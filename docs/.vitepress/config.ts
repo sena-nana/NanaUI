@@ -518,6 +518,13 @@ export default defineConfig({
   title: "NanaUI",
   cleanUrls: true,
   srcExclude: ["**/README.md"],
+  vite: {
+    server: {
+      fs: {
+        allow: [".."],
+      },
+    },
+  },
   rewrites(id) {
     if (id.startsWith("en/")) return id.slice(3);
     return "zh/" + id;
@@ -545,7 +552,7 @@ export default defineConfig({
       label: "简体中文",
       lang: "zh-CN",
       link: "/zh/",
-      description: "易上手的桌面界面框架。一棵界面树，窗口和 GPU 由你的应用持有。",
+      description: "一个把实时 GPU 画面作为普通界面节点的保留式 Rust UI 框架。一棵界面树，窗口与 GPU 归你的应用所有。",
       themeConfig: {
         nav: localize(zhNav, "zh"),
         sidebar: sidebar("zh"),

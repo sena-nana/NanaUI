@@ -8,6 +8,15 @@ Wakeups for animation, live GPU content and ordinary UI are separate. One piece 
 
 A window that needs a redraw goes roughly through these steps: drain `dispatch_program` messages, `prepare_window_frame`, `RuntimeDocument::flush`, acquire the Surface, `SceneWgpuPainter::paint_target`, submit and present, and only then `window_frame_presented`. When the compositor needs its own tick, only that window is moved to `FrameDemand::Continuous`. That does not force style or layout recomputation. A zero-size window is still prepared; producer encoding runs only when the size is drawable.
 
+## Post-refactor baseline snapshot
+
+Following the five-phase architecture baseline reset, Apple M4 `release` / `dist` measurements are (methodology and commands in [Resource budgets](../../reference/resource-budgets.md) and [Taffy reference benchmark](../../reference/taffy-reference.md)):
+
+- **Stack safety with zero `stacker`**: both `measure_node` and `mount_view*` (`ViewBuilder::run_trampoline`) run iteratively on heap work stacks (`0 B` measure stack per level), while placement bounds recursion via `recursion::SPAN` + `Boundary` queues; a 500-level deep tree finishes a full frame on a **`52 KiB`** thread stack (vs. `900 KiB` for Taffy).
+- **Compact per-node memory**: with `NodeRecord <= 152 B`, `Hierarchy == 24 B`, paged `Slots`, and shared `Arc<NodeStyle>`, 10k laid-out `Stack` nodes stay at `634 B` each, and `stack-depth wide` across `21,001` boxes measures **`943 B / box`** (vs. `1,506 B / box` for Taffy).
+- **Local scaling & zero-bloat counters**: 100k-node local frame `p95` is `30.2 µs`, a **`1.17×`** ratio against 1k nodes (`25.8 µs`); `WorkCounters` and `HeadlessTurn::work` enforce incremental budgets in CI with zero per-node memory overhead.
+- **Precompiled shaders & dist binary size**: Apple loads offline precompiled compressed MSL (`0 B` resident `naga` IR), while non-Apple hosts load compacted `NAGA1` IR; combined with `[profile.dist]`, the `reactive-sfc` binary shrinks from `15.80 MiB` to **`5.56 MiB`** (`-64.8%`).
+
 ## One pointer event
 
 Dispatch itself is constant. The measurement is the P50 of the `window` shape on macOS / Apple Silicon, `--release`, 60 warm-up moves plus 400 moves. Production windows go through `prepare_window_frame`. The `headless` shape goes through `flush_scene_frame`, which production windows do not use.
@@ -34,7 +43,7 @@ New code enters through `nana_ui::runtime`. A `GpuTextureView` on the same strin
 
 For the headless comparison, replace `--shape window` with `--shape headless`. For the scrolling version, add `--scroll`. The row count must match the one used to generate the bundle.
 
-These numbers come from hovering on one machine; they are not a CI gate. The Gallery's 559 pixel gates guard this pure-Rust path. The clock used to be frozen at 0; at that time L3 with 2,000 rows recorded 0.0242 ms, about 3.4 times more optimistic than the later 0.0819 ms. Each event now advances 16 ms, and the 0.0003 ms above is the figure after the index fix.
+These numbers come from hovering on one machine; they are not a CI gate. The clock used to be frozen at 0; at that time L3 with 2,000 rows recorded 0.0242 ms, about 3.4 times more optimistic than the later 0.0819 ms. Each event now advances 16 ms, and the 0.0003 ms above is the figure after the index fix.
 
 Measurement commands and per-phase timings are in [Cost of one pointer event](../../reference/input-cost.md).
 

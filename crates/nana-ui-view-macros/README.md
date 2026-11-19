@@ -1,33 +1,35 @@
 # nana-ui-view-macros
 
-NanaUI 声明式视图的过程宏：`view!`、`css!`、`stylesheet!`、`#[component]` 和 `#[derive(Store)]`。
+English · [简体中文](README.zh-CN.md)
 
-`view!` 接受类 Vue 的模板，展开成普通的视图函数调用，运行时不多出任何东西。`css!` 和 `stylesheet!` 在编译期经 CSS 引擎编译，`stylesheet!` 为每个 class 生成一个 `view::Class`。`#[component]` 让模板按参数名传参并支持 `#[prop(default)]`，`#[derive(Store)]` 为结构体生成按字段追踪的访问器。
+Proc macros for NanaUI's declarative view layer: `view!`, `css!`, `stylesheet!`, `#[component]`, and `#[derive(Store)]`.
 
-请经 `nana_ui::runtime`（或 `nana_ui_runtime`）使用这些宏，打开 `nana-ui` 或 `nana-ui-runtime` 的 `view-macro` feature 即可，不要直接依赖本 crate。代码生成本身在 [`nana-ui-view-codegen`](../nana-ui-view-codegen)。
+`view!` accepts Vue-like templates and expands into plain view-function calls with zero extra runtime overhead. `css!` and `stylesheet!` run through the CSS engine at compile time, generating typed `view::Class` handles for each class in `stylesheet!`. `#[component]` wires named template parameters and `#[prop(default)]` attributes, and `#[derive(Store)]` generates field-tracked reactive accessors for structs.
 
-## 示例
+Consume these macros through `nana_ui::runtime` (or `nana_ui_runtime`) by enabling the `view-macro` feature on `nana-ui` or `nana-ui-runtime` instead of depending on this crate directly. Code generation itself lives in [`nana-ui-view-codegen`](../nana-ui-view-codegen).
+
+## Example
 
 ```rust
 view! {
     <Column gap=12>
-        <Text>"计数 {count}"</Text>
-        <Button @activate={count.update(|c| *c += 1)}>"加一"</Button>
-        <Text v-if={loading}>"加载中"</Text>
-        <Text v-else>"完成"</Text>
+        <Text>"Count {count}"</Text>
+        <Button @activate={count.update(|c| *c += 1)}>"Increment"</Button>
+        <Text v-if={loading}>"Loading"</Text>
+        <Text v-else>"Done"</Text>
         <Slider min=0 max=1 step=0.05 v-model={volume} />
     </Column>
 }
 ```
 
-字面量是常量，`{path}` 原样传入，其他 `{表达式}` 变为 `move || 表达式`。
+Literals are constants, `{path}` passes through as-is, and any other `{expr}` expands to `move || expr`.
 
-## 测试
+## Tests
 
 ```bash
 cargo test -p nana-ui-runtime --features view-macro --test contracts view_macro
 ```
 
-这条测试检查模板与等价的手写函数挂出同一棵树、以同样方式更新。其余检查见 [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)。
+This test verifies that templates mount the exact same tree and update identically to equivalent hand-written view functions. See [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) for the rest of the checks.
 
-更多内容见 [声明式视图](../../docs/reference/reactive-view.md) 和 [组合视图](../../docs/guide/essentials/view-functions.md)。
+Learn more in [Reactive View](../../docs/en/reference/reactive-view.md) and [Composing Views](../../docs/en/guide/essentials/view-functions.md).

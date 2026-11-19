@@ -2,9 +2,11 @@
 
 ## 什么是 NanaUI？
 
-NanaUI 是一套用来构建桌面界面的框架。你的应用打开窗口，并持有那块用来绘制的 GPU 设备。框架在一棵界面树上做布局、点击和合成，再把这棵树画进窗口的 Surface。
+NanaUI 是一套用来构建原生桌面界面的保留式 Rust 框架。你的应用打开窗口，并持有那块用来绘制的 GPU 设备。框架在一棵界面树上用纯 `Flex + Grid (+ subgrid) + Inline + Layers + Overlay` 模型完成排版、命中与合成，再把这棵树画进窗口的 Surface。
 
 按钮、文字、侧栏和实时画面是同一棵树上的节点。它们共用排版、裁剪、点击和前后顺序。
+
+![NanaUI 架构总览](../assets/diagrams/architecture-pipeline.zh-CN.svg)
 
 ## 和其他框架的差别
 

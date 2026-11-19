@@ -18,7 +18,7 @@ cargo metadata --format-version 1 --no-deps | ConvertFrom-Json
 # 读法：遍历每个成员包的 dependencies[]，凡 path 落在 crates/ 内且 kind 为空（normal）的即一条普通依赖边
 ```
 
-**当前读数**：`crates/` 内共有 **55 条普通依赖边**（24 个成员 crate 之间 54 条 + `nana-ui → nana-icons-tabler` 1 条），**全部严格前向**。核心主线：`nana-ui-core` 仅依赖 `nana-diagnostics`；`nana-ui-runtime` 依赖 `{core, text, charts, input, view-macros, view-schema, diagnostics}`；`nana-ui-scene` 依赖 `{runtime, core, text(可选 benchmark), charts, diagnostics}`；`nana-ui` 依赖 `{scene, runtime, core, …}`。没有任何一条低层指回高层的普通边。仅用于测试宿主的 4 组 `dev-dependencies` 例外已单独列于 [模块与分层](/learn/modules-and-layers#dev-边与例外)，不进入产品二进制。
+**当前读数**：`crates/` 内共有 **58 条工作区成员普通依赖边**（24 个工作区成员 crate 之间 57 条 + `nana-ui → nana-icons-tabler` 可选边 1 条；另加非成员 `nana-icons-tabler → nana-ui-core` 1 条），**全部严格前向**。核心主线：`nana-ui-core` 仅依赖 `nana-diagnostics`；`nana-ui-runtime` 依赖 `{core, text, input, view-schema, diagnostics}` 与可选 `{charts, diagram, view-macros}`；`nana-ui-scene` 依赖 `{runtime, core, diagnostics, text(可选 benchmark)}`，已移除 `nana-ui-charts`；`nana-ui` 依赖 `{scene, runtime, core, …}`。没有任何一条低层指回高层的普通边。仅用于测试宿主的 4 组 `dev-dependencies` 例外已单独列于 [模块与分层](/learn/modules-and-layers#dev-边与例外)，不进入产品二进制。
 
 ### A2. 四个 UI 主线 crate 均不依赖 CSS 引擎
 
@@ -81,5 +81,5 @@ rg "fn redraw" crates/nana-ui/src/scene_host/present.rs      # pub(super) fn red
 ## 接着读
 
 - [合同与不变量](/learn/contracts-and-invariants)：九条核心合同的设计缘由与违反后果
-- [模块与分层](/learn/modules-and-layers)：55 条普通依赖边全量清单与 dev 边说明
-- [24 crate 覆盖矩阵](/learn/coverage-matrix)：每个 crate 的四要素速查表
+- [模块与分层](/learn/modules-and-layers)：58 条工作区成员普通依赖边全量清单与 dev 边说明
+- [25 crate 覆盖矩阵](/learn/coverage-matrix)：每个 crate 的四要素速查表

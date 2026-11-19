@@ -15,7 +15,7 @@ title: Scene 提取
 
 ## 依赖与邻居
 
-在依赖层级上：`core(L1) → text/css/charts/input/window/gpu(L2) → runtime(L5) → scene(L6) → nana-ui(L7)`。`nana-ui-scene` 依赖 `nana-ui-runtime`、`nana-ui-core`、`nana-ui-charts` 与 `nana-diagnostics`，**不依赖** `nana-gpu` 与 `nana-ui-css`：
+在依赖层级上：`core(L1) → text/css/charts/input/gpu(L2) → diagram/platform(L3) → window(L4) → runtime(L5) → scene(L6) → nana-ui(L7)`。`nana-ui-scene` 依赖 `nana-ui-runtime`、`nana-ui-core` 与 `nana-diagnostics`（`benchmark` feature 下可选 `nana-text`），**不依赖** `nana-gpu`、`nana-ui-css` 或 `nana-ui-charts`：
 
 | 邻居 Crate | 协作关系 |
 | --- | --- |
@@ -65,7 +65,7 @@ title: Scene 提取
 
 - **节点基础槽位（`0..=255`）**：如背景表面（slot 0）、边框、主文本等；
 - **集合命名空间槽位（`namespace << 32 | index`，`collection_slot:152`）**：文本行标签（1）、诊断标记（2）、文档文本选区（6）、内联对象（7）、编辑器光标（8）、下拉菜单项（9–13）等；
-- **特殊全局槽位**：`MODAL_SCRIM_SLOT = 10`（`:208`，模态遮罩）、`TRIGGERED_OVERLAY_SURFACE = 0xFFFF_FFE0`（`:216`，弹出菜单与气泡表面提升至根层叠上下文，脱离触发器的局部裁剪链）、`SCROLLBAR_CHROME = 0xFFFF_FFF8`（`:226`，滚动条始终排在容器全部后代之后绘制）。
+- **特殊全局槽位与 `OverlayMount`（`core/src/overlay.rs:65`、`scene/slots.rs:152`）**：`MODAL_SCRIM_SLOT = 10`（`:208`，模态遮罩与卡片隔离组分离）、`TRIGGERED_OVERLAY_SURFACE = 0xFFFF_FFE0`（`:216`，弹出菜单与气泡表面通过 `OverlayMount::{NearestModal, TopLayer, Inline}` 经 `resolve_scene_overlay_mount` 决定挂载层级，默认脱离祖先不透明度与滚动边缘渐隐组）、`SCROLLBAR_CHROME = 0xFFFF_FFF8`（`:226`，滚动条始终排在容器全部后代之后绘制）。
 
 应用通过 `Painter` API 录制的自定义矢量路径（`PaintRecording`，Issue #217）在 `crates/nana-ui-scene/src/scene/custom_paint.rs` 中经 `i_overlay` 布尔/填充求解与 `lyon` 曲面细分（容差 `TOLERANCE = 0.05` 逻辑像素，`MITER_LIMIT = 4.0`，`:45-48`）生成保留的 `PathMesh`——节点平移或滚动时直接重发缓存网格，无需重新三角化。
 

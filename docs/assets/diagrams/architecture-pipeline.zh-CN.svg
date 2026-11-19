@@ -1,0 +1,137 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="440" viewBox="0 0 1200 440" role="img" aria-label="NanaUI 架构总览 — 单一保留树，窗口与 GPU 归宿主所有">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0C172E"/>
+      <stop offset="0.55" stop-color="#112244"/>
+      <stop offset="1" stop-color="#152D58"/>
+    </linearGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#FFFFFF" stroke-opacity="0.04" stroke-width="1"/>
+    </pattern>
+    <marker id="arrowBlue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M1 1.5L8.5 5L1 8.5Z" fill="#64ACE8"/>
+    </marker>
+    <marker id="arrowPurple" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M1 1.5L8.5 5L1 8.5Z" fill="#B78BFA"/>
+    </marker>
+    <marker id="arrowCoral" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M1 1.5L8.5 5L1 8.5Z" fill="#FF8A5C"/>
+    </marker>
+    <marker id="arrowTeal" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M1 1.5L8.5 5L1 8.5Z" fill="#54C79B"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="440" rx="18" fill="url(#bg)"/>
+  <rect width="1200" height="440" rx="18" fill="url(#grid)"/>
+  <rect x="0.5" y="0.5" width="1199" height="439" rx="17.5" fill="none" stroke="#FFFFFF" stroke-opacity="0.10"/>
+
+  <!-- Header -->
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif">
+    <text x="36" y="36" fill="#F8FAFC" font-size="20" font-weight="700">NanaUI 架构总览 — 单一保留树，窗口与 GPU 归宿主所有</text>
+    <text x="36" y="57" fill="#94A3B8" font-size="13">构建期编译 CSS · 单向无环 Rust 管线 · 运行时零 CSS 解析、零产品路径 CPU 回读</text>
+  </g>
+
+  <!-- Top Band -->
+  <g>
+    <rect x="36" y="76" width="234" height="68" rx="10" fill="#1B233A" stroke="#FF8A5C" stroke-opacity="0.65" stroke-width="1.2"/>
+    <text x="52" y="99" fill="#FF8A5C" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" font-weight="700">nana-ui-css</text>
+    <rect x="166" y="84" width="90" height="19" rx="9.5" fill="#FF8A5C" fill-opacity="0.16"/>
+    <text x="211" y="97" text-anchor="middle" fill="#FFB293" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', sans-serif" font-size="10.5" font-weight="600">仅构建期</text>
+    <text x="52" y="120" fill="#CBD5E1" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', sans-serif" font-size="11.5">解析/级联 → 静态 StylePatch</text>
+    <text x="52" y="135" fill="#94A3B8" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', sans-serif" font-size="11">不进入任何运行时二进制</text>
+  </g>
+
+  <g>
+    <rect x="304" y="76" width="860" height="68" rx="10" fill="#192440" stroke="#B78BFA" stroke-opacity="0.6" stroke-width="1.2"/>
+    <text x="322" y="99" fill="#D2B8FF" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', sans-serif" font-size="13.5" font-weight="700">作者入口（全部收敛到同一棵 UiWorld）</text>
+    <rect x="322" y="109" width="252" height="26" rx="6" fill="#24335A" stroke="#FFFFFF" stroke-opacity="0.12"/>
+    <text x="448" y="126" text-anchor="middle" fill="#E2E8F0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12">Rust 视图函数 (nana_ui::runtime)</text>
+    <rect x="588" y="109" width="268" height="26" rx="6" fill="#24335A" stroke="#FFFFFF" stroke-opacity="0.12"/>
+    <text x="722" y="126" text-anchor="middle" fill="#E2E8F0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12">view! · css! · stylesheet! 宏</text>
+    <rect x="870" y="109" width="276" height="26" rx="6" fill="#24335A" stroke="#FFFFFF" stroke-opacity="0.12"/>
+    <text x="1008" y="126" text-anchor="middle" fill="#E2E8F0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12">.vue 单文件组件（Rust 脚本）</text>
+  </g>
+
+  <!-- Connectors -->
+  <line x1="304" y1="110" x2="274" y2="110" stroke="#B78BFA" stroke-width="1.6" stroke-dasharray="4 3" marker-end="url(#arrowCoral)"/>
+  <line x1="153" y1="144" x2="153" y2="170" stroke="#FF8A5C" stroke-width="1.6" stroke-dasharray="4 3" marker-end="url(#arrowCoral)"/>
+  <text x="163" y="161" fill="#FFB293" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', sans-serif" font-size="11">Style Model 数据</text>
+  <line x1="464" y1="144" x2="464" y2="170" stroke="#B78BFA" stroke-width="1.8" marker-end="url(#arrowPurple)"/>
+  <text x="474" y="161" fill="#D2B8FF" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', sans-serif" font-size="11">mount_view / 信号 / IntoView</text>
+
+  <!-- Stage 1 -->
+  <g>
+    <rect x="36" y="174" width="234" height="162" rx="12" fill="#162749" stroke="#64ACE8" stroke-opacity="0.55" stroke-width="1.3"/>
+    <text x="54" y="200" fill="#7CC4FF" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="700">nana-ui-core</text>
+    <text x="54" y="219" fill="#93C5FD" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', sans-serif" font-size="11.5" font-weight="600">共享基础合同 (L1)</text>
+    <line x1="54" y1="229" x2="252" y2="229" stroke="#FFFFFF" stroke-opacity="0.10"/>
+    <g fill="#CBD5E1" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', sans-serif" font-size="12">
+      <text x="54" y="250">• Style Model 与主题令牌</text>
+      <text x="54" y="271">• OKLCH / 广色域 / HDR 策略</text>
+      <text x="54" y="292">• Motion IR 与几何原语</text>
+      <text x="54" y="313">• WorkspaceModel 与切分树</text>
+    </g>
+  </g>
+
+  <!-- Stage 2 -->
+  <g>
+    <rect x="304" y="174" width="320" height="162" rx="12" fill="#182D54" stroke="#64ACE8" stroke-width="1.8"/>
+    <text x="322" y="200" fill="#7CC4FF" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="700">nana-ui-runtime</text>
+    <text x="322" y="219" fill="#93C5FD" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', sans-serif" font-size="11.5" font-weight="600">UiWorld · 唯一保留树权威 (L5)</text>
+    <line x1="322" y1="229" x2="606" y2="229" stroke="#FFFFFF" stroke-opacity="0.12"/>
+    <g fill="#E2E8F0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', sans-serif" font-size="12">
+      <text x="322" y="250">• Flex · Grid (+subgrid) · Inline · Layers · Overlay</text>
+      <text x="322" y="271">• 堆上迭代测量与挂载（500 层深仅 52 KiB 栈）</text>
+      <text x="322" y="292">• nana-text · AccessKit · Shell / Workspace / Dock</text>
+      <text x="322" y="313">• nana-ui-diagram (34) · 图表 · WorkCounters</text>
+    </g>
+  </g>
+
+  <!-- Stage 3 -->
+  <g>
+    <rect x="658" y="174" width="228" height="162" rx="12" fill="#142C48" stroke="#54C79B" stroke-opacity="0.65" stroke-width="1.4"/>
+    <text x="676" y="200" fill="#6EE7B7" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="700">nana-ui-scene</text>
+    <text x="676" y="219" fill="#A7F3D0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', sans-serif" font-size="11.5" font-weight="600">GPU 中立保留绘制图 (L6)</text>
+    <line x1="676" y1="229" x2="868" y2="229" stroke="#FFFFFF" stroke-opacity="0.10"/>
+    <g fill="#CBD5E1" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', sans-serif" font-size="12">
+      <text x="676" y="250">• UiScene · ScenePrimitive</text>
+      <text x="676" y="271">• FramePlan 与 RenderGraph</text>
+      <text x="676" y="292">• CompositorLayer 与裁剪链</text>
+      <text x="676" y="313">• 零 WGPU 依赖</text>
+    </g>
+  </g>
+
+  <!-- Stage 4 -->
+  <g>
+    <rect x="920" y="174" width="244" height="162" rx="12" fill="#1D2847" stroke="#FF8A5C" stroke-opacity="0.7" stroke-width="1.4"/>
+    <text x="938" y="200" fill="#FFA882" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="700">nana-ui</text>
+    <text x="938" y="219" fill="#FDBA74" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', sans-serif" font-size="11.5" font-weight="600">宿主适配与绘制器 (L7)</text>
+    <line x1="938" y1="229" x2="1146" y2="229" stroke="#FFFFFF" stroke-opacity="0.10"/>
+    <g fill="#CBD5E1" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', sans-serif" font-size="12">
+      <text x="938" y="250">• SceneWgpuPainter (scRGB/HDR)</text>
+      <text x="938" y="271">• 预编译 MSL / Naga IR 管线</text>
+      <text x="938" y="292">• HostTexture · GpuView 节点</text>
+      <text x="938" y="313">• FrameExchange · ExternalSurface</text>
+    </g>
+  </g>
+
+  <line x1="270" y1="255" x2="300" y2="255" stroke="#64ACE8" stroke-width="2" marker-end="url(#arrowBlue)"/>
+  <line x1="624" y1="255" x2="654" y2="255" stroke="#54C79B" stroke-width="2" marker-end="url(#arrowTeal)"/>
+  <line x1="886" y1="255" x2="916" y2="255" stroke="#FF8A5C" stroke-width="2" marker-end="url(#arrowCoral)"/>
+
+  <!-- Bottom Host Boundary -->
+  <line x1="464" y1="364" x2="464" y2="340" stroke="#64ACE8" stroke-width="1.8" marker-end="url(#arrowBlue)"/>
+  <text x="474" y="356" fill="#93C5FD" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', sans-serif" font-size="11">规范输入事件 (nana-ui-input)</text>
+
+  <line x1="1042" y1="336" x2="1042" y2="360" stroke="#FF8A5C" stroke-width="1.8" marker-end="url(#arrowCoral)"/>
+  <text x="1052" y="354" fill="#FDBA74" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', sans-serif" font-size="11">同帧 FrameContext</text>
+
+  <g>
+    <rect x="36" y="364" width="1128" height="58" rx="12" fill="#13223D" stroke="#38BDF8" stroke-opacity="0.45" stroke-width="1.2"/>
+    <text x="56" y="388" fill="#38BDF8" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', sans-serif" font-size="13.5" font-weight="700">宿主所有权边界</text>
+    <text x="56" y="408" fill="#CBD5E1" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', sans-serif" font-size="12">Window · Surface · 进程唯一 GpuContext (third_party/wgpu fork + 栅格顺序纹理) · FrameContext · nana-window（系统材质 / Chrome / 吸色）</text>
+    <rect x="920" y="378" width="226" height="28" rx="14" fill="#38BDF8" fill-opacity="0.14" stroke="#38BDF8" stroke-opacity="0.4"/>
+    <text x="1033" y="396" text-anchor="middle" fill="#BAE6FD" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', sans-serif" font-size="11.5" font-weight="600">无第二设备 · 无产品 CPU 回读</text>
+  </g>
+</svg>

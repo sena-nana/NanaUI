@@ -4,7 +4,7 @@ title: Reading the Code
 
 # Reading the Code
 
-This chapter answers a practical question: **faced with a repository of 24 workspace crates, which file should you start with, in what order should you read, how do you run a minimal check, and at what point have you really mastered the main path**.
+This chapter answers a practical question: **faced with a repository of 25 crates under `crates/` (24 workspace members plus standalone `nana-icons-tabler`), which file should you start with, in what order should you read, how do you run a minimal check, and at what point have you really mastered the main path**.
 
 ## Step one: read these five short documents in order
 
@@ -15,7 +15,7 @@ Before diving into source files thousands of lines long, spend 20 minutes buildi
 | 1 | `AGENTS.md` (repository root) | The most condensed form of the repository's architecture contracts: the single product path, supporting boundaries, and the nine non-negotiable red lines |
 | 2 | [`docs/reference/how-it-works.md`](/reference/how-it-works) | The core runtime model: one retained tree, the host owns the GPU, the 8-step lifecycle of a frame |
 | 3 | [`docs/reference/architecture.md`](/reference/architecture) | Crate boundaries, the Motion IR routing table, and the ownership table for global objects |
-| 4 | [Modules and Layers](/learn/modules-and-layers) | The dependency-depth levels of the 24 crates and an actual reading of the 55 normal dependency edges |
+| 4 | [Modules and Layers](/learn/modules-and-layers) | The dependency-depth levels of the 25 crates and an actual reading of the 58 workspace-member normal dependency edges |
 | 5 | [Contracts and Invariants](/learn/contracts-and-invariants) | The design rationale behind the nine non-negotiable contracts, with read-only verification commands |
 
 Keep `AGENTS.md` at hand while reading the source. Nearly every design in the repository of the "why is this done in two steps, why not just pass the handle" kind ultimately maps to one of its non-negotiable contracts.
@@ -24,12 +24,12 @@ Keep `AGENTS.md` at hand while reading the source. Nearly every design in the re
 
 ```text
 NanaUI/
-├── Cargo.toml                  Workspace root manifest: 24 core crates + tools + platform + 5 examples
+├── Cargo.toml                  Workspace root manifest: 24 workspace member crates + tools + platform + 5 examples
 ├── AGENTS.md                   Architecture contracts and development rules (the most important root document)
-├── crates/                     All 24 framework crates (full table at /learn/coverage-matrix)
+├── crates/                     All 25 framework crates (24 members + nana-icons-tabler; full table at /learn/coverage-matrix)
 ├── examples/                   5 workspace example packages (component-gallery, native-rhi-probe,
 │                               runtime-host-fixture, package-fixture, reactive-sfc)
-├── crates/nana-ui/examples/    16 single-file minimal topic examples (counter, GPU view, transparent window, Splash, accessibility, and more)
+├── crates/nana-ui/examples/    26 single-file minimal topic examples (counter, GPU view, transparent window, Splash, accessibility, and more)
 ├── docs/                       VitePress docs site source (including the :::api dual-authoring check script)
 ├── platform/android/           Experimental Android GameActivity host
 ├── tools/css-parity/           Test fixtures and comparison tools for CSS-subset layout parity
@@ -70,7 +70,7 @@ cargo run -p nana-ui --example application-counter --features hosted,bundled-fon
 cargo run -p nana-ui --example reactive-counter --features hosted,bundled-fonts,view-macro
 
 # 4. Live GPU content mixed with ordinary controls in one window
-cargo run -p nana-ui --example hosted-gpu-demo --features hosted,bundled-fonts,wgpu-interop
+cargo run -p nana-ui --example hosted-gpu-demo --features hosted,bundled-fonts,wgpu-interop,runtime-wgsl
 
 # 5. Two-phase startup and the native Early Splash probe
 cargo run -p nana-ui --example startup-splash --features hosted,bundled-fonts -- --probe
@@ -99,5 +99,5 @@ After reading this section, use these three questions as a quick self-check (the
 ## Read next
 
 - [End-to-End Data Flow](/learn/flows): four complete paths that tie all subsystems together
-- [24-Crate Coverage Matrix](/learn/coverage-matrix): four-point quick reference for all 24 workspace crates
+- [25-Crate Coverage Matrix](/learn/coverage-matrix): four-point quick reference for all 25 crates under `crates/`
 - [Evidence Checklist](/learn/evidence-checklist): verify every architecture claim yourself with read-only commands

@@ -1,21 +1,10 @@
 # 架构总览
 
-本板块面向**应用作者**，建立开发 NanaUI 桌面产品所需的核心心智模型。如果你需要查阅 crate 之间的完整边界合同，请见 [架构合同](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/architecture.md)；如果你想深入各个 crate 的内部源码与数据流，请进入 [架构学习](/learn/)。
+本板块面向**应用作者**，建立开发 NanaUI 桌面产品所需的核心心智模型。如果你需要查阅 crate 之间的完整边界合同，请见 [架构合同](../reference/architecture.md)；如果你想深入各个 crate 的内部源码与数据流，请进入 [架构学习](/learn/)。
 
 ## 一条唯一的产品路径
 
-```text
-应用状态
-    │  声明式视图挂载 / 信号绑定 / 更新宿主纹理
-    ▼
-UiWorld          保留树、样式、布局、命中测试、焦点与无障碍
-    │  flush
-    ▼
-UiScene          与图形后端无关的保留绘制图
-    │  SceneWgpuPainter
-    ▼
-宿主 Surface     应用持有的 Window / Device / Queue
-```
+![NanaUI 架构总览](../assets/diagrams/architecture-pipeline.zh-CN.svg)
 
 Rust 的 `view!` 宏、函数式视图以及 `.vue` 方言写的都是同一棵 `UiWorld`——它们是不同的作者入口，而不是第二棵树或第二套绘制器。CSS 解析与级联也只有 `nana-ui-css` 一处实现：`.vue` 的 `<style>`、`stylesheet!` 与 `css!` 在构建时调用它并编译为 Style Model 数据。
 
@@ -25,15 +14,17 @@ Rust 的 `view!` 宏、函数式视图以及 `.vue` 方言写的都是同一棵 
 
 | Crate | 核心职责 |
 | --- | --- |
-| `nana-ui-core` | 共享基础合同：Style Model（Tokens + Semantics + Layout）、主题令牌、几何、WorkspaceModel、Motion IR |
-| `nana-ui-runtime` | 保留树权威 `UiWorld`、内置控件、布局引擎、输入路由、焦点、Shell、Workspace、Dock、AreaLayout |
+| `nana-ui-core` | 共享基础合同：Style Model（Tokens + Semantics + Layout）、OKLCH/Color 4、主题令牌、几何、WorkspaceModel、Motion IR |
+| `nana-ui-runtime` | 保留树权威 `UiWorld`、内置控件、纯 `Flex + Grid (+ subgrid) + Inline + Layers + Overlay` 迭代布局引擎、输入路由、焦点、Shell、Workspace、Dock、AreaLayout |
 | `nana-ui-scene` | 绘制图权威 `UiScene` 与 `FramePlan`（依赖 runtime，不依赖 WGPU） |
-| `nana-ui` | 宿主适配器、`run_runtime` 与 `SceneWgpuPainter` |
-| `nana-ui-css` | 唯一的样式表解析与级联引擎（不进入 core / runtime / scene / nana-ui） |
+| `nana-ui` | 宿主适配器、`run_runtime` 与 `SceneWgpuPainter`（预编译 MSL / Naga IR 管线、线性 scRGB / HDR `Rgba16Float` 合成） |
+| `nana-ui-css` | 唯一的样式表解析与级联引擎（仅构建期运行，不进入 core / runtime / scene / nana-ui） |
 | `nana-text` | 产品唯一的文本测量、OpenType 整形与保留文本布局权威 |
+| `nana-ui-charts` | ECharts 风格图表模型、刻度、布局与 GPU 标记数组（仅依赖 `nana-ui-core`） |
+| `nana-ui-diagram` | 原生 Mermaid 图表引擎：支持全部 34 种图表类型（仅依赖 `nana-ui-core` 与 `nana-ui-charts`） |
 | `nana-ui-input` | 规范输入事件、序列器与 `HostServices` 合同（Runtime 路由器是唯一消费方） |
 | `nana-gpu` | `GpuContext`、`FrameContext`、`GpuTexture` 合同（WGPU 是唯一正式后端） |
-| `nana-window` | 原生窗口句柄、系统材质、标题栏拖拽、客户区 chrome 与缩放 |
+| `nana-window` | 原生窗口句柄、系统材质、标题栏拖拽、客户区 chrome、缩放与屏幕取色（`ColorSampler`） |
 
 普通控件永远拿不到原生窗口句柄（`HWND` / `NSWindow`）。系统材质经由 `nana-window` 申请，失败时如实返回实际生效结果或显式回退。你的应用拥有 `Window`、`Surface`、`GpuContext` 以及每一帧的 `FrameContext`；实时画面通过 `GpuTextureView` 或 `CustomRenderNode` 挂在树上，像普通控件一样参与布局、裁剪、命中测试和文档顺序。
 

@@ -1,15 +1,17 @@
 # Architecture Deep Dive
 
-This section is for readers who **want to understand how the NanaUI framework is implemented and why its design choices were made**. It takes the repository apart by module (all 24 workspace crates) and by core subsystem (retained tree, layout, style, text, Scene extraction, GPU and frames, input, windows, toolchain), and drills down to source-level data structures and line-number anchors.
+This section is for readers who **want to understand how the NanaUI framework is implemented and why its design choices were made**. It takes the repository apart by module (all 25 crates: 24 workspace members plus standalone `nana-icons-tabler`) and by core subsystem (retained tree, layout, style, text, Scene extraction, GPU and frames, input, windows, toolchain), and drills down to source-level data structures and line-number anchors.
+
+![NanaUI Architecture Pipeline](../../assets/diagrams/architecture-pipeline.en.svg)
 
 It divides the work with the other sections of the docs site as follows:
 
 | Section | Perspective and audience |
 | --- | --- |
 | [Guide](/guide/introduction) | Getting started and going further as an application developer: building a window from scratch, reactivity, component composition, hot reload, packaging, and accessibility |
-| [Components](/components/) | Catalog of the 71 built-in controls, usage examples (switchable between `view!` and functions), property tables, and event tables |
+| [Components](/components/) | Catalog of the 89 built-in controls, usage examples (switchable between `view!` and functions), property tables, and event tables |
 | [Architecture](/architecture/) | The mental model an application author needs (a frame, live GPU content, text, windows) |
-| **Architecture Deep Dive (this section)** | For architecture learners and framework contributors: coverage of all 24 crates + subsystem internals + end-to-end data flow + verification checklists |
+| **Architecture Deep Dive (this section)** | For architecture learners and framework contributors: coverage of all 25 crates + subsystem internals + end-to-end data flow + verification checklists |
 | [Reference](/reference/how-it-works) | Complete technical contracts for lookup (application API, declarative views, CSS/Rust layout, window/GPU/windowless output, maintainer notes) |
 
 ## The main path in one picture
@@ -30,7 +32,7 @@ There is exactly one product rendering path: `UiWorld → ExtractedNode → UiSc
 
 | Chapter | Core content |
 | --- | --- |
-| [Modules and Layers](/learn/modules-and-layers) | Layer grouping of the 24 crates, the list of 55 dependency edges, layering rules, and verification commands |
+| [Modules and Layers](/learn/modules-and-layers) | Layer grouping of the 25 crates, the list of 58 normal dependency edges (plus `nana-icons-tabler → nana-ui-core`), layering rules, and verification commands |
 | [Contracts and Invariants](/learn/contracts-and-invariants) | Nine non-negotiable architecture contracts, each with "why it is designed this way" and the consequences of violating it |
 | [End-to-End Data Flow](/learn/flows) | Four core flows: state change → pixels, click → callback, text → pixels, live GPU content attached to the tree |
 | [Reading the Code](/learn/reading-the-code) | Repository map, recommended reading routes, minimal runnable examples, and debugging techniques |
@@ -72,10 +74,10 @@ There is exactly one product rendering path: `UiWorld → ExtractedNode → UiSc
 
 | Chapter | Core content |
 | --- | --- |
-| [24-Crate Coverage Matrix](/learn/coverage-matrix) | Quick reference for each crate's responsibility, dependency direction, key entry types, and owning chapter |
+| [25-Crate Coverage Matrix](/learn/coverage-matrix) | Quick reference for each crate's responsibility, dependency direction, key entry types, and owning chapter |
 | [Evidence Checklist](/learn/evidence-checklist) | Read-only verification commands for key architecture claims, readings from actual runs in the current workspace, and source line-number anchors |
 
-## Owning chapter for each of the 24 crates
+## Owning chapter for each of the 25 crates
 
 | Crate | Owning chapter |
 | --- | --- |
@@ -95,6 +97,7 @@ There is exactly one product rendering path: `UiWorld → ExtractedNode → UiSc
 | `nana-ui-view-schema` | [Authoring Toolchain](/learn/toolchain) |
 | `nana-ui-view-codegen` | [Authoring Toolchain](/learn/toolchain) |
 | `nana-ui-charts` | [Supporting Crates at a Glance](/learn/supporting-crates) |
+| `nana-ui-diagram` | [Supporting Crates at a Glance](/learn/supporting-crates) |
 | `nana-diagnostics` | [Supporting Crates at a Glance](/learn/supporting-crates) |
 | `nana-svg-raster` | [Supporting Crates at a Glance](/learn/supporting-crates) |
 | `nana-app-icon` | [Supporting Crates at a Glance](/learn/supporting-crates) |
@@ -108,4 +111,4 @@ There is exactly one product rendering path: `UiWorld → ExtractedNode → UiSc
 
 - **Start from the bird's-eye view**: [Modules and Layers](/learn/modules-and-layers) → [Contracts and Invariants](/learn/contracts-and-invariants) → pick the subsystem chapters that interest you → [End-to-End Data Flow](/learn/flows).
 - **Start from rendering one frame**: [End-to-End Data Flow](/learn/flows) (Flow 1: state → pixels) → [Retained Tree](/learn/runtime-tree) → [Scene Extraction](/learn/scene-extraction) → [GPU and Frame Lifecycle](/learn/gpu-frame).
-- **Start from a specific crate**: look up its responsibility and key entry types in the [24-Crate Coverage Matrix](/learn/coverage-matrix), jump to its owning chapter, then follow the data flow to see how it works with upstream and downstream crates.
+- **Start from a specific crate**: look up its responsibility and key entry types in the [25-Crate Coverage Matrix](/learn/coverage-matrix), jump to its owning chapter, then follow the data flow to see how it works with upstream and downstream crates.

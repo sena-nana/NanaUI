@@ -1,0 +1,141 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="440" viewBox="0 0 1200 440" role="img" aria-label="NanaUI Architecture — One Retained Tree, Host-Owned GPU and Surface">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0C172E"/>
+      <stop offset="0.55" stop-color="#112244"/>
+      <stop offset="1" stop-color="#152D58"/>
+    </linearGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#FFFFFF" stroke-opacity="0.04" stroke-width="1"/>
+    </pattern>
+    <marker id="arrowBlue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M1 1.5L8.5 5L1 8.5Z" fill="#64ACE8"/>
+    </marker>
+    <marker id="arrowPurple" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M1 1.5L8.5 5L1 8.5Z" fill="#B78BFA"/>
+    </marker>
+    <marker id="arrowCoral" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M1 1.5L8.5 5L1 8.5Z" fill="#FF8A5C"/>
+    </marker>
+    <marker id="arrowTeal" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M1 1.5L8.5 5L1 8.5Z" fill="#54C79B"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="440" rx="18" fill="url(#bg)"/>
+  <rect width="1200" height="440" rx="18" fill="url(#grid)"/>
+  <rect x="0.5" y="0.5" width="1199" height="439" rx="17.5" fill="none" stroke="#FFFFFF" stroke-opacity="0.10"/>
+
+  <!-- Header -->
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', sans-serif">
+    <text x="36" y="36" fill="#F8FAFC" font-size="20" font-weight="700">NanaUI Architecture — One Retained Tree, Host-Owned GPU &amp; Surface</text>
+    <text x="36" y="57" fill="#94A3B8" font-size="13">Build-time CSS compilation · Acyclic Rust product pipeline · Zero runtime CSS parsing or product CPU readback</text>
+  </g>
+
+  <!-- Top Band: Build-Time CSS & Authoring Inputs -->
+  <!-- nana-ui-css (Build-Time Only) -->
+  <g>
+    <rect x="36" y="76" width="234" height="68" rx="10" fill="#1B233A" stroke="#FF8A5C" stroke-opacity="0.65" stroke-width="1.2"/>
+    <text x="52" y="99" fill="#FF8A5C" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" font-weight="700">nana-ui-css</text>
+    <rect x="160" y="84" width="96" height="19" rx="9.5" fill="#FF8A5C" fill-opacity="0.16"/>
+    <text x="208" y="97" text-anchor="middle" fill="#FFB293" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="10.5" font-weight="600">Build-time only</text>
+    <text x="52" y="120" fill="#CBD5E1" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11.5">Cascade &amp; selectors → StylePatch</text>
+    <text x="52" y="135" fill="#94A3B8" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11">Never linked at runtime</text>
+  </g>
+
+  <!-- Authoring Inputs -->
+  <g>
+    <rect x="304" y="76" width="860" height="68" rx="10" fill="#192440" stroke="#B78BFA" stroke-opacity="0.6" stroke-width="1.2"/>
+    <text x="322" y="99" fill="#D2B8FF" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="13.5" font-weight="700">Authoring Inputs (All lower to the same UiWorld)</text>
+    <rect x="322" y="109" width="248" height="26" rx="6" fill="#24335A" stroke="#FFFFFF" stroke-opacity="0.12"/>
+    <text x="446" y="126" text-anchor="middle" fill="#E2E8F0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12">Rust builders (nana_ui::runtime)</text>
+    <rect x="584" y="109" width="270" height="26" rx="6" fill="#24335A" stroke="#FFFFFF" stroke-opacity="0.12"/>
+    <text x="719" y="126" text-anchor="middle" fill="#E2E8F0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12">view! · css! · stylesheet! macros</text>
+    <rect x="868" y="109" width="278" height="26" rx="6" fill="#24335A" stroke="#FFFFFF" stroke-opacity="0.12"/>
+    <text x="1007" y="126" text-anchor="middle" fill="#E2E8F0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12">.vue SFC (Rust script, nana-ui-sfc)</text>
+  </g>
+
+  <!-- Connectors from Top Band (zero crossings) -->
+  <line x1="304" y1="110" x2="274" y2="110" stroke="#B78BFA" stroke-width="1.6" stroke-dasharray="4 3" marker-end="url(#arrowCoral)"/>
+  <line x1="153" y1="144" x2="153" y2="170" stroke="#FF8A5C" stroke-width="1.6" stroke-dasharray="4 3" marker-end="url(#arrowCoral)"/>
+  <text x="163" y="161" fill="#FFB293" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11">Style Model data</text>
+  <line x1="464" y1="144" x2="464" y2="170" stroke="#B78BFA" stroke-width="1.8" marker-end="url(#arrowPurple)"/>
+  <text x="474" y="161" fill="#D2B8FF" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11">mount_view / signals / IntoView</text>
+
+  <!-- Middle Band: 4-Stage Product Spine -->
+  <!-- Stage 1: nana-ui-core -->
+  <g>
+    <rect x="36" y="174" width="234" height="162" rx="12" fill="#162749" stroke="#64ACE8" stroke-opacity="0.55" stroke-width="1.3"/>
+    <text x="54" y="200" fill="#7CC4FF" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="700">nana-ui-core</text>
+    <text x="54" y="219" fill="#93C5FD" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11.5" font-weight="600">Shared Contracts (L1)</text>
+    <line x1="54" y1="229" x2="252" y2="229" stroke="#FFFFFF" stroke-opacity="0.10"/>
+    <g fill="#CBD5E1" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12">
+      <text x="54" y="250">• Style Model &amp; Theme Tokens</text>
+      <text x="54" y="271">• OKLCH / Color 4 · HDR Policy</text>
+      <text x="54" y="292">• Motion IR &amp; Geometry</text>
+      <text x="54" y="313">• WorkspaceModel &amp; Split Trees</text>
+    </g>
+  </g>
+
+  <!-- Stage 2: nana-ui-runtime -->
+  <g>
+    <rect x="304" y="174" width="320" height="162" rx="12" fill="#182D54" stroke="#64ACE8" stroke-width="1.8"/>
+    <text x="322" y="200" fill="#7CC4FF" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="700">nana-ui-runtime</text>
+    <text x="322" y="219" fill="#93C5FD" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11.5" font-weight="600">UiWorld · Single Tree Authority (L5)</text>
+    <line x1="322" y1="229" x2="606" y2="229" stroke="#FFFFFF" stroke-opacity="0.12"/>
+    <g fill="#E2E8F0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12">
+      <text x="322" y="250">• Flex · Grid (+subgrid) · Inline · Layers · Overlay</text>
+      <text x="322" y="271">• Heap-iterative measure &amp; mount (52 KiB @ 500)</text>
+      <text x="322" y="292">• nana-text · AccessKit · Shell / Workspace / Dock</text>
+      <text x="322" y="313">• nana-ui-diagram (34) · charts · WorkCounters</text>
+    </g>
+  </g>
+
+  <!-- Stage 3: nana-ui-scene -->
+  <g>
+    <rect x="658" y="174" width="228" height="162" rx="12" fill="#142C48" stroke="#54C79B" stroke-opacity="0.65" stroke-width="1.4"/>
+    <text x="676" y="200" fill="#6EE7B7" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="700">nana-ui-scene</text>
+    <text x="676" y="219" fill="#A7F3D0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11.5" font-weight="600">GPU-Neutral Draw Graph (L6)</text>
+    <line x1="676" y1="229" x2="868" y2="229" stroke="#FFFFFF" stroke-opacity="0.10"/>
+    <g fill="#CBD5E1" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12">
+      <text x="676" y="250">• UiScene · ScenePrimitive</text>
+      <text x="676" y="271">• FramePlan &amp; RenderGraph</text>
+      <text x="676" y="292">• CompositorLayer &amp; Clips</text>
+      <text x="676" y="313">• Zero WGPU dependency</text>
+    </g>
+  </g>
+
+  <!-- Stage 4: nana-ui -->
+  <g>
+    <rect x="920" y="174" width="244" height="162" rx="12" fill="#1D2847" stroke="#FF8A5C" stroke-opacity="0.7" stroke-width="1.4"/>
+    <text x="938" y="200" fill="#FFA882" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="700">nana-ui</text>
+    <text x="938" y="219" fill="#FDBA74" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11.5" font-weight="600">Host Adapter &amp; Painter (L7)</text>
+    <line x1="938" y1="229" x2="1146" y2="229" stroke="#FFFFFF" stroke-opacity="0.10"/>
+    <g fill="#CBD5E1" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12">
+      <text x="938" y="250">• SceneWgpuPainter (scRGB/HDR)</text>
+      <text x="938" y="271">• Precompiled MSL / Naga IR</text>
+      <text x="938" y="292">• HostTexture · GpuView</text>
+      <text x="938" y="313">• FrameExchange · ExternalSurface</text>
+    </g>
+  </g>
+
+  <!-- Pipeline Arrows -->
+  <line x1="270" y1="255" x2="300" y2="255" stroke="#64ACE8" stroke-width="2" marker-end="url(#arrowBlue)"/>
+  <line x1="624" y1="255" x2="654" y2="255" stroke="#54C79B" stroke-width="2" marker-end="url(#arrowTeal)"/>
+  <line x1="886" y1="255" x2="916" y2="255" stroke="#FF8A5C" stroke-width="2" marker-end="url(#arrowCoral)"/>
+
+  <!-- Bottom Band: Host-Owned Boundary -->
+  <line x1="464" y1="364" x2="464" y2="340" stroke="#64ACE8" stroke-width="1.8" marker-end="url(#arrowBlue)"/>
+  <text x="474" y="356" fill="#93C5FD" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11">CanonicalInputEvent (nana-ui-input)</text>
+
+  <line x1="1042" y1="336" x2="1042" y2="360" stroke="#FF8A5C" stroke-width="1.8" marker-end="url(#arrowCoral)"/>
+  <text x="1052" y="354" fill="#FDBA74" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11">1 FrameContext</text>
+
+  <g>
+    <rect x="36" y="364" width="1128" height="58" rx="12" fill="#13223D" stroke="#38BDF8" stroke-opacity="0.45" stroke-width="1.2"/>
+    <text x="56" y="388" fill="#38BDF8" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="13.5" font-weight="700">Host-Owned Boundary</text>
+    <text x="56" y="408" fill="#CBD5E1" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12">Window · Surface · Single GpuContext (third_party/wgpu fork + ROV) · FrameContext · nana-window (Materials, Chrome, ColorSampler)</text>
+    <rect x="896" y="378" width="250" height="28" rx="14" fill="#38BDF8" fill-opacity="0.14" stroke="#38BDF8" stroke-opacity="0.4"/>
+    <text x="1021" y="396" text-anchor="middle" fill="#BAE6FD" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11.5" font-weight="600">No 2nd Device · No CPU Readback</text>
+  </g>
+</svg>

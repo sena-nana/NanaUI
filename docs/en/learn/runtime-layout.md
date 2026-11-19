@@ -28,7 +28,7 @@ This chapter takes apart the layout engine in `nana-ui-runtime`: how computed st
 | --- | --- | --- |
 | `RuntimeLayoutEngine` | `crates/nana-ui-runtime/src/layout_engine.rs:89` | Layout algorithm entry point (full / incremental / style-tree measurement) |
 | `LayoutViewport` | `crates/nana-ui-runtime/src/layout_engine.rs:50` | Logical viewport size passed in by the host (`width` / `height`, clamped to non-negative finite values on construction) |
-| `EstablishedContext` | `crates/nana-ui-runtime/src/layout_engine/context.rs:13` | The formatting context a container establishes for its in-flow children (`Flex` / `Grid` / `Inline` / `Flow`) and the `grid_2d` flag |
+| `EstablishedContext` | `crates/nana-ui-runtime/src/layout_engine/context.rs:13` | The formatting context a container establishes for its children (`Overlay` / `Layers` / `Grid` / `Flex` / `Inline`) and the `grid_2d` flag |
 | `IntrinsicMetrics` | `crates/nana-ui-runtime/src/intrinsic_cache.rs:57` | A subtree's intrinsic size contribution: `min/max inline·block`, `preferred`, first and last baseline, aspect ratio, `truncatable`, `generation` |
 | `UsedSize` | `crates/nana-ui-runtime/src/intrinsic_cache.rs:21` | Main-axis and cross-axis used sizes resolved under a specific containing-block constraint |
 | `LayoutFrontierSeed` | `crates/nana-ui-runtime/src/layout_frontier.rs:19` | Incremental seed: target node + `LayoutInvalidation` (invalidation class, field mask, dependency footprint) |
@@ -45,19 +45,19 @@ This chapter takes apart the layout engine in `nana-ui-runtime`: how computed st
 
 `UiWorld::resolve_style` (`crates/nana-ui-runtime/src/world/style.rs:87`) resolves computed styles top-down from the root. A child with no local overrides shares its parent's `Arc<ComputedStyle>` directly (`publish_inherited_computed_style`, `:12`). The layout engine reads `motion_layout(id, &resolved_layout)` (`:106-108`), which folds in the responsive container bucket and Layout-class animations.
 
-The formatting context is decided in one place, `establish_context` (`crates/nana-ui-runtime/src/layout_engine/context.rs:29`): `Grid` → `Flex` → `Inline` (in-flow children include inline-level elements) → `Flow`. Both the measure and placement phases call the same function, so the same container can never get two different algorithms. The per-context solvers are split by module:
+The formatting context is decided in one place, `establish_context` (`crates/nana-ui-runtime/src/layout_engine/context.rs:29`), using the pure five-context model: `Overlay` → `Layers` → `Grid` → `Flex` → `Inline` (legacy CSS `Block` / `FlowRoot` / `InlineBlock` paths were removed). Both measure and placement call the same function, so the same container can never get two different algorithms. The solvers and collectors are split by module:
 
-- **Flow collection (`flow.rs:23`)**: `collect_flow_children_reporting` collects the in-flow child list and explicitly reports whether it depends on deeper descendants because of `display: contents` or inline boxes nested inside blocks.
-- **Flexbox (`flex.rs:25`)**: `distribute_flex_main` performs main-axis space distribution and cross-axis stretching.
-- **Grid (`grid.rs:23`)**: `Grid2DLayout` solves two-dimensional explicit tracks and `subgrid` (`InheritedGridTracks`, `:16`).
-- **Inline wrap packing (`inline.rs:6`)**: `pack_wrap_lines` handles line wrapping of inline-level atomic boxes.
+- **In-flow collection (`flow.rs:24`)**: `collect_flow_children_reporting` gathers in-flow children (excluding `Overlay` / out-of-flow items) and reports deeper descendant dependencies such as `display: contents`;
+- **Flexbox (`flex.rs:25`)**: `distribute_flex_main` performs main-axis space distribution and cross-axis stretching;
+- **Grid and standalone `subgrid` (`grid.rs:23`)**: `Grid2DLayout` solves two-dimensional explicit tracks and supports per-axis or two-axis standalone `subgrid` (`InheritedGridTracks`, `:16`);
+- **Inline wrap packing (`inline.rs:6`)**: `pack_wrap_lines` handles line wrapping of inline-level atomic boxes;
 - **Dynamic adaptive layout (`dynamic.rs:1-18`, Issues #209/#212/#213)**: when a container configured with `AdaptationProfile::solve_overflow` runs out of space on a single line, it uses `DynamicPass::envelope` and `solve_deficit` to borrow space from flexible children in order of increasing cost. The envelope (`RetainedEnvelope`) is retained and reused across resizes.
 
-### 2. Two-phase traversal and three cross-frame cache layers (`intrinsic_size` → `place_node`)
+### 2. Two-phase traversal, bounded stack depth, and three cross-frame cache layers (`measure_node` → `place_node`)
 
-Each layout pass consists of bottom-up **intrinsic measurement (`intrinsic_size`, `measure.rs:6`)** and top-down **node placement (`place_node`, `placement.rs:6`)**. `RetainedLayoutCache` (isolated per document) avoids recomputation with three cache layers:
+Each layout pass consists of bottom-up **intrinsic measurement (`intrinsic_size` backed by an explicit heap-iterative `measure_node` loop, `measure.rs:993`)** and top-down **node placement (`place_node`, `placement.rs:6`)**. `measure_node` uses `0 B` of call-stack recursion (and zero `stacker`), while placement bounds recursion via `recursion::SPAN` and the `Boundary` queue (`recursion.rs:18-28`), holding peak 500-depth stack usage to `52 KiB`. `RetainedLayoutCache` (isolated per document) avoids recomputation with three cache layers:
 
-1. **Intrinsic fact cache shared across contexts (`intrinsic_cache.rs:1-13`)**: the cache key contains only the subtree's content/style identity and the **constraint class**, not the formatting context type of the outer container. So whether a Flex, Grid, or Block parent asks for the intrinsic size of the same subtree, it hits the same cache entry.
+1. **Intrinsic fact cache shared across contexts (`intrinsic_cache.rs:1-13`)**: the cache key contains only the subtree's content/style identity and the **constraint class**, not the formatting context type of the outer container. So whether a `Flex`, `Grid`, `Layers`, or `Inline` parent asks for the intrinsic size of the same subtree, it hits the same cache entry.
 2. **Container placement plans (`ContainerPlan`) and measure plans (`MeasurePlan`)**: `place_node` replays the cached container plan and uses `PlanCheck` (`placement.rs:33-43`) to decide `Unchanged` (skip), `ChangedFrom(idx)` (replay from the first changed child), or `Stale` (full recompute). Container plans follow **Gate E (one plan per container; repeated edits replace in place rather than append, `layout_engine.rs:454-458`)**. Measure plans are **merged rather than overwritten** per `(container, constraint slot)` (because the same container is often measured under both main-axis and cross-axis constraints in one pass, `:480-491`), and slots not measured in this pass are actively checked with `plan_missed_change` (`:493-509`).
 3. **Same-source full snapshot pass-through**: if a full layout is requested but neither `layout_source_epoch` nor the viewport has changed, the previous output snapshot is returned whole (`:214-246`).
 
@@ -94,9 +94,10 @@ Output: immutable LayoutResult (consumed jointly by Scene extraction, hit testin
 | --- | --- |
 | `crates/nana-ui-runtime/src/layout_engine.rs` | Engine entry point, `LayoutViewport`, `RetainedLayoutCache`, Gate E plan publishing |
 | `crates/nana-ui-runtime/src/layout_engine/context.rs` | `establish_context`: formatting context decision |
-| `crates/nana-ui-runtime/src/layout_engine/measure.rs` | `intrinsic_size` and the family of functions that decide definite own size |
+| `crates/nana-ui-runtime/src/layout_engine/measure.rs` | `intrinsic_size` and heap-iterative `measure_node` sizing |
 | `crates/nana-ui-runtime/src/layout_engine/placement.rs` | `place_node`, container plan replay, and `PlanCheck` |
-| `crates/nana-ui-runtime/src/layout_engine/{flow,flex,grid,inline,dynamic}.rs` | Flow, Flexbox, two-dimensional Grid, inline wrapping, and dynamic adaptive solvers |
+| `crates/nana-ui-runtime/src/layout_engine/recursion.rs` | `SPAN` and `Boundary` placement chunking (`52 KiB` @ 500 nesting depth) |
+| `crates/nana-ui-runtime/src/layout_engine/{flow,flex,grid,inline,overlay,dynamic}.rs` | In-flow collection, Flexbox, 2D Grid / standalone `subgrid`, inline wrapping, `Overlay`, and dynamic adaptive solvers |
 | `crates/nana-ui-runtime/src/layout_frontier.rs` | `LayoutFrontierSeed`, `LayoutDependencyGraph`, and `LayoutFrontier` |
 | `crates/nana-ui-runtime/src/intrinsic_cache.rs` | `IntrinsicMetrics`, `UsedSize`, and the cross-context shared cache key |
 | `crates/nana-ui-runtime/src/text_layout_cache.rs` | Bounded FIFO text metrics cache |

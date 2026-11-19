@@ -1,13 +1,13 @@
 ---
-title: The 24-crate coverage matrix
+title: The 25-crate coverage matrix
 ---
 
-# 24-crate coverage matrix: which chapter covers each crate, and what to look up
+# 25-crate coverage matrix: which chapter covers each crate, and what to look up
 
-This page is the **complete reference ledger** for the [Architecture learning](/learn/) section: for all **24** crates under the workspace's `crates/`, each crate gets a four-part description — **responsibility boundary**, **dependency direction**, **key entry types (with `file:line` anchors)**, and **primary chapter** — plus a read-only verification command you can rerun.
+This page is the **complete reference ledger** for the [Architecture learning](/learn/) section: for all **25** crates under `crates/` (24 workspace members plus standalone `nana-icons-tabler`), each crate gets a four-part description — **responsibility boundary**, **dependency direction**, **key entry types (with `file:line` anchors)**, and **primary chapter** — plus a read-only verification command you can rerun.
 
 ```powershell
-# Count the directories under crates/ (should print 24)
+# Count the directories under crates/ (should print 25)
 (Get-ChildItem crates -Directory).Count
 ```
 
@@ -15,10 +15,10 @@ This page is the **complete reference ledger** for the [Architecture learning](/
 
 | Crate | Role in one line | Primary chapter | Dependency direction | Key entry points and source anchors | Read-only verification command |
 | --- | --- | --- | --- | --- | --- |
-| **`nana-ui-core`** | Framework-wide shared vocabulary: Style Model, geometry, themes, Motion IR, WorkspaceModel | [Core contracts](/learn/core-contracts) | In: `nana-diagnostics`; Out: nearly every upper-layer crate | `LayoutStyle` (`box_layout.rs:3292`), `SemanticColorRole` (`style_model.rs:257`) | `cargo tree -p nana-ui-core --depth 1` |
-| **`nana-ui-runtime`** | The single authoritative retained tree `UiWorld`: mutation, layout, input routing, focus, IME, accessibility, Shell/Dock/AreaLayout | [Retained tree](/learn/runtime-tree) · [Layout engine](/learn/runtime-layout) · [Input path](/learn/runtime-input) · [Workspace](/learn/workspace-shell-dock) | In: `view-schema`, `view-macros`, `core`, `text`, `charts`, `input`, `diagnostics`; Out: `nana-ui`, `scene`, `devtools` | `UiWorld` (`world.rs:628`), `UiMutation` (`mutation.rs:15`), `AppContext` (`framework.rs:1072`) | `rg "pub struct UiWorld" crates/nana-ui-runtime/src/world.rs` |
-| **`nana-ui-scene`** | Backend-neutral drawable scene `UiScene` and frame program `FramePlan`, with no GPU dependency | [Scene extraction](/learn/scene-extraction) | In: `runtime`, `core`, `charts`, `diagnostics`; **no** `gpu` / `css` dependency | `UiScene` (`scene.rs:1357`), `apply_delta` (`scene.rs:1672`), `RuntimeDocument::flush` (`runtime_document.rs:109`) | `cargo tree -p nana-ui-scene --depth 1` |
-| **`nana-ui`** | Host adapter: `SceneWgpuPainter`, host frame scheduling, window services, accessibility backend, headless output | [GPU and frames](/learn/gpu-frame) · [Windows and platforms](/learn/window-platform) | In: `gpu`, `window`, `platform`, `scene`, `runtime`, `frame-exchange`, `svg-raster`, `package`, `icons` and more | `SceneWgpuPainter` (`scene_paint/mod.rs:381`), `run_runtime_scene` (`scene_host.rs:99`) | `rg "pub struct SceneWgpuPainter" crates/nana-ui/src/scene_paint/mod.rs` |
+| **`nana-ui-core`** | Framework-wide shared vocabulary: Style Model, geometry, themes, Motion IR, WorkspaceModel, `WorkCounters` | [Core contracts](/learn/core-contracts) | In: `nana-diagnostics`; Out: nearly every upper-layer crate | `LayoutStyle` (`box_layout.rs:3292`), `SemanticColorRole` (`style_model.rs:257`), `WorkCounters` (`work.rs:83`) | `cargo tree -p nana-ui-core --depth 1` |
+| **`nana-ui-runtime`** | The single authoritative retained tree `UiWorld`: paged storage, 5-context layout, input routing, focus, IME, accessibility, Shell/Dock/AreaLayout | [Retained tree](/learn/runtime-tree) · [Layout engine](/learn/runtime-layout) · [Input path](/learn/runtime-input) · [Workspace](/learn/workspace-shell-dock) | In: `view-schema`, `core`, `text`, `input`, `diagnostics`, optional `charts` / `diagram` / `view-macros`; Out: `nana-ui`, `scene`, `devtools` | `UiWorld` (`world.rs:628`), `UiMutation` (`mutation.rs:15`), `AppContext` (`framework.rs:1072`) | `rg "pub struct UiWorld" crates/nana-ui-runtime/src/world.rs` |
+| **`nana-ui-scene`** | Backend-neutral drawable scene `UiScene` and frame program `FramePlan`, with no GPU or charts dependency | [Scene extraction](/learn/scene-extraction) | In: `runtime`, `core`, `diagnostics`, optional `text` (benchmark); **no** `gpu` / `css` / `charts` dependency | `UiScene` (`scene.rs:1357`), `apply_delta` (`scene.rs:1672`), `RuntimeDocument::flush` (`runtime_document.rs:109`) | `cargo tree -p nana-ui-scene --depth 1` |
+| **`nana-ui`** | Host adapter: `SceneWgpuPainter`, host frame scheduling, window services, accessibility backend, headless output (`default = []`) | [GPU and frames](/learn/gpu-frame) · [Windows and platforms](/learn/window-platform) | In: required `core`, `text`, `platform`, `runtime`, `scene`, `diagnostics`; optional `gpu`, `window`, `frame-exchange`, `svg-raster`, `package`, `charts`, `icons` | `SceneWgpuPainter` (`scene_paint/mod.rs:381`), `run_runtime_scene` (`scene_host.rs:99`) | `rg "pub struct SceneWgpuPainter" crates/nana-ui/src/scene_paint/mod.rs` |
 | **`nana-text`** | The product's only text engine: font matching, OpenType shaping, UAX #14 line breaking, retained layout handles | [Text engine](/learn/text-engine) | In: `nana-ui-core`, `fontdb`, `skrifa`, `harfrust`, `unicode-*`; Out: `runtime`, `nana-ui`, `scene` (benchmark) | `TextEngine` (`engine.rs:25`), `Shaper` (`shaping/shaper.rs:27`), `Layouter` (`layout/engine.rs:157`) | `cargo test -p nana-text` |
 
 ## 2. Engine and contract crates (CSS / input / GPU / frame exchange, 4)
@@ -35,7 +35,7 @@ This page is the **complete reference ledger** for the [Architecture learning](/
 | Crate | Role in one line | Primary chapter | Dependency direction | Key entry points and source anchors | Read-only verification command |
 | --- | --- | --- | --- | --- | --- |
 | **`nana-ui-platform`** | Platform-neutral contracts: window descriptors/events/commands, input re-export, `fetch`/WebSocket/clipboard/paths | [Windows and platforms](/learn/window-platform) | In: `core`, `input`, `diagnostics`, `ureq`, `url`, `arboard`; Out: each host layer | `WindowDescriptor` (`window.rs:429`), `WindowEvent` (`:114`), `WindowCommand` (`:684`) | `cargo tree -p nana-ui-platform --depth 1` |
-| **`nana-window`** | Native window execution: handles, system materials, frameless chrome, scaling, fullscreen, Underlay, headless `WebSurface` | [Windows and platforms](/learn/window-platform) | In: `nana-ui-core`, `window-vibrancy`, `url`; Out: `nana-ui` | `apply_system_material` (`material.rs:176`), `prepare_client_chrome` (`chrome.rs:32`) | `rg "pub fn apply_system_material" crates/nana-window/src/material.rs` |
+| **`nana-window`** | Native window execution: handles, system materials, frameless chrome, scaling, fullscreen, Underlay, headless `WebSurface`, `WindowDescriptor::parent` | [Windows and platforms](/learn/window-platform) | In: `nana-ui-core`, `nana-ui-platform`, `window-vibrancy`, `url`; Out: `nana-ui` | `apply_system_material` (`material.rs:176`), `prepare_client_chrome` (`chrome.rs:32`) | `rg "pub fn apply_system_material" crates/nana-window/src/material.rs` |
 
 ## 4. Authoring toolchain crates (4)
 
@@ -46,11 +46,12 @@ This page is the **complete reference ledger** for the [Architecture learning](/
 | **`nana-ui-view-codegen`** | Expands templates into declarative view functions, and calls the CSS engine at build time to compile styles | [Authoring toolchain](/learn/toolchain) | In: `core`, `css`, `view-schema` | `expand` (`lib.rs:287`), `compile_styles` (`style.rs:986`) | `rg "use nana_ui_css" crates/nana-ui-view-codegen/src/style.rs` |
 | **`nana-ui-sfc`** | `.vue` single-file component (Rust script) build-time compiler | [Authoring toolchain](/learn/toolchain) | In: `view-codegen` (generated code points at `runtime` through paths) | `Compiler` (`lib.rs:115`), `component()` (`lib.rs:413`) | `rg "pub struct Compiler" crates/nana-ui-sfc/src/lib.rs` |
 
-## 5. Supporting crates (9)
+## 5. Supporting crates (10)
 
 | Crate | Role in one line | Primary chapter | Dependency direction | Key entry points and source anchors | Read-only verification command |
 | --- | --- | --- | --- | --- | --- |
-| **`nana-ui-charts`** | Chart model: `ChartOption`, scales, layout, hit testing and GPU mark arrays | [Supporting crates](/learn/supporting-crates) | In: only `core` + `bytemuck`; Out: `runtime`, `scene`, `nana-ui` | `ChartOption` (`option.rs:105`), `ChartMarks` (`marks.rs:203`) | Read `crates/nana-ui-charts/Cargo.toml` |
+| **`nana-ui-charts`** | Chart model: `ChartOption`, scales, layout, hit testing and GPU mark arrays | [Supporting crates](/learn/supporting-crates) | In: only `core` + `bytemuck`; Out: `runtime`, `diagram`, `nana-ui` | `ChartOption` (`option.rs:105`), `ChartMarks` (`marks.rs:203`) | Read `crates/nana-ui-charts/Cargo.toml` |
+| **`nana-ui-diagram`** | Native Mermaid diagram engine: 34 diagram families (`DiagramKind::ALL`) parsing, layout, and theme-neutral vector display lists | [Supporting crates](/learn/supporting-crates) | In: `core`, `charts`; Out: `runtime` (`rich-text` feature) | `DiagramKind` (`lib.rs:32`), `DiagramScene` (`ir/mod.rs`), `families/` | Read `crates/nana-ui-diagram/src/lib.rs` |
 | **`nana-diagnostics`** | `event!` / `metric!` / `fault!` / `span!` macros and static descriptors | [Supporting crates](/learn/supporting-crates) | In: zero ordinary dependencies; Out: the whole product line, starting at `core` | `event!` (`lib.rs:83`), the descriptor table in `framework.rs` | `rg "never renumber" crates/nana-diagnostics/src/framework.rs` |
 | **`nana-svg-raster`** | CPU-side SVG rasterization (`resvg → pixmap`) | [Supporting crates](/learn/supporting-crates) | In: `resvg 0.48.1`; Out: `nana-ui` | `rasterize_document` (`lib.rs:58`) | `rg "pub fn rasterize" crates/nana-svg-raster/src/lib.rs` |
 | **`nana-app-icon`** | Default application icon, PNG/ICO/ICNS encoding and Windows PE resource embedding | [Supporting crates](/learn/supporting-crates) | In: `platform` (optional), `image`, `flate2`, `embed-resource` | `rasterize` (`mark.rs:8`) | `rg "feature" crates/nana-app-icon/Cargo.toml` |
@@ -62,10 +63,10 @@ This page is the **complete reference ledger** for the [Architecture learning](/
 
 ## Coverage statistics
 
-The five groups above total `5 + 4 + 2 + 4 + 9 = 24`, covering all 24 crates under `crates/`, 100%.
+The five groups above total `5 + 4 + 2 + 4 + 10 = 25`, covering all 25 crates under `crates/` (24 workspace members plus standalone `nana-icons-tabler`), 100%.
 
 ## Further reading
 
-- [Modules and layers](/learn/modules-and-layers): the full dependency-depth table for the 24 crates and the list of 55 ordinary dependency edges
+- [Modules and layers](/learn/modules-and-layers): the full dependency-depth table for the 25 crates and the list of 58 workspace-member ordinary dependency edges
 - [Evidence checklist](/learn/evidence-checklist): read-only verification commands and measured readings for the key architecture claims
 - [Architecture learning overview](/learn/): the map of all chapters, organized by learning path

@@ -11,7 +11,9 @@ Run them from the repository root. `nana-ui` examples need the features they dec
 | Counter (`view!`) | `cargo run -p nana-ui --example reactive-counter --features hosted,bundled-fonts,view-macro` | `crates/nana-ui/examples/reactive-counter.rs` |
 | Counter (application shell) | `cargo run -p nana-ui --example application-counter --features hosted,bundled-fonts` | `crates/nana-ui/examples/application-counter.rs` |
 | To-do list (`.vue`) | `cargo run -p reactive-sfc` | `examples/reactive-sfc` |
-| Live GPU content | `cargo run -p nana-ui --example gpu-view-demo --features hosted,bundled-fonts` | `crates/nana-ui/examples/gpu-view-demo.rs` |
+| Live GPU content (`GpuView`) | `cargo run -p nana-ui --example gpu-view-demo --features hosted,bundled-fonts` | `crates/nana-ui/examples/gpu-view-demo.rs` |
+| Live WGSL shader viewport | `cargo run -p nana-ui --example hosted-gpu-demo --features hosted,bundled-fonts,wgpu-interop,runtime-wgsl` | `crates/nana-ui/examples/hosted-gpu-demo.rs` |
+| Mixing an egui panel in the tree | `cargo run -p nana-ui --example egui-in-nanaui --features hosted,bundled-fonts,wgpu-interop` | `crates/nana-ui/examples/egui-in-nanaui.rs` |
 | Multiple windows | `cargo run -p nana-ui --example window-chrome-multi-window --features hosted,bundled-fonts` | `crates/nana-ui/examples/window-chrome-multi-window.rs` |
 
 ## Next steps

@@ -2,7 +2,7 @@
 
 本文建立 NanaUI 的核心运行模型。读完后你应能清楚判断三件事：**业务状态放在哪里**、**一帧之内各层按什么顺序协作**，以及**实时 GPU 画面如何作为普通节点融进界面树**。
 
-具体函数签名见 [应用 API](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/application-api.md)，保留树与绘制图的底层提取细节见 [Runtime 与 Scene](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/runtime-scene.md)。
+具体函数签名见 [应用 API](application-api.md)，保留树与绘制图的底层提取细节见 [Runtime 与 Scene](runtime-scene.md)。
 
 ## 三个核心事实
 
@@ -49,9 +49,11 @@ scene_gpu_renderers / scene_resource_producers
                              高级 GPU 路径：同 pass 直写或按图离屏生产（首次接入可忽略，见 gpu.md）
 ```
 
-控件交互直接绑定在视图节点上（如 `.on_activate(...)` 或 `AppContext::on`）。只有在需要开窗、换纹理等跨宿主操作时，才在事件回调里调用 `cx.dispatch_program(Message)`，交由下一帧开头的 `update` 处理。`update` 应保持轻量；填充新窗口内容等操作放在 `present` 之后的 `bind_window` 中执行。完整可运行代码见 [创建应用](https://github.com/sena-nana/NanaUI/blob/main/docs/guide/essentials/application.md)。
+控件交互直接绑定在视图节点上（如 `.on_activate(...)` 或 `AppContext::on`）。只有在需要开窗、换纹理等跨宿主操作时，才在事件回调里调用 `cx.dispatch_program(Message)`，交由下一帧开头的 `update` 处理。`update` 应保持轻量；填充新窗口内容等操作放在 `present` 之后的 `bind_window` 中执行。完整可运行代码见 [创建应用](../guide/essentials/application.md)。
 
 ## 一帧的执行顺序
+
+![NanaUI 的一帧 8 步时序](../assets/diagrams/frame-lifecycle.zh-CN.svg)
 
 在 `run_runtime`（底层为 `run_runtime_scene`）中，每一扇需要重绘的窗口按以下 8 步顺序推进：
 
@@ -97,7 +99,7 @@ scene_gpu_renderers / scene_resource_producers
 
 默认产品路径是将实时画面渲染到可采样纹理，在树上挂载 `GpuTextureView`，并使用**同一个字符串槽位名**在 `host_textures()` 中登记。多层画面只需挂载相邻的多张 `GpuTextureView`；`Video` 同样走 `video:{id}` 宿主纹理槽（有槽位时不叠加 poster）。更换纹理尺寸或对象时递增 `generation` 即可，切勿销毁重建 Runtime 节点。
 
-只有在完全没有中间纹理、必须直接画进当前 UI 渲染通道时，才使用 `GpuView`（以 `u64` 槽位号匹配已注册的 `SceneGpuRenderer`，不同于 `HostTextureRegistry` 的字符串键）。详细接入规范见 [实时画面](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/gpu.md)。
+只有在完全没有中间纹理、必须直接画进当前 UI 渲染通道时，才使用 `GpuView`（以 `u64` 槽位号匹配已注册的 `SceneGpuRenderer`，不同于 `HostTextureRegistry` 的字符串键）。详细接入规范见 [实时画面](gpu.md)。
 
 ## 一份 Style Model，一棵树
 

@@ -62,8 +62,8 @@ title: GPU 与帧生命周期
 
 `SceneWgpuPainter`（`crates/nana-ui/src/scene_paint/mod.rs:381`）分为两层：
 
-- **设备级共享管线（构造一次）**：quad、motion、mesh、icon、text、host_texture、backdrop 七个管线家族在构造时通过 `beside!` 宏在 scoped 线程上**并行编译**（最慢的 quad 管线留在当前线程，`:566`），`charts` 管线在首次遇到图表时惰性编译。
-- **每目标状态（`TargetState`，`:469`）**：按 `RenderTargetId` 隔离存储预备批次（`PreparedBatch`）、目标纹理与各管线实例数据，通过 `swap_target_state`（`:935`）换入换出，并由 `RetainedWrites` 账本跟踪——若上一帧在提交前被丢弃，`begin_frame`（`:955`）会自动清空并重建该目标的保留状态；若同一目标已有另一帧在飞（in-flight），直接返回 `ScenePaintError::TargetInFlight` 防止乱序提交破坏状态。内部合成统一在**预乘线性 scRGB** 空间完成（`ScenePresentationProfile:94`）。
+- **设备级共享管线（构造一次）**：quad、motion、mesh、icon、text、host_texture、backdrop 七个管线家族在构造时通过 `beside!` 宏在 scoped 线程上**并行编译**（最慢的 quad 管线留在当前线程，`:566`），`charts` 管线在首次遇到图表时惰性编译。macOS / Metal 默认从预编译 Metal 3.1 MSL 归档加载着色器（`msl_precompiled/mod.rs`），其余 WGPU 后端读取紧凑的 `b"NAGA1"` Naga IR 字节码（`naga_ir/codec.rs:17`），仅当显式开启 `runtime-wgsl` feature 时才在运行期解析 WGSL 源码。
+- **每目标状态（`TargetState`，`:469`）、HDR/OKLCH 呈现与 ROV**：按 `RenderTargetId` 隔离存储预备批次（`PreparedBatch`）、目标纹理与各管线实例数据，通过 `swap_target_state`（`:935`）换入换出，并由 `RetainedWrites` 账本跟踪——若上一帧在提交前被丢弃，`begin_frame`（`:955`）会自动清空并重建该目标的保留状态；若同一目标已有另一帧在飞（in-flight），直接返回 `ScenePaintError::TargetInFlight` 防止乱序提交破坏状态。作者色保留 OKLCH/sRGB 精度，内部合成统一在**预乘线性 scRGB** 空间完成，`ScenePresentationProfile` 输出到 SDR sRGB、Display P3 或 HDR PQ+BT.2020；当适配器支持 `wgpu::Features::TEXTURE_STORAGE_RASTERIZER_ORDER`（`crates/nana-ui/src/hosted_context.rs:1475`）时，背景虚化与混合通道走光栅序视图（ROV）路径。帧级 CPU/GPU 工作量分账统一汇总于 `WorkCounters`（`crates/nana-ui-core/src/work.rs:83`）。
 
 ### 4. 宿主一帧的 35 步完整序列（`scene_host/present.rs`）
 
@@ -101,6 +101,7 @@ title: GPU 与帧生命周期
 | `crates/nana-gpu/src/upload.rs` | `UploadRing` 批量合并上传环 |
 | `crates/nana-gpu/src/{wgpu_interop,__framework,abi}.rs` | 显式逃生舱、框架内部通道与逻辑资源绑定 ABI |
 | `crates/nana-ui/src/scene_paint/mod.rs` | `SceneWgpuPainter` 主体、每目标状态管理与 `paint_target` |
+| `crates/nana-ui/src/scene_paint/{msl_precompiled,naga_ir}/` | 预编译 Metal 3.1 MSL 归档与紧凑 `b"NAGA1"` Naga IR 编解码器 |
 | `crates/nana-ui/src/scene_host/present.rs` | 宿主 `redraw` 35 步完整生命周期与 `tick_hidden_gpu` |
 | `crates/nana-ui/src/{gpu_texture,scene_gpu,frame_binding}.rs` | `HostTextureRegistry`、`SceneGpuRenderer` / `SceneResourceProducer` 与 `FrameBinding` |
 | `crates/nana-frame-exchange/src/lib.rs` | `FrameExchange` 跨线程有界最新帧交换池与 `FrameColorMetadata` |

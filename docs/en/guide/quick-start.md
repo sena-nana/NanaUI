@@ -8,14 +8,14 @@ Rust 1.98+ is required. The repository is currently referenced by path or git an
 
 ## Add the dependency
 
-`nana-ui` has `default = []`: without `hosted` there is no `run_runtime`, and without `gpu` there is no painter. Enabling `hosted` implies `gpu` and pulls only the platform's primary graphics backend (`metal` on Apple, `dx12` on Windows, `vulkan` on Unix); add `wgpu-backends` if you need all cross-platform backends, or enable `full`. See the [Migration Guide](migration-layout-and-features.md) for opt-in features. A minimal desktop application needs at least this:
+`nana-ui` has `default = []`: without `hosted` there is no `run_runtime`, and without `gpu` there is no painter. Enabling `hosted` implies `gpu` and pulls only the platform's primary graphics backend (`metal` on Apple, `dx12` on Windows, `vulkan` on Unix), loading precompiled shader archives by default; add `wgpu-backends` if you need all cross-platform backends, or enable `full`. See the [Migration Guide](migration-layout-and-features.md) for opt-in features. A minimal desktop application needs at least this:
 
 ```toml
 [dependencies]
 nana-ui = { path = "../NanaUI/crates/nana-ui", features = ["hosted", "bundled-fonts", "view-macro"] }
 ```
 
-`hosted` brings in `gpu`, winit and AccessKit. `view-macro` compiles `view!`, `css!` and `stylesheet!`. If you only write function calls, you can drop it. For more control families, see [Application API](../reference/application-api.md).
+`hosted` brings in `gpu`, winit and AccessKit. `view-macro` compiles `view!`, `css!` and `stylesheet!`. If you only write function calls, you can drop it. For more control families and `[profile.dist]` builds, see [Application API](../reference/application-api.md).
 
 ## See the finished product
 
@@ -24,9 +24,12 @@ From the repository root:
 ```bash
 cargo run -p component-gallery
 cargo run -p nana-ui --example gpu-view-demo --features hosted,bundled-fonts
+cargo run -p nana-ui --example hosted-gpu-demo --features hosted,bundled-fonts,wgpu-interop,runtime-wgsl
 ```
 
-The Gallery is the control catalog. The minimal host reference is `examples/runtime-host-fixture`.
+The Gallery is the control catalog, while `gpu-view-demo` and `hosted-gpu-demo` mount live GPU nodes in the UI tree (`hosted-gpu-demo` uses custom WGSL shaders). The minimal host reference is `examples/runtime-host-fixture`.
+
+For compact release binaries, build with the workspace distribution profile (`cargo build --profile dist`).
 
 ## Your first UI
 

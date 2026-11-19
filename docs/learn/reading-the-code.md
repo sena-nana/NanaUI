@@ -4,7 +4,7 @@ title: 代码阅读指南
 
 # 代码阅读指南
 
-本章回答一个实际问题：**面对包含 24 个工作区 crate 的仓库，应该从哪个文件开始读、按什么顺序读、怎么跑最小验证、读到哪一步算真正掌握了主干**。
+本章回答一个实际问题：**面对 `crates/` 下 25 个 crate（24 个工作区成员 + 独立 `nana-icons-tabler`）的仓库，应该从哪个文件开始读、按什么顺序读、怎么跑最小验证、读到哪一步算真正掌握了主干**。
 
 ## 第一步：按顺序读完这五份短文档
 
@@ -15,7 +15,7 @@ title: 代码阅读指南
 | 1 | `AGENTS.md`（仓库根目录） | 全仓架构合同的最高浓缩：唯一产品路径、支撑边界与九条非协商红线 |
 | 2 | [`docs/reference/how-it-works.md`](/reference/how-it-works) | 核心运行模型：一棵保留树、宿主拥有 GPU、一帧的 8 步生命周期 |
 | 3 | [`docs/reference/architecture.md`](/reference/architecture) | Crate 边界、Motion IR 分流表与全局对象所有权表 |
-| 4 | [模块与分层](/learn/modules-and-layers) | 24 个 crate 的依赖深度层级与 55 条普通依赖边实读 |
+| 4 | [模块与分层](/learn/modules-and-layers) | 25 个 crate 的依赖深度层级与 58 条工作区成员普通依赖边实读 |
 | 5 | [合同与不变量](/learn/contracts-and-invariants) | 九条非协商合同的设计因果与只读验证命令 |
 
 `AGENTS.md` 值得在阅读源码时随时对照：仓库里几乎所有「为什么这段代码要分两步、为什么不直接传句柄」的设计，最终都对应其中一条非协商合同。
@@ -24,12 +24,12 @@ title: 代码阅读指南
 
 ```text
 NanaUI/
-├── Cargo.toml                  Workspace 根清单：24 个核心 crate + tools + platform + 5 个示例
+├── Cargo.toml                  Workspace 根清单：24 个工作区成员 crate + tools + platform + 5 个示例
 ├── AGENTS.md                   架构合同与开发守则（最重要的一份根文档）
-├── crates/                     全部 24 个框架 crate（全表见 /learn/coverage-matrix）
+├── crates/                     全部 25 个框架 crate（24 成员 + nana-icons-tabler，全表见 /learn/coverage-matrix）
 ├── examples/                   5 个工作区示例包（component-gallery、native-rhi-probe、
 │                               runtime-host-fixture、package-fixture、reactive-sfc）
-├── crates/nana-ui/examples/    16 个单文件最小专题示例（计数器、GPU 视图、透明窗、Splash、无障碍等）
+├── crates/nana-ui/examples/    26 个单文件最小专题示例（计数器、GPU 视图、透明窗、Splash、无障碍等）
 ├── docs/                       VitePress 文档站源码（含 :::api 双写法校验脚本）
 ├── platform/android/           Android 实验性 GameActivity 宿主
 ├── tools/css-parity/           CSS 子集布局一致性测试夹具与比对工具
@@ -70,7 +70,7 @@ cargo run -p nana-ui --example application-counter --features hosted,bundled-fon
 cargo run -p nana-ui --example reactive-counter --features hosted,bundled-fonts,view-macro
 
 # 4. 实时 GPU 画面与普通控件同窗混排
-cargo run -p nana-ui --example hosted-gpu-demo --features hosted,bundled-fonts,wgpu-interop
+cargo run -p nana-ui --example hosted-gpu-demo --features hosted,bundled-fonts,wgpu-interop,runtime-wgsl
 
 # 5. 两阶段启动与原生 Early Splash 探针
 cargo run -p nana-ui --example startup-splash --features hosted,bundled-fonts -- --probe
@@ -99,5 +99,5 @@ cargo run -p nana-ui --example startup-splash --features hosted,bundled-fonts --
 ## 接着读
 
 - [端到端数据流](/learn/flows)：四条完整链路串起全部子系统
-- [24 crate 覆盖矩阵](/learn/coverage-matrix)：全部 24 个工作区 crate 的四要素速查表
+- [25 crate 覆盖矩阵](/learn/coverage-matrix)：全部 25 个 crate 的四要素速查表
 - [证据清单](/learn/evidence-checklist)：用只读命令亲手核验每一条架构断言

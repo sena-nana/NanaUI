@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  A Rust UI framework where live GPU content is an ordinary node in the UI tree.
+  A retained-mode Rust UI framework where live GPU content is an ordinary node in the UI tree.
 </p>
 
 <p align="center">
@@ -21,6 +21,7 @@
   <a href="https://sena-nana.github.io/NanaUI/guide/introduction">Guide</a> ·
   <a href="https://sena-nana.github.io/NanaUI/components/">Components</a> ·
   <a href="https://sena-nana.github.io/NanaUI/architecture/">Architecture</a> ·
+  <a href="https://sena-nana.github.io/NanaUI/learn/">Architecture Deep Dive</a> ·
   <a href="examples">Examples</a>
 </p>
 
@@ -36,40 +37,48 @@
 
 ## Why NanaUI
 
-NanaUI started from one concrete need: mixing live GPU content and a complete UI in the same window. Most approaches we tried forced a choice. Either the UI is in charge, and GPU content can only be a texture or a hole cut into the interface; or rendering is in charge, and the UI is a HUD layered on top, with clipping, hit testing, focus and window behavior left for you to rebuild.
+NanaUI started from one concrete need: mixing live GPU content and a complete desktop UI in the same window. Most toolkits force a choice. Either the UI owns the window and GPU content is squeezed into a texture or a hole cut into the interface; or a renderer owns the window and UI becomes a HUD painted on top, leaving clipping, hit testing, focus, accessibility and native window behavior for you to rebuild.
 
-In NanaUI, GPU content is an ordinary node in the UI tree. It takes part in layout, clipping, hit testing and draw order alongside buttons and text. The application owns the WGPU device, and NanaUI draws into the frames the application hands it.
+In NanaUI, live GPU content is an ordinary node in the retained UI tree. It participates in layout, rounded-corner and scroll clipping, hit testing and document order alongside buttons and text. Your application owns the Window, Surface and WGPU device, and NanaUI paints the tree into the frames you give it.
 
-That makes it a fit for editors and creative tools with preview viewports, games that need menus and HUDs, and real-time tools such as shader debuggers and visualizers. In all of these, the live content and the controls share one layout pass, one hit-test structure and one GPU device.
-
-The other reason is that the Rust UI frameworks we looked at each leave gaps: some are immediate mode and struggle with large desktop interfaces; some have immature layout, text shaping or IME support; some rely on an embedded browser; few treat windowing, accessibility, theming, developer tools and packaging as one system. NanaUI aims to be a more complete system in which the framework provides all of these and they work together.
+That makes it a natural fit for editors and creative tools with preview viewports, games that need menus and HUDs, and real-time tools such as shader debuggers and visualizers. Because NanaUI treats layout, text shaping, IME, accessibility, theming, hot reload, diagnostics and packaging as one system, you do not have to assemble those pieces yourself.
 
 ## Design goals
 
-- **One UI tree.** Controls, text and GPU content live in the same retained tree, with one layout engine, one hit-test structure and one text engine.
-- **The application owns the GPU.** The window, surface and WGPU device belong to the application. NanaUI never creates a second device and never reads frames back to the CPU.
-- **Work proportional to change.** Frames with no changes do no work, and a local edit only recomputes what it affects. Work counters in CI enforce this.
-- **Completeness.** Windowing, IME, accessibility, theming, hot reload, debugging and packaging come with the framework instead of being assembled by each application.
+- **One retained tree.** Controls, text and live GPU nodes share `UiWorld`, one pure `Flex + Grid (+ subgrid) + Inline + Layers + Overlay` layout engine, one hit-test index and one text engine.
+- **Host-owned GPU & precompiled shaders.** The window, surface and single WGPU device (`third_party/wgpu` fork with rasterizer-ordered storage textures) belong to the application. Built-in shaders ship precompiled (compressed MSL on Apple, compacted Naga IR elsewhere), with no second `Device` and no CPU readback on product paths.
+- **Work proportional to change & bounded stack.** Clean frames do no work, local edits recompute only what they affect (verified in CI via zero-overhead `WorkCounters`), and heap-iterative measurement and mounting eliminate `stacker` / `psm` completely (`52 KiB` thread stack at 500 levels of nesting).
+- **Modular completeness (`default = []`).** Every crate defaults to minimal features so applications opt in only to what they use — from windowing, IME and AccessKit to headless testing, `.nlog` diagnostics, signed resource packs and `[profile.dist]` builds.
 
-NanaUI is not a browser shell, does not offer an immediate-mode API, and is not a game engine. Scenes, physics and asset pipelines stay with your engine or renderer; NanaUI handles the UI and places your content inside it.
+NanaUI is not a browser shell, does not offer an immediate-mode API, and is not a game engine. Scenes, physics and asset pipelines stay with your renderer; NanaUI handles the UI and composites your live content inside it.
+
+## Architecture at a glance
+
+<p align="center">
+  <img src="docs/assets/diagrams/architecture-pipeline.en.svg" alt="NanaUI Architecture Pipeline" width="100%">
+</p>
+
+- **Single product path:** `nana-ui-core` (shared contracts) → `nana-ui-runtime` (`UiWorld`, layout, input, controls) → `nana-ui-scene` (backend-neutral `UiScene` & `FramePlan`) → `nana-ui` (`SceneWgpuPainter` & host adapter).
+- **Build-time CSS only:** `nana-ui-css` runs at build time inside `view!`, `css!`, `stylesheet!` and `.vue` compilation to emit static Style Model patches; runtime crates contain zero CSS parsing.
+- **Strict host ownership:** Your application holds `Window`, `Surface`, `GpuContext` and `FrameContext`; ordinary controls never see raw window handles (`nana-window` isolates materials, chrome and screen sampling).
+
+See [Architecture](https://sena-nana.github.io/NanaUI/architecture/) for the application author mental model, or [Architecture Deep Dive](https://sena-nana.github.io/NanaUI/learn/) for a full 25-crate source walkthrough.
 
 ## Features
 
 | Area | What you get |
 | --- | --- |
-| Controls | About 90: forms, lists, tables, trees, dialogs, drawers, toasts, date and color pickers, node graphs, timelines, a rich text editor |
-| Desktop shell | Shell, Workspace, Dock, command palette, overlays, multiple windows; Mica / Acrylic / Vibrancy system materials |
-| Text | In-house engine: shaping, layout, vertical text, bidirectional text, IME composition, CLDR locale formatting |
-| Rich content | Markdown, KaTeX math, Mermaid diagrams and ECharts-style charts, with no browser involved |
-| Authoring | Plain Rust functions, the `view!` macro, and `.vue` single-file components whose scripts are Rust |
-| Styling | A CSS subset compiled at build time, light and dark themes, custom themes and material shaders |
-| Accessibility | An incremental accessibility tree built on AccessKit |
-| Tooling | Hot reload, headless snapshot tests, debugging sessions, structured diagnostic logs (`.nlog`) |
-| Packaging | Resource packs, content signing, platform directory layouts, Steam output |
+| Controls | 89 documented built-in controls: forms, lists, tables, trees, dialogs, drawers, toasts, date & color pickers (with native screen eyedropper), node graphs (`GraphCanvas`), DCC timeline (`TimelineEditor`), `PropertyGrid`, rich text editor |
+| Layout & Styling | Pure `Flex + Grid (+ subgrid) + Inline + Layers + Overlay`; build-time CSS subset calibrated on 147 Chrome 152 fixtures; CSS Color 4 (`oklch`, `color-mix`), wide-gamut & automatic HDR `Rgba16Float` presentation, light/dark & custom material shaders |
+| Desktop shell & windows | `AppShell`, `DesktopShell`, `Workspace`, `Dock`, `AreaLayout`, `CommandPalette`, auxiliary parented windows, `Underlay`; Mica / Acrylic / Vibrancy with explicit outcome or fallback |
+| Text & rich content | In-house `nana-text`: shaping, layout, vertical text, BiDi, IME preedit, CLDR locale formatting, `mmap` system fonts; native Markdown, KaTeX math, native `nana-ui-diagram` (all 34 Mermaid families) and GPU ECharts-style charts without a browser |
+| Authoring | Plain Rust builders (`nana_ui::runtime`), `view!` / `css!` / `stylesheet!` macros, and `.vue` single-file components with Rust scripts |
+| GPU & interop | Host-owned WGPU fork (ROV / pixel interlock / `raster_order_group`), precompiled MSL / Naga IR, `HostTexture`, `GpuView`, lock-free `FrameExchange`, windowless `ExternalSurface` |
+| Tooling & packaging | Incremental AccessKit tree, debug-only hot reload, headless snapshots & agent sessions, `.nlog` structured diagnostics, signed/encrypted `.nrpack` packs, Steam output & `[profile.dist]` |
 
 ## Example
 
-The same counter written three ways. Plain Rust functions are the most common style; the `view!` macro and `.vue` single-file components are template forms that expand to the same function calls and the same UI tree.
+The same counter written three ways. Plain Rust functions and `view!` are first-class styles over `nana_ui::runtime`; `.vue` single-file components compile at build time into the exact same function calls and `UiWorld` tree.
 
 <table>
 <tr>
@@ -129,18 +138,24 @@ let count = signal(0);
 
 For complete runnable programs, see [`application-counter`](crates/nana-ui/examples/application-counter.rs), [`reactive-counter`](crates/nana-ui/examples/reactive-counter.rs) and [`examples/reactive-sfc`](examples/reactive-sfc).
 
-## Mixing with other UI frameworks
+## Mixing live GPU & other UI frameworks
 
-Because GPU content is an ordinary node in the tree, whatever another UI framework draws can also become a node in NanaUI. It is laid out, clipped and ordered together with the surrounding NanaUI controls, and shares the same WGPU device and the same submission. An existing egui debug panel or a game's built-in tool UI can move into a NanaUI window without a rewrite, and be migrated piece by piece later.
+Because GPU content is an ordinary node in the tree, whatever another renderer or UI toolkit draws can become a `HostTexture` or `GpuView` node in NanaUI — laid out, clipped and ordered with surrounding NanaUI controls on the same WGPU device and frame submission.
 
 <p align="center">
-  <img src="docs/assets/readme/egui-in-nanaui.png" alt="An egui panel inside a NanaUI tree" width="70%">
+  <img src="docs/assets/readme/egui-in-nanaui.png" alt="NanaUI controls on the left and an egui GpuView panel on the right in one window" width="72%">
 </p>
 
-[`egui-in-nanaui`](crates/nana-ui/examples/egui-in-nanaui.rs) mounts an egui panel as a `GpuView` node between NanaUI controls, with both sides reading and writing the same state. NanaUI forwards pointer, wheel and text input to egui:
+[`egui-in-nanaui`](crates/nana-ui/examples/egui-in-nanaui.rs) mounts an egui panel on the right as a `GpuView` node alongside NanaUI controls on the left, with both sides reading and writing the same state and sharing one WGPU pass:
 
 ```bash
 cargo run -p nana-ui --example egui-in-nanaui --features hosted,bundled-fonts,wgpu-interop
+```
+
+For a live custom WGPU shader viewport mixed into the same UI tree, run:
+
+```bash
+cargo run -p nana-ui --example hosted-gpu-demo --features hosted,bundled-fonts,wgpu-interop,runtime-wgsl
 ```
 
 ## Screenshots
@@ -159,37 +174,74 @@ cargo run -p nana-ui --example egui-in-nanaui --features hosted,bundled-fonts,wg
         <source media="(prefers-color-scheme: dark)" srcset="examples/component-gallery/snapshots/metal-apple-m4/gallery-rich-text-dark.png">
         <img src="examples/component-gallery/snapshots/metal-apple-m4/gallery-rich-text-light.png" alt="Rich text">
       </picture>
-      <sub>Rich text: vertical writing, Markdown, KaTeX and Mermaid</sub>
+      <sub>Rich text: vertical writing, Markdown, KaTeX and native Mermaid</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center">
       <picture>
-        <source media="(prefers-color-scheme: dark)" srcset="examples/component-gallery/snapshots/metal-apple-m4/gallery-surfaces-dark.png">
-        <img src="examples/component-gallery/snapshots/metal-apple-m4/gallery-surfaces-light.png" alt="Surfaces">
+        <source media="(prefers-color-scheme: dark)" srcset="examples/component-gallery/snapshots/metal-apple-m4/gallery-data-dark.png">
+        <img src="examples/component-gallery/snapshots/metal-apple-m4/gallery-data-light.png" alt="Data visualization">
       </picture>
-      <sub>Surfaces and split panes</sub>
+      <sub>Data visualization: bar/line combination, donut and calendar heatmap</sub>
+    </td>
+    <td width="50%" align="center">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="examples/component-gallery/snapshots/metal-apple-m4/gallery-surfaces-split-dark.png">
+        <img src="examples/component-gallery/snapshots/metal-apple-m4/gallery-surfaces-split-light.png" alt="Surfaces and split panes">
+      </picture>
+      <sub>Lists, trees, surface tiers and split panes</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="examples/component-gallery/snapshots/metal-apple-m4/gallery-command-palette-dark.png">
+        <img src="examples/component-gallery/snapshots/metal-apple-m4/gallery-command-palette-light.png" alt="Command palette">
+      </picture>
+      <sub>Command palette and modal overlay layer</sub>
     </td>
     <td width="50%" align="center">
       <picture>
         <source media="(prefers-color-scheme: dark)" srcset="examples/component-gallery/snapshots/metal-apple-m4/gallery-settings-appearance-dark.png">
         <img src="examples/component-gallery/snapshots/metal-apple-m4/gallery-settings-appearance-light.png" alt="Settings">
       </picture>
-      <sub>Settings page and appearance switching</sub>
-    </td>
-  </tr>
-  <tr>
-    <td colspan="2" align="center">
-      <picture>
-        <source media="(prefers-color-scheme: dark)" srcset="examples/component-gallery/snapshots/metal-apple-m4/gallery-data-dark.png">
-        <img src="examples/component-gallery/snapshots/metal-apple-m4/gallery-data-light.png" alt="Data" width="50%">
-      </picture>
-      <sub>Data: bar/line combination, donut and calendar heatmap</sub>
+      <sub>Settings page, system materials and appearance switching</sub>
     </td>
   </tr>
 </table>
 
-<p align="center"><sub>Screenshots are rendered output from the <a href="examples/component-gallery">component-gallery</a> snapshot tests (Metal, Apple M4). They follow your GitHub theme. The gallery UI text is in Chinese.</sub></p>
+<details>
+<summary><b>Creative &amp; DCC controls</b> (TimelineEditor, AreaLayout, GraphCanvas)</summary>
+<br>
+<table>
+  <tr>
+    <td width="33%" align="center">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="examples/component-gallery/snapshots/metal-apple-m4/component-migration/timeline-editor/dark/curves.png">
+        <img src="examples/component-gallery/snapshots/metal-apple-m4/component-migration/timeline-editor/light/curves.png" alt="TimelineEditor curves">
+      </picture>
+      <sub><code>TimelineEditor</code> (keyframes &amp; Bézier curves)</sub>
+    </td>
+    <td width="33%" align="center">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="examples/component-gallery/snapshots/metal-apple-m4/component-migration/area-layout/dark/split-preview.png">
+        <img src="examples/component-gallery/snapshots/metal-apple-m4/component-migration/area-layout/light/split-preview.png" alt="AreaLayout split preview">
+      </picture>
+      <sub><code>AreaLayout</code> (corner drag split &amp; join)</sub>
+    </td>
+    <td width="33%" align="center">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="examples/component-gallery/snapshots/metal-apple-m4/component-migration/graph-canvas/dark/nodes.png">
+        <img src="examples/component-gallery/snapshots/metal-apple-m4/component-migration/graph-canvas/light/nodes.png" alt="GraphCanvas nodes">
+      </picture>
+      <sub><code>GraphCanvas</code> (node graph &amp; ports)</sub>
+    </td>
+  </tr>
+</table>
+</details>
+
+<p align="center"><sub>Screenshots are rendered output from the <a href="examples/component-gallery">component-gallery</a> snapshot tests (Metal, Apple M4). They adapt automatically to your GitHub theme. The gallery UI text is in Chinese.</sub></p>
 
 ## Built with NanaUI
 
@@ -220,32 +272,48 @@ cargo run -p component-gallery
 ```
 
 ```bash
-cargo run -p nana-ui --example hosted-gpu-demo --features hosted,bundled-fonts,wgpu-interop
+cargo run -p nana-ui --example gpu-view-demo --features hosted,bundled-fonts
 ```
 
-The first opens the control and workspace gallery; the second puts the UI and live GPU content in the same window. Then add the dependency to your own project:
+The first opens the full control and workspace gallery; the second embeds a live GPU node in the same window (`hosted-gpu-demo` adds `wgpu-interop,runtime-wgsl` for custom WGSL). To add NanaUI to your own project:
 
 ```toml
 [dependencies]
 nana-ui = { git = "https://github.com/sena-nana/NanaUI", features = ["hosted", "bundled-fonts", "view-macro"] }
 ```
 
+For compact release packaging, build with the workspace distribution profile (`opt-level = "z"`, fat LTO, `panic = "abort"`, symbol stripping):
+
+```bash
+cargo build --profile dist
+```
+
 <details>
-<summary><b>Common features</b></summary>
+<summary><b>Cargo features (<code>default = []</code>, opt-in)</b></summary>
 <br>
+
+`nana-ui`, `nana-ui-runtime` and `nana-ui-scene` all set `default = []`. Enabling `gpu` or `hosted` compiles only the platform's primary graphics backend (`metal` on Apple, `dx12` on Windows, `vulkan` on Unix).
 
 | Feature | Purpose |
 | --- | --- |
-| `hosted` | Desktop host: windows, event loop, platform accessibility; implies `gpu` |
-| `bundled-fonts` | Ships Noto Sans SC as the default UI font (about 4.2 MiB); without it text uses system fonts |
-| `view-macro` | The `view!`, `css!` and `stylesheet!` macros |
-| `components` | Calendar, charts, node graph, image viewer, rich text and other control families |
-| `wgpu-interop` | Access to the WGPU objects behind `GpuContext` |
-| `snippet-transforms` | Regular-expression transforms in snippets |
-| `svg` | SVG images (icons are drawn from their own geometry and do not need it) |
-| `full` | `hosted`, `bundled-fonts`, `components`, `syntax-highlighting`, `icu`, `snippet-transforms`, `svg` |
+| `hosted` | Desktop host: windows, event loop, AccessKit platform adapter; implies `gpu` |
+| `gpu` | `SceneWgpuPainter`, `HostTexture`, `FrameExchange`, windowless output (primary backend only, precompiled shader archives) |
+| `bundled-fonts` | Embeds Noto Sans SC as the default UI font (~4.2 MiB); without it, text uses system fonts |
+| `view-macro` | The `view!`, `css!` and `stylesheet!` compile-time macros |
+| `components` | Enables `calendar`, `charts`, `controls`, `graph-canvas`, `image-viewer`, `qr-code`, `rich-text` and `vector-boolean` |
+| `wgpu-backends` | Enables all standard cross-platform WGPU backends (`dx12`, `vulkan`, `gles`, `metal`) when `gpu` is active |
+| `runtime-wgsl` | Runtime WGSL shader compilation (`naga` / `wgpu` WGSL) for custom user `MaterialProgram` shaders |
+| `wgpu-interop` | Escape hatch exposing underlying WGPU objects on `GpuContext` and `FrameContext` |
+| `icu` | ICU4X CLDR locale formatting for numbers, dates and plurals (`PlainFormatter` when off) |
+| `snippet-transforms` | Regular-expression transforms in snippets (`fancy-regex`) |
+| `http-fetch` | Built-in `ureq` `http(s)://` image/resource fetching (off by default unless enabled or custom `FetchHost`) |
+| `image-codecs-extra` | Extra JPEG, GIF and WebP decoding in `image` (PNG stays available) |
+| `svg` | CPU-side SVG image rasterization (`usvg` / `resvg`; built-in icons render from vector geometry without it) |
+| `vector-boolean` | `i_overlay` path boolean simplification in `custom_paint` (falls back to built-in integer planar sweep-line solver) |
+| `packaged-resources` | `.nrpack` resource pack mounting and `NANA_PACKAGE_VALIDATE` self-check |
+| `full` | Convenience desktop bundle: `bundled-fonts`, `components`, `hosted`, `http-fetch`, `icu`, `image-codecs-extra`, `runtime-wgsl`, `snippet-transforms`, `svg`, `syntax-highlighting`, `wgpu-backends` |
 
-`wgpu-backends`, `icu`, `snippet-transforms` and `svg` are on by default; an application that sets `default-features = false` names the ones it uses. The full list is in [`nana-ui`](crates/nana-ui).
+The complete list is in [`nana-ui`](crates/nana-ui) and [Layout & Feature Migration](https://sena-nana.github.io/NanaUI/guide/migration-layout-and-features).
 
 </details>
 
@@ -253,73 +321,74 @@ Next, read [Quick start](https://sena-nana.github.io/NanaUI/guide/quick-start) a
 
 ## Platform support
 
-| Platform | Status |
-| --- | --- |
-| Windows 10 / 11 | Supported |
-| macOS | Supported |
-| Linux | Supported; system materials unavailable |
-| Android / iOS | Experimental |
-| OpenHarmony | Builds only |
+| Platform | Primary GPU / Window | Status |
+| --- | --- | --- |
+| Windows 10 / 11 | DX12 · Mica / Acrylic | Supported |
+| macOS 14+ | Metal (precompiled MSL 3.1) · Vibrancy | Supported |
+| Linux | Vulkan (X11 / Wayland) · system materials unavailable | Supported |
+| Android / iOS 17+ | Vulkan / Metal | Experimental |
+| OpenHarmony | Vulkan | Builds only |
 
-## Performance
+## Performance & footprint
 
 | Measurement | Result |
 | --- | --- |
-| Dispatching a pointer move over a list of 250 to 2 000 rows | 0.3 µs, independent of row count |
-| Changing one control's text on a page with 42 001 boxes, full frame | 21 µs |
-| Thread stack needed to finish a layout, 64 to 500 levels of nesting | 116 KiB, independent of depth |
-| Cold full-page layout, 21 001 boxes, per box (Taffy 0.11: 0.70 µs) | 1.24 µs |
+| Dispatching a pointer move over a list of 250 to 2 000 rows | `0.3 µs`, independent of row count |
+| Changing one control's text on 42 001 boxes / 100k tree p95 local scaling | `21 µs` full frame · `1.17×` (`30.2 µs` at 100k vs `25.8 µs` at 1k) |
+| Minimum thread stack for 500 levels of nesting (zero `stacker` / `psm`) | `52 KiB` full frame (Taffy 0.11: `900 KiB`) |
+| Live heap per box (`stack-depth wide`, 21 001 boxes) / laid-out `Stack` | `943 B / box` (Taffy 0.11: `1 506 B / box`) · `634 B` per 10k `Stack` |
+| Cold full-page flex layout, 21 001 boxes, per box (Taffy 0.11: `0.71 µs`) | `0.91–1.00 µs` (retaining incremental plans & `LayoutResult`) |
+| Distribution binary size (`[profile.dist]`, `reactive-sfc` + precompiled MSL) | `5.56 MiB` (down from `15.80 MiB`, `-64.8%`; `0 B` resident naga IR on Apple) |
 
-Measured on an Apple M4 with release builds. Cold layout is about 1.8× slower than [Taffy](https://github.com/DioxusLabs/taffy) because NanaUI's layout also maintains the state needed for incremental updates and accessibility; this is still being optimized. Methodology and reproduction commands are in [resource budgets](https://sena-nana.github.io/NanaUI/reference/resource-budgets) and [`perf/`](perf/README.md).
+Measured on an Apple M4 with `release` / `dist` builds. Cold layout matches [Taffy](https://github.com/DioxusLabs/taffy) 0.11 box-for-box (`0.0000 px` worst delta) while retaining incremental measurement plans, dependency footprints and `LayoutResult` snapshots for zero-measure edits and accessibility. Methodology and reproduction commands are in [Resource budgets](https://sena-nana.github.io/NanaUI/reference/resource-budgets), [Taffy reference benchmark](https://sena-nana.github.io/NanaUI/reference/taffy-reference) and [`perf/`](perf/README.md).
 
 ## Project layout
 
-Applications usually depend on `nana-ui` only. See [architecture contracts](https://sena-nana.github.io/NanaUI/reference/architecture) for the overall architecture.
+Applications usually depend on `nana-ui` only. All 25 crates under `crates/` (24 workspace members + standalone `nana-icons-tabler`, 58 acyclic normal dependency edges) plus the vendored `third_party/wgpu` fork are documented in [Architecture contracts](https://sena-nana.github.io/NanaUI/reference/architecture) and [Modules and layers](https://sena-nana.github.io/NanaUI/learn/modules-and-layers).
 
 <details>
-<summary><b>All crates</b></summary>
+<summary><b>All 25 crates by architectural layer</b></summary>
 <br>
 
-| Crate | Description |
-| --- | --- |
-| [`nana-ui`](crates/nana-ui) | Facade crate: application entry points, window host, WGPU painting |
-| [`nana-ui-runtime`](crates/nana-ui-runtime) | UI tree, components, layout, input, accessibility |
-| [`nana-ui-scene`](crates/nana-ui-scene) | GPU-independent drawable scene |
-| [`nana-ui-core`](crates/nana-ui-core) | Shared types: style, themes, geometry |
-| [`nana-text`](crates/nana-text) | Text engine |
-| [`nana-ui-css`](crates/nana-ui-css) | Build-time CSS engine |
-| [`nana-ui-sfc`](crates/nana-ui-sfc) | `.vue` single-file component compiler |
-| [`nana-ui-view-macros`](crates/nana-ui-view-macros) | The `view!` macro |
-| [`nana-ui-view-codegen`](crates/nana-ui-view-codegen) | Template code generation (internal) |
-| [`nana-ui-view-schema`](crates/nana-ui-view-schema) | Built-in control table (internal) |
-| [`nana-ui-dev`](crates/nana-ui-dev) | Hot reload |
-| [`nana-ui-devtools`](crates/nana-ui-devtools) | Headless snapshots and debugging sessions |
-| [`nana-gpu`](crates/nana-gpu) | GPU interface layer |
-| [`nana-frame-exchange`](crates/nana-frame-exchange) | Passing GPU frames across threads |
-| [`nana-window`](crates/nana-window) | Native windows, system materials and title bars |
-| [`nana-ui-platform`](crates/nana-ui-platform) | Platform-neutral window, clipboard and path interfaces |
-| [`nana-ui-input`](crates/nana-ui-input) | Canonical input events |
-| [`nana-diagnostics`](crates/nana-diagnostics) | Structured diagnostics and `.nlog` |
-| [`nana-ui-charts`](crates/nana-ui-charts) | Chart model |
-| [`nana-ui-diagram`](crates/nana-ui-diagram) | Mermaid diagram engine |
-| [`nana-svg-raster`](crates/nana-svg-raster) | SVG rasterization |
-| [`nana-icons-tabler`](crates/nana-icons-tabler) | The full Tabler icon set |
-| [`nana-app-icon`](crates/nana-app-icon) | App icon encoding and embedding |
-| [`nana-package`](crates/nana-package) | Resource pack runtime |
-| [`nana-packager`](crates/nana-packager) | Packaging tool |
+| Layer | Crate | Description |
+| --- | --- | --- |
+| Core pipeline | [`nana-ui`](crates/nana-ui) | Facade crate: application entry points, desktop host, WGPU painting |
+| Core pipeline | [`nana-ui-scene`](crates/nana-ui-scene) | Backend-neutral drawable scene (`UiScene`, `FramePlan`, `RenderGraph`) |
+| Core pipeline | [`nana-ui-runtime`](crates/nana-ui-runtime) | Retained UI tree (`UiWorld`), components, iterative layout, input, accessibility |
+| Core pipeline | [`nana-ui-core`](crates/nana-ui-core) | Shared contracts: Style Model, OKLCH/Color 4, themes, geometry, Motion IR |
+| Engines & platform | [`nana-text`](crates/nana-text) | In-house text shaping, layout & glyph rasterization engine |
+| Engines & platform | [`nana-ui-css`](crates/nana-ui-css) | Build-time CSS parser, selector matching & cascade engine |
+| Engines & platform | [`nana-ui-input`](crates/nana-ui-input) | Canonical input events, sequencer & `HostServices` contract |
+| Engines & platform | [`nana-gpu`](crates/nana-gpu) | Backend-neutral GPU contract (`GpuContext`, `FrameContext`, `GpuTexture`) |
+| Engines & platform | [`nana-frame-exchange`](crates/nana-frame-exchange) | Bounded lock-free GPU frame exchange across threads |
+| Engines & platform | [`nana-window`](crates/nana-window) | Native windows, system materials, client chrome, `ColorSampler` & `WebSurface` |
+| Engines & platform | [`nana-ui-platform`](crates/nana-ui-platform) | Platform-neutral window, clipboard, fetch & path contracts |
+| Engines & platform | [`nana-diagnostics`](crates/nana-diagnostics) | Zero-I/O structured diagnostics & `.nlog` flight recorder |
+| Authoring toolchain | [`nana-ui-sfc`](crates/nana-ui-sfc) | `.vue` single-file component compiler (Rust scripts) |
+| Authoring toolchain | [`nana-ui-view-macros`](crates/nana-ui-view-macros) | `view!`, `css!` and `stylesheet!` proc macros |
+| Authoring toolchain | [`nana-ui-view-codegen`](crates/nana-ui-view-codegen) | Shared template code generator (internal) |
+| Authoring toolchain | [`nana-ui-view-schema`](crates/nana-ui-view-schema) | Single built-in control schema table (internal) |
+| Rich content & assets | [`nana-ui-charts`](crates/nana-ui-charts) | ECharts-shaped chart model & GPU mark arrays |
+| Rich content & assets | [`nana-ui-diagram`](crates/nana-ui-diagram) | Native Mermaid diagram engine (all 34 diagram families) |
+| Rich content & assets | [`nana-svg-raster`](crates/nana-svg-raster) | CPU-side SVG image rasterization (`resvg`) |
+| Rich content & assets | [`nana-icons-tabler`](crates/nana-icons-tabler) | Generated Tabler vector icon catalog (standalone, linker-GC'd) |
+| Rich content & assets | [`nana-app-icon`](crates/nana-app-icon) | Default mark, PNG/ICO/ICNS encoding & Windows PE icon embedding |
+| Rich content & assets | [`nana-package`](crates/nana-package) | Pure-Rust `.nrpack` resource pack runtime reader |
+| Rich content & assets | [`nana-packager`](crates/nana-packager) | Build-side packager & tamper-validation CLI |
+| Dev & testing | [`nana-ui-dev`](crates/nana-ui-dev) | Debug-only hot reload watcher |
+| Dev & testing | [`nana-ui-devtools`](crates/nana-ui-devtools) | Headless snapshots & automated debugging agent sessions |
 
 </details>
 
 ## Contributing
 
-Before you start, read [AGENTS.md](AGENTS.md), which describes the framework's boundaries and the rules every change must follow. Before submitting, run:
+Before you start, read [AGENTS.md](AGENTS.md), which describes the framework's boundaries and non-negotiable contracts. Before submitting, run:
 
 ```bash
 cargo fmt --all -- --check
-```
-
-```bash
-cargo test --workspace
+python3 scripts/check-engine-boundary.py
+python3 scripts/check-test-hygiene.py
+cargo test --workspace -- --test-threads=1
 ```
 
 ## License

@@ -87,6 +87,6 @@ Contracts one through nine all point to the same architecture review question:
 
 ## Read next
 
-- [Modules and layers](/learn/modules-and-layers): a full reading of the dependency graph of 24 crates
+- [Modules and layers](/learn/modules-and-layers): a full reading of the dependency graph of 25 crates
 - [Authoring paths](/learn/authoring-paths): how the two authoring paths flow into the same tree
 - [Evidence checklist](/learn/evidence-checklist): automated recheck commands and source line numbers for the nine contracts

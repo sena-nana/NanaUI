@@ -2,7 +2,7 @@
 
 NanaUI 面向原生桌面软件：标题栏、系统毛玻璃材质与高 DPI 缩放遵循桌面操作系统语义，而非浏览器规则。
 
-你的应用拥有 `Window` 与 `Surface`。调用 `run_runtime(WindowDescriptor::new("标题"))` 会创建主窗口、初始化进程唯一的 `GpuContext` 并启动事件循环；后续附加窗口共享同一份 `GpuContext` 与组件注册表，但每扇窗口各自独立持有 Surface、输入端点、IME 会话、文档与渲染目标。原始窗口句柄（`HWND` / `NSWindow`）严格封闭在 `nana-window` 内，普通控件永远拿不到句柄。完整技术合同见 [窗口参考](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/window.md)。
+你的应用拥有 `Window` 与 `Surface`。调用 `run_runtime(WindowDescriptor::new("标题"))` 会创建主窗口、初始化进程唯一的 `GpuContext` 并启动事件循环；后续附加窗口共享同一份 `GpuContext` 与组件注册表，但每扇窗口各自独立持有 Surface、输入端点、IME 会话、文档与渲染目标。原始窗口句柄（`HWND` / `NSWindow`）严格封闭在 `nana-window` 内，普通控件永远拿不到句柄。完整技术合同见 [窗口参考](../reference/window.md)。
 
 ## 自绘标题栏与客户区 Chrome
 
@@ -48,7 +48,8 @@ let window = service.create_window(WindowDescriptor {
 ```
 
 - **用 `tag` 标识窗口角色**：不要依赖窗口创建顺序去猜测 `WindowId`；在描述符中设置 `tag`，构建文档时通过 `window_tag()` 读取即可。新窗口需等隐藏的原生窗口、Surface、输入端点与应用文档全部就绪后才完成创建（任一步失败即自动回滚，不会发出 `Ready`）；窗口位置与尺寸可通过 `WindowDescriptor::persist_key` 自动持久化恢复（全屏与最小化状态不写入恢复记录）。
-- **贴底伴生窗口（`WindowRole::Underlay`）**：紧贴在父窗口正下方、共享同一块客户区矩形、跟随父窗口移动与显隐、不接收输入也不抢焦点，但被父窗口盖住时照常独立出帧——专为 OBS 等录屏软件「单独捕获底层画面而不录进上层 UI 面板」的场景设计（详见 [窗口参考 · 贴底窗口](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/window.md)）。
+- **父属伴生子窗口（`WindowDescriptor::parent`）与贴底窗口（`WindowRole::Underlay`）**：普通辅助顶层窗口通过 `WindowDescriptor::parent` 维持在属主窗口之上并继承层级，与共享客户区且排在属主正下方的 `Underlay` 语义严格分离；`Underlay` 在被父窗口盖住时仍独立出帧，专为 OBS 等录屏软件「单独捕获底层画面而不录进上层 UI 面板」的场景设计（详见 [窗口参考](../reference/window.md)）。
+- **原生屏幕吸色（`ColorSampler`）**：`ColorField` 等控件所需的桌面吸色统一通过原生边界实现（macOS `NSColorSampler`、Linux Wayland 严格走 XDG Portal v2+ 而不回退 X11 / X11 根窗口读取、Windows 逐显示器 DPI 放大镜），宿主不支持时由 `set_eyedropper_supported(false)` 隐藏入口并记入 `window.color_sampler.failed` 诊断事件。
 - **嵌入式宿主（`EmbeddedRuntime`）**：当外部宿主已拥有事件循环与 GPU 设备时，使用 `EmbeddedRuntime` 并通过 `HostedGpuShared::from_device` 注入现有设备；如需在回调中临时访问原生窗口句柄，使用 `with_native_handle`（借用仅在回调期间有效，切勿保留裸指针）。
 
 ## 菜单栏、系统文件对话框与网页内容

@@ -1,0 +1,154 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="420" viewBox="0 0 1200 420" role="img" aria-label="NanaUI 的一帧 — 8 步严格时序与分离的唤醒通道">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0C172E"/>
+      <stop offset="0.55" stop-color="#112244"/>
+      <stop offset="1" stop-color="#152D58"/>
+    </linearGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#FFFFFF" stroke-opacity="0.04" stroke-width="1"/>
+    </pattern>
+    <marker id="arrowBlue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M1 1.5L8.5 5L1 8.5Z" fill="#64ACE8"/>
+    </marker>
+    <marker id="arrowCoral" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M1 1.5L8.5 5L1 8.5Z" fill="#FF8A5C"/>
+    </marker>
+    <marker id="arrowTeal" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M1 1.5L8.5 5L1 8.5Z" fill="#54C79B"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="420" rx="18" fill="url(#bg)"/>
+  <rect width="1200" height="420" rx="18" fill="url(#grid)"/>
+  <rect x="0.5" y="0.5" width="1199" height="419" rx="17.5" fill="none" stroke="#FFFFFF" stroke-opacity="0.10"/>
+
+  <!-- Header -->
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif">
+    <text x="36" y="36" fill="#F8FAFC" font-size="20" font-weight="700">NanaUI 的一帧 — 8 步严格时序与分离的唤醒通道</text>
+    <text x="36" y="57" fill="#94A3B8" font-size="13">UiWorld 增量收敛 -&gt; 后端中立 UiScene -&gt; 单一宿主 FrameContext 一次提交</text>
+  </g>
+
+  <!-- Row 1 -->
+  <g>
+    <rect x="36" y="78" width="256" height="112" rx="10" fill="#17284B" stroke="#B78BFA" stroke-opacity="0.65"/>
+    <circle cx="58" cy="100" r="11" fill="#B78BFA" fill-opacity="0.22" stroke="#B78BFA"/>
+    <text x="58" y="104" text-anchor="middle" fill="#E9D5FF" font-family="-apple-system, sans-serif" font-size="11.5" font-weight="700">1</text>
+    <text x="76" y="104" fill="#E9D5FF" font-family="ui-monospace, Menlo, monospace" font-size="12.5" font-weight="700">RuntimeProgram::update</text>
+    <g fill="#CBD5E1" font-family="-apple-system, 'Noto Sans SC', sans-serif" font-size="11.5">
+      <text x="50" y="128">消化 dispatch_program 消息</text>
+      <text x="50" y="146">（开窗、切换 GPU 槽、落盘）。</text>
+      <text x="50" y="164" fill="#94A3B8">普通点击走 .on / .observe。</text>
+    </g>
+  </g>
+
+  <g>
+    <rect x="318" y="78" width="260" height="112" rx="10" fill="#17284B" stroke="#64ACE8" stroke-opacity="0.65"/>
+    <circle cx="340" cy="100" r="11" fill="#64ACE8" fill-opacity="0.22" stroke="#64ACE8"/>
+    <text x="340" y="104" text-anchor="middle" fill="#BAE6FD" font-family="-apple-system, sans-serif" font-size="11.5" font-weight="700">2</text>
+    <text x="358" y="104" fill="#BAE6FD" font-family="ui-monospace, Menlo, monospace" font-size="12.5" font-weight="700">prepare_window_frame</text>
+    <g fill="#CBD5E1" font-family="-apple-system, 'Noto Sans SC', sans-serif" font-size="11.5">
+      <text x="332" y="128">在 flush 前准备好本帧采样的</text>
+      <text x="332" y="146">HostTexture / FrameBinding。</text>
+      <text x="332" y="164" fill="#94A3B8">遮挡窗口跳过 3–7 步。</text>
+    </g>
+  </g>
+
+  <g>
+    <rect x="604" y="78" width="298" height="112" rx="10" fill="#182F58" stroke="#64ACE8" stroke-width="1.6"/>
+    <circle cx="626" cy="100" r="11" fill="#64ACE8" fill-opacity="0.28" stroke="#64ACE8"/>
+    <text x="626" y="104" text-anchor="middle" fill="#E0F2FE" font-family="-apple-system, sans-serif" font-size="11.5" font-weight="700">3</text>
+    <text x="644" y="104" fill="#7CC4FF" font-family="ui-monospace, Menlo, monospace" font-size="12.5" font-weight="700">RuntimeDocument::flush</text>
+    <g fill="#E2E8F0" font-family="-apple-system, 'Noto Sans SC', sans-serif" font-size="11.5">
+      <text x="618" y="128">响应 -&gt; 样式 -&gt; 文本 -&gt; 迭代布局</text>
+      <text x="618" y="146">-&gt; 命中 -&gt; 无障碍 -&gt; UiScene。</text>
+      <text x="618" y="164" fill="#93C5FD">有界 ≤ 8 轮；无变更即空转跳过。</text>
+    </g>
+  </g>
+
+  <g>
+    <rect x="928" y="78" width="236" height="112" rx="10" fill="#142C48" stroke="#54C79B" stroke-opacity="0.7"/>
+    <circle cx="950" cy="100" r="11" fill="#54C79B" fill-opacity="0.22" stroke="#54C79B"/>
+    <text x="950" y="104" text-anchor="middle" fill="#A7F3D0" font-family="-apple-system, sans-serif" font-size="11.5" font-weight="700">4</text>
+    <text x="968" y="104" fill="#6EE7B7" font-family="ui-monospace, Menlo, monospace" font-size="12.5" font-weight="700">Surface 与外部生产</text>
+    <g fill="#CBD5E1" font-family="-apple-system, 'Noto Sans SC', sans-serif" font-size="11.5">
+      <text x="942" y="128">先申请帧槽再取 Surface，</text>
+      <text x="942" y="146">将 SceneResourceProducer</text>
+      <text x="942" y="164">离屏 pass 编入同一帧。</text>
+    </g>
+  </g>
+
+  <line x1="292" y1="134" x2="314" y2="134" stroke="#64ACE8" stroke-width="1.8" marker-end="url(#arrowBlue)"/>
+  <line x1="578" y1="134" x2="600" y2="134" stroke="#64ACE8" stroke-width="1.8" marker-end="url(#arrowBlue)"/>
+  <line x1="902" y1="134" x2="924" y2="134" stroke="#54C79B" stroke-width="1.8" marker-end="url(#arrowTeal)"/>
+
+  <path d="M1046 190 L1046 208 L164 208 L164 222" fill="none" stroke="#54C79B" stroke-width="1.8" marker-end="url(#arrowTeal)"/>
+
+  <!-- Row 2 -->
+  <g>
+    <rect x="36" y="226" width="268" height="112" rx="10" fill="#1D2847" stroke="#FF8A5C" stroke-opacity="0.7"/>
+    <circle cx="58" cy="248" r="11" fill="#FF8A5C" fill-opacity="0.22" stroke="#FF8A5C"/>
+    <text x="58" y="252" text-anchor="middle" fill="#FED7AA" font-family="-apple-system, sans-serif" font-size="11.5" font-weight="700">5</text>
+    <text x="76" y="252" fill="#FFA882" font-family="ui-monospace, Menlo, monospace" font-size="12.5" font-weight="700">painter.paint_target</text>
+    <g fill="#CBD5E1" font-family="-apple-system, 'Noto Sans SC', sans-serif" font-size="11.5">
+      <text x="50" y="276">按文档顺序录制全部可见图元；</text>
+      <text x="50" y="294">线性 scRGB 合成，含广色域或</text>
+      <text x="50" y="312">HDR 时自动升级 Rgba16Float。</text>
+    </g>
+  </g>
+
+  <g>
+    <rect x="330" y="226" width="260" height="112" rx="10" fill="#1D2847" stroke="#FF8A5C" stroke-opacity="0.7"/>
+    <circle cx="352" cy="248" r="11" fill="#FF8A5C" fill-opacity="0.22" stroke="#FF8A5C"/>
+    <text x="352" y="252" text-anchor="middle" fill="#FED7AA" font-family="-apple-system, sans-serif" font-size="11.5" font-weight="700">6</text>
+    <text x="370" y="252" fill="#FFA882" font-family="ui-monospace, Menlo, monospace" font-size="12.5" font-weight="700">submit() + present</text>
+    <g fill="#CBD5E1" font-family="-apple-system, 'Noto Sans SC', sans-serif" font-size="11.5">
+      <text x="344" y="276">UploadRing 在渲染前合并上传，</text>
+      <text x="344" y="294">单次 queue.submit 后上屏。</text>
+      <text x="344" y="312" fill="#FDBA74">出错/丢弃时自动回滚保留状态。</text>
+    </g>
+  </g>
+
+  <g>
+    <rect x="616" y="226" width="268" height="112" rx="10" fill="#142C48" stroke="#54C79B" stroke-opacity="0.7"/>
+    <circle cx="638" cy="248" r="11" fill="#54C79B" fill-opacity="0.22" stroke="#54C79B"/>
+    <text x="638" y="252" text-anchor="middle" fill="#A7F3D0" font-family="-apple-system, sans-serif" font-size="11.5" font-weight="700">7</text>
+    <text x="656" y="252" fill="#6EE7B7" font-family="ui-monospace, Menlo, monospace" font-size="12.5" font-weight="700">window_frame_presented</text>
+    <g fill="#CBD5E1" font-family="-apple-system, 'Noto Sans SC', sans-serif" font-size="11.5">
+      <text x="630" y="276">最早的安全回收时点：释放或</text>
+      <text x="630" y="294">复用上一帧被替换掉的纹理与</text>
+      <text x="630" y="312">FrameBinding 租约槽位。</text>
+    </g>
+  </g>
+
+  <g>
+    <rect x="910" y="226" width="254" height="112" rx="10" fill="#17284B" stroke="#64ACE8" stroke-opacity="0.65"/>
+    <circle cx="932" cy="248" r="11" fill="#64ACE8" fill-opacity="0.22" stroke="#64ACE8"/>
+    <text x="932" y="252" text-anchor="middle" fill="#BAE6FD" font-family="-apple-system, sans-serif" font-size="11.5" font-weight="700">8</text>
+    <text x="950" y="252" fill="#BAE6FD" font-family="ui-monospace, Menlo, monospace" font-size="12.5" font-weight="700">bind_window</text>
+    <g fill="#CBD5E1" font-family="-apple-system, 'Noto Sans SC', sans-serif" font-size="11.5">
+      <text x="924" y="276">为新就绪窗口挂载初始视图，</text>
+      <text x="924" y="294">不阻塞第 1 步 update()，</text>
+      <text x="924" y="312">让首帧与窗口生命周期分离。</text>
+    </g>
+  </g>
+
+  <line x1="304" y1="282" x2="326" y2="282" stroke="#FF8A5C" stroke-width="1.8" marker-end="url(#arrowCoral)"/>
+  <line x1="590" y1="282" x2="612" y2="282" stroke="#54C79B" stroke-width="1.8" marker-end="url(#arrowTeal)"/>
+  <line x1="884" y1="282" x2="906" y2="282" stroke="#64ACE8" stroke-width="1.8" marker-end="url(#arrowBlue)"/>
+
+  <!-- Bottom Invariant Strip -->
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', sans-serif">
+    <rect x="36" y="356" width="366" height="46" rx="8" fill="#13223D" stroke="#FFFFFF" stroke-opacity="0.10"/>
+    <text x="52" y="375" fill="#7CC4FF" font-size="12" font-weight="700">合成器稳态零写回</text>
+    <text x="52" y="392" fill="#94A3B8" font-size="11">PresentationStore overlay 绝不把瞬态采样写回 UiWorld。</text>
+
+    <rect x="417" y="356" width="366" height="46" rx="8" fill="#13223D" stroke="#FFFFFF" stroke-opacity="0.10"/>
+    <text x="433" y="375" fill="#6EE7B7" font-size="12" font-weight="700">独立 FrameDemand 唤醒</text>
+    <text x="433" y="392" fill="#94A3B8" font-size="11">静态窗口保持 OnDemand，仅活动动画窗口切入连续刷新。</text>
+
+    <rect x="798" y="356" width="366" height="46" rx="8" fill="#13223D" stroke="#FFFFFF" stroke-opacity="0.10"/>
+    <text x="814" y="375" fill="#FFA882" font-size="12" font-weight="700">滚动只是投影</text>
+    <text x="814" y="392" fill="#94A3B8" font-size="11">scroll_offset 只平移绘制与命中，不改写 LayoutBox。</text>
+  </g>
+</svg>

@@ -18,7 +18,7 @@ cargo metadata --format-version 1 --no-deps | ConvertFrom-Json
 # How to read it: walk dependencies[] of every member package; an entry whose path falls inside crates/ and whose kind is empty (normal) is one normal dependency edge
 ```
 
-**Current reading**: `crates/` holds **55 normal dependency edges** (54 between the 24 member crates plus 1 for `nana-ui → nana-icons-tabler`), and **all of them strictly forward**. The core mainline: `nana-ui-core` depends only on `nana-diagnostics`; `nana-ui-runtime` depends on `{core, text, charts, input, view-macros, view-schema, diagnostics}`; `nana-ui-scene` depends on `{runtime, core, text (optional benchmark), charts, diagnostics}`; `nana-ui` depends on `{scene, runtime, core, …}`. Not one normal edge points from a lower layer back to an upper one. The four `dev-dependencies` exceptions used only for test hosts are listed separately in [Modules and layers](/learn/modules-and-layers#dev-edges-and-exceptions) and never enter the product binary.
+**Current reading**: `crates/` holds **58 workspace-member normal dependency edges** (57 among the 24 member crates + 1 optional edge `nana-ui → nana-icons-tabler`, plus standalone `nana-icons-tabler → nana-ui-core`), and **all of them strictly forward**. The core mainline: `nana-ui-core` depends only on `nana-diagnostics`; `nana-ui-runtime` depends on `{core, text, input, view-schema, diagnostics}` plus optional `{charts, diagram, view-macros}`; `nana-ui-scene` depends on `{runtime, core, diagnostics, text (optional benchmark)}` with `nana-ui-charts` removed; `nana-ui` depends on `{scene, runtime, core, …}`. Not one normal edge points from a lower layer back to an upper one. The four `dev-dependencies` exceptions used only for test hosts are listed separately in [Modules and layers](/learn/modules-and-layers#dev-edges-and-exceptions) and never enter the product binary.
 
 ### A2. None of the four main UI crates depends on the CSS engine
 
@@ -81,5 +81,5 @@ rg "fn redraw" crates/nana-ui/src/scene_host/present.rs      # pub(super) fn red
 ## Read next
 
 - [Contracts and invariants](/learn/contracts-and-invariants): why the nine core contracts are designed this way and what violating them costs
-- [Modules and layers](/learn/modules-and-layers): the full list of 55 normal dependency edges and the dev edges explained
-- [24-crate coverage matrix](/learn/coverage-matrix): the four-part quick-reference table for each crate
+- [Modules and layers](/learn/modules-and-layers): the full list of 58 workspace-member normal dependency edges and the dev edges explained
+- [25-crate coverage matrix](/learn/coverage-matrix): the four-part quick-reference table for each crate

@@ -4,16 +4,7 @@ A frame's job is to settle the state changes already in `UiWorld` and paint them
 
 Inside `run_runtime`, each window that needs a redraw goes through a frame in the following 8 steps (for the full reference, see [How the framework runs](../reference/how-it-works.md)):
 
-```text
-1. Drain dispatch_program messages  → RuntimeProgram::update
-2. prepare_window_frame        → the application prepares the latest textures this frame samples
-3. RuntimeDocument::flush      → style, text shaping, layout, hit index, accessibility and Scene extraction
-4. Acquire Surface + external resource production → compile FramePlan, share one host encoder (failure discards the whole frame)
-5. SceneWgpuPainter::paint_target → visible primitives recorded into the target in document order
-6. queue.submit + present      → one submit per target, then present
-7. window_frame_presented      → only now is it safe to release textures retired by the previous frame
-8. bind_window                 → bind further content for new windows as needed
-```
+![One Frame in NanaUI](../../assets/diagrams/frame-lifecycle.en.svg)
 
 The key constraints are described below in four phases: "Messages and mutation commit", "Texture preparation", "The flush transaction", and "Present and reclamation".
 

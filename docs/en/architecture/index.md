@@ -4,18 +4,7 @@ This section is for **application authors**. It builds the core mental model you
 
 ## One product path
 
-```text
-Application state
-    │  declarative view mount / signal bindings / host texture updates
-    ▼
-UiWorld          retained tree, style, layout, hit testing, focus and accessibility
-    │  flush
-    ▼
-UiScene          retained drawing graph, independent of the graphics backend
-    │  SceneWgpuPainter
-    ▼
-Host Surface     Window / Device / Queue owned by the application
-```
+![NanaUI Architecture Pipeline](../../assets/diagrams/architecture-pipeline.en.svg)
 
 Rust's `view!` macro, function views and the `.vue` dialect all build the same `UiWorld`. They are different authoring paths, not a second tree or a second painter. CSS parsing and cascade also have exactly one implementation, `nana-ui-css`: the `.vue` `<style>`, `stylesheet!` and `css!` call it at build time and compile to Style Model data.
 
@@ -25,15 +14,17 @@ The application owns business state, routing and the concrete content of each re
 
 | Crate | Core responsibility |
 | --- | --- |
-| `nana-ui-core` | Shared foundation contracts: Style Model (Tokens + Semantics + Layout), theme tokens, geometry, WorkspaceModel, Motion IR |
-| `nana-ui-runtime` | Retained tree authority `UiWorld`, built-in controls, layout engine, input routing, focus, Shell, Workspace, Dock, AreaLayout |
+| `nana-ui-core` | Shared foundation contracts: Style Model (Tokens + Semantics + Layout), OKLCH/Color 4, theme tokens, geometry, WorkspaceModel, Motion IR |
+| `nana-ui-runtime` | Retained tree authority `UiWorld`, built-in controls, pure `Flex + Grid (+ subgrid) + Inline + Layers + Overlay` iterative layout engine, input routing, focus, Shell, Workspace, Dock, AreaLayout |
 | `nana-ui-scene` | Drawing graph authority `UiScene` and `FramePlan` (depends on runtime, not on WGPU) |
-| `nana-ui` | Host adapter, `run_runtime` and `SceneWgpuPainter` |
-| `nana-ui-css` | The only stylesheet parse and cascade engine (stays out of core / runtime / scene / nana-ui) |
+| `nana-ui` | Host adapter, `run_runtime` and `SceneWgpuPainter` (precompiled MSL / Naga IR pipelines, linear scRGB / HDR `Rgba16Float` compositing) |
+| `nana-ui-css` | The only stylesheet parse and cascade engine (build-time only; stays out of core / runtime / scene / nana-ui) |
 | `nana-text` | The product's only authority for text measurement, OpenType shaping and retained text layout |
+| `nana-ui-charts` | ECharts-shaped chart model, scales, layout and GPU mark arrays (depends only on `nana-ui-core`) |
+| `nana-ui-diagram` | Native Mermaid diagram engine supporting all 34 diagram kinds (depends only on `nana-ui-core` and `nana-ui-charts`) |
 | `nana-ui-input` | Canonical input events, sequencer and `HostServices` contract (the Runtime router is the only consumer) |
 | `nana-gpu` | `GpuContext`, `FrameContext`, `GpuTexture` contracts (WGPU is the only official backend) |
-| `nana-window` | Native window handles, system materials, title bar dragging, client-area chrome and scaling |
+| `nana-window` | Native window handles, system materials, title bar dragging, client-area chrome, scaling and screen `ColorSampler` |
 
 Ordinary controls never get a native window handle (`HWND` / `NSWindow`). System materials are requested through `nana-window`; on failure it truthfully returns the outcome that actually applied, or an explicit fallback. Your application owns the `Window`, the `Surface`, the `GpuContext` and each frame's `FrameContext`. Live GPU content hangs on the tree through `GpuTextureView` or `CustomRenderNode` and takes part in layout, clipping, hit testing and document order like any ordinary control.
 

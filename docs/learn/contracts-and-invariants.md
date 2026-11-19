@@ -87,6 +87,6 @@ UiWorld → ExtractedNode → UiScene → SceneWgpuPainter
 
 ## 接着读
 
-- [模块与分层](/learn/modules-and-layers)：24 个 crate 依赖图的完整实读
+- [模块与分层](/learn/modules-and-layers)：25 个 crate 依赖图的完整实读
 - [作者入口](/learn/authoring-paths)：两条编写路径如何汇入同一棵树
 - [证据清单](/learn/evidence-checklist)：九条合同的自动化复核命令与源码行号

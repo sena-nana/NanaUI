@@ -12,7 +12,7 @@ title: 核心合同：nana-ui-core
 
 - **共享模型，而非解析实现**：`core` 只定义「样式数据长什么样」「主题如何编译」「区域如何声明」，绝不解析任何样式表或脚本。文件头明确规定："This crate must **not** depend on CSS parsers, JS engines, WebView, or window backends"（`crates/nana-ui-core/src/lib.rs:8-9`）。
 - **零 CSS 引擎边界**：CSS 解析被完整隔离在 `core` 之外，`style_model.rs` 的非目标清单写明 CSS 解析与 CSSOM 不得进入本 crate（`crates/nana-ui-core/src/style_model.rs:43-46`）。`core` 与 CSS 唯一的接触点是 `SemanticColorRole::from_css_token_name`（`crates/nana-ui-core/src/style_model.rs:341`，仅将 `--nana-*` 变量名映射为语义色角色，未知 `#hex` / `rgb()` 直接返回 `None`）及少量单值枚举关键字解析。
-- **入口中立**：Rust 构建器与构建期 CSS 编译必须产出同一份样式数据，因此合同层必须比任何一方都更底层；文本、CSS、图表、输入、窗口、GPU 六个第 2 层 crate 全部只依赖 `core` 与外部算法库。
+- **入口中立**：Rust 构建器与构建期 CSS 编译必须产出同一份样式数据，因此合同层必须比任何一方都更底层；文本、CSS、图表、输入、GPU 五个第 2 层工作区 crate（外加独立 `nana-icons-tabler`）以及第 3 层 `nana-ui-diagram` 都向下依赖 `core`（第 4 层 `nana-window` 再经 `nana-ui-platform` 接入）。
 - **诊断走静态描述符**：遵循 `nana-diagnostics` 的静态描述符合同，不引入外部日志 crate——这也是它仅有的三个依赖项之一。
 
 ## 依赖与邻居
@@ -21,7 +21,7 @@ title: 核心合同：nana-ui-core
 
 | 邻居 Crate | 协作关系 |
 | --- | --- |
-| `nana-text` / `nana-ui-css` / `nana-ui-charts` / `nana-ui-input` / `nana-window` / `nana-gpu` | 六个第 2 层 crate，仅依赖 `core` 与外部库；排版词汇（`LineBreakSpec`、`WritingModeSpec` 等）从 `core` 借用 |
+| `nana-text` / `nana-ui-css` / `nana-ui-charts` / `nana-ui-input` / `nana-gpu` | 五个第 2 层工作区 crate（外加第 3 层的 `nana-ui-diagram` 与第 4 层的 `nana-window`），均直接依赖 `core`；排版词汇（`LineBreakSpec`、`WritingModeSpec` 等）从 `core` 借用 |
 | `nana-ui-runtime` | 在 `core` 之上构建保留树；`NodeStyle` 内含 `LayoutStyle`，主题经 `CompiledTheme` 编译后挂入世界 |
 | `nana-ui-css` | 唯一 CSS 引擎，将样式声明映射到 `core` 的 `LayoutStyle`（见下文 [内部结构](#内部结构)） |
 | `nana-diagnostics` | 提供 `event!` / `metric!` / `fault!` 静态描述符，`core` 是最底层的消费方之一 |

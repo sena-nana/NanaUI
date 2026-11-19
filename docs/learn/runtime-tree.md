@@ -15,7 +15,7 @@ title: 运行时保留树
 
 ## 依赖与邻居
 
-`nana-ui-runtime` 位于第 5 层（L5），向下依赖 `nana-ui-core`、`nana-text`、`nana-ui-charts`、`nana-ui-input`、`nana-ui-view-macros` / `nana-ui-view-schema` 与 `nana-diagnostics`；**不依赖** `nana-ui-css` 或任何 GPU crate：
+`nana-ui-runtime` 位于第 5 层（L5），向下必选依赖 `nana-ui-core`、`nana-text`、`nana-ui-input`、`nana-ui-view-schema` 与 `nana-diagnostics`，并按 feature 可选依赖 `nana-ui-charts`、`nana-ui-diagram` 与 `nana-ui-view-macros`；**不依赖** `nana-ui-css` 或任何 GPU crate：
 
 | 邻居 Crate | 协作关系 |
 | --- | --- |
@@ -50,9 +50,10 @@ title: 运行时保留树
 
 `store.rs` 采用**「高频字段进稠密表、特定功能字段进稀疏侧表」**的双层布局（`crates/nana-ui-runtime/src/store.rs:300-445`）：
 
-- **稠密表 `NodeTable`（`:300`）**：由 `dense: Vec<Option<NodeRecord>>` 与 `overflow: HashMap` 组成。当节点 ID $\le 65,536$（`DENSE_LIMIT`）且距当前表尾不超过 `1024`（`DENSE_GAP`）时直接走 $O(1)$ 数组下标寻址，其余大跨度 ID 自动落入 `overflow` 哈希表。
-- **`NodeRecord`（`:81`）与写时解析策略**：存放每个节点最常访问的字段，包括 `hierarchy`（自带 `index_in_parent` 以避免找兄弟时线性扫表；它从父节点的 `children_base` 数起，整段兄弟平移时只改基数）、`mount: MountState`、作者原始 `style: NodeStyle` 以及预解析好的 `resolved_layout: Arc<LayoutStyle>`。由于 `LayoutStyle` 结构体约 4.8 KB，框架在写入样式或切换主题时预先解析一次存入 `Arc`，后续布局与抽取阶段只需廉价克隆 `Arc` 指针（`:87`）。
+- **稠密表与分页压缩 `Slots<T>`（`store/paged.rs`）**：核心存储封装于 `Slots<T>`（`crates/nana-ui-runtime/src/store/paged.rs:267`）。批量连续建树时底层以紧凑线性槽位运行（配合 `overflow`）；当局部反复卸载使存活密度跌破 ID 跨度的 1/8 时自动切换为 64 槽位一页的 `Paged` 分页表，空页随即归还分配器，从而在宽销毁场景保持 `943 B/box`（10k 节点 `Stack` 为 `634 B/box`）。
+- **`NodeRecord`（`:81`，`<= 152 B`）与写时解析策略**：存放每个节点最常访问的字段，包括 `hierarchy`（`24 B`，自带 `index_in_parent` 以避免找兄弟时线性扫表；从父节点的 `children_base` 数起，整段兄弟平移时只改基数）、`mount: MountState`、作者原始 `style: NodeStyle` 以及预解析好的 `resolved_layout: Arc<LayoutStyle>`。由于 `LayoutStyle` 结构体约 4.8 KB，框架在写入样式或切换主题时预先解析一次存入 `Arc`，后续布局与抽取阶段只需廉价克隆 `Arc` 指针（`:87`）。
 - **稀疏侧表（`NodeStore` 其余字段，`:379-445`）**：按需存放 `visuals`、`custom_render`、`event_listeners`、`component_types`、`overlay_hosts`、`editors` 以及单独成表的 `text_nodes` 与 `text_layouts`（使大范围重排能快速遍历小表跳过无文本工作的节点）。
+- **堆迭代建树弹跳器 `ViewBuilder::run_trampoline`（`view/node.rs:491`）**：声明式视图装配深层嵌套树时，通过显式堆任务队列迭代构建与收尾（`ViewTask::Build` / `ViewTask::LeaveEl`），不随视图嵌套深度累积原生调用栈帧。
 
 ### 2. 批式变异提交：`UiMutation` / `MutationQueue` / `commit`
 
@@ -106,7 +107,9 @@ title: 运行时保留树
 | 文件路径 | 核心内容 |
 | --- | --- |
 | `crates/nana-ui-runtime/src/world.rs` | `UiWorld` 主体、`StableNodeId` / `IdHasher`、`CommitReport`、`take_system_work` |
-| `crates/nana-ui-runtime/src/store.rs` | `NodeStore`、`NodeRecord`、`Hierarchy`、`NodeTable`（稠密数组 + 溢出表）与全部稀疏侧表 |
+| `crates/nana-ui-runtime/src/store.rs` | `NodeStore`、`NodeRecord`、`Hierarchy` 与全部稀疏侧表 |
+| `crates/nana-ui-runtime/src/store/paged.rs` | `Slots<T>` 与 64 槽位稀疏压缩分页表（空页即时释放） |
+| `crates/nana-ui-runtime/src/view/node.rs` | `ViewBuilder::run_trampoline` 堆迭代视图装配弹跳器 |
 | `crates/nana-ui-runtime/src/mutation.rs` | `UiMutation` 枚举词表与 `MutationQueue` |
 | `crates/nana-ui-runtime/src/world/mutation.rs` | `UiWorld::commit` / `commit_with_mount_lifecycle`、滚动偏移与布局结果发布 |
 | `crates/nana-ui-runtime/src/component_registry.rs` | `ComponentRegistry`、`RegisterableComponent`、`ComponentTypeId` |

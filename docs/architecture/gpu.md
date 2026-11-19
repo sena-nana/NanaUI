@@ -2,7 +2,10 @@
 
 在 NanaUI 中，实时画面（着色器输出、预览视口、视频流、离屏渲染纹理）是界面树上的一等节点：它占据布局尺寸、受父级圆角和滚动区域裁切、参与指针命中测试，并且严格按**文档顺序（document order）**与周围的按钮、卡片、浮层合成——既不是窗口上抠出的“洞”，也不是最后盖在界面顶上的 HUD 层。
 
-宿主进程只持有一份 `GpuContext`（WGPU 是唯一正式图形后端），每一帧的 `FrameContext` 也归宿主所有；`SceneWgpuPainter` 直接往宿主的帧里录制绘制命令，不创建第二套 `Device` / `Queue`，也不把画面读回 CPU。完整技术合同见 [实时画面参考](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/gpu.md)。
+宿主进程只持有一份 `GpuContext`（WGPU 是唯一正式图形后端），每一帧的 `FrameContext` 也归宿主所有；`SceneWgpuPainter` 直接往宿主的帧里录制绘制命令，不创建第二套 `Device` / `Queue`，也不把画面读回 CPU。完整技术合同见 [实时画面参考](../reference/gpu.md)。
+
+- **离线预编译着色器与按需租约**：在 Apple（macOS 14+ / iOS 17+，`MSL 3.1`）默认加载预编译 zlib 压缩 MSL（`stages.msl.zz`，常驻 `naga` IR 为 `0 B`），其余平台加载按入口裁剪的压缩 `NAGA1` IR；仅在开启可选 `runtime-wgsl` feature 时才链接运行时 WGSL 编译器用于自定义 `MaterialProgram`。
+- **广色域 / HDR 与栅格顺序存储纹理**：`SceneWgpuPainter` 内部统一在预乘线性 scRGB 空间合成；仅当场景含超 sRGB（如 OKLCH / Display P3）颜色或 `Rgba16Float` `HostTexture` 时按 `SurfacePresentationPolicy` 自动升级工作附件至 `Rgba16Float`（纯 8-bit SDR 保持零开销直通）。NanaUI 的 `third_party/wgpu` fork 还提供跨 DX12 ROV / Vulkan pixel interlock / Metal `raster_order_group` 的 `TEXTURE_STORAGE_RASTERIZER_ORDER`，供同设备合成器单 pass 原位读改写目标纹理。
 
 ::: warning
 切勿在应用或插件里额外调用 `request_device`。多窗口、自定义渲染器（`wgpu-interop`）以及跨线程帧交换（`FrameExchange`）全部复用宿主这一份 `GpuContext`。

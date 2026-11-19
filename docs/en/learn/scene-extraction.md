@@ -15,7 +15,7 @@ This chapter goes into `nana-ui-scene`: **how a batch of dirty nodes in the reta
 
 ## Dependencies and neighbors
 
-In the dependency levels: `core(L1) → text/css/charts/input/window/gpu(L2) → runtime(L5) → scene(L6) → nana-ui(L7)`. `nana-ui-scene` depends on `nana-ui-runtime`, `nana-ui-core`, `nana-ui-charts`, and `nana-diagnostics`. It **does not depend** on `nana-gpu` or `nana-ui-css`:
+In the dependency levels: `core(L1) → text/css/charts/input/gpu(L2) → diagram/platform(L3) → window(L4) → runtime(L5) → scene(L6) → nana-ui(L7)`. `nana-ui-scene` depends on `nana-ui-runtime`, `nana-ui-core`, and `nana-diagnostics` (plus optional `nana-text` under `benchmark`). It **does not depend** on `nana-gpu`, `nana-ui-css`, or `nana-ui-charts`:
 
 | Neighbor crate | Relationship |
 | --- | --- |
@@ -65,7 +65,7 @@ Once the loop settles, `flush` shares the same `layout_generation` (`:28`) **wit
 
 - **Node base slots (`0..=255`)**: such as the background surface (slot 0), border, main text, and so on.
 - **Collection namespace slots (`namespace << 32 | index`, `collection_slot:152`)**: text line labels (1), diagnostic markers (2), document text selection (6), inline objects (7), editor caret (8), dropdown menu items (9–13), and so on.
-- **Special global slots**: `MODAL_SCRIM_SLOT = 10` (`:208`, modal scrim), `TRIGGERED_OVERLAY_SURFACE = 0xFFFF_FFE0` (`:216`, popup menu and bubble surfaces are promoted to the root stacking context and leave the trigger's local clip chain), `SCROLLBAR_CHROME = 0xFFFF_FFF8` (`:226`, scrollbars are always drawn after all of the container's descendants).
+- **Special global slots & `OverlayMount` (`core/src/overlay.rs:65`, `scene/slots.rs:152`)**: `MODAL_SCRIM_SLOT = 10` (`:208`, modal scrim isolated outside its own card's opacity group), `TRIGGERED_OVERLAY_SURFACE = 0xFFFF_FFE0` (`:216`, popup menus and bubble surfaces resolved via `resolve_scene_overlay_mount` using `OverlayMount::{NearestModal, TopLayer, Inline}`, escaping ancestor opacity and scroll-edge-fade groups by default), and `SCROLLBAR_CHROME = 0xFFFF_FFF8` (`:226`, scrollbars are always drawn after all of the container's descendants).
 
 Custom vector paths that an application records through the `Painter` API (`PaintRecording`, Issue #217) go through `i_overlay` boolean/fill solving and `lyon` tessellation (tolerance `TOLERANCE = 0.05` logical pixels, `MITER_LIMIT = 4.0`, `:45-48`) in `crates/nana-ui-scene/src/scene/custom_paint.rs` to produce a retained `PathMesh`. When the node is translated or scrolled, the cached mesh is reissued directly without retriangulation.
 

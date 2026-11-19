@@ -53,6 +53,8 @@ Control interactions bind directly to view nodes (such as `.on_activate(...)` or
 
 ## Execution order within a frame
 
+![One Frame in NanaUI](../../assets/diagrams/frame-lifecycle.en.svg)
+
 In `run_runtime` (built on `run_runtime_scene`), each window that needs a redraw advances through these 8 steps in order:
 
 ```text

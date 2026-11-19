@@ -2,9 +2,11 @@
 
 ## What is NanaUI?
 
-NanaUI is a framework for building desktop user interfaces. Your application opens the windows and owns the GPU device used for drawing. The framework does layout, hit testing and compositing on one UI tree, then draws that tree into the window's Surface.
+NanaUI is a retained-mode Rust framework for building native desktop user interfaces. Your application opens the windows and owns the GPU device used for drawing. The framework performs layout (`Flex + Grid (+ subgrid) + Inline + Layers + Overlay`), hit testing and compositing on one UI tree, then draws that tree into the window's Surface.
 
 Buttons, text, sidebars and live GPU content are nodes in the same tree. They share layout, clipping, hit testing and stacking order.
+
+![NanaUI Architecture Pipeline](../../assets/diagrams/architecture-pipeline.en.svg)
 
 ## How it differs from other frameworks
 

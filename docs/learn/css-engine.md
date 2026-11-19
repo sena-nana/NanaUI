@@ -4,7 +4,7 @@ title: CSS 引擎：nana-ui-css
 
 # CSS 引擎：`nana-ui-css`
 
-本章深入 `nana-ui-css`：全框架唯一的 CSS 引擎，负责样式表解析、选择器匹配、级联排序，以及将命中的声明映射到 Style Model（`nana_ui_core::LayoutStyle`）。读完后你能搞懂：一份 CSS 从源码字符串到 `LayoutStyle` 字段的完整内部流水线（手写词法/切分 → 选择器匹配 → 级联排序 → 字段映射）；`@media`、`@import`、`@layer`、`@font-face`、`@keyframes`、`@container` 各自被编译成什么数据结构；为什么这个引擎只在 `view-codegen` 构建期运行；以及 `tools/css-parity` 如何用 149 组测试夹具守住它与浏览器盒模型的一致性。
+本章深入 `nana-ui-css`：全框架唯一的 CSS 引擎，负责样式表解析、选择器匹配、级联排序，以及将命中的声明映射到 Style Model（`nana_ui_core::LayoutStyle`）。读完后你能搞懂：一份 CSS 从源码字符串到 `LayoutStyle` 字段的完整内部流水线（手写词法/切分 → 选择器匹配 → 级联排序 → 字段映射）；`@media`、`@import`、`@layer`、`@font-face`、`@keyframes`、`@container` 各自被编译成什么数据结构；为什么这个引擎只在 `view-codegen` 构建期运行；以及 `tools/css-parity` 如何用 147 组测试夹具守住它与浏览器盒模型的一致性。
 
 ## 职责与边界
 
@@ -78,7 +78,7 @@ title: CSS 引擎：nana-ui-css
 
 ### 4. 属性映射表：`LayoutStyleCss`（`css_map.rs`）
 
-`crates/nana-ui-css/src/css_map.rs`（约 9,100 行）将 CSS 属性键值对写入 `nana_ui_core::LayoutStyle`（通过 `LayoutStyleCss` trait，`:1862`）。颜色解析走 `CssPaintColor`（`style.rs:30`），保留 `Oklch` / `Hsv` / `Srgb` 精度并通过 `map_css_color_for_tokens`（`:635`）执行语义色令牌策略。宿主工具类（如 `gap-sm`、`p-*`、`w-full`、`flex-1`、`rounded*`）集中隔离在 `crates/nana-ui-css/src/shell_contract.rs` 中，与标准 CSS 语法解析保持清晰分界。工具类与 Tailwind 同义：只有 `flex` 设 `display: flex`（样式表已写 `display` 时不覆盖）；`flex-row` / `flex-col`、`items-*`、`justify-*` 各只设自己那一项。所以 `flex-col items-center` 不写 `flex` 时是块容器，块布局没有 `align-items`，子项不会居中，要写 `flex flex-col items-center`。
+`crates/nana-ui-css/src/css_map.rs`（约 9,100 行）将 CSS 属性键值对写入 `nana_ui_core::LayoutStyle`（通过 `LayoutStyleCss` trait，`:1862`）。颜色解析走 `CssPaintColor`（`style.rs:30`），保留 `Oklch` / `Hsv` / `Srgb` 精度并通过 `map_css_color_for_tokens`（`:635`）执行语义色令牌策略。宿主工具类（如 `gap-sm`、`p-*`、`w-full`、`flex-1`、`rounded*`）集中隔离在 `crates/nana-ui-css/src/shell_contract.rs` 中，与标准 CSS 语法解析保持清晰分界。工具类与 Tailwind 同义：只有 `flex` 设 `display: flex`（样式表已写 `display` 时不覆盖）；`flex-row` / `flex-col`、`items-*`、`justify-*` 各只设自己那一项。所以 `flex-col items-center` 不写 `flex` 时仍是默认纵向容器（未开启 flex 布局，`align-items` 不生效，子项不会居中），要写 `flex flex-col items-center`。
 
 ### 5. 各 `@` 规则与伪类的编译去向
 

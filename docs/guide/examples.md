@@ -11,7 +11,9 @@
 | 计数器（`view!`） | `cargo run -p nana-ui --example reactive-counter --features hosted,bundled-fonts,view-macro` | `crates/nana-ui/examples/reactive-counter.rs` |
 | 计数器（应用壳） | `cargo run -p nana-ui --example application-counter --features hosted,bundled-fonts` | `crates/nana-ui/examples/application-counter.rs` |
 | 待办（`.vue`） | `cargo run -p reactive-sfc` | `examples/reactive-sfc` |
-| 实时画面 | `cargo run -p nana-ui --example gpu-view-demo --features hosted,bundled-fonts` | `crates/nana-ui/examples/gpu-view-demo.rs` |
+| 实时画面（`GpuView`） | `cargo run -p nana-ui --example gpu-view-demo --features hosted,bundled-fonts` | `crates/nana-ui/examples/gpu-view-demo.rs` |
+| 实时 WGSL 着色器视口 | `cargo run -p nana-ui --example hosted-gpu-demo --features hosted,bundled-fonts,wgpu-interop,runtime-wgsl` | `crates/nana-ui/examples/hosted-gpu-demo.rs` |
+| 在树中混排 egui 面板 | `cargo run -p nana-ui --example egui-in-nanaui --features hosted,bundled-fonts,wgpu-interop` | `crates/nana-ui/examples/egui-in-nanaui.rs` |
 | 多窗口 | `cargo run -p nana-ui --example window-chrome-multi-window --features hosted,bundled-fonts` | `crates/nana-ui/examples/window-chrome-multi-window.rs` |
 
 ## 接下来

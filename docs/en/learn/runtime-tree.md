@@ -15,7 +15,7 @@ This chapter goes into the heart of `nana-ui-runtime`: **how the `UiWorld` retai
 
 ## Dependencies and neighbors
 
-`nana-ui-runtime` sits at level 5 (L5). It depends downward on `nana-ui-core`, `nana-text`, `nana-ui-charts`, `nana-ui-input`, `nana-ui-view-macros` / `nana-ui-view-schema`, and `nana-diagnostics`. It **does not depend** on `nana-ui-css` or any GPU crate:
+`nana-ui-runtime` sits at level 5 (L5). Required dependencies point downward to `nana-ui-core`, `nana-text`, `nana-ui-input`, `nana-ui-view-schema`, and `nana-diagnostics`, plus optional feature-gated `nana-ui-charts`, `nana-ui-diagram`, and `nana-ui-view-macros`. It **does not depend** on `nana-ui-css` or any GPU crate:
 
 | Neighbor crate | Relationship |
 | --- | --- |
@@ -50,9 +50,10 @@ This chapter goes into the heart of `nana-ui-runtime`: **how the `UiWorld` retai
 
 `store.rs` uses a two-tier layout: **"hot fields go in the dense table, feature-specific fields go in sparse side tables"** (`crates/nana-ui-runtime/src/store.rs:300-445`):
 
-- **Dense table `NodeTable` (`:300`)**: made of `dense: Vec<Option<NodeRecord>>` and `overflow: HashMap`. When a node ID is $\le 65,536$ (`DENSE_LIMIT`) and no more than `1024` (`DENSE_GAP`) past the current end of the table, it uses $O(1)$ array indexing. Other far-ranging IDs fall into the `overflow` hash table automatically.
-- **`NodeRecord` (`:81`) and resolve-on-write**: stores each node's most frequently accessed fields, including `hierarchy` (with its own `index_in_parent` to avoid a linear scan when finding siblings; it counts from the parent's `children_base`, so siblings shifted as a block only move the base), `mount: MountState`, the author's original `style: NodeStyle`, and the pre-resolved `resolved_layout: Arc<LayoutStyle>`. Because the `LayoutStyle` struct is about 4.8 KB, the framework resolves it once when a style is written or the theme is switched and stores it in an `Arc`; later layout and extraction phases only need a cheap `Arc` pointer clone (`:87`).
-- **Sparse side tables (the remaining `NodeStore` fields, `:379-445`)**: store `visuals`, `custom_render`, `event_listeners`, `component_types`, `overlay_hosts`, `editors` on demand, plus the separate `text_nodes` and `text_layouts` tables (so a wide relayout can walk the small tables quickly and skip nodes with no text work).
+- **Paged storage `Slots<T>` (`store/paged.rs:267`)**: Backing tables use `Slots<T>`. Contiguous mounts run directly over a linear run; when sparse unmounts drop live occupancy below 1/8 of the ID span, entries migrate automatically into 64-slot `Paged` pages and emptied pages are immediately freed, keeping wide sparse heaps at `943 B/box` (`634 B/box` for a 10k `Stack`).
+- **`NodeRecord` (`:81`, `<= 152 B`) and resolve-on-write**: stores each node's most frequently accessed fields, including `hierarchy` (`24 B`, with `index_in_parent` counted from the parent's `children_base` to avoid linear sibling scans), `mount: MountState`, the author's original `style: NodeStyle`, and the pre-resolved `resolved_layout: Arc<LayoutStyle>`. Because `LayoutStyle` is about 4.8 KB, it is resolved once on write or theme switch and shared via `Arc` (`:87`).
+- **Sparse side tables (remaining `NodeStore` fields, `:379-445`)**: store `visuals`, `custom_render`, `event_listeners`, `component_types`, `overlay_hosts`, `editors`, and separate `text_nodes` / `text_layouts` tables on demand.
+- **Heap-iterative mount trampoline `ViewBuilder::run_trampoline` (`view/node.rs:491`)**: mounts deeply nested declarative views via an explicit heap task queue (`ViewTask::Build` / `ViewTask::LeaveEl`) rather than growing native call stack frames with tree depth.
 
 ### 2. Batched mutation commit: `UiMutation` / `MutationQueue` / `commit`
 
@@ -106,7 +107,9 @@ Application / view functions / components ──write──▶ MutationQueue (in
 | File path | Core content |
 | --- | --- |
 | `crates/nana-ui-runtime/src/world.rs` | The `UiWorld` body, `StableNodeId` / `IdHasher`, `CommitReport`, `take_system_work` |
-| `crates/nana-ui-runtime/src/store.rs` | `NodeStore`, `NodeRecord`, `Hierarchy`, `NodeTable` (dense array + overflow table), and all sparse side tables |
+| `crates/nana-ui-runtime/src/store.rs` | `NodeStore`, `NodeRecord`, `Hierarchy`, and all sparse side tables |
+| `crates/nana-ui-runtime/src/store/paged.rs` | `Slots<T>` and 64-slot sparse-compressed pages (immediate empty-page reclamation) |
+| `crates/nana-ui-runtime/src/view/node.rs` | `ViewBuilder::run_trampoline` heap-iterative view mounting trampoline |
 | `crates/nana-ui-runtime/src/mutation.rs` | The `UiMutation` enum vocabulary and `MutationQueue` |
 | `crates/nana-ui-runtime/src/world/mutation.rs` | `UiWorld::commit` / `commit_with_mount_lifecycle`, scroll offsets, and layout result publishing |
 | `crates/nana-ui-runtime/src/component_registry.rs` | `ComponentRegistry`, `RegisterableComponent`, `ComponentTypeId` |

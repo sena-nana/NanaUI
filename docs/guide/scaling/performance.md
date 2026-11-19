@@ -8,6 +8,15 @@
 
 需要重绘的窗口大致走这些步：消化 `dispatch_program` 的消息，`prepare_window_frame`，`RuntimeDocument::flush`，获取 Surface，`SceneWgpuPainter::paint_target`，submit 和 present，然后才是 `window_frame_presented`。合成器自己要 tick 时，只把该窗口接到 `FrameDemand::Continuous`。它不强制样式或布局重算。0 尺寸仍然 prepare；producer 的编码只在尺寸可画时才跑。
 
+## 重构后的基准快照
+
+在五阶段架构基线重置之后，Apple M4 `release` / `dist` 实测读数如下（完整口径与复现命令见 [资源预算](../../reference/resource-budgets.md) 与 [Taffy 对照基准](../../reference/taffy-reference.md)）：
+
+- **栈安全、零 `stacker`**：测量（`measure_node`）与视图建树（`ViewBuilder::run_trampoline`）均在堆上显式工作栈迭代执行（`0 B` 测量每层栈），放置按 `recursion::SPAN` 与 `Boundary` 队列截断；`500` 层深树整帧最低线程栈为 **`52 KiB`**（Taffy 为 `900 KiB`）。
+- **节点常驻内存**：`NodeRecord <= 152 B`、`Hierarchy == 24 B` 配合分页槽位 `Slots` 与共享 `Arc<NodeStyle>`，10k 已布局 `Stack` `634 B`、`stack-depth wide` `21,001` 盒实测 **`943 B / 盒`**（Taffy `1,506 B / 盒`）。
+- **局部增量与零开销观测**：`100k` 节点局部帧 `p95` 耗时 `30.2 µs`，与 `1k` 节点（`25.8 µs`）之比为 **`1.17×`**；`WorkCounters` 与 `HeadlessTurn::work` 在不增加单节点常驻内存的前提下守住增量计数。
+- **预编译着色器与分发体积**：Apple 默认加载预编译压缩 MSL（常驻 `naga` IR `0 B`），其余平台加载紧致压缩 `NAGA1` IR；配合 `[profile.dist]`，`reactive-sfc` 可执行体积从 `15.80 MiB` 降至 **`5.56 MiB`**（`-64.8%`）。
+
 ## 一条指针事件
 
 派发本身是常数。测量是 macOS / Apple Silicon、`--release`、60 次预热加 400 次移动、`window` 形状的 P50。生产窗口走 `prepare_window_frame`。`headless` 形状走 `flush_scene_frame`，生产窗口不走那条路。
@@ -20,7 +29,7 @@ Rust L3 在修好按组件类型的索引之后，250 到 2,000 行每个规模�
 
 欠下的工作本身是常数时，代价也是常数：502 到 8,002 个节点都在 0.008–0.011 ms。下面每一行都要移位时，仍然是 O(节点数)。
 
-长列表用 `each_virtual`：5 万行挂载加布局加出窗口 2.4 ms，一次建完的 `each` 是 175 ms，每行常驻约 2.3 KB。写法见 [列表](https://github.com/sena-nana/NanaUI/blob/main/docs/guide/essentials/list.md)。
+长列表用 `each_virtual`：5 万行挂载加布局加出窗口 2.4 ms，一次建完的 `each` 是 175 ms，每行常驻约 2.3 KB。写法见 [列表](../essentials/list.md)。
 
 帧上要和 UI 对齐，就走宿主这一次提交：
 
@@ -34,9 +43,9 @@ Rust L3 在修好按组件类型的索引之后，250 到 2,000 行每个规模�
 
 无头对照把 `--shape window` 换成 `--shape headless`。滚动版本再加 `--scroll`。行数要和生成 bundle 时的行数一致。
 
-这些数字来自一台机器上的 hover，不是 CI 门禁。Gallery 的 559 张像素门禁守的是这条纯 Rust 路径。时钟曾经被冻在 0，那时 2,000 行的 L3 记成 0.0242 ms，比后来的 0.0819 ms 乐观大约 3.4 倍。现在每个事件按 16 ms 推进，上面的 0.0003 ms 是索引修好之后的数。
+这些数字来自一台机器上的 hover，不是 CI 门禁。时钟曾经被冻在 0，那时 2,000 行的 L3 记成 0.0242 ms，比后来的 0.0819 ms 乐观大约 3.4 倍。现在每个事件按 16 ms 推进，上面的 0.0003 ms 是索引修好之后的数。
 
-测量命令和分段计时在 [一个指针事件的成本](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/input-cost.md)。
+测量命令和分段计时在 [一个指针事件的成本](../../reference/input-cost.md)。
 
 ## 接下来
 

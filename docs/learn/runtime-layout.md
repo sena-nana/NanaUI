@@ -28,7 +28,7 @@ title: 布局引擎
 | --- | --- | --- |
 | `RuntimeLayoutEngine` | `crates/nana-ui-runtime/src/layout_engine.rs:89` | 布局算法入口（全量 / 增量 / 样式树测量） |
 | `LayoutViewport` | `crates/nana-ui-runtime/src/layout_engine.rs:50` | 宿主传入的逻辑视口尺寸（`width` / `height`，构造时钳制为非负有限值） |
-| `EstablishedContext` | `crates/nana-ui-runtime/src/layout_engine/context.rs:13` | 容器为其流内子节点建立的格式化上下文（`Flex` / `Grid` / `Inline` / `Flow`）与 `grid_2d` 标志 |
+| `EstablishedContext` | `crates/nana-ui-runtime/src/layout_engine/context.rs:13` | 容器为其流内子节点建立的格式化上下文（`Overlay` / `Layers` / `Grid` / `Flex` / `Inline`）与 `grid_2d` 标志 |
 | `IntrinsicMetrics` | `crates/nana-ui-runtime/src/intrinsic_cache.rs:57` | 子树固有尺寸贡献：`min/max inline·block`、`preferred`、首末基线、宽高比、`truncatable`、`generation` |
 | `UsedSize` | `crates/nana-ui-runtime/src/intrinsic_cache.rs:21` | 在特定包含块约束下解析出的主轴与交叉轴已用尺寸 |
 | `LayoutFrontierSeed` | `crates/nana-ui-runtime/src/layout_frontier.rs:19` | 增量种子：目标节点 + `LayoutInvalidation`（失效类别、字段掩码、依赖足迹） |
@@ -45,19 +45,19 @@ title: 布局引擎
 
 `UiWorld::resolve_style`（`crates/nana-ui-runtime/src/world/style.rs:87`）自根向下解析计算样式，对无本地覆盖的子节点直接共享父节点的 `Arc<ComputedStyle>`（`publish_inherited_computed_style`，`:12`）；布局引擎读取的是叠入了响应式容器桶与Layout类动画后的 `motion_layout(id, &resolved_layout)`（`:106-108`）。
 
-格式化上下文由 `establish_context`（`crates/nana-ui-runtime/src/layout_engine/context.rs:29`）统一判定：`Grid` → `Flex` → `Inline`（流内子节点含行内级元素）→ `Flow`。测量与放置两个阶段调用同一个函数，确保对同一容器绝不会选出两套不同的算法。各上下文求解器按模块拆分：
+格式化上下文由 `establish_context`（`crates/nana-ui-runtime/src/layout_engine/context.rs:29`）统一判定，已收敛为纯五上下文模型：`Overlay` → `Layers` → `Grid` → `Flex` → `Inline`（旧式 CSS `Block` / `FlowRoot` / `InlineBlock` 布局路径已移除）。测量与放置两个阶段调用同一个函数，确保对同一容器绝不会选出两套不同的算法。各上下文求解器与收集器按模块拆分：
 
-- **流式收集（`flow.rs:23`）**：`collect_flow_children_reporting` 收集流内子列表，并显式上报是否因 `display: contents` 或块内嵌行内盒子而依赖更深层后代；
+- **流内子项收集（`flow.rs:24`）**：`collect_flow_children_reporting` 收集流内子列表（排除 `Overlay` / `PositionSpec::Absolute|Fixed` 脱离流子节点），并上报 `display: contents` 等后代结构依赖；
 - **Flexbox（`flex.rs:25`）**：`distribute_flex_main` 执行主轴空间分配与交叉轴拉伸；
-- **Grid（`grid.rs:23`）**：`Grid2DLayout` 求解二维显式轨道与 `subgrid`（`InheritedGridTracks`，`:16`）；
+- **Grid 与独立 `subgrid`（`grid.rs:23`）**：`Grid2DLayout` 求解二维显式轨道，并支持独立轴向或双向 `subgrid`（`InheritedGridTracks`，`:16`）；
 - **行内折行装箱（`inline.rs:6`）**：`pack_wrap_lines` 处理行内级原子盒换行；
 - **动态自适应布局（`dynamic.rs:1-18`，Issues #209/#212/#213）**：配置了 `AdaptationProfile::solve_overflow` 的容器在单行空间不足时，通过 `DynamicPass::envelope` 与 `solve_deficit` 按代价从低到高向弹性子项借出空间，且包络（`RetainedEnvelope`）跨 resize 保留复用。
 
-### 2. 两阶段遍历与三层跨帧缓存（`intrinsic_size` → `place_node`）
+### 2. 两阶段遍历、无界深度栈控与三层跨帧缓存（`measure_node` → `place_node`）
 
-每遍布局由自底向上的**内蕴测量（`intrinsic_size`，`measure.rs:6`）**与自顶向下的**节点放置（`place_node`，`placement.rs:6`）**组成。`RetainedLayoutCache`（按文档隔离）通过三层缓存避免重复计算：
+每遍布局由自底向上的**内蕴测量（`intrinsic_size` / 显式堆工作栈迭代的 `measure_node`，`measure.rs:993`）**与自顶向下的**节点放置（`place_node`，`placement.rs:6`）**组成。`measure_node` 全程运行在显式 `Vec` 堆工作栈上（`0 B` 递归栈增长、零 `stacker` 依赖）；放置阶段则通过 `recursion::SPAN` 与 `Boundary` 队列（`recursion.rs:18-28`）分段展开，500 层嵌套实测峰值栈仅 `52 KiB`。`RetainedLayoutCache`（按文档隔离）通过三层缓存避免重复计算：
 
-1. **跨上下文共享的内蕴事实缓存（`intrinsic_cache.rs:1-13`）**：缓存键只包含子树内容/样式身份与**约束类别**，不包含外层容器的格式化上下文类型——因此无论是 Flex、Grid 还是 Block 父容器询问同一个子树的固有尺寸，都能直接命中同一条缓存。
+1. **跨上下文共享的内蕴事实缓存（`intrinsic_cache.rs:1-13`）**：缓存键只包含子树内容/样式身份与**约束类别**，不包含外层容器的格式化上下文类型——因此无论是 `Flex`、`Grid`、`Layers` 还是 `Inline` 父容器询问同一个子树的固有尺寸，都能直接命中同一条缓存。
 2. **容器放置计划（`ContainerPlan`）与测量计划（`MeasurePlan`）**：`place_node` 重放已缓存的容器计划，通过 `PlanCheck`（`placement.rs:33-43`）判定 `Unchanged`（直接跳过）、`ChangedFrom(idx)`（从首个变化子项起重放）或 `Stale`（全量重算）。容器计划遵守 **Gate E（一容器一计划，重复编辑原地替换而非追加，`layout_engine.rs:454-458`）**；测量计划按 `(容器, 约束槽)` **合并而非覆盖**（因为同一容器常在单遍内被主轴和交叉轴两种约束测量，`:480-491`），并对本遍未量到的槽位主动检查 `plan_missed_change`（`:493-509`）。
 3. **同源全量快照直通**：若请求全量布局但 `layout_source_epoch` 与视口均未变化，直接整块返回上一次的输出快照（`:214-246`）。
 
@@ -94,9 +94,10 @@ RuntimeDocument::flush ──调用──▶ AppContext::layout_document_with_fr
 | --- | --- |
 | `crates/nana-ui-runtime/src/layout_engine.rs` | 引擎总入口、`LayoutViewport`、`RetainedLayoutCache`、Gate E 计划发布 |
 | `crates/nana-ui-runtime/src/layout_engine/context.rs` | `establish_context`：格式化上下文判定 |
-| `crates/nana-ui-runtime/src/layout_engine/measure.rs` | `intrinsic_size` 与自身确定尺寸判定函数族 |
+| `crates/nana-ui-runtime/src/layout_engine/measure.rs` | `intrinsic_size` 与显式堆工作栈迭代测量 `measure_node` |
 | `crates/nana-ui-runtime/src/layout_engine/placement.rs` | `place_node`、容器计划重放与 `PlanCheck` |
-| `crates/nana-ui-runtime/src/layout_engine/{flow,flex,grid,inline,dynamic}.rs` | 流式、Flexbox、二维 Grid、行内换行与动态自适应求解器 |
+| `crates/nana-ui-runtime/src/layout_engine/recursion.rs` | `SPAN` 与 `Boundary` 分段放置栈预算控制（500 层 `52 KiB`） |
+| `crates/nana-ui-runtime/src/layout_engine/{flow,flex,grid,inline,overlay,dynamic}.rs` | 流内收集、Flexbox、二维 Grid / 独立 `subgrid`、行内换行、`Overlay` 与动态自适应求解器 |
 | `crates/nana-ui-runtime/src/layout_frontier.rs` | `LayoutFrontierSeed`、`LayoutDependencyGraph` 与 `LayoutFrontier` |
 | `crates/nana-ui-runtime/src/intrinsic_cache.rs` | `IntrinsicMetrics`、`UsedSize` 与跨上下文共享缓存键 |
 | `crates/nana-ui-runtime/src/text_layout_cache.rs` | 有界 FIFO 文本度量缓存 |

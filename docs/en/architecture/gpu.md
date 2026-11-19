@@ -4,6 +4,9 @@ In NanaUI, live GPU content (shader output, preview viewports, video streams, of
 
 The host process holds exactly one `GpuContext` (WGPU is the only official graphics backend), and each frame's `FrameContext` also belongs to the host. `SceneWgpuPainter` records drawing commands directly into the host's frame. It creates no second `Device` / `Queue` and never reads the image back to the CPU. For the complete technical contract, see the [Live GPU content reference](../reference/gpu.md).
 
+- **Precompiled shader archives**: on Apple (macOS 14+ / iOS 17+, `MSL 3.1`) built-in shaders load offline precompiled zlib-compressed MSL (`stages.msl.zz`, `0 B` resident `naga` IR), and other platforms load entry-pruned compacted `NAGA1` IR; runtime WGSL compilation for custom user `MaterialProgram` shaders is strictly opt-in behind `runtime-wgsl`.
+- **Wide-gamut / HDR & rasterizer-ordered storage textures**: `SceneWgpuPainter` composites in premultiplied linear scRGB and upgrades the SDR working target to `Rgba16Float` via `SurfacePresentationPolicy` only when out-of-sRGB colors (OKLCH / Display P3) or `Rgba16Float` `HostTexture`s appear (pure 8-bit SDR stays zero-overhead). NanaUI's `third_party/wgpu` fork also adds `TEXTURE_STORAGE_RASTERIZER_ORDER` across DX12 ROV, Vulkan fragment pixel interlock, and Metal `raster_order_group` for single-pass read-modify-write compositors.
+
 ::: warning
 Never call `request_device` again in an application or plugin. Multiple windows, custom renderers (`wgpu-interop`) and cross-thread frame exchange (`FrameExchange`) all reuse the host's single `GpuContext`.
 :::

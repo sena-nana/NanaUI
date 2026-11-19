@@ -12,7 +12,7 @@ This chapter goes into `nana-ui-core`, the cornerstone of the whole framework: i
 
 - **A shared model, not a parsing implementation**: `core` only defines "what style data looks like", "how a theme compiles" and "how a region is declared"; it never parses any stylesheet or script. The file header states it plainly: "This crate must **not** depend on CSS parsers, JS engines, WebView, or window backends" (`crates/nana-ui-core/src/lib.rs:8-9`).
 - **A zero CSS engine boundary**: CSS parsing is fully isolated outside `core`; the non-goals list in `style_model.rs` says that CSS parsing and the CSSOM must not enter this crate (`crates/nana-ui-core/src/style_model.rs:43-46`). The only contact point between `core` and CSS is `SemanticColorRole::from_css_token_name` (`crates/nana-ui-core/src/style_model.rs:341`, which only maps `--nana-*` variable names to semantic color roles, and returns `None` directly for an unknown `#hex` / `rgb()`) plus a small amount of single-value enum keyword parsing.
-- **Entry-point neutrality**: the Rust builder and the build-time CSS compiler must produce the same style data, so the contract layer must sit lower than either of them; the six layer-2 crates — text, CSS, charts, input, window, GPU — all depend only on `core` and external algorithm libraries.
+- **Entry-point neutrality**: the Rust builder and the build-time CSS compiler must produce the same style data, so the contract layer must sit lower than either of them; the five layer-2 workspace crates — text, CSS, charts, input, GPU (plus standalone `nana-icons-tabler`) — as well as layer-3 `nana-ui-diagram` all build on `core` (with layer-4 `nana-window` also depending on `nana-ui-platform`).
 - **Diagnostics go through static descriptors**: it follows the static descriptor contract of `nana-diagnostics` and introduces no external logging crate — which is also one of its only three dependencies.
 
 ## Dependencies and neighbors
@@ -21,7 +21,7 @@ The dependency table in `crates/nana-ui-core/Cargo.toml` has only three entries:
 
 | Neighbor crate | Collaboration |
 | --- | --- |
-| `nana-text` / `nana-ui-css` / `nana-ui-charts` / `nana-ui-input` / `nana-window` / `nana-gpu` | Six layer-2 crates that depend only on `core` and external libraries; typography vocabulary (`LineBreakSpec`, `WritingModeSpec`, etc.) is borrowed from `core` |
+| `nana-text` / `nana-ui-css` / `nana-ui-charts` / `nana-ui-input` / `nana-gpu` | Five layer-2 workspace crates (joined by layer-3 `nana-ui-diagram` and layer-4 `nana-window`) that build directly on `core`; typography vocabulary (`LineBreakSpec`, `WritingModeSpec`, etc.) is borrowed from `core` |
 | `nana-ui-runtime` | Builds the retained tree on top of `core`; `NodeStyle` contains `LayoutStyle`, and a theme is compiled through `CompiledTheme` and attached to the world |
 | `nana-ui-css` | The only CSS engine; maps style declarations onto `core`'s `LayoutStyle` (see [internal structure](#internal-structure) below) |
 | `nana-diagnostics` | Provides `event!` / `metric!` / `fault!` static descriptors; `core` is one of the lowest consumers |

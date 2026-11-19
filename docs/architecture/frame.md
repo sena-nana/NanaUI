@@ -2,18 +2,9 @@
 
 一帧的工作是将已经在 `UiWorld` 里的状态变化结算并画上宿主的 Surface。路径始终唯一：应用状态进入 `nana-ui-runtime` 的 `UiWorld`，经 `flush` 抽取为 `nana-ui-scene` 的 `UiScene`，再由 `nana-ui` 的 `SceneWgpuPainter` 录制进宿主的 `FrameContext`（不另开 `Device`，也不回读 CPU）。
 
-在 `run_runtime` 内部，每扇需要重绘的窗口按以下 8 个步骤走完一帧（完整参考见 [框架如何运行](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/how-it-works.md)）：
+在 `run_runtime` 内部，每扇需要重绘的窗口按以下 8 个步骤走完一帧（完整参考见 [框架如何运行](../reference/how-it-works.md)）：
 
-```text
-1. 消化 dispatch_program 消息  → RuntimeProgram::update
-2. prepare_window_frame        → 应用准备好本帧要采样的最新纹理
-3. RuntimeDocument::flush      → 样式、文本整形、布局、命中索引、无障碍与 Scene 抽取
-4. 获取 Surface + 外部资源生产  → 编译 FramePlan，共用同一宿主 encoder（失败整帧丢弃）
-5. SceneWgpuPainter::paint_target → 可见图元按文档顺序录制进目标
-6. queue.submit + present      → 每个目标一次提交并上屏
-7. window_frame_presented      → 此时才可安全释放上一帧退役的纹理
-8. bind_window                 → 按需为新窗口绑定后续内容
-```
+![NanaUI 的一帧 8 步时序](../assets/diagrams/frame-lifecycle.zh-CN.svg)
 
 下面按「消息与变更提交」「纹理准备」「flush 事务」「present 与回收」四个阶段说明关键约束。
 
@@ -25,7 +16,7 @@
 
 ## 2. 纹理准备（`prepare_window_frame`）
 
-`prepare_window_frame` 在 `flush` 之前执行，应用在此处准备好本帧要采样的最新纹理。更换纹理对象或尺寸时只需递增 `HostTexture` 的 `generation`，切勿为了换画面而去销毁或重建 Runtime 节点（详见 [实时画面](https://github.com/sena-nana/NanaUI/blob/main/docs/architecture/gpu.md)）。
+`prepare_window_frame` 在 `flush` 之前执行，应用在此处准备好本帧要采样的最新纹理。更换纹理对象或尺寸时只需递增 `HostTexture` 的 `generation`，切勿为了换画面而去销毁或重建 Runtime 节点（详见 [实时画面](./gpu.md)）。
 
 ::: tip 遮挡与零尺寸窗口的纹理节拍
 当窗口被最小化、遮挡或尺寸为 0 时，只要 `FrameDemand` 到期，宿主仍会调用 `prepare_window_frame`（若尺寸非零，按图离屏生产者仍会在无 Surface 的 `FrameContext` 上编码并立即提交；此处的 `submitted()` 仅代表离屏编码已入队，不代表采样它的 UI 帧已上屏）。但这一拍会跳过 UI `flush`、不获取 Surface、不 `present`，也不调用 `window_frame_presented`。因此**永远不要在 `prepare_window_frame` 里假定后面一定有 `present`；上一帧仍可能被采样的旧纹理必须留到真正的 `window_frame_presented` 之后才能释放**。
