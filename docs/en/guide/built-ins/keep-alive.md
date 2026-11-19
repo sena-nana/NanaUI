@@ -25,7 +25,7 @@ when(editing, || text_input().model(draft))
 
 :::
 
-`<KeepAlive>` wraps one `v-if` / `v-else-if` / `v-else` chain. Apart from `class`, it has no attributes. A hidden branch moves into a hidden `Stack` inside the container: it takes no part in layout, painting, or hit testing, and focus moves away. When the container is destroyed, the kept branches are destroyed with it.
+`<KeepAlive>` wraps one `v-if` / `v-else-if` / `v-else` chain. Apart from `class`, it has no attributes. A hidden branch moves into a parked hidden `Stack` outside the host's child list: it occupies no child slot, takes no part in layout, painting, or hit testing, and focus moves away. When the host is destroyed, the kept branches and parked holder are destroyed with it.
 
 Combined with `<Transition>`, a kept-alive branch plays no leave animation when switched away and plays its enter animation when switched back. See [Transition](https://github.com/sena-nana/NanaUI/blob/main/docs/guide/built-ins/transition.md).
 
@@ -46,11 +46,11 @@ dynamic(tab, |tab| match tab {
 
 The limit exists only in the function style. The template `<KeepAlive>` has no `max`. Wrapping a `v-for` is also an error: list rows are kept by their own keys, not by this chain.
 
-A kept branch's scope is not reclaimed; its nodes sit in that hidden `Stack`. Switching back shows the original nodes.
+A kept branch's scope is not reclaimed; its nodes wait in that parked hidden `Stack`. Switching back splices the original nodes directly into the host's child slot.
 
 `when(…).keep_alive()` keeps at most one branch that is not showing. `v-if` with `v-else` is exactly that one. When the chain also has `v-else-if`, branches that left earlier are dropped and only the most recently hidden one is kept. To keep several pages by key, use `dynamic`.
 
-A class on `<KeepAlive class="panel">` lands on the container wrapping the chain. In the function style, write `.class` after `keep_alive()`.
+A class on `<KeepAlive class="panel">` (or `.class` after `keep_alive()`) materializes a wrapper container for the chain and applies the class there. Without container options it is boxless and adds no extra `gap`.
 
 ## Next steps
 

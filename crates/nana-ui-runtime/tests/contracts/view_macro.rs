@@ -411,15 +411,16 @@ fn a_template_page_adds_and_removes_rows_through_its_handlers() {
         cx.read(Entity::<Text>::from_stable_id(id), |t| t.value.clone())
             .unwrap()
     };
-    let summary = |cx: &AppContext| {
-        let block = parts(cx)[2];
-        text_of(cx, cx.world().node(block).unwrap().children[0])
+    let summary = |cx: &AppContext| text_of(cx, *parts(cx).last().unwrap());
+    let rows_of = |cx: &AppContext| {
+        let all = parts(cx);
+        all[1..all.len() - 1].to_vec()
     };
     assert_eq!(summary(&cx), "空");
     cx.activate_button(add).unwrap();
     cx.activate_button(add).unwrap();
     cx.flush_reactive().unwrap();
-    let rows = cx.world().node(parts(&cx)[1]).unwrap().children.to_vec();
+    let rows = rows_of(&cx);
     assert_eq!(rows.len(), 2);
     assert_eq!(summary(&cx), "共 2 项");
     let first_title = cx.world().node(rows[0]).unwrap().children[0];
@@ -429,7 +430,7 @@ fn a_template_page_adds_and_removes_rows_through_its_handlers() {
         .unwrap();
     cx.activate_button(remove).unwrap();
     cx.flush_reactive().unwrap();
-    let rows_after = cx.world().node(parts(&cx)[1]).unwrap().children.to_vec();
+    let rows_after = rows_of(&cx);
     assert_eq!(rows_after, vec![rows[1]], "the other row kept its node");
     assert_eq!(summary(&cx), "共 1 项");
     assert_eq!(state.get().unwrap().with_untracked(Vec::len), 1);
@@ -844,7 +845,7 @@ mod store_derive {
             .unwrap()
             .stable_id();
         let app = std::cell::Cell::new(None);
-        let view = cx
+        let _view = cx
             .mount_view(parent, || {
                 let state = store(App {
                     todos: vec![
@@ -867,7 +868,6 @@ mod store_derive {
             })
             .unwrap();
         let app = app.get().unwrap();
-        let list = view.roots()[0];
 
         let before = reactive_stats();
         app.heading().set("新标题".into());
@@ -879,7 +879,8 @@ mod store_derive {
         cx.flush_reactive().unwrap();
         let after = reactive_stats();
         assert_eq!(after.effects_run - before.effects_run, 1);
-        let rows = cx.world().node(list).unwrap().children.to_vec();
+        let rows = cx.world().node(parent).unwrap().children.to_vec();
+        assert_eq!(rows.len(), 2);
         let second: Entity<Text> = Entity::from_stable_id(rows[1]);
         assert_eq!(cx.read(second, |text| text.value.clone()).unwrap(), "贰");
         assert_eq!(app.heading().get_untracked(), "新标题");
@@ -960,16 +961,16 @@ mod transition_block {
             })
             .unwrap();
         let column = view.roots()[0];
-        let block = cx.world().node(column).unwrap().children[0];
+        assert_eq!(cx.world().node(column).unwrap().children.len(), 3);
         flag.get().unwrap().set(false);
         cx.flush_reactive().unwrap();
         assert_eq!(
-            cx.world().node(block).unwrap().children.len(),
-            2,
+            cx.world().node(column).unwrap().children.len(),
+            4,
             "the old branch leaves while the new one enters"
         );
         cx.advance_animations(Duration::from_secs(2));
-        assert_eq!(cx.world().node(block).unwrap().children.len(), 1);
+        assert_eq!(cx.world().node(column).unwrap().children.len(), 3);
     }
 }
 
@@ -1001,8 +1002,7 @@ mod suspense_block {
         cx.take_system_work();
         let root = view.roots()[0];
         let children = cx.world().node(root).unwrap().children.to_vec();
-        let fallback = cx.world().node(children[1]).unwrap().children.len();
-        assert_eq!(fallback, 0, "resolved on the first poll");
+        assert_eq!(children.len(), 1, "resolved on the first poll");
     }
 }
 

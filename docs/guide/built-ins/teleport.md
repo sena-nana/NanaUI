@@ -38,17 +38,17 @@ column().gap(8).children((
 
 :::
 
-`to` 可以是 `NodeRef`、节点 id，或选出 `Option<StableNodeId>` 的闭包。它变了，内容跟着搬。值为 `None`，或目标不在树上，内容就留在声明处的锚点里。锚点是一列 `Stack::column(0)`。底层是 `place_assembled`。
+`to` 可以是 `NodeRef`、节点 id，或选出 `Option<StableNodeId>` 的闭包。它变了，内容跟着搬。值为 `None`，或目标不在树上，内容就回到声明处的精确位置。在宿主容器内它默认是无盒片段：传走之后声明处不占任何 `gap` 或空间；如果写了 `.key`、`.class`、`.class_when`、`.css` 等容器选项（或没有宿主父节点），才会在声明处保留一列 `Stack::column(0)` 作为锚点容器。
 
 模板里记下目标用 `ref={layer}`，展开成 `.node_ref(layer)`。`layer` 在挂载之后才有 id。传送发生在这段内容进树的时候。
 
-锚点接受 `.class`、`.class_when` 和 `.css`。模板写在 `<Teleport to={layer} class="fill">` 上，让还没传走的内容撑满高度。目标后来出现，内容再搬过去。
+显式给出 `.class`、`.class_when` 和 `.css`（模板写在 `<Teleport to={layer} class="fill">` 上）会建出锚点容器，让还没传走的内容撑满高度。目标后来出现，内容再搬过去。
 
 内容的作用域归声明处。声明处销毁，当时画在目标下面的内容一起销毁。窗口仍由宿主打开。传送只改这棵树里的父节点。
 
 ## 锚点上的类
 
-`.class`、`.class_when`、`.css` 写在 `teleport(…)` 的返回值上，或写在 `<Teleport>` 标签上。它们装饰内容建在里面的那一列。内容已经挂到目标下面之后，这列锚点可以是空的。
+`.class`、`.class_when`、`.css` 写在 `teleport(…)` 的返回值上，或写在 `<Teleport>` 标签上，会显式建出并装饰内容所在的锚点列；没有这些容器选项或 `.key` 时不会产生额外包装盒。内容已经挂到目标下面之后，显式建出的这列锚点会为空。
 
 `to` 用闭包时，闭包选出的 id 变了就再搬一次。这次求值时目标已经不在树上，内容回到锚点。
 

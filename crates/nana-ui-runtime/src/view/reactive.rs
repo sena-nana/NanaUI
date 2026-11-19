@@ -27,6 +27,18 @@ use crate::StableNodeId;
 
 static NEXT_RUNTIME: AtomicU32 = AtomicU32::new(1);
 static NEXT_CONTEXT: AtomicU64 = AtomicU64::new(1);
+static NEXT_FRAGMENT: AtomicU64 = AtomicU64::new(1);
+
+/// Identity of a reactive control-flow fragment (`when`, `each`, `dynamic`,
+/// `teleport`) inside a view tree.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub(crate) struct FragmentId(u64);
+
+impl FragmentId {
+    pub(crate) fn next() -> Self {
+        Self(NEXT_FRAGMENT.fetch_add(1, Ordering::Relaxed))
+    }
+}
 
 thread_local! {
     static RUNTIME: RefCell<Runtime> = RefCell::new(Runtime::new());
@@ -155,6 +167,8 @@ pub(crate) enum EffectTarget {
     Node(StableNodeId),
     /// Re-run a keyed list or conditional block rooted at a container.
     Structural(StableNodeId),
+    /// Re-run a control-flow fragment tracked without an extra wrapper box.
+    Fragment(FragmentId),
     /// A [`watch_effect`].
     User,
 }

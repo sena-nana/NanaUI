@@ -200,7 +200,7 @@ struct Todo {
 fn a_keyed_list_keeps_row_identity_through_insert_remove_and_reorder() {
     let (mut cx, _, parent) = setup();
     let items = std::cell::Cell::new(None);
-    let view = cx
+    let _view = cx
         .mount_view(parent, || {
             let todos = signal(
                 (1..=3)
@@ -215,7 +215,7 @@ fn a_keyed_list_keeps_row_identity_through_insert_remove_and_reorder() {
         })
         .unwrap();
     let todos = items.get().unwrap();
-    let list = view.roots()[0];
+    let list = parent;
     let initial = children(&cx, list);
     assert_eq!(initial.len(), 3);
 
@@ -252,14 +252,14 @@ fn a_keyed_list_keeps_row_identity_through_insert_remove_and_reorder() {
 fn a_keyed_list_builds_the_first_item_of_a_repeated_key_and_skips_the_rest() {
     let (mut cx, _, parent) = setup();
     let items = std::cell::Cell::new(None);
-    let view = cx
+    let _view = cx
         .mount_view(parent, || {
             let list = signal(vec![(1u32, "a"), (2, "b"), (1, "c")]);
             items.set(Some(list));
             each(list, |item| item.0, |item| text(item.1))
         })
         .unwrap();
-    let list = view.roots()[0];
+    let list = parent;
     let label = |cx: &AppContext, id: StableNodeId| text_of(cx, Entity::from_stable_id(id));
     let built = children(&cx, list);
     assert_eq!(
@@ -288,7 +288,7 @@ fn view_scope_signal(value: &str) -> Signal<String> {
 fn a_row_field_change_does_not_rerun_the_list() {
     let (mut cx, _, parent) = setup();
     let items = std::cell::Cell::new(None);
-    let view = cx
+    let _view = cx
         .mount_view(parent, || {
             let todos = signal(
                 (1..=200)
@@ -309,7 +309,7 @@ fn a_row_field_change_does_not_rerun_the_list() {
     let delta = delta(before);
     assert_eq!(delta.effects_run, 1, "only the row's text binding ran");
     assert_eq!(delta.nodes_patched, 1);
-    let row = children(&cx, view.roots()[0])[57];
+    let row = children(&cx, parent)[57];
     assert_eq!(text_of(&cx, Entity::from_stable_id(row)), "改过");
 }
 
@@ -317,7 +317,7 @@ fn a_row_field_change_does_not_rerun_the_list() {
 fn when_builds_and_drops_its_branch_and_disposes_its_scope() {
     let (mut cx, _, parent) = setup();
     let flag = std::cell::Cell::new(None);
-    let view = cx
+    let _view = cx
         .mount_view(parent, || {
             let open = signal(false);
             flag.set(Some(open));
@@ -329,7 +329,7 @@ fn when_builds_and_drops_its_branch_and_disposes_its_scope() {
         })
         .unwrap();
     let open = flag.get().unwrap();
-    let block = view.roots()[0];
+    let block = parent;
     let closed = children(&cx, block);
     assert_eq!(text_of(&cx, Entity::from_stable_id(closed[0])), "关闭");
     let baseline = reactive_stats();
@@ -617,10 +617,10 @@ fn provided_values_reach_rows_and_branches_built_later() {
     open.set(true);
     cx.flush_reactive().unwrap();
     let root = view.roots()[0];
-    let [list, block] = children(&cx, root)[..] else {
-        panic!("two blocks");
+    let [row1, row2, branch_col] = children(&cx, root)[..] else {
+        panic!("two rows directly in column and the branch column");
     };
-    let texts: Vec<String> = children(&cx, list)
+    let texts: Vec<String> = [row1, row2]
         .into_iter()
         .map(|id| text_of(&cx, Entity::from_stable_id(id)))
         .collect();
@@ -629,7 +629,7 @@ fn provided_values_reach_rows_and_branches_built_later() {
         ["行1 深色", "行2 深色"],
         "a row built later still sees the mount's value"
     );
-    let branch = children(&cx, children(&cx, block)[0])[0];
+    let branch = children(&cx, branch_col)[0];
     assert_eq!(
         text_of(&cx, Entity::from_stable_id(branch)),
         "分支 浅色",
@@ -1102,21 +1102,20 @@ fn task(id: u64) -> Task {
 
 fn mount_board(cx: &mut AppContext, parent: StableNodeId, n: u64) -> (Store<Board>, StableNodeId) {
     let board = std::cell::Cell::new(None);
-    let view = cx
-        .mount_view(parent, || {
-            let state = store(Board {
-                tasks: (1..=n).map(task).collect(),
-            });
-            board.set(Some(state));
-            state.tasks().keyed(|task| task.id).each(|task| {
-                row().gap(4.0).children((
-                    text(task.title()).key("title"),
-                    checkbox("").checked(task.done()).key("done"),
-                ))
-            })
+    cx.mount_view(parent, || {
+        let state = store(Board {
+            tasks: (1..=n).map(task).collect(),
+        });
+        board.set(Some(state));
+        state.tasks().keyed(|task| task.id).each(|task| {
+            row().gap(4.0).children((
+                text(task.title()).key("title"),
+                checkbox("").checked(task.done()).key("done"),
+            ))
         })
-        .unwrap();
-    (board.get().unwrap(), view.roots()[0])
+    })
+    .unwrap();
+    (board.get().unwrap(), parent)
 }
 
 #[test]
@@ -1138,7 +1137,7 @@ fn a_store_field_write_reaches_only_the_binding_that_read_it() {
 fn a_model_bound_to_a_store_path_writes_back_through_it() {
     let (mut cx, _, parent) = setup();
     let board = std::cell::Cell::new(None);
-    let view = cx
+    let _view = cx
         .mount_view(parent, || {
             let state = store(Board {
                 tasks: (1..=3).map(task).collect(),
@@ -1153,7 +1152,7 @@ fn a_model_bound_to_a_store_path_writes_back_through_it() {
         })
         .unwrap();
     let board = board.get().unwrap();
-    let list = view.roots()[0];
+    let list = parent;
     let tasks = board.tasks().keyed(|task| task.id);
 
     let row = children(&cx, list)[1];
@@ -1309,7 +1308,7 @@ fn a_leaving_branch_never_reads_its_own_signals_again() {
     cx.advance_animations(Duration::from_secs(10));
     let shared = signal(0);
     let flag = std::cell::Cell::new(None);
-    let view = cx
+    let _view = cx
         .mount_view(parent, || {
             let open = signal(true);
             flag.set(Some(open));
@@ -1320,7 +1319,7 @@ fn a_leaving_branch_never_reads_its_own_signals_again() {
             .transition(Transition::fade(Duration::from_millis(200)))
         })
         .unwrap();
-    let container = view.roots()[0];
+    let container = parent;
     let label = children(&cx, container)[0];
 
     flag.get().unwrap().set(false);
@@ -1340,7 +1339,7 @@ fn a_transitioned_branch_leaves_before_it_is_despawned_and_the_next_one_enters()
     let start = Duration::from_secs(10);
     cx.advance_animations(start);
     let flag = std::cell::Cell::new(None);
-    let view = cx
+    let _view = cx
         .mount_view(parent, || {
             let open = signal(true);
             flag.set(Some(open));
@@ -1349,7 +1348,7 @@ fn a_transitioned_branch_leaves_before_it_is_despawned_and_the_next_one_enters()
                 .transition(Transition::fade(Duration::from_millis(200)))
         })
         .unwrap();
-    let container = view.roots()[0];
+    let container = parent;
     let panel = children(&cx, container)[0];
     assert_eq!(opacity_at(&cx, panel, start), 1.0, "no enter at mount");
 
@@ -1395,7 +1394,7 @@ fn a_transitioned_list_keeps_removed_rows_in_place_and_slides_the_rest() {
     let start = Duration::from_secs(10);
     cx.advance_animations(start);
     let items = std::cell::Cell::new(None);
-    let view = cx
+    let _view = cx
         .mount_view(parent, || {
             let list = signal(vec![1u32, 2, 3]);
             items.set(Some(list));
@@ -1416,7 +1415,7 @@ fn a_transitioned_list_keeps_removed_rows_in_place_and_slides_the_rest() {
         .unwrap();
     let viewport = LayoutViewport::new(320.0, 240.0);
     cx.layout_document(document, viewport).unwrap();
-    let list = view.roots()[0];
+    let list = parent;
     let rows = children(&cx, list);
     let third_y = cx.world().layout_box(rows[2]).unwrap().y;
 
@@ -1455,7 +1454,7 @@ fn a_row_removed_while_it_enters_plays_its_whole_leave() {
     let start = Duration::from_secs(10);
     cx.advance_animations(start);
     let items = std::cell::Cell::new(None);
-    let view = cx
+    let _view = cx
         .mount_view(parent, || {
             let list = signal(vec![1u32]);
             items.set(Some(list));
@@ -1467,7 +1466,7 @@ fn a_row_removed_while_it_enters_plays_its_whole_leave() {
             .transition(Transition::fade(Duration::from_millis(200)))
         })
         .unwrap();
-    let list = view.roots()[0];
+    let list = parent;
     items.get().unwrap().update(|list| list.push(2));
     cx.flush_reactive().unwrap();
     let entering = children(&cx, list)[1];
@@ -1595,8 +1594,8 @@ fn suspense_shows_its_fallback_until_the_resources_inside_resolve() {
         .unwrap();
     cx.take_system_work();
     let root = view.roots()[0];
-    let [wrapper, block] = children(&cx, root)[..] else {
-        panic!("content wrapper and fallback block");
+    let [wrapper, fallback] = children(&cx, root)[..] else {
+        panic!("content wrapper and fallback directly in suspense column");
     };
     let hidden = |cx: &AppContext| {
         cx.world()
@@ -1604,13 +1603,13 @@ fn suspense_shows_its_fallback_until_the_resources_inside_resolve() {
             .is_some_and(|style| style.layout.hidden)
     };
     assert!(hidden(&cx), "content is built but hidden");
-    assert_eq!(children(&cx, block).len(), 1, "fallback shown");
+    assert_eq!(text_of(&cx, Entity::from_stable_id(fallback)), "加载中");
 
     open.set(true);
     gate.borrow_mut().take().unwrap().wake();
     cx.take_system_work();
     assert!(!hidden(&cx));
-    assert!(children(&cx, block).is_empty(), "fallback gone");
+    assert_eq!(children(&cx, root), vec![wrapper], "fallback gone");
     let content = children(&cx, wrapper)[0];
     assert_eq!(text_of(&cx, Entity::from_stable_id(content)), "Some(42)");
 }
@@ -1632,7 +1631,7 @@ fn a_kept_alive_branch_comes_back_with_its_nodes_and_state() {
         })
         .unwrap();
     let open = handles.get().unwrap();
-    let container = view.roots()[0];
+    let container = parent;
     let draft_node = children(&cx, container)[0];
     let scopes = reactive_stats().scopes;
 
@@ -1640,7 +1639,11 @@ fn a_kept_alive_branch_comes_back_with_its_nodes_and_state() {
     cx.flush_reactive().unwrap();
     assert!(cx.world().contains(draft_node), "kept, not despawned");
     let shown = children(&cx, container);
-    assert_eq!(shown.len(), 2, "the other branch and the hidden holder");
+    assert_eq!(
+        shown.len(),
+        1,
+        "only the other branch; the kept holder is parked"
+    );
     assert!(!shown.contains(&draft_node));
 
     open.set(true);
@@ -1662,7 +1665,7 @@ fn a_kept_alive_branch_comes_back_with_its_nodes_and_state() {
 fn dynamic_keeps_at_most_max_views_alive() {
     let (mut cx, _, parent) = setup();
     let tab = std::cell::Cell::new(None);
-    let view = cx
+    let _view = cx
         .mount_view(parent, || {
             let current = signal(0u32);
             tab.set(Some(current));
@@ -1672,7 +1675,7 @@ fn dynamic_keeps_at_most_max_views_alive() {
         })
         .unwrap();
     let tab = tab.get().unwrap();
-    let container = view.roots()[0];
+    let container = parent;
     let first = children(&cx, container)[0];
     tab.set(1);
     cx.flush_reactive().unwrap();
@@ -1721,9 +1724,7 @@ fn teleported_content_lives_under_the_target_and_dies_with_its_declaration() {
     target.set(false);
     cx.flush_reactive().unwrap();
     assert!(children(&cx, layer).is_empty(), "back in place");
-    let block = children(&cx, root)[1];
-    let anchor = children(&cx, block)[0];
-    assert_eq!(children(&cx, anchor), content);
+    assert_eq!(children(&cx, root), vec![layer, content[0]]);
 
     target.set(true);
     cx.flush_reactive().unwrap();
@@ -1760,8 +1761,8 @@ fn an_error_boundary_shows_its_fallback_while_a_view_inside_failed() {
         .unwrap();
     let input = handle.get().unwrap();
     let root = view.roots()[0];
-    let [content, fallback] = children(&cx, root)[..] else {
-        panic!("content and fallback blocks");
+    let [content] = children(&cx, root)[..] else {
+        panic!("content wrapper without fallback");
     };
     let hidden = |cx: &AppContext| {
         cx.world()
@@ -1769,21 +1770,22 @@ fn an_error_boundary_shows_its_fallback_while_a_view_inside_failed() {
             .is_some_and(|style| style.layout.hidden)
     };
     assert!(!hidden(&cx));
-    assert!(children(&cx, fallback).is_empty());
 
     input.set("abc".into());
     cx.flush_reactive().unwrap();
     assert!(hidden(&cx), "content hidden while the error stands");
-    let shown = children(&cx, fallback);
+    let [_, shown] = children(&cx, root)[..] else {
+        panic!("content wrapper and boxless fallback");
+    };
     assert_eq!(
-        text_of(&cx, Entity::from_stable_id(shown[0])),
+        text_of(&cx, Entity::from_stable_id(shown)),
         "出错：abc 不是数"
     );
 
     input.set("7".into());
     cx.flush_reactive().unwrap();
     assert!(!hidden(&cx), "the failed branch was dropped with its error");
-    assert!(children(&cx, fallback).is_empty());
+    assert_eq!(children(&cx, root), vec![content]);
 }
 
 #[test]
@@ -1839,7 +1841,7 @@ fn a_control_can_be_inspected_and_edited_field_by_field() {
 fn a_store_with_history_undoes_one_handler_at_a_time() {
     let (mut cx, _, parent) = setup();
     let board = std::cell::Cell::new(None);
-    let view = cx
+    let _view = cx
         .mount_view(parent, || {
             let state = store_with_history(
                 Board {
@@ -1855,7 +1857,7 @@ fn a_store_with_history_undoes_one_handler_at_a_time() {
         })
         .unwrap();
     let board = board.get().unwrap();
-    let list = view.roots()[0];
+    let list = parent;
     let tasks = board.tasks().keyed(|task| task.id);
     let title =
         |cx: &AppContext, row: usize| text_of(cx, Entity::from_stable_id(children(cx, list)[row]));
@@ -2188,7 +2190,7 @@ fn reduced_motion_swaps_a_transitioned_branch_without_a_fade() {
     cx.advance_animations(start);
     cx.set_reduced_motion(true);
     let flag = std::cell::Cell::new(None);
-    let view = cx
+    let _view = cx
         .mount_view(parent, || {
             let open = signal(true);
             flag.set(Some(open));
@@ -2197,7 +2199,7 @@ fn reduced_motion_swaps_a_transitioned_branch_without_a_fade() {
                 .transition(Transition::fade(Duration::from_millis(200)))
         })
         .unwrap();
-    let container = view.roots()[0];
+    let container = parent;
     let panel = children(&cx, container)[0];
     flag.get().unwrap().set(false);
     cx.flush_reactive().unwrap();
@@ -2501,14 +2503,8 @@ fn a_section_keeps_its_chrome_and_takes_rows_that_come_later() {
     let nodes = cx.world().len();
 
     let (count, rows) = state.get().unwrap();
-    let list = children(&cx, body);
-    assert_eq!(
-        list.len(),
-        1,
-        "the section body holds the one list it was given"
-    );
-    let first = children(&cx, list[0]);
-    assert_eq!(first.len(), 1);
+    let first = children(&cx, body);
+    assert_eq!(first.len(), 1, "the section body holds the row directly");
     assert_eq!(cx.world().text(first[0]), Some("行 1"));
 
     count.set(2);
@@ -2517,7 +2513,7 @@ fn a_section_keeps_its_chrome_and_takes_rows_that_come_later() {
     assert_eq!(children(&cx, section.stable_id()), vec![header, body]);
     let count_label = children(&cx, header)[1];
     assert_eq!(cx.world().text(count_label), Some("2"));
-    let after = children(&cx, list[0]);
+    let after = children(&cx, body);
     assert_eq!(after.len(), 2);
     assert_eq!(after[0], first[0], "the first row kept its node");
     assert_eq!(
@@ -4284,8 +4280,8 @@ fn a_virtual_list_within_follows_its_ref_to_another_scroll_area() {
     settle(&mut cx, document, viewport);
     let area_a = Entity::<crate::ScrollView>::from_stable_id(a.get_untracked().unwrap());
     let area_b = Entity::<crate::ScrollView>::from_stable_id(b.get_untracked().unwrap());
-    // Teleported, the list keeps its key under the place it is declared.
-    let list = cx.resolve_assembly_path(view.roots()[2], "rows").unwrap();
+    // Teleported, the list is already `view.roots()[2]`.
+    let list = view.roots()[2];
     let first = |cx: &AppContext| texts_under(cx, list).first().cloned();
     cx.scroll_to(area_a, crate::ScrollOffset { x: 0.0, y: 2_000.0 })
         .unwrap();
@@ -5353,8 +5349,7 @@ fn teleported_content_outlives_its_target() {
     assert!(!cx.world().contains(first));
     assert!(cx.world().contains(content[0]), "the content lives on");
     let root = view.roots()[0];
-    let anchor = children(&cx, root)[1];
-    assert_eq!(children(&cx, anchor), content, "back where it was declared");
+    assert_eq!(children(&cx, root), content, "back where it was declared");
 
     open.set(true);
     cx.flush_reactive().unwrap();
@@ -6823,7 +6818,7 @@ fn focused_list_item_moves_muted_descendants_to_focus_text_unless_plated() {
 fn shrinking_store_list_unmounts_rows_before_running_row_computeds_watchers_and_nested_when() {
     let (mut cx, _, parent) = setup();
     let board = std::cell::Cell::new(None);
-    let view = cx
+    let _view = cx
         .mount_view(parent, || {
             let state = store(Board {
                 tasks: (1..=3).map(task).collect(),
@@ -6845,7 +6840,7 @@ fn shrinking_store_list_unmounts_rows_before_running_row_computeds_watchers_and_
         })
         .unwrap();
     let board = board.get().unwrap();
-    let list = view.roots()[0];
+    let list = parent;
     let tasks = board.tasks().keyed(|task| task.id);
 
     tasks.at(&2).done().set(true);
@@ -6946,4 +6941,855 @@ fn store_path_removed_item_panic_reports_caller_location() {
     assert_caller_panic(|| {
         let _ = title.get_untracked();
     });
+}
+
+#[cfg(test)]
+mod issue420_boxless_fragments {
+    use super::*;
+    use nana_ui_core::{DisplaySpec, GridLine, GridPlacement, GridTrack};
+
+    fn text_layout(tag: &'static str, f: impl FnOnce(&mut nana_ui_core::LayoutStyle)) -> El<Text> {
+        let mut t = Text::new(tag);
+        f(std::sync::Arc::make_mut(&mut t.style.layout));
+        widget(t)
+    }
+
+    fn fixed_box(w: f32, h: f32, tag: &'static str) -> El<Text> {
+        text_layout(tag, move |l| {
+            l.width = Some(LengthSpec::Px(w));
+            l.height = Some(LengthSpec::Px(h));
+        })
+    }
+
+    fn boxes_of(cx: &AppContext, ids: &[StableNodeId]) -> Vec<(f32, f32, f32, f32)> {
+        ids.iter()
+            .map(|&id| {
+                let b = cx.world().layout_box(id).unwrap();
+                (b.x, b.y, b.width, b.height)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn ac1_empty_fragments_take_zero_gap_and_zero_space_and_toggle_cleanly() {
+        let (mut cx, document, parent) = setup();
+        let state = std::cell::Cell::new(None);
+        let layer_ref = std::cell::Cell::new(None);
+        let view = cx
+            .mount_view(parent, || {
+                let show = signal(false);
+                let items = signal(Vec::<u32>::new());
+                let dyn_key = signal(0u32);
+                let teleport_on = signal(true);
+                let layer = node_ref();
+                state.set(Some((show, items, dyn_key, teleport_on)));
+                layer_ref.set(Some(layer));
+                let grid = Stack::column(0.0).with_layout(|l| {
+                    l.display = Some(DisplaySpec::Grid);
+                    l.gap = Some(LengthSpec::Px(12.0));
+                    l.grid.columns = Some(vec![GridTrack::Px(50.0), GridTrack::Px(50.0)]);
+                });
+                column().children((
+                    row()
+                        .gap(12.0)
+                        .children((
+                            fixed_box(30.0, 20.0, "r0"),
+                            when(show, || fixed_box(30.0, 20.0, "rw")),
+                            each(
+                                items,
+                                |k| *k,
+                                |k| fixed_box(30.0, 20.0, if k == 1 { "re1" } else { "re2" }),
+                            ),
+                            dynamic(dyn_key, |k| match *k {
+                                0 => ().into_any(),
+                                _ => fixed_box(30.0, 20.0, "rd").into_any(),
+                            }),
+                            teleport(
+                                move || teleport_on.get().then(|| layer.get()).flatten(),
+                                fixed_box(30.0, 20.0, "rt"),
+                            ),
+                            fixed_box(30.0, 20.0, "r1"),
+                        ))
+                        .key("row"),
+                    column()
+                        .gap(12.0)
+                        .children((
+                            fixed_box(30.0, 20.0, "c0"),
+                            when(show, || fixed_box(30.0, 20.0, "cw")),
+                            each(items, |k| *k, |_| fixed_box(30.0, 20.0, "ce")),
+                            fixed_box(30.0, 20.0, "c1"),
+                        ))
+                        .key("col"),
+                    widget(grid)
+                        .children((
+                            fixed_box(50.0, 20.0, "g0"),
+                            when(show, || fixed_box(50.0, 20.0, "gw")),
+                            each(items, |k| *k, |_| fixed_box(50.0, 20.0, "ge")),
+                            fixed_box(50.0, 20.0, "g1"),
+                        ))
+                        .key("grid"),
+                    widget(Stack::column(0.0)).node_ref(layer),
+                ))
+            })
+            .unwrap();
+        let (show, items, dyn_key, teleport_on) = state.get().unwrap();
+        let root = view.roots()[0];
+        let row_id = cx.resolve_assembly_path(root, "row").unwrap();
+        let col_id = cx.resolve_assembly_path(root, "col").unwrap();
+        let grid_id = cx.resolve_assembly_path(root, "grid").unwrap();
+
+        let (mut ref_cx, ref_doc, ref_parent) = setup();
+        let ref_view = ref_cx
+            .mount_view(ref_parent, || {
+                let grid = Stack::column(0.0).with_layout(|l| {
+                    l.display = Some(DisplaySpec::Grid);
+                    l.gap = Some(LengthSpec::Px(12.0));
+                    l.grid.columns = Some(vec![GridTrack::Px(50.0), GridTrack::Px(50.0)]);
+                });
+                column().children((
+                    row()
+                        .gap(12.0)
+                        .children((fixed_box(30.0, 20.0, "r0"), fixed_box(30.0, 20.0, "r1")))
+                        .key("row"),
+                    column()
+                        .gap(12.0)
+                        .children((fixed_box(30.0, 20.0, "c0"), fixed_box(30.0, 20.0, "c1")))
+                        .key("col"),
+                    widget(grid)
+                        .children((fixed_box(50.0, 20.0, "g0"), fixed_box(50.0, 20.0, "g1")))
+                        .key("grid"),
+                ))
+            })
+            .unwrap();
+        let ref_root = ref_view.roots()[0];
+        let ref_row = ref_cx.resolve_assembly_path(ref_root, "row").unwrap();
+        let ref_col = ref_cx.resolve_assembly_path(ref_root, "col").unwrap();
+        let ref_grid = ref_cx.resolve_assembly_path(ref_root, "grid").unwrap();
+
+        let viewport = LayoutViewport::new(400.0, 400.0);
+        cx.layout_document(document, viewport).unwrap();
+        ref_cx.layout_document(ref_doc, viewport).unwrap();
+
+        assert_eq!(children(&cx, row_id).len(), 2);
+        assert_eq!(children(&cx, col_id).len(), 2);
+        assert_eq!(children(&cx, grid_id).len(), 2);
+        assert_eq!(
+            boxes_of(&cx, &children(&cx, row_id)),
+            boxes_of(&ref_cx, &children(&ref_cx, ref_row))
+        );
+        assert_eq!(
+            boxes_of(&cx, &children(&cx, col_id)),
+            boxes_of(&ref_cx, &children(&ref_cx, ref_col))
+        );
+        assert_eq!(
+            boxes_of(&cx, &children(&cx, grid_id)),
+            boxes_of(&ref_cx, &children(&ref_cx, ref_grid))
+        );
+
+        // Toggle everything populated (and recall teleport home), then clear again.
+        show.set(true);
+        items.set(vec![1, 2]);
+        dyn_key.set(1);
+        teleport_on.set(false);
+        cx.flush_reactive().unwrap();
+        let row_texts: Vec<_> = children(&cx, row_id)
+            .into_iter()
+            .filter_map(|id| cx.world().text(id).map(str::to_owned))
+            .collect();
+        assert_eq!(row_texts, ["r0", "rw", "re1", "re2", "rd", "rt", "r1"]);
+
+        show.set(false);
+        items.set(Vec::new());
+        dyn_key.set(0);
+        teleport_on.set(true);
+        cx.flush_reactive().unwrap();
+        cx.layout_document(document, viewport).unwrap();
+        assert_eq!(children(&cx, row_id).len(), 2);
+        assert_eq!(
+            boxes_of(&cx, &children(&cx, row_id)),
+            boxes_of(&ref_cx, &children(&ref_cx, ref_row))
+        );
+        assert_eq!(
+            boxes_of(&cx, &children(&cx, col_id)),
+            boxes_of(&ref_cx, &children(&ref_cx, ref_col))
+        );
+        assert_eq!(
+            boxes_of(&cx, &children(&cx, grid_id)),
+            boxes_of(&ref_cx, &children(&ref_cx, ref_grid))
+        );
+    }
+
+    #[test]
+    fn ac2_children_participate_directly_in_parent_flex_and_grid_allocation() {
+        let (mut cx, document, parent) = setup();
+        let flex_child = |tag: &'static str| {
+            text_layout(tag, |l| {
+                l.height = Some(LengthSpec::Px(30.0));
+                l.flex_grow = Some(1.0);
+                l.flex_shrink = Some(1.0);
+                l.min_width = Some(LengthSpec::Px(0.0));
+            })
+        };
+        let shrink_box = |tag: &'static str| {
+            text_layout(tag, |l| {
+                l.width = Some(LengthSpec::Px(60.0));
+                l.height = Some(LengthSpec::Px(30.0));
+                l.flex_shrink = Some(1.0);
+                l.min_width = Some(LengthSpec::Px(0.0));
+            })
+        };
+        let view = cx
+            .mount_view(parent, move || {
+                let items = signal(vec![1u32, 2]);
+                let grid = Stack::column(10.0).with_layout(|l| {
+                    l.display = Some(DisplaySpec::Grid);
+                    l.width = Some(LengthSpec::Px(210.0));
+                    l.grid.columns = Some(vec![GridTrack::Fr(1.0), GridTrack::Fr(1.0)]);
+                });
+                let grow_row = Stack::row(10.0).with_layout(|l| {
+                    l.width = Some(LengthSpec::Px(340.0));
+                });
+                let shrink_row = Stack::row(10.0).with_layout(|l| {
+                    l.width = Some(LengthSpec::Px(130.0));
+                });
+                column().children((
+                    widget(grow_row)
+                        .children((
+                            flex_child("a"),
+                            when(constant(true), move || flex_child("b")),
+                            each(items, |k| *k, move |_| flex_child("c")),
+                        ))
+                        .key("grow_row"),
+                    widget(shrink_row)
+                        .children((
+                            shrink_box("s0"),
+                            when(constant(true), move || shrink_box("s1")),
+                            shrink_box("s2"),
+                        ))
+                        .key("shrink_row"),
+                    widget(grid)
+                        .children((
+                            when(constant(true), || {
+                                text_layout("span", |l| {
+                                    l.height = Some(LengthSpec::Px(20.0));
+                                    l.grid.placement = GridPlacement {
+                                        column_start: GridLine::Span(2),
+                                        ..GridPlacement::default()
+                                    }
+                                    .into();
+                                })
+                            }),
+                            each(items, |k| *k, |_| fixed_box(100.0, 30.0, "cell")),
+                        ))
+                        .key("grid"),
+                ))
+            })
+            .unwrap();
+        let viewport = LayoutViewport::new(400.0, 400.0);
+        cx.layout_document(document, viewport).unwrap();
+        let root = view.roots()[0];
+
+        let grow_row = cx.resolve_assembly_path(root, "grow_row").unwrap();
+        let grow_boxes = boxes_of(&cx, &children(&cx, grow_row));
+        assert_eq!(grow_boxes.len(), 4);
+        assert_eq!(
+            grow_boxes,
+            vec![
+                (0.0, 0.0, 77.5, 30.0),
+                (87.5, 0.0, 77.5, 30.0),
+                (175.0, 0.0, 77.5, 30.0),
+                (262.5, 0.0, 77.5, 30.0),
+            ]
+        );
+
+        let shrink_row = cx.resolve_assembly_path(root, "shrink_row").unwrap();
+        let shrink_boxes = boxes_of(&cx, &children(&cx, shrink_row));
+        assert_eq!(shrink_boxes.len(), 3);
+        // 130px total - 2*10px gaps = 110px / 3 -> each ~36.6667px directly shrunk in parent row.
+        assert!((shrink_boxes[1].2 - shrink_boxes[0].2).abs() < 0.5);
+        assert!(shrink_boxes[1].2 < 40.0);
+        assert!(shrink_boxes[1].0 > shrink_boxes[0].0 && shrink_boxes[2].0 > shrink_boxes[1].0);
+
+        let grid_id = cx.resolve_assembly_path(root, "grid").unwrap();
+        let grid_origin = cx.world().layout_box(grid_id).unwrap();
+        let rel_grid: Vec<_> = boxes_of(&cx, &children(&cx, grid_id))
+            .into_iter()
+            .map(|(x, y, w, h)| (x - grid_origin.x, y - grid_origin.y, w, h))
+            .collect();
+        assert_eq!(rel_grid.len(), 3);
+        assert_eq!(rel_grid[0], (0.0, 0.0, 210.0, 20.0));
+        assert_eq!(rel_grid[1], (0.0, 30.0, 100.0, 30.0));
+        assert_eq!(rel_grid[2], (110.0, 30.0, 100.0, 30.0));
+    }
+
+    #[test]
+    fn ac3_composites_penetrate_boxless_control_flow() {
+        let (mut cx, document, parent) = setup();
+        let controls = std::cell::Cell::new(None);
+        let view = cx
+            .mount_view(parent, || {
+                let show_lead = signal(false);
+                let items = signal(vec![1u32, 2]);
+                let show_menu_extra = signal(false);
+                let show_panel = signal(false);
+                let show_li = signal(false);
+                let seg_choice = signal(0u32);
+                controls.set(Some((
+                    show_lead,
+                    items,
+                    show_menu_extra,
+                    show_panel,
+                    show_li,
+                    seg_choice,
+                )));
+                let dock_root = crate::DockNode::split(
+                    crate::DockAxis::Horizontal,
+                    0.5,
+                    crate::DockNode::item("fixed", None),
+                    crate::DockNode::item("dyn", None),
+                );
+                #[cfg(feature = "controls")]
+                let reorder =
+                    crate::ReorderList::new(Vec::<crate::ReorderItem>::new()).live_rows(true);
+                column().children((
+                    widget(crate::SettingsGroup::new())
+                        .children((
+                            when(show_lead, || settings_row("lead")),
+                            each(items, |i| *i, |i| settings_row(format!("s{i}"))),
+                        ))
+                        .key("settings"),
+                    widget(crate::SidebarSection::new("Section"))
+                        .children((
+                            text("sb_before"),
+                            when(show_lead, move || {
+                                each(items, |i| *i, |i| text(format!("sb_{i}")))
+                            }),
+                            text("sb_after"),
+                        ))
+                        .key("sidebar"),
+                    segmented()
+                        .children((
+                            when(show_lead, || segmented_option("opt0")),
+                            each(
+                                items,
+                                |i| *i,
+                                move |i| {
+                                    segmented_option(format!("opt{i}"))
+                                        .selected(move || seg_choice.get() == i)
+                                },
+                            ),
+                            dynamic(seg_choice, |choice| {
+                                if *choice == 0 {
+                                    segmented_option("dyn_a")
+                                } else {
+                                    segmented_option("dyn_b")
+                                }
+                            }),
+                        ))
+                        .key("seg"),
+                    action_menu("Actions")
+                        .open(true)
+                        .children((
+                            action_menu_item("m0"),
+                            when(show_menu_extra, || action_menu_item("m_dyn")),
+                            each(items, |i| *i, |i| action_menu_item(format!("m_{i}"))),
+                        ))
+                        .key("menu"),
+                    list_item("Item")
+                        .leading(text("lead_slot"))
+                        .trailing(text("trail_slot"))
+                        .children((text("li_static"), when(show_li, || text("li_dyn"))))
+                        .key("list_item"),
+                    widget(crate::Dock::new(dock_root))
+                        .children((
+                            text("fixed content").key("fixed"),
+                            when(show_panel, || text("dyn content").key("dyn")),
+                        ))
+                        .key("dock"),
+                    {
+                        #[cfg(feature = "controls")]
+                        {
+                            widget(reorder)
+                                .children(each(items, |i| *i, |i| text(format!("rl_{i}"))))
+                                .key("reorder")
+                                .into_any()
+                        }
+                        #[cfg(not(feature = "controls"))]
+                        {
+                            ().into_any()
+                        }
+                    },
+                ))
+            })
+            .unwrap();
+        let (show_lead, items, show_menu_extra, show_panel, show_li, _seg_choice) =
+            controls.get().unwrap();
+        let root = view.roots()[0];
+
+        // SettingsGroup edges & zero wrapper children.
+        let settings_id = cx.resolve_assembly_path(root, "settings").unwrap();
+        let row_edges = |cx: &AppContext| -> Vec<(String, bool, bool)> {
+            children(cx, settings_id)
+                .into_iter()
+                .filter_map(|id| {
+                    cx.read(Entity::<crate::SettingsRow>::from_stable_id(id), |r| {
+                        (r.label.to_string(), r.first_in_group, r.last_in_group)
+                    })
+                    .ok()
+                })
+                .collect()
+        };
+        assert_eq!(
+            row_edges(&cx),
+            vec![("s1".into(), true, false), ("s2".into(), false, true)]
+        );
+        assert_eq!(children(&cx, settings_id).len(), 2);
+
+        // SidebarSection penetrates retargeted fragments into body with anchors intact.
+        let sb_id = cx.resolve_assembly_path(root, "sidebar").unwrap();
+        let sb_body = cx
+            .read(
+                Entity::<crate::SidebarSection>::from_stable_id(sb_id),
+                |s| s.body.unwrap(),
+            )
+            .unwrap();
+        let texts_in = |cx: &AppContext, parent: StableNodeId| -> Vec<String> {
+            children(cx, parent)
+                .into_iter()
+                .filter_map(|id| cx.world().text(id).map(str::to_owned))
+                .collect()
+        };
+        assert_eq!(texts_in(&cx, sb_body), ["sb_before", "sb_after"]);
+
+        // SegmentedControl sees dynamic options and boxed `.key("grp")` children.
+        let seg_id = cx.resolve_assembly_path(root, "seg").unwrap();
+        let seg_labels = |cx: &AppContext| -> Vec<String> {
+            let ids = cx
+                .read(
+                    Entity::<crate::SegmentedControl>::from_stable_id(seg_id),
+                    |s| s.options.clone(),
+                )
+                .unwrap();
+            ids.into_iter()
+                .map(|id| {
+                    cx.read(Entity::<crate::SegmentedOption>::from_stable_id(id), |o| {
+                        o.label.to_string()
+                    })
+                    .unwrap()
+                })
+                .collect()
+        };
+        assert_eq!(seg_labels(&cx), ["opt1", "opt2", "dyn_a"]);
+
+        // ActionMenu receives items directly as children.
+        let menu_id = cx.resolve_assembly_path(root, "menu").unwrap();
+        assert_eq!(children(&cx, menu_id).len(), 3);
+
+        // Dock initially has "fixed" bound and "dyn" unbound.
+        let dock_id = cx.resolve_assembly_path(root, "dock").unwrap();
+        let dock_bound = |cx: &AppContext| -> (bool, bool) {
+            cx.read(Entity::<crate::Dock>::from_stable_id(dock_id), |d| {
+                let crate::DockNode::Split { first, second, .. } = &d.root else {
+                    panic!("expected DockNode::Split");
+                };
+                let fixed_ok = matches!(
+                    first.as_ref(),
+                    crate::DockNode::Item {
+                        content: Some(_),
+                        ..
+                    }
+                );
+                let dyn_ok = matches!(
+                    second.as_ref(),
+                    crate::DockNode::Item {
+                        content: Some(_),
+                        ..
+                    }
+                );
+                (fixed_ok, dyn_ok)
+            })
+            .unwrap()
+        };
+        assert_eq!(dock_bound(&cx), (true, false));
+
+        #[cfg(feature = "controls")]
+        {
+            let reorder_id = cx.resolve_assembly_path(root, "reorder").unwrap();
+            assert_eq!(texts_in(&cx, reorder_id), ["rl_1", "rl_2"]);
+        }
+
+        // ListItem initial children contain leading + copy + li_static + trailing.
+        let li_id = cx.resolve_assembly_path(root, "list_item").unwrap();
+        assert_eq!(
+            texts_in(&cx, li_id),
+            ["lead_slot", "li_static", "trail_slot"]
+        );
+
+        // Mutate every composite's fragment simultaneously and re-verify!
+        show_lead.set(true);
+        items.set(vec![2, 3]);
+        show_menu_extra.set(true);
+        show_panel.set(true);
+        show_li.set(true);
+        cx.flush_reactive().unwrap();
+        cx.layout_document(document, LayoutViewport::new(500.0, 500.0))
+            .unwrap();
+
+        assert_eq!(
+            row_edges(&cx),
+            vec![
+                ("lead".into(), true, false),
+                ("s2".into(), false, false),
+                ("s3".into(), false, true),
+            ]
+        );
+        assert_eq!(
+            texts_in(&cx, sb_body),
+            ["sb_before", "sb_2", "sb_3", "sb_after"]
+        );
+        assert_eq!(seg_labels(&cx), ["opt0", "opt2", "opt3", "dyn_a"]);
+        assert_eq!(children(&cx, menu_id).len(), 4);
+        assert_eq!(
+            texts_in(&cx, li_id),
+            ["lead_slot", "li_static", "li_dyn", "trail_slot"]
+        );
+        assert_eq!(dock_bound(&cx), (true, true));
+        #[cfg(feature = "controls")]
+        {
+            let reorder_id = cx.resolve_assembly_path(root, "reorder").unwrap();
+            assert_eq!(texts_in(&cx, reorder_id), ["rl_2", "rl_3"]);
+        }
+
+        // Turning off Dock's dynamic panel clears its stale node id from DockNode!
+        show_panel.set(false);
+        cx.flush_reactive().unwrap();
+        assert_eq!(dock_bound(&cx), (true, false));
+    }
+
+    #[test]
+    fn ac4_incremental_layout_hit_test_and_a11y_match_cold_build() {
+        let (mut cx, document, parent) = setup();
+        let handles = std::cell::Cell::new(None);
+        let fixed_button = |label: &'static str| {
+            let mut b = crate::Button::new(label);
+            std::sync::Arc::make_mut(&mut b.style.layout).height = Some(LengthSpec::Px(24.0));
+            widget(b)
+        };
+        let build_scene = move |show: Signal<bool>, list: Signal<Vec<(u32, bool)>>| {
+            column().gap(6.0).children((
+                fixed_button("head"),
+                when(show, move || {
+                    each(
+                        list,
+                        |item| *item,
+                        move |item| {
+                            let label = if item.1 { "leaf_on" } else { "leaf_off" };
+                            when(constant(item.1), move || fixed_button(label))
+                                .otherwise(move || fixed_box(100.0, 18.0, label))
+                        },
+                    )
+                }),
+                fixed_button("tail"),
+            ))
+        };
+        let _inc_view = cx
+            .mount_view(parent, || {
+                let show = signal(false);
+                let list = signal(vec![(1u32, true), (2, false)]);
+                handles.set(Some((show, list)));
+                build_scene(show, list)
+            })
+            .unwrap();
+        let (show, list) = handles.get().unwrap();
+        let viewport = LayoutViewport::new(320.0, 320.0);
+        cx.layout_document(document, viewport).unwrap();
+
+        show.set(true);
+        cx.flush_reactive().unwrap();
+        list.set(vec![(3u32, false), (1, true), (2, false)]);
+        cx.flush_reactive().unwrap();
+        list.set(vec![(2u32, false), (3, true)]);
+        cx.flush_reactive().unwrap();
+        cx.layout_document(document, viewport).unwrap();
+
+        let (mut cold_cx, cold_doc, cold_parent) = setup();
+        let _cold_view = cold_cx
+            .mount_view(cold_parent, || {
+                build_scene(signal(true), signal(vec![(2u32, false), (3, true)]))
+            })
+            .unwrap();
+        cold_cx.layout_document(cold_doc, viewport).unwrap();
+
+        let snapshot = |ctx: &AppContext, doc: DocumentId| {
+            ctx.world()
+                .document_order(doc)
+                .into_iter()
+                .map(|id| {
+                    let node = ctx.world().node(id).unwrap();
+                    let lb = ctx.world().layout_box(id).unwrap();
+                    (
+                        node.kind,
+                        ctx.world().text(id).map(str::to_owned),
+                        (lb.x, lb.y, lb.width, lb.height),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let inc_nodes = snapshot(&cx, document);
+        let cold_nodes = snapshot(&cold_cx, cold_doc);
+        assert_eq!(inc_nodes, cold_nodes);
+
+        // Hit-test centers match across both trees.
+        for (&(_, _, (x, y, w, h)), &(_, _, (cx0, cy0, cw, ch))) in
+            inc_nodes.iter().zip(&cold_nodes)
+        {
+            if w > 4.0 && h > 4.0 {
+                let inc_hit = cx
+                    .world()
+                    .hit_test(document, x + w * 0.5, y + h * 0.5)
+                    .and_then(|id| cx.world().text(id).map(str::to_owned));
+                let cold_hit = cold_cx
+                    .world()
+                    .hit_test(cold_doc, cx0 + cw * 0.5, cy0 + ch * 0.5)
+                    .and_then(|id| cold_cx.world().text(id).map(str::to_owned));
+                assert_eq!(inc_hit, cold_hit);
+            }
+        }
+
+        // Accessibility tree roles & labels match cold tree sequence.
+        let a11y_seq = |ctx: &AppContext, doc: DocumentId| {
+            ctx.world()
+                .project_accessibility(doc)
+                .into_iter()
+                .map(|n| (n.role, n.label.map(|l| l.to_string())))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(a11y_seq(&cx, document), a11y_seq(&cold_cx, cold_doc));
+    }
+
+    #[test]
+    fn edge_cases_nested_keep_alive_teleport_mount_before_boxed_and_leaks() {
+        let (mut cx, document, parent) = setup();
+        let baseline = reactive_stats();
+
+        // 1. Sibling fragments + nested `when -> each -> when` without auto-key `#v0` collisions,
+        // KeepAlive with nested signal updates while stashed, and Teleport rescue on target despawn.
+        let handles = std::cell::Cell::new(None);
+        let view = cx
+            .mount_view(parent, || {
+                let a = signal(false);
+                let items = signal(vec![1u32, 2]);
+                let b = signal(true);
+                let kept_text = signal(String::from("kept"));
+                let layer_open = signal(true);
+                let layer_ref = node_ref();
+                let tele_items = signal(vec![1u32]);
+                handles.set(Some((
+                    a, items, b, kept_text, layer_open, layer_ref, tele_items,
+                )));
+                column().children((
+                    when(layer_open, move || {
+                        widget(Stack::column(0.0)).node_ref(layer_ref).key("layer")
+                    }),
+                    column()
+                        .children((
+                            text("s0").key("s0"),
+                            when(a, || text("f0")),
+                            text("s1"),
+                            each(items, |k| *k, |k| text(format!("e{k}"))),
+                            text("s2"),
+                            when(b, move || {
+                                let show_inner = signal(true);
+                                when(show_inner, move || text(kept_text).key("kept_label"))
+                            })
+                            .keep_alive(),
+                            teleport(
+                                move || layer_ref.get(),
+                                each(tele_items, |k| *k, |k| text(format!("t{k}"))),
+                            ),
+                            text("s3"),
+                        ))
+                        .key("host"),
+                ))
+            })
+            .unwrap();
+        let (a, items, b, kept_text, layer_open, layer_ref, tele_items) = handles.get().unwrap();
+        let root = view.roots()[0];
+        let col = cx.resolve_assembly_path(root, "host").unwrap();
+        let texts_in = |cx: &AppContext, node: StableNodeId| -> Vec<String> {
+            children(cx, node)
+                .into_iter()
+                .filter_map(|id| cx.world().text(id).map(str::to_owned))
+                .collect()
+        };
+        let layer1 = layer_ref.get_untracked().unwrap();
+        assert_eq!(
+            texts_in(&cx, col),
+            ["s0", "s1", "e1", "e2", "s2", "kept", "s3"]
+        );
+        assert_eq!(texts_in(&cx, layer1), ["t1"]);
+
+        // Dynamic update inside Teleport target + stash KeepAlive branch + update signal while stashed.
+        tele_items.set(vec![1, 2]);
+        a.set(true);
+        items.set(vec![2, 1]);
+        b.set(false);
+        cx.flush_reactive().unwrap();
+        assert_eq!(texts_in(&cx, layer1), ["t1", "t2"]);
+        assert_eq!(
+            texts_in(&cx, col),
+            ["s0", "f0", "s1", "e2", "e1", "s2", "s3"]
+        );
+        kept_text.set("kept_updated".into());
+        cx.flush_reactive().unwrap();
+
+        // Despawn Teleport target while host lives -> rescues into exact slot between `s2` and `s3`!
+        layer_open.set(false);
+        b.set(true);
+        cx.flush_reactive().unwrap();
+        assert_eq!(
+            texts_in(&cx, col),
+            [
+                "s0",
+                "f0",
+                "s1",
+                "e2",
+                "e1",
+                "s2",
+                "kept_updated",
+                "t1",
+                "t2",
+                "s3"
+            ]
+        );
+
+        // 2. `mount_view_before` with boxless `when` between existing children (`before` = `s1`).
+        let s1 = children(&cx, col)[2];
+        let before_cell = std::cell::Cell::new(None);
+        let mounted_before = cx
+            .mount_view_before(col, s1, || {
+                let before_flag = signal(false);
+                before_cell.set(Some(before_flag));
+                when(before_flag, || text("inserted_before"))
+            })
+            .unwrap();
+        before_cell.get().unwrap().set(true);
+        cx.flush_reactive().unwrap();
+        assert_eq!(
+            texts_in(&cx, col),
+            [
+                "s0",
+                "f0",
+                "inserted_before",
+                "s1",
+                "e2",
+                "e1",
+                "s2",
+                "kept_updated",
+                "t1",
+                "t2",
+                "s3"
+            ]
+        );
+        mounted_before.unmount(&mut cx).unwrap();
+        assert_eq!(
+            texts_in(&cx, col),
+            [
+                "s0",
+                "f0",
+                "s1",
+                "e2",
+                "e1",
+                "s2",
+                "kept_updated",
+                "t1",
+                "t2",
+                "s3"
+            ]
+        );
+
+        // Unmount outer view and confirm parked KeepAlive holder & teleported scopes leak nothing.
+        view.unmount(&mut cx).unwrap();
+        let after = reactive_stats();
+        assert_eq!(
+            (after.signals, after.effects, after.scopes),
+            (baseline.signals, baseline.effects, baseline.scopes)
+        );
+
+        // 3. Explicit boxed options materialize a structural `Stack`, and `mount_view_root`
+        // materializes a single wrapper root.
+        let root_view = cx
+            .mount_view_root(document, || {
+                let items_boxed = signal(vec![1u32]);
+                column().children((
+                    each(items_boxed, |k| *k, |_| text("gap")).gap(8.0),
+                    each(items_boxed, |k| *k, |_| text("row")).horizontal(8.0),
+                    when(constant(true), || text("grow")).grow(),
+                    when(constant(true), || text("keyed")).key("k"),
+                    teleport(constant(None), text("tele_keyed")).key("t"),
+                ))
+            })
+            .unwrap();
+        let kids = children(&cx, root_view.roots()[0]);
+        assert_eq!(kids.len(), 5);
+        for kid in kids {
+            assert!(
+                cx.read(Entity::<Stack>::from_stable_id(kid), |s| s.is_structural())
+                    .unwrap()
+            );
+        }
+        root_view.unmount(&mut cx).unwrap();
+
+        let top_when = cx
+            .mount_view_root(document, || when(constant(true), || text("root_when")))
+            .unwrap();
+        assert_eq!(top_when.roots().len(), 1);
+        assert!(
+            cx.read(Entity::<Stack>::from_stable_id(top_when.roots()[0]), |s| {
+                s.is_structural()
+            })
+            .unwrap()
+        );
+        top_when.unmount(&mut cx).unwrap();
+
+        // 4. Despawning declaration host while KeepAlive is stashed & Teleport is placed
+        // cleans up external nodes and leaves zero reactive leaks.
+        let target_layer = cx
+            .create_component(document, Stack::column(0.0))
+            .unwrap()
+            .stable_id();
+        let decl_host = cx
+            .create_component(document, Stack::column(0.0))
+            .unwrap()
+            .stable_id();
+        let ka_flag = std::cell::Cell::new(None);
+        cx.mount_view(decl_host, || {
+            let open = signal(true);
+            ka_flag.set(Some(open));
+            (
+                when(open, || {
+                    let s = signal(1u32);
+                    text!("ka {s}")
+                })
+                .keep_alive(),
+                teleport(constant(Some(target_layer)), text("in_target")),
+            )
+        })
+        .unwrap();
+        assert_eq!(children(&cx, target_layer).len(), 1);
+        let tele_node = children(&cx, target_layer)[0];
+        ka_flag.get().unwrap().set(false);
+        cx.flush_reactive().unwrap();
+        let mut despawn = crate::MutationQueue::new();
+        despawn.despawn_subtree(decl_host);
+        cx.commit_mutations(despawn).unwrap();
+        assert!(!cx.world().contains(tele_node));
+        assert!(children(&cx, target_layer).is_empty());
+
+        let clean = reactive_stats();
+        assert_eq!(
+            (clean.signals, clean.effects, clean.scopes),
+            (baseline.signals, baseline.effects, baseline.scopes)
+        );
+    }
 }

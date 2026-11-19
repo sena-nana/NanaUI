@@ -237,6 +237,10 @@ impl<'a> UiBuilder<'a> {
     /// Key `root`, a top-level node of this detached build, under `parent`,
     /// the existing node it will be placed in: what [`Self::child`] records
     /// for a node built under its parent. `parent`'s other keys stay.
+    pub(crate) fn at_root_level(&self) -> bool {
+        self.stack.len() == 1
+    }
+
     pub(crate) fn key_parked_root(
         &mut self,
         parent: StableNodeId,

@@ -589,7 +589,7 @@ const INSERT_BESIDES: usize = 1024;
 /// through `looked` children than as an insert each. Two rows exchanged
 /// across a long list are two inserts; a block turned round, a list sorted
 /// or rows filled in between others are one reorder.
-fn reorder_is_cheaper(moves: usize, list: usize, looked: usize) -> bool {
+pub(crate) fn reorder_is_cheaper(moves: usize, list: usize, looked: usize) -> bool {
     moves >= 2
         && moves.saturating_mul(list.saturating_add(INSERT_BESIDES))
             >= looked.saturating_mul(REORDER_LOOKS)

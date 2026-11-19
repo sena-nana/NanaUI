@@ -135,6 +135,37 @@ impl DockNode {
         }
     }
 
+    /// Unbind any panel content node that is no longer alive in the world.
+    pub(crate) fn clear_missing_content(
+        &mut self,
+        contains: &impl Fn(StableNodeId) -> bool,
+    ) -> bool {
+        match self {
+            Self::Item { content, .. } => {
+                if content.is_some_and(|id| !contains(id)) {
+                    *content = None;
+                    return true;
+                }
+                false
+            }
+            Self::Tabs { contents, .. } => {
+                let mut changed = false;
+                for (_, slot) in contents {
+                    if slot.is_some_and(|id| !contains(id)) {
+                        *slot = None;
+                        changed = true;
+                    }
+                }
+                changed
+            }
+            Self::Split { first, second, .. } => {
+                let a = first.clear_missing_content(contains);
+                let b = second.clear_missing_content(contains);
+                a || b
+            }
+        }
+    }
+
     pub fn flatten(&self) -> Vec<Arc<str>> {
         let mut ids = Vec::new();
         collect_ids(self, &mut ids);
@@ -2514,7 +2545,7 @@ impl AppContext {
     /// [`Self::assemble_dock`]. A child whose key names no item is parked.
     pub fn assemble_dock_panels(&mut self, dock: Entity<Dock>) -> Result<bool, FrameworkError> {
         let mut root = self.read(dock, |dock| dock.root.clone())?;
-        let mut bound = false;
+        let mut bound = root.clear_missing_content(&|id| self.world().contains(id));
         for id in root.flatten() {
             if let Some(content) = self
                 .assembled_child(dock.stable_id(), &id)

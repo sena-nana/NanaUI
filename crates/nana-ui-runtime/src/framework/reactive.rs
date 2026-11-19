@@ -2,8 +2,11 @@
 //! binding flush, and disposal with the nodes that own reactive state.
 
 use super::*;
-use crate::view::reactive::{self as rx, EffectKey, EffectTarget, ScopeKey};
-use crate::view::{Mount, NodePatch, Refs, StructuralBinding, ViewBuilder, ViewParts, ViewState};
+use crate::view::reactive::{self as rx, EffectKey, EffectTarget, FragmentId, ScopeKey};
+use crate::view::{
+    FragmentBinding, Mount, NodePatch, Refs, SlotItem, StructuralBinding, ViewBuilder,
+    ViewParts, ViewState,
+};
 use crate::{AnimatableProperty, AnimationFillMode, AnimationId, Easing, MotionValue};
 
 /// Rounds a flush runs before it gives up on effects that keep re-queueing
@@ -21,10 +24,39 @@ struct StructuralEntry {
     binding: Box<dyn StructuralBinding>,
 }
 
+struct FragmentEntry {
+    host: StableNodeId,
+    parent: Option<FragmentId>,
+    boxed: bool,
+    effect: EffectKey,
+    items: Vec<SlotItem>,
+    leaving: Vec<StableNodeId>,
+    mount_scope: Option<ScopeKey>,
+    binding: Option<Box<dyn FragmentBinding>>,
+}
+
+struct Leaving {
+    animation: AnimationId,
+    moves: Option<(Duration, Easing)>,
+}
+
+struct PendingFlip {
+    node: StableNodeId,
+    first: nana_ui_core::FlipRect,
+    duration: Duration,
+    easing: Easing,
+}
+
 pub(crate) struct ReactiveHost {
     tag: u64,
     nodes: HashMap<StableNodeId, NodeEntry, crate::BuildIdHasher>,
     structural: HashMap<StableNodeId, StructuralEntry, crate::BuildIdHasher>,
+    fragments: HashMap<FragmentId, FragmentEntry>,
+    host_slots: HashMap<StableNodeId, Vec<SlotItem>, crate::BuildIdHasher>,
+    /// Fragments currently holding live nodes outside their declaration `host`
+    /// (KeepAlive holder or active Teleport target), checked in O(1) before
+    /// despawn commits.
+    out_of_host_fragments: HashSet<FragmentId>,
     anchors: HashMap<StableNodeId, ScopeKey, crate::BuildIdHasher>,
     queue: Vec<(EffectKey, EffectTarget)>,
     patches: Vec<(StableNodeId, EffectKey)>,
@@ -44,24 +76,15 @@ pub(crate) struct ReactiveHost {
     settings_rows: Vec<StableNodeId>,
 }
 
-struct Leaving {
-    animation: AnimationId,
-    moves: Option<(Duration, Easing)>,
-}
-
-struct PendingFlip {
-    node: StableNodeId,
-    first: nana_ui_core::FlipRect,
-    duration: Duration,
-    easing: Easing,
-}
-
 impl Default for ReactiveHost {
     fn default() -> Self {
         Self {
             tag: rx::next_context_tag(),
             nodes: HashMap::default(),
             structural: HashMap::default(),
+            fragments: HashMap::default(),
+            host_slots: HashMap::default(),
+            out_of_host_fragments: HashSet::default(),
             anchors: HashMap::default(),
             queue: Vec::new(),
             patches: Vec::new(),
@@ -82,8 +105,18 @@ impl Drop for ReactiveHost {
             .values()
             .map(|entry| entry.effect)
             .chain(self.structural.values().map(|entry| entry.effect))
+            .chain(self.fragments.values().map(|entry| entry.effect))
             .collect();
-        let scopes = self.anchors.values().copied().collect();
+        let scopes = self
+            .anchors
+            .values()
+            .copied()
+            .chain(
+                self.fragments
+                    .values()
+                    .filter_map(|entry| entry.mount_scope),
+            )
+            .collect();
         rx::release_on_drop(effects, scopes);
     }
 }
@@ -93,6 +126,8 @@ impl Drop for ReactiveHost {
 #[derive(Debug, Clone)]
 pub struct MountedView {
     roots: Vec<StableNodeId>,
+    slots: Vec<SlotItem>,
+    host: Option<StableNodeId>,
     scope: ScopeKey,
 }
 
@@ -110,16 +145,30 @@ impl MountedView {
     /// Dispose every signal and effect the view created and despawn it.
     pub fn unmount(self, cx: &mut AppContext) -> Result<(), FrameworkError> {
         rx::dispose_scope(self.scope);
+        let has_fragments = self
+            .slots
+            .iter()
+            .any(|item| matches!(item, SlotItem::Fragment(_)));
+        let mut visible = Vec::new();
+        let mut immediate = Vec::new();
+        cx.teardown_slot_items(&self.slots, &mut visible, &mut immediate);
         let mut mutations = MutationQueue::new();
-        for root in self.roots {
-            if cx.world.contains(root) {
-                mutations.despawn_subtree(root);
+        let mut seen = crate::NodeSet::default();
+        for id in visible.into_iter().chain(immediate).chain(self.roots) {
+            if seen.insert(id) && cx.world.contains(id) {
+                mutations.despawn_subtree(id);
             }
         }
-        if mutations.is_empty() {
-            return Ok(());
+        if !mutations.is_empty() {
+            cx.commit_mutations(mutations)?;
         }
-        cx.commit_mutations(mutations).map(|_| ())
+        if has_fragments
+            && let Some(host) = self.host
+            && cx.world.contains(host)
+        {
+            cx.notify_host_slot_assembler(host)?;
+        }
+        Ok(())
     }
 }
 
@@ -244,13 +293,13 @@ impl AppContext {
         let scope = rx::create_scope(rx::current_scope());
         let mut refs = None;
         let build = |ui: &mut UiBuilder<'_>| {
-            let mut st = ViewState::new(tag);
-            let roots = rx::with_scope(scope, || {
+            let mut st = ViewState::new_in(tag, parent, None);
+            let (roots, slots) = rx::with_scope(scope, || {
                 let (view, made) = view().split();
                 refs = Some(made);
-                ViewBuilder { ui, st: &mut st }.build_collect(view)
+                ViewBuilder { ui, st: &mut st }.build_collect_slots(view)
             });
-            (roots, st.parts)
+            ((roots, slots), st.parts)
         };
         // Under a parent the roots are inserted unkeyed afterwards, so the
         // parent's own keyed children are not reassembled.
@@ -259,19 +308,33 @@ impl AppContext {
         } else {
             self.build(document, build)
         };
-        let (roots, parts) = match built {
+        let ((roots, slots), parts) = match built {
             Ok(built) => built,
             Err(error) => {
                 rx::dispose_scope(scope);
                 return Err(error);
             }
         };
+        let has_top_fragments = slots
+            .iter()
+            .any(|item| matches!(item, SlotItem::Fragment(_)));
+        let seed_slots = parent
+            .filter(|p| has_top_fragments || self.reactive.host_slots.contains_key(p))
+            .filter(|p| !self.reactive.host_slots.contains_key(p))
+            .map(|p| {
+                self.world
+                    .node(p)
+                    .map(|node| node.children.to_vec())
+                    .unwrap_or_default()
+            });
         if let Some(parent) = parent {
             let mut insert = MutationQueue::new();
             for root in &roots {
                 insert.insert(parent, *root, before);
             }
-            if let Err(error) = self.commit_mutations(insert) {
+            if !insert.is_empty()
+                && let Err(error) = self.commit_mutations(insert)
+            {
                 rx::dispose_scope(scope);
                 let mut cleanup = MutationQueue::new();
                 for root in &roots {
@@ -280,18 +343,61 @@ impl AppContext {
                 self.commit_mutations(cleanup)?;
                 return Err(error);
             }
+            if has_top_fragments || self.reactive.host_slots.contains_key(&parent) {
+                let before_pos = before.and_then(|target| {
+                    let list = self.reactive.host_slots.get(&parent)?;
+                    list.iter().position(|item| match *item {
+                        SlotItem::Node(id) => id == target,
+                        SlotItem::Fragment(frag) => self.fragment_contains_node(frag, target),
+                    })
+                });
+                let list = self.reactive.host_slots.entry(parent).or_insert_with(|| {
+                    seed_slots
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(SlotItem::Node)
+                        .collect()
+                });
+                let pos = before_pos.unwrap_or_else(|| {
+                    before
+                        .and_then(|target| {
+                            list.iter().position(|item| *item == SlotItem::Node(target))
+                        })
+                        .unwrap_or(list.len())
+                });
+                list.splice(pos..pos, slots.iter().copied());
+            }
         }
         if let Err(error) = self.install_view_parts(parts) {
             // The tree stands; what failed is placing its slots.
-            let mounted = MountedView { roots, scope };
+            let mounted = MountedView {
+                roots,
+                slots,
+                host: parent,
+                scope,
+            };
             mounted.unmount(self)?;
             return Err(error);
         }
-        for root in &roots {
-            self.reactive.anchors.insert(*root, scope);
+        for item in &slots {
+            match *item {
+                SlotItem::Node(root) => {
+                    self.reactive.anchors.insert(root, scope);
+                }
+                SlotItem::Fragment(frag) => {
+                    if let Some(entry) = self.reactive.fragments.get_mut(&frag) {
+                        entry.mount_scope = Some(scope);
+                    }
+                }
+            }
         }
         rx::run_mounted(self);
-        let mounted = MountedView { roots, scope };
+        let mounted = MountedView {
+            roots,
+            slots,
+            host: parent,
+            scope,
+        };
         // Every ref names an element that was built, or the caller asked
         // for a node that is not there.
         match refs.and_then(Refs::resolve) {
@@ -309,7 +415,10 @@ impl AppContext {
 
     /// Take over what a build left and assemble the slots of the composites
     /// it built, innermost first.
-    pub(crate) fn install_view_parts(&mut self, parts: ViewParts) -> Result<(), FrameworkError> {
+    pub(crate) fn install_view_parts(
+        &mut self,
+        mut parts: ViewParts,
+    ) -> Result<(), FrameworkError> {
         for (id, effect, patch, source) in parts.nodes {
             if !self.world.contains(id) {
                 rx::dispose_effect(effect);
@@ -339,6 +448,35 @@ impl AppContext {
                 rx::dispose_effect(old.effect);
             }
         }
+        for (host, slots) in parts.host_slots {
+            if self.world.contains(host) {
+                self.reactive
+                    .host_slots
+                    .entry(host)
+                    .or_default()
+                    .extend(slots);
+            }
+        }
+        for mut decl in parts.fragments {
+            if !self.world.contains(decl.host) {
+                rx::dispose_effect(decl.effect);
+                decl.binding.forget(self);
+                continue;
+            }
+            self.reactive.fragments.insert(
+                decl.id,
+                FragmentEntry {
+                    host: decl.host,
+                    parent: decl.parent,
+                    boxed: decl.boxed,
+                    effect: decl.effect,
+                    items: decl.items,
+                    leaving: Vec::new(),
+                    mount_scope: None,
+                    binding: Some(decl.binding),
+                },
+            );
+        }
         for (id, implicit) in parts.implicit {
             if self.world.contains(id) {
                 self.reactive.implicit.insert(id, implicit);
@@ -351,7 +489,7 @@ impl AppContext {
                 rx::dispose_scope(old);
             }
         }
-        for (id, type_id) in parts.assemble {
+        for (id, type_id) in std::mem::take(&mut parts.assemble) {
             self.run_built_assembler(id, type_id)?;
         }
         Ok(())
@@ -386,10 +524,16 @@ impl AppContext {
     }
 
     fn flush_reactive_rounds(&mut self) -> Result<(), FrameworkError> {
+        #[derive(Clone, Copy)]
+        enum StructuralWork {
+            Node(StableNodeId),
+            Fragment(FragmentId),
+        }
+
         let tag = self.reactive.tag;
         let mut queue = std::mem::take(&mut self.reactive.queue);
         let mut patches = std::mem::take(&mut self.reactive.patches);
-        let mut structural = Vec::new();
+        let mut structural: Vec<(u32, EffectKey, StructuralWork)> = Vec::new();
         let mut outcome = Ok(());
         let (mut patched, mut commits) = (0, 0);
         for _ in 0..MAX_ROUNDS {
@@ -406,17 +550,28 @@ impl AppContext {
             // effects or node computeds inside rows that are about to unmount.
             structural.clear();
             structural.extend(queue.iter().filter_map(|&(effect, target)| match target {
-                EffectTarget::Structural(node) => {
-                    Some((rx::effect_scope_depth(effect), effect, node))
-                }
+                EffectTarget::Structural(node) => Some((
+                    rx::effect_scope_depth(effect),
+                    effect,
+                    StructuralWork::Node(node),
+                )),
+                EffectTarget::Fragment(frag) => Some((
+                    rx::effect_scope_depth(effect),
+                    effect,
+                    StructuralWork::Fragment(frag),
+                )),
                 _ => None,
             }));
             if structural.len() > 1 {
                 structural.sort_by_key(|&(depth, _, _)| depth);
             }
-            for &(_, effect, node) in &structural {
+            for &(_, effect, work) in &structural {
                 if rx::confirm(effect) {
-                    outcome = outcome.and(self.run_structural(node, effect));
+                    let step = match work {
+                        StructuralWork::Node(node) => self.run_structural(node, effect),
+                        StructuralWork::Fragment(frag) => self.run_fragment(frag, effect),
+                    };
+                    outcome = outcome.and(step);
                 }
             }
             // Rows and branches are placed now.
@@ -543,6 +698,612 @@ impl AppContext {
         }
     }
 
+    fn run_fragment(&mut self, frag: FragmentId, effect: EffectKey) -> Result<(), FrameworkError> {
+        let Some(entry) = self.reactive.fragments.get_mut(&frag) else {
+            return Ok(());
+        };
+        if entry.effect != effect || !self.world.contains(entry.host) || !rx::effect_alive(effect) {
+            return Ok(());
+        }
+        let Some(mut binding) = entry.binding.take() else {
+            return Ok(());
+        };
+        let outcome = binding.update(self, frag, effect);
+        if let Some(entry) = self.reactive.fragments.get_mut(&frag)
+            && self.world.contains(entry.host)
+        {
+            entry.binding = Some(binding);
+        } else {
+            rx::dispose_effect(effect);
+            binding.forget(self);
+            self.reactive.fragments.remove(&frag);
+            self.reactive.out_of_host_fragments.remove(&frag);
+        }
+        outcome
+    }
+
+    pub(crate) fn run_fragment_now(&mut self, frag: FragmentId) -> Result<(), FrameworkError> {
+        let Some(effect) = self.reactive.fragments.get(&frag).map(|entry| entry.effect) else {
+            return Ok(());
+        };
+        self.run_fragment(frag, effect)
+    }
+
+    pub(crate) fn fragment_host(&self, frag: FragmentId) -> Option<StableNodeId> {
+        self.reactive.fragments.get(&frag).map(|entry| entry.host)
+    }
+
+    pub(crate) fn fragment_boxed(&self, frag: FragmentId) -> bool {
+        self.reactive
+            .fragments
+            .get(&frag)
+            .is_some_and(|entry| entry.boxed)
+    }
+
+    pub(crate) fn fragment_has_mount_scope(&self, frag: FragmentId) -> bool {
+        let mut cursor = Some(frag);
+        while let Some(id) = cursor {
+            let Some(entry) = self.reactive.fragments.get(&id) else {
+                return false;
+            };
+            if entry.mount_scope.is_some() {
+                return true;
+            }
+            if entry.boxed {
+                return false;
+            }
+            cursor = entry.parent;
+        }
+        false
+    }
+
+    pub(crate) fn set_fragment_items(
+        &mut self,
+        frag: FragmentId,
+        items: Vec<SlotItem>,
+        leaving: Vec<StableNodeId>,
+    ) {
+        if let Some(entry) = self.reactive.fragments.get_mut(&frag) {
+            entry.items = items;
+            entry.leaving = leaving;
+        }
+    }
+
+    pub(crate) fn mark_out_of_host_fragment(&mut self, frag: FragmentId, active: bool) {
+        if active {
+            self.reactive.out_of_host_fragments.insert(frag);
+        } else {
+            self.reactive.out_of_host_fragments.remove(&frag);
+        }
+    }
+
+    fn fragment_contains_node(&self, frag: FragmentId, target: StableNodeId) -> bool {
+        let Some(entry) = self.reactive.fragments.get(&frag) else {
+            return false;
+        };
+        if entry.leaving.contains(&target) {
+            return true;
+        }
+        for item in &entry.items {
+            match *item {
+                SlotItem::Node(id) if id == target => return true,
+                SlotItem::Fragment(child) if self.fragment_contains_node(child, target) => {
+                    return true;
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
+    pub(crate) fn flatten_slot_items(
+        &self,
+        items: &[SlotItem],
+        target_host: StableNodeId,
+        out: &mut Vec<StableNodeId>,
+    ) {
+        for item in items {
+            match *item {
+                SlotItem::Node(id) => {
+                    if self.world.contains(id) {
+                        out.push(id);
+                    }
+                }
+                SlotItem::Fragment(frag) => {
+                    let Some(entry) = self.reactive.fragments.get(&frag) else {
+                        continue;
+                    };
+                    if entry.host != target_host
+                        || entry
+                            .binding
+                            .as_ref()
+                            .and_then(|binding| binding.placed_target())
+                            .is_some()
+                    {
+                        continue;
+                    }
+                    self.flatten_slot_items(&entry.items, target_host, out);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn flatten_all_live_nodes(&self, items: &[SlotItem], out: &mut Vec<StableNodeId>) {
+        for item in items {
+            match *item {
+                SlotItem::Node(id) => {
+                    if self.world.contains(id) {
+                        out.push(id);
+                    }
+                }
+                SlotItem::Fragment(frag) => {
+                    if let Some(entry) = self.reactive.fragments.get(&frag) {
+                        self.flatten_all_live_nodes(&entry.items, out);
+                    }
+                }
+            }
+        }
+    }
+
+    fn edge_live_node_in_slot(
+        &self,
+        item: SlotItem,
+        target_host: StableNodeId,
+        forward: bool,
+    ) -> Option<StableNodeId> {
+        match item {
+            SlotItem::Node(id) => (self.world.parent_id(id) == Some(target_host)).then_some(id),
+            SlotItem::Fragment(frag) => {
+                let entry = self.reactive.fragments.get(&frag)?;
+                if entry.host != target_host
+                    || entry
+                        .binding
+                        .as_ref()
+                        .and_then(|binding| binding.placed_target())
+                        .is_some()
+                {
+                    return None;
+                }
+                let item_edge =
+                    if forward {
+                        entry.items.iter().find_map(|child| {
+                            self.edge_live_node_in_slot(*child, target_host, true)
+                        })
+                    } else {
+                        entry.items.iter().rev().find_map(|child| {
+                            self.edge_live_node_in_slot(*child, target_host, false)
+                        })
+                    };
+                if entry.leaving.is_empty() {
+                    return item_edge;
+                }
+                let live_leaving: Vec<StableNodeId> = entry
+                    .leaving
+                    .iter()
+                    .copied()
+                    .filter(|&id| self.world.parent_id(id) == Some(target_host))
+                    .collect();
+                if live_leaving.is_empty() {
+                    return item_edge;
+                }
+                let children = self.world.node(target_host).map(|node| node.children)?;
+                let best_leaving = live_leaving
+                    .into_iter()
+                    .filter_map(|id| children.iter().position(|&c| c == id).map(|pos| (pos, id)))
+                    .min_by_key(|&(pos, _)| if forward { pos } else { usize::MAX - pos });
+                match (item_edge, best_leaving) {
+                    (Some(edge), Some((l_pos, l_id))) => {
+                        let e_pos = children.iter().position(|&c| c == edge);
+                        match e_pos {
+                            Some(e_pos)
+                                if (forward && e_pos <= l_pos) || (!forward && e_pos >= l_pos) =>
+                            {
+                                Some(edge)
+                            }
+                            _ => Some(l_id),
+                        }
+                    }
+                    (Some(edge), None) => Some(edge),
+                    (None, Some((_, l_id))) => Some(l_id),
+                    (None, None) => None,
+                }
+            }
+        }
+    }
+
+    fn anchor_for_fragment(&self, frag: FragmentId, forward: bool) -> Option<StableNodeId> {
+        let mut cur = frag;
+        let target_host = self.reactive.fragments.get(&cur)?.host;
+        loop {
+            let entry = self.reactive.fragments.get(&cur)?;
+            let siblings: &[SlotItem] = match entry.parent {
+                Some(parent) => {
+                    let parent_entry = self.reactive.fragments.get(&parent)?;
+                    if parent_entry.host != target_host {
+                        return None;
+                    }
+                    &parent_entry.items
+                }
+                None => self.reactive.host_slots.get(&target_host)?.as_slice(),
+            };
+            let pos = siblings
+                .iter()
+                .position(|item| *item == SlotItem::Fragment(cur))?;
+            if forward {
+                for &sibling in &siblings[pos + 1..] {
+                    if let Some(node) = self.edge_live_node_in_slot(sibling, target_host, true) {
+                        return Some(node);
+                    }
+                }
+            } else {
+                for &sibling in siblings[..pos].iter().rev() {
+                    if let Some(node) = self.edge_live_node_in_slot(sibling, target_host, false) {
+                        return Some(node);
+                    }
+                }
+            }
+            match entry.parent {
+                Some(parent)
+                    if self
+                        .reactive
+                        .fragments
+                        .get(&parent)
+                        .is_some_and(|p| p.host == target_host) =>
+                {
+                    cur = parent;
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    pub(crate) fn next_live_anchor_after(&self, frag: FragmentId) -> Option<StableNodeId> {
+        self.anchor_for_fragment(frag, true)
+    }
+
+    pub(crate) fn prev_live_anchor_before(&self, frag: FragmentId) -> Option<StableNodeId> {
+        self.anchor_for_fragment(frag, false)
+    }
+
+    pub(crate) fn splice_fragment_children(
+        &mut self,
+        frag: FragmentId,
+        desired: &[StableNodeId],
+    ) -> Result<(), FrameworkError> {
+        let Some((host, boxed)) = self
+            .reactive
+            .fragments
+            .get(&frag)
+            .map(|entry| (entry.host, entry.boxed))
+        else {
+            return Ok(());
+        };
+        if !self.world.contains(host) {
+            return Ok(());
+        }
+        if boxed {
+            return self.reconcile_children(host, desired).map(|_| ());
+        }
+        let mut seen = crate::NodeSet::default();
+        let desired: Vec<StableNodeId> = desired
+            .iter()
+            .copied()
+            .filter(|&id| self.world.contains(id) && seen.insert(id))
+            .collect();
+        let current = self
+            .world
+            .node(host)
+            .map(|node| node.children.to_vec())
+            .unwrap_or_default();
+        let prev = self.prev_live_anchor_before(frag);
+        let next = self.next_live_anchor_after(frag);
+        let mut lo = prev
+            .and_then(|p| current.iter().position(|&c| c == p))
+            .map_or(0, |i| i + 1);
+        let hi = next
+            .and_then(|n| current.iter().position(|&c| c == n))
+            .unwrap_or(current.len());
+        if lo > hi {
+            lo = hi;
+        }
+        let slice = &current[lo..hi];
+        if slice == desired.as_slice() {
+            return self.notify_host_slot_assembler(host);
+        }
+        let positions = crate::world::child_order::positions_in(slice, &desired);
+        let stays = crate::world::child_order::longest_increasing(&positions);
+        let moves = stays.iter().filter(|stays| !**stays).count();
+        if desired.len() == slice.len()
+            && slice.iter().all(|id| seen.contains(id))
+            && crate::framework::assemble::reorder_is_cheaper(moves, current.len(), slice.len())
+        {
+            let mut full = Vec::with_capacity(current.len());
+            full.extend_from_slice(&current[..lo]);
+            full.extend_from_slice(&desired);
+            full.extend_from_slice(&current[hi..]);
+            let mut mutations = MutationQueue::new();
+            mutations.reorder_children(host, full);
+            self.commit_mutations(mutations)?;
+            return self.notify_host_slot_assembler(host);
+        }
+        let mut mutations = MutationQueue::new();
+        let mut anchor = current[hi..].iter().copied().find(|id| !seen.contains(id));
+        for (index, &child) in desired.iter().enumerate().rev() {
+            if !stays[index] {
+                mutations.insert(host, child, anchor);
+            }
+            anchor = Some(child);
+        }
+        if !mutations.is_empty() {
+            self.commit_mutations(mutations)?;
+        }
+        self.notify_host_slot_assembler(host)
+    }
+
+    pub(crate) fn notify_host_slot_assembler(
+        &mut self,
+        host: StableNodeId,
+    ) -> Result<(), FrameworkError> {
+        if let Some(type_id) = self.view_type_id(host) {
+            self.run_slot_assembler(host, type_id)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn teleport_place_nodes(
+        &mut self,
+        frag: FragmentId,
+        nodes: &[StableNodeId],
+        target: Option<StableNodeId>,
+    ) -> Result<Option<StableNodeId>, FrameworkError> {
+        let Some(host) = self.fragment_host(frag) else {
+            return Ok(None);
+        };
+        let host_doc = self.world.document_of(host);
+        let valid_target = target.filter(|&target| {
+            self.world.contains(target)
+                && target != host
+                && self.world.document_of(target) == host_doc
+                && !nodes
+                    .iter()
+                    .any(|&node| self.world.is_descendant_or_self(target, node))
+        });
+        if let Some(target) = valid_target {
+            let mut mutations = MutationQueue::new();
+            for &node in nodes {
+                if !self.world.contains(node) {
+                    continue;
+                }
+                if self.declared_assembly_parent(node).is_some() {
+                    self.promote_auto_view_slot(node);
+                    self.placed_assembled.insert(node);
+                }
+                if self.world.parent_id(node) != Some(target) {
+                    mutations.insert(target, node, None);
+                }
+            }
+            if !mutations.is_empty() {
+                self.commit_mutations(mutations)?;
+            }
+            return Ok(Some(target));
+        }
+        for &node in nodes {
+            if self
+                .declared_assembly_parent(node)
+                .is_some_and(|(declared, _)| declared == host)
+            {
+                self.placed_assembled.remove(&node);
+            }
+        }
+        self.splice_fragment_children(frag, nodes)?;
+        Ok(None)
+    }
+
+    pub(crate) fn retarget_slot_items(
+        &mut self,
+        items: &[SlotItem],
+        old_host: StableNodeId,
+        new_host: StableNodeId,
+    ) {
+        if old_host == new_host {
+            return;
+        }
+        for item in items {
+            let SlotItem::Fragment(frag) = *item else {
+                continue;
+            };
+            let nested = match self.reactive.fragments.get_mut(&frag) {
+                Some(entry) if !entry.boxed && entry.host == old_host => {
+                    entry.host = new_host;
+                    entry.items.clone()
+                }
+                _ => continue,
+            };
+            self.retarget_slot_items(&nested, old_host, new_host);
+        }
+    }
+
+    /// Move any boxless fragment declarations (and their sibling nodes already
+    /// reparented into `new_host`) from `old_host` onto `new_host` (for
+    /// composites like `SidebarSection` that adopt user children into a
+    /// private body wrapper).
+    pub(crate) fn retarget_fragments(&mut self, old_host: StableNodeId, new_host: StableNodeId) {
+        if old_host == new_host {
+            return;
+        }
+        let Some(old_slots) = self.reactive.host_slots.remove(&old_host) else {
+            return;
+        };
+        let moved: Vec<SlotItem> = old_slots
+            .into_iter()
+            .filter(|item| match *item {
+                SlotItem::Fragment(_) => true,
+                SlotItem::Node(id) => self.world.parent_id(id) == Some(new_host),
+            })
+            .collect();
+        if !moved
+            .iter()
+            .any(|item| matches!(item, SlotItem::Fragment(_)))
+        {
+            return;
+        }
+        self.retarget_slot_items(&moved, old_host, new_host);
+        self.reactive
+            .host_slots
+            .entry(new_host)
+            .or_default()
+            .extend(moved);
+    }
+
+    pub(crate) fn teardown_slot_items(
+        &mut self,
+        items: &[SlotItem],
+        visible_nodes: &mut Vec<StableNodeId>,
+        immediate_despawn: &mut Vec<StableNodeId>,
+    ) {
+        for item in items {
+            match *item {
+                SlotItem::Node(id) => visible_nodes.push(id),
+                SlotItem::Fragment(frag) => {
+                    self.reactive.out_of_host_fragments.remove(&frag);
+                    let Some(mut entry) = self.reactive.fragments.remove(&frag) else {
+                        continue;
+                    };
+                    rx::dispose_effect(entry.effect);
+                    if let Some(scope) = entry.mount_scope {
+                        rx::dispose_scope(scope);
+                    }
+                    if let Some(mut binding) = entry.binding.take() {
+                        binding.teardown(self, visible_nodes, immediate_despawn);
+                    }
+                    immediate_despawn.extend(entry.leaving);
+                    if entry.parent.is_none()
+                        && let Some(host_slots) = self.reactive.host_slots.get_mut(&entry.host)
+                    {
+                        host_slots.retain(|slot| *slot != SlotItem::Fragment(frag));
+                        if host_slots.is_empty() {
+                            self.reactive.host_slots.remove(&entry.host);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    pub(crate) fn forget_fragment(&mut self, frag: FragmentId) {
+        self.reactive.out_of_host_fragments.remove(&frag);
+        let Some(mut entry) = self.reactive.fragments.remove(&frag) else {
+            return;
+        };
+        rx::dispose_effect(entry.effect);
+        if let Some(scope) = entry.mount_scope {
+            rx::dispose_scope(scope);
+        }
+        if let Some(mut binding) = entry.binding.take() {
+            binding.forget(self);
+        }
+    }
+
+    pub(crate) fn despawn_or_rescue_out_of_host_fragments(
+        &mut self,
+        mutations: &mut MutationQueue,
+    ) -> Option<MutationQueue> {
+        if self.reactive.out_of_host_fragments.is_empty() {
+            return None;
+        }
+        let mut roots: HashSet<StableNodeId> = mutations
+            .as_slice()
+            .iter()
+            .filter_map(|mutation| match mutation {
+                crate::UiMutation::DespawnSubtree { root } => Some(*root),
+                _ => None,
+            })
+            .collect();
+        if roots.is_empty() {
+            return None;
+        }
+        let out_of_host: Vec<FragmentId> = self
+            .reactive
+            .out_of_host_fragments
+            .iter()
+            .copied()
+            .collect();
+        let under = |cx: &Self, roots: &HashSet<StableNodeId>, id: StableNodeId| {
+            std::iter::successors(Some(id), |id| cx.world.parent_id(*id))
+                .any(|ancestor| roots.contains(&ancestor))
+        };
+        loop {
+            let mut added = false;
+            for &frag in &out_of_host {
+                let Some(entry) = self.reactive.fragments.get(&frag) else {
+                    continue;
+                };
+                if !under(self, &roots, entry.host) {
+                    continue;
+                }
+                let mut ext = Vec::new();
+                if let Some(binding) = &entry.binding {
+                    binding.collect_external_nodes(self, &mut ext);
+                }
+                for node in ext {
+                    if self.world.contains(node) && !under(self, &roots, node) {
+                        roots.insert(node);
+                        mutations.despawn_subtree(node);
+                        added = true;
+                    }
+                }
+            }
+            if !added {
+                break;
+            }
+        }
+        let mut rescued = MutationQueue::new();
+        for frag in out_of_host {
+            let (host, target, items) = match self.reactive.fragments.get(&frag) {
+                Some(entry) => {
+                    let target = entry
+                        .binding
+                        .as_ref()
+                        .and_then(|binding| binding.placed_target());
+                    (entry.host, target, entry.items.clone())
+                }
+                None => continue,
+            };
+            let Some(target) = target else {
+                continue;
+            };
+            if under(self, &roots, host) || !under(self, &roots, target) {
+                continue;
+            }
+            if let Some(entry) = self.reactive.fragments.get_mut(&frag)
+                && let Some(binding) = entry.binding.as_mut()
+            {
+                binding.clear_placed_target();
+            }
+            self.reactive.out_of_host_fragments.remove(&frag);
+            self.retarget_slot_items(&items, target, host);
+            let mut live = Vec::new();
+            self.flatten_all_live_nodes(&items, &mut live);
+            let before = self.next_live_anchor_after(frag);
+            for node in live {
+                if self
+                    .world
+                    .parent_id(node)
+                    .is_some_and(|parent| under(self, &roots, parent))
+                {
+                    if self
+                        .declared_assembly_parent(node)
+                        .is_some_and(|(declared, _)| declared == host)
+                    {
+                        self.placed_assembled.remove(&node);
+                    }
+                    rescued.insert(host, node, before);
+                }
+            }
+        }
+        (!rescued.is_empty()).then_some(rescued)
+    }
+
     /// Stage every queued node against the current world, commit the lot
     /// once, then install the staged views and follow their lifecycles.
     fn patch_bound_nodes(
@@ -641,10 +1402,13 @@ impl AppContext {
             && host.anchors.is_empty()
             && host.leaving.is_empty()
             && host.implicit.is_empty()
+            && host.host_slots.is_empty()
         {
             return;
         }
+        let mut frags_to_forget = Vec::new();
         for id in removed {
+            let host = &mut self.reactive;
             host.leaving.remove(id);
             host.implicit.remove(id);
             if let Some(entry) = host.nodes.remove(id) {
@@ -656,6 +1420,16 @@ impl AppContext {
             if let Some(scope) = host.anchors.remove(id) {
                 rx::dispose_scope(scope);
             }
+            if let Some(slots) = host.host_slots.remove(id) {
+                for item in slots {
+                    if let SlotItem::Fragment(frag) = item {
+                        frags_to_forget.push(frag);
+                    }
+                }
+            }
+        }
+        for frag in frags_to_forget {
+            self.forget_fragment(frag);
         }
     }
 
@@ -1044,6 +1818,7 @@ impl AppContext {
             return;
         }
         let mut mutations = MutationQueue::new();
+        let mut notify_hosts = Vec::new();
         for root in done {
             let Some(leaving) = self.reactive.leaving.remove(&root) else {
                 continue;
@@ -1051,27 +1826,39 @@ impl AppContext {
             if !self.world.contains(root) {
                 continue;
             }
-            if let Some(moves) = leaving.moves
-                && let Some(parent) = self.world.node(root).and_then(|node| node.parent)
-            {
-                let siblings = self
-                    .world
-                    .node(parent)
-                    .map(|node| node.children.to_vec())
-                    .unwrap_or_default();
-                for sibling in siblings {
-                    if sibling != root
-                        && !self.reactive.leaving.contains_key(&sibling)
-                        && let Some(first) = self.flip_rect(sibling)
-                    {
-                        self.flip_after_layout(sibling, first, (moves.0, Some(moves.1)));
+            if let Some(parent) = self.world.node(root).and_then(|node| node.parent) {
+                if self.reactive.host_slots.contains_key(&parent) && !notify_hosts.contains(&parent)
+                {
+                    notify_hosts.push(parent);
+                }
+                if let Some(moves) = leaving.moves {
+                    let siblings = self
+                        .world
+                        .node(parent)
+                        .map(|node| node.children.to_vec())
+                        .unwrap_or_default();
+                    for sibling in siblings {
+                        if sibling != root
+                            && !self.reactive.leaving.contains_key(&sibling)
+                            && let Some(first) = self.flip_rect(sibling)
+                        {
+                            self.flip_after_layout(sibling, first, (moves.0, Some(moves.1)));
+                        }
                     }
                 }
             }
             mutations.despawn_subtree(root);
         }
-        if !mutations.is_empty() && self.commit_mutations(mutations).is_err() {
-            nana_diagnostics::metric!(nana_diagnostics::framework::runtime::FLUSH_FAILED);
+        if !mutations.is_empty() {
+            if self.commit_mutations(mutations).is_err() {
+                nana_diagnostics::metric!(nana_diagnostics::framework::runtime::FLUSH_FAILED);
+            } else {
+                for host in notify_hosts {
+                    if self.world.contains(host) {
+                        let _ = self.notify_host_slot_assembler(host);
+                    }
+                }
+            }
         }
     }
 

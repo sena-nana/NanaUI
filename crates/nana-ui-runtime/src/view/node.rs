@@ -6,7 +6,7 @@ use std::borrow::Cow;
 use std::panic::Location;
 
 use super::prop::{FieldWrite, IntoProp};
-use super::reactive::{self, EffectKey, EffectTarget, ScopeKey, Signal, SignalKey};
+use super::reactive::{self, EffectKey, EffectTarget, FragmentId, ScopeKey, Signal, SignalKey};
 use crate::{
     AppContext, ComponentView, Entity, FrameworkError, MutationQueue, StableNodeId, UiBuilder,
     View, ViewContext,
@@ -232,6 +232,63 @@ pub(crate) trait StructuralBinding: Send {
     ) -> Result<(), FrameworkError>;
 }
 
+/// One direct entry in a host container's or fragment's child slot list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SlotItem {
+    Node(StableNodeId),
+    Fragment(FragmentId),
+}
+
+/// A reactive control-flow binding (`each`, `when`, `dynamic`, `teleport`)
+/// tracked by its [`FragmentId`] rather than requiring a wrapper node.
+pub(crate) trait FragmentBinding: Send {
+    fn update(
+        &mut self,
+        cx: &mut AppContext,
+        frag: FragmentId,
+        effect: EffectKey,
+    ) -> Result<(), FrameworkError>;
+
+    /// Live nodes owned by this fragment currently placed outside its host
+    /// (for example a KeepAlive holder or teleported roots).
+    fn collect_external_nodes(&self, _cx: &AppContext, _out: &mut Vec<StableNodeId>) {}
+
+    /// Current teleport target when this fragment's content sits away from its
+    /// declaration host.
+    fn placed_target(&self) -> Option<StableNodeId> {
+        None
+    }
+
+    /// Clear a recorded teleport target after rescuing content back to its
+    /// declaration host.
+    fn clear_placed_target(&mut self) {}
+
+    /// Dispose owned inner scopes and gather live nodes during unmount / branch
+    /// removal. `visible_nodes` may play leave transitions; `immediate_despawn`
+    /// is always despawned immediately.
+    fn teardown(
+        &mut self,
+        cx: &mut AppContext,
+        visible_nodes: &mut Vec<StableNodeId>,
+        immediate_despawn: &mut Vec<StableNodeId>,
+    );
+
+    /// Dispose owned inner scopes and nested fragments when the host has already
+    /// been despawned (`forget_reactive`).
+    fn forget(&mut self, cx: &mut AppContext);
+}
+
+/// One installed fragment declaration produced while building a view.
+pub(crate) struct FragmentDecl {
+    pub(crate) id: FragmentId,
+    pub(crate) host: StableNodeId,
+    pub(crate) parent: Option<FragmentId>,
+    pub(crate) boxed: bool,
+    pub(crate) effect: EffectKey,
+    pub(crate) items: Vec<SlotItem>,
+    pub(crate) binding: Box<dyn FragmentBinding>,
+}
+
 /// A node as the view layer sees it, for devtools: the built-in control it
 /// is and each bindable field with its value, where the element was
 /// declared and where each bound field's binding was.
@@ -317,6 +374,8 @@ pub(crate) struct ViewParts {
         Option<&'static ViewSource>,
     )>,
     pub(crate) structural: Vec<(StableNodeId, EffectKey, Box<dyn StructuralBinding>)>,
+    pub(crate) fragments: Vec<FragmentDecl>,
+    pub(crate) host_slots: Vec<(StableNodeId, Vec<SlotItem>)>,
     /// Scopes disposed when the node leaves the world.
     pub(crate) anchors: Vec<(StableNodeId, ScopeKey)>,
     pub(crate) implicit: Vec<(StableNodeId, Box<[super::Implicit]>)>,
@@ -330,6 +389,12 @@ pub(crate) struct ViewParts {
 struct Level {
     next_auto: usize,
     roots: Vec<StableNodeId>,
+    slots: Vec<SlotItem>,
+    /// The concrete host node whose children belong to this level (`None` for
+    /// detached slots and document-root / detached mounts).
+    host: Option<StableNodeId>,
+    parent_fragment: Option<FragmentId>,
+    has_fragments: bool,
     /// The key each root was declared with, beside `roots`; `None` for a
     /// positional one. A slot's roots take it under the node that adopts
     /// them.
@@ -377,10 +442,18 @@ pub(crate) struct RootKeys {
 }
 
 impl ViewState {
-    pub(crate) fn new(tag: u64) -> Self {
+    pub(crate) fn new_in(
+        tag: u64,
+        host: Option<StableNodeId>,
+        parent_fragment: Option<FragmentId>,
+    ) -> Self {
         Self {
             tag,
-            levels: vec![Level::default()],
+            levels: vec![Level {
+                host,
+                parent_fragment,
+                ..Level::default()
+            }],
             parts: ViewParts::default(),
             pending_key: None,
             root_keys: None,
@@ -403,9 +476,18 @@ impl<'a> ViewBuilder<'_, 'a, '_> {
     }
 
     /// Position is identity for undeclared keys: static structure is built
-    /// once, so the n-th child stays the n-th child.
+    /// once, so the n-th child stays the n-th child. Transparent fragment
+    /// levels advance the nearest enclosing non-fragment container level so
+    /// siblings before, inside, and after a boxless fragment do not collide
+    /// on `#v0`.
     pub(crate) fn auto_key(&mut self) -> crate::framework::AssemblyKey {
-        let level = self.level();
+        let level_idx = self
+            .st
+            .levels
+            .iter()
+            .rposition(|level| level.parent_fragment.is_none())
+            .unwrap_or(0);
+        let level = &mut self.st.levels[level_idx];
         let index = level.next_auto;
         level.next_auto += 1;
         crate::framework::AssemblyKey::auto_view(index)
@@ -430,7 +512,7 @@ impl<'a> ViewBuilder<'_, 'a, '_> {
             let root_key = self
                 .st
                 .root_keys
-                .filter(|keys| self.st.levels.len() == 1 && (keys.positional || declared.is_some()))
+                .filter(|keys| self.ui.at_root_level() && (keys.positional || declared.is_some()))
                 .map(|keys| (keys.container, key.clone()));
             let entity = self.ui.child(key, component);
             if let Some((container, key)) = root_key {
@@ -439,27 +521,15 @@ impl<'a> ViewBuilder<'_, 'a, '_> {
             entity
         };
         if entity.stable_id() != UNBUILT {
+            let id = entity.stable_id();
             let level = self.level();
-            level.roots.push(entity.stable_id());
+            level.roots.push(id);
+            level.slots.push(SlotItem::Node(id));
             level.declared.push(declared);
         }
         entity
     }
 
-    pub(crate) fn nest<P: View>(
-        &mut self,
-        parent: Entity<P>,
-        f: impl FnOnce(&mut ViewBuilder<'_, 'a, '_>),
-    ) {
-        let mut f = Some(f);
-        self.nest_dyn(parent.stable_id(), &mut |vb| {
-            if let Some(f) = f.take() {
-                f(vb);
-            }
-        });
-    }
-
-    /// [`Self::nest`] without generics: `f` runs exactly once.
     #[inline(never)]
     pub(crate) fn nest_dyn(
         &mut self,
@@ -468,12 +538,64 @@ impl<'a> ViewBuilder<'_, 'a, '_> {
     ) {
         // A pending key names a root at this level, never a child.
         let pending = self.st.pending_key.take();
-        self.st.levels.push(Level::default());
+        self.st.levels.push(Level {
+            host: Some(parent),
+            ..Level::default()
+        });
         let st = &mut *self.st;
         let ui = &mut *self.ui;
         ui.nest_dyn(parent, &mut |ui| f(&mut ViewBuilder { ui, st }));
-        self.st.levels.pop();
+        if let Some(level) = self.st.levels.pop()
+            && level.has_fragments
+        {
+            self.st.parts.host_slots.push((parent, level.slots));
+        }
         self.st.pending_key = pending;
+    }
+
+    pub(crate) fn fragment_host(&self) -> Option<StableNodeId> {
+        let level = self.st.levels.last()?;
+        if level.detached { None } else { level.host }
+    }
+
+    pub(crate) fn parent_fragment(&self) -> Option<FragmentId> {
+        self.st
+            .levels
+            .last()
+            .and_then(|level| level.parent_fragment)
+    }
+
+    pub(crate) fn record_fragment(&mut self, frag: FragmentId) {
+        let level = self.level();
+        level.slots.push(SlotItem::Fragment(frag));
+        level.has_fragments = true;
+    }
+
+    /// Build a fragment's direct content in a transparent level sharing `host`
+    /// with the enclosing level, returning the direct [`SlotItem`]s produced.
+    #[inline(never)]
+    pub(crate) fn build_fragment_slots(
+        &mut self,
+        host: StableNodeId,
+        frag: FragmentId,
+        f: &mut dyn FnMut(&mut ViewBuilder<'_, 'a, '_>),
+    ) -> Vec<SlotItem> {
+        let detached = self.level().detached;
+        let pending = self.st.pending_key.take();
+        self.st.levels.push(Level {
+            host: Some(host),
+            parent_fragment: Some(frag),
+            detached,
+            ..Level::default()
+        });
+        f(self);
+        let level = self.st.levels.pop().expect("fragment level pushed above");
+        self.st.pending_key = pending;
+        if let Some(parent) = self.st.levels.last_mut() {
+            parent.roots.extend(level.roots);
+            parent.declared.extend(level.declared);
+        }
+        level.slots
     }
 
     fn should_defer(&self) -> bool {
@@ -504,7 +626,11 @@ impl<'a> ViewBuilder<'_, 'a, '_> {
                     nested_ui,
                 } => {
                     self.ui.leave_nest(nested_ui);
-                    self.st.levels.pop();
+                    if let Some(level) = self.st.levels.pop()
+                        && level.has_fragments
+                    {
+                        self.st.parts.host_slots.push((id, level.slots));
+                    }
                     self.st.pending_key = pending;
                     if assemble {
                         self.st.parts.assemble.push((id, type_id));
@@ -518,11 +644,27 @@ impl<'a> ViewBuilder<'_, 'a, '_> {
         self.st.trampoline_active = was_active;
     }
 
-    /// Build `view` at the current level and return the roots it added.
-    pub(crate) fn build_collect(&mut self, view: impl IntoView) -> Vec<StableNodeId> {
-        let start = self.level().roots.len();
+    /// Build `view` at the current level and return both its concrete roots and
+    /// direct [`SlotItem`]s.
+    pub(crate) fn build_collect_slots(
+        &mut self,
+        view: impl IntoView,
+    ) -> (Vec<StableNodeId>, Vec<SlotItem>) {
+        let r_start = self.level().roots.len();
+        let s_start = self.level().slots.len();
         self.run_trampoline(view);
-        self.level().roots[start..].to_vec()
+        let level = self.level();
+        (
+            level.roots[r_start..].to_vec(),
+            level.slots[s_start..].to_vec(),
+        )
+    }
+
+    pub(crate) fn take_top_slots_if_fragments(&mut self) -> Option<Vec<SlotItem>> {
+        let level = self.st.levels.first_mut()?;
+        level
+            .has_fragments
+            .then(|| std::mem::take(&mut level.slots))
     }
 
     /// Build `view` without placing its roots, for a slot: its roots, each
@@ -1390,11 +1532,16 @@ fn build_el_deferred<C: ComponentView>(
     };
     let id = entity.stable_id();
     let pending = vb.st.pending_key.take();
-    vb.st.levels.push(Level::default());
+    let mut child_level = Level {
+        host: Some(id),
+        ..Level::default()
+    };
     let nested_ui = vb.ui.enter_nest(id);
     for (root, key) in adopt {
         vb.ui.adopt_as(root, key);
+        child_level.slots.push(SlotItem::Node(root));
     }
+    vb.st.levels.push(child_level);
     let assemble = C::BEHAVIOR.slot_assembler.is_some() || C::BEHAVIOR.assembler.is_some();
     vb.st.tasks.push(ViewTask::LeaveEl {
         id,
@@ -1422,6 +1569,7 @@ fn build_el<C: ComponentView>(
     vb.nest_dyn(id, &mut |vb| {
         for (root, key) in std::mem::take(&mut adopt) {
             vb.ui.adopt_as(root, key);
+            vb.level().slots.push(SlotItem::Node(root));
         }
         children(vb);
     });

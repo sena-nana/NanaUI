@@ -49,9 +49,9 @@ key 还在时，行内的字段变化应写在行自己的信号或 [Store](http
 不要把 `v-for` 和 `v-if` 写在同一个元素上。那是模板错误，不会变成「先过滤再循环」。
 :::
 
-## 容器
+## 片段与显式容器
 
-`each` 的行放在一个容器里，默认是间距为 0 的一列。行距用 `.gap(8)`。要横着排，用 `.horizontal(8)`。
+在宿主父节点内，`each` 默认是**无盒片段**：行直接插入宿主父节点的子节点列表里，列表为空时不占空间也不占 `gap`，每一行也直接参与父容器的 flex / grid 布局。只有在显式使用 `.gap(8)`、`.horizontal(8)`、`.class(..)`、`.key(..)`（或无宿主边界）时，才会建出一个包装 `Stack` 容器：
 
 ```rust
 use nana_ui::runtime::view::each;
@@ -59,13 +59,13 @@ use nana_ui::runtime::view::each;
 each(list, |todo| todo.id, |todo| text(todo.title)).gap(8)
 ```
 
-模板里给这个容器加类，用 `<Block class="strip">` 包住那一个 `v-for` 元素。`v-for` 元素自己的 `class` 落在每一行上，不落在容器上。
+模板里给列表建一个显式包装容器并加类，用 `<Block class="strip">` 包住那一个 `v-for` 元素。`v-for` 元素自己的 `class` 仍然落在每一行上。
 
 静态的几个子节点不要用 `each`。个数写死就用 tuple。建树时的 `for` 写在 `.with(|c| { … })` 里，它只跑一遍，不跟着后来的 `push` 变。
 
 ## key 还用在查找上
 
-静态节点不写 key 时按位置命名，`#v0`、`#v1` 这样。需要 `resolve_assembly_path` 按名字找到它时，才在节点上写 `.key("title")`。`each` 里每一行是自己的范围：不同行可以写同样的 key，互不覆盖。挂载之后才加进来的行，同样登记在这个容器下面。
+静态节点不写 key 时按位置命名，`#v0`、`#v1` 这样。需要 `resolve_assembly_path` 按名字找到它时，才在节点上写 `.key("title")`。`each` 里每一行是自己的范围：不同行可以写同样的 key，互不覆盖。挂载之后才加进来的行，写有显式 `.key` 的子节点也会登记在所属容器下面。
 
 `Store` 的列表用 `keyed(|item| item.id).each(|item| …)`，key 已经在 `keyed` 里，行闭包只负责视图。见 [响应式](https://github.com/sena-nana/NanaUI/blob/main/docs/guide/essentials/reactivity.md)。
 

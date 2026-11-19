@@ -93,9 +93,9 @@ For something toggled often whose inner state must stay, use `v-show`. For a who
 One element cannot write `v-for` and `v-if` at the same time; that is a template error. To filter rows out, filter in the `each` data, or let the row view write its own `v-if`. Lists are the next chapter.
 :::
 
-`when` and `each` each carry a container, by default a `Stack` column with a gap of 0. To add a class to this chain's container, wrap the chain in `<Block class="…">`, or write `when(…).class(…)` in the function style. The class does not land on the two branches automatically. A branch root's own `class` still belongs to that branch only.
+Inside a host parent, `when` and `each` default to boxless fragments: their branches or rows sit directly as sibling children of the host parent, and an empty branch takes zero space and zero `gap`. Wrapping a chain in `<Block class="…">` or calling `.class(…)`, `.grow()`, `.key(…)`, and so on explicitly materializes a wrapper `Stack` container; classes on that wrapper do not automatically land on the branches, while a branch root's own `class` belongs only to that branch.
 
-When a branch has to fill the remaining space (a scroll area, an editor), write `when(…).grow()` or `dynamic(…).grow()`: the container takes the rest of the space along the parent's main axis, which gives the branch's `fill_column` something to fill.
+Writing `when(…).grow()` or `dynamic(…).grow()` materializes a container that takes the remaining space along the parent's main axis so a branch's `fill_column` has room to fill; when you want branch children to participate directly in a parent `row` or CSS grid track layout, simply omit `.grow()` and other container options.
 
 `when(…).transition(…)` adds enter and exit. An exiting node first stays where it is, takes no hit testing, and is destroyed once the transition ends. That is enter and exit, not `v-show`.
 

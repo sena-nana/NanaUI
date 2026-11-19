@@ -38,17 +38,17 @@ column().gap(8).children((
 
 :::
 
-`to` can be a `NodeRef`, a node id, or a closure that selects an `Option<StableNodeId>`. When it changes, the content moves with it. When the value is `None`, or the target is not in the tree, the content stays in the anchor at the declaration site. The anchor is a `Stack::column(0)` column. Underneath it is `place_assembled`.
+`to` can be a `NodeRef`, a node id, or a closure that selects an `Option<StableNodeId>`. When it changes, the content moves with it. When the value is `None`, or the target is not in the tree, the content returns to its exact slot at the declaration host. Inside a host container it is a boxless fragment by default, occupying zero `gap` and zero space while teleported away; only when given `.key`, `.class`, `.class_when`, `.css`, or built without a host parent does it materialize a `Stack::column(0)` anchor container at the declaration site.
 
 In a template, record the target with `ref={layer}`, which expands to `.node_ref(layer)`. `layer` has an id only after mounting. Teleporting happens when this content enters the tree.
 
-The anchor accepts `.class`, `.class_when`, and `.css`. In a template write them on `<Teleport to={layer} class="fill">` so content that has not been teleported yet fills the height. If the target appears later, the content moves there.
+Explicit `.class`, `.class_when`, and `.css` (in templates `<Teleport to={layer} class="fill">`) materialize an anchor container so content that has not been teleported yet fills the height. If the target appears later, the content moves there.
 
 The content's scope belongs to the declaration site. When the declaration site is destroyed, the content painted under the target at that moment is destroyed with it. Windows are still opened by the host. Teleporting only changes the parent within this tree.
 
 ## Classes on the anchor
 
-`.class`, `.class_when`, and `.css` are written on the return value of `teleport(…)`, or on the `<Teleport>` tag. They decorate the column the content is built in. Once the content has been mounted under the target, this anchor column can be empty.
+`.class`, `.class_when`, and `.css` are written on the return value of `teleport(…)`, or on the `<Teleport>` tag, and materialize and decorate that anchor column (without container options or `.key`, no wrapper node is created). Once the content has been mounted under the target, that explicit anchor column becomes empty.
 
 When `to` is a closure, the content moves again whenever the id it selects changes. If the target is no longer in the tree at that evaluation, the content returns to the anchor.
 

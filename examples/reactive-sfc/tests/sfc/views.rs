@@ -51,9 +51,12 @@ fn the_counter_and_the_todo_list_work_as_written() {
     let todos = cx
         .resolve_assembly_path(page, "todo-section/todos")
         .unwrap();
-    let list = children(&cx, todos)[2];
-    let summary = children(&cx, todos)[3];
-    let empty_summary = text_of(&cx, children(&cx, summary)[0]);
+    let summary_text = |cx: &AppContext| text_of(cx, *children(cx, todos).last().unwrap());
+    let row_children = |cx: &AppContext| {
+        let all = children(cx, todos);
+        all[2..all.len() - 1].to_vec()
+    };
+    let empty_summary = summary_text(&cx);
     for title in ["买菜", "写代码"] {
         cx.update_component(draft, |field, cx| {
             field.state.replace_value(title);
@@ -68,9 +71,9 @@ fn the_counter_and_the_todo_list_work_as_written() {
         cx.activate_button(add).unwrap();
         cx.flush_reactive().unwrap();
     }
-    let rows = children(&cx, list);
+    let rows = row_children(&cx);
     assert_eq!(rows.len(), 2);
-    let two_summary = text_of(&cx, children(&cx, summary)[0]);
+    let two_summary = summary_text(&cx);
     assert_ne!(two_summary, empty_summary, "the summary follows the list");
     assert!(
         cx.read(add, |b| b.disabled).unwrap(),
@@ -82,12 +85,12 @@ fn the_counter_and_the_todo_list_work_as_written() {
     cx.activate_button(remove).unwrap();
     cx.flush_reactive().unwrap();
     assert_eq!(
-        children(&cx, list),
+        row_children(&cx),
         vec![rows[1]],
         "the other row kept its node"
     );
     assert_ne!(
-        text_of(&cx, children(&cx, summary)[0]),
+        summary_text(&cx),
         two_summary,
         "removing a row updates the summary"
     );
@@ -251,7 +254,7 @@ fn view_styles_apply_and_follow_their_classes() {
     assert_eq!(shown(200), 1.0);
 
     // TodoItem.vue's rows take `.item`, their titles `.title`.
-    let row = children(&cx, children(&cx, todos)[2])[0];
+    let row = children(&cx, todos)[2];
     let layout = &cx.world().node_style(row).unwrap().layout;
     assert_eq!(
         layout.padding_left,

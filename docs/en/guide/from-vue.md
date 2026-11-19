@@ -25,7 +25,7 @@ The guide's chapter names follow Vue. The runtime is not Vue: there is no virtua
 | Vue Router, Pinia | Your application's own structures and `store` | The framework does not own routing, region content or persistence |
 | SFC | `.vue` dialect, with Rust scripts | See [.vue dialect](scaling/sfc.md) |
 
-`each` and `when` each bring their own container. Vue's `v-for` / `v-if` emit sibling nodes directly. Component functions are not lazy; ownership is divided only at three scope boundaries: mount, row and branch.
+`each` and `when` default to boxless fragments inside a host parent, emitting sibling nodes directly just like Vue's `v-for` / `v-if`; they materialize a wrapper `Stack` only when given explicit container options (`.gap`, `.horizontal`, `.grow`, `.class`, `.key`, etc.) or at a host-less single-root slot/mount boundary. Component functions are not lazy; ownership is divided only at three scope boundaries: mount, row and branch.
 
 ## What is not here
 

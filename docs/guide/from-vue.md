@@ -25,7 +25,7 @@
 | Vue Router、Pinia | 应用自己的结构和 `store` | 框架不持有路由、区域内容和持久化 |
 | SFC | `.vue` 方言，脚本写 Rust | 见 [.vue 方言](https://github.com/sena-nana/NanaUI/blob/main/docs/guide/scaling/sfc.md) |
 
-`each` 和 `when` 各自带一个容器。Vue 的 `v-for` / `v-if` 直接生成兄弟节点。组件函数不是惰性的，只在挂载、行、分支这三个作用域边界上划分归属。
+`each` 和 `when` 在父容器内默认作为无盒片段直接生成兄弟节点，与 Vue 的 `v-for` / `v-if` 相同；只在显式使用 `.gap`、`.horizontal`、`.grow`、`.class`、`.key` 等容器选项或处于单根插槽/独立根挂载边界时才建一个包装 `Stack`。组件函数不是惰性的，只在挂载、行、分支这三个作用域边界上划分归属。
 
 ## 这里没有的
 

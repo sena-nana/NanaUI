@@ -804,6 +804,11 @@ enum ContainerStyleOp {
 }
 
 impl ContainerStyle {
+    /// Whether no style operations were attached to the control-flow node.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     /// `element` with these styles, in the order they were given.
     pub(crate) fn apply<C: StyledComponent + ComponentView>(self, element: El<C>) -> El<C> {
         self.0.into_iter().fold(element, |element, op| match op {

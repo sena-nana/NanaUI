@@ -88,7 +88,9 @@ pub use node::{
     AppliedInspection, DynamicInspection, InspectedField, Inspection, LayoutCause,
     LayoutNodeInspection,
 };
-pub(crate) use node::{NodePatch, StructuralBinding, ViewParts, ViewState};
+pub(crate) use node::{
+    FragmentBinding, NodePatch, SlotItem, StructuralBinding, ViewParts, ViewState,
+};
 #[doc(hidden)]
 pub use prop::Fixed;
 pub use prop::{FieldWrite, IntoProp, PropSource, Writable};

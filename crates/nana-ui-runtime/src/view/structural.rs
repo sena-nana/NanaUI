@@ -16,62 +16,75 @@ use std::panic::Location;
 
 use super::controls::StyledComponent;
 use super::node::{
-    AnyView, El, IntoView, RootKeys, StructuralBinding, ViewBuilder, ViewState, widget,
+    AnyView, El, FragmentBinding, FragmentDecl, IntoView, RootKeys, SlotItem, ViewBuilder,
+    ViewState, widget,
 };
 use super::prop::{IntoProp, PropSource};
-use super::reactive::{self, EffectKey, EffectTarget, Readable, ScopeKey};
+use super::reactive::{self, EffectKey, EffectTarget, FragmentId, Readable, ScopeKey};
 use super::style::{ContainerStyle, container_styles};
 use super::transition::Transition;
 use crate::{AppContext, ComponentView, FrameworkError, MutationQueue, StableNodeId, Stack};
 
 pub(super) struct Built {
     pub(super) scope: ScopeKey,
-    pub(super) roots: Vec<StableNodeId>,
+    pub(super) items: Vec<SlotItem>,
 }
 
 /// Build `view` in a new child scope of `parent`, recording the scope as
-/// owned by the roots it produced.
+/// owned by the direct concrete roots it produced.
 pub(super) fn build_scoped(
     vb: &mut ViewBuilder<'_, '_, '_>,
     parent: Option<ScopeKey>,
     view: impl FnOnce() -> AnyView,
 ) -> Built {
     let scope = reactive::create_scope(parent);
-    let roots = reactive::with_scope(scope, || {
+    let (_, items) = reactive::with_scope(scope, || {
         let view = reactive::untrack(view);
-        vb.build_collect(view)
+        vb.build_collect_slots(view)
     });
-    for root in &roots {
-        vb.st.parts.anchors.push((*root, scope));
+    for item in &items {
+        if let SlotItem::Node(root) = *item {
+            vb.st.parts.anchors.push((root, scope));
+        }
     }
-    Built { scope, roots }
+    Built { scope, items }
 }
 
-/// Build detached subtrees for a container that already exists, in one
-/// commit, and hand their parts to the context. `build` records every scope
-/// it creates so a failed commit disposes them. The roots are keyed under
-/// `container` as the ones built with it were (only declared keys unless
-/// `positional`; see [`RootKeys`]), so a path through the container finds
-/// them.
+fn fragment_root_keys(
+    cx: &AppContext,
+    frag: FragmentId,
+    host: StableNodeId,
+    positional_when_boxed: bool,
+) -> Option<RootKeys> {
+    if cx.fragment_has_mount_scope(frag) {
+        return None;
+    }
+    Some(RootKeys {
+        container: host,
+        positional: positional_when_boxed && cx.fragment_boxed(frag),
+    })
+}
+
+/// Build detached subtrees for a host that already exists, in one commit, and
+/// hand their parts to the context. `build` records every scope it creates so
+/// a failed commit disposes them.
 pub(super) fn build_detached_into<R>(
     cx: &mut AppContext,
-    container: StableNodeId,
-    positional: bool,
+    host: StableNodeId,
+    parent_fragment: Option<FragmentId>,
+    root_keys: Option<RootKeys>,
     build: impl FnOnce(&mut ViewBuilder<'_, '_, '_>, &mut Vec<ScopeKey>) -> R,
 ) -> Result<R, FrameworkError> {
     let document = cx
         .world()
-        .node(container)
-        .ok_or(FrameworkError::MissingView(container))?
+        .node(host)
+        .ok_or(FrameworkError::MissingView(host))?
         .document;
     let tag = cx.reactive_tag();
     let mut created = Vec::new();
     let result = cx.build_detached(document, |ui| {
-        let mut st = ViewState::new(tag);
-        st.root_keys = Some(RootKeys {
-            container,
-            positional,
-        });
+        let mut st = ViewState::new_in(tag, Some(host), parent_fragment);
+        st.root_keys = root_keys;
         let built = build(&mut ViewBuilder { ui, st: &mut st }, &mut created);
         (built, st.parts)
     });
@@ -99,10 +112,15 @@ pub(super) fn build_under<P: crate::View>(
     build: impl FnOnce(&mut ViewBuilder<'_, '_, '_>, &mut Vec<ScopeKey>),
 ) -> Result<(), FrameworkError> {
     let tag = cx.reactive_tag();
+    let host = parent.stable_id();
     let mut created = Vec::new();
     let result = cx.build_child(parent, |ui| {
-        let mut st = ViewState::new(tag);
-        build(&mut ViewBuilder { ui, st: &mut st }, &mut created);
+        let mut st = ViewState::new_in(tag, Some(host), None);
+        let mut vb = ViewBuilder { ui, st: &mut st };
+        build(&mut vb, &mut created);
+        if let Some(slots) = vb.take_top_slots_if_fragments() {
+            vb.st.parts.host_slots.push((host, slots));
+        }
         st.parts
     });
     match result {
@@ -116,6 +134,25 @@ pub(super) fn build_under<P: crate::View>(
     }
 }
 
+fn teardown_built(
+    cx: &mut AppContext,
+    built: Built,
+    visible_nodes: &mut Vec<StableNodeId>,
+    immediate_despawn: &mut Vec<StableNodeId>,
+) {
+    reactive::dispose_scope(built.scope);
+    cx.teardown_slot_items(&built.items, visible_nodes, immediate_despawn);
+}
+
+fn forget_built(cx: &mut AppContext, built: Built) {
+    reactive::dispose_scope(built.scope);
+    for item in built.items {
+        if let SlotItem::Fragment(frag) = item {
+            cx.forget_fragment(frag);
+        }
+    }
+}
+
 /// Dispose the scopes of `removed` and despawn their roots, or, under a
 /// transition with a leave, start it and add the root to `leaving`.
 fn remove(
@@ -124,22 +161,29 @@ fn remove(
     transition: Option<&Transition>,
     leaving: &mut Vec<StableNodeId>,
 ) -> Result<(), FrameworkError> {
-    let mut mutations = MutationQueue::new();
+    let mut visible = Vec::new();
+    let mut immediate = Vec::new();
     for built in removed {
-        reactive::dispose_scope(built.scope);
-        for root in built.roots {
-            if !cx.world().contains(root) {
-                continue;
-            }
-            if let Some(transition) = transition
-                && let Some(leave) = &transition.leave
-                && cx.begin_leave(root, leave, transition.moves)?
-            {
-                leaving.push(root);
-                continue;
-            }
+        teardown_built(cx, built, &mut visible, &mut immediate);
+    }
+    let mut mutations = MutationQueue::new();
+    for root in immediate {
+        if cx.world().contains(root) {
             mutations.despawn_subtree(root);
         }
+    }
+    for root in visible {
+        if !cx.world().contains(root) {
+            continue;
+        }
+        if let Some(transition) = transition
+            && let Some(leave) = &transition.leave
+            && cx.begin_leave(root, leave, transition.moves)?
+        {
+            leaving.push(root);
+            continue;
+        }
+        mutations.despawn_subtree(root);
     }
     if mutations.is_empty() {
         return Ok(());
@@ -197,7 +241,7 @@ pub struct Each<T, K, S, KF, RF> {
     key_fn: KF,
     row_fn: RF,
     transition: Option<Transition>,
-    container: Stack,
+    container: Option<Stack>,
     style: ContainerStyle,
     key: Option<Cow<'static, str>>,
     site: &'static Location<'static>,
@@ -220,7 +264,7 @@ where
         key_fn: key,
         row_fn: row,
         transition: None,
-        container: Stack::column(0.0),
+        container: None,
         style: ContainerStyle::default(),
         key: None,
         site: Location::caller(),
@@ -231,13 +275,13 @@ where
 impl<T, K, S, KF, RF> Each<T, K, S, KF, RF> {
     /// Gap between rows.
     pub fn gap(mut self, gap: impl super::Px) -> Self {
-        self.container = Stack::column(gap.px());
+        self.container = Some(Stack::column(gap.px()));
         self
     }
 
     /// Lay rows out horizontally.
     pub fn horizontal(mut self, gap: impl super::Px) -> Self {
-        self.container = Stack::row(gap.px());
+        self.container = Some(Stack::row(gap.px()));
         self
     }
 
@@ -510,10 +554,10 @@ struct EachBinding<K> {
     scope: Option<ScopeKey>,
     rows: HashMap<K, Built>,
     order: Vec<K>,
-    /// Every row's roots, in `order`, and how many each key has. Kept so a
-    /// change in one place takes the unchanged rows' roots from here rather
+    /// Every row's slot items, in `order`, and how many each key has. Kept so
+    /// a change in one place takes the unchanged rows' items from here rather
     /// than look each row up again.
-    roots: Vec<StableNodeId>,
+    items: Vec<SlotItem>,
     spans: Vec<u32>,
 }
 
@@ -527,7 +571,7 @@ impl<K: Eq + Hash + Clone + Send + 'static> EachBinding<K> {
             scope: reactive::current_scope(),
             rows: HashMap::new(),
             order: Vec::new(),
-            roots: Vec::new(),
+            items: Vec::new(),
             spans: Vec::new(),
         }
     }
@@ -545,63 +589,83 @@ impl<K: Eq + Hash + Clone + Send + 'static> EachBinding<K> {
         (changes, fresh)
     }
 
-    /// Takes `changes`' keys as the order, with the roots of the rows they
-    /// have. The rows of the unchanged start and end keep the roots they
-    /// had; only the rows between are looked up.
+    /// Takes `changes`' keys as the order, with the items of the rows they
+    /// have. The rows of the unchanged start and end keep the items they had;
+    /// only the rows between are looked up.
     fn settle(&mut self, changes: Changes<K>) {
         let Changes {
             keys, head, tail, ..
         } = changes;
         let count = |spans: &[u32]| spans.iter().map(|span| *span as usize).sum::<usize>();
-        let head_roots = count(&self.spans[..head]);
+        let head_items = count(&self.spans[..head]);
         let tail_spans = &self.spans[self.spans.len() - tail..];
-        let tail_roots = &self.roots[self.roots.len() - count(tail_spans)..];
-        let mut roots = Vec::with_capacity(self.roots.len() + keys.len() - head - tail);
+        let tail_items = &self.items[self.items.len() - count(tail_spans)..];
+        let mut items = Vec::with_capacity(self.items.len() + keys.len() - head - tail);
         let mut spans = Vec::with_capacity(keys.len());
-        roots.extend_from_slice(&self.roots[..head_roots]);
+        items.extend_from_slice(&self.items[..head_items]);
         spans.extend_from_slice(&self.spans[..head]);
         for key in &keys[head..keys.len() - tail] {
-            let row = self.rows.get(key).map_or(&[][..], |built| &built.roots);
-            roots.extend_from_slice(row);
+            let row = self.rows.get(key).map_or(&[][..], |built| &built.items);
+            items.extend_from_slice(row);
             spans.push(row.len() as u32);
         }
-        roots.extend_from_slice(tail_roots);
+        items.extend_from_slice(tail_items);
         spans.extend_from_slice(tail_spans);
         self.order = keys;
-        self.roots = roots;
+        self.items = items;
         self.spans = spans;
     }
 
-    /// Build the rows under `container`, placed already, and keep them
-    /// bound to the items.
+    /// Build the rows under `host`, placed already, and keep them bound to
+    /// the items.
     #[inline(never)]
     fn mount(
         mut self,
         vb: &mut ViewBuilder<'_, '_, '_>,
-        container: StableNodeId,
+        host: StableNodeId,
+        parent_fragment: Option<FragmentId>,
+        boxed: bool,
         site: &'static Location<'static>,
     ) {
-        let effect =
-            reactive::create_effect(vb.st.tag, EffectTarget::Structural(container), None, site);
+        let frag = FragmentId::next();
+        let effect = reactive::create_effect(vb.st.tag, EffectTarget::Fragment(frag), None, site);
         let (changes, fresh) = reactive::run_tracked(effect, || {
             Self::read(&*self.source, &self.order, &self.rows)
         });
         let mut fresh = Some(fresh);
         let mut built = Vec::new();
         let scope = self.scope;
-        vb.nest_dyn(container, &mut |vb| {
-            if let Some(fresh) = fresh.take() {
-                built = Self::build_rows(vb, scope, fresh);
-            }
-        });
-        // The rows it held borrow the source, which goes into the box below.
+        if boxed {
+            vb.nest_dyn(host, &mut |vb| {
+                vb.record_fragment(frag);
+                vb.build_fragment_slots(host, frag, &mut |vb| {
+                    if let Some(fresh) = fresh.take() {
+                        built = Self::build_rows(vb, scope, fresh);
+                    }
+                });
+            });
+        } else {
+            vb.record_fragment(frag);
+            vb.build_fragment_slots(host, frag, &mut |vb| {
+                if let Some(fresh) = fresh.take() {
+                    built = Self::build_rows(vb, scope, fresh);
+                }
+            });
+        }
+        // The rows it held borrow the source, which goes into the decl below.
         drop(fresh);
         self.rows.extend(built);
         self.settle(changes);
-        vb.st
-            .parts
-            .structural
-            .push((container, effect, Box::new(self)));
+        let items = self.items.clone();
+        vb.st.parts.fragments.push(FragmentDecl {
+            id: frag,
+            host,
+            parent: parent_fragment,
+            boxed,
+            effect,
+            items,
+            binding: Box::new(self),
+        });
     }
 
     fn build_rows(
@@ -637,8 +701,28 @@ where
             site,
             ..
         } = self;
-        if let Some(container) = container(stack.structural(), key, style, site).place(vb) {
-            each_binding(items, key_fn, row_fn, transition).mount(vb, container.stable_id(), site);
+        let boxed =
+            stack.is_some() || key.is_some() || !style.is_empty() || vb.fragment_host().is_none();
+        if boxed {
+            let stack = stack.unwrap_or_else(|| Stack::column(0.0));
+            if let Some(container) = container(stack.structural(), key, style, site).place(vb) {
+                each_binding(items, key_fn, row_fn, transition).mount(
+                    vb,
+                    container.stable_id(),
+                    None,
+                    true,
+                    site,
+                );
+            }
+        } else if let Some(host) = vb.fragment_host() {
+            let parent_fragment = vb.parent_fragment();
+            each_binding(items, key_fn, row_fn, transition).mount(
+                vb,
+                host,
+                parent_fragment,
+                false,
+                site,
+            );
         }
     }
 }
@@ -663,7 +747,13 @@ where
             ..
         } = self.each;
         if let Some(container) = self.element.place(vb) {
-            each_binding(items, key_fn, row_fn, transition).mount(vb, container.stable_id(), site);
+            each_binding(items, key_fn, row_fn, transition).mount(
+                vb,
+                container.stable_id(),
+                None,
+                true,
+                site,
+            );
         }
     }
 }
@@ -694,14 +784,17 @@ where
     )
 }
 
-impl<K: Eq + Hash + Clone + Send + 'static> StructuralBinding for EachBinding<K> {
+impl<K: Eq + Hash + Clone + Send + 'static> FragmentBinding for EachBinding<K> {
     #[inline(never)]
     fn update(
         &mut self,
         cx: &mut AppContext,
-        container: StableNodeId,
+        frag: FragmentId,
         effect: EffectKey,
     ) -> Result<(), FrameworkError> {
+        let Some(host) = cx.fragment_host(frag) else {
+            return Ok(());
+        };
         let (changes, fresh) = reactive::run_tracked(effect, || {
             Self::read(&*self.source, &self.order, &self.rows)
         });
@@ -714,12 +807,16 @@ impl<K: Eq + Hash + Clone + Send + 'static> StructuralBinding for EachBinding<K>
             .collect();
         // Where kept rows are before the change, to slide them from.
         let firsts: Vec<_> = match moves {
-            Some(_) => self
-                .rows
-                .values()
-                .flat_map(|built| built.roots.iter().copied())
-                .filter_map(|root| Some((root, cx.flip_first(root)?)))
-                .collect(),
+            Some(_) => {
+                let mut nodes = Vec::new();
+                for built in self.rows.values() {
+                    cx.flatten_slot_items(&built.items, host, &mut nodes);
+                }
+                nodes
+                    .into_iter()
+                    .filter_map(|root| Some((root, cx.flip_first(root)?)))
+                    .collect()
+            }
             None => Vec::new(),
         };
         self.leaving.retain(|root| cx.is_leaving(*root));
@@ -730,27 +827,29 @@ impl<K: Eq + Hash + Clone + Send + 'static> StructuralBinding for EachBinding<K>
             drop(fresh);
         } else {
             let scope = self.scope;
-            let built = build_detached_into(cx, container, false, |vb, created| {
+            let root_keys = fragment_root_keys(cx, frag, host, false);
+            let built = build_detached_into(cx, host, Some(frag), root_keys, |vb, created| {
                 let built = Self::build_rows(vb, scope, fresh);
                 created.extend(built.iter().map(|(_, built)| built.scope));
                 built
             })?;
             if transition.is_some_and(|transition| transition.enter.is_some()) {
-                entered.extend(
-                    built
-                        .iter()
-                        .flat_map(|(_, built)| built.roots.iter().copied()),
-                );
+                for (_, built) in &built {
+                    cx.flatten_slot_items(&built.items, host, &mut entered);
+                }
             }
             self.rows.extend(built);
         }
         self.settle(changes);
-        if self.leaving.is_empty() {
-            cx.reconcile_children(container, &self.roots)?;
+        cx.set_fragment_items(frag, self.items.clone(), self.leaving.clone());
+        let mut desired = Vec::new();
+        cx.flatten_slot_items(&self.items, host, &mut desired);
+        let ordered = if self.leaving.is_empty() {
+            desired
         } else {
-            let ordered = with_leaving(cx, container, self.roots.clone(), &self.leaving);
-            cx.reconcile_children(container, &ordered)?;
-        }
+            with_leaving(cx, host, desired, &self.leaving)
+        };
+        cx.splice_fragment_children(frag, &ordered)?;
         if let Some(enter) = transition.and_then(|transition| transition.enter) {
             cx.begin_enter(&entered, &enter)?;
         }
@@ -760,6 +859,24 @@ impl<K: Eq + Hash + Clone + Send + 'static> StructuralBinding for EachBinding<K>
             }
         }
         Ok(())
+    }
+
+    fn teardown(
+        &mut self,
+        cx: &mut AppContext,
+        visible_nodes: &mut Vec<StableNodeId>,
+        immediate_despawn: &mut Vec<StableNodeId>,
+    ) {
+        for (_, built) in self.rows.drain() {
+            teardown_built(cx, built, visible_nodes, immediate_despawn);
+        }
+        immediate_despawn.append(&mut self.leaving);
+    }
+
+    fn forget(&mut self, cx: &mut AppContext) {
+        for (_, built) in self.rows.drain() {
+            forget_built(cx, built);
+        }
     }
 }
 
@@ -1018,19 +1135,28 @@ fn build_switch<K: Clone + PartialEq + Send + 'static>(
         style,
         grow,
     } = options;
-    let mut column = Stack::column(0.0);
-    if grow {
-        let layout = column.layout_mut();
-        layout.flex_grow = Some(1.0);
-        layout.flex_shrink = Some(1.0);
-        layout.flex_basis = Some(nana_ui_core::LengthSpec::Px(0.0));
-        layout.min_height = Some(nana_ui_core::LengthSpec::Px(0.0));
-    }
-    let Some(container) = container(column.structural(), node_key, style, site).place(vb) else {
+    let boxed = grow || node_key.is_some() || !style.is_empty() || vb.fragment_host().is_none();
+    let (host, parent_fragment) = if boxed {
+        let mut column = Stack::column(0.0);
+        if grow {
+            let layout = column.layout_mut();
+            layout.flex_grow = Some(1.0);
+            layout.flex_shrink = Some(1.0);
+            layout.flex_basis = Some(nana_ui_core::LengthSpec::Px(0.0));
+            layout.min_height = Some(nana_ui_core::LengthSpec::Px(0.0));
+        }
+        let Some(container) = container(column.structural(), node_key, style, site).place(vb)
+        else {
+            return;
+        };
+        (container.stable_id(), None)
+    } else if let Some(host) = vb.fragment_host() {
+        (host, vb.parent_fragment())
+    } else {
         return;
     };
-    let id = container.stable_id();
-    let effect = reactive::create_effect(vb.st.tag, EffectTarget::Structural(id), None, site);
+    let frag = FragmentId::next();
+    let effect = reactive::create_effect(vb.st.tag, EffectTarget::Fragment(frag), None, site);
     let shown = reactive::run_tracked(effect, &key);
     let mut binding = SwitchBinding {
         key,
@@ -1044,13 +1170,39 @@ fn build_switch<K: Clone + PartialEq + Send + 'static>(
         holder: None,
         leaving: Vec::new(),
     };
-    vb.nest(container, |vb| {
-        if binding.render.exists(&binding.shown) {
-            let (render, shown) = (&binding.render, &binding.shown);
-            binding.branch = Some(build_scoped(vb, binding.scope, || render.make(shown)));
-        }
+    if boxed {
+        vb.nest_dyn(host, &mut |vb| {
+            vb.record_fragment(frag);
+            vb.build_fragment_slots(host, frag, &mut |vb| {
+                if binding.render.exists(&binding.shown) {
+                    let (render, shown) = (&binding.render, &binding.shown);
+                    binding.branch = Some(build_scoped(vb, binding.scope, || render.make(shown)));
+                }
+            });
+        });
+    } else {
+        vb.record_fragment(frag);
+        vb.build_fragment_slots(host, frag, &mut |vb| {
+            if binding.render.exists(&binding.shown) {
+                let (render, shown) = (&binding.render, &binding.shown);
+                binding.branch = Some(build_scoped(vb, binding.scope, || render.make(shown)));
+            }
+        });
+    }
+    let items = binding
+        .branch
+        .as_ref()
+        .map(|branch| branch.items.clone())
+        .unwrap_or_default();
+    vb.st.parts.fragments.push(FragmentDecl {
+        id: frag,
+        host,
+        parent: parent_fragment,
+        boxed,
+        effect,
+        items,
+        binding: Box::new(binding),
     });
-    vb.st.parts.structural.push((id, effect, Box::new(binding)));
 }
 
 struct SwitchBinding<K> {
@@ -1062,21 +1214,22 @@ struct SwitchBinding<K> {
     shown: K,
     branch: Option<Built>,
     /// Branches kept alive, the one shown longest ago first, with the keys
-    /// their roots held under the container: a branch shown after them may
-    /// take the same keys, and a kept branch shown again takes them back.
+    /// their roots held under the host: a branch shown after them may take
+    /// the same keys, and a kept branch shown again takes them back.
     kept: Vec<(K, Built, Vec<crate::framework::AssembledKey>)>,
-    /// The hidden stack kept branches wait in, created on first use.
+    /// The parked hidden stack kept branches wait in, created on first use.
     holder: Option<StableNodeId>,
     leaving: Vec<StableNodeId>,
 }
 
 impl<K: Clone + PartialEq + Send + 'static> SwitchBinding<K> {
-    /// Move `branch` into the hidden holder, dropping the oldest kept
+    /// Move `branch` into the parked hidden holder, dropping the oldest kept
     /// branches beyond the limit.
     fn stash(
         &mut self,
         cx: &mut AppContext,
-        container: StableNodeId,
+        frag: FragmentId,
+        host: StableNodeId,
         key: K,
         branch: Built,
         limit: usize,
@@ -1086,41 +1239,47 @@ impl<K: Clone + PartialEq + Send + 'static> SwitchBinding<K> {
             None => {
                 let document = cx
                     .world()
-                    .node(container)
-                    .ok_or(FrameworkError::MissingView(container))?
+                    .node(host)
+                    .ok_or(FrameworkError::MissingView(host))?
                     .document;
                 let hidden = Stack::column(0.0).with_layout(|layout| layout.hidden = true);
-                let holder = cx.create_component(document, hidden)?.stable_id();
+                let holder = cx.create_detached_component(document, hidden)?.stable_id();
                 self.holder = Some(holder);
+                cx.mark_out_of_host_fragment(frag, true);
                 holder
             }
         };
+        let mut all_nodes = Vec::new();
+        cx.flatten_all_live_nodes(&branch.items, &mut all_nodes);
         let mut mutations = MutationQueue::new();
-        if let Some(document) = cx.world().node(container).map(|node| node.document)
+        if let Some(document) = cx.world().node(host).map(|node| node.document)
             && cx.world().focused(document).is_some_and(|focused| {
-                branch
-                    .roots
+                all_nodes
                     .iter()
                     .any(|root| cx.world().is_descendant_or_self(focused, *root))
             })
         {
             mutations.request_focus(document, None);
         }
-        for root in &branch.roots {
-            if cx.world().contains(*root) {
-                mutations.insert(holder, *root, None);
+        let mut host_nodes = Vec::new();
+        cx.flatten_slot_items(&branch.items, host, &mut host_nodes);
+        for root in host_nodes {
+            if cx.world().contains(root) {
+                mutations.insert(holder, root, None);
             }
         }
-        let keys = branch
-            .roots
+        cx.retarget_slot_items(&branch.items, host, holder);
+        let keys = all_nodes
             .iter()
-            .filter_map(|root| cx.assembled_key(container, *root))
+            .filter_map(|root| cx.assembled_key(host, *root))
             .collect();
         self.kept.push((key, branch, keys));
         while self.kept.len() > limit {
             let (_, evicted, _) = self.kept.remove(0);
-            reactive::dispose_scope(evicted.scope);
-            for root in evicted.roots {
+            let mut evict_vis = Vec::new();
+            let mut evict_imm = Vec::new();
+            teardown_built(cx, evicted, &mut evict_vis, &mut evict_imm);
+            for root in evict_vis.into_iter().chain(evict_imm) {
                 if cx.world().contains(root) {
                     mutations.despawn_subtree(root);
                 }
@@ -1130,13 +1289,16 @@ impl<K: Clone + PartialEq + Send + 'static> SwitchBinding<K> {
     }
 }
 
-impl<K: Clone + PartialEq + Send + 'static> StructuralBinding for SwitchBinding<K> {
+impl<K: Clone + PartialEq + Send + 'static> FragmentBinding for SwitchBinding<K> {
     fn update(
         &mut self,
         cx: &mut AppContext,
-        container: StableNodeId,
+        frag: FragmentId,
         effect: EffectKey,
     ) -> Result<(), FrameworkError> {
+        let Some(host) = cx.fragment_host(frag) else {
+            return Ok(());
+        };
         let shown = reactive::run_tracked(effect, &self.key);
         if shown == self.shown {
             return Ok(());
@@ -1152,44 +1314,105 @@ impl<K: Clone + PartialEq + Send + 'static> StructuralBinding for SwitchBinding<
             .map(|at| self.kept.remove(at));
         if let Some(branch) = self.branch.take() {
             match self.keep_alive {
-                Some(limit) => self.stash(cx, container, previous, branch, limit)?,
+                Some(limit) => self.stash(cx, frag, host, previous, branch, limit)?,
                 None => remove(cx, vec![branch], transition.as_ref(), &mut self.leaving)?,
             }
         }
         let branch = match kept {
             Some((_, branch, keys)) => {
                 for key in keys {
-                    cx.rekey_assembled(container, key);
+                    cx.rekey_assembled(host, key);
+                }
+                if let Some(holder) = self.holder {
+                    cx.retarget_slot_items(&branch.items, holder, host);
                 }
                 Some(branch)
             }
             None if self.render.exists(&shown) => {
                 let (render, scope) = (&self.render, self.scope);
-                Some(build_detached_into(cx, container, true, |vb, created| {
-                    let built = build_scoped(vb, scope, || render.make(&shown));
-                    created.push(built.scope);
-                    built
-                })?)
+                let root_keys = fragment_root_keys(cx, frag, host, true);
+                Some(build_detached_into(
+                    cx,
+                    host,
+                    Some(frag),
+                    root_keys,
+                    |vb, created| {
+                        let built = build_scoped(vb, scope, || render.make(&shown));
+                        created.push(built.scope);
+                        built
+                    },
+                )?)
             }
             None => None,
         };
-        let roots = branch
+        let items = branch
             .as_ref()
-            .map(|branch| branch.roots.clone())
+            .map(|branch| branch.items.clone())
             .unwrap_or_default();
         self.branch = branch;
+        cx.set_fragment_items(frag, items.clone(), self.leaving.clone());
+        let mut roots = Vec::new();
+        cx.flatten_slot_items(&items, host, &mut roots);
         let ordered = self
             .leaving
             .iter()
             .copied()
             .chain(roots.iter().copied())
-            .chain(self.holder.filter(|holder| cx.world().contains(*holder)))
             .collect::<Vec<_>>();
-        cx.reconcile_children(container, &ordered)?;
+        cx.splice_fragment_children(frag, &ordered)?;
         if let Some(enter) = transition.and_then(|transition| transition.enter) {
             cx.begin_enter(&roots, &enter)?;
         }
         Ok(())
+    }
+
+    fn collect_external_nodes(&self, cx: &AppContext, out: &mut Vec<StableNodeId>) {
+        if let Some(holder) = self.holder
+            && cx.world().contains(holder)
+        {
+            out.push(holder);
+        }
+        for (_, branch, _) in &self.kept {
+            let mut nodes = Vec::new();
+            cx.flatten_all_live_nodes(&branch.items, &mut nodes);
+            for node in nodes {
+                if self
+                    .holder
+                    .is_none_or(|holder| !cx.world().is_descendant_or_self(node, holder))
+                {
+                    out.push(node);
+                }
+            }
+        }
+    }
+
+    fn teardown(
+        &mut self,
+        cx: &mut AppContext,
+        visible_nodes: &mut Vec<StableNodeId>,
+        immediate_despawn: &mut Vec<StableNodeId>,
+    ) {
+        if let Some(branch) = self.branch.take() {
+            teardown_built(cx, branch, visible_nodes, immediate_despawn);
+        }
+        for (_, branch, _) in self.kept.drain(..) {
+            let mut kept_nodes = Vec::new();
+            teardown_built(cx, branch, &mut kept_nodes, immediate_despawn);
+            immediate_despawn.extend(kept_nodes);
+        }
+        if let Some(holder) = self.holder.take() {
+            immediate_despawn.push(holder);
+        }
+        immediate_despawn.append(&mut self.leaving);
+    }
+
+    fn forget(&mut self, cx: &mut AppContext) {
+        if let Some(branch) = self.branch.take() {
+            forget_built(cx, branch);
+        }
+        for (_, branch, _) in self.kept.drain(..) {
+            forget_built(cx, branch);
+        }
     }
 }
 

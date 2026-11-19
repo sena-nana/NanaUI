@@ -49,9 +49,9 @@ A duplicate key keeps only the first and skips the rest.
 Do not write `v-for` and `v-if` on the same element. That is a template error and does not become "filter, then loop".
 :::
 
-## Container
+## Fragments and explicit containers
 
-`each` puts its rows in a container, by default a column with a gap of 0. Row spacing comes from `.gap(8)`. For a horizontal row, use `.horizontal(8)`.
+Inside a host parent, `each` defaults to a **boxless fragment**: rows are spliced directly into the host parent's child list, an empty list takes zero space and zero `gap`, and each row participates directly in the parent's flex or grid layout. Only explicit container options such as `.gap(8)`, `.horizontal(8)`, `.class(..)`, or `.key(..)` (or a host-less boundary) materialize a wrapper `Stack`:
 
 ```rust
 use nana_ui::runtime::view::each;
@@ -59,13 +59,13 @@ use nana_ui::runtime::view::each;
 each(list, |todo| todo.id, |todo| text(todo.title)).gap(8)
 ```
 
-To add a class to this container in a template, wrap that one `v-for` element in `<Block class="strip">`. The `v-for` element's own `class` lands on each row, not on the container.
+To wrap that `v-for` in an explicit styled container in a template, wrap that one `v-for` element in `<Block class="strip">`. The `v-for` element's own `class` still lands on each row.
 
 Do not use `each` for a fixed set of children. When the count is fixed, use a tuple. A tree-building `for` goes inside `.with(|c| { … })`; it runs once and does not follow a later `push`.
 
 ## Keys also serve lookup
 
-A static node with no key is named by position, as `#v0`, `#v1` and so on. Write `.key("title")` on a node only when `resolve_assembly_path` has to find it by name. Each row in `each` is its own range: different rows can write the same key without covering each other. A row added after mount is registered under this container too.
+A static node with no key is named by position, as `#v0`, `#v1` and so on. Write `.key("title")` on a node only when `resolve_assembly_path` has to find it by name. Each row in `each` is its own range: different rows can write the same key without covering each other. Explicitly keyed nodes in a row added after mount are registered under their container too.
 
 For a `Store` list use `keyed(|item| item.id).each(|item| …)`; the key is already in `keyed`, and the row closure is only the view. See [Reactivity](https://github.com/sena-nana/NanaUI/blob/main/docs/guide/essentials/reactivity.md).
 

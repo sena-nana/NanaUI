@@ -24,9 +24,9 @@
 use std::borrow::Cow;
 use std::panic::Location;
 
-use super::node::{IntoView, StructuralBinding, ViewBuilder};
+use super::node::{FragmentBinding, FragmentDecl, IntoView, SlotItem, ViewBuilder};
 use super::prop::{IntoProp, PropSource};
-use super::reactive::{self, EffectKey, EffectTarget, on_mount};
+use super::reactive::{self, EffectKey, EffectTarget, FragmentId, on_mount};
 use super::structural::container;
 use super::style::{ContainerStyle, container_styles};
 use crate::{AppContext, FrameworkError, StableNodeId, Stack};
@@ -66,64 +66,142 @@ impl<V> Teleport<V> {
 
 container_styles!([V] Teleport<V>);
 
-/// Put `roots` under `to` when it exists, else back under `anchor`.
-fn place(
-    cx: &mut AppContext,
-    anchor: StableNodeId,
-    roots: &[StableNodeId],
-    to: Option<StableNodeId>,
-) -> Result<(), FrameworkError> {
-    let parent = to
-        .filter(|target| cx.world().contains(*target))
-        .unwrap_or(anchor);
-    for &root in roots {
-        if cx.world().contains(root) && cx.world().parent_id(root) != Some(parent) {
-            cx.place_assembled(root, parent)?;
-        }
-    }
-    Ok(())
-}
-
 struct TeleportBinding {
     to: PropSource<Option<StableNodeId>>,
-    roots: Vec<StableNodeId>,
+    items: Vec<SlotItem>,
+    placed_target: Option<StableNodeId>,
 }
 
-impl StructuralBinding for TeleportBinding {
+impl FragmentBinding for TeleportBinding {
     fn update(
         &mut self,
         cx: &mut AppContext,
-        anchor: StableNodeId,
+        frag: FragmentId,
         effect: EffectKey,
     ) -> Result<(), FrameworkError> {
+        let Some(host) = cx.fragment_host(frag) else {
+            return Ok(());
+        };
         let to = reactive::run_tracked(effect, || self.to.get());
-        place(cx, anchor, &self.roots, to)
+        let prev_container = self.placed_target.unwrap_or(host);
+        let mut nodes = Vec::new();
+        cx.flatten_slot_items(&self.items, prev_container, &mut nodes);
+        let actual_target = if self.placed_target.is_none()
+            && to
+                .filter(|t| *t != host && cx.world().contains(*t))
+                .is_none()
+        {
+            // Already at home inside `host`: only verify when valid target exists.
+            None
+        } else {
+            cx.teleport_place_nodes(frag, &nodes, to)?
+        };
+        let new_container = actual_target.unwrap_or(host);
+        if new_container != prev_container {
+            cx.retarget_slot_items(&self.items, prev_container, new_container);
+        }
+        self.placed_target = actual_target;
+        cx.mark_out_of_host_fragment(frag, actual_target.is_some());
+        Ok(())
+    }
+
+    fn collect_external_nodes(&self, cx: &AppContext, out: &mut Vec<StableNodeId>) {
+        if let Some(target) = self.placed_target {
+            cx.flatten_slot_items(&self.items, target, out);
+        }
+    }
+
+    fn placed_target(&self) -> Option<StableNodeId> {
+        self.placed_target
+    }
+
+    fn clear_placed_target(&mut self) {
+        self.placed_target = None;
+    }
+
+    fn teardown(
+        &mut self,
+        cx: &mut AppContext,
+        visible_nodes: &mut Vec<StableNodeId>,
+        immediate_despawn: &mut Vec<StableNodeId>,
+    ) {
+        if self.placed_target.is_some() {
+            let mut placed = Vec::new();
+            cx.teardown_slot_items(&self.items, &mut placed, immediate_despawn);
+            immediate_despawn.extend(placed);
+        } else {
+            cx.teardown_slot_items(&self.items, visible_nodes, immediate_despawn);
+        }
+    }
+
+    fn forget(&mut self, cx: &mut AppContext) {
+        for item in &self.items {
+            if let SlotItem::Fragment(frag) = *item {
+                cx.forget_fragment(frag);
+            }
+        }
     }
 }
 
 impl<V: IntoView> IntoView for Teleport<V> {
     fn build(self, vb: &mut ViewBuilder<'_, '_, '_>) {
-        let Some(anchor) = container(Stack::column(0.0), self.key, self.style, self.site).place(vb)
-        else {
+        let boxed = self.key.is_some() || !self.style.is_empty() || vb.fragment_host().is_none();
+        let (host, parent_fragment) = if boxed {
+            let Some(anchor) = container(
+                Stack::column(0.0).structural(),
+                self.key,
+                self.style,
+                self.site,
+            )
+            .place(vb) else {
+                return;
+            };
+            (anchor.stable_id(), None)
+        } else if let Some(host) = vb.fragment_host() {
+            (host, vb.parent_fragment())
+        } else {
             return;
         };
-        let id = anchor.stable_id();
-        let mut roots = Vec::new();
-        let content = self.content;
-        vb.nest(anchor, |vb| roots = vb.build_collect(content));
+        let frag = FragmentId::next();
         let effect =
-            reactive::create_effect(vb.st.tag, EffectTarget::Structural(id), None, self.site);
-        let to = self.to;
-        let first = reactive::run_tracked(effect, || to.get());
-        let placed = roots.clone();
-        // The target may be declared after this in the same view: place
-        // once everything is in the tree.
+            reactive::create_effect(vb.st.tag, EffectTarget::Fragment(frag), None, self.site);
+        let mut items = Vec::new();
+        let mut content = Some(self.content);
+        if boxed {
+            vb.nest_dyn(host, &mut |vb| {
+                vb.record_fragment(frag);
+                items = vb.build_fragment_slots(host, frag, &mut |vb| {
+                    if let Some(content) = content.take() {
+                        vb.build_collect_slots(content);
+                    }
+                });
+            });
+        } else {
+            vb.record_fragment(frag);
+            items = vb.build_fragment_slots(host, frag, &mut |vb| {
+                if let Some(content) = content.take() {
+                    vb.build_collect_slots(content);
+                }
+            });
+        }
+        let binding = TeleportBinding {
+            to: self.to,
+            items: items.clone(),
+            placed_target: None,
+        };
+        // The target may be declared after this in the same view: place once
+        // everything is in the tree.
         on_mount(move |cx| {
-            let _ = place(cx, id, &placed, first);
+            let _ = cx.run_fragment_now(frag);
         });
-        vb.st
-            .parts
-            .structural
-            .push((id, effect, Box::new(TeleportBinding { to, roots })));
+        vb.st.parts.fragments.push(FragmentDecl {
+            id: frag,
+            host,
+            parent: parent_fragment,
+            boxed,
+            effect,
+            items,
+            binding: Box::new(binding),
+        });
     }
 }

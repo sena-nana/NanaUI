@@ -2107,6 +2107,10 @@ impl AppContext {
             ));
         }
         self.prepare_surface_closing(&mut mutations);
+        if let Some(rescued) = self.despawn_or_rescue_out_of_host_fragments(&mut mutations) {
+            // Before placed-children rescue and subtree collection read the world.
+            self.commit_mutations(rescued)?;
+        }
         if let Some(rescued) = self.despawn_placed_with_declared_parents(&mut mutations) {
             // Before the batch reads which subtrees it despawns.
             self.commit_mutations(rescued)?;

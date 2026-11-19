@@ -1779,6 +1779,8 @@ impl AppContext {
             changed |= self.reconcile_children(body, &rows)?;
         }
         changed |= self.reconcile_children(id, &[header, body])?;
+        self.retarget_fragments(id, body);
+        self.watch_child_structure(id, Some(body));
         Ok(changed)
     }
 }
