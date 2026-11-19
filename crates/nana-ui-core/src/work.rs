@@ -1214,6 +1214,8 @@ pub struct ThemeWorkCounters {
     pub scope_cache_misses: usize,
     /// `ThemeScope` generation advances (#104).
     pub scope_generation_changes: usize,
+    /// Number of non-root `ThemeScope` instances active after the pass (#104).
+    pub theme_scopes_active: usize,
 }
 
 impl ThemeWorkCounters {
@@ -1344,6 +1346,7 @@ impl ThemeWorkCounters {
 accumulate_counters! {
     /// Fold another pass into this snapshot.
     ThemeWorkCounters {
+        max: theme_scopes_active;
         sum: style_nodes_considered, style_nodes_resolved, style_nodes_skipped, theme_reads,
             style_allocations, style_allocated_bytes, layout_copies, layout_copied_bytes,
             layout_nodes_from_style, text_nodes_from_style, paint_nodes_from_style,
@@ -1795,5 +1798,25 @@ mod tests {
         assert_eq!(total.paint_nodes_from_style, 240);
         assert_eq!(total.layout_nodes_from_style, 8);
         assert_eq!(total.text_nodes_from_style, 4);
+    }
+
+    #[test]
+    fn theme_work_counters_tracks_active_scopes_with_max_and_idle_stays_true() {
+        let mut first = ThemeWorkCounters {
+            theme_scopes_active: 3,
+            ..ThemeWorkCounters::default()
+        };
+        assert!(first.is_idle());
+        let second = ThemeWorkCounters {
+            theme_scopes_active: 5,
+            ..ThemeWorkCounters::default()
+        };
+        first.accumulate(second);
+        assert_eq!(first.theme_scopes_active, 5);
+        first.accumulate(ThemeWorkCounters {
+            theme_scopes_active: 2,
+            ..ThemeWorkCounters::default()
+        });
+        assert_eq!(first.theme_scopes_active, 5);
     }
 }

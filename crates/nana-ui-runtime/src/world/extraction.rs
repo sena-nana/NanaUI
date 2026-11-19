@@ -222,7 +222,12 @@ impl UiWorld {
             || overlay_fg.is_some()
         {
             let layout_mut = Arc::make_mut(&mut source_style.layout);
-            if layout_mut.has_dynamic_paint_colors() {
+            if !style.paint_colors.has_dynamic_theme() {
+                layout_mut.apply_pre_resolved_paint_colors(&style.paint_colors);
+                if layout_mut.has_dynamic_paint() {
+                    layout_mut.resolve_theme_paint(model);
+                }
+            } else if layout_mut.has_dynamic_paint_colors() {
                 layout_mut.resolve_theme_colors(model);
             }
             if let Some(bg) = overlay_bg {

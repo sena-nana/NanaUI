@@ -1602,4 +1602,89 @@ mod tests {
         assert_eq!(accent_of(&host, WindowId::PRIMARY), owner_accent_updated);
         assert_eq!(accent_of(&host, aux_id), owner_accent_updated);
     }
+
+    #[test]
+    fn three_window_dark_light_compact_metrics_isolate_cross_invalidation() {
+        let base_dark = crate::theme::builtin_theme_arc(ThemeAppearance::Dark);
+        let base_light = crate::theme::builtin_theme_arc(ThemeAppearance::Light);
+        let compact_dark = Arc::new(
+            ThemePatch::default()
+                .with_metrics_patch(nana_ui_core::ThemeMetricsPatch {
+                    control_height: Some(26.0),
+                    ..Default::default()
+                })
+                .apply_to_compiled(&base_dark)
+                .unwrap(),
+        );
+        let light_accent = SemanticColor::rgb8(30, 140, 230);
+        let light_v2 = Arc::new(
+            ThemePatch::default()
+                .with_color(SemanticColorRole::Accent, light_accent)
+                .apply_to_compiled(&base_light)
+                .unwrap(),
+        );
+
+        let mut host = HeadlessRuntime::<MultiWindowThemeProgram>::new(
+            crate::test_gpu::private_context(),
+            WindowDescriptor::new("DarkMain"),
+            headless_geometry((320.0, 240.0), 1.0),
+            HeadlessOptions::default(),
+        )
+        .expect("init 3-window headless host");
+
+        let mut light_req = host
+            .service
+            .create_window(WindowDescriptor::new("LightWin"));
+        let mut compact_req = host
+            .service
+            .create_window(WindowDescriptor::new("CompactWin"));
+        let _ = host.turn();
+        let light_id = light_req.try_take().unwrap().unwrap().id();
+        let compact_id = compact_req.try_take().unwrap().unwrap().id();
+
+        (host.dispatch)(Msg::SetWindowTheme(light_id, Some(Arc::clone(&base_light))));
+        (host.dispatch)(Msg::SetWindowTheme(
+            compact_id,
+            Some(Arc::clone(&compact_dark)),
+        ));
+        let _ = host.turn();
+
+        let snapshot = |h: &HeadlessRuntime<MultiWindowThemeProgram>, id: WindowId| {
+            h.with_document(id, |doc| {
+                let world = doc.context().world();
+                let t = world.theme();
+                (
+                    t.appearance(),
+                    t.palette().accent,
+                    t.metrics().control_height,
+                    world.theme_generations(),
+                )
+            })
+            .unwrap()
+            .unwrap()
+        };
+
+        let dark_before = snapshot(&host, WindowId::PRIMARY);
+        let light_before = snapshot(&host, light_id);
+        let compact_before = snapshot(&host, compact_id);
+
+        assert_eq!(dark_before.0, ThemeAppearance::Dark);
+        assert_eq!(light_before.0, ThemeAppearance::Light);
+        assert_eq!(compact_before.0, ThemeAppearance::Dark);
+        assert_eq!(compact_before.2, 26.0);
+        assert_ne!(compact_before.2, dark_before.2);
+
+        // Switching only `light_id` must not cross-invalidate `PRIMARY` or `compact_id`.
+        (host.dispatch)(Msg::SetWindowTheme(light_id, Some(light_v2)));
+        let _ = host.turn();
+
+        let dark_after = snapshot(&host, WindowId::PRIMARY);
+        let light_after = snapshot(&host, light_id);
+        let compact_after = snapshot(&host, compact_id);
+
+        assert_eq!(light_after.1, light_accent);
+        assert_ne!(light_after.3, light_before.3);
+        assert_eq!(dark_after, dark_before);
+        assert_eq!(compact_after, compact_before);
+    }
 }

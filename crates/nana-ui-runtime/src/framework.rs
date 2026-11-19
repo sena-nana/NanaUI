@@ -2335,7 +2335,12 @@ impl AppContext {
     /// for the next commit instead.
     fn reproject_metrics_views(&mut self) -> Result<(), FrameworkError> {
         for (id, reproject) in self.collect_reproject_targets(&self.metrics_reproject_types) {
-            if self.views.contains_key(&id) {
+            if self.views.contains_key(&id)
+                && !self
+                    .world
+                    .document_of(id)
+                    .is_some_and(|doc| self.world.has_document_theme(doc))
+            {
                 reproject(self, id)?;
             }
         }
@@ -2398,6 +2403,12 @@ impl AppContext {
         let targets: Vec<(StableNodeId, ChildReprojectFn)> = self
             .views
             .iter()
+            .filter(|(id, _)| {
+                !self
+                    .world
+                    .document_of(**id)
+                    .is_some_and(|doc| self.world.has_document_theme(doc))
+            })
             .filter_map(|(&id, view)| {
                 self.recipe_reproject_types
                     .get(&view.as_ref().type_id())
@@ -2559,6 +2570,11 @@ impl AppContext {
     /// Aggregate count of live nodes partitioned by tracked theme dependency category (#109).
     pub fn theme_dependency_summary(&self) -> crate::ThemeDependencySummary {
         self.world.theme_dependency_summary()
+    }
+
+    /// Number of currently active non-root [`ThemeScope`](nana_ui_core::ThemeScopeId)s (#104).
+    pub fn active_theme_scopes(&self) -> usize {
+        self.world.active_theme_scopes()
     }
 
     /// Install Style Model tokens, including backdrop alphas on Surface /

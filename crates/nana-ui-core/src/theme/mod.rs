@@ -285,6 +285,7 @@ pub struct ThemeMetrics {
 /// space, so changing it repaints and lays nothing out again. Its colour is
 /// [`crate::SemanticColorRole::FocusBorder`].
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FocusRingMetrics {
     /// Stroke width.
     pub width: f32,
@@ -355,6 +356,7 @@ impl CornerShape {
 /// The thumb is not here: the painter derives it from the track, so a theme
 /// that states a track states a thumb.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SwitchMetrics {
     /// Inline extent of the track.
     pub track_width: f32,
@@ -379,6 +381,7 @@ impl Default for SwitchMetrics {
 
 /// Tree row geometry; see [`ThemeMetrics::tree`].
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TreeMetrics {
     /// Space between two rows.
     pub row_gap: f32,
@@ -409,6 +412,7 @@ impl Default for TreeMetrics {
 
 /// Keycap geometry; see [`ThemeMetrics::keycap`].
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct KeycapMetrics {
     /// The cap's height, and its narrowest width: a one-letter key is square.
     pub height: f32,

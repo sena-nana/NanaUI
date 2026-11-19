@@ -1422,6 +1422,7 @@ impl Progress {
         id: StableNodeId,
         start: Duration,
         pass: Duration,
+        easing: Easing,
     ) -> Option<AnimationSpec> {
         let animation = component_animation_id(component_animation_kinds::PROGRESS, id)?;
         Some(AnimationSpec::new(
@@ -1430,7 +1431,7 @@ impl Progress {
             start,
             pass,
             crate::framework::COMPONENT_FRAME_INTERVAL,
-            Easing::Linear,
+            easing,
         ))
     }
 
@@ -1591,10 +1592,10 @@ impl ComponentView for Progress {
         // hidden bar generates no box and stops it, as does a determinate one
         // or reduced motion.
         let sweeping = self.indeterminate && !world.reduced_motion();
-        let pass = world
-            .theme()
-            .duration(nana_ui_core::MotionRole::SkeletonPulse);
-        if let Some(spec) = Self::sweep_animation(id, Duration::ZERO, pass) {
+        let theme = world.node_theme(id);
+        let pass = theme.duration(nana_ui_core::MotionRole::SkeletonPulse);
+        let easing = theme.motion().easing(nana_ui_core::EasingRole::Linear);
+        if let Some(spec) = Self::sweep_animation(id, Duration::ZERO, pass, easing) {
             let running = world.animation_is_active(spec.id);
             if sweeping && !self.style.layout.hidden {
                 let startable = !world.contains(id) || world.is_mounted(id);
@@ -1882,7 +1883,7 @@ impl WidgetVisual for ProgressVisual {
                         bounds: cancel,
                         content: TextValue::from("×"),
                         color: ctx.style.color,
-                        font_size: 15.0,
+                        font_size: ctx.theme.typography().card_title,
                         font_weight: None,
                     },
                     ctx,
@@ -1924,15 +1925,20 @@ impl Spinner {
 
     /// The spinner's rotation timeline anchored at `start`, or `None` when its
     /// hashed animation ID would be zero.
-    pub(crate) fn spin_animation(id: StableNodeId, start: Duration) -> Option<AnimationSpec> {
+    pub(crate) fn spin_animation(
+        id: StableNodeId,
+        start: Duration,
+        duration: Duration,
+        easing: Easing,
+    ) -> Option<AnimationSpec> {
         let animation = component_animation_id(component_animation_kinds::SPINNER, id)?;
         Some(AnimationSpec::new(
             animation,
             id,
             start,
-            nana_ui_core::motion::SPINNER_ROTATION,
+            duration,
             crate::framework::COMPONENT_FRAME_INTERVAL,
-            Easing::Linear,
+            easing,
         ))
     }
 
@@ -2131,7 +2137,10 @@ impl ComponentView for Spinner {
         // repeated projections and per-frame phase writes cannot reset it.
         // A hidden spinner generates no box, so its timeline stops rather than
         // holding the host awake for a turn nobody can see.
-        if let Some(spec) = Self::spin_animation(id, Duration::ZERO) {
+        let theme = world.node_theme(id);
+        let duration = theme.duration(nana_ui_core::MotionRole::SpinnerRotation);
+        let easing = theme.motion().easing(nana_ui_core::EasingRole::Linear);
+        if let Some(spec) = Self::spin_animation(id, Duration::ZERO, duration, easing) {
             let startable = !world.contains(id) || world.is_mounted(id);
             let running = world.animation_is_active(spec.id);
             if self.style.layout.hidden {
@@ -3748,9 +3757,14 @@ mod tests {
         let id = progress.stable_id();
         let pass = context
             .world()
-            .theme()
+            .node_theme(id)
             .duration(nana_ui_core::MotionRole::SkeletonPulse);
-        let sweep = Progress::sweep_animation(id, Duration::ZERO, pass)
+        let easing = context
+            .world()
+            .node_theme(id)
+            .motion()
+            .easing(nana_ui_core::EasingRole::Linear);
+        let sweep = Progress::sweep_animation(id, Duration::ZERO, pass, easing)
             .unwrap()
             .id;
         assert!(context.world().animation_is_active(sweep));
@@ -3841,9 +3855,14 @@ mod tests {
         context.append_child(parent, progress).unwrap();
         let pass = context
             .world()
-            .theme()
+            .node_theme(progress.stable_id())
             .duration(nana_ui_core::MotionRole::SkeletonPulse);
-        let sweep = Progress::sweep_animation(progress.stable_id(), Duration::ZERO, pass)
+        let easing = context
+            .world()
+            .node_theme(progress.stable_id())
+            .motion()
+            .easing(nana_ui_core::EasingRole::Linear);
+        let sweep = Progress::sweep_animation(progress.stable_id(), Duration::ZERO, pass, easing)
             .unwrap()
             .id;
         assert!(context.world().animation_is_active(sweep));

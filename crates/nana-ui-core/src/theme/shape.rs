@@ -73,6 +73,7 @@ impl ShapeRole {
 /// components named themselves before the recipe existed, so a theme that
 /// does not set one looks exactly as before.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ShapeRecipe {
     pub button: RadiusTier,
     pub icon_button: RadiusTier,

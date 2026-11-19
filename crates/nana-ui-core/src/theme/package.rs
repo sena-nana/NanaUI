@@ -850,4 +850,78 @@ mod tests {
             })
         ));
     }
+
+    #[test]
+    fn fail_closed_rejects_nested_unknown_fields_bad_easing_and_color_mix() {
+        let base = ThemeDefinition::NANA_DARK.compile().unwrap();
+        let pkg = ThemePackage::new(ThemeId::new("acme.valid"), "Valid").with_patch(
+            ThemePatch::new().with_motion_patch(MotionPatch {
+                hover_color_ms: Some(150),
+                ..MotionPatch::default()
+            }),
+        );
+        let json = pkg.to_json_pretty().unwrap();
+        let mut parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        parsed["patch"]["motion"]["mystery_easing"] = serde_json::json!(123);
+        let nested_unknown = parsed.to_string();
+        assert!(matches!(
+            ThemePackage::from_json(&nested_unknown),
+            Err(ThemePackageError::Parse { .. })
+        ));
+
+        let mut schema_unknown: serde_json::Value = serde_json::from_str(&json).unwrap();
+        schema_unknown["schema_version"]["extra"] = serde_json::json!(true);
+        assert!(matches!(
+            ThemePackage::from_json(&schema_unknown.to_string()),
+            Err(ThemePackageError::Parse { .. })
+        ));
+
+        let bad_easing = ThemePatch::new().with_motion_patch(MotionPatch {
+            standard_easing: Some(crate::motion::Easing::CubicBezier([1.2, 0.0, 0.5, 1.0])),
+            ..MotionPatch::default()
+        });
+        assert!(matches!(
+            bad_easing.apply_to_compiled(&base),
+            Err(ThemeCompileError::EasingOutOfRange {
+                token: "motion.standard_easing",
+                ..
+            })
+        ));
+
+        let nan_easing = ThemePatch::new().with_motion_patch(MotionPatch {
+            emphasized_easing: Some(crate::motion::Easing::CubicBezier([
+                0.2,
+                f32::NAN,
+                0.2,
+                1.0,
+            ])),
+            ..MotionPatch::default()
+        });
+        assert!(matches!(
+            nan_easing.apply_to_compiled(&base),
+            Err(ThemeCompileError::NotFinite {
+                token: "motion.emphasized_easing",
+                ..
+            })
+        ));
+
+        let mut input = InputRecipe::DEFAULT;
+        input.focus_background_mix = crate::style_model::SemanticColorMix::from_parts(
+            SemanticColorRole::Accent,
+            Some(SemanticColorRole::Surface),
+            10_001,
+        );
+        let bad_mix = ThemePatch::new().with_recipes(crate::theme::RecipePatch {
+            input: Some(input),
+            ..Default::default()
+        });
+        assert!(matches!(
+            bad_mix.apply_to_compiled(&base),
+            Err(ThemeCompileError::ColorMixOutOfRange {
+                token: "input.focus_background_mix",
+                weight: 10_001,
+                ..
+            })
+        ));
+    }
 }

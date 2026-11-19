@@ -20,9 +20,11 @@ pub use protocol::{
     A11yFilter, AgentCommand, AgentReply, AppliedDump, CauseDump, DiagnosticDump, DynamicDump,
     FieldDump, GpuDump, HitDump, InspectDump, KeyStroke, LayoutCauseDump, LayoutNodeDump,
     PixelDiff, PixelStats, PointerGesture, RectDump, SceneProbeDump, SegmentDump, SessionInfo,
-    Target, ThemeCategoryCountDump, ThemeColorOverrideDump, ThemeDependencySummaryDump,
-    ThemeInspectDump, ThemeInvalidationDump, ThemeName, ThemeOverrideDump, ThemePackageLayerDump,
-    ThemePackageLoadDump, ThemePackageProvenanceDump, ThemeScopeLayerDump,
+    Target, ThemeCategoryCountDump, ThemeCategoryGenerationsDump, ThemeColorOverrideDump,
+    ThemeDependencySummaryDump, ThemeInspectDump, ThemeInteractionStateDump, ThemeInvalidationDump,
+    ThemeName, ThemeNodeInvalidationStatusDump, ThemeOverrideDump, ThemePackageLayerDump,
+    ThemePackageLoadDump, ThemePackageProvenanceDump, ThemeResolvedTokenDump, ThemeScopeLayerDump,
+    ThemeTraceLayerDump, ThemeTransitionSourceDump,
 };
 pub use runtime::{
     RuntimeAgentSession, document_hit_test, document_inspect, document_load_theme_package,

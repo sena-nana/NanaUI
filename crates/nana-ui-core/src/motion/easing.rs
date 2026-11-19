@@ -63,6 +63,19 @@ fn sample_cubic_bezier([x1, y1, x2, y2]: [f32; 4], progress: f32) -> f32 {
     bezier_axis(0.5 * (low + high), y1, y2)
 }
 
+impl std::fmt::Display for Easing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            Self::Linear => f.write_str("linear"),
+            Self::EaseOutCubic => f.write_str("ease-out-cubic"),
+            Self::EaseInOutCubic => f.write_str("ease-in-out-cubic"),
+            Self::CubicBezier([x1, y1, x2, y2]) => {
+                write!(f, "cubic-bezier({x1:.2}, {y1:.2}, {x2:.2}, {y2:.2})")
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

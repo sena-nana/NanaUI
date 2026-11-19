@@ -69,16 +69,21 @@ impl Skeleton {
 
     /// The skeleton's pulse timeline anchored at `start`, or `None` when its
     /// hashed animation ID would be zero.
-    pub(crate) fn pulse_animation(id: StableNodeId, start: Duration) -> Option<AnimationSpec> {
+    pub(crate) fn pulse_animation(
+        id: StableNodeId,
+        start: Duration,
+        half_cycle: Duration,
+        easing: Easing,
+    ) -> Option<AnimationSpec> {
         let animation = component_animation_id(component_animation_kinds::SKELETON, id)?;
         Some(
             AnimationSpec::new(
                 animation,
                 id,
                 start,
-                nana_ui_core::motion::SKELETON_PULSE / 2,
+                half_cycle,
                 crate::framework::COMPONENT_FRAME_INTERVAL,
-                Easing::EaseInOutCubic,
+                easing,
             )
             .with_property(crate::AnimatableProperty::Opacity)
             .with_range(
@@ -142,9 +147,12 @@ impl ComponentView for Skeleton {
         // repeated projections cannot reset it. Parked nodes skip the start:
         // their timeline is (re)started on mount. Opacity lives on the
         // compositor overlay, not logical layout.
+        let theme = world.node_theme(id);
+        let half_cycle = theme.duration(nana_ui_core::MotionRole::SkeletonPulse) / 2;
+        let easing = theme.motion().easing(nana_ui_core::EasingRole::Expand);
         let startable = !world.contains(id) || world.is_mounted(id);
         if startable
-            && let Some(spec) = Self::pulse_animation(id, Duration::ZERO)
+            && let Some(spec) = Self::pulse_animation(id, Duration::ZERO, half_cycle, easing)
             && !world.animation_is_active(spec.id)
         {
             mutations.start_animation_with_playback(spec, Self::PULSE_PLAYBACK);

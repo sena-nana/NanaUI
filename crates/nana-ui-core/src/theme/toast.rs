@@ -93,6 +93,7 @@ impl ToastGlyphs {
 /// What a toast shows before its copy to say its tone, in the tone's
 /// colour.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum ToastIndicator {
     /// Nothing: the copy starts at the inset.
     None,
@@ -115,6 +116,7 @@ impl ToastIndicator {
 
 /// The progress row a toast shows under its copy while a task runs.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ToastProgressRecipe {
     /// The bar's thickness.
     pub height: f32,
@@ -160,6 +162,7 @@ impl Default for ToastProgressRecipe {
 /// How a toast comes and goes, and how the toasts beside it move into the
 /// room it makes or leaves. With reduced motion on, none of it plays.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ToastMotion {
     /// The entrance: a fade, and a move from [`Self::enter_offset_y`] and
     /// [`Self::enter_scale`] to where the toast rests.
@@ -223,6 +226,7 @@ impl Default for ToastMotion {
 
 /// What a toast looks like, and how a stack of toasts moves.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ToastRecipe {
     /// How round its corners are.
     pub radius: RadiusTier,

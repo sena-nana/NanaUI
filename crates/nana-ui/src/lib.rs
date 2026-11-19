@@ -392,10 +392,11 @@ pub use staged::{Launch, LaunchError, LaunchMessage, LaunchUpdate, Staged};
 pub use theme::{
     CompiledTheme, HAIRLINE, LastThemeInvalidation, SemanticColor, SemanticPalette,
     ThemeAppearance, ThemeAppearanceExt, ThemeChoice, ThemeDependencyMask, ThemeDependencySummary,
-    ThemeId, ThemeInvalidationTrigger, ThemeMetrics, ThemeNodeInspection, ThemePackage,
-    ThemePackageError, ThemePackageProvenance, ThemePatch, ThemeRegistry, ThemeRegistryError,
-    ThemeScopeChainEntry, ThemeScopeId, ThemeTokens, ThemeWorkCounters, UI_BASE_TEXT_SIZE,
-    UI_METRICS, builtin_theme_arc, install_theme_tokens, space, type_scale,
+    ThemeId, ThemeInteractionState, ThemeInvalidationTrigger, ThemeMetrics, ThemeNodeInspection,
+    ThemeNodeInvalidationStatus, ThemePackage, ThemePackageError, ThemePackageProvenance,
+    ThemePatch, ThemeRegistry, ThemeRegistryError, ThemeResolvedToken, ThemeScopeChainEntry,
+    ThemeScopeId, ThemeTokens, ThemeTraceLayer, ThemeTransitionSource, ThemeWorkCounters,
+    UI_BASE_TEXT_SIZE, UI_METRICS, builtin_theme_arc, install_theme_tokens, space, type_scale,
 };
 #[cfg(feature = "bundled-fonts")]
 pub use theme::{UI_FONT_REGULAR, ui_font_sources};

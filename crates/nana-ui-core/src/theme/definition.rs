@@ -69,6 +69,7 @@ impl std::fmt::Display for ThemeId {
 /// reinterpreted. Minor changes when a category is added with a default, which
 /// an older definition can still compile against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ThemeSchemaVersion {
     pub major: u16,
     pub minor: u16,
@@ -276,6 +277,18 @@ pub enum ThemeCompileError {
     /// A transition that never advances is a disabled transition written by
     /// accident; say so rather than freezing a control mid-fade.
     ZeroDuration { theme: ThemeId, token: &'static str },
+    /// A cubic-bezier easing control-point x coordinate left `0.0..=1.0`.
+    EasingOutOfRange {
+        theme: ThemeId,
+        token: &'static str,
+        value: i32,
+    },
+    /// A color mix weight in basis points exceeded `10_000` (100%).
+    ColorMixOutOfRange {
+        theme: ThemeId,
+        token: &'static str,
+        weight: u16,
+    },
     /// A component family has no recipe.
     MissingRecipe {
         theme: ThemeId,
@@ -351,6 +364,22 @@ impl std::fmt::Display for ThemeCompileError {
             Self::ZeroDuration { theme, token } => {
                 write!(f, "theme `{theme}` duration `{token}` is zero")
             }
+            Self::EasingOutOfRange {
+                theme,
+                token,
+                value,
+            } => write!(
+                f,
+                "theme `{theme}` easing `{token}` control-point x is outside 0..=1 ({value} thousandths)"
+            ),
+            Self::ColorMixOutOfRange {
+                theme,
+                token,
+                weight,
+            } => write!(
+                f,
+                "theme `{theme}` color mix `{token}` weight exceeds 10000 basis points ({weight})"
+            ),
             Self::MissingRecipe {
                 theme,
                 component,
@@ -460,6 +489,38 @@ impl Check<'_> {
             self.fail(ThemeCompileError::ZeroDuration {
                 theme: self.theme.clone(),
                 token,
+            });
+        }
+    }
+
+    fn easing(&mut self, token: &'static str, easing: crate::motion::Easing) {
+        let crate::motion::Easing::CubicBezier([x1, y1, x2, y2]) = easing else {
+            return;
+        };
+        for value in [x1, y1, x2, y2] {
+            if !self.finite(token, value) {
+                return;
+            }
+        }
+        for x in [x1, x2] {
+            if !(0.0..=1.0).contains(&x) {
+                self.fail(ThemeCompileError::EasingOutOfRange {
+                    theme: self.theme.clone(),
+                    token,
+                    value: thousandths(x),
+                });
+                return;
+            }
+        }
+    }
+
+    fn color_mix(&mut self, token: &'static str, mix: crate::style_model::SemanticColorMix) {
+        let (_, _, weight) = mix.parts();
+        if weight > 10_000 {
+            self.fail(ThemeCompileError::ColorMixOutOfRange {
+                theme: self.theme.clone(),
+                token,
+                weight,
             });
         }
     }
@@ -687,6 +748,14 @@ impl ThemeDefinition {
             check.duration(MOTION_NAMES[index], millis);
         }
         check.alpha("motion.attention_hold", self.motion.attention_hold);
+        for (token, easing) in [
+            ("motion.linear_easing", self.motion.linear_easing),
+            ("motion.standard_easing", self.motion.standard_easing),
+            ("motion.expand_easing", self.motion.expand_easing),
+            ("motion.emphasized_easing", self.motion.emphasized_easing),
+        ] {
+            check.easing(token, easing);
+        }
 
         for (name, shadow) in [
             ("effects.surface", self.effects.surface),
@@ -956,6 +1025,15 @@ pub(super) fn validate_compiled_theme(
         check.duration(MOTION_NAMES[index], millis);
     }
     check.alpha("motion.attention_hold", theme.motion().attention_hold);
+    let motion = theme.motion();
+    for (token, easing) in [
+        ("motion.linear_easing", motion.linear_easing),
+        ("motion.standard_easing", motion.standard_easing),
+        ("motion.expand_easing", motion.expand_easing),
+        ("motion.emphasized_easing", motion.emphasized_easing),
+    ] {
+        check.easing(token, easing);
+    }
     let effects = theme.effects();
     for (name, shadow) in [
         ("effects.surface", effects.surface),
@@ -1028,6 +1106,7 @@ fn validate_dialog_recipe(
         ("dialog.motion.card_move", motion.card_move),
     ] {
         check.duration(token, transition.millis);
+        check.easing(token, transition.easing);
     }
     let _ = check.finite("dialog.motion.enter_offset_y", motion.enter_offset_y);
     if check.finite("dialog.motion.enter_scale", motion.enter_scale) && motion.enter_scale <= 0.0 {
@@ -1060,6 +1139,24 @@ fn validate_scrollbar_recipe(
         ("scrollbar.motion.expand", scrollbar.motion.expand),
     ] {
         check.duration(token, transition.millis);
+        check.easing(token, transition.easing);
+    }
+    for (token, mix) in [
+        ("scrollbar.thumb", Some(scrollbar.thumb)),
+        ("scrollbar.thumb_hot", Some(scrollbar.thumb_hot)),
+        ("scrollbar.thumb_active", Some(scrollbar.thumb_active)),
+        ("scrollbar.track", scrollbar.track),
+        ("scrollbar.track_hot", scrollbar.track_hot),
+        ("scrollbar.track_resident", scrollbar.track_resident),
+        ("scrollbar.media_track", scrollbar.media_track),
+        ("scrollbar.media_track_hot", scrollbar.media_track_hot),
+        ("scrollbar.track_border", scrollbar.track_border),
+        ("scrollbar.thumb_border", scrollbar.thumb_border),
+        ("scrollbar.thumb_border_hot", scrollbar.thumb_border_hot),
+    ] {
+        if let Some(mix) = mix {
+            check.color_mix(token, mix);
+        }
     }
     if let Some(error) = error {
         return Err(error);
@@ -1093,6 +1190,7 @@ fn validate_toast_recipe(
         ("toast.motion.stack_move", motion.stack_move),
     ] {
         check.duration(token, transition.millis);
+        check.easing(token, transition.easing);
     }
     let _ = check.finite("toast.motion.enter_offset_y", motion.enter_offset_y);
     for (token, scale) in [
@@ -1142,6 +1240,7 @@ fn validate_compiled_control_recipes(
         }
     }
     check.alpha("input.additional_caret_alpha", input.additional_caret_alpha);
+    check.color_mix("input.focus_background_mix", input.focus_background_mix);
 
     let select = recipes.select();
     for (token, value) in select.lengths() {

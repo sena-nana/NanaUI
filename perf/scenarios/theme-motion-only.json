@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "id": "theme-motion-only",
+  "kind": "Theme",
+  "params": {
+    "workload": "motion-only",
+    "controls": 1000
+  },
+  "record": [
+    "work_counters"
+  ],
+  "invariants": [
+    {
+      "name": "motion_only_does_not_consider_style",
+      "path": "work_counters.style_nodes_considered",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "Issue #106 §8: motion-only policy updates must not trigger style resolution."
+    },
+    {
+      "name": "motion_only_does_not_reshape",
+      "path": "work_counters.text_nodes_from_style",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "Issue #106 §8: motion-only policy updates must not reshape text."
+    },
+    {
+      "name": "motion_only_does_not_lay_out",
+      "path": "work_counters.layout_nodes_from_style",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "Issue #106 §8: motion-only policy updates must not trigger layout from style."
+    },
+    {
+      "name": "motion_only_does_not_lay_out_the_frame",
+      "path": "work_counters.layout_nodes",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "Cross-check against the drain: no LAYOUT was scheduled."
+    },
+    {
+      "name": "motion_only_does_not_paint",
+      "path": "work_counters.paint_nodes_from_style",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "Issue #106 §8: motion-only policy updates must not invalidate paint."
+    },
+    {
+      "name": "motion_only_does_not_copy_layout",
+      "path": "work_counters.layout_copies",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "A motion-only change must not copy any LayoutStyle box."
+    },
+    {
+      "name": "motion_only_records_invalidation",
+      "path": "work_counters.style_motion_policy_invalidations",
+      "op": "gte",
+      "value": 1,
+      "status": "required",
+      "note": "The motion-policy fast path must record its lightweight invalidation counter."
+    }
+  ],
+  "notes": "Issue #106 §8 motion-policy-only theme change over 1k controls."
+}

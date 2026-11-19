@@ -77,6 +77,10 @@ impl ThemeScopeRegistry {
         self.scopes.is_empty()
     }
 
+    pub(crate) fn len(&self) -> usize {
+        self.scopes.len()
+    }
+
     pub(crate) fn scope_for_owner(&self, owner: StableNodeId) -> Option<ThemeScopeId> {
         self.owner_to_scope.get(&owner).copied()
     }
@@ -282,9 +286,27 @@ impl ThemeScopeRegistry {
             .map(|entry| entry.id)
             .collect()
     }
+
+    /// Documents that own at least one registered `ThemeScope`.
+    pub(crate) fn documents(&self) -> Vec<DocumentId> {
+        let mut docs: Vec<DocumentId> = self.scopes.values().map(|entry| entry.document).collect();
+        docs.sort_by_key(|doc| doc.get());
+        docs.dedup();
+        docs
+    }
 }
 
 impl UiWorld {
+    /// Number of currently active non-root [`ThemeScope`](nana_ui_core::ThemeScopeId)s.
+    pub fn active_theme_scopes(&self) -> usize {
+        self.theme_state.theme_scopes.len()
+    }
+
+    /// Whether `document` overrides the workspace root theme via [`Self::set_document_theme`].
+    pub fn has_document_theme(&self, document: DocumentId) -> bool {
+        self.theme_state.document_themes.contains_key(&document)
+    }
+
     /// Root theme active for `document` (either a per-document override or the
     /// application root theme).
     pub fn document_theme(&self, document: DocumentId) -> &Arc<CompiledTheme> {
@@ -451,6 +473,26 @@ impl UiWorld {
                     if *prev_entry_theme != *next_theme {
                         self.palette_epoch = self.palette_epoch.wrapping_add(1).max(1);
                     }
+                    self.rebind_descendant_scopes(id, scope_id, &next_theme, false, &mut work);
+                    work.theme_scopes_active = self.theme_state.theme_scopes.len();
+                    self.record_scope_pending_work(work);
+                    return;
+                }
+                if changed == ThemeDependencyMask::MOTION_POLICY {
+                    self.rebind_descendant_scopes(id, scope_id, &next_theme, false, &mut work);
+                    work.style_motion_policy_invalidations = 1;
+                    work.theme_scopes_active = self.theme_state.theme_scopes.len();
+                    self.record_theme_invalidation(
+                        crate::world::theme_inspect::ThemeInvalidationTrigger::ScopePatch {
+                            owner: id,
+                            scope_id,
+                            generation: scope_generation,
+                        },
+                        changed,
+                        &work,
+                        0,
+                        true,
+                    );
                     self.record_scope_pending_work(work);
                     return;
                 }
@@ -466,6 +508,7 @@ impl UiWorld {
                     true,
                     &mut work,
                 );
+                work.theme_scopes_active = self.theme_state.theme_scopes.len();
                 self.record_theme_invalidation(
                     crate::world::theme_inspect::ThemeInvalidationTrigger::ScopePatch {
                         owner: id,
@@ -475,7 +518,7 @@ impl UiWorld {
                     changed,
                     &work,
                     seeds,
-                    changed == ThemeDependencyMask::MOTION_POLICY,
+                    false,
                 );
                 self.record_scope_pending_work(work);
             }
@@ -486,19 +529,28 @@ impl UiWorld {
                 let prev_theme = removed.resolved;
                 let changed = ThemeCategoryGenerations::diff_themes(&prev_theme, &parent_theme);
                 self.nodes.set_node_scope(id, parent_scope);
-                if !changed.is_empty() {
-                    self.palette_epoch = self.palette_epoch.wrapping_add(1).max(1);
-                    let seeds = self.propagate_theme_delta_on_roots(
-                        &[id],
+                if changed.is_empty() {
+                    self.rebind_descendant_scopes(
+                        id,
                         parent_scope,
-                        &prev_theme,
                         &parent_theme,
-                        changed,
-                        true,
-                        true,
-                        true,
+                        false,
                         &mut work,
                     );
+                    work.theme_scopes_active = self.theme_state.theme_scopes.len();
+                    self.record_scope_pending_work(work);
+                    return;
+                }
+                if changed == ThemeDependencyMask::MOTION_POLICY {
+                    self.rebind_descendant_scopes(
+                        id,
+                        parent_scope,
+                        &parent_theme,
+                        false,
+                        &mut work,
+                    );
+                    work.style_motion_policy_invalidations = 1;
+                    work.theme_scopes_active = self.theme_state.theme_scopes.len();
                     self.record_theme_invalidation(
                         crate::world::theme_inspect::ThemeInvalidationTrigger::ScopeRemoved {
                             owner: id,
@@ -506,10 +558,35 @@ impl UiWorld {
                         },
                         changed,
                         &work,
-                        seeds,
-                        changed == ThemeDependencyMask::MOTION_POLICY,
+                        0,
+                        true,
                     );
+                    self.record_scope_pending_work(work);
+                    return;
                 }
+                self.palette_epoch = self.palette_epoch.wrapping_add(1).max(1);
+                let seeds = self.propagate_theme_delta_on_roots(
+                    &[id],
+                    parent_scope,
+                    &prev_theme,
+                    &parent_theme,
+                    changed,
+                    true,
+                    true,
+                    true,
+                    &mut work,
+                );
+                work.theme_scopes_active = self.theme_state.theme_scopes.len();
+                self.record_theme_invalidation(
+                    crate::world::theme_inspect::ThemeInvalidationTrigger::ScopeRemoved {
+                        owner: id,
+                        parent_scope,
+                    },
+                    changed,
+                    &work,
+                    seeds,
+                    false,
+                );
                 self.record_scope_pending_work(work);
             }
         }
@@ -546,6 +623,9 @@ impl UiWorld {
         let new_parent_theme = self.theme_arc_for_scope(document, new_parent_scope);
         let changed = ThemeCategoryGenerations::diff_themes(&old_parent_theme, &new_parent_theme);
         let mut work = ThemeWorkCounters::default();
+        if !changed.is_empty() && changed != ThemeDependencyMask::MOTION_POLICY {
+            self.palette_epoch = self.palette_epoch.wrapping_add(1).max(1);
+        }
         let seeds = self.propagate_theme_delta_on_roots(
             &[child],
             new_parent_scope,
@@ -557,8 +637,8 @@ impl UiWorld {
             true,
             &mut work,
         );
+        work.theme_scopes_active = self.theme_state.theme_scopes.len();
         if !changed.is_empty() {
-            self.palette_epoch = self.palette_epoch.wrapping_add(1).max(1);
             self.record_theme_invalidation(
                 crate::world::theme_inspect::ThemeInvalidationTrigger::ScopeReparented {
                     root: child,
@@ -605,7 +685,37 @@ impl UiWorld {
         if changed.is_empty() {
             return ThemeDependencyMask::NONE;
         }
+        self.theme_state.theme_generations.advance(changed);
+        if changed == ThemeDependencyMask::MOTION_POLICY {
+            let mut work = ThemeWorkCounters::default();
+            self.refresh_document_scopes(document, &next_effective, &mut work);
+            work.style_motion_policy_invalidations = 1;
+            work.theme_scopes_active = self.theme_state.theme_scopes.len();
+            let doc_identity = next_effective.identity();
+            self.record_theme_invalidation(
+                crate::world::theme_inspect::ThemeInvalidationTrigger::DocumentTheme {
+                    document,
+                    theme_id: doc_identity.id,
+                    generation: doc_identity.generation,
+                },
+                changed,
+                &work,
+                0,
+                true,
+            );
+            self.record_theme_work(work);
+            return changed;
+        }
         self.palette_epoch = self.palette_epoch.wrapping_add(1).max(1);
+        let hover_ids: Vec<StableNodeId> = self
+            .hover_transitions
+            .keys()
+            .copied()
+            .filter(|&id| self.contains(id) && self.record(id).document == document)
+            .collect();
+        for id in hover_ids {
+            self.cancel_hover_transition(id);
+        }
         let roots: Vec<StableNodeId> = self
             .live_document_roots
             .get(&document)
@@ -646,6 +756,7 @@ impl UiWorld {
                 }
             }
         }
+        work.theme_scopes_active = self.theme_state.theme_scopes.len();
         let doc_identity = next_effective.identity();
         self.record_theme_invalidation(
             crate::world::theme_inspect::ThemeInvalidationTrigger::DocumentTheme {
@@ -656,7 +767,7 @@ impl UiWorld {
             changed,
             &work,
             seeds,
-            changed == ThemeDependencyMask::MOTION_POLICY,
+            false,
         );
         self.record_theme_work(work);
         changed
@@ -670,6 +781,40 @@ impl UiWorld {
         next_root: &Arc<CompiledTheme>,
         changed: ThemeDependencyMask,
     ) {
+        if changed == ThemeDependencyMask::MOTION_POLICY {
+            let mut work = ThemeWorkCounters::default();
+            let mut docs: Vec<DocumentId> = self
+                .live_document_roots
+                .keys()
+                .copied()
+                .filter(|doc| !self.theme_state.document_themes.contains_key(doc))
+                .collect();
+            for doc in self.theme_state.theme_scopes.documents() {
+                if !self.theme_state.document_themes.contains_key(&doc) && !docs.contains(&doc) {
+                    docs.push(doc);
+                }
+            }
+            for &doc in &docs {
+                self.refresh_document_scopes(doc, next_root, &mut work);
+            }
+            if !docs.is_empty() || self.live_document_roots.is_empty() {
+                work.style_motion_policy_invalidations = 1;
+            }
+            work.theme_scopes_active = self.theme_state.theme_scopes.len();
+            let root_identity = next_root.identity();
+            self.record_theme_invalidation(
+                crate::world::theme_inspect::ThemeInvalidationTrigger::RootTheme {
+                    theme_id: root_identity.id,
+                    generation: root_identity.generation,
+                },
+                changed,
+                &work,
+                0,
+                true,
+            );
+            self.record_theme_work(work);
+            return;
+        }
         let roots: Vec<StableNodeId> = self
             .live_document_roots
             .iter()
@@ -692,6 +837,7 @@ impl UiWorld {
         } else {
             0
         };
+        work.theme_scopes_active = self.theme_state.theme_scopes.len();
         let root_identity = next_root.identity();
         self.record_theme_invalidation(
             crate::world::theme_inspect::ThemeInvalidationTrigger::RootTheme {
@@ -701,9 +847,108 @@ impl UiWorld {
             changed,
             &work,
             seeds,
-            changed == ThemeDependencyMask::MOTION_POLICY,
+            false,
         );
         self.record_theme_work(work);
+    }
+
+    fn refresh_document_scopes(
+        &mut self,
+        document: DocumentId,
+        doc_theme: &Arc<CompiledTheme>,
+        work: &mut ThemeWorkCounters,
+    ) {
+        if self.theme_state.theme_scopes.is_empty() {
+            return;
+        }
+        let doc_scopes = self.theme_state.theme_scopes.scopes_in_document(document);
+        if doc_scopes.is_empty() {
+            return;
+        }
+        let mut resolved_parents: std::collections::HashMap<ThemeScopeId, Arc<CompiledTheme>> =
+            std::collections::HashMap::with_capacity(doc_scopes.len() + 1);
+        resolved_parents.insert(ThemeScopeId::ROOT, Arc::clone(doc_theme));
+        let mut remaining = doc_scopes;
+        while !remaining.is_empty() {
+            let before = remaining.len();
+            let mut next_remaining = Vec::new();
+            for scope_id in remaining {
+                let Some(parent_scope) = self
+                    .theme_state
+                    .theme_scopes
+                    .entry(scope_id)
+                    .map(|entry| entry.parent_scope)
+                else {
+                    continue;
+                };
+                if let Some(parent_theme) = resolved_parents.get(&parent_scope).cloned() {
+                    if let Some((_, next_resolved, _)) = self
+                        .theme_state
+                        .theme_scopes
+                        .refresh_scope(scope_id, parent_scope, &parent_theme, work)
+                    {
+                        resolved_parents.insert(scope_id, next_resolved);
+                    }
+                } else {
+                    next_remaining.push(scope_id);
+                }
+            }
+            if next_remaining.len() == before {
+                for scope_id in next_remaining {
+                    if let Some(parent_scope) = self
+                        .theme_state
+                        .theme_scopes
+                        .entry(scope_id)
+                        .map(|entry| entry.parent_scope)
+                    {
+                        let _ = self.theme_state.theme_scopes.refresh_scope(
+                            scope_id,
+                            parent_scope,
+                            doc_theme,
+                            work,
+                        );
+                    }
+                }
+                break;
+            }
+            remaining = next_remaining;
+        }
+    }
+
+    fn rebind_descendant_scopes(
+        &mut self,
+        id: StableNodeId,
+        incoming_scope: ThemeScopeId,
+        incoming_theme: &Arc<CompiledTheme>,
+        include_self: bool,
+        work: &mut ThemeWorkCounters,
+    ) {
+        if !self.contains(id) {
+            return;
+        }
+        let (eff_scope, eff_theme) = if !include_self {
+            (incoming_scope, Arc::clone(incoming_theme))
+        } else if let Some(own_scope) = self.theme_state.theme_scopes.scope_for_owner(id) {
+            if let Some((_, next_resolved, _)) = self.theme_state.theme_scopes.refresh_scope(
+                own_scope,
+                incoming_scope,
+                incoming_theme,
+                work,
+            ) {
+                self.nodes.set_node_scope(id, own_scope);
+                (own_scope, next_resolved)
+            } else {
+                self.nodes.set_node_scope(id, incoming_scope);
+                (incoming_scope, Arc::clone(incoming_theme))
+            }
+        } else {
+            self.nodes.set_node_scope(id, incoming_scope);
+            (incoming_scope, Arc::clone(incoming_theme))
+        };
+        let children = Arc::clone(&self.record(id).hierarchy.children);
+        for &child in children.iter() {
+            self.rebind_descendant_scopes(child, eff_scope, &eff_theme, true, work);
+        }
     }
 
     fn record_scope_pending_work(&mut self, work: ThemeWorkCounters) {
@@ -881,7 +1126,11 @@ impl UiWorld {
 
         self.nodes.set_node_scope(id, eff_scope);
 
-        if !changed.is_empty() {
+        if changed == ThemeDependencyMask::MOTION_POLICY {
+            if work.style_motion_policy_invalidations == 0 {
+                work.style_motion_policy_invalidations = 1;
+            }
+        } else if !changed.is_empty() {
             *touched_nodes += 1;
             let dep = self.nodes.theme_dependency(id);
             if dep.intersects(changed) {
@@ -903,101 +1152,96 @@ impl UiWorld {
                 work.theme_dependency_skipped += 1;
             }
 
-            if changed == ThemeDependencyMask::MOTION_POLICY {
-                work.style_motion_policy_invalidations += 1;
-            } else {
-                if self.paint_recordings.get_mut().contains_key(&id) && dep.intersects(changed) {
-                    self.mark_repaint(id);
-                }
-                if self.modal_surface_recordings.get_mut().contains_key(&id)
-                    && changed.intersects(
-                        ThemeDependencyMask::PALETTE
-                            .union(ThemeDependencyMask::ACCENT)
-                            .union(ThemeDependencyMask::EFFECT)
-                            .union(ThemeDependencyMask::RECIPE_DIALOG)
-                            .union(ThemeDependencyMask::METRICS)
-                            .union(ThemeDependencyMask::RECIPE_SHAPE),
-                    )
-                {
-                    self.mark_repaint(id);
-                }
+            if self.paint_recordings.get_mut().contains_key(&id) && dep.intersects(changed) {
+                self.mark_repaint(id);
+            }
+            if self.modal_surface_recordings.get_mut().contains_key(&id)
+                && changed.intersects(
+                    ThemeDependencyMask::PALETTE
+                        .union(ThemeDependencyMask::ACCENT)
+                        .union(ThemeDependencyMask::EFFECT)
+                        .union(ThemeDependencyMask::RECIPE_DIALOG)
+                        .union(ThemeDependencyMask::METRICS)
+                        .union(ThemeDependencyMask::RECIPE_SHAPE),
+                )
+            {
+                self.mark_repaint(id);
+            }
 
-                let metrics_changed = !old_theme.metrics().same_layout(&new_theme.metrics())
-                    || old_theme.typography() != new_theme.typography()
-                    || old_theme.spacing() != new_theme.spacing();
-                let token_layout_changed = old_theme.spacing() != new_theme.spacing()
-                    || old_theme.typography() != new_theme.typography()
-                    || old_theme.border() != new_theme.border()
-                    || old_theme.metrics() != new_theme.metrics();
-                let dialog_changed =
-                    changed.intersects(ThemeDependencyMask::RECIPE_DIALOG) || token_layout_changed;
-                let toast_changed = changed.intersects(ThemeDependencyMask::RECIPE_TOAST);
-                let shape_changed = changed.intersects(ThemeDependencyMask::RECIPE_SHAPE);
-                let menu_changed = changed.intersects(ThemeDependencyMask::RECIPE_MENU);
-                let intent_relevant = metrics_changed
-                    || token_layout_changed
-                    || shape_changed
-                    || menu_changed
-                    || changed.intersects(ThemeDependencyMask::TYPOGRAPHY_ANY);
+            let metrics_changed = !old_theme.metrics().same_layout(&new_theme.metrics())
+                || old_theme.typography() != new_theme.typography()
+                || old_theme.spacing() != new_theme.spacing();
+            let token_layout_changed = old_theme.spacing() != new_theme.spacing()
+                || old_theme.typography() != new_theme.typography()
+                || old_theme.border() != new_theme.border()
+                || old_theme.metrics() != new_theme.metrics();
+            let dialog_changed =
+                changed.intersects(ThemeDependencyMask::RECIPE_DIALOG) || token_layout_changed;
+            let toast_changed = changed.intersects(ThemeDependencyMask::RECIPE_TOAST);
+            let shape_changed = changed.intersects(ThemeDependencyMask::RECIPE_SHAPE);
+            let menu_changed = changed.intersects(ThemeDependencyMask::RECIPE_MENU);
+            let intent_relevant = metrics_changed
+                || token_layout_changed
+                || shape_changed
+                || menu_changed
+                || changed.intersects(ThemeDependencyMask::TYPOGRAPHY_ANY);
 
-                if dialog_changed
-                    && (self
-                        .widget_visual_as::<crate::ModalFrameVisual>(id)
-                        .is_some()
-                        || self
-                            .widget_visual_as::<crate::EmptyStateVisual>(id)
-                            .is_some())
+            if dialog_changed
+                && (self
+                    .widget_visual_as::<crate::ModalFrameVisual>(id)
+                    .is_some()
+                    || self
+                        .widget_visual_as::<crate::EmptyStateVisual>(id)
+                        .is_some())
+            {
+                modal_frames.push(id);
+            }
+            if token_layout_changed || toast_changed {
+                let widget_visual = self.nodes.widget_visual(id);
+                if (token_layout_changed
+                    && widget_visual.is_some_and(|w| w.visual_parts_read_theme()))
+                    || (toast_changed && widget_visual.is_some_and(|w| w.reads_toast_recipe()))
                 {
-                    modal_frames.push(id);
+                    part_readers.push(id);
                 }
-                if token_layout_changed || toast_changed {
-                    let widget_visual = self.nodes.widget_visual(id);
-                    if (token_layout_changed
-                        && widget_visual.is_some_and(|w| w.visual_parts_read_theme()))
-                        || (toast_changed && widget_visual.is_some_and(|w| w.reads_toast_recipe()))
+            }
+            if intent_relevant {
+                *any_intent_relevant = true;
+                if self.intent_nodes.contains(&id) {
+                    intent_candidates.push(id);
+                }
+                let body_changed = old_theme.typography().body != new_theme.typography().body;
+                let regular_changed =
+                    old_theme.typography().regular != new_theme.typography().regular;
+                let line_ratio_changed = old_theme.typography().line / old_theme.typography().body
+                    != new_theme.typography().line / new_theme.typography().body;
+                let record = self.record(id);
+                if record.hierarchy.parent.is_none() {
+                    let layout = &record.resolved_layout;
+                    if (body_changed && layout.font_size.is_none())
+                        || (regular_changed && layout.font_weight.is_none())
+                        || (line_ratio_changed && layout.line_height.is_none())
                     {
-                        part_readers.push(id);
+                        default_roots.push(id);
                     }
                 }
-                if intent_relevant {
-                    *any_intent_relevant = true;
-                    if self.intent_nodes.contains(&id) {
-                        intent_candidates.push(id);
-                    }
-                    let body_changed = old_theme.typography().body != new_theme.typography().body;
-                    let regular_changed =
-                        old_theme.typography().regular != new_theme.typography().regular;
-                    let line_ratio_changed = old_theme.typography().line
-                        / old_theme.typography().body
-                        != new_theme.typography().line / new_theme.typography().body;
-                    let record = self.record(id);
-                    if record.hierarchy.parent.is_none() {
-                        let layout = &record.resolved_layout;
-                        if (body_changed && layout.font_size.is_none())
-                            || (regular_changed && layout.font_weight.is_none())
-                            || (line_ratio_changed && layout.line_height.is_none())
-                        {
-                            default_roots.push(id);
-                        }
-                    }
-                }
-                if queue_reprojects {
-                    let border_changed = old_theme.border() != new_theme.border();
-                    let reproject_mask = if border_changed {
-                        changed.union(ThemeDependencyMask::RECIPE_ANY)
-                    } else {
-                        changed
-                    };
-                    if reproject_mask.intersects(
-                        ThemeDependencyMask::METRICS
-                            .union(ThemeDependencyMask::TYPOGRAPHY_ANY)
-                            .union(ThemeDependencyMask::RECIPE_ANY),
-                    ) && !matches!(self.record(id).kind.as_ref(), NodeKind::Text)
-                    {
-                        self.theme_state
-                            .pending_scope_reprojects
-                            .push((id, reproject_mask));
-                    }
+            }
+            if queue_reprojects {
+                let border_changed = old_theme.border() != new_theme.border();
+                let reproject_mask = if border_changed {
+                    changed.union(ThemeDependencyMask::RECIPE_ANY)
+                } else {
+                    changed
+                };
+                if reproject_mask.intersects(
+                    ThemeDependencyMask::METRICS
+                        .union(ThemeDependencyMask::TYPOGRAPHY_ANY)
+                        .union(ThemeDependencyMask::RECIPE_ANY),
+                ) && !matches!(self.record(id).kind.as_ref(), NodeKind::Text)
+                {
+                    self.theme_state
+                        .pending_scope_reprojects
+                        .push((id, reproject_mask));
                 }
             }
         }

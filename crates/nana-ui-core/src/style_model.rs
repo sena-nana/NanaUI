@@ -64,6 +64,7 @@ use crate::theme::{ThemeAppearance, ThemeMetrics, UI_BASE_TEXT_SIZE, UI_METRICS}
 /// hex from CSS must map to an existing [`SemanticPalette`] role or stay as a
 /// one-off paint hint on the bridge — never as a new formal token.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SemanticColor {
     pub r: f32,
     pub g: f32,
@@ -808,6 +809,7 @@ impl SemanticColorRole {
 
 /// A theme-relative, premultiplied-alpha sRGB mix. Weights use basis points.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SemanticColorMix {
     first: SemanticColorRole,
     second: Option<SemanticColorRole>,
@@ -1348,6 +1350,7 @@ impl SemanticPalette {
 /// `Warning` moves `WarningSoft` with it. Naming a derived role itself has no
 /// effect.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ColorOverrides {
     entries: Vec<(SemanticColorRole, SemanticColor)>,
 }

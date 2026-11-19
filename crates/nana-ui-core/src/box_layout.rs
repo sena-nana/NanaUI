@@ -4101,7 +4101,87 @@ impl LayoutStyle {
     /// the live [`StyleModelRef`] rather than baked as static sRGB.
     pub fn has_dynamic_paint_colors(&self) -> bool {
         (!self.paint_colors.is_shared_default() && self.paint_colors.has_dynamic_theme())
-            || (!self.paint.is_shared_default() && self.paint.has_dynamic_theme())
+            || self.has_dynamic_paint()
+    }
+
+    /// True when advanced `paint` slots (gradients, shadows, strokes) carry dynamic theme colors.
+    pub fn has_dynamic_paint(&self) -> bool {
+        !self.paint.is_shared_default() && self.paint.has_dynamic_theme()
+    }
+
+    /// Resolve only advanced `paint` slots against `model`.
+    pub fn resolve_theme_paint(&mut self, model: StyleModelRef) {
+        if self.has_dynamic_paint() {
+            self.paint.resolve_theme(model);
+        }
+    }
+
+    /// Apply pre-resolved [`PaintColorSlots`] onto dynamic slots and mirror legacy `[f32; 4]` fields.
+    pub fn apply_pre_resolved_paint_colors(
+        &mut self,
+        resolved: &crate::shared::Shared<crate::style_model::PaintColorSlots>,
+    ) {
+        if self.paint_colors.is_shared_default() || !self.paint_colors.has_dynamic_theme() {
+            return;
+        }
+        let dyn_color = self
+            .paint_colors
+            .color
+            .is_some_and(PaintColor::is_theme_dynamic);
+        let dyn_bg = self
+            .paint_colors
+            .background
+            .is_some_and(PaintColor::is_theme_dynamic);
+        let dyn_border = self
+            .paint_colors
+            .border
+            .is_some_and(PaintColor::is_theme_dynamic);
+        let dyn_top = self
+            .paint_colors
+            .border_top
+            .is_some_and(PaintColor::is_theme_dynamic);
+        let dyn_right = self
+            .paint_colors
+            .border_right
+            .is_some_and(PaintColor::is_theme_dynamic);
+        let dyn_bottom = self
+            .paint_colors
+            .border_bottom
+            .is_some_and(PaintColor::is_theme_dynamic);
+        let dyn_left = self
+            .paint_colors
+            .border_left
+            .is_some_and(PaintColor::is_theme_dynamic);
+        let dyn_outline = self
+            .paint_colors
+            .outline
+            .is_some_and(PaintColor::is_theme_dynamic);
+        self.paint_colors = resolved.clone();
+        let slots = &*self.paint_colors;
+        if dyn_color && let Some(c) = slots.color {
+            self.color = Some(c.to_srgb());
+        }
+        if dyn_bg && let Some(c) = slots.background {
+            self.background = Some(c.to_srgb());
+        }
+        if dyn_border && let Some(c) = slots.border {
+            self.border_color = Some(c.to_srgb());
+        }
+        if dyn_top && let Some(c) = slots.border_top {
+            self.border_sides.top_color = Some(c.to_srgb());
+        }
+        if dyn_right && let Some(c) = slots.border_right {
+            self.border_sides.right_color = Some(c.to_srgb());
+        }
+        if dyn_bottom && let Some(c) = slots.border_bottom {
+            self.border_sides.bottom_color = Some(c.to_srgb());
+        }
+        if dyn_left && let Some(c) = slots.border_left {
+            self.border_sides.left_color = Some(c.to_srgb());
+        }
+        if dyn_outline && let Some(c) = slots.outline {
+            self.paint.outline.color = Some(c.to_srgb());
+        }
     }
 
     /// Resolve every theme-dynamic [`PaintColor`] into static colors against

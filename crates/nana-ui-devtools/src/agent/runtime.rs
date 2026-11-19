@@ -9,7 +9,10 @@ use nana_ui::runtime::{
     ThemeInvalidationTrigger,
 };
 use nana_ui::{HeadlessInput, HostTextureRegistry, InputCounters, NanaTextShaper, ThemeAppearance};
-use nana_ui_core::{SemanticColorRole, ThemePackageProvenance, ThemeRegistry};
+use nana_ui_core::{
+    SemanticColorRole, ThemeCategoryGenerations, ThemePackageProvenance, ThemeRecipeFamily,
+    ThemeRegistry,
+};
 use nana_ui_platform::{
     FileDragInput, FileDragKind, InputModifiers, InputPayload, KeyInput, KeyState, LogicalKey,
     PhysicalKey, PointerInput, PointerPhase, WheelInput, WheelUnit,
@@ -19,9 +22,11 @@ use std::sync::Arc;
 
 use super::protocol::{
     HitDump, KeyStroke, PixelStats, PointerGesture, SceneProbeDump, SessionInfo,
-    ThemeCategoryCountDump, ThemeColorOverrideDump, ThemeDependencySummaryDump, ThemeInspectDump,
-    ThemeInvalidationDump, ThemeName, ThemeOverrideDump, ThemePackageLayerDump,
-    ThemePackageLoadDump, ThemePackageProvenanceDump, ThemeScopeLayerDump,
+    ThemeCategoryCountDump, ThemeCategoryGenerationsDump, ThemeColorOverrideDump,
+    ThemeDependencySummaryDump, ThemeInspectDump, ThemeInteractionStateDump, ThemeInvalidationDump,
+    ThemeName, ThemeNodeInvalidationStatusDump, ThemeOverrideDump, ThemePackageLayerDump,
+    ThemePackageLoadDump, ThemePackageProvenanceDump, ThemeResolvedTokenDump, ThemeScopeLayerDump,
+    ThemeTraceLayerDump, ThemeTransitionSourceDump,
 };
 use super::session::AgentSession;
 use super::{AccessibilityDumpNode, AgentError, scene_probe};
@@ -692,6 +697,39 @@ fn dependency_summary_dump(summary: &ThemeDependencySummary) -> ThemeDependencyS
     }
 }
 
+fn category_generations_dump(
+    generations: &ThemeCategoryGenerations,
+) -> ThemeCategoryGenerationsDump {
+    let mut recipes = std::collections::BTreeMap::new();
+    for family in ThemeRecipeFamily::ALL {
+        let name = match family {
+            ThemeRecipeFamily::Button => "button",
+            ThemeRecipeFamily::Input => "input",
+            ThemeRecipeFamily::Select => "select",
+            ThemeRecipeFamily::Tabs => "tabs",
+            ThemeRecipeFamily::TreeView => "tree_view",
+            ThemeRecipeFamily::Menu => "menu",
+            ThemeRecipeFamily::Dialog => "dialog",
+            ThemeRecipeFamily::Scrollbar => "scrollbar",
+            ThemeRecipeFamily::Toast => "toast",
+            ThemeRecipeFamily::Shape => "shape",
+            ThemeRecipeFamily::Status => "status",
+            ThemeRecipeFamily::Family => "family",
+        };
+        recipes.insert(name.to_owned(), generations.recipes[family.index()]);
+    }
+    ThemeCategoryGenerationsDump {
+        palette: generations.palette,
+        accent: generations.accent,
+        metrics: generations.metrics,
+        typography_shape: generations.typography_shape,
+        typography_layout: generations.typography_layout,
+        effect: generations.effect,
+        motion: generations.motion,
+        recipes,
+    }
+}
+
 fn invalidation_dump(invalidation: &LastThemeInvalidation) -> ThemeInvalidationDump {
     let (trigger, document, owner, theme_id, generation, scope_id, old_scope_id, new_scope_id) =
         match &invalidation.trigger {
@@ -767,7 +805,9 @@ fn invalidation_dump(invalidation: &LastThemeInvalidation) -> ThemeInvalidationD
     ThemeInvalidationDump {
         trigger: trigger.to_owned(),
         document,
+        target_document: invalidation.target_document.map(|d| d.get()),
         owner,
+        scope_root: invalidation.scope_root.map(|s| s.get()),
         theme_id,
         generation,
         scope_id,
@@ -780,12 +820,27 @@ fn invalidation_dump(invalidation: &LastThemeInvalidation) -> ThemeInvalidationD
             .map(str::to_owned)
             .collect(),
         changed_mask_bits: invalidation.changed_mask.bits(),
+        category_generations: category_generations_dump(&invalidation.category_generations),
         candidates_invalidated: invalidation.candidates_invalidated,
         nodes_skipped_by_dependency: invalidation.nodes_skipped_by_dependency,
         scope_nodes_invalidated: invalidation.scope_nodes_invalidated,
         recipe_nodes_invalidated: invalidation.recipe_nodes_invalidated,
         layout_seeds: invalidation.layout_seeds,
         motion_policy_only: invalidation.motion_policy_only,
+        resolved_style_changed: invalidation.resolved_style_changed,
+        resolved_style_unchanged: invalidation.resolved_style_unchanged,
+        paint_nodes_from_style: invalidation.paint_nodes_from_style,
+        text_nodes_from_style: invalidation.text_nodes_from_style,
+        style_text_shape_invalidations: invalidation.style_text_shape_invalidations,
+        style_text_layout_invalidations: invalidation.style_text_layout_invalidations,
+        layout_nodes_from_style: invalidation.layout_nodes_from_style,
+        style_motion_policy_invalidations: invalidation.style_motion_policy_invalidations,
+        triggered_stages: invalidation
+            .triggered_stages
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect(),
+        stage_reasons: invalidation.stage_reasons.clone(),
     }
 }
 
@@ -806,9 +861,11 @@ pub fn document_theme_inspect(
     Ok(ThemeInspectDump {
         node: inspected.node.get(),
         document: inspected.document.get(),
+        component: inspected.component,
         effective_theme_id: inspected.effective_theme_id.as_str().to_owned(),
         effective_theme_generation: inspected.effective_theme_generation.0,
         appearance: appearance_name(inspected.appearance),
+        high_contrast: inspected.high_contrast,
         active_scope: inspected.active_scope.0,
         scope_generation: inspected.scope_generation.0,
         document_theme_override: inspected
@@ -844,8 +901,62 @@ pub fn document_theme_inspect(
             .map(str::to_owned)
             .collect(),
         dependency_mask_bits: inspected.dependency_mask.bits(),
+        recipe_families: inspected
+            .recipe_families
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+        interaction_state: ThemeInteractionStateDump {
+            hovered: inspected.interaction_state.hovered,
+            active: inspected.interaction_state.active,
+            focused: inspected.interaction_state.focused,
+            focus_visible: inspected.interaction_state.focus_visible,
+            disabled: inspected.interaction_state.disabled,
+            selected: inspected.interaction_state.selected,
+            checked: inspected.interaction_state.checked,
+        },
+        resolved_tokens: inspected
+            .resolved_tokens
+            .into_iter()
+            .map(|token| ThemeResolvedTokenDump {
+                category: token.category.to_owned(),
+                name: token.name.to_owned(),
+                value: token.value,
+            })
+            .collect(),
+        transitions: inspected
+            .transitions
+            .into_iter()
+            .map(|t| ThemeTransitionSourceDump {
+                property: t.property.to_owned(),
+                duration_ms: t.duration_ms,
+                easing: t.easing,
+                reduced_motion: t.reduced_motion,
+            })
+            .collect(),
+        resolution_trace: inspected
+            .resolution_trace
+            .into_iter()
+            .map(|layer| ThemeTraceLayerDump {
+                layer_kind: layer.layer_kind.to_owned(),
+                source: layer.source,
+                theme_id: layer.theme_id,
+                scope_id: layer.scope_id.map(|id| id.0),
+                overridden_categories: layer
+                    .overridden_categories
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
+            })
+            .collect(),
         package_provenance: inspected.package_provenance.as_ref().map(provenance_dump),
         last_invalidation: inspected.last_invalidation.as_ref().map(invalidation_dump),
+        last_invalidation_status: inspected.last_invalidation_status.map(|status| {
+            ThemeNodeInvalidationStatusDump {
+                affected: status.affected,
+                reasons: status.reasons,
+            }
+        }),
         dependency_summary: dependency_summary_dump(&summary),
     })
 }

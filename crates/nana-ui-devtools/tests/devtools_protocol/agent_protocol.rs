@@ -785,6 +785,25 @@ fn theme_inspect_reports_nested_theme_scopes_color_overrides_and_invalidation() 
         "{:?}",
         inspect.dependency_categories
     );
+    assert!(
+        inspect.component.contains("Button"),
+        "{}",
+        inspect.component
+    );
+    assert!(
+        inspect
+            .recipe_families
+            .contains(&"RECIPE_BUTTON".to_owned())
+    );
+    assert!(!inspect.high_contrast);
+    assert!(!inspect.resolved_tokens.is_empty());
+    assert!(!inspect.transitions.is_empty());
+    assert!(
+        inspect
+            .resolution_trace
+            .iter()
+            .any(|layer| layer.layer_kind == "theme_scope")
+    );
 
     let inv_reply = session.execute(AgentCommand::ThemeInvalidation);
     assert!(inv_reply.ok, "{inv_reply:?}");
@@ -793,6 +812,7 @@ fn theme_inspect_reports_nested_theme_scopes_color_overrides_and_invalidation() 
         .expect("initial scope invalidation present");
     assert_eq!(first_inv.trigger, "scope_reparented");
     assert_eq!(first_inv.new_scope_id, Some(inspect.active_scope));
+    assert!(first_inv.scope_root.is_some());
 
     // Switch root theme to Light and verify invalidation updates.
     let switch_reply = session.execute(AgentCommand::Theme {
@@ -806,6 +826,20 @@ fn theme_inspect_reports_nested_theme_scopes_color_overrides_and_invalidation() 
         .expect("root switch invalidation");
     assert_eq!(root_inv.trigger, "root_theme");
     assert_eq!(root_inv.theme_id.as_deref(), Some("nana.light"));
+    assert!(root_inv.category_generations.palette >= 2);
+    assert!(root_inv.resolved_style_changed > 0);
+    assert!(root_inv.triggered_stages.contains(&"style".to_owned()));
+    assert!(!root_inv.stage_reasons.is_empty());
+    let inspected_after = session
+        .execute(AgentCommand::ThemeInspect { target })
+        .theme_inspect
+        .expect("theme_inspect after light switch");
+    assert!(
+        inspected_after
+            .last_invalidation_status
+            .as_ref()
+            .is_some_and(|status| status.affected)
+    );
 }
 
 #[test]
@@ -906,6 +940,14 @@ fn load_theme_package_validates_applies_and_fails_closed_on_bad_fixtures() {
         (
             "invalid_token_negative_spacing",
             r#"{"schema_version":{"major":1,"minor":0},"id":"bad.spacing","name":"Bad Spacing","base":"nana.dark","patch":{"spacing":{"md":-4.0}}}"#,
+        ),
+        (
+            "nested_unknown_field_in_spacing",
+            r#"{"schema_version":{"major":1,"minor":0},"id":"bad.nested","name":"Bad Nested","base":"nana.dark","patch":{"spacing":{"md":8.0,"unexpected":1.0}}}"#,
+        ),
+        (
+            "invalid_cubic_bezier_easing",
+            r#"{"schema_version":{"major":1,"minor":0},"id":"bad.easing","name":"Bad Easing","base":"nana.dark","patch":{"motion":{"standard_easing":{"CubicBezier":[1.5,0.0,0.5,1.0]}}}}"#,
         ),
     ];
 

@@ -12,6 +12,7 @@ use crate::style_model::{SemanticColorMix, SemanticColorRole};
 
 /// Recipe for single- and multi-line input controls (`TextInput`, `NumberInput`, `TextArea`).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InputRecipe {
     pub background: SemanticColorRole,
     pub foreground: SemanticColorRole,
@@ -73,6 +74,7 @@ impl Default for InputRecipe {
 
 /// Recipe for `Select`, `Dropdown`, and `SearchDropdown`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SelectRecipe {
     pub background: SemanticColorRole,
     pub inactive_background: SemanticColorRole,
@@ -145,6 +147,7 @@ impl Default for SelectRecipe {
 
 /// Recipe for `Tabs` strips and tab options.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TabsRecipe {
     pub strip_gap: SpacingStep,
     pub option_padding_extra: SpacingStep,
@@ -193,6 +196,7 @@ impl Default for TabsRecipe {
 
 /// Recipe for `TreeView` rows, icons, toggle indicators, and drag-drop marks.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TreeViewRecipe {
     pub selected_background: SemanticColorRole,
     pub hover_background: Option<SemanticColorRole>,
@@ -240,6 +244,7 @@ impl Default for TreeViewRecipe {
 
 /// Recipe for `ActionMenu`, `ContextMenu`, `Popover` menus, and `AppMenuBar`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MenuRecipe {
     pub surface_background: SemanticColorRole,
     pub surface_border: SemanticColorRole,

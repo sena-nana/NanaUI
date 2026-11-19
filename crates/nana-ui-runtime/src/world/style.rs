@@ -22,6 +22,12 @@ impl UiWorld {
         let Some(parent) = parent else {
             return Ok(false);
         };
+        if !self.theme_state.theme_scopes.is_empty()
+            && self.theme_state.theme_scopes.scope_for_owner(id).is_some()
+        {
+            return Ok(false);
+        }
+        let parent_scope = self.nodes.node_scope(parent);
         if self.layout_length_tracks.contains_key(&id)
             || !self.overlay_branch_active(id)
             || !self.menu_branch_open(id)
@@ -39,7 +45,9 @@ impl UiWorld {
         }
         let (parent_style, parent_scope_gen) = {
             let parent_record = self.record(parent);
-            if parent_record.resolved.1 != self.resolved_palette_epoch() {
+            if parent_record.resolved.1 != self.resolved_palette_epoch()
+                || parent_record.resolved.3.ext.theme_scope != parent_scope
+            {
                 return Ok(false);
             }
             (
@@ -89,7 +97,7 @@ impl UiWorld {
         {
             return Ok(false);
         }
-        self.nodes.set_node_scope(id, parent_style.ext.theme_scope);
+        self.nodes.set_node_scope(id, parent_scope);
         let theme_change = self
             .theme_state
             .pending_theme_eval
@@ -256,7 +264,7 @@ impl UiWorld {
         let inherited_color = parent.and(inherited.color);
         let doc = self.record(id).document;
         let parent_scope = parent
-            .map(|p| self.record(p).resolved.0.ext.theme_scope)
+            .map(|p| self.nodes.node_scope(p))
             .unwrap_or(nana_ui_core::ThemeScopeId::ROOT);
         let effective_scope = if self.theme_state.theme_scopes.is_empty() {
             nana_ui_core::ThemeScopeId::ROOT
@@ -1414,6 +1422,7 @@ impl UiWorld {
         let mut queue: std::collections::VecDeque<StableNodeId> = ids.iter().copied().collect();
         let mut propagated_theme = HashSet::new();
         let mut work = ThemeWorkCounters::default();
+        let pending_theme_before = self.theme_state.pending_theme_eval.len();
         while let Some(id) = queue.pop_front() {
             if !self.contains(id) {
                 return Err(UiWorldError::MissingNode(id));
@@ -1430,6 +1439,9 @@ impl UiWorld {
                 &mut propagated_theme,
                 &mut work,
             )?;
+        }
+        if self.theme_state.pending_theme_eval.len() < pending_theme_before {
+            self.fold_theme_invalidation_resolution(&work);
         }
         self.record_theme_work(work);
         self.reconcile_focus(ids);
@@ -1536,7 +1548,20 @@ impl UiWorld {
             return;
         }
         if changed != nana_ui_core::ThemeDependencyMask::MOTION_POLICY {
-            let hover_ids = self.hover_transitions.keys().copied().collect::<Vec<_>>();
+            let has_doc_overrides = !self.theme_state.document_themes.is_empty();
+            let hover_ids = self
+                .hover_transitions
+                .keys()
+                .copied()
+                .filter(|&id| {
+                    !has_doc_overrides
+                        || !self.contains(id)
+                        || !self
+                            .theme_state
+                            .document_themes
+                            .contains_key(&self.record(id).document)
+                })
+                .collect::<Vec<_>>();
             for id in hover_ids {
                 self.cancel_hover_transition(id);
             }

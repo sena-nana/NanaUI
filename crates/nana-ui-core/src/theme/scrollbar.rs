@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 /// One scrollbar transition: how long, along which curve. CSS
 /// `transition: <property> <duration> <timing-function>`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ScrollbarTransition {
     pub millis: u16,
     pub easing: Easing,
@@ -35,6 +36,7 @@ impl ScrollbarTransition {
 /// How a bar comes, goes and grows. With reduced motion on none of it
 /// plays: the bar shows, hides and changes thickness at once.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ScrollbarMotion {
     pub fade_in: ScrollbarTransition,
     pub fade_out: ScrollbarTransition,
@@ -70,6 +72,7 @@ impl Default for ScrollbarMotion {
 
 /// The Scrollbar family: what a bar paints with and when it shows.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ScrollbarRecipe {
     /// The application's policy for every scroll view that does not choose
     /// its own: bars that hide on their own, resident bars, or none.

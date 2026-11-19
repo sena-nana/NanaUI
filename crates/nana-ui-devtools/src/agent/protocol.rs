@@ -363,6 +363,70 @@ pub struct ThemeDependencySummaryDump {
     pub category_counts: Vec<ThemeCategoryCountDump>,
 }
 
+/// Per-category generation snapshot captured alongside a theme invalidation (#109).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ThemeCategoryGenerationsDump {
+    pub palette: u32,
+    pub accent: u32,
+    pub metrics: u32,
+    pub typography_shape: u32,
+    pub typography_layout: u32,
+    pub effect: u32,
+    pub motion: u32,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub recipes: std::collections::BTreeMap<String, u32>,
+}
+
+/// Active pointer/focus/accessibility interaction state observed on a node (#109).
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ThemeInteractionStateDump {
+    pub hovered: bool,
+    pub active: bool,
+    pub focused: bool,
+    pub focus_visible: bool,
+    pub disabled: bool,
+    pub selected: bool,
+    pub checked: bool,
+}
+
+/// One resolved token value active on an inspected node (#109).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ThemeResolvedTokenDump {
+    pub category: String,
+    pub name: String,
+    pub value: String,
+}
+
+/// Effective motion/transition timing policy resolved for an inspected node (#109).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ThemeTransitionSourceDump {
+    pub property: String,
+    pub duration_ms: u32,
+    pub easing: String,
+    pub reduced_motion: bool,
+}
+
+/// One causal layer in the node's resolved theme override stack (#109).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ThemeTraceLayerDump {
+    pub layer_kind: String,
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_id: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub overridden_categories: Vec<String>,
+}
+
+/// Causal explanation of whether the last invalidation affected a given node (#109).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ThemeNodeInvalidationStatusDump {
+    pub affected: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reasons: Vec<String>,
+}
+
 /// Summary of the most recent theme or scope invalidation pass (#109).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ThemeInvalidationDump {
@@ -370,7 +434,11 @@ pub struct ThemeInvalidationDump {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub document: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_document: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_root: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -383,12 +451,25 @@ pub struct ThemeInvalidationDump {
     pub new_scope_id: Option<u32>,
     pub changed_categories: Vec<String>,
     pub changed_mask_bits: u32,
+    pub category_generations: ThemeCategoryGenerationsDump,
     pub candidates_invalidated: usize,
     pub nodes_skipped_by_dependency: usize,
     pub scope_nodes_invalidated: usize,
     pub recipe_nodes_invalidated: usize,
     pub layout_seeds: usize,
     pub motion_policy_only: bool,
+    pub resolved_style_changed: usize,
+    pub resolved_style_unchanged: usize,
+    pub paint_nodes_from_style: usize,
+    pub text_nodes_from_style: usize,
+    pub style_text_shape_invalidations: usize,
+    pub style_text_layout_invalidations: usize,
+    pub layout_nodes_from_style: usize,
+    pub style_motion_policy_invalidations: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub triggered_stages: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stage_reasons: Vec<String>,
 }
 
 /// On-demand theme inspection payload for one node (#109).
@@ -396,9 +477,11 @@ pub struct ThemeInvalidationDump {
 pub struct ThemeInspectDump {
     pub node: u64,
     pub document: u64,
+    pub component: String,
     pub effective_theme_id: String,
     pub effective_theme_generation: u32,
     pub appearance: String,
+    pub high_contrast: bool,
     pub active_scope: u32,
     pub scope_generation: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -409,10 +492,21 @@ pub struct ThemeInspectDump {
     pub color_overrides: Vec<ThemeColorOverrideDump>,
     pub dependency_categories: Vec<String>,
     pub dependency_mask_bits: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recipe_families: Vec<String>,
+    pub interaction_state: ThemeInteractionStateDump,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resolved_tokens: Vec<ThemeResolvedTokenDump>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub transitions: Vec<ThemeTransitionSourceDump>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resolution_trace: Vec<ThemeTraceLayerDump>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub package_provenance: Option<ThemePackageProvenanceDump>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_invalidation: Option<ThemeInvalidationDump>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_invalidation_status: Option<ThemeNodeInvalidationStatusDump>,
     pub dependency_summary: ThemeDependencySummaryDump,
 }
 

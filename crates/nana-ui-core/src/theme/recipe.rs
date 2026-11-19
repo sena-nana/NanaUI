@@ -121,6 +121,7 @@ impl ComponentRecipeId {
 
 /// One family's resolved foreground contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ComponentRecipe {
     /// Foreground at rest.
     pub foreground: SemanticColorRole,
@@ -163,6 +164,7 @@ impl ComponentRecipeDraft {
 /// are real design answers for a ghost button — unlike [`Self::foreground`],
 /// which every variant must state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ButtonVariantRecipe {
     pub foreground: SemanticColorRole,
     pub background: Option<SemanticColorRole>,
@@ -286,6 +288,7 @@ impl ButtonRecipeDraft {
 /// This replaces the free-standing `status_tone_role` helper in the runtime:
 /// "info is the accent colour" is a design-system decision, not a runtime one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StatusRecipe {
     pub neutral: SemanticColorRole,
     pub info: SemanticColorRole,
@@ -319,6 +322,7 @@ impl StatusRecipe {
 /// One run of a component's own copy, as a recipe states it: CSS
 /// `font-size` and `font-weight`. `weight: None` keeps the node's own.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RecipeText {
     pub size: f32,
     pub weight: Option<u16>,

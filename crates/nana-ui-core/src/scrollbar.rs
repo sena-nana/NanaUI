@@ -40,7 +40,7 @@ pub enum ScrollbarVisibility {
 /// `serde(default)` so a metrics blob written before a field existed still
 /// loads; a missing field takes its [`SCROLLBAR_METRICS`] value.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ScrollbarMetrics {
     /// Cross-axis extent of the lane: the band the bar is grabbed in, which
     /// the thumb and the track are centred in.

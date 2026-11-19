@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use nana_ui_runtime::{
     AppContext, Button, DocumentId, MutationQueue, NodeKind, NodeStyle, StableNodeId, Stack,
-    SystemWork, ThemeWorkCounters, UiWorld, WorkCounters,
+    StatusBadge, SystemWork, ThemeWorkCounters, UiWorld, WorkCounters,
 };
 use serde::Serialize;
 
@@ -85,6 +85,7 @@ struct ThemeWork {
     scope_cache_hits: usize,
     scope_cache_misses: usize,
     scope_generation_changes: usize,
+    theme_scopes_active: usize,
 }
 
 impl From<ThemeWorkCounters> for ThemeWork {
@@ -113,6 +114,7 @@ impl From<ThemeWorkCounters> for ThemeWork {
             scope_cache_hits: counters.scope_cache_hits,
             scope_cache_misses: counters.scope_cache_misses,
             scope_generation_changes: counters.scope_generation_changes,
+            theme_scopes_active: counters.theme_scopes_active,
         }
     }
 }
@@ -183,6 +185,8 @@ fn main() {
         density_case(),
         head_mutation_case(),
         scope_patch_case(),
+        motion_only_case(),
+        recipe_button_case(),
     ];
     let report = Report {
         schema_version: 1,
@@ -605,6 +609,147 @@ fn scope_patch_case() -> Case {
     Case {
         id: "theme-scope-patch",
         workload: "scope-patch",
+        status: "ok",
+        controls: FIXTURE_CONTROLS,
+        nodes,
+        iterations: ITERATIONS,
+        work,
+        frame_work,
+        elapsed_ms: summarize(&samples),
+    }
+}
+
+/// Motion policy only (#106 §8): zero style/layout/text/paint work on 1k controls.
+fn motion_only_case() -> Case {
+    let Fixture {
+        mut context,
+        document,
+        ..
+    } = settled_fixture(FIXTURE_CONTROLS);
+    let base = std::sync::Arc::new(context.world().installed_theme().clone());
+    let mut motion = base.motion();
+    motion.hover_color_ms = motion.hover_color_ms.saturating_add(40);
+    let patched = std::sync::Arc::new(
+        nana_ui_core::ThemePatch::default()
+            .with_motion(motion)
+            .apply_to_compiled(&base)
+            .unwrap(),
+    );
+    let nodes = context.world().len();
+    let mut samples = Vec::with_capacity(ITERATIONS);
+    let mut work = ThemeWork::default();
+    let mut frame_work = FrameWork::default();
+    for iteration in 0..(WARMUP + ITERATIONS) {
+        let next = if iteration.is_multiple_of(2) {
+            std::sync::Arc::clone(&patched)
+        } else {
+            std::sync::Arc::clone(&base)
+        };
+        context.compat_world_mut().begin_frame_counters();
+        let started = Instant::now();
+        assert!(
+            context.set_theme_tokens(next).unwrap(),
+            "motion-only theme must change"
+        );
+        let drained = drain_frame_systems(&mut context, document);
+        let elapsed = started.elapsed();
+        context.compat_world_mut().end_frame_counters();
+        if iteration >= WARMUP {
+            samples.push(elapsed);
+            work = context.world().last_theme_work_counters().into();
+            frame_work = drained;
+        }
+    }
+    Case {
+        id: "theme-motion-only",
+        workload: "motion-only",
+        status: "ok",
+        controls: FIXTURE_CONTROLS,
+        nodes,
+        iterations: ITERATIONS,
+        work,
+        frame_work,
+        elapsed_ms: summarize(&samples),
+    }
+}
+
+/// Button-only recipe delta (#106 §8) over a 1k mixed Button + StatusBadge tree:
+/// non-Button controls are skipped and no layout/text work runs.
+fn recipe_button_case() -> Case {
+    let document = DocumentId::new(1).unwrap();
+    let mut context = AppContext::new();
+    let root = context
+        .create_component(document, Stack::column(0.0))
+        .unwrap();
+    for index in 0..FIXTURE_CONTROLS {
+        if index.is_multiple_of(2) {
+            let child = context
+                .create_component(document, Button::new(format!("Action {index}")))
+                .unwrap();
+            context.append_child(root, child).unwrap();
+        } else {
+            let child = context
+                .create_component(
+                    document,
+                    StatusBadge::new("OK", nana_ui_core::StatusTone::Success),
+                )
+                .unwrap();
+            context.append_child(root, child).unwrap();
+        }
+    }
+    for _ in 0..16 {
+        let work = context.take_system_work();
+        if work.is_empty() {
+            break;
+        }
+        run_systems(&mut context, document, &work);
+    }
+
+    let base = std::sync::Arc::new(context.world().installed_theme().clone());
+    let mut next_variant = base
+        .recipes()
+        .button()
+        .variant(nana_ui_core::ButtonKind::Primary);
+    next_variant.foreground = if next_variant.foreground == nana_ui_core::SemanticColorRole::Warning
+    {
+        nana_ui_core::SemanticColorRole::Accent
+    } else {
+        nana_ui_core::SemanticColorRole::Warning
+    };
+    let patched = std::sync::Arc::new(
+        nana_ui_core::ThemePatch::default()
+            .with_button_variant(nana_ui_core::ButtonKind::Primary, next_variant)
+            .apply_to_compiled(&base)
+            .unwrap(),
+    );
+    let nodes = context.world().len();
+    let mut samples = Vec::with_capacity(ITERATIONS);
+    let mut work = ThemeWork::default();
+    let mut frame_work = FrameWork::default();
+    for iteration in 0..(WARMUP + ITERATIONS) {
+        let next = if iteration.is_multiple_of(2) {
+            std::sync::Arc::clone(&patched)
+        } else {
+            std::sync::Arc::clone(&base)
+        };
+        context.compat_world_mut().begin_frame_counters();
+        let started = Instant::now();
+        assert!(
+            context.set_theme_tokens(next).unwrap(),
+            "button recipe patch must change"
+        );
+        let drained = drain_frame_systems(&mut context, document);
+        let elapsed = started.elapsed();
+        context.compat_world_mut().end_frame_counters();
+        if iteration >= WARMUP {
+            samples.push(elapsed);
+            work = context.world().last_theme_work_counters().into();
+            frame_work = drained;
+        }
+    }
+    Case {
+        id: "theme-recipe-button",
+        workload: "recipe-button",
         status: "ok",
         controls: FIXTURE_CONTROLS,
         nodes,

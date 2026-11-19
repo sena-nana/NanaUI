@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "id": "theme-recipe-button",
+  "kind": "Theme",
+  "params": {
+    "workload": "recipe-button",
+    "controls": 1000
+  },
+  "record": [
+    "work_counters"
+  ],
+  "invariants": [
+    {
+      "name": "recipe_button_does_not_reshape",
+      "path": "work_counters.text_nodes_from_style",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "Issue #106 §8: a button color recipe delta must not reshape text."
+    },
+    {
+      "name": "recipe_button_does_not_lay_out",
+      "path": "work_counters.layout_nodes_from_style",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "Issue #106 §8: a button color recipe delta must not trigger layout from style."
+    },
+    {
+      "name": "recipe_button_does_not_lay_out_the_frame",
+      "path": "work_counters.layout_nodes",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "Cross-check against the drain: no LAYOUT was scheduled."
+    },
+    {
+      "name": "recipe_button_does_not_copy_layout",
+      "path": "work_counters.layout_copies",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "A button color recipe change must not copy any LayoutStyle box."
+    },
+    {
+      "name": "recipe_button_invalidates_buttons",
+      "path": "work_counters.component_recipe_nodes_invalidated",
+      "op": "gte",
+      "value": 1,
+      "status": "required",
+      "note": "Buttons dependent on RECIPE_BUTTON must be targeted."
+    },
+    {
+      "name": "recipe_button_skips_unrelated_controls",
+      "path": "work_counters.theme_dependency_skipped",
+      "op": "gte",
+      "value": 1,
+      "status": "required",
+      "note": "Issue #106 §8: non-button controls must be skipped rather than re-evaluated."
+    }
+  ],
+  "notes": "Issue #106 §8 Button-only recipe delta over a mixed 1k Button + StatusBadge fixture."
+}

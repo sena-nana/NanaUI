@@ -785,7 +785,7 @@ impl AppContext {
         let mark = self.create_detached_component(document, mark)?.stable_id();
         let mut title = Text::new("");
         title.decorative = true;
-        Arc::make_mut(&mut title.style.layout).font_weight = Some(600);
+        title.style.type_weight = Some(nana_ui_core::TextWeight::Semibold);
         let title = self.create_detached_component(document, title)?.stable_id();
         self.append_children(header, &[mark, title])?;
         let body = self

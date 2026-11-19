@@ -1477,8 +1477,15 @@ impl AppContext {
                 .views
                 .get(&id)
                 .is_some_and(|view| view.is::<crate::Skeleton>())
-                && let Some(spec) =
-                    crate::Skeleton::pulse_animation(id, self.component_lifecycle.now)
+                && let Some(spec) = {
+                    let theme = self.world.node_theme(id);
+                    crate::Skeleton::pulse_animation(
+                        id,
+                        self.component_lifecycle.now,
+                        theme.duration(nana_ui_core::MotionRole::SkeletonPulse) / 2,
+                        theme.motion().easing(nana_ui_core::EasingRole::Expand),
+                    )
+                }
                 && !self.world.animation_is_active(spec.id)
             {
                 mutations.start_animation_with_playback(spec, crate::Skeleton::PULSE_PLAYBACK);
@@ -1487,7 +1494,15 @@ impl AppContext {
                 .views
                 .get(&id)
                 .is_some_and(|view| view.is::<crate::Spinner>())
-                && let Some(spec) = crate::Spinner::spin_animation(id, self.component_lifecycle.now)
+                && let Some(spec) = {
+                    let theme = self.world.node_theme(id);
+                    crate::Spinner::spin_animation(
+                        id,
+                        self.component_lifecycle.now,
+                        theme.duration(nana_ui_core::MotionRole::SpinnerRotation),
+                        theme.motion().easing(nana_ui_core::EasingRole::Linear),
+                    )
+                }
                 && !self.world.animation_is_active(spec.id)
             {
                 mutations.start_animation_with_playback(spec, crate::Spinner::SPIN_PLAYBACK);

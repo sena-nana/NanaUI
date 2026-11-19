@@ -20,7 +20,6 @@ use crate::{
 const MAX_VISIBLE_ROWS: usize = 12;
 const INPUT_GAP: f32 = nana_ui_core::space::MD;
 const ROW_PAD_X: f32 = nana_ui_core::space::LG;
-const SHORTCUT_TEXT_SIZE: f32 = nana_ui_core::type_scale::HINT;
 const SHORTCUT_LABEL_GAP: f32 = nana_ui_core::space::MD;
 
 fn palette_row_height(metrics: nana_ui_core::ThemeMetrics) -> f32 {
@@ -462,11 +461,13 @@ pub struct CommandPaletteVisual {
 }
 
 impl CommandPaletteVisual {
+    #[allow(clippy::too_many_arguments)]
     fn layout_at(
         &self,
         bounds: LayoutBox,
         palette: &nana_ui_core::SemanticPalette,
         metrics: nana_ui_core::ThemeMetrics,
+        typography: nana_ui_core::TypographyTokens,
         measure: crate::text_width::ChromeTextMeasure<'_>,
     ) -> CommandPaletteLayout {
         command_palette_geometry(
@@ -478,6 +479,7 @@ impl CommandPaletteVisual {
             &self.rows,
             palette,
             metrics,
+            typography,
             measure,
         )
     }
@@ -508,6 +510,7 @@ impl WidgetVisual for CommandPaletteVisual {
             ctx.bounds,
             &ctx.style_model.palette,
             ctx.style_model.metrics,
+            ctx.theme.typography(),
             ctx.world.chrome_text_measure(ctx.id),
         );
         layout.to_widget_paint(ctx.chrome_radii, ctx.style)
@@ -521,15 +524,18 @@ impl UiWorld {
         let visual = self.widget_visual_as::<CommandPaletteVisual>(id)?;
         let bounds = self.component_layout_box(id)?;
         let style_model = self.node_style_model(id);
+        let typography = self.node_theme(id).typography();
         Some(visual.layout_at(
             bounds,
             &style_model.palette,
             style_model.metrics,
+            typography,
             self.chrome_text_measure(id),
         ))
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn command_palette_geometry(
     bounds: LayoutBox,
     title: &Arc<str>,
@@ -539,6 +545,7 @@ pub(crate) fn command_palette_geometry(
     rows: &[PaletteRowData],
     palette: &nana_ui_core::SemanticPalette,
     metrics: nana_ui_core::ThemeMetrics,
+    typography: nana_ui_core::TypographyTokens,
     measure: crate::text_width::ChromeTextMeasure<'_>,
 ) -> CommandPaletteLayout {
     let input_height = ControlSize::Medium.height_in(metrics);
@@ -571,8 +578,8 @@ pub(crate) fn command_palette_geometry(
         },
         content: Arc::clone(title).into(),
         color: Some(palette.text.as_rgba_array()),
-        font_size: nana_ui_core::type_scale::HEADING,
-        font_weight: Some(nana_ui_core::type_scale::SEMIBOLD),
+        font_size: typography.heading,
+        font_weight: Some(typography.semibold),
     };
     y += ControlSize::Small.height_in(metrics);
     let input_box = LayoutBox {
@@ -613,7 +620,7 @@ pub(crate) fn command_palette_geometry(
         },
         content: Arc::clone(label).into(),
         color: Some(palette.muted.as_rgba_array()),
-        font_size: nana_ui_core::type_scale::META,
+        font_size: typography.meta,
         font_weight: None,
     });
     let rows = rows
@@ -627,17 +634,17 @@ pub(crate) fn command_palette_geometry(
                 height: row_height,
             };
             let shortcut = row.shortcut.as_ref().map(|shortcut| {
-                let shortcut_width = measure.width(shortcut, SHORTCUT_TEXT_SIZE, None);
+                let shortcut_width = measure.width(shortcut, typography.hint, None);
                 ComponentTextRegion {
                     bounds: LayoutBox {
                         x: bounds.x + bounds.width - ROW_PAD_X - shortcut_width,
                         y: bounds.y + nana_ui_core::space::XL,
                         width: shortcut_width,
-                        height: nana_ui_core::type_scale::LINE,
+                        height: typography.line,
                     },
                     content: Arc::clone(shortcut).into(),
                     color: Some(palette.muted.as_rgba_array()),
-                    font_size: SHORTCUT_TEXT_SIZE,
+                    font_size: typography.hint,
                     font_weight: None,
                 }
             });
@@ -652,23 +659,23 @@ pub(crate) fn command_palette_geometry(
                     x: bounds.x + ROW_PAD_X,
                     y: bounds.y + nana_ui_core::space::SM,
                     width: (label_right - bounds.x - ROW_PAD_X).max(0.0),
-                    height: nana_ui_core::type_scale::LINE,
+                    height: typography.line,
                 },
                 content: Arc::clone(&row.label).into(),
                 color: Some(palette.text.as_rgba_array()),
-                font_size: nana_ui_core::type_scale::META,
-                font_weight: Some(nana_ui_core::type_scale::MEDIUM),
+                font_size: typography.meta,
+                font_weight: Some(typography.medium),
             };
             let category = row.category.as_ref().map(|category| ComponentTextRegion {
                 bounds: LayoutBox {
                     x: bounds.x + ROW_PAD_X,
                     y: bounds.y + nana_ui_core::space::PAGE_TIGHT + nana_ui_core::space::XXS,
                     width: (bounds.width - ROW_PAD_X * 2.0).max(0.0),
-                    height: nana_ui_core::type_scale::META,
+                    height: typography.meta,
                 },
                 content: Arc::clone(category).into(),
                 color: Some(palette.muted.as_rgba_array()),
-                font_size: SHORTCUT_TEXT_SIZE,
+                font_size: typography.hint,
                 font_weight: None,
             });
             PaletteRowGeometry {
@@ -865,14 +872,17 @@ mod tests {
             &rows,
             &nana_ui_core::SemanticPalette::dark(),
             nana_ui_core::UI_METRICS,
+            nana_ui_core::TypographyTokens::DEFAULT,
             crate::text_width::ChromeTextMeasure::ESTIMATE,
         );
         let CommandPaletteLayout { rows, .. } = geometry;
         let row = &rows[0];
         let shortcut = row.shortcut.as_ref().expect("shortcut region");
         // "Ctrl+Alt+Delete" at 10px ≈ 93px, far past the old fixed 70px box.
-        let estimated =
-            crate::text_width::estimated_text_width(shortcut.content.as_ref(), SHORTCUT_TEXT_SIZE);
+        let estimated = crate::text_width::estimated_text_width(
+            shortcut.content.as_ref(),
+            nana_ui_core::TypographyTokens::DEFAULT.hint,
+        );
         assert!(
             estimated > 80.0,
             "estimate {estimated} should exceed the old box"
@@ -903,6 +913,7 @@ mod tests {
             &[],
             &nana_ui_core::SemanticPalette::dark(),
             nana_ui_core::UI_METRICS,
+            nana_ui_core::TypographyTokens::DEFAULT,
             crate::text_width::ChromeTextMeasure::ESTIMATE,
         );
         let CommandPaletteLayout {

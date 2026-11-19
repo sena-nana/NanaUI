@@ -37,8 +37,9 @@ use hit_test::*;
 pub(crate) use text::TextDisplayView;
 use text::*;
 pub use theme_inspect::{
-    LastThemeInvalidation, ThemeDependencySummary, ThemeInvalidationTrigger, ThemeNodeInspection,
-    ThemeScopeChainEntry,
+    LastThemeInvalidation, ThemeDependencySummary, ThemeInteractionState, ThemeInvalidationTrigger,
+    ThemeNodeInspection, ThemeNodeInvalidationStatus, ThemeResolvedToken, ThemeScopeChainEntry,
+    ThemeTraceLayer, ThemeTransitionSource,
 };
 
 use std::{
@@ -3820,6 +3821,9 @@ impl UiWorld {
     }
 
     fn record_theme_work(&mut self, mut work: ThemeWorkCounters) {
+        work.theme_scopes_active = work
+            .theme_scopes_active
+            .max(self.theme_state.theme_scopes.len());
         if work.style_nodes_resolved > 0 {
             nana_diagnostics::metric!(
                 nana_diagnostics::framework::runtime::STYLE_NODES_RESOLVED,

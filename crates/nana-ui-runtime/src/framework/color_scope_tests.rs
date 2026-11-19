@@ -2,6 +2,7 @@
 //! answer for it and its whole subtree.
 
 use super::*;
+use crate::NodeStyle;
 use nana_ui_core::{ColorOverrides, SemanticColor, SemanticColorRole, StatusTone};
 
 const PURPLE: SemanticColor = SemanticColor::rgb8(130, 60, 220);
@@ -1404,4 +1405,319 @@ fn menu_recipe_overrides_reach_menus_and_menu_bar() {
         context.world().layout_style(mark_id).unwrap().width,
         Some(LengthSpec::Px(24.0))
     );
+}
+
+#[test]
+fn despawning_theme_scope_leaves_no_stale_handles() {
+    use nana_ui_core::{ThemeAppearance, ThemePatch, builtin_theme_arc};
+
+    let mut context = AppContext::new();
+    let doc = DocumentId::new(1).unwrap();
+    let root = context.create_component(doc, Stack::column(0.0)).unwrap();
+    let outer = context
+        .create_component(
+            doc,
+            patched_stack(ThemePatch::default().with_color(SemanticColorRole::Accent, PURPLE)),
+        )
+        .unwrap();
+    let inner = context
+        .create_component(
+            doc,
+            patched_stack(ThemePatch::default().with_color(SemanticColorRole::Warning, ORANGE)),
+        )
+        .unwrap();
+    let btn = context
+        .create_component(doc, crate::Button::new("Scoped"))
+        .unwrap();
+
+    context.append_child(root, outer).unwrap();
+    context.append_child(outer, inner).unwrap();
+    context.append_child(inner, btn).unwrap();
+    layout(&mut context, doc);
+    assert_eq!(context.active_theme_scopes(), 2);
+
+    let mut despawn = MutationQueue::new();
+    despawn.despawn_subtree(outer.stable_id());
+    context.commit_mutations(despawn).unwrap();
+    assert_eq!(context.active_theme_scopes(), 0);
+
+    context.set_preset_theme(ThemeAppearance::Light).unwrap();
+    context
+        .set_document_theme(doc, Some(builtin_theme_arc(ThemeAppearance::Dark)))
+        .unwrap();
+    assert_eq!(context.active_theme_scopes(), 0);
+}
+
+#[test]
+fn noop_theme_scope_install_and_remove_rebinds_descendant_scopes() {
+    use nana_ui_core::{ThemePatch, ThemeScopeId};
+
+    let mut context = AppContext::new();
+    let doc = DocumentId::new(1).unwrap();
+    let root = context.create_component(doc, Stack::column(0.0)).unwrap();
+    let host = context.create_component(doc, Stack::column(0.0)).unwrap();
+    let btn = context
+        .create_component(doc, crate::Button::new("Plain"))
+        .unwrap();
+    let inner = context
+        .create_component(
+            doc,
+            patched_stack(ThemePatch::default().with_color(SemanticColorRole::Accent, PURPLE)),
+        )
+        .unwrap();
+    let inner_btn = context
+        .create_component(doc, crate::Button::new("Inner"))
+        .unwrap();
+
+    context.append_child(root, host).unwrap();
+    context.append_child(host, btn).unwrap();
+    context.append_child(host, inner).unwrap();
+    context.append_child(inner, inner_btn).unwrap();
+    layout(&mut context, doc);
+
+    assert_eq!(context.active_theme_scopes(), 1);
+    assert_eq!(
+        context
+            .inspect_node_theme(btn.stable_id())
+            .unwrap()
+            .active_scope,
+        ThemeScopeId::ROOT
+    );
+    assert_eq!(
+        context
+            .inspect_node_theme(inner_btn.stable_id())
+            .unwrap()
+            .scope_chain
+            .len(),
+        1
+    );
+
+    // Install a ThemeScope on `host` whose resolved theme matches parent (changed == NONE).
+    let same_text = context.world().theme().palette().text;
+    let noop_patch = Arc::new(ThemePatch::default().with_color(SemanticColorRole::Text, same_text));
+    let mut install = MutationQueue::new();
+    install.set_style(
+        host.stable_id(),
+        NodeStyle {
+            theme_patch: Some(noop_patch),
+            ..NodeStyle::default()
+        },
+    );
+    context.commit_mutations(install).unwrap();
+
+    assert_eq!(context.active_theme_scopes(), 2);
+    let host_scope = context
+        .inspect_node_theme(host.stable_id())
+        .unwrap()
+        .active_scope;
+    assert!(!host_scope.is_root());
+    assert_eq!(
+        context
+            .inspect_node_theme(btn.stable_id())
+            .unwrap()
+            .active_scope,
+        host_scope,
+        "descendant must rebind to the newly attached no-op scope"
+    );
+    assert_eq!(
+        context
+            .inspect_node_theme(inner_btn.stable_id())
+            .unwrap()
+            .scope_chain
+            .len(),
+        2,
+        "nested child scope must re-parent under host_scope"
+    );
+
+    // Remove the no-op ThemeScope: descendants must rebind cleanly back to ROOT (no stale scope ID).
+    let mut remove = MutationQueue::new();
+    remove.set_style(host.stable_id(), NodeStyle::default());
+    context.commit_mutations(remove).unwrap();
+
+    assert_eq!(context.active_theme_scopes(), 1);
+    assert_eq!(
+        context
+            .inspect_node_theme(btn.stable_id())
+            .unwrap()
+            .active_scope,
+        ThemeScopeId::ROOT
+    );
+    assert_eq!(
+        context
+            .inspect_node_theme(inner_btn.stable_id())
+            .unwrap()
+            .scope_chain
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn root_theme_metrics_and_recipe_switch_isolates_document_theme_overrides() {
+    use nana_ui_core::{
+        ButtonKind, ThemeAppearance, ThemeMetricsPatch, ThemePatch, builtin_theme_arc,
+    };
+
+    let mut context = AppContext::new();
+    let doc1 = DocumentId::new(1).unwrap();
+    let doc2 = DocumentId::new(2).unwrap();
+    let base_dark = builtin_theme_arc(ThemeAppearance::Dark);
+    context
+        .set_document_theme(doc2, Some(Arc::clone(&base_dark)))
+        .unwrap();
+
+    let btn1 = context
+        .create_component(doc1, crate::Button::new("Root").kind(ButtonKind::Primary))
+        .unwrap();
+    let btn2 = context
+        .create_component(
+            doc2,
+            crate::Button::new("DocOverride").kind(ButtonKind::Primary),
+        )
+        .unwrap();
+    layout(&mut context, doc1);
+    layout(&mut context, doc2);
+
+    // Hover the button inside doc2 so an active hover transition exists on doc2.
+    context
+        .set_pointer_hover(doc2, 1, Some(btn2.stable_id()))
+        .unwrap();
+    layout(&mut context, doc2);
+    let hover_anim =
+        crate::component_animation_id(crate::component_animation_kinds::HOVER, btn2.stable_id())
+            .unwrap();
+    assert!(context.world().animation_is_active(hover_anim));
+
+    let height_before_doc1 = context.world().layout_box(btn1.stable_id()).unwrap().height;
+    let height_before_doc2 = context.world().layout_box(btn2.stable_id()).unwrap().height;
+    assert!((height_before_doc1 - height_before_doc2).abs() < 0.01);
+
+    let mut next_variant = base_dark.recipes().button().variant(ButtonKind::Primary);
+    next_variant.foreground = SemanticColorRole::Warning;
+    let next_root = Arc::new(
+        ThemePatch::default()
+            .with_metrics_patch(ThemeMetricsPatch {
+                control_height: Some(base_dark.metrics().control_height + 10.0),
+                ..Default::default()
+            })
+            .with_button_variant(ButtonKind::Primary, next_variant)
+            .apply_to_compiled(&base_dark)
+            .unwrap(),
+    );
+    context.set_theme_tokens(next_root).unwrap();
+    layout(&mut context, doc1);
+    layout(&mut context, doc2);
+
+    let height_after_doc1 = context.world().layout_box(btn1.stable_id()).unwrap().height;
+    let height_after_doc2 = context.world().layout_box(btn2.stable_id()).unwrap().height;
+    assert!(
+        height_after_doc1 > height_before_doc1 + 5.0,
+        "non-overridden doc1 must reproject and grow with root control_height"
+    );
+    assert!(
+        (height_after_doc2 - height_before_doc2).abs() < 0.01,
+        "overridden doc2 must not reproject when root theme changes metrics"
+    );
+    assert!(
+        context.world().animation_is_active(hover_anim),
+        "root theme switch must not cancel hover transitions in overridden doc2"
+    );
+    let doc2_status = context
+        .inspect_node_theme(btn2.stable_id())
+        .unwrap()
+        .last_invalidation_status
+        .expect("invalidation status present");
+    assert!(!doc2_status.affected);
+}
+
+#[test]
+fn nested_scope_metrics_patch_and_rapid_toggle_preserve_isolation() {
+    use nana_ui_core::{ThemeMetricsPatch, ThemePatch, UI_METRICS};
+
+    let mut context = AppContext::new();
+    let doc = DocumentId::new(1).unwrap();
+    let root = context.create_component(doc, Stack::column(0.0)).unwrap();
+    let root_btn = context
+        .create_component(doc, crate::Button::new("RootBtn"))
+        .unwrap();
+    let outer = context
+        .create_component(
+            doc,
+            patched_stack(ThemePatch::default().with_metrics_patch(ThemeMetricsPatch {
+                control_height: Some(38.0),
+                ..Default::default()
+            })),
+        )
+        .unwrap();
+    let outer_btn = context
+        .create_component(doc, crate::Button::new("OuterBtn"))
+        .unwrap();
+    let inner = context.create_component(doc, Stack::column(0.0)).unwrap();
+    let inner_btn = context
+        .create_component(doc, crate::Button::new("InnerBtn"))
+        .unwrap();
+
+    context.append_child(root, root_btn).unwrap();
+    context.append_child(root, outer).unwrap();
+    context.append_child(outer, outer_btn).unwrap();
+    context.append_child(outer, inner).unwrap();
+    context.append_child(inner, inner_btn).unwrap();
+    layout(&mut context, doc);
+
+    let inner_patch = Arc::new(ThemePatch::default().with_metrics_patch(ThemeMetricsPatch {
+        control_height: Some(46.0),
+        ..Default::default()
+    }));
+
+    for step in 0..6 {
+        let enable = step % 2 == 0;
+        let mut q = MutationQueue::new();
+        q.set_style(
+            inner.stable_id(),
+            if enable {
+                NodeStyle {
+                    theme_patch: Some(Arc::clone(&inner_patch)),
+                    ..NodeStyle::default()
+                }
+            } else {
+                NodeStyle::default()
+            },
+        );
+        context.commit_mutations(q).unwrap();
+        layout(&mut context, doc);
+
+        let expected_scopes = if enable { 2 } else { 1 };
+        let expected_inner_h = if enable { 46.0 } else { 38.0 };
+        assert_eq!(context.active_theme_scopes(), expected_scopes);
+        assert!(
+            (context
+                .world()
+                .layout_box(inner_btn.stable_id())
+                .unwrap()
+                .height
+                - expected_inner_h)
+                .abs()
+                < 0.01
+        );
+        assert!(
+            (context
+                .world()
+                .layout_box(outer_btn.stable_id())
+                .unwrap()
+                .height
+                - 38.0)
+                .abs()
+                < 0.01
+        );
+        assert!(
+            (context
+                .world()
+                .layout_box(root_btn.stable_id())
+                .unwrap()
+                .height
+                - UI_METRICS.control_height)
+                .abs()
+                < 0.01
+        );
+    }
 }

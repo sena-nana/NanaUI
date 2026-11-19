@@ -536,7 +536,9 @@ pub use world::{
     BuildIdHasher, CommitReport, DocumentId, IdHasher, InputModality, LastThemeInvalidation,
     LocaleGenerations, LocaleScope, MAX_SPLIT_DEPTH, MAX_TREE_DEPTH, NodeKind, NodeMap, NodeSet,
     NodeSnapshot, ReplacedMetadata, ReplacedResource, StableNodeId, ThemeDependencySummary,
-    ThemeInvalidationTrigger, ThemeNodeInspection, ThemeScopeChainEntry, UiWorld, UiWorldError,
+    ThemeInteractionState, ThemeInvalidationTrigger, ThemeNodeInspection,
+    ThemeNodeInvalidationStatus, ThemeResolvedToken, ThemeScopeChainEntry, ThemeTraceLayer,
+    ThemeTransitionSource, UiWorld, UiWorldError,
 };
 pub use xy_pad::{
     XYPad, XYPadAdjustment, XYPadAxisLock, XYPadDragState, XYPadEvent, XYPadLayout, XYPadSurface,

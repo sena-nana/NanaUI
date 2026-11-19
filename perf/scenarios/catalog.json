@@ -61,7 +61,9 @@
     "theme-accent-only",
     "theme-density",
     "theme-head-style-mutation",
-    "theme-scope-patch"
+    "theme-scope-patch",
+    "theme-motion-only",
+    "theme-recipe-button"
   ],
   "issue12": {
     "same_scenario_ids": [

@@ -7,19 +7,19 @@
     "color_role": 146,
     "color_literal": 0,
     "design_number": 25,
-    "motion": 3,
+    "motion": 0,
     "elevation": 0
   },
   "shared_totals": {
     "color_role": 412,
     "color_literal": 0,
-    "design_number": 95,
+    "design_number": 93,
     "motion": 31,
     "elevation": 0
   },
-  "token_reads": 1229,
-  "local_values": 28,
-  "shared_local_values": 126,
+  "token_reads": 1230,
+  "local_values": 25,
+  "shared_local_values": 124,
   "module_constants": 102,
   "components": [
     {
@@ -1474,16 +1474,16 @@
         "color_role": 2,
         "color_literal": 0,
         "design_number": 1,
-        "motion": 1,
+        "motion": 0,
         "elevation": 0
       },
-      "token_reads": 5,
+      "token_reads": 6,
       "roles": [
         "Subtle",
         "Text"
       ],
       "states": [],
-      "local_values": 2
+      "local_values": 1
     },
     {
       "component": "PropertyGrid",
@@ -2146,15 +2146,15 @@
         "color_role": 1,
         "color_literal": 0,
         "design_number": 1,
-        "motion": 1,
+        "motion": 0,
         "elevation": 0
       },
-      "token_reads": 0,
+      "token_reads": 2,
       "roles": [
         "Subtle"
       ],
       "states": [],
-      "local_values": 2
+      "local_values": 1
     },
     {
       "component": "Spinner",
@@ -2163,15 +2163,15 @@
         "color_role": 1,
         "color_literal": 0,
         "design_number": 1,
-        "motion": 1,
+        "motion": 0,
         "elevation": 0
       },
-      "token_reads": 3,
+      "token_reads": 5,
       "roles": [
         "Muted"
       ],
       "states": [],
-      "local_values": 2
+      "local_values": 1
     },
     {
       "component": "SplitHandle",
@@ -2725,27 +2725,6 @@
       ]
     },
     {
-      "file": "crates/nana-ui-runtime/src/feedback.rs",
-      "counts": {
-        "color_role": 11,
-        "color_literal": 0,
-        "design_number": 8,
-        "motion": 0,
-        "elevation": 0
-      },
-      "local_values": 8,
-      "token_reads": 25,
-      "roles": [
-        "AccentSoft",
-        "Danger",
-        "Faint",
-        "Subtle",
-        "Text",
-        "Warning",
-        "WarningSoft"
-      ]
-    },
-    {
       "file": "crates/nana-ui-runtime/src/graph_canvas.rs",
       "counts": {
         "color_role": 3,
@@ -2760,6 +2739,27 @@
         "Background",
         "Faint",
         "Subtle"
+      ]
+    },
+    {
+      "file": "crates/nana-ui-runtime/src/feedback.rs",
+      "counts": {
+        "color_role": 11,
+        "color_literal": 0,
+        "design_number": 7,
+        "motion": 0,
+        "elevation": 0
+      },
+      "local_values": 7,
+      "token_reads": 25,
+      "roles": [
+        "AccentSoft",
+        "Danger",
+        "Faint",
+        "Subtle",
+        "Text",
+        "Warning",
+        "WarningSoft"
       ]
     },
     {
@@ -3006,26 +3006,6 @@
       ]
     },
     {
-      "file": "crates/nana-ui-runtime/src/property_grid.rs",
-      "counts": {
-        "color_role": 8,
-        "color_literal": 0,
-        "design_number": 2,
-        "motion": 0,
-        "elevation": 0
-      },
-      "local_values": 2,
-      "token_reads": 11,
-      "roles": [
-        "BorderStrong",
-        "Faint",
-        "Hover",
-        "Muted",
-        "Subtle",
-        "Text"
-      ]
-    },
-    {
       "file": "crates/nana-ui-runtime/src/components.rs",
       "counts": {
         "color_role": 7,
@@ -3138,6 +3118,26 @@
         "DangerSoftHover",
         "DangerSoftPressed",
         "OnMedia"
+      ]
+    },
+    {
+      "file": "crates/nana-ui-runtime/src/property_grid.rs",
+      "counts": {
+        "color_role": 8,
+        "color_literal": 0,
+        "design_number": 1,
+        "motion": 0,
+        "elevation": 0
+      },
+      "local_values": 1,
+      "token_reads": 12,
+      "roles": [
+        "BorderStrong",
+        "Faint",
+        "Hover",
+        "Muted",
+        "Subtle",
+        "Text"
       ]
     },
     {
@@ -3256,7 +3256,7 @@
         "elevation": 0
       },
       "local_values": 1,
-      "token_reads": 33,
+      "token_reads": 24,
       "roles": []
     },
     {
@@ -3834,7 +3834,7 @@
         "elevation": 0
       },
       "local_values": 0,
-      "token_reads": 13,
+      "token_reads": 17,
       "roles": [
         "Muted"
       ]

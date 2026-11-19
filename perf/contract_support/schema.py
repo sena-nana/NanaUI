@@ -86,6 +86,8 @@ THEME_WORKLOADS = {
     "density",
     "head-scope",
     "scope-patch",
+    "motion-only",
+    "recipe-button",
 }
 
 

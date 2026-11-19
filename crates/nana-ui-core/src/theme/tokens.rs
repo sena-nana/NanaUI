@@ -40,6 +40,7 @@ use crate::style_model::{SemanticColor, SemanticColorRole};
 /// on-accent foreground is a design decision, not a formula, and light mode
 /// proves it (`on_soft` is a darker blue than `base`, `text` is white).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AccentRamp {
     /// The accent itself.
     pub base: SemanticColor,
@@ -153,6 +154,7 @@ impl AccentRamp {
 /// Control-internal insets are [`ThemeMetrics`](super::ThemeMetrics) instead —
 /// a field's horizontal inset is a control metric, not a gap.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SpacingTokens {
     pub xxs: f32,
     pub xs: f32,
@@ -333,6 +335,7 @@ pub enum TextWeight {
 
 /// Typography tokens: the product type scale.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TypographyTokens {
     pub hint: f32,
     pub meta: f32,
@@ -430,6 +433,7 @@ impl Default for TypographyTokens {
 /// two hats. The focus ring's stroke and offset are geometry of the installed
 /// theme: [`crate::ThemeMetrics::focus_ring`].
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BorderTokens {
     /// 1px rule: separators, control outlines, table grid lines.
     pub hairline: f32,
@@ -466,6 +470,7 @@ impl Default for BorderTokens {
 /// could move the numbers at all. They belong to the theme, so each mode's
 /// definition states them.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OpacityTokens {
     pub warning_soft: f32,
     pub warning_soft_hover: f32,
@@ -608,6 +613,7 @@ pub enum EasingRole {
 /// Durations are milliseconds so the struct stays `Copy` and serialisable;
 /// [`Self::duration`] hands back a [`Duration`].
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MotionTokens {
     pub hover_color_ms: u16,
     pub overlay_fade_ms: u16,
@@ -716,6 +722,7 @@ pub enum ElevationRole {
 
 /// One drop shadow, backend-neutral. Mirrors CSS `box-shadow`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ShadowToken {
     pub color: SemanticColor,
     pub offset_x: f32,
@@ -745,6 +752,7 @@ const fn default_menu_bar_shadow() -> ShadowToken {
 /// brightness sniff inside the modal-frame geometry. Both were the theme
 /// deciding something in a place the theme could not reach.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EffectTokens {
     pub surface: ShadowToken,
     pub overlay: ShadowToken,
@@ -970,6 +978,7 @@ pub enum SurfaceMaterial {
 /// One surface's contract: which palette role paints it, and whether a
 /// backdrop is allowed to thin it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SurfaceSpec {
     pub paint: SemanticColorRole,
     pub material: SurfaceMaterial,
@@ -977,6 +986,7 @@ pub struct SurfaceSpec {
 
 /// Surface / material roles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SurfaceTokens {
     pub window: SurfaceSpec,
     pub chrome: SurfaceSpec,

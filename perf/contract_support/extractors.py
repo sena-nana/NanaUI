@@ -796,6 +796,7 @@ THEME_OPTIONAL_WORK_KEYS = (
     "scope_cache_hits",
     "scope_cache_misses",
     "scope_generation_changes",
+    "theme_scopes_active",
 )
 
 

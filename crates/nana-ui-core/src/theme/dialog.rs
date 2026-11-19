@@ -45,6 +45,7 @@ use serde::{Deserialize, Serialize};
 /// One transition of a dialog's entrance and exit: how long, along which
 /// curve. CSS `transition: <property> <duration> <timing-function>`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DialogTransition {
     pub millis: u16,
     pub easing: Easing,
@@ -64,6 +65,7 @@ impl DialogTransition {
 /// moves into place from a little above, a little smaller. The exit plays
 /// the same transitions back. With reduced motion on, none of it plays.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DialogMotion {
     /// The scrim's fade.
     pub scrim: DialogTransition,
@@ -104,6 +106,7 @@ impl Default for DialogMotion {
 
 /// One section of a dialog card's insets: its CSS `padding`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DialogInsets {
     pub top: f32,
     pub bottom: f32,
@@ -153,6 +156,7 @@ pub enum DialogAlign {
 
 /// The dialog card's placement in its scrim and how it is divided.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DialogRecipe {
     /// Distance from the top of the scrim to the card, when [`Self::align`]
     /// is [`DialogAlign::Top`]. A card too tall to stand there moves up,

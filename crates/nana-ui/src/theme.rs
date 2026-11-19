@@ -50,8 +50,9 @@ pub use nana_ui_core::{
     linear_scrim_alpha, migrate_theme_package_json, space, type_scale,
 };
 pub use nana_ui_runtime::{
-    LastThemeInvalidation, ThemeDependencySummary, ThemeInvalidationTrigger, ThemeNodeInspection,
-    ThemeScopeChainEntry,
+    LastThemeInvalidation, ThemeDependencySummary, ThemeInteractionState, ThemeInvalidationTrigger,
+    ThemeNodeInspection, ThemeNodeInvalidationStatus, ThemeResolvedToken, ThemeScopeChainEntry,
+    ThemeTraceLayer, ThemeTransitionSource,
 };
 
 /// Style-model names a host needs to name a node's paint rather than spend a

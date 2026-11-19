@@ -967,16 +967,16 @@ style.color_overrides = Some(Arc::new(modeler));
 
 - **`ThemeCategoryGenerations` 与 `ThemeDependencyMask`**：主题变更不再统一触发全文档重排与全节点重绘，而是按位掩码精确分类（`PALETTE`、`ACCENT`、`METRICS`、`TYPOGRAPHY_SHAPE`、`TYPOGRAPHY_LAYOUT`、`EFFECT`、`MOTION_POLICY`、`RECIPE_*`、`CUSTOM_PAINT`、`CHART`、`INHERITED_TYPOGRAPHY`）。
 - **每节点依赖掩码与值相等早停**：`NodeStore` 记录每个存活节点的 `ThemeDependencyMask`。装入主题或切换 `ThemePatch` 时，`UiWorld` 通过 `ThemeCategoryGenerations::diff_themes` 计算 `changed` 掩码，只将依赖命中的节点加入待评估集合；进入 `resolve_styles` 后若继承链与本地派生结果与上一修订一致，即触发 `resolved_style_unchanged` 早停，不再向上游传播 `LAYOUT` / `TEXT` / `RENDER` 脏位（与视图渲染需求互斥的组件视觉重绘单独标记）。
-- **`MOTION_POLICY` 快路径**：无局部作用域且仅变动动效策略（`MotionTokens`）时，在 `apply_compiled_theme` 内直接完成切换并计入 `style_motion_policy_invalidations`，跳过布局与几何路径。
-- **结构预算与指标**：保持 `NodeRecord <= 152 B`、`ResolvedStyle == 24 B`、`UiWorld <= 10 KiB`；相关计数汇入 `ThemeWorkCounters` 及 `nana_diagnostics::framework::runtime` 指标（`THEME_DEPENDENCY_SKIPPED`、`RESOLVED_STYLE_UNCHANGED`、`THEME_MOTION_POLICY_INVALIDATIONS`）。
+- **`MOTION_POLICY` 快路径**：无论是根主题（`apply_compiled_theme` / `apply_root_theme_with_scopes`）、每文档主题（`set_document_theme`）、作用域补丁（`sync_node_theme_scope`）还是子树迁移（`theme_scope_reparented`），只要变更掩码仅为 `ThemeDependencyMask::MOTION_POLICY`，便只刷新作用域动效策略并记录 `style_motion_policy_invalidations`，跳过颜色 epoch 递增、悬停过渡取消、样式解析、布局与渲染重提。
+- **结构预算与指标**：保持 `NodeRecord <= 152 B`、`ResolvedStyle == 24 B`、`UiWorld <= 10 KiB`；相关计数汇入 `ThemeWorkCounters`（含 `theme_scopes_active` 活跃作用域计数）及 `nana_diagnostics::framework::runtime` 指标（`THEME_DEPENDENCY_SKIPPED`、`RESOLVED_STYLE_UNCHANGED`、`THEME_MOTION_POLICY_INVALIDATIONS`）。
 
 ### 9.2 完整 `ThemeScope`、`ThemePatch`、每文档主题与多窗口继承（#104）
 
 - **`ThemePatch` 全 token 补丁**：支持对外观、emphasis/`AccentRamp`、`ColorOverrides`、标题栏色、`ThemeMetricsPatch`、`SpacingPatch`、`BorderPatch`、`OpacityPatch`、`TypographyPatch`、`MotionPatch`、`EffectPatch`、`SurfacePatch` 以及 `RecipePatch`（含 `ButtonRecipePatch` 与高频控件配方）的增量覆写。
-- **`ThemeScope` 与声明式绑定**：`El::theme_scope` / `view::theme_scope` 与 `NodeStyle::theme_patch` 为任意子树建立带稳定标识与单调 `ScopeGeneration` 的局部主题作用域。`ThemeScopeRegistry` 维护受上限约束的 `O(1)` 组合解析缓存（`MAX_SCOPE_CACHE = 256`），命中与未命中分别计入 `scope_cache_hits` / `scope_cache_misses`（指标 `THEME_SCOPE_CACHE_HITS` / `THEME_SCOPE_CACHE_MISSES`）。
+- **`ThemeScope` 与声明式绑定**：`El::theme_scope` / `view::theme_scope` 与 `NodeStyle::theme_patch` 为任意子树建立带稳定标识与单调 `ScopeGeneration` 的局部主题作用域；`AppContext::active_theme_scopes` 与 `UiWorld::active_theme_scopes` 报告当前存活的非根作用域数量。`ThemeScopeRegistry` 维护受上限约束的 `O(1)` 组合解析缓存（`MAX_SCOPE_CACHE = 256`），命中与未命中分别计入 `scope_cache_hits` / `scope_cache_misses`（指标 `THEME_SCOPE_CACHE_HITS` / `THEME_SCOPE_CACHE_MISSES`）。增删与父类变更以 `NodeStore::node_scope` 为单一权威来源，无值差分的空补丁或移除同样干净重绑后代节点并更新嵌套子作用域父链。
 - **Fail-closed 与父子树迁移**：无效补丁（如负间距、非有限度量）在校验阶段 fail-closed 回退至父级有效主题，不污染节点状态，并发出诊断事件 `THEME_SCOPE_INVALID_PATCH`（`runtime.theme.scope_invalid_patch`）。子树在作用域间 `append` / `reparent` 时，通过 `theme_scope_reparented` 增量重算有效作用域并失效受影响后代。
 - **每文档根主题、Chart 与多窗口继承**：
-  - `AppContext::set_document_theme` / `UiWorld::set_document_theme` 允许不同 `DocumentId`（或窗口）独立覆盖根主题，互不串扰且在全局根主题切换时保持隔离。
+  - `AppContext::set_document_theme` / `UiWorld::set_document_theme` 允许不同 `DocumentId`（或窗口）独立覆盖根主题，互不串扰；覆盖文档保持独立的 `theme_generations`、局部 `hover_transitions` 与视图 reproject 隔离，不受全局根主题度量/配方切换影响。
   - 图表组件（`Chart`）经所在节点的 `node_theme(id)` 解析调色板、边框与字体提示，作用域切换可精确刷新图表与悬浮提示。
   - `Application` / `HeadlessRuntime` 创建的辅助窗口自动继承所属宿主窗口的有效主题配置。
 
@@ -993,29 +993,29 @@ style.color_overrides = Some(Arc::new(modeler));
 | `MenuRecipe` + `ThemeToken::{MenuSurfacePadding, MenuItemGap}` | `Popover`、`ActionMenu`、`ActionMenuItem`、`AnchoredActionMenu`、`ContextMenu`、`AppMenuBar`、`MenuSurfaceVisual` | 菜单面板原子切换至 `MenuRecipe`：面板底色/圆角/抬升 `ElevationRole::from_shadow`、标志列宽 `mark_width`、菜单内边距与条目间距走主题布局令牌 |
 
 硬编码审计基线（`scripts/baselines/theme-hardcoding.json`，`160` 个扫描组件）收敛变化：
-- 组件内局部设计常量命中：待迁移总计继续下降，`totals.color_role` 由 `181` 降至 `146`，`shared_totals.color_role` 由 `458` 降至 `412`，`shared_totals.design_number` 由 `103` 降至 `95`，`shared_local_values` 由 `134` 降至 `126`，`module_constants` 由 `103` 降至 `102`，所有局部硬编码分类均零回退；`component-gallery` `NANA_DARK` / `NANA_LIGHT` 语义基线中全部已迁移控件零回归（仅保留 8 项源于本轮前已合入主线的设置行/画布/列表项预设差异）。
+- `Progress`、`Spinner`、`Skeleton`、`CommandPalette` 与 `PropertyGrid` 剩余动效/字阶/字重字面量均已迁至主题令牌（`MotionRole`、`EasingRole`、`TypographyTokens`）；组件内 `totals.motion` 降至 `0`，`totals.color_role` 由 `181` 降至 `146`，`totals.design_number` 降至 `25`，`local_values` 降至 `25`，`shared_totals.design_number` 降至 `93`，`shared_local_values` 降至 `124`，`module_constants` 降至 `102`，所有局部硬编码分类均零回退；`component-gallery` `NANA_DARK` / `NANA_LIGHT` 语义基线中全部 `#341` 迁移控件零回归。
 
 ## 11. 主题包、按需诊断与 DevTools 接口（#109）
 
-- **结构化 JSON 主题包（`ThemePackage`）**：定义 schema v1.0 信封（`id`、`name`、`base`、`patch` 及 `MAX_PACKAGE_BYTES` 等容量上限），支持 `ThemePackage::from_json` / `ThemeRegistry::register_package_json` fail-closed 校验与多级继承链解析，同时捕获 `ThemePackageProvenance`（`base_chain` 与各层覆写条目列表）。未迁移草稿与未知字段均直接拒绝。
+- **结构化 JSON 主题包（`ThemePackage`）与 fail-closed 校验**：定义 schema v1.0 信封（`id`、`name`、`base`、`patch` 及 `MAX_PACKAGE_BYTES` 等容量上限），包及嵌套子结构统一启用 `#[serde(deny_unknown_fields)]`，`ThemeDefinition::compile` 与 `validate_compiled_theme` 同步校验 `Easing::CubicBezier` 控制点有限性与 `x1/x2 in 0.0..=1.0` 范围以及 `SemanticColorMix` 权重 `<= 10_000` 基点，捕获 `ThemePackageProvenance`（`base_chain` 与各层覆写条目列表）。未迁移草稿与未知/越界字段均直接拒绝。
 - **运行期按需检查（Zero Idle / Per-Frame Cost）**：`UiWorld` 与 `AppContext` 对外暴露按需查询方法（`nana_ui::theme` 与 `nana_ui::runtime` 均已再导出对应类型）：
-  - `inspect_node_theme(id)` / `inspect_node_theme_with_registry(id, registry)` 返回 `ThemeNodeInspection`（有效主题 ID/代数/外观、当前 `active_scope` 与 `scope_generation`、`document_theme_override`、从外到内的 `scope_chain` 覆写列表、生效 `color_overrides`、`dependency_mask`、`package_provenance` 与最近一次 `last_invalidation`）。
-  - `last_theme_invalidation()` 返回 `LastThemeInvalidation`（触发源 `RootTheme` / `DocumentTheme` / `ScopePatch` / `ScopeRemoved` / `ScopeReparented`、变更掩码、类别代数快照、命中/跳过/作用域/配方/布局种子计数及 `motion_policy_only` 标志）。
+  - `inspect_node_theme(id)` / `inspect_node_theme_with_registry(id, registry)` 返回 `ThemeNodeInspection`（`component`、有效主题 ID/代数/外观、`high_contrast`、当前 `active_scope` 与 `scope_generation`、`document_theme_override`、`scope_chain`、`color_overrides`、`dependency_mask`、`recipe_families`、`interaction_state`、`resolved_tokens`、`transitions`、`resolution_trace`、`package_provenance`、`last_invalidation` 与 `last_invalidation_status`）。
+  - `last_theme_invalidation()` 返回 `LastThemeInvalidation`（触发源、`target_document`、`scope_root`、变更掩码、类别代数快照、命中/跳过/作用域/配方/布局种子计数、`resolve_styles` 折叠后的 `resolved_style_changed/unchanged`/`paint`/`text_shape`/`text_layout`/`layout`/`motion_policy` 计数，以及 `triggered_stages` / `stage_reasons`）。
   - `theme_dependency_summary()` 返回存活节点的依赖分类汇总（`ThemeDependencySummary`）。
-- **DevTools 协议命令（`crates/nana-ui-devtools`）**：序列化 DTO（`ThemeInspectDump`、`ThemeInvalidationDump`、`ThemePackageLoadDump` 等）保留在 DevTools crate，`nana-ui-runtime` 保持零 `serde` 依赖：
-  - `theme_inspect`（`AgentCommand::ThemeInspect { target }`）：查询任意目标节点的主题解析链与依赖分类汇总。
-  - `theme_invalidation`（`AgentCommand::ThemeInvalidation`）：读取最近一次主题或作用域失效摘要。
+- **DevTools 协议命令（`crates/nana-ui-devtools`）**：序列化 DTO（`ThemeInspectDump`、`ThemeInvalidationDump`、`ThemePackageLoadDump` 及 `ThemeInteractionStateDump`、`ThemeResolvedTokenDump`、`ThemeTransitionSourceDump`、`ThemeTraceLayerDump`、`ThemeNodeInvalidationStatusDump`、`ThemeCategoryGenerationsDump` 等）保留在 DevTools crate，`nana-ui-runtime` 保持零 `serde` 依赖：
+  - `theme_inspect`（`AgentCommand::ThemeInspect { target }`）：查询任意目标节点的完整主题解析链、交互状态、已解析令牌、动效策略、最近失效归因与依赖分类汇总。
+  - `theme_invalidation`（`AgentCommand::ThemeInvalidation`）：读取最近一次主题或作用域失效摘要及触发阶段说明。
   - `load_theme_package`（`AgentCommand::LoadThemePackage { json, path, apply }`）：以 fail-closed 模式校验并注册主题包，仅当 `apply: true` 时激活并刷新文档（`apply: false` 或任意非法输入均保持当前激活主题完好无损）。`HeadlessHost` 同步暴露对应辅助方法。
 
 ## 12. Issue #100 完整复现与性能门禁
 
-- 新增子树作用域性能场景 `perf/scenarios/theme-scope-patch.json`（1,000 控件文档中仅向 64 控件子树提交 `ThemePatch`，要求 `style_nodes_considered <= 128` 且 `layout_nodes_from_style == 0`、`text_nodes_from_style == 0`、`layout_nodes == 0`、`layout_copies == 0`）；`nana-theme-benchmark` 实测该场景 `considered=66`、`scope_inv=64`、`scope_hits=1`、`dep_skip=1`、`layout_copies=0`、`p50=0.0504 ms`（相比全树仅改 accent 的 `0.6223 ms` 缩小逾 12 倍）。
+- 在原有 12 项主题基准外，新增 3 项针对 #104/#106 的门禁场景：`perf/scenarios/theme-scope-patch.json`（64 控件 `ThemeScope` 补丁，要求 `style_nodes_considered <= 128` 且零文本/布局）、`perf/scenarios/theme-motion-only.json`（仅改 `MotionTokens` 要求零样式/布局/文本/绘制计算且 `style_motion_policy_invalidations >= 1`）、以及 `perf/scenarios/theme-recipe-button.json`（1,000 混合控件下仅改 `Button` 配方要求跳过非按钮控件且零布局/文本/盒子复制）；`ThemeWorkCounters` 同步记录 `theme_scopes_active`。
 - 在 `6a80e848e` 将 `ComputedStyle` 拆分为 `Arc<InheritedStyle>` 与 `Arc<ComputedStyle>` 两个驻留对象后，单控件建树共有 2 个独立节点 × 2 次 `Arc` 驻留 = 4 次分配（100 / 1k / 10k 规模也均稳定复用到 4 次）；`perf/scenarios/theme-controls-1.json` 的 `style_allocations` 上界同步调整为 `lte 4` 以准确反映每节点双 `Arc` 驻留模型。
 
 ```bash
 # 1. Core 与 Runtime 主题契约与按需诊断测试
 cargo test -p nana-ui-core --all-features --lib theme::
-cargo test -p nana-ui-runtime --all-features --lib
+cargo test -p nana-ui-runtime --features view-macro
 
 # 2. DevTools 主题检查与 fail-closed 包加载测试（GPU 测试串行）
 cargo test -p nana-ui-devtools --features runtime-agent,headless-host -- --test-threads=1
@@ -1024,13 +1024,14 @@ cargo test -p nana-ui-devtools --features runtime-agent,headless-host -- --test-
 python3 scripts/audit-theme-hardcoding.py --check scripts/baselines/theme-hardcoding.json
 python3 -m unittest discover -s scripts/tests -v
 
-# 4. 全部 12 项 Theme 性能门禁与自测
+# 4. 全部 14 项 Theme 性能门禁与自测
 python3 perf/contract.py --self-test
 cargo run --release --locked -p nana-ui-runtime --features benchmark \
   --bin nana-theme-benchmark -- --output target/performance/issue100/theme.json
 for id in theme-static-idle theme-controls-1 theme-controls-100 theme-controls-1k \
           theme-controls-10k theme-hover-one theme-focus-one theme-palette-switch \
-          theme-accent-only theme-density theme-head-style-mutation theme-scope-patch; do
+          theme-accent-only theme-density theme-head-style-mutation theme-scope-patch \
+          theme-motion-only theme-recipe-button; do
   python3 perf/runners/nana/run.py --scenario "$id" --from-report target/performance/issue100/theme.json
 done
 ```

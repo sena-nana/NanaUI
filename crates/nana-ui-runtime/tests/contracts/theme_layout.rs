@@ -64,8 +64,23 @@ fn compiled_theme_values_follow_live_installs_and_literal_overrides() {
         "palette changes do not lay out token-bound nodes"
     );
     assert!(
-        work.style.is_empty(),
+        work.text.is_empty(),
+        "palette changes do not mark text dirty before style resolution"
+    );
+    assert!(
+        !work.style.contains(&text),
+        "palette changes only mark nodes carrying palette dependencies"
+    );
+    cx.resolve_styles(&work.style).unwrap();
+    let after = cx.take_system_work();
+    let theme_work = cx.last_theme_work_counters();
+    assert!(
+        after.text.is_empty() && theme_work.text_nodes_from_style == 0,
         "palette changes do not reshape token-bound text"
+    );
+    assert!(
+        after.layout_frontier_seeds.is_empty() && theme_work.layout_nodes_from_style == 0,
+        "palette changes do not lay out token-bound nodes"
     );
     flag.get().unwrap().set(true);
     frames(&mut cx, document);
