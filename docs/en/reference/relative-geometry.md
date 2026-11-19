@@ -64,7 +64,7 @@ Runtime internals do not go through the `layout_result` page cache: `canonical_l
 | `DOCUMENT` | Document node | Kind |
 | `VIRTUAL` | The visual derives accessibility nodes from geometry or rewrites its own accessibility box: open Select, TreeView, MenuSurface, ModalFrame. A closed Select projects only its field and does not count | Visual |
 | `MODAL` | ModalFrame: the accessibility box is the surface, and hit testing clips children to it | Visual |
-| `READS_PAGE` | The visual's geometry reads the page (`StandardVisual::geometry_reads_page`: only an open MenuSurface) | Visual |
+| `READS_PAGE` | The visual's geometry reads the page (`WidgetVisual::geometry_reads_page`: only an open MenuSurface) | Visual |
 | `MENU_ROOM` | Open Select: the menu fits into the space on the page, and moving a box above can change that space | Visual |
 
 ### 2.2 Derived answers
@@ -275,10 +275,10 @@ A box in `SystemWork::transform_kept` must additionally: not have been translate
 | `node_space.rs` | `NodeSpace` bits and derived answers |
 | `store.rs` | `NodeRecord::space`, `note_node_space`, the `space_pins` / `page_bound` indexes, `check_node_spaces` |
 | `layout_result.rs` | `LayoutFrame`, the local `LayoutResult` |
-| `world.rs` | `layout_box`, `layout_origin`, `record_layout_origin`, `layout_box_from`, `local_component_geometry`, `publish_layout_results`, `layout_result_projects_new_geometry`, `layout_result_reshapes` |
+| `world.rs` | `layout_box`, `layout_origin`, `record_layout_origin`, `layout_box_from`, `local_widget_paint`, `publish_layout_results`, `layout_result_projects_new_geometry`, `layout_result_reshapes` |
 | `world/mutation.rs` | `write_local_layout`, `reframe_layouts`, `settle_layout_moves`, `mark_transform_kept` |
 | `world/extraction.rs` | `extract_nodes_reusing`, `keeps_select_menu`, `check_records_kept_under_moves` |
-| `world/geometry.rs` | `derive_component_geometry`, `local_select_menu_room`, `local_select_menu_surface` |
+| `world/geometry.rs` | `local_select_menu_room`, `local_select_menu_surface` |
 | `world/scroll_bounds.rs` | `ContentBoundsIndex`, `MaxTree` |
 | `layout_engine.rs`, `layout_engine/placement.rs` | `may_move_line_boxes`; `origin_in`, `content_origin_in`, `place_remote_overlays` |
 | `layout_engine/verify.rs` | Layout recomputation comparison and `retained_line_boxes_are_fresh` |

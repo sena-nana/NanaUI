@@ -595,36 +595,15 @@ pub mod views {
 
 静态依赖目前**只在 debug 里校验。不用来跳过运行时追踪**：一次"值没变"的节点重跑总共约 70 ns。依赖追踪只是其中一部分。release 的正确性不押在 token 扫描上。`examples/reactive-sfc` 的测试断言校验失败数为 0。
 
-## 控件级摇树：`BuiltinComponents::Typed`
+## 控件级摇树（按需注册）
 
-`AppContext::new()` 会注册全部 91 个内置控件。每条注册都带着"从标签和属性构造这个控件"的绑定器和重投影函数。所以不管程序用没用到。全部控件的代码都会被链接进来。只从 Rust 类型创建控件的程序（`mount`、声明式视图、`.vue`）用不到这些绑定器。可以改用精简模式：
+`AppContext::new()` 与 `RuntimeDocument::new(document)` 默认就是按需注册：不再预登记全量内置控件的按标签构造表或重投影闭包，也不再需要 `BuiltinComponents::Typed` 或 `ApplicationState::BUILTINS` 编译期切换开关（`AppContext::typed()` 与 `RuntimeDocument::typed(document)` 仅保留为指向 `new()` 的源码兼容别名）：
 
-```rust
-impl ApplicationState for App {
-    const BUILTINS: BuiltinComponents = BuiltinComponents::Typed;
-    // …
-}
-// 不经过宿主时：AppContext::typed()、RuntimeDocument::typed(document)
-```
-
-- 内置控件只注册**标识**（类型名、标签、TypeId）。节点照常带上组件类型标记。按标签也能解析出类型名。
-- 每个类型的行为写在 `ComponentView::BEHAVIOR`（`TypeBehavior`：激活、组装器、在某一点上激活、关闭弹出的选项、写入后的维护、输入路由钩子 `TypeHooks`）。在该类型第一个节点被创建时安装。所有创建路径都经过这一步（`stamp_component_type`、复合控件的 `install_view`、按标签绑定的 `finish_semantic_binding`）。程序没创建过的类型。这些代码一处都不被引用。输入路由经 `hooked!` 调用子系统。钩子没装时的结果和文档里没有这种节点时一样。
+- 内置控件仅在 `component_descriptors::BUILTIN_COMPONENT_IDS` 登记静态身份与标签元数据。节点照常带上组件类型标记。按标签也能解析出 `ComponentTypeId`。
+- 每个类型的行为写在 `ComponentView::BEHAVIOR`（`TypeBehavior`：激活、组装器、在某一点上激活、关闭弹出的选项、写入后的维护、输入路由钩子 `TypeHooks`）。在该类型第一个节点被创建时安装。所有创建路径都经过这一步（`stamp_component_type`、复合控件的 `install_view`）。程序没创建过的类型。这些代码一处都不被引用。输入路由经 `hooked!` 调用子系统。钩子没装时的结果和文档里没有这种节点时一样。
 - 中心路径（指针与键盘分发、提交、帧循环里的动画推进、焦点与悬停、无障碍动作）不点名控件专属的方法。它们写 `via!(self.method(..))`，查「路由调用表」（`TypeHooks::calls`，类型 `RoutedCalls`），表里每一项以它代表的 `AppContext` 方法命名。类型在 `BEHAVIOR.hooks` 里调用 `framework/routes.rs` 中自己的函数，用 `route!` 把用到的条目填进去。没填时调用回答 `Absent`（`Ok(false)`、`None`、`Ok(())`、空表）。这与文档里没有这种节点时方法自己的回答相同。新增一处控件专属的中心调用要做三件事：给 `routed_calls!` 加一项、写进 `routes.rs` 里该类型的函数、调用处写 `via!`。宿主对齐标题栏最大化状态走 `AppContext::sync_title_bars_maximized`，不再自己点名 `AppTitleBar`。
 - `routes.rs` 的两条测试守着这张表：每一项都有类型带来（否则那项功能对所有程序都是死的）；只有文字、输入框和按钮的表单一项都不带。
-- 实测（2026-11-11，`examples/reactive-sfc`，fat LTO、`codegen-units = 1`、`panic = "abort"`、strip，aarch64 macOS）：最小窗口 16.52 MiB → 15.80 MiB。符号名里带着未创建控件类型的代码 550 KiB → 61 KiB。剩下的主要是绘制器里的图表管线（15.6 KiB）和提示框（4.5 KiB：任何控件都能带提示，切不开）。
-- 模式必须在编译期确定：`ApplicationState::BUILTINS` 是关联常量。宿主按常量选择。另一个分支在 release 里被删掉。在运行时二选一会把两种模式都链接进来。
-- 精简模式下。按标签构造内置控件（`bind_semantic`）返回 `FrameworkError::InvalidComponentType`。按标签构造控件的宿主继续用完整模式。
-
-实测（release、strip 之后）：
-
-| 程序 | 完整 | 精简 | 省下 |
-| --- | --- | --- | --- |
-| 最小无头程序（一列文字和一个按钮） | 5.40 MB | 2.28 MB | 3.12 MB（-58%） |
-| 托管窗口应用 `examples/reactive-sfc` | 35.48 MB | 33.42 MB | 2.06 MB（-5.8%） |
-
-托管应用的体积主要来自 GPU、文字和内置字体。控件只是其中一小部分。
-
-验证：`NANA_TEST_TYPED_BUILTINS=1 cargo test -p nana-ui-runtime` 让本 crate 单元测试里的 `AppContext::new()` 返回精简上下文（只存在于 `cfg(test)`）。需要按标签构造的测试会跳过。创建路径漏装行为时。对应的测试在这个模式下失败。
+- 实测（aarch64 macOS，`[profile.dist]` 下 `opt-level = "z"`、fat LTO、`codegen-units = 1`、`panic = "abort"`、strip）：结合按需注册、仅主图形后端与预编译着色器，`examples/reactive-sfc` 可执行体积从 2026-11-11 基线 `15.80 MiB` 降至 `5.56 MiB`（`5,835,088 B`，详见 [资源预算](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/resource-budgets.md)）。托管应用的剩余体积主要来自 GPU、文字和内置字体。
 
 ## 语义
 
@@ -740,7 +719,7 @@ fn page() -> impl IntoView {
 
 除了脚本逻辑（JS 要改成 Rust）。模板、响应式和样式表都可以逐行对上。样式表在 L3 里构建时编译。写法见"样式表"。和 Vue 模板仍有三处不同：
 
-- `each` 和 `when` 各自带一个容器 `Stack`。而 Vue 的 `v-for` / `v-if` 直接生成兄弟节点。容器用类排版（`<Block class>` / `.class(..)`）。不用再包一层有尺寸的盒子。没有做成 `display: contents` 那样的透传：Runtime 里 `contents` 的子节点会让父容器离开布局缓存。整列行每次都要重新测量。长列表付不起。容器也是 `each` 行增删、`when` 分支切换时重排子节点的地方。
+- `each` 和 `when` 各自带一个容器 `Stack`。而 Vue 的 `v-for` / `v-if` 直接生成兄弟节点。容器用类排版（`<Block class>` / `.class(..)`）。不用再包一层有尺寸的盒子。NanaUI 的保留树不支持 CSS `display: contents` 那样的无盒透传：`Stack` 容器能保留父容器的布局缓存。并在 `each` 行增删、`when` 分支切换时承担子节点重排边界。
 - 表达式里的 `.get()` / `.with()` 省不掉。因为 Rust 稳定版不能给信号实现 `Fn`。只有单独出现的信号可以省。例如 `"{count}"`、`disabled={busy}`。
 - 组件函数不是惰性的。只在挂载、行、分支这三个作用域边界上才划分归属。
 
@@ -790,7 +769,7 @@ fn page() -> impl IntoView {
 - **行模板克隆**：构建视图只占挂载时间的四分之一。其中组件构造和投影每行仍然都要做。克隆静态部分能省下的不到一成。
 - **分帧挂载**：5,000 行挂载约 40 ms。是两三帧。但长列表的正确做法是 `each_virtual`（5 万行 2.4 ms）。分帧只会让用户看到只挂了一半的列表。
 - **静态文字改成 `Cow<'static, str>`**：一个文本节点常驻 1,804 B。空 `Stack` 是 1,778 B。文字本身只占约 26 B。不值得改所有控件的 API。
-- 控件注册清单也不需要单独生成：`BuiltinComponents::Typed` 已经按实际用到的类型注册。
+- 控件注册清单也不需要单独生成：组件已按实际用到的 Rust 类型按需注册并自动摇树。
 
 单点更新比手写 `update_component` 多出约 0.15 µs。这是信号簿记的成本。一次改很多节点时只 commit 一次。反而更快。
 

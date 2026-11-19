@@ -76,7 +76,7 @@ impl NodeSpace {
     /// cuts its children to it.
     pub(crate) const MODAL: Self = Self(1 << 12);
     /// Its visual's geometry reads the page
-    /// ([`StandardVisual::geometry_reads_page`]: an open menu surface).
+    /// ([`crate::WidgetVisual::geometry_reads_page`]: an open menu surface).
     pub(crate) const READS_PAGE: Self = Self(1 << 13);
     /// An open select: its menu is fitted to a room on the page, which a
     /// move above it changes (`UiWorld::local_select_menu_surface`).

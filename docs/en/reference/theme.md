@@ -80,8 +80,7 @@ and keeps a diagnosable fallback result through `fell_back_to_light`.
                                                 ▼
                                           ExtractedNode
                                     · style: Arc<ComputedStyle>
-                                    · standard_visual: StandardVisual
-                                    · component_geometry
+                                    · widget_paint: Option<Arc<WidgetPaintOutput>>
                                                 ▼
                                       UiScene (ScenePrimitive)
                                                 ▼
@@ -126,7 +125,7 @@ nana_ui_core::motion::{HOVER_COLOR, …} ─────► component animations
 | `AppearanceSettings` | [settings.rs](../../crates/nana-ui-core/src/settings.rs) | User/system policy: radius ×4, window material, backdrop target/opacity, titlebar following, workspace corners | **Evolves** into the policy overlay of #100 §11, not a second theme |
 | `NodeStyle` / `InteractionStyle` / `SemanticPaint` | [nana-ui-runtime](../../crates/nana-ui-runtime/src) | Node-local style intent (semantic color roles + radius tier) + paint overlays for 7 interaction states | **Keep**; it is the explicit local style intent and state input; the intent fields are where size/color convergence lands |
 | `ComputedStyle` + `ResolvedStyle(Arc<ComputedStyle>, palette_epoch)` | [nana-ui-runtime](../../crates/nana-ui-runtime/src) | Inheritance resolution result + theme generation | **Evolves** into `ResolvedStyle` of #100 §6 (it already has that name, but covers only inheritance and color, not metrics/recipes) |
-| `StandardVisual` / `ComponentGeometry` | Same | Retained "what control this is / its geometry" | **Keep**; recipe selector and layout output |
+| `WidgetVisual` / `WidgetPaintOutput` | [widget_visual.rs](../../crates/nana-ui-runtime/src/widget_visual.rs) | Open widget visual and node-local paint output | Replaced the closed `StandardVisual` / `ComponentGeometry` enums; each control module reads recipes and projects core primitives directly |
 
 ### 1.3 Sources of default styles
 

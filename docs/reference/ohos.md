@@ -49,7 +49,7 @@ OHOS 的 `target_os` 是 `linux`，所以任何写成 `target_os = "linux"` 的�
 
 应用的 OHOS 宿主持有窗口、surface、`GpuContext`、每帧的 `FrameContext` 与帧调度，和其它宿主一样把 `SceneWgpuPainter` 建在自己的 context 上。框架侧的几条约定：
 
-- **剪贴板**：OHOS 不编译桌面剪贴板，也没有默认后端。宿主用系统 Pasteboard 实现 `HostServices::read_clipboard` / `write_clipboard`；Web API 路径则把自己的 `ClipboardHost` 用 `shared_clipboard(...)` 包好，传给 `register_web_api_host_ops_with_resources`。没有注入时 `default_shared_clipboard()` 是 `UnsupportedClipboard`，读写都返回 `HostServiceError::Unsupported`，不会 panic。
+- **剪贴板**：OHOS 不编译桌面剪贴板，也没有默认后端。宿主用系统 Pasteboard 实现 `HostServices::read_clipboard` / `write_clipboard`（也可实现 `ClipboardHost` 并用 `shared_clipboard(...)` 包装以供共享读写）。没有注入时 `default_shared_clipboard()` 是 `UnsupportedClipboard`，读写都返回 `HostServiceError::Unsupported`，不会 panic。
 - **应用数据目录**：沙箱的文件目录只有 ArkTS `Context` 知道。宿主取到 `filesDir` 后自己调用 `FileStore::open`，框架不私自写盘。
 - **桌面宿主**：不要在 OHOS 上开 `nana-ui` 的 `hosted`；用 `--lib` 与 `gpu`，和 Android 宿主一样。
 

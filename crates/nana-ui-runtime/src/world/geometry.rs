@@ -1811,7 +1811,7 @@ impl UiWorld {
     }
 
     /// Where `id`'s open menu surface stands in the field's own coordinates
-    /// now, as [`Self::local_component_geometry`] would place it: the one
+    /// now, as [`Self::local_widget_paint`] would place it: the one
     /// part of an open field's record that depends on where the field
     /// stands. `None` for anything but an open Select, Dropdown or
     /// SearchDropdown.

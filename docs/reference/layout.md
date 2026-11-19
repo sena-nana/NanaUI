@@ -661,7 +661,7 @@ CSS 路径只产出数据，不量容器（见下文「`@container`」）。
 
 能这样切的前提是：一棵子树的放置只读它自己的输入（站在哪、多大、包含块、字体、视口），不读兄弟子树放置时写下的东西，所以延后调度队列放完后结果相同。
 
-一层的放置分两步：`lay_out_children` 走一遍容器的子项：测量、分行、对齐、求解 2D grid，给每个流内子项定好盒子，返回待放置的 `Descend` 列表和计划草稿，自己不放置任何子树；`place_node_body` 等这一帧退出后再依次进入这些子树，然后记录计划并放置定位子项。`place_node_head` 在 `place_node_body` 运行前返回，复用计划的三条快速路径（`place_moved_container`、`place_edited_child_list`、`place_from_plan`）与 `lay_out_children` 各自成函数，避免同时把所有局部变量留在同一递归栈帧内。
+一层的放置分两步：`lay_out_children` 走一遍容器的子项：测量、分行、对齐、求解 2D grid，给每个流内子项定好盒子，返回待放置的 `Descend` 列表和计划草稿，自己不放置任何子树；`place_node_body` 等这一帧退出后再依次进入这些子树，然后记录计划并放置定位子项。`place_node_head` 在 `place_node_body` 运行前返回，复用计划的两条快速路径（`place_edited_child_list`、`place_from_plan`）与 `lay_out_children` 各自成函数，避免同时把所有局部变量留在同一递归栈帧内。
 
 视图建成节点（`mount_view*` 经 `ViewBuilder::run_trampoline` 的显式 `ViewTask` 堆栈，配合 `enter_nest` / `leave_nest`）同样改为迭代执行，不消耗与视图深度成正比的调用栈，也不依赖 `stacker`；`view::tests::a_view_deeper_than_the_stack_still_mounts` 在 `1 MiB` 线程上挂载、布局并析构 400 层视图，`nana-ui-scene/tests/deep_tree_stack.rs` 在 `256 KiB` 线程上完成 `MAX_TREE_DEPTH - 4`（508 层）整帧验证。
 

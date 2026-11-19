@@ -49,7 +49,7 @@ Clamp/ellipsis 省略的 atomic subtree 保留 identity 和 state，但无可见
 
 `MutationQueue::set_inline_content` 是底层批量接口，引用的 node 必须在该批结束后成为段落的直接 child，属于同一 document。它不自动创建或删除子项。`InlineFlow`/控件投影及 `AppContext::set_inline_content` 会维护 atomic 顺序并删除被替换的 atomic subtree。使用 typed component 时，持续的应用状态仍应更新该 component 的 `content`；直接 world mutation 与现有 `set_text` 一样属于低层操作。
 
-提交校验拒绝重复引用、错误 source offset、跨 document、悬空引用、在流外/float 的 atomic child，以及控件内容中嵌套的交互 role 或 focusable node。后来插入后代、改变 role/interaction、reparent 或 style 时也会重新检查受影响的 inline owners。未引用的正常流 child 被拒绝；独立 absolute/fixed chrome slot 走已有 Overlay placement。auto block extent 与依赖该 extent 的 atomic child 形成约束环时，layout 明确失败，不持续迭代。
+提交校验拒绝重复引用、错误 source offset、跨 document、悬空引用、在流外的 atomic child，以及控件内容中嵌套的交互 role 或 focusable node。后来插入后代、改变 role/interaction、reparent 或 style 时也会重新检查受影响的 inline owners。未引用的正常流 child 被拒绝；独立 absolute/fixed chrome slot 走已有 Overlay placement。auto block extent 与依赖该 extent 的 atomic child 形成约束环时，layout 明确失败，不持续迭代。
 
 Mixed 内容需要宿主使用产品 `NanaTextEngineShaper`；只有尺寸估计的 TextShaper 无法提供真实 line/object placement，会返回 `InlineTextEngineRequired`。
 

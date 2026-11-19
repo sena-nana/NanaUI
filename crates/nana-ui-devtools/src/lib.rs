@@ -6,7 +6,7 @@
 //! into product Surface present.
 //!
 //! The tiers nest: `offscreen` is paint plus readback; `runtime-agent` adds the
-//! JSON protocol, the [`agent::AgentSession`] trait, the Rust Runtime session
+//! JSON protocol, the `agent::AgentSession` trait, the Rust Runtime session
 //! and the `nana-runtime-agent` binary; `headless-host` drives a whole
 //! `RuntimeProgram` offscreen.
 

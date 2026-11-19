@@ -1057,7 +1057,7 @@ pub enum PaintPhase {
 /// 录下的一条命令，颜色和尺寸已按主题解析，坐标在节点内坐标系。
 #[derive(Debug, Clone, PartialEq)]
 pub enum PaintOp {
-    /// 该节点原本的内建外观（StandardVisual、背景、边框、文字）。
+    /// 该节点原本的内建外观（WidgetVisual、背景、边框、文字）。
     DrawDefault,
     /// 之后的命令都在这个局部变换下（相对节点左上角），直到下一条
     /// `SetTransform`。录制开始时是恒等变换。

@@ -1239,7 +1239,7 @@ pub struct UiWorld {
     /// (`NodeRecord::render_full_epoch`) say why it is dirty since the last.
     render_epoch: Cell<u32>,
     /// While extraction derives a component's geometry in the component's
-    /// own coordinates ([`Self::local_component_geometry`]): that node. Every
+    /// own coordinates ([`Self::local_widget_paint`]): that node. Every
     /// box read meanwhile is measured from its border-box origin, so the
     /// geometry is the same wherever the node stands.
     geometry_frame: Cell<Option<StableNodeId>>,
@@ -4783,7 +4783,7 @@ impl UiWorld {
 
     /// `id`'s resolved style. A palette-only theme switch re-resolves no
     /// style, so its paint colours can be the previous palette's until the
-    /// node restyles; [`Self::component_geometry`] and extraction read them
+    /// node restyles; widget paint derivation and extraction read them
     /// in the installed palette.
     pub fn computed_style(&self, id: StableNodeId) -> Option<&ComputedStyle> {
         self.nodes.get(id).map(|node| node.resolved.0.as_ref())
@@ -5127,7 +5127,7 @@ impl UiWorld {
         self.page_widget_paint(id, visual, &style)
     }
 
-    /// Page-space geometry of an [`EmptyStateVisual`] node, matching extraction.
+    /// Page-space geometry of a [`crate::EmptyStateVisual`] node, matching extraction.
     pub fn empty_state_geometry(&self, id: StableNodeId) -> Option<crate::EmptyStateGeometry> {
         let visual = self.widget_visual_as::<crate::EmptyStateVisual>(id)?;
         let style = self.painted_style(id)?;
@@ -5150,7 +5150,7 @@ impl UiWorld {
         self.nodes.empty_state_text(id)
     }
 
-    /// Page-space geometry of an [`ActionMenuItemVisual`] node, matching extraction.
+    /// Page-space geometry of a [`crate::ActionMenuItemVisual`] node, matching extraction.
     pub fn action_menu_item_geometry(
         &self,
         id: StableNodeId,
@@ -5195,7 +5195,7 @@ impl UiWorld {
             .flatten()
     }
 
-    /// Page-space geometry of a [`SelectVisual`] node, matching extraction.
+    /// Page-space geometry of a [`crate::SelectVisual`] node, matching extraction.
     pub fn select_geometry(&self, id: StableNodeId) -> Option<crate::SelectGeometry> {
         let visual = self.widget_visual_as::<crate::SelectVisual>(id)?;
         let style = self.painted_style(id)?;
@@ -5223,7 +5223,7 @@ impl UiWorld {
         geometry
     }
 
-    /// Page-space geometry of a [`MenuSurfaceVisual`] node, matching extraction.
+    /// Page-space geometry of a [`crate::MenuSurfaceVisual`] node, matching extraction.
     pub fn menu_surface_geometry(&self, id: StableNodeId) -> Option<crate::MenuSurfaceGeometry> {
         let visual = self.widget_visual_as::<crate::MenuSurfaceVisual>(id)?;
         let style = self.painted_style(id)?;
@@ -5236,7 +5236,7 @@ impl UiWorld {
         geometry
     }
 
-    /// Page-space geometry of a [`ModalFrameVisual`] node, matching extraction.
+    /// Page-space geometry of a [`crate::ModalFrameVisual`] node, matching extraction.
     pub fn modal_frame_geometry(&self, id: StableNodeId) -> Option<crate::ModalFrameGeometry> {
         let visual = self.widget_visual_as::<crate::ModalFrameVisual>(id)?;
         let style = self.painted_style(id)?;
@@ -5250,7 +5250,7 @@ impl UiWorld {
         geometry
     }
 
-    /// Page-space geometry of a [`RangeVisual`] node, matching extraction.
+    /// Page-space geometry of a [`crate::RangeVisual`] node, matching extraction.
     pub fn range_geometry(&self, id: StableNodeId) -> Option<crate::RangeGeometry> {
         let visual = self.widget_visual_as::<crate::RangeVisual>(id)?;
         let style = self.painted_style(id)?;

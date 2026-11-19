@@ -44,7 +44,7 @@ The default side is the icon size of a small control, and the foreground color i
 
 When projected, the node text is an empty string.
 
-The visual is `StandardVisual::Icon`, with no tooltip.
+The visual is `IconVisual` (`WidgetVisual`), with no tooltip.
 
 The accessibility state stays at its default; screen readers do not treat it as a button.
 

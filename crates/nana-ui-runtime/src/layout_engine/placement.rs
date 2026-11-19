@@ -620,9 +620,9 @@ fn nearest_entry(
 /// closure reaches moved, from [`check_plan_children`].
 ///
 /// Returns `None` for an edit the replay does not express -- a child that
-/// leaves or arrives positioned, floated, inline, splicing its own children
-/// in, with an auto margin, out of document order, or reading the main
-/// extent -- and the caller lays the container out again.
+/// leaves or arrives positioned or inline, with an auto margin, out of
+/// document order, or reading the main extent -- and the caller lays the
+/// container out again.
 #[allow(clippy::too_many_arguments)]
 fn replay_child_list_edit(
     plan: &ContainerPlan,
@@ -2358,16 +2358,15 @@ fn lay_out_children(
     }
     // Plain in-flow containers and 2D grids are cacheable. Positioned
     // children are recorded beside the flow plan and do not by themselves
-    // make the container uncacheable. Inline formatting, floats, subgrids
+    // make the container uncacheable. Inline formatting, subgrids
     // and triggered menu overlays each add placement inputs the plan does
     // not model, and `children_layout_style_is_local` rules out the cases
     // where an ancestor could change a child's style without marking the
     // child dirty.
     // `descendant_dependent_flow` rules out the containers whose flow list is
-    // not decided by the direct children's own styles: `display:contents`
-    // splices grandchildren in, and an inline-level child is unboxed or not
-    // depending on its own subtree. Either way the plan's `by_child` index
-    // cannot answer "is this affected id one of my entries?".
+    // not decided by the direct children's own styles: an inline-level child
+    // is unboxed or not depending on its own subtree, so the plan's
+    // `by_child` index cannot answer "is this affected id one of my entries?".
     // Recorded on full passes too, so the first scoped pass after a mount or a
     // viewport change already has a plan to reuse.
     let grid_recordable = grid_2d && !style.is_subgrid_columns() && !style.is_subgrid_rows();
@@ -2611,11 +2610,10 @@ pub(super) struct ArrangedFlow<'a> {
 
 /// Breaks `flow` (measured at `child_sizes`) into the lines of the box `id`
 /// lays out at `content`, hands each line's free space out, aligns each
-/// item across it and turns the result onto the page. Flex lines, a block
-/// flow (a column, wrapping or not) and an inline formatting context's line
-/// boxes, beside `packed_floats`. A 2D grid is placed elsewhere. `commit`
-/// lets a solved line keep its assignment, as placement does; a reader
-/// passes `false`.
+/// item across it and turns the result onto the page. Flex lines (row or
+/// column, wrapping or not) and an inline formatting context's line boxes. A
+/// 2D grid is placed elsewhere. `commit` lets a solved line keep its
+/// assignment, as placement does; a reader passes `false`.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn arrange_flow<'a>(
     id: StableNodeId,
@@ -2897,9 +2895,9 @@ pub(super) fn arrange_flow<'a>(
             None
         };
         let line_cross = line_baseline_y.map_or(line_cross, |(_, height)| height);
-        // A float-narrowed line's start, measured from main-start: its
-        // physical left offset, or the room its right end leaves when the
-        // main axis runs from the right.
+        // A line's start, measured from main-start: its physical left offset,
+        // or the room its right end leaves when the main axis runs from the
+        // right.
         let line_start = if main_reversed {
             full_main - slot.main_start - slot.main_available
         } else {

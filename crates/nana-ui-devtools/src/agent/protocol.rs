@@ -113,14 +113,6 @@ pub struct KeyStroke {
     pub shift: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct SemanticDumpWidget {
-    pub id: u64,
-    pub kind: String,
-    pub label: String,
-    pub agent_id: String,
-}
-
 /// One hit-test candidate, topmost first. Answers "I clicked and nothing
 /// happened" by naming what is actually under the point.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -362,7 +354,6 @@ pub enum AgentCommand {
         #[serde(flatten)]
         filter: A11yFilter,
     },
-    Semantic,
     Probe {
         #[serde(flatten)]
         target: Target,
@@ -457,19 +448,15 @@ pub enum AgentCommand {
         color: Option<[f32; 4]>,
     },
     Pump,
-    /// Reload the session's application without recreating its window or GPU
-    /// context. `js` re-evaluates the artifact and rebuilds the tree; `css`
-    /// swaps one keyed stylesheet and touches no node. Both are paths on the
-    /// host's filesystem, read by the session.
+    /// Swap one keyed author stylesheet in the session without recreating its
+    /// window or GPU context. `css` is a path on the host's filesystem, read by
+    /// the session.
     ///
     /// Serde-only here: the implementation belongs to whichever session can
-    /// actually reload. The Runtime session cannot; its application is compiled
-    /// in.
+    /// actually reload stylesheets. The Runtime session has no author
+    /// stylesheets to replace.
     Reload {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        js: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        css: Option<String>,
+        css: String,
         /// Stylesheet key `css` replaces. Defaults to the path itself, which is
         /// what an app that injects with an `href` will have used.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -484,7 +471,6 @@ impl AgentCommand {
         match self {
             Self::Screenshot { .. } => "screenshot",
             Self::A11y { .. } => "a11y",
-            Self::Semantic => "semantic",
             Self::Probe { .. } => "probe",
             Self::HitTest { .. } => "hit_test",
             Self::Diff { .. } => "diff",
@@ -529,8 +515,6 @@ pub struct AgentReply {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nodes: Option<Vec<AccessibilityDumpNode>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub widgets: Option<Vec<SemanticDumpWidget>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub handled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<u64>,
@@ -573,11 +557,6 @@ impl AgentReply {
 
     pub fn with_nodes(mut self, nodes: Vec<AccessibilityDumpNode>) -> Self {
         self.nodes = Some(nodes);
-        self
-    }
-
-    pub fn with_widgets(mut self, widgets: Vec<SemanticDumpWidget>) -> Self {
-        self.widgets = Some(widgets);
         self
     }
 

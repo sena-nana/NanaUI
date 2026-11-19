@@ -12,7 +12,7 @@ use super::AccessibilityDumpNode;
 use super::pixels;
 use super::protocol::{
     A11yFilter, AgentCommand, AgentReply, DiagnosticDump, GpuDump, HitDump, InspectDump, KeyStroke,
-    PixelStats, PointerGesture, SceneProbeDump, SemanticDumpWidget, SessionInfo, Target, ThemeName,
+    PixelStats, PointerGesture, SceneProbeDump, SessionInfo, Target, ThemeName,
 };
 use crate::agent::AgentError;
 use crate::offscreen::{self, Size};
@@ -57,22 +57,6 @@ pub trait AgentSession {
     fn scene_probe(&self, node: u64) -> Option<SceneProbeDump>;
     fn screenshot_rgba(&mut self) -> Result<(Size<u32>, Vec<u8>), AgentError>;
 
-    /// A Runtime document has no semantic layer, and synthesizing one would be
-    /// a second facade; a product session with one overrides this.
-    fn semantic_widgets(&self) -> Option<Vec<SemanticDumpWidget>> {
-        None
-    }
-
-    /// Re-evaluate the application from `js` and rebuild the tree, keeping the
-    /// window and GPU context. The Runtime session has no artifact to
-    /// re-evaluate: its application is Rust code that a running process cannot
-    /// replace.
-    fn reload_artifact(&mut self, _path: &Path) -> Result<(), AgentError> {
-        Err(AgentError(
-            "this session cannot reload an artifact: its application is compiled in".into(),
-        ))
-    }
-
     /// Replace one keyed stylesheet. Creates and destroys no node.
     fn reload_stylesheet(&mut self, _key: &str, _path: &Path) -> Result<(), AgentError> {
         Err(AgentError(
@@ -96,8 +80,8 @@ pub trait AgentSession {
         Err(AgentError("this session has no view inspector".into()))
     }
 
-    /// A session with a semantic layer overrides this to consult it, since it
-    /// can carry a widget that never reaches the accessibility projection.
+    /// A session with custom agent IDs overrides this when a target is not
+    /// exposed through the accessibility projection.
     fn resolve_agent_id(&self, agent_id: &str) -> Option<u64> {
         self.accessibility_nodes()
             .into_iter()
@@ -168,12 +152,6 @@ pub trait AgentSession {
                 }
                 reply
             }
-            AgentCommand::Semantic => match self.semantic_widgets() {
-                Some(widgets) => AgentReply::ok().with_widgets(widgets),
-                None => AgentReply::err(
-                    "this session has no semantic layer; use a11y for a Runtime document",
-                ),
-            },
             AgentCommand::Screenshot { path } => {
                 let path = path.unwrap_or_else(|| "target/agent-session/screenshot.png".into());
                 match self.screenshot_png(Path::new(&path)) {
@@ -326,37 +304,16 @@ pub trait AgentSession {
                 self.set_clear(color);
                 AgentReply::ok().with_info(self.describe())
             }
-            AgentCommand::Reload { js, css, css_key } => {
-                self.dispatch_reload(js.as_deref(), css.as_deref(), css_key.as_deref())
-            }
+            AgentCommand::Reload { css, css_key } => self.dispatch_reload(&css, css_key.as_deref()),
         }
     }
 
-    /// Apply a reload, then flush so the reply describes the tree that resulted
-    /// rather than the one that was there when the command arrived.
-    ///
-    /// The stylesheet goes first: it is the cheap path, and when a command
-    /// carries both, applying CSS before the artifact means the artifact's own
-    /// mount-time injection has the last word, matching what a real save does.
+    /// Replace one keyed author stylesheet, then flush so the reply reflects
+    /// the updated tree.
     #[doc(hidden)]
-    fn dispatch_reload(
-        &mut self,
-        js: Option<&str>,
-        css: Option<&str>,
-        css_key: Option<&str>,
-    ) -> AgentReply {
-        if js.is_none() && css.is_none() {
-            return AgentReply::err("reload needs js, css, or both");
-        }
-        if let Some(css) = css {
-            let key = css_key.unwrap_or(css);
-            if let Err(error) = self.reload_stylesheet(key, Path::new(css)) {
-                return AgentReply::err(error.0);
-            }
-        }
-        if let Some(js) = js
-            && let Err(error) = self.reload_artifact(Path::new(js))
-        {
+    fn dispatch_reload(&mut self, css: &str, css_key: Option<&str>) -> AgentReply {
+        let key = css_key.unwrap_or(css);
+        if let Err(error) = self.reload_stylesheet(key, Path::new(css)) {
             return AgentReply::err(error.0);
         }
         match self.flush() {

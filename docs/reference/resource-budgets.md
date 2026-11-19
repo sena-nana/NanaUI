@@ -107,7 +107,7 @@ python3 scripts/audit-stack-frames.py target/release/deps/deep_tree_stack-<hash>
 
 debug 下构造路径上最大的是 `AppContext::with_builtins` 15.3 KiB（字段初始化的临时量），`from_world`、`new` 7.8 KiB，`RuntimeDocument::with_context` / `new` 5.5 / 3.7 KiB（改前 19 / 18 KiB）。门禁：`framework::tests::context_and_world_stay_small_enough_to_move` 要求 `AppContext` 不超过 6 KiB、`UiWorld` 不超过 10 KiB（`cargo test -p nana-ui-runtime --lib context_and_world`），帧本身用上面的脚本量，release 下 `nana` 的函数现在没有超过 16 KiB 的（脚本退出码 0）。
 
-debug 下帧路径上曾有几个函数远超预算：`UiWorld::derive_component_geometry` 111 KiB、`UiScene::build_node_primitives` 74 KiB、`controls_base::build` 72 KiB、`overlays::build` 28 KiB、`text::build` 19 KiB（release 分别是 9、5、6 KiB 以下）。它们都是按 `StandardVisual` 分支的大 `match`，未优化的代码给每个分支的局部变量都留了槽，走哪个分支都要全占。现在每个 12 行以上的分支都在 `own_frame(|| ...)` 里运行（runtime 的 `crate::stack::own_frame` 和 scene 的 `primitives::own_frame`，`#[inline(always)]` 的一层调用）：debug 下闭包是独立的帧，分支的局部变量只在走到它时才占栈；release 下闭包被内联，代码不变。debug 下这几个函数现在是 16、24、16 KiB 以下，最大的分支闭包 20 与 29 KiB。新加的大 `match` 分支照此办理。
+debug 下帧路径上曾有几个大 `match` 函数远超预算（按历史封闭枚举分发，分别为 111 / 74 / 72 / 28 / 19 KiB）：未优化的代码给每个分支的局部变量都留了槽，走哪个分支都要全占。此前通过把 12 行以上分支放进 `#[inline(always)]` 的单次调用闭包（debug 独立栈帧、release 内联）将其压到 16 / 24 / 16 KiB 以下。后续开放式组件重构已彻底移除封闭枚举分发，改为各控件通过 `WidgetVisual::paint` 输出节点本地 `WidgetPaintOutput`，`UiScene::build_node_primitives` 直接发射 `widget_paint` 与核心图元族。若新写较大的 `match` 分支，仍遵循小作用域/独立辅助函数习惯以避免 debug 栈帧膨胀。
 
 ### 与同类实现的对照
 
@@ -622,7 +622,7 @@ Scene（2026-11-03）：图元是用绝对坐标的布局盒（加祖先变换�
 
 painter 段（`nana-text-paint-benchmark --workload reflow`，交替 8 轮读最小值，ms）：1 000 标签 flush 2.07 → 1.76、batch 0.151 → 0.192，合计 2.22 → 1.95；10 000 标签 flush 27.7 → 23.4、batch 2.47 → 2.59，合计 30.1 → 26.0。两边都不重建文字实例（`text_instance_rebuilds` 0），平移行上传量相同；batch 多出的约 20 ns/标签是重定基时为每个节点读一次放置原点（`DrawAttributes.origin`），flush 少的是 Scene 不再为每个平移的标签重建图元、剔除索引不再逐个重算。快照套件与 3e9c83b80 的输出逐字节相同（680 张，`gallery-sidebar-collapsed-dark` 为已知抖动）。NativeMarkdown 先试过放进本地坐标：整篇文档的排版从内容盒一路累加，按本地累加再放到页面上和按页面累加在末位不同，`gallery-rich-text` 两张快照的 Mermaid 曲线有 7 个像素差 1 级，所以它留在页面坐标里（平移时重新提取）。
 
-公开接口变化（第 4 阶段）：`ScenePrimitive` 的几何（`bounds`、批量矩形、笔画点、`Path` / `Chart` 的 `origin`、`LayerBegin` 的裁剪、`LayerMask.origin`、节点自己的裁剪）改为节点本地坐标（读页面的 visual 除外）；页面位置用新增的 `UiScene::primitive_layout_bounds` / `place_rect`。`SceneDraw` 新增 `origin` 字段与 `place`、`placed_bounds`、`geometry_transform`，`transform` 不再含原点，`clips` 全在页面上。`ExtractedNode.component_geometry` 改为本地坐标（`UiWorld::component_geometry` 仍是页面坐标，不变）；新增 `StandardVisual::geometry_reads_page`。`UiScene::node_bounds` 恢复为现在的页面盒子（与 `node_layout_bounds` 相同）。
+公开接口变化（第 4 阶段）：`ScenePrimitive` 的几何（`bounds`、批量矩形、笔画点、`Path` / `Chart` 的 `origin`、`LayerBegin` 的裁剪、`LayerMask.origin`、节点自己的裁剪）改为节点本地坐标（读页面的 visual 除外）；页面位置用新增的 `UiScene::primitive_layout_bounds` / `place_rect`。`SceneDraw` 新增 `origin` 字段与 `place`、`placed_bounds`、`geometry_transform`，`transform` 不再含原点，`clips` 全在页面上。`ExtractedNode.component_geometry`（现已演进为 `ExtractedNode.widget_paint`）改为本地坐标；`geometry_reads_page`（现为 `WidgetVisual::geometry_reads_page`）标记读页面的 visual。`UiScene::node_bounds` 恢复为现在的页面盒子（与 `node_layout_bounds` 相同）。
 
 `component-gallery` 的语义快照另有 8 个与此无关的差异（对话框、空状态等文字的 `line_height` 由 `Relative` 变为 `normal`），来自 b1bc92819，不含这些改动的树上同样出现，基线没有重录。
 
@@ -842,7 +842,7 @@ painter 段（`nana-text-paint-benchmark --workload reflow`，交替 8 轮读最
 
 节点空间分类与原地改尺寸（2026-11-05）：节点空间分类 `NodeSpace`（be0a703c8）是重构，与 1ab1855eb 在 81 + 13 帧代表性页面上导出的无障碍 delta 与全树、命中网格、Scene 图元与绘制、剔除和工作计数逐字节相同，`stack-depth` 交替 8 轮持平；自带变换的盒子原地改尺寸一律当遍历根（596930d22）是正确性修正，`stack-depth` 交替 8 轮持平。之后拆分 `world/accessibility/`、`world/hit_test/` 与 `nana-ui-scene/src/scene/`（e443a2a1e、e41729572、138c79333）只搬移代码，公开 API 与快照输出不变。
 
-只挪了位置的容器不进主体（2026-11-09）：父节点重排把一个容器挪到新位置、它自己没变时，`place_node_head` 写下新偏移，`keeps_moved_subtree` 判定主体读的东西都没变就不进 `place_node_body`（条件见 [相对几何 · 平移一棵子树](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/relative-geometry.md#_3-2-平移一棵子树)）。以前纯盒子容器靠计划逐个复查受影响的子项，没有计划的容器——行内格式化上下文（段落）、浮动、`display: contents` 等——整个重排一遍子节点：Taffy 对照基准里每个被挪动的段落约 3.6 µs，见 [Taffy 对照 · 观察](/reference/taffy-reference#观察)。测试与 `layout-verify` 构建里，保住子树的盒子下面每个盒子都要与全量布局逐位相同（`verify::note_kept_subtree`）；`world/line_box_memo/moved_paragraphs.rs` 把带各种逃逸定位子节点的段落挪动，每步与冷布局比对，去掉「子节点不在别的参照系」那一条它就变红。与 0b60695fd 交替 8 轮、每轮交换先后读最小值（负载 9–18，µs；指令是 `RUNS=240` 与 `RUNS=40` 两次 `time -l` 之差除以 200）：
+只挪了位置的容器不进主体（2026-11-09）：父节点重排把一个容器挪到新位置、它自己没变时，`place_node_head` 写下新偏移，`keeps_moved_subtree` 判定主体读的东西都没变就不进 `place_node_body`（条件见 [相对几何 · 平移一棵子树](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/relative-geometry.md#_3-2-平移一棵子树)）。以前纯盒子容器靠计划逐个复查受影响的子项，没有计划的容器——行内格式化上下文（段落）等——整个重排一遍子节点：Taffy 对照基准里每个被挪动的段落约 3.6 µs，见 [Taffy 对照 · 观察](/reference/taffy-reference#观察)。测试与 `layout-verify` 构建里，保住子树的盒子下面每个盒子都要与全量布局逐位相同（`verify::note_kept_subtree`）；`world/line_box_memo/moved_paragraphs.rs` 把带各种逃逸定位子节点的段落挪动，每步与冷布局比对，去掉「子节点不在别的参照系」那一条它就变红。与 0b60695fd 交替 8 轮、每轮交换先后读最小值（负载 9–18，µs；指令是 `RUNS=240` 与 `RUNS=40` 两次 `time -l` 之差除以 200）：
 
 | 页面 | 编辑 | 阶段 | 0b60695fd | 本次 |
 | --- | --- | --- | ---: | ---: |

@@ -64,7 +64,7 @@ abs(child) = abs(frame) + local(child)
 | `DOCUMENT` | 文档节点 | 种类 |
 | `VIRTUAL` | visual 从几何派生无障碍节点或改写自己的无障碍盒：打开的 Select、TreeView、MenuSurface、ModalFrame。关着的 Select 只投影字段，不算 | visual |
 | `MODAL` | ModalFrame：无障碍盒是 surface，命中把子节点裁到它 | visual |
-| `READS_PAGE` | visual 的几何读页面（`StandardVisual::geometry_reads_page`：只有打开的 MenuSurface） | visual |
+| `READS_PAGE` | visual 的几何读页面（`WidgetVisual::geometry_reads_page`：只有打开的 MenuSurface） | visual |
 | `MENU_ROOM` | 打开的 Select：菜单按页面上的空间适配，上面的盒子一动空间就可能变 | visual |
 
 ### 2.2 派生答案
@@ -275,10 +275,10 @@ abs(child) = abs(frame) + local(child)
 | `node_space.rs` | `NodeSpace` 的位与派生答案 |
 | `store.rs` | `NodeRecord::space`、`note_node_space`、`space_pins` / `page_bound` 索引、`check_node_spaces` |
 | `layout_result.rs` | `LayoutFrame`、本地 `LayoutResult` |
-| `world.rs` | `layout_box`、`layout_origin`、`record_layout_origin`、`layout_box_from`、`local_component_geometry`、`publish_layout_results`、`layout_result_projects_new_geometry`、`layout_result_reshapes` |
+| `world.rs` | `layout_box`、`layout_origin`、`record_layout_origin`、`layout_box_from`、`local_widget_paint`、`publish_layout_results`、`layout_result_projects_new_geometry`、`layout_result_reshapes` |
 | `world/mutation.rs` | `write_local_layout`、`reframe_layouts`、`settle_layout_moves`、`mark_transform_kept` |
 | `world/extraction.rs` | `extract_nodes_reusing`、`keeps_select_menu`、`check_records_kept_under_moves` |
-| `world/geometry.rs` | `derive_component_geometry`、`local_select_menu_room`、`local_select_menu_surface` |
+| `world/geometry.rs` | `local_select_menu_room`、`local_select_menu_surface` |
 | `world/scroll_bounds.rs` | `ContentBoundsIndex`、`MaxTree` |
 | `layout_engine.rs`、`layout_engine/placement.rs` | `may_move_line_boxes`；`origin_in`、`content_origin_in`、`place_remote_overlays` |
 | `layout_engine/verify.rs` | 布局的重算比对与 `retained_line_boxes_are_fresh` |

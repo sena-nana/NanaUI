@@ -264,7 +264,7 @@ pub struct TextGitGutterMark {
     pub kind: TextGitMarkKind,
 }
 
-/// [`crate::ComponentGeometry::TextInput`] 的 git gutter 几何：按种类
+/// [`TextInputGeometry`] 的 git gutter 几何：按种类
 /// 分组的 2px 竖条（节点空间）与已解析颜色。空种类不产生绘制批次。
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TextGitGutterGeometry {
@@ -372,7 +372,7 @@ impl TextAtomSpan {
 
 /// Chip drawn over an atomic range: body covers the token glyphs, close is a
 /// hit target. Coordinates are node space once placed on
-/// [`ComponentGeometry::TextInput`].
+/// [`TextInputGeometry`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextAtomChip {
     pub bounds: LayoutBox,
@@ -516,7 +516,7 @@ pub struct TextFoldMarker {
     pub fold: TextCodeFold,
 }
 
-/// [`crate::ComponentGeometry::TextInput`] 的折叠几何集合。空集合即
+/// [`TextInputGeometry`] 的折叠几何集合。空集合即
 /// 默认值，零额外成本。
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TextFoldGeometry {
@@ -677,7 +677,7 @@ pub struct TextCompletionRow {
     pub doc: Option<ComponentTextRegion>,
 }
 
-/// [`crate::ComponentGeometry::TextInput`] 的补全弹层几何。仅聚焦多行
+/// [`TextInputGeometry`] 的补全弹层几何。仅聚焦多行
 /// 编辑器且候选会话非空时存在；绘制在编辑器所有覆盖层（折叠、诊断、
 /// 行号）之上，点击命中与键盘交互由框架命令处理。
 #[derive(Debug, Clone, PartialEq)]
@@ -696,7 +696,7 @@ pub struct TextCompletionPopup {
     pub kind_color: [f32; 4],
 }
 
-/// [`crate::ComponentGeometry::TextInput`] 的 hover 文档浮窗几何。宿主
+/// [`TextInputGeometry`] 的 hover 文档浮窗几何。宿主
 /// 喂入 [`crate::TextArea::hover`] 时存在，纯展示；滚轮滚动由框架处理。
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextHoverPopup {
@@ -2679,7 +2679,7 @@ pub struct TextSwatchMark {
     pub color: [f32; 4],
 }
 
-/// 多行编辑器的内部派生渲染选项（[`StandardVisual::TextInput`] 携带，
+/// 多行编辑器的内部派生渲染选项（[`TextInputVisual`] 携带，
 /// 世界侧派生几何）。除括号配对着色默认开启外全部默认关闭；关闭项派生
 /// 路径零分配短路。
 #[derive(Debug, Clone, PartialEq)]
@@ -4597,7 +4597,7 @@ pub struct ExtractedNode {
     /// installed theme (Issue #217). `None` for every node without a painter,
     /// which keeps the built-in paint path.
     pub custom_paint: Option<Arc<crate::PaintRecording>>,
-    /// Node-local paint output projected from [`WidgetVisual`] (open widget visual path).
+    /// Node-local paint output projected from [`crate::WidgetVisual`] (open widget visual path).
     pub widget_paint: Option<Arc<crate::WidgetPaintOutput>>,
 }
 

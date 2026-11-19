@@ -3515,7 +3515,7 @@ impl UiWorld {
     /// [`UiWorld::project_accessibility_delta`]'s walk, the scene's frame
     /// chain). A root that only moved may keep its extracted record; a node
     /// below one whose visual's geometry reads the page
-    /// ([`StandardVisual::geometry_reads_page`]) is extracted again: a
+    /// ([`crate::WidgetVisual::geometry_reads_page`]) is extracted again: a
     /// renderer that places what paints where it stands now needs the
     /// geometry a cold extraction gives.
     pub(super) fn settle_layout_moves(&mut self) {

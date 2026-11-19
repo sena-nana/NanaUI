@@ -80,8 +80,7 @@ Phase 0 的章节保留成**当时**的审计记录。不回头重写。那份�
                                                 ▼
                                           ExtractedNode
                                     · style: Arc<ComputedStyle>
-                                    · standard_visual: StandardVisual
-                                    · component_geometry
+                                    · widget_paint: Option<Arc<WidgetPaintOutput>>
                                                 ▼
                                       UiScene（ScenePrimitive）
                                                 ▼
@@ -126,7 +125,7 @@ nana_ui_core::motion::{HOVER_COLOR, …} ─────► 组件动画
 | `AppearanceSettings` | [settings.rs](https://github.com/sena-nana/NanaUI/blob/main/crates/nana-ui-core/src/settings.rs) | 用户/系统 policy：radius ×4、window material、backdrop target/opacity、titlebar 跟随、workspace corners | **演进**为 #100 §11 的 policy overlay，不是第二套 theme |
 | `NodeStyle` / `InteractionStyle` / `SemanticPaint` | [nana-ui-runtime](https://github.com/sena-nana/NanaUI/tree/main/crates/nana-ui-runtime/src) | 节点本地样式意图（语义色角色 + 圆角档位）+ 7 个交互状态的 paint overlay | **保留**，是 explicit local style intent 与 state 输入；意图字段是尺寸/颜色收敛的落点 |
 | `ComputedStyle` + `ResolvedStyle(Arc<ComputedStyle>, palette_epoch)` | [nana-ui-runtime](https://github.com/sena-nana/NanaUI/tree/main/crates/nana-ui-runtime/src) | 继承解析结果 + 主题代 | **演进**为 #100 §6 的 `ResolvedStyle`（现在已经叫这个名字，但只覆盖继承与颜色，不覆盖 metrics/recipe） |
-| `StandardVisual` / `ComponentGeometry` | 同上 | 保留期「这是个什么控件 / 它的几何」 | **保留**，是 recipe 的 selector 与 layout 产物 |
+| `WidgetVisual` / `WidgetPaintOutput` | [widget_visual.rs](https://github.com/sena-nana/NanaUI/blob/main/crates/nana-ui-runtime/src/widget_visual.rs) | 开放式组件视觉与节点本地绘制输出 | 替代原封闭枚举 `StandardVisual` / `ComponentGeometry`，各控件模块直接消费 recipe 并投影出核心图元 |
 
 ### 1.3 默认样式来源
 

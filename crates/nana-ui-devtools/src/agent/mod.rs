@@ -19,8 +19,8 @@ pub mod session;
 pub use protocol::{
     A11yFilter, AgentCommand, AgentReply, AppliedDump, CauseDump, DiagnosticDump, DynamicDump,
     FieldDump, GpuDump, HitDump, InspectDump, KeyStroke, LayoutCauseDump, LayoutNodeDump,
-    PixelDiff, PixelStats, PointerGesture, RectDump, SceneProbeDump, SegmentDump,
-    SemanticDumpWidget, SessionInfo, Target, ThemeName,
+    PixelDiff, PixelStats, PointerGesture, RectDump, SceneProbeDump, SegmentDump, SessionInfo,
+    Target, ThemeName,
 };
 pub use runtime::{
     RuntimeAgentSession, document_hit_test, document_inspect, document_scene_probe,

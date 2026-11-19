@@ -44,7 +44,7 @@ widget(IconGlyph::new(Icon::Folder).size(16.0).role(nana_ui::runtime::SemanticCo
 
 投影时节点文本是空字符串。
 
-视觉是 `StandardVisual::Icon`，没有工具提示。
+视觉是 `IconVisual`（`WidgetVisual`），没有工具提示。
 
 可访问状态保持默认，读屏不会把它当成按钮。
 

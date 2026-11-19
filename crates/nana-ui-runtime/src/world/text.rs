@@ -1148,7 +1148,7 @@ pub(super) struct TextInputPresentationSource {
     pub(super) bracket_color_spans: Arc<[(usize, usize, usize)]>,
 }
 
-/// 从 [`StandardVisual::TextInput`] 提取的代码编辑器扩展。
+/// 从 [`crate::TextInputVisual`] 提取的代码编辑器扩展。
 #[derive(Debug, Clone, Default)]
 pub(super) struct TextInputEditorExtras {
     pub(super) diagnostics: Arc<[TextDiagnosticSpan]>,

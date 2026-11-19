@@ -3,7 +3,7 @@ name = "nana-taffy-reference"
 version = "0.0.0"
 edition = "2024"
 publish = false
-description = "NanaUI layout beside its performance reference, Taffy 0.11: block, flex and grid on the same boxes, and what NanaUI does that Taffy has no counterpart for. An observation, not a gate."
+description = "NanaUI layout beside its performance reference, Taffy 0.11: flex and grid on the same boxes, and what NanaUI does that Taffy has no counterpart for. An observation, not a gate."
 
 # Taffy is the reference this benchmark measures against. It is a dependency
 # of this benchmark only and never of a product crate.

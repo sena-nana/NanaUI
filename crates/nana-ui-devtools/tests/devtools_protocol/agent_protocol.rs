@@ -661,3 +661,56 @@ fn inspect_reports_the_layout_context_and_participation() {
     let json = serde_json::to_value(&layout).unwrap();
     assert_eq!(json["participation"], "flexitem");
 }
+
+#[test]
+fn removed_js_and_semantic_commands_are_rejected_while_css_reload_reaches_session() {
+    let mut session = counter();
+    let input = concat!(
+        "{\"id\":1,\"cmd\":\"semantic\"}\n",
+        "{\"id\":2,\"cmd\":\"reload\",\"js\":\"app.js\"}\n",
+        "{\"id\":3,\"cmd\":\"reload\",\"css\":\"theme.css\"}\n"
+    );
+    let mut output = Vec::new();
+    run_stdio(&mut session, &mut input.as_bytes(), &mut output).expect("stdio");
+
+    let replies: Vec<serde_json::Value> = String::from_utf8(output)
+        .expect("utf-8")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("reply json"))
+        .collect();
+    assert_eq!(replies.len(), 3, "{replies:?}");
+
+    assert_eq!(replies[0]["id"], 1);
+    assert_eq!(replies[0]["ok"], false);
+    assert!(
+        replies[0]["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("cannot parse command"),
+        "{:?}",
+        replies[0]
+    );
+
+    assert_eq!(replies[1]["id"], 2);
+    assert_eq!(replies[1]["ok"], false);
+    assert!(
+        replies[1]["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("cannot parse command"),
+        "{:?}",
+        replies[1]
+    );
+
+    assert_eq!(replies[2]["id"], 3);
+    assert_eq!(replies[2]["cmd"], "reload");
+    assert_eq!(replies[2]["ok"], false);
+    assert!(
+        replies[2]["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no author stylesheets"),
+        "{:?}",
+        replies[2]
+    );
+}

@@ -74,7 +74,7 @@ defineProps!(todo: Todo, on_remove: impl Fn() + Send + 'static);
 
 条件类在切换时比手写的 `FieldWrite` 慢约 11%：重跑时要算类掩码并查 `StyleSite`。debug 里 `hot(true)` 让每个纯静态文字节点多一次读表。在 release 里单独量这份生成代码：每行多 1 个副作用、约 315–330 B 常驻，挂载慢约 3%。构建脚本编译 9 个 `.vue` 文件大约 0.25 s。
 
-只从 Rust 类型、`view!` 或 `.vue` 建树时，可以用 `BuiltinComponents::Typed` 丢掉按标签构造的绑定器。体积见 [扩展控件](https://github.com/sena-nana/NanaUI/blob/main/docs/guide/components/registry.md)。
+只从 Rust 类型、`view!` 或 `.vue` 建树时，内置控件已改为默认按需注册，未用到的控件无需额外配置即可自动摇树裁剪。体积见 [扩展控件](https://github.com/sena-nana/NanaUI/blob/main/docs/guide/components/registry.md)。
 
 合同和测量条件在 [声明式视图](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/reactive-view.md)。
 
@@ -91,6 +91,6 @@ defineProps!(todo: Todo, on_remove: impl Fn() + Send + 'static);
   </a>
   <a class="next-step" href="/guide/components/registry">
     <p class="next-step-link">扩展控件</p>
-    <p class="next-step-caption">精简模式省下的体积从哪来。</p>
+    <p class="next-step-caption">按需注册与分发体积来源。</p>
   </a>
 </div>

@@ -250,7 +250,7 @@ Dock 那种从入口上方升起的一列胶囊就是两者合用：入口 `has_
 
 `TextArea` 的行号、诊断沟、minimap、git gutter 是视图属性：`line_numbers` / `diagnostics` / `minimap` / `git_gutter`。buffer revision、LSP、git 状态仍由应用喂入。
 
-`TerminalView` 是保留式网格。应用喂 `TerminalScreen` 单元格与样式。框架发 `TerminalEvent::Input` / `Resize` / `SelectionChanged`。PTY、submit、interrupt 归应用（通常把 Enter / Ctrl+C 解释成对 PTY 的写入）。按标签绑定（`bind_semantic`）时，`screen` 属性的 JSON 与 Runtime `TerminalScreen` 同形。`cells` 可以是 grapheme 串（宽字符自动占两列），或字符串/对象数组（省略 `width` 时按第一个 grapheme 的显示宽度 0/1/2）。`foreground` / `background` 是 `[r,g,b]` 或 `[r,g,b,a]`：0–1。任一 RGB 通道 `> 1` 则按 0–255。省略 `screen` 时保留宿主 `sync_terminal_screen` 喂入的画面。高频 PTY 帧仍走那条 Runtime API。
+`TerminalView` 是保留式网格。应用通过 `sync_terminal_screen` 喂入 `TerminalScreen` 单元格与样式。框架发 `TerminalEvent::Input` / `Resize` / `SelectionChanged`。PTY、submit、interrupt 归应用（通常把 Enter / Ctrl+C 解释成对 PTY 的写入）。
 
 `DiffView` 展示应用喂入的 hunk。`DiffEvent` 的接受/拒绝只是请求。不改 buffer。`assemble_diff_view` 用现有 `ScrollView` + `Button` + `Text` 装配。只读审阅（提交、工作区改动）用 `.review_actions(false)`：不装配接受/拒绝按钮。增删行以低透明度的成功/危险色铺底。
 

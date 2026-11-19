@@ -49,7 +49,7 @@ Branches already isolated under this rule:
 
 The application's OHOS host owns the window, surface, `GpuContext`, each frame's `FrameContext`, and frame scheduling, and builds `SceneWgpuPainter` on its own context like any other host. Framework-side conventions:
 
-- **Clipboard**: OHOS does not compile the desktop clipboard and has no default backend. The host implements `HostServices::read_clipboard` / `write_clipboard` with the system Pasteboard; the Web API path wraps its own `ClipboardHost` with `shared_clipboard(...)` and passes it to `register_web_api_host_ops_with_resources`. Without injection, `default_shared_clipboard()` is `UnsupportedClipboard`, and reads and writes both return `HostServiceError::Unsupported` without panicking.
+- **Clipboard**: OHOS does not compile the desktop clipboard and has no default backend. The host implements `HostServices::read_clipboard` / `write_clipboard` with the system Pasteboard (or implements `ClipboardHost` and wraps it with `shared_clipboard(...)` for shared reads and writes). Without injection, `default_shared_clipboard()` is `UnsupportedClipboard`, and reads and writes both return `HostServiceError::Unsupported` without panicking.
 - **Application data directory**: only the ArkTS `Context` knows the sandbox's files directory. After obtaining `filesDir`, the host calls `FileStore::open` itself; the framework never writes to disk on its own.
 - **Desktop host**: do not enable `nana-ui`'s `hosted` on OHOS; use `--lib` and `gpu`, as with the Android host.
 

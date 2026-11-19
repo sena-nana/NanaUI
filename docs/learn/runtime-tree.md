@@ -74,7 +74,7 @@ title: 运行时保留树
 
 ### 4. `ComponentRegistry`：内置与扩展控件的单一注册表
 
-`ComponentRegistry`（`crates/nana-ui-runtime/src/component_registry.rs:249`）维护 `by_id`、`by_tag`、`by_rust` 三张索引。无论内置控件还是应用调用 `register_component` 注册的扩展控件，都实现同一个 `RegisterableComponent` trait（`:212`），提供 `TYPE_ID`、`TAGS`、`from_semantic` 与可选的 `reconcile_semantic` / `project_semantic` / `finish_semantic`。同时 `UiWorld` 维护 `nodes_by_component: HashMap<ComponentTypeId, HashSet<StableNodeId>>`（`world.rs:894`），让按组件类型的全局查询保持 $O(1)$。
+`ComponentRegistry`（`crates/nana-ui-runtime/src/component_registry.rs:119`）维护 `by_id`、`by_rust`、`by_tag` 三张索引。内置控件的静态身份与标签元数据由 `component_descriptors::BUILTIN_COMPONENT_IDS` 提供，应用通过 `register_component` 注册的扩展控件实现 `RegisterableComponent` trait（`:113`），提供 `TYPE_ID` 与 `TAGS`；控件行为通过 `ComponentView::BEHAVIOR` 在首次创建时按需安装。同时 `UiWorld` 维护 `nodes_by_component: HashMap<ComponentTypeId, HashSet<StableNodeId>>`（`world.rs:894`），让按组件类型的全局查询保持 $O(1)$。
 
 ### 5. `DirtyMask`、`SystemWork` 与 `RuntimeDocument::flush` 收敛顺序
 

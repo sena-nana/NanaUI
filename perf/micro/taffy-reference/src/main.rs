@@ -320,10 +320,6 @@ fn taffy_style(kind: Kind, role: Role) -> taffy::Style {
     use taffy::prelude::*;
     let quarter = length(0.25_f32);
     let mut style = match (kind, role) {
-        (Kind::Flex | Kind::Grid, Role::Leaf) => Style {
-            display: Display::Block,
-            ..Style::default()
-        },
         (Kind::Flex, Role::Row) => Style {
             display: Display::Flex,
             flex_direction: FlexDirection::Row,
@@ -842,9 +838,9 @@ fn least_of(rounds: usize, mut run: impl FnMut() -> f64) -> f64 {
     (0..rounds).map(|_| run()).fold(f64::INFINITY, f64::min)
 }
 
-/// Inline text: paragraphs of text runs and inline-block boxes, broken into
+/// Inline text: paragraphs of text runs and inline-flex boxes, broken into
 /// lines by nana-text and aligned on their baselines. `rows` paragraphs,
-/// each a 400 px block holding four runs and two inline-blocks.
+/// each a 400 px flex container holding four runs and two inline-flex boxes.
 fn inline_page(
     cx: &mut AppContext,
     document: DocumentId,
@@ -981,7 +977,7 @@ fn inline_text(rows: usize, rounds: usize) {
     }
     let b = boxes as f64;
     println!(
-        "| inline text: {rows} paragraphs of 4 runs + 2 inline-blocks, 400 px wide ({boxes} boxes, {lines} px tall each) | cold frame {:.2} µs / box (layout stage {:.2}), {:.0} B / box held, {:.1} k instr / box | one run's text changed: layout {:.1} µs, frame {:.1} µs, {:.2} M instr |",
+        "| inline text: {rows} paragraphs of 4 runs + 2 inline-flex boxes, 400 px wide ({boxes} boxes, {lines} px tall each) | cold frame {:.2} µs / box (layout stage {:.2}), {:.0} B / box held, {:.1} k instr / box | one run's text changed: layout {:.1} µs, frame {:.1} µs, {:.2} M instr |",
         cold.0 / b,
         cold.1 / b,
         cold.2 as f64 / b,

@@ -9,7 +9,7 @@
 ```rust
 use nana_ui::runtime::{
     AppContext, ComponentView, ExtensionRegistrar, FrameworkError, MutationQueue, NodeKind,
-    RegisterableComponent, SemanticSpec, StableNodeId, TextContent, UiExtension, UiWorld,
+    RegisterableComponent, StableNodeId, TextContent, UiExtension, UiWorld,
 };
 
 #[derive(Clone, PartialEq)]
@@ -34,12 +34,6 @@ impl ComponentView for PreviewCard {
 impl RegisterableComponent for PreviewCard {
     const TYPE_ID: &'static str = "app.preview-card";
     const TAGS: &'static [&'static str] = &["preview-card"];
-
-    fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        Self {
-            title: spec.display_label().to_owned(),
-        }
-    }
 }
 
 struct PreviewCards;
@@ -61,9 +55,9 @@ fn install(cx: &mut AppContext) -> Result<(), FrameworkError> {
 
 `ComponentView` 要求 `Clone + PartialEq + Send`。`project` 读到的每个字段都要参与相等比较：相等的写入会被跳过。`project` 如果读共享的内部可变状态，或者往别的组件的节点上打补丁，加上 `const ALWAYS_REPROJECT: bool = true;`。
 
-`RegisterableComponent` 给出类型 id、标签，以及从 `SemanticSpec` 构造的 `from_semantic`。`install` 里调用 `ExtensionRegistrar::register_component`。额外标签用 `register_component_alias`。指针和键盘激活用 `register_activation`，不要去改 `activate_node`。
+`RegisterableComponent` 给出类型 id 与标签元数据。`install` 里调用 `ExtensionRegistrar::register_component`。额外标签用 `register_component_alias`。指针和键盘激活用 `register_activation`，不要去改 `activate_node`。
 
-Rust 用 `create_component` 按类型建节点。按标签构造解析同一张表。tag 等于 `ComponentTypeId` 去掉 `nana.` 前缀：`nana.preview-card` 对应 `preview-card`。和 HTML 同语义就用原生标签（`button`、`table` / `tr` / `td`）。语义不同就换名：`search-dropdown`，不是 HTML `<search>`。没登记、也不是已知 HTML 的 tag 会报错，不会当成布局盒。
+Rust 用 `create_component` 按类型建节点。tag 解析同一张表，等于 `ComponentTypeId` 去掉 `nana.` 前缀：`nana.preview-card` 对应 `preview-card`。和 HTML 同语义就用原生标签（`button`、`table` / `tr` / `td`）。语义不同就换名：`search-dropdown`，不是 HTML `<search>`。没登记、也不是已知 HTML 的 tag 会报错，不会当成布局盒。
 
 ## 事件名单和 GPU 槽
 
@@ -88,20 +82,11 @@ mutations.set_custom_render(
 
 发布用的 `dist` 档是 `panic = "abort"`。工厂里的 panic 会直接终止进程，不要把它当成可恢复的错误。也不支持把控件做成动态加载的 dylib。
 
-## 用不到的绑定器可以不链接
+## 未用到的内置控件自动摇树裁剪
 
-`AppContext::new()` 会登记全部内置控件的按标签构造器。只从 Rust 类型、`view!` 或 `.vue` 建树时，用精简模式：
+从 Rust 类型、`view!` 或 `.vue` 建树时，内置控件不再携带按标签构造的绑定器；`AppContext::new()` 默认只在首次创建某类控件时按需安装其行为。未创建的内置控件不会被链接进最终二进制（`AppContext::typed()` 与 `RuntimeDocument::typed(document)` 仅保留为兼容别名）。
 
-```rust
-impl nana_ui::ApplicationState for App {
-    const BUILTINS: nana_ui::runtime::BuiltinComponents =
-        nana_ui::runtime::BuiltinComponents::Typed;
-}
-```
-
-不经过宿主时用 `AppContext::typed()`、`RuntimeDocument::typed(document)`。模式必须是编译期常量，运行时再选会把两套都链接进来。精简模式下按标签构造内置控件返回 `FrameworkError::InvalidComponentType`。
-
-release、strip 之后：最小无头程序从 5.40 MB 到 2.28 MB；托管窗口 `examples/reactive-sfc` 从 35.48 MB 到 33.42 MB。托管体积主要在 GPU、文字和内置字体。
+在 `[profile.dist]`（`opt-level = "z"`、fat LTO、`panic = "abort"`、strip）与预编译着色器下，托管窗口 `examples/reactive-sfc` 的发布体积为 `5.56 MiB`（`5,835,088 B`）。剩余体积主要在 GPU、文字和内置字体。
 
 ## 接下来
 

@@ -595,36 +595,15 @@ Each component's signals (reads, writes, passed out, folded or not) and each bin
 
 Static dependencies are currently **only verified in debug. They are not used to skip runtime tracking**: rerunning a node whose "value did not change" costs about 70 ns in total. Dependency tracking is only part of that. Release correctness is not staked on a token scan. The tests of `examples/reactive-sfc` assert that the number of verification failures is 0.
 
-## Control-level tree shaking: `BuiltinComponents::Typed`
+## Control-level tree shaking (on-demand registration)
 
-`AppContext::new()` registers all 91 built-in controls. Each registration carries a binder that "constructs this control from tag and attributes" and a reprojection function. So whether or not the program uses them, the code of every control is linked in. Programs that create controls only from Rust types (`mount`, declarative views, `.vue`) do not need these binders. They can switch to the lean mode:
+`AppContext::new()` and `RuntimeDocument::new(document)` use on-demand registration by default: they no longer pre-register tag-based binder or reprojection tables for all built-in controls, and no compile-time `BuiltinComponents::Typed` / `ApplicationState::BUILTINS` switch is needed (`AppContext::typed()` and `RuntimeDocument::typed(document)` remain only as source-compatibility aliases for `new()`):
 
-```rust
-impl ApplicationState for App {
-    const BUILTINS: BuiltinComponents = BuiltinComponents::Typed;
-    // …
-}
-// Without a host: AppContext::typed(), RuntimeDocument::typed(document)
-```
-
-- Built-in controls register only their **identity** (type name, tag, TypeId). Nodes still carry the component type stamp as usual. Type names can still be resolved from tags.
-- Each type's behavior is written in `ComponentView::BEHAVIOR` (`TypeBehavior`: activation, assembler, activation at a point, dismissing popups, maintenance after writes, input routing hooks `TypeHooks`). It is installed when the first node of that type is created. Every creation path goes through this step (`stamp_component_type`, `install_view` for composite controls, `finish_semantic_binding` for binding by tag). For types the program never created, none of this code is referenced anywhere. Input routing calls subsystems through `hooked!`. When a hook is not installed, the result is the same as when the document has no such node.
+- Built-in controls register only static identities and tag metadata in `component_descriptors::BUILTIN_COMPONENT_IDS`. Nodes still carry the component type stamp as usual, and `ComponentTypeId` can still be resolved from tags.
+- Each type's behavior is written in `ComponentView::BEHAVIOR` (`TypeBehavior`: activation, assembler, activation at a point, dismissing popups, maintenance after writes, input routing hooks `TypeHooks`). It is installed when the first node of that type is created. Every creation path goes through this step (`stamp_component_type`, `install_view` for composite controls). For types the program never created, none of this code is referenced anywhere. Input routing calls subsystems through `hooked!`. When a hook is not installed, the result is the same as when the document has no such node.
 - The central paths (pointer and key dispatch, commit, the frame loop's animation step, focus and hover, accessibility actions) name no method that belongs to one control. They write `via!(self.method(..))`, which asks the table of routed calls (`TypeHooks::calls`, a `RoutedCalls`); each entry is named after the `AppContext` method it stands for. A type calls its own function in `framework/routes.rs` from `BEHAVIOR.hooks`, which fills the entries it needs with `route!`. An entry not filled answers `Absent` (`Ok(false)`, `None`, `Ok(())`, an empty list). That is what the method itself answers for a document without such a node. A new central call into one control takes three steps: an entry in `routed_calls!`, the method in that type's function in `routes.rs`, and `via!` at the call. A host aligns its title bars with the maximized state through `AppContext::sync_title_bars_maximized` and no longer names `AppTitleBar` itself.
 - Two tests in `routes.rs` hold the table: every entry has a type that brings it (or that feature is dead for every program); and a form of text, an input and a button brings none.
-- Measured (2026-11-11, `examples/reactive-sfc`, fat LTO, `codegen-units = 1`, `panic = "abort"`, stripped, aarch64 macOS): the minimal window 16.52 MiB → 15.80 MiB. Code whose symbols name a control type the program never creates 550 KiB → 61 KiB. What is left is mostly the chart pipeline in the painter (15.6 KiB) and the tooltip (4.5 KiB: any control can carry one, so it cannot be cut away).
-- The mode must be fixed at compile time: `ApplicationState::BUILTINS` is an associated constant. The host chooses by the constant. The other branch is removed in release. Choosing at runtime would link both modes in.
-- In the lean mode, constructing a built-in control by tag (`bind_semantic`) returns `FrameworkError::InvalidComponentType`. Hosts that construct controls by tag keep using the full mode.
-
-Measured (release, after strip):
-
-| Program | Full | Lean | Saved |
-| --- | --- | --- | --- |
-| Minimal headless program (a column of text and a button) | 5.40 MB | 2.28 MB | 3.12 MB (-58%) |
-| Managed window application `examples/reactive-sfc` | 35.48 MB | 33.42 MB | 2.06 MB (-5.8%) |
-
-The size of a managed application comes mostly from GPU, text, and built-in fonts. Controls are only a small part.
-
-Verification: `NANA_TEST_TYPED_BUILTINS=1 cargo test -p nana-ui-runtime` makes `AppContext::new()` in this crate's unit tests return a lean context (this exists only under `cfg(test)`). Tests that need construction by tag are skipped. When a creation path forgets to install behavior, the corresponding test fails in this mode.
+- Measured (aarch64 macOS, `[profile.dist]` with `opt-level = "z"`, fat LTO, `codegen-units = 1`, `panic = "abort"`, stripped): together with on-demand registration, primary graphics backend isolation, and precompiled shaders, `examples/reactive-sfc` dropped from the 2026-11-11 baseline of `15.80 MiB` to `5.56 MiB` (`5,835,088 B`; see [Resource budgets](https://github.com/sena-nana/NanaUI/blob/main/docs/en/reference/resource-budgets.md)). Most of the remaining size of a hosted application comes from GPU, text, and built-in fonts.
 
 ## Semantics
 
@@ -740,7 +719,7 @@ fn page() -> impl IntoView {
 
 Apart from script logic (JS has to become Rust), the template, reactivity, and stylesheets all line up line by line. In L3, stylesheets are compiled at build time; see "Stylesheets" for the syntax. Three differences from Vue templates remain:
 
-- `each` and `when` each bring a container `Stack`, whereas Vue's `v-for` / `v-if` produce sibling nodes directly. Style the container with classes (`<Block class>` / `.class(..)`). There is no need to wrap another sized box around it. It is not a pass-through like `display: contents`: in the Runtime, children of `contents` take the parent container out of the layout cache, so the whole column of rows would be remeasured every time. Long lists cannot afford that. The container is also where children are reordered when `each` rows are added or removed and when `when` branches switch.
+- `each` and `when` each bring a container `Stack`, whereas Vue's `v-for` / `v-if` produce sibling nodes directly. Style the container with classes (`<Block class>` / `.class(..)`). There is no need to wrap another sized box around it. NanaUI's retained tree does not support CSS `display: contents` boxless pass-through: the `Stack` container preserves the parent's layout cache and serves as the child-reordering boundary when `each` rows are added or removed and when `when` branches switch.
 - `.get()` / `.with()` in expressions cannot be dropped, because stable Rust cannot implement `Fn` for signals. Only a lone signal can omit them. For example `"{count}"`, `disabled={busy}`.
 - Component functions are not lazy. Ownership is divided only at three kinds of scope boundary: mounts, rows, and branches.
 
@@ -790,7 +769,7 @@ Items decided against on the same evidence:
 - **Row template cloning**: building views is only a quarter of mount time, and component construction and projection still happen for every row. Cloning the static part would save less than a tenth.
 - **Mounting across frames**: mounting 5,000 rows takes about 40 ms, which is two or three frames. But the right approach for long lists is `each_virtual` (50,000 rows in 2.4 ms). Splitting across frames would only show the user a half-mounted list.
 - **Making static text `Cow<'static, str>`**: a text node is 1,804 B resident. An empty `Stack` is 1,778 B. The text itself is only about 26 B. Not worth changing every control's API.
-- A separate control registration list is not needed either: `BuiltinComponents::Typed` already registers by the types actually used.
+- A separate control registration list is not needed either: components are already registered on demand and tree-shaken by the Rust types actually used.
 
 A single-point update costs about 0.15 µs more than a hand-written `update_component`. That is the cost of signal bookkeeping. When many nodes change at once, there is only one commit, which is actually faster.
 

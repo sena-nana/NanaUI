@@ -74,9 +74,9 @@ When only static text in a `.vue` file changes, write `Compiler::new(..).hot(deb
 
 Conditional classes are about 11% slower to toggle than a hand-written `FieldWrite`: a rerun has to compute the class mask and look up the `StyleSite`. In debug, `hot(true)` adds one table read per purely static text node. Measured on its own in release, that generated code adds 1 effect and about 315–330 B resident per row, and mounts about 3% slower. The build script compiles 9 `.vue` files in about 0.25 s.
 
-When building trees only from Rust types, `view!` or `.vue`, `BuiltinComponents::Typed` lets you drop the binders that construct by tag. For size figures see [Extending controls](https://github.com/sena-nana/NanaUI/blob/main/docs/guide/components/registry.md).
+When building trees only from Rust types, `view!` or `.vue`, built-in controls are registered on demand by default and unused controls are tree-shaken automatically with no extra configuration. For size figures see [Extending controls](https://github.com/sena-nana/NanaUI/blob/main/docs/en/guide/components/registry.md).
 
-The contract and measurement conditions are in [Declarative views](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/reactive-view.md).
+The contract and measurement conditions are in [Declarative views](https://github.com/sena-nana/NanaUI/blob/main/docs/en/reference/reactive-view.md).
 
 ## Next steps
 
@@ -91,6 +91,6 @@ The contract and measurement conditions are in [Declarative views](https://githu
   </a>
   <a class="next-step" href="/guide/components/registry">
     <p class="next-step-link">Extending controls</p>
-    <p class="next-step-caption">Where the size savings of the slim mode come from.</p>
+    <p class="next-step-caption">On-demand registration and where distribution size comes from.</p>
   </a>
 </div>

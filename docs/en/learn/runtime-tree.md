@@ -74,7 +74,7 @@ Every change to the tree is expressed as a variant of the `UiMutation` enum (`cr
 
 ### 4. `ComponentRegistry`: one registry for built-in and extension controls
 
-`ComponentRegistry` (`crates/nana-ui-runtime/src/component_registry.rs:249`) maintains three indexes: `by_id`, `by_tag`, and `by_rust`. Built-in controls and extension controls that an application registers with `register_component` all implement the same `RegisterableComponent` trait (`:212`), which provides `TYPE_ID`, `TAGS`, `from_semantic`, and the optional `reconcile_semantic` / `project_semantic` / `finish_semantic`. `UiWorld` also maintains `nodes_by_component: HashMap<ComponentTypeId, HashSet<StableNodeId>>` (`world.rs:894`), which keeps global queries by component type at $O(1)$.
+`ComponentRegistry` (`crates/nana-ui-runtime/src/component_registry.rs:119`) maintains three indexes: `by_id`, `by_rust`, and `by_tag`. Static identities and tag metadata for built-in controls come from `component_descriptors::BUILTIN_COMPONENT_IDS`, while extension controls registered with `register_component` implement the `RegisterableComponent` trait (`:113`), providing `TYPE_ID` and `TAGS`; each type's behavior (`ComponentView::BEHAVIOR`) is installed on demand when first created. `UiWorld` also maintains `nodes_by_component: HashMap<ComponentTypeId, HashSet<StableNodeId>>` (`world.rs:894`), which keeps global queries by component type at $O(1)$.
 
 ### 5. `DirtyMask`, `SystemWork`, and the convergence order of `RuntimeDocument::flush`
 
