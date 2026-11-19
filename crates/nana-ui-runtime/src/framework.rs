@@ -1068,7 +1068,11 @@ pub struct AppContext {
     /// Opt-in reproject when installed metrics change, keyed by component type.
     metrics_reproject_types: HashMap<TypeId, ChildReprojectFn, crate::BuildIdHasher>,
     /// Opt-in reproject when the installed component recipes change, keyed by type.
-    recipe_reproject_types: HashMap<TypeId, ChildReprojectFn, crate::BuildIdHasher>,
+    recipe_reproject_types: HashMap<
+        TypeId,
+        (ChildReprojectFn, nana_ui_core::ThemeDependencyMask),
+        crate::BuildIdHasher,
+    >,
     /// Opt-in reproject when the reduce-motion preference changes, keyed by type.
     reduced_motion_reproject_types: HashMap<TypeId, ChildReprojectFn, crate::BuildIdHasher>,
     /// Opt-in reproject when the host's text backend changes, keyed by type.
@@ -2274,6 +2278,7 @@ impl AppContext {
         }
         self.collect_child_reprojects();
         self.drain_child_reprojects()?;
+        self.drain_scope_reprojects()?;
         self.drain_modal_syncs()?;
         if !menu_focus.is_empty() {
             self.hand_over_menu_focus(menu_focus)?;
@@ -2354,9 +2359,53 @@ impl AppContext {
         Ok(ran)
     }
 
-    /// Same shape as [`Self::reproject_metrics_views`], different trigger.
-    fn reproject_recipe_views(&mut self) -> Result<(), FrameworkError> {
-        for (id, reproject) in self.collect_reproject_targets(&self.recipe_reproject_types) {
+    /// Reproject metrics/recipe views queued by `ThemeScope` or per-document theme changes (#104).
+    fn drain_scope_reprojects(&mut self) -> Result<(), FrameworkError> {
+        let targets = self.world.take_scope_reprojects();
+        if targets.is_empty()
+            || (self.metrics_reproject_types.is_empty() && self.recipe_reproject_types.is_empty())
+        {
+            return Ok(());
+        }
+        for (id, changed) in targets {
+            let Some(type_id) = self.views.get(&id).map(|view| view.as_ref().type_id()) else {
+                continue;
+            };
+            let metrics_hit = changed.intersects(
+                nana_ui_core::ThemeDependencyMask::METRICS
+                    .union(nana_ui_core::ThemeDependencyMask::TYPOGRAPHY_ANY),
+            );
+            if metrics_hit && let Some(&reproject) = self.metrics_reproject_types.get(&type_id) {
+                reproject(self, id)?;
+                continue;
+            }
+            if let Some(&(reproject, mask)) = self.recipe_reproject_types.get(&type_id)
+                && (mask.is_empty() || mask.intersects(changed))
+            {
+                reproject(self, id)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn reproject_recipe_views_for(
+        &mut self,
+        changed: nana_ui_core::ThemeDependencyMask,
+    ) -> Result<(), FrameworkError> {
+        if self.recipe_reproject_types.is_empty() || changed.is_empty() {
+            return Ok(());
+        }
+        let targets: Vec<(StableNodeId, ChildReprojectFn)> = self
+            .views
+            .iter()
+            .filter_map(|(&id, view)| {
+                self.recipe_reproject_types
+                    .get(&view.as_ref().type_id())
+                    .filter(|(_, mask)| mask.is_empty() || mask.intersects(changed))
+                    .map(|&(reproject, _)| (id, reproject))
+            })
+            .collect();
+        for (id, reproject) in targets {
             if self.views.contains_key(&id) {
                 reproject(self, id)?;
             }
@@ -2469,6 +2518,49 @@ impl AppContext {
         self.install_theme(theme)
     }
 
+    /// Install or clear a per-document root theme override (Issue #104).
+    ///
+    /// Passing `Some(theme)` scopes `document` to `theme` independently of all
+    /// other documents; passing `None` reverts `document` to the world theme.
+    pub fn set_document_theme(
+        &mut self,
+        document: DocumentId,
+        theme: Option<Arc<nana_ui_core::CompiledTheme>>,
+    ) -> Result<bool, FrameworkError> {
+        let changed = self.world.set_document_theme(document, theme);
+        if changed.is_empty() {
+            return Ok(false);
+        }
+        self.drain_scope_reprojects()?;
+        let _ = self.sync_keyframe_animations(true);
+        Ok(true)
+    }
+
+    /// On-demand theme inspection for `id`: effective theme, active scope
+    /// chain, color overrides, dependency mask, and last invalidation trace (#109).
+    pub fn inspect_node_theme(&self, id: StableNodeId) -> Option<crate::ThemeNodeInspection> {
+        self.world.inspect_node_theme(id)
+    }
+
+    /// Like [`Self::inspect_node_theme`], resolving package provenance against `registry` (#109).
+    pub fn inspect_node_theme_with_registry(
+        &self,
+        id: StableNodeId,
+        registry: Option<&nana_ui_core::ThemeRegistry>,
+    ) -> Option<crate::ThemeNodeInspection> {
+        self.world.inspect_node_theme_with_registry(id, registry)
+    }
+
+    /// Most recent theme or scope invalidation summary recorded on this context (#109).
+    pub fn last_theme_invalidation(&self) -> Option<&crate::LastThemeInvalidation> {
+        self.world.last_theme_invalidation()
+    }
+
+    /// Aggregate count of live nodes partitioned by tracked theme dependency category (#109).
+    pub fn theme_dependency_summary(&self) -> crate::ThemeDependencySummary {
+        self.world.theme_dependency_summary()
+    }
+
     /// Install Style Model tokens, including backdrop alphas on Surface /
     /// Background / Titlebar.
     ///
@@ -2507,12 +2599,21 @@ impl AppContext {
         if *self.world.installed_theme() == *theme {
             return Ok(false);
         }
-        let metrics_changed = !self.world.theme_metrics().same_layout(&theme.metrics())
-            || self.world.theme().spacing() != theme.spacing()
-            || self.world.theme().typography() != theme.typography()
-            || self.world.theme().border() != theme.border();
-        let recipes_changed = self.world.theme().recipes() != theme.recipes()
-            || self.world.theme().border() != theme.border();
+        let changed = nana_ui_core::ThemeCategoryGenerations::diff_themes(
+            self.world.installed_theme(),
+            &theme,
+        );
+        let metrics_changed = changed.intersects(
+            nana_ui_core::ThemeDependencyMask::METRICS
+                .union(nana_ui_core::ThemeDependencyMask::TYPOGRAPHY_ANY),
+        );
+        let border_changed = self.world.installed_theme().border() != theme.border();
+        let recipe_mask = if border_changed {
+            changed.union(nana_ui_core::ThemeDependencyMask::RECIPE_ANY)
+        } else {
+            changed
+        };
+        let recipes_changed = recipe_mask.intersects(nana_ui_core::ThemeDependencyMask::RECIPE_ANY);
         let mut queue = MutationQueue::new();
         queue.set_theme_tokens(Arc::clone(&theme));
         self.world.commit(queue)?;
@@ -2527,7 +2628,7 @@ impl AppContext {
             self.reproject_metrics_views()?;
         }
         if recipes_changed {
-            self.reproject_recipe_views()?;
+            self.reproject_recipe_views_for(recipe_mask)?;
         }
         let _ = self.sync_keyframe_animations(true);
         Ok(true)

@@ -6,6 +6,7 @@
 //! Resolution is [`CalcExpr::resolve_with_fonts`]; the layout engine only
 //! consumes px.
 
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::fmt;
@@ -17,7 +18,7 @@ use std::sync::{Mutex, OnceLock};
 use super::{FontSizeContext, LengthAtom, LengthSpec, ViewportAxes, ViewportAxis};
 
 /// Binary operator inside [`CalcExpr`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CalcBinOp {
     Add,
     Sub,
@@ -26,7 +27,7 @@ pub enum CalcBinOp {
 }
 
 /// Nested calc / min / max / clamp expression. Children are boxed.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum CalcExpr {
     Number(f32),
     Px(f32),
@@ -99,6 +100,19 @@ impl CalcExprRef {
 impl fmt::Debug for CalcExprRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.inner().fmt(f)
+    }
+}
+
+impl Serialize for CalcExprRef {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.inner().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for CalcExprRef {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let expr = CalcExpr::deserialize(deserializer)?;
+        Ok(intern_calc(Box::new(expr)))
     }
 }
 

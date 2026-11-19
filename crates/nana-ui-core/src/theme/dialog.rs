@@ -40,9 +40,11 @@ use crate::box_layout::LengthSpec;
 use crate::motion::Easing;
 use crate::style_model::SemanticColorRole;
 
+use serde::{Deserialize, Serialize};
+
 /// One transition of a dialog's entrance and exit: how long, along which
 /// curve. CSS `transition: <property> <duration> <timing-function>`.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct DialogTransition {
     pub millis: u16,
     pub easing: Easing,
@@ -61,7 +63,7 @@ impl DialogTransition {
 /// How a dialog comes and goes: the scrim fades, and the card fades and
 /// moves into place from a little above, a little smaller. The exit plays
 /// the same transitions back. With reduced motion on, none of it plays.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct DialogMotion {
     /// The scrim's fade.
     pub scrim: DialogTransition,
@@ -101,7 +103,7 @@ impl Default for DialogMotion {
 }
 
 /// One section of a dialog card's insets: its CSS `padding`.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct DialogInsets {
     pub top: f32,
     pub bottom: f32,
@@ -125,7 +127,7 @@ impl DialogInsets {
 }
 
 /// Where a dialog card's dividers start and end.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DialogDividerInset {
     /// Edge to edge of the card.
     #[default]
@@ -137,7 +139,7 @@ pub enum DialogDividerInset {
 }
 
 /// Where a dialog card stands in its scrim, up and down.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DialogAlign {
     /// [`DialogRecipe::top`] from the scrim's top: the card grows downward
     /// as its content does.
@@ -150,7 +152,7 @@ pub enum DialogAlign {
 }
 
 /// The dialog card's placement in its scrim and how it is divided.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct DialogRecipe {
     /// Distance from the top of the scrim to the card, when [`Self::align`]
     /// is [`DialogAlign::Top`]. A card too tall to stand there moves up,

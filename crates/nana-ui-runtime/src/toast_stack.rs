@@ -131,8 +131,8 @@ impl ToastStack {
         }
     }
 
-    fn effective_style(&self, world: &UiWorld) -> NodeStyle {
-        let recipe = world.theme().recipes().toast();
+    fn effective_style(&self, id: StableNodeId, world: &UiWorld) -> NodeStyle {
+        let recipe = world.node_theme(id).recipes().toast();
         let mut style = self.style.clone();
         let layout = Arc::make_mut(&mut style.layout);
         // A flex column: `align_items` places the toasts across it (the
@@ -180,6 +180,10 @@ impl ComponentView for ToastStack {
         true
     }
 
+    fn recipe_dependency_mask() -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::RECIPE_TOAST
+    }
+
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         let label = self
             .label
@@ -190,7 +194,7 @@ impl ComponentView for ToastStack {
             id,
             world,
             mutations,
-            &self.effective_style(world),
+            &self.effective_style(id, world),
             // Only the toasts take the pointer: the gaps and the room above
             // them reach whatever is underneath.
             InteractionState {
@@ -252,13 +256,17 @@ impl ComponentView for ToastSlot {
         true
     }
 
+    fn recipe_dependency_mask() -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::RECIPE_TOAST
+    }
+
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         let mut style = NodeStyle::default();
         let layout = Arc::make_mut(&mut style.layout);
         layout.direction = Some(FlexDirection::Column);
         // What scales is the slot: its entrance, exit and change in place
         // grow out of the point the theme names.
-        layout.transforms.origin = Some(world.theme().recipes().toast().motion.origin);
+        layout.transforms.origin = Some(world.node_theme(id).recipes().toast().motion.origin);
         // As wide as its toast, never wider than the stack: the stack's
         // alignment places it.
         layout.width = Some(LengthSpec::FitContent);

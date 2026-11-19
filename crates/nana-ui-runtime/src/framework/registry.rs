@@ -101,7 +101,8 @@ impl AppContext {
             self.metrics_reproject_types.insert(type_id, view.reproject);
         }
         if view.recipe_reproject {
-            self.recipe_reproject_types.insert(type_id, view.reproject);
+            self.recipe_reproject_types
+                .insert(type_id, (view.reproject, view.recipe_dependency_mask));
         }
         if view.reduced_motion_reproject {
             self.reduced_motion_reproject_types
@@ -191,6 +192,7 @@ pub(super) struct ViewType {
     child_reproject: bool,
     metrics_reproject: bool,
     recipe_reproject: bool,
+    recipe_dependency_mask: nana_ui_core::ThemeDependencyMask,
     reduced_motion_reproject: bool,
     text_backend_reproject: bool,
     hover_tracking: bool,
@@ -211,6 +213,7 @@ impl ViewType {
             child_reproject: C::wants_child_reproject(),
             metrics_reproject: C::wants_metrics_reproject(),
             recipe_reproject: C::wants_recipe_reproject(),
+            recipe_dependency_mask: C::recipe_dependency_mask(),
             reduced_motion_reproject: C::wants_reduced_motion_reproject(),
             text_backend_reproject: C::wants_text_backend_reproject(),
             hover_tracking: C::wants_hover_tracking(),

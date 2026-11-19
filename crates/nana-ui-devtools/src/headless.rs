@@ -30,9 +30,10 @@ use crate::agent::pixels::{pixel_diff, pixel_stats};
 use crate::agent::runtime::button_mask;
 use crate::agent::{
     A11yFilter, AccessibilityDumpNode, AgentError, HitDump, InspectDump, PixelDiff, PixelStats,
-    SceneProbeDump, Target, accessibility_dump, document_hit_test, document_inspect,
-    document_scene_probe, document_set_field, filter_accessibility_nodes, node_center_in,
-    resolve_target_in,
+    SceneProbeDump, Target, ThemeInspectDump, ThemeInvalidationDump, ThemePackageLoadDump,
+    accessibility_dump, document_hit_test, document_inspect, document_load_theme_package,
+    document_scene_probe, document_set_field, document_theme_inspect, document_theme_invalidation,
+    filter_accessibility_nodes, node_center_in, resolve_target_in,
 };
 use crate::offscreen::{FORMAT, Size, read_png, readback, write_painter_png};
 
@@ -43,6 +44,7 @@ const IMAGE_DEADLINE: Duration = Duration::from_secs(35);
 pub struct HeadlessHost<P: RuntimeProgram> {
     runtime: HeadlessRuntime<P>,
     painter: SceneWgpuPainter,
+    theme_registry: nana_ui_core::ThemeRegistry,
 }
 
 impl<P: RuntimeProgram> Deref for HeadlessHost<P> {
@@ -70,7 +72,11 @@ impl<P: RuntimeProgram> HeadlessHost<P> {
         let painter = SceneWgpuPainter::try_new(&gpu, FORMAT)
             .map_err(|error| AgentError(error.to_string()))?;
         let runtime = HeadlessRuntime::new(gpu, primary, geometry, options).map_err(AgentError)?;
-        Ok(Self { runtime, painter })
+        Ok(Self {
+            runtime,
+            painter,
+            theme_registry: nana_ui_core::ThemeRegistry::default(),
+        })
     }
 
     pub fn runtime(&mut self) -> &mut HeadlessRuntime<P> {
@@ -145,6 +151,55 @@ impl<P: RuntimeProgram> HeadlessHost<P> {
             .with_document(id, |document| document_inspect(document, node))
             .map_err(|error| AgentError(error.to_string()))?
             .ok_or_else(|| AgentError(format!("window {} has no document", id.0)))?
+    }
+
+    /// Inspect `target`'s resolved theme, active scope chain, color overrides,
+    /// dependency mask, and package provenance in `id` (#109).
+    pub fn theme_inspect(
+        &self,
+        id: WindowId,
+        target: &Target,
+    ) -> Result<ThemeInspectDump, AgentError> {
+        let node = self.resolve_target(id, target)?;
+        self.runtime
+            .with_document(id, |document| {
+                document_theme_inspect(document, node, Some(&self.theme_registry))
+            })
+            .map_err(|error| AgentError(error.to_string()))?
+            .ok_or_else(|| AgentError(format!("window {} has no document", id.0)))?
+    }
+
+    /// Most recent theme or scope invalidation summary recorded on `id`'s document (#109).
+    pub fn theme_invalidation(
+        &self,
+        id: WindowId,
+    ) -> Result<Option<ThemeInvalidationDump>, AgentError> {
+        self.runtime
+            .with_document(id, document_theme_invalidation)
+            .map_err(|error| AgentError(error.to_string()))?
+            .ok_or_else(|| AgentError(format!("window {} has no document", id.0)))
+    }
+
+    /// Parse, validate, and register a JSON `ThemePackage` fail-closed; apply it
+    /// to `id`'s document and re-present when `apply` is true (#109).
+    pub fn load_theme_package(
+        &mut self,
+        id: WindowId,
+        json: &str,
+        apply: bool,
+    ) -> Result<ThemePackageLoadDump, AgentError> {
+        let registry = &mut self.theme_registry;
+        let result = self
+            .runtime
+            .with_document_mut(id, |document| {
+                document_load_theme_package(document, registry, json, apply)
+            })
+            .map_err(|error| AgentError(error.to_string()))?
+            .ok_or_else(|| AgentError(format!("window {} has no document", id.0)))??;
+        if apply {
+            self.runtime.present(id);
+        }
+        Ok(result)
     }
 
     /// Present `id` once more, then paint it over `clear` and read it back,

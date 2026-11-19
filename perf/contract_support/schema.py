@@ -85,6 +85,7 @@ THEME_WORKLOADS = {
     "accent-only",
     "density",
     "head-scope",
+    "scope-patch",
 }
 
 

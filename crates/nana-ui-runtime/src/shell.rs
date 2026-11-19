@@ -2311,7 +2311,7 @@ fn project_window_control(
             let mut style = window_control_style(
                 action == WindowChromeAction::Close,
                 over_media,
-                world.theme().effects(),
+                world.node_theme(id).effects(),
             );
             // Round in a capsule, so a hover fill follows its ends.
             if round {

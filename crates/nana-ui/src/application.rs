@@ -109,6 +109,10 @@ pub trait ApplicationState: Sized + 'static {
     fn theme(&self) -> Arc<CompiledTheme> {
         builtin_theme_arc(ThemeAppearance::Dark)
     }
+    /// Optional per-window theme override. See [`RuntimeProgram::theme_for`].
+    fn theme_for(&self, _id: WindowId) -> Option<Arc<CompiledTheme>> {
+        None
+    }
     /// What this process needs from its GPU backend. See
     /// [`RuntimeProgram::gpu_backend_policy`].
     fn gpu_backend_policy() -> crate::GpuBackendPolicy {
@@ -280,10 +284,10 @@ impl<State: ApplicationState> RuntimeProgram for RuntimeApplication<State> {
         let mut state = State::initialize(context)?;
         let mut window = ApplicationWindow::new();
         state.build(&mut window, context)?;
-        let _ = window
-            .document
-            .context_mut()
-            .set_theme_tokens(state.theme());
+        let theme = state
+            .theme_for(context.window_id())
+            .unwrap_or_else(|| state.theme());
+        let _ = window.document.context_mut().set_theme_tokens(theme);
         Ok((
             Self {
                 state,
@@ -318,6 +322,9 @@ impl<State: ApplicationState> RuntimeProgram for RuntimeApplication<State> {
     }
     fn theme(&self) -> Arc<CompiledTheme> {
         self.state.theme()
+    }
+    fn theme_for(&self, id: WindowId) -> Option<Arc<CompiledTheme>> {
+        self.state.theme_for(id)
     }
     fn frame_demand(&self, id: WindowId) -> FrameDemand {
         self.windows
@@ -399,10 +406,11 @@ impl<State: ApplicationState> RuntimeProgram for RuntimeApplication<State> {
         self.state
             .build(&mut window, context)
             .map_err(|error| error.to_string())?;
-        let _ = window
-            .document
-            .context_mut()
-            .set_theme_tokens(self.state.theme());
+        let theme = self
+            .state
+            .theme_for(id)
+            .unwrap_or_else(|| self.state.theme());
+        let _ = window.document.context_mut().set_theme_tokens(theme);
         self.windows.insert(id, window);
         Ok(())
     }

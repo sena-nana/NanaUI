@@ -108,6 +108,29 @@ pub mod runtime {
     /// Scene nodes whose extracted state changed.
     pub static SCENE_NODES_CHANGED: Metric =
         Metric::counter(D, 53, "runtime.extract.nodes_changed", "count");
+    /// Nodes skipped by theme dependency mask on theme/scope install (#106).
+    pub static THEME_DEPENDENCY_SKIPPED: Metric =
+        Metric::counter(D, 54, "runtime.theme.dependency_skipped", "count");
+    /// Candidate nodes whose `ResolvedStyle` stayed identical (#106).
+    pub static RESOLVED_STYLE_UNCHANGED: Metric =
+        Metric::counter(D, 55, "runtime.style.resolved_unchanged", "count");
+    /// Nodes touched only by a `MOTION_POLICY` theme delta (#106).
+    pub static THEME_MOTION_POLICY_INVALIDATIONS: Metric =
+        Metric::counter(D, 56, "runtime.theme.motion_policy_invalidations", "count");
+    /// `ThemeScope` cache hits (#104).
+    pub static THEME_SCOPE_CACHE_HITS: Metric =
+        Metric::counter(D, 57, "runtime.theme.scope_cache_hits", "count");
+    /// `ThemeScope` cache misses (#104).
+    pub static THEME_SCOPE_CACHE_MISSES: Metric =
+        Metric::counter(D, 58, "runtime.theme.scope_cache_misses", "count");
+    /// Fault: a `ThemeScope` patch failed fail-closed validation and kept the parent theme.
+    pub static THEME_SCOPE_INVALID_PATCH: EventDescriptor = EventDescriptor::new(
+        D,
+        7,
+        "runtime.theme.scope_invalid_patch",
+        Severity::Warn,
+        &[F::u64("node")],
+    );
 
     /// Fault: effects kept re-queueing each other past the round limit; the
     /// rest of the queue was dropped.

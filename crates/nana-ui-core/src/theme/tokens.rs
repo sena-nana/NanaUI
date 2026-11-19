@@ -39,7 +39,7 @@ use crate::style_model::{SemanticColor, SemanticColorRole};
 /// The four colours are *not* derived from `base`: a readable
 /// on-accent foreground is a design decision, not a formula, and light mode
 /// proves it (`on_soft` is a darker blue than `base`, `text` is white).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct AccentRamp {
     /// The accent itself.
     pub base: SemanticColor,
@@ -152,7 +152,7 @@ impl AccentRamp {
 ///
 /// Control-internal insets are [`ThemeMetrics`](super::ThemeMetrics) instead —
 /// a field's horizontal inset is a control metric, not a gap.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct SpacingTokens {
     pub xxs: f32,
     pub xs: f32,
@@ -332,7 +332,7 @@ pub enum TextWeight {
 }
 
 /// Typography tokens: the product type scale.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct TypographyTokens {
     pub hint: f32,
     pub meta: f32,
@@ -429,7 +429,7 @@ impl Default for TypographyTokens {
 /// why it is a category of its own rather than [`SpacingTokens::xxs`] wearing
 /// two hats. The focus ring's stroke and offset are geometry of the installed
 /// theme: [`crate::ThemeMetrics::focus_ring`].
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct BorderTokens {
     /// 1px rule: separators, control outlines, table grid lines.
     pub hairline: f32,
@@ -465,7 +465,7 @@ impl Default for BorderTokens {
 /// happened to have a mid-grey background got the wrong branch, and no theme
 /// could move the numbers at all. They belong to the theme, so each mode's
 /// definition states them.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct OpacityTokens {
     pub warning_soft: f32,
     pub warning_soft_hover: f32,
@@ -488,7 +488,7 @@ pub struct OpacityTokens {
 }
 
 /// Which state-layer alpha a derived role uses.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum StateLayer {
     WarningSoft,
     WarningSoftHover,
@@ -561,7 +561,7 @@ impl Default for OpacityTokens {
 /// durations were `const`s a theme could not move. Wiring them was never a
 /// rename — it was deciding which duration each token owns. This enum is that
 /// decision: the roles *are* the durations, named by what they animate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum MotionRole {
     /// Hover / pressed colour cross-fade on a control.
     HoverColor,
@@ -591,8 +591,10 @@ pub enum MotionRole {
 /// is a nice number: `EaseOutCubic` for anything settling into a new state,
 /// `EaseInOutCubic` for the symmetric open/close of a collapsing region, and
 /// the LiliaUI `cubic-bezier(0.2, 0.8, 0.2, 1)` for a menu popping in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EasingRole {
+    /// Linear timing: indeterminate progress, spinners.
+    Linear,
     /// State transitions that settle into place: hover colour, overlay fade.
     Standard,
     /// Symmetric open / close: sidebar and workspace region collapse.
@@ -605,7 +607,7 @@ pub enum EasingRole {
 ///
 /// Durations are milliseconds so the struct stays `Copy` and serialisable;
 /// [`Self::duration`] hands back a [`Duration`].
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct MotionTokens {
     pub hover_color_ms: u16,
     pub overlay_fade_ms: u16,
@@ -619,9 +621,15 @@ pub struct MotionTokens {
     /// The share of an [`MotionRole::Attention`] flash held at full tint
     /// before it fades, `0.0..=1.0`.
     pub attention_hold: f32,
+    #[serde(default = "default_linear_easing")]
+    pub linear_easing: Easing,
     pub standard_easing: Easing,
     pub expand_easing: Easing,
     pub emphasized_easing: Easing,
+}
+
+const fn default_linear_easing() -> Easing {
+    Easing::Linear
 }
 
 impl MotionTokens {
@@ -637,6 +645,7 @@ impl MotionTokens {
         loading_spin_ms: 800,
         attention_ms: 1500,
         attention_hold: 0.2,
+        linear_easing: Easing::Linear,
         standard_easing: Easing::EaseOutCubic,
         expand_easing: Easing::EaseInOutCubic,
         emphasized_easing: Easing::MENU_POP,
@@ -662,6 +671,7 @@ impl MotionTokens {
 
     pub const fn easing(self, role: EasingRole) -> Easing {
         match role {
+            EasingRole::Linear => self.linear_easing,
             EasingRole::Standard => self.standard_easing,
             EasingRole::Expand => self.expand_easing,
             EasingRole::Emphasized => self.emphasized_easing,
@@ -690,16 +700,22 @@ impl Default for MotionTokens {
 }
 
 /// Which elevation step a surface sits at.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ElevationRole {
-    /// Menus, popovers, hover cards — a surface lifted off the page.
+    /// Popovers, hover cards — a surface lifted off the page.
     Surface,
     /// Modal frames — a surface lifted off everything, over a scrim.
     Overlay,
+    /// Context and action menus anchored in the workspace.
+    Menu,
+    /// Dropdown / select option popups.
+    Dropdown,
+    /// Application menu bar drop-down panels.
+    MenuBar,
 }
 
 /// One drop shadow, backend-neutral. Mirrors CSS `box-shadow`.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ShadowToken {
     pub color: SemanticColor,
     pub offset_x: f32,
@@ -709,6 +725,18 @@ pub struct ShadowToken {
     pub inset: bool,
 }
 
+const fn default_menu_shadow() -> ShadowToken {
+    EffectTokens::DARK.menu
+}
+
+const fn default_dropdown_shadow() -> ShadowToken {
+    EffectTokens::DARK.dropdown
+}
+
+const fn default_menu_bar_shadow() -> ShadowToken {
+    EffectTokens::DARK.menu_bar
+}
+
 /// Effect tokens: the elevation ramp, and the backdrop full-window media
 /// sits on.
 ///
@@ -716,10 +744,16 @@ pub struct ShadowToken {
 /// `ComponentElevation::surface_shadow` and as a `background.r > 0.5`
 /// brightness sniff inside the modal-frame geometry. Both were the theme
 /// deciding something in a place the theme could not reach.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct EffectTokens {
     pub surface: ShadowToken,
     pub overlay: ShadowToken,
+    #[serde(default = "default_menu_shadow")]
+    pub menu: ShadowToken,
+    #[serde(default = "default_dropdown_shadow")]
+    pub dropdown: ShadowToken,
+    #[serde(default = "default_menu_bar_shadow")]
+    pub menu_bar: ShadowToken,
     /// The near-opaque dark laid over the window behind full-window media
     /// (an image viewer). Dark in every mode: an image is judged against
     /// dark, and a light theme's page colour would wash it out.
@@ -804,6 +838,30 @@ impl EffectTokens {
             spread_radius: 0.0,
             inset: false,
         },
+        menu: ShadowToken {
+            color: SemanticColor::rgba(0.0, 0.0, 0.0, 0.55),
+            offset_x: 0.0,
+            offset_y: 4.0,
+            blur_radius: 18.0,
+            spread_radius: 0.0,
+            inset: false,
+        },
+        dropdown: ShadowToken {
+            color: SemanticColor::rgba(0.0, 0.0, 0.0, 0.48),
+            offset_x: 0.0,
+            offset_y: 8.0,
+            blur_radius: 16.0,
+            spread_radius: 0.0,
+            inset: false,
+        },
+        menu_bar: ShadowToken {
+            color: SemanticColor::rgba(0.0, 0.0, 0.0, 0.4),
+            offset_x: 0.0,
+            offset_y: 4.0,
+            blur_radius: 16.0,
+            spread_radius: 0.0,
+            inset: false,
+        },
         media_scrim: MEDIA_SCRIM,
         media_foreground: MEDIA_FOREGROUND,
         media_hover_alpha: MEDIA_HOVER_ALPHA,
@@ -831,6 +889,30 @@ impl EffectTokens {
             spread_radius: 0.0,
             inset: false,
         },
+        menu: ShadowToken {
+            color: SemanticColor::rgba(0.0, 0.0, 0.0, 0.30),
+            offset_x: 0.0,
+            offset_y: 4.0,
+            blur_radius: 14.0,
+            spread_radius: 0.0,
+            inset: false,
+        },
+        dropdown: ShadowToken {
+            color: SemanticColor::rgba(0.0, 0.0, 0.0, 0.24),
+            offset_x: 0.0,
+            offset_y: 8.0,
+            blur_radius: 16.0,
+            spread_radius: 0.0,
+            inset: false,
+        },
+        menu_bar: ShadowToken {
+            color: SemanticColor::rgba(0.0, 0.0, 0.0, 0.4),
+            offset_x: 0.0,
+            offset_y: 4.0,
+            blur_radius: 16.0,
+            spread_radius: 0.0,
+            inset: false,
+        },
         media_scrim: MEDIA_SCRIM,
         media_foreground: MEDIA_FOREGROUND,
         media_hover_alpha: MEDIA_HOVER_ALPHA,
@@ -844,6 +926,9 @@ impl EffectTokens {
         match role {
             ElevationRole::Surface => self.surface,
             ElevationRole::Overlay => self.overlay,
+            ElevationRole::Menu => self.menu,
+            ElevationRole::Dropdown => self.dropdown,
+            ElevationRole::MenuBar => self.menu_bar,
         }
     }
 
@@ -863,7 +948,7 @@ impl Default for EffectTokens {
 
 /// A window surface named by what it is, not by what the platform paints it
 /// with.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SurfaceRole {
     /// Primary content area.
     Window,
@@ -876,7 +961,7 @@ pub enum SurfaceRole {
 /// Semantic only. The theme says "this surface may be translucent"; whether it
 /// *is* translucent is [`crate::WindowMaterialMode`] policy, and the blur
 /// itself is the platform's. No platform object is held here.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SurfaceMaterial {
     Opaque,
     Translucent,
@@ -884,14 +969,14 @@ pub enum SurfaceMaterial {
 
 /// One surface's contract: which palette role paints it, and whether a
 /// backdrop is allowed to thin it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SurfaceSpec {
     pub paint: SemanticColorRole,
     pub material: SurfaceMaterial,
 }
 
 /// Surface / material roles.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SurfaceTokens {
     pub window: SurfaceSpec,
     pub chrome: SurfaceSpec,

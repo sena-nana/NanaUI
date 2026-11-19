@@ -20,6 +20,10 @@ pub enum ThemeToken {
     /// settings group insets its content by, so a scroll area's gutter can
     /// name its card's own padding under any metrics.
     PanelPaddingX,
+    /// Menu surface inner padding resolved via `MenuRecipe::surface_padding`.
+    MenuSurfacePadding,
+    /// Gap between adjacent items inside a menu surface via `MenuRecipe::item_gap`.
+    MenuItemGap,
 }
 impl ThemeToken {
     pub fn resolve(self, theme: &CompiledTheme) -> f32 {
@@ -33,6 +37,27 @@ impl ThemeToken {
             Self::Control(size) => size.height_in(theme.metrics()),
             Self::ControlPadding(padding) => padding.resolve(theme.metrics()),
             Self::PanelPaddingX => super::SurfacePadding::Panel.resolve_x(theme.metrics()),
+            Self::MenuSurfacePadding => theme
+                .spacing()
+                .resolve(theme.recipes().menu().surface_padding),
+            Self::MenuItemGap => theme.spacing().resolve(theme.recipes().menu().item_gap),
+        }
+    }
+
+    pub const fn dependency_mask(self) -> super::ThemeDependencyMask {
+        use super::ThemeDependencyMask;
+        match self {
+            Self::Space(_)
+            | Self::Border(_)
+            | Self::Radius(_)
+            | Self::Control(_)
+            | Self::ControlPadding(_)
+            | Self::PanelPaddingX => ThemeDependencyMask::METRICS,
+            Self::Type(_) | Self::Line(_) => ThemeDependencyMask::TYPOGRAPHY_LAYOUT,
+            Self::Weight(_) => ThemeDependencyMask::TYPOGRAPHY_SHAPE,
+            Self::MenuSurfacePadding | Self::MenuItemGap => {
+                ThemeDependencyMask::METRICS.union(ThemeDependencyMask::RECIPE_MENU)
+            }
         }
     }
 }
@@ -78,6 +103,14 @@ impl ThemeExpr {
                 .iter()
                 .map(|(token, coefficient)| token.resolve(theme) * coefficient)
                 .sum::<f32>()
+    }
+
+    pub fn dependency_mask(&self) -> super::ThemeDependencyMask {
+        let mut mask = super::ThemeDependencyMask::NONE;
+        for (token, _) in &self.terms {
+            mask = mask.union(token.dependency_mask());
+        }
+        mask
     }
 }
 impl From<ThemeToken> for ThemeExpr {
@@ -407,6 +440,57 @@ impl ThemeLayout {
                 ..skin
             });
         }
+    }
+
+    /// Theme dependency categories touched by any bound expression in this block.
+    pub fn dependency_mask(&self) -> super::ThemeDependencyMask {
+        let mut mask = super::ThemeDependencyMask::NONE;
+        for expr in [
+            self.gap.as_ref(),
+            self.row_gap.as_ref(),
+            self.column_gap.as_ref(),
+            self.padding.as_ref(),
+            self.padding_top.as_ref(),
+            self.padding_right.as_ref(),
+            self.padding_bottom.as_ref(),
+            self.padding_left.as_ref(),
+            self.margin.as_ref(),
+            self.margin_top.as_ref(),
+            self.margin_right.as_ref(),
+            self.margin_bottom.as_ref(),
+            self.margin_left.as_ref(),
+            self.offset_top.as_ref(),
+            self.offset_right.as_ref(),
+            self.offset_bottom.as_ref(),
+            self.offset_left.as_ref(),
+            self.width.as_ref(),
+            self.height.as_ref(),
+            self.min_width.as_ref(),
+            self.max_width.as_ref(),
+            self.min_height.as_ref(),
+            self.max_height.as_ref(),
+            self.flex_basis.as_ref(),
+            self.font_size.as_ref(),
+            self.font_weight.as_ref(),
+            self.line_height.as_ref(),
+            self.letter_spacing.as_ref(),
+            self.border_width.as_ref(),
+            self.border_top_width.as_ref(),
+            self.border_right_width.as_ref(),
+            self.border_bottom_width.as_ref(),
+            self.border_left_width.as_ref(),
+            self.border_radius.as_ref(),
+            self.scrollbar_room.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            mask = mask.union(expr.dependency_mask());
+        }
+        if self.scrollbar_room.is_some() {
+            mask = mask.union(super::ThemeDependencyMask::RECIPE_SCROLLBAR);
+        }
+        mask
     }
 }
 

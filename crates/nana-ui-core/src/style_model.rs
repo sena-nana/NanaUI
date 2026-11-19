@@ -296,6 +296,22 @@ impl PaintColor {
         )
     }
 
+    pub fn dependency_mask(self) -> crate::theme::ThemeDependencyMask {
+        match self {
+            Self::ThemeRole { role } => crate::theme::ThemeDependencyMask::for_color_role(role),
+            Self::ThemeMix(mix) => crate::theme::ThemeDependencyMask::for_color_mix(mix),
+            Self::ThemePair(pair) => pair
+                .light()
+                .dependency_mask()
+                .union(pair.dark().dependency_mask())
+                .union(crate::theme::ThemeDependencyMask::PALETTE),
+            Self::Srgb { .. }
+            | Self::Oklch { .. }
+            | Self::Hsv { .. }
+            | Self::LinearScRgb { .. } => crate::theme::ThemeDependencyMask::NONE,
+        }
+    }
+
     pub fn resolve(self, model: StyleModelRef) -> Self {
         match self {
             Self::ThemeRole { role } => Self::Srgb {
@@ -494,6 +510,28 @@ impl PaintColorSlots {
                 *color = color.resolve(model);
             }
         }
+    }
+
+    pub fn dependency_mask(&self) -> crate::theme::ThemeDependencyMask {
+        let mut mask = crate::theme::ThemeDependencyMask::NONE;
+        for color in [
+            self.color,
+            self.background,
+            self.border,
+            self.border_top,
+            self.border_right,
+            self.border_bottom,
+            self.border_left,
+            self.outline,
+            self.selection_background,
+            self.selection_color,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            mask = mask.union(color.dependency_mask());
+        }
+        mask
     }
 }
 
@@ -1309,7 +1347,7 @@ impl SemanticPalette {
 /// danger washes and the code-token roles -- follow their base role: naming
 /// `Warning` moves `WarningSoft` with it. Naming a derived role itself has no
 /// effect.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ColorOverrides {
     entries: Vec<(SemanticColorRole, SemanticColor)>,
 }

@@ -5,7 +5,7 @@ use super::*;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn place_modal_children(
-    _id: StableNodeId,
+    id: StableNodeId,
     origin: Point,
     size: Size,
     modal: &crate::ModalLayoutInput,
@@ -17,7 +17,8 @@ pub(super) fn place_modal_children(
     scope: Option<&ScopeContext<'_>>,
 ) -> Result<(), UiWorldError> {
     let world = nodes.world;
-    let recipe = *world.theme().recipes().dialog();
+    let node_theme = world.node_theme(id);
+    let recipe = *node_theme.recipes().dialog();
     let measure = |title: crate::TextMetrics| {
         crate::overlay_surfaces::ModalChrome::measure_in(
             modal.kind,
@@ -25,8 +26,8 @@ pub(super) fn place_modal_children(
             modal.description,
             &modal.slots,
             &recipe,
-            world.theme().border().hairline,
-            world.theme(),
+            node_theme.border().hairline,
+            node_theme,
         )
     };
     let root = LayoutBox {
@@ -67,7 +68,7 @@ pub(super) fn place_modal_children(
     );
     let body_copy = modal.body_text.map_or(0.0, |metrics| metrics.height);
     let body_gap = if body_copy > 0.0 && modal.slots.body.is_some() {
-        nodes.world.theme().spacing().md
+        node_theme.spacing().md
     } else {
         0.0
     };
@@ -193,13 +194,11 @@ pub(super) fn place_modal_children(
             actions.push(id);
         }
     }
+    let action_height = nana_ui_core::ControlSize::Medium.height_in(node_theme.metrics());
     for id in actions {
         let measured = intrinsic_size_scoped(
             id,
-            Size::new(
-                footer.width,
-                nana_ui_core::ControlSize::Medium.height_in(nodes.world.theme_metrics()),
-            ),
+            Size::new(footer.width, action_height),
             Some(FlexDirection::Row),
             viewport,
             parent_font_px,
@@ -209,9 +208,7 @@ pub(super) fn place_modal_children(
         )?;
         let action_size = Size::new(
             measured.width.min(footer.width),
-            measured
-                .height
-                .min(nana_ui_core::ControlSize::Medium.height_in(nodes.world.theme_metrics())),
+            measured.height.min(action_height),
         );
         action_right -= action_size.width;
         place_modal_slot(

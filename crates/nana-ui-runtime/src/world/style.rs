@@ -14,6 +14,9 @@ impl UiWorld {
         &mut self,
         id: StableNodeId,
         parent: Option<StableNodeId>,
+        propagated_from_theme: bool,
+        queue: &mut std::collections::VecDeque<StableNodeId>,
+        propagated_theme: &mut HashSet<StableNodeId>,
         work: &mut ThemeWorkCounters,
     ) -> Result<bool, UiWorldError> {
         let Some(parent) = parent else {
@@ -34,18 +37,29 @@ impl UiWorld {
         {
             return Ok(false);
         }
-        let parent_style = {
+        let (parent_style, parent_scope_gen) = {
             let parent_record = self.record(parent);
             if parent_record.resolved.1 != self.resolved_palette_epoch() {
                 return Ok(false);
             }
-            Arc::clone(&parent_record.resolved.2)
+            (
+                Arc::clone(&parent_record.resolved.3),
+                parent_record.resolved.2,
+            )
         };
         let writing_mode = parent_style.writing_mode;
         let direction = parent_style.direction;
         let text_orientation = parent_style.text_orientation;
         let has_visual = self.widget_visual_ref(id).is_some();
-        let (inherited, same, has_text, show_text) = {
+        let (
+            inherited,
+            same_identity,
+            has_text,
+            show_text,
+            prev_computed,
+            prev_epoch,
+            prev_unpainted,
+        ) = {
             let record = self.record(id);
             let inherited = record.style.computed_style_is_inherited()
                 && (crate::components::layout_style_is_default(&record.resolved_layout)
@@ -54,10 +68,14 @@ impl UiWorld {
                 inherited,
                 inherited
                     && Arc::ptr_eq(&record.resolved.0, &parent_style)
-                    && Arc::ptr_eq(&record.resolved.2, &parent_style)
-                    && record.resolved.1 == self.resolved_palette_epoch(),
+                    && Arc::ptr_eq(&record.resolved.3, &parent_style)
+                    && record.resolved.1 == self.resolved_palette_epoch()
+                    && record.resolved.2 == parent_scope_gen,
                 has_visual || record.has_text || matches!(record.kind.as_ref(), NodeKind::Text),
                 !record.resolved.0.visible && parent_style.visible,
+                Arc::clone(&record.resolved.0),
+                record.resolved.1,
+                Arc::clone(&record.resolved.3),
             )
         };
         // A node that names its own language or typography scale, or follows
@@ -71,27 +89,103 @@ impl UiWorld {
         {
             return Ok(false);
         }
+        self.nodes.set_node_scope(id, parent_style.ext.theme_scope);
+        let theme_change = self
+            .theme_state
+            .pending_theme_eval
+            .remove(&id)
+            .unwrap_or(nana_ui_core::ThemeDependencyMask::NONE);
+        let theme_triggered = propagated_from_theme || !theme_change.is_empty();
         {
             let record = self.record_mut(id);
             record.inherited_writing = nana_ui_core::WritingContext::new(writing_mode, direction);
             record.inherited_orientation = text_orientation;
         }
-        if same {
-            work.record_skipped();
+        let epoch = self.resolved_palette_epoch();
+        if same_identity {
+            let visual_needs_repaint = self.theme_change_requires_visual_repaint(id, theme_change);
+            if visual_needs_repaint {
+                work.resolved_style_changed += 1;
+                work.record_paint_invalidation(1);
+                self.mark(id, DirtyMask::RENDER);
+                if self.node_painter(id).is_some() {
+                    self.mark_repaint(id);
+                }
+            } else {
+                work.resolved_style_unchanged += 1;
+                work.record_skipped();
+            }
+            return Ok(true);
+        }
+        let was_uninitialized = prev_epoch == 0;
+        let style_changed = was_uninitialized
+            || (!Arc::ptr_eq(&prev_computed, &parent_style)
+                && !computed_style_eq(&prev_computed, &parent_style));
+        if !style_changed {
+            self.record_mut(id).resolved = ResolvedStyle(
+                Arc::clone(&parent_style),
+                epoch,
+                parent_scope_gen,
+                Arc::clone(&parent_style),
+            );
+            let visual_needs_repaint = self.theme_change_requires_visual_repaint(id, theme_change);
+            if visual_needs_repaint {
+                work.resolved_style_changed += 1;
+                work.record_paint_invalidation(1);
+                self.mark(id, DirtyMask::RENDER);
+                if self.node_painter(id).is_some() {
+                    self.mark_repaint(id);
+                }
+            } else {
+                work.resolved_style_unchanged += 1;
+                work.record_skipped();
+            }
             return Ok(true);
         }
         if has_text {
-            self.invalidate_text_for_style(id, &parent_style, work);
+            self.invalidate_text_for_style(
+                id,
+                &parent_style,
+                theme_triggered,
+                was_uninitialized,
+                work,
+            );
         }
         if show_text {
             self.text_shown.push(id);
         }
+        if hit_relevant_style_changed(was_uninitialized, &prev_computed, &parent_style) {
+            self.style_hit_changed = true;
+        }
+        if (!was_uninitialized && theme_triggered)
+            || self.theme_change_requires_visual_repaint(id, theme_change)
+        {
+            self.mark(id, DirtyMask::RENDER);
+            work.record_paint_invalidation(1);
+            if self.node_painter(id).is_some() {
+                self.mark_repaint(id);
+            }
+        }
+        let inherited_to_children_changed = !was_uninitialized
+            && !Arc::ptr_eq(&prev_unpainted, &parent_style)
+            && !computed_style_eq(&prev_unpainted, &parent_style);
+        work.resolved_style_changed += 1;
         work.record_resolved();
         self.record_mut(id).resolved = ResolvedStyle(
             Arc::clone(&parent_style),
-            self.resolved_palette_epoch(),
-            parent_style,
+            epoch,
+            parent_scope_gen,
+            Arc::clone(&parent_style),
         );
+        if inherited_to_children_changed {
+            let children = Arc::clone(&self.record(id).hierarchy.children);
+            for &child in children.iter() {
+                if theme_triggered {
+                    propagated_theme.insert(child);
+                }
+                queue.push_back(child);
+            }
+        }
         Ok(true)
     }
 
@@ -101,7 +195,10 @@ impl UiWorld {
     fn resolve_style<const SHARE: bool>(
         &mut self,
         id: StableNodeId,
+        propagated_from_theme: bool,
         resolved: &mut HashSet<StableNodeId>,
+        queue: &mut std::collections::VecDeque<StableNodeId>,
+        propagated_theme: &mut HashSet<StableNodeId>,
         work: &mut ThemeWorkCounters,
     ) -> Result<(), UiWorldError> {
         let mut chain = Vec::new();
@@ -117,7 +214,9 @@ impl UiWorld {
             cursor = self.record(node).hierarchy.parent;
         }
         for node in chain.into_iter().rev() {
-            self.resolve_one_style::<SHARE>(node, work)?;
+            let node_propagated =
+                (node == id && propagated_from_theme) || propagated_theme.contains(&node);
+            self.resolve_one_style::<SHARE>(node, node_propagated, queue, propagated_theme, work)?;
         }
         Ok(())
     }
@@ -126,10 +225,22 @@ impl UiWorld {
     fn resolve_one_style<const SHARE: bool>(
         &mut self,
         id: StableNodeId,
+        propagated_from_theme: bool,
+        queue: &mut std::collections::VecDeque<StableNodeId>,
+        propagated_theme: &mut HashSet<StableNodeId>,
         work: &mut ThemeWorkCounters,
     ) -> Result<(), UiWorldError> {
         let parent = self.record(id).hierarchy.parent;
-        if SHARE && self.publish_inherited_computed_style(id, parent, work)? {
+        if SHARE
+            && self.publish_inherited_computed_style(
+                id,
+                parent,
+                propagated_from_theme,
+                queue,
+                propagated_theme,
+                work,
+            )?
+        {
             return Ok(());
         }
         // The layout the pipeline reads: design intent and a responsive
@@ -143,6 +254,20 @@ impl UiWorld {
             .unwrap_or_else(crate::store::interned_default_style);
         let inherited = inherited_style.as_ref();
         let inherited_color = parent.and(inherited.color);
+        let doc = self.record(id).document;
+        let parent_scope = parent
+            .map(|p| self.record(p).resolved.0.ext.theme_scope)
+            .unwrap_or(nana_ui_core::ThemeScopeId::ROOT);
+        let effective_scope = if self.theme_state.theme_scopes.is_empty() {
+            nana_ui_core::ThemeScopeId::ROOT
+        } else {
+            self.theme_state
+                .theme_scopes
+                .scope_for_owner(id)
+                .unwrap_or(parent_scope)
+        };
+        let scope_gen = self.theme_state.theme_scopes.generation(effective_scope).0;
+        self.nodes.set_node_scope(id, effective_scope);
         // The colour scope: this node's own overrides written over its
         // parent's. Nested scopes are flattened here, once per resolve, so
         // nothing downstream walks the chain.
@@ -154,7 +279,7 @@ impl UiWorld {
                 (Some(own), Some(outer)) => Some(Arc::new(own.over(outer))),
             }
         };
-        let model = self.scoped_style_model(color_scope.as_deref());
+        let model = self.style_model_for_scope(doc, effective_scope, color_scope.as_deref());
         let (foreground, color, background, border_color) =
             self.palette_paint_colors(id, inherited_color, model);
         let local_paint = self.semantic_paint(id, &self.record(id).style);
@@ -178,11 +303,11 @@ impl UiWorld {
         let text_scale = match self.nodes.text_scale(id) {
             Some(own) => *own,
             None if parent.is_some() => inherited.text_scale,
-            None => self.root_text_scale(self.record(id).document),
+            None => self.root_text_scale(doc),
         };
-        // Roots inherit typography from the installed theme. Descendants still
+        // Roots inherit typography from the active scope/document theme. Descendants still
         // inherit their parent, including explicit application font overrides.
-        let typography = self.theme.typography();
+        let typography = self.theme_for_scope(doc, effective_scope).typography();
         let font_size_base = layout.font_size.unwrap_or_else(|| {
             if parent.is_some() {
                 inherited.font_size_base
@@ -299,6 +424,7 @@ impl UiWorld {
         };
         let ext_same_base = inherited.ext.language == language
             && inherited.ext.color_scope == color_scope
+            && inherited.ext.theme_scope == effective_scope
             && (self.presentation.is_empty() || self.font_axis_overlay(id).is_empty())
             && (!has_text_ext
                 || (inherited.ext.selection_background == selection_background
@@ -340,6 +466,7 @@ impl UiWorld {
                 text_emphasis,
                 language,
                 color_scope,
+                theme_scope: effective_scope,
             }
             .into()
         };
@@ -392,21 +519,51 @@ impl UiWorld {
         } else {
             Default::default()
         };
-        {
+        let theme_change = self
+            .theme_state
+            .pending_theme_eval
+            .remove(&id)
+            .unwrap_or(nana_ui_core::ThemeDependencyMask::NONE);
+        let theme_triggered = propagated_from_theme || !theme_change.is_empty();
+        let epoch = self.resolved_palette_epoch();
+        let (prev_computed, prev_epoch, prev_scope_gen, prev_unpainted) = {
             let resolved = &self.record(id).resolved;
-            let cur = resolved.0.as_ref();
-            if resolved.1 == self.resolved_palette_epoch()
-                && cur.background == background
-                && cur.border_color == border_color
-                && cur.ring_color == ring_color
-                && cur.paint_colors == paint_colors
-                && *cur.inherited == next_inherited
-            {
-                work.record_skipped();
-                return Ok(());
+            (
+                Arc::clone(&resolved.0),
+                resolved.1,
+                resolved.2,
+                Arc::clone(&resolved.3),
+            )
+        };
+        let was_uninitialized = prev_epoch == 0;
+        let same_as_prev = !was_uninitialized
+            && prev_computed.background == background
+            && prev_computed.border_color == border_color
+            && prev_computed.ring_color == ring_color
+            && prev_computed.paint_colors == paint_colors
+            && *prev_computed.inherited == next_inherited;
+        if same_as_prev {
+            if prev_epoch != epoch || prev_scope_gen != scope_gen {
+                let resolved = &mut self.record_mut(id).resolved;
+                resolved.1 = epoch;
+                resolved.2 = scope_gen;
             }
+            work.record_skipped();
+            let visual_needs_repaint = self.theme_change_requires_visual_repaint(id, theme_change);
+            if visual_needs_repaint {
+                work.resolved_style_changed += 1;
+                work.record_paint_invalidation(1);
+                self.mark(id, DirtyMask::RENDER);
+                if self.node_painter(id).is_some() {
+                    self.mark_repaint(id);
+                }
+            } else {
+                work.resolved_style_unchanged += 1;
+            }
+            return Ok(());
         }
         work.record_resolved();
+        work.resolved_style_changed += 1;
         let inherited_arc = if SHARE && *inherited_style.inherited == next_inherited {
             Arc::clone(&inherited_style.inherited)
         } else if SHARE {
@@ -423,12 +580,12 @@ impl UiWorld {
             ring_color,
         };
         // Identical inherited results can share immutable paint state. Painted
-        // boxes publish an unpainted companion Arc (`resolved.2`) so descendants
+        // boxes publish an unpainted companion Arc (`resolved.3`) so descendants
         // inside them still share via `Arc::clone`.
         let (next_arc, next_unpainted) = if !next.has_local_paint() {
             let shared = if SHARE {
                 parent
-                    .map(|parent| &self.record(parent).resolved.2)
+                    .map(|parent| &self.record(parent).resolved.3)
                     .filter(|inherited| inherited.as_ref() == &next)
                     .map(Arc::clone)
             } else {
@@ -453,7 +610,7 @@ impl UiWorld {
             let unpainted = if SHARE {
                 let clean = arc.without_local_paint();
                 parent
-                    .map(|parent| &self.record(parent).resolved.2)
+                    .map(|parent| &self.record(parent).resolved.3)
                     .filter(|parent_unpainted| parent_unpainted.as_ref() == &clean)
                     .map(Arc::clone)
                     .unwrap_or_else(|| self.computed_styles.intern(clean, work))
@@ -462,16 +619,39 @@ impl UiWorld {
             };
             (arc, unpainted)
         };
-        self.invalidate_text_for_style(id, &next_arc, work);
-        if !self.record(id).resolved.0.visible && next_arc.visible {
+        self.invalidate_text_for_style(id, &next_arc, theme_triggered, was_uninitialized, work);
+        if !prev_computed.visible && next_arc.visible {
             // Text passes skip hidden nodes without resolving them, so a node
             // whose box changed while hidden comes back stale. The scheduled
             // text pass of this same frame picks it up; marking it dirty here,
             // after the drain, would cost the frame another pass.
             self.text_shown.push(id);
         }
-        self.record_mut(id).resolved =
-            ResolvedStyle(next_arc, self.resolved_palette_epoch(), next_unpainted);
+        if hit_relevant_style_changed(was_uninitialized, &prev_computed, &next_arc) {
+            self.style_hit_changed = true;
+        }
+        if (!was_uninitialized && theme_triggered)
+            || self.theme_change_requires_visual_repaint(id, theme_change)
+        {
+            self.mark(id, DirtyMask::RENDER);
+            work.record_paint_invalidation(1);
+            if self.node_painter(id).is_some() {
+                self.mark_repaint(id);
+            }
+        }
+        let inherited_to_children_changed = !was_uninitialized
+            && !Arc::ptr_eq(&prev_unpainted, &next_unpainted)
+            && !computed_style_eq(&prev_unpainted, &next_unpainted);
+        self.record_mut(id).resolved = ResolvedStyle(next_arc, epoch, scope_gen, next_unpainted);
+        if inherited_to_children_changed {
+            let children = Arc::clone(&self.record(id).hierarchy.children);
+            for &child in children.iter() {
+                if theme_triggered {
+                    propagated_theme.insert(child);
+                }
+                queue.push_back(child);
+            }
+        }
         Ok(())
     }
 }
@@ -734,6 +914,7 @@ impl UiWorld {
         let next = Arc::clone(&self.record(id).resolved_layout);
         self.note_layout_anchor_change(id, &previous, &next);
         self.refresh_block_extent_reads(id);
+        self.recompute_node_theme_deps(id);
         self.note_layout_source_change();
     }
 
@@ -758,13 +939,14 @@ impl UiWorld {
         id: StableNodeId,
         style: &NodeStyle,
     ) -> (Arc<nana_ui_core::LayoutStyle>, bool) {
-        let (mut resolved, mut copied) = Self::resolve_layout_intent(style, self.intent_tokens());
+        let (mut resolved, mut copied) =
+            Self::resolve_layout_intent(style, self.intent_tokens_for(id));
         if !style.layout.theme.is_empty() {
             let before = Arc::clone(&resolved);
             style
                 .layout
                 .theme
-                .apply(Arc::make_mut(&mut resolved), &self.theme);
+                .apply(Arc::make_mut(&mut resolved), self.node_theme(id));
             if *before == *resolved {
                 resolved = before;
             } else {
@@ -799,9 +981,27 @@ impl UiWorld {
     /// a metrics install, and seed each live one whose resolved layout moved
     /// by what moved: a padding step moves the boxes that use it and no
     /// other. Returns how many moved.
-    fn reresolve_layout_intent(&mut self) -> usize {
+    pub(super) fn reresolve_layout_intent(&mut self) -> usize {
         let mut ids: Vec<StableNodeId> = self.intent_nodes.iter().copied().collect();
         ids.sort_unstable();
+        self.reresolve_layout_intent_ids(ids)
+    }
+
+    pub(super) fn reresolve_layout_intent_for(&mut self, candidates: &[StableNodeId]) -> usize {
+        if self.intent_nodes.is_empty() || candidates.is_empty() {
+            return 0;
+        }
+        let mut ids: Vec<StableNodeId> = candidates
+            .iter()
+            .copied()
+            .filter(|id| self.intent_nodes.contains(id))
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        self.reresolve_layout_intent_ids(ids)
+    }
+
+    fn reresolve_layout_intent_ids(&mut self, ids: Vec<StableNodeId>) -> usize {
         let mut moved = 0;
         for id in ids {
             let (mut resolved, copied) = self.node_layout(id, &self.record(id).style);
@@ -870,13 +1070,6 @@ impl UiWorld {
             Some(scope) => self.style_model.with_color_overrides(scope),
             None => self.style_model,
         }
-    }
-
-    /// The style model `id` reads its colours from: the installed one under
-    /// the colour scope its resolved style carries
-    /// ([`crate::ComputedStyle::color_scope`]).
-    pub(crate) fn node_style_model(&self, id: StableNodeId) -> StyleModelRef {
-        self.scoped_style_model(self.record(id).resolved.0.color_scope.as_deref())
     }
 
     pub(super) fn palette_paint_colors(
@@ -1022,6 +1215,10 @@ impl UiWorld {
             return secondary;
         }
         if own.color_overrides.is_some()
+            || own
+                .theme_patch
+                .as_ref()
+                .is_some_and(|p| p.colors.is_some() || p.accent.is_some() || p.appearance.is_some())
             || own.layout.background.is_some()
             || own.layout.paint_colors.background.is_some()
             || own_paint.background.is_some()
@@ -1037,6 +1234,9 @@ impl UiWorld {
                 return secondary;
             }
             if local.color_overrides.is_some()
+                || local.theme_patch.as_ref().is_some_and(|p| {
+                    p.colors.is_some() || p.accent.is_some() || p.appearance.is_some()
+                })
                 || local.layout.background.is_some()
                 || local.layout.paint_colors.background.is_some()
                 || paint.background.is_some()
@@ -1144,7 +1344,12 @@ impl UiWorld {
         }
         self.record_theme_read();
         let [r, g, b, a] = primary;
-        [r, g, b, a * self.style_model.opacity.secondary_text]
+        [
+            r,
+            g,
+            b,
+            a * self.node_style_model(id).opacity.secondary_text,
+        ]
     }
 }
 
@@ -1205,13 +1410,26 @@ impl UiWorld {
     /// Resolve inherited visual state for dirty nodes. Parent state is always
     /// resolved before its descendants, independent of stable ID order.
     pub fn resolve_styles(&mut self, ids: &[StableNodeId]) -> Result<(), UiWorldError> {
-        // Most frame batches already contain the full dirty frontier. Reserve
-        // once so parent-chain deduplication does not repeatedly rehash large
-        // initial documents.
         let mut resolved = HashSet::with_capacity(ids.len());
+        let mut queue: std::collections::VecDeque<StableNodeId> = ids.iter().copied().collect();
+        let mut propagated_theme = HashSet::new();
         let mut work = ThemeWorkCounters::default();
-        for &id in ids {
-            self.resolve_style::<true>(id, &mut resolved, &mut work)?;
+        while let Some(id) = queue.pop_front() {
+            if !self.contains(id) {
+                return Err(UiWorldError::MissingNode(id));
+            }
+            if resolved.contains(&id) {
+                continue;
+            }
+            let from_parent = propagated_theme.contains(&id);
+            self.resolve_style::<true>(
+                id,
+                from_parent,
+                &mut resolved,
+                &mut queue,
+                &mut propagated_theme,
+                &mut work,
+            )?;
         }
         self.record_theme_work(work);
         self.reconcile_focus(ids);
@@ -1228,9 +1446,18 @@ impl UiWorld {
         ids: &[StableNodeId],
     ) -> Result<(), UiWorldError> {
         let mut resolved = HashSet::new();
+        let mut queue = std::collections::VecDeque::new();
+        let mut propagated_theme = HashSet::new();
         let mut work = ThemeWorkCounters::default();
         for &id in ids {
-            self.resolve_style::<false>(id, &mut resolved, &mut work)?;
+            self.resolve_style::<false>(
+                id,
+                false,
+                &mut resolved,
+                &mut queue,
+                &mut propagated_theme,
+                &mut work,
+            )?;
         }
         self.record_theme_work(work);
         self.reconcile_focus(ids);
@@ -1253,6 +1480,17 @@ impl UiWorld {
         }
         self.high_contrast = high_contrast;
         self.apply_compiled_theme(self.contrast_rendition());
+        if !self.theme_state.installed_document_themes.is_empty() {
+            let doc_themes: Vec<_> = self
+                .theme_state
+                .installed_document_themes
+                .iter()
+                .map(|(&doc, theme)| (doc, Arc::clone(theme)))
+                .collect();
+            for (doc, installed) in doc_themes {
+                self.set_document_theme(doc, Some(installed));
+            }
+        }
         true
     }
 
@@ -1260,13 +1498,7 @@ impl UiWorld {
     /// palette of the same lightness, opaque, and a title bar that matches
     /// its background.
     fn contrast_rendition(&self) -> Arc<nana_ui_core::CompiledTheme> {
-        if !self.high_contrast {
-            return Arc::clone(&self.installed_theme);
-        }
-        let mut model = self.installed_theme.style_model();
-        model.palette = model.palette.for_system_contrast(true);
-        model.titlebar = model.palette.background;
-        Arc::new((*self.installed_theme).clone().with_style_model(model))
+        self.contrast_rendition_for(&self.installed_theme)
     }
 
     pub(super) fn apply_compiled_theme(&mut self, next: Arc<nana_ui_core::CompiledTheme>) {
@@ -1276,9 +1508,49 @@ impl UiWorld {
         if *self.theme == *next {
             return;
         }
-        let hover_ids = self.hover_transitions.keys().copied().collect::<Vec<_>>();
-        for id in hover_ids {
-            self.cancel_hover_transition(id);
+        let changed = nana_ui_core::ThemeCategoryGenerations::diff_themes(&self.theme, &next);
+        if changed.is_empty() {
+            self.theme = next;
+            return;
+        }
+        self.theme_state.theme_generations.advance(changed);
+        if changed == nana_ui_core::ThemeDependencyMask::MOTION_POLICY
+            && self.theme_state.theme_scopes.is_empty()
+            && self.theme_state.document_themes.is_empty()
+        {
+            self.theme = next;
+            let mut work = ThemeWorkCounters::default();
+            work.style_motion_policy_invalidations = 1;
+            let identity = self.theme.identity();
+            self.record_theme_invalidation(
+                crate::world::theme_inspect::ThemeInvalidationTrigger::RootTheme {
+                    theme_id: identity.id,
+                    generation: identity.generation,
+                },
+                changed,
+                &work,
+                0,
+                true,
+            );
+            self.record_theme_work(work);
+            return;
+        }
+        if changed != nana_ui_core::ThemeDependencyMask::MOTION_POLICY {
+            let hover_ids = self.hover_transitions.keys().copied().collect::<Vec<_>>();
+            for id in hover_ids {
+                self.cancel_hover_transition(id);
+            }
+        }
+        if !self.theme_state.theme_scopes.is_empty() || !self.theme_state.document_themes.is_empty()
+        {
+            let old_root = Arc::clone(&self.theme);
+            self.style_model = next.style_model();
+            self.theme = Arc::clone(&next);
+            if changed != nana_ui_core::ThemeDependencyMask::MOTION_POLICY {
+                self.palette_epoch = self.palette_epoch.wrapping_add(1).max(1);
+            }
+            self.apply_root_theme_with_scopes(&old_root, &next, changed);
+            return;
         }
         let previous_metrics = self.style_model.metrics;
         let body_changed = self.theme.typography().body != next.typography().body;
@@ -1290,35 +1562,44 @@ impl UiWorld {
             || self.theme.border() != next.border()
             || self.theme.metrics() != next.metrics();
         let previous_scales = (self.theme.typography(), self.theme.spacing());
-        // A dialog card is placed from its recipe and the hairline its
-        // dividers take, which no layout input names; a change to either
-        // reaches only the modal frames.
-        let dialog_changed =
-            self.theme.recipes().dialog() != next.recipes().dialog() || token_layout_changed;
-        // A toast's mark, copy column and dismiss target are parts read from
-        // its recipe (#205, #385), not from any style it projects.
-        let toast_changed = self.theme.recipes().toast() != next.recipes().toast();
-        // A shape role resolves to a step through the recipe, so a recipe
-        // that moves a role moves the corners of the nodes naming it.
-        let shape_changed = self.theme.recipes().shape() != next.recipes().shape();
+        let dialog_changed = changed.intersects(nana_ui_core::ThemeDependencyMask::RECIPE_DIALOG)
+            || token_layout_changed;
+        let toast_changed = changed.intersects(nana_ui_core::ThemeDependencyMask::RECIPE_TOAST);
+        let shape_changed = changed.intersects(nana_ui_core::ThemeDependencyMask::RECIPE_SHAPE);
+        let menu_changed = changed.intersects(nana_ui_core::ThemeDependencyMask::RECIPE_MENU);
         self.style_model = next.style_model();
         self.theme = next;
         self.palette_epoch = self.palette_epoch.wrapping_add(1).max(1);
-        // Painters re-record against the new palette and radius tiers, card
-        // surface painters too.
-        let mut painted = self
+
+        let painted = self
             .paint_recordings
             .get_mut()
             .keys()
             .copied()
             .collect::<Vec<_>>();
-        painted.extend(self.modal_surface_recordings.get_mut().keys().copied());
         for id in painted {
-            self.mark_repaint(id);
+            if self.contains(id) && self.nodes.theme_dependency(id).intersects(changed) {
+                self.mark_repaint(id);
+            }
         }
-        // A corner shape only paints: it moves no box.
-        // The type and spacing scales are design intent too: a node that
-        // names a step moves when its scale does.
+        if changed.intersects(
+            nana_ui_core::ThemeDependencyMask::PALETTE
+                .union(nana_ui_core::ThemeDependencyMask::ACCENT)
+                .union(nana_ui_core::ThemeDependencyMask::EFFECT)
+                .union(nana_ui_core::ThemeDependencyMask::RECIPE_DIALOG)
+                .union(nana_ui_core::ThemeDependencyMask::METRICS)
+                .union(nana_ui_core::ThemeDependencyMask::RECIPE_SHAPE),
+        ) {
+            let modal_painted = self
+                .modal_surface_recordings
+                .get_mut()
+                .keys()
+                .copied()
+                .collect::<Vec<_>>();
+            for id in modal_painted {
+                self.mark_repaint(id);
+            }
+        }
         let metrics_changed = !self.style_model.metrics.same_layout(&previous_metrics)
             || previous_scales != (self.theme.typography(), self.theme.spacing());
         let seeds_before = self.layout_seeds_created;
@@ -1328,86 +1609,89 @@ impl UiWorld {
                 ids.extend(self.subtree_ids(root));
             }
         }
-        // Every live node paints against the new palette. Layout hears only
-        // of the boxes whose design intent resolves differently against new
-        // metrics, each by what moved, and -- when the dialog recipe or the
-        // hairline moved -- of the modal frames, whose cards they place; the
-        // rest of a document lays nothing out again.
-        let modal_frames = if dialog_changed {
-            ids.iter()
-                .copied()
-                .filter(|id| {
-                    self.widget_visual_as::<crate::ModalFrameVisual>(*id)
-                        .is_some()
-                        || self
-                            .widget_visual_as::<crate::EmptyStateVisual>(*id)
-                            .is_some()
-                })
-                .collect::<Vec<_>>()
-        } else {
-            Vec::new()
-        };
-        // A control whose content parts read control metrics no style of it
-        // names (#205) lays out again when they move.
-        let part_readers = if token_layout_changed || toast_changed {
-            ids.iter()
-                .copied()
-                .filter(|id| {
-                    let widget_visual = self.nodes.widget_visual(*id);
-                    (token_layout_changed
-                        && widget_visual.is_some_and(|w| w.visual_parts_read_theme()))
-                        || (toast_changed && widget_visual.is_some_and(|w| w.reads_toast_recipe()))
-                })
-                .collect::<Vec<_>>()
-        } else {
-            Vec::new()
-        };
         let mut work = ThemeWorkCounters::default();
-        work.record_paint_invalidation(ids.len());
+        let mut modal_frames = Vec::new();
+        let mut part_readers = Vec::new();
+        for &id in &ids {
+            let dep = self.nodes.theme_dependency(id);
+            if dep.intersects(changed) {
+                let hit = dep.intersection(changed);
+                work.theme_revision_candidates += 1;
+                if hit.intersects(nana_ui_core::ThemeDependencyMask::RECIPE_ANY) {
+                    work.component_recipe_nodes_invalidated += 1;
+                }
+                self.theme_state
+                    .pending_theme_eval
+                    .entry(id)
+                    .and_modify(|prev| *prev = prev.union(hit))
+                    .or_insert(hit);
+                self.mark(id, DirtyMask::STYLE);
+            } else {
+                work.theme_dependency_skipped += 1;
+            }
+            if dialog_changed
+                && (self
+                    .widget_visual_as::<crate::ModalFrameVisual>(id)
+                    .is_some()
+                    || self
+                        .widget_visual_as::<crate::EmptyStateVisual>(id)
+                        .is_some())
+            {
+                modal_frames.push(id);
+            }
+            if token_layout_changed || toast_changed {
+                let widget_visual = self.nodes.widget_visual(id);
+                if (token_layout_changed
+                    && widget_visual.is_some_and(|w| w.visual_parts_read_theme()))
+                    || (toast_changed && widget_visual.is_some_and(|w| w.reads_toast_recipe()))
+                {
+                    part_readers.push(id);
+                }
+            }
+        }
         if !ids.is_empty() {
             work.record_allocation(1, ids.len().saturating_mul(size_of::<StableNodeId>()));
         }
         let mut dependents = 0;
-        if metrics_changed || token_layout_changed || shape_changed {
-            // Design intent resolves against the metrics, so a metrics install
-            // is the one event that has to re-run it. Doing it here, once, is
-            // what keeps it off every frame's read path.
+        let intent_relevant = metrics_changed
+            || token_layout_changed
+            || shape_changed
+            || menu_changed
+            || changed.intersects(nana_ui_core::ThemeDependencyMask::TYPOGRAPHY_ANY);
+        if intent_relevant {
             dependents = self.reresolve_layout_intent();
-            // An unstyled root has no authored token intent to re-resolve. Its
-            // inherited defaults nevertheless changed and must shape this frame.
-            let default_roots = self
-                .live_document_roots
-                .values()
-                .flat_map(|roots| roots.iter().copied())
-                .filter(|root| {
-                    let layout = &self.record(*root).resolved_layout;
-                    (body_changed && layout.font_size.is_none())
-                        || (regular_changed && layout.font_weight.is_none())
-                        || (line_ratio_changed && layout.line_height.is_none())
-                })
-                .collect::<Vec<_>>();
-            for root in default_roots {
-                self.mark_subtree(root, DirtyMask::STYLE | DirtyMask::TEXT);
-                let classified =
-                    self.classify_layout_change(root, nana_ui_core::LayoutStyleChange::FONT);
-                self.record_layout_invalidation(
-                    root,
-                    nana_ui_core::LayoutInvalidation {
-                        source: nana_ui_core::LayoutInvalidationSource::Resource,
-                        reason: nana_ui_core::InvalidationReason::RESOURCE,
-                        ..classified
-                    },
-                );
-                dependents += 1;
+            if body_changed || regular_changed || line_ratio_changed {
+                let default_roots = self
+                    .live_document_roots
+                    .values()
+                    .flat_map(|roots| roots.iter().copied())
+                    .filter(|root| {
+                        let layout = &self.record(*root).resolved_layout;
+                        (body_changed && layout.font_size.is_none())
+                            || (regular_changed && layout.font_weight.is_none())
+                            || (line_ratio_changed && layout.line_height.is_none())
+                    })
+                    .collect::<Vec<_>>();
+                for root in default_roots {
+                    self.mark(root, DirtyMask::STYLE | DirtyMask::TEXT);
+                    let classified =
+                        self.classify_layout_change(root, nana_ui_core::LayoutStyleChange::FONT);
+                    self.record_layout_invalidation(
+                        root,
+                        nana_ui_core::LayoutInvalidation {
+                            source: nana_ui_core::LayoutInvalidationSource::Resource,
+                            reason: nana_ui_core::InvalidationReason::RESOURCE,
+                            ..classified
+                        },
+                    );
+                    dependents += 1;
+                }
             }
             work.record_layout_invalidation(dependents);
         }
         work.record_layout_invalidation(modal_frames.len() + part_readers.len());
         self.record_theme_work(work);
         for id in modal_frames {
-            // These visuals shape several internal typography roles. A
-            // description or message can change while the root's own font
-            // stays equal, so they measure their complete text block again.
             self.nodes
                 .invalidate_text(id, crate::text_node::TextDirty::CONSTRAINT);
             self.mark(id, DirtyMask::TEXT);
@@ -1424,7 +1708,6 @@ impl UiWorld {
             );
         }
         for id in part_readers {
-            // A status dot's paragraph budget reads the same parts.
             if self.text(id).is_some_and(|text| !text.is_empty()) {
                 self.nodes
                     .invalidate_text(id, crate::text_node::TextDirty::CONSTRAINT);
@@ -1443,17 +1726,216 @@ impl UiWorld {
                 ),
             );
         }
-        for id in ids {
-            self.mark(id, DirtyMask::RENDER);
-        }
         let seeds = (self.layout_seeds_created - seeds_before) as usize;
+        let identity = self.theme.identity();
+        self.record_theme_invalidation(
+            crate::world::theme_inspect::ThemeInvalidationTrigger::RootTheme {
+                theme_id: identity.id,
+                generation: identity.generation,
+            },
+            changed,
+            &work,
+            seeds,
+            false,
+        );
         let counts = &mut self.counters.pending_drain_counts;
-        if metrics_changed || token_layout_changed || shape_changed {
+        if intent_relevant {
             counts.theme_to_layout_seeds += seeds;
             counts.theme_metric_dependents_invalidated += dependents;
         } else {
             counts.theme_palette_layout_invalidations += seeds;
         }
+    }
+
+    pub(crate) fn recompute_node_theme_deps(&mut self, id: StableNodeId) {
+        use nana_ui_core::ThemeDependencyMask;
+        let Some(record) = self.nodes.get(id) else {
+            return;
+        };
+        let mut mask = ThemeDependencyMask::NONE;
+        if record.hierarchy.parent.is_none() {
+            if record.style.foreground.is_none()
+                && record.style.interaction.base.foreground.is_none()
+                && record.style.interaction.base.foreground_mix.is_none()
+                && record.resolved_layout.color.is_none()
+                && record.resolved_layout.paint_colors.color.is_none()
+            {
+                mask = mask.union(ThemeDependencyMask::PALETTE);
+            }
+            if record.resolved_layout.font_size.is_none()
+                || record.resolved_layout.line_height.is_none()
+            {
+                mask = mask.union(ThemeDependencyMask::TYPOGRAPHY_LAYOUT);
+            }
+            if record.resolved_layout.font_weight.is_none() {
+                mask = mask.union(ThemeDependencyMask::TYPOGRAPHY_SHAPE);
+            }
+        }
+        for role in [
+            record.style.foreground,
+            record.style.background,
+            record.style.border,
+            record.style.ring,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            mask = mask.union(ThemeDependencyMask::for_color_role(role));
+        }
+        if record.style.ring.is_some() || record.interaction.focusable {
+            mask = mask.union(ThemeDependencyMask::EFFECT);
+        }
+        if !record.style.interaction.is_shared_default() {
+            let inter = &*record.style.interaction;
+            for paint in [
+                &inter.base,
+                &inter.selected,
+                &inter.selected_hovered,
+                &inter.selected_pressed,
+                &inter.hovered,
+                &inter.pressed,
+                &inter.focused,
+                &inter.disabled,
+            ] {
+                mask = mask.union(semantic_paint_dependency_mask(paint));
+            }
+        }
+        mask = mask.union(record.style.layout.paint_colors.dependency_mask());
+        mask = mask.union(record.resolved_layout.paint_colors.dependency_mask());
+        mask = mask.union(record.style.layout.theme.dependency_mask());
+        if record.style.type_role.is_some() {
+            mask = mask.union(ThemeDependencyMask::TYPOGRAPHY_LAYOUT);
+        }
+        if record.style.type_weight.is_some() {
+            mask = mask.union(ThemeDependencyMask::TYPOGRAPHY_SHAPE);
+        }
+        if record.style.gap_step.is_some()
+            || record.style.padding_step.is_some()
+            || record.style.radius.is_some()
+            || record.style.corner_radii.is_some()
+            || record.style.control_height.is_some()
+            || record.style.control_padding_x.is_some()
+            || record.style.control_padding_y.is_some()
+            || record.style.surface_padding.is_some()
+            || record.style.square.is_some()
+        {
+            mask = mask.union(ThemeDependencyMask::METRICS);
+        }
+        if record.style.shape.is_some() {
+            mask =
+                mask.union(ThemeDependencyMask::METRICS.union(ThemeDependencyMask::RECIPE_SHAPE));
+        }
+        if record.style.radius.is_some()
+            || record.style.corner_radii.is_some()
+            || record.style.shape.is_some()
+            || record
+                .resolved_layout
+                .border_radius
+                .is_some_and(|radius| radius > 0.0)
+            || record.resolved_layout.paint.border_radii.is_some()
+        {
+            mask = mask.union(ThemeDependencyMask::EFFECT);
+        }
+        let has_rich = self.nodes.rich_text(id).is_some()
+            || self.nodes.highlight(id).is_some()
+            || self.nodes.editor(id).is_some();
+        if has_rich {
+            mask = mask.union(
+                ThemeDependencyMask::COLOR_ANY
+                    .union(ThemeDependencyMask::TYPOGRAPHY_ANY)
+                    .union(ThemeDependencyMask::INHERITED_TYPOGRAPHY),
+            );
+        } else if matches!(record.kind.as_ref(), NodeKind::Text)
+            || record.has_text
+            || !self.nodes.text_content(id).value.is_empty()
+        {
+            mask = mask.union(ThemeDependencyMask::INHERITED_TYPOGRAPHY);
+        }
+        if self
+            .document_text_selections
+            .get(&record.document)
+            .is_some_and(|sel| sel.node == id)
+        {
+            mask = mask.union(ThemeDependencyMask::ACCENT);
+        }
+        if let Some(visual) = self.nodes.widget_visual(id) {
+            mask = mask.union(visual.theme_dependency_mask());
+        }
+        if self
+            .nodes
+            .custom_render(id)
+            .is_some_and(|c| c.renderer.as_ref() == crate::CHART_RENDERER)
+        {
+            mask = mask.union(
+                ThemeDependencyMask::CHART
+                    .union(ThemeDependencyMask::PALETTE)
+                    .union(ThemeDependencyMask::ACCENT)
+                    .union(ThemeDependencyMask::TYPOGRAPHY_LAYOUT)
+                    .union(ThemeDependencyMask::TYPOGRAPHY_SHAPE),
+            );
+        }
+        if record.style.painter.is_some()
+            || (!self.painter_overrides.is_empty() && self.painter_overrides.contains_key(&id))
+        {
+            mask = mask.union(
+                ThemeDependencyMask::CUSTOM_PAINT
+                    .union(ThemeDependencyMask::COLOR_ANY)
+                    .union(ThemeDependencyMask::METRICS)
+                    .union(ThemeDependencyMask::EFFECT),
+            );
+        }
+        self.nodes.set_theme_dependency(id, mask);
+    }
+
+    fn theme_change_requires_visual_repaint(
+        &self,
+        id: StableNodeId,
+        theme_change: nana_ui_core::ThemeDependencyMask,
+    ) -> bool {
+        if theme_change.is_empty() {
+            return false;
+        }
+        if let Some(visual) = self.nodes.widget_visual(id)
+            && visual.theme_dependency_mask().intersects(theme_change)
+        {
+            return true;
+        }
+        if self.node_painter(id).is_some() {
+            return true;
+        }
+        if theme_change.intersects(
+            nana_ui_core::ThemeDependencyMask::CHART
+                .union(nana_ui_core::ThemeDependencyMask::PALETTE)
+                .union(nana_ui_core::ThemeDependencyMask::ACCENT)
+                .union(nana_ui_core::ThemeDependencyMask::TYPOGRAPHY_ANY),
+        ) && self
+            .nodes
+            .custom_render(id)
+            .is_some_and(|c| c.renderer.as_ref() == crate::CHART_RENDERER)
+        {
+            return true;
+        }
+        let doc = self.record(id).document;
+        if theme_change.intersects(nana_ui_core::ThemeDependencyMask::EFFECT) {
+            let record = self.record(id);
+            let rounded = record.style.radius.is_some()
+                || record.style.corner_radii.is_some()
+                || record.style.shape.is_some()
+                || record
+                    .resolved_layout
+                    .border_radius
+                    .is_some_and(|radius| radius > 0.0)
+                || record.resolved_layout.paint.border_radii.is_some();
+            if rounded || self.focus_visible(doc) == Some(id) {
+                return true;
+            }
+        }
+        if theme_change.intersects(nana_ui_core::ThemeDependencyMask::ACCENT)
+            && self.drop_hover.map(|(h, _)| h) == Some(id)
+        {
+            return true;
+        }
+        false
     }
 }
 
@@ -1519,13 +2001,16 @@ impl UiWorld {
                     inherits_color: from[0] != to[0],
                 },
             );
+            let node_theme = self.node_theme(id);
+            let hover_duration = node_theme.duration(nana_ui_core::MotionRole::HoverColor);
+            let hover_easing = node_theme
+                .motion()
+                .easing(nana_ui_core::EasingRole::Standard);
             self.start_component_track(
                 id,
                 crate::component_animation_kinds::HOVER,
-                self.theme.duration(nana_ui_core::MotionRole::HoverColor),
-                self.theme
-                    .motion()
-                    .easing(nana_ui_core::EasingRole::Standard),
+                hover_duration,
+                hover_easing,
                 crate::AnimatableProperty::Progress,
                 crate::MotionValue::Scalar(0.0),
                 crate::MotionValue::Scalar(1.0),
@@ -1650,6 +2135,7 @@ fn same_style_on_one_layout(kept: &NodeStyle, style: &NodeStyle) -> bool {
         text_vertical_alignment,
         painter,
         color_overrides,
+        theme_patch,
     } = kept;
     Arc::ptr_eq(layout, &style.layout)
         && *foreground == style.foreground
@@ -1673,6 +2159,7 @@ fn same_style_on_one_layout(kept: &NodeStyle, style: &NodeStyle) -> bool {
         && *text_vertical_alignment == style.text_vertical_alignment
         && *painter == style.painter
         && *color_overrides == style.color_overrides
+        && *theme_patch == style.theme_patch
 }
 
 /// How many recent layouts a world keeps to share. Siblings built alike
@@ -1813,18 +2300,32 @@ impl UiWorld {
         &mut self,
         id: StableNodeId,
         next: &ComputedStyle,
+        theme_triggered: bool,
+        was_uninitialized: bool,
         work: &mut ThemeWorkCounters,
     ) {
         let previous = Arc::clone(&self.record(id).resolved.0);
         let dirty = crate::text_node::classify_computed_style_change(&previous, next);
-        // What this class costs the text pipeline is `TextDirty::work`'s
-        // answer, not a second copy of that mapping here. A colour-only change
-        // implies SCENE_PAINT, so a palette switch stays paint work.
         let text_work = dirty.work();
-        if text_work.intersects(crate::text_node::TextWork::SHAPE)
-            || text_work.intersects(crate::text_node::TextWork::LAYOUT)
+        let is_text_carrier = self.widget_visual_ref(id).is_some()
+            || self.record(id).has_text
+            || matches!(self.record(id).kind.as_ref(), NodeKind::Text);
+        if is_text_carrier && !was_uninitialized {
+            if text_work.intersects(crate::text_node::TextWork::SHAPE) {
+                work.style_text_shape_invalidations += 1;
+            }
+            if dirty.intersects(crate::text_node::TextDirty::CONSTRAINT) {
+                work.style_text_layout_invalidations += 1;
+            }
+        }
+        if is_text_carrier
+            && (text_work.intersects(crate::text_node::TextWork::SHAPE)
+                || text_work.intersects(crate::text_node::TextWork::LAYOUT))
         {
             work.record_text_invalidation(1);
+            if theme_triggered && !was_uninitialized && self.shows_text(id) {
+                self.mark(id, DirtyMask::TEXT | DirtyMask::RENDER);
+            }
         }
         self.note_language_invalidation(id, dirty);
         self.note_text_scale_change(id, previous.text_scale, next.text_scale);
@@ -2016,14 +2517,62 @@ pub(crate) struct IntentTokens {
 }
 
 impl UiWorld {
-    pub(crate) fn intent_tokens(&self) -> IntentTokens {
+    pub(crate) fn intent_tokens_for(&self, id: StableNodeId) -> IntentTokens {
+        let theme = self.node_theme(id);
         IntentTokens {
-            metrics: self.style_model.metrics,
-            typography: self.theme.typography(),
-            spacing: self.theme.spacing(),
-            shape: self.theme.recipes().shape(),
+            metrics: theme.metrics(),
+            typography: theme.typography(),
+            spacing: theme.spacing(),
+            shape: theme.recipes().shape(),
         }
     }
+}
+
+fn semantic_paint_dependency_mask(
+    paint: &crate::SemanticPaint,
+) -> nana_ui_core::ThemeDependencyMask {
+    let mut mask = nana_ui_core::ThemeDependencyMask::NONE;
+    for role in [
+        paint.foreground,
+        paint.foreground_secondary,
+        paint.background,
+        paint.border,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        mask = mask.union(nana_ui_core::ThemeDependencyMask::for_color_role(role));
+    }
+    for mix in [paint.foreground_mix, paint.background_mix, paint.border_mix]
+        .into_iter()
+        .flatten()
+    {
+        mask = mask.union(nana_ui_core::ThemeDependencyMask::for_color_mix(mix));
+    }
+    mask
+}
+
+fn computed_style_eq(a: &ComputedStyle, b: &ComputedStyle) -> bool {
+    a.background == b.background
+        && a.border_color == b.border_color
+        && a.ring_color == b.ring_color
+        && a.paint_colors == b.paint_colors
+        && (Arc::ptr_eq(&a.inherited, &b.inherited) || *a.inherited == *b.inherited)
+}
+
+fn hit_relevant_style_changed(
+    was_uninitialized: bool,
+    previous: &ComputedStyle,
+    next: &ComputedStyle,
+) -> bool {
+    was_uninitialized
+        || previous.visible != next.visible
+        || previous.box_visible != next.box_visible
+        || previous.pointer_events != next.pointer_events
+        || (previous.opacity <= 0.0) != (next.opacity <= 0.0)
+        || previous.writing_mode != next.writing_mode
+        || previous.direction != next.direction
+        || previous.text_orientation != next.text_orientation
 }
 
 fn style_declares_intent(style: &NodeStyle) -> bool {

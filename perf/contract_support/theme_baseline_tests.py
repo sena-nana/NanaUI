@@ -22,6 +22,7 @@ EXPECTED_THEME_IDS = {
     "theme-accent-only",
     "theme-density",
     "theme-head-style-mutation",
+    "theme-scope-patch",
 }
 
 PATHS = {"theme": Path("synthetic-theme-baseline")}
@@ -103,6 +104,9 @@ def _quiet_case(scenario: dict[str, Any]) -> dict[str, Any]:
     elif workload == "density":
         case["work"] = _work(0, 0, 0, theme_reads=1001, layout=1001, paint=1001, allocations=1)
         case["frame_work"] = _frame_work(layout=1001, render=1001)
+    elif workload == "scope-patch":
+        case["work"] = _work(65, 65, 0, theme_reads=65, paint=65, allocations=65)
+        case["frame_work"] = _frame_work(style=65, render=65, total=1002)
     else:  # head-scope
         case["work"] = _work(10_000, 10_000, 0, theme_reads=1, allocations=1)
         case["frame_work"] = _frame_work(style=10_000, render=10_000, total=10_000)
@@ -223,6 +227,7 @@ def _self_test_theme_baseline(root: Path) -> list[str]:
         ("theme-palette-switch", "layout_nodes_from_style", 1, "a palette switch laid out"),
         ("theme-density", "layout_nodes_from_style", 0, "a metrics change missed layout"),
         ("theme-density", "text_nodes_from_style", 1, "a metrics change reshaped"),
+        ("theme-scope-patch", "style_nodes_considered", 512, "scope patch became document-wide"),
     ):
         scenario = load_scenario(scenario_id, root)
         noisy = _quiet_case(scenario)
@@ -240,5 +245,23 @@ def _self_test_theme_baseline(root: Path) -> list[str]:
         loud = extract_nana(scenario, {"theme": _payload([noisy])}, source_paths=PATHS)
         if all(row.get("status") == "ok" for row in evaluate_invariants(scenario, loud)):
             errors.append(f"{scenario_id} must fail on {what} ({counter}={blown})")
+
+    # Optional #106/#104 counters propagate when present without breaking legacy payloads.
+    scope_scenario = load_scenario("theme-scope-patch", root)
+    with_extras = _quiet_case(scope_scenario)
+    with_extras["work"].update(
+        {
+            "theme_revision_candidates": 65,
+            "scope_cache_hits": 1,
+            "scope_nodes_invalidated": 65,
+            "scope_generation_changes": 1,
+        }
+    )
+    extra_report = extract_nana(
+        scope_scenario, {"theme": _payload([with_extras])}, source_paths=PATHS
+    )
+    extra_wc = extra_report.get("work_counters") or {}
+    if extra_wc.get("scope_cache_hits") != 1 or extra_wc.get("scope_nodes_invalidated") != 65:
+        errors.append(f"optional #106/#104 counters must propagate when present: {extra_wc}")
 
     return errors

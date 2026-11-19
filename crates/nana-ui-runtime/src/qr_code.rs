@@ -189,6 +189,12 @@ impl crate::WidgetVisual for QrCodeVisual {
         other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
     }
 
+    fn theme_dependency_mask(&self) -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::PALETTE
+            .union(nana_ui_core::ThemeDependencyMask::METRICS)
+            .union(nana_ui_core::ThemeDependencyMask::RECIPE_SHAPE)
+    }
+
     fn paint(&self, ctx: &crate::WidgetPaintCtx<'_>) -> crate::WidgetPaintOutput {
         let (module_size, (ox, oy)) = module_geometry(ctx.bounds, self.width);
         let quiet = QUIET_ZONE_MODULES as f32;

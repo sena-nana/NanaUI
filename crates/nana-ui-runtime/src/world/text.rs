@@ -3738,13 +3738,14 @@ impl UiWorld {
                             .component_content_box(id)
                             .map_or(layout.width, |content| content.width);
                         let runs = shaper.runs;
+                        let typography = self.node_theme(id).typography();
                         let intrinsic = shape_empty_state_text(
                             id,
                             empty_visual,
                             computed,
                             Some(width),
                             &mut shaper,
-                            self.theme.typography(),
+                            typography,
                         );
                         work.record_text_pass(1, usize::from(shaper.runs > runs));
                         validate_text_metrics(id, intrinsic.title)?;
@@ -3777,15 +3778,16 @@ impl UiWorld {
                         };
                         let body_width = width(crate::LayoutPartKind::Note).unwrap_or(wrap_width);
                         let runs = shaper.runs;
+                        let node_theme = self.node_theme(id);
                         let intrinsic = shape_modal_text(
                             id,
                             modal_visual,
                             computed,
-                            self.theme.recipes().dialog(),
+                            node_theme.recipes().dialog(),
                             Some(wrap_width),
                             Some(body_width),
                             &mut shaper,
-                            self.theme.typography(),
+                            node_theme.typography(),
                         );
                         work.record_text_pass(1, usize::from(shaper.runs > runs));
                         validate_text_metrics(id, intrinsic.title)?;
@@ -4970,13 +4972,14 @@ impl UiWorld {
                 if let Some(empty_visual) = self.widget_visual_as::<crate::EmptyStateVisual>(id) {
                     stampable = false;
                     let runs = shaper.runs;
+                    let typography = self.node_theme(id).typography();
                     let intrinsic = shape_empty_state_text(
                         id,
                         empty_visual,
                         &style,
                         None,
                         &mut shaper,
-                        self.theme.typography(),
+                        typography,
                     );
                     work.record_text_pass(1, usize::from(shaper.runs > runs));
                     validate_text_metrics(id, intrinsic.title)?;
@@ -4988,15 +4991,16 @@ impl UiWorld {
                 if let Some(modal_visual) = self.widget_visual_as::<crate::ModalFrameVisual>(id) {
                     stampable = false;
                     let runs = shaper.runs;
+                    let node_theme = self.node_theme(id);
                     let intrinsic = shape_modal_text(
                         id,
                         modal_visual,
                         &style,
-                        self.theme.recipes().dialog(),
+                        node_theme.recipes().dialog(),
                         None,
                         None,
                         &mut shaper,
-                        self.theme.typography(),
+                        node_theme.typography(),
                     );
                     work.record_text_pass(1, usize::from(shaper.runs > runs));
                     validate_text_metrics(id, intrinsic.title)?;

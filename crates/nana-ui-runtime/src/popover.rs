@@ -4,7 +4,7 @@ use std::sync::Arc;
 use nana_ui_core::UI_METRICS;
 use nana_ui_core::{
     FlexDirection, Icon, LengthSpec, OverflowSpec, PopoverAlignment, PopoverPlacement,
-    PositionSpec, SemanticColorRole, SemanticPalette, StyleModelRef, UI_BASE_TEXT_SIZE,
+    PositionSpec, SemanticColorRole, StyleModelRef, UI_BASE_TEXT_SIZE,
 };
 
 use crate::view_components::project_common;
@@ -24,13 +24,10 @@ pub(crate) const POPOVER_WIDTH: f32 = 240.0;
 const POPOVER_PADDING: f32 = nana_ui_core::space::LG;
 const POPOVER_GAP: f32 = nana_ui_core::space::SM;
 pub(crate) const ACTION_MENU_WIDTH: f32 = 200.0;
-/// Inner padding of a menu list surface (action menu, context menu, the
-/// `Select` drop-down). One authority so the three families cannot drift.
-pub(crate) const MENU_SURFACE_PADDING: f32 = nana_ui_core::space::XS;
-const ACTION_MENU_PADDING: f32 = MENU_SURFACE_PADDING;
 const ACTION_MENU_GAP: f32 = nana_ui_core::space::XS;
 pub(crate) const MENU_MIN_WIDTH: f32 = 120.0;
-pub(crate) const MENU_ITEM_GAP: f32 = nana_ui_core::space::XXS;
+#[cfg(test)]
+const ACTION_MENU_PADDING: f32 = nana_ui_core::space::XS;
 /// Indentation per tree level, shared by `TreeView` and sidebar tree rows.
 pub(crate) const TREE_DEPTH_STEP: f32 = nana_ui_core::space::XL;
 /// The `z-index` an open Popover, ActionMenu or HoverCard stacks at: its
@@ -305,6 +302,15 @@ impl crate::ComponentView for Popover {
         true
     }
 
+    fn wants_recipe_reproject() -> bool {
+        true
+    }
+
+    fn recipe_dependency_mask() -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::RECIPE_MENU
+            .union(nana_ui_core::ThemeDependencyMask::RECIPE_BUTTON)
+    }
+
     /// Items attach and detach under the open surface, so the anchored
     /// projection must re-run with them to keep the origin math current.
     fn wants_child_reproject() -> bool {
@@ -323,10 +329,12 @@ impl crate::ComponentView for Popover {
             self.trigger_content,
             self.open,
             self.width,
-            self.padding_theme
-                .map_or(self.padding, |step| world.theme().spacing().resolve(step)),
-            self.gap_theme
-                .map_or(self.gap, |step| world.theme().spacing().resolve(step)),
+            self.padding_theme.map_or(self.padding, |step| {
+                world.node_theme(id).spacing().resolve(step)
+            }),
+            self.gap_theme.map_or(self.gap, |step| {
+                world.node_theme(id).spacing().resolve(step)
+            }),
             self.placement,
             self.alignment,
             "popover",
@@ -353,13 +361,14 @@ pub struct ActionMenu {
 
 impl ActionMenu {
     pub fn new() -> Self {
+        let default_padding = nana_ui_core::MenuRecipe::DEFAULT.surface_padding;
         let mut popover = Popover::new()
             .alignment(PopoverAlignment::Start)
             .gap(ACTION_MENU_GAP)
             .width(ACTION_MENU_WIDTH)
-            .padding(ACTION_MENU_PADDING);
+            .padding(nana_ui_core::SpacingTokens::DEFAULT.resolve(default_padding));
         popover.gap_theme = Some(nana_ui_core::SpacingStep::Xs);
-        popover.padding_theme = Some(nana_ui_core::SpacingStep::Xs);
+        popover.padding_theme = Some(default_padding);
         Self {
             popover,
             disabled: false,
@@ -463,6 +472,16 @@ impl crate::ComponentView for ActionMenu {
     fn wants_metrics_reproject() -> bool {
         true
     }
+
+    fn wants_recipe_reproject() -> bool {
+        true
+    }
+
+    fn recipe_dependency_mask() -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::RECIPE_MENU
+            .union(nana_ui_core::ThemeDependencyMask::RECIPE_BUTTON)
+    }
+
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         hooks: Some(|hooks| {
             crate::framework::routes::popover(hooks);
@@ -486,6 +505,15 @@ impl crate::ComponentView for ActionMenu {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        let node_theme = world.node_theme(id);
+        let padding = self
+            .popover
+            .padding_theme
+            .map_or(self.popover.padding, |_| {
+                node_theme
+                    .spacing()
+                    .resolve(node_theme.recipes().menu().surface_padding)
+            });
         project_menu_surface(
             id,
             world,
@@ -497,14 +525,10 @@ impl crate::ComponentView for ActionMenu {
             self.popover.trigger_content,
             self.popover.open,
             self.popover.width,
+            padding,
             self.popover
-                .padding_theme
-                .map_or(self.popover.padding, |step| {
-                    world.theme().spacing().resolve(step)
-                }),
-            self.popover.gap_theme.map_or(self.popover.gap, |step| {
-                world.theme().spacing().resolve(step)
-            }),
+                .gap_theme
+                .map_or(self.popover.gap, |step| node_theme.spacing().resolve(step)),
             self.popover.placement,
             self.popover.alignment,
             "action-menu",
@@ -568,14 +592,15 @@ pub(crate) fn project_menu_surface(
         && trigger.as_deref().is_some_and(|label| !label.is_empty());
     // A labelled tool's glyph is an icon tool's, at the medium step, unless
     // set: at the small step its strokes read paler than the label.
+    let node_theme = world.node_theme(id);
     let trigger_icon_size = if labelled {
         Some(trigger_icon_size.unwrap_or_else(|| {
-            nana_ui_core::ControlSize::Medium.text_size_in(world.theme().typography())
+            nana_ui_core::ControlSize::Medium.text_size_in(node_theme.typography())
         }))
     } else {
         trigger_icon_size
     };
-    let labelled_gap = labelled.then(|| world.theme().spacing().sm);
+    let labelled_gap = labelled.then(|| node_theme.spacing().sm);
     let has_chrome = open || has_trigger;
     if has_chrome {
         let visual = MenuSurfaceVisual {
@@ -628,6 +653,7 @@ pub(crate) fn project_menu_surface(
         trigger_content_style()
     } else {
         triggered_menu_style(
+            node_theme,
             trigger_icon.is_some(),
             trigger.as_deref(),
             open,
@@ -641,7 +667,7 @@ pub(crate) fn project_menu_surface(
         // The label is measured as text; the glyph and its gap ride in the
         // leading inset.
         let mut style = crate::view_components::tool_box(trigger_button_style());
-        let inset = world.theme().metrics().small_control_padding_x();
+        let inset = node_theme.metrics().small_control_padding_x();
         let layout = Arc::make_mut(&mut style.layout);
         layout.padding_left = Some(LengthSpec::Px(inset + glyph + gap));
         layout.padding_right = Some(LengthSpec::Px(inset));
@@ -663,7 +689,7 @@ pub(crate) fn project_menu_surface(
     };
     let style = match tool.kind.filter(|_| has_trigger) {
         Some(kind) => {
-            let variant = world.theme().recipes().button().variant(kind);
+            let variant = node_theme.recipes().button().variant(kind);
             let mut style = style;
             style.foreground = Some(variant.foreground);
             style.background = if open {
@@ -774,6 +800,7 @@ pub(crate) fn overlay_surface_from_items(
 }
 
 fn triggered_menu_style(
+    node_theme: &nana_ui_core::CompiledTheme,
     icon_trigger: bool,
     trigger: Option<&str>,
     open: bool,
@@ -786,6 +813,7 @@ fn triggered_menu_style(
     if trigger.is_some() {
         return trigger_button_style();
     }
+    let menu = node_theme.recipes().menu();
     if !open {
         // Nothing to press and nothing to show, so the node keeps the smallest
         // box that stays out of the way.
@@ -797,24 +825,28 @@ fn triggered_menu_style(
                 overflow_y: OverflowSpec::Hidden,
                 ..nana_ui_core::LayoutStyle::default()
             }),
-            foreground: Some(SemanticColorRole::Text),
+            foreground: Some(menu.item_foreground),
             ..NodeStyle::default()
         };
     }
+    let item_gap = node_theme.spacing().resolve(menu.item_gap);
+    let mut theme = nana_ui_core::ThemeLayout::default();
+    theme.gap = Some(nana_ui_core::ThemeToken::MenuItemGap.into());
     NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
             width: Some(LengthSpec::Px(width.max(MENU_MIN_WIDTH))),
             min_width: Some(LengthSpec::Px(MENU_MIN_WIDTH)),
             direction: Some(FlexDirection::Column),
-            gap: Some(LengthSpec::Px(MENU_ITEM_GAP)),
+            gap: Some(LengthSpec::Px(item_gap)),
+            theme: theme.into(),
             padding_left: Some(LengthSpec::Px(padding)),
             padding_right: Some(LengthSpec::Px(padding)),
             padding_top: Some(LengthSpec::Px(padding)),
             padding_bottom: Some(LengthSpec::Px(padding)),
             ..nana_ui_core::LayoutStyle::default()
         }),
-        foreground: Some(SemanticColorRole::Text),
-        radius: Some(nana_ui_core::RadiusTier::Md),
+        foreground: Some(menu.item_foreground),
+        radius: Some(menu.surface_radius),
         ..NodeStyle::default()
     }
 }
@@ -892,8 +924,25 @@ fn bare_trigger_style(mut style: NodeStyle, open: bool) -> NodeStyle {
 }
 
 pub(crate) fn menu_surface_style(width: f32, padding: f32) -> NodeStyle {
+    menu_surface_style_in(
+        width,
+        padding,
+        nana_ui_core::builtin_theme(nana_ui_core::ThemeAppearance::Dark),
+    )
+}
+
+pub(crate) fn menu_surface_style_in(
+    width: f32,
+    padding: f32,
+    compiled: &nana_ui_core::CompiledTheme,
+) -> NodeStyle {
+    let menu = compiled.recipes().menu();
     let mut theme = nana_ui_core::ThemeLayout::default();
-    theme.gap = Some(crate::theme_intent::space(nana_ui_core::SpacingStep::Xxs));
+    theme.gap = Some(nana_ui_core::ThemeToken::MenuItemGap.into());
+    theme.padding_left = Some(nana_ui_core::ThemeToken::MenuSurfacePadding.into());
+    theme.padding_right = Some(nana_ui_core::ThemeToken::MenuSurfacePadding.into());
+    theme.padding_top = Some(nana_ui_core::ThemeToken::MenuSurfacePadding.into());
+    theme.padding_bottom = Some(nana_ui_core::ThemeToken::MenuSurfacePadding.into());
     theme.border_width =
         Some(nana_ui_core::ThemeToken::Border(nana_ui_core::BorderWidth::Hairline).into());
     theme.font_size = Some(nana_ui_core::ThemeToken::Type(nana_ui_core::TypeRole::Body).into());
@@ -903,7 +952,7 @@ pub(crate) fn menu_surface_style(width: f32, padding: f32) -> NodeStyle {
             width: Some(LengthSpec::Px(width)),
             min_width: Some(LengthSpec::Px(MENU_MIN_WIDTH)),
             direction: Some(FlexDirection::Column),
-            gap: Some(LengthSpec::Px(MENU_ITEM_GAP)),
+            gap: Some(LengthSpec::Px(compiled.spacing().resolve(menu.item_gap))),
             theme: theme.into(),
             padding_left: Some(LengthSpec::Px(padding)),
             padding_right: Some(LengthSpec::Px(padding)),
@@ -913,12 +962,30 @@ pub(crate) fn menu_surface_style(width: f32, padding: f32) -> NodeStyle {
             z_index: Some(MENU_OVERLAY_Z_INDEX),
             ..nana_ui_core::LayoutStyle::default()
         }),
-        background: Some(SemanticColorRole::Surface),
-        border: Some(SemanticColorRole::BorderSoft),
-        foreground: Some(SemanticColorRole::Text),
-        radius: Some(nana_ui_core::RadiusTier::Md),
+        background: Some(menu.surface_background),
+        border: Some(menu.surface_border),
+        foreground: Some(menu.item_foreground),
+        radius: Some(menu.surface_radius),
         ..NodeStyle::default()
     }
+}
+
+pub(crate) fn apply_menu_surface_recipe(
+    style: &mut NodeStyle,
+    theme: &nana_ui_core::CompiledTheme,
+) {
+    let menu = theme.recipes().menu();
+    style.background = Some(menu.surface_background);
+    style.border = Some(menu.surface_border);
+    style.foreground = Some(menu.item_foreground);
+    style.radius = Some(menu.surface_radius);
+    let pad = theme.spacing().resolve(menu.surface_padding);
+    let layout = Arc::make_mut(&mut style.layout);
+    layout.gap = Some(LengthSpec::Px(theme.spacing().resolve(menu.item_gap)));
+    layout.padding_left = Some(LengthSpec::Px(pad));
+    layout.padding_right = Some(LengthSpec::Px(pad));
+    layout.padding_top = Some(LengthSpec::Px(pad));
+    layout.padding_bottom = Some(LengthSpec::Px(pad));
 }
 
 pub(crate) fn project_anchored_menu(
@@ -955,6 +1022,7 @@ pub(crate) fn project_anchored_menu(
         mutations.set_widget_visual::<MenuSurfaceVisual>(id, None);
     }
     let mut style = style.clone();
+    apply_menu_surface_recipe(&mut style, world.node_theme(id));
     Arc::make_mut(&mut style.layout).hidden = !open;
     project_common(
         id,
@@ -1070,7 +1138,8 @@ impl MenuSurfaceVisual {
             self.overlay
                 .is_some_and(|overlay| overlay.trigger_label_gap.is_some()),
             style,
-            &style_model.palette,
+            style_model,
+            theme,
             surface,
             &world.component_content_parts(id),
         )
@@ -1084,6 +1153,14 @@ impl WidgetVisual for MenuSurfaceVisual {
 
     fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
         other.downcast_ref::<Self>() == Some(self)
+    }
+
+    fn theme_dependency_mask(&self) -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::PALETTE
+            .union(nana_ui_core::ThemeDependencyMask::METRICS)
+            .union(nana_ui_core::ThemeDependencyMask::EFFECT)
+            .union(nana_ui_core::ThemeDependencyMask::RECIPE_MENU)
+            .union(nana_ui_core::ThemeDependencyMask::RECIPE_SHAPE)
     }
 
     fn is_menu_surface(&self) -> bool {
@@ -1383,11 +1460,16 @@ impl MenuSurfaceVisual {
             );
         }
         if geometry.surface.height > 1.0 && geometry.surface.width > 1.0 {
+            let surface_radius = theme
+                .recipes()
+                .menu()
+                .surface_radius
+                .resolve(style_model.metrics);
             let quad = WidgetQuad {
                 rect: geometry.surface,
                 fill: Some(geometry.background),
                 border: Some((geometry.border, 1.0)),
-                corner_radius: [chrome_radii.md; 4],
+                corner_radius: [surface_radius; 4],
                 elevation: Some(geometry.elevation),
                 use_parent_clips: geometry.trigger_surface.is_none(),
                 ..WidgetQuad::default()
@@ -1507,6 +1589,7 @@ impl MenuSurfaceVisual {
 /// A triggered menu's paint over its published trigger parts: the label in
 /// its `TextContent` lane, the glyph in its `LeadingContent` square
 /// (`UiWorld::solve_content_parts_at`). Neither is placed here.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn menu_surface_geometry(
     bounds: LayoutBox,
     trigger: Option<&Arc<str>>,
@@ -1515,13 +1598,15 @@ pub(crate) fn menu_surface_geometry(
     trigger_content: bool,
     trigger_labelled: bool,
     style: &crate::ComputedStyle,
-    palette: &SemanticPalette,
+    style_model: StyleModelRef,
+    theme: &nana_ui_core::CompiledTheme,
     surface: LayoutBox,
     parts: &crate::layout_engine::parts::ContentParts,
 ) -> MenuSurfaceGeometry {
     use crate::LayoutPartKind;
     use crate::layout_engine::parts::part_bounds;
-    let is_light = palette.background.as_rgba_array()[0] > 0.5;
+    let palette = &style_model.palette;
+    let menu = theme.recipes().menu();
     let has_trigger =
         trigger.is_some() || trigger_icon.is_some() || trigger_image.is_some() || trigger_content;
     let trigger_h = if has_trigger { bounds.height } else { 0.0 };
@@ -1561,21 +1646,9 @@ pub(crate) fn menu_surface_geometry(
         search: None,
         search_field: None,
         options: Vec::new(),
-        elevation: ComponentElevation {
-            color: nana_ui_core::PaintColor::srgb([
-                0.0,
-                0.0,
-                0.0,
-                if is_light { 0.30 } else { 0.55 },
-            ]),
-            offset_x: 0.0,
-            offset_y: 4.0,
-            blur_radius: if is_light { 14.0 } else { 18.0 },
-            spread_radius: 0.0,
-            inset: false,
-        },
-        background: palette.surface.as_rgba_array(),
-        border: palette.border_soft.as_rgba_array(),
+        elevation: ComponentElevation::from_shadow(theme.effects().shadow(menu.surface_elevation)),
+        background: style_model.color(menu.surface_background).as_rgba_array(),
+        border: style_model.color(menu.surface_border).as_rgba_array(),
     }
 }
 

@@ -1,10 +1,14 @@
 use serde::{Deserialize, Serialize};
 
 pub mod compiled;
+pub mod controls;
 pub mod definition;
+pub mod dependency;
 pub mod dialog;
 pub mod layout;
 pub use layout::{ThemeExpr, ThemeLayout, ThemeProperty, ThemeToken};
+pub mod package;
+pub mod patch;
 pub mod recipe;
 pub mod registry;
 pub mod scrollbar;
@@ -13,12 +17,26 @@ pub mod toast;
 pub mod tokens;
 
 pub use compiled::{CompiledTheme, builtin_theme, builtin_theme_arc};
+pub use controls::{InputRecipe, MenuRecipe, SelectRecipe, TabsRecipe, TreeViewRecipe};
 pub use definition::{
     DesignTokens, FoundationTokens, ThemeCompileError, ThemeDefinition, ThemeGeneration, ThemeId,
     ThemeIdentity, ThemeSchemaVersion,
 };
+pub use dependency::{
+    ScopeGeneration, ThemeCategoryGenerations, ThemeDependencyMask, ThemeRecipeFamily, ThemeScopeId,
+};
 pub use dialog::{
     DialogAlign, DialogDividerInset, DialogInsets, DialogMotion, DialogRecipe, DialogTransition,
+};
+pub use package::{
+    CompiledThemePackage, MAX_COLOR_OVERRIDES, MAX_FAMILY_PATCHES, MAX_INHERITANCE_DEPTH,
+    MAX_METADATA_STR_LEN, MAX_PACKAGE_BYTES, ThemePackage, ThemePackageError,
+    ThemePackageMigration, ThemePackageProvenance, compile_theme_packages,
+    migrate_theme_package_json,
+};
+pub use patch::{
+    BorderPatch, ButtonRecipePatch, EffectPatch, MotionPatch, OpacityPatch, RecipePatch,
+    SpacingPatch, SurfacePatch, ThemeMetricsPatch, ThemePatch, TypographyPatch,
 };
 pub use recipe::{
     ButtonRecipe, ButtonRecipeDraft, ButtonVariantDraft, ButtonVariantRecipe, CompiledRecipes,
@@ -470,7 +488,7 @@ impl RadiusTier {
 /// The two variants are not decoration: some controls floor their height and
 /// let content grow them, others are fixed. Collapsing them would change
 /// layout for anything that overflows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ControlHeight {
     /// Floor. The control is at least this tall; content may grow it.
     Min(crate::ControlSize),
@@ -540,7 +558,7 @@ impl From<crate::ControlSize> for ControlPadding {
 /// Not a [`ControlPadding`]: a card is not a large button, and the theme
 /// carries a dedicated `panel_padding_*` pair. `Panel` writes both axes;
 /// `PanelX` is the tab-strip case that only insets horizontally.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SurfacePadding {
     /// Cards, settings groups, form surfaces.
     Panel,
@@ -567,7 +585,7 @@ impl SurfacePadding {
 /// [`crate::ControlSize`] on them is a different step — a Small icon button is
 /// not "the icon-button metric", it is the compact control height on both
 /// axes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SquareSize {
     IconButton,
     Control(crate::ControlSize),
@@ -609,7 +627,7 @@ fn default_radius_xxl() -> f32 {
 /// renderer; Issue #100 §3 moves it into Component Recipes. Carrying resolved
 /// values is the part that has to be true first — the renderer consumes, it
 /// does not resolve.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ChromeRadii {
     pub xs: f32,
     pub sm: f32,

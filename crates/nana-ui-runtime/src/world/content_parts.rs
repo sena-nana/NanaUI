@@ -45,15 +45,16 @@ impl UiWorld {
                 ascent: None,
             };
         }
-        let recipe = self.theme.recipes().dialog();
+        let node_theme = self.node_theme(id);
+        let recipe = node_theme.recipes().dialog();
         let chrome = crate::overlay_surfaces::ModalChrome::measure_in(
             kind,
             presentation.title,
             presentation.description,
             slots,
             recipe,
-            self.theme.border().hairline,
-            &self.theme,
+            node_theme.border().hairline,
+            node_theme,
         );
         let body_copy = presentation.body.map_or(0.0, |metrics| metrics.height);
         let body_slot = slots
@@ -61,7 +62,7 @@ impl UiWorld {
             .and_then(|id| self.component_layout_box(id))
             .map_or(0.0, |region| region.height);
         let body_gap = if body_copy > 0.0 && body_slot > 0.0 {
-            self.theme.spacing().md
+            node_theme.spacing().md
         } else {
             0.0
         };
@@ -121,7 +122,7 @@ impl UiWorld {
                     crate::LayoutPartKind::Detail,
                     LayoutBox {
                         x,
-                        y: y + title + self.theme.spacing().xs,
+                        y: y + title + self.node_theme(id).spacing().xs,
                         width,
                         height: frame.presentation.description.unwrap_or_default().height,
                     },
@@ -269,7 +270,7 @@ impl UiWorld {
             action,
             ..
         } = self.widget_visual_as::<crate::EmptyStateVisual>(id)?;
-        let spacing = self.theme.spacing();
+        let spacing = self.node_theme(id).spacing();
         let gap = if *compact { spacing.xxs } else { spacing.sm };
         Some(EmptyStateInputs {
             icon: icon.map(|_| spacing.page_tight + spacing.xxs),
@@ -321,8 +322,18 @@ impl UiWorld {
 
     /// Between a range's label and its track, and its track and readout:
     /// the spacing ladder's step for the control size.
+    #[cfg(test)]
     pub(crate) fn range_gap(&self, size: nana_ui_core::ControlSize) -> f32 {
         let spacing = self.theme.spacing();
+        match size {
+            nana_ui_core::ControlSize::Small => spacing.sm,
+            nana_ui_core::ControlSize::Medium => spacing.md,
+            nana_ui_core::ControlSize::Large => spacing.lg,
+        }
+    }
+
+    pub(crate) fn range_gap_for(&self, id: StableNodeId, size: nana_ui_core::ControlSize) -> f32 {
+        let spacing = self.node_theme(id).spacing();
         match size {
             nana_ui_core::ControlSize::Small => spacing.sm,
             nana_ui_core::ControlSize::Medium => spacing.md,

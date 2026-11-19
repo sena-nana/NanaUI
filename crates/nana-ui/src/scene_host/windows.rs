@@ -893,6 +893,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let backdrop_opacity = self.program.appearance_backdrop_opacity_for(id);
         let material_mode = self.program.window_material_mode_for(id);
         let window_background = self.program.window_background();
+        let initial_theme = self.resolve_window_theme_with_settings(id, &settings);
+        let initial_appearance = initial_theme.appearance();
         // A composed window is provisional here for the same reason the first
         // window is: `WS_EX_NOREDIRECTIONBITMAP` is decided at creation, and
         // every step that could reject the composition target comes after it.
@@ -923,7 +925,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             );
             let (requested_material, applied) = apply_window_material(
                 window.as_ref(),
-                self.last_theme,
+                initial_appearance,
                 &settings,
                 material_mode,
                 backdrop_opacity,
@@ -986,7 +988,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         self.note_native_chrome_write();
         apply_resolved_presentation(
             window.as_ref(),
-            self.last_theme,
+            initial_appearance,
             &settings,
             &presentation,
             backdrop_opacity,
@@ -1039,6 +1041,12 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             return Err(error);
         }
         pending_native.0 = None;
+        let _ = self.program.with_document_mut(id, |document| {
+            document
+                .context_mut()
+                .set_theme_tokens(Arc::clone(&initial_theme))
+        });
+        self.window_themes.insert(id, initial_theme);
         self.sync_document_reduced_motion(id);
         self.sync_document_eyedropper(id);
         self.window_ids.insert(window.id(), id);
@@ -1217,6 +1225,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         // same identity is not treated as closing.
         self.closing_windows.remove(&id);
         if let Some(host) = self.window_contexts.remove(&id) {
+            self.window_themes.remove(&id);
             #[cfg(target_os = "windows")]
             if let Some(parent_id) = host
                 .settings
@@ -1492,21 +1501,74 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             .then_some(*id)
         })
     }
+    fn resolve_window_theme_from(
+        &self,
+        id: WindowId,
+        parent: Option<WindowId>,
+        role: WindowRole,
+    ) -> Arc<crate::CompiledTheme> {
+        const MAX_PARENT_DEPTH: usize = 8;
+        if let Some(theme) = self.program.theme_for(id) {
+            return theme;
+        }
+        if role == WindowRole::Underlay {
+            return self.program.theme();
+        }
+        let mut cursor = parent;
+        let mut depth = 0usize;
+        while let Some(parent_id) = cursor {
+            if parent_id == id || depth >= MAX_PARENT_DEPTH {
+                break;
+            }
+            if let Some(theme) = self.program.theme_for(parent_id) {
+                return theme;
+            }
+            cursor = self
+                .window_contexts
+                .get(&parent_id)
+                .filter(|host| host.settings.role != WindowRole::Underlay)
+                .and_then(|host| host.settings.parent);
+            depth += 1;
+        }
+        self.program.theme()
+    }
+
+    pub(super) fn resolve_window_theme_with_settings(
+        &self,
+        id: WindowId,
+        settings: &WindowDescriptor,
+    ) -> Arc<crate::CompiledTheme> {
+        self.resolve_window_theme_from(id, settings.parent, settings.role)
+    }
+
+    pub(super) fn resolve_window_theme(&self, id: WindowId) -> Arc<crate::CompiledTheme> {
+        let (parent, role) = self
+            .window_contexts
+            .get(&id)
+            .map_or((None, WindowRole::Main), |host| {
+                (host.settings.parent, host.settings.role)
+            });
+        self.resolve_window_theme_from(id, parent, role)
+    }
+
     pub(super) fn sync_appearance(&mut self) {
-        let theme = self.program.theme();
-        self.last_theme = theme.appearance();
-        // A new theme reaches the documents of windows already open, as it
-        // reaches new ones when they are created; an unchanged `Arc` costs
-        // nothing.
-        if !Arc::ptr_eq(&theme, &self.installed_theme) {
-            for id in self.known_window_ids() {
-                // Installing changed tokens marks the document dirty, which
-                // schedules its next frame (examples/theme-switch-probe.rs).
+        let root_theme = self.program.theme();
+        self.last_theme = root_theme.appearance();
+        self.installed_theme = root_theme;
+        // Per-window and auxiliary-inherited themes reach open window documents
+        // incrementally; unchanged `Arc`s cost nothing.
+        for id in self.known_window_ids() {
+            let theme = self.resolve_window_theme(id);
+            let changed = self
+                .window_themes
+                .get(&id)
+                .is_none_or(|prev| !Arc::ptr_eq(prev, &theme));
+            if changed {
                 let _ = self.program.with_document_mut(id, |document| {
                     document.context_mut().set_theme_tokens(Arc::clone(&theme))
                 });
+                self.window_themes.insert(id, theme);
             }
-            self.installed_theme = theme;
         }
         if self.render_suspended {
             return;
@@ -1536,7 +1598,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     ) -> Result<(), HostedGpuError> {
         let mode = self.program.window_material_mode_for(id);
         let desired = WindowAppearance {
-            theme: self.program.theme().appearance(),
+            theme: self.resolve_window_theme(id).appearance(),
             material: material_override.unwrap_or(mode),
             opacity: AppearanceSettings::clamp_backdrop_opacity(
                 self.program.appearance_backdrop_opacity_for(id),

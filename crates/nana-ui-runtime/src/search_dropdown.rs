@@ -410,6 +410,15 @@ impl ComponentView for SearchDropdown {
         }
     }
 
+    fn wants_recipe_reproject() -> bool {
+        true
+    }
+
+    fn recipe_dependency_mask() -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::RECIPE_SELECT
+            .union(nana_ui_core::ThemeDependencyMask::RECIPE_MENU)
+    }
+
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         let (label, placeholder) = self.display_label();
         let visual = SelectVisual {
@@ -456,30 +465,33 @@ impl ComponentView for SearchDropdown {
                 );
             }
         }
+        let recipe = world.node_theme(id).recipes().select();
         let mut style = self.style.clone();
-        style.foreground = Some(if self.inactive() || placeholder {
-            nana_ui_core::SemanticColorRole::Faint
+        style.foreground = Some(if self.inactive() {
+            recipe.disabled_foreground
+        } else if placeholder {
+            recipe.placeholder
         } else {
-            nana_ui_core::SemanticColorRole::Text
+            recipe.foreground
         });
         style.background = Some(if self.inactive() {
-            nana_ui_core::SemanticColorRole::Subtle
+            recipe.inactive_background
         } else {
-            nana_ui_core::SemanticColorRole::Background
+            recipe.background
         });
         style.border = Some(if self.invalid {
-            nana_ui_core::SemanticColorRole::Danger
+            recipe.invalid_border
         } else if self.opened {
-            nana_ui_core::SemanticColorRole::BorderSoft
+            recipe.open_border
         } else {
-            nana_ui_core::SemanticColorRole::Border
+            recipe.border
         });
-        style.interaction.hovered.border = Some(nana_ui_core::SemanticColorRole::BorderStrong);
-        style.interaction.focused.border = Some(nana_ui_core::SemanticColorRole::FocusBorder);
+        style.interaction.hovered.border = Some(recipe.hover_border);
+        style.interaction.focused.border = Some(recipe.focus_border);
         style.interaction.disabled = SemanticPaint {
-            foreground: Some(nana_ui_core::SemanticColorRole::Faint),
-            background: Some(nana_ui_core::SemanticColorRole::Subtle),
-            border: Some(nana_ui_core::SemanticColorRole::Border),
+            foreground: Some(recipe.disabled_foreground),
+            background: Some(recipe.disabled_background),
+            border: Some(recipe.disabled_border),
             ..SemanticPaint::default()
         };
         project_common(

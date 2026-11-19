@@ -25,9 +25,14 @@ impl ControlSize {
     }
 
     pub const fn line_height(self) -> f32 {
+        self.line_height_in(crate::TypographyTokens::DEFAULT)
+    }
+
+    /// Resolve standard control line height from the installed typography scale.
+    pub const fn line_height_in(self, typography: crate::TypographyTokens) -> f32 {
         match self {
-            Self::Small | Self::Medium => crate::type_scale::LINE,
-            Self::Large => crate::type_scale::LINE_TALL,
+            Self::Small | Self::Medium => typography.line,
+            Self::Large => typography.line_tall,
         }
     }
 
@@ -173,7 +178,7 @@ impl ControlSize {
 /// Left inset of a radio ring inside its row, so hover chrome is not flush.
 pub const RADIO_ROW_INSET: f32 = space::XS;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ButtonKind {
     Ghost,
     Subtle,

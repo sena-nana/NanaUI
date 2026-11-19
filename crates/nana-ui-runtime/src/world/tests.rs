@@ -9085,6 +9085,7 @@ fn palette_only_theme_switch_is_paint_work_and_never_layout_or_reshape() {
     world.commit(queue).unwrap();
     let work = world.take_system_work();
     world.resolve_styles(&work.style).unwrap();
+    assert!(world.take_style_hit_changed());
 
     world.begin_frame_counters();
     let mut theme = MutationQueue::new();
@@ -9092,12 +9093,25 @@ fn palette_only_theme_switch_is_paint_work_and_never_layout_or_reshape() {
     world.commit(theme).unwrap();
     let work = world.take_system_work();
     assert!(
-        work.style.is_empty(),
-        "SetTheme schedules RENDER, not STYLE"
+        work.style.contains(&node(1)),
+        "SetTheme schedules dependency-filtered STYLE (#106)"
     );
     assert!(work.layout_frontier_seeds.is_empty());
-    assert_eq!(work.render_extraction.len(), 2, "both live nodes repaint");
+    assert!(
+        work.render_extraction.is_empty(),
+        "RENDER is promoted only when StyleSystem resolves a diff"
+    );
     world.resolve_styles(&work.style).unwrap();
+    assert!(
+        !world.take_style_hit_changed(),
+        "color-only switch leaves hit geometry intact"
+    );
+    let render_work = world.take_system_work();
+    assert_eq!(
+        render_work.render_extraction.len(),
+        2,
+        "both live nodes repaint"
+    );
     let counters = world.last_theme_work_counters();
     assert_eq!(
         counters.paint_nodes_from_style, 2,
@@ -9106,12 +9120,14 @@ fn palette_only_theme_switch_is_paint_work_and_never_layout_or_reshape() {
     assert_eq!(counters.layout_nodes_from_style, 0);
     assert_eq!(counters.text_nodes_from_style, 0, "colour is not a reshape");
     assert!(counters.is_paint_only());
-    assert_eq!(
-        counters.style_nodes_considered, 0,
-        "no style pass ran for this switch"
+    assert_eq!(counters.resolved_style_changed, 2);
+    let reads_before_extract = counters.theme_reads;
+    assert!(
+        reads_before_extract > 0,
+        "palette resolved ahead of extract"
     );
 
-    let extracted = world.extract_nodes(&work.render_extraction);
+    let extracted = world.extract_nodes(&render_work.render_extraction);
     world.end_frame_counters();
     assert_eq!(
         extracted[0].style.background,
@@ -9121,9 +9137,10 @@ fn palette_only_theme_switch_is_paint_work_and_never_layout_or_reshape() {
                 .as_rgba_array()
         )
     );
-    assert!(
-        world.last_theme_work_counters().theme_reads > 0,
-        "the palette is re-read, and today extract is where"
+    assert_eq!(
+        world.last_theme_work_counters().theme_reads,
+        reads_before_extract,
+        "extract must not re-read theme palette after StyleSystem resolution"
     );
 }
 
@@ -9171,10 +9188,11 @@ fn metrics_change_adds_layout_invalidation_to_the_same_theme_install() {
 
     let counters = world.last_theme_work_counters();
     assert_eq!(counters.layout_nodes_from_style, 1);
-    assert_eq!(counters.paint_nodes_from_style, 2);
+    assert_eq!(counters.theme_revision_candidates, 1);
+    assert_eq!(counters.theme_dependency_skipped, 1);
     assert!(!counters.is_paint_only());
     let work = world.take_system_work();
-    assert_eq!(work.render_extraction.len(), 2);
+    assert_eq!(work.style, vec![node(1)]);
     assert_eq!(seed_nodes(&work.layout_frontier_seeds), vec![node(1)]);
 }
 
@@ -9248,6 +9266,13 @@ fn a_corner_shape_change_is_paint_only() {
         document(1),
         NodeKind::Element { tag: "div".into() },
     );
+    queue.set_style(
+        node(1),
+        NodeStyle {
+            radius: Some(nana_ui_core::RadiusTier::Md),
+            ..NodeStyle::default()
+        },
+    );
     world.commit(queue).unwrap();
     let work = world.take_system_work();
     world.resolve_styles(&work.style).unwrap();
@@ -9265,6 +9290,8 @@ fn a_corner_shape_change_is_paint_only() {
         nana_ui_core::SemanticPalette::dark().surface,
     ));
     world.commit(tokens).unwrap();
+    let style_work = world.take_system_work();
+    world.resolve_styles(&style_work.style).unwrap();
     world.end_frame_counters();
 
     assert_eq!(
@@ -9277,7 +9304,7 @@ fn a_corner_shape_change_is_paint_only() {
     assert!(counters.is_paint_only());
     let work = world.take_system_work();
     assert!(work.layout_frontier_seeds.is_empty());
-    assert_eq!(work.render_extraction.len(), 1);
+    assert_eq!(work.render_extraction, vec![node(1)]);
 }
 
 /// Issue #100 §15: a retained frame that changed nothing must not walk or
@@ -9503,6 +9530,7 @@ fn set_theme_marks_render_not_style_when_only_palette_roles_change() {
     world.commit(queue).unwrap();
     let work = world.take_system_work();
     world.resolve_styles(&work.style).unwrap();
+    assert!(world.take_style_hit_changed());
     assert_eq!(
         world.extract_nodes(&[node(1)])[0].style.background,
         Some(nana_ui_core::SemanticPalette::dark().accent.as_rgba_array())
@@ -9512,11 +9540,15 @@ fn set_theme_marks_render_not_style_when_only_palette_roles_change() {
     theme.set_preset_theme(ThemeAppearance::Light);
     world.commit(theme).unwrap();
     let work = world.take_system_work();
-    assert!(work.style.is_empty());
+    assert_eq!(work.style, vec![node(1)]);
     assert!(work.layout_frontier_seeds.is_empty());
-    assert_eq!(work.render_extraction, vec![node(1)]);
+    assert!(work.render_extraction.is_empty());
+    world.resolve_styles(&work.style).unwrap();
+    assert!(!world.take_style_hit_changed());
+    let render_work = world.take_system_work();
+    assert_eq!(render_work.render_extraction, vec![node(1)]);
     assert_eq!(
-        world.extract_nodes(&work.render_extraction)[0]
+        world.extract_nodes(&render_work.render_extraction)[0]
             .style
             .background,
         Some(
@@ -9586,7 +9618,9 @@ fn style_tokens_drive_surface_background_and_titlebar_extract_alphas() {
     ));
     world.commit(tokens).unwrap();
     let work = world.take_system_work();
-    assert!(work.style.is_empty());
+    assert_eq!(work.style, vec![node(1), node(2), node(3)]);
+    assert!(work.layout_frontier_seeds.is_empty());
+    world.resolve_styles(&work.style).unwrap();
     let extracted = world.extract_nodes(&[node(1), node(2), node(3)]);
     assert!(
         (extracted[0].style.background.unwrap()[3] - 0.5).abs() < f32::EPSILON,
@@ -9681,7 +9715,8 @@ fn theme_change_refreshes_inherited_foreground_on_extract_only() {
     theme.set_preset_theme(ThemeAppearance::Light);
     world.commit(theme).unwrap();
     let work = world.take_system_work();
-    assert!(work.style.is_empty());
+    assert_eq!(work.style, vec![node(1)]);
+    world.resolve_styles(&work.style).unwrap();
     assert_eq!(
         world.extract_nodes(&[node(3)])[0].style.color,
         Some(
@@ -9689,6 +9724,403 @@ fn theme_change_refreshes_inherited_foreground_on_extract_only() {
                 .accent
                 .as_rgba_array()
         )
+    );
+}
+
+#[test]
+fn motion_only_theme_change_skips_style_layout_text_and_render() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(
+        node(1),
+        document(1),
+        NodeKind::Element { tag: "div".into() },
+    );
+    queue.set_style(
+        node(1),
+        NodeStyle {
+            background: Some(SemanticColorRole::Surface),
+            ..NodeStyle::default()
+        },
+    );
+    queue.create(node(2), document(1), NodeKind::Text);
+    queue.set_text(
+        node(2),
+        TextContent {
+            value: "Hello".into(),
+        },
+    );
+    queue.insert(node(1), node(2), None);
+    world.commit(queue).unwrap();
+    let work = world.take_system_work();
+    world.resolve_styles(&work.style).unwrap();
+
+    let base = world.theme().clone();
+    let mut motion = base.motion();
+    motion.hover_color_ms = motion.hover_color_ms.saturating_add(40);
+    let patched = Arc::new(
+        nana_ui_core::ThemePatch::default()
+            .with_motion(motion)
+            .apply_to_compiled(&base)
+            .unwrap(),
+    );
+
+    world.begin_frame_counters();
+    let mut tokens = MutationQueue::new();
+    tokens.set_theme_tokens(patched);
+    world.commit(tokens).unwrap();
+    world.end_frame_counters();
+
+    let work = world.take_system_work();
+    assert!(work.style.is_empty());
+    assert!(work.text.is_empty());
+    assert!(work.layout_frontier_seeds.is_empty());
+    assert!(work.render_extraction.is_empty());
+    let counters = world.last_theme_work_counters();
+    assert_eq!(counters.style_motion_policy_invalidations, 1);
+    assert_eq!(counters.theme_revision_candidates, 0);
+    assert_eq!(counters.paint_nodes_from_style, 0);
+}
+
+#[test]
+fn accent_only_theme_change_skips_non_accent_nodes() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(
+        node(1),
+        document(1),
+        NodeKind::Element { tag: "div".into() },
+    );
+    queue.set_style(
+        node(1),
+        NodeStyle {
+            background: Some(SemanticColorRole::Surface),
+            ..NodeStyle::default()
+        },
+    );
+    queue.create(
+        node(2),
+        document(1),
+        NodeKind::Element { tag: "div".into() },
+    );
+    queue.set_style(
+        node(2),
+        NodeStyle {
+            background: Some(SemanticColorRole::Accent),
+            ..NodeStyle::default()
+        },
+    );
+    queue.insert(node(1), node(2), None);
+    for id in [3, 4] {
+        queue.create(
+            node(id),
+            document(1),
+            NodeKind::Element { tag: "div".into() },
+        );
+        queue.set_style(
+            node(id),
+            NodeStyle {
+                background: Some(SemanticColorRole::Muted),
+                ..NodeStyle::default()
+            },
+        );
+        queue.insert(node(1), node(id), None);
+    }
+    world.commit(queue).unwrap();
+    let work = world.take_system_work();
+    world.resolve_styles(&work.style).unwrap();
+
+    let base = world.theme().clone();
+    let mut next_colors = nana_ui_core::ColorOverrides::new();
+    next_colors.set(
+        SemanticColorRole::Accent,
+        nana_ui_core::SemanticColor::rgb8(220, 40, 120),
+    );
+    let patched = Arc::new(
+        nana_ui_core::ThemePatch::default()
+            .with_colors(next_colors)
+            .apply_to_compiled(&base)
+            .unwrap(),
+    );
+
+    world.begin_frame_counters();
+    let mut tokens = MutationQueue::new();
+    tokens.set_theme_tokens(patched);
+    world.commit(tokens).unwrap();
+    let work = world.take_system_work();
+    assert_eq!(work.style, vec![node(2)]);
+    world.resolve_styles(&work.style).unwrap();
+    world.end_frame_counters();
+
+    let counters = world.last_theme_work_counters();
+    assert_eq!(counters.theme_revision_candidates, 1);
+    assert_eq!(counters.theme_dependency_skipped, 3);
+    let render_work = world.take_system_work();
+    assert_eq!(render_work.render_extraction, vec![node(2)]);
+}
+
+#[test]
+fn typography_weight_vs_font_size_invalidations_are_separated() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(
+        node(1),
+        document(1),
+        NodeKind::Element { tag: "div".into() },
+    );
+    queue.set_style(
+        node(1),
+        NodeStyle {
+            layout: LayoutStyle {
+                font_size: Some(13.0),
+                font_weight: Some(400),
+                line_height: Some(nana_ui_core::LineHeightSpec::Relative(1.2)),
+                ..LayoutStyle::default()
+            }
+            .into(),
+            ..NodeStyle::default()
+        },
+    );
+    queue.create(node(2), document(1), NodeKind::Text);
+    queue.set_text(
+        node(2),
+        TextContent {
+            value: "Heading".into(),
+        },
+    );
+    queue.set_style(
+        node(2),
+        NodeStyle {
+            type_weight: Some(nana_ui_core::TextWeight::Bold),
+            type_role: Some(nana_ui_core::TypeRole::Body),
+            ..NodeStyle::default()
+        },
+    );
+    queue.create(node(3), document(1), NodeKind::Text);
+    queue.set_text(
+        node(3),
+        TextContent {
+            value: "Section".into(),
+        },
+    );
+    queue.set_style(
+        node(3),
+        NodeStyle {
+            type_role: Some(nana_ui_core::TypeRole::Heading),
+            type_weight: Some(nana_ui_core::TextWeight::Medium),
+            ..NodeStyle::default()
+        },
+    );
+    queue.insert(node(1), node(2), None);
+    queue.insert(node(1), node(3), None);
+    world.commit(queue).unwrap();
+    let work = world.take_system_work();
+    world.resolve_styles(&work.style).unwrap();
+
+    // 1. Change `bold` weight only (`TYPOGRAPHY_SHAPE`): node(2) changes shape without size change;
+    //    node(3) resolves identical weight (Medium) and suppresses downstream dirty.
+    let base = world.theme().clone();
+    let mut typo = base.typography();
+    typo.bold = 800;
+    let weight_patched = Arc::new(
+        nana_ui_core::ThemePatch::default()
+            .with_typography(typo)
+            .apply_to_compiled(&base)
+            .unwrap(),
+    );
+    world.begin_frame_counters();
+    let mut tokens = MutationQueue::new();
+    tokens.set_theme_tokens(weight_patched.clone());
+    world.commit(tokens).unwrap();
+    let work = world.take_system_work();
+    world.resolve_styles(&work.style).unwrap();
+    world.end_frame_counters();
+    let weight_counters = world.last_theme_work_counters();
+    assert_eq!(weight_counters.style_text_shape_invalidations, 1);
+    assert_eq!(weight_counters.style_text_layout_invalidations, 0);
+    assert_eq!(weight_counters.resolved_style_changed, 1);
+    assert_eq!(weight_counters.resolved_style_unchanged, 2);
+
+    // 2. Change `heading` size only (`TYPOGRAPHY_LAYOUT`): node(3) changes, node(1)+node(2) suppressed.
+    let mut typo2 = weight_patched.typography();
+    typo2.heading = 22.0;
+    let size_patched = Arc::new(
+        nana_ui_core::ThemePatch::default()
+            .with_typography(typo2)
+            .apply_to_compiled(&weight_patched)
+            .unwrap(),
+    );
+    world.begin_frame_counters();
+    let mut tokens = MutationQueue::new();
+    tokens.set_theme_tokens(size_patched);
+    world.commit(tokens).unwrap();
+    let work = world.take_system_work();
+    world.resolve_styles(&work.style).unwrap();
+    world.end_frame_counters();
+    let size_counters = world.last_theme_work_counters();
+    assert_eq!(size_counters.style_text_shape_invalidations, 1);
+    assert_eq!(size_counters.resolved_style_changed, 1);
+    assert_eq!(size_counters.resolved_style_unchanged, 2);
+}
+
+#[test]
+fn button_recipe_only_theme_change_skips_non_button_nodes() {
+    let mut context = crate::AppContext::new();
+    let doc = document(1);
+    let btn = context
+        .create_component(doc, crate::Button::new("Save"))
+        .unwrap();
+    let badge = context
+        .create_component(
+            doc,
+            crate::StatusBadge::new("OK", nana_ui_core::StatusTone::Success),
+        )
+        .unwrap();
+    let work = context.compat_world_mut().take_system_work();
+    context
+        .compat_world_mut()
+        .resolve_styles(&work.style)
+        .unwrap();
+
+    let base = context.world().theme().clone();
+    let mut next_variant = base
+        .recipes()
+        .button()
+        .variant(nana_ui_core::ButtonKind::Primary);
+    next_variant.foreground = SemanticColorRole::Warning;
+    let patched = Arc::new(
+        nana_ui_core::ThemePatch::default()
+            .with_button_variant(nana_ui_core::ButtonKind::Primary, next_variant)
+            .apply_to_compiled(&base)
+            .unwrap(),
+    );
+
+    context.compat_world_mut().begin_frame_counters();
+    let _ = context.compat_world_mut().take_system_work();
+    context.set_theme_tokens(patched).unwrap();
+    let work = context.compat_world_mut().take_system_work();
+    context
+        .compat_world_mut()
+        .resolve_styles(&work.style)
+        .unwrap();
+    context.compat_world_mut().end_frame_counters();
+
+    let counters = context.last_theme_work_counters();
+    assert!(counters.component_recipe_nodes_invalidated >= 1);
+    assert!(counters.theme_dependency_skipped >= 1);
+    assert!(!work.style.contains(&badge.stable_id()));
+    assert!(work.style.contains(&btn.stable_id()) || counters.resolved_style_changed >= 1);
+}
+
+#[test]
+fn resolved_style_diff_suppresses_render_on_noop_evaluation() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(
+        node(1),
+        document(1),
+        NodeKind::Element { tag: "div".into() },
+    );
+    queue.create(
+        node(2),
+        document(1),
+        NodeKind::Element { tag: "div".into() },
+    );
+    queue.insert(node(1), node(2), None);
+    world.commit(queue).unwrap();
+    let work = world.take_system_work();
+    world.resolve_styles(&work.style).unwrap();
+
+    // Change only `palette.surface` while `palette.text` is unchanged.
+    // Root `node(1)` depends on `PALETTE` (via default `Text` role), so it is evaluated,
+    // produces the identical `ComputedStyle`, and suppresses `RENDER` and child propagation.
+    let base = world.theme().clone();
+    let mut colors = nana_ui_core::ColorOverrides::new();
+    colors.set(
+        SemanticColorRole::Surface,
+        nana_ui_core::SemanticColor::rgb8(10, 12, 16),
+    );
+    let patched = Arc::new(
+        nana_ui_core::ThemePatch::default()
+            .with_colors(colors)
+            .apply_to_compiled(&base)
+            .unwrap(),
+    );
+
+    world.begin_frame_counters();
+    let mut tokens = MutationQueue::new();
+    tokens.set_theme_tokens(patched);
+    world.commit(tokens).unwrap();
+    let work = world.take_system_work();
+    assert_eq!(work.style, vec![node(1)]);
+    world.resolve_styles(&work.style).unwrap();
+    world.end_frame_counters();
+
+    let counters = world.last_theme_work_counters();
+    assert_eq!(counters.theme_revision_candidates, 1);
+    assert_eq!(counters.theme_dependency_skipped, 1);
+    assert_eq!(counters.resolved_style_unchanged, 1);
+    assert_eq!(counters.resolved_style_changed, 0);
+    let follow = world.take_system_work();
+    assert!(follow.render_extraction.is_empty());
+}
+
+#[test]
+fn color_only_theme_switch_does_not_mark_style_hit_changed() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(
+        node(1),
+        document(1),
+        NodeKind::Element { tag: "div".into() },
+    );
+    queue.set_style(
+        node(1),
+        NodeStyle {
+            background: Some(SemanticColorRole::Surface),
+            ..NodeStyle::default()
+        },
+    );
+    world.commit(queue).unwrap();
+    let work = world.take_system_work();
+    world.resolve_styles(&work.style).unwrap();
+    assert!(
+        world.take_style_hit_changed(),
+        "initial resolution marks hit changed"
+    );
+
+    let mut theme = MutationQueue::new();
+    theme.set_preset_theme(ThemeAppearance::Light);
+    world.commit(theme).unwrap();
+    let work = world.take_system_work();
+    world.resolve_styles(&work.style).unwrap();
+    assert!(
+        !world.take_style_hit_changed(),
+        "color-only switch must not trigger hit geometry rebuild"
+    );
+
+    let mut hide = MutationQueue::new();
+    hide.set_style(
+        node(1),
+        NodeStyle {
+            layout: LayoutStyle {
+                paint: nana_ui_core::PaintStyle {
+                    visibility: Some(nana_ui_core::VisibilitySpec::Hidden),
+                    ..nana_ui_core::PaintStyle::default()
+                }
+                .into(),
+                ..LayoutStyle::default()
+            }
+            .into(),
+            ..NodeStyle::default()
+        },
+    );
+    world.commit(hide).unwrap();
+    let work = world.take_system_work();
+    world.resolve_styles(&work.style).unwrap();
+    assert!(
+        world.take_style_hit_changed(),
+        "visibility change must trigger hit geometry rebuild"
     );
 }
 

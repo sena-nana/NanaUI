@@ -138,6 +138,13 @@ impl WidgetVisual for ImageViewerVisual {
         other.downcast_ref::<Self>() == Some(self)
     }
 
+    fn theme_dependency_mask(&self) -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::PALETTE
+            .union(nana_ui_core::ThemeDependencyMask::METRICS)
+            .union(nana_ui_core::ThemeDependencyMask::EFFECT)
+            .union(nana_ui_core::ThemeDependencyMask::RECIPE_SHAPE)
+    }
+
     fn aligns_by_bottom_edge(&self) -> bool {
         true
     }
@@ -146,7 +153,7 @@ impl WidgetVisual for ImageViewerVisual {
         let layout = self.layout_at(
             ctx.bounds,
             &ctx.style_model.palette,
-            ctx.world.theme().effects().media_scrim,
+            ctx.theme.effects().media_scrim,
             ctx.style_model.metrics,
         );
         let mut out = WidgetPaintOutput::new();

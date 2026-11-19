@@ -1515,6 +1515,9 @@ pub struct NodeStyle {
     /// reads these first; a nested scope wins role by role. `None` leaves the
     /// installed theme's colours. See [`nana_ui_core::ColorOverrides`].
     pub color_overrides: Option<Arc<nana_ui_core::ColorOverrides>>,
+    /// Sparse typed theme patch scoping this node and its descendants
+    /// (`ThemeScope`, Issue #104).
+    pub theme_patch: Option<Arc<nana_ui_core::ThemePatch>>,
 }
 
 impl Default for NodeStyle {
@@ -1552,6 +1555,7 @@ impl PartialEq for NodeStyle {
             text_vertical_alignment,
             painter,
             color_overrides,
+            theme_patch,
         } = self;
         foreground == &other.foreground
             && background == &other.background
@@ -1574,6 +1578,7 @@ impl PartialEq for NodeStyle {
             && interaction == &other.interaction
             && painter == &other.painter
             && color_overrides == &other.color_overrides
+            && theme_patch == &other.theme_patch
             && (Arc::ptr_eq(layout, &other.layout) || **layout == *other.layout)
     }
 }
@@ -1594,6 +1599,7 @@ impl NodeStyle {
             && self.type_weight.is_none()
             && self.interaction.is_shared_default()
             && self.color_overrides.is_none()
+            && self.theme_patch.is_none()
     }
 
     /// This style with what `over` sets written over it, the way an
@@ -1702,6 +1708,7 @@ impl NodeStyle {
             },
             painter: over.painter.clone().or(self.painter),
             color_overrides: over.color_overrides.clone().or(self.color_overrides),
+            theme_patch: over.theme_patch.clone().or(self.theme_patch),
         }
     }
 
@@ -1729,6 +1736,7 @@ impl NodeStyle {
             text_vertical_alignment: TextVerticalAlignment::Top,
             painter: None,
             color_overrides: None,
+            theme_patch: None,
         }
     }
 
@@ -1741,6 +1749,14 @@ impl NodeStyle {
     /// 挂上节点自绘。见 [`crate::Painter`]。
     pub fn painter(mut self, painter: impl Into<crate::NodePainter>) -> Self {
         self.painter = Some(painter.into());
+        self
+    }
+
+    /// Attach a subtree theme patch (`ThemeScope`, Issue #104).
+    ///
+    /// Passing an empty patch leaves the inherited theme unchanged.
+    pub fn theme_patch(mut self, patch: nana_ui_core::ThemePatch) -> Self {
+        self.theme_patch = (!patch.is_empty()).then(|| Arc::new(patch));
         self
     }
 
@@ -1936,6 +1952,9 @@ pub struct InheritedStyleExt {
     /// [`NodeStyle::color_overrides`] written over its parent's scope.
     /// Inherited; `None` is the installed theme.
     pub color_scope: Option<Arc<nana_ui_core::ColorOverrides>>,
+    /// Effective [`nana_ui_core::ThemeScopeId`] inherited by this node and its
+    /// descendants (`ThemeScopeId::ROOT` when no ancestor has a `theme_patch`).
+    pub theme_scope: nana_ui_core::ThemeScopeId,
 }
 
 nana_ui_core::shared::shared_default!(InheritedStyleExt);

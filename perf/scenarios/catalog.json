@@ -60,7 +60,8 @@
     "theme-palette-switch",
     "theme-accent-only",
     "theme-density",
-    "theme-head-style-mutation"
+    "theme-head-style-mutation",
+    "theme-scope-patch"
   ],
   "issue12": {
     "same_scenario_ids": [

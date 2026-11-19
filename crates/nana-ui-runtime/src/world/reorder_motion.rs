@@ -83,13 +83,13 @@ impl UiWorld {
         };
         let [dx, dy] = drag.preview_offset();
         let shifts = drag.shift_offsets(&boxes);
+        let node_theme = self.node_theme(id);
         let duration = if self.reduced_motion {
             Duration::ZERO
         } else {
-            self.theme.duration(nana_ui_core::MotionRole::OverlayFade)
+            node_theme.duration(nana_ui_core::MotionRole::OverlayFade)
         };
-        let easing = self
-            .theme
+        let easing = node_theme
             .motion()
             .easing(nana_ui_core::EasingRole::Standard);
         // A track holds its end value until the drag ends and cancels it.

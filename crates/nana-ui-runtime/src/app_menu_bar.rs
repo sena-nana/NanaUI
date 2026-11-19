@@ -29,7 +29,7 @@ use nana_ui_core::{
 };
 
 use crate::popover::{
-    MENU_ITEM_GAP, MENU_MIN_WIDTH, MENU_OVERLAY_Z_INDEX, MENU_SURFACE_PADDING, menu_surface_style,
+    MENU_MIN_WIDTH, MENU_OVERLAY_Z_INDEX, apply_menu_surface_recipe, menu_surface_style_in,
 };
 use crate::submenu_aim::SubmenuAim;
 use crate::text_width::estimated_text_width;
@@ -41,8 +41,6 @@ use crate::{
     UiWorld,
 };
 
-/// The check mark column, px.
-const MARK_WIDTH: f32 = 16.0;
 const CHECK: &str = "✓";
 const SUBMENU: &str = "›";
 const SEPARATOR_HEIGHT: f32 = nana_ui_core::HAIRLINE;
@@ -488,8 +486,21 @@ impl AppMenuBar {
         MenuKey::Consumed
     }
 
-    fn effective_style(&self) -> NodeStyle {
-        self.style.clone()
+    fn effective_style(&self, theme: &nana_ui_core::CompiledTheme) -> NodeStyle {
+        let mut style = self.style.clone();
+        let pad = theme
+            .spacing()
+            .resolve(theme.recipes().menu().bar_padding_x);
+        let default_pad = nana_ui_core::SpacingTokens::DEFAULT
+            .resolve(nana_ui_core::MenuRecipe::DEFAULT.bar_padding_x);
+        let layout = Arc::make_mut(&mut style.layout);
+        if layout.padding_left == Some(LengthSpec::Px(default_pad)) {
+            layout.padding_left = Some(LengthSpec::Px(pad));
+        }
+        if layout.padding_right == Some(LengthSpec::Px(default_pad)) {
+            layout.padding_right = Some(LengthSpec::Px(pad));
+        }
+        style
     }
 }
 
@@ -634,12 +645,24 @@ impl ComponentView for AppMenuBar {
         }
     }
 
+    fn wants_metrics_reproject() -> bool {
+        true
+    }
+
+    fn wants_recipe_reproject() -> bool {
+        true
+    }
+
+    fn recipe_dependency_mask() -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::RECIPE_MENU
+    }
+
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         project_common(
             id,
             world,
             mutations,
-            &self.effective_style(),
+            &self.effective_style(world.node_theme(id)),
             InteractionState {
                 pointer_events: true,
                 focusable: false,
@@ -746,39 +769,47 @@ impl ComponentView for MenuBarScrim {
 
 fn bar_style() -> NodeStyle {
     let mut style = NodeStyle::default();
+    let pad = nana_ui_core::SpacingTokens::DEFAULT
+        .resolve(nana_ui_core::MenuRecipe::DEFAULT.bar_padding_x);
     {
         let layout = Arc::make_mut(&mut style.layout);
         layout.direction = Some(FlexDirection::Row);
         layout.align_items = AlignSpec::Stretch;
         layout.width = Some(LengthSpec::Fill);
-        layout.padding_left = Some(LengthSpec::Px(nana_ui_core::space::XXS));
-        layout.padding_right = Some(LengthSpec::Px(nana_ui_core::space::XXS));
+        layout.padding_left = Some(LengthSpec::Px(pad));
+        layout.padding_right = Some(LengthSpec::Px(pad));
     }
     style.control_height = Some(nana_ui_core::ControlHeight::Exact(ControlSize::Small));
     style
 }
 
-fn title_style(hot: bool, open: bool) -> NodeStyle {
+fn title_style(
+    hot: bool,
+    open: bool,
+    menu: &nana_ui_core::MenuRecipe,
+    spacing: &nana_ui_core::SpacingTokens,
+) -> NodeStyle {
     let mut style = NodeStyle::default();
+    let pad_x = spacing.resolve(menu.bar_title_padding_x);
     {
         let layout = Arc::make_mut(&mut style.layout);
         layout.direction = Some(FlexDirection::Row);
         layout.align_items = AlignSpec::Center;
-        layout.padding_left = Some(LengthSpec::Px(nana_ui_core::space::SM));
-        layout.padding_right = Some(LengthSpec::Px(nana_ui_core::space::SM));
+        layout.padding_left = Some(LengthSpec::Px(pad_x));
+        layout.padding_right = Some(LengthSpec::Px(pad_x));
     }
     style.radius = Some(nana_ui_core::RadiusTier::Sm);
     style.background = if open {
-        Some(SemanticColorRole::Active)
+        Some(menu.item_pressed_background)
     } else if hot {
-        Some(SemanticColorRole::Hover)
+        Some(menu.item_hover_background)
     } else {
         None
     };
     style
 }
 
-fn row_style(hot: bool) -> NodeStyle {
+fn row_style(hot: bool, menu: &nana_ui_core::MenuRecipe) -> NodeStyle {
     let size = ControlSize::Small;
     let mut style = NodeStyle::default();
     {
@@ -792,11 +823,11 @@ fn row_style(hot: bool) -> NodeStyle {
     style.radius = Some(nana_ui_core::RadiusTier::Sm);
     style.control_height = Some(nana_ui_core::ControlHeight::Exact(size));
     style.control_padding_x = Some(size.into());
-    style.background = hot.then_some(SemanticColorRole::Hover);
+    style.background = hot.then_some(menu.item_hover_background);
     style
 }
 
-fn separator_style() -> NodeStyle {
+fn separator_style(menu: &nana_ui_core::MenuRecipe) -> NodeStyle {
     let mut style = NodeStyle::default();
     {
         let layout = Arc::make_mut(&mut style.layout);
@@ -804,24 +835,28 @@ fn separator_style() -> NodeStyle {
         layout.height = Some(LengthSpec::Px(SEPARATOR_HEIGHT));
         layout.flex_shrink = Some(0.0);
     }
-    style.background = Some(SemanticColorRole::Border);
+    style.background = Some(menu.separator_color);
     style
 }
 
-fn panel_style(rect: LayoutBox) -> NodeStyle {
-    let mut style = menu_surface_style(rect.width, MENU_SURFACE_PADDING);
+fn panel_style(rect: LayoutBox, compiled: &nana_ui_core::CompiledTheme) -> NodeStyle {
+    let menu = compiled.recipes().menu();
+    let pad = compiled.spacing().resolve(menu.surface_padding);
+    let mut style = menu_surface_style_in(rect.width, pad, compiled);
+    apply_menu_surface_recipe(&mut style, compiled);
+    let shadow = compiled.effects().shadow(menu.bar_elevation);
     let layout = Arc::make_mut(&mut style.layout);
     layout.offset_left = Some(LengthSpec::Px(rect.x));
     layout.offset_top = Some(LengthSpec::Px(rect.y));
     layout.height = Some(LengthSpec::Px(rect.height));
     layout.paint.box_shadows = vec![BoxShadowSpec {
         paint_color: None,
-        offset_x: 0.0,
-        offset_y: 4.0,
-        blur_radius: 16.0,
-        spread_radius: 0.0,
-        color: [0.0, 0.0, 0.0, 0.4],
-        inset: false,
+        offset_x: shadow.offset_x,
+        offset_y: shadow.offset_y,
+        blur_radius: shadow.blur_radius,
+        spread_radius: shadow.spread_radius,
+        color: shadow.color.as_rgba_array(),
+        inset: shadow.inset,
     }];
     style
 }
@@ -866,28 +901,45 @@ fn entry_height(entry: &MenuEntry, row: f32) -> f32 {
 }
 
 /// Distance from a menu's top to the top of the entry at `index`.
-fn entry_top(entries: &[MenuEntry], index: usize, row: f32) -> f32 {
-    let inset = MENU_SURFACE_PADDING + nana_ui_core::HAIRLINE;
+fn entry_top(
+    entries: &[MenuEntry],
+    index: usize,
+    row: f32,
+    menu: &nana_ui_core::MenuRecipe,
+    spacing: &nana_ui_core::SpacingTokens,
+) -> f32 {
+    let pad = spacing.resolve(menu.surface_padding);
+    let gap = spacing.resolve(menu.item_gap);
+    let inset = pad + nana_ui_core::HAIRLINE;
     inset
         + entries[..index]
             .iter()
-            .map(|entry| entry_height(entry, row) + MENU_ITEM_GAP)
+            .map(|entry| entry_height(entry, row) + gap)
             .sum::<f32>()
 }
 
-fn menu_height(entries: &[MenuEntry], row: f32) -> f32 {
-    let inset = MENU_SURFACE_PADDING + nana_ui_core::HAIRLINE;
+fn menu_height(
+    entries: &[MenuEntry],
+    row: f32,
+    menu: &nana_ui_core::MenuRecipe,
+    spacing: &nana_ui_core::SpacingTokens,
+) -> f32 {
+    let pad = spacing.resolve(menu.surface_padding);
+    let gap = spacing.resolve(menu.item_gap);
+    let inset = pad + nana_ui_core::HAIRLINE;
     let rows = entries
         .iter()
         .map(|entry| entry_height(entry, row))
         .sum::<f32>();
-    2.0 * inset + rows + MENU_ITEM_GAP * entries.len().saturating_sub(1) as f32
+    2.0 * inset + rows + gap * entries.len().saturating_sub(1) as f32
 }
 
 fn menu_width(
     entries: &[MenuEntry],
     notation: ShortcutNotation,
     metrics: nana_ui_core::ThemeMetrics,
+    menu: &nana_ui_core::MenuRecipe,
+    spacing: &nana_ui_core::SpacingTokens,
 ) -> f32 {
     let size = ControlSize::Small;
     let mut label = 0.0f32;
@@ -915,12 +967,12 @@ fn menu_width(
     }
     let gap = nana_ui_core::space::XS;
     let row = 2.0 * size.padding_x_in(metrics)
-        + MARK_WIDTH
+        + menu.mark_width
         + gap
         + label
         + nana_ui_core::space::LG
         + hint;
-    let inset = MENU_SURFACE_PADDING + nana_ui_core::HAIRLINE;
+    let inset = spacing.resolve(menu.surface_padding) + nana_ui_core::HAIRLINE;
     (row + 2.0 * inset).clamp(MENU_MIN_WIDTH, MAX_MENU_WIDTH)
 }
 
@@ -1123,7 +1175,11 @@ impl AppContext {
     ) -> Result<bool, FrameworkError> {
         let document = self.document_of_node(bar.stable_id())?;
         let snapshot = self.read(bar, Clone::clone)?;
-        let metrics = self.world().theme_metrics();
+        let node_theme = self.world().node_theme(bar.stable_id()).clone();
+        let metrics = node_theme.metrics();
+        let menu_recipe = node_theme.recipes().menu();
+        let spacing = node_theme.spacing();
+        let surf_pad = spacing.resolve(menu_recipe.surface_padding);
         let row = ControlSize::Small.height_in(metrics);
         let alive = snapshot
             .parts
@@ -1172,12 +1228,12 @@ impl AppContext {
                 text.style = text_style(
                     ControlSize::Small.text_size(),
                     None,
-                    SemanticColorRole::Text,
+                    menu_recipe.item_foreground,
                 );
             })?;
             let name = Arc::from(menu.title.as_str());
             self.update_component(Entity::<MenuBarBox>::from_stable_id(title), |title, _| {
-                title.style = title_style(hot, open);
+                title.style = title_style(hot, open, menu_recipe, &spacing);
                 title.accessibility = AccessibilityState {
                     role: AccessibilityRole::MenuItem,
                     label: Some(name),
@@ -1213,7 +1269,7 @@ impl AppContext {
             for entry in &menu.entries {
                 if matches!(entry, MenuEntry::Separator) {
                     let mut separator = MenuBarBox::new("menu-separator");
-                    separator.style = separator_style();
+                    separator.style = separator_style(menu_recipe);
                     separator.accessibility.role = AccessibilityRole::Separator;
                     let separator = self.create_detached_component(document, separator)?;
                     rows.push(MenuRowParts {
@@ -1249,8 +1305,14 @@ impl AppContext {
         let bar_box = self.world().component_layout_box(bar.stable_id());
         let mut rects: Vec<LayoutBox> = Vec::with_capacity(open.len());
         for (level, menu) in open.iter().enumerate() {
-            let width = menu_width(&menu.entries, snapshot.shortcut_notation, metrics);
-            let height = menu_height(&menu.entries, row);
+            let width = menu_width(
+                &menu.entries,
+                snapshot.shortcut_notation,
+                metrics,
+                menu_recipe,
+                &spacing,
+            );
+            let height = menu_height(&menu.entries, row, menu_recipe, &spacing);
             let (mut x, mut y) = match level.checked_sub(1) {
                 None => {
                     let title = state
@@ -1264,12 +1326,14 @@ impl AppContext {
                 Some(parent) => {
                     let outer = rects[parent];
                     let sub = state.levels[parent].sub.unwrap_or(0);
-                    let inset = MENU_SURFACE_PADDING + nana_ui_core::HAIRLINE;
-                    let top = outer.y + entry_top(&open[parent].entries, sub, row) - inset;
-                    let right = outer.x + outer.width - MENU_SURFACE_PADDING;
+                    let inset = surf_pad + nana_ui_core::HAIRLINE;
+                    let top = outer.y
+                        + entry_top(&open[parent].entries, sub, row, menu_recipe, &spacing)
+                        - inset;
+                    let right = outer.x + outer.width - surf_pad;
                     let flip = viewport.is_some_and(|v| right + width > v.width);
                     let x = if flip {
-                        outer.x - width + MENU_SURFACE_PADDING
+                        outer.x - width + surf_pad
                     } else {
                         right
                     };
@@ -1294,7 +1358,7 @@ impl AppContext {
             self.update_component(
                 Entity::<MenuBarBox>::from_stable_id(panel.panel),
                 |panel, _| {
-                    panel.style = panel_style(rect);
+                    panel.style = panel_style(rect, &node_theme);
                     panel.accessibility = AccessibilityState {
                         role: AccessibilityRole::Menu,
                         label: Some(name),
@@ -1305,6 +1369,12 @@ impl AppContext {
             let levels = &state.levels[level];
             for (index, (entry, parts)) in menu.entries.iter().zip(&panel.rows).enumerate() {
                 let Some([mark, label, hint]) = parts.texts else {
+                    if matches!(entry, MenuEntry::Separator) {
+                        self.update_component(
+                            Entity::<MenuBarBox>::from_stable_id(parts.row),
+                            |sep, _| sep.style = separator_style(menu_recipe),
+                        )?;
+                    }
                     continue;
                 };
                 let hot = levels.hot == Some(index) || levels.sub == Some(index);
@@ -1331,20 +1401,21 @@ impl AppContext {
                     MenuEntry::Separator => continue,
                 };
                 let ink = if enabled {
-                    SemanticColorRole::Text
+                    menu_recipe.item_foreground
                 } else {
-                    SemanticColorRole::Faint
+                    menu_recipe.item_disabled_foreground
                 };
                 let quiet = if enabled {
-                    SemanticColorRole::Muted
+                    menu_recipe.item_hint
                 } else {
-                    SemanticColorRole::Faint
+                    menu_recipe.item_disabled_foreground
                 };
                 let small = ControlSize::Small.text_size();
                 self.update_component(Entity::<Text>::from_stable_id(mark), |mark, _| {
                     mark.value = if checked { CHECK } else { "" }.to_owned();
                     mark.decorative = true;
-                    mark.style = text_style(small, Some(LengthSpec::Px(MARK_WIDTH)), ink);
+                    mark.style =
+                        text_style(small, Some(LengthSpec::Px(menu_recipe.mark_width)), ink);
                     mark.style.text_horizontal_alignment = TextHorizontalAlignment::Center;
                 })?;
                 let spoken = Arc::from(text.as_str());
@@ -1364,7 +1435,7 @@ impl AppContext {
                 self.update_component(
                     Entity::<MenuBarBox>::from_stable_id(parts.row),
                     |row, _| {
-                        row.style = row_style(hot);
+                        row.style = row_style(hot, menu_recipe);
                         row.accessibility = AccessibilityState {
                             role: if checked {
                                 AccessibilityRole::Checkbox

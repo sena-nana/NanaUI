@@ -201,6 +201,67 @@ pub(crate) fn text_area_footer_extent(
     }
 }
 
+fn apply_input_recipe(
+    style: &mut NodeStyle,
+    recipe: &nana_ui_core::InputRecipe,
+    multiline: bool,
+    invalid: bool,
+    style_override: bool,
+    theme: &nana_ui_core::CompiledTheme,
+) {
+    if style_override {
+        return;
+    }
+    style.background = Some(recipe.background);
+    if recipe.foreground != nana_ui_core::InputRecipe::DEFAULT.foreground {
+        style.foreground = Some(recipe.foreground);
+    }
+    style.border = Some(if invalid {
+        recipe.invalid_border
+    } else {
+        recipe.border
+    });
+    style.interaction.hovered.border = Some(if invalid {
+        recipe.invalid_border
+    } else {
+        recipe.hover_border
+    });
+    style.interaction.focused.border = Some(if invalid {
+        recipe.invalid_border
+    } else {
+        recipe.focus_border
+    });
+    style.interaction.focused.background_mix = Some(recipe.focus_background_mix);
+    style.interaction.disabled = SemanticPaint {
+        foreground: Some(recipe.disabled_foreground),
+        background: Some(recipe.disabled_background),
+        border: Some(recipe.disabled_border),
+        ..SemanticPaint::default()
+    };
+    if multiline {
+        let layout = Arc::make_mut(&mut style.layout);
+        if layout.theme.line_height.is_none()
+            && (layout.line_height.is_none()
+                || layout.line_height
+                    == Some(nana_ui_core::LineHeightSpec::Relative(
+                        nana_ui_core::InputRecipe::DEFAULT.multiline_line_height,
+                    )))
+        {
+            layout.line_height = Some(nana_ui_core::LineHeightSpec::Relative(
+                recipe.multiline_line_height,
+            ));
+        }
+        let default_min_h = nana_ui_core::ControlSize::Medium.height_in(nana_ui_core::UI_METRICS)
+            * nana_ui_core::InputRecipe::DEFAULT.multiline_height_factor;
+        if layout.min_height == Some(nana_ui_core::LengthSpec::Px(default_min_h)) {
+            layout.min_height = Some(nana_ui_core::LengthSpec::Px(
+                nana_ui_core::ControlSize::Medium.height_in(theme.metrics())
+                    * recipe.multiline_height_factor,
+            ));
+        }
+    }
+}
+
 struct TextFieldProjection<'a> {
     state: &'a TextInputState,
     label: &'a Option<Arc<str>>,
@@ -398,6 +459,19 @@ pub trait ComponentView: Clone + PartialEq + Send + 'static {
         Self: Sized,
     {
         false
+    }
+
+    /// Narrow theme recipe dependency mask used to filter [`Self::wants_recipe_reproject`]
+    /// views during theme changes (#106).
+    fn recipe_dependency_mask() -> nana_ui_core::ThemeDependencyMask
+    where
+        Self: Sized,
+    {
+        if Self::wants_recipe_reproject() {
+            nana_ui_core::ThemeDependencyMask::RECIPE_ANY
+        } else {
+            nana_ui_core::ThemeDependencyMask::NONE
+        }
     }
 
     /// Opt in to one reprojection when the reduce-motion preference
@@ -778,6 +852,7 @@ static BUTTON_DEFAULT_STYLE: std::sync::LazyLock<NodeStyle> = std::sync::LazyLoc
         text_vertical_alignment: TextVerticalAlignment::Center,
         painter: None,
         color_overrides: None,
+        theme_patch: None,
     }
 });
 
@@ -959,6 +1034,11 @@ impl ComponentView for Button {
         true
     }
 
+    fn recipe_dependency_mask() -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::RECIPE_BUTTON
+            .union(nana_ui_core::ThemeDependencyMask::RECIPE_SHAPE)
+    }
+
     fn wants_metrics_reproject() -> bool {
         true
     }
@@ -998,14 +1078,15 @@ impl ComponentView for Button {
         } else {
             self.size
         };
+        let node_theme = world.node_theme(id);
         let icon_size = self
             .icon_size
             .filter(|size| size.is_finite() && *size >= 0.0)
-            .unwrap_or(glyph_step.text_size_in(world.theme().typography()));
+            .unwrap_or(glyph_step.text_size_in(node_theme.typography()));
         let icon_gap = if let Some(gap) = &self.themed_icon_gap {
-            gap.resolve(world.theme()).max(0.0)
+            gap.resolve(node_theme).max(0.0)
         } else if self.icon_gap_uses_theme_default || !self.icon_gap.is_finite() {
-            world.theme().spacing().sm.max(0.0)
+            node_theme.spacing().sm.max(0.0)
         } else {
             self.icon_gap.max(0.0)
         };
@@ -1091,7 +1172,7 @@ impl ComponentView for Button {
                 layout.justify_content = nana_ui_core::JustifySpec::Center;
             }
         }
-        let recipe = world.theme().recipes().button();
+        let recipe = world.node_theme(id).recipes().button();
         if !self.style_override {
             // These five slots used to be five inline `match self.kind` tables
             // right here, which made this function the design authority on what
@@ -1202,6 +1283,14 @@ impl crate::WidgetVisual for ButtonVisual {
 
     fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
         other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
+    }
+
+    fn theme_dependency_mask(&self) -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::COLOR_ANY
+            .union(nana_ui_core::ThemeDependencyMask::METRICS)
+            .union(nana_ui_core::ThemeDependencyMask::EFFECT)
+            .union(nana_ui_core::ThemeDependencyMask::RECIPE_BUTTON)
+            .union(nana_ui_core::ThemeDependencyMask::RECIPE_SHAPE)
     }
 
     fn is_document_select_target(&self) -> bool {
@@ -1451,6 +1540,11 @@ impl crate::WidgetVisual for IconVisual {
 
     fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
         other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
+    }
+
+    fn theme_dependency_mask(&self) -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::COLOR_ANY
+            .union(nana_ui_core::ThemeDependencyMask::RECIPE_FAMILY)
     }
 
     fn is_icon_visual(&self) -> bool {
@@ -1751,14 +1845,15 @@ impl ComponentView for IconButton {
         if self.tooltip.is_some() && world.overlay_host(id).is_none() {
             mutations.set_overlay_host(id, OverlayHostState::default());
         }
+        let node_theme = world.node_theme(id);
         let visual = IconVisual {
             icon: self.icon,
             size: if let Some(size) = self.icon_size {
                 size
             } else if self.compact {
-                nana_ui_core::ControlSize::Medium.text_size_in(world.theme().typography())
+                nana_ui_core::ControlSize::Medium.text_size_in(node_theme.typography())
             } else {
-                self.size.text_size_in(world.theme().typography())
+                self.size.text_size_in(node_theme.typography())
             },
             tooltip: self.tooltip.as_ref().map(|tooltip| crate::TooltipVisual {
                 label: Arc::clone(&tooltip.label),
@@ -1964,10 +2059,9 @@ impl ComponentView for IconGlyph {
         }
         let visual = IconVisual {
             icon: self.icon,
-            size: self
-                .themed_size
-                .as_ref()
-                .map_or(self.size, |size| size.resolve(world.theme()).max(0.0)),
+            size: self.themed_size.as_ref().map_or(self.size, |size| {
+                size.resolve(world.node_theme(id)).max(0.0)
+            }),
             tooltip: None,
         };
         if world.widget_visual_as::<IconVisual>(id) != Some(&visual) {
@@ -2173,6 +2267,13 @@ impl crate::WidgetVisual for CardVisual {
 
     fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
         other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
+    }
+
+    fn theme_dependency_mask(&self) -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::PALETTE
+            .union(nana_ui_core::ThemeDependencyMask::METRICS)
+            .union(nana_ui_core::ThemeDependencyMask::EFFECT)
+            .union(nana_ui_core::ThemeDependencyMask::TYPOGRAPHY_ANY)
     }
 
     fn uses_card_title_typography(&self) -> bool {
@@ -2564,6 +2665,13 @@ impl crate::WidgetVisual for ListItemVisual {
         other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
     }
 
+    fn theme_dependency_mask(&self) -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::COLOR_ANY
+            .union(nana_ui_core::ThemeDependencyMask::METRICS)
+            .union(nana_ui_core::ThemeDependencyMask::TYPOGRAPHY_ANY)
+            .union(nana_ui_core::ThemeDependencyMask::EFFECT)
+    }
+
     fn measures_text(&self) -> bool {
         true
     }
@@ -2661,13 +2769,15 @@ impl crate::WidgetVisual for ListItemVisual {
             )]));
         }
         let measure = world.chrome_text_measure(id);
-        let size = world.theme().typography().meta;
-        let height = (size * world.theme().typography().line / world.theme().typography().body)
-            .min(bounds.height.max(size));
+        let node_theme = world.node_theme(id);
+        let typography = node_theme.typography();
+        let spacing = node_theme.spacing();
+        let size = typography.meta;
+        let height = (size * typography.line / typography.body).min(bounds.height.max(size));
         let secondary = |text: &Option<Arc<str>>| {
             text.as_ref().filter(|text| !text.is_empty()).map(|text| {
                 crate::layout_engine::Size::new(
-                    measure.width(text, size, Some(world.theme().typography().regular)),
+                    measure.width(text, size, Some(typography.regular)),
                     height,
                 )
             })
@@ -2682,9 +2792,9 @@ impl crate::WidgetVisual for ListItemVisual {
                 ),
                 note: secondary(&self.note),
                 detail: secondary(&self.detail),
-                note_gap: world.theme().spacing().sm,
-                detail_gap: world.theme().spacing().md,
-                min_secondary_width: world.theme().spacing().xxxl,
+                note_gap: spacing.sm,
+                detail_gap: spacing.md,
+                min_secondary_width: spacing.xxxl,
             },
             reverse,
         ))
@@ -3971,6 +4081,14 @@ impl ComponentView for TextInput {
         }
     }
 
+    fn wants_recipe_reproject() -> bool {
+        true
+    }
+
+    fn recipe_dependency_mask() -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::RECIPE_INPUT
+    }
+
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         let visual = crate::TextInputVisual {
             placeholder: Arc::clone(&self.placeholder),
@@ -3992,14 +4110,16 @@ impl ComponentView for TextInput {
         if world.text_input_visual_ref(id) != Some(&visual) {
             mutations.set_widget_visual(id, Some(visual));
         }
+        let node_theme = world.node_theme(id);
         let mut effective_style = self.style.clone();
-        if self.invalid && !self.style_override {
-            effective_style.border = Some(nana_ui_core::SemanticColorRole::Danger);
-            effective_style.interaction.hovered.border =
-                Some(nana_ui_core::SemanticColorRole::Danger);
-            effective_style.interaction.focused.border =
-                Some(nana_ui_core::SemanticColorRole::Danger);
-        }
+        apply_input_recipe(
+            &mut effective_style,
+            node_theme.recipes().input(),
+            false,
+            self.invalid,
+            self.style_override,
+            node_theme,
+        );
         project_text_field(
             id,
             world,
@@ -4361,6 +4481,14 @@ impl ComponentView for NumberInput {
         }
     }
 
+    fn wants_recipe_reproject() -> bool {
+        true
+    }
+
+    fn recipe_dependency_mask() -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::RECIPE_INPUT
+    }
+
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         let visual = crate::TextInputVisual {
             placeholder: Arc::clone(&self.placeholder),
@@ -4385,14 +4513,16 @@ impl ComponentView for NumberInput {
         if world.text_input_visual_ref(id) != Some(&visual) {
             mutations.set_widget_visual(id, Some(visual));
         }
+        let node_theme = world.node_theme(id);
         let mut effective_style = self.style.clone();
-        if self.invalid && !self.style_override {
-            effective_style.border = Some(nana_ui_core::SemanticColorRole::Danger);
-            effective_style.interaction.hovered.border =
-                Some(nana_ui_core::SemanticColorRole::Danger);
-            effective_style.interaction.focused.border =
-                Some(nana_ui_core::SemanticColorRole::Danger);
-        }
+        apply_input_recipe(
+            &mut effective_style,
+            node_theme.recipes().input(),
+            false,
+            self.invalid,
+            self.style_override,
+            node_theme,
+        );
         project_text_field(
             id,
             world,
@@ -4645,7 +4775,16 @@ impl TextArea {
     /// the auto-grow row budget, the marker gutter and the invalid border.
     fn effective_style(&self, id: StableNodeId, world: &UiWorld) -> NodeStyle {
         let size = nana_ui_core::ControlSize::Medium;
+        let node_theme = world.node_theme(id);
         let mut effective_style = self.style.clone();
+        apply_input_recipe(
+            &mut effective_style,
+            node_theme.recipes().input(),
+            true,
+            self.invalid,
+            self.style_override,
+            node_theme,
+        );
         let expanded_footer = self.uses_expanded_footer();
         let footer_extent = if expanded_footer {
             text_area_footer_extent(
@@ -4670,7 +4809,7 @@ impl TextArea {
             // Row budgets must use the same installed typography and authored
             // line-height as shaping, including relative or literal overrides.
             let layout = &effective_style.layout;
-            let theme = world.theme();
+            let theme = world.node_theme(id);
             let font = layout.theme.font_size.as_ref().map_or_else(
                 || {
                     layout
@@ -4790,13 +4929,6 @@ impl TextArea {
             // The gutter is a spent number on this axis; keep the resolver
             // from writing Field padding back over it.
             effective_style.control_padding_x = None;
-        }
-        if self.invalid && !self.style_override {
-            effective_style.border = Some(nana_ui_core::SemanticColorRole::Danger);
-            effective_style.interaction.hovered.border =
-                Some(nana_ui_core::SemanticColorRole::Danger);
-            effective_style.interaction.focused.border =
-                Some(nana_ui_core::SemanticColorRole::Danger);
         }
         effective_style
     }
@@ -5099,6 +5231,14 @@ impl ComponentView for TextArea {
         true
     }
 
+    fn wants_recipe_reproject() -> bool {
+        true
+    }
+
+    fn recipe_dependency_mask() -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::RECIPE_INPUT
+    }
+
     /// The line-number gutter is measured in `project`.
     fn wants_text_backend_reproject() -> bool {
         true
@@ -5316,6 +5456,22 @@ impl ComponentView for HostedTextarea {
         NodeKind::Element {
             tag: "hosted-textarea".into(),
         }
+    }
+
+    fn wants_metrics_reproject() -> bool {
+        true
+    }
+
+    fn wants_recipe_reproject() -> bool {
+        true
+    }
+
+    fn recipe_dependency_mask() -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::RECIPE_INPUT
+    }
+
+    fn wants_text_backend_reproject() -> bool {
+        true
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
@@ -6172,10 +6328,11 @@ impl CheckboxVisual {
         world: &UiWorld,
         text: crate::layout_engine::Size,
     ) -> [Option<crate::layout_engine::parts::FlexPart>; 3] {
+        let node_theme = world.node_theme(id);
         crate::layout_engine::parts::checkbox_parts(
             self.size
-                .indicator_size_in(world.theme().typography(), world.theme().spacing()),
-            self.size.indicator_gap_in(world.theme().spacing()),
+                .indicator_size_in(node_theme.typography(), node_theme.spacing()),
+            self.size.indicator_gap_in(node_theme.spacing()),
             world.text(id).is_some_and(|label| !label.is_empty()),
             text,
         )
@@ -6189,6 +6346,14 @@ impl crate::WidgetVisual for CheckboxVisual {
 
     fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
         other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
+    }
+
+    fn theme_dependency_mask(&self) -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::COLOR_ANY
+            .union(nana_ui_core::ThemeDependencyMask::METRICS)
+            .union(nana_ui_core::ThemeDependencyMask::TYPOGRAPHY_SHAPE)
+            .union(nana_ui_core::ThemeDependencyMask::RECIPE_FAMILY)
+            .union(nana_ui_core::ThemeDependencyMask::RECIPE_SHAPE)
     }
 
     fn is_document_select_target(&self) -> bool {
@@ -6791,8 +6956,9 @@ impl SwitchVisual {
         id: StableNodeId,
         world: &UiWorld,
     ) -> crate::layout_engine::parts::SwitchInputs {
-        let track = world.style_model().metrics.switch;
-        let typography = world.theme().typography();
+        let node_theme = world.node_theme(id);
+        let track = node_theme.metrics().switch;
+        let typography = node_theme.typography();
         let line = |font: f32| (font * typography.line / typography.body).max(font);
         let measure = world.chrome_text_measure(id);
         let label_width = if self.label.is_empty() {
@@ -6821,7 +6987,7 @@ impl SwitchVisual {
             label_line: line(self.size.text_size_in(typography)),
             hint: self.hint.as_ref().map(|_| {
                 (
-                    world.theme().spacing().xxs,
+                    node_theme.spacing().xxs,
                     line(self.size.caption_size_in(typography)),
                 )
             }),
@@ -6836,6 +7002,13 @@ impl crate::WidgetVisual for SwitchVisual {
 
     fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
         other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
+    }
+
+    fn theme_dependency_mask(&self) -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::COLOR_ANY
+            .union(nana_ui_core::ThemeDependencyMask::METRICS)
+            .union(nana_ui_core::ThemeDependencyMask::TYPOGRAPHY_ANY)
+            .union(nana_ui_core::ThemeDependencyMask::EFFECT)
     }
 
     fn visual_parts_read_theme(&self) -> bool {
@@ -7685,7 +7858,7 @@ impl ComponentView for RangeField {
                 Some(nana_ui_core::ControlHeight::Exact(_))
             )
         {
-            let theme = world.theme();
+            let theme = world.node_theme(id);
             let mut resolved = (*effective_style.layout).clone();
             effective_style.layout.theme.apply(&mut resolved, theme);
             let font = resolved.font_size.unwrap_or(theme.typography().body);
@@ -7844,7 +8017,8 @@ impl RangeVisual {
             return None;
         }
         let style = world.computed_style(id)?;
-        let typography = world.theme().typography();
+        let node_theme = world.node_theme(id);
+        let typography = node_theme.typography();
         let measure = world.chrome_text_measure(id);
         let value = self
             .limits
@@ -7873,8 +8047,8 @@ impl RangeVisual {
                     .each_ref()
                     .map(|bound| measure.tabular_width(bound, caption, Some(typography.regular)))
             }),
-            trailing: self.reset.then_some(world.theme().spacing().page),
-            gap: world.range_gap(self.size),
+            trailing: self.reset.then_some(node_theme.spacing().page),
+            gap: world.range_gap_for(id, self.size),
         })
     }
 
@@ -7887,7 +8061,7 @@ impl RangeVisual {
         style_model: nana_ui_core::StyleModelRef,
         secondary: [f32; 4],
     ) -> RangeGeometry {
-        let theme = world.theme();
+        let theme = world.node_theme(id);
         let typography = theme.typography();
         let spacing = theme.spacing();
         let text_region = |bounds, content: Arc<str>, muted: bool, size: f32, weight| {
@@ -7943,7 +8117,7 @@ impl RangeVisual {
         let lane = crate::layout_engine::parts::range_track_lane(
             content,
             &parts,
-            world.range_gap(self.size),
+            world.range_gap_for(id, self.size),
         );
         let thumb = if self.track_gradient.is_some() {
             spacing.xxxl
@@ -8456,6 +8630,12 @@ impl crate::WidgetVisual for RangeVisual {
         other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
     }
 
+    fn theme_dependency_mask(&self) -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::COLOR_ANY
+            .union(nana_ui_core::ThemeDependencyMask::METRICS)
+            .union(nana_ui_core::ThemeDependencyMask::EFFECT)
+    }
+
     fn is_valid(&self) -> bool {
         self.ratio.is_finite()
             && (0.0..=1.0).contains(&self.ratio)
@@ -8775,6 +8955,15 @@ impl ScrollView {
             .unwrap_or_else(|| world.theme().recipes().scrollbar().visibility)
     }
 
+    pub(crate) fn scrollbar_visibility_for(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+    ) -> nana_ui_core::ScrollbarVisibility {
+        self.scrollbars
+            .unwrap_or_else(|| world.node_theme(id).recipes().scrollbar().visibility)
+    }
+
     fn projected_style(&self) -> NodeStyle {
         let mut style = self.style.clone();
         let layout = Arc::make_mut(&mut style.layout);
@@ -8966,6 +9155,12 @@ impl crate::WidgetVisual for ScrollbarVisual {
         other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
     }
 
+    fn theme_dependency_mask(&self) -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::COLOR_ANY
+            .union(nana_ui_core::ThemeDependencyMask::METRICS)
+            .union(nana_ui_core::ThemeDependencyMask::RECIPE_SCROLLBAR)
+    }
+
     fn is_valid(&self) -> bool {
         std::iter::once(self.presence)
             .chain(self.expand)
@@ -9033,7 +9228,7 @@ impl ScrollView {
         world: &UiWorld,
         mutations: &mut MutationQueue,
     ) {
-        let visibility = self.scrollbar_visibility(world);
+        let visibility = self.scrollbar_visibility_for(id, world);
         let shown = self.scrollbars_revealed();
         let dragging = self.dragging.map(|drag| drag.axis);
         let targets =
@@ -9099,10 +9294,12 @@ impl ComponentView for ScrollView {
         *self = next;
     }
 
-    /// The theme's scrollbar policy decides what views that follow it show,
-    /// so installing a theme reprojects them.
     fn wants_recipe_reproject() -> bool {
         true
+    }
+
+    fn recipe_dependency_mask() -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::RECIPE_SCROLLBAR
     }
 
     fn node_kind(&self) -> NodeKind {

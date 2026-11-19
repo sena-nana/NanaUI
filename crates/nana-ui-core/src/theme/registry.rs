@@ -1,4 +1,7 @@
-use super::{CompiledTheme, ThemeAppearance, ThemeDefinition, ThemeId, builtin_theme_arc};
+use super::{
+    CompiledTheme, ThemeAppearance, ThemeDefinition, ThemeId, ThemePackage, ThemePackageError,
+    ThemePackageProvenance, builtin_theme_arc, compile_theme_packages,
+};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -32,6 +35,8 @@ impl From<super::ThemeCompileError> for ThemeRegistryError {
 pub struct ThemeRegistry {
     themes: BTreeMap<ThemeId, Arc<CompiledTheme>>,
     choices: BTreeMap<ThemeId, Arc<str>>,
+    definitions: BTreeMap<ThemeId, ThemeDefinition>,
+    provenance: BTreeMap<ThemeId, ThemePackageProvenance>,
 }
 
 impl Default for ThemeRegistry {
@@ -39,6 +44,8 @@ impl Default for ThemeRegistry {
         let mut this = Self {
             themes: BTreeMap::new(),
             choices: BTreeMap::new(),
+            definitions: BTreeMap::new(),
+            provenance: BTreeMap::new(),
         };
         this.insert_builtin(ThemeDefinition::NANA_LIGHT, "浅色");
         this.insert_builtin(ThemeDefinition::NANA_DARK, "深色");
@@ -56,6 +63,7 @@ impl ThemeRegistry {
                 ThemeAppearance::Dark | ThemeAppearance::Custom => super::ThemeAppearance::Dark,
             }),
         );
+        self.definitions.insert(id.clone(), definition);
         self.choices.insert(id, Arc::from(label));
     }
     pub fn register(&mut self, definition: ThemeDefinition) -> Result<ThemeId, ThemeRegistryError> {
@@ -94,8 +102,60 @@ impl ThemeRegistry {
         }
         self.themes
             .insert(id.clone(), Arc::new(definition.compile()?));
+        self.definitions.insert(id.clone(), definition);
+        self.provenance.remove(&id);
         self.choices.insert(id.clone(), label);
         Ok(id)
+    }
+
+    pub fn definition(&self, id: &ThemeId) -> Option<ThemeDefinition> {
+        self.definitions.get(id).cloned()
+    }
+
+    pub fn provenance(&self, id: &ThemeId) -> Option<&ThemePackageProvenance> {
+        self.provenance.get(id)
+    }
+
+    pub fn register_package(
+        &mut self,
+        package: &ThemePackage,
+    ) -> Result<Arc<CompiledTheme>, ThemePackageError> {
+        let mut compiled = self.register_packages(std::slice::from_ref(package))?;
+        Ok(compiled.remove(0))
+    }
+
+    pub fn register_package_json(
+        &mut self,
+        json: &str,
+    ) -> Result<Arc<CompiledTheme>, ThemePackageError> {
+        let package = ThemePackage::from_json(json)?;
+        self.register_package(&package)
+    }
+
+    pub fn register_packages(
+        &mut self,
+        packages: &[ThemePackage],
+    ) -> Result<Vec<Arc<CompiledTheme>>, ThemePackageError> {
+        let compiled_list = compile_theme_packages(packages, self)?;
+        let mut installed = Vec::with_capacity(compiled_list.len());
+        for mut item in compiled_list {
+            let id = item.definition.id.clone();
+            if let Some(previous) = self.themes.get(&id) {
+                let prev_gen = previous.identity().generation;
+                if item.definition.generation <= prev_gen {
+                    item.definition.generation = prev_gen.next();
+                    item.compiled = Arc::new(item.definition.compile()?);
+                }
+            }
+            let label: Arc<str> = Arc::from(item.definition.display_name.as_ref());
+            let compiled = Arc::clone(&item.compiled);
+            self.themes.insert(id.clone(), Arc::clone(&compiled));
+            self.definitions.insert(id.clone(), item.definition);
+            self.provenance.insert(id.clone(), item.provenance);
+            self.choices.insert(id, label);
+            installed.push(compiled);
+        }
+        Ok(installed)
     }
 
     /// Replace an existing definition, or register it when the ID is new.
@@ -142,6 +202,8 @@ impl ThemeRegistry {
         if self.themes.remove(id).is_none() {
             return Err(ThemeRegistryError::Missing(id.clone()));
         }
+        self.definitions.remove(id);
+        self.provenance.remove(id);
         self.choices.remove(id);
         Ok(())
     }

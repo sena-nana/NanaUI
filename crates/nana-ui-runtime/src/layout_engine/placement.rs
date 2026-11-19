@@ -4107,6 +4107,7 @@ fn place_triggered_menu_items(
     let mut content_height = 0.0;
     // Gaps fall between items that take room: an empty group of items (a
     // keyed list with no rows yet) adds none.
+    let item_gap = nodes.world.node_theme(id).spacing().xxs;
     let mut placed_any = false;
     for child in items.iter().copied() {
         let size = intrinsic_size_scoped(
@@ -4121,7 +4122,7 @@ fn place_triggered_menu_items(
         )?;
         if size.height > 0.0 {
             if placed_any {
-                content_height += nodes.world.theme().spacing().xxs;
+                content_height += item_gap;
             }
             placed_any = true;
         }
@@ -4196,7 +4197,7 @@ fn place_triggered_menu_items(
             nodes.frames.insert(child, crate::LayoutFrame::Page);
         }
         if child_size.height > 0.0 {
-            cursor_y += child_size.height + nodes.world.theme().spacing().xxs;
+            cursor_y += child_size.height + item_gap;
         }
     }
     Ok(())

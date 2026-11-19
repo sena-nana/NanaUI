@@ -938,7 +938,7 @@ pub fn resolve_grid_track_sizes(
 
 /// 视口相对单位轴（`vw` / `vh` / `vmin` / `vmax`）。
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ViewportAxis {
     /// `vw` — 相对 viewport 宽度。
     Width,
@@ -1222,7 +1222,7 @@ impl LengthAtom {
 /// Simple variants stay `Copy`. Full `calc()` trees are
 /// [`Self::Calc`] — an interned [`Box<CalcExpr>`] handle — so this enum
 /// remains `Copy` and layout can keep copying specs.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum LengthSpec {
     Px(f32),
     /// 相对父 content box 的百分比（calc 可超出 0..=100，不钳制）。
@@ -3334,7 +3334,7 @@ impl TransformBox {
 
 /// CSS `transform-origin` (2D). Percent is relative to [`LayoutStyle::transform_box`].
 /// A third z length is accepted by the parser and dropped on this 2×3 path.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct TransformOrigin {
     pub x: LengthSpec,
     pub y: LengthSpec,

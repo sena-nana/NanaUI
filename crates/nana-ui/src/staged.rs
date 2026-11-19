@@ -346,6 +346,13 @@ impl<L: Launch> RuntimeProgram for Staged<L> {
         }
     }
 
+    fn theme_for(&self, id: WindowId) -> Option<Arc<CompiledTheme>> {
+        match &self.stage {
+            Stage::Running(program) => program.theme_for(id),
+            Stage::Launching(_) => None,
+        }
+    }
+
     fn theme_mode(&self) -> ThemeAppearance {
         match &self.stage {
             Stage::Running(program) => program.theme_mode(),

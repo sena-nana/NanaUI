@@ -1190,6 +1190,30 @@ pub struct ThemeWorkCounters {
     pub text_nodes_from_style: usize,
     /// Nodes the theme/style authority invalidated for paint/extract.
     pub paint_nodes_from_style: usize,
+    /// Live nodes matching the changed theme categories on theme/scope install (#106).
+    pub theme_revision_candidates: usize,
+    /// Live nodes skipped by theme dependency mask because none of their dependencies changed (#106).
+    pub theme_dependency_skipped: usize,
+    /// Nodes whose `ResolvedStyle` actually changed during style resolution (#106).
+    pub resolved_style_changed: usize,
+    /// Candidate nodes whose `ResolvedStyle` compared equal, suppressing downstream dirty (#106).
+    pub resolved_style_unchanged: usize,
+    /// Nodes invalidated specifically for text shaping (`TextWork::SHAPE`) from style (#106).
+    pub style_text_shape_invalidations: usize,
+    /// Nodes invalidated specifically for text line layout (`TextWork::LAYOUT`) from style (#106).
+    pub style_text_layout_invalidations: usize,
+    /// Nodes affected only by a `MOTION_POLICY` theme change (zero layout/text/paint) (#106).
+    pub style_motion_policy_invalidations: usize,
+    /// Nodes invalidated due to a component recipe delta (#106).
+    pub component_recipe_nodes_invalidated: usize,
+    /// Descendant nodes evaluated/invalidated by a `ThemeScope` patch or reparent (#104).
+    pub scope_nodes_invalidated: usize,
+    /// `ThemeScope` resolution cache hits (#104).
+    pub scope_cache_hits: usize,
+    /// `ThemeScope` resolution cache misses (#104).
+    pub scope_cache_misses: usize,
+    /// `ThemeScope` generation advances (#104).
+    pub scope_generation_changes: usize,
 }
 
 impl ThemeWorkCounters {
@@ -1241,10 +1265,66 @@ impl ThemeWorkCounters {
         self.paint_nodes_from_style = self.paint_nodes_from_style.saturating_add(nodes);
     }
 
+    pub fn record_candidate(&mut self, count: usize) {
+        self.theme_revision_candidates = self.theme_revision_candidates.saturating_add(count);
+    }
+
+    pub fn record_dependency_skip(&mut self, count: usize) {
+        self.theme_dependency_skipped = self.theme_dependency_skipped.saturating_add(count);
+    }
+
+    pub fn record_resolved_changed(&mut self, count: usize) {
+        self.resolved_style_changed = self.resolved_style_changed.saturating_add(count);
+    }
+
+    pub fn record_resolved_unchanged(&mut self, count: usize) {
+        self.resolved_style_unchanged = self.resolved_style_unchanged.saturating_add(count);
+    }
+
+    pub fn record_text_shape_invalidation(&mut self, count: usize) {
+        self.style_text_shape_invalidations =
+            self.style_text_shape_invalidations.saturating_add(count);
+    }
+
+    pub fn record_text_layout_invalidation(&mut self, count: usize) {
+        self.style_text_layout_invalidations =
+            self.style_text_layout_invalidations.saturating_add(count);
+    }
+
+    pub fn record_motion_policy_invalidation(&mut self, count: usize) {
+        self.style_motion_policy_invalidations =
+            self.style_motion_policy_invalidations.saturating_add(count);
+    }
+
+    pub fn record_recipe_invalidation(&mut self, count: usize) {
+        self.component_recipe_nodes_invalidated = self
+            .component_recipe_nodes_invalidated
+            .saturating_add(count);
+    }
+
+    pub fn record_scope_invalidation(&mut self, count: usize) {
+        self.scope_nodes_invalidated = self.scope_nodes_invalidated.saturating_add(count);
+    }
+
+    pub fn record_scope_cache_hit(&mut self, count: usize) {
+        self.scope_cache_hits = self.scope_cache_hits.saturating_add(count);
+    }
+
+    pub fn record_scope_cache_miss(&mut self, count: usize) {
+        self.scope_cache_misses = self.scope_cache_misses.saturating_add(count);
+    }
+
+    pub fn record_scope_generation_change(&mut self, count: usize) {
+        self.scope_generation_changes = self.scope_generation_changes.saturating_add(count);
+    }
+
     /// An idle steady frame resolved no style and asked the theme nothing.
     /// Issue #100 §15: a retained frame must not re-walk or re-resolve.
     pub fn is_idle(self) -> bool {
-        self.style_nodes_considered == 0 && self.theme_reads == 0
+        self.style_nodes_considered == 0
+            && self.theme_reads == 0
+            && self.style_motion_policy_invalidations == 0
+            && self.scope_nodes_invalidated == 0
     }
 
     /// A palette-only theme change is paint work: no layout, no reshape, and
@@ -1255,6 +1335,8 @@ impl ThemeWorkCounters {
     pub fn is_paint_only(self) -> bool {
         self.layout_nodes_from_style == 0
             && self.text_nodes_from_style == 0
+            && self.style_text_shape_invalidations == 0
+            && self.style_text_layout_invalidations == 0
             && self.layout_copies == 0
     }
 }
@@ -1264,7 +1346,12 @@ accumulate_counters! {
     ThemeWorkCounters {
         sum: style_nodes_considered, style_nodes_resolved, style_nodes_skipped, theme_reads,
             style_allocations, style_allocated_bytes, layout_copies, layout_copied_bytes,
-            layout_nodes_from_style, text_nodes_from_style, paint_nodes_from_style;
+            layout_nodes_from_style, text_nodes_from_style, paint_nodes_from_style,
+            theme_revision_candidates, theme_dependency_skipped, resolved_style_changed,
+            resolved_style_unchanged, style_text_shape_invalidations,
+            style_text_layout_invalidations, style_motion_policy_invalidations,
+            component_recipe_nodes_invalidated, scope_nodes_invalidated, scope_cache_hits,
+            scope_cache_misses, scope_generation_changes;
     }
 }
 

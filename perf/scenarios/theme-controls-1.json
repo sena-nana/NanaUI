@@ -22,9 +22,9 @@
       "name": "theme_first_resolve_publishes_each_node_once",
       "path": "work_counters.style_allocations",
       "op": "lte",
-      "value": 2,
+      "value": 4,
       "status": "required",
-      "note": "One published resolved style per node at most. A node that inherits its parent's result verbatim shares that allocation instead."
+      "note": "Each distinct node interns at most one Arc<InheritedStyle> and one Arc<ComputedStyle> (2 nodes x 2 = 4). Identical controls share those interned allocations."
     }
   ],
   "notes": "Issue #101 §4 control scale (1). First style pass over a fresh document."

@@ -396,6 +396,14 @@ impl crate::WidgetVisual for ModalFrameVisual {
         other.downcast_ref::<Self>() == Some(self)
     }
 
+    fn theme_dependency_mask(&self) -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::COLOR_ANY
+            .union(nana_ui_core::ThemeDependencyMask::METRICS)
+            .union(nana_ui_core::ThemeDependencyMask::TYPOGRAPHY_ANY)
+            .union(nana_ui_core::ThemeDependencyMask::EFFECT)
+            .union(nana_ui_core::ThemeDependencyMask::RECIPE_DIALOG)
+    }
+
     fn measures_text(&self) -> bool {
         true
     }

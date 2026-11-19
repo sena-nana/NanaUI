@@ -1329,6 +1329,7 @@ impl UiWorld {
                 self.spawned_since_drain += 1;
                 report.created += 1;
                 self.refresh_root_membership(*id);
+                self.recompute_node_theme_deps(*id);
             }
             UiMutation::Insert {
                 parent,
@@ -1370,6 +1371,10 @@ impl UiWorld {
                     self.responsive_reparented(*child);
                     self.i18n_reparented(*child, old_parent);
                     self.rebind_sticky_subtree(*child);
+                    self.theme_scope_reparented(*child, old_parent);
+                    if old_parent.is_none() {
+                        self.recompute_node_theme_deps(*child);
+                    }
                 }
                 let parent_mount = self.record(*parent).mount;
                 if self.record(*child).mount != parent_mount {
@@ -1424,6 +1429,7 @@ impl UiWorld {
                 self.reorder_children(*parent, order, report);
             }
             UiMutation::Detach { id } => {
+                let old_parent = self.parent_id(*id);
                 self.record_topology_invalidation(*id);
                 self.clear_layout_results_subtree(*id);
                 if self.unlink_from_parent(*id) {
@@ -1432,8 +1438,11 @@ impl UiWorld {
                 self.leave_live_document(*id);
                 self.rebind_sticky_subtree(*id);
                 self.refresh_root_membership(*id);
+                self.theme_scope_reparented(*id, old_parent);
+                self.recompute_node_theme_deps(*id);
             }
             UiMutation::ParkSubtree { root } => {
+                let old_parent = self.parent_id(*root);
                 self.record_topology_invalidation(*root);
                 self.clear_layout_results_subtree(*root);
                 self.unlink_from_parent(*root);
@@ -1441,6 +1450,7 @@ impl UiWorld {
                 self.leave_live_document(*root);
                 self.rebind_sticky_subtree(*root);
                 self.refresh_root_membership(*root);
+                self.theme_scope_reparented(*root, old_parent);
             }
             UiMutation::DespawnSubtree { root } => {
                 self.record_topology_invalidation(*root);
@@ -1473,6 +1483,8 @@ impl UiWorld {
                     self.forget_labelled_by(id);
                     self.set_live(id, None);
                     let _removed = self.nodes.remove(id);
+                    self.theme_state.pending_theme_eval.remove(&id);
+                    self.theme_state.theme_scopes.remove_owner(id);
                     self.input.focus_scopes.retain(|root, target| {
                         if *target == Some(id) {
                             *target = None;
@@ -1678,6 +1690,7 @@ impl UiWorld {
                         | DirtyMask::RENDER
                         | DirtyMask::ACCESSIBILITY,
                 );
+                self.recompute_node_theme_deps(*id);
             }
             UiMutation::SetCustomRender { id, content } => {
                 let previous = self.nodes.custom_render(*id);
@@ -1717,6 +1730,7 @@ impl UiWorld {
                 }
                 if changed {
                     self.mark(*id, DirtyMask::RENDER | DirtyMask::INPUT);
+                    self.recompute_node_theme_deps(*id);
                 }
             }
             UiMutation::SetEventListener { id, event, enabled } => {
@@ -1785,13 +1799,16 @@ impl UiWorld {
                         _ => None,
                     };
                     if let Some((thumb_progress, next)) = switch_transition {
+                        let node_theme = self.node_theme(*id);
+                        let duration = node_theme.duration(nana_ui_core::MotionRole::OverlayFade);
+                        let easing = node_theme
+                            .motion()
+                            .easing(nana_ui_core::EasingRole::Standard);
                         self.start_component_track(
                             *id,
                             crate::component_animation_kinds::SWITCH,
-                            self.theme.duration(nana_ui_core::MotionRole::OverlayFade),
-                            self.theme
-                                .motion()
-                                .easing(nana_ui_core::EasingRole::Standard),
+                            duration,
+                            easing,
                             crate::AnimatableProperty::Progress,
                             crate::MotionValue::Scalar(thumb_progress),
                             crate::MotionValue::Scalar(f32::from(next)),
@@ -1902,6 +1919,7 @@ impl UiWorld {
                             .as_ref()
                             .is_some_and(|v| v.invalidates_node_text_constraint());
                     self.nodes.set_widget_visual(*id, visual.clone());
+                    self.recompute_node_theme_deps(*id);
                     if !visual
                         .as_ref()
                         .is_some_and(|v| v.downcast_ref::<crate::EmptyStateVisual>().is_some())
@@ -3737,6 +3755,9 @@ impl UiWorld {
         );
         let next_authored = Arc::clone(&self.authored_style(id).layout);
         let next_presentation = self.record(id).style.clone();
+        if previous_presentation.theme_patch != next_presentation.theme_patch {
+            self.sync_node_theme_scope(id);
+        }
         let resolved = Arc::clone(&self.record(id).resolved_layout);
         // Every comparison of the two resolved layouts below, in one pass,
         // remembered for the pair: nodes built alike restyle from the
@@ -3983,6 +4004,7 @@ impl UiWorld {
         {
             self.set_document_text_selection(document, None);
         }
+        self.recompute_node_theme_deps(id);
     }
 }
 

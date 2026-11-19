@@ -950,7 +950,7 @@ impl AppContext {
         let Ok(visibility) = self.read(entity, |scroll| scroll.scrollbars) else {
             return Ok(());
         };
-        let recipe = *self.world.theme().recipes().scrollbar();
+        let recipe = *self.world.node_theme(id).recipes().scrollbar();
         let delay = recipe.motion.hide_delay();
         if visibility.unwrap_or(recipe.visibility) != nana_ui_core::ScrollbarVisibility::AutoHide
             || delay.is_zero()

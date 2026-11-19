@@ -1,5 +1,7 @@
 //! Timing functions that map linear progress in `0.0..=1.0`.
 
+use serde::{Deserialize, Serialize};
+
 /// Timing function for one animation timeline.
 ///
 /// [`Easing::CubicBezier`] follows CSS `cubic-bezier(x1, y1, x2, y2)`
@@ -7,7 +9,7 @@
 /// x coordinates must stay in `0.0..=1.0`; every constructor in this
 /// repository guarantees that, which keeps `x(t)` monotonic so sampling can
 /// solve for the curve parameter directly.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub enum Easing {
     #[default]
     Linear,

@@ -428,7 +428,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         );
         let host_textures = self.program.host_textures(id);
         let gpu_renderers = self.program.scene_gpu_renderers(id);
-        let theme = self.program.theme();
+        let theme = self.resolve_window_theme(id);
         let window_background = self.program.window_background();
         let material = self.material_of(id);
         let clear_color =

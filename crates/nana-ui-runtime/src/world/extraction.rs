@@ -60,7 +60,7 @@ impl UiWorld {
         style: &mut Arc<ComputedStyle>,
         inherited_color: Option<[f32; 4]>,
     ) -> Option<[f32; 4]> {
-        let model = self.scoped_style_model(style.color_scope.as_deref());
+        let model = self.node_style_model_with(id, style.color_scope.as_deref());
         let (foreground, color, background, border_color) =
             self.palette_paint_colors(id, inherited_color, model);
         let ring_color = self.palette_ring_color(id, model);
@@ -100,7 +100,10 @@ impl UiWorld {
     pub(super) fn painted_style(&self, id: StableNodeId) -> Option<Arc<ComputedStyle>> {
         let node = self.nodes.get(id)?;
         let mut style = Arc::clone(&node.resolved.0);
-        if node.resolved.1 != self.resolved_palette_epoch() {
+        if node.resolved.1 == 0
+            || (node.resolved.1 != self.resolved_palette_epoch()
+                && self.theme_state.pending_theme_eval.contains_key(&id))
+        {
             let inherited_color = self.inherited_palette_color(node.hierarchy.parent);
             self.repaint_style(id, &mut style, inherited_color);
         }
@@ -162,7 +165,10 @@ impl UiWorld {
         // this transitional projection; scene/hit geometry uses canonical
         // accessors once the batch is committed.
         let layout = self.component_layout_box(id)?;
-        if resolved_epoch != self.resolved_palette_epoch() {
+        if resolved_epoch == 0
+            || (resolved_epoch != self.resolved_palette_epoch()
+                && self.theme_state.pending_theme_eval.contains_key(&id))
+        {
             let inherited_color = parent.and_then(|parent| {
                 memo.color
                     .get(&parent)
@@ -173,9 +179,9 @@ impl UiWorld {
                 memo.color.insert(id, color);
             }
         }
-        // The colours this node paints in: the installed theme under its
+        // The colours this node paints in: the active scope theme under its
         // colour scope.
-        let model = self.scoped_style_model(style.color_scope.as_deref());
+        let model = self.node_style_model_with(id, style.color_scope.as_deref());
         if !self.inline_presentation_visible_memo(id, memo) {
             let style = Arc::make_mut(&mut style);
             style.visible = false;
@@ -361,10 +367,7 @@ impl UiWorld {
                 marks
             }),
             widget_paint,
-            chrome_radii: nana_ui_core::ChromeRadii::resolve(
-                self.style_model.metrics,
-                self.theme.recipes().shape(),
-            ),
+            chrome_radii: self.node_chrome_radii(id),
             custom_render: self
                 .nodes
                 .has_custom_render()
@@ -421,7 +424,7 @@ impl UiWorld {
         };
         let recording = Arc::new(crate::custom_paint::record(
             painter.painter(),
-            &self.theme,
+            self.node_theme(id),
             size,
             state,
             &measure,
@@ -495,7 +498,7 @@ impl UiWorld {
         };
         let recording = Arc::new(crate::custom_paint::record_surface(
             painter.painter(),
-            &self.theme,
+            self.node_theme(id),
             size,
             sections,
             &measure,

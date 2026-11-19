@@ -27,7 +27,7 @@ use nana_ui_core::{CompiledTheme, FileDialogError, FileDialogResult, SharedStore
 use nana_ui_platform::host::WindowCommand;
 use nana_ui_platform::{
     CommittedText, EndpointGeneration, InputPayload, InputSourceId, WindowEvent, WindowGeometry,
-    WindowId,
+    WindowId, WindowRole,
 };
 use nana_ui_runtime::{
     AccessibilityActionRequest, FrameworkError, HeadlessInput, LayoutViewport, Task, WorkCounters,
@@ -119,6 +119,8 @@ pub struct HeadlessReport {
 pub struct HeadlessTurn {
     /// The work of every flush that did something.
     pub work: WorkCounters,
+    /// Theme/style work accumulated across flushed frames in this turn (#106).
+    pub theme_work: crate::ThemeWorkCounters,
     /// Whether the turn processed input, window requests, program messages,
     /// non-idle flushes, due wakeups, or animation frames.
     pub did_work: bool,
@@ -137,6 +139,7 @@ pub struct HeadlessQuiesce {
 
 struct WindowState {
     window: HeadlessWindow,
+    role: WindowRole,
     input: Option<HeadlessInput>,
     /// What `WindowHandle::pointer_position` answers: where the last pointer
     /// input was, or what [`HeadlessRuntime::set_pointer`] put.
@@ -163,6 +166,7 @@ pub struct HeadlessRuntime<P: RuntimeProgram> {
     clock: RuntimeAnimationClock,
     manual_now: Option<Instant>,
     installed_theme: Arc<CompiledTheme>,
+    window_themes: BTreeMap<WindowId, Arc<CompiledTheme>>,
     text: NanaTextShaper,
     bind_after_present: BTreeSet<WindowId>,
     next_window_id: u64,
@@ -201,6 +205,7 @@ impl<P: RuntimeProgram> HeadlessRuntime<P> {
                     parent: None,
                     content_zoom: 1.0,
                 },
+                role: primary.role,
                 input: None,
                 pointer: None,
             },
@@ -218,9 +223,20 @@ impl<P: RuntimeProgram> HeadlessRuntime<P> {
             &service,
             options,
         );
-        let (program, startup_messages) =
+        let (mut program, startup_messages) =
             P::initialize(&context).map_err(|error| error.to_string())?;
         let installed_theme = program.theme();
+        let primary_theme = program
+            .theme_for(WindowId::PRIMARY)
+            .unwrap_or_else(|| Arc::clone(&installed_theme));
+        if !Arc::ptr_eq(&primary_theme, &installed_theme) {
+            let _ = program.with_document_mut(WindowId::PRIMARY, |document| {
+                document
+                    .context_mut()
+                    .set_theme_tokens(Arc::clone(&primary_theme))
+            });
+        }
+        let window_themes = BTreeMap::from([(WindowId::PRIMARY, primary_theme)]);
         let mut host = Self {
             program,
             gpu,
@@ -238,6 +254,7 @@ impl<P: RuntimeProgram> HeadlessRuntime<P> {
             clock: RuntimeAnimationClock::now(),
             manual_now: None,
             installed_theme,
+            window_themes,
             text: NanaTextShaper::default(),
             // Natively the message that installs a program also binds its
             // window; a program initialized here gets that bind after its
@@ -569,9 +586,12 @@ impl<P: RuntimeProgram> HeadlessRuntime<P> {
             .collect();
         let mut did_present = false;
         for id in visible {
-            let (work, presented_work) = self.present_tracked(id);
+            let (work, theme_work, presented_work) = self.present_tracked_with_theme(id);
             if let Some(work) = work {
                 turn.work.accumulate(work);
+            }
+            if let Some(theme_work) = theme_work {
+                turn.theme_work.accumulate(theme_work);
             }
             did_present |= presented_work;
         }
@@ -590,12 +610,15 @@ impl<P: RuntimeProgram> HeadlessRuntime<P> {
     /// `window_frame_presented` and `bind_window` when due. Returns the
     /// flush's work when it did any.
     pub fn present(&mut self, id: WindowId) -> Option<WorkCounters> {
-        self.present_tracked(id).0
+        self.present_tracked_with_theme(id).0
     }
 
-    fn present_tracked(&mut self, id: WindowId) -> (Option<WorkCounters>, bool) {
+    fn present_tracked_with_theme(
+        &mut self,
+        id: WindowId,
+    ) -> (Option<WorkCounters>, Option<crate::ThemeWorkCounters>, bool) {
         if !self.windows.contains_key(&id) {
-            return (None, false);
+            return (None, None, false);
         }
         let (queued, had_queued) = self.drain_program_messages_tracked(id);
         let did_queued = had_queued || Self::update_did_work(&queued);
@@ -611,22 +634,30 @@ impl<P: RuntimeProgram> HeadlessRuntime<P> {
             }
             document
                 .flush(LayoutViewport::new(width, height), text)
-                .map(|update| (!update.is_idle()).then(|| document.context().last_work_counters()))
+                .map(|update| {
+                    (!update.is_idle()).then(|| {
+                        (
+                            document.context().last_work_counters(),
+                            document.context().last_theme_work_counters(),
+                        )
+                    })
+                })
         });
-        let work = match flushed {
-            Some(Ok(work)) => work,
+        let (work, theme_work) = match flushed {
+            Some(Ok(Some((work, theme_work)))) => (Some(work), Some(theme_work)),
+            Some(Ok(None)) => (None, None),
             Some(Err(error)) => {
                 self.program
                     .report_host_failure(HostFailure::FrameDidNotSettle {
                         window: id,
                         error: error.to_string(),
                     });
-                return (None, did_queued);
+                return (None, None, did_queued);
             }
             None => {
                 self.program
                     .report_host_failure(HostFailure::MissingDocument { window: id });
-                return (None, did_queued);
+                return (None, None, did_queued);
             }
         };
         let mut update = self.program.window_frame_presented(id, &context);
@@ -638,6 +669,7 @@ impl<P: RuntimeProgram> HeadlessRuntime<P> {
         self.apply_update(update);
         (
             work,
+            theme_work,
             did_queued || work.is_some() || bound || did_post_update,
         )
     }
@@ -939,19 +971,65 @@ impl<P: RuntimeProgram> HeadlessRuntime<P> {
         (update, active)
     }
 
-    /// A new theme reaches the documents of windows already open.
-    fn sync_appearance(&mut self) {
-        let theme = self.program.theme();
-        if Arc::ptr_eq(&theme, &self.installed_theme) {
-            return;
+    fn resolve_window_theme_with_parent(
+        &self,
+        id: WindowId,
+        parent: Option<WindowId>,
+        role: WindowRole,
+    ) -> Arc<CompiledTheme> {
+        const MAX_PARENT_DEPTH: usize = 8;
+        if let Some(theme) = self.program.theme_for(id) {
+            return theme;
         }
+        if role == WindowRole::Underlay {
+            return self.program.theme();
+        }
+        let mut cursor = parent;
+        let mut depth = 0usize;
+        while let Some(parent_id) = cursor {
+            if parent_id == id || depth >= MAX_PARENT_DEPTH {
+                break;
+            }
+            if let Some(theme) = self.program.theme_for(parent_id) {
+                return theme;
+            }
+            cursor = self
+                .windows
+                .get(&parent_id)
+                .filter(|state| state.role != WindowRole::Underlay)
+                .and_then(|state| state.window.parent);
+            depth += 1;
+        }
+        self.program.theme()
+    }
+
+    fn resolve_window_theme(&self, id: WindowId) -> Arc<CompiledTheme> {
+        let (parent, role) = self
+            .windows
+            .get(&id)
+            .map_or((None, WindowRole::Main), |state| {
+                (state.window.parent, state.role)
+            });
+        self.resolve_window_theme_with_parent(id, parent, role)
+    }
+
+    /// A new root or per-window/parent-inherited theme reaches open windows.
+    fn sync_appearance(&mut self) {
+        self.installed_theme = self.program.theme();
         let ids: Vec<_> = self.windows.keys().copied().collect();
         for id in ids {
-            let _ = self.program.with_document_mut(id, |document| {
-                document.context_mut().set_theme_tokens(Arc::clone(&theme))
-            });
+            let theme = self.resolve_window_theme(id);
+            let changed = self
+                .window_themes
+                .get(&id)
+                .is_none_or(|prev| !Arc::ptr_eq(prev, &theme));
+            if changed {
+                let _ = self.program.with_document_mut(id, |document| {
+                    document.context_mut().set_theme_tokens(Arc::clone(&theme))
+                });
+                self.window_themes.insert(id, theme);
+            }
         }
-        self.installed_theme = theme;
     }
 
     fn sync_accessibility_preferences(&mut self, id: WindowId) {
@@ -1056,6 +1134,8 @@ impl<P: RuntimeProgram> HeadlessRuntime<P> {
             .geometry
             .scale_factor;
         let (width, height) = descriptor.initial_size;
+        let resolved_theme =
+            self.resolve_window_theme_with_parent(id, descriptor.parent, descriptor.role);
         let window = HeadlessWindow {
             geometry: geometry((width as f32, height as f32), scale),
             tag: descriptor.tag.clone(),
@@ -1068,6 +1148,7 @@ impl<P: RuntimeProgram> HeadlessRuntime<P> {
             id,
             WindowState {
                 window,
+                role: descriptor.role,
                 input: None,
                 pointer: None,
             },
@@ -1078,6 +1159,12 @@ impl<P: RuntimeProgram> HeadlessRuntime<P> {
             self.program.discard_window(id);
             return Err(error);
         }
+        let _ = self.program.with_document_mut(id, |document| {
+            document
+                .context_mut()
+                .set_theme_tokens(Arc::clone(&resolved_theme))
+        });
+        self.window_themes.insert(id, resolved_theme);
         self.program.sync_animation_clock(self.clock.epoch());
         self.sync_accessibility_preferences(id);
         let geometry = self.windows[&id].window.geometry;
@@ -1089,6 +1176,7 @@ impl<P: RuntimeProgram> HeadlessRuntime<P> {
         let Some(state) = self.windows.remove(&id) else {
             return;
         };
+        self.window_themes.remove(&id);
         if state.input.is_some() {
             let now = self.clock.runtime_time(self.now());
             self.program.write_document(id, |document| {
@@ -1273,5 +1361,245 @@ fn event_window(event: &WindowEvent) -> WindowId {
         | WindowEvent::Closed { id }
         | WindowEvent::AppearanceChanged { id, .. }
         | WindowEvent::ModeChanged { id, .. } => *id,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+    use nana_ui_core::{SemanticColor, SemanticColorRole, ThemeAppearance, ThemePatch};
+    use nana_ui_platform::{WindowId, WindowRole};
+    use nana_ui_runtime::{DocumentId, NodeStyle, Stack};
+
+    #[derive(Clone)]
+    enum Msg {
+        SetWindowTheme(WindowId, Option<Arc<CompiledTheme>>),
+        SetRootTheme(Arc<CompiledTheme>),
+    }
+
+    struct MultiWindowThemeProgram {
+        docs: Mutex<BTreeMap<WindowId, DocumentId>>,
+        windows: Mutex<BTreeMap<WindowId, RuntimeDocument>>,
+        overrides: Mutex<BTreeMap<WindowId, Arc<CompiledTheme>>>,
+        root_theme: Mutex<Arc<CompiledTheme>>,
+        next_doc_id: Mutex<u64>,
+    }
+
+    impl RuntimeProgram for MultiWindowThemeProgram {
+        type Message = Msg;
+        type Error = String;
+
+        fn initialize(_context: &RuntimeProgramContext<Msg>) -> Result<(Self, Vec<Msg>), String> {
+            let mut docs = BTreeMap::new();
+            let mut windows = BTreeMap::new();
+            let primary_doc_id = DocumentId::new(1).unwrap();
+            let mut doc = RuntimeDocument::new(primary_doc_id);
+            let root = Stack::column(0.0).style(NodeStyle {
+                background: Some(SemanticColorRole::Accent),
+                ..NodeStyle::default()
+            });
+            doc.context_mut()
+                .create_component(primary_doc_id, root)
+                .map_err(|e| e.to_string())?;
+            docs.insert(WindowId::PRIMARY, primary_doc_id);
+            windows.insert(WindowId::PRIMARY, doc);
+            let root_theme = crate::theme::builtin_theme_arc(ThemeAppearance::Dark);
+            Ok((
+                Self {
+                    docs: Mutex::new(docs),
+                    windows: Mutex::new(windows),
+                    overrides: Mutex::new(BTreeMap::new()),
+                    root_theme: Mutex::new(root_theme),
+                    next_doc_id: Mutex::new(2),
+                },
+                Vec::new(),
+            ))
+        }
+
+        fn initialize_window(
+            &mut self,
+            id: WindowId,
+            _context: &RuntimeProgramContext<Msg>,
+        ) -> Result<(), String> {
+            if self.windows.lock().unwrap().contains_key(&id) {
+                return Ok(());
+            }
+            let mut next = self.next_doc_id.lock().unwrap();
+            let doc_id = DocumentId::new(*next).unwrap();
+            *next += 1;
+            let mut doc = RuntimeDocument::new(doc_id);
+            let root = Stack::column(0.0).style(NodeStyle {
+                background: Some(SemanticColorRole::Accent),
+                ..NodeStyle::default()
+            });
+            doc.context_mut()
+                .create_component(doc_id, root)
+                .map_err(|e| e.to_string())?;
+            let theme = self.theme_for(id).unwrap_or_else(|| self.theme());
+            let _ = doc.context_mut().set_theme_tokens(theme);
+            self.docs.lock().unwrap().insert(id, doc_id);
+            self.windows.lock().unwrap().insert(id, doc);
+            Ok(())
+        }
+
+        fn theme(&self) -> Arc<CompiledTheme> {
+            Arc::clone(&self.root_theme.lock().unwrap())
+        }
+
+        fn theme_for(&self, id: WindowId) -> Option<Arc<CompiledTheme>> {
+            self.overrides.lock().unwrap().get(&id).cloned()
+        }
+
+        fn with_document<R>(
+            &self,
+            id: WindowId,
+            f: impl FnOnce(&RuntimeDocument) -> R,
+        ) -> Result<Option<R>, DocumentAccessError> {
+            Ok(self.windows.lock().unwrap().get(&id).map(f))
+        }
+
+        fn with_document_mut<R>(
+            &mut self,
+            id: WindowId,
+            f: impl FnOnce(&mut RuntimeDocument) -> R,
+        ) -> Result<Option<R>, DocumentAccessError> {
+            Ok(self.windows.lock().unwrap().get_mut(&id).map(f))
+        }
+
+        fn update(
+            &mut self,
+            message: Msg,
+            _context: &RuntimeProgramContext<Msg>,
+        ) -> RuntimeProgramUpdate {
+            match message {
+                Msg::SetWindowTheme(id, theme) => {
+                    let mut overrides = self.overrides.lock().unwrap();
+                    match theme {
+                        Some(t) => {
+                            overrides.insert(id, t);
+                        }
+                        None => {
+                            overrides.remove(&id);
+                        }
+                    }
+                    RuntimeProgramUpdate {
+                        redraw: RuntimeRedraw::All,
+                        ..RuntimeProgramUpdate::default()
+                    }
+                }
+                Msg::SetRootTheme(theme) => {
+                    *self.root_theme.lock().unwrap() = theme;
+                    RuntimeProgramUpdate {
+                        redraw: RuntimeRedraw::All,
+                        ..RuntimeProgramUpdate::default()
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn multi_window_theme_for_auxiliary_inheritance_and_underlay_separation() {
+        let base_dark = crate::theme::builtin_theme_arc(ThemeAppearance::Dark);
+        let owner_accent = SemanticColor::rgb8(210, 80, 40);
+        let owner_accent_updated = SemanticColor::rgb8(40, 170, 220);
+        let independent_accent = SemanticColor::rgb8(90, 200, 110);
+
+        let owner_theme = Arc::new(
+            ThemePatch::default()
+                .with_color(SemanticColorRole::Accent, owner_accent)
+                .apply_to_compiled(&base_dark)
+                .unwrap(),
+        );
+        let owner_theme_v2 = Arc::new(
+            ThemePatch::default()
+                .with_color(SemanticColorRole::Accent, owner_accent_updated)
+                .apply_to_compiled(&base_dark)
+                .unwrap(),
+        );
+        let independent_theme = Arc::new(
+            ThemePatch::default()
+                .with_color(SemanticColorRole::Accent, independent_accent)
+                .apply_to_compiled(&base_dark)
+                .unwrap(),
+        );
+
+        let mut host = HeadlessRuntime::<MultiWindowThemeProgram>::new(
+            crate::test_gpu::private_context(),
+            WindowDescriptor::new("Owner"),
+            headless_geometry((320.0, 240.0), 1.0),
+            HeadlessOptions::default(),
+        )
+        .expect("init headless multi-window host");
+
+        (host.dispatch)(Msg::SetWindowTheme(WindowId::PRIMARY, Some(owner_theme)));
+        let _ = host.turn();
+
+        let primary_accent = host
+            .with_document(WindowId::PRIMARY, |doc| {
+                doc.context().world().theme().palette().accent
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(primary_accent, owner_accent);
+
+        let mut aux_desc = WindowDescriptor::new("ToolChild").role(WindowRole::Tool);
+        aux_desc.parent = Some(WindowId::PRIMARY);
+        let mut aux_req = host.service.create_window(aux_desc);
+
+        let mut indep_desc = WindowDescriptor::new("Independent");
+        indep_desc.parent = None;
+        let mut indep_req = host.service.create_window(indep_desc);
+
+        let mut underlay_desc = WindowDescriptor::new("Underlay").role(WindowRole::Underlay);
+        underlay_desc.parent = Some(WindowId::PRIMARY);
+        let mut underlay_req = host.service.create_window(underlay_desc);
+
+        let _ = host.turn();
+        let aux_id = aux_req.try_take().unwrap().unwrap().id();
+        let indep_id = indep_req.try_take().unwrap().unwrap().id();
+        let underlay_id = underlay_req.try_take().unwrap().unwrap().id();
+
+        let accent_of = |h: &HeadlessRuntime<MultiWindowThemeProgram>, id: WindowId| {
+            h.with_document(id, |doc| doc.context().world().theme().palette().accent)
+                .unwrap()
+                .unwrap()
+        };
+
+        assert_eq!(
+            accent_of(&host, aux_id),
+            owner_accent,
+            "auxiliary window inherits its owner's per-window theme"
+        );
+        assert_eq!(
+            accent_of(&host, indep_id),
+            base_dark.palette().accent,
+            "independent window keeps root program theme"
+        );
+        assert_eq!(
+            accent_of(&host, underlay_id),
+            base_dark.palette().accent,
+            "WindowRole::Underlay stays separate from auxiliary per-window inheritance"
+        );
+
+        (host.dispatch)(Msg::SetWindowTheme(WindowId::PRIMARY, Some(owner_theme_v2)));
+        let _ = host.turn();
+        assert_eq!(accent_of(&host, WindowId::PRIMARY), owner_accent_updated);
+        assert_eq!(
+            accent_of(&host, aux_id),
+            owner_accent_updated,
+            "owner theme update propagates to auxiliary child"
+        );
+        assert_eq!(accent_of(&host, indep_id), base_dark.palette().accent);
+        assert_eq!(accent_of(&host, underlay_id), base_dark.palette().accent);
+
+        (host.dispatch)(Msg::SetRootTheme(independent_theme));
+        let _ = host.turn();
+        assert_eq!(accent_of(&host, indep_id), independent_accent);
+        assert_eq!(accent_of(&host, underlay_id), independent_accent);
+        assert_eq!(accent_of(&host, WindowId::PRIMARY), owner_accent_updated);
+        assert_eq!(accent_of(&host, aux_id), owner_accent_updated);
     }
 }

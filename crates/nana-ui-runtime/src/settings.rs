@@ -2192,7 +2192,7 @@ impl ComponentView for SettingsDisclosure {
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         let visual = crate::IconVisual {
             icon: disclosure_icon_kind(self.expanded),
-            size: world.theme().typography().line,
+            size: world.node_theme(id).typography().line,
             tooltip: None,
         };
         if world.widget_visual_as::<crate::IconVisual>(id) != Some(&visual) {
@@ -2668,7 +2668,7 @@ impl ComponentView for SettingsSidebarLeading {
         }
         let visual = self.icon.map(|icon| crate::IconVisual {
             icon,
-            size: world.theme().typography().meta,
+            size: world.node_theme(id).typography().meta,
             tooltip: None,
         });
         if world.widget_visual_as::<crate::IconVisual>(id) != visual.as_ref() {

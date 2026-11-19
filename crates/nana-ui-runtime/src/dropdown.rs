@@ -376,40 +376,42 @@ impl Dropdown {
             .collect()
     }
 
-    fn effective_style(&self) -> NodeStyle {
+    fn effective_style(&self, recipe: &nana_ui_core::SelectRecipe) -> NodeStyle {
         let mut style = self.style.clone();
         let (_, placeholder) = self.display_label();
-        style.foreground = Some(if self.inactive() || placeholder {
-            nana_ui_core::SemanticColorRole::Faint
+        style.foreground = Some(if self.inactive() {
+            recipe.disabled_foreground
+        } else if placeholder {
+            recipe.placeholder
         } else {
-            nana_ui_core::SemanticColorRole::Text
+            recipe.foreground
         });
         style.background = Some(if self.inactive() {
-            nana_ui_core::SemanticColorRole::Subtle
+            recipe.inactive_background
         } else {
-            nana_ui_core::SemanticColorRole::Background
+            recipe.background
         });
         style.border = Some(if self.invalid {
-            nana_ui_core::SemanticColorRole::Danger
+            recipe.invalid_border
         } else if self.opened {
-            nana_ui_core::SemanticColorRole::BorderSoft
+            recipe.open_border
         } else {
-            nana_ui_core::SemanticColorRole::Border
+            recipe.border
         });
         style.interaction.hovered.border = Some(if self.invalid {
-            nana_ui_core::SemanticColorRole::Danger
+            recipe.invalid_border
         } else {
-            nana_ui_core::SemanticColorRole::BorderStrong
+            recipe.hover_border
         });
         style.interaction.focused.border = Some(if self.invalid {
-            nana_ui_core::SemanticColorRole::Danger
+            recipe.invalid_border
         } else {
-            nana_ui_core::SemanticColorRole::FocusBorder
+            recipe.focus_border
         });
         style.interaction.disabled = SemanticPaint {
-            foreground: Some(nana_ui_core::SemanticColorRole::Faint),
-            background: Some(nana_ui_core::SemanticColorRole::Subtle),
-            border: Some(nana_ui_core::SemanticColorRole::Border),
+            foreground: Some(recipe.disabled_foreground),
+            background: Some(recipe.disabled_background),
+            border: Some(recipe.disabled_border),
             ..SemanticPaint::default()
         };
         let has_explicit_height = style.layout.height.is_some();
@@ -419,9 +421,9 @@ impl Dropdown {
                 layout.width = Some(nana_ui_core::LengthSpec::Fill);
             }
             layout.border_width = Some(if self.invalid && self.opened {
-                2.0
+                recipe.invalid_open_border_width
             } else {
-                1.0
+                nana_ui_core::HAIRLINE
             });
         }
         if has_explicit_height {
@@ -430,18 +432,23 @@ impl Dropdown {
             style.control_height = Some(nana_ui_core::ControlHeight::Exact(self.size));
         }
         if self.bare_trigger {
-            style = bare_field_style(style, self.opened, self.invalid);
+            style = bare_field_style(style, self.opened, self.invalid, recipe);
         }
         style
     }
 }
 
-fn bare_field_style(mut style: NodeStyle, open: bool, invalid: bool) -> NodeStyle {
-    style.background = open.then_some(nana_ui_core::SemanticColorRole::Hover);
-    style.border = invalid.then_some(nana_ui_core::SemanticColorRole::Danger);
-    style.interaction.hovered.background = Some(nana_ui_core::SemanticColorRole::Hover);
+fn bare_field_style(
+    mut style: NodeStyle,
+    open: bool,
+    invalid: bool,
+    recipe: &nana_ui_core::SelectRecipe,
+) -> NodeStyle {
+    style.background = open.then_some(recipe.bare_open_background);
+    style.border = invalid.then_some(recipe.invalid_border);
+    style.interaction.hovered.background = Some(recipe.bare_hover_background);
     style.interaction.hovered.border = style.border;
-    style.interaction.pressed.background = Some(nana_ui_core::SemanticColorRole::Active);
+    style.interaction.pressed.background = Some(recipe.bare_pressed_background);
     style.interaction.focused.border = style.border;
     style.interaction.disabled.background = None;
     style.interaction.disabled.border = None;
@@ -505,6 +512,15 @@ impl ComponentView for Dropdown {
         }
     }
 
+    fn wants_recipe_reproject() -> bool {
+        true
+    }
+
+    fn recipe_dependency_mask() -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::RECIPE_SELECT
+            .union(nana_ui_core::ThemeDependencyMask::RECIPE_MENU)
+    }
+
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         let (label, placeholder) = self.display_label();
         let visual = SelectVisual {
@@ -535,11 +551,12 @@ impl ComponentView for Dropdown {
                 },
             );
         }
+        let select_recipe = world.node_theme(id).recipes().select();
         project_common(
             id,
             world,
             mutations,
-            &self.effective_style(),
+            &self.effective_style(select_recipe),
             InteractionState {
                 pointer_events: !self.inactive(),
                 focusable: !self.inactive(),
@@ -670,7 +687,8 @@ mod tests {
         let field = Dropdown::single(Some("a"))
             .options([DropdownOption::new("a", "A")])
             .bare_trigger(true);
-        let style = field.effective_style();
+        let recipe = &nana_ui_core::SelectRecipe::DEFAULT;
+        let style = field.effective_style(recipe);
         assert_eq!(style.background, None);
         assert_eq!(style.border, None);
         assert_eq!(style.layout.border_width, Some(0.0));
@@ -678,12 +696,12 @@ mod tests {
             style.interaction.hovered.background,
             Some(nana_ui_core::SemanticColorRole::Hover)
         );
-        let open = field.clone().opened(true).effective_style();
+        let open = field.clone().opened(true).effective_style(recipe);
         assert_eq!(
             open.background,
             Some(nana_ui_core::SemanticColorRole::Hover)
         );
-        let invalid = field.invalid(true).effective_style();
+        let invalid = field.invalid(true).effective_style(recipe);
         assert_eq!(
             invalid.border,
             Some(nana_ui_core::SemanticColorRole::Danger)

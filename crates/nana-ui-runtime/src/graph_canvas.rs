@@ -503,6 +503,12 @@ impl WidgetVisual for GraphCanvasVisual {
         other.downcast_ref::<Self>() == Some(self)
     }
 
+    fn theme_dependency_mask(&self) -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::COLOR_ANY
+            .union(nana_ui_core::ThemeDependencyMask::METRICS)
+            .union(nana_ui_core::ThemeDependencyMask::RECIPE_SHAPE)
+    }
+
     fn paint(&self, ctx: &WidgetPaintCtx<'_>) -> WidgetPaintOutput {
         self.layout_at(ctx.bounds, &ctx.style_model.palette)
             .to_widget_paint(ctx.bounds, ctx.chrome_radii, ctx.style)

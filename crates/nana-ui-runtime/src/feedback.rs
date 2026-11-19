@@ -17,8 +17,8 @@ use nana_ui_core::{ComponentRecipeId, Icon, SemanticColorMix};
 const STATUS_DOT_FRACTION: f32 = 10.0 / 24.0;
 const PROGRESS_SWEEP_SEGMENT: f32 = 0.35;
 
-fn status_dot_lane(compact: bool, world: &UiWorld, badge: bool) -> (f32, f32) {
-    let spacing = world.theme().spacing();
+fn status_dot_lane(compact: bool, id: StableNodeId, world: &UiWorld, badge: bool) -> (f32, f32) {
+    let spacing = world.node_theme(id).spacing();
     match (badge, compact) {
         (true, true) => (spacing.sm, spacing.xs),
         (true, false) => (spacing.md, spacing.sm),
@@ -35,8 +35,13 @@ fn status_dot_flex_parts(
     crate::layout_engine::parts::status_dot_parts(slot, slot * STATUS_DOT_FRACTION, gap, text)
 }
 
-fn status_dot_intrinsic(compact: bool, world: &UiWorld, badge: bool) -> WidgetVisualContent {
-    let (slot, gap) = status_dot_lane(compact, world, badge);
+fn status_dot_intrinsic(
+    compact: bool,
+    id: StableNodeId,
+    world: &UiWorld,
+    badge: bool,
+) -> WidgetVisualContent {
+    let (slot, gap) = status_dot_lane(compact, id, world, badge);
     let parts = status_dot_flex_parts(slot, gap, crate::layout_engine::Size::default());
     let chrome = crate::layout_engine::parts::chrome_extent(&parts);
     WidgetVisualContent {
@@ -53,7 +58,7 @@ fn status_dot_content_parts(
     world: &UiWorld,
     content: LayoutBox,
 ) -> crate::layout_engine::parts::ContentParts {
-    let (slot, gap) = status_dot_lane(compact, world, badge);
+    let (slot, gap) = status_dot_lane(compact, id, world, badge);
     let text = world.text_metrics(id).unwrap_or_default();
     let parts = status_dot_flex_parts(
         slot,
@@ -69,11 +74,12 @@ fn status_dot_content_parts(
 fn status_dot_max_width(
     compact: bool,
     badge: bool,
+    id: StableNodeId,
     world: &UiWorld,
     available_width: f32,
     available_height: f32,
 ) -> f32 {
-    let (slot, gap) = status_dot_lane(compact, world, badge);
+    let (slot, gap) = status_dot_lane(compact, id, world, badge);
     let parts = status_dot_flex_parts(slot, gap, crate::layout_engine::Size::default());
     crate::layout_engine::parts::text_budget(
         parts,
@@ -283,12 +289,19 @@ impl WidgetVisual for StatusBadgeVisual {
         other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
     }
 
+    fn theme_dependency_mask(&self) -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::PALETTE
+            .union(nana_ui_core::ThemeDependencyMask::TYPOGRAPHY_ANY)
+            .union(nana_ui_core::ThemeDependencyMask::RECIPE_STATUS)
+            .union(nana_ui_core::ThemeDependencyMask::METRICS)
+    }
+
     fn visual_parts_read_theme(&self) -> bool {
         true
     }
 
-    fn intrinsic_chrome_content(&self, _id: StableNodeId, world: &UiWorld) -> WidgetVisualContent {
-        status_dot_intrinsic(self.compact, world, true)
+    fn intrinsic_chrome_content(&self, id: StableNodeId, world: &UiWorld) -> WidgetVisualContent {
+        status_dot_intrinsic(self.compact, id, world, true)
     }
 
     fn solve_content_parts(
@@ -311,7 +324,7 @@ impl WidgetVisual for StatusBadgeVisual {
 
     fn node_text_max_width(
         &self,
-        _id: StableNodeId,
+        id: StableNodeId,
         world: &UiWorld,
         _layout: LayoutBox,
         available_width: f32,
@@ -320,6 +333,7 @@ impl WidgetVisual for StatusBadgeVisual {
         Some(status_dot_max_width(
             self.compact,
             true,
+            id,
             world,
             available_width,
             available_height,
@@ -511,12 +525,19 @@ impl WidgetVisual for ValidationMessageVisual {
         other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
     }
 
+    fn theme_dependency_mask(&self) -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::PALETTE
+            .union(nana_ui_core::ThemeDependencyMask::TYPOGRAPHY_ANY)
+            .union(nana_ui_core::ThemeDependencyMask::RECIPE_STATUS)
+            .union(nana_ui_core::ThemeDependencyMask::METRICS)
+    }
+
     fn visual_parts_read_theme(&self) -> bool {
         true
     }
 
-    fn intrinsic_chrome_content(&self, _id: StableNodeId, world: &UiWorld) -> WidgetVisualContent {
-        status_dot_intrinsic(self.compact, world, false)
+    fn intrinsic_chrome_content(&self, id: StableNodeId, world: &UiWorld) -> WidgetVisualContent {
+        status_dot_intrinsic(self.compact, id, world, false)
     }
 
     fn solve_content_parts(
@@ -539,7 +560,7 @@ impl WidgetVisual for ValidationMessageVisual {
 
     fn node_text_max_width(
         &self,
-        _id: StableNodeId,
+        id: StableNodeId,
         world: &UiWorld,
         _layout: LayoutBox,
         available_width: f32,
@@ -548,6 +569,7 @@ impl WidgetVisual for ValidationMessageVisual {
         Some(status_dot_max_width(
             self.compact,
             false,
+            id,
             world,
             available_width,
             available_height,
@@ -829,6 +851,14 @@ impl WidgetVisual for EmptyStateVisual {
 
     fn dyn_eq(&self, other: &dyn Any) -> bool {
         other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
+    }
+
+    fn theme_dependency_mask(&self) -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::PALETTE
+            .union(nana_ui_core::ThemeDependencyMask::METRICS)
+            .union(nana_ui_core::ThemeDependencyMask::TYPOGRAPHY_ANY)
+            .union(nana_ui_core::ThemeDependencyMask::EFFECT)
+            .union(nana_ui_core::ThemeDependencyMask::RECIPE_DIALOG)
     }
 
     fn measures_text(&self) -> bool {
@@ -1150,6 +1180,11 @@ impl WidgetVisual for LabeledValueVisual {
         other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
     }
 
+    fn theme_dependency_mask(&self) -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::PALETTE
+            .union(nana_ui_core::ThemeDependencyMask::TYPOGRAPHY_ANY)
+    }
+
     fn measures_text(&self) -> bool {
         true
     }
@@ -1193,11 +1228,10 @@ impl WidgetVisual for LabeledValueVisual {
         own_frame: bool,
     ) -> Option<crate::layout_engine::parts::ContentParts> {
         let reverse = world.right_to_left(id);
-        let gap = if self.compact {
-            world.theme().spacing().xs
-        } else {
-            world.theme().spacing().md
-        };
+        let node_theme = world.node_theme(id);
+        let spacing = node_theme.spacing();
+        let typography = node_theme.typography();
+        let gap = if self.compact { spacing.xs } else { spacing.md };
         let action = self
             .action
             .filter(|slot| {
@@ -1216,8 +1250,8 @@ impl WidgetVisual for LabeledValueVisual {
             }
         }
         let measure = world.chrome_text_measure(id);
-        let label_size = world.theme().typography().hint;
-        let value_size = world.theme().typography().meta;
+        let label_size = typography.hint;
+        let value_size = typography.meta;
         Some(crate::layout_engine::parts::paired_text_parts(
             area,
             crate::layout_engine::Size::new(
@@ -1233,7 +1267,7 @@ impl WidgetVisual for LabeledValueVisual {
                 value_size * 1.2,
             ),
             gap,
-            world.theme().spacing().xxxl,
+            spacing.xxxl,
             reverse,
         ))
     }
@@ -1620,7 +1654,7 @@ impl ComponentView for Progress {
                 mode,
                 thickness: self
                     .explicit_thickness()
-                    .unwrap_or(world.theme().spacing().sm),
+                    .unwrap_or(world.node_theme(id).spacing().sm),
                 fill: self.fill,
             },
             false,
@@ -1648,10 +1682,26 @@ pub struct ProgressVisual {
 }
 
 impl ProgressVisual {
+    #[cfg_attr(not(test), allow(dead_code))]
     fn inputs(&self, world: &UiWorld) -> crate::layout_engine::parts::ProgressInputs {
-        let spacing = world.theme().spacing();
+        self.inputs_with_theme(world.theme())
+    }
+
+    fn inputs_for(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+    ) -> crate::layout_engine::parts::ProgressInputs {
+        self.inputs_with_theme(world.node_theme(id))
+    }
+
+    fn inputs_with_theme(
+        &self,
+        theme: &nana_ui_core::CompiledTheme,
+    ) -> crate::layout_engine::parts::ProgressInputs {
+        let spacing = theme.spacing();
         crate::layout_engine::parts::ProgressInputs {
-            label: self.label.as_ref().map(|_| world.theme().typography().meta),
+            label: self.label.as_ref().map(|_| theme.typography().meta),
             cancel: self.cancellable.then_some(spacing.page),
             cancel_gap: spacing.md,
             gap: spacing.sm,
@@ -1671,6 +1721,13 @@ impl WidgetVisual for ProgressVisual {
 
     fn dyn_eq(&self, other: &dyn Any) -> bool {
         other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
+    }
+
+    fn theme_dependency_mask(&self) -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::COLOR_ANY
+            .union(nana_ui_core::ThemeDependencyMask::TYPOGRAPHY_ANY)
+            .union(nana_ui_core::ThemeDependencyMask::METRICS)
+            .union(nana_ui_core::ThemeDependencyMask::RECIPE_STATUS)
     }
 
     fn is_valid(&self) -> bool {
@@ -1707,16 +1764,16 @@ impl WidgetVisual for ProgressVisual {
         true
     }
 
-    fn intrinsic_chrome_content(&self, _id: StableNodeId, world: &UiWorld) -> WidgetVisualContent {
+    fn intrinsic_chrome_content(&self, id: StableNodeId, world: &UiWorld) -> WidgetVisualContent {
         WidgetVisualContent {
-            height: self.inputs(world).extent(),
+            height: self.inputs_for(id, world).extent(),
             ..WidgetVisualContent::default()
         }
     }
 
     fn solve_content_parts(
         &self,
-        _id: StableNodeId,
+        id: StableNodeId,
         world: &UiWorld,
         _bounds: LayoutBox,
         content: LayoutBox,
@@ -1725,12 +1782,12 @@ impl WidgetVisual for ProgressVisual {
     ) -> Option<crate::layout_engine::parts::ContentParts> {
         Some(crate::layout_engine::parts::progress_parts(
             content,
-            self.inputs(world),
+            self.inputs_for(id, world),
         ))
     }
 
     fn paint(&self, ctx: &WidgetPaintCtx<'_>) -> WidgetPaintOutput {
-        let inputs = self.inputs(ctx.world);
+        let inputs = self.inputs_for(ctx.id, ctx.world);
         let track = crate::layout_engine::parts::progress_track(ctx.content, inputs);
         let corner_radius = (inputs.thickness / 2.0).max(0.0);
         let ratio = self.value_ratio.clamp(0.0, 1.0);
@@ -1994,6 +2051,10 @@ impl crate::WidgetVisual for SpinnerVisual {
 
     fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
         other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
+    }
+
+    fn theme_dependency_mask(&self) -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::COLOR_ANY
     }
 
     fn paint(&self, ctx: &crate::WidgetPaintCtx<'_>) -> crate::WidgetPaintOutput {

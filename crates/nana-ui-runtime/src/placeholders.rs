@@ -232,6 +232,12 @@ impl crate::WidgetVisual for LevelMeterVisual {
         other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
     }
 
+    fn theme_dependency_mask(&self) -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::PALETTE
+            .union(nana_ui_core::ThemeDependencyMask::METRICS)
+            .union(nana_ui_core::ThemeDependencyMask::RECIPE_STATUS)
+    }
+
     fn is_valid(&self) -> bool {
         self.value_ratio.is_finite() && (0.0..=1.0).contains(&self.value_ratio)
     }

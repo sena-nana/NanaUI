@@ -425,6 +425,14 @@ impl ComponentView for TreeView {
         true
     }
 
+    fn wants_recipe_reproject() -> bool {
+        true
+    }
+
+    fn recipe_dependency_mask() -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::RECIPE_TREE_VIEW
+    }
+
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         let rows = self.visible_rows();
         let visual = TreeViewVisual {
@@ -455,7 +463,8 @@ impl ComponentView for TreeView {
         // the row stack; otherwise it eats the last row. A caller that sets its
         // own height (a tree inside a fixed viewport) keeps it.
         let padding = layout.resolved_padding();
-        let content = self.intrinsic_height(world.theme_metrics()) + padding.top + padding.bottom;
+        let content =
+            self.intrinsic_height(world.node_theme(id).metrics()) + padding.top + padding.bottom;
         if layout.height.is_none() {
             layout.height = Some(LengthSpec::Px(content));
         }
@@ -643,11 +652,20 @@ impl WidgetVisual for TreeViewVisual {
         other.downcast_ref::<Self>() == Some(self)
     }
 
+    fn theme_dependency_mask(&self) -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::COLOR_ANY
+            .union(nana_ui_core::ThemeDependencyMask::METRICS)
+            .union(nana_ui_core::ThemeDependencyMask::TYPOGRAPHY_ANY)
+            .union(nana_ui_core::ThemeDependencyMask::RECIPE_TREE_VIEW)
+            .union(nana_ui_core::ThemeDependencyMask::RECIPE_SHAPE)
+    }
+
     fn has_virtual_nodes(&self) -> bool {
         true
     }
 
     fn paint(&self, ctx: &WidgetPaintCtx<'_>) -> WidgetPaintOutput {
+        let tree_recipe = ctx.theme.recipes().tree_view();
         let layout = tree_view_geometry(
             ctx.bounds,
             &self.rows,
@@ -656,6 +674,7 @@ impl WidgetVisual for TreeViewVisual {
             self.drop.as_ref(),
             &ctx.style_model.palette,
             ctx.style_model.metrics,
+            ctx.theme,
         );
         let mut out = WidgetPaintOutput {
             owns_node_text: true,
@@ -742,7 +761,9 @@ impl WidgetVisual for TreeViewVisual {
                 WidgetPaintOp::Quad(WidgetQuad {
                     rect: mark.bounds,
                     fill: (!mark.inside).then_some(mark.color),
-                    border: mark.inside.then_some((mark.color, 2.0)),
+                    border: mark
+                        .inside
+                        .then_some((mark.color, tree_recipe.drop_outline_width)),
                     corner_radius: [ctx.chrome_radii.tree_row; 4],
                     ..WidgetQuad::default()
                 }),
@@ -759,6 +780,7 @@ impl UiWorld {
         let visual = self.widget_visual_as::<TreeViewVisual>(id)?;
         let bounds = self.component_layout_box(id)?;
         let style_model = self.node_style_model(id);
+        let theme = self.node_theme(id);
         Some(tree_view_geometry(
             bounds,
             &visual.rows,
@@ -767,10 +789,12 @@ impl UiWorld {
             visual.drop.as_ref(),
             &style_model.palette,
             style_model.metrics,
+            theme,
         ))
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn tree_view_geometry(
     bounds: LayoutBox,
     rows: &[TreeRowData],
@@ -779,7 +803,11 @@ pub(crate) fn tree_view_geometry(
     drop: Option<&TreeDropIntent>,
     palette: &nana_ui_core::SemanticPalette,
     metrics: nana_ui_core::ThemeMetrics,
+    theme: &nana_ui_core::CompiledTheme,
 ) -> TreeViewLayout {
+    let recipe = theme.recipes().tree_view();
+    let opacity = theme.style_model().opacity;
+    let color = |role| palette.get_in(role, opacity).as_rgba_array();
     let row_height = size.height_in(metrics);
     let tree = metrics.tree;
     // the toggle columns take the row's end, one icon and one inset each
@@ -818,11 +846,11 @@ pub(crate) fn tree_view_geometry(
                 (
                     icon,
                     box_,
-                    if row.disabled {
-                        palette.faint.as_rgba_array()
+                    color(if row.disabled {
+                        recipe.disabled_icon
                     } else {
-                        palette.muted.as_rgba_array()
-                    },
+                        recipe.icon
+                    }),
                 )
             });
             let toggles_x = bounds.x + bounds.width - toggles_width;
@@ -846,11 +874,11 @@ pub(crate) fn tree_view_geometry(
                             width: side,
                             height: side,
                         },
-                        if on {
-                            palette.muted.as_rgba_array()
+                        color(if on {
+                            recipe.toggle_on
                         } else {
-                            palette.faint.as_rgba_array()
-                        },
+                            recipe.toggle_off
+                        }),
                     )
                 })
                 .collect();
@@ -868,25 +896,25 @@ pub(crate) fn tree_view_geometry(
                         height: row_height,
                     },
                     content: Arc::clone(&row.label).into(),
-                    color: Some(if row.disabled {
-                        palette.faint.as_rgba_array()
+                    color: Some(color(if row.disabled {
+                        recipe.disabled_foreground
                     } else {
-                        palette.text.as_rgba_array()
-                    }),
+                        recipe.foreground
+                    })),
                     font_size: size.text_size(),
-                    font_weight: row.selected.then_some(600),
+                    font_weight: row.selected.then_some(recipe.selected_weight),
                 },
                 selected: row.selected,
                 disabled: row.disabled,
                 expanded: row.expanded,
-                background: row.selected.then_some(palette.selected.as_rgba_array()),
+                background: row.selected.then(|| color(recipe.selected_background)),
                 toggles,
             }
         })
         .collect();
     let drop = drop.and_then(|intent| {
         let row = geometry.iter().find(|row| row.id == intent.target)?;
-        let line = nana_ui_core::HAIRLINE * 2.0;
+        let line = recipe.drop_line_width;
         let bounds = match intent.position {
             TreeDropPosition::Before => LayoutBox {
                 y: row.bounds.y - (tree.row_gap + line) / 2.0,
@@ -903,7 +931,7 @@ pub(crate) fn tree_view_geometry(
         Some(TreeDropMark {
             bounds,
             inside: intent.position == TreeDropPosition::Inside,
-            color: palette.accent.as_rgba_array(),
+            color: color(recipe.drop_indicator),
         })
     });
     TreeViewLayout {

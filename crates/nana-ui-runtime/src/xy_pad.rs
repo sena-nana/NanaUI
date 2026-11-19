@@ -545,6 +545,11 @@ impl WidgetVisual for XYPadVisual {
         other.downcast_ref::<Self>() == Some(self)
     }
 
+    fn theme_dependency_mask(&self) -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::COLOR_ANY
+            .union(nana_ui_core::ThemeDependencyMask::METRICS)
+    }
+
     fn paint(&self, ctx: &WidgetPaintCtx<'_>) -> WidgetPaintOutput {
         let border_width = if ctx.style.border_color.is_some() {
             ctx.source_style.layout.resolved_border_width()
@@ -574,8 +579,14 @@ impl UiWorld {
         } else {
             0.0
         };
-        let style_model = self.scoped_style_model(style.color_scope.as_deref());
-        Some(visual.layout_at(bounds, style, border_width, style_model, self.theme()))
+        let style_model = self.node_style_model_with(id, style.color_scope.as_deref());
+        Some(visual.layout_at(
+            bounds,
+            style,
+            border_width,
+            style_model,
+            self.node_theme(id),
+        ))
     }
 }
 

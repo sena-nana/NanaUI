@@ -2040,8 +2040,11 @@ impl AppContext {
                     node,
                     now,
                     duration,
-                    Duration::from_millis(16),
-                    Easing::Linear,
+                    Duration::from_nanos(16_000_000),
+                    self.world
+                        .node_theme(node)
+                        .motion()
+                        .easing(nana_ui_core::EasingRole::Linear),
                 )
                 .with_property(anim.property)
                 .with_curve(anim.curve)

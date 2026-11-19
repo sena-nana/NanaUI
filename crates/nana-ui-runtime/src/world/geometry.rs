@@ -942,6 +942,14 @@ impl crate::WidgetVisual for crate::TextInputVisual {
         other.downcast_ref::<Self>() == Some(self)
     }
 
+    fn theme_dependency_mask(&self) -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::COLOR_ANY
+            .union(nana_ui_core::ThemeDependencyMask::METRICS)
+            .union(nana_ui_core::ThemeDependencyMask::TYPOGRAPHY_ANY)
+            .union(nana_ui_core::ThemeDependencyMask::EFFECT)
+            .union(nana_ui_core::ThemeDependencyMask::RECIPE_INPUT)
+    }
+
     fn measures_text(&self) -> bool {
         true
     }
@@ -989,7 +997,7 @@ impl UiWorld {
             editor_options,
             ..
         } = visual;
-        let style_model = self.scoped_style_model(style.color_scope.as_deref());
+        let style_model = self.node_style_model_with(id, style.color_scope.as_deref());
         let bounds = self.component_layout_box(id)?;
         let mut source = NodeStyle::clone(&self.nodes.get(id)?.style);
         source.layout = Arc::clone(&self.record(id).resolved_layout);
@@ -1099,12 +1107,14 @@ impl UiWorld {
         });
         // 附加多光标：与主光标同形，用主光标色的半透明变体区分；
         // 只随焦点出现（多行编辑器才有附加光标）。
+        let node_theme = self.node_theme(id);
+        let input_recipe = node_theme.recipes().input();
         let caret_color = style
             .color
-            .unwrap_or_else(|| style_model.color(SemanticColorRole::Text).as_rgba_array());
+            .unwrap_or_else(|| style_model.color(input_recipe.foreground).as_rgba_array());
         let additional_caret_color = {
             let mut color = caret_color;
-            color[3] *= 0.55;
+            color[3] *= input_recipe.additional_caret_alpha;
             color
         };
         let additional_carets = if focused {
@@ -1154,7 +1164,7 @@ impl UiWorld {
                 },
                 content: crate::TextValue::from(label.text.as_str()),
                 color: Some(marker_color(label.severity)),
-                font_size: size.text_size_in(self.theme.typography()),
+                font_size: size.text_size_in(self.node_theme(id).typography()),
                 font_weight: None,
             })
             .collect();
@@ -1548,7 +1558,7 @@ impl UiWorld {
                         },
                         content: crate::TextValue::from(&value[head_line_start..head_line_end]),
                         color: Some(caret_color),
-                        font_size: size.text_size_in(self.theme.typography()),
+                        font_size: size.text_size_in(self.node_theme(id).typography()),
                         font_weight: style.font_weight,
                     },
                     background: style
@@ -1626,7 +1636,7 @@ impl UiWorld {
             folds: fold_geometry,
             git_marks: git_geometry,
             line_labels_color: style_model.color(SemanticColorRole::Faint).as_rgba_array(),
-            line_labels_font_size: size.caption_size_in(self.theme.typography()),
+            line_labels_font_size: size.caption_size_in(self.node_theme(id).typography()),
             text: crate::ComponentTextRegion {
                 bounds: frame.text_bounds(
                     presentation.content_size.width,
@@ -1637,14 +1647,14 @@ impl UiWorld {
                 color: Some(if presentation.placeholder {
                     text_input_placeholder_color(
                         &source.layout,
-                        style_model.color(SemanticColorRole::Faint).as_rgba_array(),
+                        style_model.color(input_recipe.placeholder).as_rgba_array(),
                     )
                 } else {
                     style.color.unwrap_or_else(|| {
-                        style_model.color(SemanticColorRole::Text).as_rgba_array()
+                        style_model.color(input_recipe.foreground).as_rgba_array()
                     })
                 }),
-                font_size: size.text_size_in(self.theme.typography()),
+                font_size: size.text_size_in(self.node_theme(id).typography()),
                 font_weight: style.font_weight,
             },
             multiline,
@@ -1678,7 +1688,7 @@ impl UiWorld {
                                     line_height,
                                 },
                                 bounds,
-                                size.text_size_in(self.theme.typography()),
+                                size.text_size_in(self.node_theme(id).typography()),
                                 &style_model.palette,
                             )
                         })
@@ -1701,7 +1711,7 @@ impl UiWorld {
                                 line_height,
                             },
                             bounds,
-                            size.text_size_in(self.theme.typography()),
+                            size.text_size_in(self.node_theme(id).typography()),
                             &style_model.palette,
                         )
                     })
@@ -1719,7 +1729,7 @@ impl UiWorld {
                                 line_height,
                             },
                             bounds,
-                            size.text_size_in(self.theme.typography()),
+                            size.text_size_in(self.node_theme(id).typography()),
                             &style_model.palette,
                             self.chrome_text_measure(id),
                         )
@@ -1747,7 +1757,7 @@ impl UiWorld {
                     0.0
                 };
                 if focused && *invalid {
-                    width.max(2.0)
+                    width.max(input_recipe.invalid_focus_border_width)
                 } else {
                     width
                 }
@@ -1760,12 +1770,14 @@ impl UiWorld {
                 .or(style.selection_background)
                 .unwrap_or_else(|| {
                     style_model
-                        .color(SemanticColorRole::AccentSoft)
+                        .color(input_recipe.selection_background)
                         .as_rgba_array()
                 }),
             caret_color,
             additional_caret_color,
-            preedit_color: style_model.color(SemanticColorRole::Accent).as_rgba_array(),
+            preedit_color: style_model
+                .color(input_recipe.preedit_underline)
+                .as_rgba_array(),
             steppers,
         };
         Some(if frame.writing.is_vertical() {
@@ -1833,12 +1845,14 @@ impl UiWorld {
         let room = self.local_select_menu_room(id, true, *menu_room);
         let fitted = self.select_fitted_options_width(id, *fit_options);
         self.geometry_frame.set(previous);
+        let node_theme = self.node_theme(id);
+        let style_model = self.node_style_model(id);
         Some(crate::select::select_menu_surface(
             bounds?,
             *size,
             options,
-            self.style_model,
-            self.theme.recipes().scrollbar(),
+            style_model,
+            node_theme,
             room,
             *checkable,
             fitted,

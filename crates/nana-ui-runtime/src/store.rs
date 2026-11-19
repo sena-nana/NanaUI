@@ -81,14 +81,21 @@ impl Default for Hierarchy {
 /// non-inherited local box paint so descendants inside painted containers can
 /// share it directly via `Arc::clone`.
 #[derive(Clone)]
-pub(crate) struct ResolvedStyle(pub Arc<ComputedStyle>, pub u32, pub Arc<ComputedStyle>);
+pub(crate) struct ResolvedStyle(
+    pub Arc<ComputedStyle>,
+    pub u32,
+    pub u32,
+    pub Arc<ComputedStyle>,
+);
 
+const _: () = assert!(std::mem::size_of::<ResolvedStyle>() == 24);
 const _: () = assert!(std::mem::size_of::<Hierarchy>() == 24);
 
 impl ResolvedStyle {
     fn interned_default() -> Self {
         Self(
             Arc::clone(&INTERNED_DEFAULT_STYLE),
+            0,
             0,
             Arc::clone(&INTERNED_DEFAULT_STYLE),
         )
@@ -1049,6 +1056,10 @@ pub(crate) struct NodeStore {
     /// Layouts retained by plain text nodes, addressed by
     /// [`crate::text_node::TextNodeState::layout`]. Released with the node.
     text_layouts: nana_text::TextLayoutStore,
+    /// Per-node theme category dependencies (#106), recomputed on node write/mount.
+    theme_deps: DenseNodeMap<nana_ui_core::ThemeDependencyMask>,
+    /// Sparse map of nodes that establish a local `ThemeScopeId` (#104).
+    node_scopes: HashMap<StableNodeId, nana_ui_core::ThemeScopeId>,
 }
 
 /// minimap 视口钉住：显式视口导航（minimap 点击/拖动）写入的滚动偏移。
@@ -1271,10 +1282,52 @@ impl NodeStore {
         self.scroll_offsets.remove(&id);
         self.accessibilities.remove(&id);
         self.render_room_epochs.remove(&id);
+        self.theme_deps.remove(&id);
+        self.node_scopes.remove(&id);
         if let Some(text) = self.text_nodes.remove(&id) {
             self.text_layouts.remove(text.layout);
         }
         Some(record)
+    }
+
+    pub(crate) fn theme_dependency(&self, id: StableNodeId) -> nana_ui_core::ThemeDependencyMask {
+        self.theme_deps
+            .get(&id)
+            .copied()
+            .unwrap_or(nana_ui_core::ThemeDependencyMask::NONE)
+    }
+
+    pub(crate) fn set_theme_dependency(
+        &mut self,
+        id: StableNodeId,
+        mask: nana_ui_core::ThemeDependencyMask,
+    ) {
+        if mask.is_empty() {
+            self.theme_deps.remove(&id);
+        } else {
+            self.theme_deps.insert(id, mask);
+        }
+    }
+
+    pub(crate) fn theme_dependency_entries(
+        &self,
+    ) -> impl Iterator<Item = (StableNodeId, nana_ui_core::ThemeDependencyMask)> + '_ {
+        self.theme_deps.iter().map(|(id, mask)| (id, *mask))
+    }
+
+    pub(crate) fn node_scope(&self, id: StableNodeId) -> nana_ui_core::ThemeScopeId {
+        self.node_scopes
+            .get(&id)
+            .copied()
+            .unwrap_or(nana_ui_core::ThemeScopeId::ROOT)
+    }
+
+    pub(crate) fn set_node_scope(&mut self, id: StableNodeId, scope: nana_ui_core::ThemeScopeId) {
+        if !scope.is_root() {
+            self.node_scopes.insert(id, scope);
+        } else if !self.node_scopes.is_empty() {
+            self.node_scopes.remove(&id);
+        }
     }
 
     pub(crate) fn has_text_inputs(&self) -> bool {

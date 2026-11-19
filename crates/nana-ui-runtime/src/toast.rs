@@ -234,9 +234,10 @@ impl Toast {
     /// A bare toast's own box. Its mark, copy and dismiss target are
     /// content parts (`UiWorld::toast_inputs`): measure gives the box their
     /// height, so the style keeps no copy of it.
-    fn effective_style(&self, world: &UiWorld) -> NodeStyle {
-        let recipe = world.theme().recipes().toast();
-        let metrics = world.theme_metrics();
+    fn effective_style(&self, id: StableNodeId, world: &UiWorld) -> NodeStyle {
+        let node_theme = world.node_theme(id);
+        let recipe = node_theme.recipes().toast();
+        let metrics = node_theme.metrics();
         let mut style = self.style.clone();
         style.foreground = Some(SemanticColorRole::Text);
         style.background = Some(recipe.background);
@@ -255,7 +256,7 @@ impl Toast {
         layout.padding_right = Some(LengthSpec::Px(padding.inline));
         layout.padding_top = Some(LengthSpec::Px(padding.top));
         layout.padding_bottom = Some(LengthSpec::Px(padding.bottom));
-        layout.border_width = recipe.border.map(|_| world.theme().border().hairline);
+        layout.border_width = recipe.border.map(|_| node_theme.border().hairline);
         layout.border_radius = Some(recipe.radius.resolve(metrics));
         layout.font_size = Some(recipe.title.size);
         if let Some(weight) = recipe.title.weight {
@@ -266,9 +267,10 @@ impl Toast {
 
     /// An assembled toast's own box: the surface its parts stand on, a row
     /// as wide as they need.
-    fn assembled_style(&self, world: &UiWorld) -> NodeStyle {
-        let recipe = world.theme().recipes().toast();
-        let metrics = world.theme_metrics();
+    fn assembled_style(&self, id: StableNodeId, world: &UiWorld) -> NodeStyle {
+        let node_theme = world.node_theme(id);
+        let recipe = node_theme.recipes().toast();
+        let metrics = node_theme.metrics();
         let mut style = self.style.clone();
         style.foreground = Some(SemanticColorRole::Text);
         style.background = Some(recipe.background);
@@ -294,7 +296,7 @@ impl Toast {
         layout.padding_right = Some(LengthSpec::Px(padding.inline));
         layout.padding_top = Some(LengthSpec::Px(padding.top));
         layout.padding_bottom = Some(LengthSpec::Px(padding.bottom));
-        layout.border_width = recipe.border.map(|_| world.theme().border().hairline);
+        layout.border_width = recipe.border.map(|_| node_theme.border().hairline);
         layout.border_radius = Some(recipe.radius.resolve(metrics));
         style
     }
@@ -325,7 +327,7 @@ impl Toast {
             id,
             world,
             mutations,
-            &self.assembled_style(world),
+            &self.assembled_style(id, world),
             // The whole surface takes the pointer, so a press on it does not
             // fall through and hovering anywhere on it holds the timer; the
             // buttons inside take focus, the toast does not.
@@ -516,8 +518,9 @@ impl AppContext {
         if parts.all().iter().any(|id| !world.contains(*id)) {
             return Ok(false);
         }
-        let recipe = *world.theme().recipes().toast();
-        let control = recipe.control_size.height_in(world.theme_metrics());
+        let node_theme = world.node_theme(toast.stable_id());
+        let recipe = *node_theme.recipes().toast();
+        let control = recipe.control_size.height_in(node_theme.metrics());
         let strings = world.framework_strings();
         let close_label = snapshot
             .close_label
@@ -737,6 +740,11 @@ impl ComponentView for Toast {
         true
     }
 
+    fn recipe_dependency_mask() -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::RECIPE_TOAST
+            .union(nana_ui_core::ThemeDependencyMask::RECIPE_STATUS)
+    }
+
     /// An assembled toast sizes its percentage by measuring the widest one;
     /// measured before any engine shaped, that is an estimate.
     fn wants_text_backend_reproject() -> bool {
@@ -771,7 +779,7 @@ impl ComponentView for Toast {
             id,
             world,
             mutations,
-            &self.effective_style(world),
+            &self.effective_style(id, world),
             if self.dismissible {
                 dismiss_target()
             } else {
@@ -804,11 +812,12 @@ impl ToastVisual {
         id: StableNodeId,
         world: &UiWorld,
     ) -> crate::layout_engine::parts::ToastInputs {
-        let recipe = world.theme().recipes().toast();
+        let node_theme = world.node_theme(id);
+        let recipe = node_theme.recipes().toast();
         let bare = !self.assembled;
         let inputs = crate::layout_engine::parts::toast_inputs(
             recipe,
-            recipe.control_size.height_in(world.theme_metrics()),
+            recipe.control_size.height_in(node_theme.metrics()),
             bare && self.dismissible,
             bare && self.description.is_some(),
         );
@@ -832,6 +841,15 @@ impl crate::WidgetVisual for ToastVisual {
 
     fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
         other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
+    }
+
+    fn theme_dependency_mask(&self) -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::COLOR_ANY
+            .union(nana_ui_core::ThemeDependencyMask::METRICS)
+            .union(nana_ui_core::ThemeDependencyMask::TYPOGRAPHY_ANY)
+            .union(nana_ui_core::ThemeDependencyMask::EFFECT)
+            .union(nana_ui_core::ThemeDependencyMask::RECIPE_TOAST)
+            .union(nana_ui_core::ThemeDependencyMask::RECIPE_STATUS)
     }
 
     fn reads_toast_recipe(&self) -> bool {
@@ -889,7 +907,7 @@ impl crate::WidgetVisual for ToastVisual {
         Some(if self.assembled {
             inputs.assembled_mark(
                 content,
-                line_box(world.theme().recipes().toast().title.size),
+                line_box(world.node_theme(id).recipes().toast().title.size),
             )
         } else {
             crate::layout_engine::parts::toast_parts(bounds, inputs)

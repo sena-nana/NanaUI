@@ -26,6 +26,7 @@ use crate::icon::Icon;
 use crate::motion::Easing;
 use crate::semantics::{ButtonKind, ControlSize, ToastTone};
 use crate::style_model::SemanticColorRole;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// The glyph a toast of each tone shows before its copy.
 ///
@@ -37,6 +38,44 @@ pub struct ToastGlyphs {
     pub success: Icon,
     pub warning: Icon,
     pub danger: Icon,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ToastGlyphNames {
+    info: String,
+    success: String,
+    warning: String,
+    danger: String,
+}
+
+impl Serialize for ToastGlyphs {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        ToastGlyphNames {
+            info: self.info.name().to_owned(),
+            success: self.success.name().to_owned(),
+            warning: self.warning.name().to_owned(),
+            danger: self.danger.name().to_owned(),
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for ToastGlyphs {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let names = ToastGlyphNames::deserialize(deserializer)?;
+        let resolve = |slot: &str, raw: &str| -> Result<Icon, D::Error> {
+            Icon::parse_name(raw).ok_or_else(|| {
+                serde::de::Error::custom(format!("unknown toast glyph icon `{raw}` in `{slot}`"))
+            })
+        };
+        Ok(Self {
+            info: resolve("info", &names.info)?,
+            success: resolve("success", &names.success)?,
+            warning: resolve("warning", &names.warning)?,
+            danger: resolve("danger", &names.danger)?,
+        })
+    }
 }
 
 impl ToastGlyphs {
@@ -53,7 +92,7 @@ impl ToastGlyphs {
 
 /// What a toast shows before its copy to say its tone, in the tone's
 /// colour.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum ToastIndicator {
     /// Nothing: the copy starts at the inset.
     None,
@@ -75,7 +114,7 @@ impl ToastIndicator {
 }
 
 /// The progress row a toast shows under its copy while a task runs.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ToastProgressRecipe {
     /// The bar's thickness.
     pub height: f32,
@@ -120,7 +159,7 @@ impl Default for ToastProgressRecipe {
 
 /// How a toast comes and goes, and how the toasts beside it move into the
 /// room it makes or leaves. With reduced motion on, none of it plays.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ToastMotion {
     /// The entrance: a fade, and a move from [`Self::enter_offset_y`] and
     /// [`Self::enter_scale`] to where the toast rests.
@@ -183,7 +222,7 @@ impl Default for ToastMotion {
 }
 
 /// What a toast looks like, and how a stack of toasts moves.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ToastRecipe {
     /// How round its corners are.
     pub radius: RadiusTier,

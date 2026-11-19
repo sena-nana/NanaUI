@@ -716,6 +716,16 @@ pub trait RuntimeProgram: Sized + 'static {
         builtin_theme_arc(ThemeAppearance::Dark)
     }
 
+    /// Optional per-window theme override (Issue #104).
+    ///
+    /// Returning `Some(theme)` scopes `id`'s document and window material to
+    /// `theme`. Returning `None` lets auxiliary windows (`WindowDescriptor::parent`)
+    /// inherit their owner window's theme and primary windows fall back to
+    /// [`Self::theme`].
+    fn theme_for(&self, _id: WindowId) -> Option<Arc<CompiledTheme>> {
+        None
+    }
+
     /// Legacy appearance hook retained for applications that still pick a
     /// built-in appearance. New hosts should override `theme` with their
     /// registry selection; this default keeps old implementations
@@ -905,7 +915,7 @@ pub trait RuntimeProgram: Sized + 'static {
         id: WindowId,
         _context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<(), String> {
-        let theme = self.theme();
+        let theme = self.theme_for(id).unwrap_or_else(|| self.theme());
         self.with_document_mut(id, |document| {
             document.context_mut().set_theme_tokens(theme).map(|_| ())
         })

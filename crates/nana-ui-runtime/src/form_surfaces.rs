@@ -201,6 +201,11 @@ impl crate::WidgetVisual for FormFieldVisual {
         other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
     }
 
+    fn theme_dependency_mask(&self) -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::PALETTE
+            .union(nana_ui_core::ThemeDependencyMask::TYPOGRAPHY_ANY)
+    }
+
     fn content_layout_changed(&self, prev: Option<&dyn std::any::Any>) -> bool {
         match prev.and_then(|any| any.downcast_ref::<Self>()) {
             Some(old) => {
@@ -230,9 +235,11 @@ impl crate::WidgetVisual for FormFieldVisual {
     ) -> Option<crate::layout_engine::parts::ContentParts> {
         let support = self.error.as_ref().or(self.hint.as_ref());
         let support_measure = support.map(|support| {
-            world
-                .chrome_text_measure(id)
-                .width(support, world.theme().typography().hint, None)
+            world.chrome_text_measure(id).width(
+                support,
+                world.node_theme(id).typography().hint,
+                None,
+            )
         });
         let reverse = world.right_to_left(id);
         Some(crate::layout_engine::parts::form_field_parts(

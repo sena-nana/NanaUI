@@ -4,19 +4,24 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use nana_ui::runtime::{
-    AccessibilityAction, AccessibilityActionRequest, LayoutViewport, RuntimeDocument,
-    RuntimeFrameUpdate, StableNodeId,
+    AccessibilityAction, AccessibilityActionRequest, LastThemeInvalidation, LayoutViewport,
+    RuntimeDocument, RuntimeFrameUpdate, StableNodeId, ThemeDependencySummary,
+    ThemeInvalidationTrigger,
 };
 use nana_ui::{HeadlessInput, HostTextureRegistry, InputCounters, NanaTextShaper, ThemeAppearance};
-use nana_ui_core::SemanticColorRole;
+use nana_ui_core::{SemanticColorRole, ThemePackageProvenance, ThemeRegistry};
 use nana_ui_platform::{
     FileDragInput, FileDragKind, InputModifiers, InputPayload, KeyInput, KeyState, LogicalKey,
     PhysicalKey, PointerInput, PointerPhase, WheelInput, WheelUnit,
 };
 use std::borrow::Cow;
+use std::sync::Arc;
 
 use super::protocol::{
-    HitDump, KeyStroke, PixelStats, PointerGesture, SceneProbeDump, SessionInfo, ThemeName,
+    HitDump, KeyStroke, PixelStats, PointerGesture, SceneProbeDump, SessionInfo,
+    ThemeCategoryCountDump, ThemeColorOverrideDump, ThemeDependencySummaryDump, ThemeInspectDump,
+    ThemeInvalidationDump, ThemeName, ThemeOverrideDump, ThemePackageLayerDump,
+    ThemePackageLoadDump, ThemePackageProvenanceDump, ThemeScopeLayerDump,
 };
 use super::session::AgentSession;
 use super::{AccessibilityDumpNode, AgentError, scene_probe};
@@ -43,6 +48,7 @@ pub struct RuntimeAgentSession {
     /// the split handle hover probe); a fixed step rather than the wall clock
     /// keeps a scripted session reproducible.
     input: HeadlessInput,
+    theme_registry: ThemeRegistry,
 }
 
 /// One frame at 60Hz. What the input clock advances per dispatched event.
@@ -79,6 +85,7 @@ impl RuntimeAgentSession {
             clear: None,
             host_textures: HostTextureRegistry::new(),
             input,
+            theme_registry: ThemeRegistry::default(),
         };
         session.flush()?;
         Ok(session)
@@ -448,6 +455,27 @@ impl AgentSession for RuntimeAgentSession {
         Self::flush(self).map(drop)
     }
 
+    fn theme_inspect(&self, node: u64) -> Result<ThemeInspectDump, AgentError> {
+        document_theme_inspect(&self.document, node, Some(&self.theme_registry))
+    }
+
+    fn theme_invalidation(&self) -> Result<Option<ThemeInvalidationDump>, AgentError> {
+        Ok(document_theme_invalidation(&self.document))
+    }
+
+    fn load_theme_package(
+        &mut self,
+        json: &str,
+        apply: bool,
+    ) -> Result<ThemePackageLoadDump, AgentError> {
+        let loaded =
+            document_load_theme_package(&mut self.document, &mut self.theme_registry, json, apply)?;
+        if apply {
+            Self::flush(self)?;
+        }
+        Ok(loaded)
+    }
+
     fn set_value(&mut self, node: u64, value: &str) -> Result<bool, AgentError> {
         let target =
             StableNodeId::new(node).ok_or_else(|| AgentError("node id 0 is reserved".into()))?;
@@ -615,6 +643,254 @@ pub fn document_set_field(
         .context_mut()
         .set_field(target, field, value)
         .map_err(AgentError)
+}
+
+fn appearance_name(appearance: ThemeAppearance) -> String {
+    match appearance {
+        ThemeAppearance::Light => "light",
+        ThemeAppearance::Dark => "dark",
+        ThemeAppearance::Custom => "custom",
+    }
+    .to_owned()
+}
+
+fn provenance_dump(provenance: &ThemePackageProvenance) -> ThemePackageProvenanceDump {
+    ThemePackageProvenanceDump {
+        base_chain: provenance
+            .base_chain
+            .iter()
+            .map(|id| id.as_str().to_owned())
+            .collect(),
+        layers: provenance
+            .patch_entries
+            .iter()
+            .map(|(theme_id, overrides)| ThemePackageLayerDump {
+                theme_id: theme_id.as_str().to_owned(),
+                overrides: overrides
+                    .iter()
+                    .map(|(path, value)| ThemeOverrideDump {
+                        path: path.clone(),
+                        value: value.clone(),
+                    })
+                    .collect(),
+            })
+            .collect(),
+    }
+}
+
+fn dependency_summary_dump(summary: &ThemeDependencySummary) -> ThemeDependencySummaryDump {
+    ThemeDependencySummaryDump {
+        total_tracked_nodes: summary.total_tracked_nodes,
+        category_counts: summary
+            .category_counts
+            .iter()
+            .map(|(category, count)| ThemeCategoryCountDump {
+                category: (*category).to_owned(),
+                count: *count,
+            })
+            .collect(),
+    }
+}
+
+fn invalidation_dump(invalidation: &LastThemeInvalidation) -> ThemeInvalidationDump {
+    let (trigger, document, owner, theme_id, generation, scope_id, old_scope_id, new_scope_id) =
+        match &invalidation.trigger {
+            ThemeInvalidationTrigger::RootTheme {
+                theme_id,
+                generation,
+            } => (
+                "root_theme",
+                None,
+                None,
+                Some(theme_id.as_str().to_owned()),
+                Some(generation.0),
+                None,
+                None,
+                None,
+            ),
+            ThemeInvalidationTrigger::DocumentTheme {
+                document,
+                theme_id,
+                generation,
+            } => (
+                "document_theme",
+                Some(document.get()),
+                None,
+                Some(theme_id.as_str().to_owned()),
+                Some(generation.0),
+                None,
+                None,
+                None,
+            ),
+            ThemeInvalidationTrigger::ScopePatch {
+                owner,
+                scope_id,
+                generation,
+            } => (
+                "scope_patch",
+                None,
+                Some(owner.get()),
+                None,
+                Some(generation.0),
+                Some(scope_id.0),
+                None,
+                None,
+            ),
+            ThemeInvalidationTrigger::ScopeRemoved {
+                owner,
+                parent_scope,
+            } => (
+                "scope_removed",
+                None,
+                Some(owner.get()),
+                None,
+                None,
+                Some(parent_scope.0),
+                None,
+                None,
+            ),
+            ThemeInvalidationTrigger::ScopeReparented {
+                root,
+                old_scope,
+                new_scope,
+            } => (
+                "scope_reparented",
+                None,
+                Some(root.get()),
+                None,
+                None,
+                None,
+                Some(old_scope.0),
+                Some(new_scope.0),
+            ),
+        };
+    ThemeInvalidationDump {
+        trigger: trigger.to_owned(),
+        document,
+        owner,
+        theme_id,
+        generation,
+        scope_id,
+        old_scope_id,
+        new_scope_id,
+        changed_categories: invalidation
+            .changed_mask
+            .names()
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+        changed_mask_bits: invalidation.changed_mask.bits(),
+        candidates_invalidated: invalidation.candidates_invalidated,
+        nodes_skipped_by_dependency: invalidation.nodes_skipped_by_dependency,
+        scope_nodes_invalidated: invalidation.scope_nodes_invalidated,
+        recipe_nodes_invalidated: invalidation.recipe_nodes_invalidated,
+        layout_seeds: invalidation.layout_seeds,
+        motion_policy_only: invalidation.motion_policy_only,
+    }
+}
+
+/// Inspect the effective theme, scope chain, color overrides, dependency mask,
+/// and package provenance for `node` inside `document` (#109).
+pub fn document_theme_inspect(
+    document: &RuntimeDocument,
+    node: u64,
+    registry: Option<&ThemeRegistry>,
+) -> Result<ThemeInspectDump, AgentError> {
+    let target =
+        StableNodeId::new(node).ok_or_else(|| AgentError("node id 0 is reserved".into()))?;
+    let context = document.context();
+    let inspected = context
+        .inspect_node_theme_with_registry(target, registry)
+        .ok_or_else(|| AgentError(format!("node {node} does not exist")))?;
+    let summary = context.theme_dependency_summary();
+    Ok(ThemeInspectDump {
+        node: inspected.node.get(),
+        document: inspected.document.get(),
+        effective_theme_id: inspected.effective_theme_id.as_str().to_owned(),
+        effective_theme_generation: inspected.effective_theme_generation.0,
+        appearance: appearance_name(inspected.appearance),
+        active_scope: inspected.active_scope.0,
+        scope_generation: inspected.scope_generation.0,
+        document_theme_override: inspected
+            .document_theme_override
+            .map(|id| id.as_str().to_owned()),
+        scope_chain: inspected
+            .scope_chain
+            .into_iter()
+            .map(|layer| ThemeScopeLayerDump {
+                scope_id: layer.scope_id.0,
+                owner: layer.owner.get(),
+                generation: layer.generation.0,
+                invalid_patch: layer.invalid_patch,
+                overrides: layer
+                    .overrides
+                    .into_iter()
+                    .map(|(path, value)| ThemeOverrideDump { path, value })
+                    .collect(),
+            })
+            .collect(),
+        color_overrides: inspected
+            .color_overrides
+            .into_iter()
+            .map(|(role, color)| ThemeColorOverrideDump {
+                role: format!("{role:?}"),
+                rgba: color.as_rgba_array(),
+            })
+            .collect(),
+        dependency_categories: inspected
+            .dependency_mask
+            .names()
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+        dependency_mask_bits: inspected.dependency_mask.bits(),
+        package_provenance: inspected.package_provenance.as_ref().map(provenance_dump),
+        last_invalidation: inspected.last_invalidation.as_ref().map(invalidation_dump),
+        dependency_summary: dependency_summary_dump(&summary),
+    })
+}
+
+/// Most recent theme or scope invalidation recorded on `document` (#109).
+pub fn document_theme_invalidation(document: &RuntimeDocument) -> Option<ThemeInvalidationDump> {
+    document
+        .context()
+        .last_theme_invalidation()
+        .map(invalidation_dump)
+}
+
+/// Parse, validate, and register a JSON `ThemePackage` fail-closed; apply it to
+/// `document` when `apply` is true (#109).
+pub fn document_load_theme_package(
+    document: &mut RuntimeDocument,
+    registry: &mut ThemeRegistry,
+    json: &str,
+    apply: bool,
+) -> Result<ThemePackageLoadDump, AgentError> {
+    let compiled = registry
+        .register_package_json(json)
+        .map_err(|error| AgentError(error.to_string()))?;
+    if apply {
+        document
+            .context_mut()
+            .set_theme_tokens(Arc::clone(&compiled))
+            .map_err(|error| AgentError(error.to_string()))?;
+    }
+    let identity = compiled.identity();
+    let provenance = registry
+        .provenance(&identity.id)
+        .map(provenance_dump)
+        .unwrap_or_else(|| ThemePackageProvenanceDump {
+            base_chain: vec![identity.id.as_str().to_owned()],
+            layers: Vec::new(),
+        });
+    Ok(ThemePackageLoadDump {
+        theme_id: identity.id.as_str().to_owned(),
+        generation: identity.generation.0,
+        appearance: appearance_name(compiled.appearance()),
+        display_name: compiled.display_name().to_owned(),
+        applied: apply,
+        provenance,
+    })
 }
 
 /// Hit-test `(x, y)` against `document`'s retained world and accessibility tree.

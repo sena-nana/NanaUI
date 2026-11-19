@@ -45,6 +45,11 @@ impl crate::WidgetVisual for PathTextVisual {
         other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
     }
 
+    fn theme_dependency_mask(&self) -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::PALETTE
+            .union(nana_ui_core::ThemeDependencyMask::TYPOGRAPHY_ANY)
+    }
+
     fn measures_text(&self) -> bool {
         true
     }

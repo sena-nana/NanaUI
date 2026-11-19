@@ -93,7 +93,7 @@ impl UiWorld {
             ..
         } = next;
         let targets = next.targets();
-        let motion = self.theme.recipes().scrollbar().motion;
+        let motion = self.node_theme(id).recipes().scrollbar().motion;
         let fades = matches!(visibility, ScrollbarVisibility::AutoHide) && !self.reduced_motion;
         let grows = !matches!(visibility, ScrollbarVisibility::Hidden) && !self.reduced_motion;
         let tracks = [
@@ -167,7 +167,7 @@ impl UiWorld {
                 kind: crate::ModalSurfaceKind::Drawer(_),
                 ..
             }) => Some((nana_ui_core::DialogMotion::DEFAULT, false)),
-            Some(_) => Some((self.theme.recipes().dialog().motion, true)),
+            Some(_) => Some((self.node_theme(id).recipes().dialog().motion, true)),
             None => None,
         }
     }

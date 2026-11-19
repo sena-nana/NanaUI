@@ -502,6 +502,7 @@ impl UiWorld {
             self.record_child_list_invalidation(id);
         }
         self.mark(id, DirtyMask::ACCESSIBILITY);
+        self.recompute_node_theme_deps(id);
     }
     /// Update only paragraphs reached by this layout scope. A pixel/hover
     /// mutation never calls this and equal exported metrics queue no work.

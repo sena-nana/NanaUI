@@ -714,3 +714,232 @@ fn removed_js_and_semantic_commands_are_rejected_while_css_reload_reaches_sessio
         replies[2]
     );
 }
+
+#[test]
+fn theme_inspect_reports_nested_theme_scopes_color_overrides_and_invalidation() {
+    use nana_ui::runtime::view::{button, theme_scope};
+    use nana_ui_core::{ColorOverrides, SemanticColor, SemanticColorRole, ThemePatch};
+    use nana_ui_devtools::agent::{AgentCommand, AgentSession, Target, ThemeName};
+
+    let mut session =
+        session_with(|document, id| {
+            document
+                .context_mut()
+                .mount_view_root(id, || {
+                    theme_scope(ThemePatch::default().with_color(
+                        SemanticColorRole::Warning,
+                        SemanticColor::rgb8(245, 190, 40),
+                    ))
+                    .children(
+                        theme_scope(ThemePatch::default().with_color(
+                            SemanticColorRole::Accent,
+                            SemanticColor::rgb8(110, 70, 210),
+                        ))
+                        .theme_colors(
+                            ColorOverrides::new()
+                                .with(SemanticColorRole::Danger, SemanticColor::rgb8(215, 50, 65)),
+                        )
+                        .children(button("Inspect Me")),
+                    )
+                })
+                .unwrap();
+        });
+    session.flush().expect("flush");
+
+    let target = Target {
+        role: Some("button".into()),
+        label: Some("Inspect Me".into()),
+        ..Target::default()
+    };
+    let reply = session.execute(AgentCommand::ThemeInspect {
+        target: target.clone(),
+    });
+    assert!(reply.ok, "{reply:?}");
+    let inspect = reply.theme_inspect.expect("theme_inspect payload");
+    assert_eq!(inspect.effective_theme_id, "nana.dark");
+    assert_eq!(inspect.scope_chain.len(), 2, "{:?}", inspect.scope_chain);
+    assert!(
+        inspect.scope_chain[0]
+            .overrides
+            .iter()
+            .any(|o| o.path == "colors.Warning"),
+        "{:?}",
+        inspect.scope_chain
+    );
+    assert!(
+        inspect.scope_chain[1]
+            .overrides
+            .iter()
+            .any(|o| o.path == "colors.Accent"),
+        "{:?}",
+        inspect.scope_chain
+    );
+    assert_eq!(inspect.color_overrides.len(), 1);
+    assert_eq!(inspect.color_overrides[0].role, "Danger");
+    assert!(inspect.dependency_summary.total_tracked_nodes >= 2);
+    assert!(
+        inspect
+            .dependency_categories
+            .iter()
+            .any(|name| name == "RECIPE_BUTTON"),
+        "{:?}",
+        inspect.dependency_categories
+    );
+
+    let inv_reply = session.execute(AgentCommand::ThemeInvalidation);
+    assert!(inv_reply.ok, "{inv_reply:?}");
+    let first_inv = inv_reply
+        .theme_invalidation
+        .expect("initial scope invalidation present");
+    assert_eq!(first_inv.trigger, "scope_reparented");
+    assert_eq!(first_inv.new_scope_id, Some(inspect.active_scope));
+
+    // Switch root theme to Light and verify invalidation updates.
+    let switch_reply = session.execute(AgentCommand::Theme {
+        mode: ThemeName::Light,
+    });
+    assert!(switch_reply.ok, "{switch_reply:?}");
+    let after_switch = session.execute(AgentCommand::ThemeInvalidation);
+    assert!(after_switch.ok, "{after_switch:?}");
+    let root_inv = after_switch
+        .theme_invalidation
+        .expect("root switch invalidation");
+    assert_eq!(root_inv.trigger, "root_theme");
+    assert_eq!(root_inv.theme_id.as_deref(), Some("nana.light"));
+}
+
+#[test]
+fn load_theme_package_validates_applies_and_fails_closed_on_bad_fixtures() {
+    use nana_ui::runtime::Button;
+    use nana_ui_core::{
+        SemanticColor, SemanticColorRole, ThemeDefinition, ThemeId, ThemePackage, ThemePatch,
+    };
+    use nana_ui_devtools::agent::{AgentCommand, AgentSession, Target};
+
+    let mut session = session_with(|document, id| {
+        document
+            .context_mut()
+            .create_component(id, Button::new("Theme Target"))
+            .unwrap();
+    });
+    session.flush().expect("flush");
+
+    let target = Target {
+        role: Some("button".into()),
+        label: Some("Theme Target".into()),
+        ..Target::default()
+    };
+
+    let valid_json = ThemePackage::new(ThemeId::new("acme.dev.ocean"), "Acme Ocean")
+        .with_base(ThemeDefinition::NANA_DARK.id)
+        .with_patch(
+            ThemePatch::new()
+                .with_color(SemanticColorRole::Accent, SemanticColor::rgb8(40, 150, 240)),
+        )
+        .to_json_pretty()
+        .expect("serialize valid package");
+
+    // 1. Validate & register without applying (`apply: false`).
+    let validate_only = session.execute(AgentCommand::LoadThemePackage {
+        json: Some(valid_json.clone()),
+        path: None,
+        apply: false,
+    });
+    assert!(validate_only.ok, "{validate_only:?}");
+    let pkg_dump = validate_only.theme_package.expect("theme_package");
+    assert_eq!(pkg_dump.theme_id, "acme.dev.ocean");
+    assert!(!pkg_dump.applied);
+    assert_eq!(
+        pkg_dump.provenance.base_chain,
+        vec!["nana.dark".to_owned(), "acme.dev.ocean".to_owned()]
+    );
+    let before_apply = session
+        .execute(AgentCommand::ThemeInspect {
+            target: target.clone(),
+        })
+        .theme_inspect
+        .unwrap();
+    assert_eq!(before_apply.effective_theme_id, "nana.dark");
+
+    // 2. Apply (`apply: true`) updates active theme and exposes provenance on ThemeInspect.
+    let apply_reply = session.execute(AgentCommand::LoadThemePackage {
+        json: Some(valid_json),
+        path: None,
+        apply: true,
+    });
+    assert!(apply_reply.ok, "{apply_reply:?}");
+    let applied_dump = apply_reply.theme_package.expect("applied theme_package");
+    assert!(applied_dump.applied);
+
+    let after_apply = session
+        .execute(AgentCommand::ThemeInspect {
+            target: target.clone(),
+        })
+        .theme_inspect
+        .unwrap();
+    assert_eq!(after_apply.effective_theme_id, "acme.dev.ocean");
+    let provenance = after_apply.package_provenance.expect("provenance");
+    assert_eq!(
+        provenance.base_chain,
+        vec!["nana.dark".to_owned(), "acme.dev.ocean".to_owned()]
+    );
+
+    // 3. Invalid fixtures fail closed without changing active theme or corruption.
+    let bad_fixtures: &[(&str, &str)] = &[
+        ("malformed_json", "{ not json"),
+        (
+            "unsupported_schema_99",
+            r#"{"schema_version":{"major":99,"minor":0},"id":"bad.99","name":"Bad 99","patch":{}}"#,
+        ),
+        (
+            "draft_schema_0_9",
+            r#"{"schema_version":{"major":0,"minor":9},"id":"bad.09","name":"Bad 09","patch":{}}"#,
+        ),
+        (
+            "unknown_field",
+            r#"{"schema_version":{"major":1,"minor":0},"id":"bad.field","name":"Bad Field","unexpected":true,"patch":{}}"#,
+        ),
+        (
+            "missing_base",
+            r#"{"schema_version":{"major":1,"minor":0},"id":"bad.base","name":"Bad Base","base":"does.not.exist","patch":{}}"#,
+        ),
+        (
+            "invalid_token_negative_spacing",
+            r#"{"schema_version":{"major":1,"minor":0},"id":"bad.spacing","name":"Bad Spacing","base":"nana.dark","patch":{"spacing":{"md":-4.0}}}"#,
+        ),
+    ];
+
+    for (label, bad_json) in bad_fixtures {
+        let reply = session.execute(AgentCommand::LoadThemePackage {
+            json: Some((*bad_json).to_owned()),
+            path: None,
+            apply: true,
+        });
+        assert!(!reply.ok, "{label} must fail closed: {reply:?}");
+        assert!(reply.error.is_some(), "{label} must return an error");
+        let after_bad = session
+            .execute(AgentCommand::ThemeInspect {
+                target: target.clone(),
+            })
+            .theme_inspect
+            .unwrap();
+        assert_eq!(
+            after_bad.effective_theme_id, "acme.dev.ocean",
+            "{label} must leave active theme untouched"
+        );
+    }
+
+    // 4. Reject both `json` and `path` or neither, and verify JSONL wire name roundtrip.
+    let both = session.execute(AgentCommand::LoadThemePackage {
+        json: Some("{}".into()),
+        path: Some("foo.json".into()),
+        apply: false,
+    });
+    assert!(!both.ok);
+    let neither = session.execute(AgentCommand::LoadThemePackage {
+        json: None,
+        path: None,
+        apply: false,
+    });
+    assert!(!neither.ok);
+}

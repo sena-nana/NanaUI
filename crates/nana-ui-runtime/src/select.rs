@@ -13,10 +13,8 @@ use crate::{
 /// Width of the drop-down arrow at the end of the field.
 pub(crate) const HANDLE_WIDTH: f32 = nana_ui_core::type_scale::LINE;
 const MENU_GAP: f32 = 0.0;
-const MENU_PAD: f32 = crate::popover::MENU_SURFACE_PADDING;
 /// The menu surface's stroke, inside its box: the rows scroll within it.
 const MENU_BORDER: f32 = nana_ui_core::HAIRLINE;
-use crate::popover::MENU_ITEM_GAP;
 /// Width of the leading check lane in a drop-down menu row.
 const MENU_CHECK_RESERVE: f32 = nana_ui_core::type_scale::LINE;
 /// Between a label and its hint, in the field and in a menu row.
@@ -369,39 +367,41 @@ impl Select {
         self.options.iter().position(|option| !option.disabled)
     }
 
-    fn effective_style(&self) -> NodeStyle {
+    pub(crate) fn effective_style(&self, recipe: &nana_ui_core::SelectRecipe) -> NodeStyle {
         let mut style = self.style.clone();
-        style.foreground = Some(if self.inactive() || self.display_label().1 {
-            SemanticColorRole::Faint
+        style.foreground = Some(if self.inactive() {
+            recipe.disabled_foreground
+        } else if self.display_label().1 {
+            recipe.placeholder
         } else {
-            SemanticColorRole::Text
+            recipe.foreground
         });
         style.background = Some(if self.inactive() {
-            SemanticColorRole::Subtle
+            recipe.inactive_background
         } else {
-            SemanticColorRole::Background
+            recipe.background
         });
         style.border = Some(if self.invalid {
-            SemanticColorRole::Danger
+            recipe.invalid_border
         } else if self.opened {
-            SemanticColorRole::BorderSoft
+            recipe.open_border
         } else {
-            SemanticColorRole::Border
+            recipe.border
         });
         style.interaction.hovered.border = Some(if self.invalid {
-            SemanticColorRole::Danger
+            recipe.invalid_border
         } else {
-            SemanticColorRole::BorderStrong
+            recipe.hover_border
         });
         style.interaction.focused.border = Some(if self.invalid {
-            SemanticColorRole::Danger
+            recipe.invalid_border
         } else {
-            SemanticColorRole::BorderStrong
+            recipe.select_focus_border
         });
         style.interaction.disabled = SemanticPaint {
-            foreground: Some(SemanticColorRole::Faint),
-            background: Some(SemanticColorRole::Subtle),
-            border: Some(SemanticColorRole::Border),
+            foreground: Some(recipe.disabled_foreground),
+            background: Some(recipe.disabled_background),
+            border: Some(recipe.disabled_border),
             ..SemanticPaint::default()
         };
         let has_explicit_height = style.layout.height.is_some();
@@ -419,9 +419,9 @@ impl Select {
                 layout.width = Some(LengthSpec::Fill);
             }
             layout.border_width = Some(if self.invalid && self.opened {
-                2.0
+                recipe.invalid_open_border_width
             } else {
-                1.0
+                nana_ui_core::HAIRLINE
             });
             layout.white_space_nowrap = true;
         }
@@ -499,6 +499,15 @@ impl crate::ComponentView for Select {
         }
     }
 
+    fn wants_recipe_reproject() -> bool {
+        true
+    }
+
+    fn recipe_dependency_mask() -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::RECIPE_SELECT
+            .union(nana_ui_core::ThemeDependencyMask::RECIPE_MENU)
+    }
+
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         let (label, placeholder) = self.display_label();
         let hint = self.display_hint();
@@ -547,11 +556,12 @@ impl crate::ComponentView for Select {
                 },
             );
         }
+        let select_recipe = world.node_theme(id).recipes().select();
         project_common(
             id,
             world,
             mutations,
-            &self.effective_style(),
+            &self.effective_style(select_recipe),
             InteractionState {
                 pointer_events: !self.inactive(),
                 focusable: !self.inactive(),
@@ -658,6 +668,7 @@ impl SelectVisual {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn geometry_from_parts(
         &self,
         bounds: LayoutBox,
@@ -665,7 +676,7 @@ impl SelectVisual {
         viewport: Option<crate::LayoutViewport>,
         style: &ComputedStyle,
         style_model: nana_ui_core::StyleModelRef,
-        scrollbars: &nana_ui_core::ScrollbarRecipe,
+        theme: &nana_ui_core::CompiledTheme,
         parts: &crate::layout_engine::parts::ContentParts,
         measure: crate::text_width::ChromeTextMeasure<'_>,
         fitted_options: Option<f32>,
@@ -684,7 +695,7 @@ impl SelectVisual {
             menu_room,
             style,
             style_model,
-            scrollbars,
+            theme,
             viewport,
             self.checkable,
             parts,
@@ -723,6 +734,17 @@ impl crate::WidgetVisual for SelectVisual {
 
     fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
         other.downcast_ref::<Self>() == Some(self)
+    }
+
+    fn theme_dependency_mask(&self) -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::COLOR_ANY
+            .union(nana_ui_core::ThemeDependencyMask::METRICS)
+            .union(nana_ui_core::ThemeDependencyMask::TYPOGRAPHY_ANY)
+            .union(nana_ui_core::ThemeDependencyMask::EFFECT)
+            .union(nana_ui_core::ThemeDependencyMask::RECIPE_SELECT)
+            .union(nana_ui_core::ThemeDependencyMask::RECIPE_MENU)
+            .union(nana_ui_core::ThemeDependencyMask::RECIPE_SCROLLBAR)
+            .union(nana_ui_core::ThemeDependencyMask::RECIPE_SHAPE)
     }
 
     fn measures_text(&self) -> bool {
@@ -831,7 +853,7 @@ impl crate::WidgetVisual for SelectVisual {
             viewport,
             ctx.style,
             ctx.style_model,
-            ctx.theme.recipes().scrollbar(),
+            ctx.theme,
             &parts,
             ctx.world.chrome_text_measure(ctx.id),
             fitted,
@@ -899,6 +921,9 @@ impl crate::WidgetVisual for SelectVisual {
             );
         }
         if let Some(menu) = geometry.menu {
+            let menu_recipe = ctx.theme.recipes().menu();
+            let select_recipe = ctx.theme.recipes().select();
+            let menu_radius = menu_recipe.surface_radius.resolve(ctx.style_model.metrics);
             out.floating_overlay = Some(crate::WidgetFloatingOverlay {
                 kind: crate::WidgetFloatingOverlayKind::AttachedPopup,
                 overlay_mount: self.overlay_mount,
@@ -913,21 +938,17 @@ impl crate::WidgetVisual for SelectVisual {
                         fill_paint: ctx.matching_background_paint(menu.background),
                         border: Some((menu.border, menu.border_width)),
                         border_paint: ctx.matching_border_paint(menu.border),
-                        corner_radius: [ctx.chrome_radii.md; 4],
+                        corner_radius: [menu_radius; 4],
                         elevation: Some(menu.elevation),
                         ..Default::default()
                     }),
                 )
                 .with_floating_overlay(),
             );
-            let clip_radius = (ctx.chrome_radii.md - menu.border_width).max(0.0);
+            let clip_radius = (menu_radius - menu.border_width).max(0.0);
             let menu_foreground = ctx
                 .style_model
-                .color(
-                    ctx.theme
-                        .recipes()
-                        .foreground(nana_ui_core::ComponentRecipeId::Menu, false),
-                )
+                .color(menu_recipe.item_foreground)
                 .as_rgba_array();
             let clip_op = |op: crate::WidgetTaggedOp| {
                 op.with_floating_overlay()
@@ -946,14 +967,14 @@ impl crate::WidgetVisual for SelectVisual {
                             bounds: LayoutBox {
                                 x: option.bounds.x,
                                 y: option.bounds.y,
-                                width: 16.0,
+                                width: select_recipe.checkmark_width,
                                 height: option.bounds.height,
                             },
                             content: crate::TextValue::from("✓"),
                             color: Some(menu_foreground),
                             paint_color: ctx.matching_text_paint(menu_foreground),
                             font_size: option.label.font_size,
-                            font_weight: Some(700),
+                            font_weight: Some(select_recipe.checkmark_weight),
                             horizontal_alignment: TextHorizontalAlignment::Center,
                             vertical_alignment: TextVerticalAlignment::Center,
                             ellipsis: false,
@@ -1076,7 +1097,7 @@ pub(crate) fn select_geometry(
     menu_room: Option<crate::SelectMenuRoom>,
     style: &ComputedStyle,
     model: nana_ui_core::StyleModelRef,
-    scrollbars: &nana_ui_core::ScrollbarRecipe,
+    theme: &nana_ui_core::CompiledTheme,
     viewport: Option<crate::LayoutViewport>,
     checkable: bool,
     parts: &crate::layout_engine::parts::ContentParts,
@@ -1084,12 +1105,20 @@ pub(crate) fn select_geometry(
     fitted_options: Option<f32>,
 ) -> SelectGeometry {
     let palette = &model.palette;
-    let text_color = if placeholder || matches!(style.foreground, SemanticColorRole::Faint) {
-        palette.faint.as_rgba_array()
+    let select_recipe = theme.recipes().select();
+    let opacity = model.opacity;
+    let color = |role| palette.get_in(role, opacity).as_rgba_array();
+    let faint_disabled = color(select_recipe.disabled_foreground);
+    let text_color = if placeholder {
+        color(select_recipe.placeholder)
+    } else if matches!(style.foreground, SemanticColorRole::Faint) {
+        faint_disabled
     } else {
-        style.color.unwrap_or_else(|| palette.text.as_rgba_array())
+        style
+            .color
+            .unwrap_or_else(|| color(select_recipe.foreground))
     };
-    let handle_color = palette.muted.as_rgba_array();
+    let handle_color = color(select_recipe.handle);
     let menu = opened.then(|| {
         select_menu_geometry(
             bounds,
@@ -1098,7 +1127,7 @@ pub(crate) fn select_geometry(
             highlighted,
             menu_scroll,
             model,
-            scrollbars,
+            theme,
             menu_room.or_else(|| window_room(viewport)),
             checkable,
             measure,
@@ -1118,10 +1147,10 @@ pub(crate) fn select_geometry(
                     bounds,
                     content: Arc::clone(hint).into(),
                     // A field that has gone faint takes its hint with it.
-                    color: Some(if text_color == palette.faint.as_rgba_array() {
+                    color: Some(if text_color == faint_disabled {
                         text_color
                     } else {
-                        palette.muted.as_rgba_array()
+                        color(select_recipe.hint)
                     }),
                     font_size: size.caption_size(),
                     font_weight: None,
@@ -1151,6 +1180,7 @@ pub(crate) fn select_geometry(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn select_menu_geometry(
     field: LayoutBox,
     size: ControlSize,
@@ -1158,7 +1188,7 @@ fn select_menu_geometry(
     highlighted: Option<usize>,
     menu_scroll: SelectMenuScroll,
     model: nana_ui_core::StyleModelRef,
-    scrollbars: &nana_ui_core::ScrollbarRecipe,
+    theme: &nana_ui_core::CompiledTheme,
     room: Option<crate::SelectMenuRoom>,
     checkable: bool,
     measure: crate::text_width::ChromeTextMeasure<'_>,
@@ -1166,11 +1196,17 @@ fn select_menu_geometry(
 ) -> SelectMenuGeometry {
     let palette = &model.palette;
     let metrics = model.metrics;
+    let menu = theme.recipes().menu();
+    let select_recipe = theme.recipes().select();
+    let scrollbars = theme.recipes().scrollbar();
+    let menu_pad = theme.spacing().resolve(menu.surface_padding);
+    let menu_item_gap = theme.spacing().resolve(menu.item_gap);
+    let opacity = model.opacity;
+    let color = |role| palette.get_in(role, opacity).as_rgba_array();
     let item_height = size.height_in(metrics);
     let count = options.len().max(1) as f32;
     let natural_height =
-        MENU_PAD * 2.0 + count * item_height + (count - 1.0).max(0.0) * MENU_ITEM_GAP;
-    let is_light = palette.background.as_rgba_array()[0] > 0.5;
+        menu_pad * 2.0 + count * item_height + (count - 1.0).max(0.0) * menu_item_gap;
     // Reserved for the whole menu when the menu *can* check, not when one
     // option currently is: deriving it from `any(checked)` shifted every label
     // 16px sideways the moment the first option became checked.
@@ -1180,7 +1216,7 @@ fn select_menu_geometry(
         size,
         options,
         model,
-        scrollbars,
+        theme,
         room,
         checkable,
         fitted_options,
@@ -1202,6 +1238,8 @@ fn select_menu_geometry(
         item_height,
         height,
         max_scroll,
+        menu_pad,
+        menu_item_gap,
     );
     let scrollbar = (max_scroll > 0.0)
         .then(|| {
@@ -1218,13 +1256,13 @@ fn select_menu_geometry(
         .flatten();
     // The rows leave the bar its lane, so its thumb never covers a label, a
     // hint or a highlight.
-    let rows_x = surface.x + MENU_PAD;
-    let rows_right = scrollbar.map_or(surface.x + surface.width - MENU_PAD, |bar| bar.lane.x);
+    let rows_x = surface.x + menu_pad;
+    let rows_right = scrollbar.map_or(surface.x + surface.width - menu_pad, |bar| bar.lane.x);
     let options = options
         .iter()
         .enumerate()
         .map(|(index, option)| {
-            let y = surface.y + MENU_PAD + index as f32 * (item_height + MENU_ITEM_GAP) - scroll;
+            let y = surface.y + menu_pad + index as f32 * (item_height + menu_item_gap) - scroll;
             let selected = highlighted == Some(index);
             let bounds = LayoutBox {
                 x: rows_x,
@@ -1257,18 +1295,28 @@ fn select_menu_geometry(
             });
             // Measuring a hint shapes text; a row out of sight is not drawn.
             let hint = overlaps_vertically(bounds, rows_viewport)
-                .then(|| menu_option_hint(option, &mut label_box, size, palette, measure))
+                .then(|| {
+                    menu_option_hint(
+                        option,
+                        &mut label_box,
+                        size,
+                        palette,
+                        opacity,
+                        menu,
+                        measure,
+                    )
+                })
                 .flatten();
             crate::SelectOptionGeometry {
                 bounds,
                 label: ComponentTextRegion {
                     bounds: label_box,
                     content: Arc::clone(&option.label).into(),
-                    color: Some(if option.disabled {
-                        palette.faint.as_rgba_array()
+                    color: Some(color(if option.disabled {
+                        menu.item_disabled_foreground
                     } else {
-                        palette.text.as_rgba_array()
-                    }),
+                        menu.item_foreground
+                    })),
                     font_size: size.text_size(),
                     font_weight: None,
                 },
@@ -1277,7 +1325,7 @@ fn select_menu_geometry(
                 selected,
                 checked: option.checked,
                 disabled: option.disabled,
-                background: selected.then_some(palette.selected.as_rgba_array()),
+                background: selected.then(|| color(select_recipe.menu_selected_background)),
                 icon: None,
                 image,
             }
@@ -1290,21 +1338,11 @@ fn select_menu_geometry(
         scroll,
         max_scroll,
         scrollbar,
-        elevation: ComponentElevation {
-            color: nana_ui_core::PaintColor::srgb([
-                0.0,
-                0.0,
-                0.0,
-                if is_light { 0.24 } else { 0.48 },
-            ]),
-            offset_x: 0.0,
-            offset_y: 8.0,
-            blur_radius: 16.0,
-            spread_radius: 0.0,
-            inset: false,
-        },
-        background: palette.surface.as_rgba_array(),
-        border: palette.border_soft.as_rgba_array(),
+        elevation: ComponentElevation::from_shadow(
+            theme.effects().shadow(select_recipe.menu_elevation),
+        ),
+        background: color(menu.surface_background),
+        border: color(menu.surface_border),
         options,
     }
 }
@@ -1320,16 +1358,20 @@ pub(crate) fn select_menu_surface(
     size: ControlSize,
     options: &[SelectOptionData],
     model: nana_ui_core::StyleModelRef,
-    scrollbars: &nana_ui_core::ScrollbarRecipe,
+    theme: &nana_ui_core::CompiledTheme,
     room: Option<crate::SelectMenuRoom>,
     checkable: bool,
     fitted_options: Option<f32>,
 ) -> LayoutBox {
     let metrics = model.metrics;
+    let menu = theme.recipes().menu();
+    let scrollbars = theme.recipes().scrollbar();
+    let menu_pad = theme.spacing().resolve(menu.surface_padding);
+    let menu_item_gap = theme.spacing().resolve(menu.item_gap);
     let item_height = size.height_in(metrics);
     let count = options.len().max(1) as f32;
     let natural_height =
-        MENU_PAD * 2.0 + count * item_height + (count - 1.0).max(0.0) * MENU_ITEM_GAP;
+        menu_pad * 2.0 + count * item_height + (count - 1.0).max(0.0) * menu_item_gap;
     let (surface_y, height) = resolve_menu_vertical(field, natural_height, room);
     let check_reserve = if checkable { MENU_CHECK_RESERVE } else { 0.0 };
     // A row with a picture fronts its label with it; a menu that fits its
@@ -1347,12 +1389,12 @@ pub(crate) fn select_menu_surface(
         let lane = if natural_height > height
             && scrollbars.visibility != nana_ui_core::ScrollbarVisibility::Hidden
         {
-            (MENU_BORDER + bar.track_inset + bar.thickness - MENU_PAD).max(0.0)
+            (MENU_BORDER + bar.track_inset + bar.thickness - menu_pad).max(0.0)
         } else {
             0.0
         };
         widest
-            + MENU_PAD * 2.0
+            + menu_pad * 2.0
             + size.padding_x_in(metrics) * 2.0
             + check_reserve
             + image_reserve
@@ -1376,6 +1418,8 @@ fn menu_option_hint(
     label_box: &mut LayoutBox,
     size: ControlSize,
     palette: &SemanticPalette,
+    opacity: nana_ui_core::OpacityTokens,
+    menu: &nana_ui_core::MenuRecipe,
     measure: crate::text_width::ChromeTextMeasure<'_>,
 ) -> Option<ComponentTextRegion> {
     let hint = option.hint.as_ref().filter(|hint| !hint.is_empty())?;
@@ -1391,14 +1435,15 @@ fn menu_option_hint(
         |text, size| measure.width(text, size, None),
     );
     *label_box = new_label;
+    let role = if option.disabled {
+        menu.item_disabled_foreground
+    } else {
+        menu.item_hint
+    };
     Some(ComponentTextRegion {
         bounds: hint_bounds?,
         content: Arc::clone(hint).into(),
-        color: Some(if option.disabled {
-            palette.faint.as_rgba_array()
-        } else {
-            palette.muted.as_rgba_array()
-        }),
+        color: Some(palette.get_in(role, opacity).as_rgba_array()),
         font_size: hint_size,
         font_weight: None,
     })
@@ -1476,13 +1521,15 @@ fn menu_offset(
     item_height: f32,
     height: f32,
     max_scroll: f32,
+    menu_pad: f32,
+    menu_item_gap: f32,
 ) -> f32 {
     if max_scroll <= 0.0 {
         return 0.0;
     }
     let offset = offset.unwrap_or_else(|| {
         highlighted.map_or(0.0, |row| {
-            MENU_PAD + row as f32 * (item_height + MENU_ITEM_GAP) + (item_height - height) / 2.0
+            menu_pad + row as f32 * (item_height + menu_item_gap) + (item_height - height) / 2.0
         })
     });
     if offset.is_finite() {
@@ -1496,8 +1543,9 @@ fn menu_offset(
 /// padding, moving the rows as little as it can from where they are.
 pub(crate) fn menu_offset_revealing(menu: &SelectMenuGeometry, row: usize) -> Option<f32> {
     let bounds = menu.options.get(row)?.bounds;
-    let top = menu.surface.y + MENU_PAD;
-    let bottom = menu.surface.y + menu.surface.height - MENU_PAD;
+    let menu_pad = (bounds.x - menu.surface.x).max(0.0);
+    let top = menu.surface.y + menu_pad;
+    let bottom = menu.surface.y + menu.surface.height - menu_pad;
     let offset = if bounds.y < top {
         menu.scroll - (top - bounds.y)
     } else if bounds.y + bounds.height > bottom {
@@ -1735,6 +1783,9 @@ pub(crate) static SELECT_HOOKS: crate::framework::ChoiceHooks = crate::framework
 
 #[cfg(test)]
 mod tests {
+    const MENU_PAD: f32 = nana_ui_core::space::XS;
+    const MENU_ITEM_GAP: f32 = nana_ui_core::space::XXS;
+
     #[test]
     fn only_a_multi_select_dropdown_reserves_the_check_lane() {
         use crate::{Dropdown, DropdownOption, SelectVisual};

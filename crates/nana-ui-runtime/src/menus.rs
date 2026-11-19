@@ -16,11 +16,14 @@ use crate::{
 };
 
 const MENU_WIDTH: f32 = crate::popover::ACTION_MENU_WIDTH;
-const MENU_PADDING: f32 = crate::popover::MENU_SURFACE_PADDING;
 use crate::popover::MENU_MIN_WIDTH;
 #[cfg(test)]
 const HINT_TEXT_SIZE: f32 = nana_ui_core::type_scale::HINT;
 const MENU_MIN_HEIGHT: f32 = nana_ui_core::ControlSize::Medium.height_in(nana_ui_core::UI_METRICS);
+
+fn default_menu_padding() -> f32 {
+    nana_ui_core::SpacingTokens::DEFAULT.resolve(nana_ui_core::MenuRecipe::DEFAULT.surface_padding)
+}
 
 /// Selectable row shared by action menus and context menus.
 #[derive(Debug, Clone, PartialEq)]
@@ -156,33 +159,35 @@ impl ActionMenuItem {
         self
     }
 
-    fn effective_style(&self) -> NodeStyle {
+    fn effective_style(&self, menu: &nana_ui_core::MenuRecipe) -> NodeStyle {
         let mut style = self.style.clone();
         style.foreground = Some(if self.disabled {
-            SemanticColorRole::Faint
+            menu.item_disabled_foreground
         } else if self.danger {
-            SemanticColorRole::Danger
+            menu.item_danger_foreground
         } else {
-            SemanticColorRole::Text
+            menu.item_foreground
         });
         style.background = if self.active && self.danger {
-            Some(SemanticColorRole::AccentSoft)
+            Some(menu.item_danger_hover_background)
         } else if self.active {
-            Some(SemanticColorRole::Hover)
+            Some(menu.item_hover_background)
         } else {
             None
         };
         style.interaction.hovered.background = Some(if self.danger {
-            SemanticColorRole::AccentSoft
+            menu.item_danger_hover_background
         } else {
-            SemanticColorRole::Hover
+            menu.item_hover_background
         });
         style.interaction.pressed.background = Some(if self.danger {
-            SemanticColorRole::AccentSoftPressed
+            menu.item_danger_pressed_background
         } else {
-            SemanticColorRole::Active
+            menu.item_pressed_background
         });
         style.interaction.selected.background = style.background;
+        Arc::make_mut(&mut style.layout).theme.font_weight =
+            Some(nana_ui_core::ThemeToken::Weight(menu.item_label_weight).into());
         style
     }
 }
@@ -207,6 +212,14 @@ impl crate::ComponentView for ActionMenuItem {
         NodeKind::Element {
             tag: "action-menu-item".into(),
         }
+    }
+
+    fn wants_recipe_reproject() -> bool {
+        true
+    }
+
+    fn recipe_dependency_mask() -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::RECIPE_MENU
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
@@ -243,11 +256,12 @@ impl crate::ComponentView for ActionMenuItem {
             );
         }
         let spoken = menu_spoken_name(label, Some(&self.accessible_name));
+        let menu_recipe = world.node_theme(id).recipes().menu();
         project_common(
             id,
             world,
             mutations,
-            &self.effective_style(),
+            &self.effective_style(menu_recipe),
             InteractionState {
                 pointer_events: !self.disabled,
                 focusable: !self.disabled,
@@ -319,7 +333,7 @@ impl AnchoredActionMenu {
             width: MENU_WIDTH,
             height: 0.0,
             overlay_mount: nana_ui_core::OverlayMount::NearestModal,
-            style: menu_surface_style(MENU_WIDTH, MENU_PADDING),
+            style: menu_surface_style(MENU_WIDTH, default_menu_padding()),
         };
         menu.apply_anchor();
         menu
@@ -407,6 +421,14 @@ impl crate::ComponentView for AnchoredActionMenu {
         NodeKind::Element {
             tag: "anchored-action-menu".into(),
         }
+    }
+
+    fn wants_recipe_reproject() -> bool {
+        true
+    }
+
+    fn recipe_dependency_mask() -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::RECIPE_MENU
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
@@ -569,7 +591,7 @@ impl ContextMenu {
             anchor_y,
             highlighted: None,
             width: MENU_WIDTH,
-            style: menu_surface_style(MENU_WIDTH, MENU_PADDING),
+            style: menu_surface_style(MENU_WIDTH, default_menu_padding()),
             active_path: Vec::new(),
             searchable: false,
             state: TextInputState::new(""),
@@ -829,6 +851,14 @@ impl crate::ComponentView for ContextMenu {
         true
     }
 
+    fn wants_recipe_reproject() -> bool {
+        true
+    }
+
+    fn recipe_dependency_mask() -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::RECIPE_MENU
+    }
+
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         let open = world.project_menu_presence(id, self.open, mutations);
         let rows: Arc<[SelectOptionData]> = self
@@ -881,13 +911,15 @@ impl crate::ComponentView for ContextMenu {
         }
         let mut style = self.style.clone();
         {
+            let node_theme = world.node_theme(id);
+            crate::popover::apply_menu_surface_recipe(&mut style, node_theme);
             let layout = Arc::make_mut(&mut style.layout);
             layout.hidden = !open;
             let height = context_menu_height_in(
                 self.visible_items().len(),
                 self.searchable,
-                world.theme_metrics(),
-                world.theme(),
+                node_theme.metrics(),
+                node_theme,
             );
             layout.height = Some(LengthSpec::Px(height));
             // Placed by layout from the fields as they are now: an owner
@@ -1003,22 +1035,23 @@ impl ActionMenuItemVisual {
         world: &UiWorld,
         bounds: LayoutBox,
     ) -> crate::layout_engine::parts::ContentParts {
+        let node_theme = world.node_theme(id);
         // A picture takes the icon's lane, a line box across.
         let leading = if self.image.is_some() {
-            Some(row_image_size(self.size, world.theme().typography()))
+            Some(row_image_size(self.size, node_theme.typography()))
         } else {
             self.icon
-                .map(|_| self.size.text_size_in(world.theme().typography()))
+                .map(|_| self.size.text_size_in(node_theme.typography()))
         };
         crate::layout_engine::parts::menu_content_parts(
             bounds,
-            self.size.padding_x_in(world.style_model().metrics),
-            world.theme().spacing().md,
+            self.size.padding_x_in(node_theme.metrics()),
+            node_theme.spacing().md,
             leading,
             self.hint.as_ref().map(|hint| {
                 world
                     .chrome_text_measure(id)
-                    .width(hint, world.theme().typography().hint, None)
+                    .width(hint, node_theme.typography().hint, None)
             }),
         )
     }
@@ -1053,6 +1086,13 @@ impl crate::WidgetVisual for ActionMenuItemVisual {
 
     fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
         other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
+    }
+
+    fn theme_dependency_mask(&self) -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::COLOR_ANY
+            .union(nana_ui_core::ThemeDependencyMask::METRICS)
+            .union(nana_ui_core::ThemeDependencyMask::TYPOGRAPHY_ANY)
+            .union(nana_ui_core::ThemeDependencyMask::RECIPE_MENU)
     }
 
     fn measures_text(&self) -> bool {
@@ -1230,13 +1270,16 @@ pub(crate) fn action_menu_item_geometry_from_parts(
 ) -> ActionMenuItemGeometry {
     use crate::LayoutPartKind;
     use crate::layout_engine::parts::part_bounds;
-    let icon_color = if disabled {
-        palette.faint.as_rgba_array()
+    let menu = theme.recipes().menu();
+    let opacity = theme.style_model().opacity;
+    let color = |role| palette.get_in(role, opacity).as_rgba_array();
+    let icon_color = color(if disabled {
+        menu.item_disabled_foreground
     } else if danger {
-        palette.danger.as_rgba_array()
+        menu.item_danger_foreground
     } else {
-        palette.muted.as_rgba_array()
-    };
+        menu.item_icon
+    });
     let leading = part_bounds(parts, LayoutPartKind::LeadingContent);
     // The picture takes the icon's lane; the parts sized it for whichever
     // the row shows.
@@ -1248,11 +1291,11 @@ pub(crate) fn action_menu_item_geometry_from_parts(
         .zip(leading)
         .map(|(icon, bounds)| (icon, bounds, icon_color));
     let foreground = if disabled {
-        palette.faint.as_rgba_array()
+        color(menu.item_disabled_foreground)
     } else if danger {
-        palette.danger.as_rgba_array()
+        color(menu.item_danger_foreground)
     } else {
-        style.color.unwrap_or_else(|| palette.text.as_rgba_array())
+        style.color.unwrap_or_else(|| color(menu.item_foreground))
     };
     ActionMenuItemGeometry {
         icon,
@@ -1262,12 +1305,12 @@ pub(crate) fn action_menu_item_geometry_from_parts(
             content: Arc::clone(label).into(),
             color: Some(foreground),
             font_size: size.text_size_in(theme.typography()),
-            font_weight: Some(theme.typography().medium),
+            font_weight: Some(theme.typography().weight(menu.item_label_weight)),
         },
         hint: hint.map(|hint| ComponentTextRegion {
             bounds: part_bounds(parts, LayoutPartKind::Hint).unwrap_or_default(),
             content: Arc::clone(hint).into(),
-            color: Some(palette.muted.as_rgba_array()),
+            color: Some(color(menu.item_hint)),
             font_size: theme.typography().hint,
             font_weight: None,
         }),
@@ -1320,12 +1363,14 @@ pub(crate) fn context_menu_height_in(
     metrics: nana_ui_core::ThemeMetrics,
     theme: &nana_ui_core::CompiledTheme,
 ) -> f32 {
+    let menu = theme.recipes().menu();
+    let pad = theme.spacing().resolve(menu.surface_padding);
+    let gap = theme.spacing().resolve(menu.item_gap);
     let count = item_count.max(1) as f32;
     let item = ControlSize::Small.height_in(metrics);
-    let list =
-        theme.spacing().xs * 2.0 + count * item + (count - 1.0).max(0.0) * theme.spacing().xxs;
+    let list = pad * 2.0 + count * item + (count - 1.0).max(0.0) * gap;
     if searchable {
-        list + search_field_height(metrics) + theme.spacing().xs
+        list + search_field_height(metrics) + pad
     } else {
         list
     }
@@ -1350,13 +1395,17 @@ pub(crate) fn context_menu_geometry_in(
     measure: crate::text_width::ChromeTextMeasure<'_>,
     theme: &nana_ui_core::CompiledTheme,
 ) -> MenuSurfaceGeometry {
-    let is_light = palette.background.as_rgba_array()[0] > 0.5;
+    let menu = theme.recipes().menu();
+    let opacity = theme.style_model().opacity;
+    let color = |role| palette.get_in(role, opacity).as_rgba_array();
+    let pad = theme.spacing().resolve(menu.surface_padding);
+    let gap = theme.spacing().resolve(menu.item_gap);
     let searchable = query.is_some();
     let search_height = search_field_height(metrics);
     let search_field = searchable.then(|| LayoutBox {
-        x: bounds.x + theme.spacing().xs,
-        y: bounds.y + theme.spacing().xs,
-        width: (bounds.width - theme.spacing().xs * 2.0).max(0.0),
+        x: bounds.x + pad,
+        y: bounds.y + pad,
+        width: (bounds.width - pad * 2.0).max(0.0),
         height: search_height,
     });
     let search = search_field.map(|field| {
@@ -1371,16 +1420,16 @@ pub(crate) fn context_menu_geometry_in(
             color: Some(if empty {
                 palette.faint.as_rgba_array()
             } else {
-                palette.text.as_rgba_array()
+                color(menu.item_foreground)
             }),
             font_size: ControlSize::Small.text_size_in(theme.typography()),
             font_weight: None,
         }
     });
     let list_top = if searchable {
-        bounds.y + theme.spacing().xs + search_height + theme.spacing().xs
+        bounds.y + pad + search_height + pad
     } else {
-        bounds.y + theme.spacing().xs
+        bounds.y + pad
     };
     let item_height = ControlSize::Small.height_in(metrics);
     let size = ControlSize::Small;
@@ -1393,12 +1442,12 @@ pub(crate) fn context_menu_geometry_in(
         .iter()
         .enumerate()
         .map(|(index, option)| {
-            let y = list_top + index as f32 * (item_height + theme.spacing().xxs);
+            let y = list_top + index as f32 * (item_height + gap);
             let selected = highlighted == Some(index);
             let row = LayoutBox {
-                x: bounds.x + theme.spacing().xs,
+                x: bounds.x + pad,
                 y,
-                width: (bounds.width - theme.spacing().xs * 2.0).max(0.0),
+                width: (bounds.width - pad * 2.0).max(0.0),
                 height: item_height,
             };
             let content = LayoutBox {
@@ -1406,11 +1455,11 @@ pub(crate) fn context_menu_geometry_in(
                 width: (row.width - check_reserve).max(0.0),
                 ..row
             };
-            let icon_color = if option.disabled {
-                palette.faint.as_rgba_array()
+            let icon_color = color(if option.disabled {
+                menu.item_disabled_foreground
             } else {
-                palette.muted.as_rgba_array()
-            };
+                menu.item_icon
+            });
             let (label_x, icon, image) = menu_option_icon(
                 content,
                 option.icon,
@@ -1443,30 +1492,30 @@ pub(crate) fn context_menu_geometry_in(
                 label: ComponentTextRegion {
                     bounds: label_box,
                     content: Arc::clone(&option.label).into(),
-                    color: Some(if option.disabled {
-                        palette.faint.as_rgba_array()
+                    color: Some(color(if option.disabled {
+                        menu.item_disabled_foreground
                     } else {
-                        palette.text.as_rgba_array()
-                    }),
+                        menu.item_foreground
+                    })),
                     font_size: size.text_size_in(theme.typography()),
-                    font_weight: Some(theme.typography().medium),
+                    font_weight: Some(theme.typography().weight(menu.item_label_weight)),
                 },
                 rich_content: option.content.clone(),
                 hint: hint_box.map(|bounds| ComponentTextRegion {
                     bounds,
                     content: option.hint.clone().unwrap_or_default().into(),
-                    color: Some(if option.disabled {
-                        palette.faint.as_rgba_array()
+                    color: Some(color(if option.disabled {
+                        menu.item_disabled_foreground
                     } else {
-                        palette.muted.as_rgba_array()
-                    }),
+                        menu.item_hint
+                    })),
                     font_size: size.caption_size(),
                     font_weight: None,
                 }),
                 selected,
                 checked: option.checked,
                 disabled: option.disabled,
-                background: selected.then_some(palette.hover.as_rgba_array()),
+                background: selected.then(|| color(menu.item_hover_background)),
                 icon,
                 image,
             }
@@ -1481,21 +1530,9 @@ pub(crate) fn context_menu_geometry_in(
         search,
         search_field,
         options,
-        elevation: ComponentElevation {
-            color: nana_ui_core::PaintColor::srgb([
-                0.0,
-                0.0,
-                0.0,
-                if is_light { 0.30 } else { 0.55 },
-            ]),
-            offset_x: 0.0,
-            offset_y: 4.0,
-            blur_radius: if is_light { 14.0 } else { 18.0 },
-            spread_radius: 0.0,
-            inset: false,
-        },
-        background: palette.surface.as_rgba_array(),
-        border: palette.border_soft.as_rgba_array(),
+        elevation: ComponentElevation::from_shadow(theme.effects().shadow(menu.surface_elevation)),
+        background: color(menu.surface_background),
+        border: color(menu.surface_border),
     }
 }
 

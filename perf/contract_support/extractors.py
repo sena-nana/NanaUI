@@ -741,6 +741,9 @@ def _extract_nana_theme(
     ]
     counters = {key: work[key] for key in THEME_WORK_KEYS}
     counters.update({key: frame_work[key] for key in THEME_FRAME_WORK_KEYS})
+    for key in THEME_OPTIONAL_WORK_KEYS:
+        if work.get(key) is not None:
+            counters[key] = work[key]
     return envelope(
         runner="nana",
         status="ok",
@@ -777,6 +780,22 @@ THEME_FRAME_WORK_KEYS = (
     "text_shaped",
     "layout_nodes",
     "render_nodes_changed",
+)
+
+
+THEME_OPTIONAL_WORK_KEYS = (
+    "theme_revision_candidates",
+    "theme_dependency_skipped",
+    "resolved_style_changed",
+    "resolved_style_unchanged",
+    "style_text_shape_invalidations",
+    "style_text_layout_invalidations",
+    "style_motion_policy_invalidations",
+    "component_recipe_nodes_invalidated",
+    "scope_nodes_invalidated",
+    "scope_cache_hits",
+    "scope_cache_misses",
+    "scope_generation_changes",
 )
 
 

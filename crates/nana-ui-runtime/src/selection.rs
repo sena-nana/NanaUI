@@ -372,7 +372,18 @@ impl SelectionOptionVisual {
         world: &UiWorld,
         text: crate::layout_engine::Size,
     ) -> [Option<crate::layout_engine::parts::FlexPart>; 3] {
-        let gap = world.theme().spacing().xs;
+        let node_theme = world.node_theme(id);
+        let gap = if !self.indicator
+            && world
+                .node_style(id)
+                .is_some_and(|style| style.shape == Some(nana_ui_core::ShapeRole::Tab))
+        {
+            node_theme
+                .spacing()
+                .resolve(node_theme.recipes().tabs().icon_gap)
+        } else {
+            node_theme.spacing().xs
+        };
         let icon = self.icon.map(|_| {
             let extent = if self.indicator {
                 self.size.icon_size()
@@ -399,6 +410,14 @@ impl crate::WidgetVisual for SelectionOptionVisual {
 
     fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
         other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
+    }
+
+    fn theme_dependency_mask(&self) -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::COLOR_ANY
+            .union(nana_ui_core::ThemeDependencyMask::METRICS)
+            .union(nana_ui_core::ThemeDependencyMask::TYPOGRAPHY_ANY)
+            .union(nana_ui_core::ThemeDependencyMask::RECIPE_TABS)
+            .union(nana_ui_core::ThemeDependencyMask::RECIPE_SHAPE)
     }
 
     fn visual_parts_read_theme(&self) -> bool {
@@ -721,8 +740,9 @@ const SEGMENTED_TRACK_BORDER: f32 = nana_ui_core::HAIRLINE;
 /// here with `space::XXS`, which dropped the rule and left the pill a pixel
 /// rounder than the corner it sits in. Deriving the inset from the two values
 /// that produce it is what stops that happening again.
-fn segmented_pill_inset(world: &UiWorld) -> f32 {
-    world.theme().spacing().xxs + world.theme().border().hairline
+fn segmented_pill_inset(id: StableNodeId, world: &UiWorld) -> f32 {
+    let node_theme = world.node_theme(id);
+    node_theme.spacing().xxs + node_theme.border().hairline
 }
 
 /// The corner of the track `option` sits in, as the track resolved it: the
@@ -978,6 +998,11 @@ impl ComponentView for SegmentedOption {
         true
     }
 
+    fn recipe_dependency_mask() -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::RECIPE_SHAPE
+            .union(nana_ui_core::ThemeDependencyMask::RECIPE_TABS)
+    }
+
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         if world.text(id) != Some(self.label.as_ref()) {
             mutations.set_text(
@@ -1000,11 +1025,13 @@ impl ComponentView for SegmentedOption {
             mutations.set_widget_visual(id, Some(visual));
         }
         let mut effective_style = self.style.clone();
-        let metrics = world.theme_metrics();
+        let node_theme = world.node_theme(id);
+        let metrics = node_theme.metrics();
         // A tab or radio row resolves its `shape` like any node; only a
         // segmented pill spends a number here, cut from its track.
         let pill = matches!(self.chrome, SelectionChrome::Segmented).then(|| {
-            (segmented_track_radius(id, self.track, world) - segmented_pill_inset(world)).max(0.0)
+            (segmented_track_radius(id, self.track, world) - segmented_pill_inset(id, world))
+                .max(0.0)
         });
         {
             let layout = Arc::make_mut(&mut effective_style.layout);
@@ -1013,7 +1040,7 @@ impl ComponentView for SegmentedOption {
             }
             if matches!(self.chrome, SelectionChrome::Segmented) {
                 let height = Some(LengthSpec::Px(
-                    (self.size.height_in(metrics) - world.theme().spacing().sm).max(0.0),
+                    (self.size.height_in(metrics) - node_theme.spacing().sm).max(0.0),
                 ));
                 if self.wrap {
                     layout.min_height = height;
@@ -1027,15 +1054,43 @@ impl ComponentView for SegmentedOption {
             // padding is the option's own inset. A segmented item's is spent
             // against the installed metrics so a density change can move it.
             let radio = matches!(self.chrome, SelectionChrome::Radio);
+            let tabs = matches!(self.chrome, SelectionChrome::Tabs);
             let inset = if radio {
                 nana_ui_core::RADIO_ROW_INSET
+            } else if tabs {
+                let tabs_recipe = node_theme.recipes().tabs();
+                self.size.padding_x_in(metrics)
+                    + node_theme
+                        .spacing()
+                        .resolve(tabs_recipe.option_padding_extra)
             } else {
-                self.size.padding_x_in(world.theme_metrics()) + world.theme().spacing().xxs
+                self.size.padding_x_in(metrics) + node_theme.spacing().xxs
             };
             let layout = Arc::make_mut(&mut effective_style.layout);
             layout.padding_left = Some(LengthSpec::Px(inset));
             if !radio {
                 layout.padding_right = Some(LengthSpec::Px(inset));
+            }
+            if tabs {
+                let tabs_recipe = node_theme.recipes().tabs();
+                layout.font_weight = Some(node_theme.typography().weight(tabs_recipe.font_weight));
+                crate::theme_intent::weight(layout, tabs_recipe.font_weight);
+                effective_style.foreground = Some(tabs_recipe.foreground);
+                let interaction = &mut effective_style.interaction;
+                interaction.hovered.foreground = Some(tabs_recipe.hover_foreground);
+                interaction.hovered.background = Some(tabs_recipe.hover_background);
+                interaction.pressed.background = Some(tabs_recipe.pressed_background);
+                interaction.selected.foreground = Some(tabs_recipe.selected_foreground);
+                interaction.selected.background = Some(tabs_recipe.selected_background);
+                interaction.selected_hovered.background =
+                    Some(tabs_recipe.selected_hover_background);
+                interaction.selected_pressed.background =
+                    Some(tabs_recipe.selected_pressed_background);
+                interaction.focused.foreground = Some(tabs_recipe.focus_text);
+                interaction.focused.foreground_secondary = Some(tabs_recipe.focus_text);
+                interaction.focused.background = Some(tabs_recipe.focus_surface);
+                interaction.focused.border = None;
+                interaction.disabled.foreground = Some(tabs_recipe.disabled_foreground);
             }
         }
         project_common(

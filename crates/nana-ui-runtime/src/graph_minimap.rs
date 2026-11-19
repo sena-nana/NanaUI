@@ -95,6 +95,10 @@ impl WidgetVisual for GraphMinimapVisual {
         other.downcast_ref::<Self>() == Some(self)
     }
 
+    fn theme_dependency_mask(&self) -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::COLOR_ANY
+    }
+
     fn paint(&self, ctx: &WidgetPaintCtx<'_>) -> WidgetPaintOutput {
         let layout = self.layout_at(
             ctx.bounds,

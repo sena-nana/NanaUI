@@ -390,9 +390,12 @@ pub use split_pane::{SplitAxis, SplitPaneAction, SplitPaneController};
 #[cfg(feature = "hosted")]
 pub use staged::{Launch, LaunchError, LaunchMessage, LaunchUpdate, Staged};
 pub use theme::{
-    CompiledTheme, HAIRLINE, SemanticColor, SemanticPalette, ThemeAppearance, ThemeAppearanceExt,
-    ThemeChoice, ThemeId, ThemeMetrics, ThemeRegistry, ThemeRegistryError, ThemeTokens,
-    UI_BASE_TEXT_SIZE, UI_METRICS, builtin_theme_arc, install_theme_tokens, space, type_scale,
+    CompiledTheme, HAIRLINE, LastThemeInvalidation, SemanticColor, SemanticPalette,
+    ThemeAppearance, ThemeAppearanceExt, ThemeChoice, ThemeDependencyMask, ThemeDependencySummary,
+    ThemeId, ThemeInvalidationTrigger, ThemeMetrics, ThemeNodeInspection, ThemePackage,
+    ThemePackageError, ThemePackageProvenance, ThemePatch, ThemeRegistry, ThemeRegistryError,
+    ThemeScopeChainEntry, ThemeScopeId, ThemeTokens, ThemeWorkCounters, UI_BASE_TEXT_SIZE,
+    UI_METRICS, builtin_theme_arc, install_theme_tokens, space, type_scale,
 };
 #[cfg(feature = "bundled-fonts")]
 pub use theme::{UI_FONT_REGULAR, ui_font_sources};

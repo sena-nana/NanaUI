@@ -378,19 +378,20 @@ pub use nana_ui_core::{
     KeyContext, LayoutStyle, LengthAtom, LengthSpec, LineBreakSpec, LineHeightSpec,
     OutputWorkObservation, OverflowSpec, OverlayMount, PaintTransform, PhysicalEdge,
     PointerEventsSpec, PopoverAlignment, PopoverPlacement, PositionSpec, RadiusTier,
-    SemanticColorMix, SemanticColorRole, ShapeRecipe, ShapeRole, StatusTone, TITLE_BAR_HEIGHT,
-    TabDragGroup, TabDragLease, TabDragRect, TabDragSurface, TabDropIndicator, TabStripPaint,
-    TableCursor, TableNavigation, TextAlignSpec, TextShadowSpec, ThemeAppearance, ThemeId,
-    ThemeRegistry, ThemeWorkCounters, TransformOrigin, TreeNavigation, TreeNode, TreeViewEvent,
-    UserSelectSpec, ValidationIntent, ViewportAxis, VirtualAlignment, VirtualFrozenWindow,
-    VirtualListLayout, VirtualListMaterialization, VirtualListMaterializationError,
-    VirtualListMaterializer, VirtualListMount, VirtualListWindow, VirtualScrollAnchor,
-    VirtualTableFrozenWindow, VirtualTableLayout, VirtualTableMaterialization,
-    VirtualTableMaterializer, VirtualTableWindow, VirtualTreeLayout, VirtualTreeRow,
-    VirtualTreeWindow, VirtualViewport, VisibilitySpec, WINDOW_CONTROL_GAP, WINDOW_CONTROL_WIDTH,
-    WhiteSpaceSpec, WordBreakSpec, WorkCounters, WritingContext, WritingModeSpec,
-    custom_window_controls_width, graph_node_fitted_height, port_tangent, space,
-    tree_navigation_event, type_scale,
+    ScopeGeneration, SemanticColorMix, SemanticColorRole, ShapeRecipe, ShapeRole, StatusTone,
+    TITLE_BAR_HEIGHT, TabDragGroup, TabDragLease, TabDragRect, TabDragSurface, TabDropIndicator,
+    TabStripPaint, TableCursor, TableNavigation, TextAlignSpec, TextShadowSpec, ThemeAppearance,
+    ThemeCategoryGenerations, ThemeDependencyMask, ThemeId, ThemeMetricsPatch, ThemePackage,
+    ThemePackageError, ThemePatch, ThemeRecipeFamily, ThemeRegistry, ThemeScopeId,
+    ThemeWorkCounters, TransformOrigin, TreeNavigation, TreeNode, TreeViewEvent, UserSelectSpec,
+    ValidationIntent, ViewportAxis, VirtualAlignment, VirtualFrozenWindow, VirtualListLayout,
+    VirtualListMaterialization, VirtualListMaterializationError, VirtualListMaterializer,
+    VirtualListMount, VirtualListWindow, VirtualScrollAnchor, VirtualTableFrozenWindow,
+    VirtualTableLayout, VirtualTableMaterialization, VirtualTableMaterializer, VirtualTableWindow,
+    VirtualTreeLayout, VirtualTreeRow, VirtualTreeWindow, VirtualViewport, VisibilitySpec,
+    WINDOW_CONTROL_GAP, WINDOW_CONTROL_WIDTH, WhiteSpaceSpec, WordBreakSpec, WorkCounters,
+    WritingContext, WritingModeSpec, custom_window_controls_width, graph_node_fitted_height,
+    port_tangent, space, tree_navigation_event, type_scale,
 };
 pub use overlay_surfaces::{
     ConfirmDialog, ConfirmIntent, ConfirmSlots, Drawer, ModalBehavior, ModalFrameGeometry,
@@ -532,9 +533,10 @@ pub use widget_visual::{
 };
 pub use workspace::{Workspace, WorkspaceRegionSlot, WorkspaceResizeHandle};
 pub use world::{
-    BuildIdHasher, CommitReport, DocumentId, IdHasher, InputModality, LocaleGenerations,
-    LocaleScope, MAX_SPLIT_DEPTH, MAX_TREE_DEPTH, NodeKind, NodeMap, NodeSet, NodeSnapshot,
-    ReplacedMetadata, ReplacedResource, StableNodeId, UiWorld, UiWorldError,
+    BuildIdHasher, CommitReport, DocumentId, IdHasher, InputModality, LastThemeInvalidation,
+    LocaleGenerations, LocaleScope, MAX_SPLIT_DEPTH, MAX_TREE_DEPTH, NodeKind, NodeMap, NodeSet,
+    NodeSnapshot, ReplacedMetadata, ReplacedResource, StableNodeId, ThemeDependencySummary,
+    ThemeInvalidationTrigger, ThemeNodeInspection, ThemeScopeChainEntry, UiWorld, UiWorldError,
 };
 pub use xy_pad::{
     XYPad, XYPadAdjustment, XYPadAxisLock, XYPadDragState, XYPadEvent, XYPadLayout, XYPadSurface,

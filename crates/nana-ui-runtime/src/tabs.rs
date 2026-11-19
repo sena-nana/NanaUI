@@ -404,10 +404,28 @@ impl ComponentView for Tabs {
         NodeKind::Element { tag: "tabs".into() }
     }
 
+    fn wants_metrics_reproject() -> bool {
+        true
+    }
+
+    fn wants_recipe_reproject() -> bool {
+        true
+    }
+
+    fn recipe_dependency_mask() -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::RECIPE_TABS
+    }
+
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        let node_theme = world.node_theme(id);
+        let tabs_recipe = node_theme.recipes().tabs();
         let mut style = self.style.clone();
         let layout = Arc::make_mut(&mut style.layout);
         layout.border_radius = None;
+        layout.gap = Some(nana_ui_core::LengthSpec::Px(
+            node_theme.spacing().resolve(tabs_recipe.strip_gap),
+        ));
+        layout.theme.gap = Some(crate::theme_intent::space(tabs_recipe.strip_gap));
         style.background = None;
         style.border = None;
         project_common(

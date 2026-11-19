@@ -163,10 +163,12 @@ fn every_row_of_a_long_list_is_a_command_spaced_like_the_fixed_ones() {
         .iter()
         .map(|item| f.cx.world().layout_box(*item).unwrap())
         .collect();
+    let default_item_gap =
+        nana_ui_core::SpacingTokens::DEFAULT.resolve(nana_ui_core::MenuRecipe::DEFAULT.item_gap);
     for pair in boxes.windows(2) {
         let gap = pair[1].y - (pair[0].y + pair[0].height);
         assert!(
-            (gap - crate::popover::MENU_ITEM_GAP).abs() < 0.01,
+            (gap - default_item_gap).abs() < 0.01,
             "rows and the fixed command are spaced as menu items: {gap}"
         );
         assert!(pair[0].width > 0.0 && (pair[0].width - pair[1].width).abs() < 0.01);

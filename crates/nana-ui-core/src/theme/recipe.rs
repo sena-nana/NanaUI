@@ -24,12 +24,14 @@
 //! leaves a required slot unset is rejected, never silently defaulted. That is
 //! the whole reason the authoring and compiled forms are different types.
 
+use super::controls::{InputRecipe, MenuRecipe, SelectRecipe, TabsRecipe, TreeViewRecipe};
 use super::dialog::DialogRecipe;
 use super::scrollbar::ScrollbarRecipe;
 use super::shape::ShapeRecipe;
 use super::toast::ToastRecipe;
 use crate::semantics::{ButtonKind, StatusTone};
 use crate::style_model::SemanticColorRole;
+use serde::{Deserialize, Serialize};
 
 /// Which component family a recipe describes.
 ///
@@ -37,7 +39,7 @@ use crate::style_model::SemanticColorRole;
 /// which is also the first batch Issue #100 §3 names. A family whose visual is
 /// only ever "the default text colour" still gets its own id: the point of a
 /// registry is that a theme can move one family without moving the rest.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ComponentRecipeId {
     /// Buttons and button-shaped chips.
     Button,
@@ -118,7 +120,7 @@ impl ComponentRecipeId {
 }
 
 /// One family's resolved foreground contract.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ComponentRecipe {
     /// Foreground at rest.
     pub foreground: SemanticColorRole,
@@ -130,7 +132,7 @@ pub struct ComponentRecipe {
 
 /// Authoring form of [`ComponentRecipe`]: slots may be unset, and compile
 /// rejects a registry that leaves a required one unset.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub struct ComponentRecipeDraft {
     pub foreground: Option<SemanticColorRole>,
     pub foreground_checked: Option<SemanticColorRole>,
@@ -160,7 +162,7 @@ impl ComponentRecipeDraft {
 /// `background` and `border` are `Option` because "no fill" and "no stroke"
 /// are real design answers for a ghost button — unlike [`Self::foreground`],
 /// which every variant must state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ButtonVariantRecipe {
     pub foreground: SemanticColorRole,
     pub background: Option<SemanticColorRole>,
@@ -170,7 +172,7 @@ pub struct ButtonVariantRecipe {
 }
 
 /// Authoring form of [`ButtonVariantRecipe`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub struct ButtonVariantDraft {
     pub foreground: Option<SemanticColorRole>,
     /// Outer `None` means "unset, reject at compile"; `Some(None)` means "this
@@ -226,7 +228,7 @@ pub(super) const fn button_kind_name(kind: ButtonKind) -> &'static str {
 /// primary button keeps its primary fill and gains a danger stroke. Issue #100
 /// §4 asks recipes to say which states are exclusive and which stack; this is
 /// the first one that stacks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ButtonRecipe {
     variants: [ButtonVariantRecipe; 8],
     pub invalid_border: SemanticColorRole,
@@ -249,7 +251,7 @@ impl ButtonRecipe {
 }
 
 /// Authoring form of [`ButtonRecipe`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ButtonRecipeDraft {
     pub variants: [ButtonVariantDraft; 8],
     pub invalid_border: Option<SemanticColorRole>,
@@ -283,7 +285,7 @@ impl ButtonRecipeDraft {
 ///
 /// This replaces the free-standing `status_tone_role` helper in the runtime:
 /// "info is the accent colour" is a design-system decision, not a runtime one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct StatusRecipe {
     pub neutral: SemanticColorRole,
     pub info: SemanticColorRole,
@@ -316,7 +318,7 @@ impl StatusRecipe {
 
 /// One run of a component's own copy, as a recipe states it: CSS
 /// `font-size` and `font-weight`. `weight: None` keeps the node's own.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct RecipeText {
     pub size: f32,
     pub weight: Option<u16>,
@@ -329,7 +331,7 @@ impl RecipeText {
 }
 
 /// Authoring form of the whole registry.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ComponentThemeRegistry {
     pub families: [ComponentRecipeDraft; ComponentRecipeId::COUNT],
     pub button: ButtonRecipeDraft,
@@ -344,6 +346,21 @@ pub struct ComponentThemeRegistry {
     /// Which radius step buttons, icon buttons and tags take. See
     /// [`ShapeRecipe`].
     pub shape: Option<ShapeRecipe>,
+    /// Single- and multi-line text inputs (`TextInput`, `NumberInput`, `TextArea`).
+    #[serde(default)]
+    pub input: Option<InputRecipe>,
+    /// `Select`, `Dropdown`, and `SearchDropdown`.
+    #[serde(default)]
+    pub select: Option<SelectRecipe>,
+    /// `Tabs` strips and tab options.
+    #[serde(default)]
+    pub tabs: Option<TabsRecipe>,
+    /// `TreeView` rows, icons, toggles, and drop marks.
+    #[serde(default)]
+    pub tree_view: Option<TreeViewRecipe>,
+    /// `ActionMenu`, `ContextMenu`, `Popover`, and `AppMenuBar`.
+    #[serde(default)]
+    pub menu: Option<MenuRecipe>,
 }
 
 impl ComponentThemeRegistry {
@@ -361,6 +378,11 @@ impl ComponentThemeRegistry {
             scrollbar: None,
             toast: None,
             shape: None,
+            input: None,
+            select: None,
+            tabs: None,
+            tree_view: None,
+            menu: None,
         }
     }
 
@@ -385,9 +407,15 @@ pub struct CompiledRecipes {
     scrollbar: ScrollbarRecipe,
     toast: ToastRecipe,
     shape: ShapeRecipe,
+    input: InputRecipe,
+    select: SelectRecipe,
+    tabs: TabsRecipe,
+    tree_view: TreeViewRecipe,
+    menu: MenuRecipe,
 }
 
 impl CompiledRecipes {
+    #[allow(clippy::too_many_arguments)]
     pub(super) const fn new(
         families: [ComponentRecipe; ComponentRecipeId::COUNT],
         button: ButtonRecipe,
@@ -396,6 +424,11 @@ impl CompiledRecipes {
         scrollbar: ScrollbarRecipe,
         toast: ToastRecipe,
         shape: ShapeRecipe,
+        input: InputRecipe,
+        select: SelectRecipe,
+        tabs: TabsRecipe,
+        tree_view: TreeViewRecipe,
+        menu: MenuRecipe,
     ) -> Self {
         Self {
             families,
@@ -405,7 +438,20 @@ impl CompiledRecipes {
             scrollbar,
             toast,
             shape,
+            input,
+            select,
+            tabs,
+            tree_view,
+            menu,
         }
+    }
+
+    pub const fn families_slice(&self) -> &[ComponentRecipe; ComponentRecipeId::COUNT] {
+        &self.families
+    }
+
+    pub(crate) fn set_family(&mut self, id: ComponentRecipeId, recipe: ComponentRecipe) {
+        self.families[id.index()] = recipe;
     }
 
     pub const fn family(&self, id: ComponentRecipeId) -> ComponentRecipe {
@@ -429,24 +475,88 @@ impl CompiledRecipes {
         &self.button
     }
 
+    pub(crate) fn set_button(&mut self, button: ButtonRecipe) {
+        self.button = button;
+    }
+
     pub const fn status(&self) -> StatusRecipe {
         self.status
+    }
+
+    pub(crate) fn set_status(&mut self, status: StatusRecipe) {
+        self.status = status;
     }
 
     pub const fn dialog(&self) -> &DialogRecipe {
         &self.dialog
     }
 
+    pub(crate) fn set_dialog(&mut self, dialog: DialogRecipe) {
+        self.dialog = dialog;
+    }
+
     pub const fn scrollbar(&self) -> &ScrollbarRecipe {
         &self.scrollbar
+    }
+
+    pub(crate) fn set_scrollbar(&mut self, scrollbar: ScrollbarRecipe) {
+        self.scrollbar = scrollbar;
     }
 
     pub const fn toast(&self) -> &ToastRecipe {
         &self.toast
     }
 
+    pub(crate) fn set_toast(&mut self, toast: ToastRecipe) {
+        self.toast = toast;
+    }
+
     /// Which radius step each shaped component takes.
     pub const fn shape(&self) -> ShapeRecipe {
         self.shape
+    }
+
+    pub(crate) fn set_shape(&mut self, shape: ShapeRecipe) {
+        self.shape = shape;
+    }
+
+    pub const fn input(&self) -> &InputRecipe {
+        &self.input
+    }
+
+    pub(crate) fn set_input(&mut self, input: InputRecipe) {
+        self.input = input;
+    }
+
+    pub const fn select(&self) -> &SelectRecipe {
+        &self.select
+    }
+
+    pub(crate) fn set_select(&mut self, select: SelectRecipe) {
+        self.select = select;
+    }
+
+    pub const fn tabs(&self) -> &TabsRecipe {
+        &self.tabs
+    }
+
+    pub(crate) fn set_tabs(&mut self, tabs: TabsRecipe) {
+        self.tabs = tabs;
+    }
+
+    pub const fn tree_view(&self) -> &TreeViewRecipe {
+        &self.tree_view
+    }
+
+    pub(crate) fn set_tree_view(&mut self, tree_view: TreeViewRecipe) {
+        self.tree_view = tree_view;
+    }
+
+    pub const fn menu(&self) -> &MenuRecipe {
+        &self.menu
+    }
+
+    pub(crate) fn set_menu(&mut self, menu: MenuRecipe) {
+        self.menu = menu;
     }
 }

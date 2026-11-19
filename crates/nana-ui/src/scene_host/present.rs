@@ -372,7 +372,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         } else {
             self.texture_subscriptions.remove(&id);
         }
-        let theme = self.program.theme();
+        let theme = self.resolve_window_theme(id);
         let window_background = self.program.window_background();
         let fetch_host = self.program.resource_fetch_host(id);
         let viewport = scene_paint_viewport(&geometry, material, theme.as_ref(), window_background);

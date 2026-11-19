@@ -307,6 +307,126 @@ pub struct FieldDump {
     pub bound_at: Option<String>,
 }
 
+/// One resolved override entry from a `ThemePatch` or `ThemePackage` layer (#109).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ThemeOverrideDump {
+    pub path: String,
+    pub value: String,
+}
+
+/// One effective `ColorOverrides` entry active on a node (#109).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ThemeColorOverrideDump {
+    pub role: String,
+    pub rgba: [f32; 4],
+}
+
+/// One `ThemeScope` layer along a node's ancestor-to-leaf scope chain (#109).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ThemeScopeLayerDump {
+    pub scope_id: u32,
+    pub owner: u64,
+    pub generation: u32,
+    pub invalid_patch: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub overrides: Vec<ThemeOverrideDump>,
+}
+
+/// One package patch layer recorded in `ThemePackageProvenance` (#109).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ThemePackageLayerDump {
+    pub theme_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub overrides: Vec<ThemeOverrideDump>,
+}
+
+/// Source provenance chain for an installed `ThemePackage` (#109).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ThemePackageProvenanceDump {
+    pub base_chain: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub layers: Vec<ThemePackageLayerDump>,
+}
+
+/// Count of live nodes subscribing to one `ThemeDependencyMask` category (#109).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ThemeCategoryCountDump {
+    pub category: String,
+    pub count: usize,
+}
+
+/// Aggregate dependency category counts across a document's retained world (#109).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ThemeDependencySummaryDump {
+    pub total_tracked_nodes: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub category_counts: Vec<ThemeCategoryCountDump>,
+}
+
+/// Summary of the most recent theme or scope invalidation pass (#109).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ThemeInvalidationDump {
+    pub trigger: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub document: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_id: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old_scope_id: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_scope_id: Option<u32>,
+    pub changed_categories: Vec<String>,
+    pub changed_mask_bits: u32,
+    pub candidates_invalidated: usize,
+    pub nodes_skipped_by_dependency: usize,
+    pub scope_nodes_invalidated: usize,
+    pub recipe_nodes_invalidated: usize,
+    pub layout_seeds: usize,
+    pub motion_policy_only: bool,
+}
+
+/// On-demand theme inspection payload for one node (#109).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ThemeInspectDump {
+    pub node: u64,
+    pub document: u64,
+    pub effective_theme_id: String,
+    pub effective_theme_generation: u32,
+    pub appearance: String,
+    pub active_scope: u32,
+    pub scope_generation: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub document_theme_override: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scope_chain: Vec<ThemeScopeLayerDump>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub color_overrides: Vec<ThemeColorOverrideDump>,
+    pub dependency_categories: Vec<String>,
+    pub dependency_mask_bits: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package_provenance: Option<ThemePackageProvenanceDump>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_invalidation: Option<ThemeInvalidationDump>,
+    pub dependency_summary: ThemeDependencySummaryDump,
+}
+
+/// Result of parsing, compiling, and optionally applying a `ThemePackage` (#109).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ThemePackageLoadDump {
+    pub theme_id: String,
+    pub generation: u32,
+    pub appearance: String,
+    pub display_name: String,
+    pub applied: bool,
+    pub provenance: ThemePackageProvenanceDump,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CauseDump {
     /// Where the signal was written.
@@ -462,6 +582,24 @@ pub enum AgentCommand {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         css_key: Option<String>,
     },
+    /// On-demand theme resolution trace, scope chain, color overrides, and
+    /// dependency mask for `target` (#109).
+    ThemeInspect {
+        #[serde(flatten)]
+        target: Target,
+    },
+    /// Most recent theme or scope invalidation summary recorded by this session (#109).
+    ThemeInvalidation,
+    /// Parse, validate, and register a JSON `ThemePackage` fail-closed; apply it
+    /// to the session when `apply` is true (#109).
+    LoadThemePackage {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        json: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        #[serde(default)]
+        apply: bool,
+    },
 }
 
 impl AgentCommand {
@@ -490,6 +628,9 @@ impl AgentCommand {
             Self::Clear { .. } => "clear",
             Self::Pump => "pump",
             Self::Reload { .. } => "reload",
+            Self::ThemeInspect { .. } => "theme_inspect",
+            Self::ThemeInvalidation => "theme_invalidation",
+            Self::LoadThemePackage { .. } => "load_theme_package",
         }
     }
 }
@@ -534,6 +675,12 @@ pub struct AgentReply {
     pub diagnostics: Option<Vec<DiagnosticDump>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inspect: Option<InspectDump>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme_inspect: Option<ThemeInspectDump>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme_invalidation: Option<ThemeInvalidationDump>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme_package: Option<ThemePackageLoadDump>,
     /// Set when a filter truncated the dump.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub truncated: Option<bool>,
@@ -612,6 +759,21 @@ impl AgentReply {
 
     pub fn with_inspect(mut self, inspect: InspectDump) -> Self {
         self.inspect = Some(inspect);
+        self
+    }
+
+    pub fn with_theme_inspect(mut self, theme_inspect: ThemeInspectDump) -> Self {
+        self.theme_inspect = Some(theme_inspect);
+        self
+    }
+
+    pub fn with_theme_invalidation(mut self, theme_invalidation: ThemeInvalidationDump) -> Self {
+        self.theme_invalidation = Some(theme_invalidation);
+        self
+    }
+
+    pub fn with_theme_package(mut self, theme_package: ThemePackageLoadDump) -> Self {
+        self.theme_package = Some(theme_package);
         self
     }
 

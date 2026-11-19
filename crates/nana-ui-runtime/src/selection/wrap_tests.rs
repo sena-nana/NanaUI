@@ -57,7 +57,7 @@ fn assert_equal_lines(
             end += 1;
         }
         let last = bounds(cx, options[end - 1]);
-        let inset = segmented_pill_inset(cx.world());
+        let inset = segmented_pill_inset(control.stable_id(), cx.world());
         assert!((first.x - track.x - inset).abs() < 0.5);
         assert!((last.x + last.width - track.x - track.width + inset).abs() < 0.5);
         for option in &options[start..end] {

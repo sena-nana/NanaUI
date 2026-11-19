@@ -353,10 +353,10 @@ struct WindowManager<Program: RuntimeProgram> {
     next_gpu_retry: Option<Instant>,
     render_suspended: bool,
     last_theme: crate::ThemeAppearance,
-    /// The tokens every window document holds: [`RuntimeProgram::theme`] as
-    /// last installed. A program that hands back a different theme gets it
-    /// installed in every open window (see `sync_appearance`).
+    /// The tokens every window document holds by default: [`RuntimeProgram::theme`] as
+    /// last installed, and per-window resolved overrides / auxiliary inheritance.
     installed_theme: Arc<crate::CompiledTheme>,
+    window_themes: HashMap<WindowId, Arc<crate::CompiledTheme>>,
     /// System reduce-motion preference, as last delivered to the program.
     reduced_motion: bool,
     /// System high-contrast flag, as last delivered to the program.
@@ -1237,7 +1237,11 @@ fn complete_startup<Program: RuntimeProgram>(
     // the inbox before the initialized program can join request-waiting workers.
     let startup_requests = window_requests;
     let installed_theme = program.theme();
-    let last_theme = installed_theme.appearance();
+    let primary_theme = program
+        .theme_for(WindowId::PRIMARY)
+        .unwrap_or_else(|| Arc::clone(&installed_theme));
+    let last_theme = primary_theme.appearance();
+    let window_themes = HashMap::from([(WindowId::PRIMARY, primary_theme)]);
     let last_material_mode = program.window_material_mode_for(WindowId::PRIMARY);
     let backdrop_opacity = program.appearance_backdrop_opacity_for(WindowId::PRIMARY);
     let window_background = program.window_background();
@@ -1396,6 +1400,7 @@ fn complete_startup<Program: RuntimeProgram>(
         render_suspended: false,
         last_theme,
         installed_theme,
+        window_themes,
         reduced_motion,
         high_contrast,
         reduced_transparency,

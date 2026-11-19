@@ -749,7 +749,7 @@ impl ComponentView for SidebarRowIcon {
         }
         let visual = crate::IconVisual {
             icon: self.icon,
-            size: world.theme().typography().meta,
+            size: world.node_theme(id).typography().meta,
             tooltip: None,
         };
         if world.widget_visual_as::<crate::IconVisual>(id) != Some(&visual) {
@@ -1080,7 +1080,7 @@ impl SidebarSection {
         }
         let visual = crate::IconVisual {
             icon: self.disclosure_icon(),
-            size: world.theme().typography().meta,
+            size: world.node_theme(id).typography().meta,
             tooltip: None,
         };
         if world.widget_visual_as::<crate::IconVisual>(id) != Some(&visual) {
@@ -1640,7 +1640,7 @@ impl ComponentView for SidebarFooterButton {
         }
         let visual = crate::IconVisual {
             icon: self.icon,
-            size: self.size.text_size_in(world.theme().typography()),
+            size: self.size.text_size_in(world.node_theme(id).typography()),
             tooltip: Some(TooltipVisual {
                 label: Arc::clone(&self.label),
                 config: TooltipConfig::default(),

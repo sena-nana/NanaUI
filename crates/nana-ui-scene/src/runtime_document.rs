@@ -239,7 +239,7 @@ impl RuntimeDocument {
             // only the last result was ever observable.
             hit_scroll_updates.extend(self.context.take_scroll_hit_updates());
             hit_dirty.extend(work.input_hit_test.iter().copied());
-            hit_geometry_changed |= !work.style.is_empty()
+            hit_geometry_changed |= self.context.take_style_hit_changed()
                 || !work.layout_frontier_seeds.is_empty()
                 || !work.transform.is_empty()
                 || !work.transform_kept.is_empty()

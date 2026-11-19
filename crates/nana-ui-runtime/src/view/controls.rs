@@ -135,6 +135,47 @@ impl<C: StyledComponent + crate::ComponentView, K> El<C, K> {
     }
 }
 
+/// [`NodeStyle::theme_patch`]: what [`El::theme_scope`] binds. An empty patch
+/// clears the node's own scope.
+#[doc(hidden)]
+pub struct ThemeScopeProp;
+
+impl<C: StyledComponent> FieldWrite<C, nana_ui_core::ThemePatch> for ThemeScopeProp {
+    const FIELD: &'static str = "style.theme_patch";
+
+    fn write(target: &mut C, patch: nana_ui_core::ThemePatch) {
+        target.node_style_mut().theme_patch = (!patch.is_empty()).then(|| Arc::new(patch));
+    }
+
+    fn differs(target: &C, patch: &nana_ui_core::ThemePatch) -> bool {
+        match target.node_style().theme_patch.as_deref() {
+            Some(current) => current != patch,
+            None => !patch.is_empty(),
+        }
+    }
+}
+
+impl<C: StyledComponent + crate::ComponentView, K> El<C, K> {
+    /// Scope this node and its subtree to a sparse [`nana_ui_core::ThemePatch`]
+    /// overlay (Issue #104).
+    ///
+    /// Every token category, metric, recipe, chart palette/typography, and
+    /// descendant `ThemeScope` under this node composes on top of its resolved
+    /// scope theme. Bind a signal/closure to update reactively; an empty patch
+    /// restores the parent scope.
+    #[track_caller]
+    pub fn theme_scope(self, patch: impl IntoProp<nana_ui_core::ThemePatch>) -> Self {
+        self.prop::<nana_ui_core::ThemePatch, ThemeScopeProp>(patch)
+    }
+}
+
+/// Convenience container wrapping a [`ThemeScope`](El::theme_scope) over a
+/// vertical stack.
+#[track_caller]
+pub fn theme_scope(patch: impl IntoProp<nana_ui_core::ThemePatch>) -> El<Stack> {
+    column().theme_scope(patch)
+}
+
 impl<C: StyledComponent + crate::ComponentView, K> El<C, K> {
     /// Keep the node but take it out of layout, paint and hit testing
     /// (`v-show`). Use [`super::when`] to drop the subtree instead (`v-if`).

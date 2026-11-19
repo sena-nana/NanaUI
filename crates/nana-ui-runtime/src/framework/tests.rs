@@ -9363,12 +9363,19 @@ fn native_theme_resolves_semantic_component_paint_without_layout_work() {
         .set_pointer_hover(document, 1, None)
         .unwrap();
     context.compat_world_mut().take_system_work();
+    let _ = context.take_style_hit_changed();
 
     assert!(context.set_preset_theme(ThemeAppearance::Light).unwrap());
     let work = context.compat_world_mut().take_system_work();
-    assert!(work.style.is_empty());
+    assert!(work.style.contains(&button.stable_id()));
     assert!(work.layout_frontier_seeds.is_empty());
-    assert!(work.render_extraction.contains(&button.stable_id()));
+    context
+        .compat_world_mut()
+        .resolve_styles(&work.style)
+        .unwrap();
+    assert!(!context.take_style_hit_changed());
+    let follow_up = context.compat_world_mut().take_system_work();
+    assert!(follow_up.render_extraction.contains(&button.stable_id()));
     let light = context
         .world()
         .extract_nodes(&[button.stable_id()])

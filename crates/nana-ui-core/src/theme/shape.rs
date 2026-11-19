@@ -18,8 +18,10 @@
 
 use super::{RadiusTier, ThemeMetrics};
 
+use serde::{Deserialize, Serialize};
+
 /// Which built-in component's corner the [`ShapeRecipe`] decides.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ShapeRole {
     /// `Button`, every kind and size.
     Button,
@@ -70,7 +72,7 @@ impl ShapeRole {
 /// The radius step each [`ShapeRole`] takes. The built-in value is what the
 /// components named themselves before the recipe existed, so a theme that
 /// does not set one looks exactly as before.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ShapeRecipe {
     pub button: RadiusTier,
     pub icon_button: RadiusTier,

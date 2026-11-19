@@ -763,6 +763,16 @@ impl AppContext {
         self.world.take_scroll_hit_updates()
     }
 
+    /// Drain whether style resolution touched a hit-test-relevant property (#106).
+    pub fn take_style_hit_changed(&mut self) -> bool {
+        self.world.take_style_hit_changed()
+    }
+
+    /// Theme/style work counters from the last style pass or theme install (#106).
+    pub fn last_theme_work_counters(&self) -> crate::ThemeWorkCounters {
+        self.world.last_theme_work_counters()
+    }
+
     /// See [`UiWorld::hit_test_work_is_scroll_only`].
     pub fn hit_test_work_is_scroll_only(
         &self,

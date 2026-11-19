@@ -858,6 +858,19 @@ pub trait WidgetVisual: Any + fmt::Debug + Send + Sync {
     ) -> Option<[f32; 2]> {
         None
     }
+
+    /// Which theme token and recipe classes this visual reads when painting (#106).
+    ///
+    /// Narrow overrides let unrelated theme changes (e.g. accent-only on a
+    /// palette-only control, or button-recipe-only on a non-button control)
+    /// skip re-extracting and repainting unchanged controls.
+    fn theme_dependency_mask(&self) -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::PALETTE
+            .union(nana_ui_core::ThemeDependencyMask::ACCENT)
+            .union(nana_ui_core::ThemeDependencyMask::METRICS)
+            .union(nana_ui_core::ThemeDependencyMask::EFFECT)
+            .union(nana_ui_core::ThemeDependencyMask::RECIPE_FAMILY)
+    }
 }
 
 /// Shared, equality-comparable handle to a [`WidgetVisual`] stored per node.
@@ -1095,6 +1108,10 @@ impl WidgetVisualHandle {
         bounds: LayoutBox,
     ) -> Option<[f32; 2]> {
         self.0.presentation_pivot(id, world, bounds)
+    }
+
+    pub fn theme_dependency_mask(&self) -> nana_ui_core::ThemeDependencyMask {
+        self.0.theme_dependency_mask()
     }
 
     /// Projects paint operations in node-local coordinates.

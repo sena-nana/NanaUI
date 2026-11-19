@@ -42,6 +42,7 @@ pub struct ChartSpec {
 struct ChartMemo {
     size: [f32; 2],
     palette: SemanticPalette,
+    appearance: nana_ui_core::ThemeAppearance,
     font_size: f32,
     font_weight: u16,
     /// The text engine that measured the labels.
@@ -96,11 +97,12 @@ impl ChartSpec {
         &self,
         size: [f32; 2],
         compiled_theme: &CompiledTheme,
-        resolve: impl Fn(SemanticColorRole) -> [f32; 4],
+        style_model: nana_ui_core::StyleModelRef,
         measure: crate::text_width::ChromeTextMeasure<'_>,
         now: Duration,
     ) -> Arc<ChartLayout> {
-        let palette = compiled_theme.palette();
+        let palette = style_model.palette;
+        let appearance = style_model.theme_appearance;
         let typography = compiled_theme.typography();
         let measure_identity = measure.engine_identity();
         let mut memo = self
@@ -110,13 +112,17 @@ impl ChartSpec {
         if let Some(memo) = memo.as_ref()
             && memo.size == size
             && memo.palette == palette
+            && memo.appearance == appearance
             && memo.font_size == typography.meta
             && memo.font_weight == typography.regular
             && memo.measure == measure_identity
         {
             return Arc::clone(&memo.layout);
         }
-        let theme = ChartTheme::new(&palette, &self.option, resolve).with_typography(typography);
+        let theme = ChartTheme::new(&palette, &self.option, |role| {
+            style_model.color(role).as_rgba_array()
+        })
+        .with_typography(typography);
         let measure = ChartLabelMeasure(measure, theme.font_weight);
         let mut fresh = layout(&LayoutInput {
             option: &self.option,
@@ -137,6 +143,7 @@ impl ChartSpec {
         *memo = Some(ChartMemo {
             size,
             palette,
+            appearance,
             font_size: theme.font_size,
             font_weight: theme.font_weight,
             measure: measure_identity,
@@ -473,6 +480,13 @@ impl WidgetVisual for ChartVisual {
         other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
     }
 
+    fn theme_dependency_mask(&self) -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::CHART
+            .union(nana_ui_core::ThemeDependencyMask::COLOR_ANY)
+            .union(nana_ui_core::ThemeDependencyMask::TYPOGRAPHY_ANY)
+            .union(nana_ui_core::ThemeDependencyMask::EFFECT)
+    }
+
     fn measures_text(&self) -> bool {
         true
     }
@@ -487,7 +501,7 @@ impl WidgetVisual for ChartVisual {
         let layout = self.spec.layout_for(
             [ctx.bounds.width, ctx.bounds.height],
             ctx.theme,
-            |role| ctx.style_model.color(role).as_rgba_array(),
+            ctx.style_model,
             ctx.world.chrome_text_measure(ctx.id),
             ctx.world.animation_now(),
         );
@@ -644,6 +658,14 @@ impl WidgetVisual for ChartTooltipVisual {
         other.downcast_ref::<Self>().is_some_and(|rhs| self == rhs)
     }
 
+    fn theme_dependency_mask(&self) -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::CHART
+            .union(nana_ui_core::ThemeDependencyMask::PALETTE)
+            .union(nana_ui_core::ThemeDependencyMask::METRICS)
+            .union(nana_ui_core::ThemeDependencyMask::TYPOGRAPHY_ANY)
+            .union(nana_ui_core::ThemeDependencyMask::EFFECT)
+    }
+
     fn measures_text(&self) -> bool {
         true
     }
@@ -701,7 +723,7 @@ impl WidgetVisual for ChartTooltipVisual {
                 right - left,
                 &self.content.title,
                 palette.text.as_rgba_array(),
-                Some(nana_ui_core::type_scale::MEDIUM),
+                Some(ctx.theme.typography().medium),
             );
             y += line + ChartTooltip::ROW_GAP;
         }
@@ -716,7 +738,7 @@ impl WidgetVisual for ChartTooltipVisual {
                     height: size,
                 });
                 dot_colors.push(color);
-                x += size + nana_ui_core::space::SM;
+                x += size + ctx.theme.spacing().sm;
             }
             let value_width = measure.measure(&row.value, ChartTooltip::FONT)[0];
             push_text(
@@ -734,7 +756,7 @@ impl WidgetVisual for ChartTooltipVisual {
                     value_width + 1.0,
                     &row.value,
                     palette.text.as_rgba_array(),
-                    Some(nana_ui_core::type_scale::MEDIUM),
+                    Some(ctx.theme.typography().medium),
                 );
             }
             y += line + ChartTooltip::ROW_GAP;

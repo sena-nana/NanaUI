@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "id": "theme-scope-patch",
+  "kind": "Theme",
+  "params": {
+    "workload": "scope-patch",
+    "controls": 1000
+  },
+  "record": [
+    "work_counters"
+  ],
+  "invariants": [
+    {
+      "name": "scope_patch_stays_in_subtree",
+      "path": "work_counters.style_nodes_considered",
+      "op": "lte",
+      "value": 128,
+      "status": "required",
+      "note": "Issue #100 / #104: patching one ThemeScope over a 64-control subtree inside a 1,000-control document must stay bounded by the scoped subtree rather than invalidating the document."
+    },
+    {
+      "name": "scope_patch_does_not_reshape",
+      "path": "work_counters.text_nodes_from_style",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "A color/accent ThemeScope patch must not reshape text."
+    },
+    {
+      "name": "scope_patch_does_not_lay_out",
+      "path": "work_counters.layout_nodes_from_style",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "A color/accent ThemeScope patch must not run layout."
+    },
+    {
+      "name": "scope_patch_does_not_lay_out_the_frame",
+      "path": "work_counters.layout_nodes",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "Cross-check against the drain: no LAYOUT was scheduled either."
+    },
+    {
+      "name": "scope_patch_does_not_copy_layout",
+      "path": "work_counters.layout_copies",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "A color/accent ThemeScope patch must not copy a single LayoutStyle box."
+    }
+  ],
+  "notes": "Issue #100 / #104 subtree ThemeScope patch (64 controls inside a 1k-control document)."
+}

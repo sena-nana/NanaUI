@@ -4,23 +4,23 @@
   "root": "crates/nana-ui-runtime/src",
   "components_scanned": 160,
   "totals": {
-    "color_role": 181,
+    "color_role": 146,
     "color_literal": 0,
     "design_number": 25,
     "motion": 3,
     "elevation": 0
   },
   "shared_totals": {
-    "color_role": 458,
+    "color_role": 412,
     "color_literal": 0,
-    "design_number": 103,
+    "design_number": 95,
     "motion": 31,
     "elevation": 0
   },
-  "token_reads": 1222,
+  "token_reads": 1229,
   "local_values": 28,
-  "shared_local_values": 134,
-  "module_constants": 103,
+  "shared_local_values": 126,
+  "module_constants": 102,
   "components": [
     {
       "component": "AboutSection",
@@ -47,7 +47,7 @@
         "motion": 0,
         "elevation": 0
       },
-      "token_reads": 0,
+      "token_reads": 1,
       "roles": [],
       "states": [],
       "local_values": 0
@@ -720,24 +720,14 @@
       "component": "Dropdown",
       "file": "crates/nana-ui-runtime/src/dropdown.rs",
       "counts": {
-        "color_role": 14,
+        "color_role": 0,
         "color_literal": 0,
         "design_number": 0,
         "motion": 0,
         "elevation": 0
       },
-      "token_reads": 3,
-      "roles": [
-        "Background",
-        "Border",
-        "BorderSoft",
-        "BorderStrong",
-        "Danger",
-        "Faint",
-        "FocusBorder",
-        "Subtle",
-        "Text"
-      ],
+      "token_reads": 4,
+      "roles": [],
       "states": [
         "disabled",
         "focused",
@@ -1311,20 +1301,15 @@
       "component": "NumberInput",
       "file": "crates/nana-ui-runtime/src/view_components.rs",
       "counts": {
-        "color_role": 3,
+        "color_role": 0,
         "color_literal": 0,
         "design_number": 0,
         "motion": 0,
         "elevation": 0
       },
-      "token_reads": 2,
-      "roles": [
-        "Danger"
-      ],
-      "states": [
-        "focused",
-        "hovered"
-      ],
+      "token_reads": 3,
+      "roles": [],
+      "states": [],
       "local_values": 0
     },
     {
@@ -1635,7 +1620,7 @@
         "motion": 0,
         "elevation": 0
       },
-      "token_reads": 1,
+      "token_reads": 2,
       "roles": [],
       "states": [],
       "local_values": 0
@@ -1661,24 +1646,14 @@
       "component": "SearchDropdown",
       "file": "crates/nana-ui-runtime/src/search_dropdown.rs",
       "counts": {
-        "color_role": 12,
+        "color_role": 0,
         "color_literal": 0,
         "design_number": 0,
         "motion": 0,
         "elevation": 0
       },
-      "token_reads": 2,
-      "roles": [
-        "Background",
-        "Border",
-        "BorderSoft",
-        "BorderStrong",
-        "Danger",
-        "Faint",
-        "FocusBorder",
-        "Subtle",
-        "Text"
-      ],
+      "token_reads": 3,
+      "roles": [],
       "states": [
         "disabled",
         "focused",
@@ -1711,9 +1686,17 @@
         "motion": 0,
         "elevation": 0
       },
-      "token_reads": 2,
+      "token_reads": 4,
       "roles": [],
-      "states": [],
+      "states": [
+        "disabled",
+        "focused",
+        "hovered",
+        "pressed",
+        "selected",
+        "selected_hovered",
+        "selected_pressed"
+      ],
       "local_values": 0
     },
     {
@@ -2375,7 +2358,7 @@
         "motion": 0,
         "elevation": 0
       },
-      "token_reads": 2,
+      "token_reads": 3,
       "roles": [],
       "states": [],
       "local_values": 0
@@ -2431,40 +2414,30 @@
       "component": "TextArea",
       "file": "crates/nana-ui-runtime/src/view_components.rs",
       "counts": {
-        "color_role": 3,
+        "color_role": 0,
         "color_literal": 0,
         "design_number": 0,
         "motion": 0,
         "elevation": 0
       },
-      "token_reads": 4,
-      "roles": [
-        "Danger"
-      ],
-      "states": [
-        "focused",
-        "hovered"
-      ],
+      "token_reads": 5,
+      "roles": [],
+      "states": [],
       "local_values": 0
     },
     {
       "component": "TextInput",
       "file": "crates/nana-ui-runtime/src/view_components.rs",
       "counts": {
-        "color_role": 3,
+        "color_role": 0,
         "color_literal": 0,
         "design_number": 0,
         "motion": 0,
         "elevation": 0
       },
-      "token_reads": 2,
-      "roles": [
-        "Danger"
-      ],
-      "states": [
-        "focused",
-        "hovered"
-      ],
+      "token_reads": 3,
+      "roles": [],
+      "states": [],
       "local_values": 0
     },
     {
@@ -2724,7 +2697,7 @@
         "elevation": 0
       },
       "local_values": 8,
-      "token_reads": 103,
+      "token_reads": 104,
       "roles": [
         "Accent",
         "AccentOnSoft",
@@ -2825,14 +2798,14 @@
     {
       "file": "crates/nana-ui-runtime/src/world/geometry.rs",
       "counts": {
-        "color_role": 30,
+        "color_role": 25,
         "color_literal": 0,
         "design_number": 5,
         "motion": 0,
         "elevation": 0
       },
       "local_values": 5,
-      "token_reads": 40,
+      "token_reads": 41,
       "roles": [
         "Accent",
         "AccentSoft",
@@ -2847,49 +2820,6 @@
         "Surface",
         "Text",
         "Warning"
-      ]
-    },
-    {
-      "file": "crates/nana-ui-runtime/src/select.rs",
-      "counts": {
-        "color_role": 22,
-        "color_literal": 0,
-        "design_number": 5,
-        "motion": 0,
-        "elevation": 0
-      },
-      "local_values": 5,
-      "token_reads": 21,
-      "roles": [
-        "Background",
-        "Border",
-        "BorderSoft",
-        "BorderStrong",
-        "Danger",
-        "Faint",
-        "Subtle",
-        "Text"
-      ]
-    },
-    {
-      "file": "crates/nana-ui-runtime/src/menus.rs",
-      "counts": {
-        "color_role": 14,
-        "color_literal": 0,
-        "design_number": 5,
-        "motion": 0,
-        "elevation": 0
-      },
-      "local_values": 5,
-      "token_reads": 16,
-      "roles": [
-        "AccentSoft",
-        "AccentSoftPressed",
-        "Active",
-        "Danger",
-        "Faint",
-        "Hover",
-        "Text"
       ]
     },
     {
@@ -2908,22 +2838,20 @@
       ]
     },
     {
-      "file": "crates/nana-ui-runtime/src/popover.rs",
+      "file": "crates/nana-ui-runtime/src/menus.rs",
       "counts": {
-        "color_role": 11,
+        "color_role": 5,
         "color_literal": 0,
         "design_number": 4,
         "motion": 0,
         "elevation": 0
       },
       "local_values": 4,
-      "token_reads": 37,
+      "token_reads": 21,
       "roles": [
         "Active",
-        "BorderSoft",
+        "Faint",
         "Hover",
-        "Subtle",
-        "Surface",
         "Text"
       ]
     },
@@ -2980,6 +2908,25 @@
       "roles": []
     },
     {
+      "file": "crates/nana-ui-runtime/src/popover.rs",
+      "counts": {
+        "color_role": 6,
+        "color_literal": 0,
+        "design_number": 3,
+        "motion": 0,
+        "elevation": 0
+      },
+      "local_values": 3,
+      "token_reads": 43,
+      "roles": [
+        "Active",
+        "BorderSoft",
+        "Hover",
+        "Subtle",
+        "Text"
+      ]
+    },
+    {
       "file": "crates/nana-ui-runtime/src/charts.rs",
       "counts": {
         "color_role": 3,
@@ -2989,7 +2936,7 @@
         "elevation": 0
       },
       "local_values": 3,
-      "token_reads": 6,
+      "token_reads": 7,
       "roles": [
         "BorderSoft",
         "Surface",
@@ -3021,7 +2968,7 @@
         "elevation": 0
       },
       "local_values": 3,
-      "token_reads": 2,
+      "token_reads": 1,
       "roles": []
     },
     {
@@ -3036,26 +2983,6 @@
       "local_values": 3,
       "token_reads": 0,
       "roles": []
-    },
-    {
-      "file": "crates/nana-ui-runtime/src/app_menu_bar.rs",
-      "counts": {
-        "color_role": 9,
-        "color_literal": 0,
-        "design_number": 2,
-        "motion": 0,
-        "elevation": 0
-      },
-      "local_values": 2,
-      "token_reads": 19,
-      "roles": [
-        "Active",
-        "Border",
-        "Faint",
-        "Hover",
-        "Muted",
-        "Text"
-      ]
     },
     {
       "file": "crates/nana-ui-runtime/src/area_layout.rs",
@@ -3140,7 +3067,7 @@
         "elevation": 0
       },
       "local_values": 2,
-      "token_reads": 31,
+      "token_reads": 33,
       "roles": []
     },
     {
@@ -3214,6 +3141,26 @@
       ]
     },
     {
+      "file": "crates/nana-ui-runtime/src/select.rs",
+      "counts": {
+        "color_role": 8,
+        "color_literal": 0,
+        "design_number": 1,
+        "motion": 0,
+        "elevation": 0
+      },
+      "local_values": 1,
+      "token_reads": 28,
+      "roles": [
+        "Background",
+        "Border",
+        "BorderStrong",
+        "Faint",
+        "Subtle",
+        "Text"
+      ]
+    },
+    {
       "file": "crates/nana-ui-runtime/src/terminal.rs",
       "counts": {
         "color_role": 7,
@@ -3267,23 +3214,6 @@
       ]
     },
     {
-      "file": "crates/nana-ui-runtime/src/dropdown.rs",
-      "counts": {
-        "color_role": 4,
-        "color_literal": 0,
-        "design_number": 1,
-        "motion": 0,
-        "elevation": 0
-      },
-      "local_values": 1,
-      "token_reads": 0,
-      "roles": [
-        "Active",
-        "Danger",
-        "Hover"
-      ]
-    },
-    {
       "file": "crates/nana-ui-runtime/src/size_field.rs",
       "counts": {
         "color_role": 3,
@@ -3327,6 +3257,19 @@
       },
       "local_values": 1,
       "token_reads": 33,
+      "roles": []
+    },
+    {
+      "file": "crates/nana-ui-runtime/src/dropdown.rs",
+      "counts": {
+        "color_role": 0,
+        "color_literal": 0,
+        "design_number": 1,
+        "motion": 0,
+        "elevation": 0
+      },
+      "local_values": 1,
+      "token_reads": 0,
       "roles": []
     },
     {
@@ -3404,7 +3347,7 @@
         "elevation": 0
       },
       "local_values": 1,
-      "token_reads": 4,
+      "token_reads": 3,
       "roles": []
     },
     {
@@ -3506,7 +3449,7 @@
         "elevation": 0
       },
       "local_values": 0,
-      "token_reads": 24,
+      "token_reads": 26,
       "roles": [
         "Accent",
         "Active",
@@ -3829,7 +3772,7 @@
         "elevation": 0
       },
       "local_values": 0,
-      "token_reads": 16,
+      "token_reads": 11,
       "roles": [
         "Muted",
         "Text"
@@ -3981,7 +3924,7 @@
         "elevation": 0
       },
       "local_values": 0,
-      "token_reads": 2,
+      "token_reads": 0,
       "roles": [
         "Muted"
       ]
@@ -4395,22 +4338,6 @@
       "count": 3
     },
     {
-      "file": "crates/nana-ui-runtime/src/app_menu_bar.rs",
-      "constants": [
-        {
-          "name": "MARK_WIDTH",
-          "type": "f32",
-          "value": 16.0
-        },
-        {
-          "name": "MAX_MENU_WIDTH",
-          "type": "f32",
-          "value": 480.0
-        }
-      ],
-      "count": 2
-    },
-    {
       "file": "crates/nana-ui-runtime/src/components.rs",
       "constants": [
         {
@@ -4553,6 +4480,17 @@
         }
       ],
       "count": 2
+    },
+    {
+      "file": "crates/nana-ui-runtime/src/app_menu_bar.rs",
+      "constants": [
+        {
+          "name": "MAX_MENU_WIDTH",
+          "type": "f32",
+          "value": 480.0
+        }
+      ],
+      "count": 1
     },
     {
       "file": "crates/nana-ui-runtime/src/charts.rs",

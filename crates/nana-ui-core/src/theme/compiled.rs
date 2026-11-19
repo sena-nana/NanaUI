@@ -43,17 +43,18 @@ use std::time::Duration;
 /// the handle per-node style resolution already takes.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompiledTheme {
-    identity: ThemeIdentity,
-    appearance: ThemeAppearance,
-    display_name: Cow<'static, str>,
-    style_model: StyleModelRef,
-    spacing: SpacingTokens,
-    border: BorderTokens,
-    typography: TypographyTokens,
-    motion: MotionTokens,
-    effects: EffectTokens,
-    surfaces: SurfaceTokens,
-    recipes: CompiledRecipes,
+    pub(super) identity: ThemeIdentity,
+    pub(super) appearance: ThemeAppearance,
+    pub(super) display_name: Cow<'static, str>,
+    pub(super) style_model: StyleModelRef,
+    pub(super) spacing: SpacingTokens,
+    pub(super) border: BorderTokens,
+    pub(super) typography: TypographyTokens,
+    pub(super) motion: MotionTokens,
+    pub(super) effects: EffectTokens,
+    pub(super) surfaces: SurfaceTokens,
+    pub(super) recipes: CompiledRecipes,
+    pub(super) chrome_radii: ChromeRadii,
 }
 
 impl CompiledTheme {
@@ -71,6 +72,7 @@ impl CompiledTheme {
         surfaces: SurfaceTokens,
         recipes: CompiledRecipes,
     ) -> Self {
+        let chrome_radii = ChromeRadii::resolve(style_model.metrics, recipes.shape());
         Self {
             identity,
             appearance,
@@ -83,6 +85,7 @@ impl CompiledTheme {
             effects,
             surfaces,
             recipes,
+            chrome_radii,
         }
     }
 
@@ -109,7 +112,12 @@ impl CompiledTheme {
 
     pub fn with_style_model(mut self, style_model: StyleModelRef) -> Self {
         self.style_model = style_model;
+        self.chrome_radii = ChromeRadii::resolve(self.style_model.metrics, self.recipes.shape());
         self
+    }
+
+    pub(super) fn refresh_chrome_radii(&mut self) {
+        self.chrome_radii = ChromeRadii::resolve(self.style_model.metrics, self.recipes.shape());
     }
 
     pub const fn palette(&self) -> SemanticPalette {
@@ -149,9 +157,9 @@ impl CompiledTheme {
     }
 
     /// The radius steps and the shaped chrome, resolved, for the renderer
-    /// to consume.
-    pub fn chrome_radii(&self) -> ChromeRadii {
-        ChromeRadii::resolve(self.metrics(), self.recipes().shape())
+    /// to consume. Precomputed on compile/patch so reads are a plain copy.
+    pub const fn chrome_radii(&self) -> ChromeRadii {
+        self.chrome_radii
     }
 
     pub const fn duration(&self, role: MotionRole) -> Duration {

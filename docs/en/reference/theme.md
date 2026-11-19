@@ -959,4 +959,78 @@ style.color_overrides = Some(Arc::new(modeler));
 - Derived roles (`WarningSoft*`, `DangerSoft*`, the code-token roles) follow their base: overriding `Warning` moves `WarningSoft` too. Naming a derived role alone has no effect. `Titlebar` and `OnMedia` can be overridden.
 - Under the default theme no node carries overrides, and the resolution path is byte-for-byte what it was.
 
-Left for #104: typography, metrics, recipe and motion patches; per-window root binding and multi-window checks; scope identity with generation caching (resolution flattens now, so a nested scope allocates its merged result once per resolve); charts (`chart_geometry` caches per size and theme and still reads the installed theme).
+Section 8 above captured the initial color-only slice; the complete `ThemeScope` / `ThemePatch` runtime, `StyleSystem`-ahead-of-extract dependency invalidation (#106), high-frequency control recipe migration (#341), and on-demand Runtime / DevTools inspection (#109) are documented in §§9–12 below.
+
+## 9. Phase 2: `StyleSystem`-Ahead-of-Extract and Subtree / Document `ThemeScope` (#106, #104)
+
+### 9.1 `StyleSystem`-Ahead-of-Extract and Dependency-Scoped Invalidation (#106)
+
+- **`ThemeCategoryGenerations` & `ThemeDependencyMask`**: theme updates no longer mark the whole document for relayout and repaint uniformly. Changes are classified bit-by-bit (`PALETTE`, `ACCENT`, `METRICS`, `TYPOGRAPHY_SHAPE`, `TYPOGRAPHY_LAYOUT`, `EFFECT`, `MOTION_POLICY`, `RECIPE_*`, `CUSTOM_PAINT`, `CHART`, `INHERITED_TYPOGRAPHY`).
+- **Per-node dependency masks and resolved-style early stop**: `NodeStore` maintains a compact `ThemeDependencyMask` per tracked node. On root theme or `ThemePatch` change, `UiWorld` computes the `changed` mask via `ThemeCategoryGenerations::diff_themes` and queues only nodes whose dependency mask intersects `changed`. Inside `resolve_styles`, if a node's inherited and derived style compare equal to its prior `ResolvedStyle`, propagation stops cleanly (`resolved_style_unchanged`) while preserving targeted repaint flags when widget visuals depend directly on the changed category.
+- **`MOTION_POLICY` fast path**: when no `ThemeScope` or per-document theme is active and a theme swap moves only `MotionTokens`, `apply_compiled_theme` swaps the theme directly and records `style_motion_policy_invalidations` with zero layout, text, or paint invalidations.
+- **Size budgets & telemetry**: preserves `NodeRecord <= 152 B`, `ResolvedStyle == 24 B`, and `UiWorld <= 10 KiB`, and surfaces counters via `ThemeWorkCounters` and `nana_diagnostics::framework::runtime` metrics (`THEME_DEPENDENCY_SKIPPED`, `RESOLVED_STYLE_UNCHANGED`, `THEME_MOTION_POLICY_INVALIDATIONS`).
+
+### 9.2 Full `ThemeScope`, `ThemePatch`, Per-Document Themes, and Multi-Window Inheritance (#104)
+
+- **Full-token `ThemePatch`**: supports incremental overrides across appearance, `AccentRamp`, `ColorOverrides`, titlebar color, `ThemeMetricsPatch`, `SpacingPatch`, `BorderPatch`, `OpacityPatch`, `TypographyPatch`, `MotionPatch`, `EffectPatch`, `SurfacePatch`, and `RecipePatch` (including `ButtonRecipePatch` and the five high-frequency control recipes).
+- **`ThemeScope` and declarative bindings**: `El::theme_scope` / `view::theme_scope` and `NodeStyle::theme_patch` attach a scoped overlay with a stable `ThemeScopeId` and monotonic `ScopeGeneration` to any subtree. `ThemeScopeRegistry` maintains a bounded `O(1)` resolution cache (`MAX_SCOPE_CACHE = 256`) tracked by `scope_cache_hits` / `scope_cache_misses` (and `THEME_SCOPE_CACHE_HITS` / `THEME_SCOPE_CACHE_MISSES`).
+- **Fail-closed validation & reparenting**: invalid patches (such as negative spacing or non-finite metrics) fail closed at validation time, retaining the parent scope's effective theme and emitting `THEME_SCOPE_INVALID_PATCH` (`runtime.theme.scope_invalid_patch`). Moving a subtree between scopes via `append` / `reparent` runs `theme_scope_reparented` to recompute effective scopes and invalidate only affected descendants.
+- **Per-document themes, scoped charts, and auxiliary window inheritance**:
+  - `AppContext::set_document_theme` / `UiWorld::set_document_theme` let each `DocumentId` install an independent root theme isolated from root theme switches on other documents.
+  - `Chart` visuals read `world.node_theme(id)` so scoped palette, border, and typography overrides reach both chart canvases and chart tooltips.
+  - Auxiliary top-level windows created through `Application` / `HeadlessRuntime` inherit their owner window's active theme configuration.
+
+## 10. High-Frequency Control Recipes & Menu Surface Cutover (#341)
+
+Following `Button`, `Scrollbar`, `Dialog`, `Toast`, `Shape`, and `Status`, five high-frequency control families and menu surfaces now read `CompiledRecipes` and layout `ThemeToken`s instead of local literals or module-level shadow/padding constants:
+
+| Recipe / Token | Controls & Visuals Covered | Key Consolidated Slots |
+| --- | --- | --- |
+| `InputRecipe` | `TextInput`, `NumberInput`, `TextArea`, `HostedTextarea` | Fill, rest/hover/focus/invalid borders, focus background mix, placeholder role (`Faint`), selection fill, preedit underline, invalid focus border width, multiline relative line height & min-height factor |
+| `SelectRecipe` | `Select`, `Dropdown`, `SearchDropdown` | Trigger fill/handle, opened selected row background, menu `ElevationRole`, checkmark width & weight, invalid open border width, and menu geometry |
+| `TabsRecipe` | `Tabs`, `SegmentedOption` | Tab/segmented active indicator/pill fill, typography & weights, gaps, and tab/option chrome styling |
+| `TreeViewRecipe` | `TreeView` | Row height/indent/toggle metrics, `TreeViewVisual` row & selection fills, drop indicator width & highlight role |
+| `MenuRecipe` + `ThemeToken::{MenuSurfacePadding, MenuItemGap}` | `Popover`, `ActionMenu`, `ActionMenuItem`, `AnchoredActionMenu`, `ContextMenu`, `AppMenuBar`, `MenuSurfaceVisual` | Atomic cutover of menu surfaces to `MenuRecipe`: panel surface/radius/`ElevationRole` shadow (`ComponentElevation::from_shadow`), `mark_width`, menu surface padding & item gaps via `ThemeToken` |
+
+Hard-coded audit baseline improvements (`scripts/baselines/theme-hardcoding.json`, `160` components scanned):
+- `totals.color_role` fell from `181` to `146`, `shared_totals.color_role` from `458` to `412`, `shared_totals.design_number` from `103` to `95`, `shared_local_values` from `134` to `126`, and `module_constants` from `103` to `102`, with zero regressions in any local-value bucket and zero regressions across all `#341`-migrated controls in `component-gallery` (`ui-snapshots -- --semantic`: 140 matched byte-for-byte alongside 8 pre-existing setting-row/canvas/list-item diffs present on `main`).
+
+## 11. Theme Packages, On-Demand Runtime Inspection, and DevTools (#109)
+
+- **Versioned JSON `ThemePackage`**: schema v1.0 envelope (`id`, `name`, `base`, `patch`, plus envelope limits such as `MAX_PACKAGE_BYTES`) parsed and compiled fail-closed by `ThemePackage::from_json` and `ThemeRegistry::register_package_json`. Multi-layer `base` chains capture `ThemePackageProvenance` (`base_chain` and per-layer override descriptions); unsupported schema versions and unknown fields fail closed without side effects.
+- **Zero-idle-cost runtime inspection**: `UiWorld` and `AppContext` expose on-demand inspection APIs (re-exported via `nana_ui::theme` and `nana_ui::runtime`):
+  - `inspect_node_theme(id)` / `inspect_node_theme_with_registry(id, registry)` -> `ThemeNodeInspection` (effective theme ID/generation/appearance, active `ThemeScopeId` & `ScopeGeneration`, `document_theme_override`, outer-to-inner `scope_chain`, effective `color_overrides`, `dependency_mask`, optional `package_provenance`, and `last_invalidation`).
+  - `last_theme_invalidation()` -> `LastThemeInvalidation` (trigger kind — `RootTheme`, `DocumentTheme`, `ScopePatch`, `ScopeRemoved`, or `ScopeReparented` — plus `changed_mask`, `category_generations`, candidate/skipped/scope/recipe/seed counts, and `motion_policy_only`).
+  - `theme_dependency_summary()` -> `ThemeDependencySummary` (live node count and per-category dependency histogram).
+- **DevTools commands (`crates/nana-ui-devtools`)**: all wire DTOs (`ThemeInspectDump`, `ThemeInvalidationDump`, `ThemePackageLoadDump`, etc.) live strictly in `nana-ui-devtools`, keeping `nana-ui-runtime` free of `serde`:
+  - `theme_inspect` (`AgentCommand::ThemeInspect { target }`): inspect resolved theme chain, overrides, provenance, and dependency summary for any resolved target.
+  - `theme_invalidation` (`AgentCommand::ThemeInvalidation`): read the most recent invalidation trace recorded on the session's document.
+  - `load_theme_package` (`AgentCommand::LoadThemePackage { json, path, apply }`): fail-closed parse, schema/chain validation, and registration; applies and flushes the document only when `apply: true` (`apply: false` or any error fixture leaves the active theme untouched). Matching helpers are also exposed on `HeadlessHost`.
+
+## 12. Issue #100 End-to-End Reproduction and Performance Gates
+
+- Added `perf/scenarios/theme-scope-patch.json` (patching a 64-control `ThemeScope` subtree inside a 1,000-control document; requires `style_nodes_considered <= 128`, `text_nodes_from_style == 0`, `layout_nodes_from_style == 0`, `layout_nodes == 0`, `layout_copies == 0`). Observed release measurement from `nana-theme-benchmark`: `style_nodes_considered=66`, `scope_nodes_invalidated=64`, `scope_cache_hits=1`, `theme_dependency_skipped=1`, `layout_copies=0`, `p50=0.0504 ms` (>12x faster than `theme-accent-only` at `0.6223 ms` over all 1,000 controls).
+- Updated `perf/scenarios/theme-controls-1.json`'s `theme_first_resolve_publishes_each_node_once` bound from `lte 2` to `lte 4`: since commit `6a80e848e` split `ComputedStyle` into two interned allocations (`Arc<InheritedStyle>` + `Arc<ComputedStyle>`), a 2-node fixture (and identically styled 100/1k/10k fixtures) performs 4 style intern allocations total.
+
+```bash
+# 1. Core and Runtime theme contracts & inspection unit suites
+cargo test -p nana-ui-core --all-features --lib theme::
+cargo test -p nana-ui-runtime --all-features --lib
+
+# 2. DevTools theme inspection & fail-closed package loading (serialize GPU tests)
+cargo test -p nana-ui-devtools --features runtime-agent,headless-host -- --test-threads=1
+
+# 3. Hard-coding audit gate and script tests
+python3 scripts/audit-theme-hardcoding.py --check scripts/baselines/theme-hardcoding.json
+python3 -m unittest discover -s scripts/tests -v
+
+# 4. All 12 Theme performance scenarios & contract self-test
+python3 perf/contract.py --self-test
+cargo run --release --locked -p nana-ui-runtime --features benchmark \
+  --bin nana-theme-benchmark -- --output target/performance/issue100/theme.json
+for id in theme-static-idle theme-controls-1 theme-controls-100 theme-controls-1k \
+          theme-controls-10k theme-hover-one theme-focus-one theme-palette-switch \
+          theme-accent-only theme-density theme-head-style-mutation theme-scope-patch; do
+  python3 perf/runners/nana/run.py --scenario "$id" --from-report target/performance/issue100/theme.json
+done
+```

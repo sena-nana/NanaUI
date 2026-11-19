@@ -12,7 +12,8 @@ use super::AccessibilityDumpNode;
 use super::pixels;
 use super::protocol::{
     A11yFilter, AgentCommand, AgentReply, DiagnosticDump, GpuDump, HitDump, InspectDump, KeyStroke,
-    PixelStats, PointerGesture, SceneProbeDump, SessionInfo, Target, ThemeName,
+    PixelStats, PointerGesture, SceneProbeDump, SessionInfo, Target, ThemeInspectDump,
+    ThemeInvalidationDump, ThemeName, ThemePackageLoadDump,
 };
 use crate::agent::AgentError;
 use crate::offscreen::{self, Size};
@@ -78,6 +79,26 @@ pub trait AgentSession {
     /// Write one field of a built-in control from text.
     fn set_field(&mut self, _node: u64, _field: &str, _value: &str) -> Result<(), AgentError> {
         Err(AgentError("this session has no view inspector".into()))
+    }
+
+    /// Inspect `node`'s effective theme, scope chain, color overrides, and
+    /// dependency mask (#109).
+    fn theme_inspect(&self, _node: u64) -> Result<ThemeInspectDump, AgentError> {
+        Err(AgentError("this session has no theme inspector".into()))
+    }
+
+    /// Most recent theme or scope invalidation recorded by this session (#109).
+    fn theme_invalidation(&self) -> Result<Option<ThemeInvalidationDump>, AgentError> {
+        Err(AgentError("this session has no theme inspector".into()))
+    }
+
+    /// Parse, validate, and optionally apply a JSON `ThemePackage` fail-closed (#109).
+    fn load_theme_package(
+        &mut self,
+        _json: &str,
+        _apply: bool,
+    ) -> Result<ThemePackageLoadDump, AgentError> {
+        Err(AgentError("this session cannot load theme packages".into()))
     }
 
     /// A session with custom agent IDs overrides this when a target is not
@@ -305,6 +326,58 @@ pub trait AgentSession {
                 AgentReply::ok().with_info(self.describe())
             }
             AgentCommand::Reload { css, css_key } => self.dispatch_reload(&css, css_key.as_deref()),
+            AgentCommand::ThemeInspect { target } => match self.resolve(&target) {
+                Ok(node) => match self.theme_inspect(node) {
+                    Ok(inspect) => AgentReply::ok()
+                        .with_target(node)
+                        .with_theme_inspect(inspect),
+                    Err(error) => AgentReply::err(error.0),
+                },
+                Err(error) => AgentReply::err(error.0),
+            },
+            AgentCommand::ThemeInvalidation => match self.theme_invalidation() {
+                Ok(Some(invalidation)) => AgentReply::ok().with_theme_invalidation(invalidation),
+                Ok(None) => AgentReply::ok(),
+                Err(error) => AgentReply::err(error.0),
+            },
+            AgentCommand::LoadThemePackage { json, path, apply } => {
+                self.dispatch_load_theme_package(json.as_deref(), path.as_deref(), apply)
+            }
+        }
+    }
+
+    #[doc(hidden)]
+    fn dispatch_load_theme_package(
+        &mut self,
+        json: Option<&str>,
+        path: Option<&str>,
+        apply: bool,
+    ) -> AgentReply {
+        let loaded;
+        let payload = match (json, path) {
+            (Some(raw), None) => raw,
+            (None, Some(path)) => {
+                use std::io::Read as _;
+                let Ok(file) = std::fs::File::open(path) else {
+                    return AgentReply::err(format!("cannot open theme package {path}"));
+                };
+                let limit = (nana_ui_core::MAX_PACKAGE_BYTES + 1) as u64;
+                let mut buf = String::new();
+                if let Err(error) = file.take(limit).read_to_string(&mut buf) {
+                    return AgentReply::err(format!("cannot read theme package {path}: {error}"));
+                }
+                loaded = buf;
+                &loaded
+            }
+            _ => {
+                return AgentReply::err(
+                    "load_theme_package requires exactly one of `json` or `path`",
+                );
+            }
+        };
+        match self.load_theme_package(payload, apply) {
+            Ok(package) => AgentReply::ok().with_theme_package(package),
+            Err(error) => AgentReply::err(error.0),
         }
     }
 

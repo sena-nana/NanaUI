@@ -31,9 +31,15 @@ mod sticky;
 mod style;
 mod style_pairs;
 mod text;
+mod theme_inspect;
+mod theme_scope;
 use hit_test::*;
 pub(crate) use text::TextDisplayView;
 use text::*;
+pub use theme_inspect::{
+    LastThemeInvalidation, ThemeDependencySummary, ThemeInvalidationTrigger, ThemeNodeInspection,
+    ThemeScopeChainEntry,
+};
 
 use std::{
     cell::{Cell, RefCell},
@@ -1331,11 +1337,8 @@ pub struct UiWorld {
     /// Nodes style resolution turned visible since the last scheduled text
     /// pass, which re-resolves them alongside its own work.
     text_shown: Vec<StableNodeId>,
-    /// Theme/style work (Issue #101) of the last style pass or theme install,
-    /// or of the last frame that ran one.
-    theme_work: ThemeWorkCounters,
-    /// Theme/style work of the frame being accumulated.
-    theme_frame_work: ThemeWorkCounters,
+    /// Boxed theme counters, per-category generations, subtree scopes, and per-document root themes.
+    pub(crate) theme_state: Box<theme_scope::ThemeRuntimeState>,
     /// Token-authority reads recorded from the `&self` palette paths. Folded
     /// into `theme_work` by the pass that made them. Counted in its own
     /// `Cell` rather than through a pending `ThemeWorkCounters`: this is the
@@ -1471,6 +1474,8 @@ pub struct UiWorld {
     validation_nodes_scanned: usize,
     /// Bumped on `SetTheme`; extract skips a second palette walk when it matches.
     pub(crate) palette_epoch: u64,
+    /// Whether style resolution since the last drain changed a hit-relevant property (#106).
+    style_hit_changed: bool,
     /// Parents whose child list changed since the last drain (insert, detach,
     /// despawn). Consumers take the list once per commit to schedule opt-in
     /// component reprojections; see `ComponentView::wants_child_reproject`.
@@ -1605,8 +1610,7 @@ impl UiWorld {
             text_frame_work: nana_text::TextWorkCounters::default(),
             pending_edit_work: nana_text::TextWorkCounters::default(),
             text_shown: Vec::new(),
-            theme_work: ThemeWorkCounters::default(),
-            theme_frame_work: ThemeWorkCounters::default(),
+            theme_state: Box::default(),
             pending_theme_reads: Cell::new(0),
             pending_layout_copies: Cell::new(0),
             layouts: style::LayoutInterner::default(),
@@ -1655,6 +1659,7 @@ impl UiWorld {
             live_regions: HashMap::default(),
             validation_nodes_scanned: 0,
             palette_epoch: 1,
+            style_hit_changed: false,
             structural_change_parents: Vec::new(),
             strut_candidates: Vec::new(),
             minimap_line_lengths_cache: RefCell::new(None),
@@ -3643,7 +3648,7 @@ impl UiWorld {
         self.commit_pending_theme_work();
         self.counters.frame_counters = WorkCounters::default();
         self.text_frame_work = nana_text::TextWorkCounters::default();
-        self.theme_frame_work = ThemeWorkCounters::default();
+        self.theme_state.theme_frame_work = ThemeWorkCounters::default();
         self.frame_extracted_nodes = 0;
         self.frame_extracted_spans = 0;
         self.accumulating_frame = true;
@@ -3736,15 +3741,30 @@ impl UiWorld {
     ///
     /// An idle frame leaves the previous snapshot in place, like
     /// [`Self::last_work_counters`].
+    /// Drain whether style resolution touched a hit-test-relevant property (#106).
+    pub fn take_style_hit_changed(&mut self) -> bool {
+        std::mem::take(&mut self.style_hit_changed)
+    }
+
+    /// Current per-category theme revisions (#106).
+    pub fn theme_generations(&self) -> nana_ui_core::ThemeCategoryGenerations {
+        self.theme_state.theme_generations
+    }
+
+    /// Current computed theme dependency classes for `id` (#106).
+    pub fn node_theme_dependency(&self, id: StableNodeId) -> nana_ui_core::ThemeDependencyMask {
+        self.nodes.theme_dependency(id)
+    }
+
     pub fn last_theme_work_counters(&self) -> ThemeWorkCounters {
-        let mut counters = self.theme_work;
+        let mut counters = self.theme_state.theme_work;
         counters.accumulate(self.pending_theme_work());
         counters
     }
 
     /// The theme/style work observed since the last fold, as counters.
     fn pending_theme_work(&self) -> ThemeWorkCounters {
-        let mut pending = ThemeWorkCounters::default();
+        let mut pending = self.theme_state.pending_scope_theme_work;
         pending.record_theme_reads(self.pending_theme_reads.get());
         pending.record_layout_copy(
             self.pending_layout_copies.get(),
@@ -3756,11 +3776,22 @@ impl UiWorld {
     }
 
     /// Take that work, leaving nothing behind for the next window.
-    fn take_pending_theme_work(&self) -> ThemeWorkCounters {
-        let pending = self.pending_theme_work();
-        self.pending_theme_reads.set(0);
-        self.pending_layout_copies.set(0);
+    fn take_pending_theme_work(&mut self) -> ThemeWorkCounters {
+        let mut pending = std::mem::take(&mut self.theme_state.pending_scope_theme_work);
+        let reads = self.pending_theme_reads.replace(0);
+        let copies = self.pending_layout_copies.replace(0);
+        pending.record_theme_reads(reads);
+        pending.record_layout_copy(
+            copies,
+            copies.saturating_mul(size_of::<nana_ui_core::LayoutStyle>()),
+        );
         pending
+    }
+
+    pub(crate) fn take_scope_reprojects(
+        &mut self,
+    ) -> Vec<(StableNodeId, nana_ui_core::ThemeDependencyMask)> {
+        std::mem::take(&mut self.theme_state.pending_scope_reprojects)
     }
 
     /// Observe one read of the token authority from a `&self` palette path.
@@ -3782,9 +3813,9 @@ impl UiWorld {
         if pending == ThemeWorkCounters::default() {
             return;
         }
-        self.theme_work.accumulate(pending);
+        self.theme_state.theme_work.accumulate(pending);
         if self.accumulating_frame {
-            self.theme_frame_work.accumulate(pending);
+            self.theme_state.theme_frame_work.accumulate(pending);
         }
     }
 
@@ -3795,12 +3826,42 @@ impl UiWorld {
                 work.style_nodes_resolved
             );
         }
+        if work.theme_dependency_skipped > 0 {
+            nana_diagnostics::metric!(
+                nana_diagnostics::framework::runtime::THEME_DEPENDENCY_SKIPPED,
+                work.theme_dependency_skipped
+            );
+        }
+        if work.resolved_style_unchanged > 0 {
+            nana_diagnostics::metric!(
+                nana_diagnostics::framework::runtime::RESOLVED_STYLE_UNCHANGED,
+                work.resolved_style_unchanged
+            );
+        }
+        if work.style_motion_policy_invalidations > 0 {
+            nana_diagnostics::metric!(
+                nana_diagnostics::framework::runtime::THEME_MOTION_POLICY_INVALIDATIONS,
+                work.style_motion_policy_invalidations
+            );
+        }
+        if work.scope_cache_hits > 0 {
+            nana_diagnostics::metric!(
+                nana_diagnostics::framework::runtime::THEME_SCOPE_CACHE_HITS,
+                work.scope_cache_hits
+            );
+        }
+        if work.scope_cache_misses > 0 {
+            nana_diagnostics::metric!(
+                nana_diagnostics::framework::runtime::THEME_SCOPE_CACHE_MISSES,
+                work.scope_cache_misses
+            );
+        }
         work.accumulate(self.take_pending_theme_work());
         if self.accumulating_frame {
-            self.theme_frame_work.accumulate(work);
-            self.theme_work = self.theme_frame_work;
+            self.theme_state.theme_frame_work.accumulate(work);
+            self.theme_state.theme_work = self.theme_state.theme_frame_work;
         } else {
-            self.theme_work = work;
+            self.theme_state.theme_work = work;
         }
     }
 
@@ -4636,13 +4697,14 @@ impl UiWorld {
         visual: &crate::WidgetVisualHandle,
         style: &ComputedStyle,
     ) -> Option<crate::WidgetPaintOutput> {
-        let style_model = self.scoped_style_model(style.color_scope.as_deref());
+        let style_model = self.node_style_model_with(id, style.color_scope.as_deref());
+        let node_theme = self.node_theme(id);
         let bounds = self.component_layout_box(id)?;
         let mut source_style = NodeStyle::clone(&self.nodes.get(id)?.style);
         source_style.layout = Arc::clone(&self.record(id).resolved_layout);
         let content = self.component_content_box(id)?;
         let chrome_radii =
-            nana_ui_core::ChromeRadii::resolve(style_model.metrics, self.theme.recipes().shape());
+            nana_ui_core::ChromeRadii::resolve(style_model.metrics, node_theme.recipes().shape());
         let ctx = crate::WidgetPaintCtx {
             id,
             world: self,
@@ -4651,7 +4713,7 @@ impl UiWorld {
             style,
             source_style: &source_style,
             style_model,
-            theme: &self.theme,
+            theme: node_theme,
             chrome_radii,
         };
         Some(visual.paint(&ctx))
@@ -5112,10 +5174,10 @@ impl UiWorld {
         let previous = self.geometry_frame.replace(None);
         let bounds = self.component_layout_box(id);
         let resolved = &self.record(id).resolved_layout;
-        let style_model = self.scoped_style_model(style.color_scope.as_deref());
-        let bars = bounds.and_then(|bounds| {
-            visual.bars_in(id, self, bounds, resolved, style_model, &self.theme)
-        });
+        let style_model = self.node_style_model_with(id, style.color_scope.as_deref());
+        let node_theme = self.node_theme(id);
+        let bars = bounds
+            .and_then(|bounds| visual.bars_in(id, self, bounds, resolved, style_model, node_theme));
         self.geometry_frame.set(previous);
         bars
     }
@@ -5134,7 +5196,7 @@ impl UiWorld {
         let previous = self.geometry_frame.replace(None);
         let bounds = self.component_layout_box(id);
         let content = self.component_content_box(id);
-        let style_model = self.scoped_style_model(style.color_scope.as_deref());
+        let style_model = self.node_style_model_with(id, style.color_scope.as_deref());
         let secondary = self.secondary_text_color(id);
         let geometry = bounds.zip(content).map(|(bounds, content)| {
             visual.geometry_in(id, self, bounds, content, style_model, secondary)
@@ -5158,10 +5220,10 @@ impl UiWorld {
         let visual = self.widget_visual_as::<crate::ActionMenuItemVisual>(id)?;
         let style = self.painted_style(id)?;
         let previous = self.geometry_frame.replace(None);
-        let style_model = self.scoped_style_model(style.color_scope.as_deref());
+        let style_model = self.node_style_model_with(id, style.color_scope.as_deref());
         let parts = self.component_content_parts(id);
         let geometry =
-            visual.geometry_from_parts(&style, &style_model.palette, &self.theme, &parts);
+            visual.geometry_from_parts(&style, &style_model.palette, self.node_theme(id), &parts);
         self.geometry_frame.set(previous);
         Some(geometry)
     }
@@ -5201,7 +5263,8 @@ impl UiWorld {
         let style = self.painted_style(id)?;
         let previous = self.geometry_frame.replace(None);
         let bounds = self.component_layout_box(id);
-        let style_model = self.scoped_style_model(style.color_scope.as_deref());
+        let style_model = self.node_style_model_with(id, style.color_scope.as_deref());
+        let node_theme = self.node_theme(id);
         let parts = self.component_content_parts(id);
         let (menu_room, viewport) =
             self.select_menu_paint_room(id, visual.opened, visual.menu_room);
@@ -5213,7 +5276,7 @@ impl UiWorld {
                 viewport,
                 &style,
                 style_model,
-                self.theme.recipes().scrollbar(),
+                node_theme,
                 &parts,
                 self.chrome_text_measure(id),
                 fitted,
@@ -5229,9 +5292,10 @@ impl UiWorld {
         let style = self.painted_style(id)?;
         let previous = self.geometry_frame.replace(None);
         let bounds = self.component_layout_box(id);
-        let style_model = self.scoped_style_model(style.color_scope.as_deref());
-        let geometry = bounds
-            .map(|bounds| visual.geometry_for(id, self, bounds, &style, style_model, &self.theme));
+        let style_model = self.node_style_model_with(id, style.color_scope.as_deref());
+        let geometry = bounds.map(|bounds| {
+            visual.geometry_for(id, self, bounds, &style, style_model, self.node_theme(id))
+        });
         self.geometry_frame.set(previous);
         geometry
     }
@@ -5242,9 +5306,9 @@ impl UiWorld {
         let style = self.painted_style(id)?;
         let previous = self.geometry_frame.replace(None);
         let bounds = self.component_layout_box(id);
-        let style_model = self.scoped_style_model(style.color_scope.as_deref());
+        let style_model = self.node_style_model_with(id, style.color_scope.as_deref());
         let geometry = bounds.and_then(|bounds| {
-            visual.geometry_for(id, self, bounds, &style, style_model, &self.theme)
+            visual.geometry_for(id, self, bounds, &style, style_model, self.node_theme(id))
         });
         self.geometry_frame.set(previous);
         geometry
@@ -5256,7 +5320,7 @@ impl UiWorld {
         let style = self.painted_style(id)?;
         let previous = self.geometry_frame.replace(None);
         let content = self.component_content_box(id);
-        let style_model = self.scoped_style_model(style.color_scope.as_deref());
+        let style_model = self.node_style_model_with(id, style.color_scope.as_deref());
         let secondary = self.secondary_text_color(id);
         let geometry = content
             .map(|content| visual.geometry_in(id, self, content, &style, style_model, secondary));
@@ -5271,8 +5335,8 @@ impl UiWorld {
         let bounds = self.component_layout_box(id)?;
         Some(visual.spec.layout_for(
             [bounds.width, bounds.height],
-            self.theme(),
-            |role| self.style_model.color(role).as_rgba_array(),
+            self.node_theme(id),
+            self.node_style_model(id),
             self.chrome_text_measure(id),
             self.animation_now(),
         ))
@@ -5790,7 +5854,11 @@ impl UiWorld {
             if self.groups_action_menu_items(id, &style) {
                 // A keyed list or a conditional block of commands: its items
                 // are spaced as the menu spaces its own.
-                Arc::make_mut(&mut style).gap = Some(LengthSpec::Px(crate::popover::MENU_ITEM_GAP));
+                let menu_theme = self.node_theme(id);
+                let item_gap = menu_theme
+                    .spacing()
+                    .resolve(menu_theme.recipes().menu().item_gap);
+                Arc::make_mut(&mut style).gap = Some(LengthSpec::Px(item_gap));
             }
         }
         style
@@ -6010,6 +6078,7 @@ impl UiWorld {
         if marks != 0 {
             self.mark(id, marks);
         }
+        self.recompute_node_theme_deps(id);
     }
 
     /// The writing mode and direction `id` lays out in. See
@@ -8486,6 +8555,7 @@ fn node_presentation_eq(left: &NodeStyle, right: &NodeStyle) -> bool {
         && left.text_vertical_alignment == right.text_vertical_alignment
         && left.painter == right.painter
         && left.color_overrides == right.color_overrides
+        && left.theme_patch == right.theme_patch
 }
 
 /// Equal but for transforms and the cursor, given whether the presentations

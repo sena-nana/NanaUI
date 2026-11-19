@@ -20,6 +20,7 @@
 //! categories. Issue #102 forbids a `ThemeColors2`, and the way to not write
 //! one is to hold the original.
 
+use super::controls::{InputRecipe, MenuRecipe, SelectRecipe, TabsRecipe, TreeViewRecipe};
 use super::recipe::{
     BUTTON_KINDS, ButtonRecipe, ButtonRecipeDraft, ButtonVariantDraft, ButtonVariantRecipe,
     CompiledRecipes, ComponentRecipe, ComponentRecipeDraft, ComponentRecipeId,
@@ -67,7 +68,7 @@ impl std::fmt::Display for ThemeId {
 /// definition written for an older major is rejected rather than silently
 /// reinterpreted. Minor changes when a category is added with a default, which
 /// an older definition can still compile against.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ThemeSchemaVersion {
     pub major: u16,
     pub minor: u16,
@@ -116,7 +117,9 @@ impl std::fmt::Display for ThemeSchemaVersion {
 /// rename. A theme whose values changed without a bump is a bug in the theme,
 /// which is why [`ThemeDefinition`] exposes [`bump`](ThemeDefinition::bump)
 /// and every mutator in this module calls it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, Serialize, Deserialize,
+)]
 pub struct ThemeGeneration(pub u32);
 
 impl ThemeGeneration {
@@ -134,7 +137,7 @@ impl std::fmt::Display for ThemeGeneration {
 }
 
 /// Who a compiled theme is. Copy, so a runtime handle can carry it.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ThemeIdentity {
     pub id: ThemeId,
     pub schema: ThemeSchemaVersion,
@@ -154,7 +157,7 @@ impl std::fmt::Display for ThemeIdentity {
 /// [`ThemeDefinition::compile`] reads this, which is the enforcement — a
 /// component cannot name `blue500` because there is no path from a component
 /// to this struct.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct FoundationTokens {
     pub accent: AccentRamp,
 }
@@ -172,7 +175,7 @@ impl FoundationTokens {
 /// Named `DesignTokens` and not `ThemeTokens` on purpose: `nana_ui::theme::
 /// ThemeTokens` is the host-side install bundle and keeps that name. One name,
 /// one type.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct DesignTokens {
     /// Author-private base values. See [`FoundationTokens`].
     pub foundation: FoundationTokens,
@@ -211,7 +214,7 @@ impl DesignTokens {
 }
 
 /// A NanaUI design system, in authoring form.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ThemeDefinition {
     pub id: ThemeId,
     /// Human-readable label used by host-provided theme pickers.
@@ -574,6 +577,31 @@ impl ThemeDefinition {
         self.bump()
     }
 
+    pub const fn with_input(mut self, input: InputRecipe) -> Self {
+        self.components.input = Some(input);
+        self.bump()
+    }
+
+    pub const fn with_select(mut self, select: SelectRecipe) -> Self {
+        self.components.select = Some(select);
+        self.bump()
+    }
+
+    pub const fn with_tabs(mut self, tabs: TabsRecipe) -> Self {
+        self.components.tabs = Some(tabs);
+        self.bump()
+    }
+
+    pub const fn with_tree_view(mut self, tree_view: TreeViewRecipe) -> Self {
+        self.components.tree_view = Some(tree_view);
+        self.bump()
+    }
+
+    pub const fn with_menu(mut self, menu: MenuRecipe) -> Self {
+        self.components.menu = Some(menu);
+        self.bump()
+    }
+
     /// Re-derive the whole accent family from one ramp.
     ///
     /// This is the foundation layer earning its place: setting
@@ -663,6 +691,9 @@ impl ThemeDefinition {
         for (name, shadow) in [
             ("effects.surface", self.effects.surface),
             ("effects.overlay", self.effects.overlay),
+            ("effects.menu", self.effects.menu),
+            ("effects.dropdown", self.effects.dropdown),
+            ("effects.menu_bar", self.effects.menu_bar),
         ] {
             check.color(name, shadow.color);
             let _ = check.finite(name, shadow.offset_x);
@@ -791,48 +822,7 @@ impl ThemeDefinition {
                 component: ComponentRecipeId::Overlay,
                 slot: "dialog",
             })?;
-        for (token, length) in [
-            ("dialog.top", Some(dialog.top)),
-            ("dialog.max_height", Some(dialog.max_height)),
-            ("dialog.title_max_width", dialog.title_max_width),
-        ] {
-            if length.is_some_and(|length| !super::dialog::is_dialog_length(length)) {
-                return Err(ThemeCompileError::NotFinite {
-                    theme: self.id.clone(),
-                    token,
-                });
-            }
-        }
-        let mut error = None;
-        let mut check = Check {
-            theme: self.id.clone(),
-            error: &mut error,
-        };
-        for (token, value) in dialog.lengths() {
-            check.length(token, value);
-        }
-        check.font_size("dialog.title.size", dialog.title.size);
-        if let Some(weight) = dialog.title.weight {
-            check.font_weight("dialog.title.weight", weight);
-        }
-        let motion = dialog.motion;
-        for (token, transition) in [
-            ("dialog.motion.scrim", motion.scrim),
-            ("dialog.motion.card_fade", motion.card_fade),
-            ("dialog.motion.card_move", motion.card_move),
-        ] {
-            check.duration(token, transition.millis);
-        }
-        let _ = check.finite("dialog.motion.enter_offset_y", motion.enter_offset_y);
-        if check.finite("dialog.motion.enter_scale", motion.enter_scale)
-            && motion.enter_scale <= 0.0
-        {
-            check.fail(ThemeCompileError::NegativeLength {
-                theme: self.id.clone(),
-                token: "dialog.motion.enter_scale",
-                value: thousandths(motion.enter_scale),
-            });
-        }
+        validate_dialog_recipe(&self.id, &dialog)?;
         let scrollbar = self
             .components
             .scrollbar
@@ -841,19 +831,7 @@ impl ThemeDefinition {
                 component: ComponentRecipeId::Scrollbar,
                 slot: "scrollbar",
             })?;
-        // A bar may hide the moment its reason to show ends, but a fade or
-        // growth that never advances is a frozen bar written by accident.
-        for (token, transition) in [
-            ("scrollbar.motion.fade_in", scrollbar.motion.fade_in),
-            ("scrollbar.motion.fade_out", scrollbar.motion.fade_out),
-            ("scrollbar.motion.expand", scrollbar.motion.expand),
-        ] {
-            check.duration(token, transition.millis);
-        }
-        if let Some(error) = error {
-            return Err(error);
-        }
-
+        validate_scrollbar_recipe(&self.id, &scrollbar)?;
         let toast = self
             .components
             .toast
@@ -862,45 +840,7 @@ impl ThemeDefinition {
                 component: ComponentRecipeId::Overlay,
                 slot: "toast",
             })?;
-        let mut error = None;
-        let mut check = Check {
-            theme: self.id.clone(),
-            error: &mut error,
-        };
-        for (token, value) in toast.lengths() {
-            check.length(token, value);
-        }
-        for (size_token, weight_token, text) in toast.texts() {
-            check.font_size(size_token, text.size);
-            if let Some(weight) = text.weight {
-                check.font_weight(weight_token, weight);
-            }
-        }
-        let motion = toast.motion;
-        for (token, transition) in [
-            ("toast.motion.enter", motion.enter),
-            ("toast.motion.exit", motion.exit),
-            ("toast.motion.change", motion.change),
-            ("toast.motion.stack_move", motion.stack_move),
-        ] {
-            check.duration(token, transition.millis);
-        }
-        let _ = check.finite("toast.motion.enter_offset_y", motion.enter_offset_y);
-        for (token, scale) in [
-            ("toast.motion.enter_scale", motion.enter_scale),
-            ("toast.motion.change_scale", motion.change_scale),
-        ] {
-            if check.finite(token, scale) && scale <= 0.0 {
-                check.fail(ThemeCompileError::NegativeLength {
-                    theme: self.id.clone(),
-                    token,
-                    value: thousandths(scale),
-                });
-            }
-        }
-        if let Some(error) = error {
-            return Err(error);
-        }
+        validate_toast_recipe(&self.id, &toast)?;
         let shape = self
             .components
             .shape
@@ -910,7 +850,48 @@ impl ThemeDefinition {
                 slot: "shape",
             })?;
 
-        Ok(CompiledRecipes::new(
+        let input = self
+            .components
+            .input
+            .ok_or(ThemeCompileError::MissingRecipe {
+                theme: self.id.clone(),
+                component: ComponentRecipeId::TextInput,
+                slot: "input",
+            })?;
+        let select = self
+            .components
+            .select
+            .ok_or(ThemeCompileError::MissingRecipe {
+                theme: self.id.clone(),
+                component: ComponentRecipeId::Selection,
+                slot: "select",
+            })?;
+        let tabs = self
+            .components
+            .tabs
+            .ok_or(ThemeCompileError::MissingRecipe {
+                theme: self.id.clone(),
+                component: ComponentRecipeId::Selection,
+                slot: "tabs",
+            })?;
+        let tree_view = self
+            .components
+            .tree_view
+            .ok_or(ThemeCompileError::MissingRecipe {
+                theme: self.id.clone(),
+                component: ComponentRecipeId::Menu,
+                slot: "tree_view",
+            })?;
+        let menu = self
+            .components
+            .menu
+            .ok_or(ThemeCompileError::MissingRecipe {
+                theme: self.id.clone(),
+                component: ComponentRecipeId::Menu,
+                slot: "menu",
+            })?;
+
+        let compiled = CompiledRecipes::new(
             families,
             ButtonRecipe::from_variants(variants, invalid_border),
             status,
@@ -918,8 +899,271 @@ impl ThemeDefinition {
             scrollbar,
             toast,
             shape,
-        ))
+            input,
+            select,
+            tabs,
+            tree_view,
+            menu,
+        );
+        validate_compiled_control_recipes(&self.id, &compiled)?;
+        Ok(compiled)
     }
+}
+
+pub(super) fn validate_compiled_theme(
+    theme: &super::CompiledTheme,
+) -> Result<(), ThemeCompileError> {
+    let id = theme.id();
+    let mut error = None;
+    let mut check = Check {
+        theme: id.clone(),
+        error: &mut error,
+    };
+    if !theme.identity().schema.is_supported() {
+        check.fail(ThemeCompileError::UnsupportedSchema {
+            theme: id.clone(),
+            found: theme.identity().schema,
+            supported: ThemeSchemaVersion::CURRENT,
+        });
+    }
+    if theme.identity().generation.0 == 0 {
+        check.fail(ThemeCompileError::ZeroGeneration { theme: id.clone() });
+    }
+    let sm = theme.style_model();
+    for (name, color) in palette_fields(&sm.palette) {
+        check.color(name, color);
+    }
+    check.color("titlebar", sm.titlebar);
+    check.color("on_media", sm.on_media);
+    for (name, value) in metrics_fields(sm.metrics) {
+        check.length(name, value);
+    }
+    check.corner_shape(sm.metrics.corner_shape);
+    for (index, step) in theme.spacing().steps().into_iter().enumerate() {
+        check.length(SPACING_NAMES[index], step);
+    }
+    check.length("border.hairline", theme.border().hairline);
+    for (index, alpha) in sm.opacity.alphas().into_iter().enumerate() {
+        check.alpha(OPACITY_NAMES[index], alpha);
+    }
+    for (index, size) in theme.typography().sizes().into_iter().enumerate() {
+        check.font_size(TYPE_SIZE_NAMES[index], size);
+    }
+    for (index, weight) in theme.typography().weights().into_iter().enumerate() {
+        check.font_weight(TYPE_WEIGHT_NAMES[index], weight);
+    }
+    for (index, millis) in theme.motion().durations().into_iter().enumerate() {
+        check.duration(MOTION_NAMES[index], millis);
+    }
+    check.alpha("motion.attention_hold", theme.motion().attention_hold);
+    let effects = theme.effects();
+    for (name, shadow) in [
+        ("effects.surface", effects.surface),
+        ("effects.overlay", effects.overlay),
+        ("effects.menu", effects.menu),
+        ("effects.dropdown", effects.dropdown),
+        ("effects.menu_bar", effects.menu_bar),
+    ] {
+        check.color(name, shadow.color);
+        let _ = check.finite(name, shadow.offset_x);
+        let _ = check.finite(name, shadow.offset_y);
+        check.length(name, shadow.blur_radius);
+        let _ = check.finite(name, shadow.spread_radius);
+    }
+    check.color("effects.media_scrim", effects.media_scrim);
+    check.color("effects.modal_scrim", effects.modal_scrim);
+    check.length("effects.modal_scrim_blur", effects.modal_scrim_blur);
+    check.color("effects.media_foreground", effects.media_foreground);
+    for (name, alpha) in [
+        ("effects.media_hover_alpha", effects.media_hover_alpha),
+        ("effects.media_pressed_alpha", effects.media_pressed_alpha),
+        (
+            "effects.media_danger_pressed_alpha",
+            effects.media_danger_pressed_alpha,
+        ),
+    ] {
+        check.alpha(name, alpha);
+    }
+    if let Some(error) = error {
+        return Err(error);
+    }
+    validate_dialog_recipe(&id, theme.recipes().dialog())?;
+    validate_scrollbar_recipe(&id, theme.recipes().scrollbar())?;
+    validate_toast_recipe(&id, theme.recipes().toast())?;
+    validate_compiled_control_recipes(&id, theme.recipes())
+}
+
+fn validate_dialog_recipe(
+    id: &ThemeId,
+    dialog: &super::DialogRecipe,
+) -> Result<(), ThemeCompileError> {
+    for (token, length) in [
+        ("dialog.top", Some(dialog.top)),
+        ("dialog.max_height", Some(dialog.max_height)),
+        ("dialog.title_max_width", dialog.title_max_width),
+    ] {
+        if length.is_some_and(|length| !super::dialog::is_dialog_length(length)) {
+            return Err(ThemeCompileError::NotFinite {
+                theme: id.clone(),
+                token,
+            });
+        }
+    }
+    let mut error = None;
+    let mut check = Check {
+        theme: id.clone(),
+        error: &mut error,
+    };
+    for (token, value) in dialog.lengths() {
+        check.length(token, value);
+    }
+    check.font_size("dialog.title.size", dialog.title.size);
+    if let Some(weight) = dialog.title.weight {
+        check.font_weight("dialog.title.weight", weight);
+    }
+    let motion = dialog.motion;
+    for (token, transition) in [
+        ("dialog.motion.scrim", motion.scrim),
+        ("dialog.motion.card_fade", motion.card_fade),
+        ("dialog.motion.card_move", motion.card_move),
+    ] {
+        check.duration(token, transition.millis);
+    }
+    let _ = check.finite("dialog.motion.enter_offset_y", motion.enter_offset_y);
+    if check.finite("dialog.motion.enter_scale", motion.enter_scale) && motion.enter_scale <= 0.0 {
+        check.fail(ThemeCompileError::NegativeLength {
+            theme: id.clone(),
+            token: "dialog.motion.enter_scale",
+            value: thousandths(motion.enter_scale),
+        });
+    }
+    if let Some(error) = error {
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn validate_scrollbar_recipe(
+    id: &ThemeId,
+    scrollbar: &super::ScrollbarRecipe,
+) -> Result<(), ThemeCompileError> {
+    let mut error = None;
+    let mut check = Check {
+        theme: id.clone(),
+        error: &mut error,
+    };
+    // A bar may hide the moment its reason to show ends, but a fade or
+    // growth that never advances is a frozen bar written by accident.
+    for (token, transition) in [
+        ("scrollbar.motion.fade_in", scrollbar.motion.fade_in),
+        ("scrollbar.motion.fade_out", scrollbar.motion.fade_out),
+        ("scrollbar.motion.expand", scrollbar.motion.expand),
+    ] {
+        check.duration(token, transition.millis);
+    }
+    if let Some(error) = error {
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn validate_toast_recipe(
+    id: &ThemeId,
+    toast: &super::ToastRecipe,
+) -> Result<(), ThemeCompileError> {
+    let mut error = None;
+    let mut check = Check {
+        theme: id.clone(),
+        error: &mut error,
+    };
+    for (token, value) in toast.lengths() {
+        check.length(token, value);
+    }
+    for (size_token, weight_token, text) in toast.texts() {
+        check.font_size(size_token, text.size);
+        if let Some(weight) = text.weight {
+            check.font_weight(weight_token, weight);
+        }
+    }
+    let motion = toast.motion;
+    for (token, transition) in [
+        ("toast.motion.enter", motion.enter),
+        ("toast.motion.exit", motion.exit),
+        ("toast.motion.change", motion.change),
+        ("toast.motion.stack_move", motion.stack_move),
+    ] {
+        check.duration(token, transition.millis);
+    }
+    let _ = check.finite("toast.motion.enter_offset_y", motion.enter_offset_y);
+    for (token, scale) in [
+        ("toast.motion.enter_scale", motion.enter_scale),
+        ("toast.motion.change_scale", motion.change_scale),
+    ] {
+        if check.finite(token, scale) && scale <= 0.0 {
+            check.fail(ThemeCompileError::NegativeLength {
+                theme: id.clone(),
+                token,
+                value: thousandths(scale),
+            });
+        }
+    }
+    if let Some(error) = error {
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn validate_compiled_control_recipes(
+    id: &ThemeId,
+    recipes: &CompiledRecipes,
+) -> Result<(), ThemeCompileError> {
+    let mut error = None;
+    let mut check = Check {
+        theme: id.clone(),
+        error: &mut error,
+    };
+    let input = recipes.input();
+    for (token, value) in input.lengths() {
+        check.length(token, value);
+    }
+    for (token, value) in [
+        (
+            "input.multiline_height_factor",
+            input.multiline_height_factor,
+        ),
+        ("input.multiline_line_height", input.multiline_line_height),
+    ] {
+        if check.finite(token, value) && value <= 0.0 {
+            check.fail(ThemeCompileError::NegativeLength {
+                theme: id.clone(),
+                token,
+                value: thousandths(value),
+            });
+        }
+    }
+    check.alpha("input.additional_caret_alpha", input.additional_caret_alpha);
+
+    let select = recipes.select();
+    for (token, value) in select.lengths() {
+        check.length(token, value);
+    }
+    check.font_weight("select.checkmark_weight", select.checkmark_weight);
+
+    let tree_view = recipes.tree_view();
+    for (token, value) in tree_view.lengths() {
+        check.length(token, value);
+    }
+    check.font_weight("tree_view.selected_weight", tree_view.selected_weight);
+
+    let menu = recipes.menu();
+    for (token, value) in menu.lengths() {
+        check.length(token, value);
+    }
+
+    if let Some(error) = error {
+        return Err(error);
+    }
+    Ok(())
 }
 
 const ACCENT_ALPHA_NAMES: [&str; 3] = [
@@ -1110,6 +1354,11 @@ const fn builtin_registry() -> ComponentThemeRegistry {
         scrollbar: Some(super::ScrollbarRecipe::DEFAULT),
         toast: Some(super::ToastRecipe::DEFAULT),
         shape: Some(super::ShapeRecipe::DEFAULT),
+        input: Some(InputRecipe::DEFAULT),
+        select: Some(SelectRecipe::DEFAULT),
+        tabs: Some(TabsRecipe::DEFAULT),
+        tree_view: Some(TreeViewRecipe::DEFAULT),
+        menu: Some(MenuRecipe::DEFAULT),
     }
 }
 
@@ -1825,6 +2074,45 @@ mod tests {
                 ..
             })
         ));
+
+        for (clear, expected_component, expected_slot) in [
+            (
+                (|d: &mut ThemeDefinition| d.components.input = None) as fn(&mut ThemeDefinition),
+                ComponentRecipeId::TextInput,
+                "input",
+            ),
+            (
+                |d| d.components.select = None,
+                ComponentRecipeId::Selection,
+                "select",
+            ),
+            (
+                |d| d.components.tabs = None,
+                ComponentRecipeId::Selection,
+                "tabs",
+            ),
+            (
+                |d| d.components.tree_view = None,
+                ComponentRecipeId::Menu,
+                "tree_view",
+            ),
+            (
+                |d| d.components.menu = None,
+                ComponentRecipeId::Menu,
+                "menu",
+            ),
+        ] {
+            let mut missing = dark();
+            clear(&mut missing);
+            assert!(matches!(
+                missing.compile(),
+                Err(ThemeCompileError::MissingRecipe {
+                    component,
+                    slot,
+                    ..
+                }) if component == expected_component && slot == expected_slot
+            ));
+        }
 
         // An empty registry is rejected on its first family, not accepted with
         // defaults filled in behind the author's back.
