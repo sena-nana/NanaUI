@@ -38,11 +38,11 @@ Runtime 帧更新（`RuntimeFrameUpdate`）对外暴露这一 `layout_generation
 
 在布局尚未记录上下文之前，仅由节点的 `display` 给出暂定上下文。若某次上下文切换碰巧让所有盒子留在原位置，仍然会发布一份新的 `LayoutResult`——因为上下文和片段类型已经改变；子节点的身份保持不变。
 
-measure 和 placement 的 child flow、脱流及浮动分类直接消费 `ParticipationKind`；检查器读取同一个分类。流参与方式改变会失效父级的 contribution/placement plan，即便 child identity 和自身尺寸都未改变。仅由父级 context/constraint 变化触及的子项仍可复用兼容约束下的 intrinsic facts；直接内容变更及其 measure 祖先继续失效，跨 context 计数按 Flex/Grid/Inline 等实际 context 记录。
+measure 和 placement 的 child flow 与脱流分类直接消费 `ParticipationKind`；检查器读取同一个分类。流参与方式改变会失效父级的 contribution/placement plan，即便 child identity 和自身尺寸都未改变。仅由父级 context/constraint 变化触及的子项仍可复用兼容约束下的 intrinsic facts；直接内容变更及其 measure 祖先继续失效，跨 context 计数按 Flex/Grid/Inline 等实际 context 记录。
 
-## 与 ComponentGeometry 的关系
+## 与 WidgetVisual / WidgetPaintOutput 的关系
 
-`ComponentGeometry` 仍是组件语义部件与非盒式绘制数据（例如缩放拖柄、图表路径、编辑器装饰线）的兼容表面。Button、Chip、ActionMenuItem 的文字、图标、hint、spinner 盒子与 Checkbox 的指示框、标签，Switch 的轨道、标签、hint，StatusBadge / ValidationMessage 的圆点、标签，SelectionOption 的圆环（`Indicator`）、图标、标签，裸 Toast 的记号、标题、说明（`Detail`）、关闭目标与装配后 Toast 的记号，菜单触发器的标签与图标由 Foundation 的轻量 parts 发布，几何投影读取 `LayoutResult.parts`，不再次分配位置。其余组件的分类与待迁移边界见[组件布局审计](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/component-layout.md)。
+各控件的 `WidgetVisual::paint`（输出 `WidgetPaintOutput`）与专用几何结构（如 `TextInputGeometry`、`RangeGeometry`）承载组件语义部件与非盒式绘制数据（例如缩放拖柄、图表路径、编辑器装饰线）。Button、Chip、ActionMenuItem 的文字、图标、hint、spinner 盒子与 Checkbox 的指示框、标签，Switch 的轨道、标签、hint，StatusBadge / ValidationMessage 的圆点、标签，SelectionOption 的圆环（`Indicator`）、图标、标签，裸 Toast 的记号、标题、说明（`Detail`）、关闭目标与装配后 Toast 的记号，菜单触发器的标签与图标由 Foundation 的轻量 parts 发布，几何投影读取 `LayoutResult.parts`，不再次分配位置。其余组件的分类与待迁移边界见[组件布局审计](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/component-layout.md)。
 
 组件内容部件求解时放在内联的定长槽里（`layout_engine::parts::ContentParts`，`CONTENT_PART_SLOTS` 为四格：Toast 的指示、标题、说明、关闭按钮恰好四个），不为节点分配；发布到 `LayoutResult.parts` 的只有存在的部件，所以槽数既不改变已发布结果的形状，也不增加节点常驻内存。读部件的地方（几何投影、段落预算、native 文本复用判定）都按部件类型取，不按槽位。
 

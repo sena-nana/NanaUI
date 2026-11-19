@@ -29,7 +29,7 @@ An early benchmark always passed `Duration::ZERO` as the event timestamp, so the
 - `active_runtime_overlays` (switched to the existing `UiWorld::overlay_hosts_by_document` index);
 - `split_handle_near`, `sync_split_handle_hover`, and `clear_calendar_heatmap_hover`.
 
-**Root-cause fix**: the single authoritative `UiWorld` maintains `nodes_by_component: HashMap<ComponentTypeId, HashSet<StableNodeId>>`, updated when `SetComponentType` is applied and when a node is despawned (it cannot live at the `AppContext` level, or the `finish_semantic_binding` semantic binding path would miss entries). After the fix, a single L3 pointer event is stable at **`0.0003 ms`** at any size, and all 559 pixel baselines in `component-gallery` match.
+**Root-cause fix**: the single authoritative `UiWorld` maintains `nodes_by_component: HashMap<ComponentTypeId, HashSet<StableNodeId>>`, updated when `SetComponentType` is applied and when a node is despawned (maintained directly inside the single authoritative `UiWorld` so every path applying `SetComponentType` stays in sync without depending on an `AppContext`-layer wrapper). After the fix, a single L3 pointer event is stable at **`0.0003 ms`** at any size, and all 559 pixel baselines in `component-gallery` match.
 
 ## Measurement commands
 

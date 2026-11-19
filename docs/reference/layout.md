@@ -137,7 +137,7 @@ context 切换，增量与冷布局相同；分派不认模态框时 placement �
 parts（`layout_engine::parts`），用 retained Flex 的同一组求解函数分配主轴、收缩和对齐，
 结果随节点的 `LayoutResult.parts` 一起发布。部件没有 `StableNodeId`，不产生 wrapper 节点。
 一份部件声明同时供四处读：intrinsic measure 取除文字以外的宽度与间距（`chrome_extent`），
-段落预算取可用宽度减去同一份（`text_budget`），placement 求解它们，`ComponentGeometry`
+段落预算取可用宽度减去同一份（`text_budget`），placement 求解它们，各控件的 `WidgetVisual::paint`
 和 Scene 只读发布的盒子、附加绘制数据。文本片段（TextLine/TextRun）落在 `TextContent`
 部件里。
 

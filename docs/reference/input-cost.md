@@ -29,7 +29,7 @@
 - `active_runtime_overlays`（改用已有的 `UiWorld::overlay_hosts_by_document` 索引）；
 - `split_handle_near`、`sync_split_handle_hover` 与 `clear_calendar_heatmap_hover`。
 
-**根治方案**：在唯一权威 `UiWorld` 内维护 `nodes_by_component: HashMap<ComponentTypeId, HashSet<StableNodeId>>`，于 `SetComponentType` 应用与节点销毁（despawn）时同步更新（不能挂在 `AppContext` 层，否则 `finish_semantic_binding` 语义绑定路径会漏记）。修复后，L3 单次指针事件在任何规模下均稳定在 **`0.0003 ms`**，且 `component-gallery` 的 559 张像素基线全部匹配。
+**根治方案**：在唯一权威 `UiWorld` 内维护 `nodes_by_component: HashMap<ComponentTypeId, HashSet<StableNodeId>>`，于 `SetComponentType` 应用与节点销毁（despawn）时同步更新（直接维护在唯一权威 `UiWorld` 内，所有写入 `SetComponentType` 的路径均自动同步，不依赖上层 `AppContext` 包装）。修复后，L3 单次指针事件在任何规模下均稳定在 **`0.0003 ms`**，且 `component-gallery` 的 559 张像素基线全部匹配。
 
 ## 测量命令
 

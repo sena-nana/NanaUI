@@ -138,7 +138,7 @@ Controls do not lay out their own content. Identity-less content such as icons, 
 parts (`layout_engine::parts`). The same retained Flex solver functions distribute the main axis, shrink, and align them,
 and the results are published with the node's `LayoutResult.parts`. Parts have no `StableNodeId` and produce no wrapper nodes.
 One part declaration is read in four places: intrinsic measure takes the width and spacing other than text (`chrome_extent`),
-the paragraph budget takes the available width minus that same amount (`text_budget`), placement solves them, and `ComponentGeometry`
+the paragraph budget takes the available width minus that same amount (`text_budget`), placement solves them, and each control's `WidgetVisual::paint`
 and Scene only read the published boxes and attached paint data. Text fragments (TextLine/TextRun) land in the `TextContent`
 part.
 

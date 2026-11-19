@@ -109,7 +109,7 @@ Application / view functions / components ──write──▶ MutationQueue (in
 | `crates/nana-ui-runtime/src/store.rs` | `NodeStore`, `NodeRecord`, `Hierarchy`, `NodeTable` (dense array + overflow table), and all sparse side tables |
 | `crates/nana-ui-runtime/src/mutation.rs` | The `UiMutation` enum vocabulary and `MutationQueue` |
 | `crates/nana-ui-runtime/src/world/mutation.rs` | `UiWorld::commit` / `commit_with_mount_lifecycle`, scroll offsets, and layout result publishing |
-| `crates/nana-ui-runtime/src/component_registry.rs` | `ComponentRegistry`, `RegisterableComponent`, `PreparedSemanticBinding` |
+| `crates/nana-ui-runtime/src/component_registry.rs` | `ComponentRegistry`, `RegisterableComponent`, `ComponentTypeId` |
 | `crates/nana-ui-runtime/src/schedule.rs` | The 9-bit `DirtyMask` invalidation mask and `SystemWork` |
 | `crates/nana-ui-runtime/src/framework.rs` | `AppContext` (typed component view state and event table) |
 | `crates/nana-ui-runtime/src/framework/frame.rs` | Phased frame driver entry points: `resolve_styles`, `shape_text`, `layout_document_*` |

@@ -36,7 +36,7 @@ abs(child) = abs(frame) + local(child)
 | `UiWorld::local_layout_box(id)` / `layout_frame(id)` | 参照系 | 记录本身 |
 | `UiWorld::layout_result(id)` | 文档 | 返回 `Option<Arc<LayoutResult>>`；放到页面上的结果缓存在 `page_layout_results`，按本地结果的 `Arc` 指针和原点（逐位）判定是否过期 |
 | `UiWorld::local_layout_result(id)` | 节点自己 | 边框盒在 (0, 0) |
-| `UiWorld::component_geometry(id)` | 文档 | 每次按当前盒子现算；命中、IME、指针读它 |
+| `UiWorld::widget_paint(id)` 及各控件几何查询（如 `range_geometry`、`select_geometry`、`modal_frame_geometry`） | 文档 | 每次按当前盒子现算；命中、IME、指针读它 |
 | `layout_origin(id)`、`layout_box_from(owner, child)`（crate 内） | 文档 / 某个祖先 | 页面原点；子节点相对某个祖先的盒子 |
 | `UiScene::primitive_layout_bounds` / `place_rect`，`SceneDraw::placed_bounds` / `place` | 页面 | 图元的本地几何加节点原点 |
 | `SceneDraw::geometry_transform` | — | 「先放到原点再变换」的合成矩阵，给不吸附网格的读者 |
@@ -189,7 +189,7 @@ abs(child) = abs(frame) + local(child)
 ### 5.1 记录与组件几何
 
 - `ExtractedNode` 带 `local_layout` 与 `layout_frame`（与 `UiWorld::local_layout_box` / `layout_frame` 相同）；`layout` 是提取那一刻的页面盒子，只作参考。`layout_result` 是本地结果，共享同一个 `Arc`。`ExtractedMove` 同样带 `local_layout` / `layout_frame` / `layout_result`，只给平移的根发。
-- `ExtractedNode::component_geometry` 在节点自己的坐标里。`UiWorld::local_component_geometry` 用同一份 `derive_component_geometry` 求它：把 `geometry_frame` 设成这个节点，`record_layout_origin` 沿链求和时走到它就停（它的原点记 0）；链上碰不到它或读了视口就记 `geometry_read_page`，调试构建断言。对外的 `component_geometry` 不设 frame，仍是页面坐标。
+- `ExtractedNode::widget_paint` 在节点自己的坐标里。`UiWorld::local_widget_paint` 用同一份 `derive_widget_paint` 求它：把 `geometry_frame` 设成这个节点，`record_layout_origin` 沿链求和时走到它就停（它的原点记 0）；链上碰不到它或读了视口就记 `geometry_read_page`，调试构建断言。对外的 `UiWorld::widget_paint` 不设 frame，仍是页面坐标。
 - **读页面的 visual**（`READS_PAGE`）：只剩打开的 MenuSurface（菜单项参照系是页面）。它在页面坐标里推导、记录在页面上，它或上面的盒子一动，`settle_layout_moves` 从 `page_bound` 里找出它并标 RENDER，整节点重新提取。关着的 MenuSurface 够不到菜单项（`closed_menu_hides`），关着的 Select 推导时不读视口，NativeMarkdown 从本地内容盒往下排，都按本地坐标推导，平移时沿用记录。
 - **打开的 Select**（`MENU_ROOM`）：菜单在字段本地坐标里推导。读页面只有一处：`select_menu_room` 给出的空间（视口与裁剪链，存在 visual 的 `menu_room` 里）。`local_select_menu_room` 把它减去字段的页面原点，之后只经过 `select_menu_surface`（`select.rs`）决定表面盒子，其余都由这个盒子和字段自己的状态决定。所以表面盒子逐位相同，整份记录就逐位相同。平移时字段是平移根，`extract_nodes_reusing` 沿用记录前比一次（`keeps_select_menu`：渲染器持有记录的表面与 `local_select_menu_surface` 现算的逐位比较）；字段在平移根下面，`settle_layout_moves` 只标 RENDER 并记 `render_room_epoch`（`mark_keeping_render_reason`，不算「别的原因」），提取时同样比一次。换边、截短或空间本身变了（滚动、裁剪、窗口变了，`stale_select_menu_rooms` 改 visual）才重新提取。
 

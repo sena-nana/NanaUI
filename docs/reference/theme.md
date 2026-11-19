@@ -131,7 +131,7 @@ nana_ui_core::motion::{HOVER_COLOR, …} ─────► 组件动画
 
 | 层 | 默认样式从哪来 | 冲突点 |
 | --- | --- | --- |
-| **L3 Rust** | `view_components.rs` 的 `impl ComponentView`：按 `ButtonKind` 等语义选 `SemanticColorRole`，写进 `NodeStyle.interaction`；几何与其余颜色由 `world/geometry.rs` + `world/extraction.rs` 决定 | 同一控件的外观分散在三处：组件体（角色 + 状态）、extraction（`StandardVisual` 配色）、scene primitives（圆角/描边） |
+| **L3 Rust** | `view_components.rs` 的 `impl ComponentView`：按 `ButtonKind` 等语义选 `SemanticColorRole`，写进 `NodeStyle.interaction`；几何与其余颜色在当时的审计里由 `world/geometry.rs` + `world/extraction.rs` 决定（现已收敛进各控件的 `WidgetVisual`） | 同一控件的外观曾分散在三处：组件体（角色 + 状态）、extraction（原 `StandardVisual` 配色）、scene primitives（圆角/描边） |
 | **CSS** | [`css_map.rs`](https://github.com/sena-nana/NanaUI/blob/main/crates/nana-ui-css/src/css_map.rs) 把 CSS 子集映射到 Layout；[`style.rs`](https://github.com/sena-nana/NanaUI/blob/main/crates/nana-ui-css/src/style.rs) 只做 paint 解析；已知 token 名经 `SemanticColorRole::from_css_token_name` 进 Tokens，未知 `#hex` 只能当受限 paint hint | 规则已经写死且有测试，是目前最干净的一层 |
 
 `from_css_token_name` 认得的名字就是 CSS 的正式 token 表面：`background`/`surface`/`subtle`/`raised`（别名 `elevated`）/`header`/`hover`/`active`/`selected*`/`border*`/`text`/`muted`/`faint`/`accent*`/`success`/`warning*`/`danger*`/`titlebar`/`on-media`。以及 `--nana-` 前缀与 `var()` 包裹。9 个代码 token 角色（`Keyword`/`Function`/…）**不在** CSS 表面。只在 L3 语义高亮里用。
@@ -158,13 +158,13 @@ nana_ui_core::motion::{HOVER_COLOR, …} ─────► 组件动画
 `apply_style_model` 遍历所有 live document roots 的整棵子树并逐节点 `mark`。1k 控件的 palette-only 切换 = 1001 个节点 paint 失效。#100 §7 的 dependency class 就是要把这个数字降下来。Phase 0 的职责是把它量出来（§4）。
 
 **F5 — 组件不写 RGB。但把角色决策写在自己身上。**
-122 个组件（`impl ComponentView for X` 加上 `impl X`）里：raw RGBA **0 处**。裸设计数字 **29 处**。`SemanticColorRole` 决策 232 处（`Button` 22、`SidebarRow` 10、`ListItem` 9…）。另有 216 处在组件之外（`world/extraction.rs` 的 `StandardVisual` 配色、`menus.rs`、`popover.rs`、`select.rs`、`settings.rs`…）。
+122 个组件（`impl ComponentView for X` 加上 `impl X`）里：raw RGBA **0 处**。裸设计数字 **29 处**。`SemanticColorRole` 决策 232 处（`Button` 22、`SidebarRow` 10、`ListItem` 9…）。另有 216 处在组件之外（当时 `world/extraction.rs` 里的原 `StandardVisual` 配色、`menus.rs`、`popover.rs`、`select.rs`、`settings.rs`…）。
 这**不是缺陷**。「primary 的 hover 是 AccentStrong」正是 #100 要组件表达的语义。它是 Component Recipe 的迁移人口：448 个角色决策要搬家。
 
 > 本轮修过一次：最初只扫 `impl ComponentView` 函数体。于是 `ListItem` 报成「不声明任何状态」。它的 `InteractionStyle` 整个写在 `ListItem::new` 里。构造函数才是组件默认外观的所在。扫描器现在两种 impl 都算。
 
 **F6 — 交互状态由 19 个组件自己声明。**
-`InteractionStyle` 在 122 个组件里有 19 个用到：`Button`、`Checkbox`、`Chip`、`CommandPalette`、`Dropdown`、`HoverCard`、`IconButton`、`InteractiveCard`、`ListItem`、`NumberInput`、`RangeField`、`SearchDropdown`、`SettingsCollapsibleCard`、`SidebarRow`、`SidebarSection`、`Switch`、`TextArea`、`TextInput`、`XYPad`。其余控件的 hover/pressed/selected 视觉来自 `StandardVisual` 在 extraction / scene 的分支。
+`InteractionStyle` 在 122 个组件里有 19 个用到：`Button`、`Checkbox`、`Chip`、`CommandPalette`、`Dropdown`、`HoverCard`、`IconButton`、`InteractiveCard`、`ListItem`、`NumberInput`、`RangeField`、`SearchDropdown`、`SettingsCollapsibleCard`、`SidebarRow`、`SidebarSection`、`Switch`、`TextArea`、`TextInput`、`XYPad`。其余控件的 hover/pressed/selected 视觉在重构前来自 extraction / scene 里的原 `StandardVisual` 分支（现已统一迁入各控件自己的 `WidgetVisual`）。
 → #100 §4 的统一状态位要同时覆盖这两条路径。只改 `InteractionStyle` 会漏掉一百来个控件。
 
 **F7 — 217 个模块级设计常量。**
@@ -800,7 +800,7 @@ cargo test -p component-gallery --bin ui-snapshots --features snapshots --locked
 | Effect / Elevation | `EffectTokens` | 菜单/浮层阴影、模态框阴影、图片查看器的媒体遮罩（`media_scrim`，两种模式都是深色；画家在线性光里合成，所以内置值是黑 0.99，白底上约 `#1a1a1a`）、叠在媒体上的前景（`media_foreground`，两种模式都是白色，经 `SemanticColorRole::OnMedia` 读）、对话框和抽屉的遮罩（`modal_scrim` 黑 0.45、`modal_scrim_blur` 0；照 CSS 的 `rgba(0,0,0,c)` 写时用 `linear_scrim_alpha(c)` 换成线性光的 α）读**安装值** | `surface_shadow` 里的 `match mode` + 模态框的亮度嗅探；遮罩是场景里写死的 `[0, 0, 0, 0.45]` |
 | Surface / material | `SurfaceTokens` | `ThemeTokens::with_backdrop` 决定 backdrop 给哪个角色上 alpha | `match target` 写死在宿主适配层 |
 | Focus | `AccentRamp.focus` + `FocusSurface` / `FocusBorder` / `FocusText` | 11 个组件的 `InteractionStyle::focused`，以及 radio 焦点环的颜色 | 三个组件写 `border: Accent` 配零宽度边（画不出来）、三个与 hover 同值、一个与选中同值 |
-| Component recipe | `ComponentThemeRegistry` | extraction 的 family 前景表、`Button` 的 variant×state 表、status tone 表 | 25 臂 `match StandardVisual` + `Button::project` 里五张内联表 |
+| Component recipe | `ComponentThemeRegistry` | extraction 的 family 前景表、`Button` 的 variant×state 表、status tone 表 | 原 25 臂 `match StandardVisual` + `Button::project` 里五张内联表 |
 
 方向很关键：**`const` 读 token。不是 token 读 `const`**。F2 之所以修不动。正是因为当时方向是反的。时长是权威。主题只挂着两个没人读的字段。
 
@@ -954,7 +954,7 @@ style.color_overrides = Some(Arc::new(modeler));
 - `NodeStyle::color_overrides: Option<Arc<ColorOverrides>>`。`El::theme_colors(impl IntoProp<ColorOverrides>)` 绑定它。
 - `SettingsRow::label_colors: Option<Arc<ColorOverrides>>`（视图 `.label_colors(..)`）：只给设置行的名称换色。行每次投影都重建名称的样式，`theme_colors` 挂在行上又会连提示、控件一起换，所以名称单独一个字段；提示、notice 与控件仍用主题色。
 - 解析时一次扁平化。`ComputedStyle::color_scope` 是继承的：节点自己的覆盖写在父作用域之上，内层逐角色盖外层。后代只读这一个 `Arc`。不沿父链往上走。没有覆盖的节点照旧共享父节点的结果。
-- 读到的地方：节点样式按角色取的前景、背景、边框、ring 与各交互态（`SemanticPaint`），组件几何（`derive_component_geometry` 整个函数换成作用域里的 `StyleModelRef`：开关轨道与拇指、状态胶囊的 tone、按钮、复选、单选、滑块、分段、列表行与它们的焦点环），标准视觉前景，文本 span、选区底色、拖入高亮，输入框的计数与后缀。
+- 读到的地方：节点样式按角色取的前景、背景、边框、ring 与各交互态（`SemanticPaint`），控件视觉绘制（各 `WidgetVisual::paint` 经 `WidgetPaintCtx::style_model` 读取作用域里的 `StyleModelRef`：开关轨道与拇指、状态胶囊的 tone、按钮、复选、单选、滑块、分段、列表行与它们的焦点环），文本 span、选区底色、拖入高亮，输入框的计数与后缀。
 - 失效：`color_overrides` 变了按继承前景处理，整棵子树标 STYLE | RENDER，重解析时同一个扁平结果停止向下传播。
 - 派生角色（`WarningSoft*`、`DangerSoft*`、代码 token 角色）跟着基色走：覆盖 `Warning` 会带上 `WarningSoft`。单独点名派生角色不起作用。`Titlebar` 与 `OnMedia` 可以覆盖。
 - 默认主题下没有节点带覆盖，取值路径与以前逐字节相同。

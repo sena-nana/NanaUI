@@ -109,7 +109,7 @@ title: 运行时保留树
 | `crates/nana-ui-runtime/src/store.rs` | `NodeStore`、`NodeRecord`、`Hierarchy`、`NodeTable`（稠密数组 + 溢出表）与全部稀疏侧表 |
 | `crates/nana-ui-runtime/src/mutation.rs` | `UiMutation` 枚举词表与 `MutationQueue` |
 | `crates/nana-ui-runtime/src/world/mutation.rs` | `UiWorld::commit` / `commit_with_mount_lifecycle`、滚动偏移与布局结果发布 |
-| `crates/nana-ui-runtime/src/component_registry.rs` | `ComponentRegistry`、`RegisterableComponent`、`PreparedSemanticBinding` |
+| `crates/nana-ui-runtime/src/component_registry.rs` | `ComponentRegistry`、`RegisterableComponent`、`ComponentTypeId` |
 | `crates/nana-ui-runtime/src/schedule.rs` | `DirtyMask` 9 位失效掩码与 `SystemWork` |
 | `crates/nana-ui-runtime/src/framework.rs` | `AppContext`（类型化组件视图状态与事件表） |
 | `crates/nana-ui-runtime/src/framework/frame.rs` | 分阶段帧驱动入口：`resolve_styles`、`shape_text`、`layout_document_*` |

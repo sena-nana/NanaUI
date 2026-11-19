@@ -90,7 +90,7 @@ RangeField::new(137.0, 0.0, 200.0, 1.0)
 视图里写成 `slider(0.0, 200.0, 1.0).value_thumb(true).show_bounds(true).default_value(默认值)`，`default_value` 可以绑 `Signal<Option<f64>>`；模板是 `<Slider value_thumb={true} show_bounds={true} default_value={Some(100.0)}>`。
 
 - **胶囊。** 高度是控件的文字行高加 `sm` 一档（常规尺寸 16 + 6 = 22），不超过内容盒；宽度是最小值、最大值和当前值里最宽的那个（等宽数字）加左右各 `md`，至少两个 `page`（48），所以拖动时宽度不变。胶囊中心的行程是轨道道两端各缩进半个胶囊，胶囊两端始终留在轨道道里。轨道在胶囊两侧各断开 `xxs` 一档，透出底色，压在填充上也看得清。禁用时胶囊换成禁用底色、文字换成禁用文字色。键盘焦点可见时，焦点环沿胶囊外沿。
-- **组件几何。** `ComponentGeometry::Range` 的 `value_thumb: Option<RangeValueThumb>` 给出胶囊盒（`capsule`）、读数（`text`）、断开的宽度（`gap`）和是否在键入（`editing`）；`track` 仍是滑块中心的行程，指针取值用它。
+- **组件几何。** `RangeGeometry`（经 `UiWorld::range_geometry` 获取）的 `value_thumb: Option<RangeValueThumb>` 给出胶囊盒（`capsule`）、读数（`text`）、断开的宽度（`gap`）和是否在键入（`editing`）；`track` 仍是滑块中心的行程，指针取值用它。
 - **拖动。** 按在胶囊上开始拖动不跳值：值从按下时的值起，按指针位移换算。按在轨道别处先跳到那一点，再从那里相对拖动。
 - **键入。** 在胶囊上按下、移动不足 2px 就松开，或焦点在滑条上按 Enter（Space、读屏的按下也算），进入键入：滑条组装的 `NumberInput` 盖在胶囊的位置（比胶囊左右各宽 `xl`），显示当前值、全选并获得焦点，胶囊让位。Enter 或焦点离开时提交：夹在范围内、按 `step` 对齐，值变了就发 `RangeInput` 和 `RangeChanged`。Escape 还原，不发事件。结束后焦点回到滑条。`editing` 表示是否在键入；`begin_range_edit(滑条)` 从代码进入键入。
 
@@ -132,7 +132,7 @@ RangeField::new(137.0, 0.0, 200.0, 1.0)
 | `page_step` | — | 翻页步进，默认是 `step` 的十倍 |
 | `rail` | `Option<f32>` | `rail(粗细)` 只画这么粗的细轨，横贯整个控件，没有标签、数值和内边距，圆点只在焦点可见时出现；控件高度就是命中区 |
 | `track_gradient` | `Option<Arc<[GradientStop]>>` | `track_gradient(色标)` 把轨道画成渐变条：没有填充和字段内边距，圆点换成对比色圆环，语义不变。少于两个色标时保持常规外观；`rail` 优先 |
-| `caution_from` | `Option<f64>` | `caution_from(值)` 把从这个值到最大值的一段标成警示段：这段的轨道与填充换成主题的 Warning 色（填充与未填充处同为实色，位置由滑块标出），取值进入这一段时滑块（胶囊或圆点）也从 Accent 换成 Warning 色，胶囊里的读数取 Accent 文字色与正文色中对比更高的一个，禁用时不换；落在这一段里的 `markers`（含起点上的那个）也画成 Warning 色；读数、步进与读屏语义不变，也不拦住取值；要在边界停一下就在那里配一个 `markers`。值在范围外或等于最大值时不标；`rail`、`track_gradient` 优先。几何在 `ComponentGeometry::Range` 的 `caution: Option<RangeCaution>`。只在构造器上，`<Slider>` 字段表里没有 |
+| `caution_from` | `Option<f64>` | `caution_from(值)` 把从这个值到最大值的一段标成警示段：这段的轨道与填充换成主题的 Warning 色（填充与未填充处同为实色，位置由滑块标出），取值进入这一段时滑块（胶囊或圆点）也从 Accent 换成 Warning 色，胶囊里的读数取 Accent 文字色与正文色中对比更高的一个，禁用时不换；落在这一段里的 `markers`（含起点上的那个）也画成 Warning 色；读数、步进与读屏语义不变，也不拦住取值；要在边界停一下就在那里配一个 `markers`。值在范围外或等于最大值时不标；`rail`、`track_gradient` 优先。几何在 `RangeGeometry` 的 `caution: Option<RangeCaution>`。只在构造器上，`<Slider>` 字段表里没有 |
 | `value_thumb` | `bool` | `value_thumb(true)` 把读数写进宽胶囊滑块，不画右侧读数；在胶囊上拖动不跳值，单击或 Enter 键入。`rail`、`track_gradient` 优先。`<Slider>` 字段表里有，`slider` 上同名 |
 | `show_bounds` | `bool` | `show_bounds(true)` 在轨道两端写最小值和带单位的最大值。`<Slider>` 字段表里有 |
 | `default_value` | `Option<f64>` | `Some(值)` 在行末放恢复默认按钮，值等于它时禁用；非有限值当作 `None`。`<Slider>` 字段表里有，可绑定 |

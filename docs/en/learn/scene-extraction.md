@@ -22,14 +22,14 @@ In the dependency levels: `core(L1) → text/css/charts/input/window/gpu(L2) →
 | `nana-ui-runtime` | `UiWorld::extract_nodes` produces `ExtractedNode`s (`crates/nana-ui-runtime/src/world/extraction.rs:652`) |
 | `nana-ui` | `SceneWgpuPainter` consumes the `UiScene` primitive sequence, `frame_plan()`, and the `instance` generation number (see [GPU and Frame Lifecycle](/learn/gpu-frame)) |
 | `nana-ui-core` | Provides low-level geometry primitives and packed Motion descriptor data |
-| `nana-text` | Retained text layout handles are already loaded into `ExtractedNode.text_layout` (`crates/nana-ui-runtime/src/components.rs:4198`) |
+| `nana-text` | Retained text layout handles are already loaded into `ExtractedNode.text_layout` (`crates/nana-ui-runtime/src/components.rs:4555`) |
 | `nana-diagnostics` | `flush` records extraction and `apply_delta` time under `FrameStage::Extract`; failing to converge in 8 rounds is recorded as `FLUSH_DID_NOT_SETTLE` (`runtime_document.rs:203`) |
 
 ## Key types and data
 
 | Type | File and line | Purpose |
 | --- | --- | --- |
-| `ExtractedNode` | `crates/nana-ui-runtime/src/components.rs:4181` | Per-node extraction snapshot (shared `Arc<NodeKind>` and `Arc<ComputedStyle>`, layout box, text layout handle, custom recording, and more) |
+| `ExtractedNode` | `crates/nana-ui-runtime/src/components.rs:4514` | Per-node extraction snapshot (shared `Arc<NodeKind>` and `Arc<ComputedStyle>`, layout box, text layout handle, custom recording, and more) |
 | `UiScene` | `crates/nana-ui-scene/src/scene.rs:1357` | Retained drawing graph: node table + primitive table + total-order table + visibility and frame plan caches, with a monotonically increasing `instance` |
 | `ScenePrimitive` | `crates/nana-ui-scene/src/scene.rs:1257` | A single drawing primitive: `id`, `bounds`, `transform`, shared clip chain `clips`, `paint_opacity`, `z_index`, `document_order`, `kind` |
 | `ScenePrimitiveKind` | `crates/nana-ui-scene/src/scene.rs` | Enum of concrete primitive kinds: `Quad` / `Mesh` / `Icon` / `Text` / `Chart` / `HostTexture` / `Custom`, and more |
@@ -57,7 +57,7 @@ Once the loop settles, `flush` shares the same `layout_generation` (`:28`) **wit
 3. **Extract dirty nodes and update the drawing graph**: call `world().extract_nodes(&render_dirty)` (hidden nodes stay in the returned list with `visible = false` so that `UiScene` removes their old primitives, `world/extraction.rs:652`), then call `Arc::make_mut(&mut self.scene).apply_delta(extracted, render_removed)` (updates in place when no one shares the snapshot; the time is counted under `FrameStage::Extract` as well, `:291`).
 4. Bind the compositor presentation layer (`apply_presentation`).
 
-`ExtractedNode` (`crates/nana-ui-runtime/src/components.rs:4181`) makes wide use of `Arc` sharing and on-demand boxing: `kind: Arc<NodeKind>` and `style: Arc<ComputedStyle>` clone references directly; the bulky `component_geometry: Option<Box<ComponentGeometry>>` is boxed separately (the `TextInput` variant alone is about 1.8 KB, `:4222`); `chrome_radii: ChromeRadii` carries corner radii already resolved against the current theme (`:4234`); `compositor: ExtractedCompositor` carries only layer promotion hints, and transient presentation values are not baked into logical style (`:4245`).
+`ExtractedNode` (`crates/nana-ui-runtime/src/components.rs:4514`) makes wide use of `Arc` sharing: `kind: Arc<NodeKind>` and `style: Arc<ComputedStyle>` clone references directly; node-local paint output projected on demand by each control's `WidgetVisual::paint` is carried in `widget_paint: Option<Arc<WidgetPaintOutput>>` (`:4601`); `chrome_radii: ChromeRadii` carries corner radii already resolved against the current theme (`:4583`); `compositor: ExtractedCompositor` carries only layer promotion hints, and transient presentation values are not baked into logical style (`:4595`).
 
 ### 2. Primitive expansion and the slot namespace (`PrimitiveId`)
 

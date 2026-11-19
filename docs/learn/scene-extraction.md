@@ -22,14 +22,14 @@ title: Scene 提取
 | `nana-ui-runtime` | `UiWorld::extract_nodes` 产出 `ExtractedNode`（`crates/nana-ui-runtime/src/world/extraction.rs:652`） |
 | `nana-ui` | `SceneWgpuPainter` 消费 `UiScene` 的图元序列、`frame_plan()` 与 `instance` 代际号（见 [GPU 与帧生命周期](/learn/gpu-frame)） |
 | `nana-ui-core` | 提供底层几何原语与 Motion 描述符打包数据 |
-| `nana-text` | 保留文本布局句柄已装入 `ExtractedNode.text_layout`（`crates/nana-ui-runtime/src/components.rs:4198`） |
+| `nana-text` | 保留文本布局句柄已装入 `ExtractedNode.text_layout`（`crates/nana-ui-runtime/src/components.rs:4555`） |
 | `nana-diagnostics` | `flush` 以 `FrameStage::Extract` 记录抽取与 `apply_delta` 耗时；8 轮未收敛记入 `FLUSH_DID_NOT_SETTLE`（`runtime_document.rs:203`） |
 
 ## 关键类型与数据
 
 | 类型 | 所在文件与行号 | 作用说明 |
 | --- | --- | --- |
-| `ExtractedNode` | `crates/nana-ui-runtime/src/components.rs:4181` | 单节点抽取快照（共享 `Arc<NodeKind>` 与 `Arc<ComputedStyle>`、布局盒、文本布局句柄、自定义录制等） |
+| `ExtractedNode` | `crates/nana-ui-runtime/src/components.rs:4514` | 单节点抽取快照（共享 `Arc<NodeKind>` 与 `Arc<ComputedStyle>`、布局盒、文本布局句柄、自定义录制等） |
 | `UiScene` | `crates/nana-ui-scene/src/scene.rs:1357` | 保留绘制图：节点表 + 图元表 + 全序表 + 可见性与帧计划缓存，单调递增 `instance` |
 | `ScenePrimitive` | `crates/nana-ui-scene/src/scene.rs:1257` | 单条绘制图元：`id`、`bounds`、`transform`、共享裁剪链 `clips`、`paint_opacity`、`z_index`、`document_order`、`kind` |
 | `ScenePrimitiveKind` | `crates/nana-ui-scene/src/scene.rs` | 图元具体类别枚举：`Quad` / `Mesh` / `Icon` / `Text` / `Chart` / `HostTexture` / `Custom` 等 |
@@ -57,7 +57,7 @@ title: Scene 提取
 3. **抽取脏节点并更新绘制图**：调用 `world().extract_nodes(&render_dirty)`（隐藏节点仍保留在返回列表中且 `visible = false`，以便 `UiScene` 移除其旧图元，`world/extraction.rs:652`），随后调用 `Arc::make_mut(&mut self.scene).apply_delta(extracted, render_removed)`（无人共享快照时原地更新，耗时一并计入 `FrameStage::Extract`，`:291`）；
 4. 绑定合成器呈现层（`apply_presentation`）。
 
-`ExtractedNode`（`crates/nana-ui-runtime/src/components.rs:4181`）广泛采用 `Arc` 共享与按需装箱：`kind: Arc<NodeKind>` 与 `style: Arc<ComputedStyle>` 直接克隆引用；体积较大的 `component_geometry: Option<Box<ComponentGeometry>>` 单独装箱（仅 `TextInput` 变体即约 1.8 KB，`:4222`）；`chrome_radii: ChromeRadii` 携带已按当前主题解析的圆角（`:4234`）；`compositor: ExtractedCompositor` 仅携带层提升提示，瞬态呈现值不烤入逻辑样式（`:4245`）。
+`ExtractedNode`（`crates/nana-ui-runtime/src/components.rs:4514`）广泛采用 `Arc` 共享与按需封装：`kind: Arc<NodeKind>` 与 `style: Arc<ComputedStyle>` 直接克隆引用；各控件通过 `WidgetVisual::paint` 按需投影出的节点本地绘制输出放入 `widget_paint: Option<Arc<WidgetPaintOutput>>`（`:4601`）；`chrome_radii: ChromeRadii` 携带已按当前主题解析的圆角（`:4583`）；`compositor: ExtractedCompositor` 仅携带层提升提示，瞬态呈现值不烤入逻辑样式（`:4595`）。
 
 ### 2. 图元展开与槽位命名空间（`PrimitiveId`）
 

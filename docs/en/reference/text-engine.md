@@ -821,7 +821,7 @@ and cannot move the glyphs. A multi-line editor's text area takes the content bo
   centers that column horizontally in the box (a negative block-direction scroll).
 - **Horizontal scrolling goes to the painter as a translation**: a multi-line editor's geometry also carries `scroll` (`EditorFrame::scroll_x`). See "Horizontal editor scrolling is also a translation".
 - **Pointer**: a page point is converted back to text space through `text_point` before hit testing. It is the same conversion as drawing the geometry.
-- **IME**: the cursor area the host hands to the input method is the caret the editor draws (the `caret` of `ComponentGeometry::TextInput`).
+- **IME**: the cursor area the host hands to the input method is the caret the editor draws (`TextInputGeometry::caret`).
   In vertical text that is the horizontal bar across a column. The candidate window sits next to the character being
   edited, not next to the whole input box.
 - **Accessibility**: an accesskit `TextRun` carries `text_direction` by inline start: horizontal LTR / RTL, vertical
@@ -2731,7 +2731,7 @@ The other two are **behavior fixes**. Not noise:
 | Item | Status |
 | --- | --- |
 | ~~Zero rebuild for horizontal subpixel movement (#223)~~ | Done: the painter snaps the final pure translation to device pixels, and the logical scroll offset keeps its fraction. See "Fractional translation snaps to device pixels" |
-| ~~Horizontal scrolling in the editor still re-parses~~ | Done: scrolling along x is handed to the painter as a translation by `ComponentGeometry::TextInput::scroll`. See "Horizontal scrolling in the editor is a translation too" |
+| ~~Horizontal scrolling in the editor still re-parses~~ | Done: scrolling along x is handed to the painter as a translation by `TextInputGeometry::scroll`. See "Horizontal scrolling in the editor is a translation too" |
 | ~~Churn with random lengths still reflows the whole arena (#224)~~ | Done: drawing goes through a paint-order index table, moving a block writes only that block, and a budget-triggered compaction rewrites only the index table. See "Arena and the paint-order index table" |
 | Paint-order compaction is still O(total on-screen slots) (#224) | Instance bytes are already only the rebuilt paragraph's own block; compacting the index table still rewrites every interval (4 B/slot). With ten thousand labels under random churn it averages 65 KB/frame over 60 frames, 8 KB/frame with a thousand labels, and after a long run, once the gaps take effect, it falls to 25 KB. Acceptance constrains instances only; the index half holds in the amortized sense |
 | Gaps are not reclaimed (#230) | After entering a layout that leaves gaps, every gap slot is a four-corner quad the vertex stage still runs (about 20% more index slots), and it can only go away at the next paint-order compaction; once the text stops growing, the UI may go a long time without compacting. A gap-free compaction should run after a few stable frames, but first an A/B has to prove those 20% of vertices are really measurable |
