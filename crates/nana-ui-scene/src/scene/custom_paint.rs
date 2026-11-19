@@ -1922,6 +1922,10 @@ fn scale_paint_alpha(color: nana_ui_core::PaintColor, opacity: f32) -> nana_ui_c
                 alpha: alpha * opacity,
             }
         }
+        other => scale_paint_alpha(
+            other.resolve(nana_ui_core::StyleModelRef::default()),
+            opacity,
+        ),
     }
 }
 

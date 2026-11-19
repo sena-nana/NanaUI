@@ -22,12 +22,13 @@ use crate::css_container::ContainerRule;
 /// Interactive pseudo-class supported at parse time.
 ///
 /// `:focus-visible` maps to [`Self::Focus`]: this engine has no keyboard-vs-pointer
-/// signal, so it matches only while focused (same as `:focus`) and never paints
-/// a focus-visible layer without focus.
+/// Focus-visible distinguishes keyboard/programmatic focus from pointer
+/// click focus in View stylesheets (`UiWorld::focus_visible`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum InteractivePseudo {
     Hover,
     Focus,
+    FocusVisible,
     Active,
 }
 
@@ -35,7 +36,8 @@ impl InteractivePseudo {
     pub fn from_ident(name: &str) -> Option<Self> {
         match name.to_ascii_lowercase().as_str() {
             "hover" => Some(Self::Hover),
-            "focus" | "focus-visible" => Some(Self::Focus),
+            "focus" => Some(Self::Focus),
+            "focus-visible" => Some(Self::FocusVisible),
             "active" => Some(Self::Active),
             _ => None,
         }
@@ -453,11 +455,12 @@ pub fn keyframes_by_name<'a>(
     keyframes.get(name)
 }
 
-/// Which `:hover` / `:focus` / `:active` pseudos are active on one node.
+/// Which `:hover` / `:focus` / `:focus-visible` / `:active` pseudos are active on one node.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct InteractivePseudoFlags {
     pub hover: bool,
     pub focus: bool,
+    pub focus_visible: bool,
     pub active: bool,
 }
 
@@ -466,6 +469,7 @@ impl InteractivePseudoFlags {
         match pseudo {
             InteractivePseudo::Hover => self.hover,
             InteractivePseudo::Focus => self.focus,
+            InteractivePseudo::FocusVisible => self.focus_visible,
             InteractivePseudo::Active => self.active,
         }
     }
@@ -475,6 +479,7 @@ impl InteractivePseudoFlags {
         match pseudo {
             InteractivePseudo::Hover => next.hover = true,
             InteractivePseudo::Focus => next.focus = true,
+            InteractivePseudo::FocusVisible => next.focus_visible = true,
             InteractivePseudo::Active => next.active = true,
         }
         next
@@ -1166,13 +1171,13 @@ mod tests {
     }
 
     #[test]
-    fn focus_visible_maps_to_focus_and_requires_focus() {
+    fn focus_visible_maps_to_distinct_pseudo_and_requires_focus_visible() {
         let (sheet, report) = parse_stylesheet_full(".field:focus-visible { color: red; }", 0);
         assert_eq!(report.skipped_selectors, 0);
         assert_eq!(sheet.interactive_rules.len(), 1);
         assert_eq!(
             sheet.interactive_rules[0].selector.pseudo,
-            InteractivePseudo::Focus
+            InteractivePseudo::FocusVisible
         );
         let classes = vec!["field".into()];
         let empty = BTreeMap::new();
@@ -1208,10 +1213,26 @@ mod tests {
                 &sheet.interactive_rules,
                 &ctx,
                 &InteractiveMatchState::default(),
-                InteractivePseudo::Focus,
+                InteractivePseudo::FocusVisible,
             )
             .is_empty(),
-            "focus-visible must not match without focus"
+            "focus-visible must not match without focus_visible"
+        );
+        assert!(
+            matched_interactive_rules(
+                &sheet.interactive_rules,
+                &ctx,
+                &InteractiveMatchState {
+                    subject: InteractivePseudoFlags {
+                        focus: true,
+                        ..Default::default()
+                    },
+                    ancestors: &[],
+                },
+                InteractivePseudo::FocusVisible,
+            )
+            .is_empty(),
+            "pointer focus alone must not activate :focus-visible"
         );
         let focused = matched_interactive_rules(
             &sheet.interactive_rules,
@@ -1219,11 +1240,12 @@ mod tests {
             &InteractiveMatchState {
                 subject: InteractivePseudoFlags {
                     focus: true,
+                    focus_visible: true,
                     ..Default::default()
                 },
                 ancestors: &[],
             },
-            InteractivePseudo::Focus,
+            InteractivePseudo::FocusVisible,
         );
         assert_eq!(focused.len(), 1);
     }

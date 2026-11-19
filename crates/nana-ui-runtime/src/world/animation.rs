@@ -216,6 +216,20 @@ impl UiWorld {
             if self.apply_layout_class_sample(&sample) {
                 component_updates.push(sample.target);
             }
+            if matches!(
+                sample.property,
+                crate::AnimatableProperty::Background | crate::AnimatableProperty::Color
+            ) && self.contains(sample.target)
+            {
+                let dirty = DirtyMask::STYLE | DirtyMask::RENDER;
+                if sample.property == crate::AnimatableProperty::Color {
+                    self.mark_subtree(sample.target, dirty);
+                } else {
+                    self.mark(sample.target, dirty);
+                }
+                self.account_animation_dirty(dirty);
+                component_updates.push(sample.target);
+            }
             samples.push(sample);
         }
         if !component_updates.is_empty() {
@@ -587,22 +601,38 @@ impl UiWorld {
         }
         self.presentation
             .insert_in_layer(track, logical, spec.layer);
-        if matches!(spec.property, crate::AnimatableProperty::FontAxis(_)) {
-            // A replaced run may have been holding the axis at another value.
-            self.mark_font_axes_changed(spec.target);
+        match spec.property {
+            crate::AnimatableProperty::FontAxis(_) => {
+                // A replaced run may have been holding the axis at another value.
+                self.mark_font_axes_changed(spec.target);
+            }
+            crate::AnimatableProperty::Background => {
+                self.mark(spec.target, DirtyMask::STYLE | DirtyMask::RENDER);
+            }
+            crate::AnimatableProperty::Color => {
+                self.mark_subtree(spec.target, DirtyMask::STYLE | DirtyMask::RENDER);
+            }
+            _ => {}
         }
     }
 
     fn unbind_presentation(&mut self, id: nana_ui_core::motion::MotionTrackId) {
         if let Some(overlay) = self.presentation.remove(id)
-            && matches!(
-                overlay.track.property,
-                crate::AnimatableProperty::FontAxis(_)
-            )
             && let Some(target) = StableNodeId::new(overlay.track.target.get())
         {
-            // The axis falls back to what the style says without it.
-            self.mark_font_axes_changed(target);
+            match overlay.track.property {
+                crate::AnimatableProperty::FontAxis(_) => {
+                    // The axis falls back to what the style says without it.
+                    self.mark_font_axes_changed(target);
+                }
+                crate::AnimatableProperty::Background => {
+                    self.mark(target, DirtyMask::STYLE | DirtyMask::RENDER);
+                }
+                crate::AnimatableProperty::Color => {
+                    self.mark_subtree(target, DirtyMask::STYLE | DirtyMask::RENDER);
+                }
+                _ => {}
+            }
         }
         self.motion_descriptors.cancel(id);
     }
@@ -629,6 +659,14 @@ impl UiWorld {
             .properties_of(target)
             .filter(|property| match property {
                 crate::AnimatableProperty::Opacity => previous.opacity != next.opacity,
+                crate::AnimatableProperty::Background => {
+                    previous.background != next.background
+                        || previous.paint_colors.background != next.paint_colors.background
+                }
+                crate::AnimatableProperty::Color => {
+                    previous.color != next.color
+                        || previous.paint_colors.color != next.paint_colors.color
+                }
                 crate::AnimatableProperty::Transform => {
                     !previous.transforms.ptr_eq(&next.transforms)
                         && (previous.transforms.transform != next.transforms.transform

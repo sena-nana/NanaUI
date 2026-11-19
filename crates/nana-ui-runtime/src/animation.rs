@@ -337,7 +337,13 @@ impl AnimationSpec {
     /// compositor properties, read at paint, and font axes, read when the
     /// style resolves.
     pub fn has_overlay(&self) -> bool {
-        self.uses_presentation_overlay() || matches!(self.property, AnimatableProperty::FontAxis(_))
+        self.uses_presentation_overlay()
+            || matches!(
+                self.property,
+                AnimatableProperty::FontAxis(_)
+                    | AnimatableProperty::Background
+                    | AnimatableProperty::Color
+            )
     }
 
     /// Overlay + descriptor path for compositor-safe properties only.

@@ -138,6 +138,18 @@ impl UiWorld {
             .filter(move |((owner, _), _)| *owner == document)
             .map(|(_, target)| *target)
     }
+
+    /// The nodes the pointers of `document` are currently pressing, one per pointer.
+    pub(crate) fn pointer_press_targets(
+        &self,
+        document: DocumentId,
+    ) -> impl Iterator<Item = StableNodeId> + '_ {
+        self.input
+            .pointer_press
+            .iter()
+            .filter(move |((owner, _), _)| *owner == document)
+            .map(|(_, target)| *target)
+    }
 }
 
 impl UiWorld {

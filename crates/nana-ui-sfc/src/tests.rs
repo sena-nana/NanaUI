@@ -687,6 +687,7 @@ let done = signal(false);
 .title { opacity: 0.2; }
 .card:hover { opacity: 0.7; }
 .card > .title { padding: 2px; }
+.card:hover .title { opacity: 0.3; }
 .card { frobnicate: 3; }
 </style>"#,
     )])
@@ -700,10 +701,47 @@ let done = signal(false);
             out.warnings
         );
     };
-    at("Card.vue: 15:", ":hover");
-    at("Card.vue: 16:", ".card > .title");
-    at("Card.vue: 17:", "frobnicate");
+    assert!(
+        !out.warnings
+            .iter()
+            .any(|warning| warning.contains("Card.vue: 15:") || warning.contains("Card.vue: 16:")),
+        "subject :hover and > combinator should compile cleanly: {:?}",
+        out.warnings
+    );
+    at("Card.vue: 17:", ":hover");
+    at("Card.vue: 18:", "frobnicate");
     at("Card.vue: 7:", "ghost");
+}
+
+#[test]
+fn scoped_style_supports_dynamic_theme_pseudos_keyframes_and_combinators() {
+    let out = compile(&[(
+        "Styled.vue",
+        r#"<script setup lang="rust">
+let open = signal(false);
+</script>
+<template>
+  <Column class="card" class:open="open">
+    <Text class="title">Hello</Text>
+  </Column>
+</template>
+<style scoped>
+:root { --tint: #112233; }
+:root[data-theme="dark"] { --tint: #ddeeff; }
+.card { background: var(--nana-surface); transition: opacity 120ms 40ms ease; }
+.card:hover { background: var(--tint); opacity: 0.9; }
+.card.open > .title { color: light-dark(#101010, #f0f0f0); animation: pulse 200ms linear infinite alternate; }
+@keyframes pulse { from { opacity: 0.3; } to { opacity: 1.0; } }
+</style>"#,
+    )])
+    .unwrap();
+    assert!(out.warnings.is_empty(), "{:?}", out.warnings);
+    let code = squash(&out.code);
+    assert!(code.contains("ThemeRole"), "{code}");
+    assert!(code.contains("PaintColor::light_dark"), "{code}");
+    assert!(code.contains("Sheet::with_animations"), "{code}");
+    assert!(code.contains("KeyframeAnimation"), "{code}");
+    assert!(code.contains("pseudo:1u8"), "{code}");
 }
 
 /// The class rules of an `@container` block compile with the block's query

@@ -1629,6 +1629,7 @@ impl AppContext {
             // preference on its next projection.
             let _ = reproject(self, id);
         }
+        let _ = self.sync_keyframe_animations(true);
     }
 
     /// Updates whether the active host provides screen color picking, reassembling existing
@@ -2528,6 +2529,7 @@ impl AppContext {
         if recipes_changed {
             self.reproject_recipe_views()?;
         }
+        let _ = self.sync_keyframe_animations(true);
         Ok(true)
     }
 
@@ -2537,7 +2539,11 @@ impl AppContext {
     /// installed meanwhile takes the overlay too. Hosts call this from the
     /// platform signal. Whether anything changed.
     pub fn set_high_contrast(&mut self, high_contrast: bool) -> bool {
-        self.world.set_high_contrast(high_contrast)
+        let changed = self.world.set_high_contrast(high_contrast);
+        if changed {
+            let _ = self.sync_keyframe_animations(true);
+        }
+        changed
     }
 
     /// Create a low-level retained view node without running a component
@@ -3407,6 +3413,7 @@ impl AppContext {
             self.reposition_follow_cursor_tooltip(target)?;
         }
         self.sync_pointer_hooks(document, pointer_id, previous, target)?;
+        self.sync_interactive_style_states();
         Ok(previous)
     }
 
@@ -3436,7 +3443,9 @@ impl AppContext {
         pointer_id: u64,
         target: StableNodeId,
     ) -> Result<Option<StableNodeId>, FrameworkError> {
-        Ok(self.world.press_pointer(document, pointer_id, target)?)
+        let previous = self.world.press_pointer(document, pointer_id, target)?;
+        self.sync_interactive_style_states();
+        Ok(previous)
     }
 
     pub fn release_pointer(
@@ -3444,7 +3453,9 @@ impl AppContext {
         document: DocumentId,
         pointer_id: u64,
     ) -> Option<StableNodeId> {
-        self.world.release_pointer_press(document, pointer_id)
+        let previous = self.world.release_pointer_press(document, pointer_id);
+        self.sync_interactive_style_states();
+        previous
     }
 
     /// Revoke capture immediately during host lifecycle cancellation. This
@@ -3505,6 +3516,7 @@ impl AppContext {
         let mut mutations = MutationQueue::new();
         mutations.request_focus(document, Some(target));
         self.commit_mutations(mutations)?;
+        self.sync_interactive_style_states();
         Ok(true)
     }
 
@@ -3517,6 +3529,7 @@ impl AppContext {
         let mut mutations = MutationQueue::new();
         mutations.request_focus(document, None);
         self.commit_mutations(mutations)?;
+        self.sync_interactive_style_states();
         Ok(true)
     }
 

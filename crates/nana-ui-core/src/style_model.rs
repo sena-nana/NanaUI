@@ -44,7 +44,15 @@
 //! - CSS parsing / CSSOM must not enter `nana-ui` or this crate
 //! - A CSS **subset** maps into this model; that mapping stays in `nana-ui-css`
 
-use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::fmt;
+use std::hash::{Hash, Hasher};
+use std::num::NonZeroU32;
+use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::{Mutex, OnceLock};
+
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::semantics::{ButtonKind, CardKind, ControlSize, StatusTone};
 use crate::theme::tokens::{AccentRamp, MEDIA_FOREGROUND, OpacityTokens, StateLayer};
@@ -86,11 +94,230 @@ pub enum PaintColor {
         channels: [f32; 3],
         alpha: f32,
     },
+    ThemeRole {
+        role: SemanticColorRole,
+    },
+    ThemeMix(SemanticColorMix),
+    ThemePair(ThemeColorPairRef),
+}
+
+const _: () = assert!(std::mem::size_of::<PaintColor>() <= 24);
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ThemeColorPair {
+    light: PaintColor,
+    dark: PaintColor,
+}
+
+/// Compact 4-byte interned `(light, dark)` [`PaintColor`] pair so `PaintColor`
+/// stays `Copy` and within 24 bytes for dynamic `light-dark(...)` / theme rules.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ThemeColorPairRef(NonZeroU32);
+
+const _: () = assert!(std::mem::size_of::<ThemeColorPairRef>() == 4);
+const _: () = assert!(std::mem::size_of::<Option<ThemeColorPairRef>>() == 4);
+
+const PAIR_PAGE_SHIFT: usize = 10;
+const PAIR_PAGE_SIZE: usize = 1 << PAIR_PAGE_SHIFT;
+const PAIR_MAX_PAGES: usize = 1024;
+
+static PAIR_PAGES: [OnceLock<Box<[AtomicPtr<ThemeColorPair>]>>; PAIR_MAX_PAGES] =
+    [const { OnceLock::new() }; PAIR_MAX_PAGES];
+
+#[derive(Default)]
+struct ThemeColorPairInternTable {
+    buckets: HashMap<u64, Vec<ThemeColorPairRef>>,
+    next_index: u32,
+}
+
+static PAIR_INTERN: OnceLock<Mutex<ThemeColorPairInternTable>> = OnceLock::new();
+
+fn pair_intern() -> &'static Mutex<ThemeColorPairInternTable> {
+    PAIR_INTERN.get_or_init(|| Mutex::new(ThemeColorPairInternTable::default()))
+}
+
+impl ThemeColorPairRef {
+    fn inner(self) -> &'static ThemeColorPair {
+        let idx = (self.0.get() - 1) as usize;
+        let page = PAIR_PAGES[idx >> PAIR_PAGE_SHIFT]
+            .get()
+            .expect("valid ThemeColorPairRef page");
+        let ptr = page[idx & (PAIR_PAGE_SIZE - 1)].load(Ordering::Acquire);
+        // SAFETY: `intern_theme_color_pair` publishes a non-null `Box::leak`
+        // pointer with `Ordering::Release` before returning `ThemeColorPairRef`.
+        unsafe { &*ptr }
+    }
+
+    pub fn light(self) -> PaintColor {
+        self.inner().light
+    }
+
+    pub fn dark(self) -> PaintColor {
+        self.inner().dark
+    }
+
+    pub fn pair(self) -> (PaintColor, PaintColor) {
+        let pair = self.inner();
+        (pair.light, pair.dark)
+    }
+}
+
+impl fmt::Debug for ThemeColorPairRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let pair = self.inner();
+        f.debug_struct("ThemeColorPairRef")
+            .field("light", &pair.light)
+            .field("dark", &pair.dark)
+            .finish()
+    }
+}
+
+impl Serialize for ThemeColorPairRef {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.pair().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for ThemeColorPairRef {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let (light, dark) = <(PaintColor, PaintColor)>::deserialize(deserializer)?;
+        Ok(intern_theme_color_pair(light, dark))
+    }
+}
+
+fn hash_f32_canonical(val: f32, state: &mut impl Hasher) {
+    let bits = if val == 0.0 { 0u32 } else { val.to_bits() };
+    bits.hash(state);
+}
+
+fn hash_paint_color(color: &PaintColor, state: &mut impl Hasher) {
+    match color {
+        PaintColor::Srgb { rgba } => {
+            0u8.hash(state);
+            for v in rgba {
+                hash_f32_canonical(*v, state);
+            }
+        }
+        PaintColor::Oklch { l, c, h, alpha } => {
+            1u8.hash(state);
+            hash_f32_canonical(*l, state);
+            hash_f32_canonical(*c, state);
+            h.is_some().hash(state);
+            if let Some(hue) = h {
+                hash_f32_canonical(*hue, state);
+            }
+            hash_f32_canonical(*alpha, state);
+        }
+        PaintColor::Hsv { h, s, v, alpha } => {
+            2u8.hash(state);
+            hash_f32_canonical(*h, state);
+            hash_f32_canonical(*s, state);
+            hash_f32_canonical(*v, state);
+            hash_f32_canonical(*alpha, state);
+        }
+        PaintColor::LinearScRgb { channels, alpha } => {
+            3u8.hash(state);
+            for c in channels {
+                hash_f32_canonical(*c, state);
+            }
+            hash_f32_canonical(*alpha, state);
+        }
+        PaintColor::ThemeRole { role } => {
+            4u8.hash(state);
+            role.hash(state);
+        }
+        PaintColor::ThemeMix(mix) => {
+            5u8.hash(state);
+            mix.hash(state);
+        }
+        PaintColor::ThemePair(pair) => {
+            6u8.hash(state);
+            pair.hash(state);
+        }
+    }
+}
+
+/// Intern a `(light, dark)` [`PaintColor`] pair so [`PaintColor::ThemePair`] stays `Copy`.
+pub fn intern_theme_color_pair(light: PaintColor, dark: PaintColor) -> ThemeColorPairRef {
+    let candidate = ThemeColorPair { light, dark };
+    let mut hasher = DefaultHasher::new();
+    hash_paint_color(&light, &mut hasher);
+    hash_paint_color(&dark, &mut hasher);
+    let hash = hasher.finish();
+    let mut table = pair_intern().lock().expect("theme color pair intern");
+    if let Some(bucket) = table.buckets.get(&hash)
+        && let Some(&existing) = bucket.iter().find(|r| *r.inner() == candidate)
+    {
+        return existing;
+    }
+    let idx = table.next_index;
+    let page_idx = (idx as usize) >> PAIR_PAGE_SHIFT;
+    let slot_idx = (idx as usize) & (PAIR_PAGE_SIZE - 1);
+    assert!(
+        page_idx < PAIR_MAX_PAGES,
+        "theme color pair intern table overflow ({} pairs)",
+        idx
+    );
+    let page = PAIR_PAGES[page_idx].get_or_init(|| {
+        (0..PAIR_PAGE_SIZE)
+            .map(|_| AtomicPtr::new(std::ptr::null_mut()))
+            .collect::<Vec<_>>()
+            .into_boxed_slice()
+    });
+    let leaked = Box::leak(Box::new(candidate));
+    page[slot_idx].store(leaked, Ordering::Release);
+    table.next_index = idx + 1;
+    let r = ThemeColorPairRef(NonZeroU32::new(idx + 1).expect("non-zero index"));
+    table.buckets.entry(hash).or_default().push(r);
+    r
 }
 
 impl PaintColor {
     pub const fn srgb(rgba: [f32; 4]) -> Self {
         Self::Srgb { rgba }
+    }
+
+    pub const fn theme_role(role: SemanticColorRole) -> Self {
+        Self::ThemeRole { role }
+    }
+
+    pub fn light_dark(light: Self, dark: Self) -> Self {
+        if light == dark {
+            light
+        } else {
+            Self::ThemePair(intern_theme_color_pair(light, dark))
+        }
+    }
+
+    pub const fn is_theme_dynamic(self) -> bool {
+        matches!(
+            self,
+            Self::ThemeRole { .. } | Self::ThemeMix(_) | Self::ThemePair(_)
+        )
+    }
+
+    pub fn resolve(self, model: StyleModelRef) -> Self {
+        match self {
+            Self::ThemeRole { role } => Self::Srgb {
+                rgba: model.color(role).as_rgba_array(),
+            },
+            Self::ThemeMix(mix) => Self::Srgb {
+                rgba: mix.resolve(model).as_rgba_array(),
+            },
+            Self::ThemePair(pair) => {
+                let branch = if model.is_dark_appearance() {
+                    pair.dark()
+                } else {
+                    pair.light()
+                };
+                branch.resolve(model)
+            }
+            static_color => static_color,
+        }
+    }
+
+    pub fn resolve_srgb(self, model: StyleModelRef) -> [f32; 4] {
+        self.resolve(model).to_srgb()
     }
 
     pub fn to_srgb(self) -> [f32; 4] {
@@ -111,6 +338,9 @@ impl PaintColor {
                     Self::gamma_encode(b),
                     alpha,
                 ]
+            }
+            Self::ThemeRole { .. } | Self::ThemeMix(_) | Self::ThemePair(_) => {
+                self.resolve(StyleModelRef::default()).to_srgb()
             }
         }
     }
@@ -138,6 +368,9 @@ impl PaintColor {
                 ],
                 a,
             ),
+            Self::ThemeRole { .. } | Self::ThemeMix(_) | Self::ThemePair(_) => {
+                self.resolve(StyleModelRef::default()).to_linear_sc_rgb()
+            }
         }
     }
 
@@ -154,7 +387,10 @@ impl PaintColor {
                         .into_iter()
                         .any(|c| c.is_finite() && (c < -EPS || c > 1.0 + EPS))
             }
-            Self::Hsv { .. } => false,
+            Self::Hsv { .. } | Self::ThemeRole { .. } | Self::ThemeMix(_) => false,
+            Self::ThemePair(pair) => {
+                pair.light().is_extended_srgb() || pair.dark().is_extended_srgb()
+            }
             Self::Oklch { .. } | Self::LinearScRgb { .. } => {
                 let (channels, alpha) = self.to_linear_sc_rgb();
                 alpha.is_finite()
@@ -219,6 +455,45 @@ impl PaintColorSlots {
         .into_iter()
         .flatten()
         .any(PaintColor::is_extended_srgb)
+    }
+
+    pub fn has_dynamic_theme(&self) -> bool {
+        [
+            self.color,
+            self.background,
+            self.border,
+            self.border_top,
+            self.border_right,
+            self.border_bottom,
+            self.border_left,
+            self.outline,
+            self.selection_background,
+            self.selection_color,
+        ]
+        .into_iter()
+        .flatten()
+        .any(PaintColor::is_theme_dynamic)
+    }
+
+    pub fn resolve_theme(&mut self, model: StyleModelRef) {
+        for slot in [
+            &mut self.color,
+            &mut self.background,
+            &mut self.border,
+            &mut self.border_top,
+            &mut self.border_right,
+            &mut self.border_bottom,
+            &mut self.border_left,
+            &mut self.outline,
+            &mut self.selection_background,
+            &mut self.selection_color,
+        ] {
+            if let Some(color) = slot
+                && color.is_theme_dynamic()
+            {
+                *color = color.resolve(model);
+            }
+        }
     }
 }
 
@@ -437,12 +712,14 @@ pub enum SemanticColorRole {
 impl SemanticColorRole {
     /// Map a known CSS / design-token name (not `#hex`) onto a palette role.
     pub fn from_css_token_name(raw: &str) -> Option<Self> {
-        let s = raw.trim().to_ascii_lowercase();
-        let s = s
+        let mut s = raw.trim().to_ascii_lowercase();
+        if let Some(inner) = s
             .strip_prefix("var(")
             .and_then(|rest| rest.strip_suffix(')'))
-            .map(str::trim)
-            .unwrap_or(s.as_str());
+        {
+            s = inner.split(',').next().unwrap_or(inner).trim().to_string();
+        }
+        let s = s.as_str();
         let s = s.strip_prefix("--nana-").unwrap_or(s);
         let s = s.strip_prefix("--").unwrap_or(s);
         Some(match s {
@@ -469,6 +746,9 @@ impl SemanticColorRole {
             "accent-soft-pressed" => Self::AccentSoftPressed,
             "accent-on-soft" => Self::AccentOnSoft,
             "accent-text" | "on-accent" => Self::AccentText,
+            "focus-surface" => Self::FocusSurface,
+            "focus-border" => Self::FocusBorder,
+            "focus-text" => Self::FocusText,
             "highlight" => Self::Highlight,
             "highlight-hover" => Self::HighlightHover,
             "highlight-pressed" => Self::HighlightPressed,
@@ -502,6 +782,20 @@ impl SemanticColorMix {
             second: Some(second),
             weight: Self::weight(ratio),
         }
+    }
+    pub const fn from_parts(
+        first: SemanticColorRole,
+        second: Option<SemanticColorRole>,
+        weight: u16,
+    ) -> Self {
+        Self {
+            first,
+            second,
+            weight,
+        }
+    }
+    pub const fn parts(self) -> (SemanticColorRole, Option<SemanticColorRole>, u16) {
+        (self.first, self.second, self.weight)
     }
     /// Mix a palette role with transparent without fading descendants.
     pub const fn alpha(role: SemanticColorRole, alpha: f32) -> Self {
@@ -1198,6 +1492,17 @@ impl StyleModelRef {
     pub const fn base_text_size(self) -> f32 {
         let _ = self;
         UI_BASE_TEXT_SIZE
+    }
+
+    pub fn is_dark_appearance(self) -> bool {
+        match self.theme_appearance {
+            ThemeAppearance::Light => false,
+            ThemeAppearance::Dark => true,
+            ThemeAppearance::Custom => {
+                let bg = self.palette.background;
+                0.2126 * bg.r + 0.7152 * bg.g + 0.0722 * bg.b < 0.5
+            }
+        }
     }
 }
 

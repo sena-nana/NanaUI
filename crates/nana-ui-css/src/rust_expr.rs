@@ -24,11 +24,12 @@ use nana_ui_core::{
     LinearGradient, MaskImage, MaterialRef, MaterialTexture, MixBlendMode, OutlineStyle,
     OverflowSpec, OverflowWrapSpec, PaintColor, PaintMat4, PaintTransform, PointerEventsSpec,
     PopoverAlignment, PopoverPlacement, PositionSpec, RadialGradient, RadiusTier, ScrollEdgeFade,
-    ScrollbarSkin, SpacingStep, TextAlignSpec, TextAutospaceSpec, TextDecorationLine,
-    TextEmphasisColor, TextEmphasisPosition, TextEmphasisShape, TextEmphasisStyle, TextJustifySpec,
-    TextOrientationSpec, TextShadowSpec, TextSpacingTrimSpec, TextStrokeSpec, TextWeight,
-    TextWrapStyleSpec, ThemeExpr, ThemeToken, TransformBox, TransformOrigin, TypeRole,
-    UserSelectSpec, ViewportAxis, VisibilitySpec, WhiteSpaceSpec, WordBreakSpec, WritingModeSpec,
+    ScrollbarSkin, SemanticColorMix, SemanticColorRole, SpacingStep, TextAlignSpec,
+    TextAutospaceSpec, TextDecorationLine, TextEmphasisColor, TextEmphasisPosition,
+    TextEmphasisShape, TextEmphasisStyle, TextJustifySpec, TextOrientationSpec, TextShadowSpec,
+    TextSpacingTrimSpec, TextStrokeSpec, TextWeight, TextWrapStyleSpec, ThemeExpr, ThemeToken,
+    TransformBox, TransformOrigin, TypeRole, UserSelectSpec, ViewportAxis, VisibilitySpec,
+    WhiteSpaceSpec, WordBreakSpec, WritingModeSpec,
 };
 
 pub(crate) trait EmitRust {
@@ -591,6 +592,75 @@ impl EmitRust for AdaptationProfile {
     }
 }
 
+impl EmitRust for SemanticColorRole {
+    fn emit_rust(&self, m: &str, out: &mut String) {
+        let variant = match self {
+            Self::Background => "Background",
+            Self::Surface => "Surface",
+            Self::Subtle => "Subtle",
+            Self::Raised => "Raised",
+            Self::Header => "Header",
+            Self::Hover => "Hover",
+            Self::Active => "Active",
+            Self::Selected => "Selected",
+            Self::SelectedHover => "SelectedHover",
+            Self::SelectedPressed => "SelectedPressed",
+            Self::Border => "Border",
+            Self::BorderSoft => "BorderSoft",
+            Self::BorderStrong => "BorderStrong",
+            Self::Text => "Text",
+            Self::Muted => "Muted",
+            Self::Faint => "Faint",
+            Self::Accent => "Accent",
+            Self::AccentStrong => "AccentStrong",
+            Self::AccentSoft => "AccentSoft",
+            Self::AccentSoftHover => "AccentSoftHover",
+            Self::AccentSoftPressed => "AccentSoftPressed",
+            Self::AccentOnSoft => "AccentOnSoft",
+            Self::AccentText => "AccentText",
+            Self::FocusSurface => "FocusSurface",
+            Self::FocusBorder => "FocusBorder",
+            Self::FocusText => "FocusText",
+            Self::Highlight => "Highlight",
+            Self::HighlightHover => "HighlightHover",
+            Self::HighlightPressed => "HighlightPressed",
+            Self::HighlightText => "HighlightText",
+            Self::Success => "Success",
+            Self::Warning => "Warning",
+            Self::WarningSoft => "WarningSoft",
+            Self::WarningSoftHover => "WarningSoftHover",
+            Self::WarningSoftPressed => "WarningSoftPressed",
+            Self::Danger => "Danger",
+            Self::DangerSoftHover => "DangerSoftHover",
+            Self::DangerSoftPressed => "DangerSoftPressed",
+            Self::Titlebar => "Titlebar",
+            Self::OnMedia => "OnMedia",
+            Self::Function => "Function",
+            Self::Builtin => "Builtin",
+            Self::Type => "Type",
+            Self::Variable => "Variable",
+            Self::Parameter => "Parameter",
+            Self::Const => "Const",
+            Self::Texture => "Texture",
+            Self::Property => "Property",
+            Self::Keyword => "Keyword",
+        };
+        let _ = write!(out, "{m}::SemanticColorRole::{variant}");
+    }
+}
+
+impl EmitRust for SemanticColorMix {
+    fn emit_rust(&self, m: &str, out: &mut String) {
+        let (first, second, weight) = self.parts();
+        let _ = write!(out, "{m}::SemanticColorMix::from_parts(");
+        first.emit_rust(m, out);
+        out.push(',');
+        second.emit_rust(m, out);
+        out.push(',');
+        let _ = write!(out, "{weight}u16)");
+    }
+}
+
 impl EmitRust for PaintColor {
     fn emit_rust(&self, m: &str, out: &mut String) {
         match *self {
@@ -627,6 +697,24 @@ impl EmitRust for PaintColor {
                 out.push_str(",alpha:");
                 alpha.emit_rust(m, out);
                 out.push('}');
+            }
+            Self::ThemeRole { role } => {
+                let _ = write!(out, "{m}::PaintColor::ThemeRole{{role:");
+                role.emit_rust(m, out);
+                out.push('}');
+            }
+            Self::ThemeMix(mix) => {
+                let _ = write!(out, "{m}::PaintColor::ThemeMix(");
+                mix.emit_rust(m, out);
+                out.push(')');
+            }
+            Self::ThemePair(pair) => {
+                let (light, dark) = pair.pair();
+                let _ = write!(out, "{m}::PaintColor::light_dark(");
+                light.emit_rust(m, out);
+                out.push(',');
+                dark.emit_rust(m, out);
+                out.push(')');
             }
         }
     }
@@ -1636,4 +1724,11 @@ pub(crate) fn emit_patch_stmt(layout: &LayoutStyle, path: &str, m: &str, out: &m
         "border_style" => emit_set(path, &layout.border_style, m, out),
         _ => panic!("unknown LayoutStyle leaf path: {path}"),
     }
+}
+
+/// Emit Rust tokens for one [`PaintColor`] referencing the caller's `__nana_patch` module alias.
+pub fn emit_paint_color_rust(color: &PaintColor, patch_mod: &str) -> String {
+    let mut out = String::new();
+    color.emit_rust(patch_mod, &mut out);
+    out
 }

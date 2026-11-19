@@ -32,10 +32,9 @@ pub fn apply_css_paint_property(style: &mut nana_ui_core::LayoutStyle, name: &st
             if v.eq_ignore_ascii_case("none") || v.eq_ignore_ascii_case("transparent") {
                 style.background = None;
                 style.paint_colors.background = None;
-            } else if let Some(c) = resolve_paint_color(val) {
-                style.background = Some(c);
-                style.paint_colors.background =
-                    crate::style::resolve_css_paint_color(val).map(|p| p.to_core());
+            } else if let Some((legacy, pc)) = crate::css_map::resolve_css_color_pair(val) {
+                style.background = legacy;
+                style.paint_colors.background = Some(pc);
             }
         }
         "mask-image" | "-webkit-mask-image" => {
@@ -106,10 +105,9 @@ pub fn apply_css_paint_property(style: &mut nana_ui_core::LayoutStyle, name: &st
             }
         }
         "outline-color" => {
-            if let Some(c) = resolve_paint_color(val) {
-                style.paint.outline.color = Some(c);
-                style.paint_colors.outline =
-                    crate::style::resolve_css_paint_color(val).map(|p| p.to_core());
+            if let Some((legacy, pc)) = crate::css_map::resolve_css_color_pair(val) {
+                style.paint.outline.color = legacy;
+                style.paint_colors.outline = Some(pc);
             }
         }
         "outline-style" => apply_outline_style(style, val),
@@ -413,17 +411,20 @@ fn apply_background_shorthand(style: &mut nana_ui_core::LayoutStyle, val: &str) 
             layers.push(image);
         }
     }
-    if let Some(c) = color {
+    if let Some(pc) = paint_color {
+        let core = pc.to_core();
+        style.background = (!core.is_theme_dynamic()).then(|| core.to_srgb());
+        style.paint_colors.background = Some(core);
+    } else if let Some(c) = color {
         style.background = Some(c);
-        style.paint_colors.background = paint_color.map(|p| p.to_core());
+        style.paint_colors.background = Some(nana_ui_core::PaintColor::srgb(c));
     }
     if layers.is_empty() {
-        if color.is_some() {
+        if paint_color.is_some() || color.is_some() {
             clear_background_images(style);
-        } else if let Some(c) = resolve_paint_color(trimmed) {
-            style.background = Some(c);
-            style.paint_colors.background =
-                crate::style::resolve_css_paint_color(trimmed).map(|p| p.to_core());
+        } else if let Some((legacy, pc)) = crate::css_map::resolve_css_color_pair(trimmed) {
+            style.background = legacy;
+            style.paint_colors.background = Some(pc);
             clear_background_images(style);
         }
         return;
@@ -652,17 +653,21 @@ fn parse_background_layer(input: &str, allow_color: bool) -> ParsedBackgroundLay
     let mut paint_color = None;
     if allow_color {
         for token in rest.split_whitespace() {
-            if let Some(c) = resolve_paint_color(token) {
-                color = Some(c);
-                paint_color = crate::style::resolve_css_paint_color(token);
+            if let Some(pc) = crate::style::resolve_css_paint_color(token) {
+                let core = pc.to_core();
+                color = (!core.is_theme_dynamic()).then(|| core.to_srgb());
+                paint_color = Some(pc);
                 break;
             }
         }
-        if color.is_none()
-            && let Some(c) = resolve_paint_color(&rest)
+        if paint_color.is_none()
+            && color.is_none()
+            && !rest.trim().is_empty()
+            && let Some(pc) = crate::style::resolve_css_paint_color(&rest)
         {
-            color = Some(c);
-            paint_color = crate::style::resolve_css_paint_color(&rest);
+            let core = pc.to_core();
+            color = (!core.is_theme_dynamic()).then(|| core.to_srgb());
+            paint_color = Some(pc);
         }
     }
     if let Some(BackgroundImage::Url {
@@ -991,10 +996,9 @@ fn apply_outline_shorthand(style: &mut nana_ui_core::LayoutStyle, val: &str) {
             saw_style = true;
         } else if let Some(px) = parse_css_length_px(&part, None) {
             style.paint.outline.width = px.max(0.0);
-        } else if let Some(c) = resolve_paint_color(&part) {
-            style.paint.outline.color = Some(c);
-            style.paint_colors.outline =
-                crate::style::resolve_css_paint_color(&part).map(|p| p.to_core());
+        } else if let Some((legacy, pc)) = crate::css_map::resolve_css_color_pair(&part) {
+            style.paint.outline.color = legacy;
+            style.paint_colors.outline = Some(pc);
         }
     }
     if !saw_style && style.paint.outline.width > 0.0 {
@@ -1506,16 +1510,7 @@ fn extract_gradient_interpolation(
 
 fn stop_to_css_paint_color(stop: &GradientStop) -> crate::style::CssPaintColor {
     match stop.paint_color {
-        Some(nana_ui_core::PaintColor::Srgb { rgba }) => crate::style::CssPaintColor::Srgb(rgba),
-        Some(nana_ui_core::PaintColor::Oklch { l, c, h, alpha }) => {
-            crate::style::CssPaintColor::Oklch { l, c, h, alpha }
-        }
-        Some(nana_ui_core::PaintColor::Hsv { h, s, v, alpha }) => {
-            crate::style::CssPaintColor::Hsv { h, s, v, alpha }
-        }
-        Some(nana_ui_core::PaintColor::LinearScRgb { channels, alpha }) => {
-            crate::style::CssPaintColor::LinearScRgb { channels, alpha }
-        }
+        Some(paint) => crate::style::CssPaintColor::from_core(paint),
         None => crate::style::CssPaintColor::Srgb(stop.color),
     }
 }
@@ -1787,6 +1782,8 @@ fn parse_author_color_prefix(input: &str) -> Option<nana_ui_core::PaintColor> {
         "color",
         "color-mix",
         "light-dark",
+        "var",
+        "theme",
     ] {
         if let Some(end) = leading_function_end(&lower, name) {
             return crate::style::resolve_css_paint_color(&trimmed[..end]).map(|c| c.to_core());
@@ -1818,6 +1815,8 @@ fn split_color_and_rest(input: &str) -> Option<([f32; 4], &str)> {
         "color",
         "color-mix",
         "light-dark",
+        "var",
+        "theme",
     ] {
         if let Some(end) = leading_function_end(&lower, name) {
             let color = resolve_paint_color(&trimmed[..end])?;

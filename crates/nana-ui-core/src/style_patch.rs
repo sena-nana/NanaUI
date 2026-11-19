@@ -182,15 +182,96 @@ pub mod set {
     pub mod paint_colors {
         use crate::PaintColor;
 
+        #[inline]
+        pub fn color(layout: &mut super::LayoutStyle, value: Option<PaintColor>) {
+            if layout.paint_colors.color != value {
+                layout.paint_colors.color = value;
+            }
+            if value.is_some_and(PaintColor::is_theme_dynamic) {
+                layout.color = None;
+            }
+        }
+
+        #[inline]
+        pub fn background(layout: &mut super::LayoutStyle, value: Option<PaintColor>) {
+            if layout.paint_colors.background != value {
+                layout.paint_colors.background = value;
+            }
+            if value.is_some_and(PaintColor::is_theme_dynamic) {
+                layout.background = None;
+            }
+        }
+
+        #[inline]
+        pub fn border(layout: &mut super::LayoutStyle, value: Option<PaintColor>) {
+            if layout.paint_colors.border != value {
+                layout.paint_colors.border = value;
+            }
+            if value.is_some_and(PaintColor::is_theme_dynamic) {
+                layout.border_color = None;
+            }
+        }
+
+        #[inline]
+        pub fn border_top(layout: &mut super::LayoutStyle, value: Option<PaintColor>) {
+            if layout.paint_colors.border_top != value {
+                layout.paint_colors.border_top = value;
+            }
+            if value.is_some_and(PaintColor::is_theme_dynamic)
+                && !layout.border_sides.is_shared_default()
+            {
+                layout.border_sides.top_color = None;
+            }
+        }
+
+        #[inline]
+        pub fn border_right(layout: &mut super::LayoutStyle, value: Option<PaintColor>) {
+            if layout.paint_colors.border_right != value {
+                layout.paint_colors.border_right = value;
+            }
+            if value.is_some_and(PaintColor::is_theme_dynamic)
+                && !layout.border_sides.is_shared_default()
+            {
+                layout.border_sides.right_color = None;
+            }
+        }
+
+        #[inline]
+        pub fn border_bottom(layout: &mut super::LayoutStyle, value: Option<PaintColor>) {
+            if layout.paint_colors.border_bottom != value {
+                layout.paint_colors.border_bottom = value;
+            }
+            if value.is_some_and(PaintColor::is_theme_dynamic)
+                && !layout.border_sides.is_shared_default()
+            {
+                layout.border_sides.bottom_color = None;
+            }
+        }
+
+        #[inline]
+        pub fn border_left(layout: &mut super::LayoutStyle, value: Option<PaintColor>) {
+            if layout.paint_colors.border_left != value {
+                layout.paint_colors.border_left = value;
+            }
+            if value.is_some_and(PaintColor::is_theme_dynamic)
+                && !layout.border_sides.is_shared_default()
+            {
+                layout.border_sides.left_color = None;
+            }
+        }
+
+        #[inline]
+        pub fn outline(layout: &mut super::LayoutStyle, value: Option<PaintColor>) {
+            if layout.paint_colors.outline != value {
+                layout.paint_colors.outline = value;
+            }
+            if value.is_some_and(PaintColor::is_theme_dynamic) && !layout.paint.is_shared_default()
+            {
+                layout.paint.outline.color = None;
+            }
+        }
+
         shared_group_setters!(paint_colors {
-            color: Option<PaintColor>,
-            background: Option<PaintColor>,
-            border: Option<PaintColor>,
-            border_top: Option<PaintColor>,
-            border_right: Option<PaintColor>,
-            border_bottom: Option<PaintColor>,
-            border_left: Option<PaintColor>,
-            outline: Option<PaintColor>,
             selection_background: Option<PaintColor>,
             selection_color: Option<PaintColor>,
         });

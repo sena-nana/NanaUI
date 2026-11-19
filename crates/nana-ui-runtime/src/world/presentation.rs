@@ -49,7 +49,19 @@ impl UiWorld {
             AnimatableProperty::Transform => Some(MotionValue::Transform(
                 layout.transforms.transform.unwrap_or_default(),
             )),
-            AnimatableProperty::Background => layout.background.map(MotionValue::Color),
+            AnimatableProperty::Background => {
+                let model = self.node_style_model(id);
+                let resolved_layout = &self.record(id).resolved_layout;
+                resolved_layout
+                    .paint_colors
+                    .background
+                    .filter(|c| c.is_theme_dynamic())
+                    .map(|c| c.resolve_srgb(model))
+                    .or(resolved_layout.background)
+                    .or(layout.background)
+                    .or_else(|| self.computed_style(id).and_then(|s| s.background))
+                    .map(MotionValue::Color)
+            }
             AnimatableProperty::Width => length_px(layout.width),
             AnimatableProperty::Height => length_px(layout.height),
             AnimatableProperty::Padding => length_px(layout.padding),
@@ -62,8 +74,20 @@ impl UiWorld {
                 tag,
             )
             .map(MotionValue::Scalar),
-            AnimatableProperty::Color
-            | AnimatableProperty::Clip
+            AnimatableProperty::Color => {
+                let model = self.node_style_model(id);
+                let resolved_layout = &self.record(id).resolved_layout;
+                resolved_layout
+                    .paint_colors
+                    .color
+                    .filter(|c| c.is_theme_dynamic())
+                    .map(|c| c.resolve_srgb(model))
+                    .or(resolved_layout.color)
+                    .or(layout.color)
+                    .or_else(|| self.computed_style(id).and_then(|s| s.color))
+                    .map(MotionValue::Color)
+            }
+            AnimatableProperty::Clip
             | AnimatableProperty::Blur
             | AnimatableProperty::Filter
             | AnimatableProperty::Shadow
@@ -282,6 +306,24 @@ impl UiWorld {
         }
     }
 
+    pub(super) fn presentation_color_overlay(
+        &self,
+        id: StableNodeId,
+        property: AnimatableProperty,
+    ) -> Option<[f32; 4]> {
+        if self.presentation.is_empty() {
+            return None;
+        }
+        let target = MotionTargetId::new(id.get())?;
+        match self
+            .presentation
+            .applied_value(target, property, self.animation_now)?
+        {
+            MotionValue::Color(rgba) => Some(rgba),
+            _ => None,
+        }
+    }
+
     fn sample_compositor_presentation(
         &self,
         id: StableNodeId,
@@ -469,8 +511,12 @@ impl UiWorld {
         property: AnimatableProperty,
         now: Duration,
     ) -> Option<PresentationPair> {
-        let logical = self.logical_motion_value(id, property)?;
         let target = MotionTargetId::new(id.get())?;
+        let logical = self.logical_motion_value(id, property).or_else(|| {
+            (property == AnimatableProperty::Background
+                && self.presentation.has_property(target, property))
+            .then_some(MotionValue::Color([0.0, 0.0, 0.0, 0.0]))
+        })?;
         Some(self.presentation.pair(target, property, logical, now))
     }
 

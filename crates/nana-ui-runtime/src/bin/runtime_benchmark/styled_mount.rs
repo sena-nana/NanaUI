@@ -116,6 +116,7 @@ fn sheet(rules: usize, shape: Shape) -> Styled {
         .enumerate()
         .map(|(rule, (patch, classes))| SheetRule {
             classes,
+            pseudo: 0,
             patch,
             query: (shape == Shape::Container && rule % 2 == 1).then_some(&RANGES),
         })

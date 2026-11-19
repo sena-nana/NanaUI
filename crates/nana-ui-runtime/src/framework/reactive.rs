@@ -4,10 +4,14 @@
 use super::*;
 use crate::view::reactive::{self as rx, EffectKey, EffectTarget, FragmentId, ScopeKey};
 use crate::view::{
-    FragmentBinding, Mount, NodePatch, Refs, SlotItem, StructuralBinding, ViewBuilder,
-    ViewParts, ViewState,
+    CompiledMotionValue, FragmentBinding, InteractiveStyleBinding, KeyframeAnimation,
+    MotionBinding, Mount, NodePatch, PSEUDO_ACTIVE, PSEUDO_FOCUS, PSEUDO_FOCUS_VISIBLE,
+    PSEUDO_HOVER, Refs, SlotItem, StructuralBinding, ViewBuilder, ViewParts, ViewState,
 };
-use crate::{AnimatableProperty, AnimationFillMode, AnimationId, Easing, MotionValue};
+use crate::{
+    AnimatableProperty, AnimationFillMode, AnimationId, AnimationIteration, AnimationPlayState,
+    AnimationPlayback, Easing, MotionTo, MotionValue,
+};
 
 /// Rounds a flush runs before it gives up on effects that keep re-queueing
 /// each other.
@@ -47,6 +51,14 @@ struct PendingFlip {
     easing: Easing,
 }
 
+#[derive(Clone)]
+struct RunningKeyframeTrack {
+    id: AnimationId,
+    spec: KeyframeAnimation,
+    palette_epoch: u64,
+    reduced_motion: bool,
+}
+
 pub(crate) struct ReactiveHost {
     tag: u64,
     nodes: HashMap<StableNodeId, NodeEntry, crate::BuildIdHasher>,
@@ -68,6 +80,12 @@ pub(crate) struct ReactiveHost {
     flips: Vec<PendingFlip>,
     /// Properties of a node that animate when its bindings change them.
     implicit: HashMap<StableNodeId, Box<[crate::view::Implicit]>, crate::BuildIdHasher>,
+    /// Interactive pseudo-state signals (`:hover`, `:focus`, `:focus-visible`, `:active`).
+    interactive_styles: HashMap<StableNodeId, InteractiveStyleBinding, crate::BuildIdHasher>,
+    /// Nodes carrying compiled CSS dynamic transitions / `@keyframes`.
+    motion_bindings: HashMap<StableNodeId, MotionBinding, crate::BuildIdHasher>,
+    /// Currently registered `#87 MotionTrack` keyframe tracks per node.
+    keyframe_tracks: HashMap<StableNodeId, Vec<RunningKeyframeTrack>, crate::BuildIdHasher>,
     /// Settings groups to mark once the flush has installed every node it
     /// patched ([`AppContext::defer_settings_group`]).
     settings_groups: Vec<StableNodeId>,
@@ -92,6 +110,9 @@ impl Default for ReactiveHost {
             leaving: HashMap::default(),
             flips: Vec::new(),
             implicit: HashMap::default(),
+            interactive_styles: HashMap::default(),
+            motion_bindings: HashMap::default(),
+            keyframe_tracks: HashMap::default(),
             settings_groups: Vec::new(),
             settings_rows: Vec::new(),
         }
@@ -482,6 +503,16 @@ impl AppContext {
                 self.reactive.implicit.insert(id, implicit);
             }
         }
+        for (id, interactive) in parts.interactive {
+            if self.world.contains(id) {
+                self.reactive.interactive_styles.insert(id, interactive);
+            }
+        }
+        for (id, motion) in parts.motion {
+            if self.world.contains(id) {
+                self.reactive.motion_bindings.insert(id, motion);
+            }
+        }
         for (id, scope) in parts.anchors {
             if let Some(old) = self.reactive.anchors.insert(id, scope)
                 && old != scope
@@ -492,6 +523,8 @@ impl AppContext {
         for (id, type_id) in std::mem::take(&mut parts.assemble) {
             self.run_built_assembler(id, type_id)?;
         }
+        self.sync_interactive_style_states();
+        self.sync_keyframe_animations(false)?;
         Ok(())
     }
 
@@ -506,6 +539,7 @@ impl AppContext {
     /// [`Self::take_system_work`] call this; call it yourself after writing
     /// signals outside both.
     pub fn flush_reactive(&mut self) -> Result<(), FrameworkError> {
+        self.sync_interactive_style_states();
         rx::advance_epoch();
         if self.reactive.flushing || !rx::has_pending(self.reactive.tag) {
             return Ok(());
@@ -1347,11 +1381,37 @@ impl AppContext {
         let now = self.component_lifecycle.now;
         let mut before = Vec::new();
         for (node, _) in &staged {
-            let Some(implicit) = self.reactive.implicit.get(node) else {
-                continue;
-            };
-            for implicit in implicit.iter() {
-                let Some(logical) = self.world.logical_motion_value(*node, implicit.property)
+            let mut transitions: Vec<crate::view::Implicit> = Vec::new();
+            if let Some(implicit) = self.reactive.implicit.get(node) {
+                transitions.extend_from_slice(implicit);
+            }
+            if let Some(binding) = self.reactive.motion_bindings.get_mut(node) {
+                let prev_mask = binding.prev_mask;
+                let curr_mask = binding.current_mask();
+                for item in binding.site.transitions_for(curr_mask) {
+                    if let Some(existing) =
+                        transitions.iter_mut().find(|t| t.property == item.property)
+                    {
+                        *existing = item;
+                    } else {
+                        transitions.push(item);
+                    }
+                }
+                for item in binding.site.transitions_for(prev_mask) {
+                    if !transitions.iter().any(|t| t.property == item.property) {
+                        transitions.push(item);
+                    }
+                }
+                binding.prev_mask = curr_mask;
+            }
+            for implicit in transitions {
+                let Some(logical) = self
+                    .world
+                    .logical_motion_value(*node, implicit.property)
+                    .or_else(|| {
+                        (implicit.property == AnimatableProperty::Background)
+                            .then_some(MotionValue::Color([0.0, 0.0, 0.0, 0.0]))
+                    })
                 else {
                     continue;
                 };
@@ -1359,7 +1419,7 @@ impl AppContext {
                     .world
                     .presentation_motion_value(*node, implicit.property, now)
                     .unwrap_or(logical);
-                before.push((*node, *implicit, logical, shown));
+                before.push((*node, implicit, logical, shown));
             }
         }
         if !mutations.is_empty() {
@@ -1368,6 +1428,7 @@ impl AppContext {
             nana_diagnostics::metric!(nana_diagnostics::framework::runtime::REACTIVE_COMMITS);
         }
         self.play_implicit(before, now)?;
+        self.sync_keyframe_animations(false)?;
         let patched = staged.len() as u64;
         if patched > 0 {
             nana_diagnostics::metric!(
@@ -1402,6 +1463,9 @@ impl AppContext {
             && host.anchors.is_empty()
             && host.leaving.is_empty()
             && host.implicit.is_empty()
+            && host.interactive_styles.is_empty()
+            && host.motion_bindings.is_empty()
+            && host.keyframe_tracks.is_empty()
             && host.host_slots.is_empty()
         {
             return;
@@ -1411,6 +1475,9 @@ impl AppContext {
             let host = &mut self.reactive;
             host.leaving.remove(id);
             host.implicit.remove(id);
+            host.interactive_styles.remove(id);
+            host.motion_bindings.remove(id);
+            host.keyframe_tracks.remove(id);
             if let Some(entry) = host.nodes.remove(id) {
                 rx::dispose_effect(entry.effect);
             }
@@ -1750,16 +1817,29 @@ impl AppContext {
         }
         let mut mutations = MutationQueue::new();
         for (node, implicit, logical, shown) in before {
-            let Some(next) = self.world.logical_motion_value(node, implicit.property) else {
+            let Some(next) = self
+                .world
+                .logical_motion_value(node, implicit.property)
+                .or_else(|| {
+                    (implicit.property == AnimatableProperty::Background)
+                        .then_some(MotionValue::Color([0.0, 0.0, 0.0, 0.0]))
+                })
+            else {
                 continue;
             };
-            if next == logical || implicit.duration.is_zero() {
+            if next == logical || (implicit.duration.is_zero() && implicit.delay.is_zero()) {
                 continue;
             }
             // Reduced motion runs it for no time at all: the new value shows
             // at once and its Finished still arrives with the next advance.
             let duration = self.motion_duration(implicit.duration);
-            mutations.start_animation(crate::motion_api::presence_spec(
+            let delay = self.motion_duration(implicit.delay);
+            let fill_mode = if delay > Duration::ZERO {
+                AnimationFillMode::Backwards
+            } else {
+                AnimationFillMode::None
+            };
+            let mut spec = crate::motion_api::presence_spec(
                 node,
                 implicit.property,
                 shown,
@@ -1767,8 +1847,231 @@ impl AppContext {
                 now,
                 duration,
                 self.transition_easing(implicit.easing),
-                AnimationFillMode::None,
-            ));
+                fill_mode,
+            );
+            if delay > Duration::ZERO {
+                spec = spec.with_delay(delay);
+            }
+            mutations.start_animation(spec);
+        }
+        if mutations.is_empty() {
+            return Ok(());
+        }
+        self.commit_mutations(mutations).map(|_| ())
+    }
+
+    pub(crate) fn sync_interactive_style_states(&mut self) {
+        if self.reactive.interactive_styles.is_empty() {
+            return;
+        }
+        let is_self_or_descendant = |mut cur: StableNodeId, ancestor: StableNodeId| loop {
+            if cur == ancestor {
+                return true;
+            }
+            let Some(parent) = self.world.node(cur).and_then(|node| node.parent) else {
+                return false;
+            };
+            cur = parent;
+        };
+        for (&node, binding) in &self.reactive.interactive_styles {
+            let Some(doc) = self.world.document_of(node) else {
+                continue;
+            };
+            let mut bits = 0u8;
+            if binding.used_pseudos & PSEUDO_HOVER != 0
+                && self
+                    .world
+                    .pointer_hover_targets(doc)
+                    .any(|target| is_self_or_descendant(target, node))
+            {
+                bits |= PSEUDO_HOVER;
+            }
+            if binding.used_pseudos & PSEUDO_ACTIVE != 0
+                && self
+                    .world
+                    .pointer_press_targets(doc)
+                    .any(|target| is_self_or_descendant(target, node))
+            {
+                bits |= PSEUDO_ACTIVE;
+            }
+            if binding.used_pseudos & PSEUDO_FOCUS != 0 && self.world.focused(doc) == Some(node) {
+                bits |= PSEUDO_FOCUS;
+            }
+            if binding.used_pseudos & PSEUDO_FOCUS_VISIBLE != 0
+                && self.world.focus_visible(doc) == Some(node)
+            {
+                bits |= PSEUDO_FOCUS_VISIBLE;
+            }
+            if binding.signal.get_untracked() != bits {
+                binding.signal.set(bits);
+            }
+        }
+    }
+
+    pub(crate) fn sync_keyframe_animations(
+        &mut self,
+        force_refresh: bool,
+    ) -> Result<(), FrameworkError> {
+        if self.reactive.motion_bindings.is_empty() && self.reactive.keyframe_tracks.is_empty() {
+            return Ok(());
+        }
+        let now = self.component_lifecycle.now;
+        let palette_epoch = self.world.palette_epoch;
+        let reduced = self.reduced_motion();
+        let mut dirty_nodes: Vec<(StableNodeId, &'static crate::view::StyleSite, u64)> = Vec::new();
+        for (&node, binding) in &mut self.reactive.motion_bindings {
+            if !self.world.contains(node) {
+                continue;
+            }
+            let curr_mask = binding.current_mask();
+            if force_refresh || curr_mask != binding.last_anim_mask {
+                binding.last_anim_mask = curr_mask;
+                dirty_nodes.push((node, binding.site, curr_mask));
+            }
+        }
+        if dirty_nodes.is_empty() {
+            return Ok(());
+        }
+        let mut mutations = MutationQueue::new();
+        for (node, site, mask) in dirty_nodes {
+            let desired = site.animations_for(mask);
+            let model = self.world.node_style_model(node);
+            let previous = self
+                .reactive
+                .keyframe_tracks
+                .remove(&node)
+                .unwrap_or_default();
+            let mut next_tracks = Vec::with_capacity(desired.len());
+            for anim in desired {
+                let id = css_keyframe_animation_id(node, anim.name, anim.property);
+                let has_dynamic_color = anim.keyframes.iter().any(
+                    |k| matches!(k.value, CompiledMotionValue::Color(color_fn) if color_fn().is_theme_dynamic()),
+                );
+                let existing = previous.iter().find(|t| t.id == id);
+                if let Some(prev) = existing {
+                    let mut same_except_play = prev.spec;
+                    same_except_play.play_state = anim.play_state;
+                    if same_except_play == anim
+                        && prev.reduced_motion == reduced
+                        && (!has_dynamic_color || prev.palette_epoch == palette_epoch)
+                    {
+                        if prev.spec.play_state != anim.play_state {
+                            match anim.play_state {
+                                AnimationPlayState::Paused => mutations.pause_animation(id),
+                                AnimationPlayState::Running => mutations.resume_animation(id),
+                            }
+                        }
+                        next_tracks.push(RunningKeyframeTrack {
+                            id,
+                            spec: anim,
+                            palette_epoch,
+                            reduced_motion: reduced,
+                        });
+                        continue;
+                    }
+                }
+                let ms_to_duration = |ms: f32| -> Duration {
+                    Duration::from_nanos((f64::from(ms.max(0.0)) * 1_000_000.0).round() as u64)
+                };
+                let duration = if reduced {
+                    Duration::ZERO
+                } else {
+                    ms_to_duration(anim.duration_ms)
+                };
+                let delay = if reduced {
+                    Duration::ZERO
+                } else {
+                    ms_to_duration(anim.delay_ms)
+                };
+                if anim.iterations == AnimationIteration::Infinite && duration.is_zero() {
+                    if existing.is_some() {
+                        mutations.stop_animation(id);
+                    }
+                    continue;
+                }
+                let mut resolved_stops: Vec<nana_ui_core::motion::Keyframe> = anim
+                    .keyframes
+                    .iter()
+                    .map(|stop| nana_ui_core::motion::Keyframe {
+                        offset: stop.offset,
+                        value: match stop.value {
+                            CompiledMotionValue::Scalar(v) => MotionValue::Scalar(v),
+                            CompiledMotionValue::Color(color_fn) => {
+                                MotionValue::Color(color_fn().resolve_srgb(model))
+                            }
+                            CompiledMotionValue::Transform(t) => MotionValue::Transform(t),
+                        },
+                        easing: stop.easing,
+                    })
+                    .collect();
+                if resolved_stops.is_empty() {
+                    if existing.is_some() {
+                        mutations.stop_animation(id);
+                    }
+                    continue;
+                }
+                let fallback_logical = || {
+                    self.world
+                        .logical_motion_value(node, anim.property)
+                        .or_else(|| {
+                            (anim.property == AnimatableProperty::Background)
+                                .then_some(MotionValue::Color([0.0, 0.0, 0.0, 0.0]))
+                        })
+                };
+                let from_value = resolved_stops
+                    .first()
+                    .filter(|stop| stop.offset <= f32::EPSILON)
+                    .map(|stop| stop.value)
+                    .or_else(fallback_logical)
+                    .unwrap_or_else(|| resolved_stops[0].value);
+                if resolved_stops
+                    .last()
+                    .is_some_and(|stop| stop.offset < 1.0 - f32::EPSILON)
+                {
+                    let to_value = fallback_logical().unwrap_or(from_value);
+                    resolved_stops.push(nana_ui_core::motion::Keyframe {
+                        offset: 1.0,
+                        value: to_value,
+                        easing: None,
+                    });
+                }
+                let mut spec = crate::AnimationSpec::new(
+                    id,
+                    node,
+                    now,
+                    duration,
+                    Duration::from_millis(16),
+                    Easing::Linear,
+                )
+                .with_property(anim.property)
+                .with_curve(anim.curve)
+                .with_delay(delay)
+                .with_range(from_value, MotionTo::Keyframes(resolved_stops))
+                .with_playback(AnimationPlayback {
+                    iteration_count: anim.iterations,
+                    direction: anim.direction,
+                    fill_mode: anim.fill_mode,
+                    play_state: anim.play_state,
+                    paused_at: (anim.play_state == AnimationPlayState::Paused).then_some(now),
+                })
+                .with_layer(crate::MotionLayer::CssAnimation);
+                spec.interrupt = crate::MotionInterrupt::Replace;
+                mutations.start_animation(spec);
+                next_tracks.push(RunningKeyframeTrack {
+                    id,
+                    spec: anim,
+                    palette_epoch,
+                    reduced_motion: reduced,
+                });
+            }
+            for old in previous {
+                if !next_tracks.iter().any(|next| next.id == old.id) {
+                    mutations.stop_animation(old.id);
+                }
+            }
+            if !next_tracks.is_empty() {
+                self.reactive.keyframe_tracks.insert(node, next_tracks);
+            }
         }
         if mutations.is_empty() {
             return Ok(());
@@ -1901,7 +2204,41 @@ impl AppContext {
     }
 }
 
-/// The curve `presence` gives `property`.
+fn css_keyframe_animation_id(
+    node: StableNodeId,
+    name: &str,
+    property: AnimatableProperty,
+) -> AnimationId {
+    use std::hash::Hasher as _;
+    const CSS_KEYFRAME_TAG: u64 = 0x4b46_524d_0001;
+    let mut hasher = crate::IdHasher::default();
+    hasher.write_u64(CSS_KEYFRAME_TAG);
+    hasher.write_u64(node.get());
+    hasher.write(name.as_bytes());
+    let tag = match property {
+        AnimatableProperty::Opacity => 1u64,
+        AnimatableProperty::Transform => 2,
+        AnimatableProperty::Color => 3,
+        AnimatableProperty::Background => 4,
+        AnimatableProperty::Width => 5,
+        AnimatableProperty::Height => 6,
+        AnimatableProperty::Padding => 7,
+        AnimatableProperty::Margin => 8,
+        AnimatableProperty::Clip => 9,
+        AnimatableProperty::Blur => 10,
+        AnimatableProperty::Filter => 11,
+        AnimatableProperty::Shadow => 12,
+        AnimatableProperty::ShaderParameter => 13,
+        AnimatableProperty::FontSize => 14,
+        AnimatableProperty::FontAxis(_) => 15,
+        AnimatableProperty::Display => 16,
+        AnimatableProperty::Progress => 17,
+    };
+    hasher.write_u64(tag);
+    AnimationId::new(hasher.finish())
+        .unwrap_or_else(|| AnimationId::new(node.get() | (1u64 << 63)).expect("nonzero"))
+}
+
 /// The curve a presence gives `property`: the transform's own when it has
 /// one, else its easing. `None`: the theme's standard easing.
 fn presence_easing(

@@ -45,9 +45,26 @@ pub enum CssPaintColor {
         channels: [f32; 3],
         alpha: f32,
     },
+    ThemeRole(SemanticColorRole),
+    ThemeMix(nana_ui_core::SemanticColorMix),
+    ThemePair(nana_ui_core::ThemeColorPairRef),
 }
 
 impl CssPaintColor {
+    pub fn from_core(color: nana_ui_core::PaintColor) -> Self {
+        match color {
+            nana_ui_core::PaintColor::Srgb { rgba } => Self::Srgb(rgba),
+            nana_ui_core::PaintColor::Oklch { l, c, h, alpha } => Self::Oklch { l, c, h, alpha },
+            nana_ui_core::PaintColor::Hsv { h, s, v, alpha } => Self::Hsv { h, s, v, alpha },
+            nana_ui_core::PaintColor::LinearScRgb { channels, alpha } => {
+                Self::LinearScRgb { channels, alpha }
+            }
+            nana_ui_core::PaintColor::ThemeRole { role } => Self::ThemeRole(role),
+            nana_ui_core::PaintColor::ThemeMix(mix) => Self::ThemeMix(mix),
+            nana_ui_core::PaintColor::ThemePair(pair) => Self::ThemePair(pair),
+        }
+    }
+
     pub fn to_core(self) -> nana_ui_core::PaintColor {
         match self {
             Self::Srgb(rgba) => nana_ui_core::PaintColor::Srgb { rgba },
@@ -56,6 +73,9 @@ impl CssPaintColor {
             Self::LinearScRgb { channels, alpha } => {
                 nana_ui_core::PaintColor::LinearScRgb { channels, alpha }
             }
+            Self::ThemeRole(role) => nana_ui_core::PaintColor::ThemeRole { role },
+            Self::ThemeMix(mix) => nana_ui_core::PaintColor::ThemeMix(mix),
+            Self::ThemePair(pair) => nana_ui_core::PaintColor::ThemePair(pair),
         }
     }
 
@@ -76,6 +96,18 @@ pub fn parse_css_paint_color(input: &str) -> Option<CssPaintColor> {
         .and_then(|r| r.strip_suffix(')'))
         && let Some((light, dark)) = split_top_level_comma_pair(rest)
     {
+        if crate::css_map::active_dynamic_light_dark() {
+            let l = light.trim();
+            let d = dark.trim();
+            if !l.starts_with("light-dark(") && !d.starts_with("light-dark(") {
+                let lc = parse_css_paint_color(l)?;
+                let dc = parse_css_paint_color(d)?;
+                return Some(CssPaintColor::from_core(
+                    nana_ui_core::PaintColor::light_dark(lc.to_core(), dc.to_core()),
+                ));
+            }
+            return None;
+        }
         let chosen = if crate::css_map::active_color_scheme_is_dark() {
             dark
         } else {
@@ -135,6 +167,25 @@ pub fn parse_css_paint_color(input: &str) -> Option<CssPaintColor> {
     if lower.starts_with("color-mix(") {
         return parse_color_mix_paint(input);
     }
+    if let Some(rest) = lower
+        .strip_prefix("theme(")
+        .and_then(|r| r.strip_suffix(')'))
+    {
+        let token = rest.trim().trim_matches(|c| c == '\'' || c == '"');
+        let token = token
+            .strip_prefix("colors.")
+            .or_else(|| token.strip_prefix("color."))
+            .or_else(|| token.strip_prefix("palette."))
+            .unwrap_or(token);
+        return SemanticColorRole::from_css_token_name(token).map(CssPaintColor::ThemeRole);
+    }
+    if let Some(rest) = lower.strip_prefix("var(").and_then(|r| r.strip_suffix(')')) {
+        let name = rest.split(',').next().unwrap_or(rest).trim();
+        if name.starts_with("--nana-") {
+            return SemanticColorRole::from_css_token_name(name).map(CssPaintColor::ThemeRole);
+        }
+        return None;
+    }
     // A malformed recognized function must fail closed. Sending it back
     // through `parse_css_color` would recurse because that parser delegates
     // OKLCH/HSV/color-mix/light-dark functions here.
@@ -145,19 +196,38 @@ pub fn parse_css_paint_color(input: &str) -> Option<CssPaintColor> {
     {
         return None;
     }
-    parse_css_color(input).map(CssPaintColor::Srgb)
+    if let Some(srgb) = parse_css_color(input) {
+        return Some(CssPaintColor::Srgb(srgb));
+    }
+    let trimmed = input.trim();
+    if !trimmed.is_empty()
+        && !trimmed.contains('(')
+        && !trimmed.starts_with('#')
+        && !trimmed.starts_with("--")
+        && let Some(role) = SemanticColorRole::from_css_token_name(trimmed)
+    {
+        return Some(CssPaintColor::ThemeRole(role));
+    }
+    None
 }
 
 /// Resolve an authoring color after expanding active CSS custom properties.
 /// The returned value still carries its source color space.
 pub fn resolve_css_paint_color(input: &str) -> Option<CssPaintColor> {
-    let expanded = crate::css_map::expand_css_var_fallback(input.trim());
-    // `light-dark()` depends on the active document scheme even when its
-    // source text and expanded custom properties are unchanged.
+    let s = input.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let expanded = crate::css_map::expand_css_vars_for_paint(s);
+    if expanded.trim().is_empty() {
+        return None;
+    }
+    // `light-dark()` depends on active scheme and dynamic compilation mode.
     let cache_key = format!(
-        "{}\u{1f}{}",
+        "{}\u{1f}{}\u{1f}{}",
         expanded,
-        crate::css_map::active_color_scheme_is_dark() as u8
+        crate::css_map::active_color_scheme_is_dark() as u8,
+        crate::css_map::active_dynamic_light_dark() as u8
     );
     RESOLVED_PAINT_CACHE.with(|cache| {
         if let Some(color) = cache.borrow().get(&cache_key).copied() {
@@ -431,6 +501,44 @@ fn parse_color_mix_paint(input: &str) -> Option<CssPaintColor> {
     // CSS Color 5 makes an under-specified mix translucent by the missing
     // weight; weights above 100% are normalized without further attenuation.
     let alpha_scale = (supplied / 100.0).min(1.0);
+    let a_core = a.to_core();
+    let b_core = b.to_core();
+    if a_core.is_theme_dynamic() || b_core.is_theme_dynamic() {
+        let is_transparent =
+            |c: CssPaintColor| matches!(c, CssPaintColor::Srgb(rgba) if rgba[3] == 0.0);
+        if alpha_scale >= 1.0 - 1e-4
+            && let (CssPaintColor::ThemeRole(r1), CssPaintColor::ThemeRole(r2)) = (a, b)
+        {
+            return Some(CssPaintColor::ThemeMix(
+                nana_ui_core::SemanticColorMix::new(r1, r2, t),
+            ));
+        }
+        if let CssPaintColor::ThemeRole(role) = a
+            && is_transparent(b)
+        {
+            return Some(CssPaintColor::ThemeMix(
+                nana_ui_core::SemanticColorMix::alpha(role, t * alpha_scale),
+            ));
+        }
+        if let CssPaintColor::ThemeRole(role) = b
+            && is_transparent(a)
+        {
+            return Some(CssPaintColor::ThemeMix(
+                nana_ui_core::SemanticColorMix::alpha(role, (1.0 - t) * alpha_scale),
+            ));
+        }
+        let resolve_branch = |appearance| {
+            let model = nana_ui_core::StyleModelRef::new(appearance);
+            let la = CssPaintColor::from_core(a_core.resolve(model));
+            let lb = CssPaintColor::from_core(b_core.resolve(model));
+            interpolate_paint_colors_scaled(method, la, lb, 1.0 - t, alpha_scale).to_core()
+        };
+        let light_res = resolve_branch(ThemeAppearance::Light);
+        let dark_res = resolve_branch(ThemeAppearance::Dark);
+        return Some(CssPaintColor::from_core(
+            nana_ui_core::PaintColor::light_dark(light_res, dark_res),
+        ));
+    }
     Some(interpolate_paint_colors_scaled(
         method,
         a,

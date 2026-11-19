@@ -29,6 +29,7 @@
 use nana_ui_core::sort::CompactSort as _;
 use std::collections::HashMap;
 use std::panic::Location;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use nana_ui_core::LayoutStyle;
@@ -36,13 +37,27 @@ use nana_ui_core::LayoutStyle;
 use super::controls::StyledComponent;
 use super::node::{El, NodeBindings};
 use super::prop::{FieldWrite, IntoProp, PropSource};
-use super::transition::Implicit;
+use super::reactive::{Signal, signal};
+use super::transition::{Implicit, KeyframeAnimation};
 use crate::{
     ComponentView, MAX_RESPONSIVE_BREAKPOINTS, MutationQueue, ResponsiveAxis, ResponsiveContainer,
     ResponsiveRule, StableNodeId, StyleVariant,
 };
 
 pub use nana_ui_core::StylePatch;
+
+#[doc(hidden)]
+pub const PSEUDO_BIT_SHIFT: u32 = 60;
+#[doc(hidden)]
+pub const MAX_CONDITIONAL_CLASSES: usize = 60;
+#[doc(hidden)]
+pub const PSEUDO_HOVER: u8 = 1 << 0;
+#[doc(hidden)]
+pub const PSEUDO_FOCUS: u8 = 1 << 1;
+#[doc(hidden)]
+pub const PSEUDO_FOCUS_VISIBLE: u8 = 1 << 2;
+#[doc(hidden)]
+pub const PSEUDO_ACTIVE: u8 = 1 << 3;
 
 /// Codegen helpers emitted by compiled stylesheet patches; not part of the
 /// supported public API.
@@ -56,24 +71,26 @@ pub mod __patch {
     pub use nana_ui_core::shared::Shared;
     pub use nana_ui_core::style_patch::set;
     pub use nana_ui_core::{
-        AlignSpec, AnchorSpec, BackdropFilter, BackgroundImage, BackgroundImageFit,
+        AlignSpec, AnchorSpec, AnimationDirection, AnimationFillMode, AnimationIteration,
+        AnimationPlayState, BackdropFilter, BackgroundImage, BackgroundImageFit,
         BackgroundPosition, BackgroundRepeat, BorderImageSlice, BorderImageSpec, BorderStyle,
         BorderWidth, BoxShadowSpec, BoxSizing, CalcBinOp, CalcExpr, ClipCircle, ClipEllipse,
         ClipInset, ClipPath, ClipPoint, ClipShapeRadius, ColorFilter, ContainerType,
-        ControlPadding, ControlSize, CssGradient, CursorSpec, DirSpec, DisplaySpec,
+        ControlPadding, ControlSize, CssGradient, CursorSpec, DirSpec, DisplaySpec, Easing,
         FilterDropShadow, FlexDirection, FlexWrap, FontFeatureSetting, FontKerningSpec,
         FontVariationSetting, GradientStop, GridAutoFlow, GridLine, GridRepeatAuto,
         GridTemplateAreas, GridTrack, GridTrackListUnsupported, ImageSampling, JustifySpec,
         LengthSpec, LineBreakSpec, LineHeightSpec, LineRole, LinearGradient, MaskImage,
-        MaterialProgram, MaterialRef, MaterialTexture, MixBlendMode, OutlineStyle, OverflowSpec,
-        OverflowWrapSpec, PaintColor, PaintMat4, PaintTransform, PointerEventsSpec,
+        MaterialProgram, MaterialRef, MaterialTexture, MixBlendMode, MotionCurve, OutlineStyle,
+        OverflowSpec, OverflowWrapSpec, PaintColor, PaintMat4, PaintTransform, PointerEventsSpec,
         PopoverAlignment, PopoverPlacement, PositionSpec, RadialGradient, RadiusTier,
-        ScrollEdgeFade, ScrollbarSkin, SpacingStep, TextAlignSpec, TextAutospaceSpec,
-        TextDecorationLine, TextEmphasisColor, TextEmphasisPosition, TextEmphasisShape,
-        TextEmphasisStyle, TextJustifySpec, TextOrientationSpec, TextShadowSpec,
-        TextSpacingTrimSpec, TextStrokeSpec, TextWeight, TextWrapStyleSpec, ThemeExpr,
-        ThemeProperty, ThemeToken, TransformBox, TransformOrigin, TypeRole, UserSelectSpec,
-        ViewportAxis, VisibilitySpec, WhiteSpaceSpec, WordBreakSpec, WritingModeSpec,
+        ScrollEdgeFade, ScrollbarSkin, SemanticColorMix, SemanticColorRole, SpacingStep, StepJump,
+        TextAlignSpec, TextAutospaceSpec, TextDecorationLine, TextEmphasisColor,
+        TextEmphasisPosition, TextEmphasisShape, TextEmphasisStyle, TextJustifySpec,
+        TextOrientationSpec, TextShadowSpec, TextSpacingTrimSpec, TextStrokeSpec, TextWeight,
+        TextWrapStyleSpec, ThemeColorPairRef, ThemeExpr, ThemeProperty, ThemeToken, TransformBox,
+        TransformOrigin, TypeRole, UserSelectSpec, ViewportAxis, VisibilitySpec, WhiteSpaceSpec,
+        WordBreakSpec, WritingModeSpec, intern_theme_color_pair,
     };
 }
 
@@ -118,12 +135,17 @@ impl SheetQuery {
 /// is the element's `i`-th conditional class), its patch, and the
 /// `@container` query that guards it.
 type SiteRule = (u64, &'static StylePatch, Option<&'static SheetQuery>);
+type SiteTransition = (u64, &'static [Implicit]);
+type SiteAnimation = (u64, &'static [KeyframeAnimation]);
 
 /// One element's compiled rules, in cascade order: each patch applies
-/// while every conditional class in its mask is active, and a guarded one
-/// only in the buckets of its container where its query holds.
+/// while every conditional class and interactive pseudo in its mask is active,
+/// and a guarded one only in the buckets of its container where its query holds.
 pub struct StyleSite {
     rules: &'static [SiteRule],
+    transitions: &'static [SiteTransition],
+    animations: &'static [SiteAnimation],
+    used_pseudos: u8,
     /// What every instance of the site shares.
     composed: Mutex<Option<Composed>>,
 }
@@ -239,8 +261,81 @@ impl StyleSite {
     pub const fn new(rules: &'static [SiteRule]) -> Self {
         Self {
             rules,
+            transitions: &[],
+            animations: &[],
+            used_pseudos: 0,
             composed: Mutex::new(None),
         }
+    }
+
+    #[doc(hidden)]
+    pub const fn with_motion(
+        rules: &'static [SiteRule],
+        transitions: &'static [SiteTransition],
+        animations: &'static [SiteAnimation],
+        used_pseudos: u8,
+    ) -> Self {
+        Self {
+            rules,
+            transitions,
+            animations,
+            used_pseudos,
+            composed: Mutex::new(None),
+        }
+    }
+
+    pub(crate) const fn used_pseudos(&self) -> u8 {
+        self.used_pseudos
+    }
+
+    pub(crate) const fn has_dynamic_motion(&self) -> bool {
+        !self.animations.is_empty() || !self.transitions.is_empty()
+    }
+
+    pub(crate) fn transitions_for(&self, active: u64) -> Vec<Implicit> {
+        let mut out: Vec<Implicit> = Vec::new();
+        for &(needs, items) in self.transitions {
+            if needs & !active == 0 {
+                for &item in items {
+                    if let Some(existing) = out.iter_mut().find(|cur| cur.property == item.property)
+                    {
+                        *existing = item;
+                    } else {
+                        out.push(item);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    pub(crate) fn animations_for(&self, active: u64) -> Vec<KeyframeAnimation> {
+        let mut out: Vec<KeyframeAnimation> = Vec::new();
+        for &(needs, items) in self.animations {
+            if needs & !active == 0 {
+                for &item in items {
+                    if item.name.is_empty() {
+                        for cur in &mut out {
+                            cur.play_state = item.play_state;
+                        }
+                        continue;
+                    }
+                    if item.name.eq_ignore_ascii_case("none") {
+                        out.clear();
+                        continue;
+                    }
+                    if let Some(existing) = out
+                        .iter_mut()
+                        .find(|cur| cur.name == item.name && cur.property == item.property)
+                    {
+                        *existing = item;
+                    } else {
+                        out.push(item);
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// Whether any rule of the site is guarded by an `@container` query.
@@ -406,30 +501,41 @@ impl StyleSite {
 }
 
 /// A stylesheet compiled at build time (`stylesheet!`, a view's `<style>`):
-/// its class rules and transitions, each in cascade order.
+/// its class rules, transitions, and keyframe animations, each in cascade order.
 pub struct Sheet {
     rules: &'static [SheetRule],
     transitions: &'static [SheetTransition],
-    /// `(fixed classes, conditional classes) -> (site, animations)`.
+    animations: &'static [SheetAnimation],
+    /// `(fixed classes, conditional classes) -> (site, static animations)`.
     resolved: Mutex<Vec<Resolved>>,
 }
 
 type Resolved = (Vec<u16>, Vec<u16>, &'static StyleSite, &'static [Implicit]);
 
-/// One rule: the classes its selector needs, its patch, and the
-/// `@container` query of the block it is in (`None` outside one).
+/// One rule: the classes its selector needs, its subject pseudo bitmask,
+/// its patch, and the `@container` query of the block it is in (`None` outside one).
 #[doc(hidden)]
 pub struct SheetRule {
     pub classes: &'static [u16],
+    pub pseudo: u8,
     pub patch: &'static StylePatch,
     pub query: Option<&'static SheetQuery>,
 }
 
-/// One `transition`: the classes its selector needs and what it animates.
+/// One `transition`: the classes its selector needs, its pseudo bitmask, and what it animates.
 #[doc(hidden)]
 pub struct SheetTransition {
     pub classes: &'static [u16],
+    pub pseudo: u8,
     pub animate: &'static [Implicit],
+}
+
+/// One `animation` binding: the classes its selector needs, its pseudo bitmask, and its keyframes.
+#[doc(hidden)]
+pub struct SheetAnimation {
+    pub classes: &'static [u16],
+    pub pseudo: u8,
+    pub animations: &'static [KeyframeAnimation],
 }
 
 impl Sheet {
@@ -438,6 +544,21 @@ impl Sheet {
         Self {
             rules,
             transitions,
+            animations: &[],
+            resolved: Mutex::new(Vec::new()),
+        }
+    }
+
+    #[doc(hidden)]
+    pub const fn with_animations(
+        rules: &'static [SheetRule],
+        transitions: &'static [SheetTransition],
+        animations: &'static [SheetAnimation],
+    ) -> Self {
+        Self {
+            rules,
+            transitions,
+            animations,
             resolved: Mutex::new(Vec::new()),
         }
     }
@@ -463,6 +584,14 @@ impl Sheet {
                 .position(|c| c == class)
                 .map_or(0, |at| 1u64 << at)
         };
+        let mask_for = |classes: &[u16], pseudo: u8| -> u64 {
+            let class_bits = classes
+                .iter()
+                .filter(|class| !fixed.contains(class))
+                .fold(0u64, |needs, class| needs | bit(class));
+            class_bits | (u64::from(pseudo) << PSEUDO_BIT_SHIFT)
+        };
+        let mut used_pseudos = 0u8;
         let rules: Vec<SiteRule> = self
             .rules
             .iter()
@@ -472,26 +601,66 @@ impl Sheet {
                     .all(|class| fixed.contains(class) || conditional.contains(class))
             })
             .map(|rule| {
-                let needs = rule
-                    .classes
-                    .iter()
-                    .filter(|class| !fixed.contains(class))
-                    .fold(0, |needs, class| needs | bit(class));
-                (needs, rule.patch, rule.query)
+                used_pseudos |= rule.pseudo;
+                (mask_for(rule.classes, rule.pseudo), rule.patch, rule.query)
             })
             .collect();
-        // One per distinct class set an element is written with: bounded
-        // by the program's source, not by how many nodes it builds.
-        let site: &'static StyleSite = Box::leak(Box::new(StyleSite::new(Box::leak(
-            rules.into_boxed_slice(),
-        ))));
-        let animate = self
+        let transitions: Vec<SiteTransition> = self
             .transitions
             .iter()
-            .rfind(|t| t.classes.iter().all(|class| fixed.contains(class)))
-            .map_or(&[][..], |t| t.animate);
-        resolved.push((fixed.to_vec(), conditional.to_vec(), site, animate));
-        (site, animate)
+            .filter(|t| {
+                t.classes
+                    .iter()
+                    .all(|class| fixed.contains(class) || conditional.contains(class))
+            })
+            .map(|t| {
+                used_pseudos |= t.pseudo;
+                (mask_for(t.classes, t.pseudo), t.animate)
+            })
+            .collect();
+        let animations: Vec<SiteAnimation> = self
+            .animations
+            .iter()
+            .filter(|a| {
+                a.classes
+                    .iter()
+                    .all(|class| fixed.contains(class) || conditional.contains(class))
+            })
+            .map(|a| {
+                used_pseudos |= a.pseudo;
+                (mask_for(a.classes, a.pseudo), a.animations)
+            })
+            .collect();
+        let has_dynamic_transitions = transitions.iter().any(|(needs, _)| *needs != 0);
+        let static_animate = if !has_dynamic_transitions && animations.is_empty() {
+            self.transitions
+                .iter()
+                .rfind(|t| t.pseudo == 0 && t.classes.iter().all(|class| fixed.contains(class)))
+                .map_or(&[][..], |t| t.animate)
+        } else {
+            &[][..]
+        };
+        let dynamic_transitions: &'static [SiteTransition] =
+            if has_dynamic_transitions || !animations.is_empty() {
+                Box::leak(transitions.into_boxed_slice())
+            } else {
+                &[]
+            };
+        let dynamic_animations: &'static [SiteAnimation] = if animations.is_empty() {
+            &[]
+        } else {
+            Box::leak(animations.into_boxed_slice())
+        };
+        // One per distinct class set an element is written with: bounded
+        // by the program's source, not by how many nodes it builds.
+        let site: &'static StyleSite = Box::leak(Box::new(StyleSite::with_motion(
+            Box::leak(rules.into_boxed_slice()),
+            dynamic_transitions,
+            dynamic_animations,
+            used_pseudos,
+        )));
+        resolved.push((fixed.to_vec(), conditional.to_vec(), site, static_animate));
+        (site, static_animate)
     }
 }
 
@@ -545,6 +714,29 @@ impl<C> Classes<C> {
     }
 }
 
+/// Per-node interactive pseudo state signal driven by [`ReactiveHost`].
+#[derive(Clone)]
+pub(crate) struct InteractiveStyleBinding {
+    pub(crate) used_pseudos: u8,
+    pub(crate) signal: Signal<u8>,
+}
+
+/// Per-node dynamic motion metadata (conditional/pseudo transitions & keyframes).
+#[derive(Clone)]
+pub(crate) struct MotionBinding {
+    pub(crate) site: &'static StyleSite,
+    pub(crate) active_mask: Arc<AtomicU64>,
+    pub(crate) prev_mask: u64,
+    /// Sentinel `u64::MAX` ensures initial mount syncs static `@keyframes` once.
+    pub(crate) last_anim_mask: u64,
+}
+
+impl MotionBinding {
+    pub(crate) fn current_mask(&self) -> u64 {
+        self.active_mask.load(Ordering::Relaxed)
+    }
+}
+
 /// `site` over the component's layout as built; the `i`-th condition
 /// switches the site's `i`-th conditional class. A site with `@container`
 /// rules also gives the element its responsive rule under the active
@@ -558,7 +750,21 @@ fn apply_site<C: StyledComponent + ComponentView>(
 ) {
     let base = &component.node_style().layout;
     let queried = site.has_queries();
-    if conditions.is_empty() {
+    let used_pseudos = site.used_pseudos();
+    let motion_mask = if site.has_dynamic_motion() {
+        let active_mask = Arc::new(AtomicU64::new(0));
+        let mask_clone = Arc::clone(&active_mask);
+        bindings.motion = Some(MotionBinding {
+            site,
+            active_mask,
+            prev_mask: 0,
+            last_anim_mask: u64::MAX,
+        });
+        Some(mask_clone)
+    } else {
+        None
+    };
+    if conditions.is_empty() && used_pseudos == 0 {
         if queried {
             bindings.responsive = Some(ResponsiveBinding::new(site.responsive(base, 0, at)));
         }
@@ -566,8 +772,18 @@ fn apply_site<C: StyledComponent + ComponentView>(
         <ComposedLayout as FieldWrite<C, Arc<LayoutStyle>>>::write(component, composed);
         return;
     }
+    let pseudo_signal = if used_pseudos != 0 {
+        let sig = signal(0u8);
+        bindings.interactive = Some(InteractiveStyleBinding {
+            used_pseudos,
+            signal: sig,
+        });
+        Some(sig)
+    } else {
+        None
+    };
     let base = site.shared_base(base);
-    // The binding computes the active classes once per run, for both.
+    // The binding computes the active classes and pseudo bits once per run, for both.
     let pending = queried.then(|| {
         let binding = ResponsiveBinding::default();
         let pending = Arc::clone(&binding.pending);
@@ -575,13 +791,19 @@ fn apply_site<C: StyledComponent + ComponentView>(
         pending
     });
     let composed = move || {
-        let active = conditions
+        let mut active = conditions
             .iter()
             .enumerate()
             .fold(0u64, |mask, (bit, class)| match class.get() {
-                true => mask | 1 << bit,
+                true => mask | (1u64 << bit),
                 false => mask,
             });
+        if let Some(pseudo) = pseudo_signal {
+            active |= u64::from(pseudo.get()) << PSEUDO_BIT_SHIFT;
+        }
+        if let Some(mask) = &motion_mask {
+            mask.store(active, Ordering::Relaxed);
+        }
         if let Some(pending) = &pending {
             let rule = site.responsive(&base, active, at);
             *pending.lock().unwrap_or_else(PoisonError::into_inner) = Some(rule);
@@ -719,7 +941,7 @@ impl<C: StyledComponent + ComponentView, K> El<C, K> {
         at: &'static Location<'static>,
     ) -> Self {
         self.with_classes(class, at, move |classes, index| {
-            if classes.conditional.len() < 64 {
+            if classes.conditional.len() < MAX_CONDITIONAL_CLASSES {
                 classes.conditional.push((index, condition));
             }
         })
@@ -955,6 +1177,7 @@ mod site_tests {
     });
     static PADDED: [SheetRule; 1] = [SheetRule {
         classes: &[0],
+        pseudo: 0,
         patch: &PAD,
         query: None,
     }];

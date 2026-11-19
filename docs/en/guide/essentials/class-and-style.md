@@ -45,7 +45,7 @@ fn todos(empty: Signal<bool>) -> impl IntoView {
 
 The `<style>` in a template goes first and compiles into one `Sheet`. `class="todos"` expands to `.class(…)`, and `class:empty={empty}` expands to `.class_when(…)`. `stylesheet!` generates a `Class` constant for every class, with `-` replaced by `_`, so `.empty` above is `todo_styles::empty`. The constants of `mod todo_styles;` are visible only to the parent module; write `pub mod` to make them public.
 
-The classes of one element must come from the same table. A `transition` on a fixed class plays along the compositor track to the new value when a binding changes `opacity`, `transform`, `width`, `height` or `background`. Logical styles take the new value directly.
+The classes of one element must come from the same table. A `transition` (including `transition-delay`) on fixed classes, conditional classes, or interactive pseudos plays along the compositor track to the new value when a state change updates `opacity`, `transform`, `width`, `height`, `background`, or `color`. `@keyframes` and `animation` also compile to `#87 MotionTrack` tracks and resolve theme colors live. Logical styles take the new value directly.
 
 To write a few declarations for a single element, use `css!`, and put it before the other layout calls:
 
@@ -61,7 +61,7 @@ Values that Rust lexing cannot write go in double quotes, such as `font-size: "1
 Mixing classes from two stylesheets on one element fails an assertion at runtime. Write conditional classes and fixed classes in the same `stylesheet!`.
 :::
 
-Build time cascades only class selectors, such as `.todos` and `.todos.empty`. Tags, ids, combinators, `:hover`, `@media` and `@keyframes` are not compiled in and produce a warning on that piece of CSS. The same goes for an unknown property. Do not assume "if it is in the stylesheet it will take effect".
+Build time cascades class selectors (such as `.todos` and `.todos.empty`), subject interactive pseudo-classes (`:hover`, `:focus`, `:focus-visible`, `:active`), `@keyframes` with `animation`, and—within a single template's `<style>`—static child (`>`) and descendant (` `) combinators of class compounds. `stylesheet!` continues to compile class selectors without combinators. Ancestor interactive pseudos (such as `.card:hover .title`), sibling combinators (`+`, `~`), tag/id/attribute selectors, `@media`, `@font-face`, pseudo-elements, and unknown properties are not compiled in and produce a warning on that piece of CSS. Do not assume "if it is in the stylesheet it will take effect".
 
 Class rules inside `@container` blocks are compiled in too and apply by container size. Declare the container with `container-type` and `container-name`:
 
@@ -76,7 +76,7 @@ The containers of `each` and `when` accept `.class`, `.class_when` and `.css` as
 
 ## Surfaces that follow the theme
 
-Colors in a stylesheet are evaluated against the light theme at build time, and switching the installed `ThemeId` does not recompute them. To follow the theme, write semantic roles. Every element on a view has `.foreground`, `.background`, `.border` and `.radius`. The first three are `SemanticColorRole` and the radius is a `RadiusTier`. All of them can be bound.
+Theme color tokens in stylesheets (`var(--nana-*)`, semantic role names, `theme(…)`, `light-dark(…)`, `:root` / `:root[data-theme="dark"]` custom properties, and `color-mix(…)` with semantic roles) compile to theme-aware `PaintColor` values that resolve dynamically when the installed `ThemeId` or an enclosing `ThemeScope` (`El::theme_colors`) changes; hardcoded literal colors remain static. Every element on a view also has `.foreground`, `.background`, `.border` and `.radius` (`SemanticColorRole` and `RadiusTier`), all bindable.
 
 :::api
 

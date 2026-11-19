@@ -78,6 +78,20 @@ impl UiWorld {
             computed.border_color = border_color;
             computed.ring_color = ring_color;
         }
+        let resolved_layout = &self.record(id).resolved_layout;
+        if resolved_layout.has_dynamic_paint_colors() || !style.paint_colors.is_shared_default() {
+            let mut slots = (*resolved_layout.paint_colors).clone();
+            if let Some(c) = color
+                && slots.color.is_none()
+                && style.paint_colors.color.is_some()
+            {
+                slots.color = Some(nana_ui_core::PaintColor::srgb(c));
+            }
+            slots.resolve_theme(model);
+            if &*style.paint_colors != &slots {
+                Arc::make_mut(style).paint_colors = slots.into();
+            }
+        }
         color
     }
 
@@ -195,6 +209,25 @@ impl UiWorld {
         // on write. Resolving it here instead meant an `Arc::make_mut` copy of
         // a 4.8 KB `LayoutStyle` per control per frame.
         source_style.layout = self.motion_layout(id, &resolved_layout);
+        let overlay_bg = self.presentation_color_overlay(id, crate::AnimatableProperty::Background);
+        let overlay_fg = self.presentation_color_overlay(id, crate::AnimatableProperty::Color);
+        if source_style.layout.has_dynamic_paint_colors()
+            || overlay_bg.is_some()
+            || overlay_fg.is_some()
+        {
+            let layout_mut = Arc::make_mut(&mut source_style.layout);
+            if layout_mut.has_dynamic_paint_colors() {
+                layout_mut.resolve_theme_colors(model);
+            }
+            if let Some(bg) = overlay_bg {
+                layout_mut.background = Some(bg);
+                layout_mut.paint_colors.background = Some(nana_ui_core::PaintColor::srgb(bg));
+            }
+            if let Some(fg) = overlay_fg {
+                layout_mut.color = Some(fg);
+                layout_mut.paint_colors.color = Some(nana_ui_core::PaintColor::srgb(fg));
+            }
+        }
         // Open menu content is viewport-fixed for layout and hit testing; the
         // Scene must paint it so too, or the trigger's clips and stacking
         // groups cut the card that was laid out above them.

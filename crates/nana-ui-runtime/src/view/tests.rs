@@ -1908,11 +1908,13 @@ static CARD_SHEET: Sheet = Sheet::new(
     &[
         SheetRule {
             classes: &[0],
+            pseudo: 0,
             patch: &CARD,
             query: None,
         },
         SheetRule {
             classes: &[1],
+            pseudo: 0,
             patch: &DIM,
             query: None,
         },
@@ -1982,16 +1984,19 @@ static QUERY_SHEET: Sheet = Sheet::new(
     &[
         SheetRule {
             classes: &[0],
+            pseudo: 0,
             patch: &QUERY_ROW,
             query: None,
         },
         SheetRule {
             classes: &[0],
+            pseudo: 0,
             patch: &QUERY_NARROW,
             query: Some(&NARROW_CARD),
         },
         SheetRule {
             classes: &[1],
+            pseudo: 0,
             patch: &QUERY_DIM,
             query: Some(&NARROW_CARD),
         },

@@ -110,14 +110,21 @@ pub use store::{
 pub use store::{Paths, StoreKey};
 pub use structural::{Dynamic, Each, EachExt, EachIn, When, WhenExt, dynamic, each, when};
 #[doc(hidden)]
-pub use style::{__patch, ComposedLayout, SheetQuery, SheetRule, SheetTransition};
+pub use style::{
+    __patch, ComposedLayout, MAX_CONDITIONAL_CLASSES, PSEUDO_ACTIVE, PSEUDO_BIT_SHIFT,
+    PSEUDO_FOCUS, PSEUDO_FOCUS_VISIBLE, PSEUDO_HOVER, SheetAnimation, SheetQuery, SheetRule,
+    SheetTransition,
+};
 pub use style::{Class, InlineStyle, Sheet, StylePatch, StyleSite};
+pub(crate) use style::{InteractiveStyleBinding, MotionBinding};
 pub use task::{
     Task, has_woken_tasks, poll_tasks, set_task_wake, spawn_blocking, spawn_local, task_count,
 };
 pub use teleport::{Teleport, teleport};
 #[cfg(feature = "reactive-trace")]
 pub use trace::{Cause, WhyUpdated};
+#[doc(hidden)]
+pub use transition::{CompiledKeyframe, CompiledMotionValue, KeyframeAnimation};
 pub use transition::{Implicit, Presence, Transition};
 
 /// Text with `format!` interpolation that re-evaluates when a signal it

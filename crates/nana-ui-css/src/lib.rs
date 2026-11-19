@@ -79,9 +79,11 @@ pub use css_map::{
     parse_css_font_weight, parse_css_length_px, parse_css_letter_spacing, parse_css_line_break,
     parse_css_line_height, parse_css_word_break, parse_grid_template_columns,
     parse_grid_track_list_result, parse_inset_length, resolve_grid_column_widths,
-    resolve_grid_track_sizes, resolve_paint_color,
+    resolve_grid_track_sizes, resolve_paint_color, with_dynamic_light_dark,
 };
+pub use css_motion::{ParsedAnimation, motion_curve_from_css_token, parse_animation_declarations};
 pub use css_written::{WrittenLayout, written_layout};
+pub use rust_expr::emit_paint_color_rust;
 mod css_theme;
 pub use css_theme::parse_theme_expr;
 pub use style::{

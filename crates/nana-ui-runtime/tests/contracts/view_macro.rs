@@ -1377,11 +1377,10 @@ mod styles {
         assert!(layout_of(&cx, group).hidden);
     }
 
-    /// The space in `.panel .open` is a descendant combinator, which L3
-    /// views do not compile; without it `.panel.open` is a compound that
-    /// applies. Quoted values are spliced bare.
+    /// The space in `.panel .open` is a descendant combinator (matching an
+    /// `.open` descendant of `.panel`, not `<Column class="panel" class:open={open}>`);
+    /// without the space, `.panel.open` matches `<Column>` itself.
     #[test]
-    #[allow(deprecated)] // the descendant rule is a warning
     fn style_tokens_keep_the_space_between_selectors() {
         let mut cx = AppContext::new();
         let document = DocumentId::new(1).unwrap();
@@ -1505,6 +1504,592 @@ mod styles {
             assert_eq!(shown(&cx), (20.0, Some(red)), "back at 400 px");
         }
         assert_eq!(*rules[0], *rules[1], "a template and a stylesheet! agree");
+    }
+
+    stylesheet! {
+        mod dynamic_theme_styles;
+        :root { --card-bg: #102030; }
+        :root[data-theme="dark"] { --card-bg: #aabbcc; }
+        .surface { background: var(--nana-surface); color: accent; }
+        .mixed { background: light-dark(#ffffff, #112233); border-color: color-mix(in srgb, var(--nana-accent) 50%, var(--nana-surface)); border-width: 1px; }
+        .mixed.open { opacity: 0.9; }
+        .var-card { background: var(--card-bg); }
+    }
+
+    #[test]
+    fn dynamic_theme_colors_update_on_theme_switch_and_theme_scope() {
+        use nana_ui_core::{
+            ColorOverrides, PaintColor, SemanticColor, SemanticColorRole, StyleModelRef,
+            ThemeAppearance,
+        };
+        let override_bg = SemanticColor {
+            r: 0.25,
+            g: 0.5,
+            b: 0.75,
+            a: 1.0,
+        };
+        let document = DocumentId::new(1).unwrap();
+        for use_template in [true, false] {
+            let mut cx = AppContext::new();
+            cx.set_preset_theme(ThemeAppearance::Light).unwrap();
+            let flag = std::cell::Cell::new(None);
+            let mounted = cx
+                .mount_view_root(document, || {
+                    let open = signal(false);
+                    flag.set(Some(open));
+                    let overrides = ColorOverrides::new().with(SemanticColorRole::Surface, override_bg);
+                    if use_template {
+                        column()
+                            .children((
+                                view! {
+                                    <style>
+                                        :root { --card-bg: #102030; }
+                                        :root[data-theme="dark"] { --card-bg: #aabbcc; }
+                                        .surface { background: var(--nana-surface); color: accent; }
+                                        .mixed { background: light-dark(#ffffff, #112233); border-color: color-mix(in srgb, var(--nana-accent) 50%, var(--nana-surface)); border-width: 1px; }
+                                        .mixed.open { opacity: 0.9; }
+                                        .var-card { background: var(--card-bg); }
+                                    </style>
+                                    <Column>
+                                        <Column class="surface"><Text>"a"</Text></Column>
+                                        <Column class="mixed" class:open={open} />
+                                        <Column class="var-card" />
+                                    </Column>
+                                }
+                                .into_any(),
+                                column()
+                                    .theme_colors(overrides)
+                                    .children(view! {
+                                        <style>
+                                            .scoped { background: var(--nana-surface); }
+                                        </style>
+                                        <Column class="scoped" />
+                                    })
+                                    .into_any(),
+                            ))
+                            .into_any()
+                    } else {
+                        column()
+                            .children((
+                                column()
+                                    .children((
+                                        column().class(dynamic_theme_styles::surface).children(text("a")),
+                                        column().class(dynamic_theme_styles::mixed).class_when(dynamic_theme_styles::open, open),
+                                        column().class(dynamic_theme_styles::var_card),
+                                    ))
+                                    .into_any(),
+                                column()
+                                    .theme_colors(overrides)
+                                    .children(column().class(dynamic_theme_styles::surface))
+                                    .into_any(),
+                            ))
+                            .into_any()
+                    }
+                })
+                .unwrap();
+
+            frames(&mut cx, document);
+            let root = mounted.roots()[0];
+            let wrapper_a = cx.world().node(root).unwrap().children[0];
+            let a_children = cx.world().node(wrapper_a).unwrap().children.clone();
+            let (surface_node, mixed_node, var_node) =
+                (a_children[0], a_children[1], a_children[2]);
+            let scoped_wrap = cx.world().node(root).unwrap().children[1];
+            let scoped_node = cx.world().node(scoped_wrap).unwrap().children[0];
+
+            let light_model = StyleModelRef::new(ThemeAppearance::Light);
+            let dark_model = StyleModelRef::new(ThemeAppearance::Dark);
+            let light_surface = light_model
+                .color(SemanticColorRole::Surface)
+                .as_rgba_array();
+            let dark_surface = dark_model.color(SemanticColorRole::Surface).as_rgba_array();
+            let light_accent = light_model.color(SemanticColorRole::Accent).as_rgba_array();
+            let dark_accent = dark_model.color(SemanticColorRole::Accent).as_rgba_array();
+            let light_mix = PaintColor::ThemeMix(nana_ui_core::SemanticColorMix::new(
+                SemanticColorRole::Accent,
+                SemanticColorRole::Surface,
+                0.5,
+            ))
+            .resolve_srgb(light_model);
+            let dark_mix = PaintColor::ThemeMix(nana_ui_core::SemanticColorMix::new(
+                SemanticColorRole::Accent,
+                SemanticColorRole::Surface,
+                0.5,
+            ))
+            .resolve_srgb(dark_model);
+
+            let approx = |actual: Option<[f32; 4]>, expected: [f32; 4], label: &str| {
+                let actual = actual.unwrap_or_else(|| panic!("{label}: missing color"));
+                for i in 0..4 {
+                    assert!(
+                        (actual[i] - expected[i]).abs() < 1e-3,
+                        "{label}[{i}]: got {actual:?}, expected {expected:?}"
+                    );
+                }
+            };
+
+            approx(
+                cx.world().computed_style(surface_node).unwrap().background,
+                light_surface,
+                "light surface",
+            );
+            approx(
+                cx.world()
+                    .computed_style(surface_node)
+                    .unwrap()
+                    .inherited
+                    .color,
+                light_accent,
+                "light accent text",
+            );
+            approx(
+                cx.world().computed_style(mixed_node).unwrap().background,
+                [1.0, 1.0, 1.0, 1.0],
+                "light light-dark",
+            );
+            approx(
+                cx.world().computed_style(mixed_node).unwrap().border_color,
+                light_mix,
+                "light color-mix",
+            );
+            approx(
+                cx.world().computed_style(scoped_node).unwrap().background,
+                override_bg.as_rgba_array(),
+                "ThemeScope override",
+            );
+            let extracted_light = cx.world().extract_document(document);
+            let ex_surface = extracted_light
+                .iter()
+                .find(|n| n.id == surface_node)
+                .unwrap();
+            let ex_var = extracted_light.iter().find(|n| n.id == var_node).unwrap();
+            let ex_scoped = extracted_light
+                .iter()
+                .find(|n| n.id == scoped_node)
+                .unwrap();
+            approx(
+                ex_surface.style.background,
+                light_surface,
+                "extracted light surface",
+            );
+            approx(
+                ex_var.style.background,
+                [
+                    0x10 as f32 / 255.0,
+                    0x20 as f32 / 255.0,
+                    0x30 as f32 / 255.0,
+                    1.0,
+                ],
+                "extracted light :root var",
+            );
+            approx(
+                ex_scoped.style.background,
+                override_bg.as_rgba_array(),
+                "extracted ThemeScope",
+            );
+
+            // Palette-only `set_preset_theme(Dark)` updates extracted scene styles immediately without re-running style resolution.
+            cx.set_preset_theme(ThemeAppearance::Dark).unwrap();
+            let extracted_dark = cx.world().extract_document(document);
+            let ex_surface_dark = extracted_dark
+                .iter()
+                .find(|n| n.id == surface_node)
+                .unwrap();
+            let ex_mixed_dark = extracted_dark.iter().find(|n| n.id == mixed_node).unwrap();
+            let ex_var_dark = extracted_dark.iter().find(|n| n.id == var_node).unwrap();
+            approx(
+                ex_surface_dark.style.background,
+                dark_surface,
+                "extracted dark surface",
+            );
+            approx(
+                ex_surface_dark.style.inherited.color,
+                dark_accent,
+                "extracted dark accent",
+            );
+            approx(
+                ex_mixed_dark.style.background,
+                [
+                    0x11 as f32 / 255.0,
+                    0x22 as f32 / 255.0,
+                    0x33 as f32 / 255.0,
+                    1.0,
+                ],
+                "extracted dark light-dark",
+            );
+            approx(
+                ex_mixed_dark.style.border_color,
+                dark_mix,
+                "extracted dark color-mix",
+            );
+            approx(
+                ex_var_dark.style.background,
+                [
+                    0xaa as f32 / 255.0,
+                    0xbb as f32 / 255.0,
+                    0xcc as f32 / 255.0,
+                    1.0,
+                ],
+                "extracted dark :root var",
+            );
+
+            // A style resolution pass while Dark is active also updates stored `ComputedStyle`.
+            flag.get().unwrap().set(true);
+            cx.flush_reactive().unwrap();
+            frames(&mut cx, document);
+            approx(
+                cx.world().computed_style(mixed_node).unwrap().background,
+                [
+                    0x11 as f32 / 255.0,
+                    0x22 as f32 / 255.0,
+                    0x33 as f32 / 255.0,
+                    1.0,
+                ],
+                "dark light-dark",
+            );
+            approx(
+                cx.world().computed_style(mixed_node).unwrap().border_color,
+                dark_mix,
+                "dark color-mix",
+            );
+
+            cx.set_preset_theme(ThemeAppearance::Light).unwrap();
+            let extracted_restored = cx.world().extract_document(document);
+            let ex_restored = extracted_restored
+                .iter()
+                .find(|n| n.id == surface_node)
+                .unwrap();
+            approx(
+                ex_restored.style.background,
+                light_surface,
+                "restored light surface",
+            );
+        }
+    }
+
+    #[test]
+    fn interactive_pseudo_classes_follow_hover_active_focus_and_focus_visible() {
+        use nana_ui_input::PointerPhase;
+        use nana_ui_runtime::HeadlessInput;
+        use std::time::Duration;
+
+        let mut cx = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let mounted = cx
+            .mount_view_root(document, || {
+                view! {
+                    <style>
+                        .card { width: 200px; height: 80px; opacity: 1; }
+                        .card:hover { opacity: 0.75; }
+                        .btn { width: 120px; height: 32px; opacity: 1; background: #0000ff; }
+                        .btn:hover { opacity: 0.85; }
+                        .btn:active { background: #ff0000; }
+                        .btn:focus { opacity: 0.6; }
+                        .btn:focus-visible { opacity: 0.3; }
+                    </style>
+                    <Column class="card">
+                        <Button class="btn">"press"</Button>
+                    </Column>
+                }
+            })
+            .unwrap();
+        let card = mounted.roots()[0];
+        let btn = cx.world().node(card).unwrap().children[0];
+        frames(&mut cx, document);
+        cx.rebuild_hit_test(document);
+
+        // Hovering descendant propagates `:hover` onto `.card` and `.btn`.
+        cx.set_pointer_hover_at(document, 1, Some(btn), Duration::from_millis(10))
+            .unwrap();
+        cx.flush_reactive().unwrap();
+        assert_eq!(layout_of(&cx, card).opacity, Some(0.75));
+        assert_eq!(layout_of(&cx, btn).opacity, Some(0.85));
+
+        // Pressing activates `:active` on `.btn`.
+        cx.press_pointer(document, 1, btn).unwrap();
+        cx.flush_reactive().unwrap();
+        assert_eq!(layout_of(&cx, btn).background, Some([1.0, 0.0, 0.0, 1.0]));
+        cx.release_pointer(document, 1);
+        cx.set_pointer_hover_at(document, 1, None, Duration::from_millis(20))
+            .unwrap();
+        cx.flush_reactive().unwrap();
+        assert_eq!(layout_of(&cx, card).opacity, Some(1.0));
+        assert_eq!(layout_of(&cx, btn).background, Some([0.0, 0.0, 1.0, 1.0]));
+
+        // Pointer click focuses `.btn` without `focus-visible`: `:focus` applies, `:focus-visible` does not.
+        let btn_box = cx.world().layout_box(btn).unwrap();
+        let (px, py) = (btn_box.x + 10.0, btn_box.y + 10.0);
+        let mut input = HeadlessInput::bind(&mut cx, document);
+        input.set_now(Duration::from_millis(30));
+        input.pointer(&mut cx, PointerPhase::Move, px, py).unwrap();
+        input.advance(Duration::from_millis(5));
+        input.pointer(&mut cx, PointerPhase::Down, px, py).unwrap();
+        input.advance(Duration::from_millis(5));
+        input.pointer(&mut cx, PointerPhase::Up, px, py).unwrap();
+        cx.flush_reactive().unwrap();
+        assert_eq!(cx.world().focused(document), Some(btn));
+        assert_eq!(cx.world().focus_visible(document), None);
+        assert_eq!(layout_of(&cx, btn).opacity, Some(0.6));
+
+        // Move pointer off `btn`, clear focus, then navigate via keyboard Tab for `:focus-visible`.
+        input.advance(Duration::from_millis(5));
+        input
+            .pointer(&mut cx, PointerPhase::Move, -10.0, -10.0)
+            .unwrap();
+        cx.clear_focus(document).unwrap();
+        cx.flush_reactive().unwrap();
+        assert_eq!(layout_of(&cx, btn).opacity, Some(1.0));
+        input.advance(Duration::from_millis(5));
+        input
+            .press(
+                &mut cx,
+                nana_ui_input::KeyInput::named(
+                    "Tab",
+                    "Tab",
+                    nana_ui_input::KeyState::Pressed,
+                    nana_ui_input::InputModifiers::default(),
+                ),
+                None,
+                None,
+            )
+            .unwrap();
+        cx.flush_reactive().unwrap();
+        assert_eq!(cx.world().focus_visible(document), Some(btn));
+        assert_eq!(layout_of(&cx, btn).opacity, Some(0.3));
+    }
+
+    #[test]
+    fn delayed_conditional_transitions_and_keyframe_animations_run_on_motion_track() {
+        use nana_ui_core::{
+            AnimatableProperty, MotionValue, SemanticColorRole, StyleModelRef, ThemeAppearance,
+        };
+        use std::time::Duration;
+
+        let t0 = Duration::from_secs(1);
+        let mut cx = AppContext::new();
+        cx.advance_animations(t0);
+        let document = DocumentId::new(1).unwrap();
+        let flags = std::cell::Cell::new(None);
+        let mounted = cx
+            .mount_view_root(document, || {
+                let open = signal(false);
+                let paused = signal(false);
+                flags.set(Some((open, paused)));
+                view! {
+                    <style>
+                        .box { opacity: 1; background: transparent; }
+                        .box.open { opacity: 0.2; background: #0000ff; transition: opacity 200ms 100ms linear, background 200ms linear; }
+                        @keyframes pulse {
+                            from { opacity: 0.2; background: var(--nana-surface); }
+                            to { opacity: 1.0; background: var(--nana-accent); }
+                        }
+                        .anim { animation: pulse 200ms linear infinite; }
+                        .anim.paused { animation-play-state: paused; }
+                    </style>
+                    <Column>
+                        <Column class="box" class:open={open} />
+                        <Column class="anim" class:paused={paused} />
+                    </Column>
+                }
+            })
+            .unwrap();
+        let root = mounted.roots()[0];
+        let trans_node = cx.world().node(root).unwrap().children[0];
+        let anim_node = cx.world().node(root).unwrap().children[1];
+        let (open, paused) = flags.get().unwrap();
+
+        // Trigger conditional transition with delay at `t0`.
+        open.set(true);
+        cx.flush_reactive().unwrap();
+
+        // Inside the 100ms delay: opacity holds 1.0 via Backwards fill while background already interpolates.
+        let t_delay = t0 + Duration::from_millis(50);
+        cx.advance_animations(t_delay);
+        let op_delay = match cx
+            .world()
+            .presentation_motion_value(trans_node, AnimatableProperty::Opacity, t_delay)
+            .unwrap()
+        {
+            MotionValue::Scalar(v) => v,
+            other => panic!("expected scalar opacity, got {other:?}"),
+        };
+        assert!(
+            (op_delay - 1.0).abs() < 1e-3,
+            "opacity during delay: {op_delay}"
+        );
+        let bg_delay = match cx
+            .world()
+            .presentation_motion_value(trans_node, AnimatableProperty::Background, t_delay)
+            .unwrap()
+        {
+            MotionValue::Color(c) => c,
+            other => panic!("expected color background, got {other:?}"),
+        };
+        assert!(
+            (bg_delay[2] - 0.25).abs() < 0.05,
+            "background at 50ms/200ms: {bg_delay:?}"
+        );
+
+        // Halfway through opacity duration (t0 + 100ms delay + 100ms half = t0 + 200ms).
+        let t_mid = t0 + Duration::from_millis(200);
+        cx.advance_animations(t_mid);
+        let op_mid = match cx
+            .world()
+            .presentation_motion_value(trans_node, AnimatableProperty::Opacity, t_mid)
+            .unwrap()
+        {
+            MotionValue::Scalar(v) => v,
+            other => panic!("expected scalar opacity, got {other:?}"),
+        };
+        assert!((op_mid - 0.6).abs() < 1e-2, "opacity midpoint: {op_mid}");
+
+        // Settle transitions.
+        let t1 = t0 + Duration::from_millis(350);
+        cx.advance_animations(t1);
+
+        // `@keyframes pulse` has 200ms linear infinite started at `t0`; at t0 + 100ms it is at 0.6.
+        let anim_at_100 = match cx
+            .world()
+            .presentation_motion_value(
+                anim_node,
+                AnimatableProperty::Opacity,
+                t0 + Duration::from_millis(100),
+            )
+            .unwrap()
+        {
+            MotionValue::Scalar(v) => v,
+            other => panic!("expected scalar opacity, got {other:?}"),
+        };
+        assert!(
+            (anim_at_100 - 0.6).abs() < 1e-2,
+            "keyframe at 100ms: {anim_at_100}"
+        );
+
+        // Pause in place at t1 (elapsed=350ms -> 150ms in 200ms cycle -> opacity = 0.2 + 0.8*0.75 = 0.8).
+        paused.set(true);
+        cx.flush_reactive().unwrap();
+        let paused_val = match cx
+            .world()
+            .presentation_motion_value(anim_node, AnimatableProperty::Opacity, t1)
+            .unwrap()
+        {
+            MotionValue::Scalar(v) => v,
+            other => panic!("expected scalar opacity, got {other:?}"),
+        };
+        let t_later = t1 + Duration::from_millis(80);
+        cx.advance_animations(t_later);
+        let still_paused = match cx
+            .world()
+            .presentation_motion_value(anim_node, AnimatableProperty::Opacity, t_later)
+            .unwrap()
+        {
+            MotionValue::Scalar(v) => v,
+            other => panic!("expected scalar opacity, got {other:?}"),
+        };
+        assert!(
+            (still_paused - paused_val).abs() < 1e-3,
+            "paused animation should freeze in place: before={paused_val}, after={still_paused}"
+        );
+
+        // Resume and verify theme switch re-resolves dynamic color keyframes on `#87 MotionTrack`.
+        paused.set(false);
+        cx.flush_reactive().unwrap();
+        cx.set_preset_theme(ThemeAppearance::Dark).unwrap();
+        cx.advance_animations(t_later + Duration::from_millis(50));
+        let dark_model = StyleModelRef::new(ThemeAppearance::Dark);
+        let dark_surface = dark_model.color(SemanticColorRole::Surface).as_rgba_array();
+        let dark_accent = dark_model.color(SemanticColorRole::Accent).as_rgba_array();
+        let dark_bg = match cx
+            .world()
+            .presentation_motion_value(
+                anim_node,
+                AnimatableProperty::Background,
+                t_later + Duration::from_millis(50),
+            )
+            .unwrap()
+        {
+            MotionValue::Color(c) => c,
+            other => panic!("expected color keyframe, got {other:?}"),
+        };
+        let lo = dark_surface[0].min(dark_accent[0]) - 1e-3;
+        let hi = dark_surface[0].max(dark_accent[0]) + 1e-3;
+        assert!(
+            (lo..=hi).contains(&dark_bg[0]),
+            "dark keyframe bg {dark_bg:?} should lie in dark Surface..Accent range {dark_surface:?}..{dark_accent:?}"
+        );
+
+        // `reduced_motion(true)` stops infinite CSS keyframe tracks.
+        cx.set_reduced_motion(true);
+        assert!(
+            cx.world().motion_work_counters().motion_tracks_active == 0,
+            "reduced_motion should stop infinite CSS keyframe tracks"
+        );
+    }
+
+    #[test]
+    fn static_child_and_descendant_combinators_support_conditional_ancestors_and_subject_pseudos() {
+        use std::time::Duration;
+
+        let mut cx = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let open_cell = std::cell::Cell::new(None);
+        let mounted = cx
+            .mount_view_root(document, || {
+                let open = signal(false);
+                open_cell.set(Some(open));
+                view! {
+                    <style>
+                        .card > .title { padding: 10px; }
+                        .card .badge { padding: 4px; }
+                        .card.open > .btn { opacity: 0.5; }
+                        .card.open > .btn:hover { opacity: 0.8; }
+                    </style>
+                    <Column class="card" class:open={open}>
+                        <Text class="title">"direct"</Text>
+                        <Button class="btn">"action"</Button>
+                        <Row>
+                            <Text class="title">"nested"</Text>
+                            <Text class="badge">"desc"</Text>
+                        </Row>
+                    </Column>
+                }
+            })
+            .unwrap();
+        let card = mounted.roots()[0];
+        let children = cx.world().node(card).unwrap().children.clone();
+        let (direct_title, btn, row) = (children[0], children[1], children[2]);
+        let row_children = cx.world().node(row).unwrap().children.clone();
+        let (nested_title, badge) = (row_children[0], row_children[1]);
+        let open = open_cell.get().unwrap();
+
+        assert_eq!(
+            layout_of(&cx, direct_title).padding,
+            Some(LengthSpec::Px(10.0))
+        );
+        assert_eq!(
+            layout_of(&cx, nested_title).padding,
+            None,
+            "grandchild must not match `>`"
+        );
+        assert_eq!(
+            layout_of(&cx, badge).padding,
+            Some(LengthSpec::Px(4.0)),
+            "descendant matches ` `"
+        );
+        assert_eq!(layout_of(&cx, btn).opacity, None);
+
+        open.set(true);
+        cx.flush_reactive().unwrap();
+        assert_eq!(layout_of(&cx, btn).opacity, Some(0.5));
+
+        cx.set_pointer_hover_at(document, 1, Some(btn), Duration::from_millis(10))
+            .unwrap();
+        cx.flush_reactive().unwrap();
+        assert_eq!(layout_of(&cx, btn).opacity, Some(0.8));
+
+        open.set(false);
+        cx.flush_reactive().unwrap();
+        assert_eq!(layout_of(&cx, btn).opacity, None);
     }
 }
 

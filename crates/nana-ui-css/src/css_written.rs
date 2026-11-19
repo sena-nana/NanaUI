@@ -37,6 +37,255 @@ impl WrittenLayout {
         }
         out
     }
+
+    /// Combine a light-mode and dark-mode [`WrittenLayout`] compiled from the
+    /// same declarations, promoting any color that differs across `:root` /
+    /// `:root[data-theme="dark"]` into [`nana_ui_core::PaintColor::light_dark`].
+    pub fn merge_light_dark(mut self, dark: Self) -> Self {
+        use nana_ui_core::{BackgroundImage, CssGradient, MaskImage, PaintColor};
+
+        if self.layout == dark.layout && self.written == dark.written {
+            return self;
+        }
+        let add_written = |written: &mut Vec<String>, path: &str| {
+            if !written.iter().any(|p| p == path) {
+                written.push(path.to_owned());
+            }
+        };
+        let remove_written = |written: &mut Vec<String>, path: &str| {
+            written.retain(|p| p != path);
+        };
+
+        let merge_slot = |l_pc: &mut Option<PaintColor>,
+                          d_pc: Option<PaintColor>,
+                          l_leg: Option<&mut Option<[f32; 4]>>,
+                          d_leg: Option<[f32; 4]>,
+                          paint_path: &str,
+                          legacy_path: Option<&str>,
+                          written: &mut Vec<String>| {
+            let l_eff = (*l_pc).or_else(|| l_leg.as_ref().and_then(|v| **v).map(PaintColor::srgb));
+            let d_eff = d_pc.or_else(|| d_leg.map(PaintColor::srgb));
+            if l_eff == d_eff {
+                return;
+            }
+            let merged = PaintColor::light_dark(
+                l_eff.unwrap_or(PaintColor::srgb([0.0; 4])),
+                d_eff.unwrap_or(PaintColor::srgb([0.0; 4])),
+            );
+            *l_pc = Some(merged);
+            add_written(written, paint_path);
+            if merged.is_theme_dynamic()
+                && let Some(leg) = l_leg
+            {
+                *leg = None;
+                if let Some(lp) = legacy_path {
+                    remove_written(written, lp);
+                }
+            }
+        };
+
+        let d_slots = &*dark.layout.paint_colors;
+        let l_slots = &mut *self.layout.paint_colors;
+        merge_slot(
+            &mut l_slots.color,
+            d_slots.color,
+            Some(&mut self.layout.color),
+            dark.layout.color,
+            "paint_colors.color",
+            Some("color"),
+            &mut self.written,
+        );
+        merge_slot(
+            &mut l_slots.background,
+            d_slots.background,
+            Some(&mut self.layout.background),
+            dark.layout.background,
+            "paint_colors.background",
+            Some("background"),
+            &mut self.written,
+        );
+        merge_slot(
+            &mut l_slots.border,
+            d_slots.border,
+            Some(&mut self.layout.border_color),
+            dark.layout.border_color,
+            "paint_colors.border",
+            Some("border_color"),
+            &mut self.written,
+        );
+        if !l_slots.border_top.is_none()
+            || !d_slots.border_top.is_none()
+            || self.layout.border_sides.top_color != dark.layout.border_sides.top_color
+        {
+            merge_slot(
+                &mut l_slots.border_top,
+                d_slots.border_top,
+                Some(&mut self.layout.border_sides.top_color),
+                dark.layout.border_sides.top_color,
+                "paint_colors.border_top",
+                Some("border_sides.top_color"),
+                &mut self.written,
+            );
+        }
+        if !l_slots.border_right.is_none()
+            || !d_slots.border_right.is_none()
+            || self.layout.border_sides.right_color != dark.layout.border_sides.right_color
+        {
+            merge_slot(
+                &mut l_slots.border_right,
+                d_slots.border_right,
+                Some(&mut self.layout.border_sides.right_color),
+                dark.layout.border_sides.right_color,
+                "paint_colors.border_right",
+                Some("border_sides.right_color"),
+                &mut self.written,
+            );
+        }
+        if !l_slots.border_bottom.is_none()
+            || !d_slots.border_bottom.is_none()
+            || self.layout.border_sides.bottom_color != dark.layout.border_sides.bottom_color
+        {
+            merge_slot(
+                &mut l_slots.border_bottom,
+                d_slots.border_bottom,
+                Some(&mut self.layout.border_sides.bottom_color),
+                dark.layout.border_sides.bottom_color,
+                "paint_colors.border_bottom",
+                Some("border_sides.bottom_color"),
+                &mut self.written,
+            );
+        }
+        if !l_slots.border_left.is_none()
+            || !d_slots.border_left.is_none()
+            || self.layout.border_sides.left_color != dark.layout.border_sides.left_color
+        {
+            merge_slot(
+                &mut l_slots.border_left,
+                d_slots.border_left,
+                Some(&mut self.layout.border_sides.left_color),
+                dark.layout.border_sides.left_color,
+                "paint_colors.border_left",
+                Some("border_sides.left_color"),
+                &mut self.written,
+            );
+        }
+        if !l_slots.outline.is_none()
+            || !d_slots.outline.is_none()
+            || self.layout.paint.outline.color != dark.layout.paint.outline.color
+        {
+            let d_outline = if dark.layout.paint.is_shared_default() {
+                None
+            } else {
+                dark.layout.paint.outline.color
+            };
+            if self.layout.paint.is_shared_default() && d_outline.is_none() {
+                merge_slot(
+                    &mut l_slots.outline,
+                    d_slots.outline,
+                    None,
+                    None,
+                    "paint_colors.outline",
+                    None,
+                    &mut self.written,
+                );
+            } else {
+                merge_slot(
+                    &mut l_slots.outline,
+                    d_slots.outline,
+                    Some(&mut self.layout.paint.outline.color),
+                    d_outline,
+                    "paint_colors.outline",
+                    Some("paint.outline.color"),
+                    &mut self.written,
+                );
+            }
+        }
+        merge_slot(
+            &mut l_slots.selection_background,
+            d_slots.selection_background,
+            None,
+            None,
+            "paint_colors.selection_background",
+            None,
+            &mut self.written,
+        );
+        merge_slot(
+            &mut l_slots.selection_color,
+            d_slots.selection_color,
+            None,
+            None,
+            "paint_colors.selection_color",
+            None,
+            &mut self.written,
+        );
+
+        let merge_pair_opt = |l_pc: &mut Option<PaintColor>,
+                              d_pc: Option<PaintColor>,
+                              l_rgba: [f32; 4],
+                              d_rgba: [f32; 4]| {
+            let lc = (*l_pc).unwrap_or(PaintColor::srgb(l_rgba));
+            let dc = d_pc.unwrap_or(PaintColor::srgb(d_rgba));
+            if lc != dc {
+                *l_pc = Some(PaintColor::light_dark(lc, dc));
+            }
+        };
+        let merge_gradient = |lg: &mut CssGradient, dg: &CssGradient| {
+            for (ls, ds) in lg.stops_mut().iter_mut().zip(dg.stops().iter()) {
+                let lc = ls.paint_color.unwrap_or(PaintColor::srgb(ls.color));
+                let dc = ds.paint_color.unwrap_or(PaintColor::srgb(ds.color));
+                if lc != dc {
+                    ls.paint_color = Some(PaintColor::light_dark(lc, dc));
+                }
+            }
+        };
+
+        if !self.layout.paint.is_shared_default() || !dark.layout.paint.is_shared_default() {
+            let dp = &*dark.layout.paint;
+            let lp = &mut *self.layout.paint;
+            for (l_s, d_s) in lp.box_shadows.iter_mut().zip(dp.box_shadows.iter()) {
+                merge_pair_opt(&mut l_s.paint_color, d_s.paint_color, l_s.color, d_s.color);
+            }
+            if let (Some(ls), Some(ds)) = (&mut lp.text_shadow, &dp.text_shadow) {
+                merge_pair_opt(&mut ls.paint_color, ds.paint_color, ls.color, ds.color);
+            }
+            for (l_s, d_s) in lp.text_shadows.iter_mut().zip(dp.text_shadows.iter()) {
+                merge_pair_opt(&mut l_s.paint_color, d_s.paint_color, l_s.color, d_s.color);
+            }
+            if let (Some(ls), Some(ds)) = (&mut lp.text_stroke, &dp.text_stroke) {
+                merge_pair_opt(
+                    &mut ls.paint_color,
+                    ds.paint_color,
+                    ls.color.unwrap_or([0.0; 4]),
+                    ds.color.unwrap_or([0.0; 4]),
+                );
+            }
+            if let (Some(lf), Some(df)) = (&mut lp.filter, &dp.filter)
+                && let (Some(ls), Some(ds)) = (&mut lf.drop_shadow, &df.drop_shadow)
+            {
+                merge_pair_opt(&mut ls.paint_color, ds.paint_color, ls.color, ds.color);
+            }
+            if let (Some(BackgroundImage::Gradient(lg)), Some(BackgroundImage::Gradient(dg))) =
+                (&mut lp.background_image, &dp.background_image)
+            {
+                merge_gradient(lg, dg);
+            }
+            for (ll, dl) in lp
+                .background_layers
+                .iter_mut()
+                .zip(dp.background_layers.iter())
+            {
+                if let (BackgroundImage::Gradient(lg), BackgroundImage::Gradient(dg)) = (ll, dl) {
+                    merge_gradient(lg, dg);
+                }
+            }
+            if let (Some(MaskImage::Gradient(lg)), Some(MaskImage::Gradient(dg))) =
+                (&mut lp.mask, &dp.mask)
+            {
+                merge_gradient(lg, dg);
+            }
+        }
+        self
+    }
 }
 
 /// Apply `declarations` (e.g. a loop of
@@ -410,5 +659,48 @@ mod tests {
         assert!(!w.contains(&"padding_right".to_owned()));
         assert!(!w.contains(&"padding_bottom".to_owned()));
         assert!(!w.contains(&"padding_left".to_owned()));
+    }
+
+    #[test]
+    fn var_nana_tokens_preserve_theme_role_and_merge_light_dark() {
+        use nana_ui_core::{PaintColor, SemanticColorRole};
+        use std::collections::BTreeMap;
+
+        let res = crate::with_dynamic_light_dark(true, || {
+            written_layout(|layout| {
+                layout.apply_css_property("background", "var(--nana-surface)", None, None);
+                layout.apply_css_property("color", "var(--nana-accent)", None, None);
+            })
+        });
+        assert_eq!(
+            res.layout.paint_colors.background,
+            Some(PaintColor::theme_role(SemanticColorRole::Surface))
+        );
+        assert_eq!(res.layout.background, None);
+        assert_eq!(
+            res.layout.paint_colors.color,
+            Some(PaintColor::theme_role(SemanticColorRole::Accent))
+        );
+        assert_eq!(res.layout.color, None);
+
+        let light_vars = BTreeMap::from([("--tint".to_owned(), "#112233".to_owned())]);
+        let dark_vars = BTreeMap::from([("--tint".to_owned(), "#ddeeff".to_owned())]);
+        let run = |vars: &BTreeMap<String, String>| {
+            crate::with_dynamic_light_dark(true, || {
+                crate::css_map::with_active_css_vars(vars, || {
+                    written_layout(|layout| {
+                        layout.apply_css_property("background", "var(--tint)", None, None);
+                    })
+                })
+            })
+        };
+        let merged = run(&light_vars).merge_light_dark(run(&dark_vars));
+        assert!(matches!(
+            merged.layout.paint_colors.background,
+            Some(PaintColor::ThemePair(_))
+        ));
+        assert_eq!(merged.layout.background, None);
+        let rust = merged.patch_rust_stmts("__patch");
+        assert!(rust.contains("PaintColor::light_dark"), "{rust}");
     }
 }

@@ -107,6 +107,8 @@ impl Presence {
 pub struct Implicit {
     pub property: crate::AnimatableProperty,
     pub duration: Duration,
+    /// Delay before the transition begins.
+    pub delay: Duration,
     /// `None`: the theme's standard easing.
     pub easing: Option<Easing>,
 }
@@ -116,6 +118,7 @@ impl Implicit {
         Self {
             property,
             duration,
+            delay: Duration::ZERO,
             easing: None,
         }
     }
@@ -124,6 +127,67 @@ impl Implicit {
         self.easing = Some(easing);
         self
     }
+
+    pub const fn delay(mut self, delay: Duration) -> Self {
+        self.delay = delay;
+        self
+    }
+}
+
+/// Static keyframe value compiled from CSS `@keyframes`, resolved against the
+/// live `StyleModelRef` at playback start when carrying a dynamic theme color.
+#[doc(hidden)]
+#[derive(Clone, Copy)]
+pub enum CompiledMotionValue {
+    Scalar(f32),
+    Color(fn() -> nana_ui_core::PaintColor),
+    Transform(nana_ui_core::PaintTransform),
+}
+
+impl std::fmt::Debug for CompiledMotionValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Scalar(v) => f.debug_tuple("Scalar").field(v).finish(),
+            Self::Color(_) => f.write_str("Color(<fn>)"),
+            Self::Transform(t) => f.debug_tuple("Transform").field(t).finish(),
+        }
+    }
+}
+
+impl PartialEq for CompiledMotionValue {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Scalar(a), Self::Scalar(b)) => a == b,
+            (Self::Color(a), Self::Color(b)) => a() == b(),
+            (Self::Transform(a), Self::Transform(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+/// One stop of a compiled `@keyframes` animation track.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CompiledKeyframe {
+    pub offset: f32,
+    pub value: CompiledMotionValue,
+    pub easing: Option<Easing>,
+}
+
+/// A compiled `@keyframes` animation attached to a stylesheet rule.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct KeyframeAnimation {
+    pub name: &'static str,
+    pub property: crate::AnimatableProperty,
+    pub keyframes: &'static [CompiledKeyframe],
+    pub duration_ms: f32,
+    pub delay_ms: f32,
+    pub curve: nana_ui_core::MotionCurve,
+    pub iterations: nana_ui_core::AnimationIteration,
+    pub direction: nana_ui_core::AnimationDirection,
+    pub fill_mode: nana_ui_core::AnimationFillMode,
+    pub play_state: nana_ui_core::AnimationPlayState,
 }
 
 /// How rows and branches enter, leave and move. See the module docs.

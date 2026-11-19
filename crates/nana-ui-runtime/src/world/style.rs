@@ -22,7 +22,14 @@ impl UiWorld {
         if self.layout_length_tracks.contains_key(&id)
             || !self.overlay_branch_active(id)
             || !self.menu_branch_open(id)
-            || (!self.presentation.is_empty() && !self.font_axis_overlay(id).is_empty())
+            || (!self.presentation.is_empty()
+                && (!self.font_axis_overlay(id).is_empty()
+                    || self
+                        .presentation_color_overlay(id, crate::AnimatableProperty::Background)
+                        .is_some()
+                    || self
+                        .presentation_color_overlay(id, crate::AnimatableProperty::Color)
+                        .is_some()))
             || self.hover_transitions.contains_key(&id)
         {
             return Ok(false);
@@ -152,6 +159,7 @@ impl UiWorld {
             self.palette_paint_colors(id, inherited_color, model);
         let local_paint = self.semantic_paint(id, &self.record(id).style);
         let color_override = layout.color.is_some()
+            || layout.paint_colors.color.is_some()
             || local_paint.foreground.is_some()
             || local_paint.foreground_mix.is_some();
         let visibility = layout.paint.visibility.unwrap_or(inherited.visibility);
@@ -202,22 +210,30 @@ impl UiWorld {
         });
         let has_text_ext = !layout.text_ext.is_shared_default();
         let text_ext = &*layout.text_ext;
+        let overlay_bg = self.presentation_color_overlay(id, crate::AnimatableProperty::Background);
+        let overlay_fg = self.presentation_color_overlay(id, crate::AnimatableProperty::Color);
         let paint_colors = if layout.paint_colors.is_shared_default()
             && inherited.paint_colors.is_shared_default()
+            && overlay_bg.is_none()
+            && overlay_fg.is_none()
         {
             nana_ui_core::shared::Shared::default()
         } else {
-            let slots = nana_ui_core::PaintColorSlots {
-                color: layout.paint_colors.color.or_else(|| {
-                    (!color_override)
-                        .then_some(inherited.paint_colors.color)
-                        .flatten()
+            let mut slots = nana_ui_core::PaintColorSlots {
+                color: overlay_fg.map(nana_ui_core::PaintColor::srgb).or_else(|| {
+                    layout.paint_colors.color.or_else(|| {
+                        (!color_override)
+                            .then_some(inherited.paint_colors.color)
+                            .flatten()
+                    })
                 }),
                 // Backgrounds, borders, and outlines are non-inherited CSS
                 // properties. Keep their authoring-space values local to the
                 // node while the foreground and selection colors follow the
                 // existing inherited compatibility fields below.
-                background: layout.paint_colors.background,
+                background: overlay_bg
+                    .map(nana_ui_core::PaintColor::srgb)
+                    .or(layout.paint_colors.background),
                 border: layout.paint_colors.border,
                 border_top: layout.paint_colors.border_top,
                 border_right: layout.paint_colors.border_right,
@@ -239,6 +255,9 @@ impl UiWorld {
                         .flatten()
                 }),
             };
+            if slots.has_dynamic_theme() {
+                slots.resolve_theme(model);
+            }
             if slots == nana_ui_core::PaintColorSlots::default() {
                 nana_ui_core::shared::Shared::default()
             } else {
@@ -871,16 +890,21 @@ impl UiWorld {
         Option<[f32; 4]>,
         Option<[f32; 4]>,
     ) {
-        let local = &self.record(id).style;
+        let record = self.record(id);
+        let local = &record.style;
         let paint = self.semantic_paint(id, local);
-        let layout = local.layout.as_ref();
-        let parent = self.record(id).hierarchy.parent;
+        let layout = record.resolved_layout.as_ref();
+        let parent = record.hierarchy.parent;
         let inherited_foreground = parent
             .map(|parent| self.record(parent).resolved.0.foreground)
             .unwrap_or(SemanticColorRole::Text);
         let foreground = paint.foreground.unwrap_or(inherited_foreground);
         let color = layout
+            .paint_colors
             .color
+            .filter(|c| c.is_theme_dynamic())
+            .map(|c| c.resolve_srgb(model))
+            .or(layout.color)
             .or_else(|| paint.foreground_mix.map(|mix| self.theme_mix(model, mix)))
             .or_else(|| {
                 paint
@@ -890,22 +914,43 @@ impl UiWorld {
                     .or_else(|| Some(self.theme_color(model, foreground)))
             });
         let background = layout
+            .paint_colors
             .background
+            .filter(|c| c.is_theme_dynamic())
+            .map(|c| c.resolve_srgb(model))
+            .or(layout.background)
             .or_else(|| paint.background_mix.map(|mix| self.theme_mix(model, mix)))
             .or_else(|| paint.background.map(|role| self.theme_color(model, role)));
         let border_color = layout
-            .resolved_border_color()
+            .paint_colors
+            .border
+            .filter(|c| c.is_theme_dynamic())
+            .map(|c| c.resolve_srgb(model))
+            .or_else(|| layout.resolved_border_color())
             .or_else(|| paint.border_mix.map(|mix| self.theme_mix(model, mix)))
             .or_else(|| paint.border.map(|role| self.theme_color(model, role)));
-        if let Some(transition) = self.hover_transitions.get(&id) {
-            let [color, background, border_color] = std::array::from_fn(|i| {
-                interpolate_color(
-                    transition.from[i],
-                    [color, background, border_color][i],
-                    transition.progress,
-                )
-            });
-            return (foreground, color, background, border_color);
+        let (mut color, mut background, border_color) =
+            if let Some(transition) = self.hover_transitions.get(&id) {
+                let [c, bg, bc] = std::array::from_fn(|i| {
+                    interpolate_color(
+                        transition.from[i],
+                        [color, background, border_color][i],
+                        transition.progress,
+                    )
+                });
+                (c, bg, bc)
+            } else {
+                (color, background, border_color)
+            };
+        if let Some(overlay_fg) =
+            self.presentation_color_overlay(id, crate::AnimatableProperty::Color)
+        {
+            color = Some(overlay_fg);
+        }
+        if let Some(overlay_bg) =
+            self.presentation_color_overlay(id, crate::AnimatableProperty::Background)
+        {
+            background = Some(overlay_bg);
         }
         (foreground, color, background, border_color)
     }
@@ -929,9 +974,21 @@ impl UiWorld {
         mut parent: Option<StableNodeId>,
     ) -> Option<[f32; 4]> {
         while let Some(id) = parent {
-            let local = &self.record(id).style;
+            if let Some(overlay) =
+                self.presentation_color_overlay(id, crate::AnimatableProperty::Color)
+            {
+                return Some(overlay);
+            }
+            let record = self.record(id);
+            let local = &record.style;
+            let resolved_layout = record.resolved_layout.as_ref();
             let model = self.node_style_model(id);
-            if let Some(color) = local.layout.color {
+            if let Some(pc) = resolved_layout.paint_colors.color
+                && pc.is_theme_dynamic()
+            {
+                return Some(pc.resolve_srgb(model));
+            }
+            if let Some(color) = resolved_layout.color.or(local.layout.color) {
                 return Some(color);
             }
             let paint = self.semantic_paint(id, local);
@@ -941,7 +998,7 @@ impl UiWorld {
             if let Some(role) = paint.foreground {
                 return Some(self.theme_color(model, role));
             }
-            parent = self.record(id).hierarchy.parent;
+            parent = record.hierarchy.parent;
         }
         None
     }
@@ -966,6 +1023,7 @@ impl UiWorld {
         }
         if own.color_overrides.is_some()
             || own.layout.background.is_some()
+            || own.layout.paint_colors.background.is_some()
             || own_paint.background.is_some()
             || own_paint.background_mix.is_some()
         {
@@ -980,6 +1038,7 @@ impl UiWorld {
             }
             if local.color_overrides.is_some()
                 || local.layout.background.is_some()
+                || local.layout.paint_colors.background.is_some()
                 || paint.background.is_some()
                 || paint.background_mix.is_some()
             {

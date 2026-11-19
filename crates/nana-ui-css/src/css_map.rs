@@ -1908,8 +1908,13 @@ impl LayoutStyleCss for LayoutStyle {
         // `width:100px !important` parses as 100px. Flag precedence is cascade.
         let (stripped, _) = split_important_flag(val);
         // Author stylesheets often use `var(--token, fallback)` — expand fallback
-        // so overflow/length keywords still parse (tokens themselves stay unresolved).
-        let val_owned = expand_css_var_fallback(&stripped);
+        // so overflow/length keywords still parse (tokens themselves stay unresolved),
+        // while preserving dynamic `--nana-*` color tokens on color/paint properties.
+        let val_owned = if is_color_or_paint_property(&key) {
+            expand_css_vars_for_paint(&stripped)
+        } else {
+            expand_css_var_fallback(&stripped)
+        };
         let val = val_owned.as_str();
         if crate::css_theme::apply(self, &key, val) {
             return;
@@ -2378,10 +2383,9 @@ impl LayoutStyleCss for LayoutStyle {
                 // SVG `stroke` paints CSS border on boxes. Generic `<svg>`
                 // charts rasterize via resvg (attrs including pathLength).
                 // There is no CSS extract into Scene StrokePattern.
-                if let Some(c) = resolve_paint_color(val) {
-                    self.border_color = Some(c);
-                    self.paint_colors.border =
-                        crate::style::resolve_css_paint_color(val).map(|p| p.to_core());
+                if let Some((legacy, pc)) = resolve_css_color_pair(val) {
+                    self.border_color = legacy;
+                    self.paint_colors.border = Some(pc);
                     if self.border_width.is_none() {
                         self.border_width = Some(8.0);
                     }
@@ -2427,31 +2431,27 @@ impl LayoutStyleCss for LayoutStyle {
             }
             "border-color" => apply_border_color_shorthand(self, val),
             "border-top-color" => {
-                if let Some(c) = resolve_paint_color(val) {
-                    self.border_sides.top_color = Some(c);
-                    self.paint_colors.border_top =
-                        crate::style::resolve_css_paint_color(val).map(|p| p.to_core());
+                if let Some((legacy, pc)) = resolve_css_color_pair(val) {
+                    self.border_sides.top_color = legacy;
+                    self.paint_colors.border_top = Some(pc);
                 }
             }
             "border-right-color" => {
-                if let Some(c) = resolve_paint_color(val) {
-                    self.border_sides.right_color = Some(c);
-                    self.paint_colors.border_right =
-                        crate::style::resolve_css_paint_color(val).map(|p| p.to_core());
+                if let Some((legacy, pc)) = resolve_css_color_pair(val) {
+                    self.border_sides.right_color = legacy;
+                    self.paint_colors.border_right = Some(pc);
                 }
             }
             "border-bottom-color" => {
-                if let Some(c) = resolve_paint_color(val) {
-                    self.border_sides.bottom_color = Some(c);
-                    self.paint_colors.border_bottom =
-                        crate::style::resolve_css_paint_color(val).map(|p| p.to_core());
+                if let Some((legacy, pc)) = resolve_css_color_pair(val) {
+                    self.border_sides.bottom_color = legacy;
+                    self.paint_colors.border_bottom = Some(pc);
                 }
             }
             "border-left-color" => {
-                if let Some(c) = resolve_paint_color(val) {
-                    self.border_sides.left_color = Some(c);
-                    self.paint_colors.border_left =
-                        crate::style::resolve_css_paint_color(val).map(|p| p.to_core());
+                if let Some((legacy, pc)) = resolve_css_color_pair(val) {
+                    self.border_sides.left_color = legacy;
+                    self.paint_colors.border_left = Some(pc);
                 }
             }
             "border-style" => apply_border_style_shorthand(self, val),
@@ -2802,10 +2802,9 @@ impl LayoutStyleCss for LayoutStyle {
                 }
             }
             "color" => {
-                if let Some(c) = resolve_paint_color(val) {
-                    self.color = Some(c);
-                    self.paint_colors.color =
-                        crate::style::resolve_css_paint_color(val).map(|p| p.to_core());
+                if let Some((legacy, pc)) = resolve_css_color_pair(val) {
+                    self.color = legacy;
+                    self.paint_colors.color = Some(pc);
                 }
             }
             "grid-template-columns" => {
@@ -4209,6 +4208,8 @@ thread_local! {
         std::cell::RefCell::new(FontSizeContext::default());
     /// Prefer `light-dark()` dark branch when true (document `data-theme=dark`).
     static ACTIVE_COLOR_SCHEME_DARK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Keep `light-dark(a, b)` as a dynamic `PaintColor::ThemePair` when true (View codegen).
+    static ACTIVE_DYNAMIC_LIGHT_DARK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Whether `light-dark(light, dark)` should pick the dark argument.
@@ -4216,10 +4217,25 @@ pub fn active_color_scheme_is_dark() -> bool {
     ACTIVE_COLOR_SCHEME_DARK.with(|cell| cell.get())
 }
 
+/// Whether `light-dark(light, dark)` should compile into a dynamic theme pair.
+pub(crate) fn active_dynamic_light_dark() -> bool {
+    ACTIVE_DYNAMIC_LIGHT_DARK.with(|cell| cell.get())
+}
+
 /// Install color-scheme for `light-dark()` resolve during `f`.
 pub fn with_active_color_scheme_dark<R>(dark: bool, f: impl FnOnce() -> R) -> R {
     ACTIVE_COLOR_SCHEME_DARK.with(|cell| {
         let previous = cell.replace(dark);
+        let out = f();
+        cell.set(previous);
+        out
+    })
+}
+
+/// Enable or disable dynamic `light-dark()` compilation during `f`.
+pub fn with_dynamic_light_dark<R>(enabled: bool, f: impl FnOnce() -> R) -> R {
+    ACTIVE_DYNAMIC_LIGHT_DARK.with(|cell| {
+        let previous = cell.replace(enabled);
         let out = f();
         cell.set(previous);
         out
@@ -4565,12 +4581,20 @@ fn expand_css_vars_with_lookup(
         };
         if let Some(resolved) = lookup.get(name_part) {
             if is_guaranteed_invalid_custom_prop_value(resolved) {
-                if let Some(fb) = fallback {
+                if is_dynamic_nana_color_var(name_part) {
+                    out.push_str("var(");
+                    out.push_str(name_part);
+                    out.push(')');
+                } else if let Some(fb) = fallback {
                     out.push_str(fb);
                 }
             } else {
                 out.push_str(resolved);
             }
+        } else if is_dynamic_nana_color_var(name_part) {
+            out.push_str("var(");
+            out.push_str(name_part);
+            out.push(')');
         } else if let Some(fb) = fallback {
             out.push_str(fb);
         }
@@ -4580,11 +4604,57 @@ fn expand_css_vars_with_lookup(
     out
 }
 
+fn is_dynamic_nana_color_var(name_part: &str) -> bool {
+    name_part.len() > "--nana-".len()
+        && name_part[..7].eq_ignore_ascii_case("--nana-")
+        && nana_ui_core::SemanticColorRole::from_css_token_name(name_part).is_some()
+}
+
 pub(crate) fn expand_css_var_fallback(input: &str) -> String {
     // 1) stylesheet custom-prop lookup  2) var(--name, fallback) → fallback
     // Unresolved var() without fallback is removed (single-value props fail closed).
     // Grid track lists must use [`expand_css_vars_for_grid_tracks`] instead.
     expand_css_vars_with_unresolved(input, None)
+}
+
+pub(crate) fn expand_css_vars_for_paint(input: &str) -> String {
+    expand_css_vars_at_depth(input, None, true, 0).0
+}
+
+fn is_color_or_paint_property(key: &str) -> bool {
+    matches!(
+        key,
+        "color"
+            | "background"
+            | "background-color"
+            | "background-image"
+            | "mask-image"
+            | "-webkit-mask-image"
+            | "border"
+            | "border-top"
+            | "border-right"
+            | "border-bottom"
+            | "border-left"
+            | "border-color"
+            | "border-top-color"
+            | "border-right-color"
+            | "border-bottom-color"
+            | "border-left-color"
+            | "outline"
+            | "outline-color"
+            | "box-shadow"
+            | "text-shadow"
+            | "-webkit-text-stroke"
+            | "-webkit-text-stroke-color"
+            | "fill"
+            | "stroke"
+            | "filter"
+            | "text-emphasis"
+            | "text-emphasis-color"
+            | "-webkit-text-emphasis"
+            | "-webkit-text-emphasis-color"
+            | "caret-color"
+    )
 }
 
 fn for_each_css_decl(style: &str, mut visit: impl FnMut(&str, &str)) {
@@ -4628,18 +4698,44 @@ const MAX_VAR_DEPTH: usize = 32;
 /// Single-pass `var()` expand against [`ACTIVE_CSS_VARS`].
 /// When a reference has no lookup and no fallback, emit `unresolved` (or omit).
 fn expand_css_vars_with_unresolved(input: &str, unresolved: Option<&str>) -> String {
-    expand_css_vars_at_depth(input, unresolved, 0)
+    expand_css_vars_at_depth(input, unresolved, false, 0).0
 }
 
-fn expand_css_vars_at_depth(input: &str, unresolved: Option<&str>, depth: usize) -> String {
+fn expand_css_vars_at_depth(
+    input: &str,
+    unresolved: Option<&str>,
+    preserve_nana_tokens: bool,
+    depth: usize,
+) -> (String, bool) {
     let mut out = String::with_capacity(input.len());
     let mut rest = input;
+    let mut had_unresolved = false;
+    let push_fallback_or_unresolved =
+        |out: &mut String, had_unresolved: &mut bool, fallback: Option<&str>| {
+            if let Some(fb) = fallback.filter(|f| !f.is_empty()) {
+                if preserve_nana_tokens && fb.contains("var(") && depth < MAX_VAR_DEPTH {
+                    let (fb_expanded, fb_unresolved) =
+                        expand_css_vars_at_depth(fb, unresolved, preserve_nana_tokens, depth + 1);
+                    out.push_str(&fb_expanded);
+                    if fb_unresolved {
+                        *had_unresolved = true;
+                    }
+                } else {
+                    out.push_str(fb);
+                }
+            } else {
+                *had_unresolved = true;
+                if let Some(placeholder) = unresolved {
+                    out.push_str(placeholder);
+                }
+            }
+        };
     while let Some(start) = rest.find("var(") {
         out.push_str(&rest[..start]);
         let after = &rest[start + 4..];
         let Some((inner, next)) = split_paren_inner(after) else {
             out.push_str(rest);
-            return simplify_simple_calc(&out);
+            return (simplify_simple_calc(&out), had_unresolved);
         };
         let (name_part, fallback) = match inner.split_once(',') {
             Some((n, fb)) => (n.trim(), Some(fb.trim())),
@@ -4649,43 +4745,47 @@ fn expand_css_vars_at_depth(input: &str, unresolved: Option<&str>, depth: usize)
         if let Some(value) = resolved {
             if is_guaranteed_invalid_custom_prop_value(&value) {
                 // `initial` on a custom prop → guaranteed-invalid → fallback.
-                if let Some(fb) = fallback.filter(|f| !f.is_empty()) {
-                    out.push_str(fb);
-                } else if let Some(placeholder) = unresolved {
-                    out.push_str(placeholder);
-                }
+                push_fallback_or_unresolved(&mut out, &mut had_unresolved, fallback);
             } else if value.contains("var(") {
                 // A value that refers on is expanded in turn, up to the depth.
-                let nested = if depth < MAX_VAR_DEPTH {
-                    expand_css_vars_at_depth(&value, unresolved, depth + 1)
+                let (nested, nested_unresolved) = if depth < MAX_VAR_DEPTH {
+                    expand_css_vars_at_depth(&value, unresolved, preserve_nana_tokens, depth + 1)
                 } else {
-                    String::new()
+                    (String::new(), true)
                 };
-                if nested.contains("var(")
+                if nested_unresolved
                     || nested.trim().is_empty()
                     || is_guaranteed_invalid_custom_prop_value(&nested)
                 {
-                    if let Some(fb) = fallback.filter(|f| !f.is_empty()) {
-                        out.push_str(fb);
-                    } else if let Some(placeholder) = unresolved {
-                        out.push_str(placeholder);
-                    }
+                    push_fallback_or_unresolved(&mut out, &mut had_unresolved, fallback);
                 } else {
                     out.push_str(&nested);
                 }
             } else {
                 out.push_str(&value);
             }
-        } else if let Some(fb) = fallback.filter(|f| !f.is_empty()) {
-            out.push_str(fb);
-        } else if let Some(placeholder) = unresolved {
-            out.push_str(placeholder);
+        } else if preserve_nana_tokens && is_dynamic_nana_color_var(name_part) {
+            out.push_str("var(");
+            out.push_str(name_part);
+            out.push(')');
+        } else {
+            push_fallback_or_unresolved(&mut out, &mut had_unresolved, fallback);
         }
         rest = next;
     }
     out.push_str(rest);
     // Fold residual simple calc(Npx * k) after var expansion (radius tokens).
-    simplify_simple_calc(&out)
+    (simplify_simple_calc(&out), had_unresolved)
+}
+
+/// Resolve a CSS color declaration into `(legacy_srgb_for_static, authoring_or_dynamic_paint)`.
+/// Dynamic theme colors keep `legacy == None` so static RGBA fields never shadow theme switching.
+pub(crate) fn resolve_css_color_pair(
+    val: &str,
+) -> Option<(Option<[f32; 4]>, nana_ui_core::PaintColor)> {
+    let pc = crate::style::resolve_css_paint_color(val)?.to_core();
+    let legacy = (!pc.is_theme_dynamic()).then(|| pc.to_srgb());
+    Some((legacy, pc))
 }
 
 /// Resolve CSS paint colors, including OKLCH/color-mix, and `var(--x, fallback)`
@@ -5295,31 +5395,24 @@ fn apply_border_color_shorthand(style: &mut LayoutStyle, val: &str) {
     let parts = split_css_space_tokens(val);
     let Some(parsed) = parts
         .iter()
-        .map(|part| resolve_paint_color(part))
-        .collect::<Option<Vec<[f32; 4]>>>()
+        .map(|part| resolve_css_color_pair(part))
+        .collect::<Option<Vec<_>>>()
     else {
         return;
     };
     let Some([top, right, bottom, left]) = css_four_sides(&parsed) else {
         return;
     };
-    style.border_color = Some(top);
-    style.border_sides.top_color = Some(top);
-    style.border_sides.right_color = Some(right);
-    style.border_sides.bottom_color = Some(bottom);
-    style.border_sides.left_color = Some(left);
-    if let Some([top, right, bottom, left]) = parts
-        .iter()
-        .map(|part| crate::style::resolve_css_paint_color(part).map(|p| p.to_core()))
-        .collect::<Option<Vec<_>>>()
-        .and_then(|parsed| css_four_sides(&parsed))
-    {
-        style.paint_colors.border = Some(top);
-        style.paint_colors.border_top = Some(top);
-        style.paint_colors.border_right = Some(right);
-        style.paint_colors.border_bottom = Some(bottom);
-        style.paint_colors.border_left = Some(left);
-    }
+    style.border_color = top.0;
+    style.border_sides.top_color = top.0;
+    style.border_sides.right_color = right.0;
+    style.border_sides.bottom_color = bottom.0;
+    style.border_sides.left_color = left.0;
+    style.paint_colors.border = Some(top.1);
+    style.paint_colors.border_top = Some(top.1);
+    style.paint_colors.border_right = Some(right.1);
+    style.paint_colors.border_bottom = Some(bottom.1);
+    style.paint_colors.border_left = Some(left.1);
 }
 
 fn apply_border_style_shorthand(style: &mut LayoutStyle, val: &str) {
@@ -5367,16 +5460,14 @@ fn apply_border_shorthand(style: &mut LayoutStyle, val: &str, side: Option<usize
     }
     let mut width = None;
     let mut parsed_style = None;
-    let mut color = None;
-    let mut explicit_color = None;
+    let mut color_pair = None;
     for part in split_css_space_tokens(trimmed) {
         if let Some(s) = BorderStyle::parse(&part) {
             parsed_style = Some(s);
         } else if let Some(v) = parse_css_length_px(&part, None) {
             width = Some(v.max(0.0));
-        } else if let Some(c) = resolve_paint_color(&part) {
-            color = Some(c);
-            explicit_color = crate::style::resolve_css_paint_color(&part).map(|p| p.to_core());
+        } else if let Some(pair) = resolve_css_color_pair(&part) {
+            color_pair = Some(pair);
         }
     }
     if let Some(w) = width {
@@ -5385,11 +5476,9 @@ fn apply_border_shorthand(style: &mut LayoutStyle, val: &str, side: Option<usize
     if let Some(s) = parsed_style {
         assign_border_side_style(style, side, s);
     }
-    if let Some(c) = color {
-        assign_border_side_color(style, side, c);
-    }
-    if let Some(c) = explicit_color {
-        assign_border_side_paint(style, side, c);
+    if let Some((legacy, pc)) = color_pair {
+        assign_border_side_color_opt(style, side, legacy);
+        assign_border_side_paint(style, side, pc);
     }
 }
 
@@ -5409,19 +5498,23 @@ fn assign_border_side_width(style: &mut LayoutStyle, side: Option<usize>, width:
     }
 }
 
-fn assign_border_side_color(style: &mut LayoutStyle, side: Option<usize>, color: [f32; 4]) {
+fn assign_border_side_color_opt(
+    style: &mut LayoutStyle,
+    side: Option<usize>,
+    color: Option<[f32; 4]>,
+) {
     match side {
         None => {
-            style.border_color = Some(color);
-            style.border_sides.top_color = Some(color);
-            style.border_sides.right_color = Some(color);
-            style.border_sides.bottom_color = Some(color);
-            style.border_sides.left_color = Some(color);
+            style.border_color = color;
+            style.border_sides.top_color = color;
+            style.border_sides.right_color = color;
+            style.border_sides.bottom_color = color;
+            style.border_sides.left_color = color;
         }
-        Some(0) => style.border_sides.top_color = Some(color),
-        Some(1) => style.border_sides.right_color = Some(color),
-        Some(2) => style.border_sides.bottom_color = Some(color),
-        _ => style.border_sides.left_color = Some(color),
+        Some(0) => style.border_sides.top_color = color,
+        Some(1) => style.border_sides.right_color = color,
+        Some(2) => style.border_sides.bottom_color = color,
+        _ => style.border_sides.left_color = color,
     }
 }
 
@@ -5789,12 +5882,14 @@ fn is_css_color_token(token: &str) -> bool {
         || lower.starts_with("color-mix(")
         || lower.starts_with("light-dark(")
         || lower.starts_with("var(")
+        || lower.starts_with("theme(")
         || is_css_named_color(token)
 }
 
 fn is_css_named_color(token: &str) -> bool {
     token.eq_ignore_ascii_case("currentcolor")
         || crate::style::parse_css_named_color(token).is_some()
+        || nana_ui_core::SemanticColorRole::from_css_token_name(token).is_some()
 }
 
 /// 解析 `12px` / `12` / `50%` / `em` / `vh` / `min()`（相对 base + 活跃 viewport）为逻辑像素。

@@ -526,7 +526,7 @@ mod tests {
     #[test]
     fn container_warnings_point_at_their_tokens() {
         let source = "@container style(--x: 1) { .a { opacity: 0.5; } }\n\
-                      @container (width > 1px) { .b .c { opacity: 1; } .a { opacity: 0.5; } }";
+                      @container (width > 1px) { div.b { opacity: 1; } .a { opacity: 0.5; } }";
         let css = sheet(source);
         let template = "crate = x; <Column class=\"a\"/>";
         let mut nodes = parse_template
@@ -567,7 +567,7 @@ mod tests {
 
     #[test]
     fn style_warnings_point_at_their_tokens() {
-        let source = ".a { padding: 4px; frobnicate: 3; }\n.b:hover { opacity: 0.5; }\ndiv .a { opacity: 1; }";
+        let source = ".a { padding: 4px; frobnicate: 3; }\n.b:hover .c { opacity: 0.5; }\ndiv .a { opacity: 1; }";
         let css = sheet(source);
         let template = "crate = x; <Column class=\"a ghost\"/>";
         let mut nodes = parse_template

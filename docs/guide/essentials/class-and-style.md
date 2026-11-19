@@ -45,7 +45,7 @@ fn todos(empty: Signal<bool>) -> impl IntoView {
 
 模板里的 `<style>` 放在最前面，编译成一张 `Sheet`。`class="todos"` 展开成 `.class(…)`，`class:empty={empty}` 展开成 `.class_when(…)`。`stylesheet!` 为每个类生成一个 `Class` 常量，`-` 换成 `_`，所以上面的 `.empty` 是 `todo_styles::empty`。`mod todo_styles;` 的常量只给父模块用，写成 `pub mod` 才公开。
 
-一个元素的类必须来自同一张表。固定类上的 `transition` 会在绑定改到 `opacity`、`transform`、`width`、`height` 或 `background` 时，沿着合成器轨道播到新值。逻辑样式直接取新值。
+一个元素的类必须来自同一张表。固定类、条件类和交互伪类上的 `transition`（支持 `transition-delay`）会在状态变化改变 `opacity`、`transform`、`width`、`height`、`background` 或 `color` 时，沿着合成器轨道播到新值；`@keyframes` 和 `animation` 同样编译成 `#87 MotionTrack` 轨道并在运行时按当前主题求值。逻辑样式直接取新值。
 
 只给一个元素写几条声明，用 `css!`，并且放在别的布局属性之前：
 
@@ -61,7 +61,7 @@ Rust 词法写不出的值放进双引号，例如 `font-size: "1.5em"`。构建
 一个元素混用两张样式表的类，会在运行时断言失败。条件类和固定类写同一份 `stylesheet!`。
 :::
 
-构建时只级联类选择器，例如 `.todos` 和 `.todos.empty`。标签、id、组合器、`:hover`、`@media`、`@keyframes` 不会编进去，落在对应的那一段 CSS 上作为警告。写了不认识的属性也一样。不要假设「写进样式表就一定生效」。
+构建时编入类选择器（`.todos`、`.todos.empty`）、宿主交互伪类（`:hover`、`:focus`、`:focus-visible`、`:active`）、`@keyframes` 与 `animation`，以及在模板 `<style>` 内针对同一模板静态元素的后代（` `）与直接子代（`>`）类组合器。`stylesheet!` 继续只编译无组合器的类选择器；祖先交互伪类（如 `.card:hover .title`）、兄弟组合器（`+`、`~`）、标签/id/属性选择器、`@media`、`@font-face`、伪元素以及不认识的属性会落在对应的那一段 CSS 上作为警告。不要假设「写进样式表就一定生效」。
 
 `@container` 块里的类规则也编进去，按容器的尺寸生效。容器用 `container-type` 和 `container-name` 声明：
 
@@ -76,7 +76,7 @@ Rust 词法写不出的值放进双引号，例如 `font-size: "1.5em"`。构建
 
 ## 跟着主题走的表面
 
-样式表里的颜色在构建时按亮色主题求值，切换已安装的 `ThemeId` 不会重算它们。要跟着主题走，写语义角色。视图上每个元素都有 `.foreground`、`.background`、`.border` 和 `.radius`。前三个是 `SemanticColorRole`，圆角是 `RadiusTier`。都可以绑定。
+样式表里的主题色 token（`var(--nana-*)`、语义色名、`theme(...)`、`light-dark(...)`、`:root` / `:root[data-theme="dark"]` 自定义属性以及含语义色的 `color-mix(...)`）会编译成动态 `PaintColor`，切换已安装的 `ThemeId` 或外层 `ThemeScope`（`El::theme_colors`）时在运行时自动重算；写死的字面颜色仍保持静态。视图上每个元素也都有 `.foreground`、`.background`、`.border` 和 `.radius`：前三个是 `SemanticColorRole`，圆角是 `RadiusTier`，都可以绑定。
 
 :::api
 

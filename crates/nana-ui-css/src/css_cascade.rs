@@ -2135,7 +2135,7 @@ fn parse_interactive_selector(raw: &str) -> Option<InteractiveSelector> {
     let pseudo = interactive_pseudo?;
     if interactive_at == ancestors.len() {
         for (comb, _) in &ancestors {
-            if *comb != Combinator::Descendant {
+            if !matches!(*comb, Combinator::Descendant | Combinator::Child) {
                 return None;
             }
         }
@@ -4091,7 +4091,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn interactive_subject_rejects_child_and_sibling_combinators() {
+    fn interactive_subject_accepts_child_and_rejects_sibling_combinators() {
         let (sheet, report) = parse_stylesheet_full(
             r#"
             .card > .btn:hover { color: red; }
@@ -4101,9 +4101,18 @@ pub(crate) mod tests {
             "#,
             0,
         );
-        assert_eq!(sheet.interactive_rules.len(), 1);
-        assert_eq!(report.skipped_selectors, 3);
+        assert_eq!(sheet.interactive_rules.len(), 2);
+        assert_eq!(report.skipped_selectors, 2);
+        assert_eq!(
+            sheet.interactive_rules[0].selector.ancestors[0].0,
+            Combinator::Child
+        );
+        assert_eq!(
+            sheet.interactive_rules[0].selector.ancestors[0].1.classes,
+            ["card"]
+        );
         assert_eq!(sheet.interactive_rules[0].selector.subject.classes, ["btn"]);
+        assert_eq!(sheet.interactive_rules[1].selector.subject.classes, ["btn"]);
     }
 
     #[test]

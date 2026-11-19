@@ -66,6 +66,10 @@ pub struct NodeBindings<C> {
     /// (`view/style.rs`), sent with the node's own changes. Not a field: it
     /// moves only with the classes the bindings above evaluate.
     pub(crate) responsive: Option<super::style::ResponsiveBinding>,
+    /// Interactive pseudo-state signal (`:hover` / `:focus` / `:focus-visible` / `:active`).
+    pub(crate) interactive: Option<super::style::InteractiveStyleBinding>,
+    /// Dynamic CSS transitions & keyframe animations bound to this node.
+    pub(crate) motion: Option<super::style::MotionBinding>,
 }
 
 impl<C> Default for NodeBindings<C> {
@@ -74,6 +78,8 @@ impl<C> Default for NodeBindings<C> {
             direct: Vec::new(),
             dynamic: Vec::new(),
             responsive: None,
+            interactive: None,
+            motion: None,
         }
     }
 }
@@ -379,6 +385,8 @@ pub(crate) struct ViewParts {
     /// Scopes disposed when the node leaves the world.
     pub(crate) anchors: Vec<(StableNodeId, ScopeKey)>,
     pub(crate) implicit: Vec<(StableNodeId, Box<[super::Implicit]>)>,
+    pub(crate) interactive: Vec<(StableNodeId, super::style::InteractiveStyleBinding)>,
+    pub(crate) motion: Vec<(StableNodeId, super::style::MotionBinding)>,
     /// Composites to assemble once built (their `slot_assembler`, or their
     /// `assembler`, which otherwise runs only after a write), each after
     /// its slots and its children.
@@ -1471,12 +1479,20 @@ impl<C: ComponentView> El<C> {
                 site,
             );
         }
+        let interactive = bindings.interactive.take();
+        let motion = bindings.motion.take();
         if let Some(effect) = effect {
             reactive::set_effect_target(effect, EffectTarget::Node(id));
             vb.st
                 .parts
                 .nodes
                 .push((id, effect, Box::new(bindings), source));
+        }
+        if let Some(interactive) = interactive {
+            vb.st.parts.interactive.push((id, interactive));
+        }
+        if let Some(motion) = motion {
+            vb.st.parts.motion.push((id, motion));
         }
         if !implicit.is_empty() {
             vb.st.parts.implicit.push((id, implicit.into_boxed_slice()));

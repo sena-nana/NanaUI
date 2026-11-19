@@ -13,7 +13,7 @@ use crate::sort::CompactSort as _;
 use serde::{Deserialize, Serialize};
 
 use crate::scrollbar::ScrollbarSkin;
-use crate::style_model::PaintColor;
+use crate::style_model::{PaintColor, StyleModelRef};
 use crate::typography::{FontKerningSpec, FontVariationSetting, LineBreakSpec};
 
 mod calc;
@@ -2101,6 +2101,13 @@ impl CssGradient {
         }
     }
 
+    pub fn stops_mut(&mut self) -> &mut [GradientStop] {
+        match self {
+            Self::Linear(g) => &mut g.stops,
+            Self::Radial(g) => &mut g.stops,
+        }
+    }
+
     pub fn stop_count(&self) -> usize {
         match self {
             Self::Linear(g) => g.stop_count(),
@@ -2885,6 +2892,104 @@ impl PaintStyle {
             .rev()
             .chain(self.background_image.as_ref())
             .chain(self.content_image.as_ref())
+    }
+
+    pub fn has_dynamic_theme(&self) -> bool {
+        let gradient_has_dynamic = |g: &CssGradient| {
+            g.stops()
+                .iter()
+                .any(|s| s.paint_color.is_some_and(PaintColor::is_theme_dynamic))
+        };
+        let bg_has_dynamic = |img: &BackgroundImage| matches!(img, BackgroundImage::Gradient(g) if gradient_has_dynamic(g));
+
+        self.box_shadows
+            .iter()
+            .any(|s| s.paint_color.is_some_and(PaintColor::is_theme_dynamic))
+            || self
+                .text_shadow
+                .is_some_and(|s| s.paint_color.is_some_and(PaintColor::is_theme_dynamic))
+            || self
+                .text_shadows
+                .iter()
+                .any(|s| s.paint_color.is_some_and(PaintColor::is_theme_dynamic))
+            || self
+                .text_stroke
+                .is_some_and(|s| s.paint_color.is_some_and(PaintColor::is_theme_dynamic))
+            || self
+                .filter
+                .and_then(|f| f.drop_shadow)
+                .is_some_and(|s| s.paint_color.is_some_and(PaintColor::is_theme_dynamic))
+            || self.background_image.as_ref().is_some_and(bg_has_dynamic)
+            || self.background_layers.iter().any(bg_has_dynamic)
+            || matches!(&self.mask, Some(MaskImage::Gradient(g)) if gradient_has_dynamic(g))
+    }
+
+    pub fn resolve_theme(&mut self, model: StyleModelRef) {
+        let resolve_stops = |g: &mut CssGradient| {
+            for stop in g.stops_mut() {
+                if let Some(pc) = stop.paint_color
+                    && pc.is_theme_dynamic()
+                {
+                    let resolved = pc.resolve(model);
+                    stop.paint_color = Some(resolved);
+                    stop.color = resolved.to_srgb();
+                }
+            }
+        };
+        for shadow in &mut self.box_shadows {
+            if let Some(pc) = shadow.paint_color
+                && pc.is_theme_dynamic()
+            {
+                let resolved = pc.resolve(model);
+                shadow.paint_color = Some(resolved);
+                shadow.color = resolved.to_srgb();
+            }
+        }
+        if let Some(shadow) = &mut self.text_shadow
+            && let Some(pc) = shadow.paint_color
+            && pc.is_theme_dynamic()
+        {
+            let resolved = pc.resolve(model);
+            shadow.paint_color = Some(resolved);
+            shadow.color = resolved.to_srgb();
+        }
+        for shadow in &mut self.text_shadows {
+            if let Some(pc) = shadow.paint_color
+                && pc.is_theme_dynamic()
+            {
+                let resolved = pc.resolve(model);
+                shadow.paint_color = Some(resolved);
+                shadow.color = resolved.to_srgb();
+            }
+        }
+        if let Some(stroke) = &mut self.text_stroke
+            && let Some(pc) = stroke.paint_color
+            && pc.is_theme_dynamic()
+        {
+            let resolved = pc.resolve(model);
+            stroke.paint_color = Some(resolved);
+            stroke.color = Some(resolved.to_srgb());
+        }
+        if let Some(filter) = &mut self.filter
+            && let Some(drop_shadow) = &mut filter.drop_shadow
+            && let Some(pc) = drop_shadow.paint_color
+            && pc.is_theme_dynamic()
+        {
+            let resolved = pc.resolve(model);
+            drop_shadow.paint_color = Some(resolved);
+            drop_shadow.color = resolved.to_srgb();
+        }
+        if let Some(BackgroundImage::Gradient(g)) = &mut self.background_image {
+            resolve_stops(g);
+        }
+        for layer in &mut self.background_layers {
+            if let BackgroundImage::Gradient(g) = layer {
+                resolve_stops(g);
+            }
+        }
+        if let Some(MaskImage::Gradient(g)) = &mut self.mask {
+            resolve_stops(g);
+        }
     }
 }
 
@@ -3981,6 +4086,7 @@ impl LayoutStyle {
 
     pub fn has_surface_paint(&self) -> bool {
         self.background.is_some()
+            || self.paint_colors.background.is_some()
             || self
                 .resolved_border_radii(0.0, 0.0)
                 .iter()
@@ -3988,6 +4094,62 @@ impl LayoutStyle {
             || self.resolved_border_width() > 0.0
             || !self.paint.box_shadows.is_empty()
             || self.paint.has_advanced_paint()
+    }
+
+    /// True when any paint color slot, gradient stop, shadow, or text stroke
+    /// carries a theme-dynamic [`PaintColor`] that must be resolved against
+    /// the live [`StyleModelRef`] rather than baked as static sRGB.
+    pub fn has_dynamic_paint_colors(&self) -> bool {
+        (!self.paint_colors.is_shared_default() && self.paint_colors.has_dynamic_theme())
+            || (!self.paint.is_shared_default() && self.paint.has_dynamic_theme())
+    }
+
+    /// Resolve every theme-dynamic [`PaintColor`] into static colors against
+    /// `model` and mirror resolved `[f32; 4]` values onto legacy fields.
+    pub fn resolve_theme_colors(&mut self, model: StyleModelRef) {
+        if !self.paint_colors.is_shared_default() && self.paint_colors.has_dynamic_theme() {
+            let resolve_slot = |slot: &mut Option<PaintColor>| -> Option<PaintColor> {
+                let pc = (*slot)?;
+                if pc.is_theme_dynamic() {
+                    let resolved = pc.resolve(model);
+                    *slot = Some(resolved);
+                    Some(resolved)
+                } else {
+                    None
+                }
+            };
+            let slots = &mut *self.paint_colors;
+            if let Some(resolved) = resolve_slot(&mut slots.color) {
+                self.color = Some(resolved.to_srgb());
+            }
+            if let Some(resolved) = resolve_slot(&mut slots.background) {
+                self.background = Some(resolved.to_srgb());
+            }
+            if let Some(resolved) = resolve_slot(&mut slots.border) {
+                self.border_color = Some(resolved.to_srgb());
+            }
+            if let Some(resolved) = resolve_slot(&mut slots.border_top) {
+                self.border_sides.top_color = Some(resolved.to_srgb());
+            }
+            if let Some(resolved) = resolve_slot(&mut slots.border_right) {
+                self.border_sides.right_color = Some(resolved.to_srgb());
+            }
+            if let Some(resolved) = resolve_slot(&mut slots.border_bottom) {
+                self.border_sides.bottom_color = Some(resolved.to_srgb());
+            }
+            if let Some(resolved) = resolve_slot(&mut slots.border_left) {
+                self.border_sides.left_color = Some(resolved.to_srgb());
+            }
+            if let Some(resolved) = resolve_slot(&mut slots.outline) {
+                self.paint.outline.color = Some(resolved.to_srgb());
+            }
+            let _ = resolve_slot(&mut slots.selection_background);
+            let _ = resolve_slot(&mut slots.selection_color);
+        }
+
+        if !self.paint.is_shared_default() && self.paint.has_dynamic_theme() {
+            self.paint.resolve_theme(model);
+        }
     }
 
     /// CSS `visibility: hidden` keeps layout but suppresses paint / hit-test.
