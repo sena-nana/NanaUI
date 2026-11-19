@@ -762,6 +762,29 @@ impl RuntimeLayoutEngine {
         for id in std::mem::take(&mut intrinsic.retired_facts) {
             retained.intrinsic_metrics.remove_content(id.get());
         }
+        // A node in `metrics_changed` that was omitted or hidden this pass
+        // never published fresh intrinsic facts, so its prior metrics and
+        // measure plans would stay behind and answer once it opens again.
+        if !metrics_changed.is_empty() {
+            let recorded_facts: crate::NodeSet = intrinsic
+                .cache
+                .recorded()
+                .filter_map(|(key, _)| StableNodeId::new(key.content))
+                .collect();
+            for &id in &metrics_changed {
+                if recorded_facts.contains(&id) || intrinsic.unchanged_plan_nodes.contains(&id) {
+                    continue;
+                }
+                retained.intrinsic_metrics.remove_content(id.get());
+                if let Some(slots) = retained.measure_plans.get_mut(&id) {
+                    for plan in slots.slots.iter_mut().flatten() {
+                        if !plan.stale && !consulted.contains(&plan_key(id, plan.available)) {
+                            plan.stale = true;
+                        }
+                    }
+                }
+            }
+        }
         retained.retain_intrinsic_metrics(&intrinsic.cache, retained_metric_budget);
         retained.materialized_inputs = nodes.materialized;
         retained.record_intrinsic_counters(intrinsic_counters);
@@ -4425,6 +4448,8 @@ struct PassIntrinsicCache {
     /// patch changed, and no longer describe it under any constraint. They
     /// leave the retained cache with this pass.
     retired_facts: Vec<StableNodeId>,
+    /// Containers whose retained measure plan answered unchanged this pass.
+    unchanged_plan_nodes: crate::NodeSet,
     /// Retained measure plans this pass answered from, by container and the
     /// constraint each holds: they saw what changed under them this pass.
     consulted_plans: Vec<(StableNodeId, Size)>,
@@ -4453,6 +4478,7 @@ impl PassIntrinsicCache {
             used_newest: crate::store::DenseNodeMap::default(),
             used_older: Vec::with_capacity(capacity),
             retired_facts: Vec::new(),
+            unchanged_plan_nodes: crate::NodeSet::default(),
             consulted_plans: Vec::new(),
             extra_counters: crate::IntrinsicCacheCounters::default(),
             execution_stats: LayoutExecutionStats::default(),
@@ -4505,6 +4531,10 @@ impl PassIntrinsicCache {
     /// `id`'s measure plan answered by a patch: see `retired_facts`.
     fn retire_intrinsic_facts(&mut self, id: StableNodeId) {
         self.retired_facts.push(id);
+    }
+
+    fn note_unchanged_plan_node(&mut self, id: StableNodeId) {
+        self.unchanged_plan_nodes.insert(id);
     }
 
     /// `id`'s retained measure plan under `available` answered this pass:

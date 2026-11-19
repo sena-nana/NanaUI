@@ -1053,6 +1053,157 @@ mod tests {
         }
     }
 
+    #[test]
+    fn triggered_menu_triggers_stay_visible_after_closing() {
+        use nana_ui_core::Icon;
+        use nana_ui_runtime::view::{row, text};
+        use nana_ui_runtime::{
+            ActionMenu, ActionMenuItem, Button, HoverCard, MeasureTextShaper, Popover, Stack, Text,
+        };
+        let id = DocumentId::new(95).unwrap();
+        let mut document = RuntimeDocument::new(id);
+        let root = document
+            .context_mut()
+            .create_component(id, Stack::row(8.0))
+            .unwrap();
+        let (_, (icon_menu, content_menu, trigger_text, popover, popover_text, hover_card)) =
+            document
+                .context_mut()
+                .mount_view(root.stable_id(), || {
+                    let icon_menu = entity_ref::<ActionMenu>();
+                    let content_menu = entity_ref::<ActionMenu>();
+                    let trigger_text = entity_ref::<Text>();
+                    let popover = entity_ref::<Popover>();
+                    let popover_text = entity_ref::<Text>();
+                    let hover_card = entity_ref::<HoverCard>();
+                    with_refs(
+                        (
+                            widget(ActionMenu::new().trigger_icon(Icon::Add, "More"))
+                                .entity_ref(icon_menu)
+                                .children(widget(ActionMenuItem::new("Rename"))),
+                            widget(ActionMenu::new().trigger("Switch"))
+                                .entity_ref(content_menu)
+                                .trigger(row().children(text("v").entity_ref(trigger_text)))
+                                .children(widget(ActionMenuItem::new("Scene 1"))),
+                            widget(Popover::new().trigger("Details").width(180.0))
+                                .entity_ref(popover)
+                                .trigger(row().children(text("Details").entity_ref(popover_text)))
+                                .children(widget(Button::new("Inside"))),
+                            widget(
+                                HoverCard::new()
+                                    .trigger_icon(Icon::Add, "Help")
+                                    .trigger_size(28.0)
+                                    .width(180.0)
+                                    .open_delay(0),
+                            )
+                            .entity_ref(hover_card)
+                            .children(widget(Button::new("Info"))),
+                        ),
+                        (
+                            icon_menu,
+                            content_menu,
+                            trigger_text,
+                            popover,
+                            popover_text,
+                            hover_card,
+                        ),
+                    )
+                })
+                .unwrap();
+        let viewport = LayoutViewport::new(640.0, 480.0);
+        let mut now = Duration::ZERO;
+        document.flush(viewport, &mut MeasureTextShaper).unwrap();
+
+        // Open every triggered menu, settle entrance, then close and finish exit.
+        let cx = document.context_mut();
+        cx.update_component(icon_menu, |m, _| m.popover.open = true)
+            .unwrap();
+        cx.update_component(content_menu, |m, _| m.popover.open = true)
+            .unwrap();
+        cx.update_component(popover, |p, _| p.open = true).unwrap();
+        cx.set_pointer_hover_at(id, 1, Some(hover_card.stable_id()), now)
+            .unwrap();
+        now += Duration::from_secs(1);
+        cx.advance_animations(now);
+        document.flush(viewport, &mut MeasureTextShaper).unwrap();
+
+        let cx = document.context_mut();
+        cx.update_component(icon_menu, |m, _| m.popover.open = false)
+            .unwrap();
+        cx.update_component(content_menu, |m, _| m.popover.open = false)
+            .unwrap();
+        cx.update_component(popover, |p, _| p.open = false).unwrap();
+        cx.set_pointer_hover_at(id, 1, None, now).unwrap();
+        document.flush(viewport, &mut MeasureTextShaper).unwrap();
+
+        now += Duration::from_secs(10);
+        document.context_mut().advance_animations(now);
+        document.flush(viewport, &mut MeasureTextShaper).unwrap();
+
+        let scene = document.scene();
+        for (label, menu_id, content_ids) in [
+            (
+                "icon_menu",
+                icon_menu.stable_id(),
+                vec![icon_menu.stable_id()],
+            ),
+            (
+                "content_menu",
+                content_menu.stable_id(),
+                vec![content_menu.stable_id(), trigger_text.stable_id()],
+            ),
+            (
+                "popover",
+                popover.stable_id(),
+                vec![popover.stable_id(), popover_text.stable_id()],
+            ),
+            (
+                "hover_card",
+                hover_card.stable_id(),
+                vec![hover_card.stable_id()],
+            ),
+        ] {
+            assert_eq!(
+                scene.compositor_paint_opacity(menu_id, 1.0),
+                1.0,
+                "{label} trigger opacity collapsed after closing"
+            );
+            assert_eq!(
+                scene.compositor_gpu_motion_ids(menu_id),
+                (0, 0),
+                "{label} trigger still carries GPU exit motion ids after closing"
+            );
+            for target_id in content_ids {
+                let mut saw_primitive = false;
+                for primitive in scene.primitives().filter(|p| p.node == target_id) {
+                    saw_primitive = true;
+                    assert_eq!(
+                        scene.compositor_primitive_opacity(primitive),
+                        1.0,
+                        "{label} primitive {:?} faded to 0 after closing",
+                        primitive.id
+                    );
+                    let draw = scene.draw_primitive(primitive.id).expect("drawn primitive");
+                    assert_eq!(
+                        draw.paint_opacity, 1.0,
+                        "{label} draw opacity collapsed for {:?}",
+                        primitive.id
+                    );
+                    assert_eq!(
+                        draw.transform,
+                        crate::AffineTransform::IDENTITY,
+                        "{label} draw transform kept closing scale on {:?}",
+                        primitive.id
+                    );
+                }
+                assert!(
+                    saw_primitive,
+                    "{label} expected trigger primitives for {target_id:?}"
+                );
+            }
+        }
+    }
+
     /// A dialog whose body grows after it opened (content that arrived
     /// later) clips and hit-tests at the height it grew to: the content
     /// below the old foot is drawn and can be pressed.

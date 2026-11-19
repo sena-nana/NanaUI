@@ -1421,6 +1421,8 @@ fn finish_plan_reused(
 ) -> Size {
     if patched {
         cache.retire_intrinsic_facts(common.id);
+    } else {
+        cache.note_unchanged_plan_node(common.id);
     }
     cache.note_plan_consulted(common.id, common.available);
     cache.note_measure_plan_reused();
@@ -3467,7 +3469,10 @@ fn try_plan_flex_line<'w, 's>(
 ) -> Result<PlanStart<'s>, UiWorldError> {
     let id = common.id;
     let style = plan.style.as_ref();
-    if plan.sequential || !flex_line_local_style(style) {
+    if plan.sequential
+        || !Arc::ptr_eq(&plan.children, &common.child_ids)
+        || !flex_line_local_style(style)
+    {
         return try_plan_ifc_line(common, plan, nodes, cache, scope);
     }
     if plan.text_metrics().is_some() || nodes.world.widget_visual_ref(id).is_some() {
@@ -3738,6 +3743,7 @@ fn try_plan_grid<'w, 's>(
 ) -> Result<PlanStart<'s>, UiWorldError> {
     let id = common.id;
     if plan.grid.is_none()
+        || !Arc::ptr_eq(&plan.children, &common.child_ids)
         || plan
             .own
             .as_ref()

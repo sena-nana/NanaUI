@@ -1267,7 +1267,11 @@ impl WidgetVisual for MenuSurfaceVisual {
             ctx.theme,
             ctx.chrome_radii,
         );
-        if let Some(overlay) = self.triggered_menu_overlay() {
+        // Keep identifying triggered menus once closed so the trigger (and any
+        // `trigger_content` subtree) stays outside the `FillMode::Forwards`
+        // closing fade/scale retained on the menu node (mirroring
+        // `UiWorld::has_triggered_menu_chrome`).
+        if let Some(overlay) = self.overlay.filter(|_| self.has_trigger()) {
             out.floating_overlay = Some(WidgetFloatingOverlay {
                 kind: WidgetFloatingOverlayKind::TriggeredSurface,
                 overlay_mount: overlay.overlay_mount,

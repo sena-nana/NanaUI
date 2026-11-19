@@ -7160,6 +7160,7 @@ mod menu_exit_withdrawal {
 
     use std::time::Duration;
 
+    use crate::view::StyledComponent;
     use crate::world::reflow_oracle::{assert_matches_cold, bundled_face_shaper, product_frame};
     use crate::{
         ActionMenu, ActionMenuItem, AppContext, DocumentId, Entity, LayoutViewport, Popover,
@@ -7245,6 +7246,136 @@ mod menu_exit_withdrawal {
                 assert_matches_cold(&mut cx, &mut cold, document);
             }
         }
+    }
+
+    #[test]
+    fn closed_menu_child_container_and_hidden_container_drop_stale_metrics() {
+        let document = DocumentId::new(1).unwrap();
+        let mut shaper = bundled_face_shaper();
+
+        // Case 1: ActionMenu wrapping a Stack::column whose items grow while
+        // the menu is closed; reopening must measure the new height instead of
+        // reusing the 1-item retained intrinsic metrics/plan.
+        let build_menu = |item_count: usize, open: bool| {
+            let mut cx = AppContext::new();
+            let root = cx
+                .create_component(document, Stack::row(4.0).width(LengthSpec::Px(420.0)))
+                .unwrap();
+            let mut view = ActionMenu::new();
+            view.popover = view.popover.trigger("Menu").open(open);
+            let menu = cx.create_detached_component(document, view).unwrap();
+            let col = cx
+                .create_detached_component(document, Stack::column(2.0))
+                .unwrap();
+            for i in 0..item_count {
+                let item = cx
+                    .create_detached_component(document, ActionMenuItem::new(format!("Item {i}")))
+                    .unwrap();
+                cx.append_child(col, item).unwrap();
+            }
+            cx.append_child(menu, col).unwrap();
+            cx.append_child(root, menu).unwrap();
+            product_frame(&mut cx, document, viewport(), &mut bundled_face_shaper());
+            (cx, menu.stable_id(), col.stable_id())
+        };
+
+        let (mut cx, menu, col) = build_menu(1, true);
+        let one_height = cx.world().layout_box(col).unwrap().height;
+        assert!(one_height > 0.0);
+
+        set_open(&mut cx, 1, menu, false);
+        product_frame(&mut cx, document, viewport(), &mut shaper);
+        cx.advance_animations(Duration::from_secs(10));
+        product_frame(&mut cx, document, viewport(), &mut shaper);
+
+        for i in 1..3 {
+            let item = cx
+                .create_detached_component(document, ActionMenuItem::new(format!("Item {i}")))
+                .unwrap();
+            cx.append_child(Entity::<Stack>::from_stable_id(col), item)
+                .unwrap();
+        }
+        product_frame(&mut cx, document, viewport(), &mut shaper);
+
+        set_open(&mut cx, 1, menu, true);
+        product_frame(&mut cx, document, viewport(), &mut shaper);
+        let three_height = cx.world().layout_box(col).unwrap().height;
+        assert!(
+            three_height > one_height * 2.0,
+            "expected reopened wrapper Stack height ({three_height}) to grow beyond 1 item ({one_height})"
+        );
+        let surface = crate::popover::hanging_surface(cx.world(), menu)
+            .expect("reopened hanging surface bounds");
+        assert!(
+            surface.height >= three_height,
+            "expected hanging surface {surface:?} to enclose 3-item column height {three_height}"
+        );
+        let (mut cold, cold_menu, _) = build_menu(3, true);
+        assert_eq!(cold_menu, menu);
+        assert_matches_cold(&mut cx, &mut cold, document);
+
+        // Case 2: Container whose children grow while `hidden: true`; showing
+        // it again must remeasure rather than return the pre-hide cached height.
+        let build_hidden = |child_count: usize, hidden: bool| {
+            let mut cx = AppContext::new();
+            let root = cx
+                .create_component(document, Stack::column(0.0).width(LengthSpec::Px(300.0)))
+                .unwrap();
+            let box_node = cx
+                .create_detached_component(document, Stack::column(4.0))
+                .unwrap();
+            if hidden {
+                cx.update_component(box_node, |s, _| {
+                    s.node_style_mut().layout_mut().hidden = true;
+                })
+                .unwrap();
+            }
+            for _ in 0..child_count {
+                let child = cx
+                    .create_detached_component(
+                        document,
+                        Stack::column(0.0).height(LengthSpec::Px(24.0)),
+                    )
+                    .unwrap();
+                cx.append_child(box_node, child).unwrap();
+            }
+            cx.append_child(root, box_node).unwrap();
+            product_frame(&mut cx, document, viewport(), &mut bundled_face_shaper());
+            (cx, box_node)
+        };
+
+        let (mut hcx, hbox) = build_hidden(1, false);
+        assert_eq!(
+            hcx.world().layout_box(hbox.stable_id()).unwrap().height,
+            24.0
+        );
+        hcx.update_component(hbox, |s, _| {
+            s.node_style_mut().layout_mut().hidden = true;
+        })
+        .unwrap();
+        product_frame(&mut hcx, document, viewport(), &mut shaper);
+        for _ in 1..3 {
+            let child = hcx
+                .create_detached_component(
+                    document,
+                    Stack::column(0.0).height(LengthSpec::Px(24.0)),
+                )
+                .unwrap();
+            hcx.append_child(hbox, child).unwrap();
+        }
+        product_frame(&mut hcx, document, viewport(), &mut shaper);
+        hcx.update_component(hbox, |s, _| {
+            s.node_style_mut().layout_mut().hidden = false;
+        })
+        .unwrap();
+        product_frame(&mut hcx, document, viewport(), &mut shaper);
+        let unhidden_height = hcx.world().layout_box(hbox.stable_id()).unwrap().height;
+        assert!(
+            (unhidden_height - 80.0).abs() < 0.5,
+            "expected unhidden 3-child height ~80px (3*24 + 2*4), got {unhidden_height}"
+        );
+        let (mut cold_h, _) = build_hidden(3, false);
+        assert_matches_cold(&mut hcx, &mut cold_h, document);
     }
 }
 
