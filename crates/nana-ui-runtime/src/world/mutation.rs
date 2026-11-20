@@ -1763,7 +1763,12 @@ impl UiWorld {
                         (Some(previous), next) => {
                             let previous = previous.clone();
                             self.sync_reorder_list_motion(*id, Some(&previous), next);
-                            super::reorder_motion::reorder_list_paints_same(Some(&previous), next)
+                            super::reorder_motion::reorder_list_paints_same(
+                                self,
+                                *id,
+                                Some(&previous),
+                                next,
+                            )
                         }
                         (None, Some(next)) => {
                             self.sync_reorder_list_motion(*id, None, Some(next));

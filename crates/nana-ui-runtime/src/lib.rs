@@ -431,8 +431,9 @@ pub use range_span::{
 };
 #[cfg(feature = "controls")]
 pub use reorder_list::{
-    REORDER_PREVIEW_Z_INDEX, ReorderAccepts, ReorderDragVisual, ReorderDropMark, ReorderItem,
-    ReorderKeyMove, ReorderList, ReorderListEvent, ReorderListLayout, ReorderListPointer,
+    REORDER_PREVIEW_Z_INDEX, ReorderAccepts, ReorderDragPreview, ReorderDragVisual,
+    ReorderDropMark, ReorderExternalDrag, ReorderGapPlan, ReorderItem, ReorderKeyMove,
+    ReorderLayout, ReorderList, ReorderListEvent, ReorderListLayout, ReorderListPointer,
     ReorderListVisual, ReorderRowPaint,
 };
 #[cfg(feature = "rich-text")]

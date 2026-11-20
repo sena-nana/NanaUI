@@ -12,10 +12,12 @@ fn preview_drag(visual: Option<&ReorderListVisual>) -> Option<&ReorderDragVisual
     visual.and_then(|visual| visual.drag.as_ref().filter(|drag| drag.preview))
 }
 
-/// Whether going from `previous` to `next` changes what a list paints. In a
-/// previewed drag the list draws no drag marks, so a pointer move — which
-/// only moves its rows' presentation — leaves the list itself as it was.
+/// Whether going from `previous` to `next` changes what a list paints. In an
+/// `Auto` preview drag the list draws no drag marks; in `LiveGap` mode it only
+/// repaints when the resolved dashed slot or highlighted parent changes.
 pub(super) fn reorder_list_paints_same(
+    world: &UiWorld,
+    id: StableNodeId,
     previous: Option<&ReorderListVisual>,
     next: Option<&ReorderListVisual>,
 ) -> bool {
@@ -24,10 +26,43 @@ pub(super) fn reorder_list_paints_same(
     else {
         return false;
     };
-    previous.rows == next.rows
-        && previous.size == next.size
-        && previous.spacing == next.spacing
-        && previous_drag.source == drag.source
+    if previous.rows != next.rows
+        || previous.size != next.size
+        || previous.spacing != next.spacing
+        || previous_drag.source != drag.source
+    {
+        return false;
+    }
+    if !previous_drag.live_gap && !drag.live_gap {
+        return true;
+    }
+    if previous_drag.live_gap != drag.live_gap {
+        return false;
+    }
+    let Some(bounds) = world.component_layout_box(id) else {
+        return false;
+    };
+    let rows = world
+        .nodes
+        .get(id)
+        .map(|node| node.hierarchy.children.to_vec())
+        .unwrap_or_default();
+    let Some(boxes): Option<Vec<LayoutBox>> = rows
+        .iter()
+        .map(|row| world.component_layout_box(*row))
+        .collect()
+    else {
+        return false;
+    };
+    let prev_plan = previous_drag.gap_plan(bounds, &boxes);
+    let next_plan = drag.gap_plan(bounds, &boxes);
+    match (prev_plan, next_plan) {
+        (Some(a), Some(b)) => {
+            a.slot == b.slot && a.slot_nested == b.slot_nested && a.inside == b.inside
+        }
+        (None, None) => true,
+        _ => false,
+    }
 }
 
 impl UiWorld {
@@ -66,13 +101,10 @@ impl UiWorld {
             boxes.len() == drag.rows()
                 && drag
                     .carried()
-                    .is_some_and(|carried| *carried.end() < boxes.len())
+                    .map_or(drag.live_gap, |carried| *carried.end() < boxes.len())
         });
-        let carried = drag
-            .as_ref()
-            .and_then(|(drag, _)| drag.carried())
-            .unwrap_or(0..=0);
-        let is_carried = |index: usize| drag.is_some() && carried.contains(&index);
+        let carried = drag.as_ref().and_then(|(drag, _)| drag.carried());
+        let is_carried = |index: usize| carried.as_ref().is_some_and(|c| c.contains(&index));
         self.sync_reorder_previews(id, &rows, is_carried);
         let Some((drag, boxes)) = drag else {
             for row in rows {
@@ -82,7 +114,17 @@ impl UiWorld {
             return;
         };
         let [dx, dy] = drag.preview_offset();
-        let shifts = drag.shift_offsets(&boxes);
+        let shifts: Vec<[f32; 2]> = if drag.live_gap {
+            self.component_layout_box(id)
+                .and_then(|bounds| drag.gap_plan(bounds, &boxes))
+                .map(|plan| plan.shifts)
+                .unwrap_or_else(|| vec![[0.0, 0.0]; boxes.len()])
+        } else {
+            drag.shift_offsets(&boxes)
+                .into_iter()
+                .map(|shift_y| [0.0, shift_y])
+                .collect()
+        };
         let node_theme = self.node_theme(id);
         let duration = if self.reduced_motion {
             Duration::ZERO
@@ -100,7 +142,7 @@ impl UiWorld {
         );
         for (index, &row) in rows.iter().enumerate() {
             let logical = self.logical_row_transform(row);
-            if carried.contains(&index) {
+            if carried.as_ref().is_some_and(|c| c.contains(&index)) {
                 self.cancel_component_track(row, REORDER_SHIFT);
                 let value = crate::MotionValue::Transform(translated(logical, dx, dy));
                 // Direct manipulation, not motion: it follows the pointer
@@ -120,8 +162,9 @@ impl UiWorld {
                 continue;
             }
             self.cancel_component_track(row, REORDER_PREVIEW);
-            let shift = shifts[index];
-            if self.reorder_shift_target(row, logical) == shift {
+            let [sx, sy] = shifts.get(index).copied().unwrap_or([0.0, 0.0]);
+            let [tx, ty] = self.reorder_shift_target(row, logical);
+            if (tx - sx).abs() <= 1e-3 && (ty - sy).abs() <= 1e-3 {
                 continue;
             }
             self.start_component_track(
@@ -131,7 +174,7 @@ impl UiWorld {
                 easing,
                 crate::AnimatableProperty::Transform,
                 crate::MotionValue::Transform(logical),
-                crate::MotionValue::Transform(translated(logical, 0.0, shift)),
+                crate::MotionValue::Transform(translated(logical, sx, sy)),
                 crate::MotionInterrupt::Retarget,
                 Some(hold),
             );
@@ -172,16 +215,18 @@ impl UiWorld {
         }
     }
 
-    /// Where a row's shift track is heading, as a vertical offset from its
-    /// logical transform: 0 without one.
-    fn reorder_shift_target(&self, row: StableNodeId, logical: PaintTransform) -> f32 {
+    /// Where a row's shift track is heading, as `[dx, dy]` from its logical
+    /// transform: `[0.0, 0.0]` without one.
+    fn reorder_shift_target(&self, row: StableNodeId, logical: PaintTransform) -> [f32; 2] {
         crate::component_animation_id(REORDER_SHIFT, row)
             .and_then(|id| self.presentation.get(id.track_id()))
             .and_then(|overlay| match overlay.track.to {
-                crate::MotionTo::Value(crate::MotionValue::Transform(to)) => Some(to.f - logical.f),
+                crate::MotionTo::Value(crate::MotionValue::Transform(to)) => {
+                    Some([to.e - logical.e, to.f - logical.f])
+                }
                 _ => None,
             })
-            .unwrap_or(0.0)
+            .unwrap_or([0.0, 0.0])
     }
 
     fn logical_row_transform(&self, row: StableNodeId) -> PaintTransform {

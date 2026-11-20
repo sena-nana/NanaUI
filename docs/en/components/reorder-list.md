@@ -44,7 +44,10 @@ After receiving `Reorder`, reorder your list by `source` and `before`, then writ
 
 Within one document, lists with the same `.transfer_group("…")` accept drags from each other. There is no group by default; a drag stays in its own list.
 
-- When a row dragged out of list A moves over list B in the same group, B computes the target by its own rules: the dragged row's `kind`, the `accepts_inside` and `accepts_sibling` of B's rows, and B's `accepts_root`, `.tree_drop` and depth, exactly as when dragging inside B, except that no row travels with the drag in B. B draws the insertion line or the marker for dropping into a row, A no longer draws its own target, and the dragged row's outline and pointer following stay as before. When the pointer returns to A, A returns to normal.
+- When a row dragged out of list A moves over list B in the same group, B computes the target by its own rules: the dragged row's `kind`, the `accepts_inside` and `accepts_sibling` of B's rows, and B's `accepts_root`, `.tree_drop` and depth, exactly as when dragging inside B, except that no row travels with the drag in B. With `.drag_preview(ReorderDragPreview::LiveGap)`, B opens a live gap with a dashed Accent slot; by default B draws the insertion line or the marker for dropping into a row. A no longer draws its own target, and the dragged row's outline and pointer following stay as before. When the pointer returns to A, A returns to normal.
+- Setting `.drop_zone(Some(node_id))` on B extends cross-list transfer hit testing to an enclosing container node (such as an entire group card and its padding), so even an empty flat list opens its landing slot inside the card; hidden or collapsed lists (and their `drop_zone`) never intercept transfers or external drags.
+- With `.drag_preview(ReorderDragPreview::LiveGap)`, the source list also emits `ReorderListEvent::Drag { source, phase, x, y, inside_group }` (in window coordinates, plus whether the pointer is over any list/drop zone in its `transfer_group`) so outer UI can take over when dragging into external containers or other windows.
+- To feed an external drag (such as from another window or drawer) into a list, call `AppContext::set_reorder_external_drag(list_id, Some(ReorderExternalDrag { value, kind, x, y, size }))` (or `None` to clear), and call `AppContext::finish_reorder_external_drag(list_id)` on release to emit/return the drop and clear state.
 - On release over B, when the target is valid, the event is emitted on B: tree lists emit `TreeDrop { source, intent }`, ordinary lists emit `Reorder { source, before }`. `source` is the dragged row's value in A; `intent` and `before` point at rows in B; row values in the same group must be distinguishable from each other. A emits nothing this time. Where B does not accept, no marker is drawn, and release sends nothing on either side.
 - A tree list needs the pointer over one of B's rows to have a target; an empty tree list accepts nothing. Ordinary lists compute by vertical position, so an empty list can still drop at the end.
 - A keeps the pointer capture throughout. Escape or `Cancel` during the drag makes A emit `Cancelled`, and B's marker retracts with it.
@@ -64,11 +67,11 @@ This type is behind the Cargo feature `controls`. `components` turns it on.
 
 ## List
 
-`.spacing` is row spacing, `.size` is small by default, `.label` is the list's accessible name. `.tree_drop(true)` allows dropping onto the tree. `.reorder(false)` makes the list select-only: no amount of movement after pressing starts a drag, and release emits `Select`. To keep only a few rows fixed, give those rows `.movable(false)`: they still select, and still accept other rows dropping next to them.
+`.spacing` is row spacing (and vertical row gap in grid mode), `.column_gap` sets horizontal gap in grid mode, `.layout_mode(ReorderLayout::Column | ReorderLayout::Grid)` selects a vertical column (default) or a wrapping left-to-right 2D grid, `.size` is small by default, `.label` is the list's accessible name. `.drag_preview(ReorderDragPreview::Auto | ReorderDragPreview::LiveGap | ReorderDragPreview::Marks)` controls drag preview mode (`Auto` shifts flat live rows and keeps marks for trees; `LiveGap` enables unified live gap-opening and dashed landing slots across columns, 2D grids, trees, cross-list transfers, and external drags; `Marks` always draws outlines and insertion lines only). `.drop_zone(Some(id))` widens transfer/external hit testing to an enclosing node, and `.tree_drop(true)` allows dropping onto the tree. `.reorder(false)` makes the list select-only: no amount of movement after pressing starts a drag, and release emits `Select`. To keep only a few rows fixed, give those rows `.movable(false)`: they still select, and still accept other rows dropping next to them.
 
 ## Tree
 
-A tree is flattened into rows in depth-first order, and each row writes its depth with `.depth(n)` (top level is 0): a row owns the rows just below it that are deeper. Leave collapsed child rows out of `items`.
+A tree is flattened into rows in depth-first order, and each row writes its depth with `.depth(n)` (top level is 0): a row owns the rows just below it that are deeper. Leave collapsed child rows out of `items` and mark collapsed parent rows with `.folded(true)`.
 
 - Dragging a row carries the whole subtree it owns: the dragged outline frames the whole block, and no position inside the subtree can be dropped into.
 - `.kind("…")` writes what this row is. `.accepts_inside(..)` writes which kinds can drop inside this row, `.accepts_sibling(..)` writes which kinds can drop before or after it (becoming its sibling), both using `ReorderAccepts`: `All` (default), `Nothing`, or `ReorderAccepts::kinds([..])`. Rows with no `kind` are only accepted by `All`.
@@ -112,21 +115,21 @@ each(ids, |id| id.clone(), entry_row).container(
 )
 ```
 
-`items` must correspond one-to-one with the rows: write back to `items` on reorder, insertion and removal (for example by binding `fields::reorder_list::items`).
+`items` must correspond one-to-one with the rows: write back to `items` on reorder, insertion and removal (for example by binding `fields::reorder_list::items`; `drop_zone`, `transfer_group`, `accepts_root`, and `reorder` field writers live in the same module).
 
 ## Gestures
 
 A drag must exceed 4px to count as a move.
 
-Ordinary dragging of live rows (`.live_rows(true)` without `.tree_drop`):
+Live-gap dragging (`.drag_preview(ReorderDragPreview::LiveGap)`, as well as live flat lists without `.tree_drop` under `ReorderDragPreview::Auto`):
 
 - The dragged row (together with the child rows it owns) follows the pointer, stacked above other rows but below open menus (the layer is `REORDER_PREVIEW_Z_INDEX`, below `MENU_OVERLAY_Z_INDEX`).
-- At the position where release would drop, the other rows smoothly make room for one dragged block's height (including row spacing). Where the target does not change or is not accepted, all rows return to their places.
+- At the position where release would drop, the other rows smoothly make room for the dragged block (vertically in columns/trees, or by 2D `[dx, dy]` shifts across wrapping cells in `ReorderLayout::Grid`); `LiveGap` draws an Accent dashed rounded landing slot inside the vacated space (and for nested tree slots highlights the target parent box with an indented L-shaped tree connector). Where the target does not change or is not accepted, all rows return to their places.
 - All of this is on the presentation layer only: row styles, layout boxes and target resolution do not move, and targets are still computed from the rows' original layout boxes. The framework drives the animation; the application does not tick it. With reduced motion the rows make room immediately, and the preview still follows the pointer.
-- The list no longer draws outlines or insertion lines; the vacated slot is the target.
-- On release (dropped or not), Escape and `Cancel`, the preview and the vacated space retract at once. After receiving `Reorder` and writing back to `items` in the same frame, the row settles into the slot it made.
+- The vacated slot and dashed outline serve as the landing indicator; no separate insertion bar is drawn.
+- On release (dropped or not), Escape and `Cancel`, the preview, dashed slot and the vacated space retract at once. After receiving `Reorder` / `TreeDrop` and writing back to `items` in the same frame, the row settles into the slot it made.
 
-Tree drag and drop and custom-drawn rows: after a move the list draws an accent outline around the dragged row and an insertion line at the position where release would drop; when tree drag and drop lands inside a row, it instead outlines that row and lays a faint accent fill over it. Positions where dropping would not change the order draw no line. With live rows these follow the child nodes' layout boxes and are drawn above the rows (a selected row's background does not cover them), so rows do not need to draw any drag state themselves.
+Tree drag and drop under `Auto`, `Marks`, and custom-drawn rows: after a move the list draws an accent outline around the dragged row and an insertion line at the position where release would drop; when tree drag and drop lands inside a row, it instead outlines that row and lays a faint accent fill over it. Positions where dropping would not change the order draw no line. With live rows these follow the child nodes' layout boxes and are drawn above the rows (a selected row's background does not cover them), so rows do not need to draw any drag state themselves.
 
 Where you press decides who owns the press:
 
@@ -148,8 +151,13 @@ Rows that used to wrap buttons in a segment registered as `.tools` so the button
 | `.drop_target` | — | For a drop target without a drag source, follow `.draggable(false)` with `.drop_target(true)` |
 | `.selected` | — | Written on a row. Unselected by default |
 | `.disabled` | — | Written on a row. Enabled by default |
+| `.folded` | `bool` | Written on a row. Marks a collapsed parent row in a tree (`false` by default) |
 | `.tools` | — | The argument is `id`. Marks child nodes inside a row where a drag never starts. Buttons in a row do not need to be registered to receive clicks |
-| `.spacing` | — | Row spacing |
+| `.spacing` | — | Row spacing (and vertical row gap in grid mode) |
+| `.column_gap` | — | Horizontal column gap in grid mode; defaults to `.spacing` |
+| `.layout_mode` | `ReorderLayout` | `Column` (default vertical column) or `Grid` (left-to-right wrapping 2D grid) |
+| `.drag_preview` | `ReorderDragPreview` | `Auto` (default), `LiveGap` (live gap-opening + dashed landing slot), or `Marks` (outlines / insertion line only) |
+| `.drop_zone` | `Option<StableNodeId>` | Enclosing container node extending cross-list/external hit testing (ignored while hidden) |
 | `.size` | — | Small by default |
 | `.label` | — | The list's accessible name |
 | `.tree_drop` | — | `true` allows dropping onto the tree |
@@ -169,6 +177,7 @@ The event is `ReorderListEvent`:
 
 - `Select(value)` is a click on a row.
 - `Secondary { source, x, y }` is a right click on a row body. `x` and `y` are window coordinates, used to anchor the context menu. The row surface does not take pointer input, so this event is emitted on the list.
+- `Drag { source, phase, x, y, inside_group }` fires during an active `LiveGap` drag on the source list with window coordinates and whether the pointer is inside any list/drop zone of its `transfer_group`.
 - In `Reorder { source, before }`, `before` equal to `None` means drop at the end.
 - In `TreeDrop { source, intent }`, `intent` carries the target id and a `TreeDropPosition`: `Before`, `Inside` or `After`. `source` moves together with its subtree. Keyboard moves emit this event too.
 - For a row dragged in from a list in the same group, this list emits `TreeDrop` (an ordinary list emits `Reorder`), and `source` is its value in the original list; see [Cross-list dragging](#cross-list-dragging).
@@ -180,6 +189,7 @@ Pointer coordinates are unprojected through the list's layout coordinates before
 | --- | --- | --- |
 | `Select` | `value` | A click on a row |
 | `Secondary` | `source`, `x`, `y` | A right click on a row body. `x` and `y` are window coordinates, used to anchor the context menu. The row surface does not take pointer input, so this event is emitted on the list |
+| `Drag` | `source`, `phase`, `x`, `y`, `inside_group` | Source drag lifecycle, window coordinates, and group hit status under `LiveGap` |
 | `Reorder` | `source`, `before` | `before` equal to `None` means drop at the end |
 | `TreeDrop` | `source`, `intent` | `intent` carries the target id and a `TreeDropPosition`: `Before`, `Inside` or `After` |
 | `Cancelled` | — | Cancellation. Escape during a drag is handled by the framework; when you drive the pointer yourself, hand focus loss and touch loss to `ReorderListPointer::Cancel` |

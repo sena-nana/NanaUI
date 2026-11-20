@@ -776,6 +776,14 @@ pub mod fields {
     pub mod reorder_list {
         /// `ReorderList` field `items`.
         pub struct items;
+        /// `ReorderList` field `drop_zone`.
+        pub struct drop_zone;
+        /// `ReorderList` field `transfer_group`.
+        pub struct transfer_group;
+        /// `ReorderList` field `accepts_root`.
+        pub struct accepts_root;
+        /// `ReorderList` field `reorder`.
+        pub struct reorder;
     }
 }
 
@@ -791,6 +799,66 @@ impl FieldWrite<crate::ReorderList, Vec<crate::ReorderItem>> for fields::reorder
 
     fn differs(target: &crate::ReorderList, items: &Vec<crate::ReorderItem>) -> bool {
         target.items != *items
+    }
+}
+
+#[cfg(feature = "controls")]
+impl FieldWrite<crate::ReorderList, Option<StableNodeId>> for fields::reorder_list::drop_zone {
+    const FIELD: &'static str = "ReorderList.drop_zone";
+
+    fn write(target: &mut crate::ReorderList, zone: Option<StableNodeId>) {
+        if target.drop_zone != zone {
+            target.drop_zone = zone;
+        }
+    }
+
+    fn differs(target: &crate::ReorderList, zone: &Option<StableNodeId>) -> bool {
+        target.drop_zone != *zone
+    }
+}
+
+#[cfg(feature = "controls")]
+impl FieldWrite<crate::ReorderList, Option<Arc<str>>> for fields::reorder_list::transfer_group {
+    const FIELD: &'static str = "ReorderList.transfer_group";
+
+    fn write(target: &mut crate::ReorderList, group: Option<Arc<str>>) {
+        if target.transfer_group != group {
+            target.transfer_group = group;
+        }
+    }
+
+    fn differs(target: &crate::ReorderList, group: &Option<Arc<str>>) -> bool {
+        target.transfer_group != *group
+    }
+}
+
+#[cfg(feature = "controls")]
+impl FieldWrite<crate::ReorderList, crate::ReorderAccepts> for fields::reorder_list::accepts_root {
+    const FIELD: &'static str = "ReorderList.accepts_root";
+
+    fn write(target: &mut crate::ReorderList, accepts: crate::ReorderAccepts) {
+        if target.accepts_root != accepts {
+            target.accepts_root = accepts;
+        }
+    }
+
+    fn differs(target: &crate::ReorderList, accepts: &crate::ReorderAccepts) -> bool {
+        target.accepts_root != *accepts
+    }
+}
+
+#[cfg(feature = "controls")]
+impl FieldWrite<crate::ReorderList, bool> for fields::reorder_list::reorder {
+    const FIELD: &'static str = "ReorderList.reorder";
+
+    fn write(target: &mut crate::ReorderList, reorder: bool) {
+        if target.reorder != reorder {
+            target.reorder = reorder;
+        }
+    }
+
+    fn differs(target: &crate::ReorderList, reorder: &bool) -> bool {
+        target.reorder != *reorder
     }
 }
 

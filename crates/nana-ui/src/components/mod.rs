@@ -50,6 +50,7 @@ pub use nana_ui_runtime::{
 };
 #[cfg(feature = "controls")]
 pub use nana_ui_runtime::{
-    ReorderAccepts, ReorderItem, ReorderKeyMove, ReorderList, TreeDropIntent, TreeDropPosition,
+    ReorderAccepts, ReorderDragPreview, ReorderExternalDrag, ReorderGapPlan, ReorderItem,
+    ReorderKeyMove, ReorderLayout, ReorderList, TreeDropIntent, TreeDropPosition,
 };
 pub use nana_ui_runtime::{StatusTone, ToastTone, ValidationIntent};
