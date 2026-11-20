@@ -655,13 +655,15 @@ CSS 路径只产出数据，不量容器（见下文「`@container`」）。
 测量（`measure_node`）已改为在 `layout_engine/measure.rs` 中使用堆上显式 `Vec` 工作栈迭代执行：函数调用栈深度对树深为 O(1)，不使用 `stacker`（`stack_budget` 中每层测量栈消耗固定为 `0 B`）。`layout_engine::recursion::level` 现在专用于为放置递归定价：
 
 - 通过 `crate::stack::remaining`（原生线程栈边界查询）对比父层与本层入口的剩余栈，每趟取最大值，发布为 `WorkCounters::layout_measure_stack_per_level`（现为 `0`）和 `layout_placement_stack_per_level`（字节，一帧内取最大；平台无法报告时为 `0`）。
-- `layout_engine::stack_budget` 的测试分别在 `Flex`、`Grid`、`Layers` 三条路线上检查每层测量与放置的栈预算，并在 `1 MiB` 线程上布局 `400` 层的树（`a_tree_deeper_than_the_stack_still_lays_out`）以及在 `384 KiB` 线程上完成 `512` 个嵌套节点的布局（`max_tree_depth_fits_in_384_kib_stack`）。
+- `layout_engine::stack_budget` 的测试分别在 `Flex`、`Grid`、`Layers` 三条路线上检查冷布局每层测量与放置的栈预算；增量路径另有一组（`an_incremental_layout_level_stays_within_its_stack_budget`）：在顺序列、反向主轴、grid、layers、滚动容器、带绝对定位子项六种容器各嵌 24 层的树上，依次改叶子尺寸（顺序回放）、增删子项（子项列表回放）、改文本叶子，每一趟都核对计划确有回放、每层放置栈不超预算，并在 `1 MiB` 线程上布局 `400` 层的树（`a_tree_deeper_than_the_stack_still_lays_out`）以及在 `384 KiB` 线程上完成 `512` 个嵌套节点的布局（`max_tree_depth_fits_in_384_kib_stack`）。
 
-放置（`place_node_scoped`）采用有界递归，不需要 `stacker` 换栈。测量之后每个盒子的尺寸都已确定，所以任何节点都可以作为边界：一次调用最多下降 `recursion::SPAN` 层（`release` 24 层、`debug` 8 层、测试构建 2 层，将受控调用栈上界维持在约 90 KiB 量级；实测 `aarch64 macOS` debug 构建 `Flex` / `Grid` / `Layers` 每层放置为 `5200 B`），到这一层的节点写下自己的盒子后，把子树的其余部分作为 `Boundary` 排进本趟队列（`PassIntrinsicCache::boundaries`）；最外层调用在返回前按入队顺序放完队列，放的过程中还可以继续入队。所以放置的调用栈深度不超过 `SPAN`，与树深无关，调用方在调用返回时看到的仍是整棵子树都已放好。`WorkCounters::layout_placement_boundaries` 记本趟从队列里放了几棵子树。
+放置（`place_node_scoped`）采用有界递归，不需要 `stacker` 换栈。测量之后每个盒子的尺寸都已确定，所以任何节点都可以作为边界：一次调用最多下降 `recursion::SPAN` 层（`release` 24 层、`debug` 8 层、测试构建 2 层，将受控调用栈上界维持在约 90 KiB 量级；实测 `aarch64 macOS` debug 构建冷布局与回放每层放置均为 `5424 B`，release 为 `2896 B`；带绝对定位子项的回放 debug `9136 B`、release `3536 B`），到这一层的节点写下自己的盒子后，把子树的其余部分作为 `Boundary` 排进本趟队列（`PassIntrinsicCache::boundaries`）；最外层调用在返回前按入队顺序放完队列，放的过程中还可以继续入队。所以放置的调用栈深度不超过 `SPAN`，与树深无关，调用方在调用返回时看到的仍是整棵子树都已放好。`WorkCounters::layout_placement_boundaries` 记本趟从队列里放了几棵子树。
 
 能这样切的前提是：一棵子树的放置只读它自己的输入（站在哪、多大、包含块、字体、视口），不读兄弟子树放置时写下的东西，所以延后调度队列放完后结果相同。
 
-一层的放置分两步：`lay_out_children` 走一遍容器的子项：测量、分行、对齐、求解 2D grid，给每个流内子项定好盒子，返回待放置的 `Descend` 列表和计划草稿，自己不放置任何子树；`place_node_body` 等这一帧退出后再依次进入这些子树，然后记录计划并放置定位子项。`place_node_head` 在 `place_node_body` 运行前返回，复用计划的两条快速路径（`place_edited_child_list`、`place_from_plan`）与 `lay_out_children` 各自成函数，避免同时把所有局部变量留在同一递归栈帧内。
+一层的放置分两步：`lay_out_children` 走一遍容器的子项：测量、分行、对齐、求解 2D grid，给每个流内子项定好盒子，返回待放置的 `Descend` 列表和计划草稿，自己不放置任何子树；`place_node_body` 等这一帧退出后再依次进入这些子树，然后记录计划并放置定位子项。`place_node_head` 在 `place_node_body` 运行前返回，复用计划的两条快速路径（`place_edited_child_list`、`place_from_plan`，经 `replay_plan`）与 `lay_out_children` 各自成函数，避免同时把所有局部变量留在同一递归栈帧内。
+
+回放路径同样分两步：顺序回放（`replay_sequential_run`）、反向主轴前缀平移（`shift_reversed_prefix`）、换行 flex 行平移（`replay_wrapped_flex_line`）、grid 回放（`replay_grid`）和计划不变时重入受影响子项，都只给子项定盒子、把要重放的子树交成 `Descend`（回放中途拒绝时收回已交出的项），自己不调用 `place_node_scoped`；`replay_plan` 返回 `PlanReplay` 后，`place_node_body` 在回放的帧退出后依次进入这些子树，再由 `finish_plan_replay` 放置定位子项。所以一层回放的栈与冷布局一层相同。定位子项（`place_positioned_child`）仍在自己的帧里进入子树。
 
 视图建成节点（`mount_view*` 经 `ViewBuilder::run_trampoline` 的显式 `ViewTask` 堆栈，配合 `enter_nest` / `leave_nest`）同样改为迭代执行，不消耗与视图深度成正比的调用栈，也不依赖 `stacker`；`view::tests::a_view_deeper_than_the_stack_still_mounts` 在 `1 MiB` 线程上挂载、布局并析构 400 层视图，`nana-ui-scene/tests/deep_tree_stack.rs` 在 `256 KiB` 线程上完成 `MAX_TREE_DEPTH - 4`（508 层）整帧验证。
 

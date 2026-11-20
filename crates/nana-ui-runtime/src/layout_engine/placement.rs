@@ -63,48 +63,62 @@ fn children_reaching_affected(
     indices
 }
 
-/// After a replay that placed only part of `container`, place the children
-/// it did not visit that still lead to an affected node, at their kept
-/// boxes: the replay left them where they were, but not what is inside.
-#[allow(clippy::too_many_arguments)]
-fn place_unvisited_reaching(
+/// After a replay that placed only part of `container`, descend into the
+/// children it did not visit that still lead to an affected node, at their
+/// kept boxes: the replay left them where they were, but not what is inside.
+fn descend_unvisited_reaching(
     container: StableNodeId,
     plan: &ContainerPlan,
-    viewport: LayoutViewport,
-    nodes: &mut LayoutInputMap<'_>,
-    intrinsic: &mut PassIntrinsicCache,
-    output: &mut PassOutput,
+    descend: &mut Vec<Descend>,
+    nodes: &LayoutInputMap<'_>,
+    output: &PassOutput,
     scope: &ScopeContext<'_>,
-) -> Result<(), UiWorldError> {
-    for index in children_reaching_affected(container, plan, scope) {
+) {
+    let reaching = children_reaching_affected(container, plan, scope);
+    if reaching.is_empty() {
+        return;
+    }
+    // The children the replay itself descends into: their subtrees are not
+    // placed yet, so their boxes are not in `output`. Few children reach an
+    // edit, so a scan of the list is cheaper than indexing it.
+    let visited: Option<HashSet<StableNodeId>> =
+        (reaching.len() > 8).then(|| descend.iter().map(|visit| visit.child).collect());
+    let mut unvisited = Vec::new();
+    for index in reaching {
         let (child, origin, size) = {
             let entries = plan.entries.borrow();
             let entry = &entries[index as usize];
             (entry.child, entry.origin, entry.size)
         };
-        if output.contains_key(&child) {
+        let replayed = match &visited {
+            Some(visited) => visited.contains(&child),
+            None => descend.iter().any(|visit| visit.child == child),
+        };
+        if output.contains_key(&child) || replayed {
             continue;
         }
-        let inherited = plan.grid.as_deref().and_then(|grid| {
-            nodes
-                .style_ref(child)
-                .and_then(|child_style| grid.inherited_tracks_for(child, child_style.as_ref()))
-        });
-        place_node_scoped(
+        unvisited.push(Descend {
             child,
             origin,
             size,
-            plan.content,
-            viewport,
-            plan.child_font_px,
-            inherited,
-            nodes,
-            intrinsic,
-            output,
-            Some(scope),
-        )?;
+            containing: plan.content,
+            inherited: inherited_tracks(plan, child, nodes),
+        });
     }
-    Ok(())
+    descend.append(&mut unvisited);
+}
+
+/// The grid tracks `child` inherits from the grid `plan` placed it in.
+fn inherited_tracks(
+    plan: &ContainerPlan,
+    child: StableNodeId,
+    nodes: &LayoutInputMap<'_>,
+) -> Option<Box<super::grid::InheritedGridTracks>> {
+    plan.grid.as_deref().and_then(|grid| {
+        nodes
+            .style_ref(child)
+            .and_then(|child_style| grid.inherited_tracks_for(child, child_style.as_ref()))
+    })
 }
 
 /// Re-check only the children the change closure reaches.
@@ -279,17 +293,15 @@ impl RunChild {
 /// container relayout.
 #[allow(clippy::too_many_arguments)]
 fn replay_sequential_suffix(
-    id: StableNodeId,
     plan: &ContainerPlan,
     from: usize,
     content: Size,
     viewport: LayoutViewport,
     nodes: &mut LayoutInputMap<'_>,
     intrinsic: &mut PassIntrinsicCache,
-    output: &mut PassOutput,
+    descend: &mut Vec<Descend>,
     scope: &ScopeContext<'_>,
 ) -> Result<bool, UiWorldError> {
-    let _ = id;
     let (cursor, run) = {
         let entries = plan.entries.borrow();
         let cursor = entries.get(from).map_or(0.0, |entry| entry.cursor_before);
@@ -297,14 +309,12 @@ fn replay_sequential_suffix(
         (cursor, run)
     };
     let Some(replayed) = replay_sequential_run(
-        plan, cursor, run, content, viewport, nodes, intrinsic, output, scope,
+        plan, cursor, run, content, viewport, nodes, intrinsic, descend, scope,
     )?
     else {
         return Ok(false);
     };
-    let shifted = shift_reversed_prefix(
-        plan, from, content, viewport, nodes, intrinsic, output, scope,
-    )?;
+    let shifted = shift_reversed_prefix(plan, from, content, descend);
     // Commit only after the whole suffix succeeded, so a bail-out above leaves
     // the cached plan exactly as it was.
     let mut entries = plan.entries.borrow_mut();
@@ -319,8 +329,10 @@ fn replay_sequential_suffix(
     Ok(true)
 }
 
-/// Place `run`, children of a sequential container in placement order, from
-/// `cursor` on, and return what the plan records for each.
+/// Give `run`, children of a sequential container in placement order, their
+/// boxes from `cursor` on, and return what the plan records for each. The
+/// children whose subtrees have to be placed again go to `descend`, entered
+/// once this frame is gone; on a refusal what it pushed is taken back.
 ///
 /// This is the one place that reproduces the container's per-child arithmetic
 /// rather than calling into the placement loop, so it is deliberately narrow:
@@ -334,13 +346,36 @@ fn replay_sequential_suffix(
 #[allow(clippy::too_many_arguments)]
 fn replay_sequential_run(
     plan: &ContainerPlan,
+    cursor: f32,
+    run: Vec<RunChild>,
+    content: Size,
+    viewport: LayoutViewport,
+    nodes: &mut LayoutInputMap<'_>,
+    intrinsic: &mut PassIntrinsicCache,
+    descend: &mut Vec<Descend>,
+    scope: &ScopeContext<'_>,
+) -> Result<Option<Vec<PlannedChild>>, UiWorldError> {
+    let pushed = descend.len();
+    let replayed = replay_sequential_children(
+        plan, cursor, run, content, viewport, nodes, intrinsic, descend, scope,
+    )?;
+    if replayed.is_none() {
+        descend.truncate(pushed);
+    }
+    Ok(replayed)
+}
+
+/// [`replay_sequential_run`] before a refusal takes back what it pushed.
+#[allow(clippy::too_many_arguments)]
+fn replay_sequential_children(
+    plan: &ContainerPlan,
     mut cursor: f32,
     run: Vec<RunChild>,
     content: Size,
     viewport: LayoutViewport,
     nodes: &mut LayoutInputMap<'_>,
     intrinsic: &mut PassIntrinsicCache,
-    output: &mut PassOutput,
+    descend: &mut Vec<Descend>,
     scope: &ScopeContext<'_>,
 ) -> Result<Option<Vec<PlannedChild>>, UiWorldError> {
     let direction = plan.main_direction;
@@ -481,19 +516,13 @@ fn replay_sequential_run(
             writing,
             Some(scope),
         ) {
-            place_node_scoped(
+            descend.push(Descend {
                 child,
-                child_origin,
-                child_size,
-                plan.content,
-                viewport,
-                plan.child_font_px,
-                None,
-                nodes,
-                intrinsic,
-                output,
-                Some(scope),
-            )?;
+                origin: child_origin,
+                size: child_size,
+                containing: plan.content,
+                inherited: None,
+            });
         }
         replayed.push(PlannedChild {
             child,
@@ -534,19 +563,14 @@ fn main_margins(
 /// A reversed main axis measures every origin back from the far edge. When
 /// the container's main size moved, the children before `from` keep their
 /// flow positions and move with that edge, all by the same amount: the work
-/// is the boxes that really moved, and nothing is measured again. Places them
-/// and returns their new origins by entry index.
-#[allow(clippy::too_many_arguments)]
+/// is the boxes that really moved, and nothing is measured again. Hands them
+/// to `descend` and returns their new origins by entry index.
 fn shift_reversed_prefix(
     plan: &ContainerPlan,
     from: usize,
     content: Size,
-    viewport: LayoutViewport,
-    nodes: &mut LayoutInputMap<'_>,
-    intrinsic: &mut PassIntrinsicCache,
-    output: &mut PassOutput,
-    scope: &ScopeContext<'_>,
-) -> Result<Vec<(usize, Point)>, UiWorldError> {
+    descend: &mut Vec<Descend>,
+) -> Vec<(usize, Point)> {
     let direction = plan.main_direction;
     let shift = if plan.main_reversed {
         main_extent(content, direction) - plan.placed_main.get()
@@ -554,7 +578,7 @@ fn shift_reversed_prefix(
         0.0
     };
     if shift == 0.0 {
-        return Ok(Vec::new());
+        return Vec::new();
     }
     let prefix: Vec<(usize, StableNodeId, Point, Size)> = plan.entries.borrow()[..from]
         .iter()
@@ -570,22 +594,16 @@ fn shift_reversed_prefix(
         .collect();
     let mut shifted = Vec::with_capacity(prefix.len());
     for (index, child, origin, size) in prefix {
-        place_node_scoped(
+        descend.push(Descend {
             child,
             origin,
             size,
-            plan.content,
-            viewport,
-            plan.child_font_px,
-            None,
-            nodes,
-            intrinsic,
-            output,
-            Some(scope),
-        )?;
+            containing: plan.content,
+            inherited: None,
+        });
         shifted.push((index, origin));
     }
-    Ok(shifted)
+    shifted
 }
 
 /// The entry of the nearest child in flow among `beside`, the children next
@@ -634,6 +652,7 @@ fn replay_child_list_edit(
     nodes: &mut LayoutInputMap<'_>,
     intrinsic: &mut PassIntrinsicCache,
     output: &mut PassOutput,
+    descend: &mut Vec<Descend>,
     scope: &ScopeContext<'_>,
 ) -> Result<Option<ContainerPlan>, UiWorldError> {
     // A line that solves its overflow shares out what it takes from its
@@ -748,14 +767,12 @@ fn replay_child_list_edit(
     // An omitted arrival gets no slot; a box it kept from before collapses.
     retire_omitted_children(edit.arrivals(children), nodes, output, scope);
     let Some(replayed) = replay_sequential_run(
-        plan, cursor, run, content, viewport, nodes, intrinsic, output, scope,
+        plan, cursor, run, content, viewport, nodes, intrinsic, descend, scope,
     )?
     else {
         return Ok(None);
     };
-    let shifted = shift_reversed_prefix(
-        plan, from, content, viewport, nodes, intrinsic, output, scope,
-    )?;
+    let shifted = shift_reversed_prefix(plan, from, content, descend);
     let mut entries = prefix;
     for (index, origin) in shifted {
         entries[index].origin = origin;
@@ -828,7 +845,7 @@ fn replay_wrapped_flex_line(
     viewport: LayoutViewport,
     nodes: &mut LayoutInputMap<'_>,
     intrinsic: &mut PassIntrinsicCache,
-    output: &mut PassOutput,
+    descend: &mut Vec<Descend>,
     scope: &ScopeContext<'_>,
 ) -> Result<bool, UiWorldError> {
     let style = plan.style.as_ref();
@@ -970,21 +987,13 @@ fn replay_wrapped_flex_line(
         }
         carried += delta;
     }
-    for (child, origin, size, _) in &jobs {
-        place_node_scoped(
-            *child,
-            *origin,
-            *size,
-            plan.content,
-            viewport,
-            plan.child_font_px,
-            None,
-            nodes,
-            intrinsic,
-            output,
-            Some(scope),
-        )?;
-    }
+    descend.extend(jobs.iter().map(|&(child, origin, size, _)| Descend {
+        child,
+        origin,
+        size,
+        containing: plan.content,
+        inherited: None,
+    }));
     let mut entries = plan.entries.borrow_mut();
     for (child, origin, size, index) in jobs {
         let entry = &mut entries[index];
@@ -1015,7 +1024,7 @@ fn replay_grid(
     viewport: LayoutViewport,
     nodes: &mut LayoutInputMap<'_>,
     intrinsic: &mut PassIntrinsicCache,
-    output: &mut PassOutput,
+    descend: &mut Vec<Descend>,
     scope: &ScopeContext<'_>,
 ) -> Result<bool, UiWorldError> {
     let Some(old_grid) = plan.grid.clone() else {
@@ -1125,7 +1134,7 @@ fn replay_grid(
         reuse.insert(item.id, entry.size);
     }
     let mut recorded = Vec::with_capacity(solved.items.len());
-    let mut items = Vec::new();
+    let pushed = descend.len();
     place_grid_2d_items(
         &solved,
         plan.writing,
@@ -1139,18 +1148,10 @@ fn replay_grid(
         Some(scope),
         Some(&reuse),
         Some(&mut recorded),
-        &mut items,
-    )?;
-    place_descendants(
-        items,
-        viewport,
-        plan.child_font_px,
-        nodes,
-        intrinsic,
-        output,
-        Some(scope),
+        descend,
     )?;
     if recorded.len() != solved.items.len() {
+        descend.truncate(pushed);
         return Ok(false);
     }
     let mut updated = plan.clone();
@@ -1711,15 +1712,17 @@ fn place_node_body<'a>(
     }
     let had_plan = scope.is_some_and(|scope| scope.retained.container_plans.contains_key(&id));
     let subgrid = style.is_subgrid_columns() || style.is_subgrid_rows();
-    if !subgrid
-        && place_edited_child_list(
+    if !subgrid && let Some(scope) = scope {
+        // A container whose plan answers gives its children their boxes from
+        // it; the subtrees under them are entered here, once the replay's
+        // frame is gone, like the walk's below.
+        let replayed = replay_plan(
             id,
             origin,
             size,
             containing,
             viewport,
             parent_font_px,
-            child_font_px,
             style_arc.arc(),
             child_ids,
             writing,
@@ -1729,35 +1732,34 @@ fn place_node_body<'a>(
             intrinsic,
             output,
             scope,
-        )?
-    {
-        return Ok(());
-    }
-    // A container whose own inputs and whose children's styles and intrinsic
-    // sizes are all unchanged places its children exactly where it did last
-    // pass. Reuse that and touch only the children the change closure reaches;
-    // otherwise a one-child edit pays a full sibling scan. See `ContainerPlan`.
-    if !subgrid
-        && place_from_plan(
-            id,
-            origin,
-            size,
-            containing,
-            viewport,
-            parent_font_px,
-            child_font_px,
-            style_arc.arc(),
-            child_ids,
-            writing,
-            content_origin,
-            content,
-            nodes,
-            intrinsic,
-            output,
-            scope,
-        )?
-    {
-        return Ok(());
+        )?;
+        if let Some(replay) = replayed {
+            let suffix = replay.suffix;
+            place_descendants(
+                replay.descend,
+                viewport,
+                child_font_px,
+                nodes,
+                intrinsic,
+                output,
+                Some(scope),
+            )?;
+            return finish_plan_replay(
+                id,
+                origin,
+                size,
+                content_origin,
+                content,
+                viewport,
+                child_font_px,
+                writing,
+                suffix,
+                nodes,
+                intrinsic,
+                output,
+                scope,
+            );
+        }
     }
 
     let ChildrenLayout {
@@ -1884,8 +1886,148 @@ fn place_node_body<'a>(
     Ok(())
 }
 
-/// A sequential container with a new child list, placed by replaying its
-/// plan from the edit. False when the plan cannot answer.
+/// A container its plan answered for: its children have their boxes, and
+/// the subtrees under them wait in `descend` to be entered once the replay's
+/// frame is gone (see `recursion`). Then [`finish_plan_replay`] places its
+/// positioned children.
+struct PlanReplay {
+    descend: Vec<Descend>,
+    /// A sequential replay that kept a prefix of the children.
+    suffix: bool,
+}
+
+/// The pass's scratch list for a replay, and the replay's answer: the list
+/// back to the scratch when the plan could not answer.
+fn plan_replay(
+    descend: Vec<Descend>,
+    answered: Option<bool>,
+    nodes: &mut LayoutInputMap<'_>,
+) -> Option<PlanReplay> {
+    match answered {
+        Some(suffix) => Some(PlanReplay { descend, suffix }),
+        None => {
+            nodes.scratch.give_descend(descend);
+            None
+        }
+    }
+}
+
+/// What a container its plan answered for does once the subtrees under its
+/// children are placed: its positioned children, which can read where those
+/// stand, as after a walk.
+#[allow(clippy::too_many_arguments)]
+// Its own frame, taken only on the path that calls it (see `recursion`).
+#[inline(never)]
+fn finish_plan_replay(
+    id: StableNodeId,
+    origin: Point,
+    size: Size,
+    content_origin: Point,
+    content: Size,
+    viewport: LayoutViewport,
+    child_font_px: f32,
+    writing: nana_ui_core::WritingContext,
+    suffix: bool,
+    nodes: &mut LayoutInputMap<'_>,
+    intrinsic: &mut PassIntrinsicCache,
+    output: &mut PassOutput,
+    scope: &ScopeContext<'_>,
+) -> Result<(), UiWorldError> {
+    // The plan the replay read: an edited child list rebuilt its own into
+    // the pass already, which the overlay writes its geometry into.
+    if let Some(plan) = scope.retained.container_plans.get(&id) {
+        finish_positioned_overlay(
+            id,
+            plan,
+            origin,
+            size,
+            content_origin,
+            content,
+            viewport,
+            child_font_px,
+            writing,
+            nodes,
+            intrinsic,
+            output,
+            scope,
+        )?;
+    }
+    intrinsic.note_placement_plan_reused();
+    if suffix {
+        intrinsic.note_suffix_replayed();
+    }
+    Ok(())
+}
+
+/// A container's children given their boxes from its plan, when the plan
+/// answers: by replaying it from a child-list edit, or else by reusing it
+/// with only what changed under it placed again.
+#[allow(clippy::too_many_arguments)]
+// Its own frame, taken only on the path that calls it (see `recursion`).
+#[inline(never)]
+fn replay_plan(
+    id: StableNodeId,
+    origin: Point,
+    size: Size,
+    containing: Size,
+    viewport: LayoutViewport,
+    parent_font_px: f32,
+    style_arc: &Arc<LayoutStyle>,
+    child_ids: &Arc<Vec<StableNodeId>>,
+    writing: nana_ui_core::WritingContext,
+    content_origin: Point,
+    content: Size,
+    nodes: &mut LayoutInputMap<'_>,
+    intrinsic: &mut PassIntrinsicCache,
+    output: &mut PassOutput,
+    scope: &ScopeContext<'_>,
+) -> Result<Option<PlanReplay>, UiWorldError> {
+    if let Some(replay) = place_edited_child_list(
+        id,
+        origin,
+        size,
+        containing,
+        viewport,
+        parent_font_px,
+        style_arc,
+        child_ids,
+        writing,
+        content_origin,
+        content,
+        nodes,
+        intrinsic,
+        output,
+        scope,
+    )? {
+        return Ok(Some(replay));
+    }
+    // A container whose own inputs and whose children's styles and
+    // intrinsic sizes are all unchanged places its children exactly where
+    // it did last pass. Reuse that and touch only the children the change
+    // closure reaches; otherwise a one-child edit pays a full sibling scan.
+    // See `ContainerPlan`.
+    place_from_plan(
+        id,
+        origin,
+        size,
+        containing,
+        viewport,
+        parent_font_px,
+        style_arc,
+        child_ids,
+        writing,
+        content_origin,
+        content,
+        nodes,
+        intrinsic,
+        output,
+        scope,
+    )
+}
+
+/// A sequential container with a new child list, its children given their
+/// boxes by replaying its plan from the edit. `None` when the plan cannot
+/// answer.
 #[allow(clippy::too_many_arguments)]
 // Its own frame, taken only on the path that calls it (see `recursion`).
 #[inline(never)]
@@ -1896,7 +2038,6 @@ fn place_edited_child_list(
     containing: Size,
     viewport: LayoutViewport,
     parent_font_px: f32,
-    child_font_px: f32,
     style_arc: &Arc<LayoutStyle>,
     child_ids: &Arc<Vec<StableNodeId>>,
     writing: nana_ui_core::WritingContext,
@@ -1905,14 +2046,15 @@ fn place_edited_child_list(
     nodes: &mut LayoutInputMap<'_>,
     intrinsic: &mut PassIntrinsicCache,
     output: &mut PassOutput,
-    scope: Option<&ScopeContext<'_>>,
-) -> Result<bool, UiWorldError> {
+    scope: &ScopeContext<'_>,
+) -> Result<Option<PlanReplay>, UiWorldError> {
     // A new child list on a sequential container: the children before the
     // edit stay, the ones after it move, and nothing it kept is measured
     // again. See `ChildListEdit`.
-    if let Some(scope) = scope
-        && let Some(plan) = scope.retained.container_plans.get(&id)
-        && plan.sequential
+    let Some(plan) = scope.retained.container_plans.get(&id) else {
+        return Ok(None);
+    };
+    if !(plan.sequential
         && !Arc::ptr_eq(&plan.children, child_ids)
         && plan.can_reuse_flow(
             origin,
@@ -1925,63 +2067,51 @@ fn place_edited_child_list(
             writing,
         )
         && nodes.world.children_layout_style_is_local(id)
-        && triggered_menu_overlay(nodes.world, id).is_none()
+        && triggered_menu_overlay(nodes.world, id).is_none())
     {
-        let edit = ChildListEdit::between(&plan.children, child_ids);
-        let changed_from = if plan.flow_membership_holds(id, Some(&edit), scope, nodes) {
-            match check_plan_children(plan, viewport, nodes, intrinsic, scope)? {
-                PlanCheck::Stale => None,
-                PlanCheck::Unchanged => Some(plan.child_count()),
-                PlanCheck::ChangedFrom(index) => Some(index),
-            }
-        } else {
-            None
-        };
-        if let Some(changed_from) = changed_from
-            && let Some(edited) = replay_child_list_edit(
-                plan,
-                child_ids,
-                edit,
-                changed_from,
-                content,
-                viewport,
-                nodes,
-                intrinsic,
-                output,
-                scope,
-            )?
-        {
-            place_unvisited_reaching(id, &edited, viewport, nodes, intrinsic, output, scope)?;
-            // In before the overlay, which writes its geometry into it. The
-            // edit moved no positioned child, so the old plan's overlay is
-            // this one's.
-            nodes.container_plans.rebuild(id, edited);
-            finish_positioned_overlay(
-                id,
-                plan,
-                origin,
-                size,
-                content_origin,
-                content,
-                viewport,
-                child_font_px,
-                writing,
-                nodes,
-                intrinsic,
-                output,
-                scope,
-            )?;
-            intrinsic.note_placement_plan_reused();
-            intrinsic.note_suffix_replayed();
-            return Ok(true);
-        }
+        return Ok(None);
     }
-    Ok(false)
+    let edit = ChildListEdit::between(&plan.children, child_ids);
+    let changed_from = if plan.flow_membership_holds(id, Some(&edit), scope, nodes) {
+        match check_plan_children(plan, viewport, nodes, intrinsic, scope)? {
+            PlanCheck::Stale => None,
+            PlanCheck::Unchanged => Some(plan.child_count()),
+            PlanCheck::ChangedFrom(index) => Some(index),
+        }
+    } else {
+        None
+    };
+    let Some(changed_from) = changed_from else {
+        return Ok(None);
+    };
+    let mut descend = nodes.scratch.descend();
+    let edited = replay_child_list_edit(
+        plan,
+        child_ids,
+        edit,
+        changed_from,
+        content,
+        viewport,
+        nodes,
+        intrinsic,
+        output,
+        &mut descend,
+        scope,
+    )?;
+    let answered = edited.map(|edited| {
+        descend_unvisited_reaching(id, &edited, &mut descend, nodes, output, scope);
+        // In before the overlay, which writes its geometry into it. The edit
+        // moved no positioned child, so the old plan's overlay is this one's.
+        nodes.container_plans.rebuild(id, edited);
+        true
+    });
+    Ok(plan_replay(descend, answered, nodes))
 }
 
-/// A container whose plan still holds for its inputs, placed from it, with
-/// only what changed under it placed again. False when the plan cannot
-/// answer and the container walks its children.
+/// A container whose plan still holds for its inputs, its children given
+/// their boxes from it, with only what changed under them to be placed
+/// again. `None` when the plan cannot answer and the container walks its
+/// children.
 #[allow(clippy::too_many_arguments)]
 // Its own frame, taken only on the path that calls it (see `recursion`).
 #[inline(never)]
@@ -1992,7 +2122,6 @@ fn place_from_plan(
     containing: Size,
     viewport: LayoutViewport,
     parent_font_px: f32,
-    child_font_px: f32,
     style_arc: &Arc<LayoutStyle>,
     child_ids: &Arc<Vec<StableNodeId>>,
     writing: nana_ui_core::WritingContext,
@@ -2001,11 +2130,12 @@ fn place_from_plan(
     nodes: &mut LayoutInputMap<'_>,
     intrinsic: &mut PassIntrinsicCache,
     output: &mut PassOutput,
-    scope: Option<&ScopeContext<'_>>,
-) -> Result<bool, UiWorldError> {
-    if let Some(scope) = scope
-        && let Some(plan) = scope.retained.container_plans.get(&id)
-        && Arc::ptr_eq(&plan.children, child_ids)
+    scope: &ScopeContext<'_>,
+) -> Result<Option<PlanReplay>, UiWorldError> {
+    let Some(plan) = scope.retained.container_plans.get(&id) else {
+        return Ok(None);
+    };
+    if !(Arc::ptr_eq(&plan.children, child_ids)
         && plan.can_reuse_flow(
             origin,
             size,
@@ -2018,123 +2148,66 @@ fn place_from_plan(
         )
         && plan.flow_membership_holds(id, None, scope, nodes)
         && nodes.world.children_layout_style_is_local(id)
-        && triggered_menu_overlay(nodes.world, id).is_none()
+        && triggered_menu_overlay(nodes.world, id).is_none())
     {
-        let grid_geometry_moved =
-            plan.grid.is_some() && (plan.size != size || plan.content != content);
-        // A reversed sequential axis whose main size moved: every cached
-        // origin moved with the far edge, even with no child changed.
-        let far_edge_moved = plan.sequential
-            && plan.main_reversed
-            && main_extent(content, plan.main_direction).to_bits()
-                != plan.placed_main.get().to_bits();
-        let check = check_plan_children(plan, viewport, nodes, intrinsic, scope)?;
-        let check = match check {
-            PlanCheck::Unchanged if far_edge_moved => PlanCheck::ChangedFrom(plan.child_count()),
-            check => check,
-        };
-        match check {
-            PlanCheck::Unchanged if !grid_geometry_moved => {
-                // A fixed intermediate box can stay out of the frontier while
-                // a descendant inside it is affected. Re-enter the direct
-                // child that contains that descendant; its own plan places
-                // only the closure.
-                for index in children_reaching_affected(id, plan, scope) {
-                    let (child, origin, size) = {
-                        let entries = plan.entries.borrow();
-                        let entry = &entries[index as usize];
-                        (entry.child, entry.origin, entry.size)
-                    };
-                    let inherited = plan.grid.as_deref().and_then(|grid| {
-                        nodes.style_ref(child).and_then(|child_style| {
-                            grid.inherited_tracks_for(child, child_style.as_ref())
-                        })
-                    });
-                    place_node_scoped(
-                        child,
-                        origin,
-                        size,
-                        plan.content,
-                        viewport,
-                        plan.child_font_px,
-                        inherited,
-                        nodes,
-                        intrinsic,
-                        output,
-                        Some(scope),
-                    )?;
-                }
-                finish_positioned_overlay(
-                    id,
-                    plan,
+        return Ok(None);
+    }
+    let grid_geometry_moved = plan.grid.is_some() && (plan.size != size || plan.content != content);
+    // A reversed sequential axis whose main size moved: every cached origin
+    // moved with the far edge, even with no child changed.
+    let far_edge_moved = plan.sequential
+        && plan.main_reversed
+        && main_extent(content, plan.main_direction).to_bits() != plan.placed_main.get().to_bits();
+    let check = check_plan_children(plan, viewport, nodes, intrinsic, scope)?;
+    let check = match check {
+        PlanCheck::Unchanged if far_edge_moved => PlanCheck::ChangedFrom(plan.child_count()),
+        check => check,
+    };
+    let mut descend = nodes.scratch.descend();
+    let answered = match check {
+        PlanCheck::Unchanged if !grid_geometry_moved => {
+            // A fixed intermediate box can stay out of the frontier while a
+            // descendant inside it is affected. Re-enter the direct child
+            // that contains that descendant; its own plan places only the
+            // closure.
+            for index in children_reaching_affected(id, plan, scope) {
+                let (child, origin, size) = {
+                    let entries = plan.entries.borrow();
+                    let entry = &entries[index as usize];
+                    (entry.child, entry.origin, entry.size)
+                };
+                descend.push(Descend {
+                    child,
                     origin,
                     size,
-                    content_origin,
-                    content,
-                    viewport,
-                    child_font_px,
-                    writing,
-                    nodes,
-                    intrinsic,
-                    output,
-                    scope,
-                )?;
-                intrinsic.note_placement_plan_reused();
-                return Ok(true);
+                    containing: plan.content,
+                    inherited: inherited_tracks(plan, child, nodes),
+                });
             }
-            // Something the closure reaches resized or restyled. Children
-            // before it cannot have moved, so a sequential container replays
-            // only from there; a tail edit shifts nothing and costs O(1).
-            PlanCheck::ChangedFrom(from) if plan.sequential => {
-                if replay_sequential_suffix(
-                    id, plan, from, content, viewport, nodes, intrinsic, output, scope,
-                )? {
-                    place_unvisited_reaching(id, plan, viewport, nodes, intrinsic, output, scope)?;
-                    finish_positioned_overlay(
-                        id,
-                        plan,
-                        origin,
-                        size,
-                        content_origin,
-                        content,
-                        viewport,
-                        child_font_px,
-                        writing,
-                        nodes,
-                        intrinsic,
-                        output,
-                        scope,
-                    )?;
-                    intrinsic.note_placement_plan_reused();
-                    intrinsic.note_suffix_replayed();
-                    return Ok(true);
-                }
-            }
-            PlanCheck::Stale => {}
-            PlanCheck::Unchanged | PlanCheck::ChangedFrom(_) => {
-                if !grid_geometry_moved
-                    && replay_wrapped_flex_line(plan, viewport, nodes, intrinsic, output, scope)?
-                {
-                    place_unvisited_reaching(id, plan, viewport, nodes, intrinsic, output, scope)?;
-                    finish_positioned_overlay(
-                        id,
-                        plan,
-                        origin,
-                        size,
-                        content_origin,
-                        content,
-                        viewport,
-                        child_font_px,
-                        writing,
-                        nodes,
-                        intrinsic,
-                        output,
-                        scope,
-                    )?;
-                    intrinsic.note_placement_plan_reused();
-                    return Ok(true);
-                }
-                if replay_grid(
+            return Ok(plan_replay(descend, Some(false), nodes));
+        }
+        // Something the closure reaches resized or restyled. Children before
+        // it cannot have moved, so a sequential container replays only from
+        // there; a tail edit shifts nothing and costs O(1).
+        PlanCheck::ChangedFrom(from) if plan.sequential => replay_sequential_suffix(
+            plan,
+            from,
+            content,
+            viewport,
+            nodes,
+            intrinsic,
+            &mut descend,
+            scope,
+        )?
+        .then_some(true),
+        PlanCheck::Stale => None,
+        PlanCheck::Unchanged | PlanCheck::ChangedFrom(_) => {
+            if !grid_geometry_moved
+                && replay_wrapped_flex_line(plan, viewport, nodes, intrinsic, &mut descend, scope)?
+            {
+                Some(false)
+            } else {
+                replay_grid(
                     id,
                     plan,
                     origin,
@@ -2144,32 +2217,17 @@ fn place_from_plan(
                     viewport,
                     nodes,
                     intrinsic,
-                    output,
+                    &mut descend,
                     scope,
-                )? {
-                    place_unvisited_reaching(id, plan, viewport, nodes, intrinsic, output, scope)?;
-                    finish_positioned_overlay(
-                        id,
-                        plan,
-                        origin,
-                        size,
-                        content_origin,
-                        content,
-                        viewport,
-                        child_font_px,
-                        writing,
-                        nodes,
-                        intrinsic,
-                        output,
-                        scope,
-                    )?;
-                    intrinsic.note_placement_plan_reused();
-                    return Ok(true);
-                }
+                )?
+                .then_some(false)
             }
         }
+    };
+    if answered.is_some() {
+        descend_unvisited_reaching(id, plan, &mut descend, nodes, output, scope);
     }
-    Ok(false)
+    Ok(plan_replay(descend, answered, nodes))
 }
 
 /// A child subtree a container's walk gave a box, placed once the walk's frame
