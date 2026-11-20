@@ -721,6 +721,27 @@ pub fn hue_spectrum() -> Arc<[GradientStop]> {
         .collect()
 }
 
+fn srgb_to_linear(channel: f32) -> f32 {
+    if channel <= 0.04045 {
+        channel / 12.92
+    } else {
+        ((channel + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn swatch_border_role(value: [f32; 4]) -> SemanticColorRole {
+    let [r, g, b, a] = sanitize_rgba(value);
+    let luma =
+        0.2126 * srgb_to_linear(r) + 0.7152 * srgb_to_linear(g) + 0.0722 * srgb_to_linear(b);
+    if a < 0.25 || luma > 0.72 {
+        SemanticColorRole::Faint
+    } else if luma < 0.08 {
+        SemanticColorRole::BorderStrong
+    } else {
+        SemanticColorRole::Border
+    }
+}
+
 /// The color itself: a square well `side` across, display only (the press is
 /// the picker's, which it draws the trigger of). Its corners are the frame's
 /// scaled by `scale`, the well's side over the frame's height.
@@ -747,7 +768,7 @@ fn swatch_well(value: [f32; 4], side: f32, scale: f32) -> Stack {
             .scaled(scale),
         );
     }
-    style.border = Some(SemanticColorRole::Border);
+    style.border = Some(swatch_border_role(value));
     Stack::row(0.0).style(style)
 }
 
@@ -1649,5 +1670,27 @@ mod tests {
             context.read(hex, |i| i.state.value.to_string()).unwrap(),
             format_hex([0.0, 1.0, 0.0, 1.0])
         );
+    }
+
+    #[test]
+    fn swatch_well_steps_up_border_contrast_for_light_dark_and_clear_colors() {
+        let border_for = |rgba: [f32; 4]| {
+            let mut context = AppContext::new();
+            let document = DocumentId::new(1).unwrap();
+            let field = context
+                .create_component(document, ColorField::new(rgba))
+                .unwrap();
+            context.assemble_color_field(field).unwrap();
+            let swatch = context.read(field, |f| f.swatch).unwrap().unwrap();
+            context.world().node_style(swatch).unwrap().border
+        };
+
+        assert_eq!(border_for([1.0, 1.0, 1.0, 1.0]), Some(SemanticColorRole::Faint));
+        assert_eq!(border_for([0.2, 0.4, 0.8, 0.0]), Some(SemanticColorRole::Faint));
+        assert_eq!(
+            border_for([0.0, 0.0, 0.0, 1.0]),
+            Some(SemanticColorRole::BorderStrong)
+        );
+        assert_eq!(border_for([0.2, 0.5, 0.8, 1.0]), Some(SemanticColorRole::Border));
     }
 }
