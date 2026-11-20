@@ -4562,14 +4562,15 @@ impl AppContext {
         if delivered.is_ok() {
             project(view, &self.world, &mut mutations);
         }
-        let commit =
-            delivered.and_then(|observers| self.commit_mutations(mutations).map(|_| observers));
         self.store_component_view(entity.id, boxed);
-        let observers = commit?;
-        if !self.world.is_mounted(entity.id) {
+        let observers =
+            delivered.and_then(|observers| self.commit_mutations(mutations).map(|_| observers))?;
+        if self.world.contains(entity.id) && !self.world.is_mounted(entity.id) {
             self.suspend(entity.id)?;
         }
         self.follow_up_observers(entity.id, observers)?;
+        self.drain_modal_syncs()?;
+        self.drain_focus_within()?;
         Ok(result)
     }
 

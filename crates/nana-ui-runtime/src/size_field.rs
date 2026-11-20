@@ -890,4 +890,52 @@ mod tests {
             vec![[640.0, 1080.0], [640.0, 1080.0], [640.0, 480.0]]
         );
     }
+
+    #[test]
+    fn size_field_submit_handler_can_clear_focus_without_missing_child_view() {
+        let (mut cx, field, doc) = fixture();
+        cx.layout_document(doc, LayoutViewport::new(400.0, 400.0))
+            .unwrap();
+        let snap = cx.read(field, Clone::clone).unwrap();
+        let width_id = snap.width.unwrap();
+        let focus_within = Arc::new(Mutex::new(Vec::new()));
+        let fw_log = focus_within.clone();
+        cx.on(field, move |_, ev: &FocusWithinChanged, _| {
+            fw_log.lock().unwrap().push(ev.focused);
+        })
+        .unwrap();
+        cx.on(field, move |_, _: &SizeFieldSubmitted, cx| {
+            cx.mutations().request_focus(doc, None);
+        })
+        .unwrap();
+
+        assert!(cx.focus_node(doc, width_id).unwrap());
+        assert!(cx.select_all_focused_text(doc).unwrap());
+        let mut input = crate::HeadlessInput::bind(&mut cx, doc);
+        input.text(&mut cx, "1280").unwrap();
+        input
+            .press(
+                &mut cx,
+                nana_ui_input::KeyInput::named(
+                    "Enter",
+                    "Enter",
+                    nana_ui_input::KeyState::Pressed,
+                    Default::default(),
+                ),
+                None,
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(cx.world().focused(doc), None);
+        assert!(!cx.read(field, |f| f.focus_within).unwrap());
+        assert_eq!(*focus_within.lock().unwrap(), vec![true, false]);
+        assert_eq!(cx.read(field, |f| f.value).unwrap(), [1280.0, 1080.0]);
+        assert_eq!(
+            cx.read(Entity::<NumberInput>::from_stable_id(width_id), |i| i
+                .value())
+                .unwrap(),
+            1280.0
+        );
+    }
 }

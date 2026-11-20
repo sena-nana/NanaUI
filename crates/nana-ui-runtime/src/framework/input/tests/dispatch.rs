@@ -7509,3 +7509,52 @@ fn number_input_enter_emits_submitted_and_escape_emits_cancelled_with_ime_guard(
         "clearing focus in NumberSubmitted must re-sync :focus interactive styles"
     );
 }
+
+#[test]
+fn enter_clearing_focus_delivers_focus_within_immediately_before_reactive_update() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let root = context
+        .create_component(document, crate::Stack::column(0.0))
+        .unwrap();
+    let value = crate::view::signal(String::from("before"));
+    let input_ref = crate::view::node_ref();
+    let focus_within = Arc::new(Mutex::new(Vec::new()));
+    let fw_log = focus_within.clone();
+    context
+        .mount_view(root.stable_id(), move || {
+            crate::view::text_input()
+                .node_ref(input_ref)
+                .value(value)
+                .on(move |ev: &crate::FocusWithinChanged| {
+                    fw_log.lock().unwrap().push(ev.focused);
+                })
+                .on_cx(move |_: &mut TextInput, _: &crate::TextSubmitted, cx| {
+                    cx.mutations().request_focus(document, None);
+                })
+        })
+        .unwrap();
+
+    let input_node = input_ref.get().expect("mounted text input");
+    assert!(context.focus_node(document, input_node).unwrap());
+    assert_eq!(*focus_within.lock().unwrap(), vec![true]);
+
+    let mut adapter = TestInput::default();
+    adapter
+        .dispatch(&mut context, document, &plain_key("Enter"))
+        .unwrap();
+    assert_eq!(context.world().focused(document), None);
+    assert_eq!(
+        *focus_within.lock().unwrap(),
+        vec![true, false],
+        "FocusWithinChanged {{ focused: false }} must fire immediately on submit blur"
+    );
+
+    value.set(String::from("after"));
+    context.flush_reactive().unwrap();
+    assert_eq!(
+        context.world().text_input(input_node).unwrap().value,
+        "after"
+    );
+    assert_eq!(*focus_within.lock().unwrap(), vec![true, false]);
+}

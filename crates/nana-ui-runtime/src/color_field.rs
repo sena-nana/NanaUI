@@ -1576,4 +1576,78 @@ mod tests {
             format_hex([0.0, 1.0, 0.0, 1.0])
         );
     }
+
+    #[test]
+    fn color_field_submit_handler_can_clear_focus_and_revert_invalid_hex() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let field = context
+            .create_component(document, ColorField::new([1.0, 0.0, 0.0, 1.0]))
+            .unwrap();
+        context.assemble_color_field(field).unwrap();
+        let snap = context.read(field, Clone::clone).unwrap();
+        let hex_id = snap.hex.unwrap();
+        let hex = Entity::<TextInput>::from_stable_id(hex_id);
+
+        let focus_within = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let fw_log = focus_within.clone();
+        context
+            .on(field, move |_, ev: &FocusWithinChanged, _| {
+                fw_log.lock().unwrap().push(ev.focused);
+            })
+            .unwrap();
+        context
+            .on(field, move |_, _: &ColorSubmitted, cx| {
+                cx.mutations().request_focus(document, None);
+            })
+            .unwrap();
+
+        assert!(context.focus_node(document, hex_id).unwrap());
+        assert!(context.select_all_focused_text(document).unwrap());
+        assert!(context.replace_focused_text(document, "#00ff00").unwrap());
+        let mut input = crate::HeadlessInput::bind(&mut context, document);
+        input
+            .press(
+                &mut context,
+                nana_ui_input::KeyInput::named(
+                    "Enter",
+                    "Enter",
+                    nana_ui_input::KeyState::Pressed,
+                    Default::default(),
+                ),
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(context.world().focused(document), None);
+        assert!(!context.read(field, |f| f.focus_within).unwrap());
+        assert_eq!(
+            context.read(field, |f| f.value).unwrap(),
+            [0.0, 1.0, 0.0, 1.0]
+        );
+        assert_eq!(*focus_within.lock().unwrap(), vec![true, false]);
+
+        assert!(context.focus_node(document, hex_id).unwrap());
+        assert!(context.select_all_focused_text(document).unwrap());
+        assert!(context.replace_focused_text(document, "not-hex").unwrap());
+        input
+            .press(
+                &mut context,
+                nana_ui_input::KeyInput::named(
+                    "Enter",
+                    "Enter",
+                    nana_ui_input::KeyState::Pressed,
+                    Default::default(),
+                ),
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(context.world().focused(document), None);
+        assert!(!context.read(field, |f| f.focus_within).unwrap());
+        assert_eq!(
+            context.read(hex, |i| i.state.value.to_string()).unwrap(),
+            format_hex([0.0, 1.0, 0.0, 1.0])
+        );
+    }
 }
