@@ -795,7 +795,7 @@ cargo test -p component-gallery --bin ui-snapshots --features snapshots --locked
 | Spacing | `SpacingTokens` | `space::*` 读它的 `DEFAULT` | 10 个裸 `const` |
 | Typography | `TypographyTokens` | `type_scale::*` / `UI_BASE_TEXT_SIZE` 读它的 `DEFAULT` | 13 个裸 `const` |
 | Border | `BorderTokens` | `HAIRLINE` 读它的 `DEFAULT` | 1 个裸 `const` |
-| Opacity | `OpacityTokens` | `StyleModelRef::color` 解析五个 soft 角色；`secondary_text` 是列表行 note/detail 相对主文本的 α | `SemanticPalette::get` 里的字面量 + `background.r > 0.5` 亮度嗅探 |
+| Opacity | `OpacityTokens` | `StyleModelRef::color` 解析五个 soft 角色；`secondary_text` 是列表行 note/detail 相对主文本的 α；`disabled`（默认 `0.5`）驱动 `IconButton` / `PropertyGrid` 禁用态透明度；`notice_tint`（默认 `0.10`）驱动提示条与 callout 染色叠加 | `SemanticPalette::get` 里的字面量 + `background.r > 0.5` 亮度嗅探 |
 | Motion | `MotionTokens` | hover 交叉淡入、switch 拨动、设置行闪烁的时长与保持比例（`attention_ms` / `attention_hold`，后者编译时须在 `0.0..=1.0`）读**安装值**；`motion::*` 八个 `const` 读 `DEFAULT` | 八个裸 `const` + 两个死字段 |
 | Effect / Elevation | `EffectTokens` | 菜单/浮层阴影、模态框阴影、图片查看器的媒体遮罩（`media_scrim`，两种模式都是深色；画家在线性光里合成，所以内置值是黑 0.99，白底上约 `#1a1a1a`）、叠在媒体上的前景（`media_foreground`，两种模式都是白色，经 `SemanticColorRole::OnMedia` 读）、对话框和抽屉的遮罩（`modal_scrim` 黑 0.45、`modal_scrim_blur` 0；照 CSS 的 `rgba(0,0,0,c)` 写时用 `linear_scrim_alpha(c)` 换成线性光的 α）读**安装值** | `surface_shadow` 里的 `match mode` + 模态框的亮度嗅探；遮罩是场景里写死的 `[0, 0, 0, 0.45]` |
 | Surface / material | `SurfaceTokens` | `ThemeTokens::with_backdrop` 决定 backdrop 给哪个角色上 alpha | `match target` 写死在宿主适配层 |
@@ -1011,6 +1011,7 @@ style.color_overrides = Some(Arc::new(modeler));
 
 - 在原有 12 项主题基准外，新增 3 项针对 #104/#106 的门禁场景：`perf/scenarios/theme-scope-patch.json`（64 控件 `ThemeScope` 补丁，要求 `style_nodes_considered <= 128` 且零文本/布局）、`perf/scenarios/theme-motion-only.json`（仅改 `MotionTokens` 要求零样式/布局/文本/绘制计算且 `style_motion_policy_invalidations >= 1`）、以及 `perf/scenarios/theme-recipe-button.json`（1,000 混合控件下仅改 `Button` 配方要求跳过非按钮控件且零布局/文本/盒子复制）；`ThemeWorkCounters` 同步记录 `theme_scopes_active`。
 - 在 `6a80e848e` 将 `ComputedStyle` 拆分为 `Arc<InheritedStyle>` 与 `Arc<ComputedStyle>` 两个驻留对象后，单控件建树共有 2 个独立节点 × 2 次 `Arc` 驻留 = 4 次分配（100 / 1k / 10k 规模也均稳定复用到 4 次）；`perf/scenarios/theme-controls-1.json` 的 `style_allocations` 上界同步调整为 `lte 4` 以准确反映每节点双 `Arc` 驻留模型。
+- **#341 剩余硬编码清零与审计门禁收口**：`crates/nana-ui-runtime/src` 非测试代码中的静态 `type_scale::*` 引用清零（`static_type_scale == 0`），新增 `FontSizeContext::DEFAULT_ROOT_PX` 与 `OpacityTokens::{disabled, notice_tint}`（同步接入 `install_theme` 与 `ThemeScope` 重投影），将文本编辑器浮层/minimap/atom chip/诊断装饰、侧栏/菜单/平滑滚动动效以及禁用态透明度全部接入活跃 `CompiledTheme` 令牌；`scripts/baselines/theme-hardcoding.json` 更新为 component `design_number` 24、shared `design_number` 69、shared `motion` 27、module constants 67、`token_reads` 1438、`static_type_scale` 0，并由 `.github/workflows/ci.yml` 在 PR/推送阶段持续门禁。
 
 ```bash
 # 1. Core 与 Runtime 主题契约与按需诊断测试

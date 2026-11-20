@@ -1,6 +1,6 @@
 //! Retained surface presence: input closes immediately, paint survives the exit.
 use super::*;
-use nana_ui_core::{PaintTransform, motion as tokens};
+use nana_ui_core::PaintTransform;
 
 use crate::MotionTargetId;
 
@@ -314,15 +314,22 @@ impl UiWorld {
                 None,
             );
         } else {
+            let (surface_duration, surface_easing) = {
+                let theme = self.node_theme(id);
+                (
+                    theme.duration(if menu {
+                        nana_ui_core::MotionRole::MenuOpacity
+                    } else {
+                        nana_ui_core::MotionRole::OverlayFade
+                    }),
+                    theme.easing(nana_ui_core::EasingRole::Standard),
+                )
+            };
             self.start_component_track(
                 id,
                 crate::component_animation_kinds::SURFACE,
-                self.surface_duration(if menu {
-                    tokens::MENU_OPACITY
-                } else {
-                    tokens::OVERLAY_FADE
-                }),
-                crate::Easing::EaseOutCubic,
+                self.surface_duration(surface_duration),
+                surface_easing,
                 crate::AnimatableProperty::Opacity,
                 crate::MotionValue::Scalar(from_opacity),
                 crate::MotionValue::Scalar(to_opacity),
@@ -331,12 +338,19 @@ impl UiWorld {
             );
         }
         if menu {
+            let (pop_duration, pop_easing) = {
+                let theme = self.node_theme(id);
+                (
+                    theme.duration(nana_ui_core::MotionRole::MenuPop),
+                    theme.easing(nana_ui_core::EasingRole::Emphasized),
+                )
+            };
             let to_scale = if open { 1.0 } else { 0.9 };
             self.start_component_track(
                 id,
                 crate::component_animation_kinds::SURFACE_POP,
-                self.surface_duration(tokens::MENU_POP),
-                crate::Easing::MENU_POP,
+                self.surface_duration(pop_duration),
+                pop_easing,
                 crate::AnimatableProperty::Transform,
                 crate::MotionValue::Transform(scale_transform(from_pop)),
                 crate::MotionValue::Transform(scale_transform(to_scale)),

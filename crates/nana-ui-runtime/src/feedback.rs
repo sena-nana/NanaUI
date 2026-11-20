@@ -215,11 +215,6 @@ impl StatusBadge {
         layout.padding_bottom = Some(LengthSpec::Px(vertical));
         layout.border_width = Some(0.0);
         layout.border_radius = Some(999.0);
-        layout.font_size = Some(if self.compact {
-            nana_ui_core::type_scale::HINT
-        } else {
-            nana_ui_core::type_scale::META
-        });
         crate::theme_intent::font(
             layout,
             if self.compact {
@@ -228,7 +223,6 @@ impl StatusBadge {
                 nana_ui_core::TypeRole::Meta
             },
         );
-        layout.font_weight = Some(nana_ui_core::type_scale::MEDIUM);
         crate::theme_intent::weight(layout, nana_ui_core::TextWeight::Medium);
         style
     }
@@ -450,11 +444,6 @@ impl ValidationMessage {
         // no left inset of its own.
         layout.padding_left = Some(LengthSpec::Px(0.0));
         layout.theme.padding_left = None;
-        layout.font_size = Some(if self.compact {
-            nana_ui_core::type_scale::HINT
-        } else {
-            nana_ui_core::type_scale::META
-        });
         crate::theme_intent::font(
             layout,
             if self.compact {
@@ -1339,13 +1328,11 @@ impl WidgetVisual for LabeledValueVisual {
 
 #[cfg(test)]
 const PROGRESS_GIRTH: f32 = nana_ui_core::space::SM;
-const PROGRESS_LABEL_SIZE: f32 = nana_ui_core::type_scale::META;
 const PROGRESS_GAP: f32 = nana_ui_core::space::SM;
 /// How much of its colour a still indeterminate fill keeps: faint enough
 /// that a full track cannot be read as "done".
 pub(crate) const PROGRESS_STILL_ALPHA: f32 = 0.35;
 const SPINNER_DEFAULT_SIZE: f32 = nana_ui_core::space::XXL;
-const SPINNER_LABEL_SIZE: f32 = nana_ui_core::type_scale::META;
 const SPINNER_GAP: f32 = nana_ui_core::space::SM;
 
 fn sanitize_progress_max(max: f64) -> f64 {
@@ -1544,9 +1531,7 @@ impl Progress {
         layout.theme.gap = Some(crate::theme_intent::space(nana_ui_core::SpacingStep::Sm));
         layout.border_width = Some(0.0);
         if self.label.is_some() {
-            layout.font_size = Some(PROGRESS_LABEL_SIZE);
             crate::theme_intent::font(layout, nana_ui_core::TypeRole::Meta);
-            layout.font_weight = Some(nana_ui_core::type_scale::MEDIUM);
             crate::theme_intent::weight(layout, nana_ui_core::TextWeight::Medium);
         }
         style
@@ -2025,7 +2010,6 @@ impl Spinner {
             }
         }
         layout.border_width = Some(0.0);
-        layout.font_size = Some(SPINNER_LABEL_SIZE);
         crate::theme_intent::font(layout, nana_ui_core::TypeRole::Meta);
         style
     }

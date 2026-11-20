@@ -55,11 +55,11 @@ fn editor_key(editor: &str) -> String {
 /// A corner drag moves this far before it means anything, px.
 const DRAG_SLOP: f32 = nana_ui_core::space::SM;
 /// The square at an area's top corners a split or join starts from, px.
-const CORNER: f32 = 12.0;
+const CORNER: f32 = nana_ui_core::space::XL;
 /// The cut line a split previews, px.
-const PREVIEW_LINE: f32 = 2.0;
+const PREVIEW_LINE: f32 = nana_ui_core::space::XXS;
 /// The least a divider grabs, however thin the gap it draws, px.
-const GRIP: f32 = 6.0;
+const GRIP: f32 = nana_ui_core::space::SM;
 
 /// What changed in the layout.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -636,7 +636,9 @@ fn preview_style(rect: Option<LayoutBox>, join: bool) -> NodeStyle {
             layout.width = Some(LengthSpec::Px(rect.width));
             layout.height = Some(LengthSpec::Px(rect.height));
             if join {
-                layout.border_width = Some(2.0);
+                layout.border_width = Some(nana_ui_core::space::XXS);
+                layout.theme.border_width =
+                    Some(crate::theme_intent::space(nana_ui_core::SpacingStep::Xxs));
                 style.background = Some(SemanticColorRole::AccentSoft);
                 style.border = Some(SemanticColorRole::Accent);
                 style.radius = Some(nana_ui_core::RadiusTier::Sm);

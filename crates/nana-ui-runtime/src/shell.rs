@@ -27,11 +27,9 @@ const NATIVE_WINDOW_CONTROLS_WIDTH: f32 = 78.0;
 /// A window-control capsule's inset around its buttons, sideways and up and
 /// down, inside its one-pixel hairline.
 const CONTROLS_CAPSULE_INSET_X: f32 = nana_ui_core::space::XXS;
-const CONTROLS_CAPSULE_INSET_Y: f32 = 1.0;
+const CONTROLS_CAPSULE_INSET_Y: f32 = nana_ui_core::HAIRLINE;
 /// A capsule's height: a window button, its inset and its hairline.
 const CONTROLS_CAPSULE_HEIGHT: f32 = WINDOW_CONTROL_WIDTH + 2.0 * (CONTROLS_CAPSULE_INSET_Y + 1.0);
-const TITLE_FONT_SIZE: f32 = nana_ui_core::type_scale::BODY;
-const TITLE_FONT_WEIGHT: u16 = nana_ui_core::type_scale::SEMIBOLD;
 const OVERLAY_Z_INDEX: i32 = 1;
 const STATUS_OVERLAY_Z_INDEX: i32 = 2;
 
@@ -288,9 +286,7 @@ impl AppTitleBar {
         layout.max_height = Some(LengthSpec::Px(TITLE_BAR_HEIGHT));
         layout.flex_grow = Some(0.0);
         layout.flex_shrink = Some(0.0);
-        layout.font_size = Some(TITLE_FONT_SIZE);
         crate::theme_intent::font(layout, nana_ui_core::TypeRole::Body);
-        layout.font_weight = Some(TITLE_FONT_WEIGHT);
         crate::theme_intent::weight(layout, nana_ui_core::TextWeight::Semibold);
         if columns {
             layout.padding_left = Some(LengthSpec::Px(0.0));
@@ -1718,9 +1714,7 @@ fn title_label_style() -> NodeStyle {
     let layout = Arc::make_mut(&mut style.layout);
     layout.width = Some(LengthSpec::Fill);
     layout.height = Some(LengthSpec::Fill);
-    layout.font_size = Some(TITLE_FONT_SIZE);
     crate::theme_intent::font(layout, nana_ui_core::TypeRole::Body);
-    layout.font_weight = Some(TITLE_FONT_WEIGHT);
     crate::theme_intent::weight(layout, nana_ui_core::TextWeight::Semibold);
     layout.overflow_x = OverflowSpec::Hidden;
     layout.overflow_y = OverflowSpec::Hidden;
@@ -2787,8 +2781,14 @@ mod tests {
         assert_eq!(context.world().text(id), Some("Nana"));
         let style = context.world().node_style(id).unwrap();
         assert_eq!(style.layout.height, Some(LengthSpec::Px(TITLE_BAR_HEIGHT)));
-        assert_eq!(style.layout.font_size, Some(TITLE_FONT_SIZE));
-        assert_eq!(style.layout.font_weight, Some(TITLE_FONT_WEIGHT));
+        assert_eq!(
+            style.layout.font_size,
+            Some(nana_ui_core::TypographyTokens::DEFAULT.body)
+        );
+        assert_eq!(
+            style.layout.font_weight,
+            Some(nana_ui_core::TypographyTokens::DEFAULT.semibold)
+        );
         assert_eq!(style.foreground, Some(SemanticColorRole::Text));
         assert_eq!(style.background, Some(SemanticColorRole::Titlebar));
         assert!(style.layout.background.is_none());

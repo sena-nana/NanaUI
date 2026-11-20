@@ -185,7 +185,7 @@ impl LevelMeter {
     pub fn new(value: f32) -> Self {
         Self {
             value,
-            height: 4.0,
+            height: nana_ui_core::space::XS,
             tone: nana_ui_core::StatusTone::Success,
             style: NodeStyle::default(),
         }

@@ -28,11 +28,7 @@ const ROW_TREE_FIRST_DEPTH_INSET: f32 = nana_ui_core::space::PAGE + nana_ui_core
 use crate::popover::TREE_DEPTH_STEP as ROW_TREE_DEPTH_STEP;
 const SECTION_ANIMATION_DURATION: Duration = nana_ui_core::motion::SIDEBAR_COLLAPSE;
 const SECTION_HEADER_GAP: f32 = nana_ui_core::space::XS;
-const SECTION_HEADER_TITLE_SIZE: f32 = nana_ui_core::type_scale::HINT;
-const SECTION_HEADER_TITLE_WEIGHT: u16 = nana_ui_core::type_scale::BOLD;
-const SECTION_DISCLOSURE_SIZE: f32 = nana_ui_core::type_scale::META;
 const SECTION_TOOL_EDGE: f32 = nana_ui_core::space::PAGE_TIGHT;
-const SECTION_COUNT_SIZE: f32 = nana_ui_core::type_scale::HINT;
 const SECTION_BODY_GAP: f32 = nana_ui_core::space::XXS;
 const SECTION_EMPTY_HEIGHT: f32 = nana_ui_core::space::PAGE + nana_ui_core::space::SM;
 const SECTION_EMPTY_PADDING_Y: f32 = nana_ui_core::space::SM;
@@ -45,7 +41,6 @@ fn tool_column_center_inset(metrics: nana_ui_core::ThemeMetrics) -> f32 {
 fn tool_column_trailing_margin(metrics: nana_ui_core::ThemeMetrics) -> f32 {
     tool_column_center_inset(metrics) - ROW_PADDING_RIGHT - SECTION_TOOL_EDGE / 2.0
 }
-const SECTION_EMPTY_FONT_SIZE: f32 = nana_ui_core::type_scale::META;
 const FOOTER_GAP: f32 = nana_ui_core::space::XXS;
 
 /// Visual selection contract for a navigation row. This is not a generic list item.
@@ -1002,12 +997,8 @@ impl SidebarSection {
         layout.padding_right = Some(LengthSpec::Px(ROW_PADDING_RIGHT));
         layout.theme.padding_right =
             Some(crate::theme_intent::space(nana_ui_core::SpacingStep::Md));
-        layout.font_size = Some(SECTION_HEADER_TITLE_SIZE);
         crate::theme_intent::font(layout, nana_ui_core::TypeRole::Hint);
-        layout.line_height = Some(LineHeightSpec::Absolute(SECTION_HEADER_TITLE_SIZE));
-        layout.theme.line_height =
-            Some(nana_ui_core::ThemeToken::Type(nana_ui_core::TypeRole::Hint).into());
-        layout.font_weight = Some(SECTION_HEADER_TITLE_WEIGHT);
+        crate::theme_intent::line_from_type(layout, nana_ui_core::TypeRole::Hint);
         crate::theme_intent::weight(layout, nana_ui_core::TextWeight::Bold);
         layout.white_space_nowrap = true;
         layout.text_overflow_ellipsis = true;
@@ -1238,10 +1229,11 @@ fn disclosure_host_style(visible: bool) -> NodeStyle {
     let mut style = NodeStyle::default();
     style.foreground = Some(SemanticColorRole::Faint);
     let layout = Arc::make_mut(&mut style.layout);
-    layout.width = Some(LengthSpec::Px(SECTION_DISCLOSURE_SIZE));
-    layout.height = Some(LengthSpec::Px(SECTION_DISCLOSURE_SIZE));
-    layout.min_width = Some(LengthSpec::Px(SECTION_DISCLOSURE_SIZE));
-    layout.min_height = Some(LengthSpec::Px(SECTION_DISCLOSURE_SIZE));
+    let default_meta = nana_ui_core::TypographyTokens::DEFAULT.meta;
+    layout.width = Some(LengthSpec::Px(default_meta));
+    layout.height = Some(LengthSpec::Px(default_meta));
+    layout.min_width = Some(LengthSpec::Px(default_meta));
+    layout.min_height = Some(LengthSpec::Px(default_meta));
     let extent = nana_ui_core::ThemeToken::Type(nana_ui_core::TypeRole::Meta);
     layout.theme.width = Some(extent.into());
     layout.theme.height = Some(extent.into());
@@ -1258,12 +1250,8 @@ fn title_slot_style() -> NodeStyle {
     style.foreground = Some(SemanticColorRole::Faint);
     style.text_vertical_alignment = crate::TextVerticalAlignment::Center;
     let layout = Arc::make_mut(&mut style.layout);
-    layout.font_size = Some(SECTION_HEADER_TITLE_SIZE);
     crate::theme_intent::font(layout, nana_ui_core::TypeRole::Hint);
-    layout.line_height = Some(LineHeightSpec::Absolute(SECTION_HEADER_TITLE_SIZE));
-    layout.theme.line_height =
-        Some(nana_ui_core::ThemeToken::Type(nana_ui_core::TypeRole::Hint).into());
-    layout.font_weight = Some(SECTION_HEADER_TITLE_WEIGHT);
+    crate::theme_intent::line_from_type(layout, nana_ui_core::TypeRole::Hint);
     crate::theme_intent::weight(layout, nana_ui_core::TextWeight::Bold);
     layout.flex_grow = Some(1.0);
     layout.flex_shrink = Some(1.0);
@@ -1278,7 +1266,6 @@ fn count_slot_style(visible: bool) -> NodeStyle {
     style.foreground = Some(SemanticColorRole::Faint);
     style.text_vertical_alignment = crate::TextVerticalAlignment::Center;
     let layout = Arc::make_mut(&mut style.layout);
-    layout.font_size = Some(SECTION_COUNT_SIZE);
     crate::theme_intent::font(layout, nana_ui_core::TypeRole::Hint);
     layout.flex_grow = Some(0.0);
     layout.flex_shrink = Some(0.0);
@@ -1310,7 +1297,6 @@ fn body_port_style(expansion: f32, empty_text: Option<&str>, content_height: f32
         layout.padding_right = Some(LengthSpec::Px(SECTION_EMPTY_PADDING_X));
         layout.theme.padding_right =
             Some(crate::theme_intent::space(nana_ui_core::SpacingStep::Md));
-        layout.font_size = Some(SECTION_EMPTY_FONT_SIZE);
         crate::theme_intent::font(layout, nana_ui_core::TypeRole::Meta);
     }
     let clip_height = content_height * expansion.clamp(0.0, 1.0);
@@ -1789,6 +1775,8 @@ impl AppContext {
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    const SECTION_DISCLOSURE_SIZE: f32 = nana_ui_core::TypographyTokens::DEFAULT.meta;
 
     use crate::{AppContext, DocumentId, Entity, IconButton, List, ListItem, Text};
 

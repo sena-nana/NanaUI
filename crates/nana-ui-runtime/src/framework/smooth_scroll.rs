@@ -195,7 +195,10 @@ impl AppContext {
         let offset = if finished {
             scroll.to
         } else {
-            let progress = nana_ui_core::motion::Easing::EaseOutCubic
+            let progress = self
+                .world
+                .node_theme(id)
+                .easing(nana_ui_core::EasingRole::Standard)
                 .sample(elapsed.as_secs_f32() / DURATION.as_secs_f32());
             self.world.clamp_scroll_offset(
                 id,

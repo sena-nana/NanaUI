@@ -490,6 +490,20 @@ pub struct OpacityTokens {
     /// the surface against muted's 6.46:1, light 0.90 is 6.36:1 against
     /// 5.66:1 — and keeps hover and selected above 4.5:1.
     pub secondary_text: f32,
+    /// Alpha applied to disabled icon/row chrome overlays when dimmed below rest ink.
+    #[serde(default = "default_disabled_opacity")]
+    pub disabled: f32,
+    /// Faint background tint alpha for inline notice / callout boxes.
+    #[serde(default = "default_notice_tint_opacity")]
+    pub notice_tint: f32,
+}
+
+const fn default_disabled_opacity() -> f32 {
+    0.5
+}
+
+const fn default_notice_tint_opacity() -> f32 {
+    0.10
 }
 
 /// Which state-layer alpha a derived role uses.
@@ -501,6 +515,8 @@ pub enum StateLayer {
     DangerSoftHover,
     DangerSoftPressed,
     SecondaryText,
+    Disabled,
+    NoticeTint,
 }
 
 impl OpacityTokens {
@@ -512,6 +528,8 @@ impl OpacityTokens {
         danger_soft_hover: 0.18,
         danger_soft_pressed: 0.22,
         secondary_text: 0.55,
+        disabled: 0.5,
+        notice_tint: 0.10,
     };
 
     /// Light-mode state layers. `warning_soft` is the difference the old
@@ -531,6 +549,8 @@ impl OpacityTokens {
             StateLayer::DangerSoftHover => self.danger_soft_hover,
             StateLayer::DangerSoftPressed => self.danger_soft_pressed,
             StateLayer::SecondaryText => self.secondary_text,
+            StateLayer::Disabled => self.disabled,
+            StateLayer::NoticeTint => self.notice_tint,
         }
     }
 
@@ -541,7 +561,7 @@ impl OpacityTokens {
         }
     }
 
-    pub(super) const fn alphas(self) -> [f32; 6] {
+    pub(super) const fn alphas(self) -> [f32; 8] {
         [
             self.warning_soft,
             self.warning_soft_hover,
@@ -549,6 +569,8 @@ impl OpacityTokens {
             self.danger_soft_hover,
             self.danger_soft_pressed,
             self.secondary_text,
+            self.disabled,
+            self.notice_tint,
         ]
     }
 }

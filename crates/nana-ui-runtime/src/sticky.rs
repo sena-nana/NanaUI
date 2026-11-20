@@ -183,7 +183,7 @@ fn project_sticky(
     } else {
         style
     };
-    let fonts = FontSizeContext::new(nana_ui_core::type_scale::LINE, font_size);
+    let fonts = FontSizeContext::new(nana_ui_core::FontSizeContext::DEFAULT_ROOT_PX, font_size);
     let margin = style.resolved_margin_against_fonts(
         Some(writing.inline_size(containing.width, containing.height)),
         fonts,

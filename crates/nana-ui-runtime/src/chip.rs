@@ -145,7 +145,6 @@ impl Chip {
             layout.border_radius = Some(999.0);
             layout.font_size = Some(self.size.text_size());
             layout.theme.control_typography(self.size);
-            layout.font_weight = Some(nana_ui_core::type_scale::MEDIUM);
             crate::theme_intent::weight(layout, nana_ui_core::TextWeight::Medium);
             layout.flex_grow = Some(0.0);
             layout.flex_shrink = Some(0.0);

@@ -27,7 +27,7 @@ use crate::{
 /// The least the label column or the controls keep, px.
 const MIN_COLUMN: f32 = 48.0;
 /// The column divider's grab width, px.
-const GRIP: f32 = 6.0;
+const GRIP: f32 = nana_ui_core::space::SM;
 
 /// One property: a label and the control keyed with `id`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -242,6 +242,8 @@ pub(crate) struct GridBox {
     accessibility: AccessibilityState,
     /// Takes the pointer (a disabled row's veil) without acting on it.
     blocks: bool,
+    /// Whether this control slot dims to the active theme's `opacity().disabled`.
+    disabled_opacity: bool,
 }
 
 impl GridBox {
@@ -251,6 +253,7 @@ impl GridBox {
             style: NodeStyle::default(),
             accessibility: AccessibilityState::default(),
             blocks: false,
+            disabled_opacity: false,
         }
     }
 }
@@ -260,6 +263,10 @@ impl ComponentView for GridBox {
         share(&mut self.style.layout);
     }
 
+    fn wants_metrics_reproject() -> bool {
+        true
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: self.tag.into(),
@@ -267,11 +274,16 @@ impl ComponentView for GridBox {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        let mut style = self.style.clone();
+        if self.disabled_opacity {
+            Arc::make_mut(&mut style.layout).opacity =
+                Some(world.node_theme(id).opacity().disabled);
+        }
         project_common(
             id,
             world,
             mutations,
-            &self.style,
+            &style,
             InteractionState {
                 pointer_events: self.blocks,
                 focusable: false,
@@ -490,7 +502,7 @@ fn label_style(width: f32, mixed: bool, disabled: bool) -> NodeStyle {
     style
 }
 
-fn slot_style(disabled: bool) -> NodeStyle {
+fn slot_style(disabled: bool, disabled_opacity: f32) -> NodeStyle {
     let mut style = NodeStyle::default();
     {
         let layout = Arc::make_mut(&mut style.layout);
@@ -501,7 +513,7 @@ fn slot_style(disabled: bool) -> NodeStyle {
         layout.flex_basis = Some(LengthSpec::Px(0.0));
         layout.min_width = Some(LengthSpec::Px(0.0));
         if disabled {
-            layout.opacity = Some(0.5);
+            layout.opacity = Some(disabled_opacity);
         }
     }
     style
@@ -527,7 +539,7 @@ fn reason_style(width: f32, shown: bool) -> NodeStyle {
         let layout = Arc::make_mut(&mut style.layout);
         layout.width = Some(LengthSpec::Fill);
         layout.padding_left = Some(LengthSpec::Px(width));
-        layout.font_size = Some(nana_ui_core::type_scale::HINT);
+        crate::theme_intent::font(layout, nana_ui_core::TypeRole::Hint);
         layout.display = (!shown).then_some(DisplaySpec::None);
     }
     style.foreground = Some(SemanticColorRole::Faint);
@@ -677,8 +689,10 @@ impl AppContext {
                     text.value = label;
                     text.style = label_style(width, mixed, disabled);
                 })?;
+                let disabled_opacity = self.world().node_theme(parts.slot).opacity().disabled;
                 self.update_component(Entity::<GridBox>::from_stable_id(parts.slot), |slot, _| {
-                    slot.style = slot_style(disabled);
+                    slot.style = slot_style(disabled, disabled_opacity);
+                    slot.disabled_opacity = disabled;
                 })?;
                 self.update_component(Entity::<GridBox>::from_stable_id(parts.veil), |veil, _| {
                     veil.style = veil_style(disabled);

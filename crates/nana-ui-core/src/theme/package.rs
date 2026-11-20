@@ -924,4 +924,65 @@ mod tests {
             })
         ));
     }
+
+    #[test]
+    fn opacity_tokens_disabled_and_notice_tint_validate_patch_and_keep_legacy_json() {
+        let base = ThemeDefinition::NANA_DARK.compile().unwrap();
+        assert_eq!(base.opacity().disabled, 0.5);
+        assert_eq!(base.opacity().notice_tint, 0.10);
+        assert_eq!(
+            base.easing(crate::EasingRole::Standard),
+            base.motion().standard_easing
+        );
+
+        let patch = crate::theme::OpacityPatch {
+            disabled: Some(0.35),
+            notice_tint: Some(0.18),
+            ..Default::default()
+        };
+        let patched = ThemePatch::new()
+            .with_opacity_patch(patch)
+            .apply_to_compiled(&base)
+            .unwrap();
+        assert_eq!(patched.opacity().disabled, 0.35);
+        assert_eq!(patched.opacity().notice_tint, 0.18);
+
+        let merged = crate::theme::OpacityPatch {
+            disabled: Some(0.25),
+            ..Default::default()
+        }
+        .over(&crate::theme::OpacityPatch {
+            disabled: Some(0.6),
+            notice_tint: Some(0.22),
+            ..Default::default()
+        });
+        let applied = merged.apply(crate::theme::OpacityTokens::DARK);
+        assert_eq!(applied.disabled, 0.25);
+        assert_eq!(applied.notice_tint, 0.22);
+
+        // Legacy OpacityTokens JSON without disabled / notice_tint deserializes cleanly.
+        let legacy_json = r#"{
+            "warning_soft": 0.16,
+            "warning_soft_hover": 0.20,
+            "warning_soft_pressed": 0.24,
+            "danger_soft_hover": 0.18,
+            "danger_soft_pressed": 0.22,
+            "secondary_text": 0.55
+        }"#;
+        let legacy: crate::theme::OpacityTokens = serde_json::from_str(legacy_json).unwrap();
+        assert_eq!(legacy.disabled, 0.5);
+        assert_eq!(legacy.notice_tint, 0.10);
+
+        let invalid = ThemePatch::new().with_opacity_patch(crate::theme::OpacityPatch {
+            disabled: Some(1.2),
+            ..Default::default()
+        });
+        assert!(matches!(
+            invalid.apply_to_compiled(&base),
+            Err(ThemeCompileError::AlphaOutOfRange {
+                token: "opacity.disabled",
+                ..
+            })
+        ));
+    }
 }

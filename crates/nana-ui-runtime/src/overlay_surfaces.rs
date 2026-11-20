@@ -1081,8 +1081,6 @@ pub(crate) const DRAWER_WIDTH: f32 = 360.0;
 pub(crate) const MODAL_PAD_X: f32 = nana_ui_core::space::XXXL;
 #[cfg(test)]
 pub(crate) const MODAL_ACTION_HEIGHT: f32 = ControlSize::Medium.height_in(nana_ui_core::UI_METRICS);
-#[cfg(test)]
-pub(crate) const MODAL_BODY_TEXT_SIZE: f32 = nana_ui_core::type_scale::BODY;
 
 /// A drawer's title icon square: the built-in dialog's. A dialog's comes
 /// from its theme recipe; a drawer keeps its own fixed chrome.
@@ -1461,6 +1459,8 @@ pub(crate) fn modal_surface_bounds(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const MODAL_BODY_TEXT_SIZE: f32 = nana_ui_core::TypographyTokens::DEFAULT.body;
 
     /// The built-in dialog card's header and body insets.
     const HEADER: nana_ui_core::DialogInsets = nana_ui_core::DialogRecipe::DEFAULT.header;

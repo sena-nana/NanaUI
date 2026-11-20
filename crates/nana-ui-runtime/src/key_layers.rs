@@ -1114,11 +1114,12 @@ impl KeyCaptureLayerVisual {
         &self,
         content: LayoutBox,
         style_model: StyleModelRef,
+        theme: &nana_ui_core::CompiledTheme,
         measure: crate::text_width::ChromeTextMeasure<'_>,
     ) -> KeyCaptureLayerLayout {
         let label = if self.recording { "Recording" } else { "Idle" };
         KeyCaptureLayerLayout {
-            badge: key_badge_region(content, label, !self.recording, style_model, measure),
+            badge: key_badge_region(content, label, !self.recording, style_model, theme, measure),
             background: Some(if self.recording {
                 style_model
                     .color(SemanticColorRole::AccentSoft)
@@ -1154,6 +1155,7 @@ impl WidgetVisual for KeyCaptureLayerVisual {
         let layout = self.layout_at(
             ctx.content,
             ctx.style_model,
+            ctx.theme,
             ctx.world.chrome_text_measure(ctx.id),
         );
         let mut out = WidgetPaintOutput {
@@ -1201,10 +1203,11 @@ impl KeymapLayerVisual {
         &self,
         content: LayoutBox,
         style_model: StyleModelRef,
+        theme: &nana_ui_core::CompiledTheme,
         measure: crate::text_width::ChromeTextMeasure<'_>,
     ) -> KeymapLayerLayout {
         KeymapLayerLayout {
-            badge: key_badge_region(content, "Keymap", false, style_model, measure),
+            badge: key_badge_region(content, "Keymap", false, style_model, theme, measure),
         }
     }
 }
@@ -1233,6 +1236,7 @@ impl WidgetVisual for KeymapLayerVisual {
         let layout = self.layout_at(
             ctx.content,
             ctx.style_model,
+            ctx.theme,
             ctx.world.chrome_text_measure(ctx.id),
         );
         let mut out = WidgetPaintOutput {
@@ -1270,21 +1274,24 @@ fn key_badge_region(
     label: &str,
     muted: bool,
     palette: StyleModelRef,
+    theme: &nana_ui_core::CompiledTheme,
     measure: crate::text_width::ChromeTextMeasure<'_>,
 ) -> ComponentTextRegion {
     let metrics = palette.metrics;
+    let spacing = theme.spacing();
+    let typography = theme.typography();
     let height = nana_ui_core::ControlSize::Small.height_in(metrics);
-    const PAD: f32 = nana_ui_core::space::MD;
+    let pad = spacing.md;
     // Four of the widest spacing step: the narrowest badge still has to read
     // as a key cap rather than as a letter with a box round it.
-    const MIN_WIDTH: f32 = nana_ui_core::space::XXXL * 4.0;
-    let font_size = nana_ui_core::type_scale::META;
-    const FONT_WEIGHT: u16 = 600;
+    let min_width = spacing.xxxl * 4.0;
+    let font_size = typography.meta;
+    let font_weight = typography.semibold;
     ComponentTextRegion {
         bounds: LayoutBox {
             x: origin.x,
             y: origin.y,
-            width: (measure.width(label, font_size, Some(FONT_WEIGHT)) + PAD * 2.0).max(MIN_WIDTH),
+            width: (measure.width(label, font_size, Some(font_weight)) + pad * 2.0).max(min_width),
             height: height.min(origin.height.max(height)),
         },
         content: TextValue::from(label),
@@ -1294,7 +1301,7 @@ fn key_badge_region(
             palette.color(SemanticColorRole::Text).as_rgba_array()
         }),
         font_size,
-        font_weight: Some(FONT_WEIGHT),
+        font_weight: Some(font_weight),
     }
 }
 
@@ -1305,7 +1312,12 @@ impl UiWorld {
         let visual = self.widget_visual_as::<KeyCaptureLayerVisual>(id)?;
         let content = self.component_content_box(id)?;
         let style_model = self.node_style_model(id);
-        Some(visual.layout_at(content, style_model, self.chrome_text_measure(id)))
+        Some(visual.layout_at(
+            content,
+            style_model,
+            self.node_theme(id),
+            self.chrome_text_measure(id),
+        ))
     }
 
     /// Resolves `id`'s keymap badge region when mounted as a [`KeymapLayer`].
@@ -1314,7 +1326,12 @@ impl UiWorld {
         let visual = self.widget_visual_as::<KeymapLayerVisual>(id)?;
         let content = self.component_content_box(id)?;
         let style_model = self.node_style_model(id);
-        Some(visual.layout_at(content, style_model, self.chrome_text_measure(id)))
+        Some(visual.layout_at(
+            content,
+            style_model,
+            self.node_theme(id),
+            self.chrome_text_measure(id),
+        ))
     }
 }
 

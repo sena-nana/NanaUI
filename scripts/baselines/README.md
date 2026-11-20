@@ -94,3 +94,25 @@ triangle before the row under it takes over) and `AIM_TOLERANCE` (4 px of
 hand wobble the triangle allows). They tune how a pointer is read, not how a
 theme looks, so they are recorded rather than moved onto the Theme. Token
 reads rose 1071 → 1085 with the commits in between (`e215bb088` among them); nothing else changed.
+
+## 2026-11-20 re-record (#341 convergence)
+
+Issue #341 retired all production `type_scale::*` references across
+`crates/nana-ui-runtime/src`, added `FontSizeContext::DEFAULT_ROOT_PX` and
+`OpacityTokens::{disabled, notice_tint}`, routed remaining visual constants and
+text-editor/motion helpers through live `CompiledTheme` tokens, and added the
+`static_type_scale == 0` check plus CI enforcement in `.github/workflows/ci.yml`:
+
+- Component `design_number`: 25 → 24
+- Shared `design_number`: 93 → 69
+- Shared `motion`: 31 → 27
+- Module constants: 102 → 67
+- Production `type_scale::` lines (`static_type_scale`): 86 → 0
+- `token_reads`: 1230 → 1438
+
+What stays in the remaining counts (24 component, 69 shared design numbers,
+27 shared motion values, 67 module constants) are intentional zeros (`0.0`),
+identity opacities (`1.0`), `999.0` pill radii pinned by the `chip` and
+`status-badge` semantic snapshot baselines (`radius=999.00`), internal
+constants/physics tolerances (`touch_scroll.rs`, `submenu_aim.rs`, `dock.rs`,
+`timeline.rs`), and public literal builder defaults.

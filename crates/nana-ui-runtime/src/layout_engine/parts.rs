@@ -1220,8 +1220,10 @@ pub(crate) fn form_field_parts(
     error: bool,
     support_measure: Option<f32>,
     reverse: bool,
+    theme: &nana_ui_core::CompiledTheme,
 ) -> ContentParts {
-    let label_height = crate::form_surfaces::form_field_label_line(size).min(bounds.height);
+    let label_height =
+        crate::form_surfaces::form_field_label_line_in(size, theme).min(bounds.height);
     let label = LayoutPart::new(
         LayoutPartKind::Label,
         LayoutBox {
@@ -1234,7 +1236,7 @@ pub(crate) fn form_field_parts(
     if support.is_none() && !error {
         return content_parts([Some(label)]);
     }
-    let support_height = nana_ui_core::type_scale::META.min(bounds.height);
+    let support_height = theme.typography().meta.min(bounds.height);
     let support_y = (bounds.y + bounds.height - support_height).max(bounds.y);
     let row = LayoutBox {
         x: bounds.x,
@@ -1243,13 +1245,13 @@ pub(crate) fn form_field_parts(
         height: support_height,
     };
     let indicator = error.then(|| {
-        let slot = nana_ui_core::space::XL;
+        let slot = theme.spacing().xl;
         let mut part = FlexPart::new(
             LayoutPartKind::LeadingContent,
             Size::new(slot, support_height),
         );
         part.align = AlignSpec::Stretch;
-        part.gap_after = nana_ui_core::space::XS;
+        part.gap_after = theme.spacing().xs;
         part
     });
     let mut hint = FlexPart::new(
@@ -1274,7 +1276,7 @@ pub(crate) fn form_field_parts(
 /// `image`: the shown option has a picture ([`crate::SelectOption::image`]),
 /// a line box square before the label; its absence lays out no lane.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn select_trigger_parts(
+pub(crate) fn select_trigger_parts_in(
     bounds: LayoutBox,
     size: nana_ui_core::ControlSize,
     label: &str,
@@ -1284,8 +1286,9 @@ pub(crate) fn select_trigger_parts(
     measure: impl Fn(&str, f32) -> f32,
     natural_label: Option<f32>,
     reverse: bool,
+    typography: nana_ui_core::TypographyTokens,
 ) -> ContentParts {
-    let handle_width = crate::select::HANDLE_WIDTH.min(bounds.width);
+    let handle_width = typography.line.min(bounds.width);
     let image_part = (image && !placeholder).then(|| {
         let extent = crate::select::image_size(size)
             .min(bounds.height)
@@ -1296,8 +1299,9 @@ pub(crate) fn select_trigger_parts(
     });
     let image_lane = image_part.map_or(0.0, |part| part.preferred.width + part.gap_after);
     let label_area = (bounds.width - handle_width - image_lane).max(0.0);
-    let label_natural = natural_label.unwrap_or_else(|| measure(label, size.text_size()));
-    let hint_size = size.caption_size();
+    let label_natural =
+        natural_label.unwrap_or_else(|| measure(label, size.text_size_in(typography)));
+    let hint_size = size.caption_size_in(typography);
     let hint_natural = hint
         .filter(|hint| !placeholder && !hint.is_empty())
         .map(|hint| measure(hint, hint_size));

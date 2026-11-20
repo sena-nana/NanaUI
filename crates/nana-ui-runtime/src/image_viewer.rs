@@ -27,7 +27,6 @@ const SURFACE_PAD_BOTTOM: f32 = nana_ui_core::space::PAGE;
 const SURFACE_PAD_LEFT: f32 = SURFACE_PAD;
 const CLOSE_INSET: f32 = nana_ui_core::space::XXL;
 const METADATA_GAP: f32 = nana_ui_core::space::LG;
-const METADATA_HEIGHT: f32 = nana_ui_core::type_scale::LINE;
 const COVERAGE: f32 = 0.75;
 /// How far the navigation sits above the foot of the stage.
 const NAVIGATION_INSET: f32 = nana_ui_core::space::XL;
@@ -82,6 +81,23 @@ impl ImageViewerVisual {
         scrim: SemanticColor,
         metrics: ThemeMetrics,
     ) -> ImageViewerLayout {
+        self.layout_at_in(
+            bounds,
+            palette,
+            scrim,
+            metrics,
+            nana_ui_core::TypographyTokens::DEFAULT,
+        )
+    }
+
+    pub(crate) fn layout_at_in(
+        &self,
+        bounds: LayoutBox,
+        palette: &SemanticPalette,
+        scrim: SemanticColor,
+        metrics: ThemeMetrics,
+        typography: nana_ui_core::TypographyTokens,
+    ) -> ImageViewerLayout {
         let mut viewer = ImageViewer::new(ImageViewerContent::None);
         viewer.intrinsic_size = self.intrinsic_size;
         if let Some(name) = &self.name {
@@ -92,7 +108,7 @@ impl ImageViewerVisual {
         }
         viewer.zoom = self.zoom;
         viewer.offset = ImageViewerOffset::new(self.offset_x, self.offset_y);
-        let geometry = viewer.geometry(bounds, metrics);
+        let geometry = viewer.geometry_in(bounds, metrics, typography);
         let mut stage = palette.background.as_rgba_array();
         stage[3] = 0.34;
         ImageViewerLayout {
@@ -107,8 +123,8 @@ impl ImageViewerVisual {
                     bounds: region,
                     content: Arc::clone(text).into(),
                     color: Some(palette.text.as_rgba_array()),
-                    font_size: nana_ui_core::type_scale::META,
-                    font_weight: Some(nana_ui_core::type_scale::SEMIBOLD),
+                    font_size: typography.meta,
+                    font_weight: Some(typography.semibold),
                 }),
             metadata: self
                 .metadata
@@ -118,7 +134,7 @@ impl ImageViewerVisual {
                     bounds: region,
                     content: Arc::clone(text).into(),
                     color: Some(palette.muted.as_rgba_array()),
-                    font_size: nana_ui_core::type_scale::HINT,
+                    font_size: typography.hint,
                     font_weight: None,
                 }),
             content: geometry.content,
@@ -141,6 +157,7 @@ impl WidgetVisual for ImageViewerVisual {
     fn theme_dependency_mask(&self) -> nana_ui_core::ThemeDependencyMask {
         nana_ui_core::ThemeDependencyMask::PALETTE
             .union(nana_ui_core::ThemeDependencyMask::METRICS)
+            .union(nana_ui_core::ThemeDependencyMask::TYPOGRAPHY_ANY)
             .union(nana_ui_core::ThemeDependencyMask::EFFECT)
             .union(nana_ui_core::ThemeDependencyMask::RECIPE_SHAPE)
     }
@@ -150,11 +167,12 @@ impl WidgetVisual for ImageViewerVisual {
     }
 
     fn paint(&self, ctx: &WidgetPaintCtx<'_>) -> WidgetPaintOutput {
-        let layout = self.layout_at(
+        let layout = self.layout_at_in(
             ctx.bounds,
             &ctx.style_model.palette,
             ctx.theme.effects().media_scrim,
             ctx.style_model.metrics,
+            ctx.theme.typography(),
         );
         let mut out = WidgetPaintOutput::new();
         out.owns_node_text = true;
@@ -231,11 +249,12 @@ impl UiWorld {
         let visual = self.widget_visual_as::<ImageViewerVisual>(id)?;
         let bounds = self.component_layout_box(id)?;
         let style_model = self.node_style_model(id);
-        Some(visual.layout_at(
+        Some(visual.layout_at_in(
             bounds,
             &style_model.palette,
-            self.theme().effects().media_scrim,
+            self.node_theme(id).effects().media_scrim,
             style_model.metrics,
+            self.node_theme(id).typography(),
         ))
     }
 }
@@ -506,8 +525,12 @@ impl ImageViewer {
 
     /// Height of the caption row under the stage, with the gap above it.
     fn caption_band(&self) -> f32 {
+        self.caption_band_in(nana_ui_core::TypographyTokens::DEFAULT)
+    }
+
+    fn caption_band_in(&self, typography: nana_ui_core::TypographyTokens) -> f32 {
         if self.name.is_some() || self.metadata.is_some() {
-            METADATA_GAP + METADATA_HEIGHT
+            METADATA_GAP + typography.line
         } else {
             0.0
         }
@@ -533,6 +556,15 @@ impl ImageViewer {
     }
 
     pub fn geometry(&self, bounds: LayoutBox, metrics: ThemeMetrics) -> ImageViewerGeometry {
+        self.geometry_in(bounds, metrics, nana_ui_core::TypographyTokens::DEFAULT)
+    }
+
+    pub(crate) fn geometry_in(
+        &self,
+        bounds: LayoutBox,
+        metrics: ThemeMetrics,
+        typography: nana_ui_core::TypographyTokens,
+    ) -> ImageViewerGeometry {
         let surface = inset(
             bounds,
             SURFACE_PAD_LEFT,
@@ -542,14 +574,14 @@ impl ImageViewer {
         );
         let has_name = self.name.is_some();
         let has_metadata = self.metadata.is_some();
-        let band = self.caption_band();
+        let band = self.caption_band_in(typography);
         let stage = LayoutBox {
             x: surface.x,
             y: surface.y,
             width: surface.width,
             height: (surface.height - band).max(0.0),
         };
-        let (name, metadata) = caption_boxes(surface, has_name, has_metadata);
+        let (name, metadata) = caption_boxes(surface, has_name, has_metadata, typography.line);
         let zoom = clamp_zoom(self.zoom);
         let fitted = fitted_bounds(stage, self.intrinsic_size);
         let offset = clamp_offset(self.offset, zoom, stage, fitted);
@@ -882,7 +914,7 @@ impl AppContext {
             )?;
             let counter = self.create_detached_component(
                 document,
-                Text::new("").font_size(nana_ui_core::type_scale::META),
+                Text::new("").typography(nana_ui_core::TypeRole::Meta),
             )?;
             let next = self.create_detached_component(
                 document,
@@ -1155,16 +1187,17 @@ fn caption_boxes(
     surface: LayoutBox,
     has_name: bool,
     has_metadata: bool,
+    metadata_height: f32,
 ) -> (Option<LayoutBox>, Option<LayoutBox>) {
     if !has_name && !has_metadata {
         return (None, None);
     }
-    let y = surface.y + surface.height - METADATA_HEIGHT;
+    let y = surface.y + surface.height - metadata_height;
     let row = LayoutBox {
         x: surface.x,
         y,
         width: surface.width,
-        height: METADATA_HEIGHT.max(0.0),
+        height: metadata_height.max(0.0),
     };
     if has_name && has_metadata {
         let gap = METADATA_GAP;

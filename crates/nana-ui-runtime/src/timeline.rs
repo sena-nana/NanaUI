@@ -44,17 +44,17 @@ use crate::{
 };
 
 /// The ruler's height, px.
-pub const TIMELINE_RULER: f32 = 24.0;
+pub const TIMELINE_RULER: f32 = nana_ui_core::space::PAGE;
 /// A track row's height, px.
-pub const TIMELINE_ROW: f32 = 20.0;
+pub const TIMELINE_ROW: f32 = nana_ui_core::space::PAGE_TIGHT;
 /// How near a key or handle a press must land, px.
-const HIT: f32 = 6.0;
+const HIT: f32 = nana_ui_core::space::SM;
 /// The curve view's margin above and below the values, px.
-const CURVE_MARGIN: f32 = 12.0;
+const CURVE_MARGIN: f32 = nana_ui_core::space::XL;
 /// Least spacing of labelled ticks, px.
 const LABEL_SPACING: f64 = 64.0;
 /// Indent per track depth, px.
-const INDENT: f32 = 12.0;
+const INDENT: f32 = nana_ui_core::space::XL;
 
 /// One key: a time, a value and its two tangent handles relative to it
 /// (`[dt, dv]`; the in handle points back in time, the out handle forward).

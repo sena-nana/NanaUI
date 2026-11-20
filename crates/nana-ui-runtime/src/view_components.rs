@@ -786,11 +786,11 @@ pub struct Button {
 }
 
 /// Font size of a `Card` title.
-pub(crate) const CARD_TITLE_SIZE: f32 = nana_ui_core::type_scale::BODY;
+pub(crate) const CARD_TITLE_SIZE: f32 = nana_ui_core::TypographyTokens::DEFAULT.body;
 /// Font weight of a `Card` title.
-pub(crate) const CARD_TITLE_WEIGHT: u16 = nana_ui_core::type_scale::SEMIBOLD;
+pub(crate) const CARD_TITLE_WEIGHT: u16 = nana_ui_core::TypographyTokens::DEFAULT.semibold;
 /// Line box the title occupies.
-pub(crate) const CARD_TITLE_LINE: f32 = nana_ui_core::type_scale::LINE_TALL;
+pub(crate) const CARD_TITLE_LINE: f32 = nana_ui_core::TypographyTokens::DEFAULT.line_tall;
 /// Gap between the title band and the card's content.
 pub(crate) const CARD_TITLE_GAP: f32 = nana_ui_core::space::SM;
 /// Vertical band a titled `Card` lays out above its body, inside its padding
@@ -802,9 +802,7 @@ pub(crate) const CARD_LOADING_RESERVE: f32 =
 
 static BUTTON_DEFAULT_STYLE: std::sync::LazyLock<NodeStyle> = std::sync::LazyLock::new(|| {
     let mut layout = (*control_layout()).clone();
-    layout.font_weight = Some(nana_ui_core::type_scale::MEDIUM);
-    layout.theme.font_weight =
-        Some(nana_ui_core::ThemeToken::Weight(nana_ui_core::TextWeight::Medium).into());
+    crate::theme_intent::weight(&mut layout, nana_ui_core::TextWeight::Medium);
     layout.white_space_nowrap = true;
     // Declared, not solved: only a strip that solves its overflow reads
     // it (Issue #212).
@@ -1876,8 +1874,9 @@ impl ComponentView for IconButton {
                 // A quiet icon's resting ink and the faint disabled ink sit
                 // close together, closest on dark themes: a disabled icon also
                 // fades, so a row of tools shows at a glance which can act.
+                let disabled_opacity = world.node_theme(id).opacity().disabled;
                 let layout = Arc::make_mut(&mut effective_style.layout);
-                layout.opacity = Some(layout.opacity.unwrap_or(1.0) * ICON_BUTTON_DISABLED_OPACITY);
+                layout.opacity = Some(layout.opacity.unwrap_or(1.0) * disabled_opacity);
             }
         }
         project_common(
@@ -1901,10 +1900,6 @@ impl ComponentView for IconButton {
         );
     }
 }
-
-/// How far a disabled [`IconButton`] in its kind's colours fades, over its
-/// disabled ink.
-const ICON_BUTTON_DISABLED_OPACITY: f32 = 0.5;
 
 /// The colours an [`IconButton`] of `kind` paints with, written over `style`.
 /// Skipped for a button that opted into [`IconButton::colors_from_style`].
@@ -1990,6 +1985,11 @@ impl IconGlyph {
 
     /// Keep layout and paint on the same live theme expression.
     pub fn size_theme(mut self, size: nana_ui_core::ThemeExpr) -> Self {
+        self.size = size
+            .resolve(nana_ui_core::builtin_theme(
+                nana_ui_core::ThemeAppearance::Dark,
+            ))
+            .max(0.0);
         self.themed_size = Some(size);
         self
     }
@@ -2326,14 +2326,15 @@ impl crate::WidgetVisual for CardVisual {
 
     fn leading_parts(
         &self,
-        _id: StableNodeId,
-        _world: &UiWorld,
+        id: StableNodeId,
+        world: &UiWorld,
     ) -> Option<crate::layout_engine::parts::LeadingParts> {
+        let theme = world.node_theme(id);
         self.title
             .as_ref()
             .map(|_| crate::layout_engine::parts::LeadingParts {
                 axis: nana_ui_core::FlexDirection::Column,
-                extent: CARD_TITLE_BAND,
+                extent: theme.typography().line_tall + theme.spacing().sm,
                 breadth: 0.0,
                 end: false,
             })
@@ -2364,13 +2365,14 @@ impl crate::WidgetVisual for CardVisual {
         _own_frame: bool,
     ) -> Option<crate::layout_engine::parts::ContentParts> {
         let text = world.text_metrics(id).unwrap_or_default();
+        let line_tall = world.node_theme(id).typography().line_tall;
         let x = content.x.min(bounds.x + bounds.width).max(bounds.x);
         let y = content.y.max(bounds.y).min(bounds.y + bounds.height);
         let header = crate::LayoutBox {
             x,
             y,
             width: content.width.min((bounds.x + bounds.width - x).max(0.0)),
-            height: CARD_TITLE_LINE.min((bounds.y + bounds.height - y).max(0.0)),
+            height: line_tall.min((bounds.y + bounds.height - y).max(0.0)),
         };
         Some(crate::layout_engine::parts::card_content_parts(
             header,
@@ -2420,8 +2422,8 @@ impl crate::WidgetVisual for CardVisual {
                     content: Arc::clone(title).into(),
                     color: Some(text_color),
                     paint_color: ctx.matching_text_paint(text_color),
-                    font_size: CARD_TITLE_SIZE,
-                    font_weight: Some(CARD_TITLE_WEIGHT),
+                    font_size: ctx.theme.typography().body,
+                    font_weight: Some(ctx.theme.typography().semibold),
                     horizontal_alignment: TextHorizontalAlignment::Start,
                     vertical_alignment: TextVerticalAlignment::Center,
                     ellipsis: true,
@@ -5506,7 +5508,7 @@ mod hosted_textarea_tests {
             .unwrap();
         assert_eq!(
             opacity(&context, button.stable_id()),
-            Some(ICON_BUTTON_DISABLED_OPACITY)
+            Some(nana_ui_core::OpacityTokens::DARK.disabled)
         );
     }
 

@@ -545,7 +545,7 @@ impl Default for WidgetText {
             content: TextValue::from(""),
             color: None,
             paint_color: None,
-            font_size: 14.0,
+            font_size: nana_ui_core::TypographyTokens::DEFAULT.section,
             font_weight: None,
             horizontal_alignment: TextHorizontalAlignment::default(),
             vertical_alignment: TextVerticalAlignment::default(),

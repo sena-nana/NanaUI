@@ -39,7 +39,7 @@ pub(crate) struct Measurer<'a> {
 }
 
 /// Body text size diagrams set their labels in, matching Markdown body text.
-const FONT_SIZE: f32 = nana_ui_core::type_scale::BODY;
+const FONT_SIZE: f32 = nana_ui_core::TypographyTokens::DEFAULT.body;
 
 pub(crate) fn metrics() -> DiagramMetrics {
     DiagramMetrics::from_font_size(FONT_SIZE)

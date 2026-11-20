@@ -880,11 +880,15 @@ fn scrim_style(open: bool) -> NodeStyle {
     style
 }
 
-fn text_style(size: f32, width: Option<LengthSpec>, color: SemanticColorRole) -> NodeStyle {
+fn text_style(
+    role: nana_ui_core::TypeRole,
+    width: Option<LengthSpec>,
+    color: SemanticColorRole,
+) -> NodeStyle {
     let mut style = NodeStyle::default();
     {
         let layout = Arc::make_mut(&mut style.layout);
-        layout.font_size = Some(size);
+        crate::theme_intent::font(layout, role);
         layout.width = width;
         layout.flex_shrink = Some(0.0);
     }
@@ -940,10 +944,11 @@ fn menu_width(
     metrics: nana_ui_core::ThemeMetrics,
     menu: &nana_ui_core::MenuRecipe,
     spacing: &nana_ui_core::SpacingTokens,
+    typography: nana_ui_core::TypographyTokens,
 ) -> f32 {
     let size = ControlSize::Small;
     let mut label = 0.0f32;
-    let mut hint = estimated_text_width(SUBMENU, nana_ui_core::type_scale::HINT);
+    let mut hint = estimated_text_width(SUBMENU, typography.hint);
     for entry in entries {
         match entry {
             MenuEntry::Item {
@@ -951,16 +956,19 @@ fn menu_width(
                 shortcut,
                 ..
             } => {
-                label = label.max(estimated_text_width(text, size.text_size()));
+                label = label.max(estimated_text_width(text, size.text_size_in(typography)));
                 if let Some(shortcut) = shortcut {
                     hint = hint.max(estimated_text_width(
                         &notation.label(shortcut),
-                        nana_ui_core::type_scale::HINT,
+                        typography.hint,
                     ));
                 }
             }
             MenuEntry::Submenu(menu) => {
-                label = label.max(estimated_text_width(&menu.title, size.text_size()));
+                label = label.max(estimated_text_width(
+                    &menu.title,
+                    size.text_size_in(typography),
+                ));
             }
             MenuEntry::Separator => {}
         }
@@ -1179,6 +1187,7 @@ impl AppContext {
         let metrics = node_theme.metrics();
         let menu_recipe = node_theme.recipes().menu();
         let spacing = node_theme.spacing();
+        let typography = node_theme.typography();
         let surf_pad = spacing.resolve(menu_recipe.surface_padding);
         let row = ControlSize::Small.height_in(metrics);
         let alive = snapshot
@@ -1226,7 +1235,7 @@ impl AppContext {
                 text.value = label;
                 text.decorative = true;
                 text.style = text_style(
-                    ControlSize::Small.text_size(),
+                    nana_ui_core::TypeRole::Meta,
                     None,
                     menu_recipe.item_foreground,
                 );
@@ -1311,6 +1320,7 @@ impl AppContext {
                 metrics,
                 menu_recipe,
                 &spacing,
+                typography,
             );
             let height = menu_height(&menu.entries, row, menu_recipe, &spacing);
             let (mut x, mut y) = match level.checked_sub(1) {
@@ -1410,19 +1420,22 @@ impl AppContext {
                 } else {
                     menu_recipe.item_disabled_foreground
                 };
-                let small = ControlSize::Small.text_size();
                 self.update_component(Entity::<Text>::from_stable_id(mark), |mark, _| {
                     mark.value = if checked { CHECK } else { "" }.to_owned();
                     mark.decorative = true;
-                    mark.style =
-                        text_style(small, Some(LengthSpec::Px(menu_recipe.mark_width)), ink);
+                    mark.style = text_style(
+                        nana_ui_core::TypeRole::Meta,
+                        Some(LengthSpec::Px(menu_recipe.mark_width)),
+                        ink,
+                    );
                     mark.style.text_horizontal_alignment = TextHorizontalAlignment::Center;
                 })?;
                 let spoken = Arc::from(text.as_str());
                 self.update_component(Entity::<Text>::from_stable_id(label), |label, _| {
                     label.value = text;
                     label.decorative = true;
-                    label.style = text_style(small, Some(LengthSpec::Fill), ink);
+                    label.style =
+                        text_style(nana_ui_core::TypeRole::Meta, Some(LengthSpec::Fill), ink);
                     Arc::make_mut(&mut label.style.layout).flex_shrink = Some(1.0);
                 })?;
                 let description =
@@ -1430,7 +1443,7 @@ impl AppContext {
                 self.update_component(Entity::<Text>::from_stable_id(hint), |hint, _| {
                     hint.value = shortcut;
                     hint.decorative = true;
-                    hint.style = text_style(nana_ui_core::type_scale::HINT, None, quiet);
+                    hint.style = text_style(nana_ui_core::TypeRole::Hint, None, quiet);
                 })?;
                 self.update_component(
                     Entity::<MenuBarBox>::from_stable_id(parts.row),

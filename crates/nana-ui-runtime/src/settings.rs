@@ -3,9 +3,9 @@ use std::sync::Arc;
 
 use nana_ui_core::{
     AlignSpec, AppearanceEvent, AppearanceSettings, BackdropTarget, ButtonKind, CardKind,
-    ControlSize, FlexDirection, FlexWrap, Icon, JustifySpec, LengthSpec, LineHeightSpec,
-    OverflowSpec, PaddingSpec, SemanticColorRole, SettingsModel, SettingsState, SettingsTabId,
-    ThemeAppearance, ThemeChoice, ThemeId, UI_METRICS, WindowMaterialMode,
+    ControlSize, FlexDirection, FlexWrap, Icon, JustifySpec, LengthSpec, OverflowSpec, PaddingSpec,
+    SemanticColorRole, SettingsModel, SettingsState, SettingsTabId, ThemeAppearance, ThemeChoice,
+    ThemeId, UI_METRICS, WindowMaterialMode,
 };
 
 use crate::view_components::{
@@ -508,12 +508,8 @@ impl SettingsRow {
             .then(|| nana_ui_core::ThemeToken::Border(nana_ui_core::BorderWidth::Hairline).into());
         layout.theme.border_top_width = rule_above
             .then(|| nana_ui_core::ThemeToken::Border(nana_ui_core::BorderWidth::Hairline).into());
-        layout.font_size = Some(nana_ui_core::type_scale::BODY);
         crate::theme_intent::font(layout, nana_ui_core::TypeRole::Body);
-        layout.line_height = Some(LineHeightSpec::Absolute(nana_ui_core::type_scale::BODY));
-        layout.theme.line_height =
-            Some(nana_ui_core::ThemeToken::Type(nana_ui_core::TypeRole::Body).into());
-        layout.font_weight = Some(nana_ui_core::type_scale::MEDIUM);
+        crate::theme_intent::line_from_type(layout, nana_ui_core::TypeRole::Body);
         crate::theme_intent::weight(layout, nana_ui_core::TextWeight::Medium);
         style.text_vertical_alignment = crate::TextVerticalAlignment::Center;
         style
@@ -749,24 +745,16 @@ fn label_slot_style(hidden: bool, on_line: bool, column: bool) -> NodeStyle {
     });
     style.text_vertical_alignment = crate::TextVerticalAlignment::Center;
     let layout = Arc::make_mut(&mut style.layout);
-    layout.font_size = Some(nana_ui_core::type_scale::BODY);
     crate::theme_intent::font(layout, nana_ui_core::TypeRole::Body);
-    layout.line_height = Some(LineHeightSpec::Absolute(nana_ui_core::type_scale::BODY));
-    layout.theme.line_height =
-        Some(nana_ui_core::ThemeToken::Type(nana_ui_core::TypeRole::Body).into());
-    let (weight, step) = if column {
-        (
-            nana_ui_core::type_scale::REGULAR,
-            nana_ui_core::TextWeight::Regular,
-        )
-    } else {
-        (
-            nana_ui_core::type_scale::MEDIUM,
-            nana_ui_core::TextWeight::Medium,
-        )
-    };
-    layout.font_weight = Some(weight);
-    crate::theme_intent::weight(layout, step);
+    crate::theme_intent::line_from_type(layout, nana_ui_core::TypeRole::Body);
+    crate::theme_intent::weight(
+        layout,
+        if column {
+            nana_ui_core::TextWeight::Regular
+        } else {
+            nana_ui_core::TextWeight::Medium
+        },
+    );
     if !on_line {
         layout.width = Some(LengthSpec::Fill);
         layout.flex_grow = Some(1.0);
@@ -788,9 +776,6 @@ fn notice_role(tone: nana_ui_core::ValidationIntent) -> SemanticColorRole {
     }
 }
 
-/// How faint a notice's box is: a tint of its colour, as a callout's.
-const NOTICE_TINT: f32 = 0.10;
-
 /// The notice line's box: a faint tint of the tone's colour with the
 /// control radius, across the row, the glyph on the text's first line.
 /// `None` hides it: a row without a notice keeps no room or gap for one.
@@ -802,7 +787,10 @@ fn notice_box_style(tone: Option<nana_ui_core::ValidationIntent>) -> crate::Stac
         .align(AlignSpec::Start)
         .padding_step(nana_ui_core::SpacingStep::Sm, nana_ui_core::SpacingStep::Xs)
         .radius(nana_ui_core::RadiusTier::Sm)
-        .surface_mix(nana_ui_core::SemanticColorMix::alpha(role, NOTICE_TINT))
+        .surface_mix(nana_ui_core::SemanticColorMix::alpha(
+            role,
+            nana_ui_core::OpacityTokens::DARK.notice_tint,
+        ))
         .with_layout(|layout| layout.hidden = tone.is_none())
 }
 
@@ -854,15 +842,11 @@ fn hint_slot_style(hidden: bool) -> NodeStyle {
     let mut style = NodeStyle::default();
     style.foreground = Some(SemanticColorRole::Muted);
     let layout = Arc::make_mut(&mut style.layout);
-    layout.font_size = Some(nana_ui_core::type_scale::META);
     crate::theme_intent::font(layout, nana_ui_core::TypeRole::Meta);
-    layout.font_weight = Some(nana_ui_core::type_scale::REGULAR);
     crate::theme_intent::weight(layout, nana_ui_core::TextWeight::Regular);
     // Its own line box: the row's is the label's, too tight for the lines of
     // a hint that wraps.
-    layout.line_height = Some(LineHeightSpec::Absolute(nana_ui_core::type_scale::LINE));
-    layout.theme.line_height =
-        Some(nana_ui_core::ThemeToken::Line(nana_ui_core::LineRole::Line).into());
+    crate::theme_intent::line(layout, nana_ui_core::LineRole::Line);
     layout.width = Some(LengthSpec::Fill);
     layout.flex_shrink = Some(1.0);
     layout.min_width = Some(LengthSpec::Px(0.0));
@@ -1702,7 +1686,9 @@ fn help_button(hint: &Arc<str>, open: bool) -> crate::IconButton {
             },
         );
     }
-    let overhang = (nana_ui_core::space::PAGE - nana_ui_core::type_scale::BODY) * -0.5;
+    let overhang = (nana_ui_core::SpacingTokens::DEFAULT.page
+        - nana_ui_core::TypographyTokens::DEFAULT.body)
+        * -0.5;
     let theme_overhang = nana_ui_core::ThemeExpr::from(nana_ui_core::ThemeToken::Space(
         nana_ui_core::SpacingStep::Page,
     ))
@@ -1859,8 +1845,6 @@ fn sync_settings_card(
 
 const COLLAPSIBLE_HEADER_GAP: f32 = nana_ui_core::space::MD;
 const COLLAPSIBLE_BODY_GAP: f32 = nana_ui_core::space::XL;
-#[cfg(test)]
-const DISCLOSURE_ICON_SIZE: f32 = nana_ui_core::type_scale::LINE;
 
 /// Controlled collapse. Header is keyboard-activatable; values stay host-owned.
 #[derive(Debug, Clone, PartialEq)]
@@ -2427,8 +2411,6 @@ const SETTINGS_PAGE_PADDING_TOP: f32 = nana_ui_core::space::PAGE_TIGHT;
 const SETTINGS_PAGE_PADDING_RIGHT: f32 = nana_ui_core::space::PAGE;
 const SETTINGS_PAGE_PADDING_BOTTOM: f32 = nana_ui_core::space::PAGE;
 const SETTINGS_PAGE_PADDING_LEFT: f32 = nana_ui_core::space::PAGE;
-const SETTINGS_PAGE_TITLE_SIZE: f32 = nana_ui_core::type_scale::TITLE;
-const SETTINGS_PAGE_TITLE_WEIGHT: u16 = nana_ui_core::type_scale::SEMIBOLD;
 
 /// Host-owned navigation snapshot. Activate emits [`SettingsBack`] / [`SettingsTabSelected`].
 #[derive(Debug, Clone, PartialEq)]
@@ -2797,8 +2779,8 @@ fn page_title_text(label: &str, size: Option<f32>, weight: Option<u16>) -> Text 
     let mut text = styled_text(
         label,
         SemanticColorRole::Text,
-        size.unwrap_or(SETTINGS_PAGE_TITLE_SIZE),
-        weight.unwrap_or(SETTINGS_PAGE_TITLE_WEIGHT),
+        nana_ui_core::TypeRole::Title,
+        nana_ui_core::TextWeight::Semibold,
     );
     if let Some(size) = size {
         text = text.font_size(size);
@@ -2956,31 +2938,17 @@ fn reconcile_children<C: ComponentView>(
     context.reconcile_children(parent.stable_id(), ordered)
 }
 
-fn styled_text(value: impl Into<String>, color: SemanticColorRole, size: f32, weight: u16) -> Text {
+fn styled_text(
+    value: impl Into<String>,
+    color: SemanticColorRole,
+    role: nana_ui_core::TypeRole,
+    weight: nana_ui_core::TextWeight,
+) -> Text {
     let mut style = NodeStyle::default();
     style.foreground = Some(color);
     let layout = Arc::make_mut(&mut style.layout);
-    layout.font_size = Some(size);
-    layout.font_weight = Some(weight);
-    let role = match size {
-        n if n <= 11.0 => nana_ui_core::TypeRole::Hint,
-        n if n <= 12.0 => nana_ui_core::TypeRole::Meta,
-        n if n <= 13.0 => nana_ui_core::TypeRole::Body,
-        n if n <= 14.0 => nana_ui_core::TypeRole::Section,
-        n if n <= 16.0 => nana_ui_core::TypeRole::Heading,
-        n if n <= 18.0 => nana_ui_core::TypeRole::Title,
-        _ => nana_ui_core::TypeRole::Display,
-    };
     crate::theme_intent::font(layout, role);
-    crate::theme_intent::weight(
-        layout,
-        match weight {
-            0..=400 => nana_ui_core::TextWeight::Regular,
-            401..=500 => nana_ui_core::TextWeight::Medium,
-            501..=600 => nana_ui_core::TextWeight::Semibold,
-            _ => nana_ui_core::TextWeight::Bold,
-        },
-    );
+    crate::theme_intent::weight(layout, weight);
     Text::new(value).style(style)
 }
 
@@ -4028,8 +3996,8 @@ impl AppContext {
                 styled_text(
                     status,
                     SemanticColorRole::Muted,
-                    nana_ui_core::type_scale::META,
-                    nana_ui_core::type_scale::REGULAR,
+                    nana_ui_core::TypeRole::Meta,
+                    nana_ui_core::TextWeight::Regular,
                 ),
             )?;
             Some(mount_settings_row(
@@ -4359,8 +4327,8 @@ impl AppContext {
             styled_text(
                 metadata.product_title.as_ref(),
                 SemanticColorRole::Text,
-                12.0,
-                500,
+                nana_ui_core::TypeRole::Meta,
+                nana_ui_core::TextWeight::Medium,
             ),
         )?;
         // The description describes the product, so it is the name row's
@@ -4383,8 +4351,8 @@ impl AppContext {
             styled_text(
                 metadata.version.as_ref(),
                 SemanticColorRole::Muted,
-                12.0,
-                400,
+                nana_ui_core::TypeRole::Meta,
+                nana_ui_core::TextWeight::Regular,
             ),
         )?;
         let version_row = mount_settings_row(
@@ -4644,6 +4612,10 @@ impl AppContext {
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
+
+    const DISCLOSURE_ICON_SIZE: f32 = nana_ui_core::TypographyTokens::DEFAULT.line;
+    const SETTINGS_PAGE_TITLE_SIZE: f32 = nana_ui_core::TypographyTokens::DEFAULT.title;
+    const SETTINGS_PAGE_TITLE_WEIGHT: u16 = nana_ui_core::TypographyTokens::DEFAULT.semibold;
 
     use crate::{AppContext, DocumentId, Entity};
     use nana_ui_core::{BackdropTarget, WindowMaterialMode};
@@ -5139,7 +5111,9 @@ mod tests {
         );
         assert_eq!(
             label_style.layout.line_height,
-            Some(LineHeightSpec::Absolute(nana_ui_core::type_scale::BODY))
+            Some(nana_ui_core::LineHeightSpec::Absolute(
+                nana_ui_core::type_scale::BODY
+            ))
         );
         assert_eq!(
             label_style.layout.font_weight,

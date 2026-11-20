@@ -533,7 +533,7 @@ impl<T> CalendarHeatmap<T> {
     pub const CELL_GAP: f32 = 3.0;
     pub const CELL_RADIUS: f32 = nana_ui_core::space::XXS;
     pub const LABEL_WIDTH: f32 = 42.0;
-    pub const MONTH_LABEL_HEIGHT: f32 = nana_ui_core::type_scale::SECTION;
+    pub const MONTH_LABEL_HEIGHT: f32 = nana_ui_core::TypographyTokens::DEFAULT.section;
 
     pub fn new(data: impl IntoIterator<Item = CalendarHeatmapDatum<T>>) -> Self {
         Self {
@@ -734,6 +734,7 @@ impl CalendarHeatmapVisual {
         &self,
         bounds: LayoutBox,
         palette: &SemanticPalette,
+        typography: nana_ui_core::TypographyTokens,
         measure: crate::text_width::ChromeTextMeasure<'_>,
     ) -> CalendarHeatmapLayout {
         let cells = self
@@ -770,7 +771,7 @@ impl CalendarHeatmapVisual {
                 &label.text,
                 label.x,
                 label.y,
-                nana_ui_core::type_scale::HINT,
+                typography.hint,
                 true,
                 palette,
                 measure,
@@ -782,7 +783,7 @@ impl CalendarHeatmapVisual {
                 &label.text,
                 label.x,
                 label.y,
-                nana_ui_core::type_scale::HINT,
+                typography.hint,
                 false,
                 palette,
                 measure,
@@ -821,6 +822,7 @@ impl crate::WidgetVisual for CalendarHeatmapVisual {
     fn theme_dependency_mask(&self) -> nana_ui_core::ThemeDependencyMask {
         nana_ui_core::ThemeDependencyMask::COLOR_ANY
             .union(nana_ui_core::ThemeDependencyMask::METRICS)
+            .union(nana_ui_core::ThemeDependencyMask::TYPOGRAPHY_ANY)
             .union(nana_ui_core::ThemeDependencyMask::RECIPE_SHAPE)
     }
 
@@ -832,6 +834,7 @@ impl crate::WidgetVisual for CalendarHeatmapVisual {
         let layout = self.layout_at(
             ctx.bounds,
             &ctx.style_model.palette,
+            ctx.theme.typography(),
             ctx.world.chrome_text_measure(ctx.id),
         );
         let mut out = crate::WidgetPaintOutput {
@@ -999,7 +1002,12 @@ impl UiWorld {
         let visual = self.widget_visual_as::<CalendarHeatmapVisual>(id)?;
         let bounds = self.component_layout_box(id)?;
         let style_model = self.node_style_model(id);
-        Some(visual.layout_at(bounds, &style_model.palette, self.chrome_text_measure(id)))
+        Some(visual.layout_at(
+            bounds,
+            &style_model.palette,
+            self.node_theme(id).typography(),
+            self.chrome_text_measure(id),
+        ))
     }
 }
 

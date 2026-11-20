@@ -1228,11 +1228,15 @@ impl UiWorld {
             }
             if queue_reprojects {
                 let border_changed = old_theme.border() != new_theme.border();
-                let reproject_mask = if border_changed {
-                    changed.union(ThemeDependencyMask::RECIPE_ANY)
-                } else {
-                    changed
-                };
+                let disabled_opacity_changed =
+                    old_theme.opacity().disabled != new_theme.opacity().disabled;
+                let mut reproject_mask = changed;
+                if border_changed {
+                    reproject_mask = reproject_mask.union(ThemeDependencyMask::RECIPE_ANY);
+                }
+                if disabled_opacity_changed {
+                    reproject_mask = reproject_mask.union(ThemeDependencyMask::METRICS);
+                }
                 if reproject_mask.intersects(
                     ThemeDependencyMask::METRICS
                         .union(ThemeDependencyMask::TYPOGRAPHY_ANY)

@@ -154,7 +154,11 @@ TOKEN_READ = re.compile(
     r"|\bLineRole::|\bTextWeight::|\bBorderWidth::|\bStateLayer::|\bSurfaceRole::"
     r"|\bComponentRecipeId::|\brecipes\(\)|\bStatusRecipe::|\bOpacityTokens::"
     r"|\bShapeRole::|\bShapeRecipe::"
+    r"|\bTypographyTokens::|\bSpacingTokens::|\bBorderTokens::|\bMotionTokens::"
+    r"|\bFontSizeContext::|\btheme_intent::|\.typography\(\)|\.spacing\(\)"
+    r"|\.border\(\)|\.opacity\(\)|\.duration\(|\.easing\("
 )
+STATIC_TYPE_SCALE = re.compile(r"\btype_scale::")
 
 COLOR_ROLE = re.compile(r"\bSemanticColorRole::(\w+)")
 COLOR_LITERAL = re.compile(r"\brgba?8?\s*\(\s*\d")
@@ -467,11 +471,23 @@ def scan_module_constants(root: Path) -> list[dict[str, object]]:
     return files
 
 
+def scan_static_type_scale(root: Path) -> int:
+    """Count non-test lines under `root` still reading static `type_scale::` constants."""
+    total = 0
+    for path in rust_sources(root):
+        text = strip_rust(path.read_text(encoding="utf-8", errors="replace"))
+        for line in text.splitlines():
+            if STATIC_TYPE_SCALE.search(line):
+                total += 1
+    return total
+
+
 def scan() -> dict[str, object]:
     root = REPO_ROOT / COMPONENT_ROOT
     components = scan_components(root)
     shared = scan_shared_authority(root)
     constants = scan_module_constants(root)
+    static_type_scale = scan_static_type_scale(root)
     totals = dict.fromkeys(COUNT_KEYS, 0)
     shared_totals = dict.fromkeys(COUNT_KEYS, 0)
     token_reads = 0
@@ -498,6 +514,7 @@ def scan() -> dict[str, object]:
             + shared_totals["motion"]
         ),
         "module_constants": sum(int(entry["count"]) for entry in constants),
+        "static_type_scale": static_type_scale,
         "components": components,
         "shared_authority": shared,
         "constant_files": constants,
@@ -586,6 +603,9 @@ def markdown(report: dict[str, object], top: int) -> str:
         lines.append(f"| `{key}` | {totals[key]} |")  # type: ignore[index]
     lines.append(f"| `token_read` lines | {report['token_reads']} |")
     lines.append(f"| module design constants | {report['module_constants']} |")
+    lines.append(
+        f"| static `type_scale::` production lines | {report.get('static_type_scale', 0)} |"
+    )
     lines.append(f"| **local values to migrate** | **{report['local_values']}** |")
     lines.append("")
     shared_totals = report["shared_totals"]  # type: ignore[index]
@@ -674,6 +694,14 @@ def main(argv: list[str] | None = None) -> int:
                     "module_constants",
                     baseline.get("module_constants", 0),
                     report["module_constants"],
+                )
+            )
+        if report["static_type_scale"] > baseline.get("static_type_scale", 0):
+            grew.append(
+                (
+                    "static_type_scale",
+                    baseline.get("static_type_scale", 0),
+                    report["static_type_scale"],
                 )
             )
         if grew:

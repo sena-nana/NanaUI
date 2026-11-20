@@ -1721,3 +1721,444 @@ fn nested_scope_metrics_patch_and_rapid_toggle_preserve_isolation() {
         );
     }
 }
+
+#[test]
+fn live_typography_tokens_update_card_form_field_and_select_without_type_scale() {
+    use nana_ui_core::{ThemePatch, TypographyPatch, TypographyTokens};
+
+    let mut context = AppContext::new();
+    let doc = DocumentId::new(1).unwrap();
+
+    let scope = context
+        .create_component(
+            doc,
+            patched_stack(
+                ThemePatch::default().with_typography_patch(TypographyPatch {
+                    hint: Some(14.0),
+                    meta: Some(15.0),
+                    body: Some(17.0),
+                    regular: Some(450),
+                    medium: Some(550),
+                    semibold: Some(650),
+                    line: Some(21.0),
+                    ..Default::default()
+                }),
+            ),
+        )
+        .unwrap();
+
+    let card = || {
+        let mut s = crate::NodeStyle::default();
+        let l = Arc::make_mut(&mut s.layout);
+        l.width = Some(LengthSpec::Px(220.0));
+        l.height = Some(LengthSpec::Px(80.0));
+        crate::Card::new().title("Summary").style(s)
+    };
+    let scoped_card = context.create_component(doc, card()).unwrap();
+    let root_card = context.create_component(doc, card()).unwrap();
+
+    let scoped_field = context
+        .create_component(doc, crate::FormField::new("Name").hint("Help"))
+        .unwrap();
+    let root_field = context
+        .create_component(doc, crate::FormField::new("Name").hint("Help"))
+        .unwrap();
+
+    let scoped_small_field = context
+        .create_component(
+            doc,
+            crate::FormField::new("Meta").size(nana_ui_core::ControlSize::Small),
+        )
+        .unwrap();
+    let root_small_field = context
+        .create_component(
+            doc,
+            crate::FormField::new("Meta").size(nana_ui_core::ControlSize::Small),
+        )
+        .unwrap();
+
+    let select = || crate::Select::new(Some("a")).options([crate::SelectOption::new("a", "Alpha")]);
+    let scoped_select = context.create_component(doc, select()).unwrap();
+    let root_select = context.create_component(doc, select()).unwrap();
+
+    context.append_child(scope, scoped_card).unwrap();
+    context.append_child(scope, scoped_field).unwrap();
+    context.append_child(scope, scoped_small_field).unwrap();
+    context.append_child(scope, scoped_select).unwrap();
+    layout(&mut context, doc);
+
+    let text_ops = |id: StableNodeId| -> Vec<(f32, Option<u16>)> {
+        let extracted = context.world().extract_nodes(&[id]);
+        let paint = extracted[0].widget_paint.as_deref().unwrap();
+        paint
+            .ops
+            .iter()
+            .filter_map(|tagged| match &tagged.op {
+                crate::WidgetPaintOp::Text(t) => Some((t.font_size, t.font_weight)),
+                _ => None,
+            })
+            .collect()
+    };
+
+    assert_eq!(text_ops(scoped_card.stable_id()), vec![(17.0, Some(650))]);
+    assert_eq!(
+        text_ops(root_card.stable_id()),
+        vec![(
+            TypographyTokens::DEFAULT.body,
+            Some(TypographyTokens::DEFAULT.semibold),
+        )]
+    );
+
+    assert_eq!(
+        text_ops(scoped_field.stable_id()),
+        vec![(15.0, Some(550)), (14.0, None)]
+    );
+    assert_eq!(
+        text_ops(root_field.stable_id()),
+        vec![
+            (
+                TypographyTokens::DEFAULT.meta,
+                Some(TypographyTokens::DEFAULT.medium),
+            ),
+            (TypographyTokens::DEFAULT.hint, None),
+        ]
+    );
+    assert_eq!(
+        text_ops(scoped_small_field.stable_id()),
+        vec![(14.0, Some(450))]
+    );
+    assert_eq!(
+        text_ops(root_small_field.stable_id()),
+        vec![(
+            TypographyTokens::DEFAULT.hint,
+            Some(TypographyTokens::DEFAULT.regular),
+        )]
+    );
+
+    assert_eq!(text_ops(scoped_select.stable_id()), vec![(17.0, None)]);
+    assert_eq!(
+        text_ops(root_select.stable_id()),
+        vec![(TypographyTokens::DEFAULT.body, None)]
+    );
+}
+
+#[test]
+fn live_opacity_tokens_disabled_updates_icon_button_and_property_grid() {
+    use nana_ui_core::{OpacityPatch, ThemeAppearance, ThemePatch, builtin_theme_arc};
+
+    let mut context = AppContext::new();
+    let doc = DocumentId::new(1).unwrap();
+
+    let root = context.create_component(doc, Stack::column(0.0)).unwrap();
+    let scope = context
+        .create_component(
+            doc,
+            patched_stack(ThemePatch::default().with_opacity_patch(OpacityPatch {
+                disabled: Some(0.25),
+                ..Default::default()
+            })),
+        )
+        .unwrap();
+    let root_btn = context
+        .create_component(
+            doc,
+            crate::IconButton::new(nana_ui_core::Icon::Add, "Root").disabled(true),
+        )
+        .unwrap();
+    let scoped_btn = context
+        .create_component(
+            doc,
+            crate::IconButton::new(nana_ui_core::Icon::Add, "Scoped").disabled(true),
+        )
+        .unwrap();
+
+    context.append_child(root, root_btn).unwrap();
+    context.append_child(root, scope).unwrap();
+    context.append_child(scope, scoped_btn).unwrap();
+
+    let sections = || {
+        vec![crate::PropertySection::new(
+            "s",
+            "Section",
+            [
+                crate::PropertyRow::new("x", "X"),
+                crate::PropertyRow::new("y", "Y").disabled(Some("locked")),
+            ],
+        )]
+    };
+    context
+        .mount_view(root.stable_id(), move || {
+            crate::view::widget(crate::PropertyGrid::new(sections())).children((
+                crate::view::widget(crate::ScrubField::new(1.0)).key("x"),
+                crate::view::widget(crate::ScrubField::new(2.0)).key("y"),
+            ))
+        })
+        .unwrap();
+    let root_grid = Entity::<crate::PropertyGrid>::from_stable_id(
+        context
+            .world()
+            .node(root.stable_id())
+            .unwrap()
+            .children
+            .last()
+            .copied()
+            .unwrap(),
+    );
+
+    context
+        .mount_view(scope.stable_id(), move || {
+            crate::view::widget(crate::PropertyGrid::new(sections())).children((
+                crate::view::widget(crate::ScrubField::new(1.0)).key("x"),
+                crate::view::widget(crate::ScrubField::new(2.0)).key("y"),
+            ))
+        })
+        .unwrap();
+    let scoped_grid = Entity::<crate::PropertyGrid>::from_stable_id(
+        context
+            .world()
+            .node(scope.stable_id())
+            .unwrap()
+            .children
+            .last()
+            .copied()
+            .unwrap(),
+    );
+
+    layout(&mut context, doc);
+
+    let root_disabled_slot = context
+        .read(root_grid, |g| {
+            g.parts.as_ref().unwrap().sections[0].rows[1].slot
+        })
+        .unwrap();
+    let scoped_disabled_slot = context
+        .read(scoped_grid, |g| {
+            g.parts.as_ref().unwrap().sections[0].rows[1].slot
+        })
+        .unwrap();
+
+    assert_eq!(
+        context
+            .world()
+            .layout_style(root_btn.stable_id())
+            .unwrap()
+            .opacity,
+        Some(0.5)
+    );
+    assert_eq!(
+        context
+            .world()
+            .layout_style(root_disabled_slot)
+            .unwrap()
+            .opacity,
+        Some(0.5)
+    );
+    assert_eq!(
+        context
+            .world()
+            .layout_style(scoped_btn.stable_id())
+            .unwrap()
+            .opacity,
+        Some(0.25)
+    );
+    assert_eq!(
+        context
+            .world()
+            .layout_style(scoped_disabled_slot)
+            .unwrap()
+            .opacity,
+        Some(0.25)
+    );
+
+    // Root `install_theme` updates un-scoped disabled controls while keeping the scope intact.
+    let base = builtin_theme_arc(ThemeAppearance::Dark);
+    let next_root = Arc::new(
+        ThemePatch::default()
+            .with_opacity_patch(OpacityPatch {
+                disabled: Some(0.35),
+                ..Default::default()
+            })
+            .apply_to_compiled(&base)
+            .unwrap(),
+    );
+    context.set_theme_tokens(next_root).unwrap();
+    layout(&mut context, doc);
+
+    assert_eq!(
+        context
+            .world()
+            .layout_style(root_btn.stable_id())
+            .unwrap()
+            .opacity,
+        Some(0.35)
+    );
+    assert_eq!(
+        context
+            .world()
+            .layout_style(root_disabled_slot)
+            .unwrap()
+            .opacity,
+        Some(0.35)
+    );
+    assert_eq!(
+        context
+            .world()
+            .layout_style(scoped_btn.stable_id())
+            .unwrap()
+            .opacity,
+        Some(0.25)
+    );
+    assert_eq!(
+        context
+            .world()
+            .layout_style(scoped_disabled_slot)
+            .unwrap()
+            .opacity,
+        Some(0.25)
+    );
+
+    // Live `ThemeScope` patch update also reprojects disabled `IconButton` & `PropertyGrid`.
+    let mut update_scope = MutationQueue::new();
+    update_scope.set_style(
+        scope.stable_id(),
+        NodeStyle {
+            theme_patch: Some(Arc::new(ThemePatch::default().with_opacity_patch(
+                OpacityPatch {
+                    disabled: Some(0.15),
+                    ..Default::default()
+                },
+            ))),
+            ..NodeStyle::default()
+        },
+    );
+    context.commit_mutations(update_scope).unwrap();
+    layout(&mut context, doc);
+
+    assert_eq!(
+        context
+            .world()
+            .layout_style(scoped_btn.stable_id())
+            .unwrap()
+            .opacity,
+        Some(0.15)
+    );
+    assert_eq!(
+        context
+            .world()
+            .layout_style(scoped_disabled_slot)
+            .unwrap()
+            .opacity,
+        Some(0.15)
+    );
+}
+
+#[test]
+fn live_motion_tokens_drive_sidebar_and_menu_surface_animations() {
+    use nana_ui_core::{Easing, MotionPatch, ThemeAppearance, ThemePatch, builtin_theme_arc};
+
+    let mut context = AppContext::new();
+    let doc = DocumentId::new(1).unwrap();
+
+    let base = builtin_theme_arc(ThemeAppearance::Dark);
+    let custom_motion = Arc::new(
+        ThemePatch::default()
+            .with_motion_patch(MotionPatch {
+                sidebar_collapse_ms: Some(400),
+                expand_easing: Some(Easing::Linear),
+                menu_opacity_ms: Some(320),
+                menu_pop_ms: Some(360),
+                standard_easing: Some(Easing::Linear),
+                emphasized_easing: Some(Easing::EaseInOutCubic),
+                ..Default::default()
+            })
+            .apply_to_compiled(&base)
+            .unwrap(),
+    );
+    context.set_theme_tokens(custom_motion).unwrap();
+
+    let section = context
+        .create_component(
+            doc,
+            crate::SidebarSection::new("Files")
+                .collapsible(true)
+                .expanded(true),
+        )
+        .unwrap();
+    layout(&mut context, doc);
+
+    // 1. Sidebar toggle uses overridden `sidebar_collapse_ms` (400ms > 260ms default) and `Linear`.
+    assert!(context.activate_sidebar_section(section).unwrap());
+    let sidebar_anim = crate::component_animation_id(
+        crate::component_animation_kinds::SIDEBAR,
+        section.stable_id(),
+    )
+    .expect("sidebar animation id");
+    assert!(context.world().animation_is_active(sidebar_anim));
+
+    let _ = context.advance_animations(std::time::Duration::from_millis(270));
+    assert!(
+        context.world().animation_is_active(sidebar_anim),
+        "400ms sidebar animation must still run after default 260ms elapsed"
+    );
+    let linear_progress = context.read(section, |s| s.animation_progress).unwrap();
+    assert!(
+        (linear_progress - (1.0 - 270.0 / 400.0)).abs() < 0.02,
+        "expected linear collapse progress near 0.325, got {linear_progress}"
+    );
+    let _ = context.advance_animations(std::time::Duration::from_millis(410));
+    assert!(!context.world().animation_is_active(sidebar_anim));
+
+    // 2. Menu open created at `t = 410ms` uses overridden `menu_opacity_ms` (320ms) and `menu_pop_ms` (360ms).
+    let host = context
+        .create_component(doc, crate::OverlayHost::new())
+        .unwrap();
+    let menu = context
+        .create_component(doc, crate::ActionMenu::new().open(true))
+        .unwrap();
+    let menu_item = context
+        .create_component(doc, crate::ActionMenuItem::new("Build"))
+        .unwrap();
+    context.append_child(host, menu).unwrap();
+    context.append_child(menu, menu_item).unwrap();
+    assert!(context.activate_overlay(host, menu).unwrap());
+    let work = context.compat_world_mut().take_system_work();
+    context
+        .compat_world_mut()
+        .resolve_styles(&work.style)
+        .unwrap();
+
+    let surface_anim =
+        crate::component_animation_id(crate::component_animation_kinds::SURFACE, menu.stable_id())
+            .expect("menu surface fade animation id");
+    let pop_anim = crate::component_animation_id(
+        crate::component_animation_kinds::SURFACE_POP,
+        menu.stable_id(),
+    )
+    .expect("menu surface pop animation id");
+    assert!(context.world().animation_is_active(surface_anim));
+    assert!(context.world().animation_is_active(pop_anim));
+
+    // `activate_overlay` started at `now = 410ms`.
+    let _ = context.advance_animations(std::time::Duration::from_millis(610));
+    assert!(
+        context.world().animation_is_active(surface_anim),
+        "320ms menu opacity animation must still run after default 160ms elapsed"
+    );
+    assert!(
+        context.world().animation_is_active(pop_anim),
+        "360ms menu pop animation must still run after default 180ms elapsed"
+    );
+
+    let _ = context.advance_animations(std::time::Duration::from_millis(740));
+    assert!(
+        !context.world().animation_is_active(surface_anim),
+        "320ms menu opacity animation finishes by 330ms"
+    );
+    assert!(
+        context.world().animation_is_active(pop_anim),
+        "360ms menu pop animation stays active at 330ms"
+    );
+
+    let _ = context.advance_animations(std::time::Duration::from_millis(780));
+    assert!(!context.world().animation_is_active(pop_anim));
+}

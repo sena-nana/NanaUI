@@ -35,8 +35,6 @@ pub const DOCK_SPLIT_KEYBOARD_STEP: f32 = MIN_SPLIT_RATIO;
 
 const HANDLE_INDICATOR: f32 = nana_ui_core::space::XXS;
 const TITLE_PADDING_X: f32 = nana_ui_core::space::SM;
-const TITLE_SIZE: f32 = nana_ui_core::type_scale::HINT;
-const TITLE_WEIGHT: u16 = nana_ui_core::type_scale::SEMIBOLD;
 const TAB_OVERLAY_THICKNESS: f32 = nana_ui_core::space::XS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -2057,8 +2055,8 @@ fn title_style() -> NodeStyle {
     layout.flex_shrink = Some(0.0);
     layout.padding_left = Some(LengthSpec::Px(TITLE_PADDING_X));
     layout.padding_right = Some(LengthSpec::Px(TITLE_PADDING_X));
-    layout.font_size = Some(TITLE_SIZE);
-    layout.font_weight = Some(TITLE_WEIGHT);
+    crate::theme_intent::font(layout, nana_ui_core::TypeRole::Hint);
+    crate::theme_intent::weight(layout, nana_ui_core::TextWeight::Semibold);
     layout.white_space_nowrap = true;
     layout.text_overflow_ellipsis = true;
     style

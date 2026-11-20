@@ -116,7 +116,7 @@ impl DiffView {
         layout.overflow_x = OverflowSpec::Hidden;
         layout.overflow_y = OverflowSpec::Hidden;
         layout.text_ext.font_family = Some("Cascadia Mono".to_owned());
-        layout.font_size = Some(nana_ui_core::type_scale::META);
+        crate::theme_intent::font(layout, nana_ui_core::TypeRole::Meta);
         Self {
             hunks: hunks.into(),
             layout: DiffLayout::Unified,
@@ -406,9 +406,13 @@ fn mount_hunk(
     {
         let style = Arc::make_mut(&mut hunk_style.layout);
         style.direction = Some(FlexDirection::Column);
-        style.gap = Some(LengthSpec::Px(2.0));
-        style.padding = Some(LengthSpec::Px(8.0));
-        style.border_radius = Some(6.0);
+        style.gap = Some(LengthSpec::Px(nana_ui_core::space::XXS));
+        style.theme.gap = Some(crate::theme_intent::space(nana_ui_core::SpacingStep::Xxs));
+        style.padding = Some(LengthSpec::Px(nana_ui_core::space::MD));
+        style.theme.padding = Some(crate::theme_intent::space(nana_ui_core::SpacingStep::Md));
+        style.border_radius = Some(nana_ui_core::UI_METRICS.radius_sm);
+        style.theme.border_radius =
+            Some(nana_ui_core::ThemeToken::Radius(nana_ui_core::RadiusTier::Sm).into());
     }
     ui.with_child(
         format!("hunk-{hunk_index}"),

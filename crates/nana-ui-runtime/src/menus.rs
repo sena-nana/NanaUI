@@ -17,8 +17,6 @@ use crate::{
 
 const MENU_WIDTH: f32 = crate::popover::ACTION_MENU_WIDTH;
 use crate::popover::MENU_MIN_WIDTH;
-#[cfg(test)]
-const HINT_TEXT_SIZE: f32 = nana_ui_core::type_scale::HINT;
 const MENU_MIN_HEIGHT: f32 = nana_ui_core::ControlSize::Medium.height_in(nana_ui_core::UI_METRICS);
 
 fn default_menu_padding() -> f32 {
@@ -1698,6 +1696,8 @@ mod tests {
     use super::*;
     use crate::framework::AppContext;
     use crate::{Activate, DocumentId};
+
+    const HINT_TEXT_SIZE: f32 = nana_ui_core::TypographyTokens::DEFAULT.hint;
 
     fn document() -> DocumentId {
         DocumentId::new(1).unwrap()

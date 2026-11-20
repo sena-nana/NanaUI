@@ -350,6 +350,10 @@ pub struct OpacityPatch {
     pub danger_soft_pressed: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secondary_text: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice_tint: Option<f32>,
 }
 
 impl OpacityPatch {
@@ -376,6 +380,12 @@ impl OpacityPatch {
         if let Some(v) = self.secondary_text {
             target.secondary_text = v;
         }
+        if let Some(v) = self.disabled {
+            target.disabled = v;
+        }
+        if let Some(v) = self.notice_tint {
+            target.notice_tint = v;
+        }
         target
     }
 
@@ -388,6 +398,8 @@ impl OpacityPatch {
             danger_soft_hover: self.danger_soft_hover.or(outer.danger_soft_hover),
             danger_soft_pressed: self.danger_soft_pressed.or(outer.danger_soft_pressed),
             secondary_text: self.secondary_text.or(outer.secondary_text),
+            disabled: self.disabled.or(outer.disabled),
+            notice_tint: self.notice_tint.or(outer.notice_tint),
         }
     }
 
@@ -401,7 +413,7 @@ impl OpacityPatch {
         {
             mask = mask.union(ThemeDependencyMask::PALETTE);
         }
-        if self.secondary_text.is_some() {
+        if self.secondary_text.is_some() || self.disabled.is_some() || self.notice_tint.is_some() {
             mask = mask.union(ThemeDependencyMask::EFFECT);
         }
         mask

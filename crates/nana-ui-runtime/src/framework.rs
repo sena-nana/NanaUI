@@ -2622,7 +2622,8 @@ impl AppContext {
         let metrics_changed = changed.intersects(
             nana_ui_core::ThemeDependencyMask::METRICS
                 .union(nana_ui_core::ThemeDependencyMask::TYPOGRAPHY_ANY),
-        );
+        ) || self.world.installed_theme().opacity().disabled
+            != theme.opacity().disabled;
         let border_changed = self.world.installed_theme().border() != theme.border();
         let recipe_mask = if border_changed {
             changed.union(nana_ui_core::ThemeDependencyMask::RECIPE_ANY)
@@ -3230,6 +3231,13 @@ impl AppContext {
         }
         let now = self.component_lifecycle.now;
         let id = entity.id;
+        let (sidebar_duration, sidebar_easing) = {
+            let theme = self.world.node_theme(id);
+            (
+                theme.duration(nana_ui_core::MotionRole::SidebarCollapse),
+                theme.easing(nana_ui_core::EasingRole::Expand),
+            )
+        };
         self.update_component(entity, |section, cx| {
             let from = section.animation_progress;
             section.state.toggle(now);
@@ -3242,9 +3250,9 @@ impl AppContext {
                         animation,
                         id,
                         now,
-                        crate::SidebarSectionState::animation_duration(),
+                        sidebar_duration,
                         COMPONENT_FRAME_INTERVAL,
-                        crate::Easing::EaseInOutCubic,
+                        sidebar_easing,
                     )
                     .with_range(
                         crate::MotionValue::Scalar(from),

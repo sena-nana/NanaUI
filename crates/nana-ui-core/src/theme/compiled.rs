@@ -25,10 +25,11 @@
 use super::definition::ThemeIdentity;
 use super::recipe::CompiledRecipes;
 use super::tokens::{
-    BorderTokens, EffectTokens, ElevationRole, MotionRole, MotionTokens, ShadowToken,
-    SpacingTokens, SurfaceTokens, TypographyTokens,
+    BorderTokens, EasingRole, EffectTokens, ElevationRole, MotionRole, MotionTokens, OpacityTokens,
+    ShadowToken, SpacingTokens, SurfaceTokens, TypographyTokens,
 };
 use super::{ChromeRadii, ThemeAppearance, ThemeDefinition, ThemeId, ThemeMetrics};
+use crate::motion::Easing;
 use crate::style_model::{SemanticPalette, StyleModelRef};
 use std::borrow::Cow;
 use std::sync::{Arc, LazyLock};
@@ -164,6 +165,14 @@ impl CompiledTheme {
 
     pub const fn duration(&self, role: MotionRole) -> Duration {
         self.motion.duration(role)
+    }
+
+    pub const fn easing(&self, role: EasingRole) -> Easing {
+        self.motion.easing(role)
+    }
+
+    pub const fn opacity(&self) -> OpacityTokens {
+        self.style_model.opacity
     }
 
     pub const fn shadow(&self, role: ElevationRole) -> ShadowToken {

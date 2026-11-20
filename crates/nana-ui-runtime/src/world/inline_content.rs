@@ -129,9 +129,11 @@ impl UiWorld {
                 style.resolved_margin_against_fonts(
                     Some(inline_size),
                     nana_ui_core::FontSizeContext::new(
-                        nana_ui_core::type_scale::LINE,
+                        nana_ui_core::FontSizeContext::DEFAULT_ROOT_PX,
                         self.computed_style(child)
-                            .map_or(nana_ui_core::type_scale::LINE, |style| style.font_size),
+                            .map_or(nana_ui_core::FontSizeContext::DEFAULT_ROOT_PX, |style| {
+                                style.font_size
+                            }),
                     ),
                 )
             })

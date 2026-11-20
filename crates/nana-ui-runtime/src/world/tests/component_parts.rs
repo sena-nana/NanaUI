@@ -6487,12 +6487,13 @@ mod container_parts {
             let (mut cold, cold_card, _) = card_page(case, themed.then_some(&moved));
             assert_eq!(cold_card.stable_id(), card.stable_id());
             assert_matches_cold(&mut cx, &mut cold, document);
+            let id = card.stable_id();
             let band = if case.title {
-                crate::view_components::CARD_TITLE_BAND
+                let theme = cx.world().node_theme(id);
+                theme.typography().line_tall + theme.spacing().sm
             } else {
                 0.0
             };
-            let id = card.stable_id();
             assert_laid_out_before_children(
                 &cx,
                 id,

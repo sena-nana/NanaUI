@@ -11,12 +11,9 @@ use crate::{
 };
 
 /// Width of the drop-down arrow at the end of the field.
-pub(crate) const HANDLE_WIDTH: f32 = nana_ui_core::type_scale::LINE;
-const MENU_GAP: f32 = 0.0;
+pub(crate) const HANDLE_WIDTH: f32 = nana_ui_core::TypographyTokens::DEFAULT.line;
 /// The menu surface's stroke, inside its box: the rows scroll within it.
 const MENU_BORDER: f32 = nana_ui_core::HAIRLINE;
-/// Width of the leading check lane in a drop-down menu row.
-const MENU_CHECK_RESERVE: f32 = nana_ui_core::type_scale::LINE;
 /// Between a label and its hint, in the field and in a menu row.
 pub(crate) const HINT_GAP: f32 = nana_ui_core::space::MD;
 /// Between an option's picture and its label, in the field and in a menu
@@ -648,14 +645,17 @@ impl SelectVisual {
         let reverse = world
             .computed_style(id)
             .is_some_and(|style| style.direction == nana_ui_core::DirSpec::Rtl);
+        let typography = world.node_theme(id).typography();
         let measure = world.chrome_text_measure(id);
         let natural_label = self.fit_options.then(|| {
             self.options
                 .iter()
-                .map(|option| measure.width(&option.label, self.size.text_size(), None))
+                .map(|option| {
+                    measure.width(&option.label, self.size.text_size_in(typography), None)
+                })
                 .fold(0.0, f32::max)
         });
-        crate::layout_engine::parts::select_trigger_parts(
+        crate::layout_engine::parts::select_trigger_parts_in(
             content,
             self.size,
             &self.label,
@@ -665,6 +665,7 @@ impl SelectVisual {
             |text, size| measure.width(text, size, None),
             natural_label.or_else(|| world.text_natural_width(id)),
             reverse,
+            typography,
         )
     }
 
@@ -787,16 +788,20 @@ impl crate::WidgetVisual for SelectVisual {
         Some(self.overlay_mount)
     }
 
+    fn visual_parts_read_theme(&self) -> bool {
+        true
+    }
+
     fn intrinsic_chrome_content(
         &self,
-        _id: StableNodeId,
-        _world: &UiWorld,
+        id: StableNodeId,
+        world: &UiWorld,
     ) -> crate::WidgetVisualContent {
         if !self.fit_options {
             return crate::WidgetVisualContent::default();
         }
         crate::WidgetVisualContent {
-            width: HANDLE_WIDTH
+            width: world.node_theme(id).typography().line
                 + if self.options.iter().any(|option| option.image.is_some()) {
                     image_size(self.size) + IMAGE_GAP
                 } else {
@@ -905,6 +910,7 @@ impl crate::WidgetVisual for SelectVisual {
         }
         let center_x = geometry.handle.x + geometry.handle.width / 2.0;
         let center_y = geometry.handle.y + geometry.handle.height / 2.0;
+        let hairline = ctx.theme.border().hairline;
         for (index, width) in [8.0_f32, 6.0, 4.0, 2.0].into_iter().enumerate() {
             out.push(
                 3 + index as u64,
@@ -913,7 +919,7 @@ impl crate::WidgetVisual for SelectVisual {
                         x: center_x - width / 2.0,
                         y: center_y - 1.5 + index as f32,
                         width,
-                        height: 1.0,
+                        height: hairline,
                     },
                     fill: Some(geometry.handle_color),
                     ..Default::default()
@@ -1152,7 +1158,7 @@ pub(crate) fn select_geometry(
                     } else {
                         color(select_recipe.hint)
                     }),
-                    font_size: size.caption_size(),
+                    font_size: size.caption_size_in(theme.typography()),
                     font_weight: None,
                 },
             )
@@ -1169,7 +1175,7 @@ pub(crate) fn select_geometry(
             bounds: label_box,
             content: Arc::clone(label).into(),
             color: Some(text_color),
-            font_size: size.text_size(),
+            font_size: size.text_size_in(theme.typography()),
             font_weight: None,
         },
         hint,
@@ -1210,7 +1216,11 @@ fn select_menu_geometry(
     // Reserved for the whole menu when the menu *can* check, not when one
     // option currently is: deriving it from `any(checked)` shifted every label
     // 16px sideways the moment the first option became checked.
-    let check_reserve = if checkable { MENU_CHECK_RESERVE } else { 0.0 };
+    let check_reserve = if checkable {
+        theme.typography().line
+    } else {
+        0.0
+    };
     let surface = select_menu_surface(
         field,
         size,
@@ -1303,6 +1313,7 @@ fn select_menu_geometry(
                         palette,
                         opacity,
                         menu,
+                        theme.typography(),
                         measure,
                     )
                 })
@@ -1317,7 +1328,7 @@ fn select_menu_geometry(
                     } else {
                         menu.item_foreground
                     })),
-                    font_size: size.text_size(),
+                    font_size: size.text_size_in(theme.typography()),
                     font_weight: None,
                 },
                 rich_content: option.content.clone(),
@@ -1373,7 +1384,11 @@ pub(crate) fn select_menu_surface(
     let natural_height =
         menu_pad * 2.0 + count * item_height + (count - 1.0).max(0.0) * menu_item_gap;
     let (surface_y, height) = resolve_menu_vertical(field, natural_height, room);
-    let check_reserve = if checkable { MENU_CHECK_RESERVE } else { 0.0 };
+    let check_reserve = if checkable {
+        theme.typography().line
+    } else {
+        0.0
+    };
     // A row with a picture fronts its label with it; a menu that fits its
     // options holds that lane beside the widest label.
     let image_lane = image_size(size) + IMAGE_GAP;
@@ -1420,15 +1435,16 @@ fn menu_option_hint(
     palette: &SemanticPalette,
     opacity: nana_ui_core::OpacityTokens,
     menu: &nana_ui_core::MenuRecipe,
+    typography: nana_ui_core::TypographyTokens,
     measure: crate::text_width::ChromeTextMeasure<'_>,
 ) -> Option<ComponentTextRegion> {
     let hint = option.hint.as_ref().filter(|hint| !hint.is_empty())?;
-    let hint_size = size.caption_size();
+    let hint_size = size.caption_size_in(typography);
     let (new_label, hint_bounds) = crate::layout_engine::parts::menu_option_text_boxes(
         *label_box,
         &option.label,
         Some(hint),
-        size.text_size(),
+        size.text_size_in(typography),
         hint_size,
         HINT_GAP,
         nana_ui_core::space::XXXL,
@@ -1660,7 +1676,7 @@ fn resolve_menu_vertical(
     room: Option<crate::SelectMenuRoom>,
 ) -> (f32, f32) {
     let Some(room) = room else {
-        return (field.y + field.height + MENU_GAP, natural_height);
+        return (field.y + field.height, natural_height);
     };
     let surface = drop_down(field, field.width, natural_height, room);
     (surface.y, surface.height)
@@ -1703,7 +1719,7 @@ fn drop_down(field: LayoutBox, width: f32, height: f32, room: crate::SelectMenuR
         },
         nana_ui_core::PopoverPlacement::Bottom,
         nana_ui_core::PopoverAlignment::Start,
-        MENU_GAP,
+        0.0,
         crate::popover::AnchorOverflow::Cap,
     )
 }
@@ -1847,7 +1863,7 @@ mod tests {
     fn menu_opens_downwards_when_the_viewport_has_room() {
         let field = menu_field(100.0);
         let (y, height) = resolve_menu_vertical(field, 90.0, window(600.0));
-        assert_eq!(y, field.y + field.height + MENU_GAP);
+        assert_eq!(y, field.y + field.height);
         assert_eq!(height, 90.0);
     }
 
@@ -1858,7 +1874,7 @@ mod tests {
         let field = menu_field(500.0);
         let (y, height) = resolve_menu_vertical(field, 90.0, window(600.0));
         assert_eq!(height, 90.0, "a flipped menu keeps its natural height");
-        assert_eq!(y, field.y - MENU_GAP - 90.0);
+        assert_eq!(y, field.y - 90.0);
         assert!(y >= 0.0, "flipped menu stays inside the viewport");
     }
 
@@ -1885,7 +1901,7 @@ mod tests {
         });
         let field = menu_field(600.0);
         let (y, height) = resolve_menu_vertical(field, 200.0, room);
-        assert_eq!((y, height), (field.y + field.height + MENU_GAP, 200.0));
+        assert_eq!((y, height), (field.y + field.height, 200.0));
         let (y, height) = resolve_menu_vertical(field, 5_000.0, room);
         assert_eq!((y, height), (632.0, 318.0), "capped to the card's bottom");
         // Near the card's bottom it flips up and stops at the card's top.
@@ -1898,7 +1914,7 @@ mod tests {
     fn menu_without_a_laid_out_viewport_keeps_its_downward_placement() {
         let field = menu_field(500.0);
         let (y, height) = resolve_menu_vertical(field, 90.0, None);
-        assert_eq!(y, field.y + field.height + MENU_GAP);
+        assert_eq!(y, field.y + field.height);
         assert_eq!(height, 90.0);
     }
 

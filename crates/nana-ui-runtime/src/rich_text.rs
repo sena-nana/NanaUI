@@ -45,7 +45,7 @@ mod span_color;
 /// Unit advance used for backend-neutral hit testing. Scene paint owns real
 /// glyph metrics.
 pub const GRAPHEME_ADVANCE: f32 = nana_ui_core::space::MD;
-pub const LINE_HEIGHT: f32 = nana_ui_core::type_scale::LINE;
+pub const LINE_HEIGHT: f32 = nana_ui_core::TypographyTokens::DEFAULT.line;
 pub const BLOCK_GAP: f32 = 9.0;
 /// Inset of a fenced code block's text from its panel edge.
 pub const CODE_PANEL_PADDING_X: f32 = nana_ui_core::space::LG;
@@ -2314,7 +2314,7 @@ impl<'a> LayoutCursor<'a> {
         Self {
             measure: None,
             font_size: None,
-            font_weight: 400,
+            font_weight: nana_ui_core::TypographyTokens::DEFAULT.regular,
             font_italic: false,
             origin_x,
             max_width,

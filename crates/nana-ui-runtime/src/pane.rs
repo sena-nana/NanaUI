@@ -19,7 +19,6 @@ const fn chrome_height(metrics: nana_ui_core::ThemeMetrics) -> f32 {
 #[cfg(test)]
 const CHROME_HEIGHT: f32 = chrome_height(nana_ui_core::UI_METRICS);
 const CHROME_PADDING_X: f32 = nana_ui_core::space::MD;
-const ACTION_TEXT_SIZE: f32 = nana_ui_core::type_scale::HINT;
 const PANE_TREE_RATIO_MIN: f32 = 0.05;
 const PANE_TREE_RATIO_MAX: f32 = 0.95;
 
@@ -215,8 +214,8 @@ impl PaneChrome {
         layout.height = Some(LengthSpec::Fill);
         layout.padding_left = Some(LengthSpec::Px(0.0));
         layout.padding_right = Some(LengthSpec::Px(0.0));
-        if layout.font_size.is_none() {
-            layout.font_size = Some(nana_ui_core::type_scale::META);
+        if layout.font_size.is_none() && layout.theme.font_size.is_none() {
+            crate::theme_intent::font(layout, nana_ui_core::TypeRole::Meta);
         }
         if world.node_style(id) != Some(&style) {
             mutations.set_style(id, style);
@@ -356,7 +355,7 @@ fn project_chrome_action(
     style.background = None;
     style.text_vertical_alignment = crate::TextVerticalAlignment::Center;
     let layout = Arc::make_mut(&mut style.layout);
-    layout.font_size = Some(ACTION_TEXT_SIZE);
+    crate::theme_intent::font(layout, nana_ui_core::TypeRole::Hint);
     layout.flex_grow = Some(0.0);
     layout.flex_shrink = Some(0.0);
     layout.height = Some(LengthSpec::Fill);

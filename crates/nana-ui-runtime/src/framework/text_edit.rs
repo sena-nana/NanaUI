@@ -2434,7 +2434,7 @@ impl AppContext {
                 Some(crate::LayoutBox {
                     x: indicator_x,
                     y: indicator_y,
-                    width: 2.0,
+                    width: nana_ui_core::space::XXS,
                     height: indicator_height,
                 }),
             );

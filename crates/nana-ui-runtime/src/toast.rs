@@ -1048,7 +1048,7 @@ impl crate::WidgetVisual for ToastVisual {
                             bounds: dismiss,
                             content: crate::TextValue::from("×"),
                             color: ctx.style.color,
-                            font_size: 15.0,
+                            font_size: ctx.theme.typography().card_title,
                             font_weight: None,
                         },
                         ctx,

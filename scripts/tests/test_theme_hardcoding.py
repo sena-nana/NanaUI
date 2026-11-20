@@ -211,6 +211,19 @@ impl Default for Helper {
         self.assertLessEqual(
             report["module_constants"], baseline["module_constants"]
         )
+        self.assertLessEqual(
+            report["static_type_scale"],
+            baseline.get("static_type_scale", 0),
+            "production code reintroduced static type_scale:: constants",
+        )
+
+    def test_runtime_production_code_has_no_type_scale_constants(self):
+        report = audit.scan()
+        self.assertEqual(
+            report["static_type_scale"],
+            0,
+            "crates/nana-ui-runtime/src production code must not use static type_scale::*",
+        )
 
 
 

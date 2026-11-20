@@ -138,8 +138,8 @@ pub struct TerminalView {
 
 impl TerminalView {
     pub const CELL_WIDTH: f32 = nana_ui_core::space::MD;
-    pub const CELL_HEIGHT: f32 = nana_ui_core::type_scale::LINE_TALL;
-    pub const FONT_SIZE: f32 = nana_ui_core::type_scale::SECTION;
+    pub const CELL_HEIGHT: f32 = nana_ui_core::TypographyTokens::DEFAULT.line_tall;
+    pub const FONT_SIZE: f32 = nana_ui_core::TypographyTokens::DEFAULT.section;
 
     /// Replaces the node style wholesale.
     ///

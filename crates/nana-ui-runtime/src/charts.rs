@@ -347,7 +347,7 @@ impl ChartTooltip {
     pub const ROW_GAP: f32 = nana_ui_core::space::XS;
     pub const DOT: f32 = nana_ui_core::space::MD;
     pub const COLUMN_GAP: f32 = nana_ui_core::space::XXL;
-    pub const FONT: f32 = nana_ui_core::type_scale::META;
+    pub const FONT: f32 = nana_ui_core::TypographyTokens::DEFAULT.meta;
 
     pub(crate) fn new(content: Arc<TooltipContent>) -> Self {
         Self {
@@ -569,7 +569,7 @@ impl WidgetVisual for ChartVisual {
                     12,
                     WidgetPaintOp::Stroke(WidgetStroke {
                         points: vec![at(from), at(to)],
-                        width: 1.0,
+                        width: ctx.theme.border().hairline,
                         color: line_color,
                         cap: LineCap::Butt,
                         dash: Some(vec![4.0, 3.0]),
@@ -581,11 +581,12 @@ impl WidgetVisual for ChartVisual {
                 let c = at(center);
                 let (x0, y0) = (origin[0] + plot[0], origin[1] + plot[1]);
                 let (x1, y1) = (origin[0] + plot[2], origin[1] + plot[3]);
+                let hairline = ctx.theme.border().hairline;
                 output.push(
                     12,
                     WidgetPaintOp::Stroke(WidgetStroke {
                         points: vec![[c[0], y0], [c[0], y1]],
-                        width: 1.0,
+                        width: hairline,
                         color: line_color,
                         cap: LineCap::Butt,
                         dash: Some(vec![4.0, 3.0]),
@@ -596,7 +597,7 @@ impl WidgetVisual for ChartVisual {
                     13,
                     WidgetPaintOp::Stroke(WidgetStroke {
                         points: vec![[x0, c[1]], [x1, c[1]]],
-                        width: 1.0,
+                        width: hairline,
                         color: line_color,
                         cap: LineCap::Butt,
                         dash: Some(vec![4.0, 3.0]),
@@ -674,7 +675,9 @@ impl WidgetVisual for ChartTooltipVisual {
         let mut output = WidgetPaintOutput::new();
         let measure = ChromeLabelMeasure(ctx.world.chrome_text_measure(ctx.id));
         let palette = ctx.style_model.palette;
-        let line = ChartTooltip::line_height();
+        let typography = ctx.theme.typography();
+        let font_size = typography.meta;
+        let line = font_size + ctx.theme.spacing().xs;
         let left = ctx.bounds.x + ChartTooltip::PADDING_X;
         let right = ctx.bounds.x + ctx.bounds.width - ChartTooltip::PADDING_X;
         let mut y = ctx.bounds.y + ChartTooltip::PADDING_Y;
@@ -695,7 +698,7 @@ impl WidgetVisual for ChartTooltipVisual {
                         content: text.clone().into(),
                         color: Some(color),
                         paint_color: ctx.matching_text_paint(color),
-                        font_size: ChartTooltip::FONT,
+                        font_size,
                         font_weight: weight,
                         horizontal_alignment: TextHorizontalAlignment::Start,
                         vertical_alignment: TextVerticalAlignment::Center,
@@ -723,7 +726,7 @@ impl WidgetVisual for ChartTooltipVisual {
                 right - left,
                 &self.content.title,
                 palette.text.as_rgba_array(),
-                Some(ctx.theme.typography().medium),
+                Some(typography.medium),
             );
             y += line + ChartTooltip::ROW_GAP;
         }
@@ -740,7 +743,7 @@ impl WidgetVisual for ChartTooltipVisual {
                 dot_colors.push(color);
                 x += size + ctx.theme.spacing().sm;
             }
-            let value_width = measure.measure(&row.value, ChartTooltip::FONT)[0];
+            let value_width = measure.measure(&row.value, font_size)[0];
             push_text(
                 x,
                 y,
@@ -756,7 +759,7 @@ impl WidgetVisual for ChartTooltipVisual {
                     value_width + 1.0,
                     &row.value,
                     palette.text.as_rgba_array(),
-                    Some(ctx.theme.typography().medium),
+                    Some(typography.medium),
                 );
             }
             y += line + ChartTooltip::ROW_GAP;

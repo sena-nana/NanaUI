@@ -334,6 +334,21 @@ impl GraphCanvasVisual {
     /// Resolves `bounds`-relative node, port, edge, and grid geometry against `palette`.
     #[must_use]
     pub fn layout_at(&self, bounds: LayoutBox, palette: &SemanticPalette) -> GraphCanvasLayout {
+        self.layout_at_in(
+            bounds,
+            palette,
+            nana_ui_core::builtin_theme(nana_ui_core::ThemeAppearance::Dark),
+        )
+    }
+
+    pub(crate) fn layout_at_in(
+        &self,
+        bounds: LayoutBox,
+        palette: &SemanticPalette,
+        theme: &nana_ui_core::CompiledTheme,
+    ) -> GraphCanvasLayout {
+        let typography = theme.typography();
+        let hairline = theme.border().hairline;
         let mut painted_edges = Vec::new();
         let mut edge_labels = Vec::new();
         for edge in self.edges.iter().chain(self.connecting.as_ref()) {
@@ -349,15 +364,15 @@ impl GraphCanvasVisual {
                     LayoutBox {
                         x: bounds.x + center.x - 40.0,
                         y: bounds.y + center.y - 16.0,
-                        width: 80.0,
-                        height: 12.0,
+                        width: PORT_LABEL_WIDTH,
+                        height: typography.meta,
                     },
                 ) {
                     edge_labels.push(ComponentTextRegion {
                         bounds: label_bounds,
                         content: Arc::clone(label).into(),
                         color: Some(palette.muted.as_rgba_array()),
-                        font_size: nana_ui_core::type_scale::HINT,
+                        font_size: typography.hint,
                         font_weight: None,
                     });
                 }
@@ -384,7 +399,7 @@ impl GraphCanvasVisual {
                             x: node_bounds.x,
                             y: node_bounds.y + title_height,
                             width: node_bounds.width,
-                            height: 1.0,
+                            height: hairline,
                         },
                     )
                 {
@@ -408,9 +423,9 @@ impl GraphCanvasVisual {
                     }),
                     content: Arc::clone(&node.label).into(),
                     color: Some(palette.text.as_rgba_array()),
-                    font_size: (nana_ui_core::type_scale::META * self.viewport_zoom)
-                        .clamp(NODE_TITLE_SIZE_MIN, nana_ui_core::type_scale::BODY),
-                    font_weight: Some(nana_ui_core::type_scale::MEDIUM),
+                    font_size: (typography.meta * self.viewport_zoom)
+                        .clamp(NODE_TITLE_SIZE_MIN, typography.body),
+                    font_weight: Some(typography.medium),
                 };
                 let fill = if node.selected {
                     palette.selected.as_rgba_array()
@@ -449,7 +464,7 @@ impl GraphCanvasVisual {
                 };
                 if self.viewport_zoom >= 0.72 && !port.label.is_empty() {
                     let (mut label, alignment) =
-                        port_label_region(bounds, port, palette.muted.as_rgba_array());
+                        port_label_region(bounds, port, palette.muted.as_rgba_array(), typography);
                     if let Some(clipped) =
                         crate::world::intersect_layout_boxes(bounds, label.bounds)
                     {
@@ -478,6 +493,7 @@ impl GraphCanvasVisual {
                 self.viewport_offset_x,
                 self.viewport_offset_y,
                 self.viewport_zoom,
+                hairline,
             ),
             background: palette.background.as_rgba_array(),
             grid_color: {
@@ -506,11 +522,12 @@ impl WidgetVisual for GraphCanvasVisual {
     fn theme_dependency_mask(&self) -> nana_ui_core::ThemeDependencyMask {
         nana_ui_core::ThemeDependencyMask::COLOR_ANY
             .union(nana_ui_core::ThemeDependencyMask::METRICS)
+            .union(nana_ui_core::ThemeDependencyMask::TYPOGRAPHY_ANY)
             .union(nana_ui_core::ThemeDependencyMask::RECIPE_SHAPE)
     }
 
     fn paint(&self, ctx: &WidgetPaintCtx<'_>) -> WidgetPaintOutput {
-        self.layout_at(ctx.bounds, &ctx.style_model.palette)
+        self.layout_at_in(ctx.bounds, &ctx.style_model.palette, ctx.theme)
             .to_widget_paint(ctx.bounds, ctx.chrome_radii, ctx.style)
     }
 }
@@ -580,6 +597,7 @@ fn graph_grid_lines(
     offset_x: f32,
     offset_y: f32,
     zoom: f32,
+    hairline: f32,
 ) -> Vec<LayoutBox> {
     if !base_spacing.is_finite() || base_spacing <= 0.0 {
         return Vec::new();
@@ -605,7 +623,7 @@ fn graph_grid_lines(
         lines.push(LayoutBox {
             x: bounds.x + x,
             y: bounds.y,
-            width: 1.0,
+            width: hairline,
             height: bounds.height,
         });
         x += spacing;
@@ -616,7 +634,7 @@ fn graph_grid_lines(
             x: bounds.x,
             y: bounds.y + y,
             width: bounds.width,
-            height: 1.0,
+            height: hairline,
         });
         y += spacing;
     }
@@ -627,31 +645,32 @@ fn port_label_region(
     bounds: LayoutBox,
     port: &GraphPortPaint,
     color: [f32; 4],
+    typography: nana_ui_core::TypographyTokens,
 ) -> (ComponentTextRegion, TextHorizontalAlignment) {
     let width = PORT_LABEL_WIDTH;
     let (x, y, height, align) = match port.side {
         GraphPortSide::Top => (
             port.x - nana_ui_core::space::PAGE_TIGHT * 2.0,
             port.y + nana_ui_core::space::MD,
-            nana_ui_core::type_scale::META,
+            typography.meta,
             TextHorizontalAlignment::Center,
         ),
         GraphPortSide::Right => (
             port.x - (width + nana_ui_core::space::MD),
             port.y - nana_ui_core::space::SM,
-            nana_ui_core::type_scale::SECTION,
+            typography.section,
             TextHorizontalAlignment::End,
         ),
         GraphPortSide::Bottom => (
             port.x - nana_ui_core::space::PAGE_TIGHT * 2.0,
             port.y - nana_ui_core::space::PAGE_TIGHT,
-            nana_ui_core::type_scale::META,
+            typography.meta,
             TextHorizontalAlignment::Center,
         ),
         GraphPortSide::Left => (
             port.x + nana_ui_core::space::MD,
             port.y - nana_ui_core::space::SM,
-            nana_ui_core::type_scale::SECTION,
+            typography.section,
             TextHorizontalAlignment::Start,
         ),
     };
@@ -679,7 +698,7 @@ impl UiWorld {
         let visual = self.widget_visual_as::<GraphCanvasVisual>(id)?;
         let bounds = self.component_layout_box(id)?;
         let style_model = self.node_style_model(id);
-        Some(visual.layout_at(bounds, &style_model.palette))
+        Some(visual.layout_at_in(bounds, &style_model.palette, self.node_theme(id)))
     }
 }
 

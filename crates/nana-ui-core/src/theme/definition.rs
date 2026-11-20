@@ -1284,13 +1284,15 @@ const SPACING_NAMES: [&str; 10] = [
     "spacing.page",
 ];
 
-const OPACITY_NAMES: [&str; 6] = [
+const OPACITY_NAMES: [&str; 8] = [
     "opacity.warning_soft",
     "opacity.warning_soft_hover",
     "opacity.warning_soft_pressed",
     "opacity.danger_soft_hover",
     "opacity.danger_soft_pressed",
     "opacity.secondary_text",
+    "opacity.disabled",
+    "opacity.notice_tint",
 ];
 
 const TYPE_SIZE_NAMES: [&str; 10] = [

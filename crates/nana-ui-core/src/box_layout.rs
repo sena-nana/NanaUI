@@ -1028,13 +1028,16 @@ pub struct FontSizeContext {
 impl Default for FontSizeContext {
     fn default() -> Self {
         Self {
-            root_px: 16.0,
-            element_px: 16.0,
+            root_px: Self::DEFAULT_ROOT_PX,
+            element_px: Self::DEFAULT_ROOT_PX,
         }
     }
 }
 
 impl FontSizeContext {
+    /// CSS initial `medium` (~16px) fallback root font size.
+    pub const DEFAULT_ROOT_PX: f32 = 16.0;
+
     pub fn new(root_px: f32, element_px: f32) -> Self {
         Self {
             root_px: root_px.max(0.0),

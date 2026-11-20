@@ -10,36 +10,47 @@ use crate::{
     MutationQueue, NodeKind, NodeStyle, SemanticPaint, StableNodeId, TextContent, UiWorld,
 };
 
-const SUPPORT_SIZE: f32 = nana_ui_core::type_scale::HINT;
-
 /// Line box a [`FormField`] reserves for its label at `size`.
 ///
 /// Layout writes this into `padding_top`; the painter places the label inside
 /// the same band. Both sides must read this one function.
 pub(crate) fn form_field_label_line(size: ControlSize) -> f32 {
-    let (label_size, _, _, _) = form_field_density(size);
-    ControlSize::nearest_text(label_size).line_height()
+    form_field_label_line_in(
+        size,
+        nana_ui_core::builtin_theme(nana_ui_core::ThemeAppearance::Dark),
+    )
+}
+
+pub(crate) fn form_field_label_line_in(
+    size: ControlSize,
+    theme: &nana_ui_core::CompiledTheme,
+) -> f32 {
+    let (label_size, _, _, _) = form_field_density_in(size, theme);
+    match ControlSize::nearest_text(label_size) {
+        ControlSize::Small | ControlSize::Medium => theme.typography().line,
+        ControlSize::Large => theme.typography().line_tall,
+    }
 }
 
 pub(crate) fn form_field_density(size: ControlSize) -> (f32, f32, SemanticColorRole, u16) {
+    form_field_density_in(
+        size,
+        nana_ui_core::builtin_theme(nana_ui_core::ThemeAppearance::Dark),
+    )
+}
+
+pub(crate) fn form_field_density_in(
+    size: ControlSize,
+    theme: &nana_ui_core::CompiledTheme,
+) -> (f32, f32, SemanticColorRole, u16) {
+    let spacing = theme.spacing();
+    let typography = theme.typography();
     let (gap, role, weight) = match size {
-        ControlSize::Small => (
-            nana_ui_core::space::XXS,
-            SemanticColorRole::Muted,
-            nana_ui_core::type_scale::REGULAR,
-        ),
-        ControlSize::Medium => (
-            nana_ui_core::space::XS,
-            SemanticColorRole::Text,
-            nana_ui_core::type_scale::MEDIUM,
-        ),
-        ControlSize::Large => (
-            nana_ui_core::space::SM,
-            SemanticColorRole::Text,
-            nana_ui_core::type_scale::MEDIUM,
-        ),
+        ControlSize::Small => (spacing.xxs, SemanticColorRole::Muted, typography.regular),
+        ControlSize::Medium => (spacing.xs, SemanticColorRole::Text, typography.medium),
+        ControlSize::Large => (spacing.sm, SemanticColorRole::Text, typography.medium),
     };
-    (size.caption_size(), gap, role, weight)
+    (size.caption_size_in(typography), gap, role, weight)
 }
 
 /// Label/hint/error wrapper. The control is an application-owned child.
@@ -115,7 +126,7 @@ impl FormField {
         // than guessing a leading factor: a label that wraps or a font with
         // taller metrics would otherwise overlap the control.
         let label_line = form_field_label_line(self.size);
-        let support_line = ControlSize::nearest_text(SUPPORT_SIZE).line_height();
+        let support_line = ControlSize::Small.line_height();
         layout.padding_top = Some(LengthSpec::Px(label_line + gap));
         layout.padding_bottom = Some(LengthSpec::Px(if self.support_text().is_some() {
             support_line + gap
@@ -241,6 +252,7 @@ impl crate::WidgetVisual for FormFieldVisual {
                 None,
             )
         });
+        let theme = world.node_theme(id);
         let reverse = world.right_to_left(id);
         Some(crate::layout_engine::parts::form_field_parts(
             bounds,
@@ -249,12 +261,15 @@ impl crate::WidgetVisual for FormFieldVisual {
             self.error.is_some(),
             support_measure,
             reverse,
+            theme,
         ))
     }
 
     fn paint(&self, ctx: &crate::WidgetPaintCtx<'_>) -> crate::WidgetPaintOutput {
-        let (label_size, _gap, label_role, label_weight) = form_field_density(self.size);
-        let label_height = form_field_label_line(self.size);
+        let typography = ctx.theme.typography();
+        let (label_size, _gap, label_role, label_weight) =
+            form_field_density_in(self.size, ctx.theme);
+        let label_height = form_field_label_line_in(self.size, ctx.theme);
         let support = self.error.as_ref().or(self.hint.as_ref());
         let support_role = if self.error.is_some() {
             SemanticColorRole::Danger
@@ -272,7 +287,7 @@ impl crate::WidgetVisual for FormFieldVisual {
                 });
         let support_bounds =
             crate::layout_engine::parts::part_bounds(&parts, crate::LayoutPartKind::Hint);
-        let support_height = nana_ui_core::type_scale::META.min(ctx.bounds.height);
+        let support_height = typography.meta.min(ctx.bounds.height);
         let support_y = (ctx.bounds.y + ctx.bounds.height - support_height).max(ctx.bounds.y);
         let indicator_lane =
             crate::layout_engine::parts::part_bounds(&parts, crate::LayoutPartKind::LeadingContent);
@@ -310,7 +325,7 @@ impl crate::WidgetVisual for FormFieldVisual {
                         }),
                         content: crate::TextValue::from(Arc::clone(message)),
                         color: Some(ctx.style_model.color(support_role).as_rgba_array()),
-                        font_size: SUPPORT_SIZE,
+                        font_size: typography.hint,
                         font_weight: None,
                     },
                     ctx,
@@ -632,7 +647,8 @@ mod tests {
             ))
         );
         // Support text reserves the line box for its own size, not the label's.
-        let support_line = ControlSize::nearest_text(SUPPORT_SIZE).line_height();
+        let support_line =
+            ControlSize::nearest_text(nana_ui_core::TypographyTokens::DEFAULT.hint).line_height();
         assert_eq!(
             style.layout.padding_bottom,
             Some(LengthSpec::Px(support_line + nana_ui_core::space::XXS))

@@ -148,13 +148,13 @@ impl crate::TextInputVisual {
             );
         }
         if let Some(grip) = geometry.resize_grip {
-            let rects: Arc<[LayoutBox]> = [4.0, 8.0]
+            let rects: Arc<[LayoutBox]> = [nana_ui_core::space::XS, nana_ui_core::space::MD]
                 .into_iter()
                 .map(|offset| LayoutBox {
                     x: grip.x + grip.width - offset,
                     y: grip.y + grip.height - 3.0,
-                    width: 2.0,
-                    height: 2.0,
+                    width: nana_ui_core::space::XXS,
+                    height: nana_ui_core::space::XXS,
                 })
                 .collect();
             out.push(
@@ -1317,6 +1317,7 @@ impl UiWorld {
         // wrap guide：全高竖线（贯穿内容区，随横向滚动平移）。
         // 与缩进参考线（slot 10，仅行内缩进深度）区分：列位置由
         // 选项给定且贯穿全高。
+        let hairline = self.node_theme(id).border().hairline;
         let wrap_guides = presentation
             .wrap_guides
             .iter()
@@ -1325,7 +1326,7 @@ impl UiWorld {
                     LayoutBox {
                         x: field_x(x),
                         y: content.y,
-                        width: 1.0,
+                        width: hairline,
                         height: content.height,
                     },
                     style_model.color(SemanticColorRole::Faint).as_rgba_array(),
@@ -1389,6 +1390,7 @@ impl UiWorld {
             deleted_color: git_color(crate::TextGitMarkKind::Deleted),
             ..crate::TextGitGutterGeometry::default()
         };
+        let mark_width = self.node_theme(id).spacing().xxs;
         for mark in &presentation.git_marks {
             let y = content.y + mark.y - scroll_y;
             // 视口外（上/下越界）的标记不产生图元。
@@ -1398,7 +1400,7 @@ impl UiWorld {
             let rect = LayoutBox {
                 x: bounds.x + border,
                 y,
-                width: 2.0,
+                width: mark_width,
                 height: mark.height,
             };
             match mark.kind {
@@ -1536,6 +1538,7 @@ impl UiWorld {
                 let head_line_end = value[head_line_start..]
                     .find('\n')
                     .map_or(value.len(), |index| head_line_start + index);
+                let hairline = self.node_theme(id).border().hairline;
                 crate::TextStickyLineGeometry {
                     panel: LayoutBox {
                         x: content.x,
@@ -1545,9 +1548,9 @@ impl UiWorld {
                     },
                     divider: LayoutBox {
                         x: content.x,
-                        y: content.y + line_height - 1.0,
+                        y: content.y + line_height - hairline,
                         width: content.width,
-                        height: 1.0,
+                        height: hairline,
                     },
                     text: crate::ComponentTextRegion {
                         bounds: LayoutBox {
@@ -1592,6 +1595,7 @@ impl UiWorld {
                 scroll_y,
                 line_height,
                 &style_model.palette,
+                self.node_theme(id),
             ))
         } else {
             None
@@ -1690,6 +1694,7 @@ impl UiWorld {
                                 bounds,
                                 size.text_size_in(self.node_theme(id).typography()),
                                 &style_model.palette,
+                                self.node_theme(id),
                             )
                         })
                 } else {
@@ -1713,6 +1718,7 @@ impl UiWorld {
                             bounds,
                             size.text_size_in(self.node_theme(id).typography()),
                             &style_model.palette,
+                            self.node_theme(id),
                         )
                     })
             },
@@ -1731,6 +1737,7 @@ impl UiWorld {
                             bounds,
                             size.text_size_in(self.node_theme(id).typography()),
                             &style_model.palette,
+                            self.node_theme(id),
                             self.chrome_text_measure(id),
                         )
                     })

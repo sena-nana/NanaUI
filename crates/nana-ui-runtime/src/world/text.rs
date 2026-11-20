@@ -1690,8 +1690,6 @@ pub(super) fn collect_non_whitespace_line_lengths(value: &str) -> Vec<u32> {
         .collect()
 }
 
-const DIAGNOSTIC_UNDERLINE: f32 = 2.0;
-const DIAGNOSTIC_LABEL_GAP: f32 = 8.0;
 const DIAGNOSTIC_LABEL_MAX_CHARS: usize = 80;
 
 fn truncate_diagnostic_message(message: &str) -> String {
@@ -1722,12 +1720,15 @@ fn derive_diagnostic_decorations(
     style: &ComputedStyle,
     presentation_constraints: crate::TextShapeConstraints,
     line_height: f32,
+    theme: &nana_ui_core::CompiledTheme,
     shaper: &mut (impl TextShaper + ?Sized),
 ) -> (
     Vec<TextDiagnosticMark>,
     Vec<TextDiagnosticLabel>,
     Vec<TextDiagnosticHit>,
 ) {
+    let underline = theme.spacing().xxs;
+    let label_gap = theme.spacing().md;
     let mut marks = Vec::new();
     let mut hits = Vec::new();
     struct LineWinner {
@@ -1756,9 +1757,9 @@ fn derive_diagnostic_decorations(
                 marks.push(TextDiagnosticMark {
                     rect: LayoutBox {
                         x: rect.x,
-                        y: rect.y + rect.height - DIAGNOSTIC_UNDERLINE,
+                        y: rect.y + rect.height - underline,
                         width: rect.width.max(1.0),
-                        height: DIAGNOSTIC_UNDERLINE,
+                        height: underline,
                     },
                     severity: span.severity,
                 });
@@ -1803,7 +1804,7 @@ fn derive_diagnostic_decorations(
             shaper.text_position(id, &source.text, end, style, presentation_constraints);
         let width = measure.width(&winner.message, font_size, None).max(1.0);
         let rect = LayoutBox {
-            x: x + DIAGNOSTIC_LABEL_GAP,
+            x: x + label_gap,
             y,
             width,
             height: height.max(line_height),
@@ -1863,12 +1864,33 @@ pub(super) fn text_input_presentation_constraints(
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn shape_text_input_presentation(
     id: StableNodeId,
     source: TextInputPresentationSource,
     style: &ComputedStyle,
     constraints: crate::TextShapeConstraints,
     previous_overlays: &crate::components::TextOverlayMetrics,
+    shaper: &mut impl TextShaper,
+) -> TextInputPresentation {
+    shape_text_input_presentation_in_theme(
+        id,
+        source,
+        style,
+        constraints,
+        previous_overlays,
+        nana_ui_core::builtin_theme(nana_ui_core::ThemeAppearance::Dark),
+        shaper,
+    )
+}
+
+pub(super) fn shape_text_input_presentation_in_theme(
+    id: StableNodeId,
+    source: TextInputPresentationSource,
+    style: &ComputedStyle,
+    constraints: crate::TextShapeConstraints,
+    previous_overlays: &crate::components::TextOverlayMetrics,
+    theme: &nana_ui_core::CompiledTheme,
     shaper: &mut impl TextShaper,
 ) -> TextInputPresentation {
     let presentation_constraints = text_input_presentation_constraints(
@@ -1909,6 +1931,7 @@ pub(super) fn shape_text_input_presentation(
                 style,
                 presentation_constraints,
                 previous_overlays,
+                theme,
                 shaper,
             )
         });
@@ -1922,6 +1945,7 @@ fn shape_text_input_probes(
     style: &ComputedStyle,
     presentation_constraints: crate::TextShapeConstraints,
     previous_overlays: &crate::components::TextOverlayMetrics,
+    theme: &nana_ui_core::CompiledTheme,
     shaper: &mut dyn TextShaper,
 ) -> TextInputPresentation {
     let (caret_x, caret_y, line_height) = shaper.text_caret_position(
@@ -1959,6 +1983,7 @@ fn shape_text_input_probes(
             style,
             presentation_constraints,
             line_height,
+            theme,
             shaper,
         )
     } else {
@@ -2050,7 +2075,7 @@ fn shape_text_input_probes(
                     )
                     .into_iter()
                     .next()?;
-                Some(layout_atom_chip(rect, atom))
+                Some(layout_atom_chip(rect, atom, theme))
             })
             .collect()
     } else {
@@ -2511,16 +2536,22 @@ fn shape_text_input_probes(
     }
 }
 
-const ATOM_CHIP_PAD_X: f32 = 4.0;
-const ATOM_CHIP_PAD_Y: f32 = 2.0;
-const ATOM_CHIP_GAP: f32 = 5.0;
-const ATOM_CHIP_ICON: f32 = 13.0;
-const ATOM_CHIP_CLOSE: f32 = 16.0;
-const ATOM_CHIP_LABEL: f32 = 12.0;
-
-fn layout_atom_chip(rect: LayoutBox, atom: &crate::TextAtomSpan) -> crate::TextAtomChip {
-    let min_width = ATOM_CHIP_PAD_X * 2.0 + ATOM_CHIP_ICON + ATOM_CHIP_GAP + ATOM_CHIP_CLOSE;
-    let height = rect.height.max(ATOM_CHIP_CLOSE + ATOM_CHIP_PAD_Y * 2.0);
+fn layout_atom_chip(
+    rect: LayoutBox,
+    atom: &crate::TextAtomSpan,
+    theme: &nana_ui_core::CompiledTheme,
+) -> crate::TextAtomChip {
+    let spacing = theme.spacing();
+    let border = theme.border();
+    let typography = theme.typography();
+    let pad_x = spacing.xs;
+    let pad_y = spacing.xxs;
+    let gap = spacing.xs + border.hairline;
+    let icon = typography.body;
+    let close_size = typography.line;
+    let label_size = typography.meta;
+    let min_width = pad_x * 2.0 + icon + gap + close_size;
+    let height = rect.height.max(close_size + pad_y * 2.0);
     let bounds = LayoutBox {
         x: rect.x,
         y: rect.y + (rect.height - height).max(0.0) * 0.5,
@@ -2528,19 +2559,19 @@ fn layout_atom_chip(rect: LayoutBox, atom: &crate::TextAtomSpan) -> crate::TextA
         height,
     };
     let icon_bounds = LayoutBox {
-        x: bounds.x + ATOM_CHIP_PAD_X,
-        y: bounds.y + (bounds.height - ATOM_CHIP_ICON) * 0.5,
-        width: ATOM_CHIP_ICON,
-        height: ATOM_CHIP_ICON,
+        x: bounds.x + pad_x,
+        y: bounds.y + (bounds.height - icon) * 0.5,
+        width: icon,
+        height: icon,
     };
     let close = LayoutBox {
-        x: bounds.x + bounds.width - ATOM_CHIP_PAD_X - ATOM_CHIP_CLOSE,
-        y: bounds.y + (bounds.height - ATOM_CHIP_CLOSE) * 0.5,
-        width: ATOM_CHIP_CLOSE,
-        height: ATOM_CHIP_CLOSE,
+        x: bounds.x + bounds.width - pad_x - close_size,
+        y: bounds.y + (bounds.height - close_size) * 0.5,
+        width: close_size,
+        height: close_size,
     };
-    let label_x = icon_bounds.x + ATOM_CHIP_ICON + ATOM_CHIP_GAP;
-    let label_width = (close.x - ATOM_CHIP_GAP - label_x).max(0.0);
+    let label_x = icon_bounds.x + icon + gap;
+    let label_width = (close.x - gap - label_x).max(0.0);
     crate::TextAtomChip {
         bounds,
         close,
@@ -2555,8 +2586,8 @@ fn layout_atom_chip(rect: LayoutBox, atom: &crate::TextAtomSpan) -> crate::TextA
             },
             content: Arc::clone(&atom.label).into(),
             color: None,
-            font_size: ATOM_CHIP_LABEL,
-            font_weight: Some(650),
+            font_size: label_size,
+            font_weight: Some(typography.semibold),
         },
         token: Arc::clone(&atom.token),
         start: atom.start,
@@ -2574,6 +2605,8 @@ pub(super) struct OverlayAnchor {
     pub(super) line_height: f32,
 }
 
+const TEXT_OVERLAY_MAX_WIDTH: f32 = 420.0;
+
 /// minimap 竖条几何：内容区右缘 64px 面板、1px 分隔线、按非空白行长
 /// 定宽的 2px 行条（文档超出条高容纳量时按整数步长抽稀）与跟随滚动的
 /// 半透明视口指示器。绘制与指针导航共用同一投影（行换算见
@@ -2584,7 +2617,9 @@ pub(crate) fn text_minimap_geometry(
     scroll_y: f32,
     line_height: f32,
     palette: &SemanticPalette,
+    theme: &nana_ui_core::CompiledTheme,
 ) -> crate::TextMinimapGeometry {
+    let hairline = theme.border().hairline;
     let line_count = lengths.len();
     let panel = LayoutBox {
         x: (content.x + content.width - crate::components::TEXT_MINIMAP_STRIP_WIDTH).max(content.x),
@@ -2595,9 +2630,9 @@ pub(crate) fn text_minimap_geometry(
         height: content.height,
     };
     let separator = LayoutBox {
-        x: panel.x - 1.0,
+        x: panel.x - hairline,
         y: panel.y,
-        width: 1.0,
+        width: hairline,
         height: panel.height,
     };
     let capacity =
@@ -2638,7 +2673,7 @@ pub(crate) fn text_minimap_geometry(
                 .min(line_count as f32)
                 .max(first_line + 1.0)
                 * pitch;
-        let height = (bottom - y).clamp(2.0, panel.height);
+        let height = (bottom - y).clamp(theme.spacing().xxs, panel.height);
         let y = y.clamp(panel.y, (panel.y + panel.height - height).max(panel.y));
         Some(LayoutBox {
             x: panel.x,
@@ -2672,11 +2707,11 @@ pub(super) fn anchored_overlay_panel(
     height: f32,
     viewport: LayoutBox,
     gap: f32,
+    viewport_pad: f32,
 ) -> LayoutBox {
-    const VIEWPORT_PAD: f32 = 2.0;
     let viewport_bottom = viewport.y + viewport.height;
-    let min_y = viewport.y + VIEWPORT_PAD;
-    let max_y = (viewport_bottom - VIEWPORT_PAD - height).max(min_y);
+    let min_y = viewport.y + viewport_pad;
+    let max_y = (viewport_bottom - viewport_pad - height).max(min_y);
     let mut y = anchor.line_top + anchor.line_height + gap;
     if y > max_y {
         let flipped = anchor.line_top - gap - height;
@@ -2685,8 +2720,8 @@ pub(super) fn anchored_overlay_panel(
         }
     }
     let y = y.clamp(min_y, max_y);
-    let min_x = viewport.x + VIEWPORT_PAD;
-    let max_x = (viewport.x + viewport.width - VIEWPORT_PAD - width).max(min_x);
+    let min_x = viewport.x + viewport_pad;
+    let max_x = (viewport.x + viewport.width - viewport_pad - width).max(min_x);
     let x = anchor.x.clamp(min_x, max_x);
     LayoutBox {
         x,
@@ -2709,10 +2744,13 @@ pub(super) fn completion_popup_geometry(
     viewport: LayoutBox,
     font_size: f32,
     palette: &SemanticPalette,
+    theme: &nana_ui_core::CompiledTheme,
 ) -> Option<crate::TextCompletionPopup> {
-    const GAP: f32 = 12.0;
-    const V_PAD: f32 = 4.0;
-    const ROW_GAP_ABOVE_BELOW: f32 = 4.0;
+    let spacing = theme.spacing();
+    let gap = spacing.xl;
+    let v_pad = spacing.xs;
+    let row_gap_above_below = spacing.xs;
+    let viewport_pad = spacing.xxs;
     let items = &state.items;
     if items.is_empty() {
         return None;
@@ -2725,16 +2763,16 @@ pub(super) fn completion_popup_geometry(
     let label_w = metrics.label_width;
     let mut content = label_w;
     let show_detail = metrics.detail_width > 0.0
-        && content + GAP + metrics.detail_width
+        && content + gap + metrics.detail_width
             <= crate::components::TEXT_COMPLETION_MAX_CONTENT_WIDTH;
     if show_detail {
-        content += GAP + metrics.detail_width;
+        content += gap + metrics.detail_width;
     }
     let show_kind = metrics.kind_width > 0.0
-        && content + GAP + metrics.kind_width
+        && content + gap + metrics.kind_width
             <= crate::components::TEXT_COMPLETION_MAX_CONTENT_WIDTH;
     if show_kind {
-        content += GAP + metrics.kind_width;
+        content += gap + metrics.kind_width;
     }
     let content = content.min(crate::components::TEXT_COMPLETION_MAX_CONTENT_WIDTH);
     let label_w = label_w.min(content);
@@ -2743,19 +2781,20 @@ pub(super) fn completion_popup_geometry(
     let panel = anchored_overlay_panel(
         anchor,
         (content + crate::components::TEXT_COMPLETION_PANEL_PAD * 2.0).max(0.0),
-        (visible_rows + doc_rows) as f32 * row_height + V_PAD * 2.0,
+        (visible_rows + doc_rows) as f32 * row_height + v_pad * 2.0,
         viewport,
-        ROW_GAP_ABOVE_BELOW,
+        row_gap_above_below,
+        viewport_pad,
     );
     let rows = visible
         .iter()
-        .scan(panel.y + V_PAD, |y, item| {
+        .scan(panel.y + v_pad, |y, item| {
             let label_line_y = *y;
             let has_doc = !item.doc.is_empty();
             *y += row_height * (1.0 + u8::from(has_doc) as f32);
             let label_rect_w = label_w.min(content);
             let detail_x =
-                panel.x + crate::components::TEXT_COMPLETION_PANEL_PAD + label_rect_w + GAP;
+                panel.x + crate::components::TEXT_COMPLETION_PANEL_PAD + label_rect_w + gap;
             let detail_rect = show_detail
                 .then_some(())
                 .filter(|_| !item.detail.is_empty())
@@ -2848,46 +2887,48 @@ pub(super) fn hover_popup_geometry(
     viewport: LayoutBox,
     font_size: f32,
     palette: &SemanticPalette,
+    theme: &nana_ui_core::CompiledTheme,
 ) -> Option<crate::TextHoverPopup> {
-    const MAX_WIDTH: f32 = 420.0;
-    const H_PAD: f32 = 10.0;
-    const V_PAD: f32 = 6.0;
-    const TITLE_BODY_GAP: f32 = 4.0;
-    const VIEWPORT_GAP: f32 = 4.0;
+    let spacing = theme.spacing();
+    let h_pad = spacing.lg;
+    let v_pad = spacing.sm;
+    let title_body_gap = spacing.xs;
+    let viewport_gap = spacing.xs;
     let line_height = anchor.line_height.max(1.0);
     let body_lines: Vec<&str> = state.doc.body.lines().collect();
     let scroll = state.scroll.min(body_lines.len().saturating_sub(1));
     let visible = &body_lines
         [scroll..(scroll + crate::components::TEXT_HOVER_MAX_BODY_ROWS).min(body_lines.len())];
-    let width = MAX_WIDTH.min(viewport.width.max(1.0));
+    let width = TEXT_OVERLAY_MAX_WIDTH.min(viewport.width.max(1.0));
     let title_height = line_height;
     let panel = anchored_overlay_panel(
         anchor,
         width,
-        V_PAD * 2.0 + title_height + TITLE_BODY_GAP + visible.len() as f32 * line_height,
+        v_pad * 2.0 + title_height + title_body_gap + visible.len() as f32 * line_height,
         viewport,
-        VIEWPORT_GAP,
+        viewport_gap,
+        spacing.xxs,
     );
-    let content_width = (width - H_PAD * 2.0).max(0.0);
+    let content_width = (width - h_pad * 2.0).max(0.0);
     let title = crate::ComponentTextRegion {
         bounds: LayoutBox {
-            x: panel.x + H_PAD,
-            y: panel.y + V_PAD,
+            x: panel.x + h_pad,
+            y: panel.y + v_pad,
             width: content_width,
             height: title_height,
         },
         content: crate::TextValue::from(state.doc.title.as_str()),
         color: Some(palette.text.as_rgba_array()),
         font_size,
-        font_weight: Some(600),
+        font_weight: Some(theme.typography().semibold),
     };
     let body_rows = visible
         .iter()
         .enumerate()
         .map(|(index, line)| crate::ComponentTextRegion {
             bounds: LayoutBox {
-                x: panel.x + H_PAD,
-                y: panel.y + V_PAD + title_height + TITLE_BODY_GAP + index as f32 * line_height,
+                x: panel.x + h_pad,
+                y: panel.y + v_pad + title_height + title_body_gap + index as f32 * line_height,
                 width: content_width,
                 height: line_height,
             },
@@ -2915,13 +2956,14 @@ pub(super) fn signature_popup_geometry(
     viewport: LayoutBox,
     font_size: f32,
     palette: &SemanticPalette,
+    theme: &nana_ui_core::CompiledTheme,
     measure: crate::text_width::ChromeTextMeasure<'_>,
 ) -> Option<crate::TextSignaturePopup> {
-    const H_PAD: f32 = 10.0;
-    const V_PAD: f32 = 6.0;
-    const GAP: f32 = 4.0;
-    const MAX_WIDTH: f32 = 420.0;
-    const ACTIVE_WEIGHT: u16 = 600;
+    let spacing = theme.spacing();
+    let h_pad = spacing.lg;
+    let v_pad = spacing.sm;
+    let gap = spacing.xs;
+    let active_weight = theme.typography().semibold;
     let line_height = anchor.line_height.max(1.0);
     let measure = |value: &str, weight| measure.width(value, font_size, weight).max(1.0);
     let names: Vec<&str> = help.params.iter().map(|(name, _)| name.as_str()).collect();
@@ -2962,28 +3004,30 @@ pub(super) fn signature_popup_geometry(
     let active_w = if active_name.is_empty() {
         0.0
     } else {
-        measure(active_name, Some(ACTIVE_WEIGHT))
+        measure(active_name, Some(active_weight))
     };
     let suffix_w = measure(&suffix, None);
-    let content_w = (prefix_w + active_w + suffix_w).clamp(1.0, MAX_WIDTH - H_PAD * 2.0);
+    let content_w =
+        (prefix_w + active_w + suffix_w).clamp(1.0, TEXT_OVERLAY_MAX_WIDTH - h_pad * 2.0);
     let panel = anchored_overlay_panel(
         anchor,
-        (content_w + H_PAD * 2.0)
-            .min(MAX_WIDTH)
+        (content_w + h_pad * 2.0)
+            .min(TEXT_OVERLAY_MAX_WIDTH)
             .min(viewport.width.max(1.0)),
-        V_PAD * 2.0
+        v_pad * 2.0
             + line_height
             + if doc.is_some() {
-                GAP + line_height
+                gap + line_height
             } else {
                 0.0
             },
         viewport,
-        4.0,
+        gap,
+        spacing.xxs,
     );
-    let content_width = (panel.width - H_PAD * 2.0).max(0.0);
-    let y = panel.y + V_PAD;
-    let mut x = panel.x + H_PAD;
+    let content_width = (panel.width - h_pad * 2.0).max(0.0);
+    let y = panel.y + v_pad;
+    let mut x = panel.x + h_pad;
     let region =
         |x: f32, y: f32, width: f32, content: &str, color: [f32; 4], weight: Option<u16>| {
             crate::ComponentTextRegion {
@@ -3009,7 +3053,7 @@ pub(super) fn signature_popup_geometry(
         None,
     );
     x += prefix_width;
-    let remaining = (panel.x + H_PAD + content_width - x).max(0.0);
+    let remaining = (panel.x + h_pad + content_width - x).max(0.0);
     let active_region = (!active_name.is_empty()).then(|| {
         region(
             x,
@@ -3017,13 +3061,13 @@ pub(super) fn signature_popup_geometry(
             active_w.min(remaining),
             active_name,
             palette.accent.as_rgba_array(),
-            Some(ACTIVE_WEIGHT),
+            Some(active_weight),
         )
     });
     if let Some(active) = &active_region {
         x += active.bounds.width;
     }
-    let suffix_remaining = (panel.x + H_PAD + content_width - x).max(0.0);
+    let suffix_remaining = (panel.x + h_pad + content_width - x).max(0.0);
     Some(crate::TextSignaturePopup {
         panel,
         prefix: prefix_region,
@@ -3038,8 +3082,8 @@ pub(super) fn signature_popup_geometry(
         ),
         doc: doc.map(|doc| {
             region(
-                panel.x + H_PAD,
-                y + line_height + GAP,
+                panel.x + h_pad,
+                y + line_height + gap,
                 content_width,
                 &doc,
                 palette.muted.as_rgba_array(),
@@ -3889,12 +3933,13 @@ impl UiWorld {
                 if presentation.editor.adaptive_footer {
                     adaptive_updates.push(id);
                 }
-                let presentation = shape_text_input_presentation(
+                let presentation = shape_text_input_presentation_in_theme(
                     id,
                     presentation,
                     computed,
                     constraints,
                     &previous_overlays,
+                    self.node_theme(id),
                     &mut shaper,
                 );
                 let metrics_held = self.nodes.text_metrics(id) == metrics;
@@ -4094,12 +4139,12 @@ impl UiWorld {
             .widget_visual_ref(id)
             .is_some_and(crate::WidgetVisualHandle::uses_card_title_typography)
             .then(|| {
+                let typography = self.node_theme(id).typography();
                 let mut style = base_style.as_ref().clone();
-                style.font_size = crate::view_components::CARD_TITLE_SIZE;
-                style.font_weight = Some(crate::view_components::CARD_TITLE_WEIGHT);
-                style.line_height = Some(nana_ui_core::LineHeightSpec::Absolute(
-                    crate::view_components::CARD_TITLE_LINE,
-                ));
+                style.font_size = typography.body;
+                style.font_weight = Some(typography.semibold);
+                style.line_height =
+                    Some(nana_ui_core::LineHeightSpec::Absolute(typography.line_tall));
                 style
             });
         let style = title_style.as_ref().unwrap_or(base_style.as_ref());
@@ -5057,12 +5102,13 @@ impl UiWorld {
                 if presentation.editor.adaptive_footer {
                     adaptive_updates.push(id);
                 }
-                let presentation = shape_text_input_presentation(
+                let presentation = shape_text_input_presentation_in_theme(
                     id,
                     presentation,
                     &style,
                     constraints,
                     &previous_overlays,
+                    self.node_theme(id),
                     &mut shaper,
                 );
                 let resolved_before = self.text_resolved_before(id);

@@ -855,11 +855,7 @@ fn segmented_option_style(size: ControlSize, chrome: SelectionChrome, fill: bool
         padding_left,
         padding_right,
         font_size: Some(size.text_size()),
-        font_weight: Some(if radio {
-            nana_ui_core::type_scale::REGULAR
-        } else {
-            nana_ui_core::type_scale::MEDIUM
-        }),
+        font_weight: None,
         line_height: Some(LineHeightSpec::Absolute(size.line_height())),
         white_space_nowrap: true,
         align_self: Some(if radio {

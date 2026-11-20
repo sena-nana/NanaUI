@@ -383,6 +383,8 @@ impl ThemeCategoryGenerations {
             || old_metrics.corner_shape != new_metrics.corner_shape
             || old_metrics.focus_ring != new_metrics.focus_ring
             || old_sm.opacity.secondary_text != new_sm.opacity.secondary_text
+            || old_sm.opacity.disabled != new_sm.opacity.disabled
+            || old_sm.opacity.notice_tint != new_sm.opacity.notice_tint
         {
             mask = mask.union(ThemeDependencyMask::EFFECT);
         }

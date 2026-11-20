@@ -143,7 +143,7 @@ pub fn kbd(key: impl Into<String>) -> AnyView {
 pub fn kbd_glyph(icon: Icon) -> AnyView {
     // The label's own size, so a glyph key matches a lettered one.
     let mut glyph = IconGlyph::new(icon)
-        .size(nana_ui_core::type_scale::META)
+        .size_role(nana_ui_core::TypeRole::Meta)
         .decorative();
     glyph.style.foreground = Some(SemanticColorRole::Text);
     widget(keycap_face()).children(widget(glyph)).into_any()
@@ -283,11 +283,15 @@ impl IntoView for Callout {
                 .padding_step(SpacingStep::Xl, SpacingStep::Md)
                 .align(AlignSpec::Start)
                 .radius(RadiusTier::Sm)
-                .surface_mix(SemanticColorMix::alpha(role, 0.10))
+                .surface_mix(SemanticColorMix::alpha(
+                    role,
+                    nana_ui_core::OpacityTokens::DARK.notice_tint,
+                ))
         };
         let mut glyph = IconGlyph::new(icon).role(role).decorative();
         if !quiet {
-            glyph = glyph.size(nana_ui_core::type_scale::LINE);
+            glyph = glyph
+                .size_theme(nana_ui_core::ThemeToken::Line(nana_ui_core::LineRole::Line).into());
         }
         let copy = if quiet {
             Text::new("")
