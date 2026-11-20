@@ -6,7 +6,7 @@ The build-time packaging tool for Nana applications, providing the `nana-package
 
 It reads `nana-package.toml` and an already built executable, packs resources into `.nrpack`, assembles the directory layout for the target platform, writes the package manifest and publisher signature, and can also generate Steam depot scripts. Given the previous release's output, unchanged entries keep their original offsets, so SteamPipe delta patches are smaller. `validate` does the final check of the delivery directory; checks that cannot run are reported as `not-executed` and never count as passing.
 
-It does not invoke cargo and does not go into the application binary; reading resource packs at run time is [`nana-package`](../nana-package)'s job. Platform signing (codesign, notarization, Authenticode) has no built-in implementation yet.
+It does not invoke cargo and does not go into the application binary; reading resource packs at run time is [`nana-package`](../nana-package)'s job. Platform signing (codesign, notarization, Authenticode, GPG, apksigner, hap-sign-tool) wraps each platform's own tool, and installer backends build dmg, msi, NSIS, deb, AppImage and Flatpak; whatever cannot run on the current host is reported `not-executed`, never as done.
 
 ## Example
 
@@ -16,7 +16,7 @@ nana-packager package --config nana-package.toml --exe target/dist/my-app --out 
 nana-packager validate out/app/<app-root> --trust-key ed25519:HEX --run
 ```
 
-`nana-packager inspect` and `nana-packager delta` inspect resource packs and estimate the difference between two releases. For the full arguments, see `USAGE` in `src/main.rs`.
+`nana-packager inspect` and `nana-packager delta` inspect resource packs and estimate the difference between two releases; `sign` signs an app or artifacts built elsewhere, `update-manifest` writes a signed update manifest, and `android-assets` lays packs out for an APK. For the full arguments, see `USAGE` in `src/main.rs`.
 
 ## Tests
 

@@ -14,8 +14,8 @@ pub mod seal;
 use std::fmt;
 
 pub use reader::{
-    EntryContext, EntryInfo, ExpectedPack, PackReader, ReadStats, check_blocks, decode_records,
-    stored_bound,
+    EntryContext, EntryInfo, ExpectedPack, FileRange, PackReader, PackSource, ReadStats,
+    check_blocks, decode_records, stored_bound,
 };
 
 /// Largest `early-splash` pack file: its 1 MiB of content plus the header,

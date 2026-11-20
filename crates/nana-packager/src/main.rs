@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use nana_package::{ContentKey, PackReader, PublisherKey, ReadStats, TrustPolicy};
@@ -25,6 +25,12 @@ USAGE:
   nana-packager delta OLD NEW
   nana-packager macos-app --exe PATH --name NAME --identifier ID --out DIR
                 [--icon ICNS] [--no-strip]
+  nana-packager sign --adapter ID [--adapter ID]... [--app APP_ROOT] [ARTIFACT]...
+                [--entitlements PLIST] [--json]
+                (exit 0: every adapter verified; 2: some not executed; 1: failed)
+  nana-packager update-manifest APP_ROOT --channel NAME --artifact PATH...
+                --out DIR [--minimum-from VERSION] [--signing-key-file PATH]
+  nana-packager android-assets APP_ROOT --out ASSETS_DIR
 ";
 
 fn main() -> ExitCode {
@@ -36,6 +42,9 @@ fn main() -> ExitCode {
         Some("inspect") => cmd_inspect(&args[1..]),
         Some("delta") => cmd_delta(&args[1..]),
         Some("macos-app") => cmd_macos_app(&args[1..]),
+        Some("sign") => cmd_sign(&args[1..]),
+        Some("update-manifest") => cmd_update_manifest(&args[1..]),
+        Some("android-assets") => cmd_android_assets(&args[1..]),
         Some("--help" | "-h" | "help") | None => {
             print!("{USAGE}");
             return ExitCode::SUCCESS;
@@ -180,6 +189,23 @@ fn cmd_package(args: &[String]) -> Result<ExitCode, String> {
     );
     for signing in &report.platform_signing {
         println!("platform signing {}: {:?}", signing.adapter, signing.status);
+    }
+    for installer in &report.installers {
+        match &installer.status {
+            nana_packager::installer::InstallerStatus::Built { file, .. } => {
+                println!(
+                    "installer {}: {}",
+                    installer.format,
+                    options.out.join(file).display()
+                )
+            }
+            nana_packager::installer::InstallerStatus::NotExecuted { reason, .. } => {
+                println!("installer {}: not executed ({reason})", installer.format)
+            }
+        }
+    }
+    for signing in &report.artifact_signing {
+        println!("artifact signing {}: {:?}", signing.adapter, signing.status);
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -382,5 +408,135 @@ fn cmd_macos_app(args: &[String]) -> Result<ExitCode, String> {
         strip: !args.has("--no-strip"),
     })?;
     println!("{}", path.display());
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Sign (and verify) an application tree or artifacts built elsewhere with
+/// the named adapters. Credentials come from the environment.
+fn cmd_sign(args: &[String]) -> Result<ExitCode, String> {
+    use nana_package::manifest::SignStatus;
+    use nana_packager::sign::{self, SignContext, SignStage};
+
+    let args = Args::parse(args, &["--json"])?;
+    let adapters: Vec<&str> = args.all("--adapter").iter().map(String::as_str).collect();
+    if adapters.is_empty() {
+        return Err(format!(
+            "sign needs --adapter (known: {})",
+            sign::KNOWN_ADAPTERS.join(", ")
+        ));
+    }
+    for id in &adapters {
+        sign::adapter(id).ok_or_else(|| format!("unknown signing adapter `{id}`"))?;
+    }
+    let artifacts: Vec<PathBuf> = args.positional.iter().map(PathBuf::from).collect();
+    let app = args.one("--app").map(PathBuf::from);
+    let located = app
+        .as_deref()
+        .map(nana_packager::release::locate_app)
+        .transpose()?;
+    if app.is_none() && artifacts.is_empty() {
+        return Err("sign needs --app APP_ROOT or artifact files".into());
+    }
+    let mut context = SignContext::artifacts(&artifacts);
+    if let (Some(root), Some(located)) = (&app, &located) {
+        context.app_root = Some(root);
+        context.executable = Some(&located.executable);
+    }
+    context.options.macos_entitlements = args.one("--entitlements").map(PathBuf::from);
+    let mut results = Vec::new();
+    if app.is_some() {
+        results.extend(sign::run_stage(
+            &adapters,
+            SignStage::Application,
+            &mut context,
+        )?);
+    }
+    if !artifacts.is_empty() || app.is_some() {
+        results.extend(sign::run_stage(
+            &adapters,
+            SignStage::Artifacts,
+            &mut context,
+        )?);
+    }
+    if args.has("--json") {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&results).expect("results serialize")
+        );
+    } else {
+        for result in &results {
+            match &result.status {
+                SignStatus::Verified | SignStatus::Signed => {
+                    println!("    verified  {}", result.adapter)
+                }
+                SignStatus::NotExecuted { reason } => {
+                    println!("not executed  {}: {reason}", result.adapter)
+                }
+                SignStatus::Failed { detail } => {
+                    println!("        FAIL  {}: {detail}", result.adapter)
+                }
+                SignStatus::NotConfigured => println!("not configured  {}", result.adapter),
+            }
+        }
+    }
+    Ok(
+        if results
+            .iter()
+            .any(|r| matches!(r.status, SignStatus::Failed { .. }))
+        {
+            ExitCode::FAILURE
+        } else if results.iter().all(|r| r.status.is_signed()) && !results.is_empty() {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::from(2)
+        },
+    )
+}
+
+fn cmd_update_manifest(args: &[String]) -> Result<ExitCode, String> {
+    let args = Args::parse(args, &["--allow-in-tree-key"])?;
+    let app_root = args
+        .positional
+        .first()
+        .ok_or("update-manifest needs the application root")?;
+    let update =
+        nana_packager::release::update_manifest(&nana_packager::release::UpdateManifestOptions {
+            app_root: PathBuf::from(app_root),
+            channel: args.required("--channel")?.to_owned(),
+            artifacts: args.all("--artifact").iter().map(PathBuf::from).collect(),
+            minimum_from_version: args.one("--minimum-from").map(str::to_owned),
+            out: PathBuf::from(args.required("--out")?),
+            secrets: SecretSources {
+                content_key_files: BTreeMap::new(),
+                signing_key_file: args.one("--signing-key-file").map(PathBuf::from),
+                allow_in_tree: args.has("--allow-in-tree-key"),
+            },
+        })?;
+    println!(
+        "update {} {} on `{}`: {} artifact(s), signed",
+        update.application.id,
+        update.application.version,
+        update.channel,
+        update.artifacts.len()
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+fn cmd_android_assets(args: &[String]) -> Result<ExitCode, String> {
+    let args = Args::parse(args, &[])?;
+    let app_root = args
+        .positional
+        .first()
+        .ok_or("android-assets needs the application root")?;
+    let written = nana_packager::release::android_assets(
+        Path::new(app_root),
+        Path::new(args.required("--out")?),
+    )?;
+    for path in &written {
+        println!("{}", path.display());
+    }
+    println!(
+        "store .nrpack uncompressed in the APK: androidResources {{ noCompress += \"nrpack\" }}"
+    );
     Ok(ExitCode::SUCCESS)
 }

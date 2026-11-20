@@ -8,6 +8,8 @@
 //!   ([`TrustPolicy`]).
 //! - [`identity`]: the application identity marker a binary embeds through
 //!   `nana_ui_platform::application_identity!`.
+//! - [`update`]: signed update manifests and the update journal's rollback
+//!   policy, for an application's own updater (Nana ships none).
 //!
 //! Everything here reads. Building packs, generating keys and signing is the
 //! build-side `nana-packager`, which never ships inside an application. See
@@ -18,6 +20,7 @@ pub mod identity;
 pub mod keys;
 pub mod manifest;
 pub mod pack;
+pub mod update;
 
 pub use identity::{EmbeddedIdentity, MarkerError, find_marker};
 pub use keys::{
@@ -29,13 +32,20 @@ pub use manifest::{
     MANIFEST_SIGNATURE_FILE, ManifestError, PackageManifest, SignatureState,
 };
 pub use pack::{
-    EARLY_SPLASH_MAX_PACK_BYTES, EntryInfo, ExpectedPack, PackError, PackReader, ReadStats,
-    ResourceClass,
+    EARLY_SPLASH_MAX_PACK_BYTES, EntryInfo, ExpectedPack, FileRange, PackError, PackReader,
+    PackSource, ReadStats, ResourceClass,
 };
 
 /// Version of the Nana packaging contract this crate implements, recorded in
 /// every manifest.
 pub const NANA_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Where an Android APK carries the package, relative to its `assets/`:
+/// `package.json` (and its signature) under the manifest directory, the
+/// `.nrpack` files under the resources directory, stored uncompressed so
+/// they keep positional reads (`nana-packager android-assets` lays it out).
+pub const ANDROID_ASSET_MANIFEST_DIR: &str = "nana/manifest";
+pub const ANDROID_ASSET_RESOURCES_DIR: &str = "nana/resources";
 
 /// Environment variable the validator sets to turn a packaged
 /// application's startup into a read-only self-check.

@@ -15,6 +15,14 @@
 //! | logs | `%LOCALAPPDATA%\{id}\Logs` | `~/Library/Logs/{id}` | `$XDG_STATE_HOME/{id}/logs` | `<root>/data/logs` |
 //! | crash | `%LOCALAPPDATA%\{id}\Crash` | `~/Library/Logs/{id}/Crash` | `$XDG_STATE_HOME/{id}/crash` | `<root>/data/crash` |
 //!
+//! A Linux executable installed in FHS form — `<prefix>/lib/<pkg>/<exe>` or
+//! `<prefix>/libexec/<pkg>/<exe>`, where the prefix is `/usr`, `/usr/local`,
+//! an AppImage's `$APPDIR/usr` or Flatpak's `/app` — keeps `runtime/{bin,
+//! plugins,tools}` beside it, and reads its architecture-independent
+//! `resources` and `manifest` from `<data>/<pkg>/`: the first of
+//! `<prefix>/share` and the `$XDG_DATA_DIRS` entries that holds
+//! `<pkg>/manifest`, else `<prefix>/share`.
+//!
 //! A build is portable when `runtime/manifest/portable` exists next to the
 //! executable (not supported inside a macOS bundle, which is read-only once
 //! signed). Android keeps everything under the app's private files directory;
@@ -298,7 +306,7 @@ pub struct PathEnvironment {
     pub portable_marker: bool,
 }
 
-const VARS: [&str; 7] = [
+const VARS: [&str; 8] = [
     "HOME",
     "APPDATA",
     "LOCALAPPDATA",
@@ -306,6 +314,7 @@ const VARS: [&str; 7] = [
     "XDG_CONFIG_HOME",
     "XDG_CACHE_HOME",
     "XDG_STATE_HOME",
+    "XDG_DATA_DIRS",
 ];
 
 /// Where the portable marker lives for an executable outside a bundle.
@@ -379,6 +388,40 @@ fn macos_bundle_root(executable: &Path) -> Option<PathBuf> {
         && contents.file_name()? == "Contents"
         && bundle.extension()? == "app")
         .then(|| bundle.to_path_buf())
+}
+
+/// `<prefix>/lib/<pkg>` (or `libexec`) → `(prefix, pkg)`, for the prefixes
+/// a Linux package installs into: `/usr`, `/usr/local`, an AppImage's
+/// `$APPDIR/usr`, Flatpak's `/app`.
+fn linux_fhs(exe_dir: &Path) -> Option<(PathBuf, String)> {
+    let pkg = exe_dir.file_name()?.to_str()?.to_owned();
+    let lib = exe_dir.parent()?;
+    if !matches!(lib.file_name()?.to_str()?, "lib" | "libexec") {
+        return None;
+    }
+    let prefix = lib.parent()?;
+    let usr_local = prefix.file_name()? == "local"
+        && prefix.parent().and_then(Path::file_name) == Some("usr".as_ref());
+    let accepted = prefix.file_name()? == "usr" || usr_local || prefix == Path::new("/app");
+    accepted.then(|| (prefix.to_path_buf(), pkg))
+}
+
+/// Where an FHS installation keeps `<pkg>/{resources,manifest}`.
+fn linux_data_dir(env: &PathEnvironment, prefix: &Path, pkg: &str) -> PathBuf {
+    let own = prefix.join("share");
+    let dirs = env
+        .vars
+        .get("XDG_DATA_DIRS")
+        .and_then(|value| value.to_str())
+        .unwrap_or("/usr/local/share:/usr/share");
+    std::iter::once(own.clone())
+        .chain(
+            dirs.split(':')
+                .filter(|dir| dir.starts_with('/'))
+                .map(PathBuf::from),
+        )
+        .find(|dir| dir.join(pkg).join("manifest").is_dir())
+        .unwrap_or(own)
 }
 
 /// An executable under Cargo's `target/<profile>/` (or its `deps` /
@@ -471,6 +514,14 @@ impl ApplicationPaths {
             }
             // Android's tree lives under the files directory, below.
             (None, PathPlatform::Android) => {}
+            (None, PathPlatform::Linux) if layout == RuntimeLayout::Installed => {
+                runtime_tree(&mut map, &exe_dir);
+                if let Some((prefix, pkg)) = linux_fhs(&exe_dir) {
+                    let data = linux_data_dir(env, &prefix, &pkg).join(&pkg);
+                    map.insert(L::RuntimeResources, data.join("resources"));
+                    map.insert(L::RuntimeManifest, data.join("manifest"));
+                }
+            }
             (None, _) => runtime_tree(&mut map, &exe_dir),
         }
 
@@ -756,6 +807,95 @@ mod tests {
             p.runtime_plugins(),
             Path::new("/opt/nanalive/runtime/plugins")
         );
+    }
+
+    #[test]
+    fn linux_fhs_installs_read_resources_from_share() {
+        for (exe, share) in [
+            ("/usr/lib/nana-live/NanaLive", "/usr/share/nana-live"),
+            ("/usr/libexec/nana-live/NanaLive", "/usr/share/nana-live"),
+            (
+                "/usr/local/lib/nana-live/NanaLive",
+                "/usr/local/share/nana-live",
+            ),
+            // Flatpak and a mounted AppImage.
+            ("/app/lib/nana-live/NanaLive", "/app/share/nana-live"),
+            (
+                "/tmp/.mount_NanaLiAbC/usr/lib/nana-live/NanaLive",
+                "/tmp/.mount_NanaLiAbC/usr/share/nana-live",
+            ),
+        ] {
+            let e = env(
+                PathPlatform::Linux,
+                exe,
+                &[("HOME", "/home/u"), ("XDG_DATA_DIRS", "/nonexistent-nana")],
+            );
+            let p = ApplicationPaths::resolve_with(&id(), &e).unwrap();
+            let exe_dir = Path::new(exe).parent().unwrap();
+            assert_eq!(p.layout(), RuntimeLayout::Installed, "{exe}");
+            assert_eq!(p.app_root(), exe_dir, "{exe}");
+            assert_eq!(p.runtime_bin(), exe_dir.join("runtime/bin"), "{exe}");
+            assert_eq!(
+                p.runtime_resources(),
+                Path::new(share).join("resources"),
+                "{exe}"
+            );
+            assert_eq!(
+                p.runtime_manifest(),
+                Path::new(share).join("manifest"),
+                "{exe}"
+            );
+            assert_eq!(p.data(), Path::new("/home/u/.local/share/dev.nana.live"));
+        }
+        // Not an FHS prefix: the portable-style tree beside the executable.
+        for exe in ["/opt/lib/nana-live/NanaLive", "/home/u/apps/lib/x/x"] {
+            let e = env(PathPlatform::Linux, exe, &[("HOME", "/home/u")]);
+            let p = ApplicationPaths::resolve_with(&id(), &e).unwrap();
+            let exe_dir = Path::new(exe).parent().unwrap();
+            assert_eq!(p.runtime_resources(), exe_dir.join("runtime/resources"));
+        }
+        // FHS shapes are a Linux rule only.
+        let e = env(
+            PathPlatform::Windows,
+            "/usr/lib/nana-live/NanaLive.exe",
+            &[("APPDATA", "C:/R"), ("LOCALAPPDATA", "C:/L")],
+        );
+        let p = ApplicationPaths::resolve_with(&id(), &e).unwrap();
+        assert_eq!(
+            p.runtime_resources(),
+            Path::new("/usr/lib/nana-live/runtime/resources")
+        );
+    }
+
+    #[test]
+    fn linux_fhs_data_comes_from_the_xdg_data_dir_that_holds_the_manifest() {
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let base = std::env::temp_dir().join(format!("nana-fhs-{}-{seq}", std::process::id()));
+        let elsewhere = base.join("vendor-share");
+        std::fs::create_dir_all(elsewhere.join("nana-live/manifest")).unwrap();
+        let empty = base.join("empty-share");
+        std::fs::create_dir_all(&empty).unwrap();
+        let dirs = format!(
+            "relative/ignored:{}:{}",
+            empty.display(),
+            elsewhere.display()
+        );
+        let e = env(
+            PathPlatform::Linux,
+            "/usr/lib/nana-live/NanaLive",
+            &[("HOME", "/home/u"), ("XDG_DATA_DIRS", &dirs)],
+        );
+        let p = ApplicationPaths::resolve_with(&id(), &e).unwrap();
+        assert_eq!(
+            p.runtime_manifest(),
+            elsewhere.join("nana-live").join("manifest")
+        );
+        assert_eq!(
+            p.runtime_resources(),
+            elsewhere.join("nana-live").join("resources")
+        );
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

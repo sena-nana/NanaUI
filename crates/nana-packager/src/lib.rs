@@ -8,11 +8,13 @@
 pub mod cache;
 pub mod config;
 pub mod delta;
+pub mod installer;
 pub mod layout;
 pub mod macos;
 pub mod pack_build;
 pub mod package;
 pub mod plan;
+pub mod release;
 pub mod secrets;
 pub mod sign;
 pub mod steam;

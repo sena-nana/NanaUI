@@ -14,6 +14,7 @@ mod mark;
 #[cfg(feature = "embed")]
 mod embed;
 
+pub use encode::default_png as encode_default_png;
 pub use encode::icns as encode_icns;
 pub use encode::png as encode_png;
 

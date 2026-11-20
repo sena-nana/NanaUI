@@ -1,5 +1,6 @@
 //! Platform input / IME / clipboard abstraction plus Android MVP flags.
 
+pub mod android_assets;
 #[cfg(feature = "clipboard")]
 mod clipboard;
 mod fetch;

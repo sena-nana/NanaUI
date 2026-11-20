@@ -42,6 +42,8 @@ CI 中的 `scripts/check-package-boundary.py` 强制守护以下边界：`nana-p
 
 `[runtime]` 的 `bin`、`tools`、`resources` 分别复制到 `RuntimeBin`、`RuntimeTools`、`RuntimeResources`。条目可以是目录：整体复制，符号链接原样保留（macOS 的 `.framework` 依赖 `Versions/Current` 链接），目录内指向自身之外的链接（绝对路径或越过目录的 `..`）会被拒绝；清单逐个记录其中的文件，链接到文件的按目标内容计。
 
+Linux 安装包（`deb`、AppImage、Flatpak）按 FHS 摆放同一棵树：可执行文件与架构相关的 `runtime/{bin,plugins,tools}` 在 `<prefix>/lib/<pkg>/`，架构无关的 `resources` 与 `manifest` 在 `<prefix>/share/<pkg>/`，另有 `<prefix>/bin/<exe>` 链接、`<id>.desktop` 和 256×256 图标。运行时 `ApplicationPaths` 认出可执行文件位于 `<prefix>/lib/<pkg>/`（或 `libexec`），且前缀是 `/usr`、`/usr/local`、AppImage 的 `$APPDIR/usr` 或 Flatpak 的 `/app` 时，从 `<prefix>/share` 与 `$XDG_DATA_DIRS` 中第一个含 `<pkg>/manifest` 的目录读取 `RuntimeResources` / `RuntimeManifest`，都没有时用 `<prefix>/share`。`/opt/<app>/` 这类自带目录仍按上表读同级 `runtime/`。自检的 `files.present` 按解析出的位置找 manifest 列出的每个文件。
+
 Windows 应用根目录默认只允许放主程序 `.exe`；确因第三方 SDK 限制必须与 `.exe` 同目录的文件（如 Steamworks 的 `steam_api64.dll`），必须在 `platform.windows.root_exceptions` 中显式登记文件路径与原因。当 `distribution.backend = "portable"` 时，打包器会写入 `runtime/manifest/portable` 标记，运行时可写数据统一落入 `<root>/data`；安装版应用绝不往安装目录内写任何数据、缓存或日志。
 
 ## 3. 配置文件 `nana-package.toml` 与密钥传入
@@ -109,6 +111,8 @@ publisher = { public_key = "ed25519:…", required = true }
 platform = ["macos-codesign", "windows-authenticode"]
 ```
 
+`backend = "installer"` 时，`[distribution.installer]` 决定构建哪些安装包，见第 7 节。
+
 配置解析采用严格模式：未知字段一律报错；任何字段名若包含 `secret`、`private`、`token`、`password` 或 `credential` 会直接拒绝并提示安全传参渠道。密钥仅允许从环境变量（`NANA_CONTENT_KEY_<NAME>` / `NANA_PUBLISHER_SIGNING_KEY`）或 git 工作树之外的密钥文件（`--content-key-file NAME=PATH` / `--signing-key-file PATH`）读取；打包结束前还会全量扫描输出产物（覆盖原始字节、大小写 Hex、Base64 与 Base64Url），一旦发现任何密钥材料残留立即删除产物并报错退出。
 
 ## 4. `.nrpack` 资源包格式、加密与 Steam Delta 友好布局
@@ -153,3 +157,81 @@ nana-packager validate "out/app/Nana Fixture.app" --trust-key ed25519:… --run 
 3. PE / Mach-O / ELF 动态库导入表可达性，以及 Steam 包不含自更新器标记（`NANA-UPDATER-V1`）；
 4. `--run`：在无关工作目录下以 `NANA_PACKAGE_VALIDATE=1` 启动应用执行开窗前自检；
 5. `--tamper-suite`：先跑未篡改对照组（`tamper.control`），再依次注入「破坏 manifest、破坏 pack Header、破坏 TOC、破坏首个真实数据块、删除 pack、剥离密钥环境变量」六类篡改，验证应用自检全部准确报错拦截且不崩溃、不挂起。
+
+## 6. 平台签名适配器
+
+NanaUI 不重写 codesign、公证、Authenticode、GPG、apksigner 或鸿蒙 hap-sign-tool，每个适配器包一层平台工具，并如实报告这一次发生了什么。工具在这里跑不了——主机不对、找不到工具、缺凭据、没有可签的产物——一律报 `not-executed` 并写明原因，绝不报已签名。凭据只从 CI 环境变量读，不进 `nana-package.toml`、manifest 或报告；能经环境或 stdin 交给工具的口令就不放进命令行，只能走命令行的（signtool 的 PFX 口令、hap-sign-tool）在所有报告与错误里打码。
+
+签名分两阶段：**应用阶段**在写完 manifest 之后原地签应用树（codesign 会把 manifest 一起封进 bundle，两者都会改写可执行文件，所以 manifest 记的是签名前哈希，校验时加 `--allow-resigned`）；**产物阶段**签安装包后端产出的文件，或经 `nana-packager sign` 签外部构建的文件。
+
+| 适配器 | 阶段 | 主机 | 做什么 | 凭据与设置 |
+| --- | --- | --- | --- | --- |
+| `macos-codesign` | 应用 | macOS | 由内向外签 `Frameworks`、`PlugIns`、`Helpers`、`MacOS` 下的 Mach-O 与嵌套 bundle，再签 `.app`；正式身份带 hardened runtime 与时间戳；`codesign --verify --strict --deep` 校验 | `NANA_MACOS_SIGN_IDENTITY`（`Developer ID Application: …`，或 `-` 表示开发用 ad-hoc 签名）、可选 `NANA_MACOS_KEYCHAIN`；`[platform.macos] entitlements` |
+| `macos-notarize` | 产物 | macOS | 有 `.dmg` 时签 DMG、提交、staple DMG；否则把 `.app` 打成 zip 提交并 staple `.app`；`stapler validate` 与 `spctl --assess` 校验。需要本次 codesign 用 Developer ID 签过 | `NANA_NOTARY_KEYCHAIN_PROFILE`，或 `NANA_NOTARY_API_KEY`（`.p8` 路径）+ `NANA_NOTARY_API_KEY_ID` + `NANA_NOTARY_API_ISSUER` |
+| `windows-authenticode` | 应用、产物 | Windows | 应用阶段总签主 `.exe`，其余 PE 文件只签尚无有效签名的（第三方已签 DLL 保留原签名）；产物阶段签 `.msi` 与安装器 `.exe`；`signtool verify /pa /all` 校验 | `NANA_AUTHENTICODE_CERT_SHA1`（证书库指纹，推荐），或 `NANA_AUTHENTICODE_PFX` + `NANA_AUTHENTICODE_PFX_PASSWORD`；时间戳 `[platform.windows] timestamp_url` 或 `NANA_AUTHENTICODE_TIMESTAMP_URL`（缺了不签）；可选 `NANA_SIGNTOOL` |
+| `msix` | 产物 | Windows | 签 `.msix` / `.appx`（打包器不产出 MSIX，用于外部构建的包） | 同 Authenticode |
+| `linux-package` | 产物 | 任意有 gpg 的主机 | 给 `.deb`、`.AppImage`、`.flatpak` 生成分离的 ASCII 签名 `<文件>.asc`，`gpg --verify` 校验 | `NANA_GPG_KEY_ID`；可选 `NANA_GPG_PASSPHRASE`（经 stdin）、`NANA_GPG_HOMEDIR`、`NANA_GPG` |
+| `android-apksigner` | 产物（仅 `sign` 命令） | 任意 | `apksigner sign`（v2+ 签名方案），`apksigner verify` 校验；口令以 `env:` 引用传入 | `NANA_ANDROID_KEYSTORE`、`NANA_ANDROID_KEY_ALIAS`、`NANA_ANDROID_KEYSTORE_PASSWORD`、可选 `NANA_ANDROID_KEY_PASSWORD`；`NANA_APKSIGNER` 或 `ANDROID_HOME` 下最新 build-tools |
+| `ohos-hapsigner` | 产物（仅 `sign` 命令） | 任意有 Java 的主机 | `hap-sign-tool.jar sign-app`（localSign）后替换原 `.hap`，`verify-app` 校验 | `NANA_OHOS_HAP_SIGN_TOOL`、`NANA_OHOS_KEYSTORE`、`NANA_OHOS_KEYSTORE_PASSWORD`、`NANA_OHOS_KEY_ALIAS`、`NANA_OHOS_KEY_PASSWORD`、`NANA_OHOS_APP_CERT`、`NANA_OHOS_PROFILE`、可选 `NANA_OHOS_SIGN_ALG`、`NANA_JAVA` |
+
+`signing.platform` 里只能列打包目标适用的前五个；`android-apksigner`、`ohos-hapsigner` 签的是打包器不产出的 APK / HAP，写进配置会报错并指向 `sign` 命令：
+
+```bash
+nana-packager sign --adapter android-apksigner app-release.apk
+nana-packager sign --adapter macos-codesign --app "out/app/Nana Fixture.app"
+```
+
+`sign` 的退出码：0 表示每个适配器都已校验通过，2 表示有适配器没执行，1 表示失败。`package-report.json` 的 `platform_signing`（应用阶段）与 `artifact_signing`（产物阶段）记每个适配器的结果；manifest 只记配置了哪些适配器。`validate` 会重新调用适配器的校验。
+
+## 7. 安装包后端
+
+```toml
+[distribution]
+backend = "installer"
+
+[distribution.installer]
+formats = ["dmg", "msi", "nsis", "deb", "appimage", "flatpak"]   # 只构建属于打包目标的
+summary = "一行简介"                 # 默认应用名
+description = "多段说明"
+homepage = "https://example.com"
+maintainer = "Nana <dev@example.com>" # deb 的 Maintainer，默认 vendor 或应用名
+linux_package = "nana-fixture"       # /usr/lib/<pkg>，默认由应用名推出
+categories = ["Utility"]
+deb_depends = ["libc6 (>= 2.31)"]
+icon_png = "packaging/icon-256.png"  # 默认 Nana 标志
+msi_upgrade_code = "{…}"             # 默认由应用 id 推出，发布后不要再改
+flatpak_runtime = "org.freedesktop.Platform"
+flatpak_runtime_version = "24.08"
+flatpak_sdk = "org.freedesktop.Sdk"
+```
+
+| 格式 | 目标 | 由谁构建 | 在哪构建 |
+| --- | --- | --- | --- |
+| `dmg` | macOS | `hdiutil`：`ditto` 复制的 `.app`（保留签名、扩展属性与 framework 链接）加 `/Applications` 链接，UDZO 压缩，`hdiutil verify` 校验 | macOS |
+| `msi` | Windows | 由应用树生成 WiX v4+ `.wxs`，`wix build`（`NANA_WIX`）。按机器安装到 `Program Files\<Name>`，开始菜单快捷方式，稳定 upgrade code 实现原地升级并拒绝降级 | Windows |
+| `nsis` | Windows | 生成 `.nsi`，`makensis`（`NANA_MAKENSIS`）。卸载器只删自己装的文件和因此变空的目录，从不 `RMDir /r` | 任意有 makensis 的主机 |
+| `deb` | Linux | 打包器自己用纯 Rust 写出 FHS 布局的 `.deb`，写完回读校验结构，有 `dpkg-deb` 时再用它检查 | 任意主机 |
+| `appimage` | Linux | 生成 AppDir（`AppRun` → `usr/bin/<exe>`、`<id>.desktop`、图标、FHS 的 `usr/`），`appimagetool`（`NANA_APPIMAGETOOL`） | Linux |
+| `flatpak` | Linux | 生成 `flatpak-builder` 清单（一个模块把暂存树复制进 `/app`），`flatpak-builder` 后 `flatpak build-bundle`；构建机需装好 runtime 与 SDK | Linux |
+
+产物写到 `<out>/installer/`。工具跑不了的格式报 `not-executed`，生成的 `.wxs`、`.nsi`、AppDir、Flatpak 清单留在 `installer/staging/<格式>/`，可以挪到对的主机上完成构建；工具跑了却失败则整个打包失败。`package-report.json` 的 `installers` 记每个格式的文件、大小、BLAKE3 与检查项。`backend = "installer"` 不写 `[distribution.installer]` 时只产出应用树并给出警告。`validate` 只校验应用树；在目标系统上安装、启动、卸载安装包尚未自动化（报告为 `installer.round-trip` not executed）。
+
+## 8. Android APK 资源
+
+APK 里的资源不是文件系统路径。`nana-packager android-assets APP_ROOT --out app/src/main/assets` 把某个打包输出的 `package.json`（及签名）和所有 `.nrpack` 复制到 `assets/nana/manifest/` 与 `assets/nana/resources/`。APK 必须不压缩地存放 `.nrpack`：
+
+```kotlin
+android { androidResources { noCompress += "nrpack" } }
+```
+
+Android 上 `nana-ui/packaged-resources` 先经应用 `Context` 的 `AAssetManager` 读 `assets/nana/manifest/`，签名按 `TrustPolicy` 校验（`PackageManifest::from_signed_bytes`）；有就从 APK 挂载 pack，没有再回落到 `RuntimeManifest`。每个 pack 经 `AAsset_openFileDescriptor64` 取得 APK 的描述符与该资源的字节区间，以 `FileRange` 交给 `PackReader::open_source`，与桌面同样按需定位读取、同样八步校验，不解出临时文件。被压缩的 pack 拿不到描述符，会以错误报告。`PackagedResourceSource` 契约不变。
+
+## 9. 更新清单与回滚日志
+
+NanaUI 不带更新器，也不带更新界面；`nana_package::update` 是应用自己的更新器（或商店）所依赖的契约：
+
+- **更新清单** `update.json` + `update.json.sig`：目标应用 id、版本、渠道、目标三元组、可选的 `minimum_from_version`、所安装 `package.json` 的 BLAKE3，以及每个安装包文件的格式、大小与 BLAKE3。由签 package manifest 的同一把发布者密钥签名，签名上下文与 package manifest 分开，二者不能互相冒用。`nana-packager update-manifest APP_ROOT --channel stable --artifact out/installer/… --out DIR` 生成；没有发布者密钥就不生成——更新不存在不签名的情形。
+- **校验** `UpdateManifest::verify(bytes, sig, installed, policy)`：先验签名再解析，然后要求应用 id、目标三元组、渠道一致，版本**严格新于**已安装版本（按 SemVer 排序，预发布早于正式版），且已安装版本不低于 `minimum_from_version`。合法签名的旧版本因此不会被当作更新重放回来。下载的文件用 `check_artifact` 流式核对大小与哈希。
+- **回滚日志** `UpdateJournal`：更新器替换文件前记下 previous / pending 两个版本（`staged`），替换后 `activated`。应用每次启动在开窗前调用 `begin_launch` 并立即落盘：运行的是 pending 版本时计一次未确认启动，返回 `AwaitConfirmation`；应用到达健康点（首个 `UiReady`）调用 `confirm`。pending 版本已有 `max_unconfirmed_launches`（默认 2）次启动没能确认时，下一次启动返回 `RollBack { restore }`，由应用自己的恢复钩子还原旧版本后调用 `rolled_back`。日志放在哪、怎么还原文件归应用。
+
+`distribution.self_update` 仍然拒绝：打包器不产出更新器，Steam 与安装包都不带 `NANA-UPDATER-V1`。打包后真实窗口里 Early Splash → UiReady 的交接验证见 Issue #273。

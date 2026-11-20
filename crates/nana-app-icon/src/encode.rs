@@ -5,6 +5,11 @@ use flate2::write::ZlibEncoder;
 
 use crate::mark::rasterize;
 
+/// The default mark as a `size`×`size` PNG (Linux desktop icons).
+pub fn default_png(size: u32) -> Result<Vec<u8>, String> {
+    png(size, size, &rasterize(size))
+}
+
 pub fn png(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, String> {
     let expected = width as usize * height as usize * 4;
     if rgba.len() != expected {

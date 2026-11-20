@@ -80,13 +80,15 @@ nana-packager validate "out/app/Nana Fixture.app" --trust-key ed25519:… --run 
     --env NANA_FIXTURE_CONTENT_KEY=…
 ```
 
-It checks: the manifest signature (reported as not executed without `--trust-key`); signing adapter verification (currently always not executed); that the root holds only the executable, `runtime/` and registered exceptions; that file sizes and hashes match the manifest; the binary identity marker; that dependencies can be found by the loader; one read of every pack per the manifest; and that there are no updater files and no `NANA-UPDATER-V1`. `--run` launches the app in an unrelated directory with `NANA_PACKAGE_VALIDATE=1`; the app prints one line of JSON before opening a window and exits. `--tamper-suite` first runs an untouched control, then separately corrupts the manifest, the header, the TOC and the first real record, deletes a pack, and removes keys with `--tamper-drop-env`. When the application declares a packaged logo, it also reads it from the `early-splash` pack and checks the PNG header.
+It checks: the manifest signature (reported as not executed without `--trust-key`); signing adapter verification (not executed when the tool or credentials are absent); that the root holds only the executable, `runtime/` and registered exceptions; that file sizes and hashes match the manifest; the binary identity marker; that dependencies can be found by the loader; one read of every pack per the manifest; and that there are no updater files and no `NANA-UPDATER-V1`. `--run` launches the app in an unrelated directory with `NANA_PACKAGE_VALIDATE=1`; the app prints one line of JSON before opening a window and exits. `--tamper-suite` first runs an untouched control, then separately corrupts the manifest, the header, the TOC and the first real record, deletes a pack, and removes keys with `--tamper-drop-env`. When the application declares a packaged logo, it also reads it from the `early-splash` pack and checks the PNG header.
 
 Platform signing rewrites the executable. For a signed package, add `--allow-resigned`; those hash changes are downgraded to warnings. `--run` can only run on a host of the same platform as the package.
 
 The CLI also has `package`, `keygen content|publisher`, `inspect`, `delta OLD NEW` and `macos-app`. `macos-app` only produces an `.app` with no resource packs and no manifest.
 
-Not yet available: platform signing adapters, installer backends, optional self-update, real-window Early Splash / UiReady in package validation, StaticAppPlan fingerprints, Android AssetManager, Linux FHS paths, paged TOC.
+Platform signing (codesign, notarization, Authenticode, GPG, apksigner, hap-sign-tool), installers (dmg, msi, NSIS, deb, AppImage, Flatpak), Linux FHS install paths, Android APK resource mounting and the update manifest contract are in sections 6–9 of the reference. The CLI also has `sign`, `update-manifest` and `android-assets`.
+
+Not yet available: a built-in self-updater, real-window Early Splash / UiReady in package validation, StaticAppPlan fingerprints, automated install/uninstall round trips of installers, paged TOC.
 
 Fields, read order and every check are in [Packaging and distribution](../../reference/packaging.md).
 

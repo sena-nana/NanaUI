@@ -388,12 +388,26 @@ impl PackageManifest {
             Err(ManifestError::TooLarge) => return Err(ManifestError::SignatureInvalid),
             other => other?,
         };
+        Self::from_signed_bytes(&bytes, signature.as_deref(), trust)
+    }
+
+    /// [`read`](Self::read) for a manifest that is not a file: the bytes of
+    /// `package.json` and of its signature file, if there is one (an Android
+    /// APK asset, an archive member). The signature is checked as `trust`
+    /// demands before a single byte is parsed.
+    pub fn from_signed_bytes(
+        bytes: &[u8],
+        signature: Option<&[u8]>,
+        trust: &TrustPolicy,
+    ) -> Result<(Self, SignatureState), ManifestError> {
+        if bytes.len() as u64 > MAX_MANIFEST_BYTES {
+            return Err(ManifestError::TooLarge);
+        }
         // A signature file is exactly one Ed25519 signature, whatever the
         // policy, so every reader gives the same answer about it.
         let signature: Option<[u8; 64]> = match signature {
             Some(bytes) => Some(
                 bytes
-                    .as_slice()
                     .try_into()
                     .map_err(|_| ManifestError::SignatureInvalid)?,
             ),
@@ -401,7 +415,7 @@ impl PackageManifest {
         };
         let state = match (trust.publisher(), signature) {
             (Some(publisher), Some(signature)) => {
-                if !publisher.verify(&Self::signing_message(&bytes), &signature) {
+                if !publisher.verify(&Self::signing_message(bytes), &signature) {
                     return Err(ManifestError::SignatureInvalid);
                 }
                 SignatureState::Verified
@@ -410,7 +424,7 @@ impl PackageManifest {
             (None, Some(_)) => SignatureState::NotChecked,
             (None, None) => SignatureState::Unsigned,
         };
-        Ok((Self::from_json(&bytes)?, state))
+        Ok((Self::from_json(bytes)?, state))
     }
 
     pub fn pack(&self, name: &str) -> Option<&ManifestPack> {

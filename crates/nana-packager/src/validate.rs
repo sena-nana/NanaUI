@@ -90,7 +90,7 @@ struct Located {
 
 /// The manifest directory of `app_root`: inside a `.app` bundle, or
 /// `runtime/manifest` next to the executable.
-fn manifest_dir(app_root: &Path) -> Result<PathBuf, String> {
+pub(crate) fn manifest_dir(app_root: &Path) -> Result<PathBuf, String> {
     let is_bundle = app_root.extension().is_some_and(|ext| ext == "app");
     let dir = if is_bundle {
         "Contents/Resources/manifest"
@@ -190,13 +190,19 @@ pub fn validate(options: &ValidateOptions) -> Result<ValidationReport, String> {
         },
     );
     for platform in &manifest.signing.platform {
-        let context = crate::sign::SignContext {
-            platform: located.platform,
-            app_root,
-            executable: &exe_path,
-        };
+        let context = crate::sign::SignContext::application(app_root, &exe_path);
         let status = match crate::sign::adapter(&platform.adapter) {
-            Some(adapter) => match adapter.verify(&context) {
+            Some(adapter) => match adapter.verify(
+                if adapter
+                    .stages()
+                    .contains(&crate::sign::SignStage::Application)
+                {
+                    crate::sign::SignStage::Application
+                } else {
+                    crate::sign::SignStage::Artifacts
+                },
+                &context,
+            ) {
                 SignStatus::Verified | SignStatus::Signed => Status::Pass,
                 SignStatus::Failed { detail } => Status::Fail(detail),
                 SignStatus::NotExecuted { reason } => Status::NotExecuted(reason),
@@ -281,7 +287,9 @@ pub fn validate(options: &ValidateOptions) -> Result<ValidationReport, String> {
         ),
         (
             "installer.round-trip",
-            "installer backends are not implemented yet (Issue #226 workstream F)",
+            "validate checks the application tree; each installer is checked when it is built \
+             (`installers` in package-report.json). Installing, launching and uninstalling an \
+             installer on its target system is not automated",
         ),
         (
             "static-app-plan",

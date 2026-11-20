@@ -84,9 +84,26 @@ pub(crate) fn package_manifest() -> Option<&'static PackageManifest> {
     MANIFEST.get()
 }
 
+/// Where a pack's bytes are.
+enum PackLocation {
+    File(PathBuf),
+    /// An APK asset path (Android), read through its byte range in the APK.
+    Asset(String),
+}
+
+/// Where the package manifest and its packs were found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PackageRoot {
+    /// `RuntimeManifest` / `RuntimeResources` of [`ApplicationPaths`].
+    Paths,
+    /// The APK's `assets/nana/` (Android).
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    ApkAssets,
+}
+
 struct LazyPack {
     name: String,
-    path: PathBuf,
+    location: PackLocation,
     prefixes: Vec<String>,
     expected: Option<ExpectedPack>,
     reader: Mutex<Slot>,
@@ -131,13 +148,24 @@ impl PackMount {
             Slot::Closed => {}
         }
         let started = Instant::now();
-        let opened = PackReader::open(
-            &pack.path,
-            &pack.name,
-            self.keys.as_ref(),
-            &self.trust,
-            pack.expected.as_ref(),
-        );
+        let opened = match &pack.location {
+            PackLocation::File(path) => PackReader::open(
+                path,
+                &pack.name,
+                self.keys.as_ref(),
+                &self.trust,
+                pack.expected.as_ref(),
+            ),
+            PackLocation::Asset(path) => asset_source(path).and_then(|source| {
+                PackReader::open_source(
+                    source,
+                    &pack.name,
+                    self.keys.as_ref(),
+                    &self.trust,
+                    pack.expected.as_ref(),
+                )
+            }),
+        };
         let mut slot = pack.reader.lock().unwrap_or_else(|e| e.into_inner());
         if let Slot::Open(reader) = &*slot {
             return Ok(reader.clone());
@@ -231,6 +259,109 @@ impl PackagedResourceSource for PackMount {
         self.read_entry(pack, path, max_bytes)
             .map_err(|error| map_error(&error))
     }
+}
+
+/// An uncompressed APK asset as a pack source.
+fn asset_source(path: &str) -> Result<Box<dyn nana_package::PackSource>, PackError> {
+    let range = nana_ui_platform::android_assets::open_asset_range(path).map_err(|error| {
+        match error.kind() {
+            std::io::ErrorKind::NotFound => PackError::Missing,
+            _ => PackError::Io(error.to_string()),
+        }
+    })?;
+    Ok(Box::new(nana_package::FileRange::new(
+        range.file,
+        range.start,
+        range.len,
+    )))
+}
+
+/// The manifest under `assets/nana/manifest/` of the APK, if it has one.
+#[cfg(target_os = "android")]
+fn read_asset_manifest(
+    trust: &TrustPolicy,
+) -> Result<(PackageManifest, SignatureState, u64), ManifestError> {
+    use nana_ui_platform::android_assets::read_asset;
+    let dir = nana_package::ANDROID_ASSET_MANIFEST_DIR;
+    let io = |error: std::io::Error| ManifestError::Io(error.to_string());
+    let bytes = read_asset(
+        &format!("{dir}/{}", nana_package::MANIFEST_FILE),
+        nana_package::manifest::MAX_MANIFEST_BYTES,
+    )
+    .map_err(|error| match error.kind() {
+        std::io::ErrorKind::InvalidData => ManifestError::TooLarge,
+        _ => io(error),
+    })?
+    .ok_or(ManifestError::Missing)?;
+    let signature = read_asset(
+        &format!("{dir}/{}", nana_package::MANIFEST_SIGNATURE_FILE),
+        64,
+    )
+    .map_err(|error| match error.kind() {
+        std::io::ErrorKind::InvalidData => ManifestError::SignatureInvalid,
+        _ => io(error),
+    })?;
+    let (manifest, state) =
+        PackageManifest::from_signed_bytes(&bytes, signature.as_deref(), trust)?;
+    Ok((manifest, state, bytes.len() as u64))
+}
+
+/// Read the package manifest: from the APK's assets on Android when it
+/// carries one, else from `RuntimeManifest`.
+fn read_manifest(
+    paths: &ApplicationPaths,
+    trust: &TrustPolicy,
+) -> (
+    Result<(PackageManifest, SignatureState, u64), ManifestError>,
+    PackageRoot,
+) {
+    #[cfg(target_os = "android")]
+    match read_asset_manifest(trust) {
+        Err(ManifestError::Missing) => {}
+        other => return (other, PackageRoot::ApkAssets),
+    }
+    let read = PackageManifest::read(paths.runtime_manifest(), trust).map(|(manifest, state)| {
+        let bytes = std::fs::metadata(paths.runtime_manifest().join(nana_package::MANIFEST_FILE))
+            .map_or(0, |meta| meta.len());
+        (manifest, state, bytes)
+    });
+    (read, PackageRoot::Paths)
+}
+
+/// Where a file the manifest lists (relative to the application root of the
+/// packaged tree) is installed: under the resolved logical location its
+/// path starts with, so a Linux FHS install that moved `resources` and
+/// `manifest` to `/usr/share/<pkg>/` is checked where it actually is.
+fn installed_path(
+    paths: &ApplicationPaths,
+    layout: &nana_package::manifest::ManifestLayout,
+    relative: &str,
+) -> PathBuf {
+    let join = |base: &std::path::Path, rest: &str| {
+        rest.split('/')
+            .filter(|part| !part.is_empty())
+            .fold(base.to_path_buf(), |dir, part| dir.join(part))
+    };
+    if relative == layout.executable {
+        return paths.executable().to_path_buf();
+    }
+    let mut locations = [
+        (&layout.runtime_manifest, paths.runtime_manifest()),
+        (&layout.runtime_resources, paths.runtime_resources()),
+        (&layout.runtime_bin, paths.runtime_bin()),
+        (&layout.runtime_plugins, paths.runtime_plugins()),
+        (&layout.runtime_tools, paths.runtime_tools()),
+    ];
+    // macOS nests the manifest inside Resources: the longest prefix wins.
+    locations.sort_by_key(|(prefix, _)| std::cmp::Reverse(prefix.len()));
+    for (prefix, resolved) in locations {
+        if let Some(rest) = relative.strip_prefix(prefix.as_str())
+            && let Some(rest) = rest.strip_prefix('/')
+        {
+            return join(resolved, rest);
+        }
+    }
+    join(paths.app_root(), relative)
 }
 
 fn map_error(error: &PackError) -> PackagedReadError {
@@ -368,6 +499,7 @@ enum Source {
 /// What startup found, for the self-check.
 struct Mounted {
     manifest: Result<(&'static PackageManifest, SignatureState), ManifestError>,
+    root: PackageRoot,
     identity_matches: Option<bool>,
     source: Option<Source>,
 }
@@ -389,25 +521,28 @@ fn mount(
     let Some(paths) = paths else {
         return Mounted {
             manifest: Err(ManifestError::Io("application paths are unresolved".into())),
+            root: PackageRoot::Paths,
             identity_matches: None,
             source: None,
         };
     };
     let started = Instant::now();
-    let manifest = PackageManifest::read(paths.runtime_manifest(), &options.trust)
+    let (read, root) = read_manifest(paths, &options.trust);
+    let mut bytes = 0;
+    let manifest = read.map(|(manifest, state, len)| {
+        bytes = len;
         // Kept for the life of the process; the first builder's wins.
-        .map(|(manifest, state)| (MANIFEST.get_or_init(|| manifest), state));
+        (MANIFEST.get_or_init(|| manifest), state)
+    });
     metric!(package_diag::MANIFEST_READ_NS, started.elapsed());
     let mut mounted = Mounted {
         manifest,
+        root,
         identity_matches: None,
         source: None,
     };
     match &mounted.manifest {
         Ok((manifest, state)) => {
-            let bytes =
-                std::fs::metadata(paths.runtime_manifest().join(nana_package::MANIFEST_FILE))
-                    .map_or(0, |meta| meta.len());
             event!(
                 package_diag::MANIFEST_LOADED,
                 bytes = bytes,
@@ -430,7 +565,14 @@ fn mount(
                 .iter()
                 .map(|pack| LazyPack {
                     name: pack.name.clone(),
-                    path: resources.join(&pack.file),
+                    location: match root {
+                        PackageRoot::Paths => PackLocation::File(resources.join(&pack.file)),
+                        PackageRoot::ApkAssets => PackLocation::Asset(format!(
+                            "{}/{}",
+                            nana_package::ANDROID_ASSET_RESOURCES_DIR,
+                            pack.file
+                        )),
+                    },
                     prefixes: pack.prefixes.clone(),
                     expected: pack.expected(),
                     reader: Mutex::new(Slot::Closed),
@@ -524,18 +666,13 @@ fn run_self_check(
         Ok((manifest, state)) => {
             push("manifest.read", true, Some(format!("{state:?}")));
             // Delivery channels drop empty directories; what must exist is
-            // every file the manifest lists.
-            if let Some(paths) = paths {
+            // every file the manifest lists, where this install keeps it. An
+            // APK's files are the package installer's to check.
+            if let (Some(paths), PackageRoot::Paths) = (paths, mounted.root) {
                 let missing: Vec<&str> = manifest
                     .runtime_files
                     .iter()
-                    .filter(|file| {
-                        !file
-                            .path
-                            .split('/')
-                            .fold(paths.app_root().to_path_buf(), |dir, part| dir.join(part))
-                            .is_file()
-                    })
+                    .filter(|file| !installed_path(paths, &manifest.layout, &file.path).is_file())
                     .map(|file| file.path.as_str())
                     .collect();
                 push(
@@ -639,7 +776,7 @@ mod tests {
     fn lazy(name: &str, prefixes: &[&str]) -> LazyPack {
         LazyPack {
             name: name.into(),
-            path: PathBuf::from(format!("/nonexistent/{name}.nrpack")),
+            location: PackLocation::File(PathBuf::from(format!("/nonexistent/{name}.nrpack"))),
             prefixes: prefixes.iter().map(|p| (*p).to_owned()).collect(),
             expected: None,
             reader: Mutex::new(Slot::Closed),
@@ -654,6 +791,83 @@ mod tests {
             keys: Arc::new(NoKeys),
             trust: TrustPolicy::AllowUnsigned,
         }
+    }
+
+    #[test]
+    fn listed_files_are_checked_where_the_install_keeps_them() {
+        use nana_ui_platform::{PathEnvironment, PathPlatform};
+        let resolve = |platform, exe: &str| {
+            let env = PathEnvironment {
+                platform,
+                executable: PathBuf::from(exe),
+                vars: [("HOME", "/home/u"), ("XDG_DATA_DIRS", "/nonexistent-nana")]
+                    .into_iter()
+                    .map(|(k, v)| (k.to_owned(), v.into()))
+                    .collect(),
+                android_files_dir: None,
+                android_cache_dir: None,
+                portable_marker: false,
+            };
+            let identity = ApplicationIdentity::new("dev.nana.fixture", "Fixture", "1.0.0");
+            ApplicationPaths::resolve_with(&identity, &env).unwrap()
+        };
+        let tree = nana_package::manifest::ManifestLayout {
+            executable: "Fixture".into(),
+            runtime_bin: "runtime/bin".into(),
+            runtime_resources: "runtime/resources".into(),
+            runtime_plugins: "runtime/plugins".into(),
+            runtime_tools: "runtime/tools".into(),
+            runtime_manifest: "runtime/manifest".into(),
+            root_exceptions: vec![],
+        };
+        let fhs = resolve(PathPlatform::Linux, "/usr/lib/fixture/Fixture");
+        for (listed, installed) in [
+            ("Fixture", "/usr/lib/fixture/Fixture"),
+            (
+                "runtime/resources/ui.nrpack",
+                "/usr/share/fixture/resources/ui.nrpack",
+            ),
+            (
+                "runtime/manifest/portable",
+                "/usr/share/fixture/manifest/portable",
+            ),
+            (
+                "runtime/bin/libfoo.so",
+                "/usr/lib/fixture/runtime/bin/libfoo.so",
+            ),
+            // Only a whole path segment matches a location.
+            (
+                "runtime/resourcesx/a",
+                "/usr/lib/fixture/runtime/resourcesx/a",
+            ),
+        ] {
+            assert_eq!(
+                installed_path(&fhs, &tree, listed),
+                PathBuf::from(installed),
+                "{listed}"
+            );
+        }
+        let bundle = nana_package::manifest::ManifestLayout {
+            executable: "Contents/MacOS/Fixture".into(),
+            runtime_bin: "Contents/Frameworks".into(),
+            runtime_resources: "Contents/Resources".into(),
+            runtime_plugins: "Contents/PlugIns".into(),
+            runtime_tools: "Contents/Helpers".into(),
+            runtime_manifest: "Contents/Resources/manifest".into(),
+            root_exceptions: vec![],
+        };
+        let app = resolve(
+            PathPlatform::MacOs,
+            "/Applications/Fixture.app/Contents/MacOS/Fixture",
+        );
+        assert_eq!(
+            installed_path(&app, &bundle, "Contents/Resources/manifest/x"),
+            PathBuf::from("/Applications/Fixture.app/Contents/Resources/manifest/x")
+        );
+        assert_eq!(
+            installed_path(&app, &bundle, "Contents/Info.plist"),
+            PathBuf::from("/Applications/Fixture.app/Contents/Info.plist")
+        );
     }
 
     #[test]

@@ -9,6 +9,9 @@
 //! ├─ app/                 the application (Windows/Linux: App.exe + runtime/;
 //! │                       macOS: Name.app)
 //! ├─ steam/               Steam backend: depot build scripts and file list
+//! ├─ installer/           installer backend: dmg / msi / setup.exe / deb /
+//! │                       AppImage / flatpak, and staged sources of formats
+//! │                       this host could not build
 //! └─ package-report.json  what was built, reused, signed and skipped
 //! ```
 
@@ -30,7 +33,7 @@ use crate::layout::{PackageLayout, TargetPlatform};
 use crate::pack_build::{self, EntrySource, InputEntry, PackInput, PackReport};
 use crate::plan::{self, PackPlan};
 use crate::secrets::{self, LoadedSecrets, SecretSources};
-use crate::sign::{self, SignContext};
+use crate::sign::{self, Host, ProcessEnv, SignContext, SignOptions, SignStage, SystemRunner};
 use crate::util::{contains, content_hex, io, relative_path, walk_files};
 
 /// Overflow-check panic text. A dev-profile binary always carries it; a
@@ -69,7 +72,12 @@ pub struct PackageReport {
     pub packs: Vec<PackReport>,
     /// Per pack, compared with the baseline.
     pub deltas: BTreeMap<String, Delta>,
+    /// The application stage: the app tree signed in place.
     pub platform_signing: Vec<nana_package::manifest::PlatformSigning>,
+    /// Installer formats built for the target, or why not.
+    pub installers: Vec<crate::installer::InstallerReport>,
+    /// The artifact stage: installers signed, notarized, or detached-signed.
+    pub artifact_signing: Vec<nana_package::manifest::PlatformSigning>,
     pub warnings: Vec<String>,
 }
 
@@ -81,6 +89,7 @@ pub fn package(options: &PackageOptions) -> Result<PackageReport, String> {
         // a secret the leak scan never got to see) and no report.
         let _ = std::fs::remove_dir_all(options.out.join("app"));
         let _ = std::fs::remove_dir_all(options.out.join("steam"));
+        let _ = std::fs::remove_dir_all(options.out.join("installer"));
         let _ = std::fs::remove_file(options.out.join(REPORT_FILE));
     }
     result
@@ -441,13 +450,74 @@ fn package_into(options: &PackageOptions, prepared: &mut bool) -> Result<Package
         .map_err(io("write manifest signature"))?;
     }
 
+    let sign_options = SignOptions {
+        macos_entitlements: macos.entitlements.as_ref().map(|path| base.join(path)),
+        windows_timestamp_url: config
+            .platform
+            .windows
+            .as_ref()
+            .and_then(|windows| windows.timestamp_url.clone()),
+    };
+    let signing_context = |artifacts| SignContext {
+        app_root: Some(&app_root),
+        executable: Some(&exe_path),
+        artifacts,
+        options: sign_options.clone(),
+        work_dir: Some(&options.out),
+        env: &ProcessEnv,
+        runner: &SystemRunner,
+        host: Host::current(),
+        earlier: Vec::new(),
+    };
+    let mut app_signing = signing_context(&[]);
     let platform_signing = sign::run_platform_signing(
         &config.signing.platform,
-        &SignContext {
+        platform,
+        SignStage::Application,
+        &mut app_signing,
+    )?;
+
+    // Installers wrap the signed application tree.
+    let (installers, artifacts) = match &config.distribution.installer {
+        Some(installer) => crate::installer::build_installers(&crate::installer::InstallerInput {
+            config: &config,
+            installer,
+            base: &base,
             platform,
+            target: &options.target,
+            layout: &layout,
             app_root: &app_root,
-            executable: &exe_path,
-        },
+            out: &options.out,
+            env: &ProcessEnv,
+            runner: &SystemRunner,
+            host: Host::current(),
+        })?,
+        None => {
+            if config.distribution.backend == DistributionBackend::Installer {
+                warnings.push(
+                    "backend \"installer\" without [distribution.installer]: only the \
+                     application tree was built"
+                        .into(),
+                );
+            }
+            (Vec::new(), Vec::new())
+        }
+    };
+    for installer in &installers {
+        if let crate::installer::InstallerStatus::NotExecuted { reason, .. } = &installer.status {
+            warnings.push(format!(
+                "installer {} not built: {reason}",
+                installer.format
+            ));
+        }
+    }
+    let mut artifact_context = signing_context(&artifacts);
+    artifact_context.earlier = app_signing.earlier;
+    let artifact_signing = sign::run_platform_signing(
+        &config.signing.platform,
+        platform,
+        SignStage::Artifacts,
+        &mut artifact_context,
     )?;
 
     if config.distribution.backend == DistributionBackend::Steam {
@@ -478,6 +548,8 @@ fn package_into(options: &PackageOptions, prepared: &mut bool) -> Result<Package
         packs: pack_reports,
         deltas,
         platform_signing,
+        installers,
+        artifact_signing,
         warnings,
     };
     std::fs::write(

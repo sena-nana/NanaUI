@@ -80,13 +80,15 @@ nana-packager validate "out/app/Nana Fixture.app" --trust-key ed25519:… --run 
     --env NANA_FIXTURE_CONTENT_KEY=…
 ```
 
-它会核对：manifest 签名（没给 `--trust-key` 就报 not executed）；签名 adapter 的 verify（目前一律 not executed）；根目录只有可执行文件、`runtime/` 和登记过的例外；文件大小和哈希与 manifest 一致；二进制身份标记；依赖能不能被加载器找到；每个 pack 按 manifest 读一遍；没有 updater 文件，也没有 `NANA-UPDATER-V1`。`--run` 在无关目录下以 `NANA_PACKAGE_VALIDATE=1` 启动，应用在开窗前打印一行 JSON 后退出。`--tamper-suite` 先跑未改过的对照，再分别破坏 manifest、header、TOC、首个真实 record，删掉 pack，并用 `--tamper-drop-env` 去掉钥匙。应用声明了 packaged Logo 时，还会从 `early-splash` pack 读它并检查 PNG 头。
+它会核对：manifest 签名（没给 `--trust-key` 就报 not executed）；签名适配器的校验（工具或凭据不在时报 not executed）；根目录只有可执行文件、`runtime/` 和登记过的例外；文件大小和哈希与 manifest 一致；二进制身份标记；依赖能不能被加载器找到；每个 pack 按 manifest 读一遍；没有 updater 文件，也没有 `NANA-UPDATER-V1`。`--run` 在无关目录下以 `NANA_PACKAGE_VALIDATE=1` 启动，应用在开窗前打印一行 JSON 后退出。`--tamper-suite` 先跑未改过的对照，再分别破坏 manifest、header、TOC、首个真实 record，删掉 pack，并用 `--tamper-drop-env` 去掉钥匙。应用声明了 packaged Logo 时，还会从 `early-splash` pack 读它并检查 PNG 头。
 
 平台签名会改写可执行文件。签名后的包加 `--allow-resigned`，这些哈希变化降为 warn。`--run` 只能在与包同平台的主机上执行。
 
 CLI 还有 `package`、`keygen content|publisher`、`inspect`、`delta OLD NEW`、`macos-app`。`macos-app` 只生成一个没有资源包、没有 manifest 的 `.app`。
 
-还没有的：平台签名 adapter、安装包后端、可选自更新、打包校验里的真窗口 Early Splash / UiReady、StaticAppPlan 指纹、Android AssetManager、Linux FHS 路径、分页 TOC。
+平台签名（codesign、公证、Authenticode、GPG、apksigner、hap-sign-tool）、安装包（dmg、msi、NSIS、deb、AppImage、Flatpak）、Linux FHS 安装路径、Android APK 资源挂载与更新清单契约见参考文档第 6–9 节。CLI 另有 `sign`、`update-manifest`、`android-assets`。
+
+还没有的：内置的自更新器、打包校验里的真窗口 Early Splash / UiReady、StaticAppPlan 指纹、安装包装卸的自动往返、分页 TOC。
 
 字段、读取顺序和每一项检查在 [打包与分发](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/packaging.md)。
 

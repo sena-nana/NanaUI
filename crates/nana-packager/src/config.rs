@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use nana_package::ResourceClass;
 use nana_package::manifest::DistributionBackend;
+use nana_package::update::ArtifactFormat;
 use serde::Deserialize;
 
 pub const CONFIG_SCHEMA_VERSION: u32 = 1;
@@ -55,6 +56,69 @@ pub struct DistributionConfig {
     #[serde(default)]
     pub self_update: bool,
     pub steam: Option<SteamConfig>,
+    /// Installers built when `backend = "installer"`.
+    pub installer: Option<InstallerConfig>,
+}
+
+/// `[distribution.installer]`: which installer formats to build and the
+/// metadata they carry. Formats that do not belong to the packaging target
+/// are skipped (`dmg` → macOS; `msi`, `nsis` → Windows; `deb`, `appimage`,
+/// `flatpak` → Linux).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InstallerConfig {
+    pub formats: Vec<ArtifactFormat>,
+    /// One line for package managers and desktop entries; the application
+    /// name when absent.
+    pub summary: Option<String>,
+    pub description: Option<String>,
+    pub homepage: Option<String>,
+    /// Debian `Maintainer` (`Name <mail>`); the vendor or name when absent.
+    pub maintainer: Option<String>,
+    /// Linux package and directory name (`/usr/lib/<pkg>`); derived from the
+    /// application name when absent.
+    pub linux_package: Option<String>,
+    /// Desktop entry categories (`Utility`, `Game`...).
+    #[serde(default)]
+    pub categories: Vec<String>,
+    #[serde(default)]
+    pub deb_depends: Vec<String>,
+    /// 256×256 PNG for Linux desktop entries; the Nana mark when absent.
+    pub icon_png: Option<PathBuf>,
+    /// MSI upgrade code; derived from the application id when absent, so
+    /// it stays the same across releases. Never change it once shipped.
+    pub msi_upgrade_code: Option<String>,
+    #[serde(default = "default_flatpak_runtime")]
+    pub flatpak_runtime: String,
+    #[serde(default = "default_flatpak_runtime_version")]
+    pub flatpak_runtime_version: String,
+    #[serde(default = "default_flatpak_sdk")]
+    pub flatpak_sdk: String,
+    #[serde(default = "default_flatpak_finish_args")]
+    pub flatpak_finish_args: Vec<String>,
+}
+
+fn default_flatpak_runtime() -> String {
+    "org.freedesktop.Platform".into()
+}
+
+fn default_flatpak_runtime_version() -> String {
+    "24.08".into()
+}
+
+fn default_flatpak_sdk() -> String {
+    "org.freedesktop.Sdk".into()
+}
+
+fn default_flatpak_finish_args() -> Vec<String> {
+    [
+        "--share=ipc",
+        "--socket=wayland",
+        "--socket=fallback-x11",
+        "--device=dri",
+    ]
+    .map(String::from)
+    .to_vec()
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -90,6 +154,8 @@ pub struct MacosConfig {
     pub info_plist_extra: Option<PathBuf>,
     #[serde(default = "yes")]
     pub strip: bool,
+    /// Entitlements plist `macos-codesign` signs the bundle with.
+    pub entitlements: Option<PathBuf>,
 }
 
 impl Default for MacosConfig {
@@ -103,6 +169,7 @@ impl Default for MacosConfig {
             document_types: Vec::new(),
             info_plist_extra: None,
             strip: true,
+            entitlements: None,
         }
     }
 }
@@ -136,6 +203,8 @@ pub struct WindowsConfig {
     /// executable directory).
     #[serde(default)]
     pub root_exceptions: Vec<RootExceptionConfig>,
+    /// RFC 3161 timestamp server `windows-authenticode` and `msix` use.
+    pub timestamp_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -273,7 +342,9 @@ pub struct KeyConfig {
 pub struct SigningConfig {
     pub publisher: Option<PublisherConfig>,
     /// Platform signing adapters to run (`macos-codesign`,
-    /// `macos-notarize`, `windows-authenticode`, `msix`, `linux-package`).
+    /// `macos-notarize`, `windows-authenticode`, `msix`, `linux-package`);
+    /// see [`crate::sign`]. `android-apksigner` and `ohos-hapsigner` sign
+    /// artifacts built elsewhere, through `nana-packager sign`.
     #[serde(default)]
     pub platform: Vec<String>,
 }
@@ -331,6 +402,16 @@ impl PackageConfig {
             && self.distribution.steam.is_none()
         {
             return Err("distribution.backend = \"steam\" needs [distribution.steam]".into());
+        }
+        match (&self.distribution.installer, self.distribution.backend) {
+            (Some(_), backend) if backend != DistributionBackend::Installer => {
+                return Err(format!(
+                    "[distribution.installer] is only used by backend = \"installer\", not \"{}\"",
+                    backend.as_str()
+                ));
+            }
+            (Some(installer), _) => installer.check()?,
+            (None, _) => {}
         }
         let file_name = &self.executable.file_name;
         if file_name.is_empty()
@@ -398,6 +479,54 @@ impl PackageConfig {
             if !(0.0..=1.0).contains(&resources.max_free_ratio) {
                 return Err("resources.max_free_ratio must be within 0..=1".into());
             }
+        }
+        Ok(())
+    }
+}
+
+impl InstallerConfig {
+    fn check(&self) -> Result<(), String> {
+        if self.formats.is_empty() {
+            return Err("distribution.installer.formats is empty".into());
+        }
+        if self.formats.contains(&ArtifactFormat::Archive) {
+            return Err(
+                "distribution.installer.formats: `archive` names an update artifact, not an \
+                 installer the packager builds"
+                    .into(),
+            );
+        }
+        if let Some(name) = &self.linux_package
+            && !crate::installer::valid_linux_package(name)
+        {
+            return Err(format!(
+                "distribution.installer.linux_package `{name}` must be lowercase letters, digits, \
+                 `+`, `-` or `.`, starting with a letter or digit"
+            ));
+        }
+        if let Some(code) = &self.msi_upgrade_code
+            && crate::installer::wix::parse_guid(code).is_none()
+        {
+            return Err(format!(
+                "distribution.installer.msi_upgrade_code `{code}` is not a GUID"
+            ));
+        }
+        for text in [&self.summary, &self.homepage, &self.maintainer]
+            .into_iter()
+            .flatten()
+            .chain(&self.categories)
+            .chain(&self.deb_depends)
+        {
+            if text.chars().any(char::is_control) {
+                return Err("distribution.installer: a field contains a control character".into());
+            }
+        }
+        if self
+            .categories
+            .iter()
+            .any(|category| category.is_empty() || category.contains([';', '=']))
+        {
+            return Err("distribution.installer.categories: names only, no `;` or `=`".into());
         }
         Ok(())
     }

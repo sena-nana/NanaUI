@@ -45,7 +45,7 @@ pub struct ReadStats {
 /// TOC's authentication. Reads are positional, so one reader serves any
 /// number of threads.
 pub struct PackReader {
-    file: File,
+    source: Box<dyn PackSource>,
     name: String,
     header: Header,
     class: ResourceClass,
@@ -82,12 +82,26 @@ impl PackReader {
             io::ErrorKind::NotFound => PackError::Missing,
             _ => PackError::Io(error.to_string()),
         })?;
-        let file_len = file.metadata().map_err(io_error)?.len();
+        Self::open_source(Box::new(file), name, keys, trust, expected)
+    }
+
+    /// Open and verify a pack read through `source`: a file, or a byte range
+    /// of one (an uncompressed Android APK asset, see [`FileRange`]). The
+    /// checks are the same as [`open`](Self::open)'s.
+    pub fn open_source(
+        source: Box<dyn PackSource>,
+        name: &str,
+        keys: &dyn KeyProvider,
+        trust: &TrustPolicy,
+        expected: Option<&ExpectedPack>,
+    ) -> Result<Self, PackError> {
+        let file = source;
+        let file_len = file.size().map_err(io_error)?;
         if file_len < HEADER_LEN as u64 {
             return Err(PackError::NotAPack);
         }
         let mut raw_header = vec![0u8; HEADER_LEN];
-        read_exact_at(&file, &mut raw_header, 0)?;
+        read_exact_at(&*file, &mut raw_header, 0)?;
         let header = Header::decode(&raw_header).ok_or(PackError::NotAPack)?;
         if header.version != FORMAT_VERSION {
             return Err(PackError::UnsupportedVersion(header.version));
@@ -137,7 +151,7 @@ impl PackReader {
             );
         }
         let mut stored_toc = vec![0u8; header.toc_stored_len as usize];
-        read_exact_at(&file, &mut stored_toc, header.toc_offset)?;
+        read_exact_at(&*file, &mut stored_toc, header.toc_offset)?;
         if crate::hash::content(&stored_toc) != header.toc_hash {
             return Err(PackError::TocHashMismatch);
         }
@@ -177,7 +191,7 @@ impl PackReader {
         }
 
         Ok(Self {
-            file,
+            source: file,
             name: name.to_owned(),
             header,
             class,
@@ -244,7 +258,7 @@ impl PackReader {
     /// The underlying file, for positional reads of stored bytes.
     pub fn read_stored(&self, offset: u64, len: u64) -> Result<Vec<u8>, PackError> {
         let mut bytes = vec![0u8; usize::try_from(len).map_err(|_| PackError::TooLarge { len })?];
-        read_exact_at(&self.file, &mut bytes, offset)?;
+        read_exact_at(&*self.source, &mut bytes, offset)?;
         Ok(bytes)
     }
 
@@ -306,7 +320,7 @@ impl PackReader {
             return Err(PackError::TocCorrupt("blocks overflow their extent"));
         }
         let mut records = vec![0u8; stored as usize];
-        read_exact_at(&self.file, &mut records, entry.extent_offset)?;
+        read_exact_at(&*self.source, &mut records, entry.extent_offset)?;
         stats.bytes_read += stored;
         Ok((entry, blocks, records))
     }
@@ -539,39 +553,86 @@ fn io_error(error: io::Error) -> PackError {
     PackError::Io(error.to_string())
 }
 
-fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> Result<(), PackError> {
-    let result = {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::FileExt;
-            file.read_exact_at(buf, offset)
+fn read_exact_at(source: &dyn PackSource, buf: &mut [u8], offset: u64) -> Result<(), PackError> {
+    source
+        .read_exact_at(buf, offset)
+        .map_err(|error| match error.kind() {
+            io::ErrorKind::UnexpectedEof => PackError::Truncated,
+            _ => io_error(error),
+        })
+}
+
+/// Random-access bytes a pack is read from. Reads are positional, so one
+/// source serves every thread that reads the pack.
+pub trait PackSource: Send + Sync {
+    /// Total length in bytes.
+    fn size(&self) -> io::Result<u64>;
+    /// Fill `buf` from `offset`; a read past the end is `UnexpectedEof`.
+    fn read_exact_at(&self, buf: &mut [u8], offset: u64) -> io::Result<()>;
+}
+
+impl PackSource for File {
+    fn size(&self) -> io::Result<u64> {
+        Ok(self.metadata()?.len())
+    }
+
+    fn read_exact_at(&self, buf: &mut [u8], offset: u64) -> io::Result<()> {
+        file_read_exact_at(self, buf, offset)
+    }
+}
+
+/// `len` bytes of `file` starting at `start`, read as a whole pack. Android
+/// hands out an uncompressed APK asset this way
+/// (`AAsset_openFileDescriptor64`): the APK's descriptor plus the asset's
+/// range inside it.
+pub struct FileRange {
+    file: File,
+    start: u64,
+    len: u64,
+}
+
+impl FileRange {
+    pub fn new(file: File, start: u64, len: u64) -> Self {
+        Self { file, start, len }
+    }
+}
+
+impl PackSource for FileRange {
+    fn size(&self) -> io::Result<u64> {
+        Ok(self.len)
+    }
+
+    fn read_exact_at(&self, buf: &mut [u8], offset: u64) -> io::Result<()> {
+        let end = offset
+            .checked_add(buf.len() as u64)
+            .ok_or_else(|| io::Error::from(io::ErrorKind::UnexpectedEof))?;
+        if end > self.len {
+            return Err(io::Error::from(io::ErrorKind::UnexpectedEof));
         }
-        #[cfg(windows)]
-        {
-            use std::os::windows::fs::FileExt;
-            let mut done = 0;
-            let mut result = Ok(());
-            while done < buf.len() {
-                match file.seek_read(&mut buf[done..], offset + done as u64) {
-                    Ok(0) => {
-                        result = Err(io::Error::from(io::ErrorKind::UnexpectedEof));
-                        break;
-                    }
-                    Ok(n) => done += n,
-                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                    Err(error) => {
-                        result = Err(error);
-                        break;
-                    }
-                }
+        file_read_exact_at(&self.file, buf, self.start + offset)
+    }
+}
+
+fn file_read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileExt;
+        FileExt::read_exact_at(file, buf, offset)
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileExt;
+        let mut done = 0;
+        while done < buf.len() {
+            match file.seek_read(&mut buf[done..], offset + done as u64) {
+                Ok(0) => return Err(io::Error::from(io::ErrorKind::UnexpectedEof)),
+                Ok(n) => done += n,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(error) => return Err(error),
             }
-            result
         }
-    };
-    result.map_err(|error| match error.kind() {
-        io::ErrorKind::UnexpectedEof => PackError::Truncated,
-        _ => io_error(error),
-    })
+        Ok(())
+    }
 }
 
 #[cfg(test)]

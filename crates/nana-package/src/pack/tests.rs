@@ -219,6 +219,52 @@ fn plain_pack_reads_every_entry() {
     assert_eq!(stats.bytes_read, 10_000);
 }
 
+/// An uncompressed APK asset: the pack sits at an arbitrary offset inside a
+/// larger file and is read through `FileRange`, which must neither see the
+/// bytes around it nor let a read cross its end.
+#[test]
+fn a_pack_inside_a_larger_file_reads_through_a_range() {
+    let spec = plain_spec();
+    let pack = build(&spec);
+    let mut apk = vec![0xAAu8; 777];
+    apk.extend_from_slice(&pack);
+    apk.extend_from_slice(&[0xBB; 333]);
+    let file = TempPack::new("apk", &apk);
+    let range = |len: u64| {
+        let handle = std::fs::File::open(file.path()).unwrap();
+        Box::new(FileRange::new(handle, 777, len))
+    };
+    let reader = PackReader::open_source(
+        range(pack.len() as u64),
+        "ui",
+        &NoKeys,
+        &TrustPolicy::AllowUnsigned,
+        None,
+    )
+    .unwrap();
+    for (key, expected) in &spec.entries {
+        assert_eq!(&read(&reader, key).unwrap(), expected, "{key}");
+    }
+    // A range one byte short ends inside the TOC: truncated, not garbage.
+    let short = PackReader::open_source(
+        range(pack.len() as u64 - 1),
+        "ui",
+        &NoKeys,
+        &TrustPolicy::AllowUnsigned,
+        None,
+    );
+    assert!(short.is_err());
+    // One byte long: the trailing APK byte is not part of the pack.
+    let long = PackReader::open_source(
+        range(pack.len() as u64 + 1),
+        "ui",
+        &NoKeys,
+        &TrustPolicy::AllowUnsigned,
+        None,
+    );
+    assert!(long.is_err());
+}
+
 #[test]
 fn max_bytes_is_enforced_before_reading() {
     let pack = TempPack::new("max", &build(&plain_spec()));

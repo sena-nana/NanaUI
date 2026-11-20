@@ -29,6 +29,8 @@ base64.workspace = true
 serde_json.workspace = true
 blake3.workspace = true
 ed25519-dalek.workspace = true
+# Pure-Rust deflate (miniz_oxide) for .deb members.
+flate2 = "1.1"
 getrandom.workspace = true
 object.workspace = true
 toml.workspace = true
