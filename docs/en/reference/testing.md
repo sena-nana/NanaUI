@@ -11,7 +11,7 @@ The gate script lives in [check-test-hygiene.py](https://github.com/sena-nana/Na
   - Crypto and compression leaf crates (`chacha20`, `poly1305`, `blake3`, `ruzstd`, `zstd-sys`) keep `opt-level = 3` in `profile.dev` so pack sealing and `nana-packager` tests do not crawl in debug builds.
 - **Trim testable targets**:
   - Every `[[bin]]` and `[[example]]` must set `test = false` unless explicitly listed in `ALLOWED_TEST_BINS` or `ALLOWED_TEST_EXAMPLES` in `scripts/check-test-hygiene.py`.
-  - Pure example, fixture, and verification crates (`examples/component-gallery`, `examples/reactive-sfc`, `examples/runtime-host-fixture`, `tools/css-parity`, `third_party/wgpu-fork-tests`) set `doctest = false` under `[lib]`.
+  - Pure example, fixture, and verification crates (`examples/component-gallery`, `examples/reactive-sfc`, `examples/runtime-host-fixture`, `examples/realtime-fixture`, `tools/css-parity`, `third_party/wgpu-fork-tests`) set `doctest = false` under `[lib]`.
 - **Integration harness caps and domain grouping**:
   - Integration `[[test]]` harnesses are capped at **4** per package (`MAX_TESTS_PER_PACKAGE = 4`) and **30** across the workspace (`MAX_TESTS_WORKSPACE = 30`).
   - Add new coverage to an existing domain harness (such as `contracts` / `perf_contracts` in `nana-ui-runtime`, or `packager` in `nana-packager`) instead of creating one integration test binary per issue.
@@ -33,7 +33,7 @@ The gate script lives in [check-test-hygiene.py](https://github.com/sena-nana/Na
 `.config/nextest.toml` configures bounded timeouts and serialization groups:
 
 - **Timeouts**: `profile.default` sets `slow-timeout = { period = "15s", terminate-after = 2 }` and `fail-fast = false` (`profile.ci` uses `period = "20s"`, and `nana-packager` overrides `period = "30s"`).
-- **`gpu-serial` (`max-threads = 1`)**: serializes `nana-gpu`, `nana-frame-exchange`, `nana-ui`, `nana-ui-devtools`, `nana-wgpu-fork-tests`, `runtime-host-fixture`, `nana-mobile-probe`, and `binary(ui-snapshots)`.
+- **`gpu-serial` (`max-threads = 1`)**: serializes `nana-gpu`, `nana-frame-exchange`, `nana-ui`, `nana-ui-devtools`, `nana-wgpu-fork-tests`, `runtime-host-fixture`, `realtime-fixture`, `nana-mobile-probe`, and `binary(ui-snapshots)`.
 - **`os-global` (`max-threads = 1`)**: serializes `nana-window`, `nana-diagnostics`, and `nana-ui-platform` so process-global singletons, environment variables, and native window state do not race.
 
 ## Shared GPU Test Devices, Lifetimes, and Linux Crash Diagnostics

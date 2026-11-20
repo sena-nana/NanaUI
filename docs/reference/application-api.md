@@ -254,6 +254,54 @@ device/surface 丢失后宿主调用 `RuntimeDocument::set_surface_generation`�
 `FrameworkError` 可以转成 `String`，所以 `type Error = String` 的回调里直接对文档操作写 `?`。
 `RuntimeRedraw` 现在持有窗口列表。只实现 `Clone`。不再实现 `Copy`。穷尽匹配需处理 `Windows`。
 
+### 实时应用（Issue #177）
+
+`examples/realtime-fixture` 是一个形似游戏、却只用上面这些钩子写成的应用：应用自己的 60 Hz 固定步更新、由显示器驱动的呈现、键盘轴向输入、几十个移动对象，上面盖一层普通的 NanaUI 界面。它没有新增任何框架类型。它用来证明 NanaUI 提供的是通用机制，而不是暗含的游戏运行时。
+
+```bash
+cargo run -p realtime-fixture
+```
+
+```bash
+cargo run -p realtime-fixture -- --evidence --bodies 64 --present-hz 120
+```
+
+`--evidence` 按脚本运行（运行 3 s、最小化 3 s、恢复 2 s、改尺寸 2 s、退出），并逐阶段打印计数。
+
+| 关注点 | 应用持有 | NanaUI 提供 |
+| --- | --- | --- |
+| 固定步更新 | `FixedClock`、`World::fixed_update(dt)`、追帧上限 | `next_wakeup` / `wake(now)` 截止时刻 |
+| 呈现 | 何时要帧：运行且可见时 `Continuous(rate)`，暂停或隐藏时 `OnDemand` | 受显示器、遮挡与最小化约束的帧调度 |
+| 输入 | 在 `input_event` 里由物理键得出 `MoveX` / `MoveY`；失焦时松开按住的键 | 规范键盘事件，先路由给界面层，没有焦点控件时照样送达 |
+| 状态到像素 | 每步之后发布一份扁平副本；`SceneGpuRenderer` 每个被绘制的修订只上传一次，所有对象一次实例化绘制 | 一个 `GpuView` 锚点，参与布局、裁剪与文档顺序；共享的设备与帧编码器 |
+| 资源 | 精灵只加载一次 | `HostTexture` 槽位；换设备时按 `DeviceGeneration` 重新实现 |
+
+fixture 遵守、实时程序也应遵守的规则：
+
+- 固定时钟从宿主传给 `wake` 的 `now` 重新起步，而不是 `Instant::now()`。程序没有可信的自有时钟（`HeadlessRuntime` 会模拟时钟），恢复后的时钟也不该欠下睡过去的时间。要重启时，让 `next_wakeup` 返回一个已经过去的时刻，宿主会立刻唤醒程序。
+- `wake` 不返回重绘。持续的帧需求会呈现最后发布的状态；每个固定步都要重绘，会把界面 flush 绑到模拟上。
+- 收到 `VisibilityChanged { hidden: true }` 或 0 × 0 的 `Resized`（Windows 报告最小化的方式）时，停下时钟并返回 `OnDemand`。否则宿主会按请求的频率为隐藏帧继续调用 `prepare_window_frame`。
+- `preparation_version` 返回 `Some(常量)`，`content_version` 返回 `None`：准备结果复用，像素保持实时。`preparation_version` 返回 `None` 会让整棵树的每一帧都无法缓存。
+
+实测：Apple M4，外接 1080p 显示器，debug 构建，64 个对象，`--evidence`，2026-11-20：
+
+| 阶段 | 固定步/s | 唤醒/s | 帧/s | 实例上传/s | 渲染器 prepare | 改动 `UiWorld` 的帧 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 运行（3 s） | 60.0 | 59.3 | 117.7 | 59.3 | 1 | 1（首帧） |
+| 最小化（3 s） | 0 | 0.3 | 0.3 | 0.3 | 0 | 0 |
+| 恢复（2 s） | 42.5 | 43.5 | 85.5 | 42.5 | 0 | 0 |
+| 改尺寸（2 s） | 60.0 | 60.5 | 119.5 | 60.0 | 1 | 1（重新布局） |
+
+764 个呈现帧里只有 2 帧改动了 `UiWorld`。整个运行只建了 1 条管线、1 张精灵纹理，prepare 两次（每个目标尺寸一次），没有丢弃固定步。用 `--present-hz 30 --bodies 100` 时，呈现 29.6 帧/s，固定步仍是 60.0/s，实例上传跟着被绘制的帧走（29.6/s），而不是跟着发布的修订走。最小化期间唯一的唤醒是脚本自己的截止时刻。恢复阶段不到 60，是因为 macOS 在恢复命令之后约 0.6 s（恢复动画）才报告窗口重新可见，时钟随后重新起步，不追帧。
+
+`examples/realtime-fixture/src/tests.rs` 里的无头门禁在模拟时钟上检查同一套契约：30、60、144、240 Hz 呈现下都是每秒 60 个固定步，且没有样式、布局、文本或渲染节点工作；两秒模拟前后 `UiScene` 与 `UiWorld` generation 不变；无论对象多少，playfield 锚点只有一个；暂停、隐藏和 0 × 0 恢复后不欠步；在宿主设备上绘制时，同一个 `UiScene` 画出移动后的像素，且只有一条管线、一次 prepare、每个被绘制的修订一次上传。Windows、Linux 以及 release 构建下的证据运行没有测。
+
+fixture 对呈现桥的发现（供 #171 与 #185 参考）：
+
+- 现有路径够用。界面层按文档顺序画在 playfield 之上，playfield 像普通节点一样被裁剪，固定步不改动 `UiWorld` 里的任何东西，整个负载是一个节点上的一次批量绘制。不需要新的呈现原语或 Scene 类型。
+- 缺口：录制绘制需要 `wgpu-interop`（`ScenePass::wgpu`）和 `runtime-wgsl`。`GpuContext` 已经能创建逻辑 buffer 和资源组，但自定义渲染器没有与后端无关的管线对象或绘制调用。这是这类负载唯一需要 #185 提供的逻辑能力。
+- 小缺口：`GpuView` 总是用 `"gpu-view"` 渲染器键，所以应用渲染器会接管该窗口的这个键，必须自己跳过不属于它的槽位。
+
 ## 建树
 
 ```text

@@ -3799,6 +3799,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "realtime-fixture"
+version = "0.1.0"
+dependencies = [
+ "nana-app-icon",
+ "nana-ui",
+ "nana-ui-platform",
+ "pollster",
+]
+
+[[package]]
 name = "redox_event"
 version = "0.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"

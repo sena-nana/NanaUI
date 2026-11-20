@@ -75,7 +75,7 @@ title: 外围支撑 crate 一览
 
 | 目录路径 | 包含内容与定位说明 |
 | --- | --- |
-| `examples/`（5 个工作区成员） | `component-gallery`（全控件画廊，附带 `ui-benchmark` / `ui-snapshots` / `ui-migration-ab` / `ui-host-ab` 四个二进制）、`reactive-sfc`（`.vue` Rust 脚本示例）、`native-rhi-probe`、`runtime-host-fixture`、`package-fixture`（打包与防篡改校验被试程序） |
+| `examples/`（7 个工作区成员） | `component-gallery`（全控件画廊，附带 `ui-benchmark` / `ui-snapshots` / `ui-migration-ab` / `ui-host-ab` 四个二进制）、`reactive-sfc`（`.vue` Rust 脚本示例）、`native-rhi-probe`、`runtime-host-fixture`、`realtime-fixture`（应用自有的 60 Hz 固定步更新经通用机制呈现，Issue #177）、`task-workbench`、`package-fixture`（打包与防篡改校验被试程序） |
 | `platform/android/` | 实验性 Android ARM64 `GameActivity` 宿主（共享 `UiWorld` → `UiScene` → `SceneWgpuPainter`，详见 [Android 实验宿主](/reference/android)） |
 | `tools/css-parity/` | 147 组 CSS 盒模型一致性夹具与比对工具（另有 workspace 外的 `tools/css-parity-webview` 用于本机 WKWebView 对照） |
 | `perf/` | 性能回归基准套件（涵盖 `compositor-steady`、`windows-composition-steady`、`nana_text_ids` 与 `nana_gpu_scale_ids`） |

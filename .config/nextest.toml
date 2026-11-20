@@ -11,7 +11,7 @@ gpu-serial = { max-threads = 1 }
 os-global = { max-threads = 1 }
 
 [[profile.default.overrides]]
-filter = 'package(nana-gpu) | package(nana-frame-exchange) | package(nana-ui) | package(nana-ui-devtools) | package(nana-wgpu-fork-tests) | package(runtime-host-fixture) | package(nana-mobile-probe) | binary(ui-snapshots)'
+filter = 'package(nana-gpu) | package(nana-frame-exchange) | package(nana-ui) | package(nana-ui-devtools) | package(nana-wgpu-fork-tests) | package(runtime-host-fixture) | package(realtime-fixture) | package(nana-mobile-probe) | binary(ui-snapshots)'
 test-group = 'gpu-serial'
 
 [[profile.default.overrides]]

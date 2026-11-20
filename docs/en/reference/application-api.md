@@ -254,6 +254,54 @@ Merging partial updates keeps the actual set of windows. `RuntimeRedraw::for_win
 `FrameworkError` converts to `String`, so in callbacks with `type Error = String` you can write `?` directly on document operations.
 `RuntimeRedraw` now holds a window list. It implements only `Clone`, no longer `Copy`. Exhaustive matches must handle `Windows`.
 
+### Realtime applications (Issue #177)
+
+`examples/realtime-fixture` is a game-shaped application built only from the hooks above: an application-owned 60 Hz fixed update, display-driven presentation, keyboard axes, and dozens of moving objects under an ordinary NanaUI overlay. It adds no framework type. It is the evidence that NanaUI supplies common mechanics rather than an implicit game runtime.
+
+```bash
+cargo run -p realtime-fixture
+```
+
+```bash
+cargo run -p realtime-fixture -- --evidence --bodies 64 --present-hz 120
+```
+
+`--evidence` runs a script (run 3 s, minimize 3 s, restore 2 s, resize 2 s, exit) and prints per-phase counters.
+
+| Concern | The application owns | NanaUI provides |
+| --- | --- | --- |
+| Fixed update | `FixedClock`, `World::fixed_update(dt)`, the catch-up bound | `next_wakeup` / `wake(now)` deadlines |
+| Presentation | When it wants frames: `Continuous(rate)` while running and visible, `OnDemand` when paused or hidden | Frame scheduling bounded by the display, occlusion and minimization |
+| Input | `MoveX` / `MoveY` from physical keys in `input_event`; held keys released on focus loss | Canonical key events, routed to the overlay first and delivered with no focused control |
+| State to pixels | Publishes a flattened copy after each step; a `SceneGpuRenderer` uploads it once per painted revision and draws every object in one instanced draw | One `GpuView` anchor in layout, clipping and document order; the shared device and frame encoder |
+| Resources | Loads the sprite once | `HostTexture` slots; `DeviceGeneration` for realizing again on a new device |
+
+Rules the fixture follows, and that a realtime program should follow:
+
+- Restart the fixed clock from the `now` the host passes to `wake`, not from `Instant::now()`. A program has no clock of its own to trust (`HeadlessRuntime` simulates one), and a resumed clock should not owe the time it slept. To restart, return an instant already past from `next_wakeup`; the host wakes the program at once.
+- Return no redraw from `wake`. The continuous frame demand presents whatever was published last; a redraw per fixed step would tie UI flushes to the simulation.
+- On `VisibilityChanged { hidden: true }` and on a 0 × 0 `Resized` (how Windows reports a minimized window), stop the clock and return `OnDemand`. Otherwise the host keeps calling `prepare_window_frame` for hidden ticks at the requested rate.
+- Return `Some(constant)` from `preparation_version` and `None` from `content_version`: preparation is reused and the pixels stay live. `None` from `preparation_version` makes every frame of the whole tree uncacheable.
+
+Measured on an Apple M4 with an external 1080p display, debug build, 64 bodies, `--evidence`, 2026-11-20:
+
+| Phase | Fixed steps/s | Wakeups/s | Frames/s | Instance uploads/s | Renderer prepares | Frames that changed the `UiWorld` |
+| --- | --- | --- | --- | --- | --- | --- |
+| Running (3 s) | 60.0 | 59.3 | 117.7 | 59.3 | 1 | 1 (first frame) |
+| Minimized (3 s) | 0 | 0.3 | 0.3 | 0.3 | 0 | 0 |
+| Restored (2 s) | 42.5 | 43.5 | 85.5 | 42.5 | 0 | 0 |
+| Resized (2 s) | 60.0 | 60.5 | 119.5 | 60.0 | 1 | 1 (relayout) |
+
+Of 764 presented frames, 2 changed the `UiWorld`. The run built 1 pipeline and 1 sprite texture, prepared twice (once per target size) and dropped no fixed step. With `--present-hz 30 --bodies 100` the fixed update still runs at 60.0/s while 29.6 frames/s are presented, and instance uploads follow painted frames (29.6/s), not published revisions. The only wakeup while minimized is the script's own deadline. The restored phase falls short of 60 because macOS reports the window visible again about 0.6 s after the restore command (the restore animation); the clock then restarts without catching up.
+
+The headless gates in `examples/realtime-fixture/src/tests.rs` check the same contract on a simulated clock: 60 fixed steps per second at 30, 60, 144 and 240 Hz presentation with no style, layout, text or render-node work; the same `UiScene` and `UiWorld` generation across two seconds of simulation; one playfield anchor whatever the body count; pause, hide and 0 × 0 resume without owed steps; and a paint on the host's device where the same `UiScene` shows moved pixels with one pipeline, one preparation and one upload per painted revision. Windows, Linux and the evidence run in a release build were not measured.
+
+What the fixture found about the presentation bridge (input for #171 and #185):
+
+- The existing path is enough. The overlay paints over the playfield in document order, the playfield is clipped like any node, a fixed step mutates nothing in the `UiWorld`, and the whole workload is one batched draw from one node. No new presentation primitive or Scene type was needed.
+- Gap: recording the draw needs `wgpu-interop` (`ScenePass::wgpu`) and `runtime-wgsl`. `GpuContext` already creates logical buffers and resource groups, but a custom renderer has no backend-neutral pipeline object or draw call. That is the one logical capability this workload needs from #185.
+- Minor gap: `GpuView` always uses the `"gpu-view"` renderer key, so an application renderer takes that key over for the window and has to skip slots that are not its own.
+
 ## Tree building
 
 ```text

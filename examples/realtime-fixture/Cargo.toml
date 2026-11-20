@@ -1,0 +1,29 @@
+[package]
+name = "realtime-fixture"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+description = "Issue #177: an application-owned 60 Hz fixed update presented through NanaUI's common mechanics"
+
+[lib]
+name = "realtime_fixture"
+path = "src/lib.rs"
+doctest = false
+
+[[bin]]
+name = "realtime-fixture"
+path = "src/main.rs"
+test = false
+
+[dependencies]
+# `wgpu-interop` records the playfield's own pipeline and draw; `runtime-wgsl`
+# compiles its WGSL. Both are the documented custom-renderer escape hatch.
+nana-ui = { workspace = true, features = ["hosted", "bundled-fonts", "wgpu-interop", "runtime-wgsl"] }
+nana-ui-platform.workspace = true
+
+[dev-dependencies]
+pollster.workspace = true
+
+[build-dependencies]
+nana-app-icon = { workspace = true, features = ["embed"] }

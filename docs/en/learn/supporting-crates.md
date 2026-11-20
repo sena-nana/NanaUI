@@ -75,7 +75,7 @@ Beyond the 25 crates under `crates/` (24 workspace members plus standalone `nana
 
 | Directory path | Contents and purpose |
 | --- | --- |
-| `examples/` (5 workspace members) | `component-gallery` (the full control gallery, shipping four extra binaries `ui-benchmark` / `ui-snapshots` / `ui-migration-ab` / `ui-host-ab`), `reactive-sfc` (`.vue` Rust script examples), `native-rhi-probe`, `runtime-host-fixture`, `package-fixture` (the fixture application for packaging and anti-tamper validation) |
+| `examples/` (7 workspace members) | `component-gallery` (the full control gallery, shipping four extra binaries `ui-benchmark` / `ui-snapshots` / `ui-migration-ab` / `ui-host-ab`), `reactive-sfc` (`.vue` Rust script examples), `native-rhi-probe`, `runtime-host-fixture`, `realtime-fixture` (an application-owned 60 Hz fixed update presented through common mechanics, Issue #177), `task-workbench`, `package-fixture` (the fixture application for packaging and anti-tamper validation) |
 | `platform/android/` | Experimental Android ARM64 `GameActivity` host (shares `UiWorld` → `UiScene` → `SceneWgpuPainter`; see [Android experimental host](/reference/android)) |
 | `tools/css-parity/` | 147 CSS box-model conformance fixtures and the comparison tool (plus `tools/css-parity-webview` outside the workspace for local WKWebView comparison) |
 | `perf/` | The performance regression benchmark suite (covering `compositor-steady`, `windows-composition-steady`, `nana_text_ids` and `nana_gpu_scale_ids`) |

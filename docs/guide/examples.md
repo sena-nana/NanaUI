@@ -8,6 +8,7 @@
 | --- | --- | --- |
 | 控件目录，含对话框、设置、侧栏 | `cargo run -p component-gallery` | `examples/component-gallery` |
 | 最小宿主 | `cargo run -p runtime-host-fixture` | `examples/runtime-host-fixture` |
+| 实时应用（60 Hz 固定步更新、实例化 GPU playfield、界面叠层） | `cargo run -p realtime-fixture` | `examples/realtime-fixture` |
 | 计数器（`view!`） | `cargo run -p nana-ui --example reactive-counter --features hosted,bundled-fonts,view-macro` | `crates/nana-ui/examples/reactive-counter.rs` |
 | 计数器（应用壳） | `cargo run -p nana-ui --example application-counter --features hosted,bundled-fonts` | `crates/nana-ui/examples/application-counter.rs` |
 | 待办（`.vue`） | `cargo run -p reactive-sfc` | `examples/reactive-sfc` |

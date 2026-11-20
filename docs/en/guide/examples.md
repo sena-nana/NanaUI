@@ -8,6 +8,7 @@ Run them from the repository root. `nana-ui` examples need the features they dec
 | --- | --- | --- |
 | Control catalog, including dialogs, settings and sidebars | `cargo run -p component-gallery` | `examples/component-gallery` |
 | Minimal host | `cargo run -p runtime-host-fixture` | `examples/runtime-host-fixture` |
+| Realtime application (60 Hz fixed update, instanced GPU playfield, UI overlay) | `cargo run -p realtime-fixture` | `examples/realtime-fixture` |
 | Counter (`view!`) | `cargo run -p nana-ui --example reactive-counter --features hosted,bundled-fonts,view-macro` | `crates/nana-ui/examples/reactive-counter.rs` |
 | Counter (application shell) | `cargo run -p nana-ui --example application-counter --features hosted,bundled-fonts` | `crates/nana-ui/examples/application-counter.rs` |
 | To-do list (`.vue`) | `cargo run -p reactive-sfc` | `examples/reactive-sfc` |

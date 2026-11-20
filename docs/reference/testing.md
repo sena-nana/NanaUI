@@ -11,7 +11,7 @@ NanaUI 对测试目标数量、调试符号体积、并发隔离与反卡死规�
   - 加解密与压缩叶子包（`chacha20`、`poly1305`、`blake3`、`ruzstd`、`zstd-sys`）在 `profile.dev` 下保留 `opt-level = 3`，确保 `nana-packager` 与打包解包测试不会在未优化路径下严重退化。
 - **收敛可测试目标**：
   - 除 `scripts/check-test-hygiene.py` 中 `ALLOWED_TEST_BINS` 与 `ALLOWED_TEST_EXAMPLES` 明确豁免的基准与探针目标外，所有 `[[bin]]` 与 `[[example]]` 都必须设置 `test = false`。
-  - 纯示例、夹具与校验工具 crate（如 `examples/component-gallery`、`examples/reactive-sfc`、`examples/runtime-host-fixture`、`tools/css-parity`、`third_party/wgpu-fork-tests`）在 `[lib]` 上设置 `doctest = false`。
+  - 纯示例、夹具与校验工具 crate（如 `examples/component-gallery`、`examples/reactive-sfc`、`examples/runtime-host-fixture`、`examples/realtime-fixture`、`tools/css-parity`、`third_party/wgpu-fork-tests`）在 `[lib]` 上设置 `doctest = false`。
 - **集成测试数量上限与域分组**：
   - 每个包最多允许 **4** 个集成 `[[test]]` harness（`MAX_TESTS_PER_PACKAGE = 4`），整个 workspace 最多允许 **30** 个集成 `[[test]]` harness（`MAX_TESTS_WORKSPACE = 30`）。
   - 新增测试用例应并入既有域 harness（如 `nana-ui-runtime` 的 `contracts` / `perf_contracts`、`nana-packager` 的 `packager`），不要按单个 issue 新建集成测试二进制。
@@ -33,7 +33,7 @@ NanaUI 对测试目标数量、调试符号体积、并发隔离与反卡死规�
 `.config/nextest.toml` 为 `cargo-nextest` 预设了安全超时与资源互斥组：
 
 - **默认超时**：`profile.default` 配置 `slow-timeout = { period = "15s", terminate-after = 2 }` 与 `fail-fast = false`（`profile.ci` 为 `period = "20s"`，`nana-packager` 覆盖为 `period = "30s"`）。
-- **`gpu-serial`（`max-threads = 1`）**：覆盖 `nana-gpu`、`nana-frame-exchange`、`nana-ui`、`nana-ui-devtools`、`nana-wgpu-fork-tests`、`runtime-host-fixture`、`nana-mobile-probe` 与 `binary(ui-snapshots)`。
+- **`gpu-serial`（`max-threads = 1`）**：覆盖 `nana-gpu`、`nana-frame-exchange`、`nana-ui`、`nana-ui-devtools`、`nana-wgpu-fork-tests`、`runtime-host-fixture`、`realtime-fixture`、`nana-mobile-probe` 与 `binary(ui-snapshots)`。
 - **`os-global`（`max-threads = 1`）**：覆盖 `nana-window`、`nana-diagnostics` 与 `nana-ui-platform`，避免进程级全局单例、环境变量或原生窗口句柄状态相互干扰。
 
 ## 共享 GPU 测试设备、生命周期与 Linux 崩溃诊断
