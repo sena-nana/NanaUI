@@ -351,6 +351,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let Some(host) = self.window_contexts.get_mut(&id) else {
             return;
         };
+        let _span = nana_diagnostics::span!(diagnostics_window::SHADOW_PREPARE_NS);
         let window = Arc::clone(host.surface.window());
         let transparent =
             host.presentation.effective().effect == crate::MaterialEffect::Transparent;
@@ -388,6 +389,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         }
         host.presentation
             .record_shadow(crate::window_shadow::outcome(intent, applied));
+        crate::window_shadow::report_work(&host.shadow, &mut host.shadow_reported);
         // The picture remains independent of the UI's capture group and
         // above the shadow, whose native owner is now the picture.
         #[cfg(target_os = "macos")]
@@ -435,6 +437,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             metric!(diagnostics_window::SHADOW_SYNC_SKIPPED);
             return;
         }
+        let _span = nana_diagnostics::span!(diagnostics_window::SHADOW_PREPARE_NS);
         host.shadow_body = Some(super::ShadowBody {
             revision,
             size,
@@ -443,6 +446,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         });
         host.shadow
             .set_shape(window.as_ref(), crate::window_shadow::shape(shape), visible);
+        crate::window_shadow::report_work(&host.shadow, &mut host.shadow_reported);
         self.sync_auxiliary_window(id);
         self.sync_auxiliaries_of(id);
         metric!(diagnostics_window::SHADOW_SYNC_APPLIED);
@@ -1102,6 +1106,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 monitor: window.current_monitor().map(|monitor| monitor.id()),
                 shadow: nana_window::shadow::WindowShadowState::default(),
                 shadow_body: None,
+                shadow_reported: Default::default(),
                 underlay,
                 auxiliary,
             },

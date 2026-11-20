@@ -44,6 +44,7 @@ pub struct RuntimeProgramContext<Message: Send + 'static> {
     presentation: crate::ResolvedWindowPresentation,
     composition_work: crate::CompositionWork,
     presentation_work: crate::PresentationWork,
+    shadow_work: nana_ui_platform::WindowShadowWork,
     dispatch: Arc<dyn Fn(Message) + Send + Sync>,
     tasks: SyncSender<Task<Message>>,
     system_appearance: Option<SystemAppearance>,
@@ -70,6 +71,7 @@ impl<Message: Send + 'static> Clone for RuntimeProgramContext<Message> {
             presentation: self.presentation,
             composition_work: self.composition_work,
             presentation_work: self.presentation_work,
+            shadow_work: self.shadow_work,
             dispatch: Arc::clone(&self.dispatch),
             tasks: self.tasks.clone(),
             system_appearance: self.system_appearance,
@@ -110,6 +112,7 @@ impl<Message: Send + 'static> RuntimeProgramContext<Message> {
             presentation,
             composition_work,
             presentation_work: crate::PresentationWork::default(),
+            shadow_work: nana_ui_platform::WindowShadowWork::default(),
             dispatch,
             tasks,
             system_appearance,
@@ -171,6 +174,11 @@ impl<Message: Send + 'static> RuntimeProgramContext<Message> {
 
     pub(crate) fn with_presentation_work(mut self, work: crate::PresentationWork) -> Self {
         self.presentation_work = work;
+        self
+    }
+
+    pub(crate) fn with_shadow_work(mut self, work: nana_ui_platform::WindowShadowWork) -> Self {
+        self.shadow_work = work;
         self
     }
 
@@ -277,6 +285,15 @@ impl<Message: Send + 'static> RuntimeProgramContext<Message> {
     /// Last host-observed GPU and output work counts recorded for this window.
     pub const fn presentation_work(&self) -> crate::PresentationWork {
         self.presentation_work
+    }
+
+    /// What this window's desktop shadow has done so far (#215): companion
+    /// resources created, shapes followed, rasterizations, moves and resizes.
+    /// A settled window's counters stop moving, and a move raises only
+    /// `companion_moves`. What was applied is [`Self::presentation`]'s
+    /// [`shadow`](crate::ResolvedWindowPresentation::shadow).
+    pub const fn shadow_work(&self) -> nana_ui_platform::WindowShadowWork {
+        self.shadow_work
     }
 
     /// The whole resolved presentation: requested and effective material, the

@@ -8,10 +8,12 @@
 
 use nana_ui_platform::{
     WindowDescriptor, WindowShadow, WindowShadowBackend, WindowShadowFallback, WindowShadowOutcome,
-    WindowShadowSource, WindowShadowStyle, WindowVisualShape,
+    WindowShadowSource, WindowShadowStyle, WindowShadowWork, WindowVisualShape,
 };
 use nana_ui_scene::{ScenePrimitiveKind, UiScene};
-use nana_window::shadow::{ShadowApplied, ShadowPlan, ShadowShape, ShadowStyle};
+use nana_window::shadow::{
+    ShadowApplied, ShadowPlan, ShadowShape, ShadowStyle, ShadowWork, WindowShadowState,
+};
 
 /// What a window's shadow should be.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -117,6 +119,64 @@ pub(crate) fn outcome(intent: ShadowIntent, applied: ShadowApplied) -> WindowSha
             WindowShadowOutcome::unavailable(WindowShadowFallback::BackendUnavailable)
         }
     }
+}
+
+/// The work a window's shadow has done so far, as the public counters.
+pub(crate) fn work(state: &WindowShadowState) -> WindowShadowWork {
+    let work = state.work();
+    WindowShadowWork {
+        shape_rebuilds: work.shape_updates,
+        effect_updates: work.effect_updates,
+        rasterizations: work.rasterizations,
+        resource_recreates: work.resource_recreates,
+        companion_moves: work.companion_moves,
+        companion_resizes: work.companion_resizes,
+        companion_count: u64::from(state.has_companion()),
+    }
+}
+
+/// Record the shadow work done since `reported` as diagnostics metrics.
+/// Counters only grow, so the difference is what this window did since it
+/// was last reported; nothing is recorded for a window that did nothing.
+pub(crate) fn report_work(state: &WindowShadowState, reported: &mut ShadowWork) {
+    use nana_diagnostics::framework::window as diagnostics;
+    use nana_diagnostics::metric;
+    let now = state.work();
+    if now == *reported {
+        return;
+    }
+    let delta = |now: u64, then: u64| now.saturating_sub(then);
+    for (metric, value) in [
+        (
+            &diagnostics::SHADOW_SHAPE_REBUILDS,
+            delta(now.shape_updates, reported.shape_updates),
+        ),
+        (
+            &diagnostics::SHADOW_EFFECT_UPDATES,
+            delta(now.effect_updates, reported.effect_updates),
+        ),
+        (
+            &diagnostics::SHADOW_RASTERIZATIONS,
+            delta(now.rasterizations, reported.rasterizations),
+        ),
+        (
+            &diagnostics::SHADOW_RESOURCE_RECREATES,
+            delta(now.resource_recreates, reported.resource_recreates),
+        ),
+        (
+            &diagnostics::SHADOW_COMPANION_MOVES,
+            delta(now.companion_moves, reported.companion_moves),
+        ),
+        (
+            &diagnostics::SHADOW_COMPANION_RESIZES,
+            delta(now.companion_resizes, reported.companion_resizes),
+        ),
+    ] {
+        if value > 0 {
+            metric!(*metric, value);
+        }
+    }
+    *reported = now;
 }
 
 /// How many primitives, in paint order, to look through for the body. The
@@ -246,6 +306,11 @@ mod tests {
     }
 
     fn card_scene(card: [f32; 2], inset: f32) -> UiScene {
+        card_scene_over(card, inset, None)
+    }
+
+    /// `layer`: a background painted over the whole window under the card.
+    fn card_scene_over(card: [f32; 2], inset: f32, layer: Option<[f32; 4]>) -> UiScene {
         use nana_ui_core::LengthSpec;
         use nana_ui_runtime::{DocumentId, LayoutViewport, MeasureTextShaper, Stack};
         let document_id = DocumentId::new(1).unwrap();
@@ -256,6 +321,7 @@ mod tests {
             .mount_view_root(document_id, || {
                 let root = Stack::column(0.0).with_layout(|layout| {
                     layout.padding = Some(LengthSpec::Px(inset));
+                    layout.background = layer;
                 });
                 let card = Stack::column(0.0).with_layout(|layout| {
                     layout.width = Some(LengthSpec::Px(card[0]));
@@ -287,6 +353,20 @@ mod tests {
         assert_eq!(
             derive_visual_shape(&badge, [400.0, 300.0]),
             WindowVisualShape::client(400.0, 300.0)
+        );
+    }
+
+    #[test]
+    fn an_invisible_full_window_layer_is_not_the_body() {
+        // A layer that only takes input — a drag or hit region spanning the
+        // window — paints nothing: the shadow still follows the card.
+        let scene = card_scene_over([360.0, 260.0], 20.0, Some([0.0, 0.0, 0.0, 0.0]));
+        assert_eq!(
+            derive_visual_shape(&scene, [400.0, 300.0]),
+            WindowVisualShape {
+                rect: [20.0, 20.0, 360.0, 260.0],
+                radii: [12.0; 4],
+            }
         );
     }
 

@@ -206,6 +206,11 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             WinitWindowEvent::Moved(_) => {
                 self.sync_window_mode(event_loop, id);
                 self.sync_geometry(id);
+                // A Windows companion follows its owner inside the owner's
+                // window procedure; record those moves as they land.
+                if let Some(host) = self.window_contexts.get_mut(&id) {
+                    crate::window_shadow::report_work(&host.shadow, &mut host.shadow_reported);
+                }
                 // Moving a window can put it on another display, with other
                 // HDR metadata and formats. Only a display change re-reads
                 // them; presentation parameters refresh without rebuilding
@@ -228,6 +233,10 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                             let window = Arc::clone(host.surface.window());
                             host.shadow.rescale(window.as_ref());
                             host.shadow_body = None;
+                            crate::window_shadow::report_work(
+                                &host.shadow,
+                                &mut host.shadow_reported,
+                            );
                         }
                     }
                     _ => nana_diagnostics::metric!(nana_diagnostics::framework::window::RESIZES),

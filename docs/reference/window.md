@@ -26,9 +26,11 @@ WindowShadow 与 UiScene 的 `DropShadow` 是两条 authority：前者由 Window
   - 有 DWM 边框的 Windows 窗口用 DWM 阴影（观察到 `DWMWA_NCRENDERING_ENABLED` 才报 `Native`）。对这种窗口请求 `None` 报 `Native` + `DisableUnsupported`。不偷改边框策略。无边框的 `Auto` 窗口没有 DWM 阴影。由默认 companion 代替。
   - Linux 等：`Unsupported` / `CompositorManaged`。明确告诉应用这里没有可观察的阴影。
 - `WindowCommand::SetShadow { id, shadow }` 在窗口打开后更换阴影。应用读 `presentation().shadow()` 得到实际结果。窗口显示前是 `Pending`。
+- **工作量可观察**：`RuntimeProgramContext::shadow_work()` 返回该窗口阴影至今的 `WindowShadowWork`（`shape_rebuilds`、`effect_updates`、`rasterizations`、`resource_recreates`、`companion_moves`、`companion_resizes`、`companion_count`）。同样的增量记为诊断指标 `window.shadow.*`（`window.shadow.prepare` 是宿主 CPU 准备时间的直方图；GPU / render server 时间不可观察，不提供，也不以 0 冒充）。门禁：静止窗口（包括只换文字的重绘）上述前四项与 `companion_resizes` 不动；只移动时只有 `companion_moves` 可以增长（仅 Windows 计数，AppKit 自己带着子窗口移动）；缩放可以更新几何，但不重建资源、不重新栅格化。
+- **probe**：`cargo run -p nana-ui --example window-shadow-probe --features hosted,bundled-fonts` 打开透明卡片窗口，依次跑 Auto、静止重绘、移动、缩放、`None` 与再次 `Auto`，逐项打印 JSON 并在门禁失败或超过 15 s 墙钟上限时以非零退出。关掉再打开阴影前后，主窗口的物理位置与尺寸必须逐值相同（阴影不给主窗口加边距）。需要显示器唤醒（`caffeinate -d`）。
 - 透明窗口默认得到阴影：卡片自己画了 UiScene `DropShadow` 的应用应设 `WindowShadow::None`。否则会有两层阴影。点击穿透的覆盖层也应设 `None`。
 
-**验证状态**：macOS 已在真窗口上确认 companion 的几何与层级（主体 + 21pt 边距、`orderedBelow`、静止帧不再更新）。可见渲染待显示器唤醒时目视确认。Windows 只做了 `x86_64-pc-windows-gnu` 交叉编译与 clippy。DComp 九宫格、`LAYERED` + `NOREDIRECTIONBITMAP` 的组合与跨进程点击穿透**未经 Windows 真机验证**。
+**验证状态**：macOS 已在真窗口上确认 companion 的几何与层级（主体 + 21pt 边距、`orderedBelow`、静止帧不再更新）。可见渲染待显示器唤醒时目视确认。`window-shadow-probe` 在 macOS（1× 显示器）上 8 项全过：静止重绘与只移动时阴影工作计数不动，缩放只更新几何（不重建、不栅格化），关 / 开阴影前后主窗口物理位置与尺寸逐值相同；把"每次重绘都挪动主体 1px"注入后，静止与移动两项按预期变红。Windows 只做了 `x86_64-pc-windows-gnu` 交叉编译与 clippy。DComp 九宫格、`LAYERED` + `NOREDIRECTIONBITMAP` 的组合与跨进程点击穿透**未经 Windows 真机验证**。
 
 `run_runtime(WindowDescriptor::new("标题"))` 会创建主窗口、唯一 GPU 上下文。并开始事件循环。`WindowDescriptor` 就是 `nana_ui_platform::WindowDescriptor`。
 

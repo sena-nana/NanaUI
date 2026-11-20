@@ -243,6 +243,8 @@ struct WindowContext {
     /// The visible body the shadow follows, with the scene projection and
     /// size it was derived for; derived again only when either changes.
     shadow_body: Option<ShadowBody>,
+    /// Shadow work already recorded as diagnostics metrics.
+    shadow_reported: nana_window::shadow::ShadowWork,
     /// Set for a `WindowRole::Underlay`: its binding beneath the parent.
     underlay: Option<nana_window::Underlay>,
     auxiliary: Option<nana_window::AuxiliaryWindow>,
@@ -1346,6 +1348,7 @@ fn complete_startup<Program: RuntimeProgram>(
         monitor: window.current_monitor().map(|monitor| monitor.id()),
         shadow: nana_window::shadow::WindowShadowState::default(),
         shadow_body: None,
+        shadow_reported: Default::default(),
         underlay: None,
         auxiliary: None,
     };
@@ -1558,6 +1561,12 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             self.last_presentation_work
                 .get(&id)
                 .copied()
+                .unwrap_or_default(),
+        )
+        .with_shadow_work(
+            self.window_contexts
+                .get(&id)
+                .map(|host| crate::window_shadow::work(&host.shadow))
                 .unwrap_or_default(),
         )
         .with_store(Arc::clone(&self.program_store))

@@ -615,6 +615,29 @@ pub mod window {
     /// Shadow-body projections that reached the platform companion update.
     pub static SHADOW_SYNC_APPLIED: Metric =
         Metric::counter(D, 11, "window.shadow.sync_applied", "count");
+    // Desktop window shadow work (#215), recorded as the companion's counters
+    // advance. A settled window raises none of them; a move raises only
+    // `companion_moves` (Windows; AppKit moves a child window itself).
+    /// Visual bodies that differed from the one the companion last followed.
+    pub static SHADOW_SHAPE_REBUILDS: Metric =
+        Metric::counter(D, 12, "window.shadow.shape_rebuilds", "count");
+    /// Retained companion updates (geometry, paths, offsets) without raster.
+    pub static SHADOW_EFFECT_UPDATES: Metric =
+        Metric::counter(D, 13, "window.shadow.effect_updates", "count");
+    /// Shadow images rasterized on the CPU (a style or scale change).
+    pub static SHADOW_RASTERIZATIONS: Metric =
+        Metric::counter(D, 14, "window.shadow.rasterizations", "count");
+    /// Companion windows, surfaces or layers created.
+    pub static SHADOW_RESOURCE_RECREATES: Metric =
+        Metric::counter(D, 15, "window.shadow.resource_recreates", "count");
+    pub static SHADOW_COMPANION_MOVES: Metric =
+        Metric::counter(D, 16, "window.shadow.companion_moves", "count");
+    pub static SHADOW_COMPANION_RESIZES: Metric =
+        Metric::counter(D, 17, "window.shadow.companion_resizes", "count");
+    histogram!(
+        /// Host CPU time of each shadow apply or body sync that reached the
+        /// platform. Not GPU or render-server time, which is not observable.
+        pub SHADOW_PREPARE_NS, D, 18, "window.shadow.prepare", "ns");
 
     pub static OPENED: EventDescriptor = EventDescriptor::new(
         D,
@@ -1152,6 +1175,13 @@ mod tests {
             &window::RESIZES,
             &window::SHADOW_SYNC_SKIPPED,
             &window::SHADOW_SYNC_APPLIED,
+            &window::SHADOW_SHAPE_REBUILDS,
+            &window::SHADOW_EFFECT_UPDATES,
+            &window::SHADOW_RASTERIZATIONS,
+            &window::SHADOW_RESOURCE_RECREATES,
+            &window::SHADOW_COMPANION_MOVES,
+            &window::SHADOW_COMPANION_RESIZES,
+            &window::SHADOW_PREPARE_NS,
             &host::REDRAW_NS,
             &host::FAILURES,
             &host::FRAMES_DROPPED,
