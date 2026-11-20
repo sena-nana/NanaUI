@@ -153,7 +153,7 @@ macro_rules! for_each_control {
                 invalid: bool = set,
                 steppers: bool = set,
             }
-            with { on_change: NumberChanged }
+            with { on_change: NumberChanged, on_submit: NumberSubmitted }
             model value: f64 => NumberChanged |event| event.value;
             Select => select() for Select {
                 value: Option<Arc<str>> = set,
@@ -265,14 +265,14 @@ macro_rules! for_each_control {
                 disabled: bool = set,
                 invalid: bool = set,
             }
-            with { on_change: SizeFieldChanged };
+            with { on_change: SizeFieldChanged, on_submit: SizeFieldSubmitted };
             ColorField => color_field() for ColorField {
                 value: [f32; 4] = builder,
                 label: Option<Arc<str>> = set,
                 disabled: bool = set,
                 eyedropper: bool = set,
             }
-            with { on_change: ColorChanged };
+            with { on_change: ColorChanged, on_submit: ColorSubmitted };
             ActionMenuItem => action_menu_item(label: text) for ActionMenuItem {
                 content: InlineContent = inline,
                 label: Arc<str> = set,

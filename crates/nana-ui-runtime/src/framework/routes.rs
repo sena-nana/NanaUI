@@ -132,7 +132,7 @@ pub(crate) fn range_field(hooks: &mut TypeHooks) {
 
 pub(crate) fn number_input(hooks: &mut TypeHooks) {
     route!(hooks;
-        step_focused_number_input, revert_focused_number_input, press_number_stepper, commit_focused_number_input, settle_focused_number_input, step_number_input, set_number_text,
+        step_focused_number_input, revert_focused_number_input, press_number_stepper, commit_focused_number_input, submit_focused_number_input, cancel_focused_number_input, select_focused_number_on_entry, settle_focused_number_input, step_number_input, set_number_text,
     );
 }
 

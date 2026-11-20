@@ -169,6 +169,9 @@ impl AppContext {
                     value: area.state.value.to_string(),
                 });
             })?;
+            if self.world.focused(document) != Some(entity.id) {
+                self.sync_interactive_style_states();
+            }
             return Ok(true);
         }
         let Some(entity) = self.focused_editor::<TextInput>(document) else {
@@ -182,6 +185,9 @@ impl AppContext {
                 value: input.state.value.to_string(),
             });
         })?;
+        if self.world.focused(document) != Some(entity.id) {
+            self.sync_interactive_style_states();
+        }
         Ok(true)
     }
 

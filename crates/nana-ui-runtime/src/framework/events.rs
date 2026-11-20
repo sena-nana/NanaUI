@@ -171,6 +171,12 @@ impl AppContext {
             .insert(key);
     }
 
+    pub(super) fn has_event_listeners<E: 'static>(&self, source: StableNodeId) -> bool {
+        self.event_handlers
+            .get(&(source, TypeId::of::<E>()))
+            .is_some_and(|handlers| !handlers.is_empty())
+    }
+
     pub fn on<V, E>(
         &mut self,
         entity: Entity<V>,

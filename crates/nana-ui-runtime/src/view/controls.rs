@@ -9,17 +9,18 @@ use super::node::IntoView;
 use super::node::{El, widget};
 use super::prop::{FieldWrite, IntoProp, Writable};
 use crate::{
-    ActionMenu, ActionMenuItem, ColorChanged, ColorField, InlineContent, ListItemRole, SizeField,
-    SizeFieldChanged, SizePreset, TabsEvent, TextSelection, ThumbnailState, TreeNode, TreeView,
+    ActionMenu, ActionMenuItem, ColorChanged, ColorField, ColorSubmitted, InlineContent,
+    ListItemRole, SizeField, SizeFieldChanged, SizeFieldSubmitted, SizePreset, TabsEvent,
+    TextSelection, ThumbnailState, TreeNode, TreeView,
 };
 use crate::{
     Activate, AppContext, Avatar, Button, Card, Checkbox, Chip, CurveChanged, CurveField,
     CurveInput, Divider, EmptyState, Entity, GpuTextureView, IconButton, ListItem, NodeStyle,
-    NumberChanged, NumberInput, Progress, RangeChanged, RangeField, RangeInput, RangeSpanChanged,
-    RangeSpanEntered, RangeSpanField, RangeSpanInput, RangeSpanOrientation, RangeSpanThumb,
-    ScrollView, Select, SelectChanged, SelectOption, SelectToggled, Spinner, StableNodeId, Stack,
-    StatusBadge, Switch, Text, TextArea, TextChanged, TextInput, TextSubmitted, TextureSlotName,
-    Thumbnail, ThumbnailPick, ToggleChanged,
+    NumberChanged, NumberInput, NumberSubmitted, Progress, RangeChanged, RangeField, RangeInput,
+    RangeSpanChanged, RangeSpanEntered, RangeSpanField, RangeSpanInput, RangeSpanOrientation,
+    RangeSpanThumb, ScrollView, Select, SelectChanged, SelectOption, SelectToggled, Spinner,
+    StableNodeId, Stack, StatusBadge, Switch, Text, TextArea, TextChanged, TextInput,
+    TextSubmitted, TextureSlotName, Thumbnail, ThumbnailPick, ToggleChanged,
 };
 use crate::{
     AppTitleBar, Breadcrumb, Dialog, Drawer, FormField, GpuView, IconGlyph, InteractiveCard,

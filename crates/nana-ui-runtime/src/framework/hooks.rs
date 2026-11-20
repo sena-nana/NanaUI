@@ -583,6 +583,10 @@ routed_calls! {
     revert_focused_number_input: fn(&mut AppContext, DocumentId) -> Result<bool, FrameworkError>,
     press_number_stepper: fn(&mut AppContext, StableNodeId, f32, f32) -> Result<bool, FrameworkError>,
     commit_focused_number_input: fn(&mut AppContext, DocumentId) -> Result<bool, FrameworkError>,
+    submit_focused_number_input: fn(&mut AppContext, DocumentId) -> Result<bool, FrameworkError>,
+    cancel_focused_number_input: fn(&mut AppContext, DocumentId) -> Result<bool, FrameworkError>,
+    select_focused_number_on_entry:
+        fn(&mut AppContext, DocumentId, StableNodeId, Option<(f32, f32)>) -> Result<bool, FrameworkError>,
     settle_focused_number_input: fn(&mut AppContext, DocumentId) -> Result<bool, FrameworkError>,
     step_number_input: fn(&mut AppContext, Entity<NumberInput>, i32) -> Result<bool, FrameworkError>,
     set_number_text: fn(&mut AppContext, Entity<NumberInput>, &str) -> Result<bool, FrameworkError>,

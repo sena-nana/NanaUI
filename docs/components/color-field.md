@@ -103,13 +103,14 @@ hex 框的文本变化会写回 `value`。
 
 ## 事件
 
-提交发 `ColorChanged { value }`，拖动中发 `ColorInput { value }`。
+提交发 `ColorChanged { value }`，拖动中发 `ColorInput { value }`；在 hex 框按回车会解析提交有效色或把无效草稿恢复为规范 hex，并发出 `ColorSubmitted { value }`（失焦同样把无法解析的 hex 草稿恢复为当前颜色的规范 hex）。
 
-提交读 `ColorChanged`，拖动中的预览读 `ColorInput`。
+提交读 `ColorChanged`，确认动作（`on_submit`）读 `ColorSubmitted`，拖动中的预览读 `ColorInput`。
 
 | 事件 | 载荷 | 说明 |
 | --- | --- | --- |
 | `ColorChanged` | `{ value }` | 提交发 `ColorChanged { value }` |
+| `ColorSubmitted` | `{ value }` | 在 hex 框按回车确认后发出（有效 hex 先同步并发 `ColorChanged`，无效草稿回退到规范 hex） |
 | `ColorInput` | `{ value }` | 拖动中发 `ColorInput { value }`。拖动中的预览读 `ColorInput` |
 
 ## 插槽

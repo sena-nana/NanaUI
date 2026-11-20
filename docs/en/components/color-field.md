@@ -103,13 +103,14 @@ The default accessible name is "Color".
 
 ## Events
 
-A commit emits `ColorChanged { value }`; a drag in progress emits `ColorInput { value }`.
+A commit emits `ColorChanged { value }`, and a drag in progress emits `ColorInput { value }`; pressing Enter in the hex input commits a valid hex value or reverts an unparseable draft to canonical hex and emits `ColorSubmitted { value }` (losing focus also reverts an unparseable hex draft back to canonical hex).
 
-Read `ColorChanged` for a commit, `ColorInput` for a preview during a drag.
+Read `ColorChanged` for a commit, `ColorSubmitted` (`on_submit`) for hex Enter confirmation, and `ColorInput` for a preview during a drag.
 
 | Event | Payload | Description |
 | --- | --- | --- |
 | `ColorChanged` | `{ value }` | A commit emits `ColorChanged { value }` |
+| `ColorSubmitted` | `{ value }` | Emitted when Enter confirms the hex input (commits valid hex and emits `ColorChanged` when moved, or reverts invalid hex to canonical form) |
 | `ColorInput` | `{ value }` | A drag in progress emits `ColorInput { value }`. Read `ColorInput` for a preview during a drag |
 
 ## Slots

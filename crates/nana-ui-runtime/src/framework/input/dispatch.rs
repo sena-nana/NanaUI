@@ -233,6 +233,7 @@ impl AppContext {
             1 => GraphPointerButton::Middle,
             _ => GraphPointerButton::Primary,
         };
+        let mut number_selected_all = false;
         let component_handled = match phase {
             PointerPhase::Move => {
                 if self.move_view_drag(document, *pointer_id, *x, *y, *modifiers, now)? {
@@ -377,7 +378,16 @@ impl AppContext {
                     {
                         let unfocused = self.world().focused(document) != Some(target);
                         self.focus_node(document, target)?;
-                        if self
+                        if unfocused
+                            && via!(self.select_focused_number_on_entry(
+                                document,
+                                target,
+                                Some((*x, *y))
+                            ))?
+                        {
+                            self.text_edit.text_pointer_drag = None;
+                            self.text_edit.text_pointer_click = None;
+                        } else if self
                             .world()
                             .text_input(target)
                             .is_some_and(|s| s.selection.range().is_empty())
@@ -470,32 +480,51 @@ impl AppContext {
                         self.clear_focus(document)?;
                     }
                 }
-                if *button == 0
-                    && !activation_click
-                    && let Some(shaper) = reborrow_text_shaper(&mut text_shaper)
-                {
-                    let editor = if let Some(focus) = focus_target {
-                        self.text_edit.unfocused_press = unfocused;
-                        let pressed = self.text_editor_pointer_press(
+                if *button == 0 && !activation_click {
+                    if let Some(focus) = focus_target
+                        && unfocused == Some(focus)
+                        && !modifiers.shift
+                        && !modifiers.alt
+                        && via!(self.select_focused_number_on_entry(
                             document,
                             focus,
-                            *pointer_id,
-                            *x,
-                            *y,
-                            modifiers.shift,
-                            modifiers.alt,
-                            now,
-                            shaper,
-                        );
-                        self.text_edit.unfocused_press = None;
-                        pressed?
-                    } else {
-                        false
-                    };
-                    if editor {
+                            Some((*x, *y))
+                        ))?
+                    {
+                        self.text_edit.text_pointer_drag = None;
+                        self.text_edit.text_pointer_click = None;
+                        number_selected_all = true;
                         self.clear_document_text_selection(document);
-                    } else {
-                        self.document_text_pointer_press(document, *pointer_id, *x, *y, shaper)?;
+                    } else if let Some(shaper) = reborrow_text_shaper(&mut text_shaper) {
+                        let editor = if let Some(focus) = focus_target {
+                            self.text_edit.unfocused_press = unfocused;
+                            let pressed = self.text_editor_pointer_press(
+                                document,
+                                focus,
+                                *pointer_id,
+                                *x,
+                                *y,
+                                modifiers.shift,
+                                modifiers.alt,
+                                now,
+                                shaper,
+                            );
+                            self.text_edit.unfocused_press = None;
+                            pressed?
+                        } else {
+                            false
+                        };
+                        if editor {
+                            self.clear_document_text_selection(document);
+                        } else {
+                            self.document_text_pointer_press(
+                                document,
+                                *pointer_id,
+                                *x,
+                                *y,
+                                shaper,
+                            )?;
+                        }
                     }
                 }
                 if let Some(target) = hit {
@@ -814,7 +843,12 @@ impl AppContext {
             _ => false,
         };
         // Reached only by a press no control took for itself.
-        if *phase == PointerPhase::Down && *is_primary && *button == 0 && !activation_click {
+        if *phase == PointerPhase::Down
+            && *is_primary
+            && *button == 0
+            && !activation_click
+            && !number_selected_all
+        {
             self.arm_view_drag(document, *pointer_id, pointer.pointer_type, *x, *y);
         }
         let handled = overlay.prevent_default || component_handled;
@@ -1300,15 +1334,15 @@ impl AppContext {
         // editing keys in `text_editor_key`; Escape is not an editing key and
         // reverts the draft here.
         if key == "Escape" {
-            let reverted = via!(self.revert_focused_number_input(document))?;
-            if reverted {
+            let cancelled = via!(self.cancel_focused_number_input(document))?;
+            if cancelled {
                 // a scrub field's typing ends with its revert
                 via!(self.end_focused_scrub_edit(document))?;
             }
             // a range's typing ends with Escape, whether the draft changed
             let range = via!(self.end_focused_range_edit(document))?
                 | via!(self.end_focused_range_span_edit(document))?;
-            if reverted || range {
+            if cancelled || range {
                 return Ok(true);
             }
         }
@@ -1574,12 +1608,15 @@ impl AppContext {
                     return Ok(true);
                 }
                 "Enter" => {
-                    let committed = via!(self.commit_focused_number_input(document))?;
+                    if self.world().ime(focused.node).is_some() {
+                        return Ok(true);
+                    }
+                    let submitted = via!(self.submit_focused_number_input(document))?;
                     // a scrub field's typing ends with Enter, committed or not
                     let ended = via!(self.end_focused_scrub_edit(document))?
                         | via!(self.end_focused_range_edit(document))?
                         | via!(self.end_focused_range_span_edit(document))?;
-                    return Ok(committed || ended);
+                    return Ok(submitted || ended);
                 }
                 _ => {}
             }

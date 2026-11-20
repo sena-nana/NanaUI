@@ -138,6 +138,90 @@ impl AppContext {
         }
     }
 
+    /// Submit an editable focused [`NumberInput`], committing any pending draft
+    /// (or reverting an unparseable one) and emitting [`crate::NumberSubmitted`].
+    /// IME composition never submits. Returns whether the draft changed or a
+    /// submission listener observed the confirmation.
+    pub fn submit_focused_number_input(
+        &mut self,
+        document: DocumentId,
+    ) -> Result<bool, FrameworkError> {
+        let Some(entity) = self.focused_number_input(document) else {
+            return Ok(false);
+        };
+        if self.world.ime(entity.id).is_some() || !self.read(entity, NumberInput::accepts_input)? {
+            return Ok(false);
+        }
+        let committed = self.commit_number_input(entity)?;
+        let observed = self.has_event_listeners::<crate::NumberSubmitted>(entity.stable_id());
+        if observed && self.world.contains(entity.id) {
+            self.update(entity, |input, cx| {
+                cx.emit(crate::NumberSubmitted {
+                    value: input.value(),
+                });
+            })?;
+            if self.world.focused(document) != Some(entity.id) {
+                self.sync_interactive_style_states();
+            }
+        }
+        Ok(committed || observed)
+    }
+
+    /// Cancel editing on an editable focused [`NumberInput`], reverting any
+    /// pending draft and emitting [`crate::NumberCancelled`]. IME composition
+    /// is left alone. Returns whether the draft reverted or a cancellation
+    /// listener observed the event.
+    pub(super) fn cancel_focused_number_input(
+        &mut self,
+        document: DocumentId,
+    ) -> Result<bool, FrameworkError> {
+        let Some(entity) = self.focused_number_input(document) else {
+            return Ok(false);
+        };
+        if self.world.ime(entity.id).is_some() || !self.read(entity, NumberInput::accepts_input)? {
+            return Ok(false);
+        }
+        let reverted = self.revert_focused_number_input(document)?;
+        let observed = self.has_event_listeners::<crate::NumberCancelled>(entity.stable_id());
+        if observed && self.world.contains(entity.id) {
+            self.update(entity, |_, cx| {
+                cx.emit(crate::NumberCancelled);
+            })?;
+            if self.world.focused(document) != Some(entity.id) {
+                self.sync_interactive_style_states();
+            }
+        }
+        Ok(reverted || observed)
+    }
+
+    /// Select all text when focus enters a [`NumberInput`] on pointer entry
+    /// (excluding stepper hits) or sequential Tab navigation. Returns `true`
+    /// when `node` is the focused [`NumberInput`] and accepts selection.
+    pub(super) fn select_focused_number_on_entry(
+        &mut self,
+        document: DocumentId,
+        node: StableNodeId,
+        point: Option<(f32, f32)>,
+    ) -> Result<bool, FrameworkError> {
+        let Some(entity) = self.focused_number_input(document) else {
+            return Ok(false);
+        };
+        if entity.stable_id() != node {
+            return Ok(false);
+        }
+        if let Some((x, y)) = point {
+            let (lx, ly) = self.layout_point(node, x, y);
+            if self.on_number_stepper(node, lx, ly) {
+                return Ok(false);
+            }
+        }
+        if !self.read(entity, EditableText::accepts_selection)? {
+            return Ok(false);
+        }
+        self.select_all_editable(entity)?;
+        Ok(true)
+    }
+
     /// Discard the focused numeric field's draft and show the committed value
     /// again. Nothing is emitted: the value never moved.
     pub fn revert_focused_number_input(

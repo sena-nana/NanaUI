@@ -7173,3 +7173,339 @@ fn an_unfocused_field_shows_its_start_and_its_focusing_click_lands_there() {
         "the click lands at the start it saw, not at {caret}"
     );
 }
+
+#[test]
+fn unfocused_number_input_selects_all_on_click_and_tab_and_keeps_steppers() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let button = context
+        .create_component(document, Button::new("Other"))
+        .unwrap();
+    let input = context
+        .create_component(document, crate::NumberInput::new(42.0).range(0.0, 100.0))
+        .unwrap();
+    let node = input.stable_id();
+    let other_node = button.stable_id();
+    let mut layout = MutationQueue::new();
+    layout.write_layout(
+        other_node,
+        LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 80.0,
+            height: 24.0,
+        },
+    );
+    layout.write_layout(
+        node,
+        LayoutBox {
+            x: 0.0,
+            y: 40.0,
+            width: 160.0,
+            height: 32.0,
+        },
+    );
+    context.commit_mutations(layout).unwrap();
+    context.take_system_work();
+    context.rebuild_hit_test(document);
+
+    let mut shaper = MeasureTextShaper;
+    let nodes = [other_node, node];
+    context.resolve_styles(&nodes).unwrap();
+    context.shape_text(&nodes, &mut shaper).unwrap();
+    let steppers = match context.world().text_input_geometry(node) {
+        Some(crate::TextInputGeometry {
+            steppers: Some(steppers),
+            ..
+        }) => steppers,
+        other => panic!("expected spinner geometry, got {other:?}"),
+    };
+
+    let mut adapter = TestInput::default();
+    // Clicking an unfocused numeric field (with small pointer jitter before release)
+    // selects all text so typing replaces it immediately.
+    for (gesture, at) in [
+        (pointer_down(12.0, 56.0), 100),
+        (pointer_move(13.0, 56.0), 110),
+        (pointer_up(13.0, 56.0), 120),
+    ] {
+        adapter
+            .dispatch_with_shaper(
+                &mut context,
+                document,
+                &gesture,
+                Duration::from_millis(at),
+                Some(&mut shaper),
+            )
+            .unwrap();
+    }
+    assert_eq!(context.world().focused(document), Some(node));
+    let (draft, anchor, focus) = textarea_selection(&context, node);
+    assert_eq!(draft, "42");
+    assert_eq!((anchor.min(focus), anchor.max(focus)), (0, 2));
+
+    adapter
+        .dispatch(
+            &mut context,
+            document,
+            &edit_key("9", Some("9"), InputModifiers::default()),
+        )
+        .unwrap();
+    assert_eq!(textarea_selection(&context, node).0, "9");
+    adapter
+        .dispatch(&mut context, document, &plain_key("Enter"))
+        .unwrap();
+    assert_eq!(context.read(input, crate::NumberInput::value).unwrap(), 9.0);
+
+    // Clicking again while already focused places a collapsed caret rather than
+    // selecting all.
+    for (gesture, at) in [
+        (pointer_down(4.0, 56.0), 2_000),
+        (pointer_up(4.0, 56.0), 2_010),
+    ] {
+        adapter
+            .dispatch_with_shaper(
+                &mut context,
+                document,
+                &gesture,
+                Duration::from_millis(at),
+                Some(&mut shaper),
+            )
+            .unwrap();
+    }
+    let (_, anchor, focus) = textarea_selection(&context, node);
+    assert_eq!(anchor, focus, "focused second click places a caret");
+
+    // Clicking without a text shaper (HeadlessInput path) also selects all on entry.
+    assert!(context.clear_focus(document).unwrap());
+    for (gesture, at) in [
+        (pointer_down(12.0, 56.0), 2_500),
+        (pointer_up(12.0, 56.0), 2_510),
+    ] {
+        adapter
+            .dispatch_with_shaper(
+                &mut context,
+                document,
+                &gesture,
+                Duration::from_millis(at),
+                None,
+            )
+            .unwrap();
+    }
+    let (_, anchor, focus) = textarea_selection(&context, node);
+    assert_eq!((anchor.min(focus), anchor.max(focus)), (0, 1));
+
+    // Sequential Tab navigation selects all on entry.
+    assert!(context.focus_node(document, other_node).unwrap());
+    adapter
+        .dispatch(&mut context, document, &plain_key("Tab"))
+        .unwrap();
+    assert_eq!(context.world().focused(document), Some(node));
+    let (draft, anchor, focus) = textarea_selection(&context, node);
+    assert_eq!(draft, "9");
+    assert_eq!((anchor.min(focus), anchor.max(focus)), (0, 1));
+    adapter
+        .dispatch(
+            &mut context,
+            document,
+            &edit_key("7", Some("7"), InputModifiers::default()),
+        )
+        .unwrap();
+    adapter
+        .dispatch(&mut context, document, &plain_key("Enter"))
+        .unwrap();
+    assert_eq!(context.read(input, crate::NumberInput::value).unwrap(), 7.0);
+
+    // Clicking a stepper button while unfocused steps directly without selecting all.
+    assert!(context.clear_focus(document).unwrap());
+    let up_x = steppers.increment.x + steppers.increment.width / 2.0;
+    let up_y = steppers.increment.y + steppers.increment.height / 2.0;
+    for (gesture, at) in [
+        (pointer_down(up_x, up_y), 3_000),
+        (pointer_up(up_x, up_y), 3_010),
+    ] {
+        adapter
+            .dispatch_with_shaper(
+                &mut context,
+                document,
+                &gesture,
+                Duration::from_millis(at),
+                Some(&mut shaper),
+            )
+            .unwrap();
+    }
+    assert_eq!(context.read(input, crate::NumberInput::value).unwrap(), 8.0);
+    let (draft, anchor, focus) = textarea_selection(&context, node);
+    assert_eq!(draft, "8");
+    assert_eq!(anchor, focus, "stepper press should not select all");
+}
+
+#[test]
+fn number_input_enter_emits_submitted_and_escape_emits_cancelled_with_ime_guard() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let input = context
+        .create_component(document, crate::NumberInput::new(10.0).range(0.0, 100.0))
+        .unwrap();
+    let node = input.stable_id();
+
+    let events = Arc::new(Mutex::new(Vec::<(&'static str, f64)>::new()));
+    let e1 = events.clone();
+    context
+        .on(input, move |_, ev: &crate::NumberChanged, _| {
+            e1.lock().unwrap().push(("changed", ev.value));
+        })
+        .unwrap();
+    let e2 = events.clone();
+    context
+        .on(input, move |_, ev: &crate::NumberSubmitted, _| {
+            e2.lock().unwrap().push(("submitted", ev.value));
+        })
+        .unwrap();
+    let e3 = events.clone();
+    context
+        .on(input, move |_, _: &crate::NumberCancelled, _| {
+            e3.lock().unwrap().push(("cancelled", 0.0));
+        })
+        .unwrap();
+
+    let mut adapter = TestInput::default();
+    assert!(context.focus_node(document, node).unwrap());
+    context.select_all_focused_text(document).unwrap();
+    context.replace_focused_text(document, "25").unwrap();
+    assert!(events.lock().unwrap().is_empty());
+
+    assert!(
+        adapter
+            .dispatch(&mut context, document, &plain_key("Enter"))
+            .unwrap()
+            .prevent_default
+    );
+    assert_eq!(
+        *events.lock().unwrap(),
+        vec![("changed", 25.0), ("submitted", 25.0)]
+    );
+
+    // Pressing Enter again when unchanged still emits NumberSubmitted when observed.
+    assert!(
+        adapter
+            .dispatch(&mut context, document, &plain_key("Enter"))
+            .unwrap()
+            .prevent_default
+    );
+    assert_eq!(
+        *events.lock().unwrap(),
+        vec![("changed", 25.0), ("submitted", 25.0), ("submitted", 25.0)]
+    );
+
+    // Empty and active IME preedit both suppress Enter and Escape.
+    context.replace_focused_text(document, "88").unwrap();
+    for preedit in ["", "あ"] {
+        context
+            .set_ime_preedit(document, preedit.into(), None)
+            .unwrap();
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &plain_key("Enter"))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            events.lock().unwrap().len(),
+            3,
+            "IME Enter must not emit NumberSubmitted"
+        );
+    }
+    context.clear_ime(document).unwrap();
+
+    // Escape reverts draft and emits NumberCancelled even when later pressed unchanged.
+    assert!(
+        adapter
+            .dispatch(&mut context, document, &plain_key("Escape"))
+            .unwrap()
+            .prevent_default
+    );
+    assert_eq!(textarea_selection(&context, node).0, "25");
+    assert_eq!(
+        *events.lock().unwrap(),
+        vec![
+            ("changed", 25.0),
+            ("submitted", 25.0),
+            ("submitted", 25.0),
+            ("cancelled", 0.0),
+        ]
+    );
+    assert!(
+        adapter
+            .dispatch(&mut context, document, &plain_key("Escape"))
+            .unwrap()
+            .prevent_default
+    );
+    assert_eq!(events.lock().unwrap().len(), 5);
+
+    // Clearing focus from NumberSubmitted leaves focus cleared and style synced,
+    // and schema `on_submit` fires cleanly on `number_input()`.
+    static FOCUS_PATCH: crate::view::StylePatch = crate::view::StylePatch::new(|layout| {
+        layout.opacity = Some(0.5);
+    });
+    static FOCUS_RULES: [crate::view::SheetRule; 1] = [crate::view::SheetRule {
+        classes: &[0],
+        pseudo: crate::view::PSEUDO_FOCUS,
+        patch: &FOCUS_PATCH,
+        query: None,
+    }];
+    static FOCUS_SHEET: crate::view::Sheet = crate::view::Sheet::new(&FOCUS_RULES, &[]);
+    let root = context
+        .create_component(document, crate::Stack::column(0.0))
+        .unwrap();
+    let mounted_submitted = Arc::new(Mutex::new(Vec::new()));
+    let mounted_log = mounted_submitted.clone();
+    let blur_ref = crate::view::node_ref();
+    context
+        .mount_view(root.stable_id(), move || {
+            crate::view::number_input()
+                .value(5.0)
+                .node_ref(blur_ref)
+                .class(crate::view::Class::new(&FOCUS_SHEET, 0))
+                .on_submit(move |ev: &crate::NumberSubmitted| {
+                    mounted_log.lock().unwrap().push(ev.value);
+                })
+                .on_cx(
+                    move |_: &mut crate::NumberInput, _: &crate::NumberSubmitted, cx| {
+                        cx.mutations().request_focus(document, None);
+                    },
+                )
+        })
+        .unwrap();
+    let styled_node = blur_ref.get().expect("mounted blur number input");
+    assert_ne!(
+        context
+            .world()
+            .node_style(styled_node)
+            .and_then(|s| s.layout.opacity),
+        Some(0.5)
+    );
+    assert!(context.focus_node(document, styled_node).unwrap());
+    context.flush_reactive().unwrap();
+    assert_eq!(
+        context
+            .world()
+            .node_style(styled_node)
+            .and_then(|s| s.layout.opacity),
+        Some(0.5)
+    );
+    adapter
+        .dispatch(&mut context, document, &plain_key("Enter"))
+        .unwrap();
+    context.flush_reactive().unwrap();
+    assert_eq!(context.world().focused(document), None);
+    assert_eq!(*mounted_submitted.lock().unwrap(), vec![5.0]);
+    assert_ne!(
+        context
+            .world()
+            .node_style(styled_node)
+            .and_then(|s| s.layout.opacity),
+        Some(0.5),
+        "clearing focus in NumberSubmitted must re-sync :focus interactive styles"
+    );
+}

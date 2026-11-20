@@ -39,6 +39,12 @@ pub struct SizeFieldChanged {
     pub value: [f64; 2],
 }
 
+/// Emitted when Enter confirms either side of a [`SizeField`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SizeFieldSubmitted {
+    pub value: [f64; 2],
+}
+
 /// Two independently editable numbers and a square preset trigger, with one frame.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SizeField {
@@ -241,6 +247,15 @@ impl AppContext {
                             cx.reassemble();
                         }
                     })?;
+                    self.observe(
+                        input,
+                        field,
+                        move |field, _event: &crate::NumberSubmitted, cx| {
+                            if !field.disabled {
+                                cx.emit(SizeFieldSubmitted { value: field.value });
+                            }
+                        },
+                    )?;
                     input
                 }
             };
@@ -748,5 +763,131 @@ mod tests {
                 .unwrap();
             assert_eq!(cx.world().layout_box(field.stable_id()).unwrap(), frame);
         }
+    }
+
+    #[test]
+    fn clicking_or_tabbing_into_side_selects_all_and_enter_emits_size_field_submitted() {
+        let (mut cx, field, doc) = fixture();
+        cx.layout_document(doc, LayoutViewport::new(400.0, 400.0))
+            .unwrap();
+        let order = cx.world().document_order(doc);
+        cx.resolve_styles(&order).unwrap();
+        let mut shaper = crate::MeasureTextShaper;
+        cx.shape_text(&order, &mut shaper).unwrap();
+        cx.rebuild_hit_test(doc);
+
+        let changed = Arc::new(Mutex::new(Vec::new()));
+        let submitted = Arc::new(Mutex::new(Vec::new()));
+        let c_log = changed.clone();
+        let s_log = submitted.clone();
+        cx.on(field, move |_, ev: &SizeFieldChanged, _| {
+            c_log.lock().unwrap().push(ev.value);
+        })
+        .unwrap();
+        cx.on(field, move |_, ev: &SizeFieldSubmitted, _| {
+            s_log.lock().unwrap().push(ev.value);
+        })
+        .unwrap();
+
+        let snap = cx.read(field, Clone::clone).unwrap();
+        let width_id = snap.width.unwrap();
+        let height_id = snap.height.unwrap();
+        let width_box = cx.world().layout_box(width_id).unwrap();
+        let click_x = width_box.x + width_box.width / 2.0;
+        let click_y = width_box.y + width_box.height / 2.0;
+
+        let mut input = crate::HeadlessInput::bind(&mut cx, doc);
+        input
+            .pointer(&mut cx, nana_ui_input::PointerPhase::Down, click_x, click_y)
+            .unwrap();
+        input
+            .pointer(&mut cx, nana_ui_input::PointerPhase::Up, click_x, click_y)
+            .unwrap();
+        assert_eq!(cx.world().focused(doc), Some(width_id));
+        let sel = cx.world().text_input(width_id).unwrap().selection.ordered();
+        assert_eq!(sel, 0..4, "unfocused click selects width draft");
+
+        input.text(&mut cx, "640").unwrap();
+        input
+            .press(
+                &mut cx,
+                nana_ui_input::KeyInput::named(
+                    "Enter",
+                    "Enter",
+                    nana_ui_input::KeyState::Pressed,
+                    Default::default(),
+                ),
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(*changed.lock().unwrap(), vec![[640.0, 1080.0]]);
+        assert_eq!(*submitted.lock().unwrap(), vec![[640.0, 1080.0]]);
+
+        // Pressing Enter again when unchanged emits SizeFieldSubmitted without SizeFieldChanged.
+        input
+            .press(
+                &mut cx,
+                nana_ui_input::KeyInput::named(
+                    "Enter",
+                    "Enter",
+                    nana_ui_input::KeyState::Pressed,
+                    Default::default(),
+                ),
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(*changed.lock().unwrap(), vec![[640.0, 1080.0]]);
+        assert_eq!(
+            *submitted.lock().unwrap(),
+            vec![[640.0, 1080.0], [640.0, 1080.0]]
+        );
+
+        // Tabbing to height selects all and Enter emits updated SizeFieldSubmitted.
+        input
+            .press(
+                &mut cx,
+                nana_ui_input::KeyInput::named(
+                    "Tab",
+                    "Tab",
+                    nana_ui_input::KeyState::Pressed,
+                    Default::default(),
+                ),
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(cx.world().focused(doc), Some(height_id));
+        let sel = cx
+            .world()
+            .text_input(height_id)
+            .unwrap()
+            .selection
+            .ordered();
+        assert_eq!(sel, 0..4, "Tab selects height draft");
+
+        input.text(&mut cx, "480").unwrap();
+        input
+            .press(
+                &mut cx,
+                nana_ui_input::KeyInput::named(
+                    "Enter",
+                    "Enter",
+                    nana_ui_input::KeyState::Pressed,
+                    Default::default(),
+                ),
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            *changed.lock().unwrap(),
+            vec![[640.0, 1080.0], [640.0, 480.0]]
+        );
+        assert_eq!(
+            *submitted.lock().unwrap(),
+            vec![[640.0, 1080.0], [640.0, 1080.0], [640.0, 480.0]]
+        );
     }
 }

@@ -113,11 +113,11 @@ inactive overlay 与关闭菜单属于结构性隐藏。`ComputedStyle::box_visi
 
 选区位置：`UiWorld::text_selection_bounds(id)` 回答 `NativeMarkdown` / `SelectableRichText` 的选区在窗口里的外接矩形，已计入上层滚动和变换，没有选区时为 `None`。用来把浮动工具条锚在选区上：在改变选区的更新返回之后再问，滚动后重新问。配合 `resolve_popover_origin` 决定放在选区上方还是下方。
 
-`NumberInput::steppers(false)` 隐藏上下步进按钮及其点击区和预留宽度；数字校验、提交和键盘方向键保持原有规则，默认仍显示按钮。
+`NumberInput::steppers(false)` 隐藏上下步进按钮及其点击区和预留宽度；从未聚焦点击文本框（非步进按钮）或按 Tab 进入时默认全选当前文本，已聚焦再点击按位置落光标，回车确认发出 `NumberSubmitted`（`on_submit`），Esc 取消并发 `NumberCancelled`；数字校验、提交和键盘方向键保持原有规则，默认仍显示按钮。
 
-`SizeField` 是共用一个外框的「宽 × 高 ▾」：两个不带步进按钮的 `NumberInput` 均分宽度，右端方形 `ActionMenu` 图标打开预设；提交单边或预设统一发 `SizeFieldChanged { value: [f64; 2] }`（`SizeChanged` 已用于布局事件）。`range`／`step` 沿用数字字段规则，`SizePreset` 提供名称、宽高值和禁用状态，以宽高值作为条目身份。`value`、`presets` 和各部分可访问名称支持视图绑定；外部回写相同数值保留编辑草稿、选择和撤销，条目刷新保留菜单身份与焦点。禁用整个字段时关闭菜单并停用内部操作。
+`SizeField` 是共用一个外框的「宽 × 高 ▾」：两个不带步进按钮的 `NumberInput` 均分宽度，右端方形 `ActionMenu` 图标打开预设；提交单边或预设统一发 `SizeFieldChanged { value: [f64; 2] }`（`SizeChanged` 已用于布局事件），任一侧按回车同时发 `SizeFieldSubmitted { value: [f64; 2] }`（`on_submit`）。`range`／`step` 沿用数字字段规则，`SizePreset` 提供名称、宽高值和禁用状态，以宽高值作为条目身份。`value`、`presets` 和各部分可访问名称支持视图绑定；外部回写相同数值保留编辑草稿、选择和撤销，条目刷新保留菜单身份与焦点。禁用整个字段时关闭菜单并停用内部操作。
 
-`ColorField` 是色块 + hex。`assemble_color_field` 挂 HSV 选择器。提交发 `ColorChanged`。拖动发 `ColorInput`。`PathField` 是路径 + 浏览按钮。浏览只发 `BrowseRequested`。由应用打开系统对话框。
+`ColorField` 是色块 + hex。`assemble_color_field` 挂 HSV 选择器。提交发 `ColorChanged`。hex 按回车确认或恢复并发 `ColorSubmitted`（`on_submit`），失焦也会恢复无效 hex 草稿。拖动发 `ColorInput`。`PathField` 是路径 + 浏览按钮。浏览只发 `BrowseRequested`。由应用打开系统对话框。
 
 ### FindReplaceBar
 

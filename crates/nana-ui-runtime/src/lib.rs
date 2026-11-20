@@ -22,7 +22,7 @@ mod charts;
 mod chip;
 mod color_field;
 mod size_field;
-pub use size_field::{SizeField, SizeFieldChanged, SizePreset};
+pub use size_field::{SizeField, SizeFieldChanged, SizeFieldSubmitted, SizePreset};
 mod command_palette;
 pub mod component_descriptors;
 mod component_registry;
@@ -218,8 +218,8 @@ pub use charts::{
 };
 pub use chip::{Chip, ChipDismissed};
 pub use color_field::{
-    ColorChanged, ColorField, ColorInput, ColorPickRequested, format_hex, hsv_to_rgb, hue_spectrum,
-    parse_hex, rgb_to_hsv, sanitize_rgba,
+    ColorChanged, ColorField, ColorInput, ColorPickRequested, ColorSubmitted, format_hex,
+    hsv_to_rgb, hue_spectrum, parse_hex, rgb_to_hsv, sanitize_rgba,
 };
 pub use command_palette::{
     CommandPalette, CommandPaletteLayout, CommandPaletteVisual, PaletteRowData, PaletteRowGeometry,
@@ -547,3 +547,17 @@ pub use xy_pad::{
 
 pub use native_content::{NATIVE_CONTENT_RENDERER, NativeContent};
 pub use panel::{Panel, PanelEdge, PanelInsets};
+
+/// Reported when Enter confirms an editable [`NumberInput`], after any
+/// pending draft has been committed (or reverted if unparseable) and
+/// excluding IME preedit. Fires even when the committed value did not change.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NumberSubmitted {
+    pub value: f64,
+}
+
+/// Reported when Escape cancels editing on an editable [`NumberInput`],
+/// after any pending draft has been reverted and excluding IME preedit.
+/// Fires even when no draft differed from the committed value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NumberCancelled;

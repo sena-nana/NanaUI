@@ -836,7 +836,9 @@ impl AppContext {
             })
             .unwrap_or_else(|| if reverse { candidates.len() - 1 } else { 0 });
         if self.world.focused(document) != Some(candidates[next]) {
-            self.focus_node(document, candidates[next])?;
+            if self.focus_node(document, candidates[next])? {
+                via!(self.select_focused_number_on_entry(document, candidates[next], None))?;
+            }
         }
         Ok(true)
     }

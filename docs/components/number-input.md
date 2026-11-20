@@ -30,6 +30,8 @@ number_input().label("数量").placeholder("0").model(count)
 
 已提交的数在 `value`。用户键入时只改草稿，不改 `value`。回车或失焦才解析。解析不了就回到上次提交的值，不另编一个数。步进和方向键优先用能解析的草稿，半截草稿解析不了就从已提交值走。到了边界、一步也动不了时，什么都不改。
 
+从未聚焦状态点击框内文字区（不落在步进按钮上）或按 Tab 进入时默认全选当前文本，方便直接输入替换；已经聚焦时再次点击按位置落光标，点在步进按钮上直接步进、不全选。
+
 ## 写入
 
 `assign` 把应用给的数夹进范围。离散模式再对齐精度和步进。写进去的结果和当前一样时，不替换文本。
@@ -70,15 +72,19 @@ number_input().label("数量").placeholder("0").model(count)
 
 ## 事件
 
-事件是 `on_change`，类型为 `NumberChanged`。处理器接收 `&NumberChanged`。
+变更事件是 `on_change`，类型为 `NumberChanged`。确认事件是 `on_submit`（`NumberSubmitted`），Esc 取消编辑发出 `NumberCancelled`。处理器分别接收 `&NumberChanged`、`&NumberSubmitted`、`&NumberCancelled`。
 
 `.on_change(|event: &NumberChanged| …)` 在提交后的值变了才发生。模板里是 `on:NumberChanged={|event: &NumberChanged| …}`。键入过程没有单独的 `on_input`。
+
+`.on_submit(|event: &NumberSubmitted| …)` 在可编辑字段按回车确认（非输入法预编辑）后发出，不论提交后的值是否变化，方便应用在确认后收起编辑态或清除焦点；按 Esc 撤回草稿后发出 `NumberCancelled`（同样忽略输入法预编辑）。
 
 `@change={save}` 在 `save` 是函数时原样传入，参数必须是 `&NumberChanged`。其它表达式展开成 `move |_| { … }`，事件被忽略。
 
 | 事件 | 载荷 | 说明 |
 | --- | --- | --- |
 | `on_change`，模板 `on:NumberChanged` 或 `@change` | `&NumberChanged` | 提交后的值变了才发生。键入过程没有单独的 `on_input`。函数原样传入，参数必须是 `&NumberChanged`；其它表达式忽略事件 |
+| `on_submit`，模板 `on:NumberSubmitted` | `&NumberSubmitted` | 可编辑字段按回车确认（非输入法预编辑）后发出；即使数值未变也会触发，并在回调清除焦点后同步控件样式 |
+| `on::<NumberCancelled>` | `&NumberCancelled` | 可编辑字段按 Esc 取消并恢复草稿（非输入法预编辑）后发出；即使草稿本未改变也会触发 |
 
 ## 插槽
 

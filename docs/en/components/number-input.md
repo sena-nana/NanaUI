@@ -30,6 +30,8 @@ number_input().label("Count").placeholder("0").model(count)
 
 The committed number lives in `value`. Typing changes only the draft, not `value`. Parsing happens on Enter or on losing focus. When it does not parse, the field returns to the last committed value and does not invent one. Stepping and the arrow keys prefer a draft that parses; a half-typed draft that does not parse falls back to the committed value. At a boundary, where one step cannot move, nothing changes.
 
+Clicking into an unfocused field outside its stepper buttons, or entering it with Tab, selects all text by default so typing immediately replaces the number; a second click while already focused places the caret at the pointer, and pressing a stepper steps directly without selecting all.
+
 ## Writes
 
 `assign` clamps the number the application gives into range. Discrete mode then aligns it to the precision and step. When the result written in equals the current one, the text is not replaced.
@@ -70,15 +72,19 @@ The fields are `value: f64`, `label: Option<Arc<str>>`, `placeholder: Arc<str>`,
 
 ## Events
 
-The event is `on_change`, of type `NumberChanged`. The handler receives `&NumberChanged`.
+The change event is `on_change`, of type `NumberChanged`. Enter confirmation emits `on_submit` (`NumberSubmitted`), and Escape cancellation emits `NumberCancelled`. Handlers receive `&NumberChanged`, `&NumberSubmitted`, and `&NumberCancelled`.
 
 `.on_change(|event: &NumberChanged| …)` fires only when the committed value changes. In templates it is `on:NumberChanged={|event: &NumberChanged| …}`. There is no separate `on_input` during typing.
+
+`.on_submit(|event: &NumberSubmitted| …)` fires when Enter confirms an editable field (outside IME preedit), even when the committed value did not change, allowing applications to exit edit mode or clear focus; Escape reverts the draft and emits `NumberCancelled` (also ignoring IME preedit).
 
 `@change={save}` passes `save` straight through when it is a function, and the parameter must be `&NumberChanged`. Other expressions expand to `move |_| { … }` and the event is ignored.
 
 | Event | Payload | Description |
 | --- | --- | --- |
 | `on_change`, template `on:NumberChanged` or `@change` | `&NumberChanged` | Fires only when the committed value changes. There is no separate `on_input` during typing. A function is passed as is and its parameter must be `&NumberChanged`; other expressions ignore the event |
+| `on_submit`, template `on:NumberSubmitted` | `&NumberSubmitted` | Fires when Enter confirms an editable field (outside IME preedit), even when the value did not change; interactive style states re-sync if a listener clears focus |
+| `on::<NumberCancelled>` | `&NumberCancelled` | Fires when Escape cancels editing on an editable field and reverts the draft (outside IME preedit), even when no draft differed from the committed value |
 
 ## Slots
 

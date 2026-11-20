@@ -43,6 +43,12 @@ pub struct ColorChanged {
     pub value: [f32; 4],
 }
 
+/// Emitted when Enter confirms the hex input of a [`ColorField`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ColorSubmitted {
+    pub value: [f32; 4],
+}
+
 /// Emitted when the user activates the picker's eyedropper button so the host
 /// can sample a screen pixel and finish with [`AppContext::complete_color_pick`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -371,8 +377,11 @@ impl AppContext {
         }
 
         if created {
-            self.on(field, |field, event: &FocusWithinChanged, _| {
+            self.on(field, |field, event: &FocusWithinChanged, cx| {
                 field.focus_within = event.focused;
+                if !event.focused {
+                    cx.reassemble();
+                }
             })?;
             // The well's press, Enter / Space on it, light dismiss and Escape
             // all toggle the popover itself; mirror that so a later reassembly
@@ -386,6 +395,20 @@ impl AppContext {
                     field.apply_rgb(value);
                     cx.emit(ColorChanged { value: field.value });
                 }
+            })?;
+            self.observe(hex, field, |field, event: &crate::TextSubmitted, cx| {
+                if field.disabled {
+                    return;
+                }
+                if let Some(value) = parse_hex(&event.value) {
+                    let before = field.value;
+                    field.apply_rgb(value);
+                    if field.value != before {
+                        cx.emit(ColorChanged { value: field.value });
+                    }
+                }
+                cx.reassemble();
+                cx.emit(ColorSubmitted { value: field.value });
             })?;
             self.observe(pad, field, |field, event: &XYPadEvent, cx| {
                 let sample = match event {
@@ -1456,5 +1479,101 @@ mod tests {
         assert!(!context.color_pick_active(field.stable_id()));
         assert!(!context.overlay_locks(document, field.stable_id()).menu_open);
         assert!(context.take_color_pick_requests().is_empty());
+    }
+
+    #[test]
+    fn hex_enter_emits_color_submitted_and_reverts_invalid_draft_on_enter_and_blur() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let field = context
+            .create_component(document, ColorField::new([1.0, 0.0, 0.0, 1.0]))
+            .unwrap();
+        context.assemble_color_field(field).unwrap();
+        let snap = context.read(field, Clone::clone).unwrap();
+        let hex_id = snap.hex.unwrap();
+        let hex = Entity::<TextInput>::from_stable_id(hex_id);
+
+        let changed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let submitted = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let c_log = changed.clone();
+        let s_log = submitted.clone();
+        context
+            .on(field, move |_, ev: &ColorChanged, _| {
+                c_log.lock().unwrap().push(ev.value);
+            })
+            .unwrap();
+        context
+            .on(field, move |_, ev: &ColorSubmitted, _| {
+                s_log.lock().unwrap().push(ev.value);
+            })
+            .unwrap();
+
+        assert!(context.focus_node(document, hex_id).unwrap());
+        assert!(context.select_all_focused_text(document).unwrap());
+        changed.lock().unwrap().clear();
+        assert!(context.replace_focused_text(document, "00ff00").unwrap());
+        assert_eq!(changed.lock().unwrap().as_slice(), &[[0.0, 1.0, 0.0, 1.0]]);
+        changed.lock().unwrap().clear();
+
+        let mut input = crate::HeadlessInput::bind(&mut context, document);
+        input
+            .press(
+                &mut context,
+                nana_ui_input::KeyInput::named(
+                    "Enter",
+                    "Enter",
+                    nana_ui_input::KeyState::Pressed,
+                    Default::default(),
+                ),
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(changed.lock().unwrap().is_empty());
+        assert_eq!(
+            submitted.lock().unwrap().as_slice(),
+            &[[0.0, 1.0, 0.0, 1.0]]
+        );
+        assert_eq!(
+            context.read(hex, |i| i.state.value.to_string()).unwrap(),
+            "00ff00"
+        );
+
+        // Unparseable draft reverts to canonical hex on Enter while still emitting ColorSubmitted.
+        assert!(context.select_all_focused_text(document).unwrap());
+        changed.lock().unwrap().clear();
+        assert!(context.replace_focused_text(document, "not-hex").unwrap());
+        assert!(changed.lock().unwrap().is_empty());
+        input
+            .press(
+                &mut context,
+                nana_ui_input::KeyInput::named(
+                    "Enter",
+                    "Enter",
+                    nana_ui_input::KeyState::Pressed,
+                    Default::default(),
+                ),
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(changed.lock().unwrap().is_empty());
+        assert_eq!(
+            submitted.lock().unwrap().as_slice(),
+            &[[0.0, 1.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]]
+        );
+        assert_eq!(
+            context.read(hex, |i| i.state.value.to_string()).unwrap(),
+            format_hex([0.0, 1.0, 0.0, 1.0])
+        );
+
+        // Blurring an unparseable hex draft also reverts it to canonical hex.
+        assert!(context.select_all_focused_text(document).unwrap());
+        assert!(context.replace_focused_text(document, "xyz").unwrap());
+        assert!(context.clear_focus(document).unwrap());
+        assert_eq!(
+            context.read(hex, |i| i.state.value.to_string()).unwrap(),
+            format_hex([0.0, 1.0, 0.0, 1.0])
+        );
     }
 }
