@@ -328,6 +328,27 @@ impl UiWorld {
         }
     }
 
+    /// A commit made `root`'s subtree inert; the index keeps the entries it
+    /// was built with until the frame. Withdraw `root` and every descendant
+    /// now -- a descendant cannot turn inertness back off -- so a hit before
+    /// that frame falls through to what is below. Like
+    /// [`Self::withdraw_pointer_events_none`], it only withdraws.
+    pub(in crate::world) fn withdraw_inert_hits(&mut self, root: StableNodeId) {
+        let document = self.record(root).document;
+        if self
+            .hit_test_index
+            .get(&document)
+            .is_none_or(|index| !index.entries.contains_key(&root))
+        {
+            return;
+        }
+        let mut stack = vec![root];
+        while let Some(id) = stack.pop() {
+            self.withdraw_hit_entry(document, id);
+            stack.extend(self.record(id).hierarchy.children.iter().copied());
+        }
+    }
+
     /// A commit moved `root` under a parked parent. Parking a subtree takes
     /// it out of the index; moving one into a parked branch must too.
     pub(in crate::world) fn withdraw_parked_hits(&mut self, root: StableNodeId) {

@@ -1079,7 +1079,7 @@ impl<'a> ValidationPlan<'a> {
                         .map(|style| style.layout.as_ref())
                 });
             visibility = visibility.or_else(|| layout.and_then(|layout| layout.paint.visibility));
-            if layout.is_some_and(|layout| layout.omits_box())
+            if layout.is_some_and(|layout| layout.omits_box() || layout.inert)
                 || !self.overlay_branch_active(id)?
                 || self.node(id)?.parent.is_some_and(|parent| {
                     self.source
@@ -3943,6 +3943,21 @@ impl UiWorld {
             self.mark_subtree(id, DirtyMask::STYLE | DirtyMask::INPUT);
             self.clear_hover_for_pointer_events_none(id);
             self.withdraw_pointer_events_none(id);
+        }
+        if changed.intersects(nana_ui_core::LayoutStyleChange::INERT) {
+            // Inherited and not undone below: every descendant resolves a
+            // new used value. Hit testing, focus and accessibility read it;
+            // nothing moves and nothing paints differently.
+            self.mark_subtree(
+                id,
+                DirtyMask::STYLE
+                    | DirtyMask::INPUT
+                    | DirtyMask::FOCUS_IME
+                    | DirtyMask::ACCESSIBILITY,
+            );
+            if self.is_inert(id) {
+                self.release_inert_subtree(id);
+            }
         }
         if cursor_changed {
             self.cursor_style_dirty = true;

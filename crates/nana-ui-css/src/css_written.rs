@@ -379,6 +379,7 @@ const WITNESS_DECLARATIONS: &[(&str, &str)] = &[
     ("text-emphasis-color", "red"),
     ("font-feature-settings", "\"liga\" 0"),
     ("pointer-events", "none"),
+    ("interactivity", "inert"),
     ("border-image", "linear-gradient(red, blue) 1"),
     ("border-image", "url(a.png) 30 round"),
     ("border-radius", "4px"),

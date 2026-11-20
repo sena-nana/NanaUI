@@ -81,6 +81,9 @@ impl LayoutStyleChange {
     /// Whether and by which names the box answers container-size queries.
     /// It moves no box; the rules that query a container find it again.
     pub const CONTAINER: Self = Self(1 << 22);
+    /// Whether the subtree is inert: no pointer, focus or accessibility
+    /// actions. It moves no box and changes no pixel.
+    pub const INERT: Self = Self(1 << 23);
 
     /// Kinds that move or resize boxes.
     pub const LAYOUT: Self = Self(
@@ -380,6 +383,7 @@ layout_style_fields! {
         overflow_y: SCROLL,
         text_overflow_ellipsis: TEXT_LAYOUT,
         pointer_events: INTERACTION,
+        inert: INERT,
         cursor: CURSOR,
         user_select: CURSOR,
         white_space_nowrap: TEXT_LAYOUT,

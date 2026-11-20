@@ -17,6 +17,7 @@
 //! | 已知控件 class（`nana-btn--primary` 等） | **Semantics**（经 `widget_map`） | 用任意 paint CSS 当 token 工厂 |
 //! | 主题色 / 间距 / 圆角档位 | **Tokens**（`ThemeMetrics` / 语义色） | 业务 `#rrggbb` 发明正式 token |
 //! | `pointer-events` (`auto` / `none`) | **Layout** paint/hit（[`PointerEventsSpec`]） | 异形窗 / 窗口 alpha / SVG 命中模型 |
+//! | `interactivity` (`auto` / `inert`) | **Layout** → Runtime 命中、焦点与无障碍动作（[`LayoutStyle::inert`]，后代不可撤销） | 把它当作 `pointer-events` 或 `visibility` |
 //! | `cursor` 常用关键字 | **Layout** → Runtime/Scene host 窗口光标 | `url()` 自定义光标图 |
 //! | `user-select` (`text` / `none` / `auto` / `all` / `contain`) | **Layout** → 文档级选区（非第二套 TextInput） | 未知关键字；完整 CSS Highlight API |
 //!
@@ -2371,6 +2372,7 @@ impl LayoutStyleCss for LayoutStyle {
             | "-webkit-text-emphasis-color"
             | "font-feature-settings"
             | "pointer-events"
+            | "interactivity"
             | "border-image"
             | "border-image-source"
             | "border-image-slice"

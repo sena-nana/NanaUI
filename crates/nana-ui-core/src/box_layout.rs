@@ -3875,6 +3875,12 @@ pub struct LayoutStyle {
     pub text_overflow_ellipsis: bool,
     /// Specified CSS `pointer-events`. `None` means inherit (not `auto`).
     pub pointer_events: Option<PointerEventsSpec>,
+    /// HTML `inert`: this box and every box under it still lay out, paint and
+    /// animate, but take no pointer, cannot be focused (sequentially or
+    /// programmatically) and offer no accessibility actions. Unlike
+    /// [`Self::pointer_events`], a descendant cannot turn it back off.
+    /// Setting it moves no box.
+    pub inert: bool,
     /// CSS `cursor`; unspecified values inherit from the parent.
     pub cursor: Option<CursorSpec>,
     /// CSS `user-select`; unspecified values inherit from the parent.
@@ -3981,6 +3987,7 @@ impl Default for LayoutStyle {
             overflow_y: OverflowSpec::Visible,
             text_overflow_ellipsis: false,
             pointer_events: None,
+            inert: false,
             cursor: None,
             user_select: None,
             white_space_nowrap: false,
@@ -5150,6 +5157,7 @@ impl LayoutStyle {
             || self.paint.visibility.is_some()
             || self.omits_box()
             || self.pointer_events.is_some()
+            || self.inert
             || self.cursor.is_some()
             || self.user_select.is_some()
             || self.font_size.is_some()

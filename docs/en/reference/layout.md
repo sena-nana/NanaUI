@@ -1056,6 +1056,10 @@ Leaving hit testing takes effect at commit. After setting `none`, turning off `I
 
 An unknown keyword fails closed. It does not change an already specified value. `inherit` and `unset` clear the specified value.
 
+**Inert subtrees.** `LayoutStyle::inert` (CSS `interactivity: inert`, builder `.inert(true)`) follows HTML `inert`: the subtree still lays out, paints and plays Presentation animations, but takes no hits, is not a sequential focus candidate (Tab and `focus_first_in` skip it), `focus_node` and `RequestFocus` refuse it, and `apply_accessibility_action` refuses it. The accessibility tree keeps its nodes and semantics with `AccessibilityNode::inert` set, and the AccessKit projection offers no action on them. It passes down from ancestors, and a descendant cannot undo it with `pointer-events: auto` or `interactivity: auto`; in the computed style an inert node's `pointer_events` is always `none`.
+
+Becoming inert takes effect at commit: focus and IME composition, pointer captures, hovers and presses inside the subtree are released at once, and its entries in the hit index are withdrawn without waiting for the next frame. The write itself marks only STYLE, INPUT, FOCUS_IME and ACCESSIBILITY dirty; it seeds no layout and re-extracts no paint. After inertness is lifted, hits and accessibility wait for the next frame to resolve styles. Use it for content that is fading out, and set `visibility: hidden` once the fade ends; `PresenceLifecycle` does exactly that.
+
 Planar 3D hit testing shares the same inverse homography as painting Quad, Text, Icon, and HostTexture. It does not hit an affine box. Nor does it hit the empty corners of a trapezoid's AABB.
 
 **Overflow.** `overflow`, `overflow-x`, and `overflow-y` can be `visible`, `hidden`, `clip`, `auto`, `scroll`.

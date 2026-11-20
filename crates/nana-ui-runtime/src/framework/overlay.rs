@@ -530,7 +530,8 @@ impl AppContext {
     }
 
     /// Focus the first reachable sequential stop inside a mounted subtree.
-    /// Uses the same disabled, hidden and roving-group rules as Tab navigation.
+    /// Uses the same disabled, hidden, inert and roving-group rules as Tab
+    /// navigation.
     pub fn focus_first_in(
         &mut self,
         document: DocumentId,

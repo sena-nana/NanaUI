@@ -148,7 +148,11 @@ impl LayoutFieldMask {
             Self::SCROLL
         } else if property == "opacity" || property == "visibility" {
             Self::VISIBILITY
-        } else if property == "pointer-events" || property == "cursor" || property == "user-select"
+        } else if property == "pointer-events"
+            || property == "interactivity"
+            || property == "inert"
+            || property == "cursor"
+            || property == "user-select"
         {
             Self::INTERACTION
         } else {

@@ -306,8 +306,13 @@ impl UiWorld {
             && inherited.box_visible
             && self.overlay_branch_active(id)
             && self.menu_branch_open(id);
-        let pointer_events =
-            PointerEventsSpec::inherit_from(layout.pointer_events, inherited.pointer_events);
+        // An inert subtree takes no pointer whatever its nodes specify.
+        let inert = layout.inert || inherited.inert;
+        let pointer_events = if inert {
+            PointerEventsSpec::None
+        } else {
+            PointerEventsSpec::inherit_from(layout.pointer_events, inherited.pointer_events)
+        };
         let text_scale = match self.nodes.text_scale(id) {
             Some(own) => *own,
             None if parent.is_some() => inherited.text_scale,
@@ -486,6 +491,7 @@ impl UiWorld {
             box_visible,
             visible: box_visible && visibility != nana_ui_core::VisibilitySpec::Hidden,
             pointer_events,
+            inert,
             cursor: layout.cursor.unwrap_or(inherited.cursor),
             cursor_specified: layout.cursor.is_some() || inherited.cursor_specified,
             user_select: layout.user_select.unwrap_or(inherited.user_select),
@@ -2594,6 +2600,7 @@ fn hit_relevant_style_changed(
         || previous.visible != next.visible
         || previous.box_visible != next.box_visible
         || previous.pointer_events != next.pointer_events
+        || previous.inert != next.inert
         || (previous.opacity <= 0.0) != (next.opacity <= 0.0)
         || previous.writing_mode != next.writing_mode
         || previous.direction != next.direction

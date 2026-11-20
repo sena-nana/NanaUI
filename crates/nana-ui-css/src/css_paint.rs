@@ -159,6 +159,20 @@ pub fn apply_css_paint_property(style: &mut nana_ui_core::LayoutStyle, name: &st
                 style.pointer_events = Some(spec);
             }
         }
+        // CSS `interactivity` onto HTML `inert` semantics: `inert` makes
+        // the subtree inert, and a descendant cannot undo it with `auto`.
+        "interactivity" => {
+            let v = val.trim();
+            if v.eq_ignore_ascii_case("inert") {
+                style.inert = true;
+            } else if v.eq_ignore_ascii_case("auto")
+                || v.eq_ignore_ascii_case("initial")
+                || v.eq_ignore_ascii_case("inherit")
+                || v.eq_ignore_ascii_case("unset")
+            {
+                style.inert = false;
+            }
+        }
         "border-image" => apply_border_image_shorthand(style, val),
         "border-image-source" => apply_border_image_source(style, val),
         "border-image-slice" => apply_border_image_slice(style, val),
@@ -3376,6 +3390,26 @@ mod tests {
             layout.pointer_events,
             Some(PointerEventsSpec::None),
             "unknown values fail closed and keep the last specified value"
+        );
+    }
+
+    #[test]
+    fn interactivity_inert_and_auto() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("interactivity: inert", None, None);
+        assert!(layout.inert);
+        layout.apply_css_text("interactivity: bogus", None, None);
+        assert!(layout.inert, "unknown values fail closed");
+        layout.apply_css_text("interactivity: auto", None, None);
+        assert!(!layout.inert);
+        let written = crate::written_layout(|layout| {
+            layout.apply_css_text("interactivity: inert", None, None);
+        });
+        assert_eq!(written.written, ["inert"]);
+        assert!(
+            written
+                .field_mask
+                .contains(nana_ui_core::LayoutFieldMask::INTERACTION)
         );
     }
 

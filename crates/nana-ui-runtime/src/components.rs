@@ -1975,8 +1975,13 @@ pub struct InheritedStyle {
     /// `visibility`, a descendant cannot override it back to `true`.
     pub box_visible: bool,
     pub visible: bool,
-    /// CSS `pointer-events` after inheritance (`auto` / `none`).
+    /// CSS `pointer-events` after inheritance (`auto` / `none`). `none` on
+    /// every [`Self::inert`] node, whatever it specifies.
     pub pointer_events: nana_ui_core::PointerEventsSpec,
+    /// This node or an ancestor is [`nana_ui_core::LayoutStyle::inert`]: it
+    /// paints and animates but takes no pointer, focus or accessibility
+    /// action. A descendant cannot turn it back off.
+    pub inert: bool,
     /// CSS `cursor` after inheritance (initial `default`).
     pub cursor: nana_ui_core::CursorSpec,
     /// Whether the cursor value comes from an authored declaration in this
@@ -2034,6 +2039,7 @@ impl Default for InheritedStyle {
             box_visible: true,
             visible: true,
             pointer_events: nana_ui_core::PointerEventsSpec::Auto,
+            inert: false,
             cursor: nana_ui_core::CursorSpec::Default,
             cursor_specified: false,
             user_select: nana_ui_core::UserSelectSpec::Auto,
@@ -3252,6 +3258,10 @@ pub struct AccessibilityNode {
     pub disabled: bool,
     /// See [`AccessibilityState::display_only`].
     pub display_only: bool,
+    /// The node sits in an inert subtree ([`nana_ui_core::LayoutStyle::inert`]):
+    /// it keeps its place and semantics in the tree but offers no action,
+    /// and [`crate::AppContext::apply_accessibility_action`] refuses one.
+    pub inert: bool,
     pub checked: Option<bool>,
     pub mixed: bool,
     pub orientation: Option<crate::SelectionOrientation>,

@@ -92,6 +92,7 @@ pub mod set {
         overflow_y: OverflowSpec,
         text_overflow_ellipsis: bool,
         pointer_events: Option<PointerEventsSpec>,
+        inert: bool,
         cursor: Option<CursorSpec>,
         user_select: Option<UserSelectSpec>,
         white_space_nowrap: bool,

@@ -440,7 +440,7 @@ impl AccessibilityProjector {
         }
         let target = StableNodeId::new(request.target_node.0)?;
         let node = self.nodes.get(&target)?;
-        if !self.interactive || node.disabled {
+        if !self.interactive || node.disabled || node.inert {
             return None;
         }
         if let Some((menu, slot)) = nana_ui_runtime::decode_virtual_menu_item(target) {
@@ -1069,6 +1069,8 @@ fn project_node(
     interactive: bool,
     scale_factor: f32,
 ) -> Vec<(NodeId, Node)> {
+    // An inert node keeps its place and what it says, and offers nothing.
+    let interactive = interactive && !node.inert;
     let mut projected = Node::new(projected_role(node));
     // AccessKit Label nodes expose their text through value (including the
     // native UIA Name property), unlike controls whose accessible name is label.
@@ -1612,6 +1614,7 @@ mod tests {
             value: None,
             disabled: false,
             display_only: false,
+            inert: false,
             checked: None,
             mixed: false,
             orientation: None,
@@ -2272,6 +2275,53 @@ mod tests {
                         data: None,
                     })
                     .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn an_inert_node_keeps_its_role_and_offers_no_action() {
+        let root = node(1, None, &[2, 3]);
+        let mut slider = node(2, Some(1), &[]);
+        slider.role = AccessibilityRole::Slider;
+        slider.numeric_minimum = Some(0.0);
+        slider.numeric_maximum = Some(1.0);
+        slider.numeric_value = Some(0.5);
+        slider.inert = true;
+        let mut button = node(3, Some(1), &[]);
+        button.role = AccessibilityRole::Button;
+        button.inert = true;
+        let (projector, update) =
+            AccessibilityProjector::new(vec![root, slider, button], true, 1.0);
+        let projected = |id| {
+            &update
+                .nodes
+                .iter()
+                .find(|(node, _)| *node == NodeId(id))
+                .unwrap()
+                .1
+        };
+        assert_eq!(projected(2).role(), Role::Slider);
+        assert_eq!(projected(3).role(), Role::Button);
+        assert!(!projected(3).is_disabled(), "inert is not disabled");
+        for (id, action) in [
+            (2, Action::Increment),
+            (2, Action::Decrement),
+            (2, Action::SetValue),
+            (3, Action::Click),
+            (3, Action::Focus),
+        ] {
+            assert!(!projected(id).supports_action(action), "{id} {action:?}");
+            assert!(
+                projector
+                    .project_action_request(ActionRequest {
+                        action,
+                        target_tree: TreeId::ROOT,
+                        target_node: NodeId(id),
+                        data: None,
+                    })
+                    .is_none(),
+                "{id} {action:?}"
             );
         }
     }

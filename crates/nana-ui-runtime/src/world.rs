@@ -1374,6 +1374,9 @@ pub struct UiWorld {
     /// Nodes with an authored `z-index`, or an open triggered menu overlay
     /// whose children inject z-index. Stacking walks skip when this is zero.
     z_index_nodes: usize,
+    /// Live nodes whose own style is [`nana_ui_core::LayoutStyle::inert`].
+    /// [`UiWorld::is_inert`] walks no ancestor while this is zero.
+    inert_nodes: usize,
     sticky_nodes: crate::StickyDependencies,
     /// Live open triggered menus (Popover, ActionMenu, HoverCard). Their
     /// surfaces take the pointer at the content's level, above the page, so
@@ -1625,6 +1628,7 @@ impl UiWorld {
             clip_visuals: 0,
             list_leading_visuals: 0,
             z_index_nodes: 0,
+            inert_nodes: 0,
             sticky_nodes: crate::StickyDependencies::default(),
             triggered_overlays: HashSet::default(),
             select_menus: HashSet::default(),
@@ -5479,6 +5483,7 @@ impl UiWorld {
             .filter_map(|(&document, &id)| {
                 let invalid = dirty.contains(&id)
                     && (!self.record(id).resolved.0.visible
+                        || self.record(id).resolved.0.inert
                         || !self.record(id).interaction.focusable);
                 invalid.then_some((document, id))
             })
@@ -6227,6 +6232,7 @@ impl UiWorld {
             list_leading: widget_visual.is_some_and(|w| w.lone_list_trailing_slots().is_some()),
             z_index: record.is_some_and(|record| record.resolved_layout.z_index.is_some())
                 || triggered,
+            inert: record.is_some_and(|record| record.style.layout.inert),
             triggered,
             select_menu: widget_visual.is_some_and(crate::WidgetVisualHandle::is_open_select_menu),
             viewport: record.is_some_and(|record| record.layout_depends_on_viewport),
@@ -6252,6 +6258,7 @@ impl UiWorld {
             next.menu_surface,
         );
         self.note_z_index_presence(previous.z_index, next.z_index);
+        bump_presence(&mut self.inert_nodes, previous.inert, next.inert);
         bump_presence(
             &mut self.list_leading_visuals,
             previous.list_leading,
@@ -6611,7 +6618,10 @@ impl UiWorld {
                     return None;
                 }
                 let node = self.nodes.get(id)?;
-                if !node.interaction.pointer_events || !self.scrollbar_subtree_visible(id) {
+                if !node.interaction.pointer_events
+                    || !self.scrollbar_subtree_visible(id)
+                    || self.is_inert(id)
+                {
                     return None;
                 }
                 let indexed = index.entries.get(&id)?;
@@ -6640,7 +6650,7 @@ impl UiWorld {
         if node.document != document {
             return Err(UiWorldError::PointerDocument { document, target });
         }
-        if !self.is_mounted(target) || !node.interaction.pointer_events {
+        if !self.is_mounted(target) || !node.interaction.pointer_events || self.is_inert(target) {
             return Err(UiWorldError::NotPointerInteractive(target));
         }
         if !self.used_pointer_events(target).hittable()
@@ -6719,6 +6729,89 @@ impl UiWorld {
         self.parent_id(id)
             .map(|parent| self.used_pointer_events(parent))
             .unwrap_or(PointerEventsSpec::Auto)
+    }
+
+    /// Whether `id` or one of its ancestors is
+    /// [`nana_ui_core::LayoutStyle::inert`], read from the styles as they
+    /// are now rather than the last resolved ones, so a commit that made a
+    /// subtree inert keeps the pointer and focus out of it before the next
+    /// frame resolves it.
+    pub fn is_inert(&self, id: StableNodeId) -> bool {
+        if self.inert_nodes == 0 {
+            return false;
+        }
+        let mut current = Some(id);
+        while let Some(node) = current {
+            let Some(record) = self.nodes.get(node) else {
+                return false;
+            };
+            if record.style.layout.inert {
+                return true;
+            }
+            current = record.hierarchy.parent;
+        }
+        false
+    }
+
+    /// A commit made `root`'s subtree inert. What it held of the pointer
+    /// and the focus is let go now, not at the next frame: the focus and
+    /// its composition, pointer captures, hovers and presses, and the hit
+    /// entries the index keeps until it is built again. Animations keep
+    /// running: an inert subtree still paints.
+    fn release_inert_subtree(&mut self, root: StableNodeId) {
+        let subtree = self.subtree_ids(root);
+        let document = self.record(root).document;
+        if let Some(focused) = self.input.focused.get(&document).copied()
+            && subtree.contains(&focused)
+        {
+            self.input.focused.remove(&document);
+            self.release_focus(focused);
+        }
+        let inside = subtree.iter().copied().collect::<HashSet<_>>();
+        let released = self
+            .input
+            .pointer_captures
+            .iter()
+            .filter_map(|(&(document, pointer_id), &target)| {
+                inside
+                    .contains(&target)
+                    .then_some((document, pointer_id, target))
+            })
+            .collect::<Vec<_>>();
+        for (document, pointer_id, target) in released {
+            self.input.pointer_captures.remove(&(document, pointer_id));
+            self.input
+                .pending_pointer_capture_changes
+                .push(PointerCaptureChange {
+                    pointer_id,
+                    target,
+                    captured: false,
+                });
+        }
+        let mut cleared = Vec::new();
+        for (_, target) in self
+            .input
+            .pointer_hover
+            .iter()
+            .chain(self.input.pointer_press.iter())
+        {
+            if inside.contains(target) && !cleared.contains(target) {
+                cleared.push(*target);
+            }
+        }
+        self.input
+            .pointer_hover
+            .retain(|_, target| !inside.contains(target));
+        self.input
+            .pointer_press
+            .retain(|_, target| !inside.contains(target));
+        if !cleared.is_empty() {
+            self.generation = self.generation.wrapping_add(1);
+            for id in cleared {
+                self.mark_interaction_style(id);
+            }
+        }
+        self.withdraw_inert_hits(root);
     }
 
     fn clear_hover_for_pointer_events_none(&mut self, root: StableNodeId) {
@@ -6898,6 +6991,7 @@ impl UiWorld {
                 && self.record(restore_focus).document == document
                 && self.record(restore_focus).interaction.focusable
                 && self.record(restore_focus).resolved.0.visible
+                && !self.is_inert(restore_focus)
                 && self.active_modal_allows_focus_now(document, restore_focus)
             {
                 // The node focus leaves, if it is still here, loses it as a
@@ -8328,6 +8422,8 @@ struct PresenceFlags {
     clip: bool,
     list_leading: bool,
     z_index: bool,
+    /// The node's own style is inert.
+    inert: bool,
     /// An open triggered menu, whose surface hangs above the page.
     triggered: bool,
     /// An open select menu, which paints above the page.
@@ -8344,6 +8440,7 @@ impl PresenceFlags {
         clip: false,
         list_leading: false,
         z_index: false,
+        inert: false,
         triggered: false,
         select_menu: false,
         viewport: false,
@@ -8562,8 +8659,9 @@ fn node_presentation_eq(left: &NodeStyle, right: &NodeStyle) -> bool {
         && left.theme_patch == right.theme_patch
 }
 
-/// Equal but for transforms and the cursor, given whether the presentations
-/// are equal (`node_presentation_eq`) and what changed in layout.
+/// Equal but for transforms, the cursor and inertness (each marked on its
+/// own), given whether the presentations are equal (`node_presentation_eq`)
+/// and what changed in layout.
 fn style_excluding_transform_and_cursor_eq(
     presentation_eq: bool,
     changed: nana_ui_core::LayoutStyleChange,
@@ -8571,7 +8669,7 @@ fn style_excluding_transform_and_cursor_eq(
     use nana_ui_core::LayoutStyleChange as Change;
     presentation_eq
         && changed
-            .difference(Change::TRANSFORM.union(Change::CURSOR))
+            .difference(Change::TRANSFORM.union(Change::CURSOR).union(Change::INERT))
             .is_empty()
 }
 
@@ -8594,7 +8692,8 @@ fn style_change_is_layout_geometry_only(
             .difference(
                 Change::GEOMETRY
                     .union(Change::TRANSFORM)
-                    .union(Change::CURSOR),
+                    .union(Change::CURSOR)
+                    .union(Change::INERT),
             )
             .is_empty()
 }

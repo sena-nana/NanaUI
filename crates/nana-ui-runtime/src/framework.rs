@@ -3624,6 +3624,7 @@ impl AppContext {
             .interaction(target)
             .is_some_and(|interaction| interaction.focusable)
             || self.confirm_busy_action_subtree(target)
+            || self.world.is_inert(target)
         {
             return Ok(false);
         }
@@ -3660,19 +3661,22 @@ impl AppContext {
 
     /// Apply an assistive-technology action through the same typed component
     /// mutations used by pointer and keyboard input.
+    ///
+    /// An action on a node of an inert subtree
+    /// ([`nana_ui_core::LayoutStyle::inert`]) is refused.
     pub fn apply_accessibility_action(
         &mut self,
         document: DocumentId,
         request: AccessibilityActionRequest,
     ) -> Result<bool, FrameworkError> {
         if let Some((tree, slot)) = crate::decode_virtual_tree_item(request.target) {
-            if self.world.document_of(tree) != Some(document) {
+            if self.world.document_of(tree) != Some(document) || self.world.is_inert(tree) {
                 return Ok(false);
             }
             return via!(self.apply_tree_item_action(document, tree, slot, &request.action));
         }
         if let Some((tree, slot, column)) = crate::decode_virtual_tree_toggle(request.target) {
-            if self.world.document_of(tree) != Some(document) {
+            if self.world.document_of(tree) != Some(document) || self.world.is_inert(tree) {
                 return Ok(false);
             }
             return via!(self.apply_tree_toggle_action(tree, slot, column, &request.action));
@@ -3687,7 +3691,10 @@ impl AppContext {
                 .unwrap_or(request.target),
             _ => request.target,
         };
-        if self.world.document_of(owner) != Some(document) {
+        if self.world.document_of(owner) != Some(document)
+            || self.world.is_inert(owner)
+            || self.world.is_inert(request.target)
+        {
             return Ok(false);
         }
         match request.action {

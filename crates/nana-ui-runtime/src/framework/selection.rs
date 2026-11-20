@@ -797,6 +797,7 @@ impl AppContext {
                 .is_some_and(|interaction| interaction.focusable)
             && self.is_roving_tab_stop(id)
             && !self.confirm_busy_action_subtree(id)
+            && !self.world.is_inert(id)
     }
 
     pub(super) fn sequential_focus_candidates(&self, document: DocumentId) -> Vec<StableNodeId> {

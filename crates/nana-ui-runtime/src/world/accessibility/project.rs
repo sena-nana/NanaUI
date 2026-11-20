@@ -103,6 +103,7 @@ impl UiWorld {
             document,
             visible,
             box_visible,
+            inert,
             writing,
             scrolls,
             layout_box,
@@ -125,6 +126,7 @@ impl UiWorld {
                 node.document,
                 node.resolved.0.visible,
                 node.resolved.0.box_visible,
+                node.resolved.0.inert,
                 node.resolved.0.writing_context(),
                 node.style.layout.overflow_x.scrolls() || node.style.layout.overflow_y.scrolls(),
                 self.record_layout_box(node),
@@ -313,6 +315,7 @@ impl UiWorld {
                         .confirm_action_effect(id)
                         .is_some_and(|effect| effect.0)),
             display_only: state.display_only,
+            inert,
             checked: state.checked,
             mixed: state.mixed,
             orientation: state.orientation,

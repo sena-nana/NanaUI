@@ -16,9 +16,11 @@
 //! the node's compositor tracks, so logical style is never written; a
 //! reversal mid-way retargets from what is shown.
 //!
-//! While concealing and once hidden the node takes no pointer input, and
-//! focus inside it is dropped as concealing begins, so keys cannot reach a
-//! fading control. Once hidden it also leaves paint, hit testing and the
+//! While concealing and once hidden the node is inert
+//! ([`nana_ui_core::LayoutStyle::inert`]): it takes no pointer, Tab and
+//! programmatic focus skip it, assistive technology can act on nothing in it,
+//! and focus inside it is dropped as concealing begins, so keys cannot reach
+//! a fading control. Once hidden it also leaves paint, hit testing and the
 //! accessibility tree (`visibility: hidden`, which keeps its layout); a
 //! reveal puts it back first.
 //!
@@ -33,7 +35,7 @@
 
 use std::time::Duration;
 
-use nana_ui_core::{PaintTransform, PointerEventsSpec, VisibilitySpec};
+use nana_ui_core::{PaintTransform, VisibilitySpec};
 
 use crate::view::{StyledComponent, Transition};
 use crate::{
@@ -70,8 +72,8 @@ pub struct PresenceLifecycle {
     phase: PresencePhase,
     /// Ends still to be reported for the runs this lifecycle started.
     outstanding: u32,
-    /// The pointer-events the node had before it first concealed.
-    pointer_events: Option<Option<PointerEventsSpec>>,
+    /// Whether the node was inert of its own before it first concealed.
+    inert: Option<bool>,
     write: StyleWriter,
 }
 
@@ -103,7 +105,7 @@ impl PresenceLifecycle {
             transition,
             phase: PresencePhase::Shown,
             outstanding: 0,
-            pointer_events: None,
+            inert: None,
             write: write_style::<C>,
         }
     }
@@ -298,22 +300,24 @@ impl PresenceLifecycle {
 
         if shown {
             self.set_painted(cx, true)?;
-            // Only a conceal took the node's pointer-events away; a show
-            // with nothing saved (one already shown) keeps what it has, so
-            // an explicit `auto` under a `none` ancestor stays hittable.
-            if let Some(restore) = self.pointer_events.take() {
-                (self.write)(cx, self.node, &mut |layout| layout.pointer_events = restore)?;
+            // Only a conceal made the node inert; a show with nothing saved
+            // (one already shown) keeps what it has, so a node its
+            // application made inert stays so.
+            if let Some(restore) = self.inert.take() {
+                (self.write)(cx, self.node, &mut |layout| layout.inert = restore)?;
             }
         } else {
+            // Through the context first, so a half-typed draft settles as
+            // focus leaves it; making the node inert would drop it as well.
+            self.drop_focus(cx)?;
             let mut before = None;
             (self.write)(cx, self.node, &mut |layout| {
-                before = Some(layout.pointer_events);
-                layout.pointer_events = Some(PointerEventsSpec::None);
+                before = Some(layout.inert);
+                layout.inert = true;
             })?;
-            if self.pointer_events.is_none() {
-                self.pointer_events = before;
+            if self.inert.is_none() {
+                self.inert = before;
             }
-            self.drop_focus(cx)?;
         }
 
         let mut queue = MutationQueue::new();
@@ -401,6 +405,7 @@ mod tests {
     use super::*;
     use crate::view::Presence;
     use crate::{Button, DocumentId, Easing, Stack};
+    use nana_ui_core::PointerEventsSpec;
 
     fn ms(value: u64) -> Duration {
         Duration::from_millis(value)
@@ -471,14 +476,16 @@ mod tests {
 
         assert!(presence.set_shown(&mut cx, false, ms(1000)).unwrap());
         assert_eq!(presence.phase(), PresencePhase::Concealing);
-        assert_eq!(
-            layout(&cx, card.stable_id()).pointer_events,
-            Some(PointerEventsSpec::None)
-        );
+        assert!(layout(&cx, card.stable_id()).inert);
+        assert_eq!(layout(&cx, card.stable_id()).pointer_events, None);
         assert_eq!(
             cx.world().focused(document),
             None,
             "no key reaches a fading control"
+        );
+        assert!(
+            !cx.focus_first_in(document, card.stable_id()).unwrap(),
+            "Tab cannot enter a fading card"
         );
         let fading = opacity(&cx, card.stable_id(), ms(1050));
         assert!(fading > 0.0 && fading < 1.0, "{fading}");
@@ -492,7 +499,7 @@ mod tests {
         );
 
         assert!(presence.set_shown(&mut cx, true, ms(2000)).unwrap());
-        assert_eq!(layout(&cx, card.stable_id()).pointer_events, None);
+        assert!(!layout(&cx, card.stable_id()).inert);
         assert_eq!(
             layout(&cx, card.stable_id()).paint.visibility,
             Some(VisibilitySpec::Visible)
@@ -508,7 +515,7 @@ mod tests {
     }
 
     #[test]
-    fn showing_again_keeps_the_nodes_own_pointer_events() {
+    fn showing_again_keeps_the_nodes_own_input_state() {
         // A card that turns input back on under a pass-through column, shown
         // at once again while it already stands (a slot fade carrying it).
         let (mut cx, _, card, _) = card_with_button();
@@ -522,12 +529,22 @@ mod tests {
         presence.set_shown_at_once(&mut cx, true, ms(0)).unwrap();
         assert_eq!(
             layout(&cx, card.stable_id()).pointer_events,
-            Some(PointerEventsSpec::Auto)
-        );
-        presence.set_shown_at_once(&mut cx, true, ms(10)).unwrap();
-        assert_eq!(
-            layout(&cx, card.stable_id()).pointer_events,
             Some(PointerEventsSpec::Auto),
+            "concealing leaves pointer-events alone"
+        );
+        assert!(!layout(&cx, card.stable_id()).inert);
+
+        // A card its application made inert stays inert through a cycle.
+        cx.update_component(card, |stack, _| {
+            std::sync::Arc::make_mut(&mut stack.node_style_mut().layout).inert = true;
+        })
+        .unwrap();
+        presence.set_shown_at_once(&mut cx, false, ms(10)).unwrap();
+        presence.set_shown_at_once(&mut cx, true, ms(10)).unwrap();
+        assert!(layout(&cx, card.stable_id()).inert);
+        presence.set_shown_at_once(&mut cx, true, ms(20)).unwrap();
+        assert!(
+            layout(&cx, card.stable_id()).inert,
             "a show with nothing to restore leaves it as it is"
         );
     }

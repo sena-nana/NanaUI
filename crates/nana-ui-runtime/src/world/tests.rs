@@ -1875,6 +1875,143 @@ fn pointer_events_none_clears_hover_without_layout() {
 }
 
 #[test]
+fn inert_subtree_releases_pointer_focus_and_actions_without_layout() {
+    use nana_ui_core::PointerEventsSpec;
+
+    let focusable = InteractionState {
+        pointer_events: true,
+        focusable: true,
+    };
+    let mut world = UiWorld::new();
+    let mut create = MutationQueue::new();
+    create.create(node(1), document(1), NodeKind::Document);
+    for (id, tag) in [(2, "panel"), (3, "child"), (4, "outside")] {
+        create.create(node(id), document(1), NodeKind::Element { tag: tag.into() });
+    }
+    create.insert(node(1), node(2), None);
+    create.insert(node(2), node(3), None);
+    create.insert(node(1), node(4), None);
+    create.write_layout(node(2), box_at(0.0, 0.0, 40.0, 40.0));
+    create.write_layout(node(3), box_at(4.0, 4.0, 16.0, 16.0));
+    create.write_layout(node(4), box_at(50.0, 0.0, 16.0, 16.0));
+    create.set_interaction(node(3), focusable);
+    create.set_interaction(node(4), focusable);
+    // A descendant's own `pointer-events: auto` does not punch through.
+    let mut auto = NodeStyle::default();
+    Arc::make_mut(&mut auto.layout).pointer_events = Some(PointerEventsSpec::Auto);
+    create.set_style(node(3), auto);
+    world.commit(create).unwrap();
+    let work = world.take_system_work();
+    world.resolve_styles(&work.style).unwrap();
+    world.rebuild_hit_test(document(1));
+    assert_eq!(world.hit_test(document(1), 8.0, 8.0), Some(node(3)));
+    world
+        .set_pointer_hover(document(1), 7, Some(node(3)))
+        .unwrap();
+    let mut focus = MutationQueue::new();
+    focus.request_focus(document(1), Some(node(3)));
+    world.commit(focus).unwrap();
+    world.take_system_work();
+    assert_eq!(world.focused(document(1)), Some(node(3)));
+
+    let mut inert = NodeStyle::default();
+    Arc::make_mut(&mut inert.layout).inert = true;
+    let mut set = MutationQueue::new();
+    set.set_style(node(2), inert);
+    world.commit(set).unwrap();
+    assert_eq!(world.inert_nodes, 1);
+    assert!(world.is_inert(node(3)));
+    assert!(!world.is_inert(node(4)));
+
+    // Released at the commit, before any frame resolves the subtree.
+    assert_eq!(world.focused(document(1)), None);
+    assert_eq!(world.pointer_hover(document(1), 7), None);
+    assert_eq!(
+        world.set_pointer_hover(document(1), 7, Some(node(3))),
+        Err(UiWorldError::NotPointerInteractive(node(3)))
+    );
+    assert_ne!(world.hit_test(document(1), 8.0, 8.0), Some(node(3)));
+
+    let work = world.take_system_work();
+    assert!(
+        work.layout_frontier_seeds.is_empty(),
+        "inertness moves no box: {:?}",
+        work.layout_frontier_seeds
+    );
+    for id in [node(2), node(3)] {
+        assert!(work.style.contains(&id), "{id:?} resolves again");
+        assert!(work.input_hit_test.contains(&id), "{id:?} hit again");
+        assert!(work.focus_ime.contains(&id), "{id:?} focus again");
+        assert!(work.accessibility.contains(&id), "{id:?} projected again");
+    }
+    assert!(
+        !work.render_extraction.contains(&node(2)),
+        "inertness changes no pixel"
+    );
+
+    world.resolve_styles(&work.style).unwrap();
+    world.rebuild_hit_test(document(1));
+    let computed = world.computed_style(node(3)).unwrap();
+    assert!(computed.inert);
+    assert_eq!(computed.pointer_events, PointerEventsSpec::None);
+    assert!(computed.visible, "an inert subtree still paints");
+    assert!(
+        !world
+            .hit_test_candidates(document(1), 8.0, 8.0)
+            .iter()
+            .any(|id| *id == node(2) || *id == node(3))
+    );
+    let painted = world.extract_nodes(&[node(2), node(3)]);
+    assert!(painted.iter().all(|node| node.style.visible));
+
+    let mut refocus = MutationQueue::new();
+    refocus.request_focus(document(1), Some(node(3)));
+    assert_eq!(
+        world.commit(refocus),
+        Err(UiWorldError::NotFocusable(node(3)))
+    );
+
+    // Kept in the accessibility tree, marked inert.
+    let tree = world.project_accessibility(document(1));
+    let child = tree.iter().find(|n| n.id == node(3)).expect("kept");
+    assert!(child.inert);
+    assert!(!tree.iter().find(|n| n.id == node(4)).unwrap().inert);
+
+    // Lifting it gives everything back at the next frame.
+    let mut lift = MutationQueue::new();
+    lift.set_style(node(2), NodeStyle::default());
+    world.commit(lift).unwrap();
+    assert_eq!(world.inert_nodes, 0);
+    let work = world.take_system_work();
+    assert!(work.layout_frontier_seeds.is_empty());
+    world.resolve_styles(&work.style).unwrap();
+    world.rebuild_hit_test(document(1));
+    assert_eq!(world.hit_test(document(1), 8.0, 8.0), Some(node(3)));
+    let mut focus = MutationQueue::new();
+    focus.request_focus(document(1), Some(node(3)));
+    world.commit(focus).unwrap();
+    assert_eq!(world.focused(document(1)), Some(node(3)));
+}
+
+#[test]
+fn removing_an_inert_node_forgets_it() {
+    let mut world = UiWorld::new();
+    let mut create = MutationQueue::new();
+    create.create(node(1), document(1), NodeKind::Document);
+    create.create(node(2), document(1), NodeKind::Element { tag: "a".into() });
+    create.insert(node(1), node(2), None);
+    let mut inert = NodeStyle::default();
+    Arc::make_mut(&mut inert.layout).inert = true;
+    create.set_style(node(2), inert);
+    world.commit(create).unwrap();
+    assert_eq!(world.inert_nodes, 1);
+    let mut remove = MutationQueue::new();
+    remove.despawn_subtree(node(2));
+    world.commit(remove).unwrap();
+    assert_eq!(world.inert_nodes, 0);
+}
+
+#[test]
 fn overflow_auto_clips_descendant_hit_testing() {
     let mut world = UiWorld::new();
     let mut queue = MutationQueue::new();

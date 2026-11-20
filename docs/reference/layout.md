@@ -1049,6 +1049,10 @@ CSS `url()` 的帧仍走 4× MSAA。它和 HostTexture、backdrop 的 interleave
 
 未知关键字 fail closed。它不改已经指定的值。`inherit` 和 `unset` 清掉指定值。
 
+**惰性子树。** `LayoutStyle::inert`（CSS `interactivity: inert`，builder `.inert(true)`）对齐 HTML `inert`：子树照常布局、绘制、播放 Presentation 动画，但不命中，不在顺序焦点候选里（Tab、`focus_first_in` 跳过），`focus_node` 与 `RequestFocus` 拒绝，`apply_accessibility_action` 拒绝。无障碍树保留节点与语义，`AccessibilityNode::inert` 为真，AccessKit 投影不暴露任何动作。它按祖先传递，后代写 `pointer-events: auto` 或 `interactivity: auto` 都撤不掉；计算样式里 inert 节点的 `pointer_events` 一律是 `none`。
+
+设为 inert 在提交时就生效：子树里的焦点与输入法组合、指针捕获、悬停与按下当场释放，命中索引里的条目当场撤下，不等下一帧。这次写入本身只产生 STYLE、INPUT、FOCUS_IME、ACCESSIBILITY 脏位，不产生布局种子，也不重新提取绘制。撤掉 inert 后，命中与无障碍要等下一帧解析样式。淡出中的内容用它，淡出结束再设 `visibility: hidden`；`PresenceLifecycle` 就是这样做的。
+
 平面 3D 命中，和 Quad、Text、Icon、HostTexture 的绘制，共用同一份单应逆变换。不按仿射盒命中。也不按梯形 AABB 的空角命中。
 
 **溢出。** `overflow`、`overflow-x`、`overflow-y` 可以是 `visible`、`hidden`、`clip`、`auto`、`scroll`。

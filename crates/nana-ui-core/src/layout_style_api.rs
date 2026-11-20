@@ -255,6 +255,7 @@ impl LayoutStyle {
         overflow_x: OverflowSpec,
         overflow_y: OverflowSpec,
         text_overflow_ellipsis: bool,
+        inert: bool,
         white_space_nowrap: bool,
         white_space: WhiteSpaceSpec,
         text_align: TextAlignSpec,

@@ -1704,6 +1704,7 @@ pub(crate) fn emit_patch_stmt(layout: &LayoutStyle, path: &str, m: &str, out: &m
         "overflow_y" => emit_set(path, &layout.overflow_y, m, out),
         "text_overflow_ellipsis" => emit_set(path, &layout.text_overflow_ellipsis, m, out),
         "pointer_events" => emit_set(path, &layout.pointer_events, m, out),
+        "inert" => emit_set(path, &layout.inert, m, out),
         "cursor" => emit_set(path, &layout.cursor, m, out),
         "user_select" => emit_set(path, &layout.user_select, m, out),
         "white_space_nowrap" => emit_set(path, &layout.white_space_nowrap, m, out),

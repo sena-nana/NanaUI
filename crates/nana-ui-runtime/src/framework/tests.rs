@@ -14803,3 +14803,106 @@ fn equal_stacks_share_one_style_with_their_records() {
         Some(nana_ui_core::SemanticColorRole::Background)
     );
 }
+
+#[test]
+fn an_inert_subtree_leaves_the_tab_order_and_refuses_focus_and_actions() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(180).unwrap();
+    let root = context
+        .create_component(document, Stack::column(4.0))
+        .unwrap();
+    let panel = context
+        .create_detached_component(document, Stack::column(4.0))
+        .unwrap();
+    context.append_child(root, panel).unwrap();
+    let first = context
+        .create_detached_component(document, Button::new("First"))
+        .unwrap();
+    let second = context
+        .create_detached_component(document, Button::new("Second"))
+        .unwrap();
+    context.append_child(panel, first).unwrap();
+    context.append_child(panel, second).unwrap();
+    let outside = context
+        .create_detached_component(document, Button::new("Outside"))
+        .unwrap();
+    context.append_child(root, outside).unwrap();
+    let viewport = crate::LayoutViewport::new(300.0, 200.0);
+    context.layout_document(document, viewport).unwrap();
+    let set_inert = |context: &mut AppContext, inert: bool| {
+        let mut style = context.world().node_style(panel.id).unwrap().clone();
+        Arc::make_mut(&mut style.layout).inert = inert;
+        let mut queue = MutationQueue::new();
+        queue.set_style(panel.id, style);
+        context.commit_mutations(queue).unwrap();
+    };
+    let click = |target: StableNodeId| AccessibilityActionRequest {
+        target,
+        action: AccessibilityAction::Click,
+    };
+
+    assert!(context.focus_node(document, first.id).unwrap());
+    set_inert(&mut context, true);
+    // The focus leaves the subtree with the commit, not at the next frame.
+    assert_eq!(context.world().focused(document), None);
+
+    // Tab skips the subtree in both directions.
+    assert!(context.navigate_sequential_focus(document, false).unwrap());
+    assert_eq!(context.world().focused(document), Some(outside.id));
+    assert!(context.navigate_sequential_focus(document, true).unwrap());
+    assert_eq!(context.world().focused(document), Some(outside.id));
+    assert!(!context.focus_first_in(document, panel.id).unwrap());
+    assert!(!context.focus_node(document, second.id).unwrap());
+    assert_eq!(context.world().focused(document), Some(outside.id));
+
+    // Assistive technology can neither focus nor activate inside it.
+    for action in [AccessibilityAction::Click, AccessibilityAction::Focus] {
+        assert!(
+            !context
+                .apply_accessibility_action(
+                    document,
+                    AccessibilityActionRequest {
+                        target: first.id,
+                        action: action.clone(),
+                    },
+                )
+                .unwrap(),
+            "{action:?}"
+        );
+    }
+    assert!(
+        context
+            .apply_accessibility_action(document, click(outside.id))
+            .unwrap()
+    );
+
+    // Still laid out and kept in the accessibility tree, marked inert, once
+    // the frame resolves the subtree; nothing seeded layout.
+    let work = context.take_system_work();
+    assert!(work.layout_frontier_seeds.is_empty());
+    context.resolve_styles(&work.style).unwrap();
+    assert!(context.world().layout_box(first.id).is_some());
+    let tree = context.world().project_accessibility(document);
+    for id in [panel.id, first.id, second.id] {
+        let node = tree.iter().find(|node| node.id == id).expect("kept");
+        assert!(node.inert, "{id:?}");
+    }
+    assert!(
+        !tree
+            .iter()
+            .find(|node| node.id == outside.id)
+            .unwrap()
+            .inert
+    );
+
+    set_inert(&mut context, false);
+    let work = context.take_system_work();
+    context.resolve_styles(&work.style).unwrap();
+    assert!(context.focus_first_in(document, panel.id).unwrap());
+    assert_eq!(context.world().focused(document), Some(first.id));
+    assert!(
+        context
+            .apply_accessibility_action(document, click(second.id))
+            .unwrap()
+    );
+}
