@@ -542,7 +542,7 @@ pub enum FullscreenMode {
 }
 ```
 
-`WindowHandle::set_fullscreen(None)` 退出全屏。`Simple` 在 macOS 与 Windows 上报为 `WindowModeState::fullscreen = Some(Simple)`。Windows 的 `Simple` 不经 winit 全屏：铺满窗口所在（或指定）显示器的工作区，自动隐藏的任务栏所在边留 1 像素让它能滑出；铺满整块显示器的窗口会被系统当成全屏，任务栏沉到它下面，透明窗口还会透出任务栏却吃掉它的点击。任务栏移动、分辨率或缩放变化时重新铺满，退出时恢复进入前的位置（含最大化）。从 macOS 原生全屏切到 Simple 时。宿主先退出原生全屏。等 `fullscreen()` 读到 `None` 再应用 Simple。
+`WindowHandle::set_fullscreen(None)` 退出全屏。`Simple` 在 macOS 与 Windows 上报为 `WindowModeState::fullscreen = Some(Simple)`。Windows 的 `Simple` 不经 winit 全屏：铺满窗口所在（或指定）显示器的工作区，自动隐藏的任务栏所在边留 1 像素让它能滑出；铺满整块显示器的窗口会被系统当成全屏，任务栏沉到它下面，透明窗口还会透出任务栏却吃掉它的点击。任务栏移动、分辨率或缩放变化时重新铺满，退出时恢复进入前的位置（含最大化）。无标题栏样式的自绘窗口（透明客户区去掉了 `WS_CAPTION`）最大化时同样只铺满所在显示器的工作区（`WM_GETMINMAXINFO`，自动隐藏的任务栏边同样留 1 像素）：系统对没有标题栏的窗口会铺满整块显示器，出现同样的任务栏问题。从 macOS 原生全屏切到 Simple 时。宿主先退出原生全屏。等 `fullscreen()` 读到 `None` 再应用 Simple。
 
 有效状态通过 `WindowEvent::ModeChanged { id, mode }` 上报。`mode` 含实际全屏模式、窗口层级和当前显示器。时机：
 

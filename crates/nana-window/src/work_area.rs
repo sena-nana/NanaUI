@@ -80,6 +80,8 @@ fn fill_rect(
 
 #[cfg(target_os = "windows")]
 pub(crate) use imp::active as hwnd_active;
+#[cfg(target_os = "windows")]
+pub(crate) use imp::fill_maximized;
 
 #[cfg(target_os = "windows")]
 mod imp {
@@ -94,9 +96,10 @@ mod imp {
         DefSubclassProc, RemoveWindowSubclass, SHAppBarMessage, SetWindowSubclass,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetWindowPlacement, IsIconic, IsZoomed, SPI_SETWORKAREA, SW_RESTORE, SWP_FRAMECHANGED,
-        SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPlacement, SetWindowPos, ShowWindow,
-        WINDOWPLACEMENT, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_NCDESTROY, WM_SETTINGCHANGE,
+        GetWindowPlacement, IsIconic, IsZoomed, MINMAXINFO, SPI_SETWORKAREA, SW_RESTORE,
+        SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPlacement, SetWindowPos,
+        ShowWindow, WINDOWPLACEMENT, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_NCDESTROY,
+        WM_SETTINGCHANGE,
     };
 
     use crate::win32::WindowProp;
@@ -188,18 +191,59 @@ mod imp {
         }
     }
 
-    fn fit(hwnd: HWND, monitor: HMONITOR) -> bool {
+    /// The monitor's rectangle and the one a window filling it may take:
+    /// `fill_rect` of its work area.
+    fn monitor_fill(monitor: HMONITOR) -> Option<(RECT, (i32, i32, i32, i32))> {
         let mut info: MONITORINFO = unsafe { std::mem::zeroed() };
         info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
         // SAFETY: info is a correctly sized out parameter.
         if unsafe { GetMonitorInfoW(monitor, &mut info) } == 0 {
-            return false;
+            return None;
         }
         let tuple = |rect: RECT| (rect.left, rect.top, rect.right, rect.bottom);
         let autohide = [ABE_LEFT, ABE_TOP, ABE_RIGHT, ABE_BOTTOM]
             .map(|edge| autohide_bar(edge, info.rcMonitor));
-        let (left, top, right, bottom) =
-            super::fill_rect(tuple(info.rcMonitor), tuple(info.rcWork), autohide);
+        Some((
+            info.rcMonitor,
+            super::fill_rect(tuple(info.rcMonitor), tuple(info.rcWork), autohide),
+        ))
+    }
+
+    /// Answers `WM_GETMINMAXINFO` for a window without a caption: maximized,
+    /// it fills the work area of the monitor it is on, like a captioned
+    /// window does, instead of the whole monitor. Without a caption Windows
+    /// maximizes to the monitor, the shell takes the window for a fullscreen
+    /// one and sinks the taskbar beneath it; winit then only insets the
+    /// client, so the strip over the taskbar still belongs to the window and
+    /// takes its clicks. The position is relative to that monitor's origin.
+    ///
+    /// # Safety
+    /// `info` is the `MINMAXINFO` a `WM_GETMINMAXINFO` for `hwnd` passed.
+    pub(crate) unsafe fn fill_maximized(hwnd: HWND, info: *mut MINMAXINFO) {
+        if info.is_null() {
+            return;
+        }
+        // SAFETY: hwnd is the live window whose message is being answered.
+        let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+        let Some((rect, (left, top, right, bottom))) = monitor_fill(monitor) else {
+            return;
+        };
+        // SAFETY: the sender owns `info` for the duration of the message.
+        let info = unsafe { &mut *info };
+        info.ptMaxPosition = POINT {
+            x: left - rect.left,
+            y: top - rect.top,
+        };
+        info.ptMaxSize = POINT {
+            x: right - left,
+            y: bottom - top,
+        };
+    }
+
+    fn fit(hwnd: HWND, monitor: HMONITOR) -> bool {
+        let Some((_, (left, top, right, bottom))) = monitor_fill(monitor) else {
+            return false;
+        };
         // SAFETY: a geometry change on the live window, z-order untouched.
         unsafe {
             SetWindowPos(

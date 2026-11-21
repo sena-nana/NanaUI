@@ -1432,7 +1432,7 @@ unsafe extern "system" fn style_guard_proc(
 ) -> isize {
     use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GWL_STYLE, STYLESTRUCT, WM_NCDESTROY, WM_STYLECHANGING,
+        GWL_STYLE, MINMAXINFO, STYLESTRUCT, WM_GETMINMAXINFO, WM_NCDESTROY, WM_STYLECHANGING,
     };
 
     if message == WM_NCDESTROY {
@@ -1451,6 +1451,12 @@ unsafe extern "system" fn style_guard_proc(
         // expected to edit in place, and the sender owns it for the call.
         let style = unsafe { &mut *(lparam as *mut STYLESTRUCT) };
         style.styleNew = guarded_style(style.styleNew as isize, mask as isize) as u32;
+    }
+    // The strip takes the caption away, and with it the work area a
+    // maximized window keeps to; give it back (`work_area::fill_maximized`).
+    if message == WM_GETMINMAXINFO && mask != 0 {
+        // SAFETY: `WM_GETMINMAXINFO` passes the `MINMAXINFO` to fill in.
+        unsafe { crate::work_area::fill_maximized(hwnd, lparam as *mut MINMAXINFO) };
     }
     result
 }
