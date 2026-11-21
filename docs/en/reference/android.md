@@ -10,7 +10,17 @@ On the Android host the UI also enters `nana-ui-runtime` (`UiWorld`) and `nana-u
 
 The whole Surface is one Runtime document, held by the [mobile host](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/mobile-host.md) (`nana-mobile-host`); the iOS host uses the same layer. `GameActivity` lays the Surface under the status bar, the navigation bar and the soft keyboard. The document root fills the theme background color and keeps padding for the four insets (`WindowInsets` `systemBars | displayCutout` and `ime`); in landscape the notch and navigation bar on each side are avoided as well. Touches outside the primary window go to the system.
 
-The window mounts the measurement page shared by both hosts (`nana-mobile-probe`). Android has no camera in the prototype; after turning on "CPU preview" the host generates and uploads 640×480 frames at 30 fps to measure the cost of the upload path.
+The window shows an `AndroidHostApp`. This crate's own APK (the default `probe` feature) mounts the measurement page shared by both hosts (`nana-mobile-probe`): Android has no camera in the prototype, so after turning on "CPU preview" it generates and uploads 640×480 frames at 30 fps to measure the cost of the upload path.
+
+## Hosting an app
+
+As with iOS's `IosApp` / `export_ios_app!`, an app crate uses the host as an rlib and builds the one cdylib its Gradle project packages:
+
+1. Depend on `nana-android-host` with default features off (`default-features = false`), leaving out the probe page and its `android_main`.
+2. Implement `AndroidHostApp`: `mount` mounts the view once, when the first window arrives, and receives a `Shell`; `before_frame` runs on every pass of the loop before the frame demand is resolved; `demand` adds the app's own deadline; `lifecycle` receives `Resumed` / `Paused` (a `Resume` from before the first window is delivered after mounting).
+3. Export `android_main` with `export_android_app!(MyApp::new(), "my-tag")`, which logs to logcat under that tag. The manifest's `android.app.lib_name` names the app's cdylib, and the Activity extends `GameActivity`; the app's own Java/Kotlin code (camera, scanner and so on) and its JNI calls live on it.
+
+`Shell` is callable from any thread: `wake()` wakes the loop (state the document reads changed on another thread), `haptic(Haptic)` plays the same five styles as iOS through the window's `View.performHapticFeedback`, and `android_app()` hands over the `AndroidApp` for the app's own JNI calls.
 
 The manifest's `configChanges` contains `uiMode|fontScale|density`; these changes do not recreate the Activity, and the light/dark mode and font size follow the system update.
 

@@ -14,13 +14,16 @@ crate-type = ["cdylib", "rlib"]
 doctest = false
 
 [features]
-default = []
+default = ["probe"]
+# This crate's own APK: `android_main` shows the mobile probe page. An app
+# crate turns it off and exports its own with `export_android_app!`.
+probe = ["dep:nana-mobile-probe"]
 # Experimental NanaUI Runtime slot. Not a product UI target.
 experimental-android = []
 
 [dependencies]
 nana-mobile-host = { path = "../mobile-core" }
-nana-mobile-probe = { path = "../mobile-probe" }
+nana-mobile-probe = { path = "../mobile-probe", optional = true }
 nana-ui-core.workspace = true
 nana-ui-platform = { workspace = true, features = ["experimental-android"] }
 nana-ui = { path = "../../crates/nana-ui", default-features = false, features = [

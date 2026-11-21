@@ -10,7 +10,17 @@ Android（`platform/android`）是仓库内的**实验性 ARM64 宿主路径**�
 
 整个 Surface 是一份 Runtime 文档，由 [移动宿主](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/mobile-host.md)（`nana-mobile-host`）持有，iOS 宿主也用同一层。`GameActivity` 把 Surface 铺到状态栏、导航栏和软键盘下面。文档根节点铺满主题背景色，按四边 inset（`WindowInsets` 的 `systemBars | displayCutout` 与 `ime`）留出内边距，横屏时左右两边的刘海和导航栏同样避让。Primary 之外的触摸交给系统。
 
-窗口里挂的是两个宿主共用的测量页（`nana-mobile-probe`）。Android 在原型里没有接摄像头，打开「CPU 预览」后，宿主以 30 fps 生成 640×480 的帧并上传，用来测上传这条路径的开销。
+窗口里显示的是一个 `AndroidHostApp`。本 crate 自己的 APK（默认的 `probe` 特性）挂两个宿主共用的测量页（`nana-mobile-probe`）：Android 在原型里没有接摄像头，打开「CPU 预览」后，以 30 fps 生成 640×480 的帧并上传，用来测上传这条路径的开销。
+
+## 接入应用
+
+和 iOS 的 `IosApp` / `export_ios_app!` 一样，应用 crate 把宿主当 rlib 用，自己出 Gradle 工程打包的那一个 cdylib：
+
+1. 依赖 `nana-android-host` 时关掉默认特性（`default-features = false`），不带测量页和它的 `android_main`。
+2. 实现 `AndroidHostApp`：`mount` 在第一扇窗口到来时挂一次视图，拿到 `Shell`；`before_frame` 在循环每一轮、判定帧需求之前运行；`demand` 交出应用自己的截止时间；`lifecycle` 收 `Resumed` / `Paused`（第一扇窗口之前的 `Resume` 在挂载后补发）。
+3. 用 `export_android_app!(MyApp::new(), "my-tag")` 导出 `android_main`，日志写到 logcat 的这个 tag。清单的 `android.app.lib_name` 指向应用的 cdylib，Activity 继承 `GameActivity`，应用自己的 Java/Kotlin 代码（相机、扫码等）和 JNI 调用都放在它上面。
+
+`Shell` 可以在任何线程调用：`wake()` 唤醒循环（文档读的状态在别的线程变了），`haptic(Haptic)` 经窗口 `View.performHapticFeedback` 播放和 iOS 同样的五种触感，`android_app()` 交出 `AndroidApp`，供应用自己的 JNI 调用。
 
 清单的 `configChanges` 含 `uiMode|fontScale|density`，这些变化不重建 Activity，深浅色和字号随系统更新。
 

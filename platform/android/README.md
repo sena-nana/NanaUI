@@ -20,8 +20,9 @@ Rust owns the wgpu Vulkan Surface, the Runtime document and
 
 | Path | Role |
 |------|------|
-| `src/lib.rs` | `android_main` entry (`cdylib`) |
-| `src/host.rs` | GameActivity loop over `nana-mobile-host`: lifecycle, input, insets / Configuration (JNI), frame demand |
+| `src/lib.rs` | `AndroidHostApp` re-exports, `export_android_app!`, and the probe APK's `android_main` (`probe` feature) |
+| `src/host.rs` | GameActivity loop over `nana-mobile-host`: lifecycle, input, insets / Configuration (JNI), frame demand; `AndroidHostApp` and `Shell` |
+| `src/probe.rs` | `ProbeApp`: the mobile probe page and its CPU preview (`probe` feature) |
 | `src/shell.rs` | `AndroidShellStub` — window size, scale, system insets → Primary |
 | `src/slot_input.rs` | Primary input gate and KeyEvent mapping |
 | `src/slot_ax.rs` | AccessKit (TalkBack) publication |

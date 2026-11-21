@@ -10,7 +10,11 @@
 //!
 //! `TerminateWindow` (background) drops only the surface: the document, its
 //! state and the device survive until the next `InitWindow`.
+//!
+//! What the window shows is an [`AndroidHostApp`]: the probe page in this
+//! crate's own APK, or an app crate's view through [`crate::export_android_app!`].
 
+use std::any::Any;
 use std::time::{Duration, Instant};
 
 use android_activity::input::{
@@ -18,12 +22,12 @@ use android_activity::input::{
     TextInputAction, TextInputState, TextSpan,
 };
 use android_activity::ndk::configuration::UiModeNight;
-use android_activity::{AndroidApp, InputStatus, MainEvent, PollEvent};
+use android_activity::{AndroidApp, AndroidAppWaker, InputStatus, MainEvent, PollEvent};
 use nana_mobile_host::{
     FrameDemand, MobileAppearance, MobilePlatform, MobileRenderer, MobileRuntime, MobileViewport,
     SafeArea, ScrollPhysics, SurfaceOptions, TouchPhase,
 };
-use nana_mobile_probe::{PreviewUploader, Probe, ProbeState};
+use nana_ui::runtime::FrameworkError;
 use nana_ui_platform::{SharedClipboardHost, TextInputContext, default_shared_clipboard};
 use raw_window_handle::{AndroidNdkWindowHandle, DisplayHandle, RawWindowHandle, WindowHandle};
 
@@ -36,11 +40,113 @@ use crate::slot_input::{
     logical_key_from_android_keycode, slot_key_to_dispatch,
 };
 
-/// The CPU preview stand-in: Android has no camera in the prototype, so a
-/// generated 640×480 frame is uploaded at the camera's 30 fps to measure the
-/// upload path the iOS host compares against its native layer.
-const PREVIEW_SIZE: (u32, u32) = (640, 480);
-const PREVIEW_INTERVAL: Duration = Duration::from_millis(33);
+/// Whether the activity is in front: an app pauses what only the visible
+/// window needs (a camera, a discovery socket) while it is not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lifecycle {
+    Resumed,
+    Paused,
+}
+
+/// Feedback played through the window's `View.performHapticFeedback`, the
+/// same five styles as the iOS host's `Haptic`.
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Haptic {
+    /// A light impact: a button press.
+    Light = 0,
+    /// A medium impact.
+    Medium = 1,
+    /// A selection tick: a value stepping.
+    Selection = 2,
+    /// A success notification.
+    Success = 3,
+    /// A warning notification.
+    Warning = 4,
+}
+
+impl Haptic {
+    /// The `HapticFeedbackConstants` value on this SDK level: `CONFIRM` and
+    /// `REJECT` exist from API 30.
+    fn constant(self, sdk: i32) -> i32 {
+        const LONG_PRESS: i32 = 0;
+        const VIRTUAL_KEY: i32 = 1;
+        const CLOCK_TICK: i32 = 4;
+        const CONTEXT_CLICK: i32 = 6;
+        const CONFIRM: i32 = 16;
+        const REJECT: i32 = 17;
+        match self {
+            Self::Light => VIRTUAL_KEY,
+            Self::Medium => CONTEXT_CLICK,
+            Self::Selection => CLOCK_TICK,
+            Self::Success if sdk >= 30 => CONFIRM,
+            Self::Success => VIRTUAL_KEY,
+            Self::Warning if sdk >= 30 => REJECT,
+            Self::Warning => LONG_PRESS,
+        }
+    }
+}
+
+/// What an app reaches the host through, from any thread.
+#[derive(Clone)]
+pub struct Shell {
+    app: AndroidApp,
+    waker: AndroidAppWaker,
+}
+
+impl Shell {
+    /// Ask the loop for a pass: state the document reads changed off the
+    /// loop's thread.
+    pub fn wake(&self) {
+        self.waker.wake();
+    }
+
+    /// Play `style` on the window's decor view.
+    pub fn haptic(&self, style: Haptic) {
+        use accesskit_android::jni::objects::JValue;
+
+        with_activity(&self.app, "haptic", |env, activity| {
+            let sdk = env
+                .get_static_field("android/os/Build$VERSION", "SDK_INT", "I")?
+                .i()?;
+            let window = env
+                .call_method(activity, "getWindow", "()Landroid/view/Window;", &[])?
+                .l()?;
+            let decor = env
+                .call_method(&window, "getDecorView", "()Landroid/view/View;", &[])?
+                .l()?;
+            env.call_method(
+                &decor,
+                "performHapticFeedback",
+                "(I)Z",
+                &[JValue::Int(style.constant(sdk))],
+            )?;
+            Ok(())
+        });
+    }
+
+    /// The activity, for an app's own JNI calls into its Java side.
+    pub fn android_app(&self) -> &AndroidApp {
+        &self.app
+    }
+}
+
+/// The application the window shows: it mounts its view once, when the
+/// first window arrives, and may prepare host textures or other per-frame
+/// state before each pass. The loop's thread only.
+pub trait AndroidHostApp: Any {
+    fn mount(&mut self, runtime: &mut MobileRuntime, shell: Shell) -> Result<(), FrameworkError>;
+
+    /// Runs on every pass of the loop before the frame demand is resolved.
+    fn before_frame(&mut self, _runtime: &mut MobileRuntime, _renderer: &mut MobileRenderer) {}
+
+    /// A pass the app needs besides the document's (a deadline of its own).
+    fn demand(&self) -> FrameDemand {
+        FrameDemand::Idle
+    }
+
+    fn lifecycle(&mut self, _runtime: &mut MobileRuntime, _event: Lifecycle) {}
+}
 
 struct AndroidPlatform;
 
@@ -58,33 +164,37 @@ impl MobilePlatform for AndroidPlatform {
 struct Document {
     runtime: MobileRuntime,
     renderer: MobileRenderer,
-    probe: Probe,
-    preview: PreviewUploader,
     ax: Option<SlotAccessibility>,
 }
 
 struct Host {
+    app: Box<dyn AndroidHostApp>,
+    shell: Shell,
+    /// The app is mounted once, into the first document.
+    mounted: bool,
+    /// Between `Resume` and `Pause`.
+    foreground: bool,
     document: Option<Document>,
     gate: SlotInputGate,
     insets: SystemInsets,
     ime_shown: bool,
     ime_buffer: SlotImeBuffer,
     editor_info: Option<SlotEditorInfo>,
-    next_preview: Instant,
-    preview_phase: u8,
 }
 
 impl Host {
-    fn new() -> Self {
+    fn new(app: Box<dyn AndroidHostApp>, shell: Shell) -> Self {
         Self {
+            app,
+            shell,
+            mounted: false,
+            foreground: false,
             document: None,
             gate: SlotInputGate::default(),
             insets: SystemInsets::default(),
             ime_shown: false,
             ime_buffer: SlotImeBuffer::default(),
             editor_info: None,
-            next_preview: Instant::now(),
-            preview_phase: 0,
         }
     }
 
@@ -143,8 +253,12 @@ impl Host {
             MobileRuntime::new(viewport, Self::appearance(app), Box::new(AndroidPlatform))
                 .map_err(|error| format!("runtime: {error}"))?;
         runtime.set_scroll_physics(ScrollPhysics::Android);
-        let probe = Probe::mount(&mut runtime, ProbeState::default())
-            .map_err(|error| format!("probe: {error}"))?;
+        if !self.mounted {
+            self.app
+                .mount(&mut runtime, self.shell.clone())
+                .map_err(|error| format!("mount: {error}"))?;
+            self.mounted = true;
+        }
         // SAFETY: as above.
         let renderer = unsafe {
             MobileRenderer::new(
@@ -162,10 +276,12 @@ impl Host {
         self.document = Some(Document {
             runtime,
             renderer,
-            probe,
-            preview: PreviewUploader::default(),
             ax,
         });
+        // `Resume` came before the first window.
+        if self.foreground {
+            self.lifecycle(Lifecycle::Resumed);
+        }
         log::info!("nana-android-host: document ready scale={}", viewport.scale);
         Ok(())
     }
@@ -198,12 +314,9 @@ impl Host {
         let Some(document) = self.document.as_ref().filter(|_| self.attached()) else {
             return FrameDemand::Idle;
         };
-        let mut demand = document.runtime.frame_demand();
+        let mut demand = document.runtime.frame_demand().merge(self.app.demand());
         if document.renderer.host_textures_changed() {
             demand = demand.merge(FrameDemand::Now);
-        }
-        if document.probe.state.cpu_preview() {
-            demand = demand.merge(FrameDemand::At(self.next_preview));
         }
         demand
     }
@@ -213,11 +326,9 @@ impl Host {
         if !self.attached() {
             return;
         }
-        self.feed_preview(now);
         if let Some(document) = self.document.as_mut() {
-            document
-                .probe
-                .sync_preview(&mut document.preview, document.renderer.host_textures());
+            self.app
+                .before_frame(&mut document.runtime, &mut document.renderer);
         }
         if self.demand().resolve(now) != FrameDemand::Now {
             return;
@@ -239,32 +350,10 @@ impl Host {
         }
     }
 
-    fn feed_preview(&mut self, now: Instant) {
-        let Some(document) = self.document.as_mut() else {
-            return;
-        };
-        if !document.probe.state.cpu_preview() || now < self.next_preview {
-            return;
-        }
-        self.next_preview = now + PREVIEW_INTERVAL;
-        self.preview_phase = self.preview_phase.wrapping_add(3);
-        let (width, height) = PREVIEW_SIZE;
-        let shade = self.preview_phase;
-        let frame: Vec<u8> = (0..width * height)
-            .flat_map(|index| {
-                let x = (index % width) as u8;
-                [x.wrapping_add(shade), shade, 160, 255]
-            })
-            .collect();
-        let uploaded = document.preview.push_bgra(
-            document.renderer.gpu(),
-            document.renderer.host_textures(),
-            &frame,
-            width,
-            height,
-            width * 4,
-        );
-        if uploaded.is_ok() {
+    fn lifecycle(&mut self, event: Lifecycle) {
+        self.foreground = event == Lifecycle::Resumed;
+        if let Some(document) = self.document.as_mut() {
+            self.app.lifecycle(&mut document.runtime, event);
             document.runtime.request_present();
         }
     }
@@ -441,10 +530,17 @@ impl Host {
     }
 }
 
-pub fn run(app: AndroidApp) -> Result<(), String> {
+/// Run the activity's loop around `host_app` until `Destroy`; the body of
+/// [`crate::export_android_app!`]'s `android_main`.
+pub fn run(app: AndroidApp, host_app: Box<dyn AndroidHostApp>) -> Result<(), String> {
     let waker = app.create_waker();
-    nana_mobile_host::set_task_wake(move || waker.wake());
-    let mut host = Host::new();
+    let task_waker = waker.clone();
+    nana_mobile_host::set_task_wake(move || task_waker.wake());
+    let shell = Shell {
+        app: app.clone(),
+        waker,
+    };
+    let mut host = Host::new(host_app, shell);
     let mut running = true;
 
     while running {
@@ -478,11 +574,14 @@ pub fn run(app: AndroidApp) -> Result<(), String> {
                         document.runtime.request_present();
                     }
                 }
-                MainEvent::Pause | MainEvent::Stop => {
+                MainEvent::Resume { .. } => host.lifecycle(Lifecycle::Resumed),
+                MainEvent::Pause => {
                     // Android dismisses the IME itself; the next focus
                     // re-shows it.
                     host.ime_shown = false;
+                    host.lifecycle(Lifecycle::Paused);
                 }
+                MainEvent::Stop => host.ime_shown = false,
                 _ => {}
             }
         });

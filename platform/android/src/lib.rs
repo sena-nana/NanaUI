@@ -2,14 +2,21 @@
 //!
 //! GameActivity + GameTextInput InputConnection + `ANativeWindow` Surface
 //! (wgpu 30 / Vulkan) over [`nana_mobile_host`], the core it shares with the
-//! iOS host. The window is one NanaUI Runtime document — the mobile probe
-//! page — painted through UiScene + `SceneWgpuPainter`, not a second product
-//! paint kernel.
+//! iOS host. The window is one NanaUI Runtime document painted through
+//! UiScene + `SceneWgpuPainter`, not a second product paint kernel.
+//!
+//! The host is an rlib as well: an app crate builds the one cdylib its
+//! Gradle project packages, puts its view in through [`AndroidHostApp`] and
+//! exports `android_main` with [`export_android_app!`], with this crate's
+//! default `probe` feature off. With it on (this crate's own APK), the
+//! window is the mobile probe page shared with the iOS host.
 
 #![cfg_attr(target_os = "android", allow(clippy::unnecessary_wraps))]
 
 #[cfg(target_os = "android")]
 mod host;
+#[cfg(all(target_os = "android", feature = "probe"))]
+mod probe;
 mod shell;
 #[cfg(target_os = "android")]
 mod slot_ax;
@@ -24,22 +31,45 @@ pub use shell::{
 };
 
 #[cfg(target_os = "android")]
-use android_activity::AndroidApp;
-
-/// GameActivity entry — linked from the AndroidManifest `android.app.lib_name`.
+pub use android_activity;
 #[cfg(target_os = "android")]
-#[unsafe(no_mangle)]
-fn android_main(app: AndroidApp) {
+pub use host::{AndroidHostApp, Haptic, Lifecycle, Shell};
+#[cfg(target_os = "android")]
+pub use nana_mobile_host::{FrameDemand, MobileRenderer, MobileRuntime};
+#[cfg(target_os = "android")]
+pub use nana_ui::runtime::FrameworkError;
+
+/// Run the activity around `app` until it is destroyed: the body of
+/// [`export_android_app!`]'s `android_main`. Logs to logcat under `tag`.
+#[cfg(target_os = "android")]
+pub fn main(activity: android_activity::AndroidApp, app: Box<dyn AndroidHostApp>, tag: &str) {
     android_logger::init_once(
         android_logger::Config::default()
             .with_max_level(log::LevelFilter::Info)
-            .with_tag("nana-android-host"),
+            .with_tag(tag),
     );
     log::info!("nana-android-host: android_main (no WebView)");
-    if let Err(err) = host::run(app) {
+    if let Err(err) = host::run(activity, app) {
         log::error!("nana-android-host: fatal: {err}");
     }
 }
+
+/// Export the GameActivity entry `android_main`, building the host around
+/// `$app` (an expression of a type implementing [`AndroidHostApp`]) and
+/// logging under `$tag`. Use it once, in the crate that builds the cdylib
+/// the manifest's `android.app.lib_name` names.
+#[macro_export]
+macro_rules! export_android_app {
+    ($app:expr, $tag:expr) => {
+        #[unsafe(no_mangle)]
+        fn android_main(activity: $crate::android_activity::AndroidApp) {
+            $crate::main(activity, ::std::boxed::Box::new($app), $tag);
+        }
+    };
+}
+
+#[cfg(all(target_os = "android", feature = "probe"))]
+export_android_app!(probe::ProbeApp::default(), "nana-android-host");
 
 #[cfg(test)]
 mod android_not_product {
