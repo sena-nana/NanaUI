@@ -214,7 +214,9 @@ impl StatusBadge {
         layout.padding_top = Some(LengthSpec::Px(vertical));
         layout.padding_bottom = Some(LengthSpec::Px(vertical));
         layout.border_width = Some(0.0);
-        layout.border_radius = Some(999.0);
+        layout.border_radius = Some(nana_ui_core::FULL_RADIUS);
+        layout.theme.border_radius =
+            Some(nana_ui_core::ThemeToken::Radius(nana_ui_core::RadiusTier::Full).into());
         crate::theme_intent::font(
             layout,
             if self.compact {
@@ -1089,8 +1091,30 @@ impl LabeledValue {
             JustifySpec::SpaceBetween
         };
         layout.align_items = AlignSpec::Center;
-        layout.min_height = Some(LengthSpec::Px(if self.compact { 28.0 } else { 32.0 }));
-        layout.gap = Some(LengthSpec::Px(if self.compact { 4.0 } else { 8.0 }));
+        // A row as tall as a small (compact) or medium control, its label
+        // and value a step apart: both named so the installed theme decides.
+        let (row, gap) = if self.compact {
+            (
+                nana_ui_core::ControlSize::Small,
+                nana_ui_core::SpacingStep::Xs,
+            )
+        } else {
+            (
+                nana_ui_core::ControlSize::Medium,
+                nana_ui_core::SpacingStep::Md,
+            )
+        };
+        layout.min_height = Some(LengthSpec::Px(row.height_in(nana_ui_core::UI_METRICS)));
+        layout.gap = Some(LengthSpec::Px(
+            nana_ui_core::SpacingTokens::DEFAULT.resolve(gap),
+        ));
+        // A step the application named on its own style still wins.
+        if layout.theme.min_height.is_none() {
+            layout.theme.min_height = Some(nana_ui_core::ThemeToken::Control(row).into());
+        }
+        if layout.theme.gap.is_none() {
+            layout.theme.gap = Some(crate::theme_intent::space(gap));
+        }
         style
     }
 }

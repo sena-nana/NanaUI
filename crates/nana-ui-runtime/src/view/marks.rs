@@ -13,8 +13,9 @@
 use std::sync::Arc;
 
 use nana_ui_core::{
-    AlignSpec, Icon, JustifySpec, LengthSpec, RadiusTier, SemanticColorMix, SemanticColorRole,
-    ShapeRole, SpacingRole, SpacingStep, SquareSize, StatusTone, TextWeight, TypeRole,
+    AlignSpec, BorderWidth, Icon, JustifySpec, LengthSpec, RadiusTier, SemanticColorMix,
+    SemanticColorRole, ShapeRole, SpacingRole, SpacingStep, SquareSize, StatusTone, TextWeight,
+    ThemeToken, TypeRole,
 };
 
 use super::node::{AnyView, IntoView, widget};
@@ -191,9 +192,12 @@ pub fn tag_frame() -> Stack {
         .padding_step(SpacingStep::Md, SpacingStep::Xxs)
         .align(AlignSpec::Center)
         .surface(SemanticColorRole::Subtle)
-        .border(SemanticColorRole::BorderSoft, 1.0)
+        .border(SemanticColorRole::BorderSoft, nana_ui_core::HAIRLINE)
         .shape(ShapeRole::Tag)
-        .with_layout(|l| l.flex_shrink = Some(0.0))
+        .with_layout(|l| {
+            l.flex_shrink = Some(0.0);
+            l.theme.border_width = Some(ThemeToken::Border(BorderWidth::Hairline).into());
+        })
 }
 
 /// [`tag_frame`] holding `text`.

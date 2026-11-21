@@ -99,7 +99,10 @@ impl PathField {
             layout.direction = Some(FlexDirection::Row);
             layout.align_items = AlignSpec::Center;
             layout.justify_content = JustifySpec::Start;
-            layout.gap = Some(LengthSpec::Px(4.0));
+            layout.gap = Some(LengthSpec::Px(nana_ui_core::space::XS));
+            if layout.theme.gap.is_none() {
+                layout.theme.gap = Some(crate::theme_intent::space(nana_ui_core::SpacingStep::Xs));
+            }
             layout.width = Some(LengthSpec::Fill);
         }
         style.control_height = Some(nana_ui_core::ControlHeight::Min(self.size));

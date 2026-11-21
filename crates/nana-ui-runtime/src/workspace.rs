@@ -16,6 +16,12 @@ use crate::{
 };
 
 const REGION_SEPARATOR_PX: f32 = nana_ui_core::HAIRLINE;
+
+/// The hairline between adjacent region tracks, as theme intent beside
+/// [`REGION_SEPARATOR_PX`]: the separator is the theme's border hairline.
+fn region_separator() -> nana_ui_core::ThemeExpr {
+    nana_ui_core::ThemeToken::Border(nana_ui_core::BorderWidth::Hairline).into()
+}
 const HANDLE_HIT_SLOP: f32 = nana_ui_core::space::SM;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -707,6 +713,7 @@ fn track_host_style(direction: FlexDirection, fill: bool) -> NodeStyle {
     layout.overflow_x = OverflowSpec::Hidden;
     layout.overflow_y = OverflowSpec::Hidden;
     layout.gap = Some(LengthSpec::Px(REGION_SEPARATOR_PX));
+    layout.theme.gap = Some(region_separator());
     if fill {
         layout.flex_grow = Some(1.0);
         layout.flex_shrink = Some(1.0);
@@ -723,7 +730,9 @@ fn keep_if_unset<T: Copy>(slot: &mut Option<T>, kept: Option<T>) {
 }
 
 /// Region chrome owns size, overflow, and flex. Content such as SidebarFrame
-/// keeps padding, gap, and direction unless the region set those edges.
+/// keeps padding, gap, and direction unless the region set those edges. A kept
+/// edge keeps the theme expression it was written from too: the number alone
+/// would freeze the content's token at the theme it was first resolved under.
 fn overlay_region_style(existing: Option<&NodeStyle>, mut region: NodeStyle) -> NodeStyle {
     let Some(existing) = existing else {
         return region;
@@ -731,12 +740,24 @@ fn overlay_region_style(existing: Option<&NodeStyle>, mut region: NodeStyle) -> 
     let layout = Arc::make_mut(&mut region.layout);
     let kept = &*existing.layout;
     keep_if_unset(&mut layout.direction, kept.direction);
-    keep_if_unset(&mut layout.gap, kept.gap);
-    keep_if_unset(&mut layout.padding, kept.padding);
-    keep_if_unset(&mut layout.padding_top, kept.padding_top);
-    keep_if_unset(&mut layout.padding_right, kept.padding_right);
-    keep_if_unset(&mut layout.padding_bottom, kept.padding_bottom);
-    keep_if_unset(&mut layout.padding_left, kept.padding_left);
+    macro_rules! keep_length {
+        ($($field:ident),*) => {$(
+            if layout.$field.is_none() && layout.theme.$field.is_none() {
+                layout.$field = kept.$field;
+                if let Some(expr) = &kept.theme.$field {
+                    layout.theme.$field = Some(expr.clone());
+                }
+            }
+        )*};
+    }
+    keep_length!(
+        gap,
+        padding,
+        padding_top,
+        padding_right,
+        padding_bottom,
+        padding_left
+    );
     region
 }
 
@@ -839,6 +860,7 @@ fn region_style(
         if state.role() == RegionRole::Inspector {
             layout.direction = Some(FlexDirection::Column);
             layout.padding_left = Some(LengthSpec::Px(REGION_SEPARATOR_PX));
+            layout.theme.padding_left = Some(region_separator());
         }
     }
     if state.role() == RegionRole::Primary {
@@ -1352,6 +1374,42 @@ mod tests {
                 .resizable(true),
         ])
         .expect("unique placements")
+    }
+
+    /// Content kept under a region keeps the theme expressions its padding
+    /// and gap were written from; an edge the region sets stays the region's.
+    #[test]
+    fn overlay_region_style_keeps_the_contents_theme_expressions() {
+        use nana_ui_core::SpacingStep;
+        let space = crate::theme_intent::space;
+        let mut content = NodeStyle::default();
+        {
+            let layout = Arc::make_mut(&mut content.layout);
+            layout.gap = Some(LengthSpec::Px(4.0));
+            layout.theme.gap = Some(space(SpacingStep::Xs));
+            layout.padding_top = Some(LengthSpec::Px(10.0));
+            layout.theme.padding_top = Some(space(SpacingStep::Lg));
+            layout.padding_left = Some(LengthSpec::Px(12.0));
+            layout.theme.padding_left = Some(space(SpacingStep::Xl));
+        }
+        let mut region = NodeStyle::default();
+        {
+            let layout = Arc::make_mut(&mut region.layout);
+            layout.padding_left = Some(LengthSpec::Px(REGION_SEPARATOR_PX));
+            layout.theme.padding_left = Some(region_separator());
+        }
+        let merged = overlay_region_style(Some(&content), region);
+        let layout = &merged.layout;
+        assert_eq!(layout.gap, Some(LengthSpec::Px(4.0)));
+        assert_eq!(layout.theme.gap, Some(space(SpacingStep::Xs)));
+        assert_eq!(layout.padding_top, Some(LengthSpec::Px(10.0)));
+        assert_eq!(layout.theme.padding_top, Some(space(SpacingStep::Lg)));
+        assert_eq!(
+            layout.padding_left,
+            Some(LengthSpec::Px(REGION_SEPARATOR_PX))
+        );
+        assert_eq!(layout.theme.padding_left, Some(region_separator()));
+        assert_eq!(layout.theme.padding_right, None);
     }
 
     fn surface(context: &mut AppContext) -> StableNodeId {

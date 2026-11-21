@@ -2208,14 +2208,16 @@ impl ComponentView for Card {
             nana_ui_core::CardKind::Surface | nana_ui_core::CardKind::Raised => {
                 (Some(nana_ui_core::SemanticColorRole::Surface), None, 0.0)
             }
-            nana_ui_core::CardKind::Outlined => {
-                (None, Some(nana_ui_core::SemanticColorRole::Border), 1.0)
-            }
+            nana_ui_core::CardKind::Outlined => (
+                None,
+                Some(nana_ui_core::SemanticColorRole::Border),
+                nana_ui_core::HAIRLINE,
+            ),
             nana_ui_core::CardKind::Flat => (None, None, 0.0),
             nana_ui_core::CardKind::Selected => (
                 Some(nana_ui_core::SemanticColorRole::Selected),
                 Some(nana_ui_core::SemanticColorRole::BorderSoft),
-                1.0,
+                nana_ui_core::HAIRLINE,
             ),
         };
         if effective_style.background.is_none() {
@@ -2232,8 +2234,16 @@ impl ComponentView for Card {
         }
         {
             let layout = Arc::make_mut(&mut effective_style.layout);
-            if layout.border_width.is_none() {
+            if layout.border_width.is_none() && layout.theme.border_width.is_none() {
                 layout.border_width = Some(kind_border_width);
+                // An outlined or selected card's edge is the theme's
+                // hairline, not a pixel of its own.
+                if kind_border_width > 0.0 {
+                    layout.theme.border_width = Some(
+                        nana_ui_core::ThemeToken::Border(nana_ui_core::BorderWidth::Hairline)
+                            .into(),
+                    );
+                }
             }
         }
         project_common(

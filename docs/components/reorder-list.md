@@ -67,7 +67,7 @@ widget(
 
 ## 列表
 
-`.spacing` 是行距（网格模式下也是行间垂直间距），`.column_gap` 是二维网格列距，`.layout_mode(ReorderLayout::Column | ReorderLayout::Grid)` 选择纵向单列（默认）或从左到右自动换行的二维网格，`.size` 默认小号，`.label` 是列表的可访问名。`.drag_preview(ReorderDragPreview::Auto | ReorderDragPreview::LiveGap | ReorderDragPreview::Marks)` 选拖动预览方式（`Auto` 时平铺活行让位、树拖放保留插线；`LiveGap` 对单列、二维网格、树拖放、跨组与外部拖入统一开启实时让位与虚线落位框；`Marks` 始终只画描边和插入线）。`.drop_zone(Some(id))` 扩大跨列表/外部拖动的容器命中区，`.tree_drop(true)` 允许拖到树上。`.reorder(false)` 让列表只能点选：按下后怎么移动都不会拖起，松手发 `Select`。只让某几行不动时，给那几行 `.movable(false)`：它们照样点选、照样能接别的行落在旁边。
+`.spacing` 是行距（网格模式下也是行间垂直间距），按像素写；`.spacing_step(SpacingStep)` 按主题间距档写，行距跟着装上的主题（和包住列表的主题作用域）走，排版、自绘行和拖动命中读的是同一个解出来的间距，网格模式下未设 `.column_gap` 时列距也用它，两者后写的生效。`.column_gap` 是二维网格列距，`.layout_mode(ReorderLayout::Column | ReorderLayout::Grid)` 选择纵向单列（默认）或从左到右自动换行的二维网格，`.size` 默认小号，`.label` 是列表的可访问名。`.drag_preview(ReorderDragPreview::Auto | ReorderDragPreview::LiveGap | ReorderDragPreview::Marks)` 选拖动预览方式（`Auto` 时平铺活行让位、树拖放保留插线；`LiveGap` 对单列、二维网格、树拖放、跨组与外部拖入统一开启实时让位与虚线落位框；`Marks` 始终只画描边和插入线）。`.drop_zone(Some(id))` 扩大跨列表/外部拖动的容器命中区，`.tree_drop(true)` 允许拖到树上。`.reorder(false)` 让列表只能点选：按下后怎么移动都不会拖起，松手发 `Select`。只让某几行不动时，给那几行 `.movable(false)`：它们照样点选、照样能接别的行落在旁边。
 
 ## 树
 
@@ -154,6 +154,7 @@ each(ids, |id| id.clone(), entry_row).container(
 | `.folded` | `bool` | 写在行上。标记树里当前收起的父行，默认 `false` |
 | `.tools` | — | 参数是 `id`。标出一行里绝不开始拖动的子节点。行里的按钮不必登记也能收到点击 |
 | `.spacing` | — | 行距（网格模式下同时是行间垂直间距） |
+| `.spacing_step` | `SpacingStep` | 主题间距档的行距，跟着装上的主题走；与 `.spacing` 后写的生效 |
 | `.column_gap` | — | 二维网格列距；未设时回退到 `.spacing` |
 | `.layout_mode` | `ReorderLayout` | `Column`（默认纵向）或 `Grid`（左到右自动换行二维网格） |
 | `.drag_preview` | `ReorderDragPreview` | `Auto`（默认）、`LiveGap`（统一让位+虚线落位框）或 `Marks`（仅插入线/描边） |

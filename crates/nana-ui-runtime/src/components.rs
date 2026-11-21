@@ -34,6 +34,51 @@ pub use nana_text::Affinity as TextAffinity;
 static DEFAULT_LAYOUT_STYLE: LazyLock<Arc<LayoutStyle>> =
     LazyLock::new(|| Arc::new(LayoutStyle::default()));
 
+/// Clears each theme expression on `merged` whose field `over` writes as a
+/// number without an expression of its own: the number is the later word.
+fn drop_expressions_over_numbers(
+    merged: &mut nana_ui_core::LayoutStyle,
+    over: &nana_ui_core::LayoutStyle,
+) {
+    macro_rules! yield_to_numbers {
+        ($($field:ident),* $(,)?) => {$(
+            if over.$field.is_some()
+                && over.theme.$field.is_none()
+                && merged.theme.$field.is_some()
+            {
+                merged.theme.$field = None;
+            }
+        )*};
+    }
+    yield_to_numbers!(
+        gap,
+        row_gap,
+        column_gap,
+        padding,
+        padding_top,
+        padding_right,
+        padding_bottom,
+        padding_left,
+        margin,
+        margin_top,
+        margin_right,
+        margin_bottom,
+        margin_left,
+        width,
+        height,
+        min_width,
+        max_width,
+        min_height,
+        max_height,
+        flex_basis,
+        font_size,
+        font_weight,
+        line_height,
+        border_width,
+        border_radius,
+    );
+}
+
 pub(crate) fn layout_style_is_default(style: &Arc<LayoutStyle>) -> bool {
     Arc::ptr_eq(style, &DEFAULT_LAYOUT_STYLE)
 }
@@ -1617,7 +1662,9 @@ impl NodeStyle {
     /// `layout.height` its [`Self::control_height`], and a horizontal or
     /// vertical padding its [`Self::control_padding_x`] or
     /// [`Self::control_padding_y`]; a step resolves over the number
-    /// otherwise.
+    /// otherwise. A theme expression on this style's layout yields the same
+    /// way to a number `over` writes for that field without one of its own,
+    /// as a literal CSS declaration clears its expression.
     pub(crate) fn overlaid(self, over: &NodeStyle) -> NodeStyle {
         let layout = &over.layout;
         let writes_radius = layout.border_radius.is_some() || layout.paint.border_radii.is_some();
@@ -1667,7 +1714,9 @@ impl NodeStyle {
             layout: if layout_style_is_default(layout) {
                 self.layout
             } else {
-                Arc::new(self.layout.overlaid(layout))
+                let mut merged = self.layout.overlaid(layout);
+                drop_expressions_over_numbers(&mut merged, layout);
+                Arc::new(merged)
             },
             foreground: over.foreground.or(self.foreground),
             background: over.background.or(self.background),

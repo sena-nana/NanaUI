@@ -116,3 +116,28 @@ identity opacities (`1.0`), `999.0` pill radii pinned by the `chip` and
 `status-badge` semantic snapshot baselines (`radius=999.00`), internal
 constants/physics tolerances (`touch_scroll.rs`, `submenu_aim.rs`, `dock.rs`,
 `timeline.rs`), and public literal builder defaults.
+
+## 2026-11-21 re-record (theme intent on component defaults)
+
+A consumer that keeps every padding, gap, line height, radius and border width
+on theme steps found NanaUI components still writing those as plain numbers
+with no `layout.theme` expression beside them. Each now names its token next
+to the default-theme number (the `theme_intent` pattern), so the resolved
+values under the built-in themes are unchanged:
+
+- Component `design_number`: 24 → 22. The two removed are the pill radii
+  `border_radius = Some(999.0)` in `Chip` and `StatusBadge`; both now write
+  `FULL_RADIUS` with a `ThemeToken::Radius(RadiusTier::Full)` expression. The
+  semantic snapshots of `chip` and `status-badge` record that radius as
+  9999.00 instead of 999.00; painters clamp any corner to half the shorter
+  side, so the pixels are identical (all 682 lavapipe A/B frames match).
+- `token_reads`: 1438 → 1469, from the expressions added to `AppTitleBar`,
+  `Card`, `Chip`, `Dropdown`, `FormField`, `LabeledValue`, `PathField`,
+  `ReorderList`, `SegmentedOption`, `StatusBadge`, `form_surfaces.rs`,
+  `popover.rs`, `select.rs`, `view/marks.rs` and `workspace.rs`.
+- Shared `color_role` 412 → 414 is not from this change: the baseline predates
+  `bf35e6e6` (`color_field.rs` swatch border contrast). Colour roles are
+  semantic intent and are not gated.
+
+Shared design numbers (69), shared motion (27), module constants (67) and
+`static_type_scale` (0) are unchanged.

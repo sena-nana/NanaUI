@@ -699,7 +699,9 @@ pub(crate) fn project_menu_surface(
             };
             style.border = variant.border;
             if variant.border.is_none() {
-                Arc::make_mut(&mut style.layout).border_width = Some(0.0);
+                let layout = Arc::make_mut(&mut style.layout);
+                layout.border_width = Some(0.0);
+                layout.theme.border_width = None;
             }
             style.interaction.hovered.background = Some(variant.hovered_background);
             style.interaction.pressed.background = Some(variant.pressed_background);
@@ -862,6 +864,13 @@ pub(crate) fn trigger_button_style() -> NodeStyle {
             // overriding the parent's cross-axis alignment in a toolbar row.
             width: Some(LengthSpec::Shrink),
             border_width: Some(nana_ui_core::HAIRLINE),
+            theme: nana_ui_core::ThemeLayout {
+                border_width: Some(
+                    nana_ui_core::ThemeToken::Border(nana_ui_core::BorderWidth::Hairline).into(),
+                ),
+                ..nana_ui_core::ThemeLayout::default()
+            }
+            .into(),
             ..nana_ui_core::LayoutStyle::default()
         }),
         background: Some(SemanticColorRole::Subtle),
@@ -920,6 +929,7 @@ fn bare_trigger_style(mut style: NodeStyle, open: bool) -> NodeStyle {
     style.border = None;
     let layout = Arc::make_mut(&mut style.layout);
     layout.border_width = Some(0.0);
+    layout.theme.border_width = None;
     style
 }
 
@@ -3113,10 +3123,14 @@ mod tests {
             layout.border_radius = Some(18.0);
             layout.height = Some(LengthSpec::Px(36.0));
             layout.padding_left = Some(LengthSpec::Px(4.0));
+            layout.border_width = Some(2.0);
         }
         let style = trigger_button_style().overlaid(&over);
         // A step would resolve over the number; the recipe's give way.
         assert_eq!(style.radius, None);
+        // So does the recipe's hairline expression.
+        assert_eq!(style.layout.border_width, Some(2.0));
+        assert_eq!(style.layout.theme.border_width, None);
         assert_eq!(style.layout.border_radius, Some(18.0));
         assert_eq!(style.control_height, None);
         assert_eq!(style.layout.height, Some(LengthSpec::Px(36.0)));

@@ -731,8 +731,7 @@ fn srgb_to_linear(channel: f32) -> f32 {
 
 fn swatch_border_role(value: [f32; 4]) -> SemanticColorRole {
     let [r, g, b, a] = sanitize_rgba(value);
-    let luma =
-        0.2126 * srgb_to_linear(r) + 0.7152 * srgb_to_linear(g) + 0.0722 * srgb_to_linear(b);
+    let luma = 0.2126 * srgb_to_linear(r) + 0.7152 * srgb_to_linear(g) + 0.0722 * srgb_to_linear(b);
     if a < 0.25 || luma > 0.72 {
         SemanticColorRole::Faint
     } else if luma < 0.08 {
@@ -1685,12 +1684,21 @@ mod tests {
             context.world().node_style(swatch).unwrap().border
         };
 
-        assert_eq!(border_for([1.0, 1.0, 1.0, 1.0]), Some(SemanticColorRole::Faint));
-        assert_eq!(border_for([0.2, 0.4, 0.8, 0.0]), Some(SemanticColorRole::Faint));
+        assert_eq!(
+            border_for([1.0, 1.0, 1.0, 1.0]),
+            Some(SemanticColorRole::Faint)
+        );
+        assert_eq!(
+            border_for([0.2, 0.4, 0.8, 0.0]),
+            Some(SemanticColorRole::Faint)
+        );
         assert_eq!(
             border_for([0.0, 0.0, 0.0, 1.0]),
             Some(SemanticColorRole::BorderStrong)
         );
-        assert_eq!(border_for([0.2, 0.5, 0.8, 1.0]), Some(SemanticColorRole::Border));
+        assert_eq!(
+            border_for([0.2, 0.5, 0.8, 1.0]),
+            Some(SemanticColorRole::Border)
+        );
     }
 }

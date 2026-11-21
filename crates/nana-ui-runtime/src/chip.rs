@@ -142,7 +142,9 @@ impl Chip {
             layout.border_width = Some(nana_ui_core::HAIRLINE);
             layout.theme.border_width =
                 Some(nana_ui_core::ThemeToken::Border(nana_ui_core::BorderWidth::Hairline).into());
-            layout.border_radius = Some(999.0);
+            layout.border_radius = Some(nana_ui_core::FULL_RADIUS);
+            layout.theme.border_radius =
+                Some(nana_ui_core::ThemeToken::Radius(nana_ui_core::RadiusTier::Full).into());
             layout.font_size = Some(self.size.text_size());
             layout.theme.control_typography(self.size);
             crate::theme_intent::weight(layout, nana_ui_core::TextWeight::Medium);
@@ -367,7 +369,11 @@ mod tests {
             }
         );
         let style = context.world().node_style(chip.stable_id()).unwrap();
-        assert_eq!(style.layout.border_radius, Some(999.0));
+        assert_eq!(style.layout.border_radius, Some(nana_ui_core::FULL_RADIUS));
+        assert_eq!(
+            style.layout.theme.border_radius,
+            Some(nana_ui_core::ThemeToken::Radius(nana_ui_core::RadiusTier::Full).into())
+        );
         assert_eq!(
             context
                 .world()

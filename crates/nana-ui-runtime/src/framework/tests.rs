@@ -7946,6 +7946,82 @@ fn an_installed_shape_recipe_reaches_shaped_controls_already_on_screen() {
     }
 }
 
+/// A component default names the token it was spent from, beside the
+/// default-theme pixels: the built-in theme keeps every edge and gap where it
+/// was, and a theme with a thicker hairline and a wider spacing scale moves
+/// the tag's, outlined card's and select trigger's edge, the path field's and
+/// labeled value's gap, and the form field's label band, already on screen.
+#[test]
+fn component_default_edges_and_gaps_follow_the_installed_theme() {
+    use nana_ui_core::{CardKind, ThemeDefinition};
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let tag = context
+        .create_component(document, crate::view::tag_frame())
+        .unwrap()
+        .stable_id();
+    let card = context
+        .create_component(document, crate::Card::new().kind(CardKind::Outlined))
+        .unwrap()
+        .stable_id();
+    let select = context
+        .create_component(document, crate::Select::new(None::<&str>))
+        .unwrap()
+        .stable_id();
+    let path = context
+        .create_component(document, crate::PathField::new("/tmp"))
+        .unwrap()
+        .stable_id();
+    // A roomy (non-compact) row: a medium step apart.
+    let mut labeled = crate::LabeledValue::new("Name", "Value");
+    labeled.compact = false;
+    let labeled = context
+        .create_component(document, labeled)
+        .unwrap()
+        .stable_id();
+    let field = context
+        .create_component(document, crate::FormField::new("Name"))
+        .unwrap()
+        .stable_id();
+    // An invalid open trigger keeps the width its recipe spent for it.
+    let mut open = crate::Select::new(None::<&str>).invalid(true);
+    open.opened = true;
+    let open = context
+        .create_component(document, open)
+        .unwrap()
+        .stable_id();
+    let read = |context: &AppContext| {
+        let layout = |id: StableNodeId| {
+            context.world().extract_nodes(&[id])[0]
+                .source_style
+                .layout
+                .clone()
+        };
+        let px = |spec: Option<LengthSpec>| match spec {
+            Some(LengthSpec::Px(value)) => value,
+            other => panic!("expected a px length, got {other:?}"),
+        };
+        [
+            layout(tag).border_width.unwrap(),
+            layout(card).border_width.unwrap(),
+            layout(select).border_width.unwrap(),
+            px(layout(path).gap),
+            px(layout(labeled).gap),
+            px(layout(field).padding_top),
+            layout(open).border_width.unwrap(),
+        ]
+    };
+    // Line (16) + Xs (4) for a medium field's label band.
+    assert_eq!(read(&context), [1.0, 1.0, 1.0, 4.0, 8.0, 20.0, 2.0]);
+
+    let mut wide = ThemeDefinition::NANA_DARK.clone();
+    wide.tokens.border.hairline = 2.0;
+    wide.tokens.spacing.xs = 5.0;
+    wide.tokens.spacing.md = 9.0;
+    assert!(context.set_theme_definition(&wide.bump()).unwrap());
+    assert_eq!(read(&context), [2.0, 2.0, 2.0, 5.0, 9.0, 21.0, 2.0]);
+}
+
 /// The recipe only answers for corners nobody else decided: a step a caller
 /// names on the node, or a number a caller's style writes, wins over the
 /// shape role, under any installed recipe.

@@ -415,10 +415,16 @@ impl Select {
             if layout.width.is_none() {
                 layout.width = Some(LengthSpec::Fill);
             }
-            layout.border_width = Some(if self.invalid && self.opened {
+            // The resting edge is the theme's hairline; an invalid open
+            // trigger takes the width the installed recipe spent for it.
+            let invalid_open = self.invalid && self.opened;
+            layout.border_width = Some(if invalid_open {
                 recipe.invalid_open_border_width
             } else {
                 nana_ui_core::HAIRLINE
+            });
+            layout.theme.border_width = (!invalid_open).then(|| {
+                nana_ui_core::ThemeToken::Border(nana_ui_core::BorderWidth::Hairline).into()
             });
             layout.white_space_nowrap = true;
         }

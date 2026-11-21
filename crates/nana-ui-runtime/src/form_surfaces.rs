@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use nana_ui_core::{
-    AlignSpec, CardKind, ControlSize, FlexDirection, JustifySpec, LengthSpec, SemanticColorRole,
+    AlignSpec, CardKind, ControlSize, FlexDirection, JustifySpec, LengthSpec, LineRole,
+    SemanticColorRole, SpacingStep, ThemeExpr, ThemeToken, TypographyTokens,
 };
 
 use crate::view_components::project_common;
@@ -30,6 +31,23 @@ pub(crate) fn form_field_label_line_in(
         ControlSize::Small | ControlSize::Medium => theme.typography().line,
         ControlSize::Large => theme.typography().line_tall,
     }
+}
+
+/// The theme intent behind the label band and the support band: the label's
+/// line role ([`form_field_label_line_in`]) and the density gap step
+/// ([`form_field_density_in`]), so the reserved padding follows the installed
+/// theme exactly as the painter that places the label inside it does.
+fn form_field_band_intent(size: ControlSize) -> (LineRole, SpacingStep) {
+    let gap = match size {
+        ControlSize::Small => SpacingStep::Xxs,
+        ControlSize::Medium => SpacingStep::Xs,
+        ControlSize::Large => SpacingStep::Sm,
+    };
+    let label = match ControlSize::nearest_text(size.caption_size_in(TypographyTokens::DEFAULT)) {
+        ControlSize::Small | ControlSize::Medium => LineRole::Line,
+        ControlSize::Large => LineRole::Tall,
+    };
+    (label, gap)
 }
 
 pub(crate) fn form_field_density(size: ControlSize) -> (f32, f32, SemanticColorRole, u16) {
@@ -127,12 +145,21 @@ impl FormField {
         // taller metrics would otherwise overlap the control.
         let label_line = form_field_label_line(self.size);
         let support_line = ControlSize::Small.line_height();
+        let (label_role, gap_step) = form_field_band_intent(self.size);
         layout.padding_top = Some(LengthSpec::Px(label_line + gap));
-        layout.padding_bottom = Some(LengthSpec::Px(if self.support_text().is_some() {
+        layout.theme.padding_top = Some(
+            ThemeExpr::from(ThemeToken::Line(label_role)).plus(ThemeToken::Space(gap_step).into()),
+        );
+        let support = self.support_text().is_some();
+        layout.padding_bottom = Some(LengthSpec::Px(if support {
             support_line + gap
         } else {
             0.0
         }));
+        layout.theme.padding_bottom = support.then(|| {
+            ThemeExpr::from(ThemeToken::Line(LineRole::Line))
+                .plus(ThemeToken::Space(gap_step).into())
+        });
         style.text_vertical_alignment = crate::TextVerticalAlignment::Center;
         style
     }

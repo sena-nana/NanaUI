@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use nana_ui_core::{
     AlignSpec, ControlSize, FlexDirection, Icon, JustifySpec, LayoutStyle, LengthSpec,
-    LineHeightSpec, SemanticColorRole,
+    LineHeightSpec, SemanticColorRole, ThemeExpr, ThemeToken,
 };
 
 use crate::view_components::project_common;
@@ -1062,10 +1062,28 @@ impl ComponentView for SegmentedOption {
             } else {
                 self.size.padding_x_in(metrics) + node_theme.spacing().xxs
             };
+            // The same inset as theme intent: the size step's control
+            // padding plus the chrome's extra step, so the authored style
+            // names the tokens the number was spent from.
+            let inset_intent = (!radio).then(|| {
+                let extra = if tabs {
+                    node_theme.recipes().tabs().option_padding_extra
+                } else {
+                    nana_ui_core::SpacingStep::Xxs
+                };
+                ThemeExpr::from(ThemeToken::ControlPadding(self.size.into()))
+                    .plus(ThemeToken::Space(extra).into())
+            });
             let layout = Arc::make_mut(&mut effective_style.layout);
             layout.padding_left = Some(LengthSpec::Px(inset));
             if !radio {
                 layout.padding_right = Some(LengthSpec::Px(inset));
+                if layout.theme.padding_left.is_none() {
+                    layout.theme.padding_left.clone_from(&inset_intent);
+                }
+                if layout.theme.padding_right.is_none() {
+                    layout.theme.padding_right = inset_intent;
+                }
             }
             if tabs {
                 let tabs_recipe = node_theme.recipes().tabs();

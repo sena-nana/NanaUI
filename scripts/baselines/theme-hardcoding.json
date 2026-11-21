@@ -6,19 +6,19 @@
   "totals": {
     "color_role": 146,
     "color_literal": 0,
-    "design_number": 24,
+    "design_number": 22,
     "motion": 0,
     "elevation": 0
   },
   "shared_totals": {
-    "color_role": 412,
+    "color_role": 414,
     "color_literal": 0,
     "design_number": 69,
     "motion": 27,
     "elevation": 0
   },
-  "token_reads": 1438,
-  "local_values": 24,
+  "token_reads": 1469,
+  "local_values": 22,
   "shared_local_values": 96,
   "module_constants": 67,
   "static_type_scale": 0,
@@ -80,7 +80,7 @@
         "motion": 0,
         "elevation": 0
       },
-      "token_reads": 10,
+      "token_reads": 12,
       "roles": [
         "OnMedia",
         "Text",
@@ -310,7 +310,7 @@
         "motion": 0,
         "elevation": 0
       },
-      "token_reads": 4,
+      "token_reads": 5,
       "roles": [
         "Border",
         "BorderSoft",
@@ -380,11 +380,11 @@
       "counts": {
         "color_role": 10,
         "color_literal": 0,
-        "design_number": 1,
+        "design_number": 0,
         "motion": 0,
         "elevation": 0
       },
-      "token_reads": 11,
+      "token_reads": 12,
       "roles": [
         "Active",
         "BorderSoft",
@@ -401,7 +401,7 @@
         "hovered",
         "pressed"
       ],
-      "local_values": 1
+      "local_values": 0
     },
     {
       "component": "ColorField",
@@ -727,7 +727,7 @@
         "motion": 0,
         "elevation": 0
       },
-      "token_reads": 4,
+      "token_reads": 5,
       "roles": [],
       "states": [
         "disabled",
@@ -806,7 +806,7 @@
         "motion": 0,
         "elevation": 0
       },
-      "token_reads": 2,
+      "token_reads": 3,
       "roles": [],
       "states": [],
       "local_values": 1
@@ -1130,7 +1130,7 @@
         "motion": 0,
         "elevation": 0
       },
-      "token_reads": 0,
+      "token_reads": 7,
       "roles": [
         "Muted",
         "Text"
@@ -1446,7 +1446,7 @@
         "motion": 0,
         "elevation": 0
       },
-      "token_reads": 3,
+      "token_reads": 5,
       "roles": [
         "Danger"
       ],
@@ -1576,7 +1576,7 @@
         "motion": 0,
         "elevation": 0
       },
-      "token_reads": 1,
+      "token_reads": 4,
       "roles": [],
       "states": [],
       "local_values": 0
@@ -1687,7 +1687,7 @@
         "motion": 0,
         "elevation": 0
       },
-      "token_reads": 9,
+      "token_reads": 11,
       "roles": [],
       "states": [
         "disabled",
@@ -2258,14 +2258,14 @@
       "counts": {
         "color_role": 0,
         "color_literal": 0,
-        "design_number": 2,
+        "design_number": 1,
         "motion": 0,
         "elevation": 0
       },
-      "token_reads": 14,
+      "token_reads": 15,
       "roles": [],
       "states": [],
-      "local_values": 2
+      "local_values": 1
     },
     {
       "component": "StatusBar",
@@ -2832,7 +2832,7 @@
         "elevation": 0
       },
       "local_values": 3,
-      "token_reads": 53,
+      "token_reads": 54,
       "roles": [
         "Active",
         "BorderSoft",
@@ -3085,7 +3085,7 @@
     {
       "file": "crates/nana-ui-runtime/src/color_field.rs",
       "counts": {
-        "color_role": 4,
+        "color_role": 6,
         "color_literal": 0,
         "design_number": 1,
         "motion": 0,
@@ -3096,6 +3096,7 @@
       "roles": [
         "Background",
         "Border",
+        "BorderStrong",
         "Faint"
       ]
     },
@@ -3320,7 +3321,7 @@
         "elevation": 0
       },
       "local_values": 0,
-      "token_reads": 49,
+      "token_reads": 50,
       "roles": [
         "Accent",
         "Background",
@@ -3495,7 +3496,7 @@
         "elevation": 0
       },
       "local_values": 0,
-      "token_reads": 40,
+      "token_reads": 41,
       "roles": [
         "Background",
         "Border",
@@ -3554,7 +3555,7 @@
         "elevation": 0
       },
       "local_values": 0,
-      "token_reads": 13,
+      "token_reads": 19,
       "roles": [
         "Danger",
         "Muted",
@@ -3659,7 +3660,7 @@
         "elevation": 0
       },
       "local_values": 0,
-      "token_reads": 2,
+      "token_reads": 3,
       "roles": [
         "Background",
         "BorderStrong",

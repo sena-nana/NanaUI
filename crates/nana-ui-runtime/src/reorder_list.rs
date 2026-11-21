@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 #[cfg(test)]
 use nana_ui_core::UI_METRICS;
-use nana_ui_core::{ControlSize, FlexDirection, FlexWrap, LengthSpec};
+use nana_ui_core::{ControlSize, FlexDirection, FlexWrap, LengthSpec, SpacingStep, SpacingTokens};
 
 use crate::view_components::project_common;
 use crate::{
@@ -1588,7 +1588,16 @@ impl crate::UiWorld {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReorderList {
     pub items: Vec<ReorderItem>,
+    /// Row spacing in logical px (and the vertical row gap in grid mode).
+    /// With [`Self::spacing_step`](field@Self::spacing_step) set, this holds
+    /// the step as last spent: the default theme's px until a gesture spends
+    /// it against the theme the list is under.
     pub spacing: f32,
+    /// The spacing as a theme step
+    /// ([`Self::spacing_step`](fn@Self::spacing_step)). When set it wins over
+    /// [`Self::spacing`](field@Self::spacing): layout, painting and drag
+    /// geometry all resolve it against the theme the list is under.
+    pub spacing_step: Option<SpacingStep>,
     /// Horizontal gap between tiles when [`Self::layout_mode`] is [`ReorderLayout::Grid`].
     /// Defaults to [`Self::spacing`] when `None`.
     pub column_gap: Option<f32>,
@@ -1628,6 +1637,7 @@ impl ReorderList {
         Self {
             items: items.into_iter().collect(),
             spacing: DEFAULT_SPACING,
+            spacing_step: None,
             column_gap: None,
             layout_mode: ReorderLayout::Column,
             drag_preview: ReorderDragPreview::Auto,
@@ -1647,8 +1657,23 @@ impl ReorderList {
         }
     }
 
+    /// Row spacing in logical px. Clears a [`Self::spacing_step`](fn@Self::spacing_step).
     pub fn spacing(mut self, spacing: f32) -> Self {
         self.spacing = spacing.max(0.0);
+        self.spacing_step = None;
+        self
+    }
+
+    /// Row spacing as a theme spacing step: the gap follows the installed
+    /// theme (and a theme scope around the list) like any `gap_step`, and
+    /// drag geometry reads the same resolved gap. In grid
+    /// mode it is also the row gap, and the column gap unless
+    /// [`Self::column_gap`](field@Self::column_gap) names one. Replaces a px
+    /// [`Self::spacing`](fn@Self::spacing).
+    pub fn spacing_step(mut self, step: impl Into<SpacingStep>) -> Self {
+        let step = step.into();
+        self.spacing_step = Some(step);
+        self.spacing = SpacingTokens::DEFAULT.resolve(step);
         self
     }
 
@@ -2107,9 +2132,17 @@ impl ReorderList {
             .map(|item| Arc::clone(&item.label))
     }
 
-    fn intrinsic_height(&self, metrics: nana_ui_core::ThemeMetrics) -> f32 {
+    fn intrinsic_height(&self, metrics: nana_ui_core::ThemeMetrics, spacing: f32) -> f32 {
         let count = self.items.len().max(1) as f32;
-        count * self.size.height_in(metrics) + (count - 1.0) * self.spacing.max(0.0)
+        count * self.size.height_in(metrics) + (count - 1.0) * spacing
+    }
+
+    /// The row spacing under `tokens`: the step when one is named, else the
+    /// px [`Self::spacing`](field@Self::spacing).
+    fn spacing_in(&self, tokens: SpacingTokens) -> f32 {
+        self.spacing_step
+            .map_or(self.spacing, |step| tokens.resolve(step))
+            .max(0.0)
     }
 }
 
@@ -2147,6 +2180,8 @@ impl ComponentView for ReorderList {
         // Live row children paint themselves; retained items only feed
         // hit testing and reorder events.
         let live_rows = self.live_rows;
+        let spacing = self.spacing_in(world.node_theme(id).spacing());
+        let step_gap = self.spacing_step.map(crate::theme_intent::space);
         let visual = ReorderListVisual {
             rows: if live_rows {
                 Arc::<[ReorderRowPaint]>::from([])
@@ -2154,7 +2189,7 @@ impl ComponentView for ReorderList {
                 self.paint_rows()
             },
             size: self.size,
-            spacing: self.spacing,
+            spacing,
             drag: self.drag_visual(),
         };
         if world.widget_visual_as::<ReorderListVisual>(id) != Some(&visual) {
@@ -2169,18 +2204,28 @@ impl ComponentView for ReorderList {
             if self.layout_mode == ReorderLayout::Grid {
                 layout.direction = Some(FlexDirection::Row);
                 layout.flex_wrap = FlexWrap::Wrap;
-                if layout.row_gap.is_none() {
-                    layout.row_gap = Some(LengthSpec::Px(self.spacing.max(0.0)));
+                if layout.row_gap.is_none() && layout.theme.row_gap.is_none() {
+                    layout.row_gap = Some(LengthSpec::Px(spacing));
+                    if let Some(gap) = &step_gap {
+                        layout.theme.row_gap = Some(gap.clone());
+                    }
                 }
-                if layout.column_gap.is_none() {
-                    layout.column_gap = Some(LengthSpec::Px(
-                        self.column_gap.unwrap_or(self.spacing).max(0.0),
-                    ));
+                if layout.column_gap.is_none() && layout.theme.column_gap.is_none() {
+                    layout.column_gap =
+                        Some(LengthSpec::Px(self.column_gap.unwrap_or(spacing).max(0.0)));
+                    if self.column_gap.is_none()
+                        && let Some(gap) = &step_gap
+                    {
+                        layout.theme.column_gap = Some(gap.clone());
+                    }
                 }
             } else {
                 layout.direction = Some(FlexDirection::Column);
-                if layout.gap.is_none() {
-                    layout.gap = Some(LengthSpec::Px(self.spacing.max(0.0)));
+                if layout.gap.is_none() && layout.theme.gap.is_none() {
+                    layout.gap = Some(LengthSpec::Px(spacing));
+                    if let Some(gap) = &step_gap {
+                        layout.theme.gap = Some(gap.clone());
+                    }
                 }
             }
             if layout.height.is_none() {
@@ -2194,7 +2239,7 @@ impl ComponentView for ReorderList {
                     incoming
                         .carried_size
                         .map_or(self.size.height_in(world.theme_metrics()), |s| s[1])
-                        + self.spacing.max(0.0)
+                        + spacing
                 });
                 let needs_room = if self.layout_mode == ReorderLayout::Grid {
                     let children = world.child_ids(id);
@@ -2204,7 +2249,7 @@ impl ComponentView for ReorderList {
                         world.component_layout_box(id),
                         children.last().and_then(|c| world.component_layout_box(*c)),
                     ) {
-                        let col_gap = self.column_gap.unwrap_or(self.spacing).max(0.0);
+                        let col_gap = self.column_gap.unwrap_or(spacing).max(0.0);
                         let item_w = incoming.carried_size.map_or(last.width, |s| s[0]);
                         last.x - bounds.x + last.width + col_gap + item_w > bounds.width + 0.5
                     } else {
@@ -2222,8 +2267,9 @@ impl ComponentView for ReorderList {
             // Border-box: declared padding is added to the self-drawn row
             // stack instead of clipping its last row.
             let padding = layout.resolved_padding();
-            let content =
-                self.intrinsic_height(world.theme_metrics()) + padding.top + padding.bottom;
+            let content = self.intrinsic_height(world.theme_metrics(), spacing)
+                + padding.top
+                + padding.bottom;
             if layout.height.is_none() {
                 layout.height = Some(LengthSpec::Px(content));
             }
@@ -2341,6 +2387,7 @@ impl crate::AppContext {
         let Some(entity) = self.reorder_list_entity(list_id) else {
             return Ok(false);
         };
+        self.sync_reorder_spacing(list_id)?;
         let Some(bounds) = self.world().component_layout_box(list_id) else {
             return Ok(false);
         };
@@ -2437,6 +2484,7 @@ impl crate::AppContext {
         let Some(ext) = drag else {
             return self.update_component(entity, |list, _| list.incoming.take().is_some());
         };
+        self.sync_reorder_spacing(list_id)?;
         let world = self.world();
         if self.is_reorder_node_hidden(world, list_id) {
             return self.update_component(entity, |list, _| list.incoming.take().is_some());
@@ -2782,6 +2830,7 @@ impl crate::AppContext {
             self.update_component(previous, |list, _| list.incoming = None)?;
         }
         if let Some((list, incoming)) = over {
+            self.sync_reorder_spacing(list.stable_id())?;
             self.update_component(list, |list, _| list.incoming = Some(incoming))?;
         }
         if previous != next {
@@ -2917,6 +2966,25 @@ impl crate::AppContext {
     fn reorder_list_entity(&self, id: StableNodeId) -> Option<crate::Entity<ReorderList>> {
         self.is_reorder_list(id)
             .then(|| crate::Entity::from_stable_id(id))
+    }
+
+    /// Spends `list_id`'s [`ReorderList::spacing_step`] against the theme the
+    /// list is under, so the drag geometry a gesture starts from reads the
+    /// gap layout laid the rows out with.
+    fn sync_reorder_spacing(&mut self, list_id: StableNodeId) -> Result<(), crate::FrameworkError> {
+        let Some(entity) = self.reorder_list_entity(list_id) else {
+            return Ok(());
+        };
+        let tokens = self.world().node_theme(list_id).spacing();
+        let stale = self
+            .read(entity, |list| {
+                list.spacing_step.is_some() && list.spacing_in(tokens) != list.spacing
+            })
+            .unwrap_or(false);
+        if stale {
+            self.update_component(entity, |list, _| list.spacing = list.spacing_in(tokens))?;
+        }
+        Ok(())
     }
 
     /// Whether a press on `target` lands on a control inside one of `list`'s
@@ -3870,6 +3938,64 @@ mod tests {
             Some(LengthSpec::Px(
                 3.0 * ControlSize::Small.height_in(UI_METRICS) + 2.0 * DEFAULT_SPACING
             ))
+        );
+    }
+
+    /// A spacing step resolves against the installed theme everywhere the
+    /// list spends it: the self-drawn stack's height, the hit rows a press
+    /// lands on, and the gap live rows are laid out with. A px spacing
+    /// replaces the step.
+    #[test]
+    fn a_spacing_step_follows_the_installed_theme_in_layout_and_hit_rows() {
+        use nana_ui_core::SpacingStep;
+        let small = ControlSize::Small.height_in(UI_METRICS);
+        let stepped = sample().spacing_step(SpacingStep::Xxxl);
+        assert_eq!(stepped.spacing, nana_ui_core::space::XXXL);
+        assert_eq!(stepped.clone().spacing(3.0).spacing_step, None);
+
+        let mut context = AppContext::new();
+        let list = context.create_component(document(), stepped).unwrap();
+        let mut wide = nana_ui_core::ThemeDefinition::NANA_DARK.clone();
+        wide.tokens.spacing.xxxl = 30.0;
+        assert!(context.set_theme_definition(&wide.bump()).unwrap());
+        context
+            .layout_document(document(), crate::LayoutViewport::new(180.0, 400.0))
+            .unwrap();
+        let bounds = context.world().layout_box(list.stable_id()).unwrap();
+        assert_eq!(bounds.height, 3.0 * small + 2.0 * 30.0);
+        // Five px into row "c" at the installed gap; past the whole stack at
+        // the default one.
+        let x = bounds.x + 40.0;
+        let y = bounds.y + 2.0 * (small + 30.0) + 5.0;
+        assert!(
+            context
+                .begin_reorder_list_pointer(document(), 1, list.stable_id(), x, y)
+                .unwrap()
+        );
+        assert!(
+            context
+                .end_reorder_list_pointer(document(), 1, x, y, false)
+                .unwrap()
+        );
+        assert_eq!(
+            context
+                .read(list, |list| list.selected_value().map(Arc::clone))
+                .unwrap()
+                .as_deref(),
+            Some("c")
+        );
+
+        let live = context
+            .create_component(
+                document(),
+                sample().live_rows(true).spacing_step(SpacingStep::Xxxl),
+            )
+            .unwrap();
+        let layout = &context.world().node_style(live.stable_id()).unwrap().layout;
+        assert_eq!(layout.gap, Some(LengthSpec::Px(30.0)));
+        assert_eq!(
+            layout.theme.gap,
+            Some(crate::theme_intent::space(SpacingStep::Xxxl))
         );
     }
 
