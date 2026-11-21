@@ -367,12 +367,13 @@ each(items, |t| t.id, row).transition(Transition::slide(0.0, 12.0, ms(180)).move
 - **进场**：新行、新分支从给定的透明度和变换播到节点自己的值。挂载时已经存在的行不播。
 - **离场**：被删掉的行或分支不立刻销毁。它的作用域马上回收（不再跟随数据）。节点留在原位。不参与命中测试。焦点移走。播完离场后才销毁。
 - **移动**（`.moves(时长)`）：位置变了的行从原来的位置滑过去（FLIP）。插入、删除、重排都算。离场的行最终销毁、后面的行补位时也算。
+- **节点自己的移动**（`El::moves(时长)`）：不靠数据增删，而是布局把节点在父节点里挪了位置（前面的兄弟变高、出现、消失、换位），节点就从原来显示的位置滑过去（FLIP，主题标准缓动）。滑到一半又被挪动时从当前显示的位置接着滑。父节点整个移动不算移动，只看在父节点里的位置。刚出现、被拿出文档流或放回（绝对或固定定位）、换了父节点、没有尺寸时直接落位。适合拖动排序时让位的行和格子这类不走 `each` 的内容。
 - 一个常驻节点的显示和隐藏（卡片、工具窗口的内容）用同一个 `Transition` 交给 `PresenceLifecycle`，见 [Runtime 与 Scene](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/runtime-scene.md)。
 - 预设：`Transition::fade`、`slide(dx, dy, 时长)`、`scale(比例, 时长)`。自定义用 `Transition::new().enter(Presence::new(时长).opacity(0.0).translate(0.0, 8.0)).leave(..)`。`.ease(e)` 统一缓动，`Presence::ease_transform(e)` 给位移单独一条曲线。`without_enter()` / `without_leave()` 只要一半。
 - 全部走节点的合成器轨道。不写回逻辑样式。离场结束由 `advance_animations` 的完成事件驱动。移动在布局阶段之后、同一帧提取之前开始。所以不会先闪到新位置。
 - `when` 的新旧分支同时存在：旧分支原位离场。新分支接在它后面进场。加 `.moves` 后。旧分支消失时新分支平滑上移。Vue 的 `mode="out-in"`（先离场再进场）目前没有。
 - 虚拟列表（`each_virtual`）不支持：滚出视口的行本来就要立刻回收。
-- **减少动态效果**：`AppContext::reduced_motion()` 为真时，进场、离场、隐式属性过渡（`El::animate`、样式表的 `transition`）都不播：值立刻落到终点，离场的行在下一次 advance 销毁，移动不滑。逻辑值照常提交，它们本来会报的 `Finished` 仍随下一次 advance 送达，等它的代码照常往下走。托管运行时在建窗口文档时和系统设置变化时调用 `set_system_reduced_motion` 同步；应用自己的设置用 `set_reduced_motion(bool)` 压过系统，`follow_system_reduced_motion()` 回到跟随系统。应用自己用 `queue.node(id, now).transition()` 或 `Timeline` 开的动画看不到这个开关，时长写成 `cx.motion_duration(时长)`：减少动态效果时它是零，动画立刻落定，`Finished` 照样送达。框架控件里，不确定的 `Progress` 不再扫动，改成整条淡的填充；偏好一变，正在屏上的进度条立即跟着停下或重新扫。
+- **减少动态效果**：`AppContext::reduced_motion()` 为真时，进场、离场、隐式属性过渡（`El::animate`、样式表的 `transition`）都不播：值立刻落到终点，离场的行在下一次 advance 销毁，移动（包括 `El::moves`）不滑。逻辑值照常提交，它们本来会报的 `Finished` 仍随下一次 advance 送达，等它的代码照常往下走。托管运行时在建窗口文档时和系统设置变化时调用 `set_system_reduced_motion` 同步；应用自己的设置用 `set_reduced_motion(bool)` 压过系统，`follow_system_reduced_motion()` 回到跟随系统。应用自己用 `queue.node(id, now).transition()` 或 `Timeline` 开的动画看不到这个开关，时长写成 `cx.motion_duration(时长)`：减少动态效果时它是零，动画立刻落定，`Finished` 照样送达。框架控件里，不确定的 `Progress` 不再扫动，改成整条淡的填充；偏好一变，正在屏上的进度条立即跟着停下或重新扫。
 - 模板：`<Transition name="fade" duration="150">` 包住一条 `v-if` / `v-else-if` / `v-else` 链。`<TransitionGroup duration="150" move="200">` 包住一个 `v-for` 元素（两个标签可以互换）。`name` 可选 `fade`、`slide-up`、`slide-down`、`slide-left`、`slide-right`、`scale`。默认 `fade`。时长单位是毫秒。`:transition="值"` 直接传一个 `Transition`。
 
 ## 组合控件的 slot

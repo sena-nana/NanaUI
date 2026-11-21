@@ -385,6 +385,8 @@ pub(crate) struct ViewParts {
     /// Scopes disposed when the node leaves the world.
     pub(crate) anchors: Vec<(StableNodeId, ScopeKey)>,
     pub(crate) implicit: Vec<(StableNodeId, Box<[super::Implicit]>)>,
+    /// Nodes that slide when layout moves them ([`El::moves`]).
+    pub(crate) moves: Vec<(StableNodeId, std::time::Duration)>,
     pub(crate) interactive: Vec<(StableNodeId, super::style::InteractiveStyleBinding)>,
     pub(crate) motion: Vec<(StableNodeId, super::style::MotionBinding)>,
     /// Composites to assemble once built (their `slot_assembler`, or their
@@ -1110,6 +1112,8 @@ pub struct El<C: ComponentView, K = ()> {
     /// Properties that animate to their new value when a binding changes
     /// them (CSS `transition`).
     implicit: Vec<super::Implicit>,
+    /// Slide when layout moves the node ([`El::moves`]).
+    moves: Option<std::time::Duration>,
     slots: Vec<Slot<C>>,
     classes: Option<super::style::Classes<C>>,
     /// Boxed, so an element is the same size whatever it holds: a static
@@ -1134,6 +1138,7 @@ pub fn widget<C: ComponentView>(component: C) -> El<C> {
         bindings: NodeBindings::default(),
         events: Vec::new(),
         implicit: Vec::new(),
+        moves: None,
         slots: Vec::new(),
         classes: None,
         children: Box::new(()),
@@ -1306,6 +1311,7 @@ impl<C: ComponentView, K> El<C, K> {
             bindings: self.bindings,
             events: self.events,
             implicit: self.implicit,
+            moves: self.moves,
             slots: self.slots,
             classes: self.classes,
             children: Box::new(children),
@@ -1355,6 +1361,20 @@ impl<C: ComponentView, K> El<C, K> {
         self.implicit.extend(implicit);
         self
     }
+
+    /// When layout moves this node within its parent (a sibling before it
+    /// grows, appears, goes or changes place), slide it over `duration`
+    /// from where it was shown instead of jumping (FLIP, on the compositor,
+    /// with the theme's standard easing). A move that interrupts a slide
+    /// starts from where the node is shown. The node lands without a slide
+    /// when it first appears, when it is taken out of the flow or put back
+    /// (absolute or fixed positioning), when it changes parent, while it has
+    /// no size, and under reduced motion. Its parent moving with it is not
+    /// a move: only the place within the parent counts.
+    pub fn moves(mut self, duration: std::time::Duration) -> Self {
+        self.moves = Some(duration);
+        self
+    }
 }
 
 impl<C: ComponentView, K> El<C, K> {
@@ -1370,6 +1390,7 @@ impl<C: ComponentView, K> El<C, K> {
             bindings,
             events,
             implicit,
+            moves,
             slots,
             classes,
             children,
@@ -1385,6 +1406,7 @@ impl<C: ComponentView, K> El<C, K> {
             bindings,
             events,
             implicit,
+            moves,
             slots,
             classes,
             children: Box::new(()),
@@ -1413,6 +1435,7 @@ impl<C: ComponentView> El<C> {
             mut bindings,
             events,
             mut implicit,
+            moves,
             slots,
             classes,
             children: _,
@@ -1496,6 +1519,9 @@ impl<C: ComponentView> El<C> {
         }
         if !implicit.is_empty() {
             vb.st.parts.implicit.push((id, implicit.into_boxed_slice()));
+        }
+        if let Some(duration) = moves {
+            vb.st.parts.moves.push((id, duration));
         }
         for install in events {
             match install {

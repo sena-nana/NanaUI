@@ -1448,6 +1448,132 @@ fn a_transitioned_list_keeps_removed_rows_in_place_and_slides_the_rest() {
 }
 
 #[test]
+fn a_node_with_moves_slides_where_layout_moves_it_in_its_parent() {
+    use std::time::Duration;
+    let (mut cx, document, parent) = setup();
+    let start = Duration::from_secs(10);
+    cx.advance_animations(start);
+    let sizes = std::cell::Cell::new(None);
+    let view = cx
+        .mount_view(parent, || {
+            let above = signal(20.0f32);
+            let before = signal(0.0f32);
+            sizes.set(Some((above, before)));
+            let block = |height: Signal<f32>| {
+                widget(Stack::column(0.0)).bind(move |stack: &mut Stack| {
+                    let height = height.get();
+                    *stack =
+                        Stack::column(0.0).with_layout(|l| l.height = Some(LengthSpec::Px(height)));
+                })
+            };
+            (
+                block(before),
+                widget(Stack::column(0.0)).children((
+                    block(above),
+                    widget(
+                        Stack::column(0.0).with_layout(|l| l.height = Some(LengthSpec::Px(20.0))),
+                    )
+                    .moves(Duration::from_millis(200)),
+                )),
+            )
+        })
+        .unwrap();
+    let (above, before) = sizes.get().unwrap();
+    let viewport = LayoutViewport::new(320.0, 240.0);
+    cx.layout_document(document, viewport).unwrap();
+    let column = view.roots()[1];
+    let row = children(&cx, column)[1];
+    assert_eq!(translate_y_at(&cx, row, start), 0.0, "no slide on arrival");
+
+    // What comes before it in its parent grows: it slides down from where it was.
+    above.set(40.0);
+    cx.flush_reactive().unwrap();
+    cx.layout_document(document, viewport).unwrap();
+    let offset = translate_y_at(&cx, row, start);
+    assert!((offset + 20.0).abs() < 0.5, "starts where it was: {offset}");
+
+    // Moved again halfway: it goes on from where it is shown.
+    let halfway = start + Duration::from_millis(100);
+    cx.advance_animations(halfway);
+    let shown = translate_y_at(&cx, row, halfway);
+    assert!(shown < -0.5 && shown > -19.5, "{shown}");
+    above.set(60.0);
+    cx.flush_reactive().unwrap();
+    cx.layout_document(document, viewport).unwrap();
+    let resumed = translate_y_at(&cx, row, halfway);
+    assert!(
+        (resumed - (shown - 20.0)).abs() < 0.5,
+        "{resumed} after {shown}"
+    );
+    let settled = translate_y_at(&cx, row, halfway + Duration::from_millis(250));
+    assert!(settled.abs() < 0.01, "{settled}");
+
+    // Its parent moving takes it along: that is not a move.
+    let later = halfway + Duration::from_millis(300);
+    cx.advance_animations(later);
+    before.set(30.0);
+    cx.flush_reactive().unwrap();
+    cx.layout_document(document, viewport).unwrap();
+    assert_eq!(translate_y_at(&cx, row, later), 0.0);
+}
+
+#[test]
+fn moves_land_at_once_out_of_the_flow_and_under_reduced_motion() {
+    use std::time::Duration;
+    let (mut cx, document, parent) = setup();
+    let start = Duration::from_secs(10);
+    cx.advance_animations(start);
+    let state = std::cell::Cell::new(None);
+    let view = cx
+        .mount_view(parent, || {
+            let above = signal(20.0f32);
+            let lifted = signal(false);
+            state.set(Some((above, lifted)));
+            (
+                widget(Stack::column(0.0)).bind(move |stack: &mut Stack| {
+                    let height = above.get();
+                    *stack =
+                        Stack::column(0.0).with_layout(|l| l.height = Some(LengthSpec::Px(height)));
+                }),
+                widget(Stack::column(0.0))
+                    .bind(move |stack: &mut Stack| {
+                        let lifted = lifted.get();
+                        *stack = Stack::column(0.0).with_layout(|l| {
+                            l.height = Some(LengthSpec::Px(20.0));
+                            if lifted {
+                                l.position = crate::PositionSpec::Absolute;
+                                l.offset_top = Some(LengthSpec::Px(0.0));
+                            }
+                        });
+                    })
+                    .moves(Duration::from_millis(200)),
+            )
+        })
+        .unwrap();
+    let (above, lifted) = state.get().unwrap();
+    let viewport = LayoutViewport::new(320.0, 240.0);
+    cx.layout_document(document, viewport).unwrap();
+    let row = view.roots()[1];
+
+    // Taken out of the flow and put back: it lands where it goes.
+    lifted.set(true);
+    cx.flush_reactive().unwrap();
+    cx.layout_document(document, viewport).unwrap();
+    assert_eq!(translate_y_at(&cx, row, start), 0.0);
+    lifted.set(false);
+    cx.flush_reactive().unwrap();
+    cx.layout_document(document, viewport).unwrap();
+    assert_eq!(translate_y_at(&cx, row, start), 0.0);
+
+    cx.set_system_reduced_motion(true);
+    above.set(40.0);
+    cx.flush_reactive().unwrap();
+    cx.layout_document(document, viewport).unwrap();
+    assert_eq!(cx.world().layout_box(row).unwrap().y, 40.0);
+    assert_eq!(translate_y_at(&cx, row, start), 0.0);
+}
+
+#[test]
 fn a_row_removed_while_it_enters_plays_its_whole_leave() {
     use std::time::Duration;
     let (mut cx, _, parent) = setup();

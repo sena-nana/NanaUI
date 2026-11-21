@@ -44,6 +44,20 @@ struct Leaving {
     moves: Option<(Duration, Easing)>,
 }
 
+/// A node that slides when layout moves it ([`crate::view::El::moves`]).
+struct LayoutMove {
+    duration: Duration,
+    /// Where the last layout put it in its parent, while it stood in the
+    /// flow with a size.
+    placed: Option<Placed>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct Placed {
+    parent: StableNodeId,
+    offset: [f32; 2],
+}
+
 struct PendingFlip {
     node: StableNodeId,
     first: nana_ui_core::FlipRect,
@@ -80,6 +94,8 @@ pub(crate) struct ReactiveHost {
     flips: Vec<PendingFlip>,
     /// Properties of a node that animate when its bindings change them.
     implicit: HashMap<StableNodeId, Box<[crate::view::Implicit]>, crate::BuildIdHasher>,
+    /// Nodes that slide when a layout pass moves them within their parent.
+    layout_moves: HashMap<StableNodeId, LayoutMove, crate::BuildIdHasher>,
     /// Interactive pseudo-state signals (`:hover`, `:focus`, `:focus-visible`, `:active`).
     interactive_styles: HashMap<StableNodeId, InteractiveStyleBinding, crate::BuildIdHasher>,
     /// Nodes carrying compiled CSS dynamic transitions / `@keyframes`.
@@ -110,6 +126,7 @@ impl Default for ReactiveHost {
             leaving: HashMap::default(),
             flips: Vec::new(),
             implicit: HashMap::default(),
+            layout_moves: HashMap::default(),
             interactive_styles: HashMap::default(),
             motion_bindings: HashMap::default(),
             keyframe_tracks: HashMap::default(),
@@ -501,6 +518,17 @@ impl AppContext {
         for (id, implicit) in parts.implicit {
             if self.world.contains(id) {
                 self.reactive.implicit.insert(id, implicit);
+            }
+        }
+        for (id, duration) in parts.moves {
+            if self.world.contains(id) {
+                self.reactive.layout_moves.insert(
+                    id,
+                    LayoutMove {
+                        duration,
+                        placed: None,
+                    },
+                );
             }
         }
         for (id, interactive) in parts.interactive {
@@ -1463,6 +1491,7 @@ impl AppContext {
             && host.anchors.is_empty()
             && host.leaving.is_empty()
             && host.implicit.is_empty()
+            && host.layout_moves.is_empty()
             && host.interactive_styles.is_empty()
             && host.motion_bindings.is_empty()
             && host.keyframe_tracks.is_empty()
@@ -1475,6 +1504,7 @@ impl AppContext {
             let host = &mut self.reactive;
             host.leaving.remove(id);
             host.implicit.remove(id);
+            host.layout_moves.remove(id);
             host.interactive_styles.remove(id);
             host.motion_bindings.remove(id);
             host.keyframe_tracks.remove(id);
@@ -2203,6 +2233,96 @@ impl AppContext {
         self.reactive.flips = kept;
         if !mutations.is_empty() && self.commit_mutations(mutations).is_err() {
             nana_diagnostics::metric!(nana_diagnostics::framework::runtime::FLUSH_FAILED);
+        }
+    }
+
+    /// After a layout pass of `document`: slide the nodes marked with
+    /// [`crate::view::El::moves`] that it moved within their parent.
+    pub(crate) fn play_layout_moves(&mut self, document: DocumentId) {
+        if self.reactive.layout_moves.is_empty() {
+            return;
+        }
+        let reduced = self.reduced_motion();
+        let now = self.component_lifecycle.now;
+        let easing = self.transition_easing(None);
+        let mut mutations = MutationQueue::new();
+        let ids: Vec<StableNodeId> = self.reactive.layout_moves.keys().copied().collect();
+        for id in ids {
+            let Some(node) = self.world.node(id) else {
+                continue;
+            };
+            if node.document != document {
+                continue;
+            }
+            let placed = self.placed_in_parent(id, node.parent);
+            let Some(entry) = self.reactive.layout_moves.get_mut(&id) else {
+                continue;
+            };
+            let was = std::mem::replace(&mut entry.placed, placed);
+            let duration = entry.duration;
+            let (Some(was), Some(placed)) = (was, placed) else {
+                continue;
+            };
+            if reduced || was.parent != placed.parent {
+                continue;
+            }
+            let moved = [
+                was.offset[0] - placed.offset[0],
+                was.offset[1] - placed.offset[1],
+            ];
+            if moved[0].abs() <= 0.5 && moved[1].abs() <= 0.5 {
+                continue;
+            }
+            let Some(last) = self.flip_rect(id) else {
+                continue;
+            };
+            // A slide still running: start from where the node is shown.
+            let [sx, sy] = self.shown_offset(id, now);
+            let first = nana_ui_core::FlipRect::new(
+                last.x + moved[0] + sx,
+                last.y + moved[1] + sy,
+                last.width,
+                last.height,
+            );
+            mutations.start_layout_flip(id, first, last, now, duration, easing);
+        }
+        if !mutations.is_empty() && self.commit_mutations(mutations).is_err() {
+            nana_diagnostics::metric!(nana_diagnostics::framework::runtime::FLUSH_FAILED);
+        }
+    }
+
+    /// Where `id` stands in `parent`, while it is in the flow with a size.
+    fn placed_in_parent(&self, id: StableNodeId, parent: Option<StableNodeId>) -> Option<Placed> {
+        let style = self.world.node_style(id)?;
+        if matches!(
+            style.layout.position,
+            nana_ui_core::PositionSpec::Absolute | nana_ui_core::PositionSpec::Fixed
+        ) {
+            return None;
+        }
+        let own = self.world.component_layout_box(id)?;
+        if own.width <= 0.0 || own.height <= 0.0 {
+            return None;
+        }
+        let parent = parent?;
+        let base = self.world.component_layout_box(parent)?;
+        Some(Placed {
+            parent,
+            offset: [own.x - base.x, own.y - base.y],
+        })
+    }
+
+    /// How far the compositor shows `id` from its layout, by translation.
+    fn shown_offset(&self, id: StableNodeId, now: Duration) -> [f32; 2] {
+        match self
+            .world
+            .presentation_pair(id, AnimatableProperty::Transform, now)
+        {
+            Some(nana_ui_core::motion::PresentationPair {
+                logical: MotionValue::Transform(logical),
+                presentation: MotionValue::Transform(shown),
+            }) => [shown.e - logical.e, shown.f - logical.f],
+            _ => [0.0, 0.0],
         }
     }
 }
