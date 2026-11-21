@@ -349,11 +349,10 @@ impl WidgetVisual for StatusBadgeVisual {
                     height: ctx.bounds.height,
                     ..part
                 });
-        let text_size = if self.compact {
-            ctx.theme.typography().hint
-        } else {
-            ctx.theme.typography().meta
-        };
+        // The size layout measured the label at: the style's Hint or Meta
+        // times the document's text scale. The theme's bare size would
+        // overflow (and elide) a pill measured at a smaller system text size.
+        let text_size = ctx.style.font_size;
         let foreground = ctx
             .style_model
             .color(ctx.theme.recipes().status().role(self.tone))
@@ -2331,6 +2330,38 @@ mod tests {
             .unwrap();
         let (_, _, _, foreground) = badge_paint(&context);
         assert_ne!(foreground, dark_foreground);
+    }
+
+    /// A badge in a document set at a smaller system text size paints its
+    /// label at the size it was measured at, so it fits its pill.
+    #[test]
+    fn status_badge_label_follows_the_documents_text_scale() {
+        let mut context = AppContext::new();
+        context.set_document_text_scale(document(), Some(0.9));
+        let badge = context
+            .create_component(
+                document(),
+                StatusBadge::new("正在使用", nana_ui_core::StatusTone::Neutral),
+            )
+            .unwrap();
+        let id = badge.stable_id();
+        layout(&mut context, id, 120.0, 24.0);
+        let paint = context.world().widget_paint(id).unwrap();
+        let WidgetPaintOp::Text(label) = &paint
+            .ops
+            .iter()
+            .find(|tagged| tagged.slot == 2)
+            .expect("status badge label")
+            .op
+        else {
+            panic!("status badge label");
+        };
+        let expected = nana_ui_core::type_scale::HINT * 0.9;
+        assert!(
+            (label.font_size - expected).abs() < 0.01,
+            "{} != {expected}",
+            label.font_size
+        );
     }
 
     #[test]
