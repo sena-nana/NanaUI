@@ -56,6 +56,8 @@ struct LayerUniform {
     editor: vec4<f32>,
     // rounded clip radii (logical px), in the sibling Quad's corner order
     corners: vec4<f32>,
+    // target clear colour (premultiplied) for clear-fused replace draws
+    clear_premul: vec4<f32>,
 }
 
 @group(0) @binding(2)
@@ -119,6 +121,11 @@ fn rounded_box_distance(
 // `local`, ramping over one device pixel (`dx`/`dy`: its screen derivatives).
 fn box_cover(local: vec2<f32>, lo: vec2<f32>, size: vec2<f32>, radii: vec4<f32>, dx: vec2<f32>, dy: vec2<f32>) -> f32 {
     let p = -(local - lo - size * 0.5);
+    let max_r = max(max(radii.x, radii.y), max(radii.z, radii.w));
+    let margin = vec2<f32>(max_r) + max(abs(dx) + abs(dy), vec2<f32>(1.0e-4));
+    if (all(abs(p) <= size * 0.5 - margin)) {
+        return 1.0;
+    }
     return clamp(0.5 - rounded_box_distance(p, size * 0.5, radii, dx, dy, layer.params.y), 0.0, 1.0);
 }
 
@@ -188,17 +195,28 @@ fn overflow_clip_local(world: vec2<f32>) -> vec2<f32> {
 
 // An ancestor overflow clip's coverage, ramped as `fragment_clip_coverage`.
 fn overflow_clip_coverage(world: vec2<f32>) -> f32 {
+    if (layer.clip_rect.z >= 1.0e7 && layer.clip_rect.w >= 1.0e7) {
+        return 1.0;
+    }
     let local = overflow_clip_local(world);
     // Rounded or not, the clip's edge ramps over one device pixel (as
     // `color.wgsl`).
     let half = layer.clip_rect.zw * 0.5;
     let corner = min(max(layer.clip_inv_ef.z, 0.0), min(half.x, half.y));
+    let scale = max(layer.source.y, 0.0001);
+    let center = local - layer.clip_rect.xy - half;
+    if (abs(layer.clip_inv_abcd.x - 1.0) <= 1.0e-5
+        && abs(layer.clip_inv_abcd.w - 1.0) <= 1.0e-5
+        && abs(layer.clip_inv_abcd.y) <= 1.0e-5
+        && abs(layer.clip_inv_abcd.z) <= 1.0e-5
+        && all(abs(center) <= half - vec2<f32>(corner + 1.0 / scale)))
+    {
+        return 1.0;
+    }
     // `world` is logical px: it moves `1 / scale` per device pixel, and the
     // inverse's columns take that to clip-local space (as `color.wgsl`).
-    let scale = max(layer.source.y, 0.0001);
     let dx = layer.clip_inv_abcd.xy / scale;
     let dy = layer.clip_inv_abcd.zw / scale;
-    let center = local - layer.clip_rect.xy - half;
     return clamp(
         0.5 - rounded_box_distance(center, half, vec4(corner), dx, dy, layer.params.y),
         0.0,
@@ -304,6 +322,9 @@ fn sample_source(uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>) -> vec4<f32> {
     }
     let texels = vec2<f32>(textureDimensions(source));
     let footprint = vec2(length(dx * texels), length(dy * texels));
+    if (max(footprint.x, footprint.y) <= 1.0625) {
+        return textureSampleLevel(source, source_sampler, uv, 0.0);
+    }
     let taps = clamp(ceil(footprint - 1.0 / 16.0), vec2(1.0), vec2(8.0));
     var sum = vec4(0.0);
     for (var i = 0.0; i < taps.x; i += 1.0) {
@@ -313,6 +334,56 @@ fn sample_source(uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>) -> vec4<f32> {
         }
     }
     return sum / (taps.x * taps.y);
+}
+
+struct SimpleVertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+}
+
+@vertex
+fn vertex_main_simple(@builtin(vertex_index) index: u32) -> SimpleVertexOutput {
+    var units = array<vec2<f32>, 6>(
+        vec2<f32>(0.0, 0.0),
+        vec2<f32>(1.0, 0.0),
+        vec2<f32>(0.0, 1.0),
+        vec2<f32>(1.0, 0.0),
+        vec2<f32>(1.0, 1.0),
+        vec2<f32>(0.0, 1.0),
+    );
+    let unit = units[index];
+    let corner = layer.origin.zw + unit * layer.params.zw;
+    let world = vec2<f32>(
+        layer.affine.x * corner.x + layer.origin.x,
+        layer.affine.w * corner.y + layer.origin.y,
+    );
+    let physical = world * layer.source.y;
+    let dest = vec2<f32>(max(layer.source.z, 1.0), max(layer.source.w, 1.0));
+    var output: SimpleVertexOutput;
+    output.position = vec4<f32>(
+        2.0 * physical.x / dest.x - 1.0,
+        1.0 - 2.0 * physical.y / dest.y,
+        0.0,
+        1.0,
+    );
+    output.uv = unit;
+    return output;
+}
+
+@fragment
+fn fragment_simple_blend(input: SimpleVertexOutput) -> @location(0) vec4<f32> {
+    let sampled = textureSampleLevel(source, source_sampler, input.uv, 0.0);
+    let source_alpha = select(sampled.a, 1.0, layer.source.x > 0.5);
+    return vec4<f32>(sampled.rgb, source_alpha) * layer.params.x;
+}
+
+@fragment
+fn fragment_simple_replace(input: SimpleVertexOutput) -> @location(0) vec4<f32> {
+    let sampled = textureSampleLevel(source, source_sampler, input.uv, 0.0);
+    let source_alpha = select(sampled.a, 1.0, layer.source.x > 0.5);
+    let src = vec4<f32>(sampled.rgb, source_alpha) * layer.params.x;
+    let inv_a = 1.0 - src.a;
+    return vec4<f32>(src.rgb + layer.clear_premul.rgb * inv_a, src.a + layer.clear_premul.a * inv_a);
 }
 
 @fragment
@@ -1266,6 +1337,7 @@ impl GpuTexturePrimitive {
         persp: [f32; 2],
         scale_factor: f32,
         dest_size: [u32; 2],
+        clear_premul: [f32; 4],
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
         // A HostTexture is already a texture on this painter's device (its
@@ -1301,86 +1373,122 @@ impl GpuTexturePrimitive {
             &texture,
         ) || mask_changed;
 
+        let layer_uniform_value = make_layer_uniform(
+            &self.layer,
+            bounds,
+            affine,
+            persp,
+            scale_factor,
+            dest_size,
+            mask_url.is_some(),
+            clear_premul,
+        );
+        let uniform_bytes = bytemuck::bytes_of(&layer_uniform_value);
+
         if needs_rebind {
-            let layer_uniform = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("nana-ui host texture layer uniform"),
-                size: std::mem::size_of::<LayerUniform>() as u64,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            let layer_uniform_value = make_layer_uniform(
-                &self.layer,
-                bounds,
-                affine,
-                persp,
-                scale_factor,
-                dest_size,
-                mask_url.is_some(),
-            );
-            let uniform_bytes = bytemuck::bytes_of(&layer_uniform_value);
-            if let Some(work) = gpu_work {
-                work.write_buffer(queue, &layer_uniform, 0, uniform_bytes);
-                work.record_realloc();
-            } else {
-                queue.write_buffer(&layer_uniform, 0, uniform_bytes);
-            }
             let mask_view = mask_url
                 .as_deref()
                 .and_then(|url| url_cache.get(url))
                 .and_then(Option::as_ref)
                 .map(|cached| &cached.view)
                 .unwrap_or(&pipeline.mask_fallback);
-            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("nana-ui host texture bind group"),
-                layout: &pipeline.bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&texture.view),
+            let sampler = match self.layer.sampling {
+                nana_ui_core::ImageSampling::Resample => &pipeline.sampler,
+                nana_ui_core::ImageSampling::Mipmap => &pipeline.mip_sampler,
+            };
+            let layout = &pipeline.bind_group_layout;
+            if let Some(prepared) = pipeline.textures.get_mut(&key) {
+                if let Some(work) = gpu_work {
+                    work.write_buffer(queue, &prepared.layer_uniform, 0, uniform_bytes);
+                } else {
+                    queue.write_buffer(&prepared.layer_uniform, 0, uniform_bytes);
+                }
+                prepared.instance_identity = texture.instance_identity;
+                prepared.generation = texture.generation;
+                prepared.bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("nana-ui host texture bind group"),
+                    layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&texture.view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(sampler),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: prepared.layer_uniform.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: wgpu::BindingResource::TextureView(mask_view),
+                        },
+                    ],
+                });
+                prepared.slot = slot;
+                prepared.viewport = viewport_rect;
+                prepared.clip = clip;
+                prepared.mask_url = mask_url;
+                prepared.sampling = self.layer.sampling;
+                prepared.used = true;
+                prepared.lifetime = texture.lifetime;
+            } else {
+                let layer_uniform = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("nana-ui host texture layer uniform"),
+                    size: std::mem::size_of::<LayerUniform>() as u64,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                if let Some(work) = gpu_work {
+                    work.write_buffer(queue, &layer_uniform, 0, uniform_bytes);
+                    work.record_realloc();
+                } else {
+                    queue.write_buffer(&layer_uniform, 0, uniform_bytes);
+                }
+                let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("nana-ui host texture bind group"),
+                    layout: &pipeline.bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&texture.view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(
+                                pipeline.sampler_for(self.layer.sampling),
+                            ),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: layer_uniform.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: wgpu::BindingResource::TextureView(mask_view),
+                        },
+                    ],
+                });
+                pipeline.textures.insert(
+                    key,
+                    PreparedTexture {
+                        instance_identity: texture.instance_identity,
+                        generation: texture.generation,
+                        bind_group,
+                        slot,
+                        viewport: viewport_rect,
+                        clip,
+                        layer_uniform,
+                        mask_url,
+                        sampling: self.layer.sampling,
+                        used: true,
+                        lifetime: texture.lifetime,
                     },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(
-                            pipeline.sampler_for(self.layer.sampling),
-                        ),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: layer_uniform.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::TextureView(mask_view),
-                    },
-                ],
-            });
-            pipeline.textures.insert(
-                key,
-                PreparedTexture {
-                    instance_identity: texture.instance_identity,
-                    generation: texture.generation,
-                    bind_group,
-                    slot,
-                    viewport: viewport_rect,
-                    clip,
-                    layer_uniform,
-                    mask_url,
-                    sampling: self.layer.sampling,
-                    used: true,
-                    lifetime: texture.lifetime,
-                },
-            );
+                );
+            }
         } else if let Some(prepared) = pipeline.textures.get_mut(&key) {
-            let layer_uniform_value = make_layer_uniform(
-                &self.layer,
-                bounds,
-                affine,
-                persp,
-                scale_factor,
-                dest_size,
-                mask_url.is_some(),
-            );
-            let uniform_bytes = bytemuck::bytes_of(&layer_uniform_value);
             if let Some(work) = gpu_work {
                 work.write_buffer(queue, &prepared.layer_uniform, 0, uniform_bytes);
             } else {
@@ -1393,12 +1501,13 @@ impl GpuTexturePrimitive {
         }
     }
 
-    pub(crate) fn draw_in_pass(
+    pub(crate) fn draw_in_pass_with_mode(
         &self,
         pipeline: &GpuTexturePipeline,
         pass: &mut wgpu::RenderPass<'_>,
         clip_bounds: PhysicalRect,
         dest_size: [u32; 2],
+        mode: HostTextureDrawMode,
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
         let key = TextureKey::new(self.presentation, self.layer.texture.id());
@@ -1411,12 +1520,31 @@ impl GpuTexturePrimitive {
         if layer_bounds.width == 0 || layer_bounds.height == 0 {
             return;
         }
-        encode_host_texture(pipeline, texture, pass, layer_bounds, dest_size, gpu_work);
+        let render_pipeline = match mode {
+            HostTextureDrawMode::Full => &pipeline.pipeline,
+            HostTextureDrawMode::SimpleBlend => &pipeline.simple_blend_pipeline,
+            HostTextureDrawMode::SimpleReplace => &pipeline.simple_replace_pipeline,
+        };
+        encode_host_texture(
+            render_pipeline,
+            texture,
+            pass,
+            layer_bounds,
+            dest_size,
+            gpu_work,
+        );
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HostTextureDrawMode {
+    Full,
+    SimpleBlend,
+    SimpleReplace,
+}
+
 fn encode_host_texture(
-    pipeline: &GpuTexturePipeline,
+    render_pipeline: &wgpu::RenderPipeline,
     texture: &PreparedTexture,
     pass: &mut wgpu::RenderPass<'_>,
     bounds: PhysicalRect,
@@ -1434,7 +1562,7 @@ fn encode_host_texture(
         1.0,
     );
     pass.set_scissor_rect(bounds.x, bounds.y, bounds.width, bounds.height);
-    pass.set_pipeline(&pipeline.pipeline);
+    pass.set_pipeline(render_pipeline);
     pass.set_bind_group(0, &texture.bind_group, &[]);
     pass.draw(0..6, 0..1);
     pass.set_viewport(
@@ -1454,6 +1582,8 @@ fn encode_host_texture(
 #[doc(hidden)]
 pub struct GpuTexturePipeline {
     pipeline: wgpu::RenderPipeline,
+    simple_blend_pipeline: wgpu::RenderPipeline,
+    simple_replace_pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     /// Trilinear, for nodes that ask for `ImageSampling::Mipmap`.
@@ -1582,51 +1712,82 @@ impl GpuTexturePipeline {
             .as_ref()
             .map(|layout| layout.key())
             .unwrap_or(7);
-        let pipeline = shader.try_cached_pipeline(
-            policy,
-            |policy| nana_gpu::PipelineKey {
-                generation: policy.generation(),
-                target_format: nana_gpu::__framework::format_from_wgpu(format),
-                sample_count: 1,
-                shader: 0x686f_7374_7465_7874,
-                layout: layout_key,
-                material: 0,
-                primitive: 0,
-                blend: 2,
-                depth: 0,
-                vertex_layout: 0,
-            },
-            device,
+        let build_pipeline = |label: &'static str,
+                              vs_entry: &'static str,
+                              fs_entry: &'static str,
+                              blend: wgpu::BlendState,
+                              material: u64,
+                              blend_key: u64| {
+            shader.try_cached_pipeline(
+                policy,
+                |policy| nana_gpu::PipelineKey {
+                    generation: policy.generation(),
+                    target_format: nana_gpu::__framework::format_from_wgpu(format),
+                    sample_count: 1,
+                    shader: 0x686f_7374_7465_7874,
+                    layout: layout_key,
+                    material,
+                    primitive: 0,
+                    blend: blend_key,
+                    depth: 0,
+                    vertex_layout: 0,
+                },
+                device,
+                vs_entry,
+                fs_entry,
+                &[],
+                |vs_module, vs_ep, fs_module, fs_ep, _| {
+                    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                        label: Some(label),
+                        layout: Some(&pipeline_layout),
+                        vertex: wgpu::VertexState {
+                            module: vs_module,
+                            entry_point: Some(vs_ep),
+                            buffers: &[],
+                            compilation_options: wgpu::PipelineCompilationOptions::default(),
+                        },
+                        fragment: Some(wgpu::FragmentState {
+                            module: fs_module,
+                            entry_point: Some(fs_ep),
+                            targets: &[Some(wgpu::ColorTargetState {
+                                format,
+                                blend: Some(blend),
+                                write_mask: wgpu::ColorWrites::ALL,
+                            })],
+                            compilation_options: wgpu::PipelineCompilationOptions::default(),
+                        }),
+                        primitive: wgpu::PrimitiveState::default(),
+                        depth_stencil: None,
+                        multisample: wgpu::MultisampleState::default(),
+                        multiview_mask: None,
+                        cache: None,
+                    })
+                },
+            )
+        };
+        let pipeline = build_pipeline(
+            "nana-ui host texture pipeline",
             "vertex_main",
             "fragment_main",
-            &[],
-            |vs_module, vs_ep, fs_module, fs_ep, _| {
-                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                    label: Some("nana-ui host texture pipeline"),
-                    layout: Some(&pipeline_layout),
-                    vertex: wgpu::VertexState {
-                        module: vs_module,
-                        entry_point: Some(vs_ep),
-                        buffers: &[],
-                        compilation_options: wgpu::PipelineCompilationOptions::default(),
-                    },
-                    fragment: Some(wgpu::FragmentState {
-                        module: fs_module,
-                        entry_point: Some(fs_ep),
-                        targets: &[Some(wgpu::ColorTargetState {
-                            format,
-                            blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                            write_mask: wgpu::ColorWrites::ALL,
-                        })],
-                        compilation_options: wgpu::PipelineCompilationOptions::default(),
-                    }),
-                    primitive: wgpu::PrimitiveState::default(),
-                    depth_stencil: None,
-                    multisample: wgpu::MultisampleState::default(),
-                    multiview_mask: None,
-                    cache: None,
-                })
-            },
+            wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+            0,
+            2,
+        )?;
+        let simple_blend_pipeline = build_pipeline(
+            "nana-ui host texture simple blend pipeline",
+            "vertex_main_simple",
+            "fragment_simple_blend",
+            wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+            1,
+            2,
+        )?;
+        let simple_replace_pipeline = build_pipeline(
+            "nana-ui host texture simple replace pipeline",
+            "vertex_main_simple",
+            "fragment_simple_replace",
+            wgpu::BlendState::REPLACE,
+            2,
+            0,
         )?;
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("nana-ui host texture sampler"),
@@ -1650,6 +1811,8 @@ impl GpuTexturePipeline {
 
         Ok(Self {
             pipeline,
+            simple_blend_pipeline,
+            simple_replace_pipeline,
             bind_group_layout,
             sampler,
             mip_sampler,
@@ -1739,10 +1902,12 @@ struct LayerUniform {
     mask_pos2: [f32; 4],
     editor: [f32; 4],
     corners: [f32; 4],
+    clear_premul: [f32; 4],
 }
 
-const _: () = assert!(std::mem::size_of::<LayerUniform>() == 272);
+const _: () = assert!(std::mem::size_of::<LayerUniform>() == 288);
 
+#[allow(clippy::too_many_arguments)]
 fn make_layer_uniform(
     layer: &HostTextureLayer,
     bounds: LogicalRect,
@@ -1751,6 +1916,7 @@ fn make_layer_uniform(
     scale_factor: f32,
     dest_size: [u32; 2],
     url_mask_loaded: bool,
+    clear_premul: [f32; 4],
 ) -> LayerUniform {
     let scale = if scale_factor.is_finite() && scale_factor > 0.0 {
         scale_factor
@@ -1801,6 +1967,7 @@ fn make_layer_uniform(
             0.0,
         ],
         corners: layer.corner_radii,
+        clear_premul,
     }
 }
 
@@ -2180,6 +2347,7 @@ mod tests {
             1.0,
             [320, 180],
             false,
+            [0.0; 4],
         );
         let opaque_uniform = make_layer_uniform(
             &HostTextureLayer::from_binding(opaque),
@@ -2189,6 +2357,7 @@ mod tests {
             1.0,
             [320, 180],
             false,
+            [0.0; 4],
         );
         assert_eq!(premultiplied_uniform.source[0], 0.0);
         assert_eq!(opaque_uniform.source[0], 1.0);
@@ -2201,6 +2370,7 @@ mod tests {
             1.0,
             [320, 180],
             false,
+            [0.0; 4],
         );
         assert_eq!(rounded.corners, [8.0; 4]);
         assert_eq!(rounded.clip, [0.0, 0.0, 320.0, 180.0]);
@@ -2216,6 +2386,7 @@ mod tests {
             1.0,
             [320, 180],
             false,
+            [0.0; 4],
         );
         assert_eq!(rounded_clip.corners, [32.0; 4]);
         assert_eq!(rounded_clip.params[2], 320.0);
@@ -2255,6 +2426,7 @@ mod tests {
             1.0,
             [320, 180],
             false,
+            [0.0; 4],
         );
         assert_eq!(uniform.editor[0], 1.0);
         assert_eq!(uniform.editor[1], 2.0);
@@ -2288,6 +2460,7 @@ mod tests {
             1.0,
             [320, 180],
             false,
+            [0.0; 4],
         );
         assert_eq!(uniform.editor[0], 0.0);
         assert_eq!(uniform.editor[1], 1.0);
@@ -2329,6 +2502,7 @@ mod tests {
             1.0,
             [64, 64],
             false,
+            [0.0; 4],
         );
         assert_eq!(uniform.mask_meta[0], 1.0);
         assert_eq!(uniform.mask_meta[1], 2.0);
@@ -2374,6 +2548,7 @@ mod tests {
             1.0,
             [64, 64],
             false,
+            [0.0; 4],
         );
         assert_eq!(uniform.mask_alpha[0], 0.8);
     }
@@ -2398,6 +2573,7 @@ mod tests {
             1.0,
             [64, 64],
             true,
+            [0.0; 4],
         );
         assert_eq!(loaded.mask_meta[0], 3.0);
         let ignored = make_layer_uniform(
@@ -2408,6 +2584,7 @@ mod tests {
             1.0,
             [64, 64],
             false,
+            [0.0; 4],
         );
         assert_eq!(ignored.mask_meta[0], 0.0);
     }

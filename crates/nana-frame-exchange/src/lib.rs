@@ -1,13 +1,15 @@
 //! Bounded latest-frame exchange on a host's existing GPU.
 //!
 //! A producer thread copies finished frames into a small pool of textures on
-//! the shared [`GpuContext`], and a consumer — usually a UI window — samples the
-//! newest completed copy. Neither side waits for the other or for GPU
-//! completion: a full pool drops producer work, and a lease frees its slot
+//! the shared [`GpuContext`], or renders directly into a pool slot acquired via
+//! [`FrameExchange::try_begin_write`], and a consumer — usually a UI window —
+//! samples the newest completed frame. Neither side waits for the other or for
+//! GPU completion: a full pool drops producer work, and a lease frees its slot
 //! only after the consumer submission that sampled it has completed.
 //!
-//! The copy is a real GPU-side `copy_texture_to_texture`, not zero-copy. It
-//! never reads pixels back to the CPU.
+//! `copy_from*` performs a GPU-side `copy_texture_to_texture` (never CPU
+//! readback), while `try_begin_write` / `commit_write*` lets the producer render
+//! into the pooled texture directly on the same submission without a copy.
 
 #![recursion_limit = "256"]
 
@@ -284,6 +286,70 @@ pub enum CopyOutcome {
     IncompatibleSource,
     /// The source lives on another device than the exchange.
     DeviceMismatch,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriteAcquireError {
+    /// Requested extent has zero width or height.
+    EmptyExtent,
+    /// Requested format cannot back a renderable, sampleable 2D slot texture
+    /// (for example depth/stencil, compressed, or unsupported usage).
+    IncompatibleFormat,
+    /// Every slot in the pool is currently held by an uncommitted write, an
+    /// in-flight frame, or a consumer lease.
+    PoolFull,
+}
+
+/// A free pool slot reserved for direct producer rendering.
+///
+/// The producer renders directly into [`Self::texture`] (or [`Self::wgpu_texture`]
+/// / [`Self::wgpu_view`] with `wgpu-interop`), submits that work to the shared
+/// device queue, and hands the slot back to [`FrameExchange::commit_write`] (or
+/// [`FrameExchange::commit_write_with_payload`]). Dropping an uncommitted slot
+/// immediately releases it back to the pool.
+pub struct WriteSlot {
+    exchange: u64,
+    slot_index: usize,
+    sequence: u64,
+    texture: GpuTexture,
+    ownership: Arc<SlotOwnership>,
+    committed: bool,
+}
+
+impl WriteSlot {
+    pub fn texture(&self) -> &GpuTexture {
+        &self.texture
+    }
+
+    pub fn size(&self) -> (u32, u32) {
+        self.texture.size()
+    }
+
+    pub fn format(&self) -> GpuTextureFormat {
+        self.texture.format()
+    }
+
+    pub fn slot(&self) -> u8 {
+        self.ownership.slot
+    }
+
+    #[cfg(feature = "wgpu-interop")]
+    pub fn wgpu_texture(&self) -> &wgpu::Texture {
+        __framework::texture(&self.texture)
+    }
+
+    #[cfg(feature = "wgpu-interop")]
+    pub fn wgpu_view(&self) -> &wgpu::TextureView {
+        __framework::texture_view(&self.texture)
+    }
+}
+
+impl Drop for WriteSlot {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.ownership.release(self.sequence);
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -769,6 +835,164 @@ impl<E: Copy + Eq + Send + Sync + 'static, M: Send + Sync + 'static> FrameExchan
                 epoch,
                 slot: slot.ownership.slot,
                 sequence,
+            },
+            color_metadata,
+            payload,
+            completed,
+        });
+        self.stats.submitted += 1;
+        self.stats.occupied_high_water = self.stats.occupied_high_water.max(self.occupied());
+        CopyOutcome::Submitted
+    }
+
+    /// Reserve a free slot texture sized `(width, height)` in `format` with
+    /// `RENDER_TARGET | SAMPLED | COPY_SRC | COPY_DST` usages so a producer can
+    /// render directly into it without an extra `copy_texture_to_texture`.
+    ///
+    /// Returns [`WriteAcquireError::PoolFull`] without waiting when every slot is
+    /// in use. Dropping the returned [`WriteSlot`] without committing releases
+    /// the slot immediately.
+    pub fn try_begin_write(
+        &mut self,
+        width: u32,
+        height: u32,
+        format: GpuTextureFormat,
+    ) -> Result<WriteSlot, WriteAcquireError> {
+        if width == 0 || height == 0 {
+            return Err(WriteAcquireError::EmptyExtent);
+        }
+        let wgpu_format = __framework::format_to_wgpu(format);
+        if wgpu_format.is_depth_stencil_format() || wgpu_format.is_compressed() {
+            return Err(WriteAcquireError::IncompatibleFormat);
+        }
+        let reserved = self.sequence.checked_add(1).and_then(|sequence| {
+            let index = self
+                .slots
+                .iter()
+                .position(|slot| slot.ownership.reserve(sequence))?;
+            Some((sequence, index))
+        });
+        let Some((sequence, index)) = reserved else {
+            self.stats.pool_full += 1;
+            return Err(WriteAcquireError::PoolFull);
+        };
+        self.sequence = sequence;
+        let slot = &mut self.slots[index];
+        let usage = GpuTextureUsages::RENDER_TARGET
+            | GpuTextureUsages::SAMPLED
+            | GpuTextureUsages::COPY_SRC
+            | GpuTextureUsages::COPY_DST;
+        let reuse_existing = slot.texture.as_ref().is_some_and(|existing| {
+            existing.size() == (width, height)
+                && existing.format() == format
+                && existing.usage() == usage
+        });
+        if !reuse_existing {
+            if let Some(old) = slot.texture.take() {
+                let old_key = TransientResourceKey::new(
+                    self.gpu.generation(),
+                    old.format(),
+                    old.usage().bits(),
+                    old.size().0,
+                    old.size().1,
+                    1,
+                );
+                self.gpu.policy().release_transient_texture(old_key, old);
+            }
+            let key = TransientResourceKey::new(
+                self.gpu.generation(),
+                format,
+                usage.bits(),
+                width,
+                height,
+                1,
+            );
+            let gpu = self.gpu.clone();
+            match self.gpu.policy().acquire_transient_texture(key, || {
+                gpu.create_texture(&GpuTextureDescriptor {
+                    label: Some("NanaUI frame exchange write slot"),
+                    width,
+                    height,
+                    format,
+                    usage,
+                })
+            }) {
+                Ok(texture) => slot.texture = Some(texture),
+                Err(_) => {
+                    slot.ownership.release(sequence);
+                    return Err(WriteAcquireError::IncompatibleFormat);
+                }
+            }
+        }
+        let texture = slot
+            .texture
+            .as_ref()
+            .expect("write slot texture must be allocated")
+            .clone();
+        let ownership = Arc::clone(&slot.ownership);
+        self.stats.occupied_high_water = self.stats.occupied_high_water.max(self.occupied());
+        Ok(WriteSlot {
+            exchange: self.shared.exchange,
+            slot_index: index,
+            sequence,
+            texture,
+            ownership,
+            committed: false,
+        })
+    }
+
+    /// Commit a [`WriteSlot`] whose rendering work has been submitted on the
+    /// shared queue.
+    pub fn commit_write(&mut self, slot: WriteSlot, epoch: E) -> CopyOutcome
+    where
+        M: Default,
+    {
+        self.commit_write_with_metadata(slot, epoch, FrameColorMetadata::unknown())
+    }
+
+    /// Commit a [`WriteSlot`] together with explicit color metadata.
+    pub fn commit_write_with_metadata(
+        &mut self,
+        slot: WriteSlot,
+        epoch: E,
+        color_metadata: FrameColorMetadata,
+    ) -> CopyOutcome
+    where
+        M: Default,
+    {
+        self.commit_write_with_payload(slot, epoch, color_metadata, M::default())
+    }
+
+    /// Commit a [`WriteSlot`] together with color metadata and an immutable
+    /// application payload.
+    ///
+    /// The caller must have already submitted any GPU commands writing into
+    /// `slot` on [`FrameExchange`]'s device queue; completion is tracked via
+    /// the next queue fence before [`FrameExchange::poll`] publishes the lease.
+    pub fn commit_write_with_payload(
+        &mut self,
+        mut write_slot: WriteSlot,
+        epoch: E,
+        color_metadata: FrameColorMetadata,
+        payload: M,
+    ) -> CopyOutcome {
+        self.set_epoch(epoch);
+        if write_slot.exchange != self.shared.exchange {
+            return CopyOutcome::DeviceMismatch;
+        }
+        write_slot.committed = true;
+        let completed = Arc::new(AtomicBool::new(false));
+        let completion = Arc::clone(&completed);
+        __framework::queue(&self.gpu)
+            .on_submitted_work_done(move || completion.store(true, Ordering::Release));
+        let slot = &mut self.slots[write_slot.slot_index];
+        slot.pending = Some(PendingCopy {
+            token: FrameToken {
+                exchange: self.shared.exchange,
+                device_generation: self.shared.device_generation,
+                epoch,
+                slot: write_slot.ownership.slot,
+                sequence: write_slot.sequence,
             },
             color_metadata,
             payload,
@@ -1382,5 +1606,184 @@ mod tests {
             producer,
             "the last queue completion runs on the retirement thread"
         );
+    }
+
+    #[test]
+    fn write_slot_renders_and_publishes_without_copy_and_reuses_slot_texture() {
+        let gpu = test_gpu();
+        let mut exchange = FrameExchange::<_, String>::new_with_payload(
+            &gpu,
+            NonZeroU8::new(1).unwrap(),
+            5u64,
+            Arc::new(|| {}),
+        );
+        let inbox = exchange.inbox();
+        let slot = exchange
+            .try_begin_write(4, 4, GpuTextureFormat::RGBA8_UNORM)
+            .expect("free slot");
+        let first_ptr = slot.texture().clone();
+
+        let device = __framework::device(&gpu);
+        let queue = __framework::queue(&gpu);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("write slot clear"),
+        });
+        {
+            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("write slot pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: __framework::texture_view(slot.texture()),
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.2,
+                            g: 0.4,
+                            b: 0.6,
+                            a: 0.8,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+        }
+        queue.submit([encoder.finish()]);
+        let metadata = FrameColorMetadata::srgb(FrameAlphaMode::Premultiplied);
+        assert_eq!(
+            exchange.commit_write_with_payload(slot, 5, metadata, "direct".into()),
+            CopyOutcome::Submitted
+        );
+        wait(&gpu);
+        assert!(exchange.poll());
+
+        let lease = inbox.try_take_latest().expect("published lease");
+        assert_eq!(lease.payload(), "direct");
+        assert_eq!(lease.color_metadata(), metadata);
+        assert!(lease.texture().ptr_eq(&first_ptr));
+
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("write slot readback"),
+            size: 256 * 4,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut copy_enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("write slot readback copy"),
+        });
+        copy_enc.copy_texture_to_buffer(
+            __framework::texture(lease.texture()).as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(256),
+                    rows_per_image: Some(4),
+                },
+            },
+            wgpu::Extent3d {
+                width: 4,
+                height: 4,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit([copy_enc.finish()]);
+        let (tx, rx) = std::sync::mpsc::channel();
+        readback
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |res| {
+                let _ = tx.send(res);
+            });
+        wait(&gpu);
+        rx.recv().unwrap().unwrap();
+        let data = readback.slice(..).get_mapped_range().unwrap();
+        let expected = [51u8, 102, 153, 204];
+        for actual in data[0..16].chunks_exact(4) {
+            for (a, e) in actual.iter().zip(expected.iter()) {
+                assert!(
+                    a.abs_diff(*e) <= 1,
+                    "expected ~{expected:?}, got {actual:?}"
+                );
+            }
+        }
+        drop(data);
+        readback.unmap();
+
+        drop(lease);
+        exchange.set_epoch(6);
+        exchange.poll();
+        wait(&gpu);
+
+        let second = exchange
+            .try_begin_write(4, 4, GpuTextureFormat::RGBA8_UNORM)
+            .expect("reused slot");
+        assert!(
+            second.texture().ptr_eq(&first_ptr),
+            "re-acquiring the same size and format must reuse the slot texture without reallocation"
+        );
+    }
+
+    #[test]
+    fn dropped_write_slot_returns_to_pool_immediately() {
+        let gpu = test_gpu();
+        let mut exchange =
+            FrameExchange::<_, ()>::new_with_payload(&gpu, DEFAULT_CAPACITY, 1u64, Arc::new(|| {}));
+        assert_eq!(
+            exchange
+                .try_begin_write(0, 4, GpuTextureFormat::RGBA8_UNORM)
+                .err(),
+            Some(WriteAcquireError::EmptyExtent)
+        );
+        let mut held = Vec::new();
+        for _ in 0..DEFAULT_CAPACITY.get() {
+            held.push(
+                exchange
+                    .try_begin_write(4, 4, GpuTextureFormat::RGBA8_UNORM)
+                    .expect("free slot"),
+            );
+        }
+        assert_eq!(
+            exchange
+                .try_begin_write(4, 4, GpuTextureFormat::RGBA8_UNORM)
+                .err(),
+            Some(WriteAcquireError::PoolFull)
+        );
+        held.pop();
+        let reacquired = exchange
+            .try_begin_write(4, 4, GpuTextureFormat::RGBA8_UNORM)
+            .expect("dropped write slot immediately returns to pool");
+        assert_eq!(reacquired.size(), (4, 4));
+    }
+
+    #[test]
+    fn write_slot_commit_respects_epoch_change() {
+        let gpu = test_gpu();
+        let mut exchange = FrameExchange::<_, String>::new_with_payload(
+            &gpu,
+            NonZeroU8::new(1).unwrap(),
+            10u64,
+            Arc::new(|| {}),
+        );
+        let inbox = exchange.inbox();
+        let slot = exchange
+            .try_begin_write(4, 4, GpuTextureFormat::RGBA8_UNORM)
+            .expect("free slot");
+        assert_eq!(
+            exchange.commit_write_with_payload(
+                slot,
+                10,
+                FrameColorMetadata::unknown(),
+                "stale".into()
+            ),
+            CopyOutcome::Submitted
+        );
+        exchange.set_epoch(11);
+        wait(&gpu);
+        assert!(!exchange.poll());
+        assert_eq!(exchange.stats().stale_epoch, 1);
+        assert!(inbox.latest().is_none());
     }
 }

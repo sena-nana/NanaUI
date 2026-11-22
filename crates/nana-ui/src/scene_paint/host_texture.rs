@@ -1,7 +1,9 @@
 use super::clip::{self, LogicalRect, physical_scissor};
-use crate::gpu_texture::{GpuTexturePipeline, GpuTexturePrimitive, HostTextureLayer};
+use crate::gpu_texture::{
+    GpuTexturePipeline, GpuTexturePrimitive, HostTextureDrawMode, HostTextureLayer,
+};
 use crate::gpu_view::intersect_physical;
-use crate::{HostTextureBinding, PhysicalRect};
+use crate::{HostTextureAlphaMode, HostTextureBinding, PhysicalRect};
 
 pub(super) struct HostTexturePipeline {
     pipeline: GpuTexturePipeline,
@@ -15,6 +17,39 @@ pub(super) struct PreparedHostTexture {
     /// 这一帧这张宿主纹理实际覆盖的设备像素范围(变换后 AABB × 缩放)。
     /// 消费方据此知道该按多少像素准备内容,不必从布局盒自己反推。
     pub(super) painted: [u32; 2],
+    simple: bool,
+    opaque_full_alpha: bool,
+    clear_premul: [f32; 4],
+}
+
+impl PreparedHostTexture {
+    /// True when this full-viewport axis-aligned layer can replace the pass's
+    /// initial `LoadOp::Clear(load_color)` with `LoadOp::DontCare` + `BlendState::REPLACE`.
+    pub(super) fn can_replace_clear(
+        &self,
+        dest_physical: [u32; 2],
+        load_color: wgpu::Color,
+    ) -> bool {
+        if !self.simple
+            || self.clip
+                != (PhysicalRect {
+                    x: 0,
+                    y: 0,
+                    width: dest_physical[0],
+                    height: dest_physical[1],
+                })
+        {
+            return false;
+        }
+        if self.opaque_full_alpha {
+            return true;
+        }
+        const EPS: f32 = 1.0e-5;
+        (self.clear_premul[0] - load_color.r as f32).abs() <= EPS
+            && (self.clear_premul[1] - load_color.g as f32).abs() <= EPS
+            && (self.clear_premul[2] - load_color.b as f32).abs() <= EPS
+            && (self.clear_premul[3] - load_color.a as f32).abs() <= EPS
+    }
 }
 
 impl HostTexturePipeline {
@@ -80,7 +115,11 @@ impl HostTexturePipeline {
         checkerboard: bool,
         zoom: f32,
         sampling: nana_ui_core::ImageSampling,
+        clear_premul: [f32; 4],
     ) -> PreparedHostTexture {
+        let binding_size = [binding.width, binding.height];
+        let opaque_full_alpha =
+            binding.alpha_mode == HostTextureAlphaMode::Opaque && opacity >= 1.0 - 1.0e-6;
         let primitive = GpuTexturePrimitive::from_scene(
             node,
             slot,
@@ -99,7 +138,7 @@ impl HostTexturePipeline {
                     fragment_clip.inv_ef,
                     fragment_clip.corner_radius,
                 )
-                .with_mask(mask)
+                .with_mask(mask.clone())
                 .with_checkerboard(checkerboard)
                 .with_zoom(zoom)
                 .with_sampling(sampling)
@@ -115,6 +154,7 @@ impl HostTexturePipeline {
             persp,
             scale_factor,
             physical_size,
+            clear_premul,
             gpu_work,
         );
         let world = if clip::is_translation_projective(affine, persp) {
@@ -134,10 +174,29 @@ impl HostTexturePipeline {
                 width: 0,
                 height: 0,
             });
+        let simple = is_simple_host_texture(
+            bounds,
+            affine,
+            persp,
+            clip,
+            corner_radii,
+            rounded_clip,
+            &fragment_clip,
+            scale_factor,
+            mask.as_ref(),
+            checkerboard,
+            zoom,
+            sampling,
+            binding_size,
+            painted,
+        );
         PreparedHostTexture {
             primitive,
             clip,
             painted,
+            simple,
+            opaque_full_alpha,
+            clear_premul,
         }
     }
 
@@ -148,14 +207,113 @@ impl HostTexturePipeline {
         dest_size: [u32; 2],
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
-        prepared
-            .primitive
-            .draw_in_pass(&self.pipeline, pass, prepared.clip, dest_size, gpu_work);
+        let mode = if prepared.simple {
+            HostTextureDrawMode::SimpleBlend
+        } else {
+            HostTextureDrawMode::Full
+        };
+        prepared.primitive.draw_in_pass_with_mode(
+            &self.pipeline,
+            pass,
+            prepared.clip,
+            dest_size,
+            mode,
+            gpu_work,
+        );
+    }
+
+    pub(super) fn draw_replace(
+        &self,
+        prepared: &PreparedHostTexture,
+        pass: &mut wgpu::RenderPass<'_>,
+        dest_size: [u32; 2],
+        gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
+    ) {
+        prepared.primitive.draw_in_pass_with_mode(
+            &self.pipeline,
+            pass,
+            prepared.clip,
+            dest_size,
+            HostTextureDrawMode::SimpleReplace,
+            gpu_work,
+        );
     }
 
     pub(super) fn trim(&mut self) {
         self.pipeline.trim();
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn is_simple_host_texture(
+    bounds: LogicalRect,
+    affine: [f32; 6],
+    persp: [f32; 2],
+    clip: PhysicalRect,
+    corner_radii: [f32; 4],
+    rounded_clip: LogicalRect,
+    fragment_clip: &super::clip::FragmentClip,
+    scale_factor: f32,
+    mask: Option<&nana_ui_core::MaskImage>,
+    checkerboard: bool,
+    zoom: f32,
+    sampling: nana_ui_core::ImageSampling,
+    binding_size: [u32; 2],
+    painted: [u32; 2],
+) -> bool {
+    const EPS: f32 = 1.0e-4;
+    const PX_EPS: f32 = 1.0e-3;
+    if affine[1].abs() > 1.0e-6
+        || affine[2].abs() > 1.0e-6
+        || affine[0] <= 0.0
+        || affine[3] <= 0.0
+        || persp[0].abs() > 1.0e-6
+        || persp[1].abs() > 1.0e-6
+        || !scale_factor.is_finite()
+        || scale_factor <= 0.0
+        || bounds.width <= 0.0
+        || bounds.height <= 0.0
+        || clip.width == 0
+        || clip.height == 0
+        || !corner_radii.iter().all(|&r| r <= 0.0)
+        || rounded_clip.x > bounds.x + EPS
+        || rounded_clip.y > bounds.y + EPS
+        || rounded_clip.x + rounded_clip.width < bounds.x + bounds.width - EPS
+        || rounded_clip.y + rounded_clip.height < bounds.y + bounds.height - EPS
+        || fragment_clip.rect[2] < 1.0e7
+        || fragment_clip.rect[3] < 1.0e7
+        || fragment_clip.polygon_count != 0
+        || mask.is_some()
+        || checkerboard
+        || zoom > 1.0
+        || sampling != nana_ui_core::ImageSampling::Resample
+        || binding_size[0] == 0
+        || binding_size[1] == 0
+        || painted[0] < binding_size[0]
+        || painted[1] < binding_size[1]
+    {
+        return false;
+    }
+    let x0 = (affine[0] * bounds.x + affine[4]) * scale_factor;
+    let y0 = (affine[3] * bounds.y + affine[5]) * scale_factor;
+    let x1 = (affine[0] * (bounds.x + bounds.width) + affine[4]) * scale_factor;
+    let y1 = (affine[3] * (bounds.y + bounds.height) + affine[5]) * scale_factor;
+    if (x0 - x0.round()).abs() > PX_EPS
+        || (y0 - y0.round()).abs() > PX_EPS
+        || (x1 - x1.round()).abs() > PX_EPS
+        || (y1 - y1.round()).abs() > PX_EPS
+    {
+        return false;
+    }
+    let qx0 = x0.round() as i64;
+    let qy0 = y0.round() as i64;
+    let qx1 = x1.round() as i64;
+    let qy1 = y1.round() as i64;
+    let cx0 = i64::from(clip.x);
+    let cy0 = i64::from(clip.y);
+    let cx1 = cx0 + i64::from(clip.width);
+    let cy1 = cy0 + i64::from(clip.height);
+    qx1 > qx0 && qy1 > qy0 && cx0 >= qx0 && cy0 >= qy0 && cx1 <= qx1 && cy1 <= qy1
 }
 
 /// 逻辑长度换成设备像素。非有限值与负值当作 0——没画到就是没画到,

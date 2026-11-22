@@ -544,6 +544,10 @@ pub struct SceneWgpuPainter {
     last_frame: Option<nana_gpu::FrameId>,
     /// Last fully scene-described dest; host textures / GPU slots skip reuse.
     painted: Option<PaintedDest>,
+    /// Key of the most recently painted frame on the active target, used to
+    /// detect consecutive changing frames (`SurfaceRouting::Direct` when streaming).
+    last_encoded_key: Option<PaintedDest>,
+    changing_frame_streak: u8,
     /// Which host-texture slots the last fresh prepare of the active target
     /// drew, and how large; swapped per target like `painted`.
     painted_demand: crate::painted_demand::PaintedChannel,
@@ -616,6 +620,8 @@ struct TargetState {
     host_textures: crate::gpu_texture::GpuTextureTarget,
     dest: Option<DestTarget>,
     painted: Option<PaintedDest>,
+    last_encoded_key: Option<PaintedDest>,
+    changing_frame_streak: u8,
     painted_demand: crate::painted_demand::PaintedChannel,
     natural_sizes: natural_sizes::NaturalSizes,
     image_revision: u64,
@@ -883,6 +889,8 @@ impl SceneWgpuPainter {
             last_dest_pass_counts: None,
             last_frame: None,
             painted: None,
+            last_encoded_key: None,
+            changing_frame_streak: 0,
             painted_demand: Default::default(),
             natural_sizes: Default::default(),
             placed_points: Vec::new(),
@@ -1368,6 +1376,8 @@ impl SceneWgpuPainter {
         let mut state = self.targets.remove(&id).unwrap_or_default();
         if state.image_revision != self.image_revision {
             state.painted = None;
+            state.last_encoded_key = None;
+            state.changing_frame_streak = 0;
             QuadPipeline::invalidate_target_image_bindings(&mut state.quads);
             HostTexturePipeline::invalidate_target_image_bindings(&mut state.host_textures);
         }
@@ -1397,6 +1407,11 @@ impl SceneWgpuPainter {
     fn swap_target_state(&mut self, state: &mut TargetState) {
         std::mem::swap(&mut self.dest, &mut state.dest);
         std::mem::swap(&mut self.painted, &mut state.painted);
+        std::mem::swap(&mut self.last_encoded_key, &mut state.last_encoded_key);
+        std::mem::swap(
+            &mut self.changing_frame_streak,
+            &mut state.changing_frame_streak,
+        );
         std::mem::swap(&mut self.painted_demand, &mut state.painted_demand);
         std::mem::swap(&mut self.natural_sizes, &mut state.natural_sizes);
         std::mem::swap(&mut self.prepared_batch, &mut state.prepared_batch);
@@ -1556,6 +1571,8 @@ impl SceneWgpuPainter {
         if egress_of(self.fetch_host.as_ref()) != egress_of(self.bound_fetch_host.as_ref()) {
             self.bound_fetch_host = self.fetch_host.clone();
             self.painted = None;
+            self.last_encoded_key = None;
+            self.changing_frame_streak = 0;
             self.prepared_batch = None;
             self.quads.invalidate_image_bindings();
             self.host_textures.invalidate_image_bindings();
@@ -1573,6 +1590,8 @@ impl SceneWgpuPainter {
             self.last_gpu_timings = None;
             self.last_dest_pass_counts = None;
             self.painted = None;
+            self.last_encoded_key = None;
+            self.changing_frame_streak = 0;
             // Nothing of this target is visible: withdraw its demand.
             self.painted_demand.begin();
             self.painted_demand.commit(host_textures);
@@ -1630,9 +1649,12 @@ impl SceneWgpuPainter {
         if self.painted == Some(painted)
             && !gpu_motion_live
             && let Some(dest) = self.dest.as_mut()
+            && dest.has_color()
             && dest.width == dest_physical[0]
             && dest.height == dest_physical[1]
         {
+            self.last_encoded_key = Some(painted);
+            self.changing_frame_streak = 0;
             dest.release_prefix();
             if self
                 .prepared_batch
@@ -2577,6 +2599,16 @@ impl SceneWgpuPainter {
                                 custom.fit,
                             );
                             batching.close_all();
+                            let clear_premul = if viewport.clear {
+                                [
+                                    clear.r as f32,
+                                    clear.g as f32,
+                                    clear.b as f32,
+                                    clear.a as f32,
+                                ]
+                            } else {
+                                [0.0; 4]
+                            };
                             let prepared = self.host_textures.prepare(
                                 &self.device,
                                 &self.queue,
@@ -2599,6 +2631,7 @@ impl SceneWgpuPainter {
                                 custom.checkerboard,
                                 custom.zoom,
                                 custom.sampling,
+                                clear_premul,
                             );
                             self.painted_demand.note(&custom.resource, prepared.painted);
                             commands.push(DrawCommand::HostTexture(prepared));
@@ -2745,47 +2778,6 @@ impl SceneWgpuPainter {
                 )
             })
             || self.backdrop.needs_backdrop();
-        DestTarget::try_ensure(
-            &mut self.dest,
-            self.dest_pipelines.as_ref(),
-            &self.device,
-            self.format,
-            __framework::format_to_wgpu(self.presentation.target_format),
-            self.presentation,
-            dest_physical[0],
-            dest_physical[1],
-            !gpu_interleaved,
-            self.gpu.policy(),
-        )?;
-        self.dest
-            .as_mut()
-            .expect("dest target")
-            .set_presentation_parameters(
-                &self.queue,
-                self.presentation_parameters,
-                Some(&gpu_work),
-            );
-        if max_group_depth > 0 {
-            self.dest
-                .as_mut()
-                .expect("dest target")
-                .try_prepare_groups(
-                    &self.device,
-                    &self.queue,
-                    max_group_depth,
-                    &group_slots_uniforms,
-                    corner_exponent,
-                    Some(&gpu_work),
-                )?;
-        } else {
-            self.dest.as_mut().expect("dest target").trim_idle_groups(
-                &self.device,
-                0,
-                0,
-                false,
-                Some(&gpu_work),
-            );
-        }
         // Per-glyph presentation moves text alone. While nothing else moves
         // and the batch is the last frame's, the dest as it stood before its
         // first text draw is the last frame's too: put that back instead of
@@ -2795,36 +2787,136 @@ impl SceneWgpuPainter {
         } else {
             None
         };
-        let prefix = {
+        let target_format = __framework::format_to_wgpu(self.presentation.target_format);
+        let has_external_pixels = commands.iter().any(|command| {
+            matches!(
+                command,
+                DrawCommand::HostTexture(_) | DrawCommand::Custom { .. }
+            )
+        });
+        let has_backdrop = self.backdrop.needs_backdrop()
+            || commands
+                .iter()
+                .any(|command| matches!(command, DrawCommand::Backdrop { .. }));
+        let has_reading_blend = group_slots_uniforms.iter().any(dest::slot_reads_backdrop);
+        let identity_linear_blit = self.alpha_encoding == AlphaEncoding::Linear
+            && self.format == target_format
+            && !self.presentation.requires_float_working_target()
+            && !clear_color_is_extended(clear_color)
+            && (self.presentation.is_direct_linear()
+                || (self.presentation.color_space == ScenePresentationColorSpace::Srgb
+                    && self.presentation.target_format.is_srgb()));
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        enum SurfaceRouting {
+            Direct,
+            Retained,
+        }
+        const DIRECT_STREAK_THRESHOLD: u8 = 2;
+
+        match self.last_encoded_key {
+            Some(prev) if prev == painted => self.changing_frame_streak = 0,
+            Some(prev) if prev.instance == painted.instance => {
+                self.changing_frame_streak = self.changing_frame_streak.saturating_add(1);
+            }
+            _ => self.changing_frame_streak = 0,
+        }
+        self.last_encoded_key = Some(painted);
+
+        let target_extent = target.texture().size();
+        let target_matches_dest =
+            target_extent.width == dest_physical[0] && target_extent.height == dest_physical[1];
+        let can_render_directly = split.is_none()
+            && !has_backdrop
+            && !has_reading_blend
+            && identity_linear_blit
+            && viewport.clear
+            && blit_origin == [0.0, 0.0]
+            && dest_physical == viewport.physical_size
+            && target_matches_dest;
+        let uncacheable_frame = has_external_pixels || gpu_motion_live;
+        let streaming_scene = self.changing_frame_streak >= DIRECT_STREAK_THRESHOLD;
+        let routing = if can_render_directly && (uncacheable_frame || streaming_scene) {
+            SurfaceRouting::Direct
+        } else {
+            SurfaceRouting::Retained
+        };
+
+        let mut dest_passes = DestPassCounts::default();
+        let need_dest =
+            routing == SurfaceRouting::Retained || !gpu_interleaved || max_group_depth > 0;
+        let prefix = if need_dest {
+            DestTarget::try_ensure(
+                &mut self.dest,
+                self.dest_pipelines.as_ref(),
+                &self.device,
+                self.format,
+                target_format,
+                self.presentation,
+                dest_physical[0],
+                dest_physical[1],
+                !gpu_interleaved,
+                routing == SurfaceRouting::Retained,
+                self.gpu.policy(),
+            )?;
             let dest = self.dest.as_mut().expect("dest target");
-            match split {
-                None => {
-                    dest.release_prefix();
-                    PrefixUse::Paint
-                }
-                Some(split) if reused && dest.prefix_holds(split) => PrefixUse::Restore(split),
-                // Only a batch painted twice is stored: one rebuilt every
-                // frame would pay the copy for nothing.
-                Some(split) if reused => {
-                    dest.reserve_prefix(&self.device);
-                    PrefixUse::Store(split)
-                }
-                Some(_) => {
-                    dest.forget_prefix();
-                    PrefixUse::Paint
+            dest.set_presentation_parameters(
+                &self.queue,
+                self.presentation_parameters,
+                Some(&gpu_work),
+            );
+            if max_group_depth > 0 {
+                dest.try_prepare_groups(
+                    &self.device,
+                    &self.queue,
+                    max_group_depth,
+                    &group_slots_uniforms,
+                    corner_exponent,
+                    Some(&gpu_work),
+                )?;
+            } else {
+                dest.trim_idle_groups(&self.device, 0, 0, false, Some(&gpu_work));
+            }
+            dest_passes.msaa_allocated = dest.msaa_allocated;
+            if routing == SurfaceRouting::Direct {
+                dest.release_prefix();
+                PrefixUse::Paint
+            } else {
+                match split {
+                    None => {
+                        dest.release_prefix();
+                        PrefixUse::Paint
+                    }
+                    Some(split) if reused && dest.prefix_holds(split) => PrefixUse::Restore(split),
+                    // Only a batch painted twice is stored: one rebuilt every
+                    // frame would pay the copy for nothing.
+                    Some(split) if reused => {
+                        dest.reserve_prefix(&self.device);
+                        PrefixUse::Store(split)
+                    }
+                    Some(_) => {
+                        dest.forget_prefix();
+                        PrefixUse::Paint
+                    }
                 }
             }
+        } else {
+            if let Some(dest) = self.dest.as_mut() {
+                dest.release_prefix();
+                dest.release_msaa();
+                dest.trim_idle_groups(&self.device, 0, 0, false, Some(&gpu_work));
+                dest.trim_idle_color();
+                dest_passes.msaa_allocated = dest.msaa_allocated;
+                if dest.is_idle_empty() {
+                    self.dest = None;
+                }
+            }
+            PrefixUse::Paint
         };
-        let dest = self.dest.as_ref().expect("dest target");
         let sample_count = if gpu_interleaved { 1 } else { 4 };
         let initial_load = if viewport.clear {
             wgpu::LoadOp::Clear(clear)
         } else {
             wgpu::LoadOp::Load
-        };
-        let mut dest_passes = DestPassCounts {
-            msaa_allocated: dest.msaa_allocated,
-            ..DestPassCounts::default()
         };
         self.motion.sync_with_work(
             &self.device,
@@ -2833,154 +2925,182 @@ impl SceneWgpuPainter {
             Some(&gpu_work),
             Some(encoder),
         );
-        if gpu_interleaved {
-            let mut ordered = EncodeOrdered {
-                quads: &self.quads,
-                meshes: &self.meshes,
-                #[cfg(feature = "charts")]
-                charts: self.charts.as_ref(),
-                #[cfg(feature = "charts")]
-                chart_target: &self.chart_target,
-                icons: &self.icons,
-                text: &self.text,
-                host_textures: &self.host_textures,
-                backdrop: &mut self.backdrop,
-                gpu: &self.gpu,
-                format: __framework::format_from_wgpu(self.format),
-                presentation: self.presentation,
-                gpu_work: &gpu_work,
-                motion: self.motion.bind_group(),
-                group_extents: &group_extents,
-                group_extents_exact: !gpu_motion_live,
-            };
-            let (load, rest) = match prefix {
-                PrefixUse::Restore(PrefixSplit::Ordered(split)) => {
-                    dest.restore_prefix(encoder, &mut dest_passes);
-                    (wgpu::LoadOp::Load, &commands[split..])
-                }
-                PrefixUse::Store(PrefixSplit::Ordered(split)) => {
-                    encode_ordered(
-                        &mut ordered,
-                        encoder,
-                        dest,
-                        dest_physical,
-                        initial_load,
-                        &commands[..split],
-                        &mut dest_passes,
-                    );
-                    dest.store_prefix(encoder, &mut dest_passes);
-                    (wgpu::LoadOp::Load, &commands[split..])
-                }
-                _ => (initial_load, &commands[..]),
-            };
-            encode_ordered(
-                &mut ordered,
-                encoder,
-                dest,
-                dest_physical,
-                load,
-                rest,
-                &mut dest_passes,
-            );
-        } else if let PrefixUse::Restore(PrefixSplit::Geometry) = prefix {
-            dest.restore_prefix(encoder, &mut dest_passes);
-            encode_glyph_pass(
-                &self.text,
-                &self.icons,
-                dest,
-                encoder,
-                &commands,
-                dest_physical,
-                &gpu_work,
-                &mut dest_passes,
-            );
-        } else {
-            let mut pass = dest.begin_msaa_pass(encoder, clear, &mut dest_passes);
-            restore_dest_viewport(&mut pass, dest_physical);
-            for command in &commands {
-                match command {
-                    DrawCommand::Quads { range, scissor } => {
-                        self.quads.draw(
-                            &mut pass,
-                            range.clone(),
-                            *scissor,
-                            sample_count,
-                            self.motion.bind_group(),
-                            Some(&gpu_work),
-                        );
-                    }
-                    DrawCommand::Mesh { range, scissor } => {
-                        self.meshes
-                            .draw(&mut pass, range, *scissor, sample_count, Some(&gpu_work));
-                    }
-                    DrawCommand::Path { range, scissor } => {
-                        self.meshes.draw_path(
-                            &mut pass,
-                            range,
-                            *scissor,
-                            sample_count,
-                            Some(&gpu_work),
-                        );
-                    }
+        if routing == SurfaceRouting::Direct {
+            if gpu_interleaved {
+                let dest = (max_group_depth > 0).then(|| self.dest.as_ref().expect("dest target"));
+                let mut ordered = EncodeOrdered {
+                    quads: &self.quads,
+                    meshes: &self.meshes,
                     #[cfg(feature = "charts")]
-                    DrawCommand::Chart {
-                        slot,
-                        draw,
-                        scissor,
-                    } => {
-                        if let Some(pipeline) = &self.charts {
-                            self.chart_target.draw(
-                                pipeline,
-                                &mut pass,
-                                *slot,
-                                *draw,
-                                *scissor,
-                                sample_count,
-                                self.motion.bind_group(),
-                                Some(&gpu_work),
-                            );
-                        }
+                    charts: self.charts.as_ref(),
+                    #[cfg(feature = "charts")]
+                    chart_target: &self.chart_target,
+                    icons: &self.icons,
+                    text: &self.text,
+                    host_textures: &self.host_textures,
+                    backdrop: &mut self.backdrop,
+                    gpu: &self.gpu,
+                    format: __framework::format_from_wgpu(self.format),
+                    presentation: self.presentation,
+                    gpu_work: &gpu_work,
+                    motion: self.motion.bind_group(),
+                    group_extents: &group_extents,
+                    group_extents_exact: !gpu_motion_live,
+                };
+                encode_ordered(
+                    &mut ordered,
+                    encoder,
+                    dest,
+                    target,
+                    dest_physical,
+                    wgpu::LoadOp::Clear(surface_clear),
+                    &commands,
+                    &mut dest_passes,
+                );
+            } else {
+                let dest = self.dest.as_ref().expect("4x MSAA direct dest");
+                let mut pass = dest.begin_msaa_pass_with_resolve(
+                    encoder,
+                    target,
+                    surface_clear,
+                    &mut dest_passes,
+                );
+                restore_dest_viewport(&mut pass, dest_physical);
+                encode_msaa_geometry_commands(
+                    &self.quads,
+                    &self.meshes,
+                    #[cfg(feature = "charts")]
+                    self.charts.as_ref(),
+                    #[cfg(feature = "charts")]
+                    &self.chart_target,
+                    &mut pass,
+                    &commands,
+                    sample_count,
+                    self.motion.bind_group(),
+                    &gpu_work,
+                );
+                drop(pass);
+                encode_glyph_pass_on_view(
+                    &self.text,
+                    &self.icons,
+                    target,
+                    encoder,
+                    &commands,
+                    dest_physical,
+                    &gpu_work,
+                    &mut dest_passes,
+                );
+            }
+        } else {
+            let dest = self.dest.as_ref().expect("dest target");
+            if gpu_interleaved {
+                let mut ordered = EncodeOrdered {
+                    quads: &self.quads,
+                    meshes: &self.meshes,
+                    #[cfg(feature = "charts")]
+                    charts: self.charts.as_ref(),
+                    #[cfg(feature = "charts")]
+                    chart_target: &self.chart_target,
+                    icons: &self.icons,
+                    text: &self.text,
+                    host_textures: &self.host_textures,
+                    backdrop: &mut self.backdrop,
+                    gpu: &self.gpu,
+                    format: __framework::format_from_wgpu(self.format),
+                    presentation: self.presentation,
+                    gpu_work: &gpu_work,
+                    motion: self.motion.bind_group(),
+                    group_extents: &group_extents,
+                    group_extents_exact: !gpu_motion_live,
+                };
+                let (load, rest) = match prefix {
+                    PrefixUse::Restore(PrefixSplit::Ordered(split)) => {
+                        dest.restore_prefix(encoder, &mut dest_passes);
+                        (wgpu::LoadOp::Load, &commands[split..])
                     }
-                    // A mask only ever sits inside a group, and a frame with
-                    // groups is encoded in order, not here.
-                    DrawCommand::PathMask { .. } => {}
-                    DrawCommand::Text { .. }
-                    | DrawCommand::Icon { .. }
-                    | DrawCommand::HostTexture(_)
-                    | DrawCommand::Backdrop { .. }
-                    | DrawCommand::Custom { .. }
-                    | DrawCommand::PushGroup { .. }
-                    | DrawCommand::PopGroup => {}
+                    PrefixUse::Store(PrefixSplit::Ordered(split)) => {
+                        encode_ordered(
+                            &mut ordered,
+                            encoder,
+                            Some(dest),
+                            dest.color_view(),
+                            dest_physical,
+                            initial_load,
+                            &commands[..split],
+                            &mut dest_passes,
+                        );
+                        dest.store_prefix(encoder, &mut dest_passes);
+                        (wgpu::LoadOp::Load, &commands[split..])
+                    }
+                    _ => (initial_load, &commands[..]),
+                };
+                encode_ordered(
+                    &mut ordered,
+                    encoder,
+                    Some(dest),
+                    dest.color_view(),
+                    dest_physical,
+                    load,
+                    rest,
+                    &mut dest_passes,
+                );
+            } else if let PrefixUse::Restore(PrefixSplit::Geometry) = prefix {
+                dest.restore_prefix(encoder, &mut dest_passes);
+                encode_glyph_pass_on_view(
+                    &self.text,
+                    &self.icons,
+                    dest.color_view(),
+                    encoder,
+                    &commands,
+                    dest_physical,
+                    &gpu_work,
+                    &mut dest_passes,
+                );
+            } else {
+                let mut pass = dest.begin_msaa_pass(encoder, clear, &mut dest_passes);
+                restore_dest_viewport(&mut pass, dest_physical);
+                encode_msaa_geometry_commands(
+                    &self.quads,
+                    &self.meshes,
+                    #[cfg(feature = "charts")]
+                    self.charts.as_ref(),
+                    #[cfg(feature = "charts")]
+                    &self.chart_target,
+                    &mut pass,
+                    &commands,
+                    sample_count,
+                    self.motion.bind_group(),
+                    &gpu_work,
+                );
+                drop(pass);
+                if let PrefixUse::Store(PrefixSplit::Geometry) = prefix {
+                    dest.store_prefix(encoder, &mut dest_passes);
                 }
+                encode_glyph_pass_on_view(
+                    &self.text,
+                    &self.icons,
+                    dest.color_view(),
+                    encoder,
+                    &commands,
+                    dest_physical,
+                    &gpu_work,
+                    &mut dest_passes,
+                );
             }
-            drop(pass);
-            if let PrefixUse::Store(PrefixSplit::Geometry) = prefix {
-                dest.store_prefix(encoder, &mut dest_passes);
-            }
-            encode_glyph_pass(
-                &self.text,
-                &self.icons,
-                dest,
+            dest.blit(
                 encoder,
-                &commands,
-                dest_physical,
-                &gpu_work,
+                target,
+                blit_origin[0],
+                blit_origin[1],
+                viewport.physical_size,
+                viewport.clear.then_some(surface_clear),
+                self.alpha_encoding,
+                Some(&gpu_work),
                 &mut dest_passes,
             );
-        }
-        dest.blit(
-            encoder,
-            target,
-            blit_origin[0],
-            blit_origin[1],
-            viewport.physical_size,
-            viewport.clear.then_some(surface_clear),
-            self.alpha_encoding,
-            Some(&gpu_work),
-            &mut dest_passes,
-        );
-        if let PrefixUse::Store(split) = prefix {
-            self.dest.as_mut().expect("dest target").mark_prefix(split);
+            if let PrefixUse::Store(split) = prefix {
+                self.dest.as_mut().expect("dest target").mark_prefix(split);
+            }
         }
         let encode = encode_started.elapsed();
         self.backdrop.finish_frame(&self.device, Some(&gpu_work));
@@ -3000,18 +3120,12 @@ impl SceneWgpuPainter {
             submit: std::time::Duration::ZERO,
         });
         self.last_dest_pass_counts = Some(dest_passes);
-        // Host-driven pixels (host textures, GPU slots) can change while the
-        // scene stands still, so only fully scene-described frames may be
-        // reused by the next paint.
-        self.painted = commands
-            .iter()
-            .all(|command| {
-                !matches!(
-                    command,
-                    DrawCommand::HostTexture(_) | DrawCommand::Custom { .. }
-                )
-            })
-            .then_some(painted);
+        // Host-driven or GPU-animated pixels can change while the scene
+        // stands still, and `Direct` frames do not paint `dest.color`, so
+        // only stationary `Retained` frames may reuse the cached dest.
+        self.painted =
+            (routing == SurfaceRouting::Retained && !has_external_pixels && !gpu_motion_live)
+                .then_some(painted);
         if resolved.cacheable {
             self.prepared_batch = Some(PreparedBatch {
                 key: painted,
@@ -3788,12 +3902,75 @@ fn prefix_split(commands: &[DrawCommand], ordered: bool, clears: bool) -> Option
     None
 }
 
+#[allow(clippy::too_many_arguments)]
+fn encode_msaa_geometry_commands<'a>(
+    quads: &'a QuadPipeline,
+    meshes: &'a MeshPipeline,
+    #[cfg(feature = "charts")] charts: Option<&'a chart::ChartPipeline>,
+    #[cfg(feature = "charts")] chart_target: &'a chart::ChartPipelineTarget,
+    pass: &mut wgpu::RenderPass<'a>,
+    commands: &'a [DrawCommand],
+    sample_count: u32,
+    motion: &'a wgpu::BindGroup,
+    gpu_work: &GpuWorkSink,
+) {
+    for command in commands {
+        match command {
+            DrawCommand::Quads { range, scissor } => {
+                quads.draw(
+                    pass,
+                    range.clone(),
+                    *scissor,
+                    sample_count,
+                    motion,
+                    Some(gpu_work),
+                );
+            }
+            DrawCommand::Mesh { range, scissor } => {
+                meshes.draw(pass, range, *scissor, sample_count, Some(gpu_work));
+            }
+            DrawCommand::Path { range, scissor } => {
+                meshes.draw_path(pass, range, *scissor, sample_count, Some(gpu_work));
+            }
+            #[cfg(feature = "charts")]
+            DrawCommand::Chart {
+                slot,
+                draw,
+                scissor,
+            } => {
+                if let Some(pipeline) = charts {
+                    chart_target.draw(
+                        pipeline,
+                        pass,
+                        *slot,
+                        *draw,
+                        *scissor,
+                        sample_count,
+                        motion,
+                        Some(gpu_work),
+                    );
+                }
+            }
+            // A mask only ever sits inside a group, and a frame with
+            // groups is encoded in order, not here.
+            DrawCommand::PathMask { .. } => {}
+            DrawCommand::Text { .. }
+            | DrawCommand::Icon { .. }
+            | DrawCommand::HostTexture(_)
+            | DrawCommand::Backdrop { .. }
+            | DrawCommand::Custom { .. }
+            | DrawCommand::PushGroup { .. }
+            | DrawCommand::PopGroup => {}
+        }
+    }
+}
+
 /// A UI-only frame's glyphs and icons, over its geometry.
 #[allow(clippy::too_many_arguments)]
-fn encode_glyph_pass(
+fn encode_glyph_pass_on_view(
     text: &TextPipeline,
     icons: &IconPipeline,
-    dest: &DestTarget,
+    root_view: &wgpu::TextureView,
     encoder: &mut wgpu::CommandEncoder,
     commands: &[DrawCommand],
     dest_physical: [u32; 2],
@@ -3806,7 +3983,8 @@ fn encode_glyph_pass(
     {
         return;
     }
-    let mut pass = dest.begin_color_pass(encoder, wgpu::LoadOp::Load, dest_passes);
+    let mut pass =
+        DestTarget::begin_color_pass_on_view(encoder, root_view, wgpu::LoadOp::Load, dest_passes);
     restore_dest_viewport(&mut pass, dest_physical);
     for command in commands {
         match command {
@@ -3825,10 +4003,12 @@ fn encode_glyph_pass(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn encode_ordered(
     pipelines: &mut EncodeOrdered<'_>,
     encoder: &mut wgpu::CommandEncoder,
-    dest: &DestTarget,
+    dest: Option<&DestTarget>,
+    root_view: &wgpu::TextureView,
     dest_physical: [u32; 2],
     initial_load: wgpu::LoadOp<wgpu::Color>,
     commands: &[DrawCommand],
@@ -3871,7 +4051,9 @@ fn encode_ordered(
                 // only there. While something moves on the GPU the extents are
                 // the encoded bounds, not where it is now, so only the
                 // backdrop copy — which needs them — is limited.
-                let reads_backdrop = dest.reads_backdrop(frame.slot);
+                let reads_backdrop = dest
+                    .expect("dest target present for groups")
+                    .reads_backdrop(frame.slot);
                 let whole = PhysicalRect {
                     x: 0,
                     y: 0,
@@ -3897,6 +4079,7 @@ fn encode_ordered(
                     area = Some(region);
                 }
                 if let Some(region) = area.filter(|_| reads_backdrop) {
+                    let group_dest = dest.expect("dest target present for reading blend");
                     // The blend reads what it lands on: bring the parent up
                     // to date — a first use still has to clear it — and copy
                     // it before compositing over it.
@@ -3906,7 +4089,7 @@ fn encode_ordered(
                             if let wgpu::LoadOp::Clear(_) =
                                 group_layer_load(&mut layer_ready, layer)
                             {
-                                let mut pass = dest.begin_group_pass(
+                                let mut pass = group_dest.begin_group_pass(
                                     encoder,
                                     layer,
                                     wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
@@ -3916,22 +4099,28 @@ fn encode_ordered(
                             }
                         }
                         None => ensure_backdrop_target_ready(
-                            dest,
+                            root_view,
                             encoder,
                             dest_physical,
                             &mut dest_load,
                             dest_passes,
                         ),
                     }
-                    dest.copy_backdrop(encoder, parent, region);
+                    group_dest.copy_backdrop(encoder, parent, region);
                 }
+                let group_dest = dest.expect("dest target present for groups");
                 let mut pass = match stack.last() {
                     Some(parent) => {
                         let load = group_layer_load(&mut layer_ready, parent.layer);
-                        dest.begin_group_pass(encoder, parent.layer, load, dest_passes)
+                        group_dest.begin_group_pass(encoder, parent.layer, load, dest_passes)
                     }
                     None => {
-                        let pass = dest.begin_color_pass(encoder, dest_load, dest_passes);
+                        let pass = DestTarget::begin_color_pass_on_view(
+                            encoder,
+                            root_view,
+                            dest_load,
+                            dest_passes,
+                        );
                         dest_load = wgpu::LoadOp::Load;
                         pass
                     }
@@ -3940,7 +4129,12 @@ fn encode_ordered(
                 let area = area.unwrap_or(whole);
                 pass.set_scissor_rect(area.x, area.y, area.width, area.height);
                 dest_passes.composite_pixels += u64::from(area.width) * u64::from(area.height);
-                dest.composite_group(&mut pass, frame.layer, frame.slot, Some(pipelines.gpu_work));
+                group_dest.composite_group(
+                    &mut pass,
+                    frame.layer,
+                    frame.slot,
+                    Some(pipelines.gpu_work),
+                );
                 drop(pass);
                 index += 1;
             }
@@ -3953,8 +4147,9 @@ fn encode_ordered(
                         index += 1;
                         continue;
                     };
+                    let backdrop_dest = dest.expect("dest target present for backdrop");
                     ensure_backdrop_target_ready(
-                        dest,
+                        root_view,
                         encoder,
                         dest_physical,
                         &mut dest_load,
@@ -3963,9 +4158,9 @@ fn encode_ordered(
                     pipelines.backdrop.encode(
                         __framework::device(pipelines.gpu),
                         encoder,
-                        dest.color_view(),
+                        backdrop_dest.color_view(),
                         dest_physical,
-                        dest.color_view(),
+                        backdrop_dest.color_view(),
                         &request,
                         pipelines.quads.paint_buffer(),
                         Some(pipelines.gpu_work),
@@ -3975,18 +4170,49 @@ fn encode_ordered(
                     index += 1;
                     continue;
                 }
-                let mut pass = match stack.last() {
-                    Some(frame) => {
-                        let load = group_layer_load(&mut layer_ready, frame.layer);
-                        dest.begin_group_pass(encoder, frame.layer, load, dest_passes)
+                let mut replaced_first_clear = false;
+                let pass_load = if stack.is_empty()
+                    && let wgpu::LoadOp::Clear(load_color) = dest_load
+                    && let DrawCommand::HostTexture(prepared) = &commands[index]
+                    && prepared.can_replace_clear(dest_physical, load_color)
+                {
+                    replaced_first_clear = true;
+                    // SAFETY: `commands[index]` is a full-viewport `BlendState::REPLACE`
+                    // `HostTexture` whose fragment shader overwrites every pixel of `root_view`.
+                    unsafe { wgpu::LoadOp::DontCare(wgpu::LoadOpDontCare::enabled()) }
+                } else {
+                    match stack.last() {
+                        Some(frame) => group_layer_load(&mut layer_ready, frame.layer),
+                        None => dest_load,
                     }
+                };
+                let mut pass = match stack.last() {
+                    Some(frame) => dest
+                        .expect("dest target present for groups")
+                        .begin_group_pass(encoder, frame.layer, pass_load, dest_passes),
                     None => {
-                        let pass = dest.begin_color_pass(encoder, dest_load, dest_passes);
+                        let pass = DestTarget::begin_color_pass_on_view(
+                            encoder,
+                            root_view,
+                            pass_load,
+                            dest_passes,
+                        );
                         dest_load = wgpu::LoadOp::Load;
                         pass
                     }
                 };
                 restore_dest_viewport(&mut pass, dest_physical);
+                if replaced_first_clear && let DrawCommand::HostTexture(prepared) = &commands[index]
+                {
+                    pipelines.host_textures.draw_replace(
+                        prepared,
+                        &mut pass,
+                        dest_physical,
+                        Some(pipelines.gpu_work),
+                    );
+                    restore_dest_viewport(&mut pass, dest_physical);
+                    index += 1;
+                }
                 while index < commands.len() {
                     match &commands[index] {
                         DrawCommand::PushGroup { .. } | DrawCommand::PopGroup => break,
@@ -4137,8 +4363,10 @@ fn encode_ordered(
                 {
                     if bounds.width > 0 && bounds.height > 0 {
                         let target = match stack.last() {
-                            Some(frame) => dest.group_view(frame.layer),
-                            None => dest.color_view(),
+                            Some(frame) => dest
+                                .expect("dest target present for groups")
+                                .group_view(frame.layer),
+                            None => root_view,
                         };
                         renderer.render(
                             node,
@@ -4162,7 +4390,13 @@ fn encode_ordered(
     }
     // Every command may have been an empty group, skipped: the dest still
     // owes its clear.
-    ensure_backdrop_target_ready(dest, encoder, dest_physical, &mut dest_load, dest_passes);
+    ensure_backdrop_target_ready(
+        root_view,
+        encoder,
+        dest_physical,
+        &mut dest_load,
+        dest_passes,
+    );
 }
 
 /// Offer the renderer the run of `Custom` commands starting at `start` that
@@ -4253,14 +4487,15 @@ fn restore_dest_viewport(pass: &mut wgpu::RenderPass<'_>, dest_physical: [u32; 2
 }
 
 fn ensure_backdrop_target_ready(
-    dest: &DestTarget,
+    root_view: &wgpu::TextureView,
     encoder: &mut wgpu::CommandEncoder,
     dest_physical: [u32; 2],
     dest_load: &mut wgpu::LoadOp<wgpu::Color>,
     dest_passes: &mut DestPassCounts,
 ) {
     if matches!(*dest_load, wgpu::LoadOp::Clear(_)) {
-        let mut pass = dest.begin_color_pass(encoder, *dest_load, dest_passes);
+        let mut pass =
+            DestTarget::begin_color_pass_on_view(encoder, root_view, *dest_load, dest_passes);
         restore_dest_viewport(&mut pass, dest_physical);
         drop(pass);
         *dest_load = wgpu::LoadOp::Load;
@@ -4403,6 +4638,8 @@ impl SceneWgpuPainter {
         let mut state = self.targets.remove(&id).unwrap_or_default();
         if state.image_revision != self.image_revision {
             state.painted = None;
+            state.last_encoded_key = None;
+            state.changing_frame_streak = 0;
             QuadPipeline::invalidate_target_image_bindings(&mut state.quads);
             HostTexturePipeline::invalidate_target_image_bindings(&mut state.host_textures);
         }

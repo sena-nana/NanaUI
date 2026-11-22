@@ -279,6 +279,10 @@ fn group_layer_bind_group(
 /// unit cannot do.
 const FIRST_READING_BLEND: u32 = 3;
 
+pub(super) fn slot_reads_backdrop(slot: &GroupSlot) -> bool {
+    slot.mix_blend >= FIRST_READING_BLEND
+}
+
 fn group_blend_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
@@ -507,6 +511,64 @@ struct GroupLayer {
     blend_bind_group: Option<wgpu::BindGroup>,
 }
 
+struct ColorAttachment {
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    blit_bind_group: wgpu::BindGroup,
+}
+
+fn create_color_attachment(
+    device: &wgpu::Device,
+    bind_layout: &wgpu::BindGroupLayout,
+    sampler: &wgpu::Sampler,
+    presentation_uniforms: &ManagedBuffer,
+    format: wgpu::TextureFormat,
+    width: u32,
+    height: u32,
+) -> ColorAttachment {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("nana-ui.scene.dest.color"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let blit_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("nana-ui.scene.dest.blit.bind"),
+        layout: bind_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: presentation_uniforms.as_entire_binding(),
+            },
+        ],
+    });
+    ColorAttachment {
+        texture,
+        view,
+        blit_bind_group,
+    }
+}
+
 pub(super) struct DestTarget {
     pub width: u32,
     pub height: u32,
@@ -515,8 +577,10 @@ pub(super) struct DestTarget {
     target_format: wgpu::TextureFormat,
     presentation: ScenePresentationProfile,
     msaa: Option<wgpu::TextureView>,
-    color: wgpu::Texture,
-    color_view: wgpu::TextureView,
+    color: Option<ColorAttachment>,
+    color_idle_frames: u32,
+    blit_bind_layout: wgpu::BindGroupLayout,
+    blit_sampler: wgpu::Sampler,
     blit_pipeline: wgpu::RenderPipeline,
     /// The blit that stores encoded-premultiplied pixels for compositor
     /// surfaces (see [`AlphaEncoding::Gamma`]). Wide-gamut profiles use their
@@ -530,7 +594,6 @@ pub(super) struct DestTarget {
     blit_clear_pipeline: wgpu::RenderPipeline,
     blit_clear_gamma_pipeline: Option<wgpu::RenderPipeline>,
     blit_clear_presentation_pipeline: Option<wgpu::RenderPipeline>,
-    blit_bind_group: wgpu::BindGroup,
     presentation_uniforms: ManagedBuffer,
     presentation_uniform: [f32; 4],
     group_layers: Vec<GroupLayer>,
@@ -969,6 +1032,7 @@ impl DestTarget {
         width: u32,
         height: u32,
         want_msaa: bool,
+        want_color: bool,
         policy: &nana_gpu::GpuDeviceState,
     ) {
         Self::try_ensure(
@@ -981,6 +1045,7 @@ impl DestTarget {
             width,
             height,
             want_msaa,
+            want_color,
             policy,
         )
         .expect("dest target test build");
@@ -999,6 +1064,7 @@ impl DestTarget {
         width: u32,
         height: u32,
         want_msaa: bool,
+        want_color: bool,
         policy: &nana_gpu::GpuDeviceState,
     ) -> Result<(), super::validate::ScenePaintError> {
         if let Some(target) = current.as_mut()
@@ -1010,6 +1076,22 @@ impl DestTarget {
         {
             // Switching between UI-only and ordered GPU composition changes
             // the attachment, not the color target, bindings or pipelines.
+            if want_color {
+                if target.color.is_none() {
+                    target.color = Some(create_color_attachment(
+                        device,
+                        &target.blit_bind_layout,
+                        &target.blit_sampler,
+                        &target.presentation_uniforms,
+                        format,
+                        width.max(1),
+                        height.max(1),
+                    ));
+                }
+                target.color_idle_frames = 0;
+            } else {
+                target.trim_idle_color();
+            }
             if target.msaa_allocated != want_msaa {
                 target.msaa = want_msaa.then(|| msaa_view(device, format, width, height));
                 target.msaa_allocated = want_msaa;
@@ -1026,6 +1108,7 @@ impl DestTarget {
             width,
             height,
             want_msaa,
+            want_color,
             policy,
         )?);
         Ok(())
@@ -1041,29 +1124,12 @@ impl DestTarget {
         width: u32,
         height: u32,
         want_msaa: bool,
+        want_color: bool,
         policy: &nana_gpu::GpuDeviceState,
     ) -> Result<Self, super::validate::ScenePaintError> {
         let width = width.max(1);
         let height = height.max(1);
         let msaa = want_msaa.then(|| msaa_view(device, format, width, height));
-        let color = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("nana-ui.scene.dest.color"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_SRC
-                | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        let color_view = color.create_view(&wgpu::TextureViewDescriptor::default());
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("nana-ui.scene.dest.sampler"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -1101,23 +1167,16 @@ impl DestTarget {
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }));
-        let blit_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("nana-ui.scene.dest.blit.bind"),
-            layout: &bind_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&color_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: presentation_uniforms.as_entire_binding(),
-                },
-            ],
+        let color = want_color.then(|| {
+            create_color_attachment(
+                device,
+                &bind_layout,
+                &sampler,
+                &presentation_uniforms,
+                format,
+                width,
+                height,
+            )
         });
         let group_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("nana-ui.scene.group.sampler"),
@@ -1140,14 +1199,15 @@ impl DestTarget {
             presentation,
             msaa,
             color,
-            color_view,
+            color_idle_frames: 0,
+            blit_bind_layout: bind_layout,
+            blit_sampler: sampler,
             blit_pipeline,
             blit_gamma_pipeline,
             blit_presentation_pipeline,
             blit_clear_pipeline,
             blit_clear_gamma_pipeline,
             blit_clear_presentation_pipeline,
-            blit_bind_group,
             presentation_uniforms,
             presentation_uniform: [f32::NAN; 4],
             group_layers: Vec::new(),
@@ -1186,8 +1246,41 @@ impl DestTarget {
         self.reading_blend.is_some()
     }
 
+    pub(super) fn has_color(&self) -> bool {
+        self.color.is_some()
+    }
+
+    pub(super) fn is_idle_empty(&self) -> bool {
+        self.color.is_none()
+            && self.msaa.is_none()
+            && self.group_layers.is_empty()
+            && self.reading_blend.is_none()
+            && self.prefix.is_none()
+    }
+
+    pub(super) fn release_msaa(&mut self) {
+        if self.msaa.is_some() || self.msaa_allocated {
+            self.msaa = None;
+            self.msaa_allocated = false;
+            self.forget_prefix();
+        }
+    }
+
+    pub(super) fn trim_idle_color(&mut self) {
+        if self.color.is_some() {
+            self.color_idle_frames = self.color_idle_frames.saturating_add(1);
+            if self.color_idle_frames >= SHRINK_IDLE_FRAMES {
+                self.color = None;
+                self.prefix = None;
+                self.color_idle_frames = 0;
+            }
+        } else {
+            self.color_idle_frames = 0;
+        }
+    }
+
     pub(super) fn color_view(&self) -> &wgpu::TextureView {
-        &self.color_view
+        &self.color.as_ref().expect("retained dest color").view
     }
 
     /// Whether the snapshot holds the dest as it stood at `split`.
@@ -1251,8 +1344,9 @@ impl DestTarget {
             return;
         };
         counts.prefix_store = counts.prefix_store.saturating_add(1);
+        let color = self.color.as_ref().expect("retained dest color");
         encoder.copy_texture_to_texture(
-            self.color.as_image_copy(),
+            color.texture.as_image_copy(),
             prefix.texture.as_image_copy(),
             self.extent(),
         );
@@ -1274,9 +1368,10 @@ impl DestTarget {
             return;
         };
         counts.prefix_restore = counts.prefix_restore.saturating_add(1);
+        let color = self.color.as_ref().expect("retained dest color");
         encoder.copy_texture_to_texture(
             prefix.texture.as_image_copy(),
-            self.color.as_image_copy(),
+            color.texture.as_image_copy(),
             self.extent(),
         );
     }
@@ -1472,7 +1567,7 @@ impl DestTarget {
         };
         let source = match parent {
             Some(layer) => &self.group_layers[layer].texture,
-            None => &self.color,
+            None => &self.color.as_ref().expect("retained dest color").texture,
         };
         let x = area.x.min(self.width);
         let y = area.y.min(self.height);
@@ -1650,9 +1745,9 @@ impl DestTarget {
         }
     }
 
-    pub(super) fn begin_color_pass<'a>(
-        &'a self,
+    pub(super) fn begin_color_pass_on_view<'a>(
         encoder: &'a mut wgpu::CommandEncoder,
+        view: &'a wgpu::TextureView,
         load: wgpu::LoadOp<wgpu::Color>,
         counts: &mut DestPassCounts,
     ) -> wgpu::RenderPass<'a> {
@@ -1660,7 +1755,7 @@ impl DestTarget {
         encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("nana-ui.scene.dest.color"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &self.color_view,
+                view,
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
@@ -1681,13 +1776,23 @@ impl DestTarget {
         clear: wgpu::Color,
         counts: &mut DestPassCounts,
     ) -> wgpu::RenderPass<'a> {
+        self.begin_msaa_pass_with_resolve(encoder, self.color_view(), clear, counts)
+    }
+
+    pub(super) fn begin_msaa_pass_with_resolve<'a>(
+        &'a self,
+        encoder: &'a mut wgpu::CommandEncoder,
+        resolve_target: &'a wgpu::TextureView,
+        clear: wgpu::Color,
+        counts: &mut DestPassCounts,
+    ) -> wgpu::RenderPass<'a> {
         counts.msaa = counts.msaa.saturating_add(1);
         encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("nana-ui.scene.dest.msaa"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: self.msaa.as_ref().expect("UI-only dest allocates 4x MSAA"),
                 depth_slice: None,
-                resolve_target: Some(&self.color_view),
+                resolve_target: Some(resolve_target),
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(clear),
                     store: wgpu::StoreOp::Discard,
@@ -1757,7 +1862,15 @@ impl DestTarget {
             &self.blit_pipeline
         };
         pass.set_pipeline(pipeline.unwrap_or(fallback));
-        pass.set_bind_group(0, &self.blit_bind_group, &[]);
+        pass.set_bind_group(
+            0,
+            &self
+                .color
+                .as_ref()
+                .expect("retained dest color")
+                .blit_bind_group,
+            &[],
+        );
         pass.draw(0..3, 0..1);
         drop(pass);
         if let Some(work) = gpu_work {
@@ -1791,23 +1904,26 @@ mod lifecycle_tests {
                 width,
                 48,
                 msaa,
+                true,
                 gpu.policy(),
             );
         };
         ensure(&mut current, 64, false);
         let target = current.as_ref().unwrap();
-        let color = target.color.clone();
-        let binding = target.blit_bind_group.clone();
+        let attachment = target.color.as_ref().unwrap();
+        let color = attachment.texture.clone();
+        let binding = attachment.blit_bind_group.clone();
         let pipeline = target.blit_pipeline.clone();
         let group = target.group_pipeline.clone();
         for msaa in [true, false, true, false] {
             ensure(&mut current, 64, msaa);
             let target = current.as_ref().unwrap();
+            let attachment = target.color.as_ref().unwrap();
             assert_eq!(
-                target.color, color,
+                attachment.texture, color,
                 "mode change must preserve the color attachment"
             );
-            assert_eq!(target.blit_bind_group, binding);
+            assert_eq!(attachment.blit_bind_group, binding);
             assert_eq!(target.blit_pipeline, pipeline);
             assert_eq!(target.msaa.is_some(), msaa);
             assert_eq!(target.msaa_allocated, msaa);
@@ -1815,7 +1931,8 @@ mod lifecycle_tests {
         ensure(&mut current, 96, false);
         let resized = current.as_ref().unwrap();
         assert_ne!(
-            resized.color, color,
+            resized.color.as_ref().unwrap().texture,
+            color,
             "size change needs a new color attachment"
         );
         assert_eq!(
@@ -1824,5 +1941,67 @@ mod lifecycle_tests {
         );
         assert_eq!(resized.group_pipeline, group);
         assert_eq!(resized.width, 96);
+    }
+
+    #[test]
+    fn dest_skips_and_reclaims_color_attachment_when_direct() {
+        let gpu = crate::test_gpu::context();
+        let device = __framework::device(&gpu);
+        let profile = ScenePresentationProfile::sdr(GpuTextureFormat::BGRA8_UNORM_SRGB);
+        let format = __framework::format_to_wgpu(profile.working_format());
+        let output = wgpu::TextureFormat::Bgra8UnormSrgb;
+        let mut current = None;
+
+        DestTarget::ensure(
+            &mut current,
+            None,
+            device,
+            format,
+            output,
+            profile,
+            64,
+            48,
+            true,
+            false,
+            gpu.policy(),
+        );
+        let direct = current.as_ref().unwrap();
+        assert!(!direct.has_color());
+        assert!(direct.msaa_allocated);
+
+        DestTarget::ensure(
+            &mut current,
+            None,
+            device,
+            format,
+            output,
+            profile,
+            64,
+            48,
+            true,
+            true,
+            gpu.policy(),
+        );
+        assert!(current.as_ref().unwrap().has_color());
+
+        for _ in 0..SHRINK_IDLE_FRAMES {
+            DestTarget::ensure(
+                &mut current,
+                None,
+                device,
+                format,
+                output,
+                profile,
+                64,
+                48,
+                false,
+                false,
+                gpu.policy(),
+            );
+        }
+        let trimmed = current.as_ref().unwrap();
+        assert!(!trimmed.has_color());
+        assert!(!trimmed.msaa_allocated);
+        assert!(trimmed.is_idle_empty());
     }
 }

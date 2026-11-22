@@ -5949,8 +5949,8 @@ fn assert_mixed_gpu_pass_counts(painter: &SceneWgpuPainter) {
         "mixed GPU frames must not allocate unused 4x MSAA, got {counts:?}"
     );
     assert_eq!(
-        counts.blit, 1,
-        "dest→window blit may be one extra pass, got {counts:?}"
+        counts.blit, 0,
+        "eligible linear mixed GPU frames must paint directly to target without dest blit, got {counts:?}"
     );
 }
 
@@ -15156,4 +15156,562 @@ fn backdrop_scratch_and_dest_groups_right_size_and_reclaim_when_idle() {
         !dest.has_reading_blend(),
         "idle reading_blend target must drop after 120 frames"
     );
+}
+
+#[test]
+fn host_texture_direct_to_target_matches_dest_blit_pixels() {
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let (scene, registry, _texture, _overlay_fill) =
+        runtime_button_over_host_texture_scene(&device, &queue, format);
+
+    let mut group = translucent_parent(900, &[901], 8.0, 8.0, 24.0, 24.0, 0.5);
+    Arc::make_mut(&mut group.source_style.layout).border_radius = Some(4.0);
+    let mut grouped_scene = scene.clone();
+    grouped_scene.apply_delta(
+        [
+            group,
+            colored_quad_child(901, 900, 2.0, 2.0, 20.0, 20.0, [0.9, 0.4, 0.1, 1.0]),
+        ],
+        [],
+    );
+
+    let mut direct_painter = SceneWgpuPainter::for_test(format);
+    let (direct_tex, direct_view) = test_copy_target(&device, format, 64, 64);
+    let direct_viewport = ScenePaintViewport {
+        logical_size: [64.0, 64.0],
+        physical_size: [64, 64],
+        scale_factor: 1.0,
+        scene_origin: [0.0, 0.0],
+        target_origin: [0.0, 0.0],
+        clear_color: [0.05, 0.1, 0.15, 1.0],
+        clear: true,
+    };
+    let mut direct_enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("direct-to-target"),
+    });
+    direct_painter
+        .paint_encoder(
+            &grouped_scene,
+            &mut direct_enc,
+            &direct_view,
+            direct_viewport,
+            Some(&registry),
+            None,
+        )
+        .unwrap();
+    let direct_counts = direct_painter.last_dest_pass_counts.unwrap();
+    assert_eq!(direct_counts.blit, 0);
+    assert_eq!(direct_counts.color, 2);
+    assert_eq!(direct_counts.group, 1);
+    let direct_pixels = readback_rgba(&device, &queue, direct_enc, &direct_tex, 64, 64);
+
+    let mut blit_painter = SceneWgpuPainter::for_test(format);
+    let (blit_tex, blit_view) = test_copy_target(&device, format, 65, 64);
+    let blit_viewport = ScenePaintViewport {
+        logical_size: [64.0, 64.0],
+        physical_size: [65, 64],
+        scale_factor: 1.0,
+        scene_origin: [0.0, 0.0],
+        target_origin: [0.0, 0.0],
+        clear_color: [0.05, 0.1, 0.15, 1.0],
+        clear: true,
+    };
+    let mut blit_enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("forced-dest-blit"),
+    });
+    blit_painter
+        .paint_encoder(
+            &grouped_scene,
+            &mut blit_enc,
+            &blit_view,
+            blit_viewport,
+            Some(&registry),
+            None,
+        )
+        .unwrap();
+    let blit_counts = blit_painter.last_dest_pass_counts.unwrap();
+    assert_eq!(blit_counts.blit, 1);
+    let blit_pixels = readback_rgba(&device, &queue, blit_enc, &blit_tex, 65, 64);
+
+    for y in 0..64u32 {
+        for x in 0..64u32 {
+            let a = pixel(&direct_pixels, 64, x, y);
+            let b = pixel(&blit_pixels, 65, x, y);
+            assert_eq!(
+                a, b,
+                "pixel mismatch at ({x}, {y}): direct={a:?} blit={b:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn host_texture_falls_back_to_dest_blit_when_required() {
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let (scene, registry, _texture, _overlay_fill) =
+        runtime_button_over_host_texture_scene(&device, &queue, format);
+    let (_tex, view) = test_copy_target(&device, format, 64, 64);
+    let base_viewport = ScenePaintViewport {
+        logical_size: [64.0, 64.0],
+        physical_size: [64, 64],
+        scale_factor: 1.0,
+        scene_origin: [0.0, 0.0],
+        target_origin: [0.0, 0.0],
+        clear_color: [0.0, 0.0, 0.0, 1.0],
+        clear: true,
+    };
+
+    let paint_counts = |painter: &mut SceneWgpuPainter, scene: &UiScene, viewport| {
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("fallback-check"),
+        });
+        painter
+            .paint_encoder(scene, &mut encoder, &view, viewport, Some(&registry), None)
+            .unwrap();
+        queue.submit([encoder.finish()]);
+        painter.last_dest_pass_counts.unwrap()
+    };
+
+    // 1. AlphaEncoding::Gamma requires dest blit for gamma-alpha conversion.
+    let mut gamma_painter = SceneWgpuPainter::for_test(format);
+    gamma_painter.set_alpha_encoding(AlphaEncoding::Gamma);
+    assert_eq!(
+        paint_counts(&mut gamma_painter, &scene, base_viewport).blit,
+        1
+    );
+
+    // 2. BackdropFilter requires dest.color intermediate.
+    let mut backdrop_painter = SceneWgpuPainter::for_test(format);
+    let mut backdrop_scene = scene.clone();
+    backdrop_scene.apply_delta(
+        [frost_quad_node_with_fill(
+            950,
+            4.0,
+            4.0,
+            24.0,
+            24.0,
+            [1.0, 1.0, 1.0, 0.2],
+            nana_ui_core::BackdropFilter {
+                blur_radius: 4.0,
+                saturate: 1.0,
+            },
+        )],
+        [],
+    );
+    assert_eq!(
+        paint_counts(&mut backdrop_painter, &backdrop_scene, base_viewport).blit,
+        1
+    );
+
+    // 3. Reading blend group (Overlay) requires dest.color backdrop copy.
+    let mut blend_painter = SceneWgpuPainter::for_test(format);
+    let mut blend_group = translucent_parent(960, &[961], 0.0, 0.0, 32.0, 32.0, 0.8);
+    Arc::make_mut(&mut blend_group.source_style.layout).paint = nana_ui_core::PaintStyle {
+        mix_blend: nana_ui_core::MixBlendMode::Overlay,
+        ..Default::default()
+    }
+    .into();
+    let mut blend_scene = scene.clone();
+    blend_scene.apply_delta(
+        [
+            blend_group,
+            colored_quad_child(961, 960, 4.0, 4.0, 16.0, 16.0, [0.8, 0.2, 0.4, 1.0]),
+        ],
+        [],
+    );
+    assert_eq!(
+        paint_counts(&mut blend_painter, &blend_scene, base_viewport).blit,
+        1
+    );
+
+    // 4. viewport.clear == false preserves existing target content over dest blit.
+    let mut linear_painter = SceneWgpuPainter::for_test(format);
+    assert_eq!(
+        paint_counts(
+            &mut linear_painter,
+            &scene,
+            ScenePaintViewport {
+                clear: false,
+                ..base_viewport
+            },
+        )
+        .blit,
+        1
+    );
+
+    // 5. Non-zero target_origin offsets the dest quad onto the target via dest.blit.
+    assert_eq!(
+        paint_counts(
+            &mut linear_painter,
+            &scene,
+            ScenePaintViewport {
+                target_origin: [2.0, 0.0],
+                ..base_viewport
+            },
+        )
+        .blit,
+        1
+    );
+}
+
+#[test]
+fn streaming_ui_switches_to_direct_msaa_resolve_and_re_retains_when_idle() {
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let bg = context
+        .create_component(
+            document,
+            RuntimeButton::new("").layout(square_button_layout()),
+        )
+        .unwrap();
+    let card = context
+        .create_component(
+            document,
+            RuntimeButton::new("Go")
+                .kind(ButtonKind::Selected)
+                .layout(square_button_layout()),
+        )
+        .unwrap();
+    let mut layout = MutationQueue::new();
+    write_box(&mut layout, bg.stable_id(), 0.0, 0.0, 64.0, 64.0);
+    write_box(&mut layout, card.stable_id(), 8.0, 12.0, 48.0, 32.0);
+    context.commit_mutations(layout).unwrap();
+    let scene = commit_scene(&mut context);
+
+    let mut painter = SceneWgpuPainter::for_test(format);
+    let (texture, view) = test_copy_target(&device, format, 64, 64);
+    let make_viewport = |scroll_x: f32| ScenePaintViewport {
+        logical_size: [64.0, 64.0],
+        physical_size: [64, 64],
+        scale_factor: 1.0,
+        scene_origin: [scroll_x, 0.0],
+        target_origin: [0.0, 0.0],
+        clear_color: [0.05, 0.08, 0.12, 1.0],
+        clear: true,
+    };
+
+    let paint_at = |target_painter: &mut SceneWgpuPainter,
+                    tex: &wgpu::Texture,
+                    target_view: &wgpu::TextureView,
+                    vp: ScenePaintViewport,
+                    w: u32| {
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("streaming-ui-routing"),
+        });
+        target_painter
+            .paint_encoder(&scene, &mut enc, target_view, vp, None, None)
+            .unwrap();
+        let counts = target_painter.last_dest_pass_counts.unwrap();
+        let work = target_painter.last_gpu_work().unwrap();
+        let pixels = readback_rgba(&device, &queue, enc, tex, w, 64);
+        (counts, work, pixels)
+    };
+
+    // Frames 1 & 2 (scroll 0 -> 2): Retained while building streak.
+    let (c1, _, _) = paint_at(&mut painter, &texture, &view, make_viewport(0.0), 64);
+    assert_eq!((c1.msaa, c1.blit), (1, 1));
+    assert!(painter.dest.as_ref().unwrap().has_color());
+
+    let (c2, _, _) = paint_at(&mut painter, &texture, &view, make_viewport(2.0), 64);
+    assert_eq!((c2.msaa, c2.blit), (1, 1));
+
+    // Frame 3 (scroll 4): streak reaches DIRECT_STREAK_THRESHOLD -> 4x MSAA resolves directly into target.
+    let (c3, _, direct_pixels) = paint_at(&mut painter, &texture, &view, make_viewport(4.0), 64);
+    assert_eq!(c3.msaa, 1);
+    assert_eq!(c3.color, 1);
+    assert_eq!(c3.blit, 0);
+
+    // Pixel parity against forced Retained (`target.width = 65` forces dest.blit).
+    let mut ref_painter = SceneWgpuPainter::for_test(format);
+    let (ref_tex, ref_view) = test_copy_target(&device, format, 65, 64);
+    let (c_ref, _, ref_pixels) = paint_at(
+        &mut ref_painter,
+        &ref_tex,
+        &ref_view,
+        make_viewport(4.0),
+        65,
+    );
+    assert_eq!(c_ref.blit, 1);
+    for y in 0..64u32 {
+        for x in 0..64u32 {
+            assert_eq!(
+                pixel(&direct_pixels, 64, x, y),
+                pixel(&ref_pixels, 65, x, y),
+                "4x MSAA direct resolve mismatch at ({x}, {y})"
+            );
+        }
+    }
+
+    // Frame 4 (stationary at scroll 4): promotes back to Retained for future static reuse.
+    let (c4, _, f4_pixels) = paint_at(&mut painter, &texture, &view, make_viewport(4.0), 64);
+    assert_eq!((c4.msaa, c4.blit), (1, 1));
+    assert_eq!(f4_pixels, direct_pixels);
+
+    // Frame 5 (still stationary at scroll 4): hits PaintedDest cache (0 scene draws, blit only).
+    let (c5, w5, f5_pixels) = paint_at(&mut painter, &texture, &view, make_viewport(4.0), 64);
+    assert_eq!((c5.msaa, c5.color, c5.blit), (0, 0, 1));
+    assert_eq!(w5.gpu_upload_bytes, 0);
+    assert_eq!(f5_pixels, direct_pixels);
+}
+
+#[test]
+fn gpu_motion_live_renders_direct_without_dest_color_or_blit() {
+    use std::time::Duration;
+
+    use nana_ui_core::{
+        Easing,
+        motion::{AnimatableProperty, MotionTo, MotionValue},
+    };
+    use nana_ui_runtime::{AnimationId, AnimationSpec, UiWorld};
+
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+
+    let panel = StableNodeId::new(1).unwrap();
+    let mut world = UiWorld::new();
+    let mut queue_mut = MutationQueue::new();
+    queue_mut.create(panel, DocumentId::new(1).unwrap(), NodeKind::Document);
+    queue_mut.start_animation(
+        AnimationSpec::new(
+            AnimationId::new(1).unwrap(),
+            panel,
+            Duration::ZERO,
+            Duration::from_millis(400),
+            Duration::from_millis(16),
+            Easing::Linear,
+        )
+        .with_property(AnimatableProperty::Opacity)
+        .with_range(
+            MotionValue::Scalar(0.2),
+            MotionTo::Value(MotionValue::Scalar(1.0)),
+        ),
+    );
+    world.commit(queue_mut).unwrap();
+    world.advance_animations(Duration::ZERO);
+    let mut extracted = world.extract_nodes(&[panel]);
+    extracted[0].layout = LayoutBox {
+        x: 8.0,
+        y: 8.0,
+        width: 48.0,
+        height: 48.0,
+    };
+    extracted[0].widget_paint =
+        colored_quad_node(1, 8.0, 8.0, 48.0, 48.0, [0.8, 0.3, 0.2, 1.0]).widget_paint;
+    let mut scene = UiScene::new();
+    scene.apply_delta(extracted, []);
+    scene.apply_presentation(
+        world.presentation_store(),
+        Duration::from_millis(200),
+        Some(world.motion_descriptors()),
+    );
+
+    let viewport = ScenePaintViewport {
+        logical_size: [64.0, 64.0],
+        physical_size: [64, 64],
+        scale_factor: 1.0,
+        scene_origin: [0.0, 0.0],
+        target_origin: [0.0, 0.0],
+        clear_color: [0.1, 0.1, 0.1, 1.0],
+        clear: true,
+    };
+
+    let mut direct_painter = SceneWgpuPainter::for_test(format);
+    let (direct_tex, direct_view) = test_copy_target(&device, format, 64, 64);
+    let mut direct_enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("gpu-motion-direct"),
+    });
+    direct_painter
+        .paint_encoder(&scene, &mut direct_enc, &direct_view, viewport, None, None)
+        .unwrap();
+    let direct_counts = direct_painter.last_dest_pass_counts.unwrap();
+    assert_eq!(direct_counts.msaa, 1);
+    assert_eq!(direct_counts.blit, 0);
+    assert!(!direct_painter.dest.as_ref().unwrap().has_color());
+    let direct_pixels = readback_rgba(&device, &queue, direct_enc, &direct_tex, 64, 64);
+
+    let mut blit_painter = SceneWgpuPainter::for_test(format);
+    let (blit_tex, blit_view) = test_copy_target(&device, format, 65, 64);
+    let mut blit_enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("gpu-motion-blit"),
+    });
+    blit_painter
+        .paint_encoder(&scene, &mut blit_enc, &blit_view, viewport, None, None)
+        .unwrap();
+    let blit_counts = blit_painter.last_dest_pass_counts.unwrap();
+    assert_eq!(blit_counts.blit, 1);
+    let blit_pixels = readback_rgba(&device, &queue, blit_enc, &blit_tex, 65, 64);
+
+    for y in 0..64u32 {
+        for x in 0..64u32 {
+            assert_eq!(
+                pixel(&direct_pixels, 64, x, y),
+                pixel(&blit_pixels, 65, x, y),
+                "GPU motion direct mismatch at ({x}, {y})"
+            );
+        }
+    }
+}
+
+#[test]
+fn host_texture_simple_replace_matches_clear_and_blend_pixels() {
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+
+    for alpha_mode in [
+        crate::HostTextureAlphaMode::Opaque,
+        crate::HostTextureAlphaMode::Premultiplied,
+    ] {
+        for clear_color in [[0.0, 0.0, 0.0, 0.0], [0.15, 0.25, 0.35, 1.0]] {
+            let mut layer = host_texture_child(1, 99, 0.0, 0.0, 64.0, 64.0, "layer");
+            layer.parent = None;
+            let mut overlay = colored_quad_node(2, 16.0, 16.0, 24.0, 24.0, [0.8, 0.2, 0.3, 0.5]);
+            overlay.parent = None;
+            let mut scene = UiScene::new();
+            scene.apply_delta([layer, overlay], []);
+
+            let src_view = solid_texture_view(
+                &device,
+                &queue,
+                format,
+                64,
+                64,
+                wgpu::Color {
+                    r: 0.2,
+                    g: 0.4,
+                    b: 0.6,
+                    a: 0.5,
+                },
+            );
+            let registry = HostTextureRegistry::new();
+            registry.register(
+                "layer",
+                crate::HostTexture::new(&crate::test_gpu::wrap_view(&src_view)),
+                64,
+                64,
+                alpha_mode,
+            );
+
+            let viewport = ScenePaintViewport {
+                logical_size: [64.0, 64.0],
+                physical_size: [64, 64],
+                scale_factor: 1.0,
+                scene_origin: [0.0, 0.0],
+                target_origin: [0.0, 0.0],
+                clear_color,
+                clear: true,
+            };
+
+            let mut direct_painter = SceneWgpuPainter::for_test(format);
+            let (direct_tex, direct_view) = test_copy_target(&device, format, 64, 64);
+            let mut direct_enc = device.create_command_encoder(&Default::default());
+            direct_painter
+                .paint_encoder(
+                    &scene,
+                    &mut direct_enc,
+                    &direct_view,
+                    viewport,
+                    Some(&registry),
+                    None,
+                )
+                .unwrap();
+            let direct_counts = direct_painter.last_dest_pass_counts.unwrap();
+            assert_eq!(direct_counts.color, 1);
+            assert_eq!(direct_counts.blit, 0);
+            let direct_pixels = readback_rgba(&device, &queue, direct_enc, &direct_tex, 64, 64);
+
+            let mut ref_painter = SceneWgpuPainter::for_test(format);
+            let (ref_tex, ref_view) = test_copy_target(&device, format, 65, 64);
+            let mut ref_enc = device.create_command_encoder(&Default::default());
+            ref_painter
+                .paint_encoder(
+                    &scene,
+                    &mut ref_enc,
+                    &ref_view,
+                    viewport,
+                    Some(&registry),
+                    None,
+                )
+                .unwrap();
+            assert_eq!(ref_painter.last_dest_pass_counts.unwrap().blit, 1);
+            let ref_pixels = readback_rgba(&device, &queue, ref_enc, &ref_tex, 65, 64);
+
+            for y in 0..64u32 {
+                for x in 0..64u32 {
+                    let got = pixel(&direct_pixels, 64, x, y);
+                    let want = pixel(&ref_pixels, 65, x, y);
+                    for c in 0..4 {
+                        assert!(
+                            got[c].abs_diff(want[c]) <= 1,
+                            "simple replace mismatch ({alpha_mode:?}, clear={clear_color:?}) at ({x},{y})[{c}]: got {got:?}, want {want:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn host_texture_rebind_reuses_uniform_buffer() {
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let mut layer = host_texture_child(1, 99, 0.0, 0.0, 32.0, 32.0, "layer");
+    layer.parent = None;
+    let mut scene = UiScene::new();
+    scene.apply_delta([layer], []);
+
+    let tex1 = solid_texture_view(&device, &queue, format, 32, 32, wgpu::Color::RED);
+    let tex2 = solid_texture_view(&device, &queue, format, 32, 32, wgpu::Color::GREEN);
+    let tex3 = solid_texture_view(&device, &queue, format, 32, 32, wgpu::Color::BLUE);
+
+    let host_tex = crate::HostTexture::new(&crate::test_gpu::wrap_view(&tex1));
+    let registry = HostTextureRegistry::new();
+    registry.register(
+        "layer",
+        host_tex.clone(),
+        32,
+        32,
+        crate::HostTextureAlphaMode::Opaque,
+    );
+
+    let mut painter = SceneWgpuPainter::for_test(format);
+    let viewport = ScenePaintViewport {
+        logical_size: [32.0, 32.0],
+        physical_size: [32, 32],
+        scale_factor: 1.0,
+        scene_origin: [0.0, 0.0],
+        target_origin: [0.0, 0.0],
+        clear_color: [0.0; 4],
+        clear: true,
+    };
+
+    let mut render_and_check = |expected: [u8; 4]| {
+        let (target_tex, target_view) = test_copy_target(&device, format, 32, 32);
+        let mut enc = device.create_command_encoder(&Default::default());
+        painter
+            .paint_encoder(
+                &scene,
+                &mut enc,
+                &target_view,
+                viewport,
+                Some(&registry),
+                None,
+            )
+            .unwrap();
+        let reallocs = painter.last_gpu_work().unwrap().gpu_buffer_reallocations;
+        let pixels = readback_rgba(&device, &queue, enc, &target_tex, 32, 32);
+        assert_eq!(pixel(&pixels, 32, 8, 8), expected);
+        reallocs
+    };
+
+    assert_eq!(render_and_check([255, 0, 0, 255]), 1);
+    host_tex.replace_texture(&crate::test_gpu::wrap_view(&tex2));
+    assert_eq!(render_and_check([0, 255, 0, 255]), 0);
+    host_tex.replace_texture(&crate::test_gpu::wrap_view(&tex3));
+    assert_eq!(render_and_check([0, 0, 255, 255]), 0);
 }

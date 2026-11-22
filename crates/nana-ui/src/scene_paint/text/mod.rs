@@ -922,6 +922,19 @@ impl TextPipeline {
             .expect("text test pipeline")
     }
 
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(super) fn new_with_policy(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        format: wgpu::TextureFormat,
+        policy: &nana_gpu::GpuDeviceState,
+        precompiled: bool,
+    ) -> Self {
+        Self::try_new_with_policy(device, queue, format, policy, precompiled)
+            .expect("text test pipeline")
+    }
+
     pub(super) fn try_new_with_policy(
         device: &wgpu::Device,
         _queue: &wgpu::Queue,
@@ -1094,6 +1107,13 @@ impl TextPipeline {
     }
 
     /// See [`TextGpu::try_prewarm_subpixel`].
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(super) fn prewarm_subpixel(&mut self, device: &wgpu::Device) {
+        self.try_prewarm_subpixel(device)
+            .expect("text subpixel test prewarm");
+    }
+
     pub(super) fn try_prewarm_subpixel(
         &mut self,
         device: &wgpu::Device,
