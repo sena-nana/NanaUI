@@ -639,7 +639,7 @@ let mut binding = FrameBinding::new(
 // 在 window_frame_presented 中调用：binding.presented(Some(&inbox), |token| accept(token));
 ```
 
-- **GPU 内部复制与无锁交换**：`copy_from` 在纹理池内执行一次 `copy_texture_to_texture`（要求源纹理具备 `COPY_SRC`、单采样 2D、非深度格式）。单扇消费窗口建议分配 `3` 个槽位（在途复制、正在显示、已替换待 present），每增加一扇共享消费窗口多加 `2` 个槽位。
+- **GPU 内部复制与无锁交换**：`copy_from` 在纹理池内执行一次 `copy_texture_to_texture`（要求源纹理具备 `COPY_SRC`、单采样 2D、非深度格式）。若生产端直接渲染到池纹理上，可调用 `try_begin_write(width, height, format)` 借出 `WriteSlot`（带 `RENDER_TARGET | SAMPLED | COPY_SRC | COPY_DST`），在共享队列提交绘制后调用 `commit_write` / `commit_write_with_payload` 完成零拷贝发布（丢弃未提交的 `WriteSlot` 会立即归还槽位；尺寸格式不变时复用槽位纹理对象）。单扇消费窗口建议分配 `3` 个槽位（在途写/复制、正在显示、已替换待 present），每增加一扇共享消费窗口多加 `2` 个槽位。
 - **租约顺序与 Epoch 过滤**：`prepare` 换上新帧后，旧帧一直保留到 `presented` 才归还，生产端需等采样它的那次 UI 提交完成后才会复用该槽位。应用可通过 `set_epoch` 推进场景代次（立即隐藏收件箱中的旧代次帧；在新代次帧尚未发布且 `accept` 仍允许旧帧时，`FrameBinding` 会保持已显示的画面而不闪回透明空白）。
 
 ## GpuView：同 Pass 无中间纹理直写
