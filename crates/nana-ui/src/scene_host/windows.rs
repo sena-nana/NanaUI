@@ -1198,6 +1198,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         self.frame_schedules.remove(&id);
         self.producer_frames.remove(id);
         self.direct_output_traces.remove(&id);
+        self.damage_trackers.remove(&id);
         self.close_window_output(id);
         self.texture_subscriptions.remove(&id);
         if let Ok(mut targets) = self.image_targets.lock() {

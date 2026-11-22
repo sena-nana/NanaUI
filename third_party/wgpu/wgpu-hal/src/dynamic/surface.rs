@@ -15,6 +15,10 @@ pub struct DynAcquiredSurfaceTexture {
     /// the surface properties exactly, but can still be used to present
     /// to the surface successfully.
     pub suboptimal: bool,
+    /// Backend swapchain backbuffer index when available (NanaUI fork).
+    pub buffer_index: Option<u32>,
+    /// True when the acquired backbuffer preserves prior presented contents (NanaUI fork).
+    pub preserved: bool,
 }
 
 pub trait DynSurface: DynResource {
@@ -59,9 +63,13 @@ impl<S: Surface + DynResource> DynSurface for S {
         unsafe { S::acquire_texture(self, timeout, fence) }.map(|ast| {
             let texture = Box::new(ast.texture);
             let suboptimal = ast.suboptimal;
+            let buffer_index = ast.buffer_index;
+            let preserved = ast.preserved;
             DynAcquiredSurfaceTexture {
                 texture,
                 suboptimal,
+                buffer_index,
+                preserved,
             }
         })
     }

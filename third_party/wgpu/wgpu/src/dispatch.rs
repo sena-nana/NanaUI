@@ -268,6 +268,11 @@ pub trait QueueInterface: CommonTraits {
     fn compact_blas(&self, blas: &DispatchBlas) -> (Option<u64>, DispatchBlas);
 
     fn present(&self, detail: &DispatchSurfaceOutputDetail);
+
+    fn present_with_damage(&self, detail: &DispatchSurfaceOutputDetail, dirty_rects: &[[u32; 4]]) {
+        let _ = dirty_rects;
+        self.present(detail);
+    }
 }
 
 pub trait ShaderModuleInterface: CommonTraits {
@@ -629,6 +634,14 @@ pub trait SurfaceInterface: CommonTraits {
 pub trait SurfaceOutputDetailInterface: CommonTraits {
     fn texture_discard(&self);
     fn texture_release(&self);
+
+    fn buffer_index(&self) -> Option<u32> {
+        None
+    }
+
+    fn preserved(&self) -> bool {
+        false
+    }
 }
 
 pub trait QueueWriteBufferInterface: CommonTraits {

@@ -24,6 +24,17 @@ impl SurfaceTexture {
     pub fn as_custom<T: crate::custom::SurfaceOutputDetailInterface>(&self) -> Option<&T> {
         self.detail.as_custom()
     }
+
+    /// Returns the backend swapchain backbuffer index when exposed (e.g. DX12).
+    pub fn buffer_index(&self) -> Option<u32> {
+        self.detail.buffer_index()
+    }
+
+    /// Returns `true` when this backbuffer preserves the pixels from a previous
+    /// presentation on the current swapchain configuration.
+    pub fn preserved(&self) -> bool {
+        self.detail.preserved()
+    }
 }
 
 impl Drop for SurfaceTexture {

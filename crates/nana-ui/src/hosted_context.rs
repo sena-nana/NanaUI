@@ -225,6 +225,9 @@ pub struct HostedGpuSurface {
     /// On DX12 such a surface runs at DXGI maximum frame latency 2; see
     /// [`steady_frame_latency`].
     continuous_redraw: bool,
+    /// Monotonic counter bumped whenever the underlying swapchain is
+    /// configured or recreated, so per-backbuffer damage history can reset.
+    configure_generation: u64,
 }
 
 impl HostedGpuSurface {
@@ -464,9 +467,14 @@ impl HostedGpuSurface {
         self.configuration.width > 0 && self.configuration.height > 0
     }
 
+    pub(crate) const fn configure_generation(&self) -> u64 {
+        self.configure_generation
+    }
+
     fn reconfigure(&mut self, gpu: &GpuContext) {
         self.surface
             .configure(__framework::device(gpu), &self.configuration);
+        self.configure_generation = self.configure_generation.wrapping_add(1);
         self.needs_target_commit = true;
         self.needs_reconfigure = false;
     }
@@ -1086,6 +1094,15 @@ impl HostedGpuShared {
     pub(crate) fn present_frame(&self, frame: wgpu::SurfaceTexture) {
         __framework::queue(&self.gpu).present(frame);
     }
+
+    pub(crate) fn present_frame_with_damage(
+        &self,
+        frame: wgpu::SurfaceTexture,
+        dirty_rects: &[[u32; 4]],
+    ) {
+        __framework::queue(&self.gpu).present_with_damage(frame, dirty_rects);
+    }
+
     #[cfg(feature = "wgpu-interop")]
     pub fn present(&self, frame: wgpu::SurfaceTexture) {
         self.present_frame(frame);
@@ -1158,6 +1175,7 @@ fn configure_surface(
         alpha_recreate_attempted: false,
         live_present_mode: preferred_live_present_mode(&capabilities.present_modes),
         continuous_redraw: false,
+        configure_generation: 1,
     })
 }
 

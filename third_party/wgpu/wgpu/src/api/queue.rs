@@ -379,6 +379,22 @@ impl Queue {
         self.inner.present(&surface_texture.detail);
     }
 
+    /// Schedule a surface texture to be presented on the owning surface with
+    /// physical-pixel dirty rectangles `[x, y, width, height]` describing the
+    /// changed region since the previous present.
+    ///
+    /// Backends that do not support dirty-rect presentation fall back to
+    /// [`Queue::present`].
+    pub fn present_with_damage(
+        &self,
+        mut surface_texture: SurfaceTexture,
+        dirty_rects: &[[u32; 4]],
+    ) {
+        surface_texture.presented = true;
+        self.inner
+            .present_with_damage(&surface_texture.detail, dirty_rects);
+    }
+
     /// Compact a BLAS, it must have had [`Blas::prepare_compaction_async`] called on it and had the
     /// callback provided called.
     ///

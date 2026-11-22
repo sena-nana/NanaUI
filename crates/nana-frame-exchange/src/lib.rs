@@ -14,6 +14,7 @@
 #![recursion_limit = "256"]
 
 use std::{
+    collections::VecDeque,
     num::NonZeroU8,
     sync::{
         Arc, Mutex, MutexGuard,
@@ -300,6 +301,67 @@ pub enum WriteAcquireError {
     PoolFull,
 }
 
+/// Pixel-space dirty rectangle in source texture coordinates (`[x, y, width, height]`).
+///
+/// Carried optionally with an exchanged frame so consumers can skip copying or
+/// compositing unchanged texels across frame rings.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct FrameDamageRect {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl FrameDamageRect {
+    pub const EMPTY: Self = Self {
+        x: 0,
+        y: 0,
+        width: 0,
+        height: 0,
+    };
+
+    pub const fn new(x: u32, y: u32, width: u32, height: u32) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    pub const fn is_empty(self) -> bool {
+        self.width == 0 || self.height == 0
+    }
+
+    pub fn union(self, other: Self) -> Self {
+        if self.is_empty() {
+            return other;
+        }
+        if other.is_empty() {
+            return self;
+        }
+        let x0 = self.x.min(other.x);
+        let y0 = self.y.min(other.y);
+        let x1 = self
+            .x
+            .saturating_add(self.width)
+            .max(other.x.saturating_add(other.width));
+        let y1 = self
+            .y
+            .saturating_add(self.height)
+            .max(other.y.saturating_add(other.height));
+        Self {
+            x: x0,
+            y: y0,
+            width: x1.saturating_sub(x0),
+            height: y1.saturating_sub(y0),
+        }
+    }
+}
+
+const DAMAGE_HISTORY_CAPACITY: usize = 32;
+
 /// A free pool slot reserved for direct producer rendering.
 ///
 /// The producer renders directly into [`Self::texture`] (or [`Self::wgpu_texture`]
@@ -313,6 +375,7 @@ pub struct WriteSlot {
     sequence: u64,
     texture: GpuTexture,
     ownership: Arc<SlotOwnership>,
+    texture_reused: bool,
     committed: bool,
 }
 
@@ -331,6 +394,12 @@ impl WriteSlot {
 
     pub fn slot(&self) -> u8 {
         self.ownership.slot
+    }
+
+    /// Whether this slot kept its previous backing texture (same size and
+    /// format, so previously rendered pixels outside a dirty rect remain intact).
+    pub fn texture_reused(&self) -> bool {
+        self.texture_reused
     }
 
     #[cfg(feature = "wgpu-interop")]
@@ -448,6 +517,7 @@ pub struct FrameLease<E = u64, M = ()> {
     token: FrameToken<E>,
     texture: GpuTexture,
     color_metadata: FrameColorMetadata,
+    damage: Option<FrameDamageRect>,
     payload: M,
     ownership: Arc<SlotOwnership>,
     _retirement: Arc<Retirement>,
@@ -480,6 +550,13 @@ impl<E: Copy, M> FrameLease<E, M> {
         self.color_metadata
     }
 
+    /// Modified region of this frame relative to its predecessor in the same
+    /// exchange epoch, or `None` when the full frame changed or no partial
+    /// damage was supplied.
+    pub fn damage(&self) -> Option<FrameDamageRect> {
+        self.damage
+    }
+
     /// Immutable application data copied with this frame, independent of its epoch.
     pub fn payload(&self) -> &M {
         &self.payload
@@ -501,6 +578,7 @@ struct Shared<E, M> {
     device_generation: DeviceGeneration,
     latest: Mutex<Option<Arc<FrameLease<E, M>>>>,
     epoch: Mutex<E>,
+    damage_history: Mutex<VecDeque<(u64, Option<FrameDamageRect>)>>,
     notified: AtomicBool,
     active: AtomicBool,
 }
@@ -548,6 +626,35 @@ impl<E: Copy + Eq, M> FrameInbox<E, M> {
             && token.epoch == *lock(&self.shared.epoch)
     }
 
+    /// Union of per-frame damage rectangles across all submitted frames strictly
+    /// after `after_sequence` up to and including `up_to_sequence` in the active
+    /// epoch. Returns `None` if history overflowed, the epoch reset, or any
+    /// frame in the range declared full-frame damage.
+    pub fn damage_since(
+        &self,
+        after_sequence: u64,
+        up_to_sequence: u64,
+    ) -> Option<FrameDamageRect> {
+        if up_to_sequence < after_sequence {
+            return None;
+        }
+        if up_to_sequence == after_sequence {
+            return Some(FrameDamageRect::EMPTY);
+        }
+        let history = lock(&self.shared.damage_history);
+        let start = history.iter().position(|(seq, _)| *seq == after_sequence)?;
+        let end = history.iter().position(|(seq, _)| *seq == up_to_sequence)?;
+        if end < start {
+            return None;
+        }
+        let mut union = FrameDamageRect::EMPTY;
+        for (_, damage) in history.iter().take(end + 1).skip(start + 1) {
+            let rect = (*damage)?;
+            union = union.union(rect);
+        }
+        Some(union)
+    }
+
     /// The exchange is still the one that produced `token`, its epoch has
     /// moved, and it has not published the next frame. The picture already on
     /// screen stays: unbinding here presents a transparent window.
@@ -563,6 +670,7 @@ impl<E: Copy + Eq, M> FrameInbox<E, M> {
 struct PendingCopy<E, M> {
     token: FrameToken<E>,
     color_metadata: FrameColorMetadata,
+    damage: Option<FrameDamageRect>,
     payload: M,
     completed: Arc<AtomicBool>,
 }
@@ -613,6 +721,7 @@ impl<E: Copy + Eq + Send + Sync + 'static, M: Send + Sync + 'static> FrameExchan
                 device_generation: gpu.generation(),
                 latest: Mutex::new(None),
                 epoch: Mutex::new(epoch),
+                damage_history: Mutex::new(VecDeque::with_capacity(DAMAGE_HISTORY_CAPACITY)),
                 notified: AtomicBool::new(false),
                 active: AtomicBool::new(true),
             }),
@@ -650,10 +759,19 @@ impl<E: Copy + Eq + Send + Sync + 'static, M: Send + Sync + 'static> FrameExchan
         }
         self.epoch = epoch;
         *lock(&self.shared.epoch) = epoch;
+        lock(&self.shared.damage_history).clear();
         let had_frame = lock(&self.shared.latest).take().is_some();
         if had_frame {
             self.wake();
         }
+    }
+
+    fn record_damage_history(&self, sequence: u64, damage: Option<FrameDamageRect>) {
+        let mut history = lock(&self.shared.damage_history);
+        if history.len() == DAMAGE_HISTORY_CAPACITY {
+            history.pop_front();
+        }
+        history.push_back((sequence, damage));
     }
 
     /// Copy `source` into a free slot on the shared device. Returns without
@@ -691,11 +809,30 @@ impl<E: Copy + Eq + Send + Sync + 'static, M: Send + Sync + 'static> FrameExchan
         color_metadata: FrameColorMetadata,
         payload: M,
     ) -> CopyOutcome {
+        self.copy_from_with_payload_and_damage(source, epoch, color_metadata, payload, None)
+    }
+
+    /// Copy texels, immutable application data, and an optional dirty rect in
+    /// source pixel coordinates (`None` = full frame changed).
+    pub fn copy_from_with_payload_and_damage(
+        &mut self,
+        source: &GpuTexture,
+        epoch: E,
+        color_metadata: FrameColorMetadata,
+        payload: M,
+        damage: Option<FrameDamageRect>,
+    ) -> CopyOutcome {
         if source.generation() != self.gpu.generation() {
             self.set_epoch(epoch);
             return CopyOutcome::DeviceMismatch;
         }
-        self.copy_raw(__framework::texture(source), epoch, color_metadata, payload)
+        self.copy_raw(
+            __framework::texture(source),
+            epoch,
+            color_metadata,
+            payload,
+            damage,
+        )
     }
 
     /// [`Self::copy_from`] for a raw WGPU texture created on the exchange's
@@ -732,7 +869,20 @@ impl<E: Copy + Eq + Send + Sync + 'static, M: Send + Sync + 'static> FrameExchan
         color_metadata: FrameColorMetadata,
         payload: M,
     ) -> CopyOutcome {
-        self.copy_raw(source, epoch, color_metadata, payload)
+        self.copy_raw(source, epoch, color_metadata, payload, None)
+    }
+
+    /// Raw WGPU variant of [`Self::copy_from_with_payload_and_damage`].
+    #[cfg(feature = "wgpu-interop")]
+    pub fn copy_from_wgpu_with_payload_and_damage(
+        &mut self,
+        source: &wgpu::Texture,
+        epoch: E,
+        color_metadata: FrameColorMetadata,
+        payload: M,
+        damage: Option<FrameDamageRect>,
+    ) -> CopyOutcome {
+        self.copy_raw(source, epoch, color_metadata, payload, damage)
     }
 
     fn copy_raw(
@@ -741,6 +891,7 @@ impl<E: Copy + Eq + Send + Sync + 'static, M: Send + Sync + 'static> FrameExchan
         epoch: E,
         color_metadata: FrameColorMetadata,
         payload: M,
+        damage: Option<FrameDamageRect>,
     ) -> CopyOutcome {
         self.set_epoch(epoch);
         let size = source.size();
@@ -837,9 +988,11 @@ impl<E: Copy + Eq + Send + Sync + 'static, M: Send + Sync + 'static> FrameExchan
                 sequence,
             },
             color_metadata,
+            damage,
             payload,
             completed,
         });
+        self.record_damage_history(sequence, damage);
         self.stats.submitted += 1;
         self.stats.occupied_high_water = self.stats.occupied_high_water.max(self.occupied());
         CopyOutcome::Submitted
@@ -937,6 +1090,7 @@ impl<E: Copy + Eq + Send + Sync + 'static, M: Send + Sync + 'static> FrameExchan
             sequence,
             texture,
             ownership,
+            texture_reused: reuse_existing,
             committed: false,
         })
     }
@@ -971,10 +1125,23 @@ impl<E: Copy + Eq + Send + Sync + 'static, M: Send + Sync + 'static> FrameExchan
     /// the next queue fence before [`FrameExchange::poll`] publishes the lease.
     pub fn commit_write_with_payload(
         &mut self,
+        write_slot: WriteSlot,
+        epoch: E,
+        color_metadata: FrameColorMetadata,
+        payload: M,
+    ) -> CopyOutcome {
+        self.commit_write_with_payload_and_damage(write_slot, epoch, color_metadata, payload, None)
+    }
+
+    /// Commit a [`WriteSlot`] together with color metadata, an immutable
+    /// application payload, and an optional dirty rect (`None` = full frame).
+    pub fn commit_write_with_payload_and_damage(
+        &mut self,
         mut write_slot: WriteSlot,
         epoch: E,
         color_metadata: FrameColorMetadata,
         payload: M,
+        damage: Option<FrameDamageRect>,
     ) -> CopyOutcome {
         self.set_epoch(epoch);
         if write_slot.exchange != self.shared.exchange {
@@ -985,6 +1152,7 @@ impl<E: Copy + Eq + Send + Sync + 'static, M: Send + Sync + 'static> FrameExchan
         let completion = Arc::clone(&completed);
         __framework::queue(&self.gpu)
             .on_submitted_work_done(move || completion.store(true, Ordering::Release));
+        let sequence = write_slot.sequence;
         let slot = &mut self.slots[write_slot.slot_index];
         slot.pending = Some(PendingCopy {
             token: FrameToken {
@@ -992,12 +1160,14 @@ impl<E: Copy + Eq + Send + Sync + 'static, M: Send + Sync + 'static> FrameExchan
                 device_generation: self.shared.device_generation,
                 epoch,
                 slot: write_slot.ownership.slot,
-                sequence: write_slot.sequence,
+                sequence,
             },
             color_metadata,
+            damage,
             payload,
             completed,
         });
+        self.record_damage_history(sequence, damage);
         self.stats.submitted += 1;
         self.stats.occupied_high_water = self.stats.occupied_high_water.max(self.occupied());
         CopyOutcome::Submitted
@@ -1059,6 +1229,7 @@ impl<E: Copy + Eq + Send + Sync + 'static, M: Send + Sync + 'static> FrameExchan
                 token: pending.token,
                 texture: texture.clone(),
                 color_metadata: pending.color_metadata,
+                damage: pending.damage,
                 payload: pending.payload,
                 ownership: Arc::clone(&slot.ownership),
                 _retirement: Arc::clone(&self.retirement),
@@ -1720,10 +1891,86 @@ mod tests {
         let second = exchange
             .try_begin_write(4, 4, GpuTextureFormat::RGBA8_UNORM)
             .expect("reused slot");
+        assert!(second.texture_reused());
         assert!(
             second.texture().ptr_eq(&first_ptr),
             "re-acquiring the same size and format must reuse the slot texture without reallocation"
         );
+    }
+
+    #[test]
+    fn damage_history_tracks_unions_across_superseded_and_aborted_frames() {
+        let gpu = test_gpu();
+        let mut exchange =
+            FrameExchange::<_, ()>::new_with_payload(&gpu, DEFAULT_CAPACITY, 1u64, Arc::new(|| {}));
+        let inbox = exchange.inbox();
+
+        // First frame (full frame).
+        let s1 = exchange
+            .try_begin_write(64, 64, GpuTextureFormat::RGBA8_UNORM)
+            .unwrap();
+        assert!(!s1.texture_reused());
+        assert_eq!(
+            exchange.commit_write_with_payload_and_damage(
+                s1,
+                1,
+                FrameColorMetadata::unknown(),
+                (),
+                None
+            ),
+            CopyOutcome::Submitted
+        );
+        wait(&gpu);
+        assert!(exchange.poll());
+        let l1 = inbox.try_take_latest().unwrap();
+        assert_eq!(l1.damage(), None);
+        let seq1 = l1.token().sequence();
+
+        // Superseded frame with rect A, followed by dropped uncommitted WriteSlot, then rect B.
+        let s2 = exchange
+            .try_begin_write(64, 64, GpuTextureFormat::RGBA8_UNORM)
+            .unwrap();
+        let rect_a = FrameDamageRect::new(4, 8, 10, 12);
+        assert_eq!(
+            exchange.commit_write_with_payload_and_damage(
+                s2,
+                1,
+                FrameColorMetadata::unknown(),
+                (),
+                Some(rect_a),
+            ),
+            CopyOutcome::Submitted
+        );
+        let dropped = exchange
+            .try_begin_write(64, 64, GpuTextureFormat::RGBA8_UNORM)
+            .unwrap();
+        drop(dropped);
+        let s3 = exchange
+            .try_begin_write(64, 64, GpuTextureFormat::RGBA8_UNORM)
+            .unwrap();
+        let rect_b = FrameDamageRect::new(20, 4, 8, 16);
+        assert_eq!(
+            exchange.commit_write_with_payload_and_damage(
+                s3,
+                1,
+                FrameColorMetadata::unknown(),
+                (),
+                Some(rect_b),
+            ),
+            CopyOutcome::Submitted
+        );
+        wait(&gpu);
+        assert!(exchange.poll());
+        let l3 = inbox.try_take_latest().unwrap();
+        assert_eq!(l3.damage(), Some(rect_b));
+        assert_eq!(
+            inbox.damage_since(seq1, l3.token().sequence()),
+            Some(rect_a.union(rect_b))
+        );
+
+        // Epoch change invalidates history.
+        exchange.set_epoch(2);
+        assert_eq!(inbox.damage_since(seq1, l3.token().sequence()), None);
     }
 
     #[test]

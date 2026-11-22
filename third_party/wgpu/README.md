@@ -326,3 +326,24 @@ runtime Naga WGSL/IR translation from default Apple builds.
   translation so precompiled-passthrough builds (`default-features = false`
   with only `metal`) strip runtime Naga validation and translation code under
   LTO.
+
+### DX12 `FLIP_SEQUENTIAL` backbuffer preservation and `Present1` dirty rects
+
+Allows swapchain consumers that only repaint changed rectangles (such as an
+embedded host-texture viewport) to keep prior backbuffer contents via
+`LoadOp::Load` and submit DXGI dirty rectangles via `IDXGISwapChain3::Present1`.
+
+- **`wgpu::SurfaceTexture::buffer_index(&self) -> Option<u32>`** and
+  **`wgpu::SurfaceTexture::preserved(&self) -> bool`** (additive): expose the
+  acquired backbuffer index and whether it holds contents from a previous
+  presentation on the current swapchain configuration.
+- **`wgpu::Queue::present_with_damage(&self, SurfaceTexture, &[[u32; 4]])`**
+  (additive): presents with physical-pixel dirty rects `[x, y, width, height]`,
+  falling back to `Queue::present` on backends without partial present (and in
+  DX12 on the first present after create/resize or when `PresentMode::Immediate`
+  is active).
+- **`wgpu-hal` DX12**: configures DXGI swapchains with
+  `DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL`, tracks per-backbuffer initialization across
+  create/resize, and calls `Present1` with clamped `RECT`s when allowed by DXGI.
+- **`wgpu-core`**: skips zero-init clearing (`init = !ast.preserved`) for
+  preserved backbuffers so `LoadOp::Load` does not trigger a full-surface clear.

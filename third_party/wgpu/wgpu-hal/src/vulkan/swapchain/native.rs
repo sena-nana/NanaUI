@@ -684,6 +684,8 @@ impl Swapchain for NativeSwapchain {
         Ok(crate::AcquiredSurfaceTexture {
             texture,
             suboptimal,
+            buffer_index: None,
+            preserved: false,
         })
     }
 

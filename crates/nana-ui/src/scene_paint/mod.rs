@@ -570,6 +570,12 @@ pub struct SceneWgpuPainter {
     /// with; swapped per target like `painted`.
     bound_fetch_host: Option<SharedFetchHost>,
     alpha_encoding: AlphaEncoding,
+    /// Optional physical-pixel damage rectangle requested for the very next
+    /// `paint` / `paint_target` call on this painter (`None` = full frame).
+    next_frame_damage: Option<PhysicalRect>,
+    /// True when the most recent encoded `paint` / `paint_target` used partial-
+    /// damage incremental rendering (`LoadOp::Load` + scissored commands).
+    last_frame_used_partial_damage: bool,
     #[cfg(test)]
     _test_gpu_guard: Option<crate::test_gpu::GpuTestGuard>,
 }
@@ -901,6 +907,8 @@ impl SceneWgpuPainter {
             fetch_host: None,
             bound_fetch_host: None,
             alpha_encoding: AlphaEncoding::Linear,
+            next_frame_damage: None,
+            last_frame_used_partial_damage: false,
             #[cfg(test)]
             _test_gpu_guard: None,
         })
@@ -1250,6 +1258,130 @@ impl SceneWgpuPainter {
         self.alpha_encoding = encoding;
     }
 
+    /// Requests partial-damage incremental rendering over `damage` for the
+    /// next `paint` / `paint_target` call (`None` forces a full repaint).
+    pub fn set_next_frame_damage(&mut self, damage: Option<PhysicalRect>) {
+        self.next_frame_damage = damage;
+    }
+
+    /// Whether the most recent `paint` / `paint_target` rendered only the
+    /// requested damage rectangle on top of preserved target contents.
+    pub fn last_frame_used_partial_damage(&self) -> bool {
+        self.last_frame_used_partial_damage
+    }
+
+    /// Synchronizes `last_slot_revs` to current `host_textures` damage revisions
+    /// and returns the union of mapped physical-pixel damage rectangles when
+    /// `target_id` holds a matching cached batch eligible for partial-damage
+    /// incremental repaint.
+    pub(crate) fn host_texture_damage_for_cached_scene(
+        &self,
+        target_id: Option<RenderTargetId>,
+        scene: &UiScene,
+        viewport: ScenePaintViewport,
+        presentation: ScenePresentationProfile,
+        host_textures: Option<&HostTextureRegistry>,
+        last_slot_revs: &mut std::collections::HashMap<nana_ui_runtime::TextureSlotName, u64>,
+    ) -> Option<PhysicalRect> {
+        let batch = match target_id {
+            Some(id) => self
+                .targets
+                .get(&id)
+                .and_then(|state| state.prepared_batch.as_ref()),
+            None => self.prepared_batch.as_ref(),
+        }?;
+        let registry = host_textures?;
+        let mut eligible = batch.key.instance == scene.instance_id()
+            && batch.key.presentation_epoch == scene.presentation_epoch()
+            && batch.key.viewport == viewport
+            && batch.key.presentation == presentation
+            && batch.image_revision == self.image_revision
+            && batch.text_placement_epoch == self.text.placement_epoch()
+            && !self.text.order_settle_due()
+            && batch.max_group_depth == 0
+            && matches!(batch.commands.first(), Some(DrawCommand::HostTexture(_)));
+        let mut total_damage = PhysicalRect {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+        };
+        for command in &batch.commands {
+            match command {
+                DrawCommand::Custom { .. }
+                | DrawCommand::Backdrop { .. }
+                | DrawCommand::PathMask { .. }
+                | DrawCommand::PushGroup { .. } => {
+                    eligible = false;
+                }
+                DrawCommand::HostTexture(prepared) => {
+                    let prev_rev = last_slot_revs
+                        .get(&prepared.slot_name)
+                        .copied()
+                        .unwrap_or(0);
+                    match registry.slot_damage_since(&prepared.slot_name, prev_rev) {
+                        Some((current_rev, Some(slot_damage))) => {
+                            last_slot_revs.insert(prepared.slot_name.clone(), current_rev);
+                            if slot_damage.width > 0 && slot_damage.height > 0 {
+                                match prepared.map_source_damage(slot_damage) {
+                                    Some(mapped) => {
+                                        total_damage =
+                                            crate::gpu_view::union_physical(total_damage, mapped);
+                                    }
+                                    None => eligible = false,
+                                }
+                            }
+                        }
+                        Some((current_rev, None)) => {
+                            last_slot_revs.insert(prepared.slot_name.clone(), current_rev);
+                            eligible = false;
+                        }
+                        None => {
+                            last_slot_revs.remove(&prepared.slot_name);
+                            eligible = false;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        eligible.then_some(total_damage)
+    }
+
+    /// Records the current `damage_rev` for each `HostTexture` in `target_id`'s
+    /// prepared batch after a full-frame paint so subsequent frames can compute
+    /// incremental slot damage deltas.
+    pub(crate) fn sync_host_texture_revisions(
+        &self,
+        target_id: Option<RenderTargetId>,
+        host_textures: Option<&HostTextureRegistry>,
+        last_slot_revs: &mut std::collections::HashMap<nana_ui_runtime::TextureSlotName, u64>,
+    ) {
+        let Some(registry) = host_textures else {
+            last_slot_revs.clear();
+            return;
+        };
+        let batch = match target_id {
+            Some(id) => self
+                .targets
+                .get(&id)
+                .and_then(|state| state.prepared_batch.as_ref()),
+            None => self.prepared_batch.as_ref(),
+        };
+        let Some(batch) = batch else {
+            return;
+        };
+        for command in &batch.commands {
+            if let DrawCommand::HostTexture(prepared) = command {
+                if let Some((current_rev, _)) =
+                    registry.slot_damage_since(&prepared.slot_name, u64::MAX)
+                {
+                    last_slot_revs.insert(prepared.slot_name.clone(), current_rev);
+                }
+            }
+        }
+    }
+
     /// Text shape-cache counters from the last `paint`: (hits, misses,
     /// evictions). Tests use this to pin the reshaping-skip contract.
     pub fn text_shape_cache_stats(&self) -> (usize, usize, usize) {
@@ -1437,12 +1569,14 @@ impl SceneWgpuPainter {
         target: &GpuRenderTarget,
     ) -> Result<(), ScenePaintError> {
         // A rejected frame must not report a previous target's successful work.
+        self.last_frame_used_partial_damage = false;
         self.last_gpu_work = None;
         self.last_gpu_timings = None;
         self.last_dest_pass_counts = None;
         let expected = self.gpu.generation();
         for found in [frame.generation(), target.generation()] {
             if found != expected {
+                self.next_frame_damage = None;
                 return Err(ScenePaintError::DeviceMismatch { expected, found });
             }
         }
@@ -1454,6 +1588,7 @@ impl SceneWgpuPainter {
             None => self.retained_default.in_flight(DEFAULT_TARGET, frame.id()),
         };
         if in_flight {
+            self.next_frame_damage = None;
             return Err(ScenePaintError::TargetInFlight(target_id));
         }
         if self.retained_shared.has_rolled_back() {
@@ -1562,6 +1697,8 @@ impl SceneWgpuPainter {
         frame: Option<crate::gpu_work::FrameLink>,
     ) -> Result<(), ScenePaintError> {
         // A rejected frame must not report a previous target's successful work.
+        let requested_damage = self.next_frame_damage.take();
+        self.last_frame_used_partial_damage = false;
         self.last_gpu_work = None;
         self.last_gpu_timings = None;
         self.last_dest_pass_counts = None;
@@ -2927,6 +3064,40 @@ impl SceneWgpuPainter {
         );
         if routing == SurfaceRouting::Direct {
             if gpu_interleaved {
+                let full_rect = PhysicalRect {
+                    x: 0,
+                    y: 0,
+                    width: dest_physical[0],
+                    height: dest_physical[1],
+                };
+                let active_damage = requested_damage.and_then(|rect| {
+                    let clamped = crate::gpu_view::intersect_physical(rect, full_rect);
+                    let total_px = u64::from(dest_physical[0]) * u64::from(dest_physical[1]);
+                    let dirty_px = u64::from(clamped.width) * u64::from(clamped.height);
+                    let fits_area = clamped.width > 0
+                        && clamped.height > 0
+                        && dirty_px.saturating_mul(4) < total_px.saturating_mul(3);
+                    let supported_commands = !commands.iter().any(|command| {
+                        matches!(
+                            command,
+                            DrawCommand::Custom { .. } | DrawCommand::PathMask { .. }
+                        )
+                    });
+                    let leading_host_replaces = matches!(
+                        commands.first(),
+                        Some(DrawCommand::HostTexture(prepared))
+                            if prepared.can_replace_clear_in(clamped, surface_clear)
+                    );
+                    (fits_area
+                        && max_group_depth == 0
+                        && !has_backdrop
+                        && !has_reading_blend
+                        && viewport.clear
+                        && supported_commands
+                        && leading_host_replaces)
+                        .then_some(clamped)
+                });
+                self.last_frame_used_partial_damage = active_damage.is_some();
                 let dest = (max_group_depth > 0).then(|| self.dest.as_ref().expect("dest target"));
                 let mut ordered = EncodeOrdered {
                     quads: &self.quads,
@@ -2956,6 +3127,7 @@ impl SceneWgpuPainter {
                     wgpu::LoadOp::Clear(surface_clear),
                     &commands,
                     &mut dest_passes,
+                    active_damage,
                 );
             } else {
                 let dest = self.dest.as_ref().expect("4x MSAA direct dest");
@@ -3028,6 +3200,7 @@ impl SceneWgpuPainter {
                             initial_load,
                             &commands[..split],
                             &mut dest_passes,
+                            None,
                         );
                         dest.store_prefix(encoder, &mut dest_passes);
                         (wgpu::LoadOp::Load, &commands[split..])
@@ -3043,6 +3216,7 @@ impl SceneWgpuPainter {
                     load,
                     rest,
                     &mut dest_passes,
+                    None,
                 );
             } else if let PrefixUse::Restore(PrefixSplit::Geometry) = prefix {
                 dest.restore_prefix(encoder, &mut dest_passes);
@@ -4013,6 +4187,7 @@ fn encode_ordered(
     initial_load: wgpu::LoadOp<wgpu::Color>,
     commands: &[DrawCommand],
     dest_passes: &mut DestPassCounts,
+    partial_damage: Option<PhysicalRect>,
 ) {
     const SAMPLE_COUNT: u32 = 1;
     let mut index = 0;
@@ -4171,7 +4346,19 @@ fn encode_ordered(
                     continue;
                 }
                 let mut replaced_first_clear = false;
-                let pass_load = if stack.is_empty()
+                let partial_first_replace = partial_damage.filter(|damage| {
+                    stack.is_empty()
+                        && index == 0
+                        && matches!(
+                            (&dest_load, &commands[index]),
+                            (wgpu::LoadOp::Clear(load_color), DrawCommand::HostTexture(prepared))
+                                if prepared.can_replace_clear_in(*damage, *load_color)
+                        )
+                });
+                let pass_load = if partial_first_replace.is_some() {
+                    replaced_first_clear = true;
+                    wgpu::LoadOp::Load
+                } else if stack.is_empty()
                     && let wgpu::LoadOp::Clear(load_color) = dest_load
                     && let DrawCommand::HostTexture(prepared) = &commands[index]
                     && prepared.can_replace_clear(dest_physical, load_color)
@@ -4204,46 +4391,69 @@ fn encode_ordered(
                 restore_dest_viewport(&mut pass, dest_physical);
                 if replaced_first_clear && let DrawCommand::HostTexture(prepared) = &commands[index]
                 {
-                    pipelines.host_textures.draw_replace(
-                        prepared,
-                        &mut pass,
-                        dest_physical,
-                        Some(pipelines.gpu_work),
-                    );
+                    if let Some(dmg) = partial_first_replace {
+                        pipelines.host_textures.draw_replace_clipped(
+                            prepared,
+                            &mut pass,
+                            dest_physical,
+                            dmg,
+                            Some(pipelines.gpu_work),
+                        );
+                    } else {
+                        pipelines.host_textures.draw_replace(
+                            prepared,
+                            &mut pass,
+                            dest_physical,
+                            Some(pipelines.gpu_work),
+                        );
+                    }
                     restore_dest_viewport(&mut pass, dest_physical);
                     index += 1;
                 }
+                let clip_scissor = |scissor: PhysicalRect| match partial_damage {
+                    Some(dmg) => crate::gpu_view::intersect_physical(scissor, dmg),
+                    None => scissor,
+                };
                 while index < commands.len() {
                     match &commands[index] {
                         DrawCommand::PushGroup { .. } | DrawCommand::PopGroup => break,
                         DrawCommand::Backdrop { .. } => break,
                         DrawCommand::Quads { range, scissor } => {
-                            pipelines.quads.draw(
-                                &mut pass,
-                                range.clone(),
-                                *scissor,
-                                SAMPLE_COUNT,
-                                pipelines.motion,
-                                Some(pipelines.gpu_work),
-                            );
+                            let clipped = clip_scissor(*scissor);
+                            if clipped.width > 0 && clipped.height > 0 {
+                                pipelines.quads.draw(
+                                    &mut pass,
+                                    range.clone(),
+                                    clipped,
+                                    SAMPLE_COUNT,
+                                    pipelines.motion,
+                                    Some(pipelines.gpu_work),
+                                );
+                            }
                         }
                         DrawCommand::Mesh { range, scissor } => {
-                            pipelines.meshes.draw(
-                                &mut pass,
-                                range,
-                                *scissor,
-                                SAMPLE_COUNT,
-                                Some(pipelines.gpu_work),
-                            );
+                            let clipped = clip_scissor(*scissor);
+                            if clipped.width > 0 && clipped.height > 0 {
+                                pipelines.meshes.draw(
+                                    &mut pass,
+                                    range,
+                                    clipped,
+                                    SAMPLE_COUNT,
+                                    Some(pipelines.gpu_work),
+                                );
+                            }
                         }
                         DrawCommand::Path { range, scissor } => {
-                            pipelines.meshes.draw_path(
-                                &mut pass,
-                                range,
-                                *scissor,
-                                SAMPLE_COUNT,
-                                Some(pipelines.gpu_work),
-                            );
+                            let clipped = clip_scissor(*scissor);
+                            if clipped.width > 0 && clipped.height > 0 {
+                                pipelines.meshes.draw_path(
+                                    &mut pass,
+                                    range,
+                                    clipped,
+                                    SAMPLE_COUNT,
+                                    Some(pipelines.gpu_work),
+                                );
+                            }
                         }
                         #[cfg(feature = "charts")]
                         DrawCommand::Chart {
@@ -4251,13 +4461,17 @@ fn encode_ordered(
                             draw,
                             scissor,
                         } => {
-                            if let Some(pipeline) = pipelines.charts {
+                            let clipped = clip_scissor(*scissor);
+                            if clipped.width > 0
+                                && clipped.height > 0
+                                && let Some(pipeline) = pipelines.charts
+                            {
                                 pipelines.chart_target.draw(
                                     pipeline,
                                     &mut pass,
                                     *slot,
                                     *draw,
-                                    *scissor,
+                                    clipped,
                                     SAMPLE_COUNT,
                                     pipelines.motion,
                                     Some(pipelines.gpu_work),
@@ -4269,42 +4483,61 @@ fn encode_ordered(
                             scissor,
                             mode,
                         } => {
-                            pipelines.meshes.draw_mask(
-                                &mut pass,
-                                range,
-                                *scissor,
-                                *mode,
-                                Some(pipelines.gpu_work),
-                            );
+                            let clipped = clip_scissor(*scissor);
+                            if clipped.width > 0 && clipped.height > 0 {
+                                pipelines.meshes.draw_mask(
+                                    &mut pass,
+                                    range,
+                                    clipped,
+                                    *mode,
+                                    Some(pipelines.gpu_work),
+                                );
+                            }
                         }
                         DrawCommand::Text { prepared, scissor } => {
-                            pipelines.text.draw(
-                                &mut pass,
-                                prepared,
-                                *scissor,
-                                Some(pipelines.gpu_work),
-                            );
+                            let clipped = clip_scissor(*scissor);
+                            if clipped.width > 0 && clipped.height > 0 {
+                                pipelines.text.draw(
+                                    &mut pass,
+                                    prepared,
+                                    clipped,
+                                    Some(pipelines.gpu_work),
+                                );
+                            }
                         }
                         DrawCommand::Icon {
                             first,
                             count,
                             scissor,
                         } => {
-                            pipelines.icons.draw(
-                                &mut pass,
-                                *first,
-                                *count,
-                                *scissor,
-                                Some(pipelines.gpu_work),
-                            );
+                            let clipped = clip_scissor(*scissor);
+                            if clipped.width > 0 && clipped.height > 0 {
+                                pipelines.icons.draw(
+                                    &mut pass,
+                                    *first,
+                                    *count,
+                                    clipped,
+                                    Some(pipelines.gpu_work),
+                                );
+                            }
                         }
                         DrawCommand::HostTexture(prepared) => {
-                            pipelines.host_textures.draw(
-                                prepared,
-                                &mut pass,
-                                dest_physical,
-                                Some(pipelines.gpu_work),
-                            );
+                            if let Some(dmg) = partial_damage {
+                                pipelines.host_textures.draw_clipped(
+                                    prepared,
+                                    &mut pass,
+                                    dest_physical,
+                                    dmg,
+                                    Some(pipelines.gpu_work),
+                                );
+                            } else {
+                                pipelines.host_textures.draw(
+                                    prepared,
+                                    &mut pass,
+                                    dest_physical,
+                                    Some(pipelines.gpu_work),
+                                );
+                            }
                             restore_dest_viewport(&mut pass, dest_physical);
                         }
                         DrawCommand::Custom {

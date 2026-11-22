@@ -19,6 +19,12 @@ pub trait DynQueue: DynResource {
         surface: &dyn DynSurface,
         texture: Box<dyn DynSurfaceTexture>,
     ) -> Result<(), SurfaceError>;
+    unsafe fn present_with_damage(
+        &self,
+        surface: &dyn DynSurface,
+        texture: Box<dyn DynSurfaceTexture>,
+        dirty_rects: &[[u32; 4]],
+    ) -> Result<(), SurfaceError>;
     unsafe fn get_timestamp_period(&self) -> f32;
     unsafe fn wait_for_idle(&self) -> Result<(), DeviceError>;
 }
@@ -49,6 +55,16 @@ impl<Q: Queue + DynResource> DynQueue for Q {
     ) -> Result<(), SurfaceError> {
         let surface = surface.expect_downcast_ref();
         unsafe { Q::present(self, surface, texture.unbox()) }
+    }
+
+    unsafe fn present_with_damage(
+        &self,
+        surface: &dyn DynSurface,
+        texture: Box<dyn DynSurfaceTexture>,
+        dirty_rects: &[[u32; 4]],
+    ) -> Result<(), SurfaceError> {
+        let surface = surface.expect_downcast_ref();
+        unsafe { Q::present_with_damage(self, surface, texture.unbox(), dirty_rects) }
     }
 
     unsafe fn get_timestamp_period(&self) -> f32 {

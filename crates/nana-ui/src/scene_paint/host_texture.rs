@@ -13,7 +13,12 @@ pub(super) struct HostTexturePipeline {
 
 pub(super) struct PreparedHostTexture {
     primitive: GpuTexturePrimitive,
-    clip: PhysicalRect,
+    pub(super) slot_name: nana_ui_runtime::TextureSlotName,
+    pub(super) src_size: [u32; 2],
+    /// Dest AABB in physical target pixels when axis-aligned (`affine[1] == 0`,
+    /// `affine[2] == 0`, `persp == [0, 0]`), used to project slot damage rects.
+    pub(super) aligned_dest_px: Option<[f32; 4]>,
+    pub(super) clip: PhysicalRect,
     /// 这一帧这张宿主纹理实际覆盖的设备像素范围(变换后 AABB × 缩放)。
     /// 消费方据此知道该按多少像素准备内容,不必从布局盒自己反推。
     pub(super) painted: [u32; 2],
@@ -23,21 +28,21 @@ pub(super) struct PreparedHostTexture {
 }
 
 impl PreparedHostTexture {
-    /// True when this full-viewport axis-aligned layer can replace the pass's
-    /// initial `LoadOp::Clear(load_color)` with `LoadOp::DontCare` + `BlendState::REPLACE`.
-    pub(super) fn can_replace_clear(
+    /// True when this axis-aligned layer covers `region` and can replace an
+    /// initial `LoadOp::Clear(load_color)` with `BlendState::REPLACE` inside
+    /// `region` without reading back prior pixels.
+    pub(super) fn can_replace_clear_in(
         &self,
-        dest_physical: [u32; 2],
+        region: PhysicalRect,
         load_color: wgpu::Color,
     ) -> bool {
         if !self.simple
-            || self.clip
-                != (PhysicalRect {
-                    x: 0,
-                    y: 0,
-                    width: dest_physical[0],
-                    height: dest_physical[1],
-                })
+            || region.width == 0
+            || region.height == 0
+            || region.x < self.clip.x
+            || region.y < self.clip.y
+            || region.x.saturating_add(region.width) > self.clip.x.saturating_add(self.clip.width)
+            || region.y.saturating_add(region.height) > self.clip.y.saturating_add(self.clip.height)
         {
             return false;
         }
@@ -49,6 +54,62 @@ impl PreparedHostTexture {
             && (self.clear_premul[1] - load_color.g as f32).abs() <= EPS
             && (self.clear_premul[2] - load_color.b as f32).abs() <= EPS
             && (self.clear_premul[3] - load_color.a as f32).abs() <= EPS
+    }
+
+    /// True when this full-viewport axis-aligned layer can replace the pass's
+    /// initial `LoadOp::Clear(load_color)` with `LoadOp::DontCare` + `BlendState::REPLACE`.
+    pub(super) fn can_replace_clear(
+        &self,
+        dest_physical: [u32; 2],
+        load_color: wgpu::Color,
+    ) -> bool {
+        self.clip
+            == (PhysicalRect {
+                x: 0,
+                y: 0,
+                width: dest_physical[0],
+                height: dest_physical[1],
+            })
+            && self.can_replace_clear_in(self.clip, load_color)
+    }
+
+    /// Maps a source texel damage rectangle to clamped physical target pixels,
+    /// or returns `None` if the mapping is non-axis-aligned.
+    pub(super) fn map_source_damage(&self, damage: PhysicalRect) -> Option<PhysicalRect> {
+        if damage.width == 0 || damage.height == 0 {
+            return Some(PhysicalRect {
+                x: 0,
+                y: 0,
+                width: 0,
+                height: 0,
+            });
+        }
+        let [dx, dy, dw, dh] = self.aligned_dest_px?;
+        let src_w = self.src_size[0].max(1) as f32;
+        let src_h = self.src_size[1].max(1) as f32;
+        let sx0 = (damage.x as f32 / src_w) * dw + dx;
+        let sy0 = (damage.y as f32 / src_h) * dh + dy;
+        let sx1 = ((damage.x.saturating_add(damage.width)) as f32 / src_w) * dw + dx;
+        let sy1 = ((damage.y.saturating_add(damage.height)) as f32 / src_h) * dh + dy;
+        // 1px safety pad covers bilinear sampling fringes when scaled.
+        let pad = if self.painted == self.src_size && self.simple {
+            0.0
+        } else {
+            1.0
+        };
+        let x0 = (sx0 - pad).floor().max(0.0) as u32;
+        let y0 = (sy0 - pad).floor().max(0.0) as u32;
+        let x1 = (sx1 + pad).ceil().max(0.0) as u32;
+        let y1 = (sy1 + pad).ceil().max(0.0) as u32;
+        Some(intersect_physical(
+            PhysicalRect {
+                x: x0,
+                y: y0,
+                width: x1.saturating_sub(x0),
+                height: y1.saturating_sub(y0),
+            },
+            self.clip,
+        ))
     }
 }
 
@@ -117,6 +178,7 @@ impl HostTexturePipeline {
         sampling: nana_ui_core::ImageSampling,
         clear_premul: [f32; 4],
     ) -> PreparedHostTexture {
+        let slot_name = binding.slot.clone();
         let binding_size = [binding.width, binding.height];
         let opaque_full_alpha =
             binding.alpha_mode == HostTextureAlphaMode::Opaque && opacity >= 1.0 - 1.0e-6;
@@ -190,8 +252,27 @@ impl HostTexturePipeline {
             binding_size,
             painted,
         );
+        let aligned_dest_px = (affine[1].abs() <= 1.0e-6
+            && affine[2].abs() <= 1.0e-6
+            && affine[0] > 0.0
+            && affine[3] > 0.0
+            && persp[0].abs() <= 1.0e-6
+            && persp[1].abs() <= 1.0e-6
+            && scale_factor.is_finite()
+            && scale_factor > 0.0)
+            .then(|| {
+                [
+                    (affine[0] * bounds.x + affine[4]) * scale_factor,
+                    (affine[3] * bounds.y + affine[5]) * scale_factor,
+                    affine[0] * bounds.width * scale_factor,
+                    affine[3] * bounds.height * scale_factor,
+                ]
+            });
         PreparedHostTexture {
             primitive,
+            slot_name,
+            src_size: binding_size,
+            aligned_dest_px,
             clip,
             painted,
             simple,
@@ -207,6 +288,17 @@ impl HostTexturePipeline {
         dest_size: [u32; 2],
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
+        self.draw_clipped(prepared, pass, dest_size, prepared.clip, gpu_work);
+    }
+
+    pub(super) fn draw_clipped(
+        &self,
+        prepared: &PreparedHostTexture,
+        pass: &mut wgpu::RenderPass<'_>,
+        dest_size: [u32; 2],
+        scissor: PhysicalRect,
+        gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
+    ) {
         let mode = if prepared.simple {
             HostTextureDrawMode::SimpleBlend
         } else {
@@ -215,7 +307,7 @@ impl HostTexturePipeline {
         prepared.primitive.draw_in_pass_with_mode(
             &self.pipeline,
             pass,
-            prepared.clip,
+            intersect_physical(prepared.clip, scissor),
             dest_size,
             mode,
             gpu_work,
@@ -229,10 +321,21 @@ impl HostTexturePipeline {
         dest_size: [u32; 2],
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
+        self.draw_replace_clipped(prepared, pass, dest_size, prepared.clip, gpu_work);
+    }
+
+    pub(super) fn draw_replace_clipped(
+        &self,
+        prepared: &PreparedHostTexture,
+        pass: &mut wgpu::RenderPass<'_>,
+        dest_size: [u32; 2],
+        scissor: PhysicalRect,
+        gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
+    ) {
         prepared.primitive.draw_in_pass_with_mode(
             &self.pipeline,
             pass,
-            prepared.clip,
+            intersect_physical(prepared.clip, scissor),
             dest_size,
             HostTextureDrawMode::SimpleReplace,
             gpu_work,

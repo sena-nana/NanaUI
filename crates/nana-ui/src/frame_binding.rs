@@ -157,9 +157,30 @@ impl<E: Copy + Eq + Send + Sync + 'static, M: Send + Sync + 'static> FrameBindin
         {
             let (width, height) = frame.size();
             let token = frame.token();
+            let damage = if !self.showing_placeholder {
+                self.current.as_deref().and_then(|prev| {
+                    let prev_token = prev.token();
+                    (prev_token.exchange_id() == token.exchange_id()
+                        && prev_token.epoch() == token.epoch()
+                        && prev.size() == (width, height))
+                        .then(|| {
+                            inbox
+                                .damage_since(prev_token.sequence(), token.sequence())
+                                .map(|rect| crate::PhysicalRect {
+                                    x: rect.x,
+                                    y: rect.y,
+                                    width: rect.width,
+                                    height: rect.height,
+                                })
+                        })
+                        .flatten()
+                })
+            } else {
+                None
+            };
             self.texture.replace_texture(frame.texture());
             self.slot
-                .replace(self.texture.clone(), width, height, self.alpha);
+                .replace_with_damage(self.texture.clone(), width, height, self.alpha, damage);
             let from_placeholder = std::mem::replace(&mut self.showing_placeholder, false);
             self.awaiting_present = true;
             self.retired = self.current.replace(frame);

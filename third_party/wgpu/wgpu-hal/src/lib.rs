@@ -1321,6 +1321,23 @@ pub trait Queue: WasmNotSendSync {
         surface: &<Self::A as Api>::Surface,
         texture: <Self::A as Api>::SurfaceTexture,
     ) -> Result<(), SurfaceError>;
+    /// Present a surface texture along with dirty rectangles in physical pixel
+    /// coordinates `[x, y, width, height]` describing the region modified since
+    /// the previous present. Backends without partial-present support fall back
+    /// to [`Queue::present`]. (NanaUI fork)
+    ///
+    /// # Safety
+    ///
+    /// Same safety requirements as [`Queue::present`].
+    unsafe fn present_with_damage(
+        &self,
+        surface: &<Self::A as Api>::Surface,
+        texture: <Self::A as Api>::SurfaceTexture,
+        dirty_rects: &[[u32; 4]],
+    ) -> Result<(), SurfaceError> {
+        let _ = dirty_rects;
+        unsafe { self.present(surface, texture) }
+    }
     /// Block until all previously submitted work on this queue has completed,
     /// including any pending presentations.
     ///
@@ -2170,6 +2187,11 @@ pub struct AcquiredSurfaceTexture<A: Api> {
     /// the surface properties exactly, but can still be used to present
     /// to the surface successfully.
     pub suboptimal: bool,
+    /// Backend swapchain backbuffer index when available (NanaUI fork).
+    pub buffer_index: Option<u32>,
+    /// True when the acquired backbuffer preserves contents from a previous
+    /// presentation on the current swapchain configuration (NanaUI fork).
+    pub preserved: bool,
 }
 
 /// An open connection to a device and a queue.

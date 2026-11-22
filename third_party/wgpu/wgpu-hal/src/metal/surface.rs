@@ -402,6 +402,8 @@ impl crate::Surface for super::Surface {
         Ok(crate::AcquiredSurfaceTexture {
             texture: suf_texture,
             suboptimal: false,
+            buffer_index: None,
+            preserved: false,
         })
     }
 

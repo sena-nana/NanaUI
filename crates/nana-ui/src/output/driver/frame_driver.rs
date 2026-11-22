@@ -70,6 +70,7 @@ pub(crate) struct DirectPresentation {
     pub alpha: AlphaEncoding,
     pub text_aa: Option<SubpixelOrder>,
     pub parameters: ScenePresentationParameters,
+    pub damage: Option<crate::PhysicalRect>,
 }
 
 #[derive(Clone, Copy)]
@@ -359,6 +360,7 @@ impl PresentationFrameDriver {
         painter.set_alpha_encoding(direct.alpha);
         painter.set_subpixel_text(direct.text_aa);
         painter.set_presentation_parameters(direct.parameters);
+        painter.set_next_frame_damage(direct.damage);
         painter.paint_target(
             direct.id,
             scene,

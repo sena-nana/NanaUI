@@ -483,6 +483,8 @@ impl crate::Surface for Surface {
         Ok(crate::AcquiredSurfaceTexture {
             texture,
             suboptimal: false,
+            buffer_index: None,
+            preserved: false,
         })
     }
 

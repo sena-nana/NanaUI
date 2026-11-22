@@ -178,6 +178,31 @@ pub(crate) fn intersect_physical(slot: PhysicalRect, clip: PhysicalRect) -> Phys
     }
 }
 
+pub(crate) fn union_physical(left: PhysicalRect, right: PhysicalRect) -> PhysicalRect {
+    if left.width == 0 || left.height == 0 {
+        return right;
+    }
+    if right.width == 0 || right.height == 0 {
+        return left;
+    }
+    let min_x = left.x.min(right.x);
+    let min_y = left.y.min(right.y);
+    let max_x = left
+        .x
+        .saturating_add(left.width)
+        .max(right.x.saturating_add(right.width));
+    let max_y = left
+        .y
+        .saturating_add(left.height)
+        .max(right.y.saturating_add(right.height));
+    PhysicalRect {
+        x: min_x,
+        y: min_y,
+        width: max_x.saturating_sub(min_x),
+        height: max_y.saturating_sub(min_y),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{RenderSlot, intersect_physical};

@@ -5,6 +5,7 @@
 mod accessibility;
 mod browser;
 mod color_sampler;
+mod damage;
 mod dialogs;
 mod display;
 mod host_services;
@@ -316,6 +317,8 @@ struct WindowManager<Program: RuntimeProgram> {
     direct_output_traces: HashMap<WindowId, crate::output::OutputTraceSnapshot>,
     /// Last GPU and output work counts observed when presenting each window.
     last_presentation_work: HashMap<WindowId, crate::PresentationWork>,
+    /// Per-window swapchain backbuffer damage tracker for partial presentation.
+    damage_trackers: HashMap<WindowId, damage::WindowDamageTracker>,
     /// Host-texture slots each window's scene samples, with the subscription
     /// that wakes it; re-subscribed only when the slot set or registry changes.
     texture_subscriptions: HashMap<WindowId, (HashSet<Arc<str>>, crate::TextureSubscription)>,
@@ -1385,6 +1388,7 @@ fn complete_startup<Program: RuntimeProgram>(
         producer_frames: production::WindowProducerCache::default(),
         direct_output_traces: HashMap::new(),
         last_presentation_work: HashMap::new(),
+        damage_trackers: HashMap::new(),
         texture_subscriptions: HashMap::new(),
         texture_redraws: Arc::new(Mutex::new(HashSet::new())),
         startup_painter: None,

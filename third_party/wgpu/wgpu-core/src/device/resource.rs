@@ -5558,6 +5558,8 @@ impl Device {
                     device: Arc::clone(self),
                     config: config.clone(),
                     acquired_texture: None,
+                    acquired_buffer_index: None,
+                    acquired_preserved: false,
                 });
             }
 

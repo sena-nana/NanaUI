@@ -443,19 +443,65 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         if let Some(state) = self.window_outputs.get_mut(&id) {
             state.can_share_window(self.graphics.gpu(), &geometry, profile, viewport, opaque);
         }
+        let target_id = crate::RenderTargetId(id.0);
+        let alpha = if opaque {
+            crate::AlphaEncoding::Linear
+        } else {
+            crate::AlphaEncoding::Gamma
+        };
+        let text_aa = opaque
+            .then(crate::scene_paint::SubpixelOrder::system)
+            .flatten();
+        let configure_generation = self
+            .window_contexts
+            .get(&id)
+            .map_or(0, |host| host.surface.configure_generation());
+        let effective_profile = profile.effective_for_frame(
+            scene.as_ref(),
+            viewport.clear_color,
+            host_textures.as_ref(),
+        );
+        let scene_key = super::damage::DamageSceneKey {
+            instance_id: scene.instance_id(),
+            presentation_epoch: scene.presentation_epoch(),
+            viewport,
+            profile: effective_profile,
+            alpha,
+            text_aa,
+            parameters: presentation_parameters,
+        };
+        let damage_plan = {
+            let tracker = self.damage_trackers.entry(id).or_default();
+            let current_damage = if output_step.is_none()
+                && let Some(painter) = self.painter.as_ref()
+            {
+                painter.host_texture_damage_for_cached_scene(
+                    Some(target_id),
+                    scene.as_ref(),
+                    viewport,
+                    effective_profile,
+                    host_textures.as_ref(),
+                    &mut tracker.slot_revisions,
+                )
+            } else {
+                None
+            };
+            tracker.begin_frame(
+                configure_generation,
+                frame.buffer_index(),
+                frame.preserved(),
+                scene_key,
+                current_damage,
+            )
+        };
         let direct = crate::output::driver::frame_driver::DirectPresentation {
-            id: crate::RenderTargetId(id.0),
+            id: target_id,
             profile,
             viewport,
-            alpha: if opaque {
-                crate::AlphaEncoding::Linear
-            } else {
-                crate::AlphaEncoding::Gamma
-            },
-            text_aa: opaque
-                .then(crate::scene_paint::SubpixelOrder::system)
-                .flatten(),
+            alpha,
+            text_aa,
             parameters: presentation_parameters,
+            damage: damage_plan.backbuffer_damage,
         };
         stage_clock.mark(&stage::PRESENTATION_PLAN_NS);
         // This frame samples every host texture slot as it stands now, so a
@@ -481,6 +527,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             Err(error) => {
                 drop(recording);
                 drop(target);
+                self.damage_trackers.remove(&id);
                 self.discard_frame(id, frame);
                 self.fail_output_trace(id);
                 self.program
@@ -494,6 +541,23 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         };
         let shared_paint = encoded_presentation.shared;
         let direct_ui = encoded_presentation.direct_ui;
+        let direct_presented = !shared_paint && direct_ui;
+        let used_partial = direct_presented
+            && self
+                .painter
+                .as_ref()
+                .is_some_and(|painter| painter.last_frame_used_partial_damage());
+        if direct_presented
+            && !used_partial
+            && let (Some(painter), Some(tracker)) =
+                (self.painter.as_ref(), self.damage_trackers.get_mut(&id))
+        {
+            painter.sync_host_texture_revisions(
+                Some(target_id),
+                host_textures.as_ref(),
+                &mut tracker.slot_revisions,
+            );
+        }
         stage_clock.mark(&stage::PRESENTATION_ENCODE_NS);
         let submission = recording.submit();
         stage_clock.mark(&stage::PRESENTATION_SUBMIT_NS);
@@ -538,7 +602,19 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             }
         }
         stage_clock.mark(&stage::PRESENTATION_POST_SUBMIT_NS);
-        self.graphics.present_frame(frame);
+        if used_partial
+            && let Some(rect) = damage_plan.present_damage
+            && rect.width > 0
+            && rect.height > 0
+        {
+            self.graphics
+                .present_frame_with_damage(frame, &[[rect.x, rect.y, rect.width, rect.height]]);
+        } else {
+            self.graphics.present_frame(frame);
+        }
+        if let Some(tracker) = self.damage_trackers.get_mut(&id) {
+            tracker.commit_presented(damage_plan, direct_presented, used_partial);
+        }
         self.note_window_presented(id);
         stage_clock.mark(&stage::PRESENTATION_PRESENT_NS);
         self.note_native_live_resize_presented(id);

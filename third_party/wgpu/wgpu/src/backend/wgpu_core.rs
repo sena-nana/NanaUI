@@ -621,6 +621,8 @@ pub struct CoreSurfaceOutputDetail {
     context: ContextWgpuCore,
     surface_id: wgc::id::SurfaceId,
     error_sink: ErrorSink,
+    buffer_index: Option<u32>,
+    preserved: bool,
 }
 
 type ErrorSink = Arc<Mutex<ErrorSinkRaw>>;
@@ -2173,6 +2175,28 @@ impl dispatch::QueueInterface for CoreQueue {
             Err(err) => {
                 self.context
                     .handle_error_nolabel(&self.error_sink, err, "Queue::present");
+            }
+        }
+    }
+
+    fn present_with_damage(
+        &self,
+        detail: &dispatch::DispatchSurfaceOutputDetail,
+        dirty_rects: &[[u32; 4]],
+    ) {
+        let detail = detail.as_core();
+        match self
+            .context
+            .0
+            .surface_present_with_damage(detail.surface_id, dirty_rects)
+        {
+            Ok(_status) => (),
+            Err(err) => {
+                self.context.handle_error_nolabel(
+                    &self.error_sink,
+                    err,
+                    "Queue::present_with_damage",
+                );
             }
         }
     }
@@ -4017,18 +4041,24 @@ impl dispatch::SurfaceInterface for CoreSurface {
             Arc::new(Mutex::new(ErrorSinkRaw::new()))
         };
 
-        let output_detail = CoreSurfaceOutputDetail {
-            context: self.context.clone(),
-            surface_id: self.id,
-            error_sink: error_sink.clone(),
-        }
-        .into();
-
         match self.context.0.surface_get_current_texture(self.id, None) {
             Ok(wgc::present::SurfaceOutput {
                 status,
                 texture: texture_id,
             }) => {
+                let (buffer_index, preserved) = if texture_id.is_some() {
+                    self.context.0.surface_acquired_buffer_info(self.id)
+                } else {
+                    (None, false)
+                };
+                let output_detail = CoreSurfaceOutputDetail {
+                    context: self.context.clone(),
+                    surface_id: self.id,
+                    error_sink: error_sink.clone(),
+                    buffer_index,
+                    preserved,
+                }
+                .into();
                 let data = texture_id
                     .map(|id| CoreTexture {
                         context: self.context.clone(),
@@ -4040,6 +4070,14 @@ impl dispatch::SurfaceInterface for CoreSurface {
                 (data, status, output_detail)
             }
             Err(err) => {
+                let output_detail = CoreSurfaceOutputDetail {
+                    context: self.context.clone(),
+                    surface_id: self.id,
+                    error_sink: error_sink.clone(),
+                    buffer_index: None,
+                    preserved: false,
+                }
+                .into();
                 let error_sink = self.error_sink.lock();
                 match error_sink.as_ref() {
                     Some(error_sink) => {
@@ -4084,6 +4122,14 @@ impl dispatch::SurfaceOutputDetailInterface for CoreSurfaceOutputDetail {
                     .handle_error_nolabel(&self.error_sink, err, "Surface::release_texture")
             }
         }
+    }
+
+    fn buffer_index(&self) -> Option<u32> {
+        self.buffer_index
+    }
+
+    fn preserved(&self) -> bool {
+        self.preserved
     }
 }
 impl Drop for CoreSurfaceOutputDetail {

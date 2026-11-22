@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     sync::{
         Arc, RwLock,
         atomic::{AtomicU64, Ordering},
@@ -720,22 +720,62 @@ pub struct HostTextureRegistry {
     painted_observers: Arc<TextureObservers>,
 }
 
+const HOST_TEXTURE_DAMAGE_HISTORY_CAPACITY: usize = 32;
+
 #[derive(Debug, Clone)]
 struct RegisteredHostTextureBinding {
     binding: HostTextureBinding,
     generation: u64,
     version: u64,
+    damage_rev: u64,
+    damage_history: VecDeque<(u64, Option<PhysicalRect>)>,
 }
 
 impl RegisteredHostTextureBinding {
-    fn new(binding: HostTextureBinding) -> Self {
+    fn new(
+        binding: HostTextureBinding,
+        previous: Option<&Self>,
+        damage: Option<PhysicalRect>,
+    ) -> Self {
         let generation = binding.texture.generation();
         let version = binding.texture.version();
+        let (damage_rev, mut damage_history, same_geometry) = match previous {
+            Some(prev) => (
+                prev.damage_rev.saturating_add(1),
+                prev.damage_history.clone(),
+                prev.binding.width == binding.width
+                    && prev.binding.height == binding.height
+                    && prev.binding.alpha_mode == binding.alpha_mode,
+            ),
+            None => (
+                1,
+                VecDeque::with_capacity(HOST_TEXTURE_DAMAGE_HISTORY_CAPACITY),
+                false,
+            ),
+        };
+        let recorded_damage = if same_geometry { damage } else { None };
+        if !same_geometry {
+            damage_history.clear();
+        }
+        if damage_history.len() == HOST_TEXTURE_DAMAGE_HISTORY_CAPACITY {
+            damage_history.pop_front();
+        }
+        damage_history.push_back((damage_rev, recorded_damage));
         Self {
             binding,
             generation,
             version,
+            damage_rev,
+            damage_history,
         }
+    }
+
+    fn note_invalidate(&mut self) {
+        self.damage_rev = self.damage_rev.saturating_add(1);
+        if self.damage_history.len() == HOST_TEXTURE_DAMAGE_HISTORY_CAPACITY {
+            self.damage_history.pop_front();
+        }
+        self.damage_history.push_back((self.damage_rev, None));
     }
 
     fn matches(&self, binding: &HostTextureBinding) -> bool {
@@ -838,6 +878,17 @@ impl TextureSlot {
     ) -> HostTextureBinding {
         self.registry
             .register(self.name.clone(), texture, width, height, alpha)
+    }
+    pub fn replace_with_damage(
+        &self,
+        texture: HostTexture,
+        width: u32,
+        height: u32,
+        alpha: HostTextureAlphaMode,
+        damage: Option<PhysicalRect>,
+    ) -> HostTextureBinding {
+        self.registry
+            .register_with_damage(self.name.clone(), texture, width, height, alpha, damage)
     }
     pub fn remove(&self) -> Option<HostTextureBinding> {
         self.registry.remove(&self.name)
@@ -950,6 +1001,20 @@ impl HostTextureRegistry {
         height: u32,
         alpha_mode: HostTextureAlphaMode,
     ) -> HostTextureBinding {
+        self.register_with_damage(slot, texture, width, height, alpha_mode, None)
+    }
+
+    /// Replace a slot binding and record an optional source-texel dirty
+    /// rectangle relative to the immediately preceding binding on the same slot.
+    pub fn register_with_damage(
+        &self,
+        slot: impl Into<TextureSlotName>,
+        texture: HostTexture,
+        width: u32,
+        height: u32,
+        alpha_mode: HostTextureAlphaMode,
+        damage: Option<PhysicalRect>,
+    ) -> HostTextureBinding {
         let slot = slot.into();
         let binding = HostTextureBinding {
             slot: slot.clone(),
@@ -964,11 +1029,59 @@ impl HostTextureRegistry {
         {
             return current.binding.clone();
         }
-        bindings.insert(slot, RegisteredHostTextureBinding::new(binding.clone()));
+        let next = RegisteredHostTextureBinding::new(binding.clone(), bindings.get(&slot), damage);
+        bindings.insert(slot, next);
         self.revision.fetch_add(1, Ordering::AcqRel);
         drop(bindings);
         self.notify(binding.slot.as_str());
         binding
+    }
+
+    /// Returns `(current_damage_rev, union_damage)` for `slot` covering all
+    /// updates strictly after `after_rev` (`None` inside the pair means full
+    /// slot damage; `Some(empty)` when `after_rev == current_damage_rev`).
+    pub fn slot_damage_since(
+        &self,
+        slot: impl AsRef<str>,
+        after_rev: u64,
+    ) -> Option<(u64, Option<PhysicalRect>)> {
+        let bindings = self.bindings.read().ok()?;
+        let entry = bindings.get(slot.as_ref())?;
+        let current = entry.damage_rev;
+        if after_rev == current {
+            return Some((
+                current,
+                Some(PhysicalRect {
+                    x: 0,
+                    y: 0,
+                    width: 0,
+                    height: 0,
+                }),
+            ));
+        }
+        if after_rev == 0 || after_rev > current {
+            return Some((current, None));
+        }
+        let Some(start) = entry
+            .damage_history
+            .iter()
+            .position(|(rev, _)| *rev == after_rev)
+        else {
+            return Some((current, None));
+        };
+        let mut union = PhysicalRect {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+        };
+        for (_, dmg) in entry.damage_history.iter().skip(start + 1) {
+            let Some(rect) = *dmg else {
+                return Some((current, None));
+            };
+            union = crate::gpu_view::union_physical(union, rect);
+        }
+        Some((current, Some(union)))
     }
 
     pub fn get(&self, slot: impl AsRef<str>) -> Option<HostTextureBinding> {
@@ -1007,10 +1120,8 @@ impl HostTextureRegistry {
         if current.matches(&binding) {
             return true;
         }
-        bindings.insert(
-            binding.slot.clone(),
-            RegisteredHostTextureBinding::new(binding),
-        );
+        let next = RegisteredHostTextureBinding::new(binding.clone(), Some(current), None);
+        bindings.insert(binding.slot.clone(), next);
         self.revision.fetch_add(1, Ordering::AcqRel);
         drop(bindings);
         self.notify(slot);
@@ -1112,6 +1223,7 @@ impl HostTextureRegistry {
         let version = binding.binding.texture.invalidate();
         binding.generation = binding.binding.texture.generation();
         binding.version = version;
+        binding.note_invalidate();
         self.revision.fetch_add(1, Ordering::AcqRel);
         drop(bindings);
         self.notify(slot);
@@ -2196,7 +2308,7 @@ mod tests {
         VersionedResource, affine_aabb, clip_pixels, make_layer_uniform, texture_needs_rebind,
         trim_unused,
     };
-    use crate::geometry::LogicalRect;
+    use crate::geometry::{LogicalRect, PhysicalRect};
     use crate::gpu_view::RenderSlot;
 
     #[test]
@@ -2653,6 +2765,89 @@ mod tests {
         assert_eq!(replaced.texture.generation(), 1);
         assert_eq!((replaced.width, replaced.height), (64, 36));
         let _ = queue;
+    }
+
+    #[test]
+    fn slot_damage_since_tracks_updates_resets_and_invalidation() {
+        let _ = test_device();
+        let registry = HostTextureRegistry::new();
+        let slot = registry.slot("stage");
+        let tex = test_host_texture();
+        slot.replace_with_damage(
+            tex.clone(),
+            64,
+            64,
+            HostTextureAlphaMode::Premultiplied,
+            None,
+        );
+        let (rev1, dmg0) = registry.slot_damage_since("stage", 0).unwrap();
+        assert_eq!(rev1, 1);
+        assert_eq!(dmg0, None);
+        assert_eq!(
+            registry.slot_damage_since("stage", rev1),
+            Some((
+                rev1,
+                Some(PhysicalRect {
+                    x: 0,
+                    y: 0,
+                    width: 0,
+                    height: 0
+                })
+            ))
+        );
+
+        let r_a = PhysicalRect {
+            x: 4,
+            y: 6,
+            width: 10,
+            height: 12,
+        };
+        let r_b = PhysicalRect {
+            x: 16,
+            y: 8,
+            width: 8,
+            height: 14,
+        };
+        tex.replace_texture(&test_texture());
+        slot.replace_with_damage(
+            tex.clone(),
+            64,
+            64,
+            HostTextureAlphaMode::Premultiplied,
+            Some(r_a),
+        );
+        tex.replace_texture(&test_texture());
+        slot.replace_with_damage(
+            tex.clone(),
+            64,
+            64,
+            HostTextureAlphaMode::Premultiplied,
+            Some(r_b),
+        );
+        let (rev3, union_ab) = registry.slot_damage_since("stage", rev1).unwrap();
+        assert_eq!(rev3, 3);
+        assert_eq!(
+            union_ab,
+            Some(PhysicalRect {
+                x: 4,
+                y: 6,
+                width: 20,
+                height: 16,
+            })
+        );
+
+        // Invalidate resets incremental history to full frame.
+        slot.invalidate();
+        let (rev4, after_inv) = registry.slot_damage_since("stage", rev3).unwrap();
+        assert_eq!(rev4, 4);
+        assert_eq!(after_inv, None);
+
+        // Size change also forces full-frame damage.
+        tex.replace_texture(&test_texture());
+        slot.replace_with_damage(tex, 128, 64, HostTextureAlphaMode::Premultiplied, Some(r_a));
+        let (rev5, after_resize) = registry.slot_damage_since("stage", rev4).unwrap();
+        assert_eq!(rev5, 5);
+        assert_eq!(after_resize, None);
     }
 
     fn test_host_texture() -> HostTexture {

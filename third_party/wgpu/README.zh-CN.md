@@ -133,3 +133,13 @@ NanaUI 在 Apple 平台上通过 `Device::create_shader_module_passthrough` 直�
 - **`wgpu-hal` Metal**：`ShaderInput::Msl` 编译包裹在 `autoreleasepool` 中，若源码首行包含 `// language: metal<maj>.<min>` 则解析语言版本（上限钳位到 `private_caps.msl_version`，否则回退到 `private_caps.msl_version`）并设置 `MTLCompileOptions::setLanguageVersion` 与 `setPreserveInvariance(true)`；`load_shader` 与 `create_compute_pipeline` 统一使用 `.get(...).unwrap_or(...)` 安全读取透传表。在启用 `naga-translation` 且打开 `wgpu_hal::metal::stage_meta` `debug` 日志时，`load_shader` 输出转译后入口名、工作组大小、尺寸绑定与完整 MSL 源码供离线采集。
 - **`wgpu-core`**：`Device::create_shader_module_passthrough` 在 Metal 后端免除对 `Features::PASSTHROUGH_SHADERS` 的要求，使通过 `wgpu-interop` 以默认特性创建的外部 Metal 设备也能使用预编译 MSL。
 - **`naga-translation` 特性**（在 `wgpu-hal`、`wgpu-core`、`wgpu` 中新增，由 `wgsl`、`spirv`、`glsl`、`replay` 与 `naga-ir` 自动启用）：门控运行时的 `ShaderModuleSource::Naga` 与 `Device::create_shader_module` 转译路径，使仅开启 `metal` 的无运行时编译器构建在 LTO 下彻底裁剪 Naga 校验与后端转译代码。
+
+### DX12 `FLIP_SEQUENTIAL` 后缓冲保留与 `Present1` 脏矩形呈现
+
+允许只重绘局部变化区域的宿主窗口在保留的后缓冲上使用 `LoadOp::Load` 增量渲染，并通过 DXGI `IDXGISwapChain3::Present1` 提交脏矩形给 DWM 合成。
+
+- **`wgpu::SurfaceTexture::buffer_index(&self) -> Option<u32>`** 与
+  **`wgpu::SurfaceTexture::preserved(&self) -> bool`**（增量新增）：返回当前获取的后缓冲索引，以及该缓冲在当前交换链配置下是否已包含上一轮呈现后的保留像素。
+- **`wgpu::Queue::present_with_damage(&self, SurfaceTexture, &[[u32; 4]])`**（增量新增）：携带物理像素脏矩形 `[x, y, width, height]` 提交呈现；在不支持局部呈现的后端（以及 DX12 建链/缩放后的首次呈现、或 `PresentMode::Immediate` 撕裂模式下）自动回退到完整呈现。
+- **`wgpu-hal` DX12**：将 DXGI 交换链配置为 `DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL`，跨建链/`ResizeBuffers` 追踪每个后缓冲的初始化状态，并在符合 DXGI 规则时使用裁剪后的 `RECT` 调用 `Present1`。
+- **`wgpu-core`**：对 `preserved == true` 的后缓冲跳过初次全屏清零标记（`init = !ast.preserved`），避免 `LoadOp::Load` 触发隐式全屏清屏。

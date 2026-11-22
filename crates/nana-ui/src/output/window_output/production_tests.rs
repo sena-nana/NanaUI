@@ -71,6 +71,7 @@ fn direct(viewport: ScenePaintViewport) -> DirectPresentation {
         alpha: AlphaEncoding::Gamma,
         text_aa: None,
         parameters: Default::default(),
+        damage: None,
     }
 }
 

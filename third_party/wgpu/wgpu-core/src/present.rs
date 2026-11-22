@@ -36,6 +36,8 @@ pub(crate) struct Presentation {
     pub(crate) device: Arc<Device>,
     pub(crate) config: wgt::SurfaceConfiguration<Vec<wgt::TextureFormat>>,
     pub(crate) acquired_texture: Option<Arc<resource::Texture>>,
+    pub(crate) acquired_buffer_index: Option<u32>,
+    pub(crate) acquired_preserved: bool,
 }
 
 #[derive(Clone, Debug, Error)]
@@ -226,6 +228,8 @@ impl Surface {
 
                 let mut presentation = self.presentation.lock();
                 let present = presentation.as_mut().unwrap();
+                let preserved = ast.preserved;
+                let buffer_index = ast.buffer_index;
                 let texture = resource::Texture::new(
                     &device,
                     resource::TextureInner::Surface {
@@ -238,7 +242,7 @@ impl Surface {
                     resource::TextureClearMode::Surface {
                         clear_view: ManuallyDrop::new(clear_view),
                     },
-                    true,
+                    !preserved,
                 );
 
                 let texture = Arc::new(texture);
@@ -253,6 +257,8 @@ impl Surface {
                     return Err(SurfaceError::AlreadyAcquired);
                 }
                 present.acquired_texture = Some(texture.clone());
+                present.acquired_buffer_index = buffer_index;
+                present.acquired_preserved = preserved;
 
                 let status = if ast.suboptimal {
                     Status::Suboptimal
@@ -283,6 +289,10 @@ impl Surface {
     }
 
     pub fn present(&self) -> Result<Status, SurfaceError> {
+        self.present_with_damage(&[])
+    }
+
+    pub fn present_with_damage(&self, dirty_rects: &[[u32; 4]]) -> Result<Status, SurfaceError> {
         profiling::scope!("Surface::present");
 
         let presentation = self.presentation.lock();
@@ -298,12 +308,20 @@ impl Surface {
             .ok_or(SurfaceError::Device(DeviceError::Lost))?;
         drop(presentation);
 
-        queue.present(self)
+        queue.present_with_damage(self, dirty_rects)
     }
 }
 
 impl Queue {
     pub fn present(&self, surface: &Surface) -> Result<Status, SurfaceError> {
+        self.present_with_damage(surface, &[])
+    }
+
+    pub fn present_with_damage(
+        &self,
+        surface: &Surface,
+        dirty_rects: &[[u32; 4]],
+    ) -> Result<Status, SurfaceError> {
         profiling::scope!("Queue::present");
 
         let texture = {
@@ -327,6 +345,8 @@ impl Queue {
                 ))));
             }
 
+            present.acquired_buffer_index = None;
+            present.acquired_preserved = false;
             present
                 .acquired_texture
                 .take()
@@ -356,7 +376,7 @@ impl Queue {
                 // other present calls. Locking command indices prevents submits which must increment the
                 // submission index, and by `write`ing prevents other present calls.
                 let _command_indices = device.command_indices.write();
-                unsafe { raw_queue.present(raw_surface, raw) }
+                unsafe { raw_queue.present_with_damage(raw_surface, raw, dirty_rects) }
             }
             _ => unreachable!(),
         };
@@ -394,6 +414,8 @@ impl Surface {
 
         device.check_is_valid()?;
 
+        present.acquired_buffer_index = None;
+        present.acquired_preserved = false;
         let texture = present
             .acquired_texture
             .take()
@@ -432,6 +454,8 @@ impl Surface {
         // Arc<SwapchainAcquireSemaphore>. If this was the last Arc, the Texture
         // is freed, which drops NativeSurfaceTextureMetadata and
         // its Arc<SwapchainAcquireSemaphore>.
+        present.acquired_buffer_index = None;
+        present.acquired_preserved = false;
         _ = present
             .acquired_texture
             .take()
@@ -475,6 +499,14 @@ impl Global {
     }
 
     pub fn surface_present(&self, surface_id: id::SurfaceId) -> Result<Status, SurfaceError> {
+        self.surface_present_with_damage(surface_id, &[])
+    }
+
+    pub fn surface_present_with_damage(
+        &self,
+        surface_id: id::SurfaceId,
+        dirty_rects: &[[u32; 4]],
+    ) -> Result<Status, SurfaceError> {
         let surface = self.surfaces.get(surface_id);
 
         #[cfg(feature = "trace")]
@@ -484,7 +516,15 @@ impl Global {
             }
         }
 
-        surface.present()
+        surface.present_with_damage(dirty_rects)
+    }
+
+    pub fn surface_acquired_buffer_info(&self, surface_id: id::SurfaceId) -> (Option<u32>, bool) {
+        let surface = self.surfaces.get(surface_id);
+        let presentation = surface.presentation.lock();
+        presentation.as_ref().map_or((None, false), |present| {
+            (present.acquired_buffer_index, present.acquired_preserved)
+        })
     }
 
     pub fn surface_texture_discard(&self, surface_id: id::SurfaceId) -> Result<(), SurfaceError> {

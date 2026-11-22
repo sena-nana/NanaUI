@@ -15715,3 +15715,234 @@ fn host_texture_rebind_reuses_uniform_buffer() {
     host_tex.replace_texture(&crate::test_gpu::wrap_view(&tex3));
     assert_eq!(render_and_check([0, 0, 255, 255]), 0);
 }
+
+#[test]
+fn partial_damage_incremental_paint_matches_full_frame_with_ui_overlays() {
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+
+    // Scene: full-viewport HostTexture + two UI quads (one overlapping the
+    // moving damage region, one sitting outside it).
+    let layer = host_texture_child(1, 10, 0.0, 0.0, 64.0, 64.0, "stage");
+    let quad_inside = extracted_div(
+        2,
+        &[],
+        20.0,
+        16.0,
+        10.0,
+        10.0,
+        nana_ui_core::LayoutStyle::default(),
+        Some([0.0, 0.8, 0.2, 0.5]),
+    );
+    let quad_outside = extracted_div(
+        3,
+        &[],
+        48.0,
+        48.0,
+        10.0,
+        10.0,
+        nana_ui_core::LayoutStyle::default(),
+        Some([0.9, 0.6, 0.1, 1.0]),
+    );
+    let mut layer = layer;
+    layer.parent = None;
+    let mut scene = UiScene::new();
+    scene.apply_delta([layer, quad_inside, quad_outside], []);
+
+    let make_host_frame = |rect: PhysicalRect, fill: [u8; 4]| -> wgpu::Texture {
+        let tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("partial_damage_host_src"),
+            size: wgpu::Extent3d {
+                width: 64,
+                height: 64,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let mut pixels = vec![0u8; 64 * 64 * 4];
+        for y in rect.y..(rect.y + rect.height) {
+            for x in rect.x..(rect.x + rect.width) {
+                let idx = ((y * 64 + x) * 4) as usize;
+                pixels[idx..idx + 4].copy_from_slice(&fill);
+            }
+        }
+        queue.write_texture(
+            tex.as_image_copy(),
+            &pixels,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(64 * 4),
+                rows_per_image: Some(64),
+            },
+            wgpu::Extent3d {
+                width: 64,
+                height: 64,
+                depth_or_array_layers: 1,
+            },
+        );
+        tex
+    };
+
+    let rect_a = PhysicalRect {
+        x: 6,
+        y: 6,
+        width: 12,
+        height: 12,
+    };
+    let rect_b = PhysicalRect {
+        x: 18,
+        y: 12,
+        width: 12,
+        height: 12,
+    };
+    let rect_c = PhysicalRect {
+        x: 24,
+        y: 22,
+        width: 10,
+        height: 10,
+    };
+
+    let tex_a = make_host_frame(rect_a, [220, 40, 60, 255]);
+    let tex_b = make_host_frame(rect_b, [40, 140, 230, 255]);
+    let tex_c = make_host_frame(rect_c, [240, 240, 60, 255]);
+
+    let host_tex = crate::HostTexture::new(&crate::test_gpu::wrap_view(
+        &tex_a.create_view(&Default::default()),
+    ));
+    let registry = HostTextureRegistry::new();
+    registry.register_with_damage(
+        "stage",
+        host_tex.clone(),
+        64,
+        64,
+        crate::HostTextureAlphaMode::Premultiplied,
+        None,
+    );
+
+    let viewport = ScenePaintViewport {
+        logical_size: [64.0, 64.0],
+        physical_size: [64, 64],
+        scale_factor: 1.0,
+        scene_origin: [0.0, 0.0],
+        target_origin: [0.0, 0.0],
+        clear_color: [0.0; 4],
+        clear: true,
+    };
+
+    let mut painter = SceneWgpuPainter::for_test(format);
+    let (target_tex, target_view) = test_copy_target(&device, format, 64, 64);
+
+    // Frame 1: full frame
+    let mut enc = device.create_command_encoder(&Default::default());
+    painter
+        .paint_encoder(
+            &scene,
+            &mut enc,
+            &target_view,
+            viewport,
+            Some(&registry),
+            None,
+        )
+        .unwrap();
+    assert!(!painter.last_frame_used_partial_damage());
+    queue.submit([enc.finish()]);
+    let mut slot_revs = std::collections::HashMap::new();
+    painter.sync_host_texture_revisions(None, Some(&registry), &mut slot_revs);
+
+    // Frame 2: partial damage A ∪ B
+    host_tex.replace_texture(&crate::test_gpu::wrap_view(
+        &tex_b.create_view(&Default::default()),
+    ));
+    registry.register_with_damage(
+        "stage",
+        host_tex.clone(),
+        64,
+        64,
+        crate::HostTextureAlphaMode::Premultiplied,
+        Some(crate::gpu_view::union_physical(rect_a, rect_b)),
+    );
+    let dmg2 = painter
+        .host_texture_damage_for_cached_scene(
+            None,
+            &scene,
+            viewport,
+            painter.presentation(),
+            Some(&registry),
+            &mut slot_revs,
+        )
+        .expect("cached scene damage");
+    painter.set_next_frame_damage(Some(dmg2));
+    let mut enc = device.create_command_encoder(&Default::default());
+    painter
+        .paint_encoder(
+            &scene,
+            &mut enc,
+            &target_view,
+            viewport,
+            Some(&registry),
+            None,
+        )
+        .unwrap();
+    assert!(painter.last_frame_used_partial_damage());
+    queue.submit([enc.finish()]);
+
+    // Frame 3: partial damage B ∪ C
+    host_tex.replace_texture(&crate::test_gpu::wrap_view(
+        &tex_c.create_view(&Default::default()),
+    ));
+    registry.register_with_damage(
+        "stage",
+        host_tex,
+        64,
+        64,
+        crate::HostTextureAlphaMode::Premultiplied,
+        Some(crate::gpu_view::union_physical(rect_b, rect_c)),
+    );
+    let dmg3 = painter
+        .host_texture_damage_for_cached_scene(
+            None,
+            &scene,
+            viewport,
+            painter.presentation(),
+            Some(&registry),
+            &mut slot_revs,
+        )
+        .expect("cached scene damage");
+    painter.set_next_frame_damage(Some(dmg3));
+    let mut enc = device.create_command_encoder(&Default::default());
+    painter
+        .paint_encoder(
+            &scene,
+            &mut enc,
+            &target_view,
+            viewport,
+            Some(&registry),
+            None,
+        )
+        .unwrap();
+    assert!(painter.last_frame_used_partial_damage());
+    let partial_pixels = readback_rgba(&device, &queue, enc, &target_tex, 64, 64);
+
+    // Reference: fresh full-frame render of Frame 3
+    let mut ref_painter = SceneWgpuPainter::for_test(format);
+    let (ref_tex, ref_view) = test_copy_target(&device, format, 64, 64);
+    let mut ref_enc = device.create_command_encoder(&Default::default());
+    ref_painter
+        .paint_encoder(
+            &scene,
+            &mut ref_enc,
+            &ref_view,
+            viewport,
+            Some(&registry),
+            None,
+        )
+        .unwrap();
+    let ref_pixels = readback_rgba(&device, &queue, ref_enc, &ref_tex, 64, 64);
+
+    assert_eq!(partial_pixels, ref_pixels);
+}

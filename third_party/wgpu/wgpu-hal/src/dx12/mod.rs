@@ -93,7 +93,7 @@ mod suballocation;
 mod types;
 mod view;
 
-use alloc::{borrow::ToOwned as _, string::String, sync::Arc, vec::Vec};
+use alloc::{borrow::ToOwned as _, collections::VecDeque, string::String, sync::Arc, vec::Vec};
 use core::{ffi, fmt, mem, ops::Deref, sync::atomic::AtomicU64};
 
 use arrayvec::ArrayVec;
@@ -621,6 +621,15 @@ struct SwapChain {
     /// back buffer: the work that rendered them and the presents themselves
     /// sit before it in queue order (NanaUI fork).
     presented: Option<(Direct3D12::ID3D12Fence, u64)>,
+    /// True once at least one full-frame present succeeded on the current
+    /// swapchain buffers (required before `Present1` dirty rects) (NanaUI fork).
+    first_present_done: bool,
+    /// Tracks whether each backbuffer holds prior presented contents under
+    /// `DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL` (NanaUI fork).
+    buffer_initialized: Vec<bool>,
+    /// FIFO of currently acquired backbuffer indices awaiting present or
+    /// discard (NanaUI fork).
+    acquired_indices: VecDeque<usize>,
 }
 
 enum SurfaceTarget {
@@ -1574,7 +1583,7 @@ impl crate::Surface for Surface {
                     BufferUsage: Dxgi::DXGI_USAGE_RENDER_TARGET_OUTPUT,
                     BufferCount: swap_chain_buffer,
                     Scaling: Dxgi::DXGI_SCALING_STRETCH,
-                    SwapEffect: Dxgi::DXGI_SWAP_EFFECT_FLIP_DISCARD,
+                    SwapEffect: Dxgi::DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
                     Flags: flags.0 as u32,
                 };
                 let swap_chain1 = match self.target {
@@ -1742,6 +1751,9 @@ impl crate::Surface for Surface {
             format: config.format,
             size: config.extent,
             presented: None,
+            first_present_done: false,
+            buffer_initialized: alloc::vec![false; swap_chain_buffer as usize],
+            acquired_indices: VecDeque::new(),
         });
 
         Ok(())
@@ -1778,6 +1790,8 @@ impl crate::Surface for Surface {
         let base_index = unsafe { sc.raw.GetCurrentBackBufferIndex() } as usize;
         let index = (base_index + sc.acquired_count) % sc.resources.len();
         sc.acquired_count += 1;
+        let preserved = sc.buffer_initialized.get(index).copied().unwrap_or(false);
+        sc.acquired_indices.push_back(index);
 
         let texture = Texture {
             resource: sc.resources[index].clone(),
@@ -1795,12 +1809,15 @@ impl crate::Surface for Surface {
         Ok(crate::AcquiredSurfaceTexture {
             texture,
             suboptimal: false,
+            buffer_index: Some(index as u32),
+            preserved,
         })
     }
     unsafe fn discard_texture(&self, _texture: Texture) {
         let mut swapchain = self.swap_chain.write();
         let sc = swapchain.as_mut().unwrap();
         sc.acquired_count -= 1;
+        sc.acquired_indices.pop_back();
     }
 }
 
@@ -1859,11 +1876,21 @@ impl crate::Queue for Queue {
     unsafe fn present(
         &self,
         surface: &Surface,
+        texture: Texture,
+    ) -> Result<(), crate::SurfaceError> {
+        unsafe { self.present_with_damage(surface, texture, &[]) }
+    }
+
+    unsafe fn present_with_damage(
+        &self,
+        surface: &Surface,
         _texture: Texture,
+        dirty_rects: &[[u32; 4]],
     ) -> Result<(), crate::SurfaceError> {
         let mut swapchain = surface.swap_chain.write();
         let sc = swapchain.as_mut().unwrap();
         sc.acquired_count -= 1;
+        let presented_index = sc.acquired_indices.pop_front();
 
         let (interval, flags) = match sc.present_mode {
             // We only allow immediate if ALLOW_TEARING is valid.
@@ -1873,10 +1900,61 @@ impl crate::Queue for Queue {
             m => unreachable!("Cannot make surface with present mode {m:?}"),
         };
 
-        profiling::scope!("IDXGISwapchain3::Present");
-        unsafe { sc.raw.Present(interval, flags) }
-            .ok()
-            .into_device_result("Present")?;
+        let mut rects: ArrayVec<Foundation::RECT, 8> = ArrayVec::new();
+        if sc.first_present_done
+            && sc.present_mode != wgt::PresentMode::Immediate
+            && !dirty_rects.is_empty()
+        {
+            for &[x, y, w, h] in dirty_rects {
+                let x0 = x.min(sc.size.width);
+                let y0 = y.min(sc.size.height);
+                let x1 = x.saturating_add(w).min(sc.size.width);
+                let y1 = y.saturating_add(h).min(sc.size.height);
+                if x1 > x0 && y1 > y0 {
+                    if rects.is_full() {
+                        // Overflowed fixed stack capacity: coalesce into the first rect.
+                        let mut merged = rects[0];
+                        merged.left = merged.left.min(x0 as i32);
+                        merged.top = merged.top.min(y0 as i32);
+                        merged.right = merged.right.max(x1 as i32);
+                        merged.bottom = merged.bottom.max(y1 as i32);
+                        rects[0] = merged;
+                    } else {
+                        rects.push(Foundation::RECT {
+                            left: x0 as i32,
+                            top: y0 as i32,
+                            right: x1 as i32,
+                            bottom: y1 as i32,
+                        });
+                    }
+                }
+            }
+        }
+
+        if !rects.is_empty() {
+            profiling::scope!("IDXGISwapchain3::Present1");
+            let params = Dxgi::DXGI_PRESENT_PARAMETERS {
+                DirtyRectsCount: rects.len() as u32,
+                pDirtyRects: rects.as_mut_ptr(),
+                pScrollRect: core::ptr::null_mut(),
+                pScrollOffset: core::ptr::null_mut(),
+            };
+            unsafe { sc.raw.Present1(interval, flags, &params) }
+                .ok()
+                .into_device_result("Present1")?;
+        } else {
+            profiling::scope!("IDXGISwapchain3::Present");
+            unsafe { sc.raw.Present(interval, flags) }
+                .ok()
+                .into_device_result("Present")?;
+        }
+
+        sc.first_present_done = true;
+        if let Some(index) = presented_index {
+            if let Some(initialized) = sc.buffer_initialized.get_mut(index) {
+                *initialized = true;
+            }
+        }
 
         // Mark the end of this swap chain's queue work, so reconfiguring it
         // waits for this point only (see `SwapChain::wait_for_presents`).
