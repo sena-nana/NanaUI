@@ -73,7 +73,48 @@ widget(Chart::new(option).label("本周访问"))
 
 ## 缩放
 
-`DataZoom::inside()`：在绘图区里滚轮缩放（以指针为中心），拖动平移。`DataZoom::slider()`：图下方一条带预览的滑轨，拖窗口或两端。`.range(start, end)` 是初始窗口（百分比）。窗口移动时立即重画，不做过渡。
+`DataZoom::inside()`：在绘图区里滚轮缩放（以指针为中心），拖动平移。`DataZoom::slider()`：一条带预览的滑轨，拖窗口或两端。`DataZoom::select()`：在绘图区里拖出一个框，松开就缩放到框内，双击回到初始窗口。`.range(start, end)` 是初始窗口（百分比）。窗口移动时立即重画，不做过渡。
+
+缩放默认作用于 x 轴；`.y_axis(0)` 改成 y 轴，和 ECharts 的 `yAxisIndex` 一样按屏幕方位算（横向柱状图的 x 轴是数值轴）。y 轴的滑轨在图的右侧。同一根轴上的几个缩放条目共用一个窗口，所以滚轮和滑轨总是一致。x、y 各放一个 `DataZoom::select()` 时框选同时缩放两个方向：
+
+```rust
+use nana_ui::runtime::chart::{Axis, ChartOption, DataZoom, LineSeries};
+
+let option = ChartOption::new()
+    .x_axis(Axis::category(["00:00", "00:05", "00:10", "00:15", "00:20"]))
+    .y_axis(Axis::value())
+    .data_zoom(DataZoom::select())
+    .data_zoom(DataZoom::select().y_axis(0))
+    .series(LineSeries::new("延迟", [12.0, 18.0, 95.0, 22.0, 15.0]));
+```
+
+## 标线和标域
+
+折线、柱状和散点系列可以带 `mark_line(MarkLine)` 和 `mark_area(MarkArea)`：告警阈值、平均线、正常区间、事故时间段。标域画在系列下面，标线画在上面，默认用系列颜色，标线是 1px 虚线。
+
+```rust
+use nana_ui::runtime::chart::{
+    Axis, ChartOption, LineSeries, MarkArea, MarkAreaItem, MarkLine, MarkLineItem,
+};
+
+let option = ChartOption::new()
+    .x_axis(Axis::category(["周一", "周二", "周三", "周四", "周五"]))
+    .y_axis(Axis::value())
+    .series(
+        LineSeries::new("CPU", [32.0, 48.0, 71.0, 55.0, 40.0])
+            .mark_line(MarkLine::new([
+                MarkLineItem::y(90.0).name("告警"),
+                MarkLineItem::average(),
+            ]))
+            .mark_area(MarkArea::new([MarkAreaItem::y(30.0, 60.0).name("正常")])),
+    );
+```
+
+- `MarkLineItem::x(..)` / `::y(..)` 是竖线和横线（类目轴上用类目下标），`min()` / `max()` / `average()` 是系列数值的统计线，`segment(..)` 是两点间的线段。
+- `MarkAreaItem::y(a, b)` 是横向的带，`::x(a, b)` 是纵向的带，`::rect(..)` 是矩形。
+- 数值轴会把阈值和带的边界包进来，所以阈值比数据高也看得见。
+- 标线在末端写名字，没有名字时写数值；标域在左上角写名字。
+- 指针靠近标线时提示它的名字和数值，并加粗这条线；停在标域里时标域加深，轴触发的提示会在系列之后列出所在的标域。
 
 ## 动画
 
@@ -83,7 +124,7 @@ widget(Chart::new(option).label("本周访问"))
 
 ## 事件
 
-`ChartEvent::Click { series, index }`：在一项上按下并原地抬起。`ChartEvent::LegendSelect { name, selected }`：图例切换。`ChartEvent::DataZoom { index, start, end }`：缩放窗口变了。用 `.on(|e: &ChartEvent| ..)` 接收。
+`ChartEvent::Click { series, index }`：在一项上按下并原地抬起。`ChartEvent::LegendSelect { name, selected }`：图例切换。`ChartEvent::DataZoom { index, start, end }`：缩放窗口变了（同一根轴上的每个条目各发一次）。用 `.on(|e: &ChartEvent| ..)` 接收。
 
 ## 颜色
 
@@ -118,4 +159,4 @@ widget(Chart::new(option).label("本周访问"))
 
 ## 参见
 
-[总览](https://github.com/sena-nana/NanaUI/blob/main/docs/components/index.md) · [控件](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/components.md)
+[总览](https://github.com/sena-nana/NanaUI/blob/main/docs/components/index.md) · [控件](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/components.md) · [图表模型与渲染](../reference/charts.md)

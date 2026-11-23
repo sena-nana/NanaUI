@@ -48,37 +48,37 @@ pub(super) static STAGES: &[(u64, &str, &[u8])] = &[
     ),
     #[cfg(any(test, feature = "charts"))]
     (
-        0x47e10a7981ce77c4,
+        0xee7a60e5fa58e6a4,
         "chart_line_vs",
         include_bytes!("chart__chart_line_vs.naga"),
     ),
     #[cfg(any(test, feature = "charts"))]
     (
-        0x47e10a7981ce77c4,
+        0xee7a60e5fa58e6a4,
         "chart_line_fs",
         include_bytes!("chart__chart_line_fs.naga"),
     ),
     #[cfg(any(test, feature = "charts"))]
     (
-        0x47e10a7981ce77c4,
+        0xee7a60e5fa58e6a4,
         "chart_area_vs",
         include_bytes!("chart__chart_area_vs.naga"),
     ),
     #[cfg(any(test, feature = "charts"))]
     (
-        0x47e10a7981ce77c4,
+        0xee7a60e5fa58e6a4,
         "chart_area_fs",
         include_bytes!("chart__chart_area_fs.naga"),
     ),
     #[cfg(any(test, feature = "charts"))]
     (
-        0x47e10a7981ce77c4,
+        0xee7a60e5fa58e6a4,
         "chart_shape_vs",
         include_bytes!("chart__chart_shape_vs.naga"),
     ),
     #[cfg(any(test, feature = "charts"))]
     (
-        0x47e10a7981ce77c4,
+        0xee7a60e5fa58e6a4,
         "chart_shape_fs",
         include_bytes!("chart__chart_shape_fs.naga"),
     ),

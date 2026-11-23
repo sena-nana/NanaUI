@@ -11,7 +11,7 @@ pub(super) const FORK_MSL_HASH: u64 = 0x9a29327006d4f951;
 #[cfg(test)]
 pub(super) const MSL_LANG_VERSION: (u8, u8) = (3, 1);
 
-pub(super) const UNCOMPRESSED_LEN: usize = 942300;
+pub(super) const UNCOMPRESSED_LEN: usize = 944886;
 
 pub(super) static STAGES: &[MslStage] = &[
     MslStage {
@@ -186,72 +186,6 @@ pub(super) static STAGES: &[MslStage] = &[
         offset: 24161,
         len: 980,
     },
-    #[cfg(any(test, feature = "charts"))]
-    MslStage {
-        source_hash: 0x47e10a7981ce77c4,
-        entry: "chart_area_fs",
-        msl_entry: "chart_area_fs",
-        constants: &[],
-        workgroup_size: (0, 0, 0),
-        sized_bindings: &[(0, 3, 0), (0, 5, 0)],
-        offset: 123090,
-        len: 21214,
-    },
-    #[cfg(any(test, feature = "charts"))]
-    MslStage {
-        source_hash: 0x47e10a7981ce77c4,
-        entry: "chart_area_vs",
-        msl_entry: "chart_area_vs",
-        constants: &[],
-        workgroup_size: (0, 0, 0),
-        sized_bindings: &[(0, 1, 0), (0, 5, 0)],
-        offset: 144304,
-        len: 11696,
-    },
-    #[cfg(any(test, feature = "charts"))]
-    MslStage {
-        source_hash: 0x47e10a7981ce77c4,
-        entry: "chart_line_fs",
-        msl_entry: "chart_line_fs",
-        constants: &[],
-        workgroup_size: (0, 0, 0),
-        sized_bindings: &[(0, 1, 0), (0, 3, 0), (0, 5, 0)],
-        offset: 156000,
-        len: 25103,
-    },
-    #[cfg(any(test, feature = "charts"))]
-    MslStage {
-        source_hash: 0x47e10a7981ce77c4,
-        entry: "chart_line_vs",
-        msl_entry: "chart_line_vs",
-        constants: &[],
-        workgroup_size: (0, 0, 0),
-        sized_bindings: &[(0, 1, 0), (0, 3, 0), (0, 5, 0)],
-        offset: 181103,
-        len: 11149,
-    },
-    #[cfg(any(test, feature = "charts"))]
-    MslStage {
-        source_hash: 0x47e10a7981ce77c4,
-        entry: "chart_shape_fs",
-        msl_entry: "chart_shape_fs",
-        constants: &[],
-        workgroup_size: (0, 0, 0),
-        sized_bindings: &[(0, 3, 0)],
-        offset: 192252,
-        len: 26437,
-    },
-    #[cfg(any(test, feature = "charts"))]
-    MslStage {
-        source_hash: 0x47e10a7981ce77c4,
-        entry: "chart_shape_vs",
-        msl_entry: "chart_shape_vs",
-        constants: &[],
-        workgroup_size: (0, 0, 0),
-        sized_bindings: &[(0, 2, 0)],
-        offset: 218689,
-        len: 14668,
-    },
     MslStage {
         source_hash: 0x4844b234a16c5df1,
         entry: "fs_main",
@@ -259,7 +193,7 @@ pub(super) static STAGES: &[MslStage] = &[
         constants: &[],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 233357,
+        offset: 123090,
         len: 3899,
     },
     MslStage {
@@ -269,7 +203,7 @@ pub(super) static STAGES: &[MslStage] = &[
         constants: &[],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 237256,
+        offset: 126989,
         len: 992,
     },
     MslStage {
@@ -279,7 +213,7 @@ pub(super) static STAGES: &[MslStage] = &[
         constants: &[],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[(0, 3, 0)],
-        offset: 238248,
+        offset: 127981,
         len: 20251,
     },
     MslStage {
@@ -289,7 +223,7 @@ pub(super) static STAGES: &[MslStage] = &[
         constants: &[],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 258499,
+        offset: 148232,
         len: 3822,
     },
     MslStage {
@@ -299,7 +233,7 @@ pub(super) static STAGES: &[MslStage] = &[
         constants: &[],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[(1, 0, 0), (1, 1, 0)],
-        offset: 262321,
+        offset: 152054,
         len: 33120,
     },
     MslStage {
@@ -309,7 +243,7 @@ pub(super) static STAGES: &[MslStage] = &[
         constants: &[],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 295441,
+        offset: 185174,
         len: 1185,
     },
     MslStage {
@@ -319,7 +253,7 @@ pub(super) static STAGES: &[MslStage] = &[
         constants: &[],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 296626,
+        offset: 186359,
         len: 1700,
     },
     MslStage {
@@ -329,7 +263,7 @@ pub(super) static STAGES: &[MslStage] = &[
         constants: &[],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 298326,
+        offset: 188059,
         len: 720,
     },
     MslStage {
@@ -343,7 +277,7 @@ pub(super) static STAGES: &[MslStage] = &[
         ],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 299046,
+        offset: 188779,
         len: 10553,
     },
     MslStage {
@@ -357,7 +291,7 @@ pub(super) static STAGES: &[MslStage] = &[
         ],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 309599,
+        offset: 199332,
         len: 10552,
     },
     MslStage {
@@ -371,7 +305,7 @@ pub(super) static STAGES: &[MslStage] = &[
         ],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 320151,
+        offset: 209884,
         len: 10553,
     },
     MslStage {
@@ -385,7 +319,7 @@ pub(super) static STAGES: &[MslStage] = &[
         ],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 330704,
+        offset: 220437,
         len: 10552,
     },
     MslStage {
@@ -399,7 +333,7 @@ pub(super) static STAGES: &[MslStage] = &[
         ],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 341256,
+        offset: 230989,
         len: 10553,
     },
     MslStage {
@@ -413,7 +347,7 @@ pub(super) static STAGES: &[MslStage] = &[
         ],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 351809,
+        offset: 241542,
         len: 10552,
     },
     MslStage {
@@ -427,7 +361,7 @@ pub(super) static STAGES: &[MslStage] = &[
         ],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 362361,
+        offset: 252094,
         len: 10553,
     },
     MslStage {
@@ -441,7 +375,7 @@ pub(super) static STAGES: &[MslStage] = &[
         ],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 372914,
+        offset: 262647,
         len: 10552,
     },
     MslStage {
@@ -455,7 +389,7 @@ pub(super) static STAGES: &[MslStage] = &[
         ],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 383466,
+        offset: 273199,
         len: 10553,
     },
     MslStage {
@@ -469,7 +403,7 @@ pub(super) static STAGES: &[MslStage] = &[
         ],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 394019,
+        offset: 283752,
         len: 10552,
     },
     MslStage {
@@ -483,7 +417,7 @@ pub(super) static STAGES: &[MslStage] = &[
         ],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 404571,
+        offset: 294304,
         len: 10553,
     },
     MslStage {
@@ -497,7 +431,7 @@ pub(super) static STAGES: &[MslStage] = &[
         ],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 415124,
+        offset: 304857,
         len: 10552,
     },
     MslStage {
@@ -511,7 +445,7 @@ pub(super) static STAGES: &[MslStage] = &[
         ],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 425676,
+        offset: 315409,
         len: 10553,
     },
     MslStage {
@@ -525,7 +459,7 @@ pub(super) static STAGES: &[MslStage] = &[
         ],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 436229,
+        offset: 325962,
         len: 10552,
     },
     MslStage {
@@ -539,7 +473,7 @@ pub(super) static STAGES: &[MslStage] = &[
         ],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 446781,
+        offset: 336514,
         len: 10553,
     },
     MslStage {
@@ -553,7 +487,7 @@ pub(super) static STAGES: &[MslStage] = &[
         ],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 457334,
+        offset: 347067,
         len: 10552,
     },
     MslStage {
@@ -567,7 +501,7 @@ pub(super) static STAGES: &[MslStage] = &[
         ],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 467886,
+        offset: 357619,
         len: 10553,
     },
     MslStage {
@@ -581,7 +515,7 @@ pub(super) static STAGES: &[MslStage] = &[
         ],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 478439,
+        offset: 368172,
         len: 10552,
     },
     MslStage {
@@ -595,7 +529,7 @@ pub(super) static STAGES: &[MslStage] = &[
         ],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 488991,
+        offset: 378724,
         len: 10552,
     },
     MslStage {
@@ -609,7 +543,7 @@ pub(super) static STAGES: &[MslStage] = &[
         ],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 499543,
+        offset: 389276,
         len: 10551,
     },
     MslStage {
@@ -623,7 +557,7 @@ pub(super) static STAGES: &[MslStage] = &[
         ],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 510094,
+        offset: 399827,
         len: 10552,
     },
     MslStage {
@@ -637,7 +571,7 @@ pub(super) static STAGES: &[MslStage] = &[
         ],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 520646,
+        offset: 410379,
         len: 10551,
     },
     MslStage {
@@ -651,7 +585,7 @@ pub(super) static STAGES: &[MslStage] = &[
         ],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 531197,
+        offset: 420930,
         len: 10552,
     },
     MslStage {
@@ -665,7 +599,7 @@ pub(super) static STAGES: &[MslStage] = &[
         ],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 541749,
+        offset: 431482,
         len: 10551,
     },
     MslStage {
@@ -679,7 +613,7 @@ pub(super) static STAGES: &[MslStage] = &[
         ],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 552300,
+        offset: 442033,
         len: 10552,
     },
     MslStage {
@@ -693,7 +627,7 @@ pub(super) static STAGES: &[MslStage] = &[
         ],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 562852,
+        offset: 452585,
         len: 10551,
     },
     MslStage {
@@ -707,7 +641,7 @@ pub(super) static STAGES: &[MslStage] = &[
         ],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 573403,
+        offset: 463136,
         len: 10552,
     },
     MslStage {
@@ -721,7 +655,7 @@ pub(super) static STAGES: &[MslStage] = &[
         ],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 583955,
+        offset: 473688,
         len: 10551,
     },
     MslStage {
@@ -735,7 +669,7 @@ pub(super) static STAGES: &[MslStage] = &[
         ],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 594506,
+        offset: 484239,
         len: 10552,
     },
     MslStage {
@@ -749,7 +683,7 @@ pub(super) static STAGES: &[MslStage] = &[
         ],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 605058,
+        offset: 494791,
         len: 10551,
     },
     MslStage {
@@ -763,7 +697,7 @@ pub(super) static STAGES: &[MslStage] = &[
         ],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 615609,
+        offset: 505342,
         len: 10552,
     },
     MslStage {
@@ -777,7 +711,7 @@ pub(super) static STAGES: &[MslStage] = &[
         ],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 626161,
+        offset: 515894,
         len: 10551,
     },
     MslStage {
@@ -791,7 +725,7 @@ pub(super) static STAGES: &[MslStage] = &[
         ],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 636712,
+        offset: 526445,
         len: 10552,
     },
     MslStage {
@@ -805,7 +739,7 @@ pub(super) static STAGES: &[MslStage] = &[
         ],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 647264,
+        offset: 536997,
         len: 10551,
     },
     MslStage {
@@ -819,7 +753,7 @@ pub(super) static STAGES: &[MslStage] = &[
         ],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 657815,
+        offset: 547548,
         len: 10552,
     },
     MslStage {
@@ -833,7 +767,7 @@ pub(super) static STAGES: &[MslStage] = &[
         ],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 668367,
+        offset: 558100,
         len: 10551,
     },
     MslStage {
@@ -853,7 +787,7 @@ pub(super) static STAGES: &[MslStage] = &[
         constants: &[],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[(0, 2, 0)],
-        offset: 678918,
+        offset: 568651,
         len: 19672,
     },
     MslStage {
@@ -873,7 +807,7 @@ pub(super) static STAGES: &[MslStage] = &[
         constants: &[],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 698590,
+        offset: 588323,
         len: 1668,
     },
     MslStage {
@@ -883,7 +817,7 @@ pub(super) static STAGES: &[MslStage] = &[
         constants: &[],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 700258,
+        offset: 589991,
         len: 4180,
     },
     MslStage {
@@ -893,7 +827,7 @@ pub(super) static STAGES: &[MslStage] = &[
         constants: &[("PATH_SAMPLES", 0x3ff0000000000000)],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[(0, 1, 0), (0, 2, 0)],
-        offset: 704438,
+        offset: 594171,
         len: 18511,
     },
     MslStage {
@@ -903,7 +837,7 @@ pub(super) static STAGES: &[MslStage] = &[
         constants: &[("PATH_SAMPLES", 0x4010000000000000)],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[(0, 1, 0), (0, 2, 0)],
-        offset: 722949,
+        offset: 612682,
         len: 18510,
     },
     MslStage {
@@ -913,7 +847,7 @@ pub(super) static STAGES: &[MslStage] = &[
         constants: &[("PATH_SAMPLES", 0x3ff0000000000000)],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[(0, 1, 0), (0, 2, 0)],
-        offset: 741459,
+        offset: 631192,
         len: 17379,
     },
     MslStage {
@@ -923,7 +857,7 @@ pub(super) static STAGES: &[MslStage] = &[
         constants: &[],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 758838,
+        offset: 648571,
         len: 10112,
     },
     MslStage {
@@ -933,7 +867,7 @@ pub(super) static STAGES: &[MslStage] = &[
         constants: &[],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[(0, 1, 0)],
-        offset: 768950,
+        offset: 658683,
         len: 17004,
     },
     MslStage {
@@ -943,7 +877,7 @@ pub(super) static STAGES: &[MslStage] = &[
         constants: &[],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 785954,
+        offset: 675687,
         len: 10714,
     },
     #[cfg(feature = "hosted")]
@@ -954,7 +888,7 @@ pub(super) static STAGES: &[MslStage] = &[
         constants: &[],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 796668,
+        offset: 686401,
         len: 913,
     },
     #[cfg(feature = "hosted")]
@@ -965,7 +899,7 @@ pub(super) static STAGES: &[MslStage] = &[
         constants: &[],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 797581,
+        offset: 687314,
         len: 424,
     },
     MslStage {
@@ -975,7 +909,7 @@ pub(super) static STAGES: &[MslStage] = &[
         constants: &[],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 798005,
+        offset: 687738,
         len: 12994,
     },
     MslStage {
@@ -985,7 +919,7 @@ pub(super) static STAGES: &[MslStage] = &[
         constants: &[],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 810999,
+        offset: 700732,
         len: 5833,
     },
     MslStage {
@@ -995,7 +929,7 @@ pub(super) static STAGES: &[MslStage] = &[
         constants: &[],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[(1, 0, 0), (1, 1, 0), (0, 1, 0)],
-        offset: 816832,
+        offset: 706565,
         len: 72704,
     },
     MslStage {
@@ -1005,8 +939,74 @@ pub(super) static STAGES: &[MslStage] = &[
         constants: &[],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[(1, 0, 0), (1, 1, 0)],
-        offset: 889536,
+        offset: 779269,
         len: 49857,
+    },
+    #[cfg(any(test, feature = "charts"))]
+    MslStage {
+        source_hash: 0xee7a60e5fa58e6a4,
+        entry: "chart_area_fs",
+        msl_entry: "chart_area_fs",
+        constants: &[],
+        workgroup_size: (0, 0, 0),
+        sized_bindings: &[(0, 3, 0), (0, 5, 0)],
+        offset: 829126,
+        len: 21288,
+    },
+    #[cfg(any(test, feature = "charts"))]
+    MslStage {
+        source_hash: 0xee7a60e5fa58e6a4,
+        entry: "chart_area_vs",
+        msl_entry: "chart_area_vs",
+        constants: &[],
+        workgroup_size: (0, 0, 0),
+        sized_bindings: &[(0, 1, 0), (0, 5, 0)],
+        offset: 850414,
+        len: 11770,
+    },
+    #[cfg(any(test, feature = "charts"))]
+    MslStage {
+        source_hash: 0xee7a60e5fa58e6a4,
+        entry: "chart_line_fs",
+        msl_entry: "chart_line_fs",
+        constants: &[],
+        workgroup_size: (0, 0, 0),
+        sized_bindings: &[(0, 1, 0), (0, 3, 0), (0, 5, 0)],
+        offset: 862184,
+        len: 25177,
+    },
+    #[cfg(any(test, feature = "charts"))]
+    MslStage {
+        source_hash: 0xee7a60e5fa58e6a4,
+        entry: "chart_line_vs",
+        msl_entry: "chart_line_vs",
+        constants: &[],
+        workgroup_size: (0, 0, 0),
+        sized_bindings: &[(0, 1, 0), (0, 3, 0), (0, 5, 0)],
+        offset: 887361,
+        len: 13103,
+    },
+    #[cfg(any(test, feature = "charts"))]
+    MslStage {
+        source_hash: 0xee7a60e5fa58e6a4,
+        entry: "chart_shape_fs",
+        msl_entry: "chart_shape_fs",
+        constants: &[],
+        workgroup_size: (0, 0, 0),
+        sized_bindings: &[(0, 3, 0)],
+        offset: 900464,
+        len: 26787,
+    },
+    #[cfg(any(test, feature = "charts"))]
+    MslStage {
+        source_hash: 0xee7a60e5fa58e6a4,
+        entry: "chart_shape_vs",
+        msl_entry: "chart_shape_vs",
+        constants: &[],
+        workgroup_size: (0, 0, 0),
+        sized_bindings: &[(0, 2, 0)],
+        offset: 927251,
+        len: 14728,
     },
     MslStage {
         source_hash: 0xfb154f240075e0ab,
@@ -1015,7 +1015,7 @@ pub(super) static STAGES: &[MslStage] = &[
         constants: &[],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 939393,
+        offset: 941979,
         len: 2907,
     },
     MslStage {
@@ -1025,7 +1025,7 @@ pub(super) static STAGES: &[MslStage] = &[
         constants: &[],
         workgroup_size: (0, 0, 0),
         sized_bindings: &[],
-        offset: 237256,
+        offset: 126989,
         len: 992,
     },
 ];

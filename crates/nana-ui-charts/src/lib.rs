@@ -20,7 +20,7 @@ pub mod transition;
 pub use hit::{ChartHover, PointerGeometry, TooltipContent, TooltipRow};
 pub use layout::{
     ApproximateMeasure, ChartLayout, ChartText, ChartViewState, LabelMeasure, LayoutInput,
-    LegendItem, SliderLayout, TextAlign, layout,
+    LegendItem, SliderLayout, TextAlign, ZoomAxisLayout, layout,
 };
 pub use marks::*;
 pub use option::*;

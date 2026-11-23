@@ -1,12 +1,16 @@
 //! A chart's pointer: hover with its tooltip and axis pointer, legend
-//! clicks, item clicks, and the zoom window's wheel, pan and slider.
+//! clicks, item clicks, and the zoom windows' wheel, pan, selection box
+//! and sliders.
 use super::*;
 use crate::charts::{
     ChartDrag, ChartEvent, ChartHoverVisual, ChartSpec, ChartTooltip, ChromeLabelMeasure, ZoomGrab,
+    ZoomMove,
 };
 use crate::{Chart, ChartVisual, NodePointer, NodePointerHooks, NodeWheel};
 use nana_ui_charts::hit::{ChartHover, NO_HOVER, TooltipContent};
-use nana_ui_charts::{ChartLayout, DataZoomKind, EmphasisFocus, Series};
+use nana_ui_charts::{
+    ChartLayout, DataZoomKind, EmphasisFocus, Series, SliderLayout, ZoomAxis, ZoomAxisLayout,
+};
 
 pub(crate) const CHART_POINTER: NodePointerHooks<Chart> = NodePointerHooks {
     moved: chart_moved,
@@ -22,6 +26,9 @@ const MIN_ZOOM_SPAN: f64 = 1.0;
 const CLICK_SLOP: f32 = nana_ui_core::space::XS;
 /// How near a slider end a press grabs it, px.
 const HANDLE_REACH: f32 = nana_ui_core::space::MD;
+
+/// The axis a zoom entry windows.
+type ZoomTarget = (ZoomAxis, usize);
 
 fn shown(cx: &AppContext, id: StableNodeId) -> Option<(Arc<ChartSpec>, Arc<ChartLayout>)> {
     let spec = Arc::clone(&cx.world.widget_visual_as::<ChartVisual>(id)?.spec);
@@ -43,12 +50,24 @@ fn focus_of(spec: &ChartSpec, series: u32) -> u32 {
     }
 }
 
-/// The first zoom entry of `kind` on the x axis.
-fn zoom_entry(spec: &ChartSpec, kind: DataZoomKind) -> Option<usize> {
-    spec.option
-        .data_zoom
+/// The shown zoomable axes some inside-plot entry drives with `wants`.
+fn inside_axes(
+    spec: &ChartSpec,
+    layout: &ChartLayout,
+    wants: impl Fn(&nana_ui_charts::DataZoom) -> bool,
+) -> Vec<ZoomAxisLayout> {
+    layout
+        .zoom_axes
         .iter()
-        .position(|zoom| zoom.x_axis_index == 0 && zoom.kind == kind)
+        .filter(|axis| {
+            spec.option.data_zoom.iter().any(|zoom| {
+                zoom.kind == DataZoomKind::Inside
+                    && zoom.target() == (axis.axis, axis.index)
+                    && wants(zoom)
+            })
+        })
+        .copied()
+        .collect()
 }
 
 fn inside(rect: [f32; 4], x: f32, y: f32) -> bool {
@@ -58,7 +77,7 @@ fn inside(rect: [f32; 4], x: f32, y: f32) -> bool {
 fn chart_moved(cx: &mut AppContext, chart: Entity<Chart>, pointer: NodePointer) -> HandledResult {
     let id = chart.stable_id();
     if pointer.captured
-        && let Some(drag) = cx.read(chart, |chart| chart.drag)?
+        && let Some(drag) = cx.read(chart, |chart| chart.drag.clone())?
         && !matches!(drag, ChartDrag::Press { .. })
     {
         return chart_drag(cx, chart, drag, pointer);
@@ -112,7 +131,67 @@ fn chart_left(cx: &mut AppContext, chart: Entity<Chart>) -> Result<(), Framework
     if let Some((spec, _)) = shown(cx, id) {
         set_hover(cx, chart, &spec, None)?;
     }
+    // A cancelled selection draws nothing more.
+    if cx.read(chart, |chart| chart.selection.is_some())? {
+        cx.update_component(chart, |chart, _| chart.selection = None)?;
+    }
     hide_tooltip(cx, id)
+}
+
+/// A slider press: which part it grabs and the axis it moves.
+fn slider_press(
+    cx: &mut AppContext,
+    chart: Entity<Chart>,
+    spec: &ChartSpec,
+    slider: SliderLayout,
+    vertical: bool,
+    point: [f32; 2],
+) -> Result<ChartDrag, FrameworkError> {
+    let target = spec.option.data_zoom[slider.zoom_index].target();
+    let mut window = zoom_window(cx, chart, target)?;
+    // Along the track: x, or y measured upward from the bottom.
+    let (at, lo, hi, track) = if vertical {
+        (
+            slider.track[3] - point[1],
+            slider.track[3] - slider.window[3],
+            slider.track[3] - slider.window[1],
+            slider.track[3] - slider.track[1],
+        )
+    } else {
+        (
+            point[0] - slider.track[0],
+            slider.window[0] - slider.track[0],
+            slider.window[2] - slider.track[0],
+            slider.track[2] - slider.track[0],
+        )
+    };
+    let track = track.max(1.0);
+    let grab = if (at - lo).abs() <= HANDLE_REACH {
+        ZoomGrab::Start
+    } else if (at - hi).abs() <= HANDLE_REACH {
+        ZoomGrab::End
+    } else {
+        ZoomGrab::Window
+    };
+    // The track outside the window jumps the window there.
+    if grab == ZoomGrab::Window && !(lo..=hi).contains(&at) {
+        let span = window.1 - window.0;
+        let center = (at / track) as f64 * 100.0;
+        let start = (center - span * 0.5).clamp(0.0, 100.0 - span);
+        window = (start, start + span);
+        set_zoom(cx, chart, target, window)?;
+    }
+    let per_px = 100.0 / track as f64;
+    Ok(ChartDrag::Zoom {
+        grab,
+        from: point,
+        axes: vec![ZoomMove {
+            target,
+            window,
+            per_px: if vertical { -per_px } else { per_px },
+            vertical,
+        }],
+    })
 }
 
 fn chart_pressed(cx: &mut AppContext, chart: Entity<Chart>, pointer: NodePointer) -> HandledResult {
@@ -147,55 +226,59 @@ fn chart_pressed(cx: &mut AppContext, chart: Entity<Chart>, pointer: NodePointer
         })?;
         return Ok(true);
     }
-    // The slider: its ends resize the window, the window moves, the track
+    // A slider: its ends resize the window, the window moves, the track
     // jumps there.
-    if let Some(slider) = layout.slider
-        && inside(slider.track, x, y)
-    {
-        let mut window = zoom_window(cx, chart, slider.zoom_index)?;
-        let width = (slider.track[2] - slider.track[0]).max(1.0);
-        let grab = if (x - slider.window[0]).abs() <= HANDLE_REACH {
-            ZoomGrab::Start
-        } else if (x - slider.window[2]).abs() <= HANDLE_REACH {
-            ZoomGrab::End
-        } else {
-            ZoomGrab::Window
-        };
-        if grab == ZoomGrab::Window && !(slider.window[0]..=slider.window[2]).contains(&x) {
-            let span = window.1 - window.0;
-            let center = ((x - slider.track[0]) / width) as f64 * 100.0;
-            let start = (center - span * 0.5).clamp(0.0, 100.0 - span);
-            window = (start, start + span);
-            set_zoom(cx, chart, slider.zoom_index, window)?;
+    for (slider, vertical) in [(layout.slider, false), (layout.y_slider, true)] {
+        if let Some(slider) = slider
+            && inside(slider.track, x, y)
+        {
+            let drag = slider_press(cx, chart, &spec, slider, vertical, [x, y])?;
+            cx.update_component(chart, |chart, _| chart.drag = Some(drag))?;
+            return Ok(true);
         }
-        let drag = ChartDrag::Zoom {
-            zoom: slider.zoom_index,
-            grab,
-            x,
-            window,
-            per_px: 100.0 / width as f64,
-        };
-        cx.update_component(chart, |chart, _| chart.drag = Some(drag))?;
-        return Ok(true);
-    }
-    // Dragging inside the plot pans the window the other way.
-    if let Some(plot) = layout.plot
-        && inside(plot, x, y)
-        && let Some(zoom) = zoom_entry(&spec, DataZoomKind::Inside)
-        && spec.option.data_zoom[zoom].move_on_drag
-    {
-        let window = zoom_window(cx, chart, zoom)?;
-        let drag = ChartDrag::Zoom {
-            zoom,
-            grab: ZoomGrab::Window,
-            x,
-            window,
-            per_px: -(window.1 - window.0) / (plot[2] - plot[0]).max(1.0) as f64,
-        };
-        cx.update_component(chart, |chart, _| chart.drag = Some(drag))?;
-        return Ok(true);
     }
     let hover = cx.read(chart, |chart| chart.hover.current)?;
+    if let Some(plot) = layout.plot
+        && inside(plot, x, y)
+    {
+        let selecting = inside_axes(&spec, &layout, |zoom| zoom.select_on_drag);
+        if !selecting.is_empty() {
+            // A double click goes back to the option's windows.
+            if pointer.click_count >= 2 {
+                restore_zoom(cx, chart)?;
+                return Ok(true);
+            }
+            cx.update_component(chart, |chart, _| {
+                chart.drag = Some(ChartDrag::Select {
+                    from: [x, y],
+                    hover,
+                });
+            })?;
+            return Ok(true);
+        }
+        // Dragging inside the plot pans every axis it can the other way.
+        let panning = inside_axes(&spec, &layout, |zoom| zoom.move_on_drag);
+        if !panning.is_empty() {
+            let mut axes = Vec::with_capacity(panning.len());
+            for axis in panning {
+                let target = (axis.axis, axis.index);
+                axes.push(ZoomMove {
+                    target,
+                    window: zoom_window(cx, chart, target)?,
+                    per_px: -axis.per_px(),
+                    vertical: axis.vertical,
+                });
+            }
+            cx.update_component(chart, |chart, _| {
+                chart.drag = Some(ChartDrag::Zoom {
+                    grab: ZoomGrab::Window,
+                    from: [x, y],
+                    axes,
+                });
+            })?;
+            return Ok(true);
+        }
+    }
     if hover[0] == NO_HOVER {
         return Ok(false);
     }
@@ -205,71 +288,206 @@ fn chart_pressed(cx: &mut AppContext, chart: Entity<Chart>, pointer: NodePointer
     Ok(true)
 }
 
+/// The selection box from `from` to `to`: across the whole plot on an
+/// axis nothing zooms.
+fn selection_box(
+    spec: &ChartSpec,
+    layout: &ChartLayout,
+    from: [f32; 2],
+    to: [f32; 2],
+) -> Option<[f32; 4]> {
+    let plot = layout.plot?;
+    let axes = inside_axes(spec, layout, |zoom| zoom.select_on_drag);
+    let across = axes.iter().any(|axis| !axis.vertical);
+    let down = axes.iter().any(|axis| axis.vertical);
+    let clamp = |v: f32, lo: f32, hi: f32| v.clamp(lo, hi);
+    let (x0, x1) = if across {
+        let (a, b) = (
+            clamp(from[0], plot[0], plot[2]),
+            clamp(to[0], plot[0], plot[2]),
+        );
+        (a.min(b), a.max(b))
+    } else {
+        (plot[0], plot[2])
+    };
+    let (y0, y1) = if down {
+        let (a, b) = (
+            clamp(from[1], plot[1], plot[3]),
+            clamp(to[1], plot[1], plot[3]),
+        );
+        (a.min(b), a.max(b))
+    } else {
+        (plot[1], plot[3])
+    };
+    Some([x0, y0, x1, y1])
+}
+
 fn chart_drag(
     cx: &mut AppContext,
     chart: Entity<Chart>,
     drag: ChartDrag,
     pointer: NodePointer,
 ) -> HandledResult {
-    let ChartDrag::Zoom {
-        zoom,
-        grab,
-        x,
-        window: (start, end),
-        per_px,
-    } = drag
-    else {
-        return Ok(true);
-    };
-    let delta = (pointer.x - x) as f64 * per_px;
-    let next = match grab {
-        ZoomGrab::Window => {
-            let span = end - start;
-            let start = (start + delta).clamp(0.0, 100.0 - span);
-            (start, start + span)
+    match drag {
+        ChartDrag::Zoom { grab, from, axes } => {
+            for axis in axes {
+                let travel = if axis.vertical {
+                    pointer.y - from[1]
+                } else {
+                    pointer.x - from[0]
+                };
+                let delta = travel as f64 * axis.per_px;
+                let (start, end) = axis.window;
+                let next = match grab {
+                    ZoomGrab::Window => {
+                        let span = end - start;
+                        let start = (start + delta).clamp(0.0, 100.0 - span);
+                        (start, start + span)
+                    }
+                    ZoomGrab::Start => ((start + delta).clamp(0.0, end - MIN_ZOOM_SPAN), end),
+                    ZoomGrab::End => (start, (end + delta).clamp(start + MIN_ZOOM_SPAN, 100.0)),
+                };
+                set_zoom(cx, chart, axis.target, next)?;
+            }
         }
-        ZoomGrab::Start => ((start + delta).clamp(0.0, end - MIN_ZOOM_SPAN), end),
-        ZoomGrab::End => (start, (end + delta).clamp(start + MIN_ZOOM_SPAN, 100.0)),
-    };
-    set_zoom(cx, chart, zoom, next)?;
+        ChartDrag::Select { from, .. } => {
+            let id = chart.stable_id();
+            let Some((spec, layout)) = shown(cx, id) else {
+                return Ok(true);
+            };
+            let selection = selection_box(&spec, &layout, from, [pointer.x, pointer.y]);
+            if cx.read(chart, |chart| chart.selection)? != selection {
+                cx.update_component(chart, |chart, _| chart.selection = selection)?;
+            }
+        }
+        ChartDrag::Press { .. } => {}
+    }
     hide_tooltip(cx, chart.stable_id())?;
     Ok(true)
 }
 
-/// The window of `option.data_zoom[zoom]` now, in percent.
+/// Zooms every axis the box spans to it. A box thinner than a click on
+/// every zoomed side does nothing.
+fn apply_selection(
+    cx: &mut AppContext,
+    chart: Entity<Chart>,
+    from: [f32; 2],
+    to: [f32; 2],
+) -> Result<bool, FrameworkError> {
+    let Some((spec, layout)) = shown(cx, chart.stable_id()) else {
+        return Ok(false);
+    };
+    let Some(rect) = selection_box(&spec, &layout, from, to) else {
+        return Ok(false);
+    };
+    let axes = inside_axes(&spec, &layout, |zoom| zoom.select_on_drag);
+    let spans = |axis: &ZoomAxisLayout| {
+        if axis.vertical {
+            (rect[1], rect[3])
+        } else {
+            (rect[0], rect[2])
+        }
+    };
+    if axes.iter().all(|axis| {
+        let (a, b) = spans(axis);
+        b - a < CLICK_SLOP * 2.0
+    }) {
+        return Ok(false);
+    }
+    for axis in axes {
+        let (a, b) = spans(&axis);
+        let (pa, pb) = (axis.percent_at(a), axis.percent_at(b));
+        let mut start = pa.min(pb).clamp(0.0, 100.0);
+        let mut end = pa.max(pb).clamp(0.0, 100.0);
+        if end - start < MIN_ZOOM_SPAN {
+            let center =
+                ((start + end) * 0.5).clamp(MIN_ZOOM_SPAN * 0.5, 100.0 - MIN_ZOOM_SPAN * 0.5);
+            (start, end) = (center - MIN_ZOOM_SPAN * 0.5, center + MIN_ZOOM_SPAN * 0.5);
+        }
+        set_zoom(cx, chart, (axis.axis, axis.index), (start, end))?;
+    }
+    Ok(true)
+}
+
+/// Every zoom window back to the option's, saying so for each that moved.
+fn restore_zoom(cx: &mut AppContext, chart: Entity<Chart>) -> Result<(), FrameworkError> {
+    let changed: Vec<(usize, (f64, f64))> = cx.read(chart, |chart| {
+        chart
+            .option
+            .data_zoom
+            .iter()
+            .enumerate()
+            .filter_map(|(index, zoom)| {
+                let initial = (zoom.start, zoom.end);
+                (chart.view.zoom_window(&chart.option, index) != Some(initial))
+                    .then_some((index, initial))
+            })
+            .collect()
+    })?;
+    if changed.is_empty() {
+        return Ok(());
+    }
+    cx.update_component(chart, |chart, view| {
+        chart.view.zoom.clear();
+        for (index, (start, end)) in changed {
+            view.emit(ChartEvent::DataZoom { index, start, end });
+        }
+    })
+}
+
+/// The window of the axis `target` now, in percent: its first entry's.
 fn zoom_window(
     cx: &AppContext,
     chart: Entity<Chart>,
-    zoom: usize,
+    target: ZoomTarget,
 ) -> Result<(f64, f64), FrameworkError> {
     cx.read(chart, |chart| {
         chart
-            .view
-            .zoom_window(&chart.option, zoom)
+            .option
+            .data_zoom
+            .iter()
+            .position(|zoom| zoom.target() == target)
+            .and_then(|index| chart.view.zoom_window(&chart.option, index))
             .unwrap_or((0.0, 100.0))
     })
 }
 
+/// Moves the window of the axis `target`: every entry on it, each said.
 fn set_zoom(
     cx: &mut AppContext,
     chart: Entity<Chart>,
-    zoom: usize,
+    target: ZoomTarget,
     window: (f64, f64),
 ) -> Result<(), FrameworkError> {
-    if zoom_window(cx, chart, zoom)? == window {
+    let entries: Vec<usize> = cx.read(chart, |chart| {
+        chart
+            .option
+            .data_zoom
+            .iter()
+            .enumerate()
+            .filter(|(index, zoom)| {
+                zoom.target() == target
+                    && chart.view.zoom_window(&chart.option, *index) != Some(window)
+            })
+            .map(|(index, _)| index)
+            .collect()
+    })?;
+    if entries.is_empty() {
         return Ok(());
     }
     cx.update_component(chart, |chart, view| {
         let slots = &mut chart.view.zoom;
-        if slots.len() <= zoom {
-            slots.resize(zoom + 1, None);
+        for index in entries {
+            if slots.len() <= index {
+                slots.resize(index + 1, None);
+            }
+            slots[index] = Some(window);
+            view.emit(ChartEvent::DataZoom {
+                index,
+                start: window.0,
+                end: window.1,
+            });
         }
-        slots[zoom] = Some(window);
-        view.emit(ChartEvent::DataZoom {
-            index: zoom,
-            start: window.0,
-            end: window.1,
-        });
     })
 }
 
@@ -278,10 +496,24 @@ fn chart_released(
     chart: Entity<Chart>,
     pointer: NodePointer,
 ) -> HandledResult {
-    let drag = cx.update_component(chart, |chart, _| chart.drag.take())?;
-    if let Some(ChartDrag::Press { x, y, hover }) = drag
-        && (pointer.x - x).abs() < CLICK_SLOP
-        && (pointer.y - y).abs() < CLICK_SLOP
+    let drag = cx.update_component(chart, |chart, _| {
+        chart.selection = None;
+        chart.drag.take()
+    })?;
+    let click = match drag {
+        Some(ChartDrag::Press { x, y, hover }) => Some(([x, y], hover)),
+        Some(ChartDrag::Select { from, hover }) => {
+            if apply_selection(cx, chart, from, [pointer.x, pointer.y])? {
+                None
+            } else {
+                Some((from, hover))
+            }
+        }
+        _ => None,
+    };
+    if let Some((from, hover)) = click
+        && (pointer.x - from[0]).abs() < CLICK_SLOP
+        && (pointer.y - from[1]).abs() < CLICK_SLOP
         && hover[0] != NO_HOVER
     {
         cx.update_component(chart, |_, view| {
@@ -306,21 +538,28 @@ fn chart_wheel(cx: &mut AppContext, chart: Entity<Chart>, wheel: NodeWheel) -> H
     let Some(plot) = layout.plot else {
         return Ok(false);
     };
-    let Some(zoom) = zoom_entry(&spec, DataZoomKind::Inside) else {
-        return Ok(false);
-    };
-    if !spec.option.data_zoom[zoom].zoom_on_wheel || !inside(plot, wheel.x, wheel.y) {
+    let axes = inside_axes(&spec, &layout, |zoom| zoom.zoom_on_wheel);
+    if axes.is_empty() || !inside(plot, wheel.x, wheel.y) {
         return Ok(false);
     }
-    let window = zoom_window(cx, chart, zoom)?;
-    let span = window.1 - window.0;
     // Turning the wheel away zooms in, around the pointer.
     let scale = (wheel.delta_y as f64 * 0.002).exp();
-    let next_span = (span * scale).clamp(MIN_ZOOM_SPAN, 100.0);
-    let at = ((wheel.x - plot[0]) / (plot[2] - plot[0]).max(1.0)).clamp(0.0, 1.0) as f64;
-    let focus = window.0 + at * span;
-    let start = (focus - at * next_span).clamp(0.0, 100.0 - next_span);
-    set_zoom(cx, chart, zoom, (start, start + next_span))?;
+    for axis in axes {
+        let target = (axis.axis, axis.index);
+        let window = zoom_window(cx, chart, target)?;
+        let span = window.1 - window.0;
+        let next_span = (span * scale).clamp(MIN_ZOOM_SPAN, 100.0);
+        let focus = axis
+            .percent_at(axis.along([wheel.x, wheel.y]))
+            .clamp(window.0, window.1);
+        let at = if span > 0.0 {
+            (focus - window.0) / span
+        } else {
+            0.5
+        };
+        let start = (focus - at * next_span).clamp(0.0, 100.0 - next_span);
+        set_zoom(cx, chart, target, (start, start + next_span))?;
+    }
     Ok(true)
 }
 
@@ -679,6 +918,154 @@ mod tests {
         // Outside the plot the wheel is not the chart's.
         let outcome = input.route(&mut context, wheel(590.0, 390.0)).unwrap();
         assert!(!outcome.handled);
+    }
+
+    fn wheel_at(x: f32, y: f32, delta_y: f32) -> InputPayload {
+        InputPayload::Wheel(WheelInput {
+            pointer_id: nana_ui_input::PointerId(0),
+            x,
+            y,
+            delta_x: 0.0,
+            delta_y,
+            unit: WheelUnit::Pixels,
+            modifiers: InputModifiers::default(),
+        })
+    }
+
+    fn windows(context: &AppContext, chart: Entity<Chart>) -> Vec<(f64, f64)> {
+        context
+            .read(chart, |chart| {
+                (0..chart.option.data_zoom.len())
+                    .map(|index| chart.view.zoom_window(&chart.option, index).unwrap())
+                    .collect()
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn a_selection_box_zooms_both_axes_and_a_double_click_goes_back() {
+        let option = weekly()
+            .data_zoom(DataZoom::select())
+            .data_zoom(DataZoom::select().y_axis(0));
+        let (mut context, document, chart, events) = chart_in(option);
+        let plot = layout_of(&context, chart).plot.unwrap();
+        let (w, h) = (plot[2] - plot[0], plot[3] - plot[1]);
+        let from = (plot[0] + w * 0.25, plot[1] + h * 0.25);
+        let to = (plot[0] + w * 0.75, plot[1] + h * 0.75);
+        let mut input = HeadlessInput::bind(&mut context, document);
+        input
+            .pointer(&mut context, PointerPhase::Down, from.0, from.1)
+            .unwrap();
+        input
+            .pointer(&mut context, PointerPhase::Move, to.0, to.1)
+            .unwrap();
+        // The box is drawn while the pointer is down.
+        let selection = context.read(chart, |chart| chart.selection).unwrap();
+        let selection = selection.expect("selection box");
+        assert!((selection[0] - from.0).abs() < 0.5 && (selection[3] - to.1).abs() < 0.5);
+        let paint = context.world().extract_nodes(&[chart.stable_id()]);
+        assert!(
+            paint[0]
+                .widget_paint
+                .as_deref()
+                .unwrap()
+                .ops
+                .iter()
+                .any(|op| op.slot == 14)
+        );
+        input
+            .pointer(&mut context, PointerPhase::Up, to.0, to.1)
+            .unwrap();
+        assert_eq!(context.read(chart, |chart| chart.selection).unwrap(), None);
+        let [x, y] = windows(&context, chart)[..] else {
+            panic!()
+        };
+        // Both windows narrowed to about the middle half.
+        assert!(x.1 - x.0 < 80.0 && x.0 > 10.0, "{x:?}");
+        assert!(
+            (y.0 - 25.0).abs() < 1.0 && (y.1 - 75.0).abs() < 1.0,
+            "{y:?}"
+        );
+        let zoomed = events.lock().unwrap().len();
+        assert_eq!(zoomed, 2);
+        // A double click restores the option's windows.
+        let (cx, cy) = ((plot[0] + plot[2]) * 0.5, (plot[1] + plot[3]) * 0.5);
+        for _ in 0..2 {
+            input
+                .pointer(&mut context, PointerPhase::Down, cx, cy)
+                .unwrap();
+            input
+                .pointer(&mut context, PointerPhase::Up, cx, cy)
+                .unwrap();
+        }
+        assert_eq!(windows(&context, chart), vec![(0.0, 100.0), (0.0, 100.0)]);
+        // Each window that moved back is said once; the first press of the
+        // double click is still a click on the category.
+        let after: Vec<_> = events.lock().unwrap()[zoomed..].to_vec();
+        let restored: Vec<_> = after
+            .iter()
+            .filter(|event| matches!(event, ChartEvent::DataZoom { .. }))
+            .collect();
+        assert_eq!(restored.len(), 2, "{after:?}");
+        assert!(restored.iter().all(|event| matches!(
+            event,
+            ChartEvent::DataZoom {
+                start: 0.0,
+                end: 100.0,
+                ..
+            }
+        )));
+        assert!(matches!(after[0], ChartEvent::Click { .. }), "{after:?}");
+    }
+
+    #[test]
+    fn the_wheel_zooms_a_y_axis_around_the_pointer_and_its_slider_follows() {
+        let option = weekly()
+            .data_zoom(DataZoom::inside().y_axis(0))
+            .data_zoom(DataZoom::slider().y_axis(0));
+        let (mut context, document, chart, events) = chart_in(option);
+        let layout = layout_of(&context, chart);
+        let plot = layout.plot.unwrap();
+        assert!(layout.y_slider.is_some());
+        let mut input = HeadlessInput::bind(&mut context, document);
+        // Near the top: the window shrinks towards the top.
+        let outcome = input
+            .route(
+                &mut context,
+                wheel_at(plot[0] + 10.0, plot[1] + 2.0, -240.0),
+            )
+            .unwrap();
+        assert!(outcome.handled);
+        let [inside_window, slider_window] = windows(&context, chart)[..] else {
+            panic!()
+        };
+        assert!(
+            inside_window.1 - inside_window.0 < 100.0,
+            "{inside_window:?}"
+        );
+        assert!(inside_window.1 > 95.0, "{inside_window:?}");
+        // Entries on one axis share the window, each one said.
+        assert_eq!(inside_window, slider_window);
+        assert_eq!(events.lock().unwrap().len(), 2);
+        // Dragging the slider's window down moves the window down.
+        let slider = layout_of(&context, chart).y_slider.unwrap();
+        let x = (slider.track[0] + slider.track[2]) * 0.5;
+        let y = (slider.window[1] + slider.window[3]) * 0.5;
+        input
+            .pointer(&mut context, PointerPhase::Down, x, y)
+            .unwrap();
+        input
+            .pointer(&mut context, PointerPhase::Move, x, y + 20.0)
+            .unwrap();
+        input
+            .pointer(&mut context, PointerPhase::Up, x, y + 20.0)
+            .unwrap();
+        let moved = windows(&context, chart)[0];
+        assert!(moved.0 < inside_window.0, "{moved:?} {inside_window:?}");
+        assert!(
+            ((moved.1 - moved.0) - (inside_window.1 - inside_window.0)).abs() < 1e-6,
+            "{moved:?}"
+        );
     }
 
     #[test]

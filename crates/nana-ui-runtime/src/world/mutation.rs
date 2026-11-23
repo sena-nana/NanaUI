@@ -3400,6 +3400,7 @@ impl UiWorld {
                         visual: Some(crate::WidgetVisualHandle::new(crate::ChartVisual {
                             spec,
                             hover: crate::ChartHoverVisual::default(),
+                            selection: None,
                         })),
                     },
                     &mut report,

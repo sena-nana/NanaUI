@@ -336,3 +336,240 @@ fn zooming_a_category_axis_keeps_the_window() {
     assert!(layout.texts.iter().any(|t| &*t.text == "c50"));
     assert!(!layout.texts.iter().any(|t| &*t.text == "c10"));
 }
+
+fn mark_draws(layout: &ChartLayout) -> Vec<&crate::marks::MarkDraw> {
+    layout
+        .marks
+        .draws
+        .iter()
+        .zip(&layout.draw_keys)
+        .filter(|(_, key)| key.part == DrawPart::MarkLine)
+        .map(|(draw, _)| draw)
+        .collect()
+}
+
+#[test]
+fn a_threshold_line_widens_the_value_axis_and_answers_the_pointer() {
+    use crate::marks::{MARK_LINE_INDEX, draw_flags};
+    let option = ChartOption::new()
+        .x_axis(weekdays())
+        .y_axis(Axis::value())
+        .series(
+            LineSeries::new("cpu", [30.0, 42.0, 51.0, 38.0, 60.0, 55.0, 47.0]).mark_line(
+                MarkLine::new([MarkLineItem::y(90.0).name("limit"), MarkLineItem::average()]),
+            ),
+        );
+    let layout = lay(&option, &ChartViewState::default());
+    let plot = layout.plot.unwrap();
+    let draws = mark_draws(&layout);
+    assert_eq!(draws.len(), 2);
+    for (k, draw) in draws.iter().enumerate() {
+        assert_eq!(draw.pass, MarkPass::Line);
+        assert_eq!(draw.count, 2);
+        assert_eq!(draw.series, 0);
+        assert_eq!(draw.index, MARK_LINE_INDEX + k as u32);
+        assert_ne!(draw.flags & draw_flags::MARK, 0);
+        // Dashed by default.
+        assert!(layout.marks.styles[draw.style as usize].params[1] > 0.0);
+    }
+    // 90 is above every value, yet the axis reaches it: the line is inside
+    // the plot and runs across it.
+    let limit = &layout.marks.points[draws[0].first as usize..][..2];
+    assert!((limit[0].to[0] - plot[0]).abs() < 1e-3 && (limit[1].to[0] - plot[2]).abs() < 1e-3);
+    let y_limit = limit[0].to[1];
+    assert!(
+        y_limit > plot[1] - 0.5 && y_limit < plot[3],
+        "{y_limit} {plot:?}"
+    );
+    // The average (46.14..) sits below the limit (larger y).
+    let average = &layout.marks.points[draws[1].first as usize..][..2];
+    assert!(average[0].to[1] > y_limit);
+    // Labels: the name, else the value.
+    assert!(layout.texts.iter().any(|t| &*t.text == "limit"));
+    assert!(layout.texts.iter().any(|t| t.text.starts_with("46.1")));
+    // On the line the mark wins over the axis trigger.
+    let hover = layout
+        .hover_at(&option, [(plot[0] + plot[2]) * 0.5, y_limit + 2.0])
+        .expect("mark hover");
+    assert_eq!([hover.series, hover.index], [0, MARK_LINE_INDEX]);
+    let tooltip = hover.tooltip.unwrap();
+    assert_eq!(&*tooltip.title, "cpu");
+    assert_eq!(&*tooltip.rows[0].name, "limit");
+    assert_eq!(&*tooltip.rows[0].value, "90");
+    // Off it the axis trigger answers as before.
+    let hover = layout
+        .hover_at(&option, [(plot[0] + plot[2]) * 0.5, y_limit + 20.0])
+        .unwrap();
+    assert_eq!(hover.series, ANY_SERIES);
+}
+
+#[test]
+fn mark_areas_lie_under_the_series_and_join_the_tooltip() {
+    use crate::marks::{MARK_AREA_INDEX, SHAPE_EMPHASIS_FILL};
+    let option = ChartOption::new()
+        .x_axis(weekdays())
+        .y_axis(Axis::value())
+        .series(
+            LineSeries::new("cpu", [30.0, 42.0, 51.0, 38.0, 60.0, 55.0, 47.0]).mark_area(
+                MarkArea::new([
+                    MarkAreaItem::y(40.0, 50.0).name("normal"),
+                    MarkAreaItem::x(1.0, 2.0),
+                ]),
+            ),
+        );
+    let layout = lay(&option, &ChartViewState::default());
+    let plot = layout.plot.unwrap();
+    let areas: Vec<_> = layout
+        .marks
+        .shapes
+        .iter()
+        .filter(|s| s.meta[3] >= MARK_AREA_INDEX)
+        .collect();
+    assert_eq!(areas.len(), 2);
+    assert!(areas.iter().all(|s| s.meta[0] & SHAPE_EMPHASIS_FILL != 0));
+    // The y band spans the plot's width.
+    assert!((areas[0].to[0] - plot[0]).abs() < 1e-3 && (areas[0].to[2] - plot[2]).abs() < 1e-3);
+    // On a line's category points the x band runs from Tue to Wed.
+    let width = areas[1].to[2] - areas[1].to[0];
+    assert!((width - (plot[2] - plot[0]) / 6.0).abs() < 1.0, "{width}");
+    // Drawn before the line.
+    let area_draw = layout
+        .draw_keys
+        .iter()
+        .position(|key| key.part == DrawPart::MarkArea)
+        .unwrap();
+    let line_draw = layout
+        .draw_keys
+        .iter()
+        .position(|key| key.part == DrawPart::Line)
+        .unwrap();
+    assert!(area_draw < line_draw);
+    assert!(layout.texts.iter().any(|t| &*t.text == "normal"));
+    // Inside the named band the axis tooltip lists it after the series.
+    let y = (areas[0].to[1] + areas[0].to[3]) * 0.5;
+    let hover = layout.hover_at(&option, [plot[0] + 2.0, y]).unwrap();
+    let rows = hover.tooltip.unwrap().rows;
+    assert_eq!(rows.len(), 2);
+    assert_eq!(&*rows[1].name, "normal");
+    assert_eq!(&*rows[1].value, "40 – 50");
+
+    // With the item trigger an empty spot in the band hovers the band.
+    let scatter = ChartOption::new()
+        .x_axis(Axis::value())
+        .y_axis(Axis::value())
+        .series(
+            ScatterSeries::new("s", vec![[0.0, 0.0], [10.0, 100.0]])
+                .mark_area(MarkArea::new([MarkAreaItem::y(40.0, 60.0).name("band")])),
+        );
+    let layout = lay(&scatter, &ChartViewState::default());
+    let band = layout.hit.marks[0].region;
+    let crate::hit::MarkRegion::Area(rect) = band else {
+        panic!("{band:?}");
+    };
+    let hover = layout
+        .hover_at(
+            &scatter,
+            [(rect[0] + rect[2]) * 0.5, (rect[1] + rect[3]) * 0.5],
+        )
+        .unwrap();
+    assert_eq!([hover.series, hover.index], [0, MARK_AREA_INDEX]);
+}
+
+#[test]
+fn a_y_zoom_windows_the_value_axis_and_maps_px_to_percent() {
+    let data: Vec<f64> = (0..10).map(|i| f64::from(i * 10)).collect();
+    let option = ChartOption::new()
+        .x_axis(Axis::category((0..10).map(|i| format!("c{i}"))))
+        .y_axis(Axis::value())
+        .data_zoom(DataZoom::inside())
+        .data_zoom(DataZoom::slider().y_axis(0).range(50.0, 100.0))
+        .series(LineSeries::new("v", data));
+    let layout = lay(&option, &ChartViewState::default());
+    let plot = layout.plot.unwrap();
+    // The full scale is 0..90 → nice 0..100; the upper half is 50..100.
+    assert!(layout.texts.iter().any(|t| &*t.text == "50"));
+    assert!(layout.texts.iter().any(|t| &*t.text == "100"));
+    assert!(!layout.texts.iter().any(|t| &*t.text == "20"));
+    // A vertical slider right of the plot, its window the upper half.
+    let slider = layout.y_slider.expect("y slider");
+    assert!(layout.slider.is_none());
+    assert!(slider.track[0] > plot[2]);
+    let middle = (slider.track[1] + slider.track[3]) * 0.5;
+    assert!(
+        (slider.window[3] - middle).abs() < 0.5 && (slider.window[1] - slider.track[1]).abs() < 0.5
+    );
+    // Both axes map px to percent.
+    let y = layout
+        .zoom_axes
+        .iter()
+        .find(|axis| axis.axis == ZoomAxis::Y)
+        .unwrap();
+    assert!(y.vertical);
+    assert!((y.percent_at(plot[3]) - 50.0).abs() < 1e-3);
+    assert!((y.percent_at(plot[1]) - 100.0).abs() < 1e-3);
+    let x = layout
+        .zoom_axes
+        .iter()
+        .find(|axis| axis.axis == ZoomAxis::X)
+        .unwrap();
+    assert!(!x.vertical);
+    // Category 0's centre is 5% of ten categories.
+    assert!(
+        (x.percent_at(plot[0]) - 5.0).abs() < 1e-3,
+        "{}",
+        x.percent_at(plot[0])
+    );
+
+    // The view's window wins over the option's.
+    let state = ChartViewState {
+        zoom: vec![None, Some((0.0, 20.0))],
+        ..ChartViewState::default()
+    };
+    let layout = lay(&option, &state);
+    assert!(layout.texts.iter().any(|t| &*t.text == "20"));
+    assert!(!layout.texts.iter().any(|t| &*t.text == "50"));
+}
+
+#[test]
+fn on_a_horizontal_chart_the_x_zoom_is_the_value_axis() {
+    let option = ChartOption::new()
+        .x_axis(Axis::value())
+        .y_axis(weekdays())
+        .data_zoom(DataZoom::inside())
+        .series(BarSeries::new("b", [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]));
+    let layout = lay(&option, &ChartViewState::default());
+    let axis = layout.zoom_axes[0];
+    assert_eq!(
+        (axis.axis, axis.index, axis.vertical),
+        (ZoomAxis::X, 0, false)
+    );
+    let plot = layout.plot.unwrap();
+    assert!((axis.percent_at(plot[0])).abs() < 1e-3);
+    assert!((axis.percent_at(plot[2]) - 100.0).abs() < 1e-3);
+}
+
+#[test]
+fn a_moved_threshold_starts_from_where_it_was() {
+    let with_limit = |limit: f64| {
+        ChartOption::new()
+            .x_axis(weekdays())
+            .y_axis(Axis::value().max(AxisBound::Value(100.0)))
+            .series(
+                LineSeries::new("cpu", [30.0, 42.0, 51.0, 38.0, 60.0, 55.0, 47.0])
+                    .mark_line(MarkLine::new([MarkLineItem::y(limit)])),
+            )
+    };
+    let mut first = lay(&with_limit(90.0), &ChartViewState::default());
+    crate::transition::settle(&mut first);
+    let option = with_limit(70.0);
+    let mut next = lay(&option, &ChartViewState::default());
+    crate::transition::begin(&mut next, Some(&first), &option, Duration::from_secs(1));
+    let before = mark_draws(&first)[0];
+    let after = mark_draws(&next)[0];
+    let old = &first.marks.points[before.first as usize..][..2];
+    let new = &next.marks.points[after.first as usize..][..2];
+    for (new, old) in new.iter().zip(old) {
+        assert!((new.from[1] - old.to[1]).abs() < 1e-3);
+    }
+    assert!(new[0].to[1] > old[0].to[1]);
+}

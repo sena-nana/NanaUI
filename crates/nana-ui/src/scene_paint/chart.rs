@@ -447,7 +447,12 @@ fn upload_marks(
         .iter()
         .map(|draw| GpuDraw {
             a: [draw.first, draw.count, draw.style, draw.flags],
-            b: [draw.neighbours.max(1), draw.series, pass_code(draw.pass), 0],
+            b: [
+                draw.neighbours.max(1),
+                draw.series,
+                pass_code(draw.pass),
+                draw.index,
+            ],
         })
         .collect();
     let bytes: [&[u8]; 4] = [

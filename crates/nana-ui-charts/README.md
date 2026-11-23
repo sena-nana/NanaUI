@@ -4,7 +4,7 @@ English · [简体中文](README.zh-CN.md)
 
 NanaUI's chart model, with an option shape modeled on ECharts.
 
-`ChartOption` describes axes, series, legend, tooltip, and zoom with Rust types. `layout` computes it on the CPU together with the container size and theme into a `ChartLayout`, which holds labels, hit data for hovering, and the `ChartMarks` that the chart shaders read directly. Marks carry both a start state and a target state, and transitions are interpolated by the shaders; hover queries run against the finished layout, so pointer movement never triggers relayout. Supported today: line (including area, stacked, and smooth), bar, pie, scatter, radar, and gauge, with four axis types: category, value, time, and log.
+`ChartOption` describes axes, series, legend, tooltip, and zoom with Rust types. `layout` computes it on the CPU together with the container size and theme into a `ChartLayout`, which holds labels, hit data for hovering, and the `ChartMarks` that the chart shaders read directly. Marks carry both a start state and a target state, and transitions are interpolated by the shaders; hover queries run against the finished layout, so pointer movement never triggers relayout. Supported today: line (including area, stacked, and smooth), bar, pie, scatter, radar, and gauge, with four axis types: category, value, time, and log. Cartesian series can carry mark lines (thresholds, statistics, segments) and mark areas (bands), and zoom works on either axis by wheel, drag, slider, or a selection box.
 
 This crate depends only on `nana-ui-core` and does not measure text; label widths are supplied by the caller through `LabelMeasure`. The `Chart` component is in [`nana-ui-runtime`](../nana-ui-runtime), and the paint pipelines are in [`nana-ui`](../nana-ui).
 
@@ -40,4 +40,4 @@ Applications usually do not call `layout` directly; they hand the `ChartOption` 
 cargo test -p nana-ui-charts
 ```
 
-See also [Chart component](../../docs/en/components/chart.md) and [Supporting crates](../../docs/en/learn/supporting-crates.md).
+See also [Chart component](../../docs/en/components/chart.md), [Chart model and rendering](../../docs/en/reference/charts.md) and [Supporting crates](../../docs/en/learn/supporting-crates.md).

@@ -63,7 +63,7 @@ struct GpuStyle {
     params: vec4<f32>,
 }
 
-// `a`: first, count, style, flags. `b`: neighbours, series, pass, _.
+// `a`: first, count, style, flags. `b`: neighbours, series, pass, mark index.
 struct GpuDraw {
     a: vec4<u32>,
     b: vec4<u32>,
@@ -89,6 +89,7 @@ const DRAW_REVEAL: u32 = 2u;
 const DRAW_CLOSED: u32 = 4u;
 const DRAW_SOFT_BASE: u32 = 8u;
 const DRAW_EMPHASIS: u32 = 16u;
+const DRAW_MARK: u32 = 64u;
 
 const SHAPE_RECT: u32 = 0u;
 const SHAPE_SECTOR: u32 = 1u;
@@ -96,6 +97,7 @@ const SHAPE_SYMBOL: u32 = 2u;
 const SHAPE_CLIP_TO_PLOT: u32 = 256u;
 const SHAPE_EMPHASIS_GROW: u32 = 512u;
 const SHAPE_REVEAL: u32 = 1024u;
+const SHAPE_EMPHASIS_FILL: u32 = 2048u;
 
 const NO_SERIES: u32 = 0xffffffffu;
 const ANY_SERIES: u32 = 0xfffffffeu;
@@ -300,6 +302,10 @@ fn line_half_width(draw: GpuDraw) -> f32 {
     var width = style.params.x;
     if (draw.a.w & DRAW_EMPHASIS) != 0u {
         width = width + chart_series_emphasis(draw.b.y);
+    }
+    // A hovered mark line (its own series and index) thickens by 2px.
+    if (draw.a.w & DRAW_MARK) != 0u {
+        width = width + 2.0 * chart_emphasis(draw.b.y, draw.b.w);
     }
     return width * 0.5;
 }
@@ -569,7 +575,7 @@ fn chart_shape_vs(@builtin(vertex_index) vertex_index: u32, @builtin(instance_in
     let kind = shape.info.x & 255u;
     let flags = shape.info.x;
     var emphasis = 0.0;
-    if (flags & SHAPE_EMPHASIS_GROW) != 0u {
+    if (flags & (SHAPE_EMPHASIS_GROW | SHAPE_EMPHASIS_FILL)) != 0u {
         emphasis = chart_emphasis(shape.info.z, shape.info.w);
     }
     let fringe = chart_fringe() * 1.5;
@@ -738,8 +744,13 @@ fn chart_shape_fs(input: ShapeOut) -> @location(0) vec4<f32> {
     } else {
         var fill = style.fill;
         if kind == SHAPE_RECT && emphasis > 0.0 {
-            // A hovered bar lifts towards white.
-            fill = vec4<f32>(mix(fill.rgb, vec3<f32>(1.0), 0.12 * emphasis), fill.a);
+            if (flags & SHAPE_EMPHASIS_FILL) != 0u {
+                // A hovered mark area deepens (its fill is faint).
+                fill = vec4<f32>(fill.rgb, min(fill.a * (1.0 + emphasis), 1.0));
+            } else {
+                // A hovered bar lifts towards white.
+                fill = vec4<f32>(mix(fill.rgb, vec3<f32>(1.0), 0.12 * emphasis), fill.a);
+            }
         }
         color = premultiply(fill) * outer;
     }

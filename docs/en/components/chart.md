@@ -73,7 +73,48 @@ The hovered item is emphasized: points grow, pie sectors move outward, bars brig
 
 ## Zoom
 
-`DataZoom::inside()`: wheel zoom inside the plot area (centered on the pointer), drag to pan. `DataZoom::slider()`: a track with a preview below the chart; drag the window or its ends. `.range(start, end)` is the initial window (percent). When the window moves the chart redraws immediately, without a transition.
+`DataZoom::inside()`: wheel zoom inside the plot area (centered on the pointer), drag to pan. `DataZoom::slider()`: a track with a preview; drag the window or its ends. `DataZoom::select()`: drag a box in the plot area and release to zoom to it; a double click goes back to the initial window. `.range(start, end)` is the initial window (percent). When the window moves the chart redraws immediately, without a transition.
+
+Zoom works on the x axis by default; `.y_axis(0)` moves it to the y axis, counted by position on screen like ECharts' `yAxisIndex` (on a horizontal bar chart the x axis is the value axis). A y axis' slider sits to the right of the chart. Several zoom entries on the same axis share one window, so the wheel and the slider always agree. With a `DataZoom::select()` on both x and y, box selection zooms both directions:
+
+```rust
+use nana_ui::runtime::chart::{Axis, ChartOption, DataZoom, LineSeries};
+
+let option = ChartOption::new()
+    .x_axis(Axis::category(["00:00", "00:05", "00:10", "00:15", "00:20"]))
+    .y_axis(Axis::value())
+    .data_zoom(DataZoom::select())
+    .data_zoom(DataZoom::select().y_axis(0))
+    .series(LineSeries::new("Latency", [12.0, 18.0, 95.0, 22.0, 15.0]));
+```
+
+## Mark lines and mark areas
+
+Line, bar and scatter series can carry `mark_line(MarkLine)` and `mark_area(MarkArea)`: alert thresholds, average lines, normal ranges, incident windows. Mark areas are drawn under the series and mark lines over them, in the series color by default; mark lines are 1px dashes.
+
+```rust
+use nana_ui::runtime::chart::{
+    Axis, ChartOption, LineSeries, MarkArea, MarkAreaItem, MarkLine, MarkLineItem,
+};
+
+let option = ChartOption::new()
+    .x_axis(Axis::category(["Mon", "Tue", "Wed", "Thu", "Fri"]))
+    .y_axis(Axis::value())
+    .series(
+        LineSeries::new("CPU", [32.0, 48.0, 71.0, 55.0, 40.0])
+            .mark_line(MarkLine::new([
+                MarkLineItem::y(90.0).name("Alert"),
+                MarkLineItem::average(),
+            ]))
+            .mark_area(MarkArea::new([MarkAreaItem::y(30.0, 60.0).name("Normal")])),
+    );
+```
+
+- `MarkLineItem::x(..)` / `::y(..)` are vertical and horizontal lines (category indices on a category axis), `min()` / `max()` / `average()` are statistic lines over the series' values, and `segment(..)` is a segment between two points.
+- `MarkAreaItem::y(a, b)` is a horizontal band, `::x(a, b)` a vertical band, `::rect(..)` a rectangle.
+- The value axis takes in thresholds and band edges, so a threshold above the data is still visible.
+- A mark line writes its name at its end, or its value when it has no name; a mark area writes its name in its top-left corner.
+- Near a mark line the tooltip shows its name and value and the line thickens; inside a mark area the area deepens, and an axis tooltip lists the areas it is in after the series.
 
 ## Animation
 
@@ -83,7 +124,7 @@ For live curves that update many times per second (frame time, levels), turn ani
 
 ## Events
 
-`ChartEvent::Click { series, index }`: pressed on an item and released in place. `ChartEvent::LegendSelect { name, selected }`: a legend toggle. `ChartEvent::DataZoom { index, start, end }`: the zoom window changed. Receive them with `.on(|e: &ChartEvent| ..)`.
+`ChartEvent::Click { series, index }`: pressed on an item and released in place. `ChartEvent::LegendSelect { name, selected }`: a legend toggle. `ChartEvent::DataZoom { index, start, end }`: the zoom window changed (once for each entry on that axis). Receive them with `.on(|e: &ChartEvent| ..)`.
 
 ## Colors
 
@@ -118,4 +159,4 @@ There are no slots.
 
 ## See also
 
-[Overview](https://github.com/sena-nana/NanaUI/blob/main/docs/components/index.md) · [Controls](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/components.md)
+[Overview](https://github.com/sena-nana/NanaUI/blob/main/docs/components/index.md) · [Controls](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/components.md) · [Chart model and rendering](../reference/charts.md)

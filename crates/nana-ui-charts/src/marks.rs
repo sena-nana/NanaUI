@@ -72,6 +72,17 @@ pub const SHAPE_CLIP_TO_PLOT: u32 = 1 << 8;
 pub const SHAPE_EMPHASIS_GROW: u32 = 1 << 9;
 /// [`GpuShape::meta`] flag: the line reveal also reveals this element.
 pub const SHAPE_REVEAL: u32 = 1 << 10;
+/// [`GpuShape::meta`] flag: hover emphasis deepens this rect's fill (mark
+/// areas) instead of growing it.
+pub const SHAPE_EMPHASIS_FILL: u32 = 1 << 11;
+
+/// Data indices at and above this name a series' mark lines (`+ k` for
+/// its k-th line), so hover emphasis can single one out without touching
+/// the data items.
+pub const MARK_LINE_INDEX: u32 = 0x4000_0000;
+/// Data indices at and above this (below [`MARK_LINE_INDEX`]'s end) name a
+/// series' mark areas.
+pub const MARK_AREA_INDEX: u32 = 0x6000_0000;
 
 /// One bar, slice, symbol or needle.
 ///
@@ -137,6 +148,9 @@ pub mod draw_flags {
     pub const EMPHASIS: u32 = 1 << 4;
     /// Not part of any series: guides, axes. Never faded by focus.
     pub const GUIDE: u32 = 1 << 5;
+    /// A mark line: emphasis of its own `(series, index)` widens it, not
+    /// the series' hover.
+    pub const MARK: u32 = 1 << 6;
 }
 
 /// How a [`MarkDraw`] is drawn.
@@ -166,6 +180,9 @@ pub struct MarkDraw {
     /// before it lets this segment draw, so a translucent line is painted
     /// once where its segments overlap. At least 1.
     pub neighbours: u32,
+    /// The data index hover emphasis matches for a [`draw_flags::MARK`]
+    /// line; 0 otherwise.
+    pub index: u32,
 }
 
 /// The motion every element of one [`ChartMarks`] shares, on the document's

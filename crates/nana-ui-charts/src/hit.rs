@@ -123,11 +123,69 @@ pub struct ItemHit {
     pub color: [f32; 4],
 }
 
+/// Where a mark line or mark area answers the pointer.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MarkRegion {
+    /// A line from `a` to `b`, hit within [`MARK_LINE_REACH`] of it.
+    Line { a: [f32; 2], b: [f32; 2] },
+    /// A band, cut to the plot.
+    Area([f32; 4]),
+}
+
+/// How near a mark line the pointer must be to hover it, px.
+pub const MARK_LINE_REACH: f32 = 4.0;
+
+impl MarkRegion {
+    pub fn contains(&self, p: [f32; 2]) -> bool {
+        match *self {
+            Self::Line { a, b } => {
+                let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+                let length = dx * dx + dy * dy;
+                let t = if length <= f32::EPSILON {
+                    0.0
+                } else {
+                    (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / length).clamp(0.0, 1.0)
+                };
+                let (cx, cy) = (a[0] + dx * t, a[1] + dy * t);
+                (p[0] - cx).powi(2) + (p[1] - cy).powi(2) <= MARK_LINE_REACH * MARK_LINE_REACH
+            }
+            Self::Area(rect) => ItemRegion::Rect(rect).contains(p),
+        }
+    }
+}
+
+/// A series' mark line or mark area the pointer can hover.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MarkHit {
+    pub region: MarkRegion,
+    pub series: u32,
+    /// [`crate::marks::MARK_LINE_INDEX`] or [`crate::marks::MARK_AREA_INDEX`]
+    /// `+ k`: what hover emphasis matches.
+    pub index: u32,
+    /// The item's name; empty when it has none.
+    pub name: Arc<str>,
+    /// Its value (a line) or range (an area), formatted.
+    pub value: Arc<str>,
+    pub color: [f32; 4],
+}
+
+impl MarkHit {
+    fn row(&self) -> TooltipRow {
+        TooltipRow {
+            color: Some(self.color),
+            name: self.name.clone(),
+            value: self.value.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct HitModel {
     pub axis: Option<AxisHit>,
     /// In paint order; the last one that contains the pointer is on top.
     pub items: Vec<ItemHit>,
+    /// Mark lines and areas, in paint order.
+    pub marks: Vec<MarkHit>,
 }
 
 /// `series` of [`ChartHover`] that matches every series (axis trigger).
@@ -209,7 +267,7 @@ impl HoverState {
     }
 }
 
-fn format_value(option: &ChartOption, value: f64) -> Arc<str> {
+pub(crate) fn format_value(option: &ChartOption, value: f64) -> Arc<str> {
     match &option.tooltip.value_formatter {
         Some(formatter) => formatter.format(value),
         None if !value.is_finite() => Arc::from("-"),
@@ -259,10 +317,56 @@ fn formatted(option: &ChartOption, title: Arc<str>, items: &[TooltipItem]) -> To
 
 impl ChartLayout {
     /// What `point` (node-local px) is over, or `None` when nothing is.
+    ///
+    /// A mark line under the pointer wins over the data, the data wins over
+    /// a mark area; an axis tooltip also lists the mark areas it is in.
     pub fn hover_at(&self, option: &ChartOption, point: [f32; 2]) -> Option<ChartHover> {
-        match self.trigger {
+        let marks = |area: bool| {
+            self.hit.marks.iter().rev().filter(move |mark| {
+                matches!(mark.region, MarkRegion::Area(_)) == area && mark.region.contains(point)
+            })
+        };
+        if let Some(line) = marks(false).next() {
+            return Some(self.mark_hover(option, line));
+        }
+        let hover = match self.trigger {
             TooltipTrigger::Axis => self.axis_hover(option, point),
             _ => self.item_hover(option, point),
+        };
+        match hover {
+            Some(mut hover) => {
+                if self.trigger == TooltipTrigger::Axis
+                    && let Some(tooltip) = hover.tooltip.as_mut()
+                {
+                    let mut areas: Vec<&MarkHit> = marks(true).collect();
+                    areas.reverse();
+                    tooltip.rows.extend(
+                        areas
+                            .into_iter()
+                            .filter(|area| !area.name.is_empty())
+                            .map(MarkHit::row),
+                    );
+                }
+                Some(hover)
+            }
+            None => marks(true).next().map(|area| self.mark_hover(option, area)),
+        }
+    }
+
+    fn mark_hover(&self, option: &ChartOption, mark: &MarkHit) -> ChartHover {
+        let title = option
+            .series
+            .get(mark.series as usize)
+            .map(|series| series.name().clone())
+            .unwrap_or_else(|| Arc::from(""));
+        ChartHover {
+            series: mark.series,
+            index: mark.index,
+            pointer: None,
+            tooltip: (option.tooltip.show != Some(false)).then(|| TooltipContent {
+                title,
+                rows: vec![mark.row()],
+            }),
         }
     }
 

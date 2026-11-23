@@ -21,7 +21,7 @@ pub(crate) use cartesian::sample_at;
 
 use crate::hit::HitModel;
 use crate::marks::ChartMarks;
-use crate::option::{ChartOption, Series, TooltipTrigger};
+use crate::option::{ChartOption, Series, TooltipTrigger, ZoomAxis};
 use crate::smooth::Along;
 use crate::theme::ChartTheme;
 
@@ -114,6 +114,44 @@ pub struct SliderLayout {
     pub window: [f32; 4],
 }
 
+/// How px along one zoomable axis map to its zoom window's percent, so a
+/// wheel turn, a pan or a selection box can move the window by what the
+/// pointer covers on screen.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ZoomAxisLayout {
+    /// The axis, as [`crate::DataZoom::target`] names it.
+    pub axis: ZoomAxis,
+    pub index: usize,
+    /// The axis runs down the plot (pointer y), not across it (pointer x).
+    pub vertical: bool,
+    /// Two px along the axis and the percent of the full extent at each.
+    pub px: [f32; 2],
+    pub percent: [f64; 2],
+}
+
+impl ZoomAxisLayout {
+    /// Percent of the full extent at `px` along the axis (not clamped).
+    pub fn percent_at(&self, px: f32) -> f64 {
+        self.percent[0] + (px - self.px[0]) as f64 * self.per_px()
+    }
+
+    /// Percent per px along the axis; negative where percent grows against
+    /// the pointer (up a y axis).
+    pub fn per_px(&self) -> f64 {
+        let span = (self.px[1] - self.px[0]) as f64;
+        if span.abs() < 1e-6 {
+            0.0
+        } else {
+            (self.percent[1] - self.percent[0]) / span
+        }
+    }
+
+    /// The pointer coordinate this axis reads.
+    pub fn along(&self, point: [f32; 2]) -> f32 {
+        if self.vertical { point[1] } else { point[0] }
+    }
+}
+
 /// Identity of a mark draw across layouts, to morph one into the next.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DrawKey {
@@ -129,6 +167,10 @@ pub enum DrawPart {
     Area,
     Shapes,
     Guide,
+    /// A series' mark line; `run` is its emphasis index.
+    MarkLine,
+    /// A series' mark areas.
+    MarkArea,
 }
 
 /// A laid-out chart.
@@ -139,7 +181,13 @@ pub struct ChartLayout {
     pub plot: Option<[f32; 4]>,
     pub texts: Vec<ChartText>,
     pub legend: Vec<LegendItem>,
+    /// The zoom slider under the plot (an x axis).
     pub slider: Option<SliderLayout>,
+    /// The zoom slider right of the plot (a y axis); its window grows
+    /// upward from `start`.
+    pub y_slider: Option<SliderLayout>,
+    /// Every zoomable axis shown, for the pointer to move its window.
+    pub zoom_axes: Vec<ZoomAxisLayout>,
     pub marks: ChartMarks,
     /// Parallel to `marks.draws`: what each draw is, to match it next time.
     pub draw_keys: Vec<DrawKey>,
@@ -198,10 +246,14 @@ pub fn layout(input: &LayoutInput<'_>) -> ChartLayout {
     let has_cartesian = input.option.series.iter().any(Series::is_cartesian);
     let mut plot = None;
     let mut slider = None;
+    let mut y_slider = None;
+    let mut zoom_axes = Vec::new();
     if has_cartesian {
         let cartesian = cartesian::layout(input, frame, &mut builder, &mut texts, &mut hit);
         plot = Some(cartesian.plot);
         slider = cartesian.slider;
+        y_slider = cartesian.y_slider;
+        zoom_axes = cartesian.zoom_axes;
     }
     polar::layout(input, frame, &mut builder, &mut texts, &mut hit);
     let trigger = match input.option.tooltip.trigger {
@@ -227,6 +279,8 @@ pub fn layout(input: &LayoutInput<'_>) -> ChartLayout {
         texts,
         legend,
         slider,
+        y_slider,
+        zoom_axes,
         marks,
         draw_keys,
         draw_along,

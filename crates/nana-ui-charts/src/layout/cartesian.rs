@@ -7,16 +7,18 @@ use std::sync::Arc;
 use super::builder::{Polyline, fill_style, line_style, symbol_style, with_alpha};
 use super::{
     ChartText, DrawKey, DrawPart, LABEL_GAP, LayoutInput, MarkBuilder, SliderLayout, TextAlign,
-    crisp, rects_overlap, text_rect,
+    ZoomAxisLayout, crisp, rects_overlap, text_rect,
 };
-use crate::hit::{AxisHit, AxisPoint, AxisSeries, BaseAxisHit, HitModel, ItemHit, ItemRegion};
+use crate::hit::{
+    AxisHit, AxisPoint, AxisSeries, BaseAxisHit, HitModel, ItemHit, ItemRegion, MarkHit, MarkRegion,
+};
 use crate::marks::{
-    GpuShape, SHAPE_CLIP_TO_PLOT, SHAPE_EMPHASIS_GROW, SHAPE_REVEAL, ShapeKind, SymbolShape,
-    draw_flags,
+    GpuShape, MARK_AREA_INDEX, MARK_LINE_INDEX, SHAPE_CLIP_TO_PLOT, SHAPE_EMPHASIS_FILL,
+    SHAPE_EMPHASIS_GROW, SHAPE_REVEAL, ShapeKind, SymbolShape, draw_flags,
 };
 use crate::option::{
     Axis, AxisBound, AxisKind, AxisPosition, BarSeries, DataZoomKind, Length, LineSeries, LineType,
-    Sampling, ScatterSeries, Series, SeriesData, Symbol,
+    MarkLineKind, MarkStat, Sampling, ScatterSeries, Series, SeriesData, Symbol, ZoomAxis,
 };
 use crate::scale::{self, LinearTicks, TimeTick};
 use crate::smooth::{self, Along};
@@ -33,6 +35,8 @@ const SMOOTH_SEGMENT: f32 = 4.0;
 pub(super) struct CartesianOut {
     pub plot: [f32; 4],
     pub slider: Option<SliderLayout>,
+    pub y_slider: Option<SliderLayout>,
+    pub zoom_axes: Vec<ZoomAxisLayout>,
 }
 
 /// A value axis' resolved scale.
@@ -331,20 +335,30 @@ pub(super) fn layout(
             }
         }
     }
-    let zoom = option
-        .data_zoom
-        .iter()
-        .enumerate()
-        .find(|(_, zoom)| zoom.x_axis_index == 0)
-        .and_then(|(index, _)| {
-            input
-                .state
-                .zoom_window(option, index)
-                .map(|window| (index, window))
-        });
-    let slider_zoom =
-        zoom.filter(|(index, _)| option.data_zoom[*index].kind == DataZoomKind::Slider);
-    let (start_pct, end_pct) = zoom.map_or((0.0, 100.0), |(_, window)| window);
+    // Zoom entries name an axis by its side; the base axis is the x axis
+    // unless the chart is horizontal. The first entry on an axis holds its
+    // window (the runtime keeps every entry on it the same).
+    let (base_side, value_side) = if base_x {
+        (ZoomAxis::X, ZoomAxis::Y)
+    } else {
+        (ZoomAxis::Y, ZoomAxis::X)
+    };
+    let zoom_on = |side: ZoomAxis, index: usize| -> Option<(f64, f64)> {
+        let entry = option
+            .data_zoom
+            .iter()
+            .position(|zoom| zoom.target() == (side, index))?;
+        input.state.zoom_window(option, entry)
+    };
+    let slider_on = |side: ZoomAxis| -> Option<(usize, (f64, f64))> {
+        let entry = option
+            .data_zoom
+            .iter()
+            .position(|zoom| zoom.target() == (side, 0) && zoom.kind == DataZoomKind::Slider)?;
+        Some((entry, zoom_on(side, 0)?))
+    };
+    let zoom = zoom_on(base_side, 0);
+    let (start_pct, end_pct) = zoom.unwrap_or((0.0, 100.0));
 
     let is_category = base_axis.kind == AxisKind::Category;
     let wants_gap = base_axis.boundary_gap.unwrap_or_else(|| {
@@ -413,8 +427,14 @@ pub(super) fn layout(
         Some((x, base, top))
     };
 
-    // Value extents per value axis over the window.
+    // Value extents per value axis over the window, and over all the data
+    // (what a value-axis zoom window is a percent of).
     let mut extents: Vec<(f64, f64)> = vec![(f64::INFINITY, f64::NEG_INFINITY); value_axes.len()];
+    let mut full_extents = extents.clone();
+    let grow = |extent: &mut (f64, f64), value: f64| {
+        extent.0 = extent.0.min(value);
+        extent.1 = extent.1.max(value);
+    };
     for (slot, placed_series) in placed.iter().enumerate() {
         let axis = value_axis_index(placed_series.series, base_x).min(value_axes.len() - 1);
         let Some(data) = series_data(placed_series.series) else {
@@ -426,23 +446,36 @@ pub(super) fn layout(
             let Some((x, base, top)) = value_at(slot, index) else {
                 continue;
             };
+            let both = bars || stacked_series;
+            grow(&mut full_extents[axis], top);
+            if both {
+                grow(&mut full_extents[axis], base);
+            }
             if !in_window(x) {
                 continue;
             }
-            let extent = &mut extents[axis];
-            extent.0 = extent.0.min(top);
-            extent.1 = extent.1.max(top);
-            if bars || stacked_series {
-                extent.0 = extent.0.min(base);
-                extent.1 = extent.1.max(base);
+            grow(&mut extents[axis], top);
+            if both {
+                grow(&mut extents[axis], base);
             }
+        }
+        // A threshold or band at a fixed value stays in view.
+        for value in mark_values(placed_series.series, value_side) {
+            grow(&mut extents[axis], value);
+            grow(&mut full_extents[axis], value);
         }
     }
 
     let value_scales: Vec<Scale> = value_axes
         .iter()
-        .zip(&extents)
-        .map(|(axis, (lo, hi))| value_scale(axis, *lo, *hi))
+        .enumerate()
+        .map(|(index, axis)| match zoom_on(value_side, index) {
+            Some(window) if axis.kind == AxisKind::Value => {
+                let (lo, hi) = full_extents[index];
+                zoomed_value_scale(axis, lo, hi, window)
+            }
+            _ => value_scale(axis, extents[index].0, extents[index].1),
+        })
         .collect();
     let base_scale = if is_category {
         Scale::Band {
@@ -582,12 +615,14 @@ pub(super) fn layout(
         margin[2] = margin[2].max(sizes.last().map_or(0.0, |s| s[0] * 0.5));
     }
     margin[1] = margin[1].max(line_height * 0.5);
-    let slider_space = if slider_zoom.is_some() {
-        SLIDER_HEIGHT + LABEL_GAP * 2.0
-    } else {
-        0.0
-    };
-    margin[3] += slider_space;
+    let x_slider = slider_on(ZoomAxis::X);
+    let y_slider = slider_on(ZoomAxis::Y);
+    if x_slider.is_some() {
+        margin[3] += SLIDER_HEIGHT + LABEL_GAP * 2.0;
+    }
+    if y_slider.is_some() {
+        margin[2] += SLIDER_HEIGHT + LABEL_GAP * 2.0;
+    }
     let resolve = |length: Option<Length>, reference: f32, fallback: f32| {
         length.map_or(fallback, |length| length.resolve(reference))
     };
@@ -670,6 +705,18 @@ pub(super) fn layout(
         }
     }
 
+    let marks = MarkContext {
+        input,
+        placed: &placed,
+        base_axis: &base_axis,
+        base_map: &base_map,
+        value_maps: &value_maps,
+        base_x,
+        plot,
+    };
+    // Mark areas lie under every series.
+    marks.areas(builder, texts, hit);
+
     // Bar backgrounds and the axis-pointer band go under the series; the
     // series follow; the base axis line goes on top of the bars' feet.
     let bars = layout_bars(
@@ -717,6 +764,8 @@ pub(super) fn layout(
             _ => {}
         }
     }
+    // Mark lines go over every series.
+    marks.lines(builder, texts, hit);
 
     // Axis lines, ticks and labels.
     let label_color = theme.muted;
@@ -927,7 +976,7 @@ pub(super) fn layout(
         }
     }
 
-    let slider = slider_zoom.map(|(zoom_index, (start, end))| {
+    let slider = x_slider.map(|(zoom_index, (start, end))| {
         let track = [plot[0], fy1 - SLIDER_HEIGHT, plot[2], fy1];
         let span = track[2] - track[0];
         let window = [
@@ -936,13 +985,83 @@ pub(super) fn layout(
             track[0] + span * (end / 100.0) as f32,
             track[3],
         ];
-        layout_slider(input, &placed, track, window, builder);
+        // The preview shows the data along the base axis.
+        layout_slider(
+            input,
+            base_x.then_some(&placed[..]),
+            track,
+            window,
+            false,
+            builder,
+        );
         SliderLayout {
             zoom_index,
             track,
             window,
         }
     });
+    let y_slider = y_slider.map(|(zoom_index, (start, end))| {
+        let track = [fx1 - SLIDER_HEIGHT, plot[1], fx1, plot[3]];
+        let span = track[3] - track[1];
+        // The window grows upward, as the axis does.
+        let window = [
+            track[0],
+            track[3] - span * (end / 100.0) as f32,
+            track[2],
+            track[3] - span * (start / 100.0) as f32,
+        ];
+        layout_slider(input, None, track, window, true, builder);
+        SliderLayout {
+            zoom_index,
+            track,
+            window,
+        }
+    });
+
+    // How px map to each zoomable axis' window.
+    let mut zoom_axes = Vec::new();
+    let zoomable = |side: ZoomAxis, index: usize| {
+        option
+            .data_zoom
+            .iter()
+            .any(|zoom| zoom.target() == (side, index))
+    };
+    if zoomable(base_side, 0) {
+        // Two base values and their percent of the full extent: category
+        // `i` is centred at `(i + 0.5) / total`.
+        let anchors = if is_category {
+            let total = category_count.max(1) as f64;
+            let first = window_first as f64;
+            Some((
+                [first, first + 1.0],
+                [(first + 0.5) / total * 100.0, (first + 1.5) / total * 100.0],
+            ))
+        } else {
+            (base_lo.is_finite() && base_hi > base_lo).then_some(([base_lo, base_hi], [0.0, 100.0]))
+        };
+        if let Some((values, percent)) = anchors {
+            zoom_axes.push(ZoomAxisLayout {
+                axis: base_side,
+                index: 0,
+                vertical: !base_x,
+                px: [base_map.px(values[0]), base_map.px(values[1])],
+                percent,
+            });
+        }
+    }
+    for (index, (axis, map)) in value_axes.iter().zip(&value_maps).enumerate() {
+        if axis.kind == AxisKind::Value
+            && let Some((start, end)) = zoom_on(value_side, index)
+        {
+            zoom_axes.push(ZoomAxisLayout {
+                axis: value_side,
+                index,
+                vertical: base_x,
+                px: [map.start, map.end],
+                percent: [start, end],
+            });
+        }
+    }
 
     let titles: Arc<[Arc<str>]> = if is_category {
         (0..category_count)
@@ -980,7 +1099,397 @@ pub(super) fn layout(
         series: axis_series,
         has_bars: placed.iter().any(|p| matches!(p.series, Series::Bar(_))),
     });
-    CartesianOut { plot, slider }
+    CartesianOut {
+        plot,
+        slider,
+        y_slider,
+        zoom_axes,
+    }
+}
+
+/// A value axis zoomed to `window` (percent) of the scale it has over all
+/// the data, keeping the window's exact ends.
+fn zoomed_value_scale(axis: &Axis, lo: f64, hi: f64, (start, end): (f64, f64)) -> Scale {
+    let reference = value_scale(axis, lo, hi);
+    let Scale::Linear(ticks) = &reference else {
+        return reference;
+    };
+    if start <= 0.0 && end >= 100.0 {
+        return reference;
+    }
+    let span = ticks.max - ticks.min;
+    let (lo, hi) = (
+        ticks.min + span * start / 100.0,
+        ticks.min + span * end / 100.0,
+    );
+    Scale::Linear(scale::nice_linear(
+        lo,
+        hi,
+        axis.split_number,
+        Some(lo),
+        Some(hi),
+    ))
+}
+
+/// Fixed values a series' marks put on its value axis (`value_side`).
+fn mark_values(series: &Series, value_side: ZoomAxis) -> Vec<f64> {
+    let (line, area) = series.marks();
+    let mut values = Vec::new();
+    let on_y = value_side == ZoomAxis::Y;
+    for item in line.iter().flat_map(|line| &line.data) {
+        match item.kind {
+            MarkLineKind::Y(value) if on_y => values.push(value),
+            MarkLineKind::X(value) if !on_y => values.push(value),
+            MarkLineKind::Segment(a, b) => {
+                let side = usize::from(on_y);
+                values.extend([a[side], b[side]]);
+            }
+            _ => {}
+        }
+    }
+    for item in area.iter().flat_map(|area| &area.data) {
+        if let Some(range) = if on_y { item.y } else { item.x } {
+            values.extend(range);
+        }
+    }
+    values.retain(|value| value.is_finite());
+    values
+}
+
+/// A statistic of a series' values (NaN gaps left out).
+fn series_stat(series: &Series, stat: MarkStat) -> Option<f64> {
+    let data = series_data(series)?;
+    let mut values: Vec<f64> = (0..data.len())
+        .filter_map(|index| data.get(index))
+        .map(|(_, value)| value)
+        .filter(|value| value.is_finite())
+        .collect();
+    if values.is_empty() {
+        return None;
+    }
+    Some(match stat {
+        MarkStat::Min => values.iter().copied().fold(f64::INFINITY, f64::min),
+        MarkStat::Max => values.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+        MarkStat::Average => values.iter().sum::<f64>() / values.len() as f64,
+        MarkStat::Median => {
+            values.compact_sort_by(f64::total_cmp);
+            let middle = values.len() / 2;
+            if values.len().is_multiple_of(2) {
+                (values[middle - 1] + values[middle]) * 0.5
+            } else {
+                values[middle]
+            }
+        }
+    })
+}
+
+/// What mark lines and areas are placed against.
+struct MarkContext<'a> {
+    input: &'a LayoutInput<'a>,
+    placed: &'a [Placed<'a>],
+    base_axis: &'a Axis,
+    base_map: &'a AxisMap,
+    value_maps: &'a [AxisMap],
+    base_x: bool,
+    plot: [f32; 4],
+}
+
+impl MarkContext<'_> {
+    /// The maps of the x and y axes a series is drawn against.
+    fn maps(&self, series: &Series) -> (&AxisMap, &AxisMap) {
+        let value =
+            &self.value_maps[value_axis_index(series, self.base_x).min(self.value_maps.len() - 1)];
+        if self.base_x {
+            (self.base_map, value)
+        } else {
+            (value, self.base_map)
+        }
+    }
+
+    /// A value on the x (`on_x`) or y axis as text: a category's name, a
+    /// time, or a number.
+    fn value_text(
+        &self,
+        on_x: bool,
+        value: f64,
+        formatter: Option<&crate::option::ValueFormatter>,
+    ) -> Arc<str> {
+        let on_base = on_x == self.base_x;
+        let option = self.input.option;
+        if on_base && self.base_axis.kind == AxisKind::Category {
+            let index = value.round();
+            if index >= 0.0
+                && let Some(name) = self.base_axis.data.get(index as usize)
+            {
+                return name.clone();
+            }
+        }
+        if on_base && self.base_axis.kind == AxisKind::Time {
+            return time_label(
+                self.base_axis,
+                TimeTick {
+                    value: value.round() as i64,
+                    unit: crate::option::TimeUnit::Second,
+                    boundary: false,
+                },
+            );
+        }
+        match formatter {
+            Some(formatter) => formatter.format(value),
+            None => crate::hit::format_value(option, value),
+        }
+    }
+
+    fn areas(&self, builder: &mut MarkBuilder, texts: &mut Vec<ChartText>, hit: &mut HitModel) {
+        let theme = self.input.theme;
+        let plot = self.plot;
+        for placed in self.placed {
+            let (_, Some(area)) = placed.series.marks() else {
+                continue;
+            };
+            let series = placed.index as u32;
+            let (x_map, y_map) = self.maps(placed.series);
+            // A range's px; on bands (bars) it covers its categories whole,
+            // on category points (lines) it runs between them.
+            let span = |map: &AxisMap, range: Option<[f64; 2]>, lo: f32, hi: f32| match range {
+                None => Some((lo, hi)),
+                Some([a, b]) => {
+                    let (a, b) = (map.px(a), map.px(b));
+                    let half = if matches!(map.scale, Scale::Band { gap: true, .. }) {
+                        map.band() * 0.5
+                    } else {
+                        0.0
+                    };
+                    (a.is_finite() && b.is_finite()).then(|| (a.min(b) - half, a.max(b) + half))
+                }
+            };
+            for (k, item) in area.data.iter().enumerate() {
+                let (Some((x0, x1)), Some((y0, y1))) = (
+                    span(x_map, item.x, plot[0], plot[2]),
+                    span(y_map, item.y, plot[1], plot[3]),
+                ) else {
+                    continue;
+                };
+                let rect = [
+                    x0.max(plot[0]),
+                    y0.max(plot[1]),
+                    x1.min(plot[2]),
+                    y1.min(plot[3]),
+                ];
+                if rect[2] <= rect[0] || rect[3] <= rect[1] {
+                    continue;
+                }
+                let color = item
+                    .color
+                    .or(area.color)
+                    .map_or(placed.color, |color| theme.resolve(color));
+                let fill = with_alpha(color, area.opacity);
+                let style = builder.style(fill_style(fill, fill));
+                let index = MARK_AREA_INDEX + k as u32;
+                let mut shape = GpuShape::new(
+                    ShapeKind::Rect,
+                    SHAPE_CLIP_TO_PLOT | SHAPE_EMPHASIS_FILL,
+                    style,
+                    series,
+                    index,
+                );
+                shape.to = rect;
+                shape.from = rect;
+                builder.shape(
+                    shape,
+                    DrawKey {
+                        series,
+                        part: DrawPart::MarkArea,
+                        run: 0,
+                    },
+                    0,
+                );
+                let name = item.name.clone().unwrap_or_else(|| Arc::from(""));
+                if area.label && !name.is_empty() {
+                    let size = theme.font_size;
+                    let label = text_rect(
+                        self.input.measure,
+                        &name,
+                        size,
+                        [rect[0] + LABEL_GAP * 0.5, rect[1] + LABEL_GAP * 0.5],
+                        TextAlign::Start,
+                        TextAlign::Start,
+                    );
+                    if label[2] <= rect[2] && label[3] <= rect[3] {
+                        texts.push(ChartText {
+                            rect: label,
+                            text: name.clone(),
+                            color: theme.muted,
+                            size,
+                            weight: None,
+                        });
+                    }
+                }
+                let range = |on_x: bool, [a, b]: [f64; 2]| -> Arc<str> {
+                    format!(
+                        "{} – {}",
+                        self.value_text(on_x, a.min(b), None),
+                        self.value_text(on_x, a.max(b), None)
+                    )
+                    .into()
+                };
+                let value = match (item.y, item.x) {
+                    (Some(y), _) => range(false, y),
+                    (None, Some(x)) => range(true, x),
+                    (None, None) => Arc::from(""),
+                };
+                hit.marks.push(MarkHit {
+                    region: MarkRegion::Area(rect),
+                    series,
+                    index,
+                    name,
+                    value,
+                    color,
+                });
+            }
+            builder.close_shapes();
+        }
+    }
+
+    fn lines(&self, builder: &mut MarkBuilder, texts: &mut Vec<ChartText>, hit: &mut HitModel) {
+        let theme = self.input.theme;
+        let plot = self.plot;
+        let inside = |lo: f32, hi: f32, at: f32| at.is_finite() && at >= lo - 0.5 && at <= hi + 0.5;
+        for placed in self.placed {
+            let (Some(line), _) = placed.series.marks() else {
+                continue;
+            };
+            let series = placed.index as u32;
+            let (x_map, y_map) = self.maps(placed.series);
+            let formatter = line.formatter.as_ref();
+            for (k, item) in line.data.iter().enumerate() {
+                // `(ends, the value it marks, on the x axis, vertical)`.
+                let vertical = |value: f64| {
+                    let x = x_map.px(value);
+                    inside(plot[0], plot[2], x).then_some((
+                        [[x, plot[1]], [x, plot[3]]],
+                        value,
+                        true,
+                        true,
+                    ))
+                };
+                let horizontal = |value: f64| {
+                    let y = y_map.px(value);
+                    inside(plot[1], plot[3], y).then_some((
+                        [[plot[0], y], [plot[2], y]],
+                        value,
+                        false,
+                        false,
+                    ))
+                };
+                let placed_line = match item.kind {
+                    MarkLineKind::X(value) => vertical(value),
+                    MarkLineKind::Y(value) => horizontal(value),
+                    MarkLineKind::Stat(stat) => {
+                        series_stat(placed.series, stat).and_then(|value| {
+                            if self.base_x {
+                                horizontal(value)
+                            } else {
+                                vertical(value)
+                            }
+                        })
+                    }
+                    MarkLineKind::Segment(a, b) => {
+                        let a_px = [x_map.px(a[0]), y_map.px(a[1])];
+                        let b_px = [x_map.px(b[0]), y_map.px(b[1])];
+                        // A segment reads as its end's value.
+                        let (value, on_x) = if self.base_x {
+                            (b[1], false)
+                        } else {
+                            (b[0], true)
+                        };
+                        (a_px.iter().chain(&b_px).all(|v| v.is_finite())).then_some((
+                            [a_px, b_px],
+                            value,
+                            on_x,
+                            false,
+                        ))
+                    }
+                };
+                let Some((ends, value, on_x, is_vertical)) = placed_line else {
+                    continue;
+                };
+                let color = item
+                    .color
+                    .or(line.color)
+                    .map_or(placed.color, |color| theme.resolve(color));
+                let style = builder.style(line_style(
+                    color,
+                    line.width,
+                    dash_of(line.line_type, line.width),
+                ));
+                let index = MARK_LINE_INDEX + k as u32;
+                builder.mark_line(
+                    ends,
+                    style,
+                    line.width,
+                    series,
+                    index,
+                    if is_vertical { Along::Y } else { Along::X },
+                );
+                let value_text = self.value_text(on_x, value, formatter);
+                let name = item.name.clone().unwrap_or_else(|| Arc::from(""));
+                if line.label {
+                    let text = if name.is_empty() {
+                        value_text.clone()
+                    } else {
+                        name.clone()
+                    };
+                    let size = theme.font_size;
+                    let gap = LABEL_GAP * 0.5;
+                    let rect = match item.kind {
+                        MarkLineKind::Segment(..) => text_rect(
+                            self.input.measure,
+                            &text,
+                            size,
+                            [ends[1][0] + gap, ends[1][1] - gap],
+                            TextAlign::Start,
+                            TextAlign::End,
+                        ),
+                        _ if is_vertical => text_rect(
+                            self.input.measure,
+                            &text,
+                            size,
+                            [ends[0][0] + gap, plot[1] + gap],
+                            TextAlign::Start,
+                            TextAlign::Start,
+                        ),
+                        _ => text_rect(
+                            self.input.measure,
+                            &text,
+                            size,
+                            [plot[2] - gap, ends[0][1] - gap * 0.5],
+                            TextAlign::End,
+                            TextAlign::End,
+                        ),
+                    };
+                    texts.push(ChartText {
+                        rect,
+                        text,
+                        color,
+                        size,
+                        weight: None,
+                    });
+                }
+                hit.marks.push(MarkHit {
+                    region: MarkRegion::Line {
+                        a: ends[0],
+                        b: ends[1],
+                    },
+                    series,
+                    index,
+                    name,
+                    value: value_text,
+                    color,
+                });
+            }
+        }
+    }
 }
 
 fn value_scale(axis: &Axis, lo: f64, hi: f64) -> Scale {
@@ -1677,9 +2186,10 @@ fn layout_scatter(
 /// and its two handles.
 fn layout_slider(
     input: &LayoutInput<'_>,
-    placed: &[Placed<'_>],
+    preview: Option<&[Placed<'_>]>,
     track: [f32; 4],
     window: [f32; 4],
+    vertical: bool,
     builder: &mut MarkBuilder,
 ) {
     let theme = input.theme;
@@ -1696,7 +2206,10 @@ fn layout_slider(
     builder.shape(shape, key, 0);
     builder.close_shapes();
     // The first series over its whole extent.
-    if let Some(data) = placed.first().and_then(|p| series_data(p.series)) {
+    if let Some(data) = preview
+        .and_then(|placed| placed.first())
+        .and_then(|p| series_data(p.series))
+    {
         let count = data.len();
         let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
         let (mut xlo, mut xhi) = (f64::INFINITY, f64::NEG_INFINITY);
@@ -1764,10 +2277,20 @@ fn layout_slider(
     selected.from = window;
     builder.shape(selected, key, 0);
     let handle_style = builder.style(symbol_style(theme.surface, theme.pointer, 1.0));
-    for x in [window[0], window[2]] {
-        let center = [x, (window[1] + window[3]) * 0.5];
+    let ends = if vertical {
+        let x = (window[0] + window[2]) * 0.5;
+        [[x, window[1]], [x, window[3]]]
+    } else {
+        let y = (window[1] + window[3]) * 0.5;
+        [[window[0], y], [window[2], y]]
+    };
+    for center in ends {
         let mut handle = GpuShape::new(ShapeKind::Symbol, 0, handle_style, u32::MAX, 0);
-        let size = (window[3] - window[1]) * 0.7;
+        let size = if vertical {
+            window[2] - window[0]
+        } else {
+            window[3] - window[1]
+        } * 0.7;
         handle.to = [center[0], center[1], size, 0.0];
         handle.from = handle.to;
         handle.extra = [1.0, SymbolShape::RoundRect as u32 as f32, size, 0.0];

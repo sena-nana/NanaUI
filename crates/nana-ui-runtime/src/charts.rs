@@ -2,8 +2,8 @@
 //! by `nana-ui-charts` and drawn by the chart shaders.
 //!
 //! The component owns interaction, which is presentation and never touches
-//! the option: hover (emphasis, axis pointer, tooltip), legend selection
-//! and the zoom window. A layout depends on the option, the view state, the
+//! the option: hover (emphasis, axis pointer, tooltip), legend selection,
+//! the zoom windows and the zoom selection box. A layout depends on the option, the view state, the
 //! box size and the theme; hover is answered from the finished layout and
 //! drawn from a uniform, so a moving pointer never lays the chart out.
 
@@ -165,20 +165,32 @@ pub enum ChartEvent {
 }
 
 /// What a press on the chart started.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ChartDrag {
     /// A press that is a click unless it moves.
     Press { x: f32, y: f32, hover: [u32; 2] },
-    /// Moving the zoom window `zoom` (or one of its ends) from `window`,
-    /// by `per_px` percent for each px the pointer moves from `x`: panning
-    /// inside the plot, or dragging the slider.
+    /// Moving zoom windows (or one of their ends) by the pointer's travel
+    /// from `from`: panning inside the plot moves every axis it can,
+    /// dragging a slider moves its axis.
     Zoom {
-        zoom: usize,
         grab: ZoomGrab,
-        x: f32,
-        window: (f64, f64),
-        per_px: f64,
+        from: [f32; 2],
+        axes: Vec<ZoomMove>,
     },
+    /// Drawing a zoom selection box from `from`; a press that does not
+    /// move is a click on `hover`.
+    Select { from: [f32; 2], hover: [u32; 2] },
+}
+
+/// One axis a [`ChartDrag::Zoom`] moves: its window when the drag began
+/// and the percent each px of pointer travel moves it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ZoomMove {
+    pub target: (nana_ui_charts::ZoomAxis, usize),
+    pub window: (f64, f64),
+    pub per_px: f64,
+    /// Reads the pointer's y travel, not its x.
+    pub vertical: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,6 +212,8 @@ pub struct Chart {
     pub view: ChartViewState,
     pub(crate) hover: ChartHoverVisual,
     pub(crate) drag: Option<ChartDrag>,
+    /// The zoom selection box being drawn, node-local px.
+    pub(crate) selection: Option<[f32; 4]>,
 }
 
 impl Chart {
@@ -214,6 +228,7 @@ impl Chart {
             view: ChartViewState::default(),
             hover: ChartHoverVisual::default(),
             drag: None,
+            selection: None,
         }
     }
 
@@ -292,6 +307,7 @@ impl ComponentView for Chart {
         let visual = ChartVisual {
             spec: self.spec(world, id),
             hover: self.hover,
+            selection: self.selection,
         };
         if world.widget_visual_as::<ChartVisual>(id) != Some(&visual) {
             mutations.set_widget_visual(id, Some(visual));
@@ -469,6 +485,8 @@ impl ComponentView for ChartTooltip {
 pub struct ChartVisual {
     pub spec: Arc<ChartSpec>,
     pub hover: ChartHoverVisual,
+    /// The zoom selection box being drawn, node-local px.
+    pub selection: Option<[f32; 4]>,
 }
 
 impl WidgetVisual for ChartVisual {
@@ -606,6 +624,26 @@ impl WidgetVisual for ChartVisual {
                 );
             }
             _ => {}
+        }
+        if let Some(rect) = self.selection {
+            let [x0, y0] = at([rect[0], rect[1]]);
+            let [x1, y1] = at([rect[2], rect[3]]);
+            output.push(
+                14,
+                WidgetPaintOp::QuadBatch(WidgetQuadBatch {
+                    bounds: ctx.bounds,
+                    rects: Arc::from([LayoutBox {
+                        x: x0,
+                        y: y0,
+                        width: (x1 - x0).max(0.0),
+                        height: (y1 - y0).max(0.0),
+                    }]),
+                    colors: WidgetBatchColors::Uniform(band_color),
+                    fill_paint: None,
+                    border: Some((line_color, ctx.theme.border().hairline)),
+                    corner_radius: [0.0; 4],
+                }),
+            );
         }
         for (index, text) in layout.texts.iter().enumerate() {
             output.push(

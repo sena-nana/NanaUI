@@ -147,6 +147,7 @@ impl MarkBuilder {
                 series,
                 flags: flags & !draw_flags::EMPHASIS,
                 neighbours: 1,
+                index: 0,
             });
             self.keys.push(part(DrawPart::Area));
             self.along.push(along);
@@ -161,10 +162,52 @@ impl MarkBuilder {
                 series,
                 flags,
                 neighbours: Self::neighbours(&line, width, along, flags & draw_flags::CLOSED != 0),
+                index: 0,
             });
             self.keys.push(part(DrawPart::Line));
             self.along.push(along);
         }
+    }
+
+    /// A two-point mark line of `series` that hover emphasis singles out
+    /// by `index` ([`crate::marks::MARK_LINE_INDEX`] `+ k`).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn mark_line(
+        &mut self,
+        ends: [[f32; 2]; 2],
+        style: u32,
+        width: f32,
+        series: u32,
+        index: u32,
+        along: Along,
+    ) {
+        self.close_shapes();
+        let Some((first, count)) = self.push_points(&Polyline {
+            points: &ends,
+            bases: None,
+            from: None,
+            from_bases: None,
+        }) else {
+            return;
+        };
+        // Emphasis widens a mark line by up to 2px.
+        self.note_reach(width * 0.5 + 4.0);
+        self.draws.push(MarkDraw {
+            pass: MarkPass::Line,
+            first,
+            count,
+            style,
+            series,
+            flags: draw_flags::CLIP_TO_PLOT | draw_flags::MARK,
+            neighbours: 1,
+            index,
+        });
+        self.keys.push(DrawKey {
+            series,
+            part: DrawPart::MarkLine,
+            run: index,
+        });
+        self.along.push(along);
     }
 
     /// A shape. Consecutive shapes with the same key and flags share one
@@ -199,6 +242,7 @@ impl MarkBuilder {
             series: key.series,
             flags,
             neighbours: 1,
+            index: 0,
         });
         self.keys.push(key);
         self.along.push(Along::X);
