@@ -907,6 +907,15 @@ mod tests {
         assert!((viewport.scale_factor - 0.4).abs() < 1e-6);
         // The window's own zero size has no viewport: that is what stopped it.
         assert!(config.viewport(&minimised, extent, [0.0; 4]).is_none());
+        // A window-sized output keeps the size and layout it was showing.
+        let matching = WindowOutputConfig::default().with_extent(WindowOutputExtent::MatchWindow);
+        let extent = matching.resolve_extent(&geometry).expect("last size");
+        assert_eq!(extent, [1600, 1200]);
+        let viewport = matching
+            .viewport(&geometry, extent, [0.0; 4])
+            .expect("a viewport to draw");
+        assert_eq!(viewport.logical_size, [800.0, 600.0]);
+        assert!(matching.resolve_extent(&minimised).is_none());
         // A window never drawn has no last geometry; its output stays idle.
         let never = super::output_geometry(minimised, WindowGeometry::default());
         assert!(!drawable_surface(never.physical_size));

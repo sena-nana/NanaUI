@@ -67,7 +67,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         if !self.window_outputs.contains_key(&id) {
             return None;
         }
-        let geometry = self.content_geometry_of(id);
+        // A zero-sized window draws at the last size it had a surface for.
+        let geometry = self.output_geometry_of(id);
         // Unknown custom renderer versions require invalidation. The shared
         // render key tracks actual compositor clocks and presentation epochs.
         let renderer_revision = gpu_renderers.map(|registry| registry.retained_revision(scene));
@@ -389,7 +390,9 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         // Without it a glyph reveal is painted where the last present left
         // the clock: the newest glyph stays at the start of its fade.
         self.sync_compositor_clock(id);
-        let geometry = self.content_geometry_of(id);
+        // Lay out at the size the output draws at: a zero-sized window keeps
+        // the layout it last had a surface for (Issue #304).
+        let geometry = self.output_geometry_of(id);
         let viewport = LayoutViewport::new(geometry.logical_size.0, geometry.logical_size.1);
         let a11y_enabled = self.is_accessibility_activated(id);
         let Some(flush) = self.program.write_document(id, |document| {
