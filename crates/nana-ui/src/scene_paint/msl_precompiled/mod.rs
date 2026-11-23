@@ -998,8 +998,16 @@ pub(in crate::scene_paint) mod tests {
             "precompiled MSL failed without WGSL fallback:\n{}",
             failures.join("\n")
         );
+        // Chart stages stay in the table under `test` so the freshness check
+        // sees them, but their pipeline is built only with `charts`.
+        let unbuildable: BTreeSet<u64> = super::super::naga_ir::tests::builtin_programs()
+            .iter()
+            .filter(|program| program.slug == "chart" && !cfg!(feature = "charts"))
+            .map(|program| super::super::precompiled::fnv1a(program.source.as_bytes()))
+            .collect();
         let unused: Vec<String> = generated::STAGES
             .iter()
+            .filter(|stage| !unbuildable.contains(&stage.source_hash))
             .filter(|stage| !built.contains(&(*stage as *const MslStage as usize)))
             .map(|stage| format!("{:#018x} `{}`", stage.source_hash, stage.entry))
             .collect();
@@ -1029,9 +1037,10 @@ pub(in crate::scene_paint) mod tests {
     #[test]
     #[ignore = "regenerates checked-in Metal MSL archive after WGSL shader or wgpu edits"]
     fn regenerate_precompiled_msl() {
-        const {
-            assert!(
-                cfg!(feature = "hosted") && cfg!(feature = "charts"),
+        // A runtime check, not `const { assert!(..) }`: the ignored test
+        // still compiles under `--features gpu`, which CI tests.
+        if !(cfg!(feature = "hosted") && cfg!(feature = "charts")) {
+            panic!(
                 "run regenerate_precompiled_msl with --features full so all feature-gated shaders are emitted"
             );
         }

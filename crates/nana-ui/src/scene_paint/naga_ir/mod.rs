@@ -541,9 +541,10 @@ pub(in crate::scene_paint) mod tests {
     #[test]
     #[ignore = "regenerates checked-in .naga IR assets after WGSL shader edits"]
     fn regenerate_precompiled_naga_ir() {
-        const {
-            assert!(
-                cfg!(feature = "hosted"),
+        // A runtime check, not `const { assert!(..) }`: the ignored test
+        // still compiles under `--features gpu`, which CI tests.
+        if !cfg!(feature = "hosted") {
+            panic!(
                 "run regenerate_precompiled_naga_ir with --features full so all feature-gated shaders are emitted"
             );
         }
