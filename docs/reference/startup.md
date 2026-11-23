@@ -65,9 +65,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/validate-startup-han
 | `nana-packager` 打出的 portable 包，`--packaged-logo`（Logo 在 `early-splash` 的 `.nrpack` 里） | `Shown`，读 Logo 1.1 ms | 无空帧 |
 | `--packaged-logo` 但未开 `packaged-resources` | `Failed(Package(Unsupported))`，应用照常启动 | — |
 | `--bad-logo` | `Failed(Logo(NotPng))`，应用照常启动 | — |
-| `--no-splash` | `Skipped(NotConfigured)` | 有一帧（约 30 ms）是只有边框的空窗口 |
+| `--no-splash` | `Skipped(NotConfigured)` | 修复前有一帧（约 30 ms）是只有边框的空窗口；修复后窗口第一次出现时已带内容，无空帧 |
 
-观察到的两点：没有 Splash 时主窗口在 `UiReady` 显示、约 150 ms 后才有第一帧，期间不 Cloak，所以会闪一下空窗口；有 Splash 时事件线程最长阻塞 260–445 ms（无 Splash 约 50 ms），即建 Splash 的时间。截屏频率分辨不出单帧（16 ms）的重复或空帧。macOS 未执行（没有机器）；Linux 按上表报 `Skipped(PlatformUnsupported)`，本次没有在真实 Linux 上运行。
+观察到的两点：没有 Splash 时主窗口在 `UiReady` 显示、约 150 ms 后才有第一帧。现在宿主在显示前 Cloak 它（照常显示与取得焦点，只是不合成到屏幕），等第一帧的 GPU 工作完成再解除；1 s 内仍没有第一帧时照样解除，画不出来的窗口也会出现。不能 Cloak 的平台照旧直接显示；有 Splash 时事件线程最长阻塞 260–445 ms（无 Splash 约 50 ms），即建 Splash 的时间。截屏频率分辨不出单帧（16 ms）的重复或空帧。macOS 未执行（没有机器）；Linux 按上表报 `Skipped(PlatformUnsupported)`，本次没有在真实 Linux 上运行。
 
 ### 从 `early-splash` 资源包读取 Logo
 

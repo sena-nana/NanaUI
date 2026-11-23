@@ -30,6 +30,10 @@ use crate::startup::{
 /// frame's GPU work has completed. Only while that one frame is in flight.
 const LATCH_POLL: Duration = Duration::from_millis(2);
 
+/// The longest a primary shown without a splash stays held invisible while it
+/// waits for its first frame. A window that cannot present still appears.
+const UNSPLASHED_REVEAL_LIMIT: Duration = Duration::from_secs(1);
+
 /// The milestones `host.startup_phase` reports, by their stable number.
 #[derive(Clone, Copy)]
 #[repr(u64)]
@@ -736,6 +740,34 @@ struct ActiveStartup {
     /// The primary is held invisible (cloaked / zero alpha) until handoff.
     /// Occlusion reports for it mean nothing until then.
     held: bool,
+    /// A primary shown without a splash is held until its first frame is on
+    /// screen, not until the handoff, which a program may defer: the GPU
+    /// latch of that frame, and the deadline after which it shows anyway.
+    reveal: Option<UnsplashedReveal>,
+}
+
+struct UnsplashedReveal {
+    deadline: Instant,
+    latch: Option<Arc<AtomicBool>>,
+}
+
+impl UnsplashedReveal {
+    /// `None` once the held primary may be shown: its first frame's GPU work
+    /// is done, or the deadline passed. Otherwise when to look again.
+    fn next_check(&self, now: Instant) -> Option<Instant> {
+        let presented = self
+            .latch
+            .as_ref()
+            .is_some_and(|latch| latch.load(Ordering::Acquire));
+        if presented || now >= self.deadline {
+            return None;
+        }
+        Some(if self.latch.is_some() {
+            (now + LATCH_POLL).min(self.deadline)
+        } else {
+            self.deadline
+        })
+    }
 }
 
 impl HostStartup {
@@ -754,6 +786,7 @@ impl HostStartup {
                 latch: None,
                 primary_flushes: 0,
                 auto_takeover: false,
+                reveal: None,
             })),
             longest_block: Some(longest_block),
         }
@@ -893,10 +926,13 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             return;
         };
         active.coordinator.frame_committed();
+        // A primary held without a splash comes on screen at the handoff too:
+        // like a Windows splash, it waits for the frame's GPU work.
         let flush_after_gpu = active
             .splash
             .as_ref()
-            .is_some_and(|splash| splash.handoff() == SplashHandoff::AfterCompositorFlush);
+            .is_some_and(|splash| splash.handoff() == SplashHandoff::AfterCompositorFlush)
+            || active.reveal.is_some();
         let at = self.startup.handle.elapsed();
         startup_event(StartupMark::TakeoverFrame, at);
         self.startup
@@ -927,6 +963,15 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         &mut self,
         event_loop: &dyn ActiveEventLoop,
     ) -> Option<Instant> {
+        let reveal = self.poll_unsplashed_reveal();
+        let latch = self.poll_takeover_latch(event_loop);
+        match (reveal, latch) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    fn poll_takeover_latch(&mut self, event_loop: &dyn ActiveEventLoop) -> Option<Instant> {
         let latch = self.startup.active.as_ref()?.latch.as_ref()?;
         if !latch.load(Ordering::Acquire) {
             self.graphics.gpu().poll();
@@ -952,21 +997,98 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         self.notify_startup_changed(event_loop);
     }
 
-    /// Puts a primary held behind the splash on screen and gives it the focus
-    /// its descriptor asks for. Idempotent.
-    fn release_primary_hold(&mut self) {
-        let held = self
+    /// Shows the primary of a startup without a splash, held invisible until
+    /// its first frame is on screen, so the user never sees the empty window
+    /// the platform shows before it. Where the platform cannot hold it, it is
+    /// simply shown. Returns whether it is held.
+    pub(super) fn show_unsplashed_primary(&mut self, window: &dyn winit::window::Window) -> bool {
+        let visible = self.settings.visible;
+        let held = visible
+            && self.startup.active.as_ref().is_some_and(|active| {
+                active.splash.is_none() && !active.held && active.reveal.is_none()
+            })
+            && nana_window::set_presentation_hold(window, true);
+        if held && let Some(active) = self.startup.active.as_mut() {
+            active.held = true;
+            active.reveal = Some(UnsplashedReveal {
+                deadline: Instant::now() + UNSPLASHED_REVEAL_LIMIT,
+                latch: None,
+            });
+        }
+        // Shown and focused exactly as without the hold: only what the
+        // compositor shows of it waits.
+        windows::set_native_visible(window, visible, self.settings.focus_on_show);
+        held
+    }
+
+    /// A frame of `id` was presented. The first one of a primary held without
+    /// a splash releases it once its GPU work is done: before that, the
+    /// compositor may still show the empty window.
+    pub(super) fn startup_window_presented(&mut self, id: WindowId) {
+        if id != WindowId::PRIMARY {
+            return;
+        }
+        let Some(reveal) = self
             .startup
             .active
             .as_mut()
-            .is_some_and(|active| std::mem::take(&mut active.held));
+            .and_then(|active| active.reveal.as_mut())
+            .filter(|reveal| reveal.latch.is_none())
+        else {
+            return;
+        };
+        let latch = Arc::new(AtomicBool::new(false));
+        let done = Arc::clone(&latch);
+        reveal.latch = Some(latch);
+        let proxy = self.proxy.clone();
+        self.graphics
+            .gpu()
+            .raw_queue()
+            .on_submitted_work_done(move || {
+                done.store(true, Ordering::Release);
+                proxy.wake_up();
+            });
+    }
+
+    /// Releases a primary held without a splash once its first frame is done
+    /// or its deadline passed. Returns when to look again while it is not.
+    fn poll_unsplashed_reveal(&mut self) -> Option<Instant> {
+        let reveal = self.startup.active.as_ref()?.reveal.as_ref()?;
+        let now = Instant::now();
+        if let Some(latch) = &reveal.latch
+            && !latch.load(Ordering::Acquire)
+        {
+            self.graphics.gpu().poll();
+        }
+        let next = reveal.next_check(now);
+        if next.is_none() {
+            self.release_primary_hold();
+        }
+        next
+    }
+
+    /// Puts a primary held behind the splash on screen and gives it the focus
+    /// its descriptor asks for. Idempotent.
+    fn release_primary_hold(&mut self) {
+        let Some((held, unsplashed)) = self.startup.active.as_mut().map(|active| {
+            (
+                std::mem::take(&mut active.held),
+                active.reveal.take().is_some(),
+            )
+        }) else {
+            return;
+        };
         if held && let Some(window) = self.window(WindowId::PRIMARY) {
             nana_window::set_presentation_hold(window.as_ref(), false);
-            windows::set_native_visible(
-                window.as_ref(),
-                self.settings.visible,
-                self.settings.focus_on_show,
-            );
+            // A window held behind a splash was shown without the focus; one
+            // held without a splash already has what its descriptor asked.
+            if !unsplashed {
+                windows::set_native_visible(
+                    window.as_ref(),
+                    self.settings.visible,
+                    self.settings.focus_on_show,
+                );
+            }
         }
     }
 
@@ -1242,6 +1364,28 @@ mod tests {
         let ticket = startup.ticket().expect("deferred program keeps its ticket");
         startup.request(ticket, 3).unwrap();
         assert!(startup.completes_with(WindowId::PRIMARY, 4));
+    }
+
+    #[test]
+    fn an_unsplashed_primary_shows_after_its_first_frame_or_its_deadline() {
+        let now = Instant::now();
+        let deadline = now + UNSPLASHED_REVEAL_LIMIT;
+        // No frame yet: wait for the deadline, then show anyway.
+        let waiting = UnsplashedReveal {
+            deadline,
+            latch: None,
+        };
+        assert_eq!(waiting.next_check(now), Some(deadline));
+        assert_eq!(waiting.next_check(deadline), None);
+        // A frame is in flight: poll its GPU work, and show once it is done.
+        let latch = Arc::new(AtomicBool::new(false));
+        let in_flight = UnsplashedReveal {
+            deadline,
+            latch: Some(Arc::clone(&latch)),
+        };
+        assert_eq!(in_flight.next_check(now), Some(now + LATCH_POLL));
+        latch.store(true, Ordering::Release);
+        assert_eq!(in_flight.next_check(now), None);
     }
 
     #[test]

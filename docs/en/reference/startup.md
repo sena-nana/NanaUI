@@ -65,9 +65,9 @@ Measured 2026-11-23 (Windows 11 Enterprise 25H2 build 26200.9974, RTX 5060 Ti / 
 | Portable package built by `nana-packager`, `--packaged-logo` (logo in the `early-splash` `.nrpack`) | `Shown`, logo read in 1.1 ms | no empty frame |
 | `--packaged-logo` without `packaged-resources` | `Failed(Package(Unsupported))`; the application starts normally | — |
 | `--bad-logo` | `Failed(Logo(NotPng))`; the application starts normally | — |
-| `--no-splash` | `Skipped(NotConfigured)` | one frame (about 30 ms) shows an empty window with only its border |
+| `--no-splash` | `Skipped(NotConfigured)` | before the fix one frame (about 30 ms) showed an empty window with only its border; after it the window first appears with its content, no empty frame |
 
-Two observations: without a splash the main window is shown at `UiReady` and gets its first frame about 150 ms later, uncloaked meanwhile, so an empty window flashes; with a splash the longest event-thread block is 260–445 ms (about 50 ms without), the time spent creating the splash. The capture rate cannot resolve a single duplicated or empty 16 ms frame. macOS was not executed (no machine); Linux reports `Skipped(PlatformUnsupported)` as in the table above and was not run on a real Linux machine this time.
+Two observations: without a splash the main window is shown at `UiReady` and gets its first frame about 150 ms later. The host now cloaks it before the show (it is shown and focused as usual, only not composed to the screen) and uncloaks it once that frame's GPU work is done; with no first frame within 1 s it is uncloaked anyway, so a window that cannot draw still appears. A platform that cannot cloak shows it directly as before; with a splash the longest event-thread block is 260–445 ms (about 50 ms without), the time spent creating the splash. The capture rate cannot resolve a single duplicated or empty 16 ms frame. macOS was not executed (no machine); Linux reports `Skipped(PlatformUnsupported)` as in the table above and was not run on a real Linux machine this time.
 
 ### Reading the logo from an `early-splash` resource pack
 

@@ -1509,11 +1509,7 @@ fn complete_startup<Program: RuntimeProgram>(
     }
     if !event_loop.exiting() && ready.window(WindowId::PRIMARY).is_some() {
         if !shown_early {
-            windows::set_native_visible(
-                window.as_ref(),
-                ready.settings.visible,
-                ready.settings.focus_on_show,
-            );
+            ready.show_unsplashed_primary(window.as_ref());
         }
         ready.reconcile_native_chrome(WindowId::PRIMARY);
         window.request_redraw();

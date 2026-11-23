@@ -658,7 +658,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         }
         self.deliver_window_output(id, output);
         // The frame is presented (and, on Windows, its composition published):
-        // it may now end the startup.
+        // it may now show a primary held without a splash, and end the startup.
+        self.startup_window_presented(id);
         if takes_over {
             self.startup_frame_presented(event_loop);
         }
