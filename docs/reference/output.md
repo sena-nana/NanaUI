@@ -54,24 +54,33 @@ SDR sRGB 的 `BGRA8_UNORM`、`BGRA8_UNORM_SRGB`、`RGBA8_UNORM`、`RGBA8_UNORM_S
 let mut time = PresentationFrameTime::new(Duration::ZERO, Duration::from_millis(40)).unwrap();
 document.context_mut().set_presentation_playback(PresentationPlayback::Paused);
 for _ in 0..frames {
-    let frame = driver.render_document_at(
-        &mut document, time, [640.0, 360.0], host_revision, [0.0; 4], None, None,
-    )?;
+    let frame = loop {
+        let mut media = |request: &MediaSampleRequest| clip.prepare_media(Some(&inbox), |_| true, request);
+        match driver.render_document_at(
+            &mut document, time, [640.0, 360.0], host_revision, [0.0; 4],
+            Some(&textures), None, Some(&mut media),
+        ) {
+            // 资源帧还没对齐：等解码器发布这一时刻的帧（应用自己设墙钟上限），用同一时间重试。
+            Err(PresentationError::MediaUnaligned(request)) => wait_for_decoder(&request)?,
+            other => break other?,
+        }
+    };
     // frame.outcomes 里某组为 Deferred 时，poll 之后用 render_scene(document.scene(), ..) 重试；
-    // 等 sample 到 Submitted 报告的 content_revision 再交给编码器。
+    // 等 sample 到 Submitted 报告的 content_revision 再交给编码器，画完后 clip.presented(..)。
     time = time.next();
 }
 ```
 
-`PresentationDriver::render_document_at` 按固定顺序完成一帧：设定文档 `now` 与帧间隔（`AppContext::seek_presentation_frame`），flush（样式、文字与显式矩形落位），合成器在同一 `now` 求值并绘制各组。尺寸只来自 consumer 的目标像素与调用方给的逻辑视口，不读任何窗口尺寸，所以窗口被遮挡、最小化或尺寸为 0 都不影响这条路径。
+`PresentationDriver::render_document_at` 按固定顺序完成一帧：设定文档 `now` 与帧间隔（`AppContext::seek_presentation_frame`），把每个可见的按时间取样资源请求（`RuntimeDocument::media_sample_requests`）交给调用方的取样闭包对齐，flush（样式、文字与显式矩形落位），合成器在同一 `now` 求值（含隔离组效果）并绘制各组。尺寸只来自 consumer 的目标像素与调用方给的逻辑视口，不读任何窗口尺寸，所以窗口被遮挡、最小化或尺寸为 0 都不影响这条路径。
 
 - **帧间隔。** `PresentationFrameTime` 同时携带 `now` 和这一帧代表的间隔，间隔不能为 0。实时播放时文档帧间隔是显示间隔；按步长出图时就是调用方的步长，取样容差读它，不读显示间隔，也不读某个资源节点自己的帧时长。往回 seek 同样生效。
-- **结果。** 返回的 `DocumentFrame` 带着这次的时间、seek 产生的采样、flush 结果与各组 outcome。`is_drawn()` 为假说明某组被 `Deferred`，这一时刻还没画；调用方 `poll` 后用 `render_scene(document.scene(), ...)` 重试，不重复 seek。时间与内容都没变时返回 `Reused`，0 提交。
+- **资源对齐（#321）。** 取样闭包通常就是对应槽的 `FrameBinding::prepare_media`；资源帧时间与请求相差不超过半个帧间隔才算对齐。停住的文档请求为 `MediaPacing::Stepped`：任一请求未对齐时返回 `PresentationError::MediaUnaligned(request)`，flush 之前就停下，不出图。框架不在出帧路径上等待，调用方等生产端发布后用同一时间重试，或让导出明确失败。播放中的文档为 `Realtime`，未对齐时重复上一张已对齐的帧。传 `None` 时所有请求都算未对齐。对齐结果记在 `DocumentFrame::media`。
+- **结果。** 返回的 `DocumentFrame` 带着这次的时间、seek 产生的采样、各资源的对齐结果、flush 结果与各组 outcome。`is_drawn()` 为假说明某组被 `Deferred`，这一时刻还没画；调用方 `poll` 后用 `render_scene(document.scene(), ...)` 重试，不重复 seek。时间与内容都没变时返回 `Reused`，0 提交。
 - **时钟。** 只给出帧使用的文档没有宿主时间推进它；若同一文档还在窗口里呈现，应先 `PresentationPlayback::Paused` 停住，否则下一次宿主时间会把它带走。
-- **色彩。** 出帧边界沿用既有 profile 合同：SDR 目标在 painter 输出处编码为目标的 sRGB，Scene 的工作色彩不变；devtools 快照仍拒绝把 extended-linear、PQ 或 HLG 当成 SDR 快照。
+- **色彩。** 出帧边界沿用既有 profile 合同：SDR 目标在 painter 输出处编码为目标的 sRGB，超白的线性颜色在这里截到 SDR 上限，Scene 与节点样式仍保留扩展值；devtools 快照仍拒绝把 extended-linear、PQ 或 HLG 当成 SDR 快照（`into_png_srgb_rejects_hdr_and_wide_gamut_contracts`）。
 - **普通应用。** 只有普通窗口时不调用这条入口，因此不多一次纹理分配或回读。
 
-按时间取样的资源半帧对齐（#303）与隔离组效果按 `now` 求值（#302）落地后接入同一顺序：资源对齐在 flush 之前，组效果在合成器求值里；当前合同测试覆盖自由图层与合成器按时间求值（`output::driver_tests::presentation_time`）。
+合同测试（`output::driver_tests::presentation_time`，#322）按这一顺序在无窗口 Surface、无编码器的情况下覆盖自由图层、隔离组滤镜与按时间取样的资源：没有对齐帧时明确报错；偏离 15 ms 的帧在 40 ms 步长下对齐；下一步换帧且组滤镜按新时间变暗。
 
 原 `ApplicationState` / `RuntimeApplication` / `RuntimeProgramContext` 仍是窗口应用的兼容入口。无窗口应用通过 `RuntimeDocument` + `PresentationDriver` 驱动；不应把仍依赖 winit Window 的 `EmbeddedRuntime` 当作此入口。
 

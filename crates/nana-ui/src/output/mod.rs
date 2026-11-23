@@ -34,7 +34,9 @@ pub use adapters::{
     OverlayAdapterError, OverlayAdapterState, OverlayFramePlan, OverlayHostAdapter, OverlayRelease,
     OverlayTransport, OverlayTransportError,
 };
-pub use driver::{DocumentFrame, PresentationDriver, PresentationError, PresentationFrameTime};
+pub use driver::{
+    DocumentFrame, MediaSampler, PresentationDriver, PresentationError, PresentationFrameTime,
+};
 pub use embedded::{
     EmbeddedBindError, EmbeddedFrameBinding, EmbeddedInputMapping, EmbeddedMetadataError,
     EmbeddedOutputMetadata, EmbeddedSurfaceNode,

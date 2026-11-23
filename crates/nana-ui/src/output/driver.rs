@@ -3,7 +3,7 @@
 
 use super::trace::{OutputWorkObservation, PresentationWork};
 use nana_gpu::{FrameContext, GpuContext, GpuRenderTarget};
-use nana_ui_runtime::{FrameworkError, LayoutViewport};
+use nana_ui_runtime::{FrameworkError, LayoutViewport, MediaPacing, MediaSampleRequest};
 use nana_ui_scene::{RuntimeDocument, RuntimeFrameUpdate, UiScene};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -113,9 +113,20 @@ pub struct DocumentFrame {
     pub animation: nana_ui_runtime::AnimationFrame,
     /// The flush that brought the document to that time.
     pub update: RuntimeFrameUpdate,
+    /// Each time-sampled resource the frame asked for (Issue #321), in node
+    /// order, with what the caller's sampler bound for it. Under
+    /// [`nana_ui_runtime::MediaPacing::Realtime`] a `Repeated` outcome shows
+    /// the last aligned frame; a stepped frame only draws when every request
+    /// is aligned.
+    pub media: Vec<(MediaSampleRequest, crate::MediaSampleOutcome)>,
     /// One per configured group, in plan order.
     pub outcomes: Vec<ExternalRenderOutcome>,
 }
+
+/// Binds the frame that stands for one time-sampled resource request before
+/// [`PresentationDriver::render_document_at`] flushes; usually
+/// [`crate::FrameBinding::prepare_media`] for the request's slot.
+pub type MediaSampler<'a> = &'a mut dyn FnMut(&MediaSampleRequest) -> crate::MediaSampleOutcome;
 
 impl DocumentFrame {
     /// Whether every group drew or reused its frame for this time; `false`
@@ -136,6 +147,11 @@ pub enum PresentationError {
     PresenterRequired(OutputConsumerId),
     UnsupportedConsumer(OutputConsumerId),
     InvalidViewport,
+    /// A stepped frame (Issue #321) found no resource frame within half the
+    /// document's frame interval of this request's time, so nothing was
+    /// drawn. Wait for the producer and render the same time again, or fail
+    /// the export; never present the frame as that time.
+    MediaUnaligned(MediaSampleRequest),
 }
 
 impl std::fmt::Display for PresentationError {
@@ -151,6 +167,13 @@ impl std::fmt::Display for PresentationError {
             Self::InvalidViewport => {
                 f.write_str("presentation viewport must be finite and positive")
             }
+            Self::MediaUnaligned(request) => write!(
+                f,
+                "no frame for media time {}s on slot {} within {}s",
+                request.media_time,
+                request.slot.as_str(),
+                request.tolerance()
+            ),
         }
     }
 }
@@ -574,17 +597,29 @@ impl PresentationDriver {
         }
     }
 
-    /// Draw `document` as it presents at `time` (Issue #304): set the
-    /// document's time and frame interval, flush it at `logical_size` (styles,
-    /// text and every explicit rectangle), then have the compositor evaluate
-    /// at that time and draw each configured group at its own target pixels.
+    /// Draw `document` as it presents at `time` (Issue #304). One frame runs
+    /// in a fixed order:
+    ///
+    /// 1. set the document's time and frame interval;
+    /// 2. hand each visible time-sampled resource's request to `media`, which
+    ///    binds the frame standing for it (Issue #321);
+    /// 3. flush at `logical_size` (styles, text and every explicit rectangle);
+    /// 4. the compositor evaluates at that time and each configured group is
+    ///    drawn at its own target pixels.
     ///
     /// No window, Surface or window size is read, so a hidden or zero-sized
     /// window does not stop it. Live playback and fixed-step output are the
     /// same call: a caller stepping at its own rate passes its step as the
-    /// interval. Hold the document
-    /// ([`nana_ui_runtime::PresentationPlayback::Paused`]) if anything else
-    /// observes host time on it, or that time moves the document on.
+    /// interval, and resource frames align within half of it, never within
+    /// the display interval or a resource's own frame duration. Hold the
+    /// document ([`nana_ui_runtime::PresentationPlayback::Paused`]) if
+    /// anything else observes host time on it, or that time moves the
+    /// document on.
+    ///
+    /// A held document's requests are
+    /// [`MediaPacing::Stepped`]: if any is not aligned this returns
+    /// [`PresentationError::MediaUnaligned`] before flushing and draws
+    /// nothing. `None` for `media` treats every request as unaligned.
     ///
     /// The returned outcomes say what each group did. A `Deferred` group drew
     /// nothing: retry with [`Self::render_scene`] on `document.scene()` once
@@ -600,6 +635,7 @@ impl PresentationDriver {
         clear_color: [f32; 4],
         textures: Option<&HostTextureRegistry>,
         renderers: Option<&SceneGpuRendererRegistry>,
+        mut media: Option<MediaSampler<'_>>,
     ) -> Result<DocumentFrame, PresentationError> {
         if !logical_size
             .iter()
@@ -610,6 +646,23 @@ impl PresentationDriver {
         let animation = document
             .context_mut()
             .seek_presentation_frame(time.now, time.interval);
+        let media = document
+            .media_sample_requests()
+            .into_iter()
+            .map(|request| {
+                let outcome = media.as_mut().map_or(
+                    match request.pacing {
+                        MediaPacing::Realtime => crate::MediaSampleOutcome::Repeated,
+                        MediaPacing::Stepped => crate::MediaSampleOutcome::Unaligned,
+                    },
+                    |sample| sample(&request),
+                );
+                if outcome == crate::MediaSampleOutcome::Unaligned {
+                    return Err(PresentationError::MediaUnaligned(request));
+                }
+                Ok((request, outcome))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let update = flush_presentation(
             document,
             LayoutViewport::new(logical_size[0], logical_size[1]),
@@ -628,6 +681,7 @@ impl PresentationDriver {
             time,
             animation,
             update,
+            media,
             outcomes,
         })
     }

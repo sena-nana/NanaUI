@@ -170,7 +170,7 @@ pub use output::{
     DocumentFrame, EmbeddedBindError, EmbeddedFrameBinding, EmbeddedInputMapping,
     EmbeddedMetadataError, EmbeddedOutputMetadata, EmbeddedSurfaceNode, ExternalFrame,
     ExternalRenderOutcome, ExternalSurface, ExternalSurfaceConfig, ExternalSurfaceError,
-    OutputProvenance, OutputSurfaceId, OutputWorkObservation, OverlayAdapterError,
+    MediaSampler, OutputProvenance, OutputSurfaceId, OutputWorkObservation, OverlayAdapterError,
     OverlayAdapterState, OverlayFramePlan, OverlayHostAdapter, OverlayRelease, OverlayTransport,
     OverlayTransportError, PresentationDriver, PresentationError, PresentationFrameTime,
     PresentationWork,

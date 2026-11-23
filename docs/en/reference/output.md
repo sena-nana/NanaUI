@@ -54,24 +54,35 @@ Share cards, snapshots and fixed-step output draw one frame of a document at one
 let mut time = PresentationFrameTime::new(Duration::ZERO, Duration::from_millis(40)).unwrap();
 document.context_mut().set_presentation_playback(PresentationPlayback::Paused);
 for _ in 0..frames {
-    let frame = driver.render_document_at(
-        &mut document, time, [640.0, 360.0], host_revision, [0.0; 4], None, None,
-    )?;
+    let frame = loop {
+        let mut media = |request: &MediaSampleRequest| clip.prepare_media(Some(&inbox), |_| true, request);
+        match driver.render_document_at(
+            &mut document, time, [640.0, 360.0], host_revision, [0.0; 4],
+            Some(&textures), None, Some(&mut media),
+        ) {
+            // No aligned resource frame yet: wait for the decoder to publish this time's
+            // frame (under the application's own wall-clock cap), then retry the same time.
+            Err(PresentationError::MediaUnaligned(request)) => wait_for_decoder(&request)?,
+            other => break other?,
+        }
+    };
     // A Deferred group in frame.outcomes: poll, then retry with render_scene(document.scene(), ..);
-    // hand the frame to the encoder once sample returns the content_revision Submitted reported.
+    // hand the frame to the encoder once sample returns the content_revision Submitted reported,
+    // then call clip.presented(..).
     time = time.next();
 }
 ```
 
-`PresentationDriver::render_document_at` runs one frame in a fixed order: set the document's `now` and frame interval (`AppContext::seek_presentation_frame`), flush (styles, text and explicit rectangles), then have the compositor evaluate at that `now` and draw each group. Size comes only from the consumers' target pixels and the logical viewport the caller passes; no window size is read, so an occluded, minimized or zero-sized window does not affect this path.
+`PresentationDriver::render_document_at` runs one frame in a fixed order: set the document's `now` and frame interval (`AppContext::seek_presentation_frame`), hand each visible time-sampled resource request (`RuntimeDocument::media_sample_requests`) to the caller's sampler to align, flush (styles, text and explicit rectangles), then have the compositor evaluate at that `now` (isolated group effects included) and draw each group. Size comes only from the consumers' target pixels and the logical viewport the caller passes; no window size is read, so an occluded, minimized or zero-sized window does not affect this path.
 
 - **Frame interval.** `PresentationFrameTime` carries `now` and the interval the frame stands for; the interval cannot be zero. During live playback the document's frame interval is the display interval; for fixed-step output it is the caller's step. Sampling tolerances read it, never the display interval or a resource node's own frame duration. Seeking backwards works the same way.
-- **Result.** The returned `DocumentFrame` carries the time, the samples the seek produced, the flush result and each group's outcome. `is_drawn()` is false when a group was `Deferred` and that time is not drawn yet: `poll`, then retry with `render_scene(document.scene(), ...)` without seeking again. An unchanged time and content returns `Reused` with zero submissions.
+- **Resource alignment (#321).** The sampler is usually the slot's `FrameBinding::prepare_media`; a resource frame aligns when its time is within half the frame interval of the request. A held document's requests are `MediaPacing::Stepped`: if any is not aligned the call returns `PresentationError::MediaUnaligned(request)`, stopping before the flush and drawing nothing. The framework does not wait on the frame path: the caller waits for the producer to publish and renders the same time again, or fails the export explicitly. A playing document's requests are `Realtime` and repeat the last aligned frame. Passing `None` treats every request as unaligned. The alignment results are in `DocumentFrame::media`.
+- **Result.** The returned `DocumentFrame` carries the time, the samples the seek produced, each resource's alignment, the flush result and each group's outcome. `is_drawn()` is false when a group was `Deferred` and that time is not drawn yet: `poll`, then retry with `render_scene(document.scene(), ...)` without seeking again. An unchanged time and content returns `Reused` with zero submissions.
 - **Clock.** A document used only for output has no host time moving it. If the same document also presents in a window, hold it with `PresentationPlayback::Paused` first, or the next host time carries it away.
-- **Colour.** The output boundary keeps the existing profile contract: an SDR target is encoded to the target's sRGB at the painter's output and the Scene's working colour is unchanged. Devtools snapshots still refuse to treat extended-linear, PQ or HLG as an SDR snapshot.
+- **Colour.** The output boundary keeps the existing profile contract: an SDR target is encoded to the target's sRGB at the painter's output, where over-white linear colour clips to the SDR maximum, while the Scene and the node's style keep the extended value. Devtools snapshots still refuse to treat extended-linear, PQ or HLG as an SDR snapshot (`into_png_srgb_rejects_hdr_and_wide_gamut_contracts`).
 - **Ordinary applications.** With only ordinary windows this entry is never called, so there is no extra texture allocation or readback.
 
-Half-frame alignment of time-sampled resources (#303) and group effects evaluated at `now` (#302) join the same order when they land: resource alignment before the flush, group effects inside compositor evaluation. The current contract test covers free layers and compositor evaluation at a time (`output::driver_tests::presentation_time`).
+The contract test (`output::driver_tests::presentation_time`, #322) runs this order with no window Surface and no encoder over a free layer, an isolated group filter and a time-sampled resource: with no aligned frame the call fails explicitly; a frame 15 ms off aligns under a 40 ms step; the next step swaps the frame and the group filter darkens at the new time.
 
 The original `ApplicationState` / `RuntimeApplication` / `RuntimeProgramContext` remain the compatibility entry for window applications. A windowless application is driven by `RuntimeDocument` + `PresentationDriver`; `EmbeddedRuntime`, which still depends on a winit window, is not this entry.
 
