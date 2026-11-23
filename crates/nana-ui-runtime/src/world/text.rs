@@ -3507,7 +3507,7 @@ impl UiWorld {
     /// minimap 行长的单条缓存：值未变（纯光标/选区同步）时复用上一次
     /// O(文档) 单趟扫描结果，避免每趟 shape 全文档重扫。
     pub(super) fn minimap_line_lengths_cached(&self, value: &crate::TextValue) -> Vec<u32> {
-        let mut cache = self.minimap_line_lengths_cache.borrow_mut();
+        let mut cache = self.editor_caches.minimap_line_lengths.borrow_mut();
         // The same text is recognised by its stamp: a caret move compares
         // nothing, and the cache holds a shared copy, not a second one.
         if let Some((cached_value, cached_lengths)) = cache.as_ref()
@@ -3534,7 +3534,7 @@ impl UiWorld {
         &self,
         value: &crate::TextValue,
     ) -> Arc<[(usize, usize, usize)]> {
-        let mut cache = self.bracket_color_spans_cache.borrow_mut();
+        let mut cache = self.editor_caches.bracket_color_spans.borrow_mut();
         if let Some((cached_value, cached_spans)) = cache.as_mut() {
             if cached_value.same_identity(value) {
                 return Arc::clone(cached_spans);

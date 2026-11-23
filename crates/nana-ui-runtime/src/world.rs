@@ -1097,6 +1097,18 @@ struct WorldCounters {
     pending_drain_counts: WorkCounters,
 }
 
+/// Single-entry caches a code editor's presentation reads through `&self`.
+#[derive(Default)]
+struct EditorPresentationCaches {
+    /// minimap 行长单条缓存（原始值 → 每逻辑行非空白字符数）。存于
+    /// `RefCell` 供 `&self` 的 presentation 构建路径读写。
+    minimap_line_lengths: RefCell<Option<(crate::TextValue, Vec<u32>)>>,
+    /// 括号配对着色单条缓存（原始值 → 配对/未配对 span 表）。值未变
+    /// （纯光标/选区同步）时复用上一次 O(n) 单趟栈扫描结果。存于
+    /// `RefCell` 供 `&self` 的 presentation 构建路径读写。
+    bracket_color_spans: RefCell<Option<(crate::TextValue, Arc<[(usize, usize, usize)]>)>>,
+}
+
 /// The sole authoritative retained identity and hierarchy store.
 pub struct UiWorld {
     input: input::WorldInputState,
@@ -1491,13 +1503,9 @@ pub struct UiWorld {
     /// list or a child's display changed, or their font did. See
     /// [`Self::resolve_block_struts`].
     strut_candidates: Vec<StableNodeId>,
-    /// minimap 行长单条缓存（原始值 → 每逻辑行非空白字符数）。存于
-    /// `RefCell` 供 `&self` 的 presentation 构建路径读写。
-    minimap_line_lengths_cache: RefCell<Option<(crate::TextValue, Vec<u32>)>>,
-    /// 括号配对着色单条缓存（原始值 → 配对/未配对 span 表）。值未变
-    /// （纯光标/选区同步）时复用上一次 O(n) 单趟栈扫描结果。存于
-    /// `RefCell` 供 `&self` 的 presentation 构建路径读写。
-    bracket_color_spans_cache: RefCell<Option<(crate::TextValue, Arc<[(usize, usize, usize)]>)>>,
+    /// The code editor's single-entry presentation caches, boxed: only an
+    /// editor reads them, and every world carries them.
+    editor_caches: Box<EditorPresentationCaches>,
     presentation_transform_documents_cache: RefCell<Option<(u64, u64, HashSet<DocumentId>)>>,
     /// Queries answered by the hit index; see [`Self::hit_test_queries`].
     hit_test_queries: Cell<u64>,
@@ -1671,8 +1679,7 @@ impl UiWorld {
             style_hit_changed: false,
             structural_change_parents: Vec::new(),
             strut_candidates: Vec::new(),
-            minimap_line_lengths_cache: RefCell::new(None),
-            bracket_color_spans_cache: RefCell::new(None),
+            editor_caches: Box::default(),
             presentation_transform_documents_cache: RefCell::new(None),
             hit_test_queries: Cell::new(0),
             hit_scratch: RefCell::new(hit_test::HitScratch::default()),
