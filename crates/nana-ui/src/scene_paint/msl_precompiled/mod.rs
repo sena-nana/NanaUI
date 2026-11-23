@@ -1010,6 +1010,22 @@ pub(in crate::scene_paint) mod tests {
         );
     }
 
+    /// An array literal for a `MslStage` field laid out the way rustfmt does,
+    /// so `cargo fmt --check` keeps the generated file: one line while the
+    /// items fit its 60-column array width, else one item per line.
+    fn field_array(items: &[String]) -> String {
+        let inline = items.join(", ");
+        if inline.len() <= 60 {
+            return format!("[{inline}]");
+        }
+        let mut out = String::from("[\n");
+        for item in items {
+            out.push_str(&format!("            {item},\n"));
+        }
+        out.push_str("        ]");
+        out
+    }
+
     #[test]
     #[ignore = "regenerates checked-in Metal MSL archive after WGSL shader or wgpu edits"]
     fn regenerate_precompiled_msl() {
@@ -1088,22 +1104,22 @@ pub(in crate::scene_paint) mod tests {
                 .constants
                 .iter()
                 .map(|(name, bits)| format!("({name:?}, {bits:#018x})"))
-                .collect::<Vec<_>>()
-                .join(", ");
+                .collect::<Vec<_>>();
+            let consts = field_array(&consts);
             let sized = stage
                 .sized_bindings
                 .iter()
                 .map(|(g, b, i)| format!("({g}, {b}, {i})"))
-                .collect::<Vec<_>>()
-                .join(", ");
+                .collect::<Vec<_>>();
+            let sized = field_array(&sized);
             rows.push_str(&format!(
                 "    MslStage {{\n        \
                     source_hash: {:#018x},\n        \
                     entry: {:?},\n        \
                     msl_entry: {:?},\n        \
-                    constants: &[{consts}],\n        \
+                    constants: &{consts},\n        \
                     workgroup_size: {:?},\n        \
-                    sized_bindings: &[{sized}],\n        \
+                    sized_bindings: &{sized},\n        \
                     offset: {offset},\n        \
                     len: {len},\n    \
                  }},\n",

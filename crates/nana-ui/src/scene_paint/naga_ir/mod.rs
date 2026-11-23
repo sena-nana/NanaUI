@@ -568,8 +568,14 @@ pub(in crate::scene_paint) mod tests {
                 if let Some(gate) = program.cfg_gate {
                     generated.push_str(&format!("    #[cfg({gate})]\n"));
                 }
+                // rustfmt's multi-line tuple layout: every row is wider than
+                // its tuple width, so `cargo fmt --check` keeps this output.
                 generated.push_str(&format!(
-                    "    ({hash:#018x}, {:?}, include_bytes!({file_name:?})),\n",
+                    "    (\n        \
+                         {hash:#018x},\n        \
+                         {:?},\n        \
+                         include_bytes!({file_name:?}),\n    \
+                     ),\n",
                     point.name
                 ));
             }
