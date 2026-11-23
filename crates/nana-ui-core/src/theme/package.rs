@@ -305,14 +305,14 @@ impl ThemePackage {
                 });
             }
         }
-        if let Some(recipes) = &self.patch.recipes {
-            if recipes.families.len() > MAX_FAMILY_PATCHES {
-                return Err(ThemePackageError::EntryLimitExceeded {
-                    field: "patch.recipes.families",
-                    count: recipes.families.len(),
-                    max: MAX_FAMILY_PATCHES,
-                });
-            }
+        if let Some(recipes) = &self.patch.recipes
+            && recipes.families.len() > MAX_FAMILY_PATCHES
+        {
+            return Err(ThemePackageError::EntryLimitExceeded {
+                field: "patch.recipes.families",
+                count: recipes.families.len(),
+                max: MAX_FAMILY_PATCHES,
+            });
         }
         Ok(())
     }
