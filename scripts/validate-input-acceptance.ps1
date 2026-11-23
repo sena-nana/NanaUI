@@ -370,6 +370,9 @@ try {
         Focus-Probe
         $afterRefocus = Editor-State
         Check 'ime.focus_loss.refocus' ([bool]$afterRefocus.focused) $afterRefocus
+        # The runtime cancelled the preedit on blur; a reading the IME still
+        # commits for that session (Microsoft Pinyin does) must not land.
+        Check 'ime.focus_loss.no_late_commit' (-not ([string]$afterRefocus.value).Contains('ceshi')) $afterRefocus.value
     }
 
     if ($Part -in 'All', 'Pen') {

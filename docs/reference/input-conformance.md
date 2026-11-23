@@ -56,7 +56,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Mta -File scripts/validate-input-
 | 微软日语输入法 `konnnichiha` + 空格 + 回车：预编辑与提交 `こんにちは`，焦点不变 | 通过 |
 | UIA：编辑器为 `ControlType.Edit`，`ValuePattern` 值与提交后的值一致（两种输入法） | 通过 |
 | 组字中途失焦：送达 `Focus { focused: false }` 与 `Composition::End`，再得焦恢复编辑焦点 | 通过 |
-| 组字中途失焦后的提交 | **未通过**：宿主发 `End` 之后，微软拼音仍发 `Commit("ceshi")`，编辑器收下了读音字母。这与窗口参考（`docs/reference/window.md`）IME 段的“原生窗口失焦时 Runtime 取消预编辑”不符 |
+| 组字中途失焦后的提交 | 通过：宿主发 `End` 之后，微软拼音仍发 `Commit("ceshi")`；路由器在失焦取消预编辑后、焦点回来之前丢掉这一来源的组字编辑，编辑器保持空值（`ime.focus_loss.no_late_commit`）。与窗口参考（`docs/reference/window.md`）IME 段的“原生窗口失焦时 Runtime 取消预编辑”一致 |
 | 物理 XP-Pen 数位板 | 未执行，需要人手 |
 
-笔的三项未通过都在 winit 的 Win32 指针处理里（不处理 `WM_POINTERLEAVE` 与 `POINTER_FLAG_CANCELED`，压力 0 与“无压力”不分），修复要改 winit 或在宿主里另接 `WM_POINTER`。失焦后的提交要在取消预编辑之后、下一次 `Enabled` 之前丢掉迟到的 `Commit`。物理笔的验收用同一个探针手动进行：启动探针、把 stdout 存为轨迹，然后用真实笔完成悬停、带压力的笔画、按笔杆键、中途切走窗口、移出范围。
+笔的三项未通过都在 winit 的 Win32 指针处理里（不处理 `WM_POINTERLEAVE` 与 `POINTER_FLAG_CANCELED`，压力 0 与“无压力”不分），修复要改 winit 或在宿主里另接 `WM_POINTER`。物理笔的验收用同一个探针手动进行：启动探针、把 stdout 存为轨迹，然后用真实笔完成悬停、带压力的笔画、按笔杆键、中途切走窗口、移出范围。
