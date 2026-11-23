@@ -3335,6 +3335,38 @@ impl TransformBox {
     }
 }
 
+/// CSS `backface-visibility`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum BackfaceVisibility {
+    #[default]
+    Visible,
+    Hidden,
+}
+
+/// Parent `perspective` + `perspective-origin` resolved in ancestor layout
+/// space for a direct child's 3D transform.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ParentPerspective {
+    pub distance: f32,
+    pub origin: [f32; 2],
+}
+
+/// True when the z=0 projective homography `(affine, persp)` maps the center
+/// `(center_x, center_y)` behind the camera (`w <= 0`) or reverses orientation
+/// (`det <= 0`), i.e. the element's back face is turned toward the viewer.
+pub fn is_projective_backface(
+    affine: [f32; 6],
+    persp: [f32; 2],
+    center_x: f32,
+    center_y: f32,
+) -> bool {
+    let [a, b, c, d, e, f] = affine;
+    let [g, h] = persp;
+    let w = g * center_x + h * center_y + 1.0;
+    let det = (a * d - b * c) + g * (c * f - d * e) + h * (b * e - a * f);
+    !w.is_finite() || !det.is_finite() || w <= 1e-6 || det <= 1e-6
+}
+
 /// CSS `transform-origin` (2D). Percent is relative to [`LayoutStyle::transform_box`].
 /// A third z length is accepted by the parser and dropped on this 2×3 path.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -3636,8 +3668,8 @@ pub struct GridStyle {
 pub struct TransformStyle {
     /// Paint-only 2D `transform` subset. It never participates in flex/grid
     /// measurement. Planar CSS 3D is [`Self::transform_3d`]; parent
-    /// `perspective` / `preserve-3d` are [`Self::css_perspective`] /
-    /// [`Self::preserve_3d`] and fail-close child 3D at paint.
+    /// `perspective` is [`Self::css_perspective`] + [`Self::perspective_origin`],
+    /// and `preserve-3d` is [`Self::preserve_3d`] (which fail-closes child 3D).
     pub transform: Option<PaintTransform>,
     /// Planar 4×4 (`perspective()` + `rotateY`, true `matrix3d`). Additive to
     /// the 2×3: 2D lists stay on [`Self::transform`].
@@ -3646,11 +3678,15 @@ pub struct TransformStyle {
     /// CSS `transform-origin`. `None` = `50% 50%` (box center).
     /// Applied to both the 2×3 and the 4×4 planar path.
     pub origin: Option<TransformOrigin>,
-    /// CSS `perspective` property (not the transform function). Stored so we
-    /// fail closed instead of pretending a parent 3D rendering context exists.
+    /// CSS `perspective` property (not the transform function). Applies to
+    /// direct children's 3D transforms around [`Self::perspective_origin`].
     pub css_perspective: Option<f32>,
+    /// CSS `perspective-origin`. `None` = `50% 50%` of this box's border box.
+    pub perspective_origin: Option<TransformOrigin>,
     /// CSS `transform-style: preserve-3d`. Flattening is not implemented.
     pub preserve_3d: bool,
+    /// CSS `backface-visibility`. Default `visible`.
+    pub backface_visibility: BackfaceVisibility,
     /// CSS `transform-box`. Default `view-box` (used as border-box for HTML).
     pub transform_box: TransformBox,
 }
@@ -4071,6 +4107,20 @@ impl LayoutStyle {
         width: f32,
         height: f32,
     ) -> Option<([f32; 6], [f32; 2])> {
+        self.world_scene_transform_with_perspective(x, y, width, height, None)
+    }
+
+    /// World-space homography of the z=0 plane with an optional direct-parent
+    /// CSS `perspective` + `perspective-origin` applied in 4×4 space before
+    /// extracting the planar homography.
+    pub fn world_scene_transform_with_perspective(
+        &self,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        parent_perspective: Option<ParentPerspective>,
+    ) -> Option<([f32; 6], [f32; 2])> {
         if self.transforms.is_shared_default() {
             return None;
         }
@@ -4080,18 +4130,50 @@ impl LayoutStyle {
         }
         let [ox, oy] = self.resolved_transform_origin(width, height);
         if let Some(mat4) = t.transform_3d {
-            return mat4.around_origin(x, y, ox, oy).planar_homography();
+            let local_4x4 = mat4.around_origin(x, y, ox, oy);
+            let composed = if let Some(pp) = parent_perspective
+                && pp.distance.is_finite()
+                && pp.distance > 1e-5
+                && let Some(p_mat) = PaintMat4::perspective(pp.distance)
+            {
+                p_mat
+                    .around_origin(0.0, 0.0, pp.origin[0], pp.origin[1])
+                    .then(local_4x4)
+            } else {
+                local_4x4
+            };
+            return composed.planar_homography();
         }
         let transform = t.transform?;
         Some((transform.around_origin(x, y, ox, oy), [0.0, 0.0]))
     }
 
-    /// True when this node asked for a parent 3D rendering context we do not paint.
+    /// Resolved CSS `perspective-origin` in box-local px relative to the border box.
+    pub fn resolved_perspective_origin(&self, width: f32, height: f32) -> [f32; 2] {
+        if self.transforms.is_shared_default() {
+            return TransformOrigin::default().resolve(width, height);
+        }
+        self.transforms
+            .perspective_origin
+            .unwrap_or_default()
+            .resolve(width, height)
+    }
+
+    /// True when this node sets a positive finite CSS `perspective` length.
+    pub fn has_css_perspective(&self) -> bool {
+        !self.transforms.is_shared_default()
+            && self
+                .transforms
+                .css_perspective
+                .is_some_and(|d| d.is_finite() && d > 1e-5)
+    }
+
+    /// True when this node asked for a `preserve-3d` rendering context we do not flatten.
     pub fn fails_closed_3d_context(&self) -> bool {
         if self.transforms.is_shared_default() {
             return false;
         }
-        self.transforms.css_perspective.is_some() || self.transforms.preserve_3d
+        self.transforms.preserve_3d
     }
 
     pub fn has_surface_paint(&self) -> bool {

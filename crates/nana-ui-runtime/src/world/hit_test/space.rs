@@ -458,21 +458,27 @@ impl UiWorld {
             cursor = node.hierarchy.parent;
         }
         let mut blocks_3d = false;
+        let mut parent_persp = None;
         for (id, passed_over) in chain.into_iter().rev() {
             if !self.nodes.contains(id) {
                 return None;
             }
             let style = self.hit_motion_layout(id);
             let b = self.component_layout_box(id)?;
-            let local = self.input_local_scene_transform(id, &style, b, blocks_3d);
+            let local = self.input_local_scene_transform(id, &style, b, blocks_3d, parent_persp);
             transform = then_hit(transform, self.with_sticky_translation(id, local));
             blocks_3d |= style.fails_closed_3d_context();
             if id != target && !passed_over {
                 let scroll = self.nodes.scroll_offset(id);
+                parent_persp = crate::world::presentation::child_parent_perspective(
+                    &style, b, scroll, blocks_3d,
+                );
                 transform = then_hit(
                     transform,
                     ([1.0, 0.0, 0.0, 1.0, -scroll.x, -scroll.y], [0.0, 0.0]),
                 );
+            } else {
+                parent_persp = None;
             }
         }
         Some(transform)

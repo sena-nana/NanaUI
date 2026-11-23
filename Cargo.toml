@@ -9,6 +9,7 @@ members = [
     "crates/nana-ui-view-macros",
     "crates/nana-ui-charts",
     "crates/nana-ui-diagram",
+    "crates/nana-ui-viewport3d",
     "crates/nana-ui-scene",
     "crates/nana-ui",
     "crates/nana-window",
@@ -54,6 +55,7 @@ nana-ui-runtime = { path = "crates/nana-ui-runtime", default-features = false }
 nana-ui-scene = { path = "crates/nana-ui-scene", default-features = false }
 nana-ui-charts = { path = "crates/nana-ui-charts" }
 nana-ui-diagram = { path = "crates/nana-ui-diagram" }
+nana-ui-viewport3d = { path = "crates/nana-ui-viewport3d" }
 nana-svg-raster = { path = "crates/nana-svg-raster" }
 nana-text = { path = "crates/nana-text" }
 nana-ui-platform = { path = "crates/nana-ui-platform", default-features = false }
@@ -106,6 +108,9 @@ unicode-width = "0.2"
 raw-window-handle = "0.6.2"
 windows-sys = "0.61.2"
 pollster = "1.0"
+glam = "0.30"
+bytemuck = { version = "1.25", features = ["derive"] }
+gltf = { version = "1.4", default-features = false, features = ["import", "utils", "names"] }
 objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", default-features = false }
 objc2-foundation = { version = "0.3.2", default-features = false }

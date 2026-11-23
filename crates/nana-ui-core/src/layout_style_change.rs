@@ -410,7 +410,9 @@ layout_style_fields! {
         unsupported_transform => transforms_unsupported_transform: TRANSFORM,
         origin => transforms_origin: TRANSFORM,
         css_perspective => transforms_css_perspective: TRANSFORM,
+        perspective_origin => transforms_perspective_origin: TRANSFORM,
         preserve_3d => transforms_preserve_3d: TRANSFORM,
+        backface_visibility => transforms_backface_visibility: TRANSFORM,
         transform_box => transforms_transform_box: TRANSFORM,
     }
     shared logical_edges: LogicalBoxEdges {

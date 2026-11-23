@@ -280,7 +280,7 @@ pub mod set {
 
     pub mod transforms {
         use crate::box_layout::*;
-        use crate::{TransformBox, TransformOrigin};
+        use crate::{BackfaceVisibility, TransformBox, TransformOrigin};
 
         shared_group_setters!(transforms {
             transform: Option<PaintTransform>,
@@ -288,7 +288,9 @@ pub mod set {
             unsupported_transform: Option<String>,
             origin: Option<TransformOrigin>,
             css_perspective: Option<f32>,
+            perspective_origin: Option<TransformOrigin>,
             preserve_3d: bool,
+            backface_visibility: BackfaceVisibility,
             transform_box: TransformBox,
         });
     }

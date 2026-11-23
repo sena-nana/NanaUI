@@ -2563,9 +2563,8 @@ impl LayoutStyleCss for LayoutStyle {
                     self.transforms.transform_box = box_;
                 }
             }
-            // CSS `perspective` property establishes a parent 3D context we do
-            // not paint. Store the length so Scene can fail closed instead of
-            // pretending `rotateY` on children used this vanishing point.
+            // CSS `perspective` applies a perspective projection around
+            // `perspective-origin` to direct children's 3D transforms.
             "perspective" => {
                 let v = val.trim();
                 if v.eq_ignore_ascii_case("none")
@@ -2575,7 +2574,7 @@ impl LayoutStyleCss for LayoutStyle {
                     if self.transforms.css_perspective.is_some() {
                         self.transforms.css_perspective = None;
                     }
-                } else if let Some(px) = parse_css_length_px(v, None).filter(|d| d.abs() > 1e-5) {
+                } else if let Some(px) = parse_css_length_px(v, None).filter(|d| *d > 1e-5) {
                     self.transforms.css_perspective = Some(px);
                 }
             }
@@ -2586,9 +2585,24 @@ impl LayoutStyleCss for LayoutStyle {
                     self.transforms.preserve_3d = next;
                 }
             }
-            // `perspective-origin` skipped: parent perspective is fail-closed,
-            // so there is no stored vanishing point to offset.
-            "perspective-origin" => {}
+            "perspective-origin" => {
+                let v = val.trim();
+                if v.eq_ignore_ascii_case("initial") || v.eq_ignore_ascii_case("unset") {
+                    if self.transforms.perspective_origin.is_some() {
+                        self.transforms.perspective_origin = None;
+                    }
+                } else if let Some(origin) = crate::css_paint_transform::parse_perspective_origin(v)
+                {
+                    self.transforms.perspective_origin = Some(origin);
+                }
+            }
+            "backface-visibility" => {
+                if let Some(bv) = crate::css_paint_transform::parse_backface_visibility(val)
+                    && self.transforms.backface_visibility != bv
+                {
+                    self.transforms.backface_visibility = bv;
+                }
+            }
             "top" => {
                 self.offset_top = parse_inset_length(val);
                 self.logical_edges

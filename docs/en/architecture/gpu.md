@@ -49,6 +49,10 @@ prepare_window_frame             ──► writes pixels or replaces the texture
 - **Sampling in document order and device-generation protection**: textures are sampled in place in the main render pass in the order their nodes appear (renderer key `"nana.host-texture"`). Multiple layers of live GPU content just mean mounting several `GpuTextureView`s side by side. If the device is lost and rebuilt while some `HostTexture` still holds the old `device_generation()`, the painter rejects the whole frame with `ScenePaintError::StaleHostTexture` and never sends a stale handle into the new device.
 - **Reading the actual painted size on demand**: `HostTextureRegistry::painted_extent(slot)` returns, read-only, the largest physical pixel size any consuming node of that slot needed in the most recent complete paint (with `ContentFit`, node transforms and DPI scaling already applied), so the producer can prepare a texture at the real resolution.
 
+### Offscreen 3D viewports
+
+3D scenes and game viewports follow the same default path: in `prepare_window_frame`, open `context.gpu().begin_producer_frame(...)` (which does not consume presentation frame slots), record a 4x MSAA `Rgba16Float` + `Depth32Float` offscreen pass via `wgpu-interop`, resolve into a `GpuTexture::from_wgpu` texture sized from `painted_extent` (falling back to `content_geometry().physical_size` on frame 0), publish via `TextureSlot::replace` / `invalidate`, and rebuild pipelines and targets in `rebuild_gpu` on `DeviceGeneration` changes. See the `viewport-3d-demo` example, or the optional `nana-ui-viewport3d` crate for a ready-made orbit camera and glTF preview viewport.
+
 ## The no-intermediate-texture path: `GpuView` and `SceneGpuRenderer`
 
 Use `GpuView` only when **there is no intermediate texture and the drawing commands must be recorded directly into the current UI render pass**. `GpuView::new(slot_id)` projects a `CustomRenderNode` with the renderer key `"gpu-view"` (note that `slot_id` here is a `u64`, not the string key of `HostTextureRegistry`).

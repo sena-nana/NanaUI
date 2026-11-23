@@ -182,6 +182,7 @@ impl UiWorld {
         let mut current = Some(id);
         let mut cumulative = (IDENTITY_AFFINE, [0.0, 0.0]);
         let mut blocks_3d = false;
+        let mut parent_persp = None;
         // Where the box above the next one stands on the page, when a box
         // measured from it stands at that origin and its own offset.
         let mut above: Option<[f32; 2]> = None;
@@ -189,6 +190,7 @@ impl UiWorld {
             if let Some(transform) = memo.transforms.get(&node) {
                 cumulative = transform.children;
                 blocks_3d = transform.blocks_3d;
+                parent_persp = transform.parent_persp;
                 above = transform.stacks.then_some(transform.origin);
                 break;
             }
@@ -230,7 +232,13 @@ impl UiWorld {
                     );
                     let layout = self.hit_motion_layout(node);
                     assert_eq!(
-                        self.input_local_scene_transform(node, &layout, bounds, blocks_3d),
+                        self.input_local_scene_transform(
+                            node,
+                            &layout,
+                            bounds,
+                            blocks_3d,
+                            parent_persp,
+                        ),
                         (IDENTITY_AFFINE, [0.0, 0.0]),
                         "{node:?}: a plain box hands its parent's map on"
                     );
@@ -244,13 +252,15 @@ impl UiWorld {
                     cumulative,
                     ([1.0, 0.0, 0.0, 1.0, -scroll.x, -scroll.y], [0.0, 0.0]),
                 );
-                blocks_3d |= record.space.opens_3d_context();
+                blocks_3d |= record.space.fails_closed_3d();
+                parent_persp = None;
                 memo.transforms.insert(
                     node,
                     AccessibleTransform {
                         own,
                         children: cumulative,
                         blocks_3d,
+                        parent_persp,
                         origin,
                         stacks,
                     },
@@ -264,6 +274,7 @@ impl UiWorld {
                 // Viewport-relative; ancestors cannot scroll or clip this branch.
                 cumulative = self.hanging_branch_transform(node);
                 blocks_3d = false;
+                parent_persp = None;
             } else if let Some(anchor) = self.clip_escape(node) {
                 // An escaped box resumes from its clip parent, through the
                 // transforms it passes over but none of their scroll (#201).
@@ -271,16 +282,23 @@ impl UiWorld {
                 let base = match anchor.and_then(|anchor| memo.transforms.get(&anchor)) {
                     Some(transform) => {
                         blocks_3d = transform.blocks_3d;
+                        parent_persp = if anchor == record.hierarchy.parent {
+                            transform.parent_persp
+                        } else {
+                            None
+                        };
                         transform.children
                     }
                     None => {
                         blocks_3d = false;
+                        parent_persp = None;
                         (IDENTITY_AFFINE, [0.0, 0.0])
                     }
                 };
                 cumulative = self.clip_bridge_transform(node, anchor, base, true);
             }
-            let local = self.input_local_scene_transform(node, &layout, bounds, blocks_3d);
+            let local =
+                self.input_local_scene_transform(node, &layout, bounds, blocks_3d, parent_persp);
             cumulative = then_hit(cumulative, self.with_sticky_translation(node, local));
             let own = cumulative;
             let scroll = self.nodes.scroll_offset(node);
@@ -289,12 +307,16 @@ impl UiWorld {
                 ([1.0, 0.0, 0.0, 1.0, -scroll.x, -scroll.y], [0.0, 0.0]),
             );
             blocks_3d |= layout.fails_closed_3d_context();
+            parent_persp = crate::world::presentation::child_parent_perspective(
+                &layout, bounds, scroll, blocks_3d,
+            );
             memo.transforms.insert(
                 node,
                 AccessibleTransform {
                     own,
                     children: cumulative,
                     blocks_3d,
+                    parent_persp,
                     origin: [bounds.x, bounds.y],
                     stacks,
                 },

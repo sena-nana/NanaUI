@@ -152,10 +152,11 @@ let count = signal(0);
 cargo run -p nana-ui --example egui-in-nanaui --features hosted,bundled-fonts,wgpu-interop
 ```
 
-如需运行自定义 WGPU 着色器视口与界面控件同窗混排示例：
+如需运行自定义 WGPU 着色器视口或离屏 3D 视口与界面控件同窗混排示例：
 
 ```bash
 cargo run -p nana-ui --example hosted-gpu-demo --features hosted,bundled-fonts,wgpu-interop,runtime-wgsl
+cargo run -p nana-ui --example viewport-3d-demo --features hosted,bundled-fonts,wgpu-interop,runtime-wgsl,view-macro
 ```
 
 ## 截图
@@ -370,6 +371,7 @@ cargo build --profile dist
 | 作者工具链 | [`nana-ui-view-schema`](crates/nana-ui-view-schema) | 内置控件单一描述表（内部） |
 | 富内容、资产与打包 | [`nana-ui-charts`](crates/nana-ui-charts) | ECharts 风格图表模型与 GPU 标记数组 |
 | 富内容、资产与打包 | [`nana-ui-diagram`](crates/nana-ui-diagram) | 原生 Mermaid 图表引擎（支持全部 34 种图表类型） |
+| 富内容、资产与打包 | [`nana-ui-viewport3d`](crates/nana-ui-viewport3d) | 可选轻量 3D 预览视口（轨道相机、glTF、基础光照、`HostTexture` 输出） |
 | 富内容、资产与打包 | [`nana-svg-raster`](crates/nana-svg-raster) | CPU 端 SVG 图片光栅化（`resvg`） |
 | 富内容、资产与打包 | [`nana-icons-tabler`](crates/nana-icons-tabler) | Tabler 矢量图标常量目录（独立包，链接器按引用裁剪） |
 | 富内容、资产与打包 | [`nana-app-icon`](crates/nana-app-icon) | 默认应用图标、PNG/ICO/ICNS 编码与 Windows PE 资源嵌入 |

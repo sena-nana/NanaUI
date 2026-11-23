@@ -353,3 +353,7 @@ required-features = ["hosted", "bundled-fonts", "wgpu-interop"]
 [[example]]
 name = "partial-present-probe"
 required-features = ["hosted", "bundled-fonts", "wgpu-interop"]
+
+[[example]]
+name = "viewport-3d-demo"
+required-features = ["hosted", "bundled-fonts", "wgpu-interop", "runtime-wgsl", "view-macro"]

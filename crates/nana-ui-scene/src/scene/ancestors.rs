@@ -3,32 +3,65 @@
 
 use super::*;
 
+/// Inherited 3D context carried along the ancestor fold:
+/// - `blocks_3d`: true below a `preserve-3d` ancestor (refuses child 3D).
+/// - `parent_perspective`: direct parent's `perspective` + `perspective-origin`.
+/// - `backface_hidden`: true when a flattened ancestor with
+///   `backface-visibility: hidden` faces away from the camera.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub(super) struct Ancestor3d {
+    pub(super) blocks_3d: bool,
+    pub(super) parent_perspective: Option<nana_ui_core::ParentPerspective>,
+    pub(super) backface_hidden: bool,
+}
+
+pub(super) fn child_parent_perspective(
+    style: &nana_ui_core::LayoutStyle,
+    layout: LayoutBox,
+    scroll: nana_ui_runtime::ScrollOffset,
+    blocks_3d: bool,
+) -> Option<nana_ui_core::ParentPerspective> {
+    if blocks_3d || style.transforms.preserve_3d {
+        return None;
+    }
+    let distance = style.transforms.css_perspective?;
+    if !distance.is_finite() || distance <= 1e-5 {
+        return None;
+    }
+    let [ox, oy] = style.resolved_perspective_origin(layout.width, layout.height);
+    Some(nana_ui_core::ParentPerspective {
+        distance,
+        origin: [layout.x + ox + scroll.x, layout.y + oy + scroll.y],
+    })
+}
+
 pub(super) fn node_scene_transform(
     style: &nana_ui_core::LayoutStyle,
     layout: LayoutBox,
     block_3d: bool,
+    parent_perspective: Option<nana_ui_core::ParentPerspective>,
 ) -> AffineTransform {
     if block_3d && style.transforms.transform_3d.is_some() {
         return AffineTransform::IDENTITY;
     }
     style
-        .world_scene_transform(layout.x, layout.y, layout.width, layout.height)
+        .world_scene_transform_with_perspective(
+            layout.x,
+            layout.y,
+            layout.width,
+            layout.height,
+            parent_perspective,
+        )
         .map(|(matrix, persp)| AffineTransform(matrix, persp))
         .unwrap_or_default()
 }
 
 impl UiScene {
-    pub(super) fn ancestor_state(
-        &self,
-        node: &ExtractedNode,
-    ) -> (AffineTransform, f32, Arc<[ClipRegion]>, bool) {
+    pub(super) fn ancestor_state(&self, node: &ExtractedNode) -> AncestorState {
         self.project_ancestor_state(node, false)
     }
 
-    pub(super) fn draw_ancestor_state(
-        &self,
-        node: &ExtractedNode,
-    ) -> (AffineTransform, f32, Arc<[ClipRegion]>, bool) {
+    pub(super) fn draw_ancestor_state(&self, node: &ExtractedNode) -> AncestorState {
         self.project_ancestor_state(node, true)
     }
 
@@ -215,7 +248,7 @@ impl UiScene {
             transform,
             opacity,
             clips: Vec::new(),
-            blocks_3d: false,
+            ctx_3d: Ancestor3d::default(),
         };
         // The ancestors the clip chain hangs this node from, outermost
         // first: a subsequence of `ancestors`. The others are passed over by
@@ -262,16 +295,42 @@ impl UiScene {
         // whole: a node whose `matrix3d` this rule takes away must not go
         // on handing it down, or it paints flat with a rotated inside.
         let local = if visual {
-            self.resolved_page_transform(ancestor, fold.blocks_3d)
+            self.resolved_page_transform(
+                ancestor,
+                fold.ctx_3d.blocks_3d,
+                fold.ctx_3d.parent_perspective,
+            )
         } else {
-            self.logical_page_transform(ancestor, fold.blocks_3d)
+            self.logical_page_transform(
+                ancestor,
+                fold.ctx_3d.blocks_3d,
+                fold.ctx_3d.parent_perspective,
+            )
         };
         // What it hands down is on the page, and so are its clips.
         let handed = fold.transform.then(local);
         fold.transform = handed;
-        if ancestor.source_style.layout.fails_closed_3d_context() {
-            fold.blocks_3d = true;
+        let ancestor_style = ancestor.source_style.layout.as_ref();
+        if ancestor_style.fails_closed_3d_context() {
+            fold.ctx_3d.blocks_3d = true;
         }
+        if ancestor_style.transforms.backface_visibility == nana_ui_core::BackfaceVisibility::Hidden
+            && nana_ui_core::is_projective_backface(
+                handed.0,
+                handed.1,
+                layout.x + layout.width * 0.5,
+                layout.y + layout.height * 0.5,
+            )
+        {
+            fold.ctx_3d.backface_hidden = true;
+        }
+        let scroll = if reaches {
+            ancestor.scroll_offset
+        } else {
+            nana_ui_runtime::ScrollOffset::default()
+        };
+        fold.ctx_3d.parent_perspective =
+            child_parent_perspective(ancestor_style, layout, scroll, fold.ctx_3d.blocks_3d);
         if !reaches {
             return false;
         }
@@ -433,7 +492,12 @@ impl UiScene {
             match node.parent {
                 Some(next) => cursor = next,
                 None => {
-                    break Some((AffineTransform::IDENTITY, 1.0, Arc::from(Vec::new()), false));
+                    break Some((
+                        AffineTransform::IDENTITY,
+                        1.0,
+                        Arc::from(Vec::new()),
+                        Ancestor3d::default(),
+                    ));
                 }
             }
         };
@@ -451,12 +515,12 @@ impl UiScene {
         ancestor: &ExtractedNode,
         visual: bool,
     ) -> Option<AncestorState> {
-        let (transform, opacity, inherited, blocks_3d) = state;
+        let (transform, opacity, inherited, ctx_3d) = state;
         let mut fold = AncestorFold {
             transform,
             opacity,
             clips: Vec::new(),
-            blocks_3d,
+            ctx_3d,
         };
         let mut inherited = Some(inherited);
         if ancestor.source_style.layout.position == nana_ui_core::PositionSpec::Fixed {
@@ -465,7 +529,7 @@ impl UiScene {
             } else {
                 AffineTransform::IDENTITY
             };
-            fold.blocks_3d = false;
+            fold.ctx_3d = Ancestor3d::default();
             inherited = None;
         }
         if !is_opacity_group(&self.nodes, ancestor) {
@@ -483,7 +547,7 @@ impl UiScene {
             Some(inherited) => inherited.iter().cloned().chain(fold.clips).collect(),
             None => fold.clips.into(),
         };
-        Some((fold.transform, fold.opacity, clips, fold.blocks_3d))
+        Some((fold.transform, fold.opacity, clips, fold.ctx_3d))
     }
 
     /// Whether a rasterized SVG or an icon glyph above `node` already paints
@@ -725,24 +789,19 @@ pub(super) type AncestorStateKey = (
 pub(super) type DrawStamp = (u64, u64);
 
 /// What a node inherits from the chain above it.
-pub(super) type AncestorState = (AffineTransform, f32, Arc<[ClipRegion]>, bool);
+pub(super) type AncestorState = (AffineTransform, f32, Arc<[ClipRegion]>, Ancestor3d);
 
 /// [`AncestorState`] while it is being folded, its clips still growing.
 pub(super) struct AncestorFold {
     pub(super) transform: AffineTransform,
     pub(super) opacity: f32,
     pub(super) clips: Vec<ClipRegion>,
-    pub(super) blocks_3d: bool,
+    pub(super) ctx_3d: Ancestor3d,
 }
 
 impl AncestorFold {
     pub(super) fn finish(self) -> AncestorState {
-        (
-            self.transform,
-            self.opacity,
-            self.clips.into(),
-            self.blocks_3d,
-        )
+        (self.transform, self.opacity, self.clips.into(), self.ctx_3d)
     }
 }
 

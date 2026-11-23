@@ -189,6 +189,10 @@ struct SourceState {
     handled_key: Option<InputSequence>,
     /// A file drag from this source is hovering the document.
     file_drag: bool,
+    /// Losing focus cancelled this source's preedit. Until focus returns,
+    /// composition text the platform still delivers for the old session
+    /// (Microsoft Pinyin commits the reading on deactivation) is dropped.
+    composition_cancelled: bool,
 }
 
 impl SourceState {
@@ -206,6 +210,7 @@ impl SourceState {
             effects: effects::SourceEffects::default(),
             handled_key: None,
             file_drag: false,
+            composition_cancelled: false,
         }
     }
 }
@@ -687,7 +692,25 @@ impl AppContext {
                 }
             }
             InputPayload::Composition(composition) => {
-                self.dispatch_composition(document, composition)?
+                let cancelled = self
+                    .input
+                    .source(source)
+                    .is_some_and(|state| state.composition_cancelled);
+                let edits = matches!(
+                    composition,
+                    CompositionInput::Start
+                        | CompositionInput::Update { .. }
+                        | CompositionInput::Commit(_)
+                        | CompositionInput::DeleteSurrounding { .. }
+                );
+                if cancelled && edits {
+                    InputDisposition {
+                        handled: false,
+                        prevent_default: true,
+                    }
+                } else {
+                    self.dispatch_composition(document, composition)?
+                }
             }
             InputPayload::FileDrag(drag) => {
                 let (changed, target) =
@@ -858,6 +881,7 @@ impl AppContext {
             state.focused = focused;
             if focused {
                 state.focus_ever = true;
+                state.composition_cancelled = false;
             }
         }
         // A window that lost focus keeps its caret shown and still; one
@@ -877,6 +901,9 @@ impl AppContext {
             });
             if !other_focused {
                 self.dispatch_composition(document, &CompositionInput::End)?;
+                if let Some(state) = self.input.source(source) {
+                    state.composition_cancelled = true;
+                }
             }
         }
         Ok(())

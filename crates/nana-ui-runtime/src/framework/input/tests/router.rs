@@ -854,6 +854,60 @@ fn window_blur_cancels_an_active_ime_preedit() {
     assert_eq!(context.world().text(editor.stable_id()), Some("draft"));
 }
 
+/// Microsoft Pinyin answers the blur's cancel by committing the reading
+/// (`ceshi`) after the preedit was ended. That late commit belongs to the
+/// cancelled session and never reaches the editor; typing after focus
+/// returns does.
+#[test]
+fn a_commit_arriving_after_the_blur_cancelled_the_preedit_is_dropped() {
+    let mut context = AppContext::new();
+    let doc = document(47);
+    let source = InputSourceId(47);
+    let generation = EndpointGeneration(1);
+    context.bind_input_source(source, generation, doc).unwrap();
+    let editor = focused_editor(&mut context, doc, "draft");
+    let mut services = UnsupportedHostServices;
+    let mut route = |context: &mut AppContext, sequence, payload| {
+        context
+            .route_input(
+                &event(source, generation, sequence, payload),
+                &mut services,
+                None,
+            )
+            .unwrap()
+    };
+    route(&mut context, 1, InputPayload::Focus { focused: true });
+    route(
+        &mut context,
+        2,
+        InputPayload::Composition(CompositionInput::Update {
+            text: "ce'shi".into(),
+            selection: Some((6, 6)),
+        }),
+    );
+    route(&mut context, 3, InputPayload::Focus { focused: false });
+    route(
+        &mut context,
+        4,
+        InputPayload::Composition(CompositionInput::Commit("ceshi".into())),
+    );
+    route(
+        &mut context,
+        5,
+        InputPayload::Composition(CompositionInput::Disabled),
+    );
+    assert!(context.world().ime(editor.stable_id()).is_none());
+    assert_eq!(context.world().text(editor.stable_id()), Some("draft"));
+
+    route(&mut context, 6, InputPayload::Focus { focused: true });
+    route(
+        &mut context,
+        7,
+        InputPayload::Composition(CompositionInput::Commit("测试".into())),
+    );
+    assert_eq!(context.world().text(editor.stable_id()), Some("draft测试"));
+}
+
 #[test]
 fn a_blur_from_one_source_does_not_cancel_another_focused_sources_ime() {
     let mut context = AppContext::new();
@@ -1220,6 +1274,11 @@ fn text_input_state_follows_the_focused_editor() {
         .unwrap();
     assert_eq!(context.input_counters().text_input_updates, sent);
 
+    // Back in the window (a blurred one drops late IME text), an edit
+    // changes the surrounding text the IME is told about.
+    input
+        .route(&mut context, InputPayload::Focus { focused: true })
+        .unwrap();
     input
         .composition(&mut context, CompositionInput::Commit("!".into()))
         .unwrap();

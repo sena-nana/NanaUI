@@ -275,7 +275,7 @@ cargo run -p component-gallery
 cargo run -p nana-ui --example gpu-view-demo --features hosted,bundled-fonts
 ```
 
-The first opens the full control and workspace gallery; the second embeds a live GPU node in the same window (`hosted-gpu-demo` adds `wgpu-interop,runtime-wgsl` for custom WGSL). To add NanaUI to your own project:
+The first opens the full control and workspace gallery; the second embeds a live GPU node in the same window (`hosted-gpu-demo` adds `wgpu-interop,runtime-wgsl`; `viewport-3d-demo` adds `wgpu-interop,runtime-wgsl,view-macro` for an offscreen 3D `HostTexture` viewport). To add NanaUI to your own project:
 
 ```toml
 [dependencies]
@@ -370,6 +370,7 @@ Applications usually depend on `nana-ui` only. All 25 crates under `crates/` (24
 | Authoring toolchain | [`nana-ui-view-schema`](crates/nana-ui-view-schema) | Single built-in control schema table (internal) |
 | Rich content & assets | [`nana-ui-charts`](crates/nana-ui-charts) | ECharts-shaped chart model & GPU mark arrays |
 | Rich content & assets | [`nana-ui-diagram`](crates/nana-ui-diagram) | Native Mermaid diagram engine (all 34 diagram families) |
+| Rich content & assets | [`nana-ui-viewport3d`](crates/nana-ui-viewport3d) | Optional lightweight 3D preview viewport (orbit camera, glTF, lighting, `HostTexture` output) |
 | Rich content & assets | [`nana-svg-raster`](crates/nana-svg-raster) | CPU-side SVG image rasterization (`resvg`) |
 | Rich content & assets | [`nana-icons-tabler`](crates/nana-icons-tabler) | Generated Tabler vector icon catalog (standalone, linker-GC'd) |
 | Rich content & assets | [`nana-app-icon`](crates/nana-app-icon) | Default mark, PNG/ICO/ICNS encoding & Windows PE icon embedding |

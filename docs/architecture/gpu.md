@@ -49,6 +49,10 @@ prepare_window_frame             ──► 在每帧 flush 前写入像素或替
 - **按文档顺序采样与设备代际防护**：纹理在主渲染通道中按节点出现的顺序就地采样（渲染器键为 `"nana.host-texture"`），多层实时画面只需并排挂载多张 `GpuTextureView`。若设备发生丢失重建而某张 `HostTexture` 仍停留在旧的 `device_generation()`，painter 会以 `ScenePaintError::StaleHostTexture` 拒绝整帧，绝不把过期句柄送进新设备。
 - **按需读取实际绘制尺寸**：`HostTextureRegistry::painted_extent(slot)` 只读返回该槽位在最近一次完整绘制中各消费节点所需的最大物理像素尺寸（已计入 `ContentFit`、节点变换与 DPI 缩放），供生产端按真实清晰度准备纹理。
 
+### 离屏 3D 视口接入
+
+3D 场景与游戏渲染同样沿用默认路径：在 `prepare_window_frame` 中调用 `context.gpu().begin_producer_frame(...)`（不占用呈现帧槽），用 `wgpu-interop` 录制 4×MSAA `Rgba16Float` + `Depth32Float` 离屏通道并解析到通过 `GpuTexture::from_wgpu` 包装的纹理中，按 `painted_extent`（首帧回退到 `content_geometry().physical_size`）调整尺寸并经 `TextureSlot::replace` / `invalidate` 发布，同时在 `rebuild_gpu` 中随 `DeviceGeneration` 重建管线与目标纹理。参考示例见 `viewport-3d-demo`；开箱即用的轨道相机与 glTF 预览视口见可选 crate `nana-ui-viewport3d`。
+
 ## 无中间纹理路径：`GpuView` 与 `SceneGpuRenderer`
 
 只有在**没有中间纹理、必须把绘制命令直接录进当前 UI 渲染通道**时，才使用 `GpuView`。`GpuView::new(slot_id)` 投影出渲染器键为 `"gpu-view"` 的 `CustomRenderNode`（注意此处的 `slot_id` 是 `u64`，不是 `HostTextureRegistry` 的字符串键）。

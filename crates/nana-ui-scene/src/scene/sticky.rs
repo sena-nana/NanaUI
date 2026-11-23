@@ -43,6 +43,7 @@ impl UiScene {
         &self,
         node: &ExtractedNode,
         blocks_3d: bool,
+        parent_perspective: Option<nana_ui_core::ParentPerspective>,
     ) -> AffineTransform {
         self.with_sticky_translation(
             node,
@@ -50,6 +51,7 @@ impl UiScene {
                 &node.source_style.layout,
                 self.placed_layout(node),
                 blocks_3d,
+                parent_perspective,
             ),
         )
     }
@@ -60,7 +62,8 @@ impl UiScene {
         &self,
         node: &ExtractedNode,
         blocks_3d: bool,
+        parent_perspective: Option<nana_ui_core::ParentPerspective>,
     ) -> AffineTransform {
-        self.logical_page_transform(node, blocks_3d)
+        self.logical_page_transform(node, blocks_3d, parent_perspective)
     }
 }

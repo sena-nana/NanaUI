@@ -146,6 +146,20 @@ impl UiWorld {
             return Some(deferred);
         };
 
+        // A parent with 3D / perspective / backface context does not hand
+        // direct-child 3D perspective or backface state through `live_child_seed`;
+        // fall back to full document rebuild.
+        if self.record(parent).space.depth()
+            || self.hit_test_index.get(&document).is_some_and(|forest| {
+                forest
+                    .entries
+                    .get(&parent)
+                    .is_some_and(|e| e.entry.persp != [0.0, 0.0])
+            })
+        {
+            return None;
+        }
+
         // The parent's own entry supplies the inherited transform. Its scroll is
         // read live because scroll never invalidates the parent entry itself.
         let scroll = self.nodes.scroll_offset(parent);

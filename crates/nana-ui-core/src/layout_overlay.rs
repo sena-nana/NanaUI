@@ -223,7 +223,7 @@ overlay! {
 overlay! {
     TransformStyle {
         transform, transform_3d, unsupported_transform, origin, css_perspective,
-        preserve_3d, transform_box,
+        perspective_origin, preserve_3d, backface_visibility, transform_box,
     }
     nested {
     }

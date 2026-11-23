@@ -1,0 +1,34 @@
+[package]
+name = "nana-ui-viewport3d"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+description = "Optional lightweight 3D preview viewport for NanaUI (orbit camera, glTF, basic lighting, HostTexture output)"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "nana_ui_viewport3d"
+path = "src/lib.rs"
+
+[[example]]
+name = "model-viewer"
+path = "examples/model-viewer.rs"
+required-features = ["hosted"]
+test = false
+
+[features]
+default = ["gltf"]
+gltf = ["dep:gltf", "dep:image"]
+hosted = ["nana-ui/hosted", "nana-ui/bundled-fonts", "nana-ui/view-macro"]
+
+[dependencies]
+nana-gpu = { workspace = true, features = ["wgpu-interop"] }
+nana-ui = { workspace = true, default-features = false, features = ["gpu", "wgpu-interop", "runtime-wgsl"] }
+glam = { workspace = true }
+bytemuck = { workspace = true }
+gltf = { workspace = true, optional = true }
+image = { workspace = true, optional = true }
+
+[dev-dependencies]
+nana-ui-platform = { workspace = true }
+pollster = { workspace = true }

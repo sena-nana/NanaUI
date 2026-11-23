@@ -805,7 +805,7 @@ fn flip_animate_size_uses_layout_class_not_scale() {
     }
 }
 
-/// `perspective` on the parent fails the child's `matrix3d` closed, and paint
+/// `preserve-3d` on the parent fails the child's `matrix3d` closed, and paint
 /// refuses it. The pointer has to refuse it too: an overlay is sampled on the
 /// way to a node's local transform, and taking it before the refusal would
 /// leave a click landing where the node is not drawn.
@@ -830,7 +830,7 @@ fn a_closed_3d_context_refuses_a_presented_transform_for_the_pointer_too() {
         queue.write_layout(node(1), box_at(0.0, 0.0, 80.0, 40.0));
         queue.write_layout(node(2), box_at(0.0, 0.0, 40.0, 40.0));
         let mut persp_layout = LayoutStyle::default();
-        persp_layout.transforms.css_perspective = Some(800.0);
+        persp_layout.transforms.preserve_3d = true;
         queue.set_style(
             node(1),
             NodeStyle {
@@ -881,5 +881,132 @@ fn a_closed_3d_context_refuses_a_presented_transform_for_the_pointer_too() {
         sampled(true),
         refused,
         "a presented transform reopened a closed 3D context for the pointer"
+    );
+}
+
+#[test]
+fn parent_perspective_and_perspective_origin_drive_child_trapezoid_hit_test() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(
+        node(1),
+        document(1),
+        NodeKind::Element {
+            tag: "stage".into(),
+        },
+    );
+    queue.create(
+        node(2),
+        document(1),
+        NodeKind::Element { tag: "card".into() },
+    );
+    queue.insert(node(1), node(2), None);
+    queue.write_layout(node(1), box_at(0.0, 0.0, 200.0, 200.0));
+    queue.write_layout(node(2), box_at(50.0, 50.0, 100.0, 100.0));
+
+    let mut stage_layout = LayoutStyle::default();
+    stage_layout.transforms.css_perspective = Some(200.0);
+    stage_layout.transforms.perspective_origin = Some(nana_ui_core::TransformOrigin {
+        x: nana_ui_core::LengthSpec::Px(100.0),
+        y: nana_ui_core::LengthSpec::Px(100.0),
+    });
+    queue.set_style(
+        node(1),
+        NodeStyle {
+            layout: Arc::new(stage_layout),
+            ..NodeStyle::default()
+        },
+    );
+
+    let mut card_layout = LayoutStyle::default();
+    card_layout.transforms.transform_3d = Some(PaintMat4::rotate_y(45_f32.to_radians()));
+    queue.set_style(
+        node(2),
+        NodeStyle {
+            layout: Arc::new(card_layout),
+            ..NodeStyle::default()
+        },
+    );
+    world.commit(queue).unwrap();
+    world.rebuild_hit_test(document(1));
+
+    // Right edge (x = 150) rotates away (-z) and shrinks toward y = 100, so
+    // the original top-right corner (145, 55) falls outside the trapezoid.
+    assert_ne!(
+        world.hit_test_candidates(document(1), 145.0, 55.0).first(),
+        Some(&node(2)),
+        "untransformed corner outside projected trapezoid must miss"
+    );
+    // Left edge (x = 50) rotates toward (+z) and grows taller past y = 50..150,
+    // so (58, 42) falls inside the flared left half of the trapezoid.
+    assert_eq!(
+        world.hit_test_candidates(document(1), 58.0, 42.0).first(),
+        Some(&node(2)),
+        "point inside flared trapezoid half must hit"
+    );
+}
+
+#[test]
+fn backface_visibility_hidden_refuses_hits_when_rotated_past_90_deg() {
+    let hit_at_angle = |deg: f32| {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(
+            node(1),
+            document(1),
+            NodeKind::Element {
+                tag: "stage".into(),
+            },
+        );
+        queue.create(
+            node(2),
+            document(1),
+            NodeKind::Element { tag: "card".into() },
+        );
+        queue.create(
+            node(3),
+            document(1),
+            NodeKind::Element {
+                tag: "child".into(),
+            },
+        );
+        queue.insert(node(1), node(2), None);
+        queue.insert(node(2), node(3), None);
+        queue.write_layout(node(1), box_at(0.0, 0.0, 200.0, 200.0));
+        queue.write_layout(node(2), box_at(50.0, 50.0, 100.0, 100.0));
+        queue.write_layout(node(3), box_at(60.0, 60.0, 80.0, 80.0));
+
+        let mut stage_layout = LayoutStyle::default();
+        stage_layout.transforms.css_perspective = Some(800.0);
+        queue.set_style(
+            node(1),
+            NodeStyle {
+                layout: Arc::new(stage_layout),
+                ..NodeStyle::default()
+            },
+        );
+
+        let mut card_layout = LayoutStyle::default();
+        card_layout.transforms.transform_3d = Some(PaintMat4::rotate_y(deg.to_radians()));
+        card_layout.transforms.backface_visibility = nana_ui_core::BackfaceVisibility::Hidden;
+        queue.set_style(
+            node(2),
+            NodeStyle {
+                layout: Arc::new(card_layout),
+                ..NodeStyle::default()
+            },
+        );
+
+        world.commit(queue).unwrap();
+        world.rebuild_hit_test(document(1));
+        world.hit_test_candidates(document(1), 100.0, 100.0)
+    };
+
+    let front = hit_at_angle(30.0);
+    assert_eq!(front.first(), Some(&node(3)), "front-facing child hits");
+    let back = hit_at_angle(180.0);
+    assert!(
+        !back.contains(&node(2)) && !back.contains(&node(3)),
+        "back-facing card and its flattened child must not hit: {back:?}"
     );
 }

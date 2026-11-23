@@ -3,12 +3,34 @@
 
 use super::*;
 use nana_ui_core::{
-    DisplaySpec, LengthSpec, PaintTransform,
+    DisplaySpec, LengthSpec, PaintTransform, ParentPerspective,
     motion::{
         AnimatableProperty, AnimationClass, MotionEvaluatorBackend, MotionInspectorEntry,
         MotionTargetId, MotionValue, MotionWorkCounters, PresentationPair, cpu_fallback_reason,
     },
 };
+
+/// Resolves direct-child `perspective` + `perspective-origin` in this parent's
+/// layout coordinates (with `scroll` added so child coordinates match).
+pub(super) fn child_parent_perspective(
+    style: &nana_ui_core::LayoutStyle,
+    layout: LayoutBox,
+    scroll: ScrollOffset,
+    blocks_3d: bool,
+) -> Option<ParentPerspective> {
+    if blocks_3d || style.transforms.preserve_3d {
+        return None;
+    }
+    let distance = style.transforms.css_perspective?;
+    if !distance.is_finite() || distance <= 1e-5 {
+        return None;
+    }
+    let [ox, oy] = style.resolved_perspective_origin(layout.width, layout.height);
+    Some(ParentPerspective {
+        distance,
+        origin: [layout.x + ox + scroll.x, layout.y + oy + scroll.y],
+    })
+}
 
 impl UiWorld {
     pub fn presentation_store(&self) -> &nana_ui_core::motion::PresentationStore {
@@ -351,6 +373,7 @@ impl UiWorld {
         style: &nana_ui_core::LayoutStyle,
         bounds: LayoutBox,
         blocks_3d: bool,
+        parent_perspective: Option<ParentPerspective>,
     ) -> ([f32; 6], [f32; 2]) {
         // The refusal comes first: an overlay is not a way around a closed 3D
         // context, or the pointer keeps a projection paint gave up and a click
@@ -374,7 +397,13 @@ impl UiWorld {
             );
         }
         style
-            .world_scene_transform(bounds.x, bounds.y, bounds.width, bounds.height)
+            .world_scene_transform_with_perspective(
+                bounds.x,
+                bounds.y,
+                bounds.width,
+                bounds.height,
+                parent_perspective,
+            )
             .unwrap_or((IDENTITY_AFFINE, [0.0, 0.0]))
     }
 

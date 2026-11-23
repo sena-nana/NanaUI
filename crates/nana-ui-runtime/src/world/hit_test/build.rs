@@ -175,6 +175,8 @@ impl UiWorld {
                     position,
                     self.parent_used_pointer_events(id),
                     false,
+                    None::<nana_ui_core::ParentPerspective>,
+                    false,
                     hit_parent,
                 )
             })
@@ -182,7 +184,12 @@ impl UiWorld {
         let mut built: Vec<BuiltHit> = Vec::new();
         // What each built entry hands its children: an escaped box resumes
         // from its clip parent's.
-        let mut child_states: Vec<(([f32; 6], [f32; 2]), bool)> = Vec::new();
+        let mut child_states: Vec<(
+            ([f32; 6], [f32; 2]),
+            bool,
+            Option<nana_ui_core::ParentPerspective>,
+            bool,
+        )> = Vec::new();
         let mut deferred = Vec::new();
         let mut memo = AncestorMemo::default();
         let visuals = self.nodes.has_widget_visuals();
@@ -202,6 +209,8 @@ impl UiWorld {
             position,
             parent_used_pe,
             parent_blocks_3d,
+            parent_persp,
+            parent_backface_hidden,
             hit_parent,
         )) = stack.pop()
         {
@@ -285,6 +294,8 @@ impl UiWorld {
                 && parent_hit.0 == IDENTITY_AFFINE
                 && parent_hit.1 == [0.0, 0.0]
                 && !parent_blocks_3d
+                && parent_persp.is_none()
+                && !parent_backface_hidden
                 && !painted
                 && self.confirm_modals == 0
             {
@@ -319,7 +330,7 @@ impl UiWorld {
                     },
                     parent,
                 });
-                child_states.push((parent_hit, false));
+                child_states.push((parent_hit, false, None, false));
                 if descend {
                     stack.extend(children.iter().enumerate().rev().map(|(position, child)| {
                         (
@@ -328,6 +339,8 @@ impl UiWorld {
                             Some(index),
                             position,
                             used_pe,
+                            false,
+                            None,
                             false,
                             Some(id),
                         )
@@ -356,41 +369,71 @@ impl UiWorld {
             // An absolute box that escapes overflow containers hangs from its
             // clip parent instead (#201): their clips and scroll do not reach
             // it, the transforms between still do.
-            let (parent_hit, parent, parent_blocks_3d, escaped, hit_parent) =
-                if node_style.position == PositionSpec::Fixed {
-                    ((IDENTITY_AFFINE, [0.0, 0.0]), None, false, false, None)
-                } else if let Some(tree_parent) = parent
-                    && node_style.position == PositionSpec::Absolute
-                    && let Some(anchor) = self.clip_escape(id)
+            let (
+                parent_hit,
+                parent,
+                parent_blocks_3d,
+                parent_persp,
+                parent_backface_hidden,
+                escaped,
+                hit_parent,
+            ) = if node_style.position == PositionSpec::Fixed {
+                (
+                    (IDENTITY_AFFINE, [0.0, 0.0]),
+                    None,
+                    false,
+                    None,
+                    false,
+                    false,
+                    None,
+                )
+            } else if let Some(tree_parent) = parent
+                && node_style.position == PositionSpec::Absolute
+                && let Some(anchor) = self.clip_escape(id)
+            {
+                let mut cursor = Some(tree_parent);
+                while let Some(at) = cursor
+                    && Some(built[at].entry.id) != anchor
                 {
-                    let mut cursor = Some(tree_parent);
-                    while let Some(at) = cursor
-                        && Some(built[at].entry.id) != anchor
-                    {
-                        cursor = built[at].parent;
-                    }
-                    let Some(at) = cursor else {
-                        deferred.push(id);
-                        continue;
-                    };
-                    let (base, blocks_3d) = child_states[at];
-                    let anchor_id = built[at].entry.id;
-                    (
-                        self.clip_bridge_transform_from(
-                            id,
-                            anchor,
-                            base,
-                            false,
-                            self.layout_origin(anchor_id).unwrap_or_default(),
-                        ),
-                        Some(at),
-                        blocks_3d,
-                        true,
-                        Some(anchor_id),
-                    )
-                } else {
-                    (parent_hit, parent, parent_blocks_3d, false, hit_parent)
+                    cursor = built[at].parent;
+                }
+                let Some(at) = cursor else {
+                    deferred.push(id);
+                    continue;
                 };
+                let (base, blocks_3d, base_persp, backface_hidden) = child_states[at];
+                let anchor_id = built[at].entry.id;
+                let escaped_persp = if Some(anchor_id) == self.parent_id(id) {
+                    base_persp
+                } else {
+                    None
+                };
+                (
+                    self.clip_bridge_transform_from(
+                        id,
+                        anchor,
+                        base,
+                        false,
+                        self.layout_origin(anchor_id).unwrap_or_default(),
+                    ),
+                    Some(at),
+                    blocks_3d,
+                    escaped_persp,
+                    backface_hidden,
+                    true,
+                    Some(anchor_id),
+                )
+            } else {
+                (
+                    parent_hit,
+                    parent,
+                    parent_blocks_3d,
+                    parent_persp,
+                    parent_backface_hidden,
+                    false,
+                    hit_parent,
+                )
+            };
             let (offset, offset_pinned) = offset_from(hit_parent);
             // A sticky box's offset is a translation before its own
             // transform, as its layout offset is: without a perspective it
@@ -429,11 +472,24 @@ impl UiWorld {
             };
             let mut reads_page =
                 offset_pinned || escaped || space.contains(crate::node_space::NodeSpace::STICKY);
+            let shifted_persp = parent_persp.map(|pp| nana_ui_core::ParentPerspective {
+                distance: pp.distance,
+                origin: [
+                    pp.origin[0] - offset[0] - stuck[0],
+                    pp.origin[1] - offset[1] - stuck[1],
+                ],
+            });
             let local = if parent_blocks_3d && node_style.transforms.transform_3d.is_some() {
                 (IDENTITY_AFFINE, [0.0, 0.0])
             } else {
                 node_style
-                    .world_scene_transform(layout.x, layout.y, layout.width, layout.height)
+                    .world_scene_transform_with_perspective(
+                        layout.x,
+                        layout.y,
+                        layout.width,
+                        layout.height,
+                        shifted_persp,
+                    )
                     .unwrap_or((IDENTITY_AFFINE, [0.0, 0.0]))
             };
             let local = if flat_parent || stuck == [0.0, 0.0] {
@@ -442,7 +498,22 @@ impl UiWorld {
                 then_hit(([1.0, 0.0, 0.0, 1.0, stuck[0], stuck[1]], [0.0; 2]), local)
             };
             let (transform, persp) = then_hit(parent_hit, local);
-            let child_blocks_3d = parent_blocks_3d || space.opens_3d_context();
+            let child_blocks_3d = parent_blocks_3d || space.fails_closed_3d();
+            let child_persp = crate::world::presentation::child_parent_perspective(
+                node_style,
+                layout,
+                scroll,
+                child_blocks_3d,
+            );
+            let self_backface_hidden = parent_backface_hidden
+                || (node_style.transforms.backface_visibility
+                    == nana_ui_core::BackfaceVisibility::Hidden
+                    && nana_ui_core::is_projective_backface(
+                        transform,
+                        persp,
+                        layout.width * 0.5,
+                        layout.height * 0.5,
+                    ));
             // A box that scales, rotates, skews or flips in 2D hands its
             // children its own layout coordinates: nothing of its transform
             // or of what is above it reaches their entries. Under a
@@ -454,7 +525,11 @@ impl UiWorld {
                 local.0[..4] != [1.0, 0.0, 0.0, 1.0] && local.1 == [0.0, 0.0],
                 "{id:?}: its space {space:?} frames itself unlike its transform {local:?}"
             );
-            let local_children = frames_itself && persp == [0.0, 0.0] && !child_blocks_3d;
+            let local_children = frames_itself
+                && persp == [0.0, 0.0]
+                && !child_blocks_3d
+                && child_persp.is_none()
+                && !self_backface_hidden;
             let child_transform = if local_children {
                 (scroll_seed([scroll.x, scroll.y]), [0.0, 0.0])
             } else {
@@ -529,7 +604,8 @@ impl UiWorld {
                 && interaction.pointer_events
                 && used_pe.hittable()
                 && computed_pointer.hittable()
-                && !confirm_busy;
+                && !confirm_busy
+                && !self_backface_hidden;
             let menu = (hittable
                 && (visuals
                     || !self.select_menus.is_empty()
@@ -577,7 +653,12 @@ impl UiWorld {
                 },
                 parent,
             });
-            child_states.push((child_transform, child_blocks_3d));
+            child_states.push((
+                child_transform,
+                child_blocks_3d,
+                child_persp,
+                self_backface_hidden,
+            ));
             // Sibling position is the sort key. Invisible siblings are skipped
             // and leave gaps, which is harmless because only relative order
             // between surviving siblings is ever compared.
@@ -592,6 +673,8 @@ impl UiWorld {
                     position,
                     used_pe,
                     child_blocks_3d,
+                    child_persp,
+                    self_backface_hidden,
                     Some(id),
                 )
             }));

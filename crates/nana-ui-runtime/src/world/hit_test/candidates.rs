@@ -335,7 +335,7 @@ impl UiWorld {
             } else {
                 base
             };
-            if self.visit_presentation_hits(index, id, base, false, x, y, emit) {
+            if self.visit_presentation_hits(index, id, base, false, None, false, x, y, emit) {
                 return true;
             }
         }
@@ -348,6 +348,8 @@ impl UiWorld {
         id: StableNodeId,
         parent_hit: ([f32; 6], [f32; 2]),
         parent_blocks_3d: bool,
+        parent_persp: Option<nana_ui_core::ParentPerspective>,
+        parent_backface_hidden: bool,
         x: f32,
         y: f32,
         emit: &mut impl FnMut(StableNodeId) -> bool,
@@ -362,16 +364,31 @@ impl UiWorld {
             return false;
         }
         let style = self.hit_motion_layout(id);
-        let (parent_hit, parent_blocks_3d) = if style.position == PositionSpec::Fixed {
-            (self.hanging_branch_transform(id), false)
-        } else {
-            (parent_hit, parent_blocks_3d)
-        };
+        let (parent_hit, parent_blocks_3d, parent_persp, parent_backface_hidden) =
+            if style.position == PositionSpec::Fixed {
+                (self.hanging_branch_transform(id), false, None, false)
+            } else {
+                (
+                    parent_hit,
+                    parent_blocks_3d,
+                    parent_persp,
+                    parent_backface_hidden,
+                )
+            };
         let Some(layout) = self.component_layout_box(id) else {
             return false;
         };
-        let local = self.input_local_scene_transform(id, &style, layout, parent_blocks_3d);
+        let local =
+            self.input_local_scene_transform(id, &style, layout, parent_blocks_3d, parent_persp);
         let (transform, persp) = then_hit(parent_hit, self.with_sticky_translation(id, local));
+        let self_backface_hidden = parent_backface_hidden
+            || (style.transforms.backface_visibility == nana_ui_core::BackfaceVisibility::Hidden
+                && nana_ui_core::is_projective_backface(
+                    transform,
+                    persp,
+                    layout.x + layout.width * 0.5,
+                    layout.y + layout.height * 0.5,
+                ));
         // The entry keeps its clips, menu and box in its own coordinates;
         // these transforms map the page's.
         let to_page = ([1.0, 0.0, 0.0, 1.0, layout.x, layout.y], [0.0, 0.0]);
@@ -388,9 +405,10 @@ impl UiWorld {
         if !path_clips_contain(&node.path_clips, own.0, own.1, x, y) {
             return false;
         }
-        let menu_hit = node
-            .menu
-            .is_some_and(|menu| transformed_contains(menu, own.0, own.1, x, y));
+        let menu_hit = !self_backface_hidden
+            && node
+                .menu
+                .is_some_and(|menu| transformed_contains(menu, own.0, own.1, x, y));
         let children_ok = node
             .child_clips
             .iter()
@@ -401,6 +419,12 @@ impl UiWorld {
             ([1.0, 0.0, 0.0, 1.0, -scroll.x, -scroll.y], [0.0, 0.0]),
         );
         let child_blocks_3d = parent_blocks_3d || style.fails_closed_3d_context();
+        let child_persp = crate::world::presentation::child_parent_perspective(
+            &style,
+            layout,
+            scroll,
+            child_blocks_3d,
+        );
         let menu_z = node.z_index.max(1000);
         let mut emitted_menu = !menu_hit;
         if children_ok {
@@ -421,20 +445,25 @@ impl UiWorld {
                 }
                 // An escaped child takes the transforms of the ancestors it
                 // passes over, but none of their scroll.
-                let parent_hit = if index
+                let (parent_hit, next_persp) = if index
                     .entries
                     .get(&child)
                     .is_some_and(|child| child.entry.escaped)
                 {
-                    self.clip_bridge_transform(child, Some(id), child_transform, true)
+                    (
+                        self.clip_bridge_transform(child, Some(id), child_transform, true),
+                        None,
+                    )
                 } else {
-                    child_transform
+                    (child_transform, child_persp)
                 };
                 if self.visit_presentation_hits(
                     index,
                     child,
                     parent_hit,
                     child_blocks_3d,
+                    next_persp,
+                    self_backface_hidden,
                     x,
                     y,
                     emit,
@@ -447,6 +476,7 @@ impl UiWorld {
             return true;
         }
         if node.hittable
+            && !self_backface_hidden
             && transformed_contains(node.layout, own.0, own.1, x, y)
             && painter_accepts(node, node.layout, own.0, own.1, x, y)
         {

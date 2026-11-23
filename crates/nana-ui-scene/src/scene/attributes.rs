@@ -139,8 +139,12 @@ impl UiScene {
     /// projective bounds return `None`, requiring conservative composition.
     pub fn draw_node_bounds(&self, id: StableNodeId) -> Option<SceneRect> {
         let node = self.nodes.get(&id)?;
-        let (parent, _, _, blocks_3d) = self.draw_ancestor_state(node);
-        let transform = parent.then(self.resolved_local_transform(node, blocks_3d));
+        let (parent, _, _, ctx_3d) = self.draw_ancestor_state(node);
+        let transform = parent.then(self.resolved_local_transform(
+            node,
+            ctx_3d.blocks_3d,
+            ctx_3d.parent_perspective,
+        ));
         super::visibility::transform(self.node_bounds(id)?, transform)
     }
 
@@ -148,8 +152,12 @@ impl UiScene {
     /// ([`Self::node_bounds`]): any rectangle of its record or primitives.
     pub fn draw_node_rect(&self, id: StableNodeId, rect: SceneRect) -> Option<SceneRect> {
         let node = self.nodes.get(&id)?;
-        let (parent, _, _, blocks_3d) = self.draw_ancestor_state(node);
-        let transform = parent.then(self.resolved_local_transform(node, blocks_3d));
+        let (parent, _, _, ctx_3d) = self.draw_ancestor_state(node);
+        let transform = parent.then(self.resolved_local_transform(
+            node,
+            ctx_3d.blocks_3d,
+            ctx_3d.parent_perspective,
+        ));
         super::visibility::transform(rect, transform)
     }
 
@@ -193,8 +201,12 @@ impl UiScene {
             attributes
         } else {
             let extracted = self.nodes.get(&node)?;
-            let (parent, _, parent_clips, blocks_3d) = self.draw_ancestor_state(extracted);
-            let current = parent.then(self.resolved_local_transform(extracted, blocks_3d));
+            let (parent, _, parent_clips, ctx_3d) = self.draw_ancestor_state(extracted);
+            let current = parent.then(self.resolved_local_transform(
+                extracted,
+                ctx_3d.blocks_3d,
+                ctx_3d.parent_perspective,
+            ));
             // A node that did not move owes no rebasing. `inverse` divides by
             // the determinant, so anything but a translation round-trips an
             // ulp off the identity, and a base that was merely recomputed can
@@ -699,7 +711,7 @@ mod tests {
             if closed {
                 Arc::make_mut(&mut root.source_style.layout)
                     .transforms
-                    .css_perspective = Some(800.0);
+                    .preserve_3d = true;
             }
             let mut middle = node(2, Some(1), &[3]);
             Arc::make_mut(&mut middle.source_style.layout)
@@ -758,7 +770,7 @@ mod tests {
         let mut recoloured = node(1, None, &[2]);
         Arc::make_mut(&mut recoloured.source_style.layout)
             .transforms
-            .css_perspective = Some(800.0);
+            .preserve_3d = true;
         Arc::make_mut(&mut recoloured.source_style.layout).background = Some([1.0, 0.0, 0.0, 1.0]);
         scene.apply_delta([recoloured], []);
         assert_eq!(

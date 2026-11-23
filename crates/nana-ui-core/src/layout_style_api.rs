@@ -4,14 +4,15 @@
 //! they do not invent a second model.
 
 use crate::box_layout::{
-    AlignSpec, BackdropFilter, BackgroundImage, BackgroundImageFit, BackgroundPosition,
-    BackgroundRepeat, BorderImageSpec, BorderStyle, BoxShadowSpec, BoxSizing, ClipPath,
-    ColorFilter, DirSpec, DisplaySpec, FlexDirection, FlexWrap, FontFeatureSetting, GridAutoFlow,
-    GridPlacement, GridRepeatAuto, GridTemplateAreas, GridTrack, GridTrackListUnsupported,
-    JustifySpec, LayoutStyle, LengthSpec, LineHeightSpec, LogicalEdges, MaskImage, MixBlendMode,
-    OutlineSpec, OverflowSpec, OverflowWrapSpec, PaintMat4, PaintStyle, PaintTransform,
-    PointerEventsSpec, PositionSpec, TextAlignSpec, TextDecorationLine, TextShadowSpec,
-    TransformBox, TransformOrigin, UserSelectSpec, VisibilitySpec, WhiteSpaceSpec, WordBreakSpec,
+    AlignSpec, BackdropFilter, BackfaceVisibility, BackgroundImage, BackgroundImageFit,
+    BackgroundPosition, BackgroundRepeat, BorderImageSpec, BorderStyle, BoxShadowSpec, BoxSizing,
+    ClipPath, ColorFilter, DirSpec, DisplaySpec, FlexDirection, FlexWrap, FontFeatureSetting,
+    GridAutoFlow, GridPlacement, GridRepeatAuto, GridTemplateAreas, GridTrack,
+    GridTrackListUnsupported, JustifySpec, LayoutStyle, LengthSpec, LineHeightSpec, LogicalEdges,
+    MaskImage, MixBlendMode, OutlineSpec, OverflowSpec, OverflowWrapSpec, PaintMat4, PaintStyle,
+    PaintTransform, PointerEventsSpec, PositionSpec, TextAlignSpec, TextDecorationLine,
+    TextShadowSpec, TransformBox, TransformOrigin, UserSelectSpec, VisibilitySpec, WhiteSpaceSpec,
+    WordBreakSpec,
 };
 
 macro_rules! set_opt {
@@ -180,6 +181,7 @@ impl LayoutStyle {
         unsupported_transform => unsupported_transform: String,
         transform_origin => origin: TransformOrigin,
         css_perspective => css_perspective: f32,
+        perspective_origin => perspective_origin: TransformOrigin,
     });
 
     set_opt!(@in text_ext {
@@ -266,6 +268,7 @@ impl LayoutStyle {
     set_val!(@in transforms {
         transform_box => transform_box: TransformBox,
         preserve_3d => preserve_3d: bool,
+        backface_visibility => backface_visibility: BackfaceVisibility,
     });
 
     set_val!(@in text_ext {

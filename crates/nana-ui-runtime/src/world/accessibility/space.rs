@@ -40,6 +40,7 @@ pub(super) struct AccessibleTransform {
     pub(super) own: ([f32; 6], [f32; 2]),
     pub(super) children: ([f32; 6], [f32; 2]),
     pub(super) blocks_3d: bool,
+    pub(super) parent_persp: Option<nana_ui_core::ParentPerspective>,
     /// The node's layout origin on the page ([`UiWorld::layout_origin`]):
     /// a child measured from it stands its local offset away, by the same
     /// addition [`UiWorld::record_layout_origin`] makes.

@@ -325,13 +325,14 @@ impl UiScene {
             if scroll_changed {
                 inherited_roots.insert(node.id);
                 let old = self.nodes.get(&node.id).expect("scrolling retained node");
-                let (parent, _, _, blocks_3d) = self.ancestor_state(old);
+                let (parent, _, _, ctx_3d) = self.ancestor_state(old);
                 let transform = parent.then(node_scene_transform(
                     &old.source_style.layout,
                     old.layout,
-                    blocks_3d,
+                    ctx_3d.blocks_3d,
+                    ctx_3d.parent_perspective,
                 ));
-                if transform.is_projective() {
+                if transform.is_projective() || old.source_style.layout.has_css_perspective() {
                     subtree_rebuild.push(node.id);
                     self.visibility.take();
                 } else {
@@ -749,10 +750,17 @@ fn inherited_component_clip(node: &ExtractedNode) -> Option<InheritedComponentCl
 /// subtree's culling bounds with it (`layout_moves`). Where its transform
 /// pivots is, and is compared below.
 fn inherited_transform_changed(old: &ExtractedNode, node: &ExtractedNode) -> bool {
+    let old_t = &old.source_style.layout.transforms;
+    let new_t = &node.source_style.layout.transforms;
     if old.parent != node.parent
         || old.source_style.layout.position != node.source_style.layout.position
         || old.source_style.layout.fails_closed_3d_context()
             != node.source_style.layout.fails_closed_3d_context()
+        || old_t.css_perspective != new_t.css_perspective
+        || old_t.perspective_origin != new_t.perspective_origin
+        || old_t.backface_visibility != new_t.backface_visibility
+        || ((old_t.css_perspective.is_some() || new_t.css_perspective.is_some())
+            && (old.layout != node.layout))
     {
         return true;
     }
@@ -780,8 +788,17 @@ fn inherited_transform_changed(old: &ExtractedNode, node: &ExtractedNode) -> boo
         }
     }
     [false, true].into_iter().any(|blocks_3d| {
-        node_scene_transform(old.source_style.layout.as_ref(), old.layout, blocks_3d)
-            != node_scene_transform(node.source_style.layout.as_ref(), node.layout, blocks_3d)
+        node_scene_transform(
+            old.source_style.layout.as_ref(),
+            old.layout,
+            blocks_3d,
+            None,
+        ) != node_scene_transform(
+            node.source_style.layout.as_ref(),
+            node.layout,
+            blocks_3d,
+            None,
+        )
     })
 }
 

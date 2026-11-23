@@ -6918,6 +6918,83 @@ fn painted_column_span(pixels: &[u8], width: u32, height: u32, x: u32) -> u32 {
 }
 
 #[test]
+fn parent_perspective_and_backface_visibility_render_on_gpu() {
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let mut painter = SceneWgpuPainter::for_test(format);
+
+    let paint_card = |painter: &mut SceneWgpuPainter, deg: f32, backface_hidden: bool| {
+        let mut context = AppContext::new();
+        let doc = DocumentId::new(1).unwrap();
+        let mut stage_style = NodeStyle::default();
+        {
+            let layout = Arc::make_mut(&mut stage_style.layout);
+            layout.transforms.css_perspective = Some(300.0);
+            layout.transforms.perspective_origin = Some(nana_ui_core::TransformOrigin {
+                x: nana_ui_core::LengthSpec::Px(128.0),
+                y: nana_ui_core::LengthSpec::Px(80.0),
+            });
+        }
+        let stage = context
+            .create_component(doc, nana_ui_runtime::Stack::row(0.0).style(stage_style))
+            .unwrap();
+        let mut card_style = NodeStyle::default();
+        {
+            let layout = Arc::make_mut(&mut card_style.layout);
+            layout.background = Some([1.0, 0.0, 0.0, 1.0]);
+            layout.transforms.transform_3d =
+                Some(nana_ui_core::PaintMat4::rotate_y(deg.to_radians()));
+            if backface_hidden {
+                layout.transforms.backface_visibility = nana_ui_core::BackfaceVisibility::Hidden;
+            }
+        }
+        let card = context
+            .create_component(doc, nana_ui_runtime::Stack::row(0.0).style(card_style))
+            .unwrap();
+        let mut queue_mut = MutationQueue::new();
+        queue_mut.insert(stage.stable_id(), card.stable_id(), None);
+        write_box(&mut queue_mut, stage.stable_id(), 0.0, 0.0, 256.0, 160.0);
+        write_box(&mut queue_mut, card.stable_id(), 28.0, 40.0, 200.0, 80.0);
+        context.commit_mutations(queue_mut).unwrap();
+        let scene = commit_scene(&mut context);
+
+        let viewport = ScenePaintViewport {
+            logical_size: [256.0, 160.0],
+            physical_size: [256, 160],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 0.0, 1.0],
+            clear: true,
+        };
+        let (texture, view) = test_copy_target(&device, format, 256, 160);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("parent perspective + backface"),
+        });
+        painter
+            .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
+            .expect("paint");
+        readback_rgba(&device, &queue, encoder, &texture, 256, 160)
+    };
+
+    // 45° under parent `perspective(300px)`: must paint a trapezoid (left span > right span).
+    let front_pixels = paint_card(&mut painter, 45.0, true);
+    let left_span = painted_column_span(&front_pixels, 256, 160, 72);
+    let right_span = painted_column_span(&front_pixels, 256, 160, 172);
+    assert!(
+        left_span > right_span + 6,
+        "parent perspective must flare left edge relative to right: left={left_span} right={right_span}"
+    );
+
+    // 180° with `backface-visibility: hidden`: all pixels stay clear black.
+    let back_pixels = paint_card(&mut painter, 180.0, true);
+    assert!(
+        back_pixels.chunks_exact(4).all(|px| px[0] == 0),
+        "backface-visibility: hidden at 180deg must not paint red pixels"
+    );
+}
+
+#[test]
 fn rotated_inset_round_clip_keeps_corner_radius_on_gpu() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;

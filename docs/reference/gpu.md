@@ -600,7 +600,8 @@ fn rebuild_gpu(&mut self, context: &RuntimeProgramContext<Self::Message>) {}
 ```
 
 - **槽位是唯一身份**：视图只记槽名（`TextureSlotName`），每帧绘制时按槽名取注册表里当前的绑定。`HostTexture::new` 自己分配 id；往同一个槽登记一个新句柄、`replace_texture` 换纹理对象（`generation` 递增）或 `invalidate` 刷新内容（`version` 递增），宿主都会重绘用到这个槽的窗口，不用改 Runtime 节点。设备重建时宿主先清空注册表，再调 `rebuild_gpu`；程序在新设备上重新登记即可。若 `HostTexture::device_generation()` 与当前 painter 的设备代际不符，整帧会以 `ScenePaintError::StaleHostTexture` 拒绝。
-- **线性工作空间要求**：进入 Scene 的 `HostTexture` 采样结果必须处于预乘线性 scRGB 空间——普通不透明/直通 alpha 的 sRGB 图片可使用 `*_SRGB` 纹理格式交由硬件采样器解码；带半透明的预乘内容请使用线性 `UNORM` 或浮点格式，勿将 gamma 空间预乘字节误标为 `SRGB`。
+- **线性工作空间要求**：进入 Scene 的 `HostTexture` 采样结果必须处于预乘线性 scRGB 空间——普通不透明/直通 alpha 的 sRGB 图片可使用 `*_SRGB` 纹理格式交由硬件采样器解码；带半透明的预乘内容请使用线性 `UNORM` 或浮点格式，勿将 gamma 空间预乘字节误标为 `SRGB`。绑定 `RGBA16_FLOAT` 的 `HostTexture` 会自动将 SDR 工作目标提升至 `RGBA16_FLOAT` 以保留线性和广色域高光。
+- **离屏 3D 视口接入要点**：在 `wgpu-interop` 下自建 4×MSAA `Rgba16Float` + `Depth32Float` 离屏渲染时，通过 `GpuContext::begin_producer_frame` 提交（避免消耗呈现帧槽），将单采样解析纹理（`RENDER_ATTACHMENT | TEXTURE_BINDING`）包装为 `GpuTexture::from_wgpu` 后登记到 `TextureSlot`（不透明背景用 `HostTextureAlphaMode::Opaque`，透明叠加用 `Premultiplied`）；第 0 帧尚未绘制前 `painted_extent` 为 `None`，回退至 `context.content_geometry().physical_size`；若需要 3D 轨道拖拽或射线拾取，请在 `GpuTextureView` 上显式开启 `.with_pointer_events(true)`，并使用 `GpuTextureView::texture_uv_at` 将命中点映射为 `[0, 1]^2` UV（完整参考见 `viewport-3d-demo` 与 `crates/nana-ui-viewport3d`）。
 
 ### GPU 合同与 wgpu 逃生口
 

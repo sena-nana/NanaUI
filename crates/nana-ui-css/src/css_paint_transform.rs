@@ -21,11 +21,11 @@
 //! ## Still fail-closed
 //!
 //! - Unknown transform functions
-//! - Parent CSS `perspective` property / `transform-style: preserve-3d`
-//!   (parsed onto LayoutStyle flags; not a 3D rendering context)
+//! - `transform-style: preserve-3d` (parsed onto `LayoutStyle::transforms.preserve_3d`;
+//!   multi-node 3D rendering contexts are not flattened)
 
 use nana_ui_core::box_layout::{
-    LengthSpec, PaintMat4, PaintTransform, TransformBox, TransformOrigin,
+    BackfaceVisibility, LengthSpec, PaintMat4, PaintTransform, TransformBox, TransformOrigin,
 };
 
 use crate::css_map::parse_css_length_px;
@@ -288,6 +288,28 @@ pub fn parse_transform_origin(raw: &str) -> Option<TransformOrigin> {
             parse_origin_z(z)?;
             parse_origin_two(a, b)
         }
+        _ => None,
+    }
+}
+
+/// CSS `perspective-origin`: keywords, `%`, `px`, 1–2 values.
+pub fn parse_perspective_origin(raw: &str) -> Option<TransformOrigin> {
+    let tokens: Vec<&str> = raw
+        .split_whitespace()
+        .filter(|part| !part.is_empty())
+        .collect();
+    match tokens.as_slice() {
+        [one] => parse_origin_one(one),
+        [a, b] => parse_origin_two(a, b),
+        _ => None,
+    }
+}
+
+/// CSS `backface-visibility`. `initial` / `unset` restore CSS initial `visible`.
+pub fn parse_backface_visibility(raw: &str) -> Option<BackfaceVisibility> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "visible" | "initial" | "unset" => Some(BackfaceVisibility::Visible),
+        "hidden" => Some(BackfaceVisibility::Hidden),
         _ => None,
     }
 }
@@ -748,16 +770,40 @@ mod tests {
     }
 
     #[test]
-    fn parent_perspective_and_preserve_3d_fail_closed() {
+    fn parent_perspective_and_preserve_3d_parsing() {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("perspective: 800px", None, None);
         assert_eq!(layout.transforms.css_perspective, Some(800.0));
-        assert!(layout.fails_closed_3d_context());
+        assert!(layout.has_css_perspective());
+        assert!(!layout.fails_closed_3d_context());
+        layout.apply_css_text("perspective: -100px", None, None);
+        assert_eq!(layout.transforms.css_perspective, Some(800.0));
+        layout.apply_css_text("perspective-origin: left 20px", None, None);
+        assert_eq!(
+            layout.transforms.perspective_origin,
+            Some(TransformOrigin {
+                x: LengthSpec::Percent(0.0),
+                y: LengthSpec::Px(20.0),
+            })
+        );
+        layout.apply_css_text("backface-visibility: hidden", None, None);
+        assert_eq!(
+            layout.transforms.backface_visibility,
+            BackfaceVisibility::Hidden
+        );
+        layout.apply_css_text("backface-visibility: visible", None, None);
+        assert_eq!(
+            layout.transforms.backface_visibility,
+            BackfaceVisibility::Visible
+        );
         layout.apply_css_text("transform-style: preserve-3d", None, None);
         assert!(layout.transforms.preserve_3d);
+        assert!(layout.fails_closed_3d_context());
         layout.apply_css_text("transform-style: flat", None, None);
         assert!(!layout.transforms.preserve_3d);
         layout.apply_css_text("perspective: none", None, None);
         assert_eq!(layout.transforms.css_perspective, None);
+        layout.apply_css_text("perspective-origin: initial", None, None);
+        assert_eq!(layout.transforms.perspective_origin, None);
     }
 }

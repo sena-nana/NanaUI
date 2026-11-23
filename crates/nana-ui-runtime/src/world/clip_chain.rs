@@ -159,6 +159,8 @@ impl UiWorld {
             cursor = self.parent_id(node);
         }
         let mut transform = base;
+        let mut blocks_3d = false;
+        let mut parent_persp = None;
         for node in between.into_iter().rev() {
             let Some(mut bounds) = self.component_layout_box(node) else {
                 continue;
@@ -169,13 +171,28 @@ impl UiWorld {
             }
             let style = self.hit_motion_layout(node);
             let local = if presented {
-                self.input_local_scene_transform(node, &style, bounds, false)
+                self.input_local_scene_transform(node, &style, bounds, blocks_3d, parent_persp)
             } else {
-                style
-                    .world_scene_transform(bounds.x, bounds.y, bounds.width, bounds.height)
-                    .unwrap_or((IDENTITY_AFFINE, [0.0, 0.0]))
+                if blocks_3d && style.transforms.transform_3d.is_some() {
+                    (IDENTITY_AFFINE, [0.0, 0.0])
+                } else {
+                    style
+                        .world_scene_transform_with_perspective(
+                            bounds.x,
+                            bounds.y,
+                            bounds.width,
+                            bounds.height,
+                            parent_persp,
+                        )
+                        .unwrap_or((IDENTITY_AFFINE, [0.0, 0.0]))
+                }
             };
             transform = then_hit(transform, self.with_sticky_translation(node, local));
+            blocks_3d |= style.fails_closed_3d_context();
+            let scroll = self.nodes.scroll_offset(node);
+            parent_persp = crate::world::presentation::child_parent_perspective(
+                &style, bounds, scroll, blocks_3d,
+            );
         }
         transform
     }

@@ -1452,13 +1452,23 @@ fn parent_preserve_3d_fail_closes_child_3d() {
 }
 
 #[test]
-fn parent_perspective_fail_closes_child_3d() {
-    let mat = nana_ui_core::PaintMat4::rotate_y(30_f32.to_radians());
+fn parent_perspective_and_origin_project_direct_child_only() {
+    let mat = nana_ui_core::PaintMat4::rotate_y(45_f32.to_radians());
     let mut parent = node(1, None, &[2]);
+    parent.layout = LayoutBox {
+        x: 0.0,
+        y: 0.0,
+        width: 200.0,
+        height: 200.0,
+    };
     parent.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
             transforms: nana_ui_core::TransformStyle {
-                css_perspective: Some(800.0),
+                css_perspective: Some(400.0),
+                perspective_origin: Some(nana_ui_core::TransformOrigin {
+                    x: nana_ui_core::LengthSpec::Px(40.0),
+                    y: nana_ui_core::LengthSpec::Px(120.0),
+                }),
                 ..Default::default()
             }
             .into(),
@@ -1466,12 +1476,12 @@ fn parent_perspective_fail_closes_child_3d() {
         }),
         ..Default::default()
     };
-    let mut child = node(2, Some(1), &[]);
+    let mut child = node(2, Some(1), &[3]);
     child.layout = LayoutBox {
-        x: 0.0,
-        y: 0.0,
-        width: 200.0,
-        height: 80.0,
+        x: 50.0,
+        y: 50.0,
+        width: 100.0,
+        height: 100.0,
     };
     child.custom_render = Some(CustomRenderNode::new("test", "resource", 0));
     child.source_style = NodeStyle {
@@ -1485,13 +1495,121 @@ fn parent_perspective_fail_closes_child_3d() {
         }),
         ..Default::default()
     };
+    // Grandchild with its own 3D transform does NOT inherit grandparent's
+    // `perspective` when child is flattened (`!preserve_3d`).
+    let mut grandchild = node(3, Some(2), &[]);
+    grandchild.layout = LayoutBox {
+        x: 60.0,
+        y: 60.0,
+        width: 40.0,
+        height: 40.0,
+    };
+    grandchild.custom_render = Some(CustomRenderNode::new("test", "resource", 1));
+    grandchild.source_style = NodeStyle {
+        layout: Arc::new(nana_ui_core::LayoutStyle {
+            transforms: nana_ui_core::TransformStyle {
+                transform_3d: Some(mat),
+                ..Default::default()
+            }
+            .into(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
     let mut scene = UiScene::new();
-    scene.apply_delta([parent, child], []);
-    let primitive = scene
+    scene.apply_delta([parent, child, grandchild], []);
+    let child_prim = scene
         .primitives()
         .find(|primitive| primitive.node == id(2))
         .expect("child");
-    assert_eq!(primitive.transform, AffineTransform::IDENTITY);
+    let expected = nana_ui_core::PaintMat4::perspective(400.0)
+        .unwrap()
+        .around_origin(0.0, 0.0, 40.0, 120.0)
+        .then(mat.around_origin(50.0, 50.0, 50.0, 50.0))
+        .planar_homography()
+        .expect("homography");
+    assert_eq!(child_prim.transform.0, expected.0);
+    assert_eq!(child_prim.transform.1, expected.1);
+    assert!(child_prim.transform.is_projective());
+
+    let grandchild_prim = scene
+        .primitives()
+        .find(|primitive| primitive.node == id(3))
+        .expect("grandchild");
+    let ortho_child = mat
+        .around_origin(60.0, 60.0, 20.0, 20.0)
+        .planar_homography()
+        .expect("ortho");
+    let expected_grandchild =
+        AffineTransform(expected.0, expected.1).then(AffineTransform(ortho_child.0, ortho_child.1));
+    assert_eq!(grandchild_prim.transform, expected_grandchild);
+}
+
+#[test]
+fn backface_visibility_hidden_omits_backfacing_subtree() {
+    let build = |deg: f32| {
+        let mut parent = node(1, None, &[2]);
+        parent.layout = LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 200.0,
+        };
+        parent.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                transforms: nana_ui_core::TransformStyle {
+                    css_perspective: Some(800.0),
+                    ..Default::default()
+                }
+                .into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut card = node(2, Some(1), &[3]);
+        card.layout = LayoutBox {
+            x: 50.0,
+            y: 50.0,
+            width: 100.0,
+            height: 100.0,
+        };
+        card.custom_render = Some(CustomRenderNode::new("test", "card", 0));
+        card.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                transforms: nana_ui_core::TransformStyle {
+                    transform_3d: Some(nana_ui_core::PaintMat4::rotate_y(deg.to_radians())),
+                    backface_visibility: nana_ui_core::BackfaceVisibility::Hidden,
+                    ..Default::default()
+                }
+                .into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut child = node(3, Some(2), &[]);
+        child.layout = LayoutBox {
+            x: 60.0,
+            y: 60.0,
+            width: 80.0,
+            height: 80.0,
+        };
+        child.custom_render = Some(CustomRenderNode::new("test", "child", 1));
+        let mut scene = UiScene::new();
+        scene.apply_delta([parent, card, child], []);
+        scene
+    };
+
+    let front = build(30.0);
+    assert!(front.primitives().any(|p| p.node == id(2)));
+    assert!(front.primitives().any(|p| p.node == id(3)));
+
+    let back = build(180.0);
+    assert!(
+        !back
+            .primitives()
+            .any(|p| p.node == id(2) || p.node == id(3)),
+        "back-facing card and flattened child must emit zero primitives"
+    );
 }
 
 /// `overflow: hidden` on a rounded box clips its children to the rounding,

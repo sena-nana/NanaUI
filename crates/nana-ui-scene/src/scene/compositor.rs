@@ -693,8 +693,9 @@ impl UiScene {
         &self,
         node: &ExtractedNode,
         block_3d: bool,
+        parent_perspective: Option<nana_ui_core::ParentPerspective>,
     ) -> AffineTransform {
-        self.resolved_page_transform(node, block_3d)
+        self.resolved_page_transform(node, block_3d, parent_perspective)
     }
 
     /// `node`'s own presented transform on the page, as its children are
@@ -703,6 +704,7 @@ impl UiScene {
         &self,
         node: &ExtractedNode,
         block_3d: bool,
+        parent_perspective: Option<nana_ui_core::ParentPerspective>,
     ) -> AffineTransform {
         // A closed 3D context refuses this node's transform, and a layer does
         // not reopen it. `layer_snapshot` cannot see the rule — it is handed
@@ -723,6 +725,7 @@ impl UiScene {
                     node.source_style.layout.as_ref(),
                     self.placed_layout(node),
                     block_3d,
+                    parent_perspective,
                 )
             });
         self.with_sticky_translation(node, transform)
@@ -745,6 +748,7 @@ impl UiScene {
                 node.source_style.layout.as_ref(),
                 self.placed_layout(node),
                 false,
+                None,
             ))
         .then_some(presented)
     }
@@ -963,15 +967,16 @@ impl UiScene {
         if transform != 0
             && let super::VisualNode::Node(node) = vn
             && let Some(extracted) = self.nodes.get(&node)
-            && extracted
-                .source_style
-                .layout
-                .transforms
-                .transform_3d
-                .is_some()
-            && self.draw_ancestor_state(extracted).3
         {
-            transform = 0;
+            let layout = &extracted.source_style.layout;
+            let ctx_3d = self.draw_ancestor_state(extracted).3;
+            if (ctx_3d.blocks_3d && layout.transforms.transform_3d.is_some())
+                || ctx_3d.parent_perspective.is_some()
+                || ctx_3d.backface_hidden
+                || layout.transforms.backface_visibility == nana_ui_core::BackfaceVisibility::Hidden
+            {
+                transform = 0;
+            }
         }
         let isolates = |v: super::VisualNode| super::visual_is_opacity_group(&self.nodes, v);
         let own_opacity_id = |v: super::VisualNode| -> u32 {
@@ -1311,7 +1316,7 @@ fn layer_snapshot(
     };
     let transform = match presentation_transform {
         Some(value) => affine_from_paint(node, placed, value),
-        None => node_scene_transform(node.source_style.layout.as_ref(), placed, false),
+        None => node_scene_transform(node.source_style.layout.as_ref(), placed, false, None),
     };
     let opacity = presentation_opacity.unwrap_or_else(|| local_opacity(node));
     LayerSnapshot {
@@ -1341,7 +1346,7 @@ fn affine_from_paint(
             y: nana_ui_core::LengthSpec::Px(y),
         });
     }
-    node_scene_transform(&layout, placed, false)
+    node_scene_transform(&layout, placed, false, None)
 }
 
 /// Where a presentation transform of `node` pivots, when its geometry says
@@ -2926,7 +2931,7 @@ mod tests {
         let mut parent = node(1, None, &[2]);
         parent.source_style.layout = Arc::new(LayoutStyle {
             transforms: nana_ui_core::TransformStyle {
-                css_perspective: Some(800.0),
+                preserve_3d: true,
                 ..Default::default()
             }
             .into(),

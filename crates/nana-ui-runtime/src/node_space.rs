@@ -143,7 +143,9 @@ impl NodeSpace {
                 Self::TURNS.0
             };
         }
-        if transforms.transform_3d.is_some() {
+        if transforms.transform_3d.is_some()
+            || transforms.backface_visibility == nana_ui_core::BackfaceVisibility::Hidden
+        {
             bits |= Self::TRANSFORM_3D.0;
         }
         if transforms.css_perspective.is_some() {
@@ -174,12 +176,9 @@ impl NodeSpace {
         self.intersects(Self::DEPTH)
     }
 
-    /// It asks for a 3D rendering context its children are drawn in
-    /// (`perspective`, `preserve-3d`:
-    /// [`LayoutStyle::fails_closed_3d_context`]). Hit testing and the
-    /// accessible transform chain carry it down.
-    pub(crate) const fn opens_3d_context(self) -> bool {
-        self.intersects(Self(Self::PERSPECTIVE.0 | Self::PRESERVE_3D.0))
+    /// True when this node opens a fail-closed `preserve-3d` context.
+    pub(crate) const fn fails_closed_3d(self) -> bool {
+        self.contains(Self::PRESERVE_3D)
     }
 
     /// It has a 2D transform of its own, of any kind.

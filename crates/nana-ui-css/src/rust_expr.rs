@@ -13,11 +13,11 @@ use nana_ui_core::dynamic_layout::{
 };
 use nana_ui_core::shared::Shared;
 use nana_ui_core::{
-    AlignSpec, AnchorSpec, BackdropFilter, BackgroundImage, BackgroundImageFit, BackgroundPosition,
-    BackgroundRepeat, BorderImageSlice, BorderImageSpec, BorderStyle, BorderWidth, BoxShadowSpec,
-    BoxSizing, CalcBinOp, CalcExpr, ClipCircle, ClipEllipse, ClipInset, ClipPath, ClipPoint,
-    ClipShapeRadius, ColorFilter, ContainerType, ControlPadding, ControlSize, CssGradient,
-    CursorSpec, DirSpec, DisplaySpec, FilterDropShadow, FlexDirection, FlexWrap,
+    AlignSpec, AnchorSpec, BackdropFilter, BackfaceVisibility, BackgroundImage, BackgroundImageFit,
+    BackgroundPosition, BackgroundRepeat, BorderImageSlice, BorderImageSpec, BorderStyle,
+    BorderWidth, BoxShadowSpec, BoxSizing, CalcBinOp, CalcExpr, ClipCircle, ClipEllipse, ClipInset,
+    ClipPath, ClipPoint, ClipShapeRadius, ColorFilter, ContainerType, ControlPadding, ControlSize,
+    CssGradient, CursorSpec, DirSpec, DisplaySpec, FilterDropShadow, FlexDirection, FlexWrap,
     FontFeatureSetting, FontKerningSpec, FontVariationSetting, GradientStop, GridAutoFlow,
     GridLine, GridRepeatAuto, GridTemplateAreas, GridTrack, GridTrackListUnsupported,
     ImageSampling, JustifySpec, LayoutStyle, LengthSpec, LineBreakSpec, LineHeightSpec, LineRole,
@@ -223,6 +223,7 @@ impl_unit_enum!(PositionSpec, "PositionSpec" => { Static, Relative, Absolute, Fi
 impl_unit_enum!(PopoverPlacement, "PopoverPlacement" => { Top, Bottom, Left, Right });
 impl_unit_enum!(PopoverAlignment, "PopoverAlignment" => { Start, Center, End });
 impl_unit_enum!(TransformBox, "TransformBox" => { ViewBox, BorderBox, FillBox, ContentBox });
+impl_unit_enum!(BackfaceVisibility, "BackfaceVisibility" => { Visible, Hidden });
 impl_unit_enum!(AlignSpec, "AlignSpec" => { Start, Center, End, Stretch, Baseline });
 impl_unit_enum!(JustifySpec, "JustifySpec" => {
     Start, Center, End, SpaceBetween, SpaceAround, SpaceEvenly, Stretch
@@ -1449,7 +1450,9 @@ pub(crate) fn emit_patch_stmt(layout: &LayoutStyle, path: &str, m: &str, out: &m
             "unsupported_transform" => emit_set(&setter, &t.unsupported_transform, m, out),
             "origin" => emit_set(&setter, &t.origin, m, out),
             "css_perspective" => emit_set(&setter, &t.css_perspective, m, out),
+            "perspective_origin" => emit_set(&setter, &t.perspective_origin, m, out),
             "preserve_3d" => emit_set(&setter, &t.preserve_3d, m, out),
+            "backface_visibility" => emit_set(&setter, &t.backface_visibility, m, out),
             "transform_box" => emit_set(&setter, &t.transform_box, m, out),
             _ => panic!("unknown LayoutStyle leaf path: {path}"),
         }

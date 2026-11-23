@@ -57,14 +57,25 @@ impl UiScene {
             }
             return;
         }
-        let (parent_transform, parent_opacity, parent_clips, parent_blocks_3d) =
+        let (parent_transform, parent_opacity, parent_clips, parent_3d) =
             self.ancestor_state(&node);
         // Everything below is built in the node's own coordinates, its
         // border box at the origin, and drawn at the node's origin: a node
         // that only moves keeps it all ([`Self::record_box`]).
         let bounds = scene_rect(Self::record_box(&node));
-        let local_transform = self.logical_local_transform(&node, parent_blocks_3d);
+        let local_transform =
+            self.logical_local_transform(&node, parent_3d.blocks_3d, parent_3d.parent_perspective);
         let transform = parent_transform.then(local_transform);
+        let page_layout = self.placed_layout(&node);
+        let self_backface_hidden = parent_3d.backface_hidden
+            || (node.source_style.layout.transforms.backface_visibility
+                == nana_ui_core::BackfaceVisibility::Hidden
+                && nana_ui_core::is_projective_backface(
+                    transform.0,
+                    transform.1,
+                    page_layout.x + page_layout.width * 0.5,
+                    page_layout.y + page_layout.height * 0.5,
+                ));
         // The base is the logical projection. While the compositor presents
         // anything, a node may sit under a layer's transform: stamp the base
         // stale so the draw rebases it onto the current projection instead of
@@ -131,7 +142,7 @@ impl UiScene {
                 Arc::clone(&clips)
             };
         let node_order = self.node_order.get(&id).copied().unwrap_or_default();
-        let visible = node.style.visible && opacity > 0.0;
+        let visible = node.style.visible && opacity > 0.0 && !self_backface_hidden;
         // A painted node's geometry must be registered before its first
         // primitive goes in: paint order asks whether the node is painted.
         // A hidden painted node keeps its built geometry: shown again with the
