@@ -46,6 +46,10 @@ text_area().label("备注").placeholder("可选").model(notes)
 
 编辑器的文本走 `commit_editor_edit`。键入、删除、粘贴都从那里进撤销。不要自己写 `state.value`，那样不会进撤销。文档 revision、冲突和持久化仍归应用。
 
+## 拖拽调整高度
+
+组件 `TextArea` 上的 `resize_vertical(true)` 在右下角放一个手柄，拖动只改高度，不发文本事件。设了 `min_height` / `max_height` 时手柄照常显示，拖拽高度夹在上下限之内，指针回到范围内边缘立刻跟随。`content-box` 盒模型需要一个显式像素高度（`height(px)`）作为起点。
+
 ## 属性
 
 | 属性 | 类型 | 说明 |

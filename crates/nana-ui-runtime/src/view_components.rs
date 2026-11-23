@@ -4585,6 +4585,28 @@ pub(crate) struct TextAreaResizeDrag {
     pub start_y: f32,
     pub start_height: f32,
     pub previous_height: Option<f32>,
+    /// `min-height` / `max-height` resolved when the drag began, in the
+    /// units `start_height` is in. Every dragged height stays inside them,
+    /// so the kept height is the one the field shows; the grip stays.
+    pub min_height: f32,
+    pub max_height: Option<f32>,
+}
+
+impl TextAreaResizeDrag {
+    /// The dragged height for a pointer at `y`, held inside the limits
+    /// (`min-height` wins over `max-height`, as in CSS).
+    pub(crate) fn height_at(&self, y: f32) -> f32 {
+        clamp_resized_height(
+            self.start_height + y - self.start_y,
+            self.min_height,
+            self.max_height,
+        )
+    }
+}
+
+pub(crate) fn clamp_resized_height(height: f32, min: f32, max: Option<f32>) -> f32 {
+    let height = max.map_or(height, |max| height.min(max));
+    height.max(min).max(0.0)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -5134,16 +5156,16 @@ impl TextArea {
     pub(crate) fn supports_vertical_resize(&self) -> bool {
         self.resize_vertical
             && (self.style.layout.box_sizing == nana_ui_core::BoxSizing::BorderBox
-                || (self.style.layout.min_height.is_none()
-                    && self.style.layout.max_height.is_none()
-                    && (self.resized_height.is_some()
-                        || matches!(
-                            self.style.layout.height,
-                            Some(nana_ui_core::LengthSpec::Px(_))
-                        ))))
+                || self.resized_height.is_some()
+                || matches!(
+                    self.style.layout.height,
+                    Some(nana_ui_core::LengthSpec::Px(_))
+                ))
     }
 
-    /// Enables a vertical grip. Content-box layouts require an unconstrained pixel height.
+    /// Enables a vertical grip. A drag keeps the height inside
+    /// `min_height` / `max_height` rather than hiding the grip; content-box
+    /// layouts need a pixel height to start from.
     pub fn resize_vertical(mut self, enabled: bool) -> Self {
         self.resize_vertical = enabled;
         self

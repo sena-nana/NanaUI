@@ -1161,6 +1161,10 @@ pub struct UiWorld {
     /// palette epoch. Cleared when the epoch moves; bounded.
     #[cfg(feature = "rich-text")]
     pub(crate) diagram_recordings: RefCell<Vec<(u64, crate::markdown_diagram::DiagramDrawing)>>,
+    /// Fenced-code spans from the registered presenters, by presenter,
+    /// language and source. Cleared when a presenter registers; bounded.
+    #[cfg(feature = "rich-text")]
+    pub(crate) code_presentations: RefCell<Vec<(u64, Arc<[crate::TextSpan]>)>>,
     /// Last recording of each modal frame's card surface painter
     /// ([`crate::Dialog::surface_painter`]), apart from the node's own
     /// painter: a frame can have both. Geometry reads through it; despawn
@@ -1549,6 +1553,8 @@ impl UiWorld {
             anchor_memo: RefCell::new(None),
             #[cfg(feature = "rich-text")]
             diagram_recordings: RefCell::new(Vec::new()),
+            #[cfg(feature = "rich-text")]
+            code_presentations: RefCell::new(Vec::new()),
             modal_surface_recordings: RefCell::new(crate::NodeMap::default()),
             paint_text_engine: None,
             painter_overrides: crate::NodeMap::default(),
@@ -4981,8 +4987,55 @@ impl UiWorld {
             {
                 self.mark(id, DirtyMask::TEXT | DirtyMask::RENDER);
             }
+            // Markdown paints fenced code through the presenters directly.
+            #[cfg(feature = "rich-text")]
+            if self
+                .widget_visual_as::<crate::NativeMarkdownVisual>(id)
+                .is_some_and(|visual| visual.code_presenter.as_ref() == name.as_str())
+            {
+                self.mark(id, DirtyMask::RENDER);
+            }
         }
+        #[cfg(feature = "rich-text")]
+        self.code_presentations.borrow_mut().clear();
         Ok(())
+    }
+
+    /// Spans the presenter `presenter` gives `source` as `language`, or
+    /// `None` when no such presenter is registered or it colors nothing.
+    /// Fenced code in [`crate::NativeMarkdown`] paints through this.
+    #[cfg(feature = "rich-text")]
+    pub(crate) fn code_presentation(
+        &self,
+        presenter: &str,
+        language: &str,
+        source: &str,
+    ) -> Option<Arc<[crate::TextSpan]>> {
+        let presenter_impl = self.presenters.get(presenter)?;
+        let key = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            (presenter, language, source).hash(&mut hasher);
+            hasher.finish()
+        };
+        if let Some((_, spans)) = self
+            .code_presentations
+            .borrow()
+            .iter()
+            .find(|(entry, _)| *entry == key)
+        {
+            return (!spans.is_empty()).then(|| Arc::clone(spans));
+        }
+        let request = HighlightRequest::new(presenter, language);
+        let spans: Arc<[crate::TextSpan]> =
+            crate::presentation::sanitize_spans(source, presenter_impl.present(source, &request))
+                .into();
+        let mut held = self.code_presentations.borrow_mut();
+        if held.len() >= 128 {
+            held.remove(0);
+        }
+        held.push((key, Arc::clone(&spans)));
+        (!spans.is_empty()).then_some(spans)
     }
 
     /// Derive [`TextPresentation`] for scheduled text nodes. Committed text
@@ -5365,6 +5418,39 @@ impl UiWorld {
             self.node_style_model(id),
             self.chrome_text_measure(id),
             self.animation_now(),
+        ))
+    }
+
+    /// The node's `min-height` / `max-height` in px, resolved the way layout
+    /// resolves them: percentages against the parent's content box (the
+    /// viewport for a root), `vh` against the document viewport and `em`
+    /// against the nearest declared font size. The values are in the box
+    /// the node's `box-sizing` names.
+    pub(crate) fn resolved_height_limits(&self, id: StableNodeId) -> Option<(f32, Option<f32>)> {
+        let style = self.layout_style(id)?;
+        let viewport = self.document_viewport_of(id);
+        let percent_base = match self.parent_id(id) {
+            Some(parent) => self
+                .component_content_box(parent)
+                .map(|bounds| bounds.height),
+            None => viewport.map(|viewport| viewport.height),
+        };
+        let mut element_px = style.font_size;
+        let mut ancestor = self.parent_id(id);
+        while element_px.is_none()
+            && let Some(node) = ancestor
+        {
+            element_px = self.layout_style(node).and_then(|style| style.font_size);
+            ancestor = self.parent_id(node);
+        }
+        let fonts = nana_ui_core::FontSizeContext::new(
+            nana_ui_core::FontSizeContext::DEFAULT_ROOT_PX,
+            element_px.unwrap_or(nana_ui_core::FontSizeContext::DEFAULT_ROOT_PX),
+        );
+        let vp = viewport.map(|viewport| (viewport.width, viewport.height));
+        Some((
+            style.resolved_min_height_fonts(percent_base, vp, fonts),
+            style.resolved_max_height_fonts(percent_base, vp, fonts),
         ))
     }
 

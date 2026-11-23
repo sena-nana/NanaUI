@@ -54,6 +54,18 @@ mermaid 围栏和公式围栏由控件自己画：公式用 RaTeX，图用原生
 
 读不懂的 mermaid 源码显示为代码块。表格、删除线和任务列表走原生块。
 
+图比正文栏宽时等比缩小，永不放大。点一下图（按下再松开，没有拖出选区）发 `RichTextEvent::DiagramActivated`，载荷 `MarkdownDiagram` 带块序号和图的源码。要不要放大、怎么放大由应用决定，比如开一个对话框，里面放一个够宽的 `NativeMarkdown::from_blocks([MarkdownBlock::Mermaid(source)])`，图就按自然尺寸画。`UiWorld::markdown_diagram_placement(id, block_index)` 回答图画在哪个框里、自然尺寸多大、缩放比多少；`scale < 1` 说明图被缩小过。
+
+## 代码块着色
+
+带语言的代码围栏交给一个已登记的 `TextPresenter` 着色，默认找 `HIGHLIGHT_PRESENTER`（`"highlight"`）。`code_presenter(name)` 换成别的名字。presenter 拿到围栏正文和带语言的 `HighlightRequest`，返回字节区间的 `TextSpan`，每段按主题角色上色，换主题跟着变。越界、重叠或不在字符边界上的区间会被裁掉。没有登记对应 presenter 时，围栏保持单色；之后再登记，下一次绘制就上色。
+
+核心运行时不绑定语法库。应用可以用 `TextPresenterFn::new(name, |text, request| spans)` 把自己的高亮函数包成 presenter，用 `AppContext::register_presenter` 登记。打开 `syntax-highlighting` 特性时，`AppContext::new` 已经装好基于 syntect 的 `HighlightPresentation`，围栏直接上色。
+
+## 提示块
+
+GFM 提示块 `> [!NOTE]`、`> [!TIP]`、`> [!IMPORTANT]`、`> [!WARNING]`、`> [!CAUTION]` 解析成 `MarkdownBlockKind::Alert { kind, opens }` 段落，`[!…]` 标记本身不进正文。每段左侧画一条该类颜色的竖条，段与段之间连起来；第一段上方画标题。颜色取主题角色（`MarkdownAlertKind::color`：说明为强调色，提示为成功色，重要为深强调色，警告为警告色，注意为危险色）。标题来自 `FrameworkStrings` 的 `markdown.alert.*`，可以按语言替换。只有标记没有正文的提示块只画标题。
+
 ## 装配
 
 `assemble_markdown` 是 `slot_assembler`。
@@ -74,12 +86,16 @@ mermaid 围栏和公式围栏由控件自己画：公式用 RaTeX，图用原生
 | --- | --- | --- |
 | `source` | — | `from_source(source)` 和 `parse(source)` 是同一条解析。源码保存在控件里。`new()` 是空文档 |
 | `blocks` | `MarkdownBlock` | `from_blocks` 直接接收已经分好的块。`blocks()` 读解析结果 |
+| `code_presenter` | `Arc<str>` | 给代码围栏着色的 presenter 名，默认 `"highlight"` |
 
 ## 事件
 
 | 事件 | 载荷 | 说明 |
 | --- | --- | --- |
-| 无 | 无 | 无 |
+| `RichTextEvent::SelectionChanged` | `Option<TextSelectionSnapshot>` | 拖选改变选区 |
+| `RichTextEvent::LinkActivated` | `Arc<str>` | 点了链接 |
+| `RichTextEvent::ImageActivated` | `MarkdownImage` | 点了图片 |
+| `RichTextEvent::DiagramActivated` | `MarkdownDiagram` | 点了 mermaid 图，供应用打开放大预览 |
 
 ## 插槽
 

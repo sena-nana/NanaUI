@@ -86,6 +86,12 @@ framework_strings! {
     diagram_label = "diagram.label" => "图表";
     /// A diagram's element counts. `{nodes}`, `{edges}`.
     diagram_summary = "diagram.summary" => "{nodes} 个节点，{edges} 条连线";
+    /// Titles of a Markdown GFM alert (`> [!NOTE]` and its kin).
+    markdown_alert_note = "markdown.alert.note" => "说明";
+    markdown_alert_tip = "markdown.alert.tip" => "提示";
+    markdown_alert_important = "markdown.alert.important" => "重要";
+    markdown_alert_warning = "markdown.alert.warning" => "警告";
+    markdown_alert_caution = "markdown.alert.caution" => "注意";
     file_tab_close = "file_tab.close" => "关闭文件";
     size_field_label = "size_field.label" => "尺寸";
     size_field_width = "size_field.width" => "宽度";

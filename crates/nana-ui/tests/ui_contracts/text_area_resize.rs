@@ -210,6 +210,73 @@ fn textarea_resize_uses_transformed_logical_coordinates_and_content_box_chrome()
     assert!((cx.world().layout_box(area.stable_id()).unwrap().height - height - 20.0).abs() < 0.1);
 }
 
+/// The limits hold the drag, not the grip: a field with `min_height` /
+/// `max_height` keeps its grip in either box model, and the edge follows the
+/// pointer again as soon as it comes back inside the range.
+#[test]
+fn textarea_resize_keeps_grip_under_limits_and_clamps_the_drag() {
+    for box_sizing in [
+        nana_ui_core::BoxSizing::BorderBox,
+        nana_ui_core::BoxSizing::ContentBox,
+    ] {
+        let mut cx = AppContext::new();
+        let doc = DocumentId::new(1).unwrap();
+        let mut view = TextArea::new("limits").height(160.0).resize_vertical(true);
+        let style = Arc::make_mut(&mut view.style.layout);
+        style.width = Some(nana_ui_core::LengthSpec::Px(280.0));
+        style.box_sizing = box_sizing;
+        style.min_height = Some(nana_ui_core::LengthSpec::Px(120.0));
+        style.max_height = Some(nana_ui_core::LengthSpec::Px(200.0));
+        let area = cx.create_component(doc, view).unwrap();
+        layout(&mut cx, doc, area);
+        let initial = cx.world().layout_box(area.stable_id()).unwrap().height;
+        let (x, y) = grip(&cx, area);
+        let mut adapter = HeadlessInput::bind(&mut cx, doc);
+        adapter
+            .route(&mut cx, pointer(PointerPhase::Down, x, y))
+            .unwrap();
+        assert_eq!(
+            cx.world().pointer_capture(doc, 1),
+            Some(area.stable_id()),
+            "{box_sizing:?}: the grip stays under limits"
+        );
+        adapter
+            .route(&mut cx, pointer(PointerPhase::Move, x, y + 400.0))
+            .unwrap();
+        layout(&mut cx, doc, area);
+        let top = cx.world().layout_box(area.stable_id()).unwrap().height;
+        assert_eq!(top, 200.0, "{box_sizing:?}: max_height holds the drag");
+        // Back inside the range: 10px short of where `max_height` holds it.
+        adapter
+            .route(
+                &mut cx,
+                pointer(PointerPhase::Move, x, y + top - initial - 10.0),
+            )
+            .unwrap();
+        layout(&mut cx, doc, area);
+        let back = cx.world().layout_box(area.stable_id()).unwrap().height;
+        assert!(
+            (top - back - 10.0).abs() < 0.1,
+            "{box_sizing:?}: the edge follows the pointer back ({top} -> {back})"
+        );
+        adapter
+            .route(&mut cx, pointer(PointerPhase::Move, x, y - 400.0))
+            .unwrap();
+        adapter
+            .route(&mut cx, pointer(PointerPhase::Up, x, y - 400.0))
+            .unwrap();
+        layout(&mut cx, doc, area);
+        let bottom = cx.world().layout_box(area.stable_id()).unwrap().height;
+        // Padding and border sit on top of a content-box height.
+        let chrome = initial - 160.0;
+        assert_eq!(
+            bottom,
+            120.0 + chrome,
+            "{box_sizing:?}: min_height holds the drag"
+        );
+    }
+}
+
 /// A multiline editor's value keeps its line breaks whatever `white-space`
 /// says. The scene has to say so: the renderer lays the same text out again,
 /// and a paragraph measured as six lines and painted as one overflows nothing

@@ -69,6 +69,56 @@ pub trait TextPresenter: Send + 'static {
     fn present(&self, text: &str, request: &HighlightRequest) -> Vec<TextSpan>;
 }
 
+/// A [`TextPresenter`] made from a closure: the lightweight way for an
+/// application to color text — say, fenced code in a
+/// [`crate::NativeMarkdown`] — with a highlighter of its own, without
+/// enabling `syntax-highlighting`.
+///
+/// ```
+/// # use nana_ui_runtime::{HighlightRequest, SemanticColorRole, TextPresenterFn, TextSpan};
+/// let keywords = TextPresenterFn::new("highlight", |text: &str, _: &HighlightRequest| {
+///     text.match_indices("fn")
+///         .map(|(start, word)| TextSpan {
+///             start,
+///             end: start + word.len(),
+///             color: SemanticColorRole::Keyword,
+///         })
+///         .collect()
+/// });
+/// # let _ = keywords;
+/// ```
+///
+/// Spans are byte ranges of the text it is given. Out-of-range, overlapping
+/// or non-boundary spans are dropped or trimmed, never trusted.
+pub struct TextPresenterFn<F> {
+    name: &'static str,
+    present: F,
+}
+
+impl<F> TextPresenterFn<F>
+where
+    F: Fn(&str, &HighlightRequest) -> Vec<TextSpan> + Send + 'static,
+{
+    /// A presenter registered under `name` (the [`HighlightRequest::presenter`]
+    /// it answers).
+    pub fn new(name: &'static str, present: F) -> Self {
+        Self { name, present }
+    }
+}
+
+impl<F> TextPresenter for TextPresenterFn<F>
+where
+    F: Fn(&str, &HighlightRequest) -> Vec<TextSpan> + Send + 'static,
+{
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn present(&self, text: &str, request: &HighlightRequest) -> Vec<TextSpan> {
+        (self.present)(text, request)
+    }
+}
+
 pub(crate) fn presentation_source(text: &crate::TextValue, request: &HighlightRequest) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     request.presenter.hash(&mut hasher);

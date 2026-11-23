@@ -34,6 +34,7 @@ context.set_framework_strings(strings)?;
 | `diff.*` | 差异对比视图的操作按钮文案 |
 | `calendar.*`、`date_picker.*` | 日历热力图（`CalendarHeatmap`）与日期选择器（`DatePicker`）的月份/星期格式 |
 | `command_palette.*`、`menu.search` | 命令面板（`CommandPalette`）与可搜索菜单的搜索框占位符 |
+| `diagram.*`、`markdown.alert.*` | `NativeMarkdown` 里图表的无障碍名称与摘要，以及 GFM 提示块（`> [!NOTE]` 等五种）的标题 |
 | `theme.*`、`material.*`、`settings.*` | 内置外观设置页的主题、材质与配置项标签 |
 | 其余独立键 | `chip.remove`、`range_field.reset`、`file_tab.close`、`color_field.label`、`path_field.*`、`browser_view.label`、`dynamic_form.auto` |
 

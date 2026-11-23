@@ -21,10 +21,15 @@ pub enum MarkdownDrawingCommand {
         line_through: bool,
         underline: bool,
         code: bool,
+        /// A theme role already resolved (a code token, an alert title);
+        /// `None` paints in the node's text color.
+        color: Option<[f32; 4]>,
     },
     Line {
         points: Vec<[f32; 2]>,
         width: f32,
+        /// `None` strokes in the node's text color.
+        color: Option<[f32; 4]>,
     },
     Box {
         bounds: LayoutBox,
@@ -90,11 +95,15 @@ impl MarkdownDrawing {
             line_through: false,
             underline: false,
             code: false,
+            color: None,
         });
     }
     fn line(&mut self, points: Vec<[f32; 2]>, width: f32) {
-        self.commands
-            .push(MarkdownDrawingCommand::Line { points, width });
+        self.commands.push(MarkdownDrawingCommand::Line {
+            points,
+            width,
+            color: None,
+        });
     }
     fn append(&mut self, other: &Self, x: f32, y: f32, scale: f32) {
         for command in &other.commands {
@@ -116,6 +125,7 @@ impl MarkdownDrawing {
                     line_through,
                     underline,
                     code,
+                    color,
                 } => MarkdownDrawingCommand::Text {
                     bounds: transform_box(*bounds, x, y, scale),
                     text: text.clone(),
@@ -125,13 +135,19 @@ impl MarkdownDrawing {
                     line_through: *line_through,
                     underline: *underline,
                     code: *code,
+                    color: *color,
                 },
-                MarkdownDrawingCommand::Line { points, width } => MarkdownDrawingCommand::Line {
+                MarkdownDrawingCommand::Line {
+                    points,
+                    width,
+                    color,
+                } => MarkdownDrawingCommand::Line {
                     points: points
                         .iter()
                         .map(|p| [x + p[0] * scale, y + p[1] * scale])
                         .collect(),
                     width: width * scale,
+                    color: *color,
                 },
                 MarkdownDrawingCommand::Box { bounds, radius } => MarkdownDrawingCommand::Box {
                     bounds: transform_box(*bounds, x, y, scale),
@@ -267,13 +283,31 @@ pub(crate) fn block_drawing(block: &MarkdownBlock) -> Option<MarkdownDrawing> {
 pub(crate) fn document(blocks: &[MarkdownBlock], bounds: LayoutBox) -> MarkdownDrawing {
     let geometry = crate::rich_text::layout_markdown(blocks, bounds);
     let theme = nana_ui_core::builtin_theme(nana_ui_core::ThemeAppearance::Light);
+    let strings = nana_ui_core::FrameworkStrings::default();
     document_with_geometry(
         blocks,
         bounds,
         &geometry,
-        nana_ui_core::UI_METRICS,
-        &|scene, scale| crate::markdown_diagram::record(scene, theme, scale),
+        &MarkdownPaint {
+            metrics: nana_ui_core::UI_METRICS,
+            record: &|scene, scale| crate::markdown_diagram::record(scene, theme, scale),
+            color: &|role| theme.style_model().color(role).as_rgba_array(),
+            strings: &strings,
+            code_spans: &|_, _| None,
+        },
     )
+}
+
+/// What a markdown drawing reads besides its blocks and geometry: the
+/// world's theme, strings and registered presenters, or their defaults.
+pub(crate) struct MarkdownPaint<'a> {
+    pub metrics: nana_ui_core::ThemeMetrics,
+    pub record: &'a DiagramRecorder<'a>,
+    /// A theme role as the color it paints.
+    pub color: &'a dyn Fn(nana_ui_core::SemanticColorRole) -> [f32; 4],
+    pub strings: &'a nana_ui_core::FrameworkStrings,
+    /// Spans the code presenter gives a fence `(language, source)`.
+    pub code_spans: &'a dyn Fn(&str, &str) -> Option<Arc<[crate::TextSpan]>>,
 }
 
 /// How a laid-out diagram becomes a recording: against the world's theme,
@@ -285,20 +319,29 @@ pub(crate) fn document_with_geometry(
     blocks: &[MarkdownBlock],
     bounds: LayoutBox,
     geometry: &crate::rich_text::MarkdownGeometry,
-    metrics: nana_ui_core::ThemeMetrics,
-    record: &DiagramRecorder<'_>,
+    paint: &MarkdownPaint<'_>,
 ) -> MarkdownDrawing {
     use crate::rich_text::{BlockArt, DiagramArt};
+    let metrics = paint.metrics;
     let mut output = MarkdownDrawing {
         width: bounds.width,
         height: geometry.bounds.height,
         ..Default::default()
     };
+    let mut previous: Option<&MarkdownBlock> = None;
     for (block, g) in blocks.iter().zip(&geometry.blocks) {
+        let before = previous.replace(block);
+        if let MarkdownBlock::Text {
+            kind: MarkdownBlockKind::Alert { kind, opens },
+            ..
+        } = block
+        {
+            alert_chrome(&mut output, paint, g.bounds, *kind, *opens, before);
+        }
         match &g.art {
             BlockArt::Diagram(DiagramArt(scene)) => {
                 let scale = (g.bounds.width.max(1.0) / scene.size[0].max(1.0)).min(1.0);
-                let drawing = record(scene, scale);
+                let drawing = (paint.record)(scene, scale);
                 let [width, height] = drawing.size;
                 output.commands.push(MarkdownDrawingCommand::Diagram {
                     bounds: LayoutBox {
@@ -337,6 +380,8 @@ pub(crate) fn document_with_geometry(
             MarkdownBlock::Text { kind, .. } => text_style(*kind),
             _ => (13.0, 400),
         };
+        let token_colors = code_token_colors(block, g, paint);
+        let token = |index: usize| token_colors.as_ref().and_then(|colors| colors[index]);
         let mut start = 0;
         while start < g.graphemes.len() {
             let first = &g.graphemes[start];
@@ -344,6 +389,7 @@ pub(crate) fn document_with_geometry(
             while end < g.graphemes.len()
                 && g.graphemes[end].span_index == first.span_index
                 && g.graphemes[end].bounds.y == first.bounds.y
+                && token(end) == token(start)
             {
                 end += 1
             }
@@ -401,9 +447,11 @@ pub(crate) fn document_with_geometry(
                     line_through,
                     underline,
                     code,
+                    color,
                     ..
                 }) = output.commands.last_mut()
                 {
+                    *color = token(start);
                     *italic = span.is_some_and(|s| s.emphasis);
                     *line_through = span.is_some_and(|s| s.strikethrough);
                     *underline = span.is_some_and(|s| s.link.is_some());
@@ -422,6 +470,92 @@ pub(crate) fn document_with_geometry(
         }
     }
     output
+}
+
+/// The bar down an alert paragraph's left edge (bridging the gap to the
+/// paragraph above in the same alert) and, on its first paragraph, the
+/// title, both in the alert's color.
+fn alert_chrome(
+    output: &mut MarkdownDrawing,
+    paint: &MarkdownPaint<'_>,
+    bounds: LayoutBox,
+    kind: crate::MarkdownAlertKind,
+    opens: bool,
+    before: Option<&MarkdownBlock>,
+) {
+    let color = (paint.color)(kind.color());
+    let continues = !opens
+        && matches!(
+            before,
+            Some(MarkdownBlock::Text {
+                kind: MarkdownBlockKind::Alert { kind: above, .. },
+                ..
+            }) if *above == kind
+        );
+    let top = if continues {
+        bounds.y - crate::rich_text::BLOCK_GAP
+    } else {
+        bounds.y
+    };
+    let x = bounds.x + crate::rich_text::ALERT_BAR_WIDTH * 0.5;
+    output.commands.push(MarkdownDrawingCommand::Line {
+        points: vec![[x, top], [x, bounds.y + bounds.height]],
+        width: crate::rich_text::ALERT_BAR_WIDTH,
+        color: Some(color),
+    });
+    if opens {
+        let (size, _) = text_style(MarkdownBlockKind::Paragraph);
+        output.text(
+            bounds.x + crate::rich_text::text_indent(MarkdownBlockKind::Alert { kind, opens }),
+            bounds.y,
+            Arc::clone(kind.title(paint.strings)),
+            size,
+            600,
+        );
+        if let Some(MarkdownDrawingCommand::Text { color: title, .. }) = output.commands.last_mut()
+        {
+            *title = Some(color);
+        }
+    }
+}
+
+/// Per grapheme of a fence, the color of the code presenter's span it falls
+/// in, or `None` for a block that is not fenced code or a presenter that
+/// colors nothing.
+fn code_token_colors(
+    block: &MarkdownBlock,
+    geometry: &crate::rich_text::MarkdownBlockGeometry,
+    paint: &MarkdownPaint<'_>,
+) -> Option<Vec<Option<[f32; 4]>>> {
+    use unicode_segmentation::UnicodeSegmentation;
+    let MarkdownBlock::Code {
+        language: Some(language),
+        source,
+    } = block
+    else {
+        return None;
+    };
+    if language.is_empty() || geometry.art != crate::rich_text::BlockArt::None {
+        return None;
+    }
+    let spans = (paint.code_spans)(language, source)?;
+    // Layout places every non-empty grapheme of the source in order.
+    let mut colors = Vec::with_capacity(geometry.graphemes.len());
+    let mut span = 0;
+    let mut offset = 0;
+    for grapheme in source.graphemes(true).filter(|value| !value.is_empty()) {
+        while spans.get(span).is_some_and(|s| s.end <= offset) {
+            span += 1;
+        }
+        colors.push(
+            spans
+                .get(span)
+                .filter(|s| s.start <= offset)
+                .map(|s| (paint.color)(s.color)),
+        );
+        offset += grapheme.len();
+    }
+    (colors.len() == geometry.graphemes.len()).then_some(colors)
 }
 
 #[cfg(test)]
@@ -622,12 +756,18 @@ mod tests {
             1,
         );
         let theme = nana_ui_core::builtin_theme(nana_ui_core::ThemeAppearance::Light);
+        let strings = nana_ui_core::FrameworkStrings::default();
         let drawing = document_with_geometry(
             markdown.blocks(),
             bounds,
             &geometry,
-            nana_ui_core::UI_METRICS,
-            &|scene, scale| crate::markdown_diagram::record(scene, theme, scale),
+            &MarkdownPaint {
+                metrics: nana_ui_core::UI_METRICS,
+                record: &|scene, scale| crate::markdown_diagram::record(scene, theme, scale),
+                color: &|role| theme.style_model().color(role).as_rgba_array(),
+                strings: &strings,
+                code_spans: &|_, _| None,
+            },
         );
         let MarkdownDrawingCommand::Text { bounds: before, .. } = &drawing.commands[0] else {
             panic!("text");
@@ -830,5 +970,265 @@ mod tests {
         assert!(
             matches!(markdown.pointer_up(x, y, bounds), Some(crate::RichTextEvent::LinkActivated(link)) if link.as_ref() == "image.png")
         );
+    }
+
+    fn column() -> LayoutBox {
+        LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 400.0,
+            height: 800.0,
+        }
+    }
+
+    /// `> [!KIND]` opens an alert: its paragraphs carry the kind, only the
+    /// first opens it, a title-only alert still shows, and a plain quote
+    /// stays a quote.
+    #[test]
+    fn gfm_alerts_parse_into_alert_paragraphs() {
+        use crate::MarkdownAlertKind;
+        let markdown = NativeMarkdown::from_source(concat!(
+            "> [!NOTE]\n> First.\n>\n> Second.\n\n",
+            "> [!WARNING]\n\n",
+            "> plain quote\n\n",
+            "> [!TIP]\n> tip\n",
+        ));
+        let kinds = markdown
+            .blocks()
+            .iter()
+            .map(|block| match block {
+                MarkdownBlock::Text { kind, .. } => *kind,
+                other => panic!("text blocks only: {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            kinds,
+            [
+                MarkdownBlockKind::Alert {
+                    kind: MarkdownAlertKind::Note,
+                    opens: true
+                },
+                MarkdownBlockKind::Alert {
+                    kind: MarkdownAlertKind::Note,
+                    opens: false
+                },
+                MarkdownBlockKind::Alert {
+                    kind: MarkdownAlertKind::Warning,
+                    opens: true
+                },
+                MarkdownBlockKind::Quote,
+                MarkdownBlockKind::Alert {
+                    kind: MarkdownAlertKind::Tip,
+                    opens: true
+                },
+            ]
+        );
+        assert!(!markdown.plain_text().contains("[!"));
+    }
+
+    /// An alert draws a bar in its color down every paragraph, joined across
+    /// the gap between them, and its title (from the framework strings) once,
+    /// above the first paragraph's text.
+    #[test]
+    fn gfm_alerts_draw_a_colored_bar_and_one_title() {
+        let markdown = NativeMarkdown::from_source("> [!CAUTION]\n> One.\n>\n> Two.");
+        let geometry = markdown.layout(column());
+        let drawing = markdown.drawing(column());
+        let theme = nana_ui_core::builtin_theme(nana_ui_core::ThemeAppearance::Light);
+        let danger = theme
+            .style_model()
+            .color(nana_ui_core::SemanticColorRole::Danger)
+            .as_rgba_array();
+        let title = &nana_ui_core::FrameworkStrings::default().markdown_alert_caution;
+        let titles = drawing
+            .commands
+            .iter()
+            .filter_map(|command| match command {
+                MarkdownDrawingCommand::Text {
+                    text,
+                    color,
+                    bounds,
+                    ..
+                } if text == title => Some((*color, *bounds)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(titles.len(), 1, "one title per alert");
+        assert_eq!(titles[0].0, Some(danger));
+        let first_text = geometry.blocks[0].graphemes[0].bounds;
+        assert!(titles[0].1.y + crate::rich_text::ALERT_TITLE_HEIGHT <= first_text.y + 0.01);
+        let bars = drawing
+            .commands
+            .iter()
+            .filter_map(|command| match command {
+                MarkdownDrawingCommand::Line { points, color, .. } => Some((points, *color)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(bars.len(), 2);
+        assert!(bars.iter().all(|(_, color)| *color == Some(danger)));
+        let first_bottom = bars[0].0[1][1];
+        let second_top = bars[1].0[0][1];
+        assert!(
+            (first_bottom - second_top).abs() < 0.01,
+            "the bar runs on through the gap ({first_bottom} vs {second_top})"
+        );
+    }
+
+    fn keyword_presenter(name: &'static str) -> Box<dyn crate::TextPresenter> {
+        Box::new(crate::TextPresenterFn::new(
+            name,
+            |text: &str, request: &crate::HighlightRequest| {
+                assert_eq!(request.language.as_ref(), "rust");
+                text.match_indices("fn")
+                    .map(|(start, word)| crate::TextSpan {
+                        start,
+                        end: start + word.len(),
+                        color: nana_ui_core::SemanticColorRole::Keyword,
+                    })
+                    .collect()
+            },
+        ))
+    }
+
+    fn painted_runs(
+        context: &AppContext,
+        id: crate::StableNodeId,
+    ) -> Vec<(String, Option<[f32; 4]>)> {
+        context
+            .world()
+            .native_markdown_layout(id)
+            .expect("markdown layout")
+            .drawing
+            .commands
+            .into_iter()
+            .filter_map(|command| match command {
+                MarkdownDrawingCommand::Text { text, color, .. } => Some((text.to_string(), color)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Fenced code paints through the registered presenter its markdown
+    /// names: runs split at span edges and take the span's theme color.
+    /// Without that presenter the fence stays one color; registering it
+    /// later colors the fence on the next paint.
+    #[test]
+    fn fenced_code_is_colored_by_the_registered_presenter() {
+        let document = DocumentId::new(82).unwrap();
+        let mut context = AppContext::new();
+        let markdown = context
+            .create_component(
+                document,
+                NativeMarkdown::from_source("```rust\nfn main() {}\n```\n\n```\nfn plain\n```")
+                    .code_presenter("test-keywords"),
+            )
+            .unwrap();
+        let id = markdown.stable_id();
+        context
+            .layout_document(document, LayoutViewport::new(400.0, 400.0))
+            .unwrap();
+        assert!(
+            painted_runs(&context, id)
+                .iter()
+                .all(|(_, color)| color.is_none()),
+            "no presenter, no colors"
+        );
+
+        context
+            .register_presenter(keyword_presenter("test-keywords"))
+            .unwrap();
+        let keyword = context
+            .world()
+            .node_style_model(id)
+            .color(nana_ui_core::SemanticColorRole::Keyword)
+            .as_rgba_array();
+        let runs = painted_runs(&context, id);
+        assert!(
+            runs.iter()
+                .any(|(text, color)| text == "fn" && *color == Some(keyword)),
+            "the keyword is its own run in the keyword color: {runs:?}"
+        );
+        assert!(
+            runs.iter()
+                .any(|(text, color)| text.starts_with(" main") && color.is_none()),
+            "the rest of the line keeps the text color: {runs:?}"
+        );
+        assert!(
+            runs.iter()
+                .any(|(text, color)| text.contains("fn plain") && color.is_none()),
+            "a fence without a language is not handed to the presenter: {runs:?}"
+        );
+    }
+
+    /// A click on a diagram that is shown smaller than its natural size
+    /// reports it with its source; a drag across it selects instead.
+    #[test]
+    fn clicking_a_diagram_reports_it_and_its_placement() {
+        let source = "flowchart LR\nA[A long first label] --> B[A long second label] --> C[A long third label]";
+        let markdown = NativeMarkdown::from_source(&format!("Intro\n\n```mermaid\n{source}\n```"));
+        let bounds = LayoutBox {
+            x: 10.0,
+            y: 20.0,
+            width: 200.0,
+            height: 800.0,
+        };
+        let geometry = markdown.layout(bounds);
+        let placement = geometry.blocks[1]
+            .diagram_placement()
+            .expect("a native diagram");
+        assert_eq!(placement.block_index, 1);
+        assert!(placement.scale < 1.0 && placement.natural_size[0] > bounds.width);
+        assert!(geometry.blocks[0].diagram_placement().is_none());
+
+        let (x, y) = (
+            placement.bounds.x + placement.bounds.width * 0.5,
+            placement.bounds.y + placement.bounds.height * 0.5,
+        );
+        assert!(markdown.pointer_down(x, y, bounds));
+        assert_eq!(
+            markdown.pointer_up(x, y, bounds),
+            Some(crate::RichTextEvent::DiagramActivated(
+                crate::MarkdownDiagram {
+                    block_index: 1,
+                    source: Arc::from(source),
+                }
+            ))
+        );
+
+        let intro = geometry.blocks[0].graphemes[0].bounds;
+        markdown.clear_selection();
+        assert!(markdown.pointer_down(intro.x + 1.0, intro.y + 1.0, bounds));
+        markdown.pointer_move(x, y, bounds);
+        assert!(matches!(
+            markdown.pointer_up(x, y, bounds),
+            Some(crate::RichTextEvent::SelectionChanged(Some(_)))
+        ));
+    }
+
+    /// The world answers where a laid-out node's diagram shows.
+    #[test]
+    fn a_laid_out_markdown_reports_its_diagram_placement() {
+        let document = DocumentId::new(83).unwrap();
+        let mut context = AppContext::new();
+        let markdown = context
+            .create_component(
+                document,
+                NativeMarkdown::from_source("```mermaid\nflowchart TD\nA-->B\n```\n\nText"),
+            )
+            .unwrap();
+        let id = markdown.stable_id();
+        context
+            .layout_document(document, LayoutViewport::new(400.0, 600.0))
+            .unwrap();
+        let world = context.world();
+        let placement = world
+            .markdown_diagram_placement(id, 0)
+            .expect("diagram placement");
+        assert_eq!(placement.scale, 1.0);
+        let content = world.component_content_box(id).unwrap();
+        assert!(placement.bounds.y >= content.y - 0.01);
+        assert!(placement.bounds.x >= content.x - 0.01);
+        assert!(world.markdown_diagram_placement(id, 1).is_none());
     }
 }

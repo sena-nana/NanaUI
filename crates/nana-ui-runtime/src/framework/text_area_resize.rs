@@ -55,8 +55,26 @@ impl AppContext {
         let Some(bounds) = self.world.component_layout_box(target) else {
             return Ok(false);
         };
+        let content_box = self.read(entity, |area| {
+            area.style.layout.box_sizing == nana_ui_core::BoxSizing::ContentBox
+        })?;
+        let (min_height, mut max_height) = self
+            .world
+            .resolved_height_limits(target)
+            .unwrap_or((0.0, None));
+        if content_box {
+            // A content-box height is dragged in content units. Layout holds
+            // it to `min-height` before adding padding and border and to
+            // `max-height` after (`layout_engine::measure::finish_intrinsic_size`), so the upper
+            // limit loses the chrome here.
+            let chrome = self
+                .world
+                .component_content_box(target)
+                .map_or(0.0, |content| (bounds.height - content.height).max(0.0));
+            max_height = max_height.map(|max| (max - chrome).max(0.0));
+        }
         let start_height = self.read(entity, |area| {
-            if area.style.layout.box_sizing == nana_ui_core::BoxSizing::ContentBox {
+            if content_box {
                 area.resized_height
                     .or_else(|| match area.style.layout.height {
                         Some(nana_ui_core::LengthSpec::Px(height)) => Some(height),
@@ -67,12 +85,21 @@ impl AppContext {
                 bounds.height
             }
         })?;
+        // Start from the height the limits let the field show, so the first
+        // move already moves the edge.
+        let start_height = crate::view_components::clamp_resized_height(
+            restored_height.unwrap_or(start_height),
+            min_height,
+            max_height,
+        );
         self.update_component(entity, |area, cx| {
             area.resize_drag = Some(TextAreaResizeDrag {
                 pointer,
                 start_y: y,
-                start_height: restored_height.unwrap_or(start_height),
+                start_height,
                 previous_height: area.resized_height,
+                min_height,
+                max_height,
             });
             cx.mutations().capture_pointer(pointer, target);
         })?;
@@ -117,7 +144,7 @@ impl AppContext {
             return Ok(false);
         };
         self.update_component(entity, |area, _| {
-            area.resized_height = Some((drag.start_height + y - drag.start_y).max(0.0));
+            area.resized_height = Some(drag.height_at(y));
         })?;
         Ok(true)
     }

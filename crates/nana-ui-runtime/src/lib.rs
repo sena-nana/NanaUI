@@ -420,7 +420,8 @@ pub use popover::{
 };
 pub use presence::{PresenceLifecycle, PresencePhase, PresenceSettled};
 pub use presentation::{
-    HIGHLIGHT_PRESENTER, HighlightRequest, TextPresentation, TextPresenter, TextSpan,
+    HIGHLIGHT_PRESENTER, HighlightRequest, TextPresentation, TextPresenter, TextPresenterFn,
+    TextSpan,
 };
 #[cfg(feature = "syntax-highlighting")]
 pub use presentation::{HighlightPresentation, SyntectHighlighter};
@@ -444,7 +445,8 @@ pub use reorder_list::{
 };
 #[cfg(feature = "rich-text")]
 pub use rich_text::{
-    MarkdownBlock, MarkdownBlockKind, MarkdownImage, MarkdownImageResource, MarkdownSpan,
+    ALERT_BAR_WIDTH, ALERT_TITLE_HEIGHT, MarkdownAlertKind, MarkdownBlock, MarkdownBlockKind,
+    MarkdownDiagram, MarkdownDiagramPlacement, MarkdownImage, MarkdownImageResource, MarkdownSpan,
     MarkdownTable, MarkdownTableAlignment, NativeMarkdown, NativeMarkdownLayout,
     NativeMarkdownVisual, RichSpan, RichTextEvent, SelectableRichText, SelectableRichTextLayout,
     SelectableRichTextVisual, TextSelectionGroup, TextSelectionGroupId, TextSelectionSnapshot,

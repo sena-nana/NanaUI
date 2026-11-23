@@ -52,6 +52,10 @@ pub const CODE_PANEL_PADDING_X: f32 = nana_ui_core::space::LG;
 pub const CODE_PANEL_PADDING_Y: f32 = nana_ui_core::space::MD;
 const LIST_INDENT: f32 = nana_ui_core::space::XXL;
 const QUOTE_INDENT: f32 = nana_ui_core::space::XL;
+/// The title line above a GFM alert's first paragraph.
+pub const ALERT_TITLE_HEIGHT: f32 = LINE_HEIGHT;
+/// Width of the bar down a GFM alert's left edge.
+pub const ALERT_BAR_WIDTH: f32 = 3.0;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MarkdownSpan {
@@ -94,7 +98,61 @@ pub enum MarkdownBlockKind {
     Paragraph,
     Heading(u8),
     Quote,
-    ListItem { depth: usize },
+    ListItem {
+        depth: usize,
+    },
+    /// A paragraph of a GFM alert (`> [!NOTE]` and its kin). The first
+    /// paragraph of each alert `opens` it and carries its title line.
+    Alert {
+        kind: MarkdownAlertKind,
+        opens: bool,
+    },
+}
+
+/// The five GFM alert kinds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MarkdownAlertKind {
+    Note,
+    Tip,
+    Important,
+    Warning,
+    Caution,
+}
+
+impl MarkdownAlertKind {
+    /// The theme role of the alert's bar and title.
+    pub fn color(self) -> SemanticColorRole {
+        match self {
+            Self::Note => SemanticColorRole::Accent,
+            Self::Tip => SemanticColorRole::Success,
+            Self::Important => SemanticColorRole::AccentStrong,
+            Self::Warning => SemanticColorRole::Warning,
+            Self::Caution => SemanticColorRole::Danger,
+        }
+    }
+
+    /// The alert's title from the document's [`nana_ui_core::FrameworkStrings`]
+    /// (`markdown.alert.*`).
+    pub fn title(self, strings: &nana_ui_core::FrameworkStrings) -> &Arc<str> {
+        match self {
+            Self::Note => &strings.markdown_alert_note,
+            Self::Tip => &strings.markdown_alert_tip,
+            Self::Important => &strings.markdown_alert_important,
+            Self::Warning => &strings.markdown_alert_warning,
+            Self::Caution => &strings.markdown_alert_caution,
+        }
+    }
+
+    fn from_cmark(kind: pulldown_cmark::BlockQuoteKind) -> Self {
+        use pulldown_cmark::BlockQuoteKind;
+        match kind {
+            BlockQuoteKind::Note => Self::Note,
+            BlockQuoteKind::Tip => Self::Tip,
+            BlockQuoteKind::Important => Self::Important,
+            BlockQuoteKind::Warning => Self::Warning,
+            BlockQuoteKind::Caution => Self::Caution,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -120,6 +178,8 @@ pub struct NativeMarkdownVisual {
     pub text: Arc<str>,
     pub blocks: Arc<[MarkdownBlock]>,
     pub selection: Option<(usize, usize)>,
+    /// Registered [`crate::TextPresenter`] that colors fenced code.
+    pub code_presenter: Arc<str>,
 }
 
 /// Resolved geometry and selection highlights for a [`SelectableRichText`] component.
@@ -182,13 +242,21 @@ impl NativeMarkdownVisual {
     ) -> NativeMarkdownLayout {
         let (text, selection_color) = selectable_text_regions(content, &self.text, style, palette);
         let geometry = world.markdown_layout(id, &self.blocks, content);
+        let style_model = world.node_style_model(id);
         NativeMarkdownLayout {
             drawing: crate::markdown_drawing::document_with_geometry(
                 &self.blocks,
                 content,
                 &geometry,
-                metrics,
-                &|scene, scale| world.diagram_drawing(scene, scale),
+                &crate::markdown_drawing::MarkdownPaint {
+                    metrics,
+                    record: &|scene, scale| world.diagram_drawing(scene, scale),
+                    color: &|role| style_model.color(role).as_rgba_array(),
+                    strings: world.framework_strings(),
+                    code_spans: &|language, source| {
+                        world.code_presentation(&self.code_presenter, language, source)
+                    },
+                },
             ),
             text,
             selection: match self.selection {
@@ -324,7 +392,9 @@ impl NativeMarkdownLayout {
                     line_through,
                     underline,
                     code,
+                    color: run_color,
                 } => {
+                    let color = run_color.unwrap_or(color);
                     if *code {
                         let mut tint = color;
                         tint[3] *= 0.10;
@@ -397,13 +467,17 @@ impl NativeMarkdownLayout {
                         }),
                     );
                 }
-                crate::MarkdownDrawingCommand::Line { points, width } => {
+                crate::MarkdownDrawingCommand::Line {
+                    points,
+                    width,
+                    color: line_color,
+                } => {
                     out.push(
                         slot,
                         WidgetPaintOp::Stroke(WidgetStroke {
                             points: points.clone(),
                             width: *width,
-                            color,
+                            color: line_color.unwrap_or(color),
                             cap: LineCap::Round,
                             dash: None,
                             snap_hairline: false,
@@ -535,6 +609,24 @@ impl UiWorld {
             &style_model.palette,
             style_model.metrics,
         ))
+    }
+
+    /// Where the mermaid diagram of `id`'s block `block_index` shows, at
+    /// what natural size and scale. `None` when that block is not a diagram
+    /// the engine drew (unreadable source shows as code) or `id` is not a
+    /// laid-out [`NativeMarkdown`].
+    #[must_use]
+    pub fn markdown_diagram_placement(
+        &self,
+        id: StableNodeId,
+        block_index: usize,
+    ) -> Option<MarkdownDiagramPlacement> {
+        let visual = self.widget_visual_as::<NativeMarkdownVisual>(id)?;
+        let content = self.component_content_box(id)?;
+        self.markdown_layout(id, &visual.blocks, content)
+            .blocks
+            .get(block_index)?
+            .diagram_placement()
     }
 
     /// Resolves `id`'s selectable rich-text region and selection highlights.
@@ -787,6 +879,7 @@ pub struct NativeMarkdown {
     blocks: Vec<MarkdownBlock>,
     selection: TextSelectionGroup,
     fence_children: Vec<StableNodeId>,
+    code_presenter: Arc<str>,
     pub style: NodeStyle,
 }
 
@@ -799,6 +892,7 @@ impl PartialEq for NativeMarkdown {
             && self.source == other.source
             && self.selection.id == other.selection.id
             && self.fence_children == other.fence_children
+            && self.code_presenter == other.code_presenter
             && self.style == other.style
     }
 }
@@ -821,6 +915,7 @@ impl NativeMarkdown {
             blocks: Vec::new(),
             selection: TextSelectionGroup::new(),
             fence_children: Vec::new(),
+            code_presenter: Arc::from(crate::HIGHLIGHT_PRESENTER),
             style: NodeStyle::default(),
         }
     }
@@ -831,6 +926,7 @@ impl NativeMarkdown {
             blocks: blocks.into_iter().collect(),
             selection: TextSelectionGroup::new(),
             fence_children: Vec::new(),
+            code_presenter: Arc::from(crate::HIGHLIGHT_PRESENTER),
             style: NodeStyle::default(),
         }
     }
@@ -883,6 +979,24 @@ impl NativeMarkdown {
     pub fn style(mut self, style: NodeStyle) -> Self {
         self.style = style;
         self
+    }
+
+    /// Names the registered [`crate::TextPresenter`] that colors fenced code
+    /// (default [`crate::HIGHLIGHT_PRESENTER`]). Each fence with a language
+    /// is handed to it as text plus a [`HighlightRequest`] carrying the
+    /// language; the spans it returns paint the fence's runs in their theme
+    /// roles. With no such presenter registered fences stay one color.
+    /// Register a closure with [`crate::TextPresenterFn`]; under the
+    /// `syntax-highlighting` feature `AppContext::new` already installs
+    /// the syntect presenter as `"highlight"`.
+    pub fn code_presenter(mut self, presenter: impl Into<Arc<str>>) -> Self {
+        self.code_presenter = presenter.into();
+        self
+    }
+
+    /// The presenter [`Self::code_presenter`] named.
+    pub fn code_presenter_name(&self) -> &str {
+        &self.code_presenter
     }
 
     pub fn plain_text(&self) -> String {
@@ -1022,6 +1136,22 @@ impl NativeMarkdown {
         geometry: &MarkdownGeometry,
     ) -> Option<RichTextEvent> {
         let event = self.selection.finish(&geometry.run, x, y)?;
+        if let RichTextEvent::SelectionChanged(snapshot) = &event
+            && snapshot
+                .as_ref()
+                .is_none_or(|value| value.start == value.end)
+            && let Some(placement) = geometry
+                .blocks
+                .iter()
+                .filter_map(MarkdownBlockGeometry::diagram_placement)
+                .find(|placement| placement.bounds.contains(x, y))
+            && let Some(MarkdownBlock::Mermaid(source)) = self.blocks.get(placement.block_index)
+        {
+            return Some(RichTextEvent::DiagramActivated(MarkdownDiagram {
+                block_index: placement.block_index,
+                source: Arc::from(source.as_str()),
+            }));
+        }
         if matches!(event, RichTextEvent::LinkActivated(_)) {
             let hit = geometry
                 .run
@@ -1077,6 +1207,10 @@ struct MarkdownParser {
     image_start: usize,
     code_block: Option<(Option<String>, String)>,
     quote_depth: usize,
+    /// One entry per open block quote: the alert it is, if it is one.
+    alerts: Vec<Option<MarkdownAlertKind>>,
+    /// The innermost alert has not given a paragraph its title line yet.
+    alert_untitled: bool,
     lists: Vec<Option<u64>>,
     table: Option<MarkdownTableBuilder>,
     table_header: bool,
@@ -1141,9 +1275,12 @@ impl MarkdownParser {
                 self.flush_text();
                 self.pending_kind = Some(PendingTextKind::Heading(heading_level(level)));
             }
-            Tag::BlockQuote(_) => {
+            Tag::BlockQuote(kind) => {
                 self.flush_text();
                 self.quote_depth += 1;
+                let alert = kind.map(MarkdownAlertKind::from_cmark);
+                self.alert_untitled |= alert.is_some();
+                self.alerts.push(alert);
             }
             Tag::CodeBlock(kind) => {
                 self.flush_text();
@@ -1214,6 +1351,15 @@ impl MarkdownParser {
             TagEnd::Paragraph | TagEnd::Heading(_) | TagEnd::Item => self.flush_text(),
             TagEnd::BlockQuote(_) => {
                 self.flush_text();
+                // An alert with no paragraph of its own still shows its title.
+                if let Some(Some(kind)) = self.alerts.pop()
+                    && std::mem::take(&mut self.alert_untitled)
+                {
+                    self.blocks.push(MarkdownBlock::Text {
+                        kind: MarkdownBlockKind::Alert { kind, opens: true },
+                        spans: Vec::new(),
+                    });
+                }
                 self.quote_depth = self.quote_depth.saturating_sub(1);
             }
             TagEnd::List(_) => {
@@ -1300,7 +1446,13 @@ impl MarkdownParser {
             .pending_kind
             .take()
             .unwrap_or(PendingTextKind::Paragraph);
-        let kind = if self.quote_depth > 0 {
+        let alert = self.alerts.iter().rev().find_map(|alert| *alert);
+        let kind = if let Some(kind) = alert {
+            MarkdownBlockKind::Alert {
+                kind,
+                opens: std::mem::take(&mut self.alert_untitled),
+            }
+        } else if self.quote_depth > 0 {
             MarkdownBlockKind::Quote
         } else {
             match pending {
@@ -1494,6 +1646,7 @@ impl ComponentView for NativeMarkdown {
             blocks: self.blocks.clone().into(),
             text: Arc::from(plain),
             selection: projected_selection(&self.selection),
+            code_presenter: Arc::clone(&self.code_presenter),
         };
         if world.widget_visual_as::<NativeMarkdownVisual>(id) != Some(&visual) {
             mutations.set_widget_visual(id, Some(visual));
@@ -1621,7 +1774,15 @@ impl AppContext {
                 markdown
                     .blocks
                     .iter()
-                    .filter_map(MarkdownBlock::fence_child)
+                    .filter_map(|block| {
+                        let mut slot = block.fence_child()?;
+                        if matches!(block, MarkdownBlock::Code { .. })
+                            && let Some(request) = slot.highlight.as_mut()
+                        {
+                            request.presenter = Arc::clone(&markdown.code_presenter);
+                        }
+                        Some(slot)
+                    })
                     .collect::<Vec<_>>(),
                 markdown.fence_children.clone(),
             )
@@ -1923,6 +2084,12 @@ pub enum RichTextEvent {
     SelectionChanged(Option<TextSelectionSnapshot>),
     LinkActivated(Arc<str>),
     ImageActivated(MarkdownImage),
+    /// A click (press and release without selecting) on a native mermaid
+    /// diagram. The hook for showing it larger: the application decides
+    /// whether and how, for example a dialog holding
+    /// `NativeMarkdown::from_blocks([MarkdownBlock::Mermaid(source)])`
+    /// wide enough for its natural size.
+    DiagramActivated(MarkdownDiagram),
 }
 
 #[derive(Clone, Debug)]
@@ -2188,6 +2355,52 @@ impl BlockArt {
         };
         Some(h * (width.max(1.0) / w.max(1.0)).min(1.0))
     }
+}
+
+impl MarkdownBlockGeometry {
+    /// Where a native diagram shows inside this block, for a mermaid fence
+    /// the diagram engine read; `None` for any other block.
+    pub fn diagram_placement(&self) -> Option<MarkdownDiagramPlacement> {
+        let BlockArt::Diagram(DiagramArt(scene)) = &self.art else {
+            return None;
+        };
+        let natural = scene.size;
+        let scale = (self.bounds.width.max(1.0) / natural[0].max(1.0)).min(1.0);
+        let width = natural[0] * scale;
+        Some(MarkdownDiagramPlacement {
+            block_index: self.index,
+            bounds: LayoutBox {
+                x: self.bounds.x + (self.bounds.width - width).max(0.0) * 0.5,
+                y: self.bounds.y,
+                width,
+                height: natural[1] * scale,
+            },
+            natural_size: natural,
+            scale,
+        })
+    }
+}
+
+/// How a mermaid diagram sits in its [`NativeMarkdown`]: the box it is
+/// drawn in (layout coordinates, the same space as the node's layout box),
+/// the size it was laid out at, and the scale between them. Diagrams wider
+/// than the column shrink to fit (`scale < 1`) and never grow; a preview
+/// that shows one at `natural_size` reads it at full size.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MarkdownDiagramPlacement {
+    pub block_index: usize,
+    pub bounds: LayoutBox,
+    pub natural_size: [f32; 2],
+    pub scale: f32,
+}
+
+/// A mermaid diagram a click landed on ([`RichTextEvent::DiagramActivated`]).
+/// `source` is the fence body; [`UiWorld::markdown_diagram_placement`] says
+/// where it shows and how far it is scaled down.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MarkdownDiagram {
+    pub block_index: usize,
+    pub source: Arc<str>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2594,9 +2807,14 @@ fn layout_block(
         MarkdownBlock::Text { kind, spans } => {
             let indent = text_indent(*kind);
             let line_height = text_line_height(*kind);
+            // An alert's first paragraph sits under its title line.
+            let title = match kind {
+                MarkdownBlockKind::Alert { opens: true, .. } => ALERT_TITLE_HEIGHT,
+                _ => 0.0,
+            };
             let mut cursor = LayoutCursor::new(
                 x + indent,
-                y,
+                y + title,
                 usable_width((width - indent).max(0.0)),
                 line_height,
             )
@@ -2613,12 +2831,17 @@ fn layout_block(
                 spans,
                 if start == 0 { "" } else { "\n\n" },
             );
+            let height = if spans.is_empty() && title > 0.0 {
+                title
+            } else {
+                title + cursor.height_from(y + title)
+            };
             labeled_block(
                 index,
                 x,
                 y,
                 width,
-                cursor.height_from(y),
+                height,
                 None,
                 None,
                 run.graphemes[start..].to_vec(),
@@ -3010,9 +3233,9 @@ fn collect_markdown_images(spans: &[MarkdownSpan], images: &mut Vec<MarkdownImag
     }
 }
 
-fn text_indent(kind: MarkdownBlockKind) -> f32 {
+pub(crate) fn text_indent(kind: MarkdownBlockKind) -> f32 {
     match kind {
-        MarkdownBlockKind::Quote => QUOTE_INDENT,
+        MarkdownBlockKind::Quote | MarkdownBlockKind::Alert { .. } => QUOTE_INDENT,
         MarkdownBlockKind::ListItem { depth } => depth.saturating_sub(1) as f32 * LIST_INDENT,
         _ => 0.0,
     }
@@ -3391,6 +3614,7 @@ mod tests {
                     .into(),
                 text: Arc::from("Title\n\nBody"),
                 selection: None,
+                code_presenter: Arc::from(crate::HIGHLIGHT_PRESENTER),
             })
         );
         assert!(context.world().highlight_request(id).is_none());
@@ -3449,6 +3673,7 @@ mod tests {
                 blocks: NativeMarkdown::from_source("Hello\n\nWorld").blocks.into(),
                 text: Arc::from("Hello\n\nWorld"),
                 selection: Some((0, 10)),
+                code_presenter: Arc::from(crate::HIGHLIGHT_PRESENTER),
             })
         );
         assert_eq!(context.world().text(id), Some("Hello\n\nWorld"));

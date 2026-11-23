@@ -34,6 +34,7 @@ The full list of keys is available by enumerating `FrameworkStrings::KEYS`. Grou
 | `diff.*` | Action button text of the diff view |
 | `calendar.*`, `date_picker.*` | Month/weekday formats of the calendar heatmap (`CalendarHeatmap`) and the date picker (`DatePicker`) |
 | `command_palette.*`, `menu.search` | Search box placeholders of the command palette (`CommandPalette`) and searchable menus |
+| `diagram.*`, `markdown.alert.*` | Accessible name and summary of a diagram in `NativeMarkdown`, and the titles of GFM alerts (`> [!NOTE]` and its four kin) |
 | `theme.*`, `material.*`, `settings.*` | Theme, material, and setting labels of the built-in appearance settings page |
 | Other standalone keys | `chip.remove`, `range_field.reset`, `file_tab.close`, `color_field.label`, `path_field.*`, `browser_view.label`, `dynamic_form.auto` |
 
