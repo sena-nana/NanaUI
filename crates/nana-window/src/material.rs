@@ -168,6 +168,7 @@ impl MaterialOutcome {
         match self.fallback {
             Some(reason) => format!("{}（{}）", self.effect.label(), reason.label()),
             None if self.is_native() => "透明效果已启用".to_string(),
+            None if self.effect == MaterialEffect::Transparent => "透明窗口已启用".to_string(),
             None => "实色背景".to_string(),
         }
     }
@@ -230,6 +231,15 @@ mod tests {
         assert_eq!(outcome.effect, MaterialEffect::Transparent);
         assert_eq!(outcome.fallback, None);
         assert!(!outcome.is_native());
+    }
+
+    #[test]
+    fn a_transparent_outcome_is_not_labelled_solid() {
+        assert_eq!(
+            MaterialOutcome::transparent().status_label(),
+            "透明窗口已启用"
+        );
+        assert_eq!(MaterialOutcome::chosen_solid().status_label(), "实色背景");
     }
 
     #[test]

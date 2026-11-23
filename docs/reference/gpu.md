@@ -512,6 +512,23 @@ WGPU_BACKEND=dx12 target/release/examples/stack-sampler.exe --delay-ms 3000 --du
 python perf/stack_attribution.py $S/color.folded
 ```
 
+### 13. 实测：真机工作负载与设备丢失（2026-11-23，Issue #275）
+
+`hosted-gpu-demo --probe-device-loss --measure-present-seconds 5` 跑规范的呈现 + `FrameExchange` 生产端负载：第 3 次呈现后对本进程的设备调用 `device.destroy()`，宿主在新 `GpuContext` 上重建后继续呈现并采样 5 s 呈现间隔。GPU 时间戳用 `nana-gpu-scene-benchmark --scenario perf/scenarios/gpu-scene-text-paint-color.json --gpu-timestamps --serialize --sample-seconds 3`（每帧等 GPU 完成，同时只有一次提交在途）。Vulkan 要开 `wgpu-backends`：Windows 上只开 `gpu` 时只编入 DX12，`WGPU_BACKEND=vulkan` 会在建表面时失败。
+
+```powershell
+$env:WGPU_BACKEND = "vulkan"; cargo run --release -p nana-ui --features hosted,bundled-fonts,wgpu-interop,runtime-wgsl,wgpu-backends --example hosted-gpu-demo -- --probe-device-loss --measure-present-seconds 5
+```
+
+RTX 5060 Ti（驱动 32.0.16.1692），Windows 11 企业版 25H2 build 26200.9974，60 Hz 显示器，release：
+
+| 后端 | 设备丢失 → 恢复 | 呈现间隔 mean / P50 / P95 / max（ms） | `FrameExchange` 恢复后 | GPU 时间戳 P50 / P95（UI 合成，ms） |
+| --- | --- | --- | --- | --- |
+| DX12（表面 `Opaque`） | 代际 1 → 2 | 8.32 / 7.68 / 16.16 / 16.55 | submitted 289、published 284、superseded 4、`stale_epoch` 0、占用高水位 3 | 0.018 / 0.021 |
+| Vulkan（表面 `PreMultiplied`） | 代际 1 → 2 | 5.28 / 5.62 / 8.74 / 9.69 | submitted 527、published 521、superseded 5、`stale_epoch` 0、占用高水位 3 | 0.018 / 0.019 |
+
+两个后端都在真实设备上观察到丢失、换上新设备并继续呈现，旧代际的帧没有被发布（`stale_epoch` 0），全程只有宿主的一个 Device / Queue。另外两点：60 Hz 显示器上 DX12 的 120 Hz 回调成对落在扫描周期里（P50 7.7 ms、P95 16.2 ms），演示的 120 Hz 门禁在这台机器上没有意义；Vulkan 以约 190 Hz 呈现，超出 `FrameDemand::Continuous(120)` 的请求。没有测到：驱动 TDR 一类的硬件重置、多窗口同时丢失与恢复、GL 后端。
+
 ## 挂载宿主纹理（`HostTexture` + `GpuTextureView`）
 
 着色器输出、预览视口、离屏渲染纹理与普通按钮一样，是界面树上占据布局、受裁剪、可命中的节点。首次接入请使用默认路径：把画面画到可采样纹理上，在树上挂载 `GpuTextureView`，并用同一个字符串槽位名在 `host_textures()` 中登记。

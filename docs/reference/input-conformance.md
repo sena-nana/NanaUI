@@ -27,3 +27,36 @@
 | **XR 空间输入** | 未包含射线求交（raycast）、扳机或摇杆生命周期合同 |
 | **Web / WebView** | 未包含浏览器 DOM composition 或动态 DPR 宿主桥接 |
 | **远程流式输入（Remote）** | `HeadlessInput` 覆盖序列号、代际与断连语义；网络层的鉴权、防重放、限流与乱序重排归外部传输层负责 |
+
+## Windows 实机验收（Issue #271 / #276）
+
+真实窗口里的 IME 与手写笔用 `input-acceptance-probe` 示例和 `scripts/validate-input-acceptance.ps1` 验收。探针窗口只有一个聚焦的 `TextInput`（无障碍名 `IME editor`）和一块空白书写区；窗口路由器交付的每个规范输入事件都以一行 JSON（`"event":"input"`）写到 stdout，编辑器的值与焦点变化写成 `"event":"editor"`。脚本只操作探针窗口：IME 部分用 `SendInput` 敲键，经系统里真实的微软拼音（0804，须处于中文模式）与微软日语输入法（0411）产生预编辑、候选与提交，再用 UI Automation 核对编辑器的 `ControlType.Edit` 与 `ValuePattern` 值；笔部分用 `InjectSyntheticPointerInput` 注入 `PT_PEN` 帧，走的是数位板同一条 `WM_POINTER` 路径，但不是物理设备。运行时不要动键盘和鼠标：注入的按键发给前台窗口，脚本一旦发现探针失去前台就停止敲键。
+
+```powershell
+cargo build --release -p nana-ui --features hosted,bundled-fonts --example input-acceptance-probe
+powershell -NoProfile -ExecutionPolicy Bypass -Mta -File scripts/validate-input-acceptance.ps1 -ExePath target/release/examples/input-acceptance-probe.exe
+```
+
+产物在 `target/acceptance/input/`：`trace.jsonl`（事件轨迹）、`summary.json`（每项检查与环境）、预编辑 / 候选 / 提交时的截图。系统丢弃注入按键时（某些终端策略下 `SendInput` 返回成功但最后输入时间不变），IME 部分记为 not executed，不算通过。
+
+2026-11-23 记录（Windows 11 企业版 25H2 build 26200.9974，RTX 5060 Ti / DX12，96 DPI）：
+
+| 项目 | 结果 |
+| --- | --- |
+| 笔悬停：在范围内移动送达，`buttons = 0`、`pressure = 0` | 通过 |
+| 接触与抬起各一次；压力 1/1024 → 1.0 → 64/1024 逐帧跟随设备值，接触时无跳变，范围 0–1 | 通过 |
+| 倾角 `(10, -5)` 原样送达 | 通过 |
+| 按住笔杆键接触映射为 `button = 2`（副键），抬起清空 `buttons` | 通过 |
+| 笔画中途失焦：送达 `Focus { focused: false }`，笔画结束且无残留按键 | 通过 |
+| 笔之后的鼠标移动：`pointer_type = Mouse`、`buttons = 0`、`pressure = 0`，无串扰 | 通过 |
+| 取消（`POINTER_FLAG_CANCELED`） | **未通过**：送达普通 `Up`。winit 0.31 的 Win32 后端不读这个标志，取消的笔画会像正常完成一样提交 |
+| 离开感应范围 | **未通过**：没有 `PointerLeave`。winit 在每次抬笔后就发 `PointerLeft`（笔仍在悬停），路由器因此给每一笔新的指针 id；笔真正离开范围时悬停停在最后的元素上 |
+| 首帧压力为 0 的接触 | **未通过**：设备报 0、40/1024、80/1024，送达 0.5、0.039、0.078。winit 把压力 0 报为 `None`，宿主在有按键时补 `0.5`，接触瞬间跳到 0.5 |
+| 微软拼音 `nihao` + 空格：预编辑 `ni'hao` 逐键送达，候选窗贴在 caret 下方、不挤动布局，提交 `你好`，焦点不变 | 通过 |
+| 微软日语输入法 `konnnichiha` + 空格 + 回车：预编辑与提交 `こんにちは`，焦点不变 | 通过 |
+| UIA：编辑器为 `ControlType.Edit`，`ValuePattern` 值与提交后的值一致（两种输入法） | 通过 |
+| 组字中途失焦：送达 `Focus { focused: false }` 与 `Composition::End`，再得焦恢复编辑焦点 | 通过 |
+| 组字中途失焦后的提交 | **未通过**：宿主发 `End` 之后，微软拼音仍发 `Commit("ceshi")`，编辑器收下了读音字母。这与窗口参考（`docs/reference/window.md`）IME 段的“原生窗口失焦时 Runtime 取消预编辑”不符 |
+| 物理 XP-Pen 数位板 | 未执行，需要人手 |
+
+笔的三项未通过都在 winit 的 Win32 指针处理里（不处理 `WM_POINTERLEAVE` 与 `POINTER_FLAG_CANCELED`，压力 0 与“无压力”不分），修复要改 winit 或在宿主里另接 `WM_POINTER`。失焦后的提交要在取消预编辑之后、下一次 `Enabled` 之前丢掉迟到的 `Commit`。物理笔的验收用同一个探针手动进行：启动探针、把 stdout 存为轨迹，然后用真实笔完成悬停、带压力的笔画、按笔杆键、中途切走窗口、移出范围。

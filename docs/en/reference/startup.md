@@ -48,6 +48,27 @@ Hosts that do not go through `NanaApplication::builder` can use `nana_ui::with_s
 
 The applied outcome is recorded in `StartupStatus::splash` (`SplashOutcome`); the requested value is never treated as the result: `Shown { animation: Applied(..) | Static { requested, reason } }` (when the system has "reduce motion" enabled or the compositor rejects the animation, it automatically degrades to a static logo and records `ReducedMotion` / `NativeAnimationFailed`), `Skipped(..)` (not configured, hidden startup with `visible = false`, embedded host, or unsupported platform), or `Failed(Logo(..) | Package(..) | Native(..))` (a corrupt or oversized logo does not block application startup; only the splash is skipped).
 
+### Windows real-machine handoff acceptance (Issue #273)
+
+`startup-splash --probe` checks the startup record's contract (one device request, one painter, ordered milestones, no splash resources after the handoff, the animation submitted once). `scripts/validate-startup-handoff.ps1` also captures the desktop compositor's output while it runs (about 45 frames per second, so DWM cloaking and DirectComposition are what is captured) and, against the desktop before launch, requires that no frame between the splash appearing and the process exiting falls back to "nothing on screen".
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/validate-startup-handoff.ps1 -ExePath target/release/examples/startup-splash.exe -Arguments '--probe'
+```
+
+Measured 2026-11-23 (Windows 11 Enterprise 25H2 build 26200.9974, RTX 5060 Ti / DX12, release, 60 Hz):
+
+| Launch | Splash outcome | Capture |
+| --- | --- | --- |
+| Development run, fade / pulse / rotate, `--defer=400`, `--composition` | `Shown { Applied(..) }`; committed at 243–422 ms, `UiReady` at 915–1265 ms, handoff done at 1005–1513 ms; every contract check passes | the splash switches straight to the main window with content, no empty frame |
+| Development run, `--packaged-logo` (with `packaged-resources`, read from `examples/assets`) | `Shown`, logo read in 0.35 ms | no empty frame |
+| Portable package built by `nana-packager`, `--packaged-logo` (logo in the `early-splash` `.nrpack`) | `Shown`, logo read in 1.1 ms | no empty frame |
+| `--packaged-logo` without `packaged-resources` | `Failed(Package(Unsupported))`; the application starts normally | — |
+| `--bad-logo` | `Failed(Logo(NotPng))`; the application starts normally | — |
+| `--no-splash` | `Skipped(NotConfigured)` | one frame (about 30 ms) shows an empty window with only its border |
+
+Two observations: without a splash the main window is shown at `UiReady` and gets its first frame about 150 ms later, uncloaked meanwhile, so an empty window flashes; with a splash the longest event-thread block is 260–445 ms (about 50 ms without), the time spent creating the splash. The capture rate cannot resolve a single duplicated or empty 16 ms frame. macOS was not executed (no machine); Linux reports `Skipped(PlatformUnsupported)` as in the table above and was not run on a real Linux machine this time.
+
 ### Reading the logo from an `early-splash` resource pack
 
 With the `nana-ui` `packaged-resources` feature enabled and `resource_packs` configured, `SplashLogo::packaged("nana://res/splash/logo.png")` reads the logo from a resource pack in the `early-splash` category (the time is recorded in `StartupWork::splash_logo_read`; measured locally, a 71 KB logo takes about `0.25 ms`):

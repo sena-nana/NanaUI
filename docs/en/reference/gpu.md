@@ -534,6 +534,23 @@ WGPU_BACKEND=dx12 target/release/examples/stack-sampler.exe --delay-ms 3000 --du
 python perf/stack_attribution.py $S/color.folded
 ```
 
+### 13. Measured: real workload and device loss (2026-11-23, Issue #275)
+
+`hosted-gpu-demo --probe-device-loss --measure-present-seconds 5` runs the canonical presenter plus `FrameExchange` producer workload: after the third present it calls `device.destroy()` on this process's device, the host rebuilds on a new `GpuContext` and keeps presenting, and 5 s of present intervals are sampled. GPU timestamps come from `nana-gpu-scene-benchmark --scenario perf/scenarios/gpu-scene-text-paint-color.json --gpu-timestamps --serialize --sample-seconds 3` (each frame waits for the GPU, one submission in flight at a time). Vulkan needs `wgpu-backends`: with only `gpu` on Windows just DX12 is compiled in, and `WGPU_BACKEND=vulkan` fails when creating the surface.
+
+```powershell
+$env:WGPU_BACKEND = "vulkan"; cargo run --release -p nana-ui --features hosted,bundled-fonts,wgpu-interop,runtime-wgsl,wgpu-backends --example hosted-gpu-demo -- --probe-device-loss --measure-present-seconds 5
+```
+
+RTX 5060 Ti (driver 32.0.16.1692), Windows 11 Enterprise 25H2 build 26200.9974, 60 Hz display, release:
+
+| Backend | Device loss → recovery | Present interval mean / P50 / P95 / max (ms) | `FrameExchange` after recovery | GPU timestamps P50 / P95 (UI composition, ms) |
+| --- | --- | --- | --- | --- |
+| DX12 (surface `Opaque`) | generation 1 → 2 | 8.32 / 7.68 / 16.16 / 16.55 | submitted 289, published 284, superseded 4, `stale_epoch` 0, occupancy high water 3 | 0.018 / 0.021 |
+| Vulkan (surface `PreMultiplied`) | generation 1 → 2 | 5.28 / 5.62 / 8.74 / 9.69 | submitted 527, published 521, superseded 5, `stale_epoch` 0, occupancy high water 3 | 0.018 / 0.019 |
+
+On both backends the loss is observed on a real device, a new device takes over and presenting continues; no frame of the old generation is published (`stale_epoch` 0), and the host's single Device / Queue is the only one throughout. Two more points: on a 60 Hz display DX12's 120 Hz callbacks land in pairs within the scan period (P50 7.7 ms, P95 16.2 ms), so the demo's 120 Hz gate means nothing on this machine; Vulkan presents at about 190 Hz, above the `FrameDemand::Continuous(120)` request. Not tested: hardware resets such as a driver TDR, several windows losing and recovering together, and the GL backend.
+
 ## Mounting host textures (`HostTexture` + `GpuTextureView`)
 
 Shader output, preview viewports, and offscreen render textures are nodes in the UI tree just like ordinary buttons: they take part in layout, are clipped, and can be hit. For a first integration, use the default path: draw the content into a sampleable texture, mount a `GpuTextureView` in the tree, and register it in `host_textures()` under the same string slot name.

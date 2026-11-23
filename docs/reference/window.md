@@ -277,6 +277,10 @@ IME：焦点进可编辑字段时 `Window::request_ime_update(Enable)` 一次（
 
 透明 Alpha（`settings.transparent`）强制 `MaterialEffect::Transparent`。不会改试 Mica / Acrylic。失败只能回不透明实色。并带 `MaterialFallback`。真机入口：`nana-ui` 的 `transparent-window` 示例。
 
+透明客户区在 Windows 上只有走合成器才成立：DX12 的普通 HWND 表面只协商出 `Opaque`，所以要透明的程序必须让 `gpu_backend_policy()` 返回 `GpuBackendPolicy::CompositionCapable`（`startup_window_material_mode()` 也返回 `Transparent`，让第一帧与真实表面一致），否则结果只能是 `Solid` + `NativeMaterialUnavailable`。`transparent-window` 示例两者都声明，并在每次 `Ready` 与 `Resized` 时向 stdout 写一行 JSON：申请的材质、实际 `MaterialOutcome`、alpha 模式、物理尺寸与缩放。`scripts/validate-transparent-window.ps1` 在它身后放一块品红窗体，截取初始尺寸与三次缩放后的窗口，量出背景透出的比例与文字像素，并要求观察结果与上报的 outcome 一致；有第二块显示器时再把窗口移过去，记录缩放变化。
+
+2026-11-23 实测（Windows 11 企业版 25H2 build 26200.9974，RTX 5060 Ti + Intel 核显，主屏 96 DPI、第二屏 120 DPI）：示例声明合成能力前，申请透明得到 `Solid` + `NativeMaterialUnavailable`、alpha `Opaque`，截图里背景不透出，outcome 与观察一致；声明后得到 `Transparent`、alpha `PreMultiplied`，初始与 1184×761、684×441、984×661 三次缩放后客户区都透出背景、文字清晰，移到 120 DPI 屏后缩放报 1.25、outcome 与 alpha 不变。没有测到的组合：Vulkan 与 GL 后端、不支持 DirectComposition 的系统、关闭透明效果的系统设置。
+
 ## 菜单栏
 
 原生应用菜单栏是**唯一画不进界面树**的桌面 chrome：macOS 上它属于应用而不是窗口。住在系统菜单条里。所以它在 `nana-window`。用一份平台中立的模型描述（`MenuBar` / `Menu` / `MenuEntry` / `MenuShortcut`。模型本身在 `nana-ui-core`。纯数据）。

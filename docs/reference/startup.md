@@ -48,6 +48,27 @@ NanaApplication::builder(identity)
 
 实际生效结果记录在 `StartupStatus::splash`（`SplashOutcome`）中，绝不把申请值当作结果：`Shown { animation: Applied(..) | Static { requested, reason } }`（当系统开启“减少动态效果”或合成器拒绝动画时自动降级为静态 Logo 并注明 `ReducedMotion` / `NativeAnimationFailed`）、`Skipped(..)`（未配置、隐藏启动 `visible = false`、嵌入式宿主或平台不支持）或 `Failed(Logo(..) | Package(..) | Native(..))`（Logo 损坏或超限时不阻断应用启动，仅跳过 Splash）。
 
+### Windows 实机交接验收（Issue #273）
+
+`startup-splash --probe` 校验启动记录的合同（只请求一次设备、只建一个 painter、里程碑有序、交接后 Splash 资源为 0、动画只提交一次）；`scripts/validate-startup-handoff.ps1` 同时从桌面合成结果截屏（约 45 帧/秒，DWM 的 Cloak 与 DirectComposition 都在画面里），以启动前的桌面为基准，要求 Splash 出现之后、进程退出之前没有一帧回到“什么都没有”。
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/validate-startup-handoff.ps1 -ExePath target/release/examples/startup-splash.exe -Arguments '--probe'
+```
+
+2026-11-23 实测（Windows 11 企业版 25H2 build 26200.9974，RTX 5060 Ti / DX12，release，60 Hz）：
+
+| 启动方式 | Splash 结果 | 截屏 |
+| --- | --- | --- |
+| 开发运行，fade / pulse / rotate、`--defer=400`、`--composition` | `Shown { Applied(..) }`；提交于 243–422 ms，`UiReady` 915–1265 ms，交接完成 1005–1513 ms；合同各项通过 | Splash 直接切到带内容的主窗口，无空帧 |
+| 开发运行，`--packaged-logo`（开 `packaged-resources`，从 `examples/assets` 读） | `Shown`，读 Logo 0.35 ms | 无空帧 |
+| `nana-packager` 打出的 portable 包，`--packaged-logo`（Logo 在 `early-splash` 的 `.nrpack` 里） | `Shown`，读 Logo 1.1 ms | 无空帧 |
+| `--packaged-logo` 但未开 `packaged-resources` | `Failed(Package(Unsupported))`，应用照常启动 | — |
+| `--bad-logo` | `Failed(Logo(NotPng))`，应用照常启动 | — |
+| `--no-splash` | `Skipped(NotConfigured)` | 有一帧（约 30 ms）是只有边框的空窗口 |
+
+观察到的两点：没有 Splash 时主窗口在 `UiReady` 显示、约 150 ms 后才有第一帧，期间不 Cloak，所以会闪一下空窗口；有 Splash 时事件线程最长阻塞 260–445 ms（无 Splash 约 50 ms），即建 Splash 的时间。截屏频率分辨不出单帧（16 ms）的重复或空帧。macOS 未执行（没有机器）；Linux 按上表报 `Skipped(PlatformUnsupported)`，本次没有在真实 Linux 上运行。
+
 ### 从 `early-splash` 资源包读取 Logo
 
 启用 `nana-ui` 的 `packaged-resources` feature 并配置 `resource_packs` 后，可使用 `SplashLogo::packaged("nana://res/splash/logo.png")` 从 `early-splash` 类别的资源包读取 Logo（耗时记录在 `StartupWork::splash_logo_read`，本机实测 71 KB Logo 仅需约 `0.25 ms`）：

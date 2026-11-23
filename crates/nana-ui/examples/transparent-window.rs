@@ -16,6 +16,7 @@ use nana_ui_platform::{WindowEvent, WindowId};
 enum Message {
     ToggleTheme,
     TogglePanel,
+    Quit,
 }
 
 struct TransparentWindow {
@@ -75,6 +76,7 @@ impl TransparentWindow {
         match message {
             Message::ToggleTheme => self.theme = self.theme.toggle(),
             Message::TogglePanel => self.panel_visible = !self.panel_visible,
+            Message::Quit => return,
         }
         let theme = self.theme;
         let panel_visible = self.panel_visible;
@@ -128,8 +130,18 @@ impl RuntimeProgram for TransparentWindow {
     type Error = Infallible;
 
     fn initialize(
-        _context: &RuntimeProgramContext<Self::Message>,
+        context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<(Self, Vec<Self::Message>), Self::Error> {
+        // `quit` on stdin closes the demo, so a script can drive it.
+        let quit = context.clone();
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            for line in std::io::stdin().lock().lines().map_while(Result::ok) {
+                if line.trim_start_matches('\u{feff}').trim() == "quit" {
+                    quit.dispatch(Message::Quit);
+                }
+            }
+        });
         Ok((
             Self::mount(ThemeAppearance::Dark, true).expect("transparent window document"),
             Vec::new(),
@@ -159,8 +171,22 @@ impl RuntimeProgram for TransparentWindow {
         message: Self::Message,
         _context: &RuntimeProgramContext<Self::Message>,
     ) -> RuntimeProgramUpdate {
+        if message == Message::Quit {
+            return RuntimeProgramUpdate::exit();
+        }
         self.apply(message);
         RuntimeProgramUpdate::redraw_all()
+    }
+
+    /// A transparent client needs the compositor path where the platform has
+    /// one: on Windows DX12 an ordinary HWND surface only presents `Opaque`,
+    /// so without this the window can only fall back to solid.
+    fn gpu_backend_policy() -> nana_ui::GpuBackendPolicy {
+        nana_ui::GpuBackendPolicy::CompositionCapable
+    }
+
+    fn startup_window_material_mode() -> nana_ui::MaterialEffect {
+        nana_ui::MaterialEffect::Transparent
     }
 
     fn theme(&self) -> std::sync::Arc<nana_ui::CompiledTheme> {
@@ -173,12 +199,28 @@ impl RuntimeProgram for TransparentWindow {
         context: &RuntimeProgramContext<Self::Message>,
     ) -> RuntimeProgramUpdate {
         match event {
-            WindowEvent::Ready { id, .. } => {
-                eprintln!(
-                    "nana window ready id={} material={:?} alpha={:?}",
-                    id.0,
-                    context.material(),
-                    context.surface_alpha_mode()
+            // One JSON line per Ready and Resized: the material the window
+            // asked for, the outcome it actually got, and the geometry
+            // (`scripts/validate-transparent-window.ps1` reads these).
+            WindowEvent::Ready { id, geometry } | WindowEvent::Resized { id, geometry } => {
+                let outcome = context.material();
+                let kind = if matches!(event, WindowEvent::Ready { .. }) {
+                    "ready"
+                } else {
+                    "resized"
+                };
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "event": kind,
+                        "window": id.0,
+                        "requested": "Transparent",
+                        "outcome": format!("{outcome:?}"),
+                        "status": outcome.status_label(),
+                        "alpha_mode": format!("{:?}", context.surface_alpha_mode()),
+                        "physical_size": [geometry.physical_size.0, geometry.physical_size.1],
+                        "scale_factor": geometry.scale_factor,
+                    })
                 );
                 RuntimeProgramUpdate::default()
             }
