@@ -4,7 +4,7 @@
 
 NanaUI 声明式视图的过程宏：`view!`、`css!`、`stylesheet!`、`#[component]` 和 `#[derive(Store)]`。
 
-`view!` 接受类 Vue 的模板，展开成普通的视图函数调用，运行时不多出任何东西。`css!` 和 `stylesheet!` 在编译期经 CSS 引擎编译，`stylesheet!` 为每个 class 生成一个 `view::Class`。`#[component]` 让模板按参数名传参并支持 `#[prop(default)]`，`#[derive(Store)]` 为结构体生成按字段追踪的访问器。
+`view!` 接受类 Vue 的模板，展开成普通的视图函数调用，运行时不多出任何东西。`css!` 和 `stylesheet!` 在编译期经 CSS 引擎编译，`stylesheet!` 为每个 class 生成一个 `view::Class`。`#[component]` 让模板按参数名传参并支持 `#[prop(default)]`，`#[derive(Store)]` 为结构体（包括泛型结构体）生成按字段追踪的访问器，为枚举生成按变体守卫的访问器。
 
 请经 `nana_ui::runtime`（或 `nana_ui_runtime`）使用这些宏，打开 `nana-ui` 或 `nana-ui-runtime` 的 `view-macro` feature 即可，不要直接依赖本 crate。代码生成本身在 [`nana-ui-view-codegen`](../nana-ui-view-codegen)。
 

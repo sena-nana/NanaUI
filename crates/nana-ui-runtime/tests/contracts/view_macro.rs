@@ -924,6 +924,161 @@ mod store_derive {
         cx.flush_reactive().unwrap();
         assert_eq!(app.heading().get_untracked(), "新标题");
     }
+
+    trait Label {
+        fn label(&self) -> String;
+    }
+
+    impl Label for u32 {
+        fn label(&self) -> String {
+            format!("#{self}")
+        }
+    }
+
+    /// Lifetimes, bounds inline and in a where clause, and a const
+    /// parameter with a default.
+    #[derive(Clone, Store)]
+    struct Page<'a, T: Label + Clone, const N: usize = 2>
+    where
+        T: Default,
+    {
+        title: &'a str,
+        items: Vec<T>,
+        marks: [u8; N],
+    }
+
+    #[derive(Clone, Store)]
+    enum Load<T> {
+        Idle,
+        Loading { progress: f32 },
+        Ready(T),
+        Failed { error: String, retries: u32 },
+        Pair(u8, u16),
+        Type(u8),
+    }
+
+    fn counter() -> (
+        std::rc::Rc<std::cell::Cell<u32>>,
+        std::rc::Rc<std::cell::Cell<u32>>,
+    ) {
+        let runs = std::rc::Rc::new(std::cell::Cell::new(0));
+        (runs.clone(), runs)
+    }
+
+    #[test]
+    fn generic_structs_keep_their_parameters() {
+        let mut cx = AppContext::new();
+        let page: Store<Page<'static, u32>> = store(Page {
+            title: "页",
+            items: vec![1, 2],
+            marks: [0; 2],
+        });
+        let (runs, seen) = counter();
+        let _watch = nana_ui_runtime::view::watch_effect(move || {
+            page.items()
+                .with(|items| items.iter().map(Label::label).count());
+            seen.set(seen.get() + 1);
+        });
+        page.title().set("新页");
+        page.marks().update(|marks| marks[1] = 7);
+        cx.flush_reactive().unwrap();
+        assert_eq!(
+            runs.get(),
+            1,
+            "writes beside `items` leave its reader alone"
+        );
+        page.items().push(3);
+        cx.flush_reactive().unwrap();
+        assert_eq!(runs.get(), 2);
+        assert_eq!(page.title().get_untracked(), "新页");
+        assert_eq!(page.marks().get_untracked(), [0, 7]);
+
+        let wide: Store<Page<'static, u32, 3>> = store(Page {
+            title: "宽",
+            items: Vec::new(),
+            marks: [1; 3],
+        });
+        assert_eq!(wide.marks().get_untracked().len(), 3);
+    }
+
+    #[test]
+    fn enum_variants_project_guarded_paths() {
+        let mut cx = AppContext::new();
+        let state: Store<Load<Todo>> = store(Load::Loading { progress: 0.0 });
+        let (is_runs, seen) = counter();
+        let _variant = nana_ui_runtime::view::watch_effect(move || {
+            state.is_ready();
+            state.is_loading();
+            seen.set(seen.get() + 1);
+        });
+        let (progress_runs, seen) = counter();
+        let _progress = nana_ui_runtime::view::watch_effect(move || {
+            state.loading_progress().try_with(|progress| *progress);
+            seen.set(seen.get() + 1);
+        });
+        assert!(state.is_loading() && !state.is_ready() && !state.is_idle());
+        assert_eq!(state.loading_progress().try_with(|p| *p), Some(0.0));
+        assert_eq!(state.ready().try_with(|todo| todo.id), None);
+
+        // A write inside the variant reaches its readers, not the variant's.
+        state.loading_progress().set(0.5);
+        cx.flush_reactive().unwrap();
+        assert_eq!((is_runs.get(), progress_runs.get()), (1, 2));
+        assert_eq!(state.loading_progress().get_untracked(), 0.5);
+
+        // Writing another variant's field does nothing.
+        state.ready().set(Todo {
+            id: 9,
+            title: "九".into(),
+        });
+        state.failed_retries().update(|retries| *retries += 1);
+        cx.flush_reactive().unwrap();
+        assert_eq!((is_runs.get(), progress_runs.get()), (1, 2));
+        assert!(state.is_loading());
+
+        // Replacing the value may change the variant: both readers run.
+        state.set(Load::Ready(Todo {
+            id: 1,
+            title: "一".into(),
+        }));
+        cx.flush_reactive().unwrap();
+        assert_eq!((is_runs.get(), progress_runs.get()), (2, 3));
+        assert!(state.is_ready());
+        assert_eq!(state.loading_progress().try_with(|p| *p), None);
+        assert_eq!(state.ready().title().get_untracked(), "一");
+
+        // The payload's own accessors reach through the variant.
+        state.ready().title().set("壹".into());
+        cx.flush_reactive().unwrap();
+        assert_eq!(
+            is_runs.get(),
+            2,
+            "a write inside the payload keeps the variant"
+        );
+        assert_eq!(state.ready().title().get_untracked(), "壹");
+
+        state.set(Load::Failed {
+            error: "断开".into(),
+            retries: 1,
+        });
+        state.failed_retries().update(|retries| *retries += 1);
+        assert_eq!(state.failed_error().get_untracked(), "断开");
+        assert_eq!(state.failed_retries().get_untracked(), 2);
+        state.set(Load::Pair(1, 2));
+        assert_eq!(
+            (
+                state.pair_0().get_untracked(),
+                state.pair_1().get_untracked()
+            ),
+            (1, 2)
+        );
+        state.set(Load::Type(3));
+        assert!(state.is_type());
+        assert_eq!(state.r#type().get_untracked(), 3);
+        state.set(Load::Idle);
+        assert!(state.is_idle());
+        assert_eq!(state.r#type().try_with(|t| *t), None);
+    }
 }
 
 mod transition_block {

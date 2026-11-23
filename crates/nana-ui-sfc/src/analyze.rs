@@ -35,7 +35,7 @@ pub enum Kind {
     /// A `Signal` / `Computed` handed in as a prop: never folded.
     Prop,
     /// A store or a path into one (`store(…)`, a `Store` / `Subfield` /
-    /// `Item` prop). What it reads depends on the path, so a binding that
+    /// `Variant` / `Item` prop). What it reads depends on the path, so a binding that
     /// uses it is tracked at run time; passed alone it binds directly.
     Store,
 }
@@ -236,7 +236,7 @@ fn reactive_kind(ty: &Type) -> Option<Kind> {
     let last = path.path.segments.last()?;
     if last.ident == "Signal" || last.ident == "Computed" {
         Some(Kind::Prop)
-    } else if ["Store", "Subfield", "Item", "KeyedList"]
+    } else if ["Store", "Subfield", "Variant", "Item", "KeyedList"]
         .iter()
         .any(|name| last.ident == name)
     {

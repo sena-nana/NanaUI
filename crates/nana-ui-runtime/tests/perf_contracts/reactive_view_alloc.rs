@@ -163,3 +163,48 @@ fn a_rerun_that_reproduces_the_node_copies_nothing() {
     });
     assert_eq!(allocations, 0, "no copy of the button, no projection");
 }
+
+mod keyed_store {
+    use super::measure;
+    use nana_ui_runtime::view::{StoreList, StorePath, Subfield, store};
+
+    #[derive(Clone)]
+    struct Task {
+        id: u64,
+        done: bool,
+    }
+
+    fn done<P: StorePath<Value = Task>>(task: P) -> Subfield<P, bool> {
+        Subfield::__new(task, 1, |task| &task.done, |task| &mut task.done)
+    }
+
+    /// Keys checked with `Eq` cost no heap where no two hashes collide:
+    /// finding a row, reading through it, and indexing the list again
+    /// after a reorder (the handles `items` returns are its one allocation).
+    #[test]
+    fn a_keyed_list_without_collisions_finds_and_reindexes_rows_without_allocating() {
+        let board = store(
+            (0..1_000)
+                .map(|id| Task { id, done: false })
+                .collect::<Vec<_>>(),
+        );
+        let list = board.keyed(|task| task.id);
+        // Index once; the row table is kept from then on.
+        assert_eq!(list.items().len(), 1_000);
+        let (allocations, _, done_500) = measure(|| done(list.at(&500)).get_untracked());
+        assert!(!done_500);
+        assert_eq!(allocations, 0, "finding and reading a row");
+
+        board.swap(0, 999);
+        let (allocations, _, items) = measure(|| list.items());
+        assert_eq!(items.len(), 1_000);
+        assert_eq!(items[0].id(), list.at(&999).id());
+        assert_eq!(allocations, 1, "only the handles returned");
+        drop(items);
+
+        board.swap(0, 999);
+        let (allocations, _, done_0) = measure(|| done(list.at(&0)).get_untracked());
+        assert!(!done_0);
+        assert_eq!(allocations, 0, "a stale row is found again in place");
+    }
+}

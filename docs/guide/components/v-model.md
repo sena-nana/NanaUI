@@ -32,7 +32,7 @@ column().gap(8).children((
 
 ## 绑到 store 的字段
 
-`v-model` 也收 store 路径（`Store`、`Subfield`、`Item`）。路径既能读也能写，所以直接交给 `.model` 就行，不用再写一个处理器：
+`v-model` 也收 store 路径（`Store`、`Subfield`、`Variant`、`Item`）。路径既能读也能写，所以直接交给 `.model` 就行，不用再写一个处理器：
 
 :::api
 

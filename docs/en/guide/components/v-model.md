@@ -32,7 +32,7 @@ Writing `v-model` on a control that has no `v-model` is a compile error when the
 
 ## Binding to a store field
 
-`v-model` also takes store paths (`Store`, `Subfield`, `Item`). A path both reads and writes, so hand it to `.model` directly, with no second handler:
+`v-model` also takes store paths (`Store`, `Subfield`, `Variant`, `Item`). A path both reads and writes, so hand it to `.model` directly, with no second handler:
 
 :::api
 

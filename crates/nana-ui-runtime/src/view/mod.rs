@@ -103,11 +103,11 @@ pub use reactive::{
 pub use resource::{Resource, Suspense, resource, suspense};
 pub use selection::{segmented, segmented_option};
 pub use settings::settings_row;
-pub use store::{
-    Item, KeyedList, Store, StoreList, StorePath, Subfield, store, store_with_history,
-};
 #[doc(hidden)]
-pub use store::{Paths, StoreKey};
+pub use store::{__variant_is, Paths, StoreKey};
+pub use store::{
+    Item, KeyedList, Store, StoreList, StorePath, Subfield, Variant, store, store_with_history,
+};
 pub use structural::{Dynamic, Each, EachExt, EachIn, When, WhenExt, dynamic, each, when};
 #[doc(hidden)]
 pub use style::{
@@ -188,7 +188,8 @@ pub use nana_ui_view_macros::stylesheet as __stylesheet;
 pub use crate::stylesheet;
 
 /// `#[derive(Store)]` (feature `view-macro`): field accessors for a struct
-/// kept in a [`Store`], as a `<Name>StoreFields` trait.
+/// or an enum kept in a [`Store`], generic or not, as a `<Name>StoreFields`
+/// trait; an enum's fields are guarded [`Variant`] paths.
 #[cfg(feature = "view-macro")]
 pub use nana_ui_view_macros::Store;
 

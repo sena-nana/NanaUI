@@ -47,9 +47,11 @@ use super::{EachVirtual, NodeBindings, each_virtual};
 
 const ROOT: u64 = 0;
 
-/// The path of `segment` under `parent`.
+/// The path of `segment` under `parent`. The segment is offset by one so
+/// that field 0 of the root is not the root's own path.
 fn child_path(parent: u64, segment: u64) -> u64 {
-    let mixed = (parent ^ segment.wrapping_mul(0x9e37_79b9_7f4a_7c15)).rotate_left(29);
+    let mixed =
+        (parent ^ segment.wrapping_add(1).wrapping_mul(0x9e37_79b9_7f4a_7c15)).rotate_left(29);
     mixed.wrapping_mul(0xbf58_476d_1ce4_e5b9) ^ (mixed >> 31)
 }
 
@@ -70,24 +72,205 @@ pub struct Paths {
     /// Triggers of rows no longer in their list, released once no borrow
     /// of the store is held.
     released: Vec<SignalKey>,
+    /// Reused by every reindex for the row paths it drops.
+    gone: Vec<u64>,
 }
 
 #[derive(Default)]
 struct PathNode {
     children: Vec<u64>,
-    /// A list item's key hash.
+    /// A list item's row id.
     key: Option<u64>,
     shallow: Option<SignalKey>,
     deep: Option<SignalKey>,
-    /// A list's key hash → position, checked on each use.
-    index: Option<HashMap<u64, usize>>,
-    /// A keyed list's item → key hash, a `KeyHash<T>`: lets a `retain`
-    /// find the rows it removed.
-    rekey: Option<Rc<dyn Any>>,
+    /// A keyed list's rows, a `Box<dyn ListIndex<T>>`.
+    index: Option<Box<dyn Any>>,
 }
 
-/// An item's key hash, for one list's item type.
-type KeyHash<T> = Box<dyn Fn(&T) -> u64>;
+/// A keyed list's rows by id, behind its item type only: what a `retain`,
+/// which knows no key type, needs to drop the rows it removed.
+trait ListIndex<T> {
+    /// Index `items` again; see [`KeyIndex::reindex`].
+    fn reindex(&mut self, items: &[T], order: Option<&mut dyn FnMut(u64)>);
+    fn holds(&self, id: u64) -> bool;
+    fn as_any(&mut self) -> &mut dyn Any;
+}
+
+/// A keyed list's rows. A row's id is its key's hash unless a different key
+/// of the list had that hash first: such a key gets the next free id along
+/// a probe sequence from the hash, and `spilled` remembers it. Every lookup
+/// compares keys with `Eq`, so a hash collision never sends one key's
+/// readers, or its `each` row, to another key's item; without one, nothing
+/// beyond `rows` is allocated, and `rows` is kept from one index to the next.
+///
+/// The row of a key gone from the list stays, with its key, until a flush
+/// has passed: until then a view may still hold its id, so a different key
+/// must not take it. The key itself, back by then, gets its row again.
+struct KeyIndex<T, K> {
+    key_of: fn(&T) -> K,
+    rows: HashMap<u64, Row<K>>,
+    /// Hash → ids of the keys with that hash that are not at it.
+    spilled: Option<HashMap<u64, Vec<u64>>>,
+    /// Rows whose key is gone.
+    gone: usize,
+}
+
+struct Row<K> {
+    key: K,
+    hash: u64,
+    /// Position in the list as last indexed; `UNSEEN` during a reindex,
+    /// `GONE` once the key has left the list.
+    at: usize,
+    /// The flush epoch the key left the list in.
+    gone_since: u64,
+}
+
+const UNSEEN: usize = usize::MAX;
+const GONE: usize = usize::MAX - 1;
+
+/// Rows of departed keys kept beyond those of the list's keys before all of
+/// them go at once, for a store that is never flushed.
+const GONE_SLACK: usize = 1024;
+
+impl<T, K: Hash + Eq> KeyIndex<T, K> {
+    fn new(key_of: fn(&T) -> K) -> Self {
+        Self {
+            key_of,
+            rows: HashMap::new(),
+            spilled: None,
+            gone: 0,
+        }
+    }
+
+    /// The id of `key`, whose hash is `hash`, if it has a row (its key may
+    /// be gone from the list).
+    fn find(&self, key: &K, hash: u64) -> Option<u64> {
+        if self.rows.get(&hash).is_some_and(|row| row.key == *key) {
+            return Some(hash);
+        }
+        self.spilled
+            .as_ref()?
+            .get(&hash)?
+            .iter()
+            .copied()
+            .find(|id| self.rows.get(id).is_some_and(|row| row.key == *key))
+    }
+
+    /// The id a key hashed `hash` with no row would get now.
+    fn free_id(&self, hash: u64) -> u64 {
+        let mut id = hash;
+        let mut probe = 0;
+        while self.rows.contains_key(&id) {
+            probe += 1;
+            id = child_path(hash, probe);
+        }
+        id
+    }
+
+    /// The position of row `id` if the list still has its key there.
+    fn fresh(&self, id: u64, items: &[T]) -> Option<usize> {
+        let row = self.rows.get(&id)?;
+        items
+            .get(row.at)
+            .is_some_and(|item| (self.key_of)(item) == row.key)
+            .then_some(row.at)
+    }
+
+    /// Index `items`: a key keeps its row and id, the first item of each
+    /// key is its row's, and new keys get new rows; the rows of keys gone
+    /// from the list are kept a flush longer. `order`: given the row ids in
+    /// list order.
+    fn reindex(&mut self, items: &[T], mut order: Option<&mut dyn FnMut(u64)>) {
+        for row in self.rows.values_mut() {
+            if row.at != GONE {
+                row.at = UNSEEN;
+            }
+        }
+        for (at, item) in items.iter().enumerate() {
+            let key = (self.key_of)(item);
+            let hash = key_hash(&key);
+            let id = match self.find(&key, hash) {
+                Some(id) => {
+                    let row = self.rows.get_mut(&id).expect("found rows exist");
+                    match row.at {
+                        UNSEEN => {}
+                        GONE => self.gone -= 1,
+                        // A repeated key: the first item has the row.
+                        _ => continue,
+                    }
+                    row.at = at;
+                    id
+                }
+                None => {
+                    let id = self.free_id(hash);
+                    if id != hash {
+                        self.spilled
+                            .get_or_insert_with(HashMap::new)
+                            .entry(hash)
+                            .or_default()
+                            .push(id);
+                    }
+                    self.rows.insert(
+                        id,
+                        Row {
+                            key,
+                            hash,
+                            at,
+                            gone_since: 0,
+                        },
+                    );
+                    id
+                }
+            };
+            if let Some(order) = order.as_deref_mut() {
+                order(id);
+            }
+        }
+        let now = reactive::epoch();
+        let (spilled, gone) = (&mut self.spilled, &mut self.gone);
+        let crowded = *gone > items.len() + GONE_SLACK;
+        self.rows.retain(|&id, row| {
+            match row.at {
+                UNSEEN => {
+                    row.at = GONE;
+                    row.gone_since = now;
+                    *gone += 1;
+                    return true;
+                }
+                // Every view has read the list since the key left.
+                GONE if crowded || now >= row.gone_since + 2 => *gone -= 1,
+                _ => return true,
+            }
+            if id != row.hash
+                && let Some(map) = spilled.as_mut()
+                && let Some(ids) = map.get_mut(&row.hash)
+            {
+                ids.retain(|&other| other != id);
+                if ids.is_empty() {
+                    map.remove(&row.hash);
+                }
+            }
+            false
+        });
+        if self.spilled.as_ref().is_some_and(HashMap::is_empty) {
+            self.spilled = None;
+        }
+    }
+}
+
+impl<T: 'static, K: Hash + Eq + 'static> ListIndex<T> for KeyIndex<T, K> {
+    fn reindex(&mut self, items: &[T], order: Option<&mut dyn FnMut(u64)>) {
+        KeyIndex::reindex(self, items, order);
+    }
+
+    fn holds(&self, id: u64) -> bool {
+        self.rows.get(&id).is_some_and(|row| row.at != GONE)
+    }
+
+    fn as_any(&mut self) -> &mut dyn Any {
+        self
+    }
+}
 
 impl Paths {
     fn link(&mut self, path: u64, parent: u64, key: Option<u64>) {
@@ -147,86 +330,110 @@ impl Paths {
         }
     }
 
-    /// The position of the item keyed `key` in the list at `list`, rebuilding
-    /// the list's index when it is stale; rows no longer present lose their
-    /// paths then.
-    fn position<T: 'static, K: Hash + 'static>(
+    /// The rows of the keyed list at `list`, linked, made for `key_of` if
+    /// it has none for this key type yet.
+    fn key_index<T: 'static, K: Hash + Eq + 'static>(
+        &mut self,
+        list: u64,
+        key_of: fn(&T) -> K,
+    ) -> &mut KeyIndex<T, K> {
+        let node = self.nodes.get_mut(&list).expect("a keyed list is linked");
+        let typed = node
+            .index
+            .as_mut()
+            .and_then(|index| index.downcast_mut::<Box<dyn ListIndex<T>>>())
+            .is_some_and(|index| index.as_any().is::<KeyIndex<T, K>>());
+        if !typed {
+            let index: Box<dyn ListIndex<T>> = Box::new(KeyIndex::new(key_of));
+            node.index = Some(Box::new(index));
+        }
+        node.index
+            .as_mut()
+            .and_then(|index| index.downcast_mut::<Box<dyn ListIndex<T>>>())
+            .and_then(|index| index.as_any().downcast_mut::<KeyIndex<T, K>>())
+            .expect("made above")
+    }
+
+    /// The position of row `id` in the list at `list`, indexing the list
+    /// again when it is stale; rows no longer present lose their paths then.
+    fn position<T: 'static, K: Hash + Eq + 'static>(
         &mut self,
         list: u64,
         items: &[T],
-        key: u64,
+        id: u64,
         key_of: fn(&T) -> K,
     ) -> Option<usize> {
-        let node = self.nodes.get_mut(&list)?;
-        if let Some(at) = node
-            .index
-            .as_ref()
-            .and_then(|index| index.get(&key).copied())
-            && items
-                .get(at)
-                .is_some_and(|item| key_hash(&key_of(item)) == key)
-        {
+        if let Some(at) = self.key_index(list, key_of).fresh(id, items) {
             return Some(at);
         }
-        if node.rekey.is_none() {
-            let hash: KeyHash<T> = Box::new(move |item| key_hash(&key_of(item)));
-            node.rekey = Some(Rc::new(hash));
-        }
-        // A key looked up and not found keeps its path: its reader waits on
+        // A row looked up and not found keeps its path: its reader waits on
         // that trigger for the row to come back.
-        self.reindex(list, items, |item| key_hash(&key_of(item)), Some(key))
-            .get(&key)
-            .copied()
+        self.reindex::<T>(list, items, Some(id), None);
+        self.key_index(list, key_of).fresh(id, items)
     }
 
-    /// Index the list at `list` again, the first item of each key; rows no
-    /// longer present, but `keep`, lose their paths, their triggers released.
-    fn reindex<T>(
+    /// The row id of `key` in the keyed list at `list`: its row's, or, for
+    /// a key the list does not hold, the id it would get now.
+    fn row_id<T: 'static, K: Hash + Eq + 'static>(
         &mut self,
         list: u64,
         items: &[T],
-        hash: impl Fn(&T) -> u64,
-        keep: Option<u64>,
-    ) -> &HashMap<u64, usize> {
-        let mut index = HashMap::with_capacity(items.len());
-        for (at, item) in items.iter().enumerate() {
-            index.entry(hash(item)).or_insert(at);
+        key: &K,
+        key_of: fn(&T) -> K,
+    ) -> u64 {
+        let hash = key_hash(key);
+        if let Some(id) = self.key_index(list, key_of).find(key, hash) {
+            return id;
         }
-        let node = self
-            .nodes
-            .get_mut(&list)
-            .expect("a reindexed list is linked");
-        let children = std::mem::take(&mut node.children);
-        let (kept, gone): (Vec<u64>, Vec<u64>) = children.into_iter().partition(|child| {
-            self.nodes
-                .get(child)
-                .and_then(|child| child.key)
-                .is_none_or(|key| Some(key) == keep || index.contains_key(&key))
-        });
-        let node = self.nodes.get_mut(&list).expect("checked above");
-        node.children = kept;
-        node.index = Some(index);
-        for child in gone {
-            self.forget(child);
-        }
-        self.nodes[&list].index.as_ref().expect("just indexed")
+        self.reindex::<T>(list, items, None, None);
+        let index = self.key_index(list, key_of);
+        index.find(key, hash).unwrap_or_else(|| index.free_id(hash))
     }
 
-    /// After a structural change of the keyed list at `list`, release the
-    /// paths of the rows it no longer has: their readers are told now, not
-    /// on the next keyed read.
-    fn drop_removed<T: 'static>(&mut self, list: u64, items: &[T]) {
-        let Some(rekey) = self
-            .nodes
-            .get(&list)
-            .filter(|node| node.index.is_some())
-            .and_then(|node| node.rekey.clone())
+    /// Index the keyed list at `list` again (see [`KeyIndex::reindex`]);
+    /// its row paths whose rows are gone, but `keep`, are forgotten, their
+    /// triggers released.
+    fn reindex<T: 'static>(
+        &mut self,
+        list: u64,
+        items: &[T],
+        keep: Option<u64>,
+        order: Option<&mut dyn FnMut(u64)>,
+    ) {
+        let Some(node) = self.nodes.get_mut(&list) else {
+            return;
+        };
+        let Some(index) = node
+            .index
+            .as_mut()
+            .and_then(|index| index.downcast_mut::<Box<dyn ListIndex<T>>>())
         else {
             return;
         };
-        if let Some(hash) = rekey.downcast_ref::<KeyHash<T>>() {
-            self.reindex(list, items, hash, None);
+        index.reindex(items, order);
+        let mut children = std::mem::take(&mut node.children);
+        let mut gone = std::mem::take(&mut self.gone);
+        let index = self.nodes[&list]
+            .index
+            .as_ref()
+            .and_then(|index| index.downcast_ref::<Box<dyn ListIndex<T>>>())
+            .expect("checked above");
+        children.retain(|child| {
+            let kept = self
+                .nodes
+                .get(child)
+                .and_then(|child| child.key)
+                .is_none_or(|id| Some(id) == keep || index.holds(id));
+            if !kept {
+                gone.push(*child);
+            }
+            kept
+        });
+        self.nodes.get_mut(&list).expect("checked above").children = children;
+        for child in gone.drain(..) {
+            self.forget(child);
         }
+        self.gone = gone;
     }
 
     fn forget(&mut self, path: u64) {
@@ -406,8 +613,8 @@ fn release(scope: Option<ScopeKey>, released: &[SignalKey], at: &'static Locatio
     reactive::release_signals(scope, released);
 }
 
-/// After a structural change of the list at `path`, drop the rows it no
-/// longer has: see [`Paths::drop_removed`].
+/// After a structural change of the keyed list at `path`, drop the rows it
+/// no longer has: their readers are told now, not on the next keyed read.
 fn drop_removed<P: StorePath<Value = Vec<T>>, T: 'static>(
     path: &P,
     at: &'static Location<'static>,
@@ -419,12 +626,51 @@ fn drop_removed<P: StorePath<Value = Vec<T>>, T: 'static>(
     let (released, scope) = {
         let value = cell.value.borrow();
         let mut paths = cell.paths.borrow_mut();
-        if let Some(items) = path.locate(&value, &mut paths) {
-            paths.drop_removed(path.path(), items);
+        let list = path.path();
+        let indexed = paths
+            .nodes
+            .get(&list)
+            .is_some_and(|node| node.index.is_some());
+        if indexed && let Some(items) = path.locate(&value, &mut paths) {
+            paths.reindex(list, items, None, None);
         }
         (std::mem::take(&mut paths.released), paths.scope)
     };
     release(scope, &released, at);
+}
+
+/// Run `f` on the paths and items of the list at `path`, linked;
+/// `track`: track the list's structure (its shallow trigger). `None` when
+/// the path leads nowhere.
+fn with_list<P: StorePath<Value = Vec<T>>, T: 'static, R>(
+    path: &P,
+    at: &'static Location<'static>,
+    track: bool,
+    f: impl FnOnce(&mut Paths, u64, &[T]) -> R,
+) -> Option<R> {
+    let cell = cell::<P::Root>(path.store(), at);
+    let cell = cell
+        .downcast_ref::<StoreCell<P::Root>>()
+        .expect("a store path reads its own store");
+    if track && reactive::tracking() {
+        let trigger = {
+            let mut paths = cell.paths.borrow_mut();
+            path.link(&mut paths);
+            paths.trigger(path.path(), false, at)
+        };
+        reactive::track_key(trigger);
+    }
+    let (result, released, scope) = {
+        let value = cell.value.borrow();
+        let mut paths = cell.paths.borrow_mut();
+        let result = path.locate(&value, &mut paths).map(|items| {
+            path.link(&mut paths);
+            f(&mut paths, path.path(), items)
+        });
+        (result, std::mem::take(&mut paths.released), paths.scope)
+    };
+    release(scope, &released, at);
+    result
 }
 
 /// Write through `path` and fire its triggers; `below`: see [`Paths::fired`].
@@ -504,6 +750,7 @@ pub fn store<T: 'static>(value: T) -> Store<T> {
             scope: reactive::current_scope(),
             nodes: HashMap::new(),
             released: Vec::new(),
+            gone: Vec::new(),
         }),
         history: RefCell::new(None),
     });
@@ -721,6 +968,140 @@ impl<P: StorePath, U: 'static> StorePath for Subfield<P, U> {
     }
 }
 
+/// A field of one variant of the enum at `P`, from a `#[derive(Store)]`
+/// accessor: it leads somewhere only while the enum holds that variant.
+/// Reading it then is `try_with`'s `None` (and `with` / `get` panic), and
+/// `set` / `update` do nothing.
+pub struct Variant<P: StorePath, U: 'static> {
+    parent: P,
+    segment: u64,
+    get: fn(&P::Value) -> Option<&U>,
+    get_mut: fn(&mut P::Value) -> Option<&mut U>,
+}
+
+impl<P: StorePath, U> Clone for Variant<P, U> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<P: StorePath, U> Copy for Variant<P, U> {}
+
+impl<P: StorePath, U: 'static> Variant<P, U> {
+    /// For `#[derive(Store)]`: variant field number `segment` of the enum
+    /// at `parent`, reached through `get` and `get_mut` while the enum
+    /// holds the variant.
+    #[doc(hidden)]
+    pub fn __new(
+        parent: P,
+        segment: u32,
+        get: fn(&P::Value) -> Option<&U>,
+        get_mut: fn(&mut P::Value) -> Option<&mut U>,
+    ) -> Self {
+        Self {
+            parent,
+            segment: u64::from(segment),
+            get,
+            get_mut,
+        }
+    }
+}
+
+impl<P: StorePath, U: 'static> StorePath for Variant<P, U> {
+    type Root = P::Root;
+    type Value = U;
+
+    fn store(&self) -> StoreKey {
+        self.parent.store()
+    }
+
+    fn path(&self) -> u64 {
+        child_path(self.parent.path(), self.segment)
+    }
+
+    fn link(&self, paths: &mut Paths) {
+        let path = self.path();
+        if !paths.nodes.contains_key(&path) {
+            self.parent.link(paths);
+            paths.link(path, self.parent.path(), None);
+        }
+    }
+
+    fn ancestors(&self, out: &mut Vec<u64>) {
+        self.parent.ancestors(out);
+        out.push(self.parent.path());
+    }
+
+    fn locate<'a>(&self, root: &'a P::Root, paths: &mut Paths) -> Option<&'a U> {
+        self.parent.locate(root, paths).and_then(self.get)
+    }
+
+    fn locate_mut<'a>(&self, root: &'a mut P::Root, paths: &mut Paths) -> Option<&'a mut U> {
+        self.parent.locate_mut(root, paths).and_then(self.get_mut)
+    }
+}
+
+/// Segments of the variant tags under an enum's path, above every field
+/// segment (a `u32`).
+const TAG: u64 = 1 << 32;
+
+/// The path that says which variant the enum at `parent` holds: only a
+/// write of the enum itself, or above it, fires it, so a reader of the
+/// variant does not run again for writes inside the variant's fields.
+#[derive(Clone, Copy)]
+struct Tag<P> {
+    parent: P,
+    segment: u64,
+}
+
+impl<P: StorePath> StorePath for Tag<P> {
+    type Root = P::Root;
+    type Value = P::Value;
+
+    fn store(&self) -> StoreKey {
+        self.parent.store()
+    }
+
+    fn path(&self) -> u64 {
+        child_path(self.parent.path(), self.segment)
+    }
+
+    fn link(&self, paths: &mut Paths) {
+        let path = self.path();
+        if !paths.nodes.contains_key(&path) {
+            self.parent.link(paths);
+            paths.link(path, self.parent.path(), None);
+        }
+    }
+
+    fn ancestors(&self, out: &mut Vec<u64>) {
+        self.parent.ancestors(out);
+        out.push(self.parent.path());
+    }
+
+    fn locate<'a>(&self, root: &'a P::Root, paths: &mut Paths) -> Option<&'a P::Value> {
+        self.parent.locate(root, paths)
+    }
+
+    fn locate_mut<'a>(&self, root: &'a mut P::Root, paths: &mut Paths) -> Option<&'a mut P::Value> {
+        self.parent.locate_mut(root, paths)
+    }
+}
+
+/// For `#[derive(Store)]` on an enum: whether the enum at `parent` holds
+/// variant number `variant` (`test`), tracked so that only a write that may
+/// change the variant runs the reader again. `false` when the path leads
+/// nowhere.
+#[doc(hidden)]
+#[track_caller]
+pub fn __variant_is<P: StorePath>(parent: P, variant: u32, test: fn(&P::Value) -> bool) -> bool {
+    let tag = Tag {
+        parent,
+        segment: TAG | u64::from(variant),
+    };
+    read(&tag, Location::caller(), Some(false), test).unwrap_or(false)
+}
+
 /// The item of the list at `P` whose key is the one this handle was made
 /// with, wherever it moves. See [`KeyedList::at`].
 pub struct Item<P: StorePath, K: 'static, T: 'static> {
@@ -738,7 +1119,9 @@ impl<P: StorePath, K, T> Clone for Item<P, K, T> {
 impl<P: StorePath, K, T> Copy for Item<P, K, T> {}
 
 impl<P: StorePath, K, T> Item<P, K, T> {
-    /// The hash of this item's key: its identity in a keyed list.
+    /// The item's row id: its identity in the keyed list, unique among the
+    /// list's keys and kept while the key stays in the list. It is the
+    /// key's hash unless another key of the list had that hash first.
     pub fn id(&self) -> u64 {
         self.key
     }
@@ -747,7 +1130,7 @@ impl<P: StorePath, K, T> Item<P, K, T> {
 impl<P, K, T> StorePath for Item<P, K, T>
 where
     P: StorePath<Value = Vec<T>>,
-    K: Hash + 'static,
+    K: Hash + Eq + 'static,
     T: 'static,
 {
     type Root = P::Root;
@@ -807,32 +1190,46 @@ impl<P: StorePath, K, T> Copy for KeyedList<P, K, T> {}
 impl<P, K, T> KeyedList<P, K, T>
 where
     P: StorePath<Value = Vec<T>>,
-    K: Hash + 'static,
+    K: Hash + Eq + 'static,
     T: 'static,
 {
-    /// The item keyed `key`, for as long as the list holds it.
+    /// The item keyed `key`, for as long as the list holds it. Untracked;
+    /// reads through the handle are. A handle made for a key the list does
+    /// not hold reaches the item once the key is added, unless a different
+    /// key with the same hash is added first: make it again then.
+    #[track_caller]
     pub fn at(&self, key: &K) -> Item<P, K, T> {
+        let key_of = self.key_of;
+        let id = with_list(
+            &self.list,
+            Location::caller(),
+            false,
+            |paths, list, items| paths.row_id(list, items, key, key_of),
+        )
+        .unwrap_or_else(|| key_hash(key));
         Item {
             list: self.list,
-            key: key_hash(key),
-            key_of: self.key_of,
+            key: id,
+            key_of,
         }
     }
 
-    /// Every item's handle, in order, tracking only the list's structure:
-    /// writes inside an item do not re-run the reader.
+    /// Every item's handle, in order, the first item of a repeated key
+    /// only, tracking only the list's structure: writes inside an item do
+    /// not re-run the reader.
     #[track_caller]
     pub fn items(&self) -> Vec<Item<P, K, T>> {
-        let at = Location::caller();
         let (list, key_of) = (self.list, self.key_of);
-        read(&list, at, Some(false), |items| {
-            let mut seen = hashbrown::HashSet::with_capacity(items.len());
-            items
-                .iter()
-                .map(|item| key_hash(&key_of(item)))
-                .filter(|key| seen.insert(*key))
-                .map(|key| Item { list, key, key_of })
-                .collect()
+        with_list(&list, Location::caller(), true, |paths, path, items| {
+            paths.key_index(path, key_of);
+            let mut handles = Vec::with_capacity(items.len());
+            paths.reindex::<T>(
+                path,
+                items,
+                None,
+                Some(&mut |key| handles.push(Item { list, key, key_of })),
+            );
+            handles
         })
         .unwrap_or_default()
     }
@@ -874,7 +1271,7 @@ where
 impl<P, K, T> Readable<Vec<Item<P, K, T>>> for KeyedList<P, K, T>
 where
     P: StorePath<Value = Vec<T>>,
-    K: Hash + Send + 'static,
+    K: Hash + Eq + Send + 'static,
     T: 'static,
 {
     #[track_caller]
@@ -888,9 +1285,10 @@ where
 /// above it run again.
 pub trait StoreList<T: 'static>: StorePath<Value = Vec<T>> {
     /// Address items by `key` (a plain function or a closure that captures
-    /// nothing): `todos.keyed(|todo| todo.id)`. Keys hash to 64 bits; two
-    /// keys of one list must not collide.
-    fn keyed<K: Hash + 'static>(self, key: fn(&T) -> K) -> KeyedList<Self, K, T> {
+    /// nothing): `todos.keyed(|todo| todo.id)`. Rows are found by the key's
+    /// hash and told apart with `Eq`, so keys whose hashes collide still
+    /// keep rows of their own.
+    fn keyed<K: Hash + Eq + 'static>(self, key: fn(&T) -> K) -> KeyedList<Self, K, T> {
         KeyedList {
             list: self,
             key_of: key,
@@ -990,5 +1388,9 @@ macro_rules! readable_paths {
 readable_paths! {
     [T: 'static] Store<T> => T;
     [P: StorePath, U: 'static] Subfield<P, U> => U;
-    [P: StorePath<Value = Vec<T>>, K: Hash + 'static, T: 'static] Item<P, K, T> => T;
+    [P: StorePath, U: 'static] Variant<P, U> => U;
+    [P: StorePath<Value = Vec<T>>, K: Hash + Eq + 'static, T: 'static] Item<P, K, T> => T;
 }
+
+#[cfg(test)]
+mod tests;

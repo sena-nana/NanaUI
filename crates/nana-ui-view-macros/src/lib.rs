@@ -18,8 +18,10 @@ pub fn view(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     expand_tokens(input.into()).into()
 }
 
-/// `#[derive(Store)]` on a struct with named fields: a `<Name>StoreFields`
-/// trait giving every path to the struct inside a store an accessor per
+/// `#[derive(Store)]` on a struct with named fields or an enum, generic or
+/// not: a `<Name>StoreFields` trait, with the type's parameters, giving
+/// every path to the value inside a store an accessor per field. An enum
+/// gets `is_<variant>()` per variant and a guarded `Variant` path per
 /// field. Import the trait where the accessors are used.
 #[proc_macro_derive(Store)]
 pub fn derive_store(input: proc_macro::TokenStream) -> proc_macro::TokenStream {

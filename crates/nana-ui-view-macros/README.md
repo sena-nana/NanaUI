@@ -4,7 +4,7 @@ English · [简体中文](README.zh-CN.md)
 
 Proc macros for NanaUI's declarative view layer: `view!`, `css!`, `stylesheet!`, `#[component]`, and `#[derive(Store)]`.
 
-`view!` accepts Vue-like templates and expands into plain view-function calls with zero extra runtime overhead. `css!` and `stylesheet!` run through the CSS engine at compile time, generating typed `view::Class` handles for each class in `stylesheet!`. `#[component]` wires named template parameters and `#[prop(default)]` attributes, and `#[derive(Store)]` generates field-tracked reactive accessors for structs.
+`view!` accepts Vue-like templates and expands into plain view-function calls with zero extra runtime overhead. `css!` and `stylesheet!` run through the CSS engine at compile time, generating typed `view::Class` handles for each class in `stylesheet!`. `#[component]` wires named template parameters and `#[prop(default)]` attributes, and `#[derive(Store)]` generates field-tracked reactive accessors for structs (generic ones included) and guarded per-variant accessors for enums.
 
 Consume these macros through `nana_ui::runtime` (or `nana_ui_runtime`) by enabling the `view-macro` feature on `nana-ui` or `nana-ui-runtime` instead of depending on this crate directly. Code generation itself lives in [`nana-ui-view-codegen`](../nana-ui-view-codegen).
 

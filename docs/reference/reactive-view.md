@@ -137,13 +137,13 @@ app.todos().push(todo);            // 列表加一行，已有的行一个都不
 app.filter().set("done".into());   // 只影响读 filter 的地方
 ```
 
-- `#[derive(Store)]` 生成 `<Name>StoreFields` trait。每个字段一个访问器。返回 `Subfield`。用到访问器的地方要导入这个 trait。只支持具名字段、不带泛型的结构体。
-- 路径句柄（`Store`、`Subfield`、`Item`）和信号一样是 `Copy` 的 id。可以直接当属性值：`text(t.title())`、`.checked(t.done())`。也可以直接双向绑定：`.model(t.done())`、`v-model={t.done()}`（`Writable<T>`，写回走路径的 `set`。行已删除时什么也不做）。读写方法 `get` / `with` / `try_with` / `set` / `update` 来自 `StorePath` trait。
+- `#[derive(Store)]` 生成 `<Name>StoreFields` trait。用到访问器的地方要导入这个 trait。结构体每个具名字段一个访问器，返回 `Subfield`。泛型参数（生命周期、约束、const 参数）原样带到 trait 上：`Page<'a, T>` 生成 `PageStoreFields<'a, T>`。每个参数都要满足 `'static`。枚举每个变体一个 `is_<变体>()`（追踪，只在这条路径或上层被整体写入时重跑），每个字段一条守卫路径 `Variant`：具名字段 `<变体>_<字段>()`，单个无名字段 `<变体>()`，多个无名字段 `<变体>_<序号>()`。值不是这个变体时，`try_with` 返回 `None`，`get` 会 panic，写入什么也不做。
+- 路径句柄（`Store`、`Subfield`、`Variant`、`Item`）和信号一样是 `Copy` 的 id。可以直接当属性值：`text(t.title())`、`.checked(t.done())`。也可以直接双向绑定：`.model(t.done())`、`v-model={t.done()}`（`Writable<T>`，写回走路径的 `set`。行已删除时什么也不做）。读写方法 `get` / `with` / `try_with` / `set` / `update` 来自 `StorePath` trait。
 - 每条路径有两个触发器。都在第一次被追踪读取时才创建。没被读过的路径不占任何信号。读值（`get` / `with`）追踪 deep。遍历列表（`keyed(..).each` / `items()`、`len()`）只追踪 shallow。写一条路径触发它自己和它下面已存在路径的两个触发器。以及它上面各路径的 deep。
 - 列表自己的 `push`、`insert`、`retain`、`swap`、`sort_by_key` 不改任何一项的内容。所以只触发列表本身和上层的 deep。不触发各行。整体 `set` / `update` 列表会触发所有行。行内绑定重跑后按字段比较。值没变就到此为止。
-- 行按 key 的 64 位哈希定位。重排后仍指向同一项。同一列表里两个 key 的哈希不能相同。行被删掉后。它的触发器在下一次按 key 查找时释放。对已删除行的 `get` 会 panic。`try_with` 返回 `None`。
+- 行先按 key 的 64 位哈希查找，再用 `Eq` 比较 key 本身（`keyed` 的 key 要 `Hash + Eq`）。哈希相同的两个 key 各有一行：先来的用哈希当行 id，后来的沿探测序列拿一个空闲 id。所以碰撞不会让一个 key 的绑定或 `each` 行读到另一个 key 的项。没有碰撞时，查找和重建索引不额外分配堆内存。重排后仍指向同一项。离开列表的 key 的行再保留一次 flush，在那之前别的 key 拿不到它的 id。行被删掉后，它的触发器随删除释放。对已删除行的 `get` 会 panic。`try_with` 返回 `None`。
 - **时间旅行**：`store_with_history(value, 上限)` 记住之前的值。`undo()` / `redo()` / `travel(±n)` 前后移动。`can_undo()` / `can_redo()` / `steps()`（每一步写在哪一行）是被追踪的。可以直接绑到按钮上。一次事件处理（两次 flush 之间）里的所有写入算一步。开始一步时复制整个值（要求 `T: Clone`。成本和值的大小成正比）。撤销和重做通过整值写回。所以只有值真的变了的绑定会更新。行按 key 保留。撤销之后再写入。就丢掉可以重做的步骤。
-- `.vue` 里 `let x = store(…)` 和 `Store` / `Subfield` / `Item` 类型的 prop 被当作 store：用到它的绑定一律在运行时追踪。不会被折叠成常量。单独写这个名字（例如 `:checked="done"`。`done` 是一个 `Subfield` prop）则直接绑定。
+- `.vue` 里 `let x = store(…)` 和 `Store` / `Subfield` / `Variant` / `Item` 类型的 prop 被当作 store：用到它的绑定一律在运行时追踪。不会被折叠成常量。单独写这个名字（例如 `:checked="done"`。`done` 是一个 `Subfield` prop）则直接绑定。
 
 ## 异步：任务、`resource` 与 `suspense`
 
