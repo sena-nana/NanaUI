@@ -91,6 +91,12 @@ pub enum UiMutation {
         id: StableNodeId,
         scale: Option<f32>,
     },
+    /// Where a `display: free` parent places a node; see
+    /// [`MutationQueue::set_explicit_rect`].
+    SetExplicitRect {
+        id: StableNodeId,
+        rect: Option<crate::ExplicitRect>,
+    },
     /// The locale a node's subtree reads; see [`MutationQueue::set_locale`].
     SetLocale {
         id: StableNodeId,
@@ -500,6 +506,22 @@ impl MutationQueue {
     /// number.
     pub fn set_text_scale(&mut self, id: StableNodeId, scale: Option<f32>) {
         self.mutations.push(UiMutation::SetTextScale { id, scale });
+    }
+
+    /// Place `id` by `rect` in its `display: free` parent: logical pixels of
+    /// the parent's padding box, origin at the top left, y down. `None`
+    /// returns it to the padding box's origin at its shrink-to-fit size.
+    ///
+    /// The rect is not a layout style: `left`, `top`, `width` and `height`
+    /// stay as authored. It depends on the parent alone. Moving it places the
+    /// node again and measures nothing; resizing it also lays out what is
+    /// inside the node. Neither measures a sibling or anything outside the
+    /// free container. A rect on a node whose parent is not a free container
+    /// is kept and takes effect once it is. Every value must be finite and
+    /// the size not negative.
+    pub fn set_explicit_rect(&mut self, id: StableNodeId, rect: Option<crate::ExplicitRect>) {
+        self.mutations
+            .push(UiMutation::SetExplicitRect { id, rect });
     }
 
     /// Make `id` a locale scope: the localized text under it, itself included,

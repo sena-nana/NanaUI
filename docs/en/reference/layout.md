@@ -66,7 +66,7 @@ Layout splits a node into three things, none of which replaces another:
   not a component, and it is not stored as another tree.
 - **Established context** (`FormattingContextKind`): how this node lays out its children. Layout records the one it
   actually ran: `Flex` (the default `DisplaySpec::Flex`, unset `display` without inline-level children, and `inline-flex`), `Grid` (`grid` / `inline-grid`), `Inline` (an un-pinned container with inline-level boxes among its in-flow
-  children), `Layers` (`display: layers`, stacking), `Overlay` (a modal places its children by slot). A leaf with text establishes
+  children), `Layers` (`display: layers`, stacking), `Free` (`display: free`, a free container), `Overlay` (a modal places its children by slot). A leaf with text establishes
   `Inline` for its own text; the glyphs belong to nana-text and do not become layout nodes. An empty leaf establishes no context.
 
 Measure and placement choose the context with the same function, so the two passes cannot choose different algorithms for the same node.
@@ -79,6 +79,7 @@ it does not parse the style a second time.
 | `Grid` | `GridItem` |
 | `Inline` | Inline text (`display: inline` text node) is `NativeText`; `display: inline` with children is `InlineSpan`; replaced/empty inline nodes and `inline-flex` / `inline-grid` controls/containers are `AtomicInline`; container children (`flex` / `grid` / `layers`) are line-breaking `FlexItem`s |
 | `Layers` | `LayerItem` |
+| `Free` | `FreeItem` |
 | `Overlay` | `OverlayItem` |
 
 `Absolute` / `Fixed` and nodes that generate no box (`NoBox` from `DisplaySpec::None`)
@@ -109,7 +110,39 @@ child overrides, the later layer catches the pointer, same as cold layout) and i
 `issue204_layers_css_and_rust_share_one_overlay_context`; the thousand-component
 switching sequence in `world/tests/layout_foundations.rs` also goes through `Layers`.
 
-A context switch (the same set of children going Flex → Grid → Inline) only replaces the context record, its generation,
+`Free` is a free container (Issue #301): each direct child that generates a box and is not `absolute` / `fixed`
+(a `FreeItem`) is placed by its own explicit rect. Whiteboards, node graphs, timelines, thumbnail walls and map pins all take part this way.
+The rect, an `ExplicitRect`, is written with `MutationQueue::set_explicit_rect` and read back with `UiWorld::explicit_rect`.
+It is in logical pixels of the parent's padding box, origin at the top left, y down, and it is the child's border box: placing
+the child measures nothing. A child without a rect sits at the padding box's origin at its shrink-to-fit size. The rect is not a
+layout style: writing it neither goes through nor changes `left`, `top`, `width` or `height`, and document coordinates are
+derived from the parent's frame only when the child is placed.
+
+What sets it apart from `Layers` is dependency. Layers share one cell, align in it, and the container follows its largest
+child, so siblings are coupled through the container's size. The children of a free container are in no sibling constraint and
+do not grow the container; its size comes only from its own style and its parent's constraints, and in its parent it is still an
+ordinary box (`Stack::free()` in Rust, `display: free` in CSS). The frontier therefore treats a free item like this:
+
+- Only the rect's x and y change: just that child is placed again. Nothing is measured, not the child, its content, a sibling or
+  anything outside the container, and its text constraint stays valid. When only the parent moves, the child's rect and the box
+  kept in the parent's frame stay as they were.
+- Its width or height changes: that layer lays out again at the new size, and its text wraps to the new width. The flex siblings
+  outside the layer are not measured.
+- A free item exports no metric to its parent and is not chained to its siblings as a context (`positioned_out_of_flow` counts it as
+  out of flow). A free item with a rect is a fixed border: a text change inside the layer stops at the layer, which is not measured.
+- `z-index` still only takes part in the existing `(z_index, document_order)` order and dirties paint alone, never layout. A new
+  rect hands only that child to the hit index, which rebuilds that node's entry in place.
+- Absolutely positioned descendants take the free item as their containing block: what is positioned inside a layer is positioned
+  in that layer. A `transform` moves, scales or rotates the painted box without changing the rect.
+
+Gates are in the `free_container` module of `world/tests/layout_foundations.rs`: the padding-box origin (inside the border, not
+the padding), participation, and that the layout style shows no rect; moving, resizing, restyling and changing text inside a layer
+each reach only the nodes they should, in both a fixed-size and a parent-sized container (read from the frontier's admitted and
+measured sets, and equal to a cold layout box for box); a moving parent keeps the rects and local boxes; `z-index` queues no layout
+and hits by `(z_index, document_order)`; a new rect rebuilds one hit entry; a button in `Stack::free()` lays out its own content as
+usual and takes the pointer.
+
+, its generation,
 the children's participation, and the layout results; plans compared by style pointer are invalidated naturally. The children's ids, components, state, focus,
 listeners, and mounts do not change, and no node is created or destroyed. Each container recorded under a different context counts once toward
 `layout_context_transitions`; static frames, paint-only writes, and equivalent writes are all 0.

@@ -1946,6 +1946,12 @@ impl LayoutStyleCss for LayoutStyle {
             }
             // NanaUI extension: one cell every child shares (ZStack / Box).
             // Children align at the start unless `place-items` says otherwise.
+            // NanaUI extension: each child placed by its explicit rect, with no
+            // sibling constraints (whiteboards, node graphs, map pins).
+            "display" if val.eq_ignore_ascii_case("free") => {
+                self.display = Some(DisplaySpec::Free);
+                self.hidden = false;
+            }
             "display" if val.eq_ignore_ascii_case("layers") => {
                 self.display = Some(DisplaySpec::Layers);
                 self.hidden = false;
@@ -7707,6 +7713,18 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         assert_eq!(layout.active_grid_rows(), Some(&[GridTrack::Auto][..]));
         // Unlike grid it does not seed `align-items: stretch`.
         assert_eq!(layout.align_items, AlignSpec::Start);
+    }
+
+    #[test]
+    fn display_free_is_a_free_container_and_writes_no_insets() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("display:free", Some(400.0), None);
+        assert_eq!(layout.display, Some(DisplaySpec::Free));
+        assert!(layout.display.unwrap().is_free());
+        assert!(!layout.display.unwrap().is_flex_container());
+        assert!(!layout.display.unwrap().is_grid_container());
+        assert_eq!(layout.offset_left, None);
+        assert_eq!(layout.offset_top, None);
     }
 
     #[test]

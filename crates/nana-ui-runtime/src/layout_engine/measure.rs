@@ -3113,7 +3113,8 @@ fn try_plan_sequential<'w, 's>(
         && scope.affected_children(id).iter().any(|&child| {
             nodes.world.parent_id(child) == Some(id)
                 && nodes.style_ref(child).is_some_and(|style| {
-                    !style.position.is_out_of_flow() && style.is_inline_level()
+                    !crate::layout_node::leaves_parent_flow(Some(&plan.style), &style)
+                        && style.is_inline_level()
                 })
         })
     {
@@ -3283,7 +3284,12 @@ fn advance_sequential_arrivals<'w, 's>(
         let child_style = nodes.style(child);
         let in_flow = match child_style.as_deref() {
             None => false,
-            Some(arrival) if arrival.omits_box() || arrival.position.is_out_of_flow() => false,
+            Some(arrival)
+                if arrival.omits_box()
+                    || crate::layout_node::leaves_parent_flow(Some(style), arrival) =>
+            {
+                false
+            }
             Some(arrival)
                 if (!flex && arrival.is_inline_level())
                     || arrival.flex_grow.unwrap_or(0.0) > 0.0

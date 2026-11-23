@@ -409,19 +409,30 @@ impl NodeRecord {
 }
 
 macro_rules! sparse {
-    ($field:ident, $ty:ty, $get:ident, $set:ident) => {
+    ($($field:ident).+, $ty:ty, $get:ident, $set:ident) => {
         pub fn $get(&self, id: StableNodeId) -> Option<&$ty> {
-            self.$field.get(&id)
+            self.$($field).+.get(&id)
         }
 
         pub fn $set(&mut self, id: StableNodeId, value: Option<$ty>) {
             if let Some(value) = value {
-                self.$field.insert(id, value);
+                self.$($field).+.insert(id, value);
             } else {
-                self.$field.remove(&id);
+                self.$($field).+.remove(&id);
             }
         }
     };
+}
+
+/// Per-node rectangles few nodes ever hold, kept behind one box so the
+/// store (and the world that holds it by value) does not grow by a map each.
+#[derive(Default)]
+struct ColdRects {
+    /// 拖拽移动选中文本的落点指示线（仅拖拽态编辑器持有条目；文本空间
+    /// 矩形）。框架侧拖拽状态机写入，提取层翻译为节点空间图元。
+    text_drop_indicators: HashMap<StableNodeId, LayoutBox>,
+    /// Explicit rects of free items (`display: free` children).
+    explicit_rects: HashMap<StableNodeId, crate::ExplicitRect>,
 }
 
 /// 代码折叠视图状态（仅喂过折叠区间的编辑器节点持有条目）。
@@ -987,9 +998,8 @@ pub(crate) struct NodeStore {
     text_signatures: HashMap<StableNodeId, crate::TextSignatureHelp>,
     /// minimap 视口钉住（仅显式导航过的多行编辑器持有条目）。
     text_viewport_pins: HashMap<StableNodeId, ScrollOffset>,
-    /// 拖拽移动选中文本的落点指示线（仅拖拽态编辑器持有条目；文本空间
-    /// 矩形）。框架侧拖拽状态机写入，提取层翻译为节点空间图元。
-    text_drop_indicators: HashMap<StableNodeId, LayoutBox>,
+    /// Text drop indicators and free items' explicit rects.
+    cold_rects: Box<ColdRects>,
     /// The width a plain text that wrapped to its box would take on its
     /// own lines, unwrapped (its max-content width). Only text that wrapped
     /// holds an entry: its metrics are the lines it wrapped to, and layout
@@ -1264,10 +1274,11 @@ impl NodeStore {
         self.text_hovers.remove(&id);
         self.text_signatures.remove(&id);
         self.text_viewport_pins.remove(&id);
-        self.text_drop_indicators.remove(&id);
+        self.cold_rects.text_drop_indicators.remove(&id);
         self.text_natural_widths.remove(&id);
         self.block_struts.remove(&id);
         self.text_wrap_limits.remove(&id);
+        self.cold_rects.explicit_rects.remove(&id);
         self.languages.remove(&id);
         self.text_scales.remove(&id);
         self.rich_texts.remove(&id);
@@ -1885,7 +1896,7 @@ impl NodeStore {
         set_text_viewport_pin
     );
     sparse!(
-        text_drop_indicators,
+        cold_rects.text_drop_indicators,
         LayoutBox,
         text_drop_indicator,
         set_text_drop_indicator
@@ -1897,6 +1908,12 @@ impl NodeStore {
         set_text_natural_width
     );
     sparse!(text_wrap_limits, f32, text_wrap_limit, set_text_wrap_limit);
+    sparse!(
+        cold_rects.explicit_rects,
+        crate::ExplicitRect,
+        explicit_rect,
+        set_explicit_rect
+    );
     sparse!(block_struts, crate::FontStrut, block_strut, set_block_strut);
 
     /// Every block holding a strut: what a new font set can change.

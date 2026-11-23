@@ -9596,6 +9596,21 @@ impl Stack {
         })
     }
 
+    /// 自由容器：每个直接子项按自己的显式矩形落位
+    /// （[`crate::MutationQueue::set_explicit_rect`]），矩形是这个容器 padding box
+    /// 内的逻辑像素，原点在左上、y 向下。子项之间没有布局依赖，也不撑大容器；
+    /// 容器自己的尺寸来自自己的样式与父级约束。CSS 写作 `display: free`。
+    /// 白板、节点图、时间轴、缩略图墙、地图钉用它，外壳仍可以是 flex。
+    pub fn free() -> Self {
+        let mut style = NodeStyle::default();
+        Arc::make_mut(&mut style.layout).display = Some(nana_ui_core::DisplaySpec::Free);
+        Self {
+            style: Arc::new(style),
+            hittable: false,
+            structural: false,
+        }
+    }
+
     /// 叠层：子项共用同一块区域，后写的盖在先写的上面。每个子项按
     /// [`Self::align`]（竖直）和 [`Self::justify`]（水平）在这块区域里对齐，
     /// 默认左上；容器随最大的子项。等同 SwiftUI `ZStack`、Compose `Box`、

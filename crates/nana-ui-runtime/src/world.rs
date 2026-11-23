@@ -2516,9 +2516,7 @@ impl UiWorld {
         let Some(record) = self.nodes.get(id) else {
             return false;
         };
-        if !definite_fixed_border(record.resolved_layout.as_ref())
-            || self.atom_baseline_reads_content(id)
-        {
+        if !self.fixed_border(id, record) || self.atom_baseline_reads_content(id) {
             return false;
         }
         if let Some(parent) = record.hierarchy.parent
@@ -5729,6 +5727,75 @@ impl UiWorld {
         }
     }
 
+    /// The explicit rect `id` was given ([`crate::MutationQueue::set_explicit_rect`]):
+    /// where a `display: free` parent places it, in logical pixels of the
+    /// parent's padding box. It is kept whatever the parent's display, and
+    /// read only while the parent is a free container.
+    pub fn explicit_rect(&self, id: StableNodeId) -> Option<crate::ExplicitRect> {
+        self.nodes.explicit_rect(id).copied()
+    }
+
+    /// A border box nothing inside can change: a fixed width and height, or
+    /// a free item's explicit rect.
+    fn fixed_border(&self, id: StableNodeId, record: &NodeRecord) -> bool {
+        definite_fixed_border(record.resolved_layout.as_ref())
+            || (self.nodes.explicit_rect(id).is_some() && self.is_free_item(id))
+    }
+
+    /// Whether a `display: free` parent places `id` by its explicit rect.
+    pub(crate) fn is_free_item(&self, id: StableNodeId) -> bool {
+        let Some(record) = self.nodes.get(id) else {
+            return false;
+        };
+        let parent = record
+            .hierarchy
+            .parent
+            .and_then(|parent| self.nodes.get(parent));
+        crate::layout_node::is_free_item(
+            parent.map(|parent| parent.resolved_layout.as_ref()),
+            record.resolved_layout.as_ref(),
+        )
+    }
+
+    /// Store `rect` for `id` and seed only what it moves. Origin only: the
+    /// node is placed again where its parent's padding box puts it, nothing
+    /// measures. A new size also lays out what is inside it. A free item
+    /// sizes nothing of its parent and couples no sibling, so nothing beside
+    /// it or outside the free container is measured.
+    pub(crate) fn apply_explicit_rect(
+        &mut self,
+        id: StableNodeId,
+        rect: Option<crate::ExplicitRect>,
+    ) {
+        let previous = self.nodes.explicit_rect(id).copied();
+        if previous == rect {
+            return;
+        }
+        self.nodes.set_explicit_rect(id, rect);
+        if !self.is_free_item(id) || !self.presence_live(id) {
+            return;
+        }
+        use nana_ui_core::LayoutStyleChange as Change;
+        let mut changed = Change::POSITION;
+        match (previous, rect) {
+            (Some(previous), Some(rect)) => {
+                if previous.width.to_bits() != rect.width.to_bits() {
+                    changed = changed.union(Change::WIDTH);
+                }
+                if previous.height.to_bits() != rect.height.to_bits() {
+                    changed = changed.union(Change::HEIGHT);
+                }
+            }
+            // To or from the shrink-to-fit size.
+            _ => changed = changed.union(Change::WIDTH).union(Change::HEIGHT),
+        }
+        // Classified as the same write to `left` / `top` / `width` /
+        // `height` would be; the frontier keeps it off the siblings and the
+        // parent's measure because the node is a free item.
+        let invalidation = self.classify_layout_change(id, changed);
+        self.record_layout_invalidation(id, invalidation);
+    }
+
     /// The layout view of `id` (Issue #197): its resolved intent, content,
     /// the context it establishes, and how it takes part in its parent's.
     /// Built from the records on each call; nothing is retained for it.
@@ -7401,9 +7468,8 @@ impl UiWorld {
                 // A box whose lines an atom's baseline reads is not fixed
                 // to the line it sits on, whatever its size: what it holds
                 // moves that baseline.
-                let has_definite_size =
-                    definite_fixed_border(parent_record.resolved_layout.as_ref())
-                        && !self.atom_baseline_reads_content(parent);
+                let has_definite_size = self.fixed_border(parent, parent_record)
+                    && !self.atom_baseline_reads_content(parent);
                 // A fixed inline-block is an atomic box. Inner metrics
                 // stop at its border; the outer inline formatting
                 // context does not reflow.
@@ -7433,8 +7499,12 @@ impl UiWorld {
                 } else {
                     upward
                 };
+                // A free item sizes nothing of its parent: whatever moved
+                // inside it, the parent only places it again.
+                let free_item = self.is_free_item(node);
                 if !upward_for_parent.is_empty() {
-                    let follows_metrics = force_all || axes.intersects(upward_for_parent);
+                    let follows_metrics =
+                        force_all || (!free_item && axes.intersects(upward_for_parent));
                     let edge_structural = !follows_metrics;
                     let edge_upward = if edge_structural {
                         LayoutDependencyFootprint::NONE
@@ -8063,10 +8133,13 @@ impl UiWorld {
         self.drop_non_overlay_animations_for_parked(&parked);
     }
 
+    /// Out of its siblings' flow: positioned, or a free item its explicit
+    /// rect places.
     fn positioned_out_of_flow(&self, id: StableNodeId) -> bool {
         self.nodes
             .get(id)
             .is_some_and(|record| record.resolved_layout.position.is_out_of_flow())
+            || self.is_free_item(id)
     }
 
     pub(crate) fn layout_isolated(&self, id: StableNodeId) -> bool {

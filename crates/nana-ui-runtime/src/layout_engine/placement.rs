@@ -429,7 +429,9 @@ fn replay_sequential_children(
         // Leaving the flow (or being omitted) changes sibling coupling the
         // suffix arithmetic does not model. The caller lays the container out
         // again, still inside this formatting context.
-        if child_style.position.is_out_of_flow() || child_style.omits_box() {
+        if crate::layout_node::leaves_parent_flow(Some(&plan.style), child_style)
+            || child_style.omits_box()
+        {
             return Ok(None);
         }
         // A newly arrived auto margin or exotic alignment makes this container
@@ -707,7 +709,7 @@ fn replay_child_list_edit(
         if style.omits_box() {
             continue;
         }
-        if style.position.is_out_of_flow()
+        if crate::layout_node::leaves_parent_flow(Some(&plan.style), &style)
             || (block && style.is_inline_level())
             || style.order != 0
             || style.margin_auto_left()
@@ -2583,7 +2585,7 @@ fn lay_out_children(
     if let Some(scope) = scope {
         retire_omitted_children(child_ids, nodes, output, scope);
     }
-    let mut positioned = collect_positioned_children(child_ids, nodes)?;
+    let mut positioned = collect_positioned_children(child_ids, nodes, style)?;
     sort_by_order(&mut flow, nodes);
     sort_by_order(&mut positioned, nodes);
     // This container is its children's containing block: their percentage
@@ -3636,6 +3638,21 @@ pub(super) fn place_positioned_child(
         return Ok(None);
     };
     let child_style = child_style_arc.as_ref();
+    if free_item_of(child, child_style, nodes).is_some() {
+        return place_free_item(
+            child,
+            child_style_arc,
+            content_origin,
+            content,
+            viewport,
+            child_font_px,
+            writing,
+            nodes,
+            intrinsic,
+            output,
+            scope,
+        );
+    }
     if !child_style.position.is_out_of_flow() {
         return Ok(None);
     }
@@ -3842,9 +3859,122 @@ pub(super) fn place_positioned_child(
     }))
 }
 
+/// `child`'s parent when it is a `display: free` container placing `child`
+/// by its explicit rect.
+fn free_item_of(
+    child: StableNodeId,
+    child_style: &LayoutStyle,
+    nodes: &LayoutInputMap<'_>,
+) -> Option<StableNodeId> {
+    let parent = nodes.world.parent_id(child)?;
+    let parent_style = nodes.style_ref(parent)?;
+    crate::layout_node::is_free_item(Some(&parent_style), child_style).then_some(parent)
+}
+
+/// Place a child of a `display: free` container from its explicit rect: in
+/// the container's padding box, measured from the container's origin. The
+/// rect is the child's border box, so nothing measures the child for it; a
+/// child without one sits at the padding box's origin at its shrink-to-fit
+/// size. Only the parent is read: no sibling, and no flow. The document
+/// coordinates follow from the parent's frame, so a parent that moves
+/// leaves this box, and the rect, as they are.
+#[allow(clippy::too_many_arguments)]
+fn place_free_item(
+    child: StableNodeId,
+    child_style_arc: Arc<LayoutStyle>,
+    content_origin: Point,
+    content: Size,
+    viewport: LayoutViewport,
+    child_font_px: f32,
+    writing: nana_ui_core::WritingContext,
+    nodes: &mut LayoutInputMap<'_>,
+    intrinsic: &mut PassIntrinsicCache,
+    output: &mut PassOutput,
+    scope: Option<&ScopeContext<'_>>,
+) -> Result<Option<PlannedOverlay>, UiWorldError> {
+    let child_style = child_style_arc.as_ref();
+    let Some(parent) = nodes.world.parent_id(child) else {
+        return Ok(None);
+    };
+    let frame = crate::LayoutFrame::Parent;
+    let (base_origin, base) =
+        padding_box(parent, nodes, output, scope).unwrap_or((content_origin, content));
+    let rect = nodes.world.explicit_rect(child);
+    let (offset, child_size) = match rect {
+        Some(rect) => (
+            Point {
+                x: rect.x,
+                y: rect.y,
+            },
+            Size::new(rect.width, rect.height),
+        ),
+        None => (
+            Point::ZERO,
+            intrinsic_size_out_of_flow(
+                child,
+                Size::new(base.width, 0.0),
+                viewport,
+                child_font_px,
+                nodes,
+                intrinsic,
+                scope,
+            )?,
+        ),
+    };
+    let child_origin = Point {
+        x: base_origin.x + offset.x,
+        y: base_origin.y + offset.y,
+    };
+    let frame_kept = pass_frame(child, nodes, scope) == frame;
+    nodes.frames.insert(child, frame);
+    let child_fonts = fonts_of(child_style, child_font_px);
+    if !frame_kept
+        || !subtree_unchanged(
+            child,
+            child_origin,
+            child_size,
+            base,
+            child_style,
+            child_fonts,
+            writing,
+            scope,
+        )
+    {
+        place_node_scoped(
+            child,
+            child_origin,
+            child_size,
+            base,
+            viewport,
+            child_font_px,
+            None,
+            nodes,
+            intrinsic,
+            output,
+            scope,
+        )?;
+    }
+    Ok(Some(PlannedOverlay {
+        child,
+        style: child_style_arc,
+        fixed: false,
+        block: Some(parent),
+        in_container: true,
+        static_origin: None,
+        // A rect is in pixels: the padding box resizing moves nothing. A
+        // shrink-to-fit box reads the width it is offered.
+        tracks_containing_block: rect.is_none(),
+        base,
+        base_origin,
+        origin: child_origin,
+        size: child_size,
+    }))
+}
+
 /// The containing block of an absolutely positioned `child` (CSS 2.1
 /// §10.1): its nearest positioned ancestor, or `None` for the initial
-/// containing block when it has none.
+/// containing block when it has none. A free item is one too: what is
+/// positioned inside a layer is positioned in that layer.
 fn absolute_containing_block(
     child: StableNodeId,
     nodes: &LayoutInputMap<'_>,
@@ -3855,10 +3985,10 @@ fn absolute_containing_block(
         if world.is_document_node(id) {
             return None;
         }
-        if nodes
-            .style(id)
-            .is_some_and(|style| style.position.establishes_containing_block())
-        {
+        if nodes.style(id).is_some_and(|style| {
+            style.position.establishes_containing_block()
+                || free_item_of(id, &style, nodes).is_some()
+        }) {
             return Some(id);
         }
         ancestor = world.parent_id(id);
@@ -4274,12 +4404,12 @@ fn finish_positioned_overlay(
     let stale = plan.overlay.iter().any(|entry| {
         nodes
             .style(entry.child)
-            .is_none_or(|style| !style.position.is_out_of_flow())
+            .is_none_or(|style| !crate::layout_node::leaves_parent_flow(Some(&plan.style), &style))
     });
     let mut placed: Vec<PlannedOverlay> = Vec::new();
     if stale {
         intrinsic.note_local_context_fallback();
-        let live = collect_positioned_children(&plan.children, nodes)?;
+        let live = collect_positioned_children(&plan.children, nodes, &plan.style)?;
         for child in live {
             if let Some(entry) = place_positioned_child(
                 child,

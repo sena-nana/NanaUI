@@ -343,7 +343,9 @@ pub use layout_engine::{
 pub use layout_frontier::{
     LayoutDependencyGraph, LayoutFrontier, LayoutFrontierSeed, LayoutFrontierStats,
 };
-pub use layout_node::{FormattingContextKind, LayoutContentKind, LayoutNode, ParticipationKind};
+pub use layout_node::{
+    ExplicitRect, FormattingContextKind, LayoutContentKind, LayoutNode, ParticipationKind,
+};
 pub use layout_result::{
     LayoutChildPlacement, LayoutFragment, LayoutFragmentKind, LayoutFrame, LayoutPart,
     LayoutPartKind, LayoutResult, LayoutResultSource,

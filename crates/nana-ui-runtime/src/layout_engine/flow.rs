@@ -55,7 +55,7 @@ pub(super) fn collect_flow_children_into(
         }
         if matches!(
             participation,
-            Participation::Absolute | Participation::Fixed
+            Participation::Absolute | Participation::Fixed | Participation::FreeItem
         ) {
             continue;
         }
@@ -122,31 +122,38 @@ pub(super) fn inline_contains_block(
     Ok(false)
 }
 
+/// The children placed beside the flow, one by one: positioned ones, and
+/// in a `display: free` container every child with a box (its explicit rect
+/// places it).
 pub(super) fn collect_positioned_children(
     children: &[StableNodeId],
     nodes: &mut LayoutInputMap<'_>,
+    parent_style: &LayoutStyle,
 ) -> Result<Vec<StableNodeId>, UiWorldError> {
     let mut out = Vec::new();
-    collect_positioned_children_into(children, nodes, &mut out)?;
+    collect_positioned_children_into(children, nodes, parent_style, &mut out)?;
     Ok(out)
 }
 
 pub(super) fn collect_positioned_children_into(
     children: &[StableNodeId],
     nodes: &mut LayoutInputMap<'_>,
+    parent_style: &LayoutStyle,
     out: &mut Vec<StableNodeId>,
 ) -> Result<(), UiWorldError> {
+    let parent = if parent_style.display == Some(DisplaySpec::Free) {
+        Context::Free
+    } else {
+        Context::Flex
+    };
     for child in children.iter().copied() {
         let Some(style) = nodes.style_ref(child) else {
             continue;
         };
-        let participation = nodes.participation(child, &style, Context::Flex);
-        if participation == Participation::NoBox {
-            continue;
-        }
+        let participation = nodes.participation(child, &style, parent);
         if matches!(
             participation,
-            Participation::Absolute | Participation::Fixed
+            Participation::Absolute | Participation::Fixed | Participation::FreeItem
         ) {
             out.push(child);
         }

@@ -4,7 +4,8 @@
 //! container establishes, so the two passes cannot pick different
 //! algorithms for the same node. The Flex, Grid, Inline and Overlay modules
 //! keep their specialized algorithms and retained plans; Layers is the grid
-//! algorithm over one cell that every child shares. Child membership is
+//! algorithm over one cell that every child shares; Free has no flow at all,
+//! its children are placed one by one from their explicit rects. Child membership is
 //! classified by the same Participation contract used by LayoutNode queries.
 
 use super::*;
@@ -38,6 +39,9 @@ pub(super) fn establish_context(
     let kind = match style.display {
         _ if nodes.world.places_modal_slots(id) => FormattingContextKind::Overlay,
         Some(DisplaySpec::Layers) => FormattingContextKind::Layers,
+        // Its children are all placed by their explicit rects, beside the
+        // (empty) flow: the flex path below runs over no item.
+        Some(DisplaySpec::Free) => FormattingContextKind::Free,
         Some(display) if display.is_grid_container() => FormattingContextKind::Grid,
         Some(display) if display.is_flex_container() => FormattingContextKind::Flex,
         _ if flow

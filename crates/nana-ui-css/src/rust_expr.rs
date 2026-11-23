@@ -216,7 +216,7 @@ impl_unit_enum!(WritingModeSpec, "WritingModeSpec" => { HorizontalTb, VerticalRl
 impl_unit_enum!(TextOrientationSpec, "TextOrientationSpec" => { Mixed, Upright, Sideways });
 impl_unit_enum!(FlexWrap, "FlexWrap" => { NoWrap, Wrap, WrapReverse });
 impl_unit_enum!(DisplaySpec, "DisplaySpec" => {
-    None, Flex, InlineFlex, Grid, InlineGrid, Inline, Layers
+    None, Flex, InlineFlex, Grid, InlineGrid, Inline, Layers, Free
 });
 impl_unit_enum!(BoxSizing, "BoxSizing" => { BorderBox, ContentBox });
 impl_unit_enum!(PositionSpec, "PositionSpec" => { Static, Relative, Absolute, Fixed, Sticky });

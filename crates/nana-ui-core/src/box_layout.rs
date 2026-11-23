@@ -194,6 +194,13 @@ pub enum DisplaySpec {
     /// 同一格的单格网格。它按网格排版：轨道固定为一行一列 `auto`，放置时这一格
     /// 撑满容器内容盒；子项自己的网格位置不起作用。
     Layers,
+    /// `display: free`（NanaUI 扩展）：自由容器。每个生成盒子、未声明
+    /// `absolute` / `fixed` 的直接子项按 Runtime 里的显式矩形
+    /// （`UiWorld::explicit_rect`）落位：矩形是父级 padding box 内的逻辑像素，
+    /// 原点在左上、y 向下。子项之间没有布局依赖，也不撑大容器；容器自己仍是
+    /// 文档流里的一个盒子，尺寸只取自己的样式与父级约束。矩形不写进
+    /// `left` / `top` / `width` / `height`。白板、节点图、时间轴、地图钉都是这种参与。
+    Free,
 }
 
 /// The one track each axis of a [`DisplaySpec::Layers`] container has: as
@@ -210,6 +217,11 @@ impl DisplaySpec {
     /// `display: layers`：每个在流子项都占同一格。
     pub fn is_layers(self) -> bool {
         matches!(self, Self::Layers)
+    }
+
+    /// `display: free`：直接子项按显式矩形落位，彼此不进入兄弟约束。
+    pub fn is_free(self) -> bool {
+        matches!(self, Self::Free)
     }
 
     /// `display: flex` 或 `inline-flex`（网格轨在此惰性）。

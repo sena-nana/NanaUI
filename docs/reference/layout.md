@@ -66,7 +66,7 @@ transform、hover 和 accessibility 更新不会 bump。
   它由父级的 context、节点解析后的布局意图和节点自己的内容推出来，是一个视图，
   不是组件，也不另存一棵树。
 - **建立的 context**（`FormattingContextKind`）：这个节点怎么排自己的子项。布局记下它
-  实际跑的那一种：`Flex`（`display` 默认 `Flex` 或未写且无行内级子项时均走弹性列/行布局，与 `inline-flex` 同属弹性算法）、`Grid`（`grid` / `inline-grid`）、`Inline`（未显式固定为 flex / grid / layers 且在流子项里有行内级盒子时）、`Layers`（`display: layers`，叠层）、`Overlay`（模态框按槽位放子项）。有文字的叶子为自己的文字建立 `Inline`，字形归 nana-text，不变成布局节点；空叶子不建立 context。
+  实际跑的那一种：`Flex`（`display` 默认 `Flex` 或未写且无行内级子项时均走弹性列/行布局，与 `inline-flex` 同属弹性算法）、`Grid`（`grid` / `inline-grid`）、`Inline`（未显式固定为 flex / grid / layers 且在流子项里有行内级盒子时）、`Layers`（`display: layers`，叠层）、`Free`（`display: free`，自由容器）、`Overlay`（模态框按槽位放子项）。有文字的叶子为自己的文字建立 `Inline`，字形归 nana-text，不变成布局节点；空叶子不建立 context。
 
 measure 和 placement 用同一个函数选 context，两趟不会对同一个节点选出不同的算法。
 context 只读 `resolved_layout`，也就是 layout intent authority 的输出；
@@ -78,6 +78,7 @@ context 只读 `resolved_layout`，也就是 layout intent authority 的输出�
 | `Grid` | `GridItem` |
 | `Inline` | 行内文字（`display: inline` 文本节点）是 `NativeText`，有子项的 `display: inline` 是 `InlineSpan`，替换内容 / 空行内节点以及 `inline-flex` / `inline-grid` 等控件容器是 `AtomicInline`，块级/容器子项（如 `flex` / `grid` / `layers`）是断行的 `FlexItem` |
 | `Layers` | `LayerItem` |
+| `Free` | `FreeItem` |
 | `Overlay` | `OverlayItem` |
 
 `Absolute` / `Fixed` 和不生成盒子的节点（`DisplaySpec::None` 对应的 `NoBox`）
@@ -108,7 +109,35 @@ context。门禁在 `world/tests/layout_foundations.rs`（共用区域、随最�
 `issue204_layers_css_and_rust_share_one_overlay_context`；`world/tests/layout_foundations.rs` 的千组件
 切换序列也经过 `Layers`。
 
-context 切换（同一组子项 Flex → Grid → Inline）只换 context 记录、它的 generation、
+`Free` 是自由容器（Issue #301）：每个生成盒子、未声明 `absolute` / `fixed` 的直接子项
+（`FreeItem`）按自己的显式矩形落位，白板、节点图、时间轴、缩略图墙、地图钉都是这种参与。
+矩形 `ExplicitRect` 由 `MutationQueue::set_explicit_rect` 写入、`UiWorld::explicit_rect` 读回，
+是父级 padding box 内的逻辑像素，原点在左上、y 向下，就是子项的边框盒：落位时不测量子项。
+没写矩形的子项放在 padding box 原点，取收缩到内容的尺寸。它不是布局样式：写入不经过、也不改动
+`left`、`top`、`width`、`height`，文档坐标只在落位时从父级的坐标系换算。
+
+和 `Layers` 的区别在依赖：叠层的子项共用一格、按对齐落位、容器随最大的子项，兄弟之间经容器
+尺寸耦合；自由容器的子项不在任何兄弟约束里，也不撑大容器，容器的尺寸只取自己的样式和父级
+约束，它在父级里仍是一个普通的盒子（Rust 写 `Stack::free()`，CSS 写 `display: free`）。
+因此 frontier 对自由子项这样走：
+
+- 只改矩形的 x、y：只重新放这一个子项，不测量它、它的内容、兄弟或容器外的任何节点；
+  文字约束不变，不失效。父级只移动时，子项的矩形和保留在父级坐标系里的盒子都不变。
+- 改了宽或高：这一层按新尺寸重新排，里面的文字按新宽度重排；层外的 flex 兄弟不被测量。
+- 自由子项不向父级导出度量，也不和兄弟连成 context 链（`positioned_out_of_flow` 把它算作脱流）；
+  有矩形的自由子项是固定边框，层里文字变了，变化停在这一层，不测量这一层本身。
+- `z-index` 仍只参与已有的 `(z_index, document_order)` 排序，只脏绘制，不进布局；矩形变了
+  只把这个子项交给命中索引，按节点原地重建。
+- 绝对定位的后代以自由子项为包含块：层里定位的东西就定位在这一层里。`transform` 只移动、缩放、
+  旋转绘制出的盒子，不改这份矩形。
+
+门禁在 `world/tests/layout_foundations.rs` 的 `free_container` 模块：padding box 原点（边框内、
+不含 padding）、参与方式、样式里读不到矩形；移动、改尺寸、改样式、改层内文字在固定尺寸与随父级
+两种容器下各自只到达该到的节点（读 frontier 收录与测量集合，并与冷布局逐项相同）；父级移动时
+矩形与局部盒子不变；`z-index` 不排布局、按 `(z_index, document_order)` 命中；新矩形只重建一条
+命中条目；`Stack::free()` 里的按钮照原有排版排自己的内容并接住指针。
+
+、它的 generation、
 子项的参与方式和布局结果；按样式指针比对的计划自然失效。子项的 id、组件、状态、焦点、
 监听和挂载都不变，不生成也不销毁节点。每个记录到不同 context 的容器计一次
 `layout_context_transitions`；静态帧、只改绘制的写入和等价写入都是 0。

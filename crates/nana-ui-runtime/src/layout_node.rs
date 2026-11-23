@@ -41,6 +41,10 @@ pub enum FormattingContextKind {
     /// in it, later ones above earlier ones (SwiftUI `ZStack`, Compose `Box`).
     /// It runs the grid algorithm over a single `1fr` cell.
     Layers,
+    /// `display: free`: every in-flow child is placed by its own
+    /// [`ExplicitRect`], in the container's padding box. The children have no
+    /// layout dependency on one another and do not size the container.
+    Free,
 }
 
 impl FormattingContextKind {
@@ -51,6 +55,7 @@ impl FormattingContextKind {
             Self::Inline => 2,
             Self::Overlay => 3,
             Self::Layers => 4,
+            Self::Free => 5,
         })
     }
     /// The context a style alone selects, before layout has run. Layout
@@ -60,6 +65,7 @@ impl FormattingContextKind {
     pub fn from_display(style: &LayoutStyle) -> Self {
         match style.display {
             Some(DisplaySpec::Layers) => Self::Layers,
+            Some(DisplaySpec::Free) => Self::Free,
             Some(display) if display.is_grid_container() => Self::Grid,
             Some(DisplaySpec::Inline) => Self::Inline,
             _ => Self::Flex,
@@ -73,6 +79,7 @@ impl FormattingContextKind {
             Self::Flex | Self::Overlay => LayoutFragmentKind::FlexChildPlacement,
             Self::Grid | Self::Layers => LayoutFragmentKind::GridChildPlacement,
             Self::Inline => LayoutFragmentKind::InlineAtomic,
+            Self::Free => LayoutFragmentKind::ChildPlacement,
         }
     }
 }
@@ -87,6 +94,9 @@ pub enum ParticipationKind {
     GridItem,
     /// An in-flow child of a `display: layers` container: one layer.
     LayerItem,
+    /// A child of a `display: free` container: placed by its
+    /// [`ExplicitRect`], depending on its parent alone.
+    FreeItem,
     /// Inline-level text in an inline context: its glyph runs join the
     /// parent's lines directly.
     NativeText,
@@ -130,6 +140,7 @@ impl ParticipationKind {
             FormattingContextKind::Flex => Self::FlexItem,
             FormattingContextKind::Grid => Self::GridItem,
             FormattingContextKind::Layers => Self::LayerItem,
+            FormattingContextKind::Free => Self::FreeItem,
             FormattingContextKind::Inline => {
                 if child.display == Some(DisplaySpec::Inline) {
                     match content {
@@ -146,6 +157,70 @@ impl ParticipationKind {
                 }
             }
         }
+    }
+}
+
+/// Whether `child` stays out of its parent's flow: positioned out of flow, or
+/// a box placed by its explicit rect in a `display: free` parent. Either way
+/// its siblings do not measure it and it does not size the parent. Every
+/// "is this child in my flow" question that reads only the child's style asks
+/// this instead, so a free item never couples to its siblings.
+#[must_use]
+pub(crate) fn leaves_parent_flow(parent: Option<&LayoutStyle>, child: &LayoutStyle) -> bool {
+    child.position.is_out_of_flow() || is_free_item(parent, child)
+}
+
+/// A child `display: free` places by its explicit rect: one that generates a
+/// box and is not itself `absolute` or `fixed`.
+#[must_use]
+pub(crate) fn is_free_item(parent: Option<&LayoutStyle>, child: &LayoutStyle) -> bool {
+    parent.is_some_and(|parent| parent.display == Some(DisplaySpec::Free))
+        && !child.omits_box()
+        && !child.position.is_out_of_flow()
+}
+
+/// Where a child of a `display: free` container goes: logical pixels in its
+/// parent's padding box, origin at the top left, y down.
+///
+/// The rect is authored data, not a layout style: writing it does not touch
+/// `left`, `top`, `width` or `height`, and layout turns it into document
+/// coordinates only when it places the child. It depends on the parent
+/// alone: a sibling's rect never measures this one. A transform moves,
+/// scales or rotates the painted box without changing this rect.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct ExplicitRect {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+impl ExplicitRect {
+    #[must_use]
+    pub const fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    /// Finite numbers and a size that is not negative.
+    #[must_use]
+    pub fn is_valid(self) -> bool {
+        [self.x, self.y, self.width, self.height]
+            .iter()
+            .all(|value| value.is_finite())
+            && self.width >= 0.0
+            && self.height >= 0.0
+    }
+
+    /// Same size, bit for bit: only the origin differs.
+    #[must_use]
+    pub fn same_size(self, other: Self) -> bool {
+        self.width.to_bits() == other.width.to_bits()
+            && self.height.to_bits() == other.height.to_bits()
     }
 }
 
@@ -236,6 +311,9 @@ mod tests {
                 Content::Replaced,
                 Part::LayerItem,
             ),
+            (Ctx::Free, &default_box, Content::Children, Part::FreeItem),
+            (Ctx::Free, &inline, Content::Text, Part::FreeItem),
+            (Ctx::Free, &inline_flex, Content::Replaced, Part::FreeItem),
             (Ctx::Inline, &inline, Content::Text, Part::NativeText),
             (Ctx::Inline, &inline, Content::Children, Part::InlineSpan),
             (Ctx::Inline, &inline, Content::Replaced, Part::AtomicInline),
@@ -280,7 +358,7 @@ mod tests {
         let none = display(DisplaySpec::None);
         let absolute = positioned(PositionSpec::Absolute);
         let fixed = positioned(PositionSpec::Fixed);
-        for parent in [Ctx::Flex, Ctx::Grid, Ctx::Layers, Ctx::Inline] {
+        for parent in [Ctx::Flex, Ctx::Grid, Ctx::Layers, Ctx::Free, Ctx::Inline] {
             assert_eq!(Part::classify(parent, &none, Content::Text), Part::NoBox);
             assert_eq!(
                 Part::classify(parent, &absolute, Content::Empty),

@@ -2566,8 +2566,9 @@ impl ContainerPlan {
             };
             // Only a container that lays no lines out records a plan: an
             // inline-level child in its flow now makes it one that does.
+            let leaves_flow = crate::layout_node::leaves_parent_flow(Some(&self.style), &style);
             if style.is_inline_level()
-                && !style.position.is_out_of_flow()
+                && !leaves_flow
                 && !self.style.display.is_some_and(|display| {
                     display.is_flex_container() || display.is_grid_container()
                 })
@@ -2578,7 +2579,7 @@ impl ContainerPlan {
             let was_positioned = self.overlay.iter().any(|entry| entry.child == child);
             if style.omits_box() {
                 !was_in_flow && !was_positioned
-            } else if style.position.is_out_of_flow() {
+            } else if leaves_flow {
                 was_positioned
             } else {
                 was_in_flow

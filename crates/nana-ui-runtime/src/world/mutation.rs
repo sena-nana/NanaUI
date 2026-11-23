@@ -293,6 +293,12 @@ impl<'a> ValidationPlan<'a> {
                         return Err(UiWorldError::InvalidStyle(*id));
                     }
                 }
+                UiMutation::SetExplicitRect { id, rect } => {
+                    self.require_exists(*id)?;
+                    if rect.is_some_and(|rect| !rect.is_valid()) {
+                        return Err(UiWorldError::InvalidStyle(*id));
+                    }
+                }
                 UiMutation::SetResponsive { id, rule } => {
                     self.require_exists(*id)?;
                     if let Some(rule) = rule {
@@ -1620,6 +1626,7 @@ impl UiWorld {
                 self.nodes.set_text_scale(*id, *scale);
                 self.mark_text_scale_scope(*id);
             }
+            UiMutation::SetExplicitRect { id, rect } => self.apply_explicit_rect(*id, *rect),
             UiMutation::SetResponsive { id, rule } => {
                 self.set_responsive_rule(*id, rule.clone());
             }
@@ -2750,6 +2757,7 @@ impl UiWorld {
                 self.nodes.language(*id) == language.as_ref()
             }
             UiMutation::SetTextScale { id, scale } => self.nodes.text_scale(*id).copied() == *scale,
+            UiMutation::SetExplicitRect { id, rect } => self.explicit_rect(*id) == *rect,
             UiMutation::SetResponsive { id, rule } => self.responsive_rule(*id) == rule.as_ref(),
             UiMutation::SetLocale { id, locale } => {
                 self.scope_locale(LocaleScope::Node(*id)) == locale.as_ref()

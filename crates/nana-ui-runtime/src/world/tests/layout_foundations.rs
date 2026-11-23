@@ -8200,3 +8200,594 @@ mod baseline_alignment {
         assert_matches_cold(&mut warm, &mut cold, doc);
     }
 }
+
+mod free_container {
+    //! Issue #301: a `display: free` container places each direct child by
+    //! its explicit rect, in the container's padding box. The children are in
+    //! no sibling constraint and do not size the container, which is still
+    //! one box of its parent's flow. Hit testing, clipping, accessibility and
+    //! extraction read the one `LayoutResult` the rect becomes.
+    //!
+    //! The page is a column: a header, a row holding a sidebar and the board
+    //! (`display: free`, 400 x 300, 3px border, 10px padding), and a footer.
+    //! The board holds three items: `a` with a label inside, `b`, and `c`
+    //! without a rect. Each step is compared with the same inputs laid out
+    //! cold.
+
+    use std::collections::HashSet;
+
+    use nana_ui_core::{BorderStyle, DisplaySpec, FlexDirection, LayoutStyle, LengthSpec};
+
+    use crate::world::reflow_oracle::{
+        Builder, admitted, assert_matches_cold, bundled_face_shaper, measured, product_frame,
+        styled,
+    };
+    use crate::world::{DocumentId, StableNodeId};
+    use crate::{
+        AppContext, Button, ExplicitRect, FormattingContextKind as Ctx, LayoutViewport,
+        MutationQueue, NanaTextEngineShaper, ParticipationKind as Part, Stack, TextContent,
+    };
+
+    fn viewport() -> LayoutViewport {
+        LayoutViewport::new(800.0, 600.0)
+    }
+
+    fn document() -> DocumentId {
+        DocumentId::new(1).unwrap()
+    }
+
+    fn board_style() -> LayoutStyle {
+        LayoutStyle {
+            display: Some(DisplaySpec::Free),
+            width: Some(LengthSpec::Px(400.0)),
+            height: Some(LengthSpec::Px(300.0)),
+            padding: Some(LengthSpec::Px(10.0)),
+            border_width: Some(3.0),
+            border_style: Some(BorderStyle::Solid),
+            ..LayoutStyle::default()
+        }
+    }
+
+    /// A board whose box is not fixed: it takes what the row leaves and is
+    /// as tall as its own (empty) flow. Nothing stops a metric it exported.
+    fn fluid_board_style() -> LayoutStyle {
+        LayoutStyle {
+            width: None,
+            height: None,
+            flex_grow: Some(1.0),
+            ..board_style()
+        }
+    }
+
+    /// Ids of the page's nodes, in the order they are built.
+    #[derive(Clone, Copy)]
+    struct Ids {
+        header: StableNodeId,
+        sidebar: StableNodeId,
+        sidebar_label: StableNodeId,
+        board: StableNodeId,
+        a: StableNodeId,
+        a_label: StableNodeId,
+        b: StableNodeId,
+        c: StableNodeId,
+        footer: StableNodeId,
+    }
+
+    impl Ids {
+        fn outside(&self) -> [StableNodeId; 4] {
+            [self.header, self.sidebar, self.sidebar_label, self.footer]
+        }
+    }
+
+    /// The authored inputs a step changes, so a cold copy can be built from
+    /// the same ones.
+    #[derive(Clone)]
+    struct Inputs {
+        header_height: f32,
+        board: LayoutStyle,
+        a: LayoutStyle,
+        a_text: &'static str,
+        rects: [Option<ExplicitRect>; 3],
+    }
+
+    impl Default for Inputs {
+        fn default() -> Self {
+            Self {
+                header_height: 40.0,
+                board: board_style(),
+                a: LayoutStyle {
+                    direction: Some(FlexDirection::Column),
+                    ..LayoutStyle::default()
+                },
+                a_text: "A card that wraps its words",
+                rects: [
+                    Some(ExplicitRect::new(20.0, 30.0, 120.0, 50.0)),
+                    Some(ExplicitRect::new(60.0, 40.0, 80.0, 40.0)),
+                    None,
+                ],
+            }
+        }
+    }
+
+    struct Page {
+        context: AppContext,
+        ids: Ids,
+        inputs: Inputs,
+        shaper: NanaTextEngineShaper,
+    }
+
+    impl Page {
+        fn build(inputs: &Inputs, shaper: &mut NanaTextEngineShaper) -> (AppContext, Ids) {
+            let (mut b, root) = Builder::new(document(), 1);
+            let page = b.element(
+                root,
+                LayoutStyle {
+                    direction: Some(FlexDirection::Column),
+                    ..LayoutStyle::default()
+                },
+            );
+            let header = b.element(
+                page,
+                LayoutStyle {
+                    height: Some(LengthSpec::Px(inputs.header_height)),
+                    ..LayoutStyle::default()
+                },
+            );
+            let row = b.element(
+                page,
+                LayoutStyle {
+                    direction: Some(FlexDirection::Row),
+                    ..LayoutStyle::default()
+                },
+            );
+            let sidebar = b.element(
+                row,
+                LayoutStyle {
+                    direction: Some(FlexDirection::Column),
+                    width: Some(LengthSpec::Px(120.0)),
+                    ..LayoutStyle::default()
+                },
+            );
+            let sidebar_label = b.label(sidebar, "Layers");
+            let board = b.element(row, inputs.board.clone());
+            let a = b.element(board, inputs.a.clone());
+            let a_label = b.label(a, inputs.a_text);
+            let b_item = b.element(board, LayoutStyle::default());
+            let c = b.element(
+                board,
+                LayoutStyle {
+                    width: Some(LengthSpec::Px(30.0)),
+                    height: Some(LengthSpec::Px(20.0)),
+                    ..LayoutStyle::default()
+                },
+            );
+            let footer = b.element(
+                page,
+                LayoutStyle {
+                    height: Some(LengthSpec::Px(20.0)),
+                    ..LayoutStyle::default()
+                },
+            );
+            for (id, rect) in [a, b_item, c].into_iter().zip(inputs.rects) {
+                b.queue.set_explicit_rect(id, rect);
+            }
+            let mut context = AppContext::new();
+            context.commit_mutations(b.queue).unwrap();
+            product_frame(&mut context, document(), viewport(), shaper);
+            let ids = Ids {
+                header,
+                sidebar,
+                sidebar_label,
+                board,
+                a,
+                a_label,
+                b: b_item,
+                c,
+                footer,
+            };
+            (context, ids)
+        }
+
+        fn new() -> Self {
+            Self::with_board(board_style())
+        }
+
+        fn with_board(board: LayoutStyle) -> Self {
+            let inputs = Inputs {
+                board,
+                ..Inputs::default()
+            };
+            let mut shaper = bundled_face_shaper();
+            let (context, ids) = Self::build(&inputs, &mut shaper);
+            Self {
+                context,
+                ids,
+                inputs,
+                shaper,
+            }
+        }
+
+        fn commit(&mut self, queue: MutationQueue) {
+            self.context.commit_mutations(queue).unwrap();
+            product_frame(&mut self.context, document(), viewport(), &mut self.shaper);
+            let (mut cold, _) = Self::build(&self.inputs, &mut bundled_face_shaper());
+            assert_matches_cold(&mut self.context, &mut cold, document());
+        }
+
+        fn set_rect(&mut self, item: usize, rect: Option<ExplicitRect>) {
+            self.inputs.rects[item] = rect;
+            let id = [self.ids.a, self.ids.b, self.ids.c][item];
+            let mut queue = MutationQueue::new();
+            queue.set_explicit_rect(id, rect);
+            self.commit(queue);
+        }
+
+        fn rect(&self, id: StableNodeId) -> (f32, f32, f32, f32) {
+            let b = self.context.world().layout_box(id).unwrap();
+            (b.x, b.y, b.width, b.height)
+        }
+
+        fn measured(&self) -> HashSet<StableNodeId> {
+            self.context
+                .world()
+                .document_order(document())
+                .into_iter()
+                .filter(|id| measured(&self.context, *id))
+                .collect()
+        }
+
+        fn admitted(&self, id: StableNodeId) -> bool {
+            admitted(&self.context, id)
+        }
+    }
+
+    #[test]
+    fn issue301_free_items_take_their_rects_in_the_padding_box() {
+        let page = Page::new();
+        let world = page.context.world();
+        let ids = page.ids;
+        let board = page.rect(ids.board);
+        // The board is one box of the row: its own size, after the sidebar.
+        assert_eq!(
+            (board.0, board.1, board.2, board.3),
+            (120.0, 40.0, 400.0, 300.0)
+        );
+        // The padding box starts inside the 3px border; padding moves nothing.
+        assert_eq!(
+            page.rect(ids.a),
+            (board.0 + 3.0 + 20.0, board.1 + 3.0 + 30.0, 120.0, 50.0)
+        );
+        assert_eq!(
+            page.rect(ids.b),
+            (board.0 + 3.0 + 60.0, board.1 + 3.0 + 40.0, 80.0, 40.0)
+        );
+        // No rect: the padding box's origin at the size it asks for.
+        assert_eq!(page.rect(ids.c), (board.0 + 3.0, board.1 + 3.0, 30.0, 20.0));
+        // `a` and `b` overlap; neither moved the other.
+        assert!(page.rect(ids.b).0 < page.rect(ids.a).0 + 120.0);
+
+        let node = world.layout_node(ids.board).unwrap();
+        assert_eq!(node.established, Some(Ctx::Free));
+        assert_eq!(node.participation, Some(Part::FlexItem));
+        for item in [ids.a, ids.b, ids.c] {
+            let node = world.layout_node(item).unwrap();
+            assert_eq!(node.parent_context, Some(Ctx::Free));
+            assert_eq!(node.participation, Some(Part::FreeItem));
+        }
+        // Inside a layer the label lays out as it would anywhere: in `a`.
+        let label = page.rect(ids.a_label);
+        assert!(
+            label.0 >= page.rect(ids.a).0 && label.2 <= 120.0,
+            "{label:?}"
+        );
+
+        // The rect was not written into the layout style.
+        for item in [ids.a, ids.b] {
+            let style = world.layout_style(item).unwrap();
+            assert_eq!(
+                (
+                    style.offset_left,
+                    style.offset_top,
+                    style.width,
+                    style.height
+                ),
+                (None, None, None, None)
+            );
+            assert_eq!(style.position, nana_ui_core::PositionSpec::Static);
+        }
+        assert_eq!(
+            world.explicit_rect(ids.a),
+            Some(ExplicitRect::new(20.0, 30.0, 120.0, 50.0))
+        );
+    }
+
+    #[test]
+    fn issue301_moving_a_free_item_measures_nothing_and_no_sibling() {
+        for board in [board_style(), fluid_board_style()] {
+            moving_a_free_item_measures_nothing_and_no_sibling(board);
+        }
+    }
+
+    fn moving_a_free_item_measures_nothing_and_no_sibling(board: LayoutStyle) {
+        let mut page = Page::with_board(board);
+        let ids = page.ids;
+        let before_b = page.rect(ids.b);
+        let before_c = page.rect(ids.c);
+        let board = page.rect(ids.board);
+        page.set_rect(0, Some(ExplicitRect::new(200.0, 150.0, 120.0, 50.0)));
+        assert_eq!(
+            page.rect(ids.a),
+            (board.0 + 203.0, board.1 + 153.0, 120.0, 50.0)
+        );
+        // Nothing measured: not `a`, not its label (whose constraint is the
+        // same), not the board, not a sibling, nothing outside the board.
+        assert_eq!(page.measured(), HashSet::new());
+        for id in [ids.b, ids.c, ids.a_label].into_iter().chain(ids.outside()) {
+            assert!(!page.admitted(id), "{id:?} was admitted");
+        }
+        assert_eq!((page.rect(ids.b), page.rect(ids.c)), (before_b, before_c));
+        assert_eq!(page.rect(ids.board), board);
+    }
+
+    #[test]
+    fn issue301_resizing_a_free_item_lays_out_only_that_layer() {
+        for board in [board_style(), fluid_board_style()] {
+            resizing_a_free_item_lays_out_only_that_layer(board);
+        }
+    }
+
+    fn resizing_a_free_item_lays_out_only_that_layer(board: LayoutStyle) {
+        let mut page = Page::with_board(board);
+        let ids = page.ids;
+        let before = (page.rect(ids.b), page.rect(ids.c), page.rect(ids.board));
+        let label_before = page.rect(ids.a_label);
+        page.set_rect(0, Some(ExplicitRect::new(20.0, 30.0, 60.0, 90.0)));
+        assert_eq!((page.rect(ids.a).2, page.rect(ids.a).3), (60.0, 90.0));
+        // The label inside wraps again to the narrower layer.
+        let label = page.rect(ids.a_label);
+        assert!(label.2 <= 60.0 && label.3 > label_before.3, "{label:?}");
+        // Nothing outside the layer is measured or placed.
+        let measured = page.measured();
+        assert!(!measured.contains(&ids.b) && !measured.contains(&ids.c));
+        // The board, the item's only dependency, may place it again; it
+        // is not measured, and nothing beside or outside it is reached.
+        assert!(!measured.contains(&ids.board));
+        for id in [ids.b, ids.c].into_iter().chain(ids.outside()) {
+            assert!(!page.admitted(id), "{id:?} was admitted");
+            assert!(!measured.contains(&id), "{id:?} was measured");
+        }
+        assert_eq!(
+            (page.rect(ids.b), page.rect(ids.c), page.rect(ids.board)),
+            before
+        );
+
+        // Back to no rect, and to one again.
+        page.set_rect(2, Some(ExplicitRect::new(5.0, 6.0, 7.0, 8.0)));
+        page.set_rect(0, None);
+        page.set_rect(0, Some(ExplicitRect::new(1.0, 2.0, 3.0, 4.0)));
+    }
+
+    #[test]
+    fn issue301_a_style_write_on_a_free_item_reaches_no_sibling() {
+        for board in [board_style(), fluid_board_style()] {
+            let mut page = Page::with_board(board);
+            let ids = page.ids;
+            let padded = LayoutStyle {
+                padding: Some(LengthSpec::Px(6.0)),
+                ..page.inputs.a.clone()
+            };
+            page.inputs.a = padded.clone();
+            let mut queue = MutationQueue::new();
+            queue.set_style(ids.a, styled(padded));
+            page.commit(queue);
+            // In a flex row this write would couple `a` to the items beside
+            // it; in a free container there are none to reach.
+            let measured = page.measured();
+            assert!(!measured.contains(&ids.board));
+            for id in [ids.b, ids.c].into_iter().chain(ids.outside()) {
+                assert!(!page.admitted(id), "{id:?} was admitted");
+            }
+        }
+    }
+
+    #[test]
+    fn issue301_new_text_in_a_layer_stops_at_the_layer() {
+        for board in [board_style(), fluid_board_style()] {
+            let mut page = Page::with_board(board);
+            let ids = page.ids;
+            let before = page.rect(ids.a);
+            let text = "A card whose words now run on for a good deal longer than before";
+            page.inputs.a_text = text;
+            let mut queue = MutationQueue::new();
+            queue.set_text(ids.a_label, TextContent { value: text.into() });
+            page.commit(queue);
+            // The rect is the layer's border box: what its text says moves
+            // nothing outside it, and the layer itself is not measured.
+            assert_eq!(page.rect(ids.a), before);
+            let measured = page.measured();
+            for id in [ids.a, ids.board, ids.b, ids.c]
+                .into_iter()
+                .chain(ids.outside())
+            {
+                assert!(!measured.contains(&id), "{id:?} was measured");
+            }
+            for id in [ids.b, ids.c].into_iter().chain(ids.outside()) {
+                assert!(!page.admitted(id), "{id:?} was admitted");
+            }
+        }
+    }
+
+    #[test]
+    fn issue301_a_moving_parent_keeps_the_rects_and_measures_no_item() {
+        let mut page = Page::new();
+        let ids = page.ids;
+        let local: Vec<_> = [ids.a, ids.b, ids.c, ids.a_label]
+            .iter()
+            .map(|id| page.context.world().local_layout_box(*id))
+            .collect();
+        let a_before = page.rect(ids.a);
+        page.inputs.header_height = 90.0;
+        let mut queue = MutationQueue::new();
+        queue.set_style(
+            ids.header,
+            styled(LayoutStyle {
+                height: Some(LengthSpec::Px(90.0)),
+                ..LayoutStyle::default()
+            }),
+        );
+        page.commit(queue);
+        // The board moved down 50px and its items with it, on the page.
+        assert_eq!(page.rect(ids.a).1, a_before.1 + 50.0);
+        // Their rects and the boxes kept in the board's frame are as they were.
+        let world = page.context.world();
+        assert_eq!(
+            world.explicit_rect(ids.a),
+            Some(ExplicitRect::new(20.0, 30.0, 120.0, 50.0))
+        );
+        let after: Vec<_> = [ids.a, ids.b, ids.c, ids.a_label]
+            .iter()
+            .map(|id| world.local_layout_box(*id))
+            .collect();
+        assert_eq!(after, local);
+        let measured = page.measured();
+        for id in [ids.a, ids.b, ids.c, ids.a_label] {
+            assert!(!measured.contains(&id), "{id:?} was measured");
+        }
+    }
+
+    #[test]
+    fn issue301_a_free_item_z_index_only_repaints_and_orders_the_hits() {
+        let mut page = Page::new();
+        let ids = page.ids;
+        // `a` and `b` overlap; `b` is later in the document, so on top.
+        let (ax, ay, _, _) = page.rect(ids.a);
+        let point = (ax + 50.0, ay + 20.0);
+        page.context.compat_world_mut().rebuild_hit_test(document());
+        let hit = |page: &Page| {
+            page.context
+                .world()
+                .hit_test_candidates(document(), point.0, point.1)
+        };
+        let candidates = hit(&page);
+        let rank = |candidates: &[StableNodeId], id| candidates.iter().position(|c| *c == id);
+        assert!(rank(&candidates, ids.b) < rank(&candidates, ids.a));
+
+        let raised = LayoutStyle {
+            z_index: Some(5),
+            ..page.inputs.a.clone()
+        };
+        page.inputs.a = raised.clone();
+        let mut queue = MutationQueue::new();
+        queue.set_style(ids.a, styled(raised));
+        page.context.commit_mutations(queue).unwrap();
+        // Stacking is not layout: nothing is queued for it.
+        assert!(
+            page.context
+                .world()
+                .pending_layout_invalidation(ids.a)
+                .is_empty()
+        );
+        let stats = product_frame(&mut page.context, document(), viewport(), &mut page.shaper);
+        assert_eq!(stats.layout_passes, 0);
+        page.context.compat_world_mut().rebuild_hit_test(document());
+        let candidates = hit(&page);
+        // `(z_index, document_order)`: `a` is above `b` now.
+        assert!(rank(&candidates, ids.a) < rank(&candidates, ids.b));
+    }
+
+    #[test]
+    fn issue301_a_new_rect_patches_the_hit_index_from_that_item() {
+        let mut page = Page::new();
+        let ids = page.ids;
+        let world = page.context.compat_world_mut();
+        world.rebuild_hit_test(document());
+        let mut queue = MutationQueue::new();
+        queue.set_explicit_rect(ids.b, Some(ExplicitRect::new(250.0, 200.0, 80.0, 40.0)));
+        page.context.commit_mutations(queue).unwrap();
+        let drained = crate::world::reflow_oracle::accessible_frame(
+            &mut page.context,
+            document(),
+            viewport(),
+            &mut page.shaper,
+            false,
+        );
+        // Only the item whose box moved is handed to the hit index.
+        assert_eq!(drained.input_hit_test, vec![ids.b]);
+        let world = page.context.compat_world_mut();
+        let built = |world: &crate::UiWorld| {
+            world
+                .last_work_counters()
+                .hit_test_nodes_rebuilt
+                .unwrap_or_default()
+        };
+        let before = built(world);
+        assert!(world.rebuild_hit_test_scoped(document(), &drained.input_hit_test));
+        let patched = built(world) - before;
+        let before = built(world);
+        world.rebuild_hit_test(document());
+        let full = built(world) - before;
+        assert!(
+            patched <= 1 && patched < full,
+            "patched {patched}, full {full}"
+        );
+        let (bx, by, _, _) = page.rect(ids.b);
+        assert_eq!(
+            page.context
+                .world()
+                .hit_test_candidates(document(), bx + 1.0, by + 1.0)
+                .first(),
+            Some(&ids.b)
+        );
+    }
+
+    #[test]
+    fn issue301_a_button_in_a_free_stack_keeps_its_own_layout() {
+        let mut cx = AppContext::new();
+        let stack = cx
+            .create_component(
+                document(),
+                Stack::free()
+                    .width(LengthSpec::Px(500.0))
+                    .height(LengthSpec::Px(400.0)),
+            )
+            .unwrap();
+        let button = cx
+            .create_detached_component(document(), Button::new("Open"))
+            .unwrap();
+        let mut queue = MutationQueue::new();
+        queue.insert(stack.stable_id(), button.stable_id(), None);
+        queue.set_explicit_rect(
+            button.stable_id(),
+            Some(ExplicitRect::new(100.0, 80.0, 140.0, 48.0)),
+        );
+        cx.commit_mutations(queue).unwrap();
+        product_frame(&mut cx, document(), viewport(), &mut bundled_face_shaper());
+        cx.rebuild_hit_test(document());
+        let world = cx.world();
+        let origin = world.layout_box(stack.stable_id()).unwrap();
+        let placed = world.layout_box(button.stable_id()).unwrap();
+        assert_eq!(
+            (placed.x, placed.y, placed.width, placed.height),
+            (origin.x + 100.0, origin.y + 80.0, 140.0, 48.0)
+        );
+        // The button lays its content out as anywhere else: its label part
+        // sits inside the rect it was given.
+        let result = world.layout_result(button.stable_id()).unwrap();
+        assert!(!result.parts.is_empty());
+        for part in result.parts.iter() {
+            let b = part.bounds;
+            assert!(
+                b.x >= placed.x && b.x + b.width <= placed.x + placed.width + 0.01,
+                "{part:?} in {placed:?}"
+            );
+        }
+        assert_eq!(
+            world.hit_test(document(), placed.x + 10.0, placed.y + 10.0),
+            Some(button.stable_id())
+        );
+        assert_eq!(
+            world.hit_test(document(), placed.x - 10.0, placed.y + 10.0),
+            None
+        );
+    }
+}
