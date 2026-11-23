@@ -45,9 +45,6 @@ pub(super) struct Boundary {
     /// How far the root's box lies outside the viewport, on the page and
     /// scrolled, in px: `0` for one in view. Read only by a sliced pass.
     pub(super) distance: f32,
-    /// A boundary an earlier pass deferred: nothing retained is placed
-    /// under it, so a pass may defer it again.
-    pub(super) resumed: bool,
 }
 
 /// How much placement a frame may do before it leaves what is out of view
@@ -120,10 +117,22 @@ impl DeferredBoundary {
 
     /// Whether a pass placing the root's box hands its body other inputs:
     /// what the deferred record held is no longer the work to do.
-    pub(super) fn differs(&self, size: Size, containing: Size, parent_font_px: f32) -> bool {
+    pub(super) fn differs(
+        &self,
+        size: Size,
+        containing: Size,
+        parent_font_px: f32,
+        inherited: Option<&super::grid::InheritedGridTracks>,
+    ) -> bool {
+        let inherited_differs = match (self.inherited.as_deref(), inherited) {
+            (Some(prev), Some(next)) => !prev.matches(next),
+            (None, None) => false,
+            _ => true,
+        };
         self.size != size
             || self.containing != containing
             || self.parent_font_px.to_bits() != parent_font_px.to_bits()
+            || inherited_differs
     }
 }
 
@@ -168,6 +177,7 @@ impl PassSlice {
         size: Size,
         containing: Size,
         parent_font_px: f32,
+        inherited: Option<&super::grid::InheritedGridTracks>,
     ) -> bool {
         if self.pending.is_empty() {
             return false;
@@ -175,7 +185,7 @@ impl PassSlice {
         let Some(record) = self.pending.remove(&id) else {
             return false;
         };
-        if record.differs(size, containing, parent_font_px) {
+        if record.differs(size, containing, parent_font_px, inherited) {
             self.cancelled += 1;
         }
         true

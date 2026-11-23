@@ -1304,6 +1304,7 @@ fn place_level(
             if inherited.is_none()
                 && !head.facts.style.is_subgrid_columns()
                 && !head.facts.style.is_subgrid_rows()
+                && !intrinsic.slice.pending.contains_key(&id)
                 && keeps_moved_subtree(
                     id,
                     &head.facts,
@@ -1325,7 +1326,10 @@ fn place_level(
             // A boundary an earlier pass deferred, reached again: placed
             // from this pass's inputs, and through the queue, which may defer
             // it again.
-            let resumed = intrinsic.slice.reach(id, size, containing, parent_font_px);
+            let resumed =
+                intrinsic
+                    .slice
+                    .reach(id, size, containing, parent_font_px, inherited.as_deref());
             // Under the span, a scroll container or an isolated box is cut
             // too: a unit of the pass's queue whatever its depth.
             let natural = !leaf
@@ -1353,7 +1357,6 @@ fn place_level(
                         parent_font_px,
                         inherited,
                         distance: out_of_view.unwrap_or(0.0),
-                        resumed,
                     },
                     out_of_view.is_some(),
                     nodes,
@@ -1526,7 +1529,7 @@ fn distance_out_of_view(
 }
 
 /// How far `id`'s box, of `size`, lies outside the viewport, in px: on the
-/// page, less what the scroll containers above it scrolled. `0` in view.
+/// page, less what the scroll containers along its frame chain scrolled. `0` in view.
 fn distance_from_view(
     id: StableNodeId,
     size: Size,
@@ -1538,17 +1541,39 @@ fn distance_from_view(
     let page = origin_in(None, id, nodes, output, scope);
     let (mut x, mut y) = (page.x, page.y);
     let world = nodes.world;
-    let mut ancestor = world.parent_id(id);
-    while let Some(node) = ancestor {
-        if let Some(offset) = world.scroll_offset(node) {
+    let mut cursor = Some(id);
+    while let Some(node) = cursor {
+        let frame_parent = match pass_frame(node, nodes, scope) {
+            crate::LayoutFrame::Parent => world
+                .parent_id(node)
+                .filter(|parent| !world.is_document_node(*parent)),
+            crate::LayoutFrame::Block(block) => Some(block),
+            crate::LayoutFrame::Page => None,
+        };
+        if let Some(container) = frame_parent
+            && let Some(offset) = world.scroll_offset(container)
+        {
             x -= offset.x;
             y -= offset.y;
         }
-        ancestor = world.parent_id(node);
+        cursor = frame_parent;
     }
     // How far one axis's span lies past the view's, in px; negative while
-    // they overlap. A span that only touches the view's edge is outside.
-    let past = |start: f32, extent: f32, view: f32| (start - view).max(-(start + extent));
+    // they overlap. A positive-extent span that only touches the view's edge
+    // is outside; a zero-extent span on `[0, view]` is in view.
+    let past = |start: f32, extent: f32, view: f32| {
+        if extent == 0.0 {
+            if start < 0.0 {
+                -start
+            } else if start > view {
+                start - view
+            } else {
+                -1.0
+            }
+        } else {
+            (start - view).max(-(start + extent))
+        }
+    };
     let past = past(x, size.width, viewport.width).max(past(y, size.height, viewport.height));
     if past < 0.0 { 0.0 } else { past + 1.0 }
 }
@@ -1589,7 +1614,7 @@ fn defers(
         && boundary.distance > 0.0
         && slice.placed_offscreen > 0
         && slice.spent(intrinsic.execution_stats.placement_nodes)
-        && (boundary.resumed || holds_no_retained_placement(boundary.id, nodes, scope))
+        && holds_no_retained_placement(boundary.id, nodes, scope)
 }
 
 /// Places every boundary earlier passes deferred that this pass did not
@@ -1611,6 +1636,7 @@ pub(super) fn resume_deferred(
     let world = nodes.world;
     let mut roots: Vec<StableNodeId> = intrinsic.slice.pending.keys().copied().collect();
     roots.sort_unstable();
+    let pending_roots: crate::NodeSet = roots.iter().copied().collect();
     let deferred: HashSet<StableNodeId> =
         intrinsic.slice.deferred.iter().map(|(id, _)| *id).collect();
     for id in roots {
@@ -1622,9 +1648,7 @@ pub(super) fn resume_deferred(
                 gone = true;
                 break;
             }
-            if node != id
-                && (intrinsic.slice.pending.contains_key(&node) || deferred.contains(&node))
-            {
+            if node != id && (pending_roots.contains(&node) || deferred.contains(&node)) {
                 waits = true;
             }
             cursor = world.parent_id(node);
@@ -1648,7 +1672,6 @@ pub(super) fn resume_deferred(
                 parent_font_px: record.parent_font_px,
                 inherited: record.inherited,
                 distance: 0.0,
-                resumed: true,
             },
             false,
             nodes,
@@ -3771,6 +3794,12 @@ pub(super) fn place_positioned_child(
     // A box placed in another frame than last pass is placed again: its
     // retained box is measured from the other one.
     let frame_kept = pass_frame(child, nodes, scope) == frame;
+    // Record the child's frame before entering its subtree so placement
+    // queries (e.g. viewport distance) see its actual frame chain. A box that
+    // generates none keeps its parent's frame, as a cold layout leaves it.
+    if !child_style.omits_box() {
+        nodes.frames.insert(child, frame);
+    }
     if !frame_kept
         || !subtree_unchanged(
             child,
@@ -3796,11 +3825,6 @@ pub(super) fn place_positioned_child(
             output,
             scope,
         )?;
-    }
-    // A box that generates none keeps its parent's frame, as a cold layout
-    // leaves it.
-    if !child_style.omits_box() {
-        nodes.frames.insert(child, frame);
     }
     let tracks_containing_block = positioned_tracks_containing_block(child_style);
     Ok(Some(PlannedOverlay {

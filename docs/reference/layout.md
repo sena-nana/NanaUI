@@ -675,7 +675,7 @@ CSS 路径只产出数据，不量容器（见下文「`@container`」）。
 - 推迟的边界记在保留缓存里（`DocumentLayoutCache::deferred`，带根的尺寸、包含块、字体等输入）。下一趟放置走到它的根时，用这一趟的输入重新排队（输入变了就算作一次取消）；没走到的，按记下的输入放。根离开文档或不再生成盒子时丢弃并计入取消。
 - `AppContext::layout_pending(document)` / `RuntimeDocument::layout_pending()` 表示还有没放完的；`RuntimeDocument::flush` 在没有编辑的帧里也会继续，窗口宿主与无头宿主在此期间持续请求帧。
 - 计数：`LayoutExecutionStats::{placement_boundaries_deferred, placement_slices, placement_deferrals_cancelled}`，公开为 `WorkCounters::{layout_boundaries_pending, layout_placement_slices, layout_deferrals_cancelled}`。
-- 不包含：超大扁平列表在一个容器里的中途暂停（用虚拟化）；推迟已有布局的子树（要先解决它里面保留状态与新测量结果之间的一致性）。
+- 不包含：超大扁平列表在一个容器里的中途暂停（用虚拟化）；推迟已有布局的子树（要先解决它里面保留状态与新测量结果之间的一致性）；从被推迟的视口外容器内部挂出的 `position: fixed` 或模态后代会随该容器一并等待。
 
 一层的放置分两步：`lay_out_children` 走一遍容器的子项：测量、分行、对齐、求解 2D grid，给每个流内子项定好盒子，返回待放置的 `Descend` 列表和计划草稿，自己不放置任何子树；`place_node_body` 等这一帧退出后再依次进入这些子树，然后记录计划并放置定位子项。`place_node_head` 在 `place_node_body` 运行前返回，复用计划的两条快速路径（`place_edited_child_list`、`place_from_plan`，经 `replay_plan`）与 `lay_out_children` 各自成函数，避免同时把所有局部变量留在同一递归栈帧内。
 
@@ -693,7 +693,7 @@ CSS 路径只产出数据，不量容器（见下文「`@container`」）。
 2. 已完成：放置边界。到达 `SPAN` 层的节点成为队列中的任务单元（`Boundary`），调用栈深度不超过 `SPAN`；边界的结果只取决于它的输入。
 3. 已完成：回放路径也交出 `Descend`，增量一层的栈与冷布局一层相同；滚动容器和 `layout_isolation` 节点作为自然边界切点；一趟只写自己的表，回放的改动记成补丁在提交时合并（双缓冲）。
 4. 已完成：调度切片——按帧预算分片、按视口距离排序、变更失效时取消在途边界，队列长度、分片次数和取消次数计入 `WorkCounters`（见上文“分帧布局”）。
-5. 后续：并行——互相独立的边界子树并行放置：每棵子树写自己的输出，最后合并。
+5. 暂缓：并行——互相独立的边界子树并行放置：每棵子树写自己的输出，最后合并。经 #399 调研，冷布局中放置仅占约 35%（测量占 44%），常规页面放置耗时不到 0.5 ms 且线程同步及 `UiWorld`/`TextPresenter` `Sync` 改造成本高、第 4 步已可分帧限额，待真实页面放置成为帧预算主瓶颈或测量同步并行化时再重新评估。
 
 测量阶段的分片粒度受内容依赖限制：尺寸由内容决定的容器会把依赖一直传给祖先，这样的一串只能作为一个单元。超大的扁平列表靠虚拟化，不靠调度。
 

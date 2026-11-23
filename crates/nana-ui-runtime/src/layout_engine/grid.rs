@@ -24,6 +24,28 @@ pub(super) struct InheritedGridTracks {
     pub(super) row_gap: f32,
 }
 
+impl InheritedGridTracks {
+    pub(super) fn matches(&self, other: &Self) -> bool {
+        fn tracks_match(a: Option<&[f32]>, b: Option<&[f32]>) -> bool {
+            match (a, b) {
+                (Some(a), Some(b)) => {
+                    a.len() == b.len()
+                        && a.iter()
+                            .zip(b.iter())
+                            .all(|(x, y)| x.to_bits() == y.to_bits())
+                }
+                (None, None) => true,
+                _ => false,
+            }
+        }
+        self.area_inline.to_bits() == other.area_inline.to_bits()
+            && self.column_gap.to_bits() == other.column_gap.to_bits()
+            && self.row_gap.to_bits() == other.row_gap.to_bits()
+            && tracks_match(self.columns.as_deref(), other.columns.as_deref())
+            && tracks_match(self.rows.as_deref(), other.rows.as_deref())
+    }
+}
+
 pub(super) fn spanned_track_sizes(sizes: &[f32], start: usize, span: usize) -> Vec<f32> {
     let end = start.saturating_add(span).min(sizes.len());
     if start >= end {

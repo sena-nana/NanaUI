@@ -3368,7 +3368,8 @@ impl PassContainerPlans {
     /// `id` keeps its retained plan, with `patch` applied when the pass
     /// commits.
     fn patch(&mut self, id: StableNodeId, patch: PlanPatch) {
-        debug_assert!(!self.rebuilt.contains_key(&id) && !self.retired.contains(&id));
+        self.rebuilt.remove(&id);
+        self.retired.remove(&id);
         self.patched.insert(id, patch);
     }
 

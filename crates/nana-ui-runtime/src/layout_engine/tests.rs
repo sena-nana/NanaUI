@@ -8078,3 +8078,239 @@ fn a_sliced_layout_of_mixed_sections_finishes_as_a_full_one() {
     finish_sliced(&mut world, document, &mut retained);
     assert_full_layout(&world, document, &retained);
 }
+
+/// A deferred boundary whose origin moves and whose containing width changes
+/// while its own fixed size stays the same must still reach `PassSlice::reach`
+/// (not be skipped by `keeps_moved_subtree`) and cancel/update its deferral.
+#[test]
+fn a_deferred_boundary_with_moved_origin_and_changed_containing_is_reached() {
+    let (mut world, document) = sectioned_page(page_column());
+    let mut retained = RetainedLayoutCache::default();
+    sliced_pass(&mut world, document, &mut retained, Some(0), true);
+    assert!(retained.layout_pending(document));
+
+    // Change the parent's width (containing block width for every section) and
+    // grow an in-view section so every deferred section also moves down, while
+    // keeping the deferred sections' own fixed 800x300 size and zero padding.
+    let mut queue = MutationQueue::new();
+    queue.set_style(
+        id(2),
+        styled(LayoutStyle {
+            width: Some(LengthSpec::Px(640.0)),
+            ..page_column()
+        }),
+    );
+    queue.set_style(
+        section(0),
+        styled(LayoutStyle {
+            width: Some(LengthSpec::Px(800.0)),
+            height: Some(LengthSpec::Px(360.0)),
+            direction: Some(FlexDirection::Column),
+            ..LayoutStyle::default()
+        }),
+    );
+    world.commit(queue).unwrap();
+    let stats = sliced_pass(&mut world, document, &mut retained, Some(0), false);
+    assert!(stats.placement_deferrals_cancelled > 0, "{stats:?}");
+    finish_sliced(&mut world, document, &mut retained);
+    assert_full_layout(&world, document, &retained);
+}
+
+/// A `position: fixed` non-leaf inside a scrolled container and a zero-height
+/// non-leaf wrapper at the top edge of the viewport are both in view and must
+/// not be deferred under a tight slice budget.
+#[test]
+fn a_sliced_pass_places_fixed_in_scroll_and_zero_height_edge_box_in_view() {
+    // Part A: `position: fixed` inside a container scrolled far down.
+    let (mut world, document) = sectioned_page(LayoutStyle {
+        height: Some(LengthSpec::Px(600.0)),
+        overflow_y: nana_ui_core::OverflowSpec::Auto,
+        ..page_column()
+    });
+    let fixed_panel = id(900);
+    let fixed_child = id(901);
+    let mut queue = MutationQueue::new();
+    queue.create(
+        fixed_panel,
+        document,
+        NodeKind::Element { tag: "div".into() },
+    );
+    queue.insert(id(2), fixed_panel, None);
+    queue.set_style(
+        fixed_panel,
+        styled(LayoutStyle {
+            position: PositionSpec::Fixed,
+            offset_left: Some(LengthSpec::Px(12.0)),
+            offset_top: Some(LengthSpec::Px(16.0)),
+            width: Some(LengthSpec::Px(120.0)),
+            height: Some(LengthSpec::Px(80.0)),
+            ..LayoutStyle::default()
+        }),
+    );
+    queue.create(
+        fixed_child,
+        document,
+        NodeKind::Element { tag: "div".into() },
+    );
+    queue.insert(fixed_panel, fixed_child, None);
+    queue.set_style(fixed_child, styled(row_style(24.0)));
+    queue.set_scroll_overscroll(id(2), crate::ScrollOffset { x: 0.0, y: 2000.0 });
+    world.commit(queue).unwrap();
+    let mut retained = RetainedLayoutCache::default();
+    sliced_pass(&mut world, document, &mut retained, Some(0), true);
+    assert!(
+        retained.documents[&document]
+            .boxes
+            .contains_key(&fixed_child),
+        "fixed panel inside scrolled container was deferred"
+    );
+    finish_sliced(&mut world, document, &mut retained);
+    assert_full_layout(&world, document, &retained);
+
+    // Part B: zero-height non-leaf wrapper sitting on the top edge (y = 0).
+    let (mut world, document) = sectioned_page(page_column());
+    let zero_wrap = id(910);
+    let zero_child = id(911);
+    let mut queue = MutationQueue::new();
+    queue.create(zero_wrap, document, NodeKind::Element { tag: "div".into() });
+    queue.insert(id(2), zero_wrap, Some(section(0)));
+    queue.set_style(
+        zero_wrap,
+        styled(LayoutStyle {
+            width: Some(LengthSpec::Px(200.0)),
+            height: Some(LengthSpec::Px(0.0)),
+            ..LayoutStyle::default()
+        }),
+    );
+    queue.create(
+        zero_child,
+        document,
+        NodeKind::Element { tag: "div".into() },
+    );
+    queue.insert(zero_wrap, zero_child, None);
+    queue.set_style(
+        zero_child,
+        styled(LayoutStyle {
+            position: PositionSpec::Absolute,
+            offset_left: Some(LengthSpec::Px(4.0)),
+            offset_top: Some(LengthSpec::Px(4.0)),
+            ..row_style(20.0)
+        }),
+    );
+    world.commit(queue).unwrap();
+    let mut retained = RetainedLayoutCache::default();
+    sliced_pass(&mut world, document, &mut retained, Some(0), true);
+    assert!(
+        retained.documents[&document]
+            .boxes
+            .contains_key(&zero_child),
+        "zero-height wrapper at top viewport edge was deferred"
+    );
+    finish_sliced(&mut world, document, &mut retained);
+    assert_full_layout(&world, document, &retained);
+}
+
+/// Reparenting an already-placed subtree under a pending deferred boundary
+/// disqualifies that boundary from being deferred again, and reparenting one
+/// pending boundary under another keeps verify invariants intact.
+#[test]
+fn reparenting_into_a_deferred_boundary_keeps_verify_and_finishes_cleanly() {
+    // Case 1: already-placed row moved into the farthest deferred section.
+    let (mut world, document) = sectioned_page(page_column());
+    let mut retained = RetainedLayoutCache::default();
+    sliced_pass(&mut world, document, &mut retained, Some(0), true);
+    assert!(retained.layout_pending(document));
+
+    let moved_row = section_row(0, 0);
+    let target = section(SECTIONS - 1);
+    let mut queue = MutationQueue::new();
+    queue.insert(target, moved_row, None);
+    world.commit(queue).unwrap();
+    // Budget 0 triggers defers() on `target` once an earlier offscreen section
+    // has been placed; `holds_no_retained_placement` must reject deferral so
+    // `moved_row` (which has a retained box) is never left under a deferral.
+    sliced_pass(&mut world, document, &mut retained, Some(0), false);
+    assert!(
+        retained.documents[&document].boxes.contains_key(&moved_row),
+        "reparented retained row should remain placed"
+    );
+    finish_sliced(&mut world, document, &mut retained);
+    assert_full_layout(&world, document, &retained);
+
+    // Case 2: one pending boundary reparented under another pending boundary.
+    let (mut world, document) = sectioned_page(page_column());
+    let mut retained = RetainedLayoutCache::default();
+    sliced_pass(&mut world, document, &mut retained, Some(0), true);
+    let mut queue = MutationQueue::new();
+    queue.insert(section(4), section(SECTIONS - 1), None);
+    world.commit(queue).unwrap();
+    sliced_pass(&mut world, document, &mut retained, Some(0), false);
+    finish_sliced(&mut world, document, &mut retained);
+    assert_full_layout(&world, document, &retained);
+}
+
+#[test]
+fn pass_container_plans_patch_overrides_prior_rebuild() {
+    let mut retained = HashMap::new();
+    let mut remote_overlays = crate::NodeSet::default();
+    let container = id(42);
+    let child_a = id(43);
+    let child_b = id(44);
+    let style = Arc::new(LayoutStyle::default());
+    let make_entry = |child, y| PlannedChild {
+        child,
+        style: Arc::clone(&style),
+        origin: Point { x: 0.0, y },
+        size: Size::new(100.0, 20.0),
+        intrinsic: Size::new(100.0, 20.0),
+        at_main: None,
+        cursor_before: y,
+        baseline: PackedOptF32::NONE,
+    };
+    let make_plan = |entries| ContainerPlan {
+        content_origin: Point::ZERO,
+        gap: 0.0,
+        sequential: true,
+        by_child: None,
+        origin: Point::ZERO,
+        size: Size::new(100.0, 200.0),
+        containing: Size::new(100.0, 200.0),
+        parent_font_px: 16.0,
+        viewport: LayoutViewport::new(800.0, 600.0),
+        style: Arc::clone(&style),
+        children: Arc::new(vec![child_a, child_b]),
+        content: Size::new(100.0, 200.0),
+        child_font_px: 16.0,
+        child_available: Size::new(100.0, 200.0),
+        main_direction: FlexDirection::Column,
+        writing: nana_ui_core::WritingContext::default(),
+        main_reversed: false,
+        cross_reversed: false,
+        entries,
+        placed_main: 200.0,
+        grid: None,
+        cross_independent: true,
+        main_dependent: false,
+        overlay: Vec::new(),
+    };
+    retained.insert(
+        container,
+        make_plan(vec![make_entry(child_a, 0.0), make_entry(child_b, 20.0)]),
+    );
+
+    let mut pass = PassContainerPlans::default();
+    pass.rebuild(container, make_plan(vec![make_entry(child_a, 0.0)]));
+    pass.patch(
+        container,
+        PlanPatch {
+            rows: vec![(1, make_entry(child_b, 48.0))],
+            placed_main: Some(240.0),
+        },
+    );
+    pass.merge_into(&mut retained, &mut remote_overlays);
+
+    let merged = &retained[&container];
+    assert_eq!(merged.entries.len(), 2);
+    assert_eq!(merged.entries[1].origin.y, 48.0);
+    assert_eq!(merged.placed_main, 240.0);
+}
