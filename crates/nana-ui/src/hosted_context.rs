@@ -82,15 +82,16 @@ impl HostedSurfaceTarget {
     }
 }
 
-/// One GPU bootstrap: the instance a capability was probed on, kept so the real
-/// device request does not initialise the backend a second time.
+/// Whether a window in this process may be created for a platform compositor.
 ///
-/// The composition question has to be answered before any window exists —
+/// The question has to be answered before any window exists —
 /// `WS_EX_NOREDIRECTIONBITMAP` is a creation-time flag winit owns and nothing
-/// can set durably afterwards — but answering it means creating an instance and
-/// enumerating adapters, which is most of what selecting the real device does.
-/// Doing both on one instance is what keeps the probe and the device from
-/// disagreeing, and from paying for DX12 initialisation twice.
+/// can set durably afterwards. Proving the answer means creating a DX12
+/// instance and enumerating its adapters, which creates a device on every
+/// adapter: hundreds of milliseconds that would block the event thread before
+/// the first window. So the answer is optimistic. The device request makes
+/// the same enumeration off the event thread, and a composed target it cannot
+/// build falls back to the plain path like any other composed failure.
 pub(crate) struct GpuBootstrap {
     /// Whether a window in this process can present through a platform
     /// compositor. It answers only that: what a client's alpha then turns out
@@ -98,79 +99,40 @@ pub(crate) struct GpuBootstrap {
     /// not automatically opaque — a Vulkan surface negotiates `PreMultiplied`
     /// on it.
     composition: bool,
-    /// The instance the probe proved that adapter on, for the device request to
-    /// reuse. `None` when nothing was probed, or when an embedder's device is
-    /// the one that will be used and brought its own instance.
-    instance: Option<ProbedInstance>,
-}
-
-/// An instance and the adapters a probe already enumerated on it. The device
-/// request picks from these instead of enumerating again.
-pub(crate) struct ProbedInstance {
-    instance: wgpu::Instance,
-    adapters: Vec<wgpu::Adapter>,
 }
 
 impl GpuBootstrap {
-    /// A bootstrap that was not asked about composition, and so probed nothing.
+    /// A bootstrap that was not asked about composition.
     pub(crate) const fn plain() -> Self {
-        Self {
-            composition: false,
-            instance: None,
-        }
+        Self { composition: false }
     }
 
-    /// Probes composition capability once, keeping the instance it probed on.
+    /// Answers composition capability without touching the GPU.
     ///
-    /// `host_backend` is the backend of a GPU context an embedder already built.
-    /// There is nothing to narrow there — the device exists — so no instance is
-    /// created, and composition is only on the table when that context is
-    /// already DX12.
+    /// `host_backend` is the backend of a GPU context an embedder already
+    /// built: composition is only on the table when that context is DX12.
+    /// Otherwise it is on the table wherever `WGPU_BACKEND` leaves DX12 to
+    /// select; the device request proves it.
     pub(crate) fn probe(host_backend: Option<wgpu::Backend>) -> Self {
-        if let Some(backend) = host_backend {
-            let _ = backend;
-            #[cfg(target_os = "windows")]
-            return Self {
-                composition: backend == wgpu::Backend::Dx12,
-                instance: None,
-            };
-            #[cfg(not(target_os = "windows"))]
-            return Self::plain();
-        }
         #[cfg(target_os = "windows")]
         {
-            // `WGPU_BACKEND` still wins: a run pinned to another backend has no
-            // composition available to it.
-            let backends = wgpu::Backends::from_env().unwrap_or_default() & wgpu::Backends::DX12;
-            if backends.is_empty() {
-                return Self::plain();
-            }
-            let instance = wgpu::Instance::new(instance_descriptor(backends));
-            let adapters = pollster::block_on(instance.enumerate_adapters(backends));
-            if adapters.is_empty() {
-                return Self::plain();
-            }
-            Self {
-                composition: true,
-                // Kept: selecting the device is the other half of what this
-                // enumeration already did, and enumerating DX12 creates a
-                // device on every adapter to read its capabilities.
-                instance: Some(ProbedInstance { instance, adapters }),
-            }
+            let composition = match host_backend {
+                Some(backend) => backend == wgpu::Backend::Dx12,
+                None => wgpu::Backends::from_env()
+                    .unwrap_or_default()
+                    .contains(wgpu::Backends::DX12),
+            };
+            Self { composition }
         }
         #[cfg(not(target_os = "windows"))]
-        Self::plain()
+        {
+            let _ = host_backend;
+            Self::plain()
+        }
     }
 
     pub(crate) const fn composition_available(&self) -> bool {
         self.composition
-    }
-
-    /// The probe's instance, for the device request to reuse. Taken, not
-    /// cloned: there is one probed instance per process and the device
-    /// selection is its one consumer.
-    pub(crate) fn take_instance(&mut self) -> Option<ProbedInstance> {
-        self.instance.take()
     }
 }
 
@@ -776,7 +738,6 @@ impl HostedGpuContext {
             want_transparent,
             mode,
             policy,
-            None,
             GpuAdapterChoice::Automatic,
         )?;
         pending.finish(request.acquire().await?)
@@ -798,7 +759,6 @@ impl HostedGpuContext {
             self.primary.window.clone(),
             required_features,
             &self.primary.target,
-            None,
             self.shared.choice.clone(),
         )?
         .acquire()
@@ -920,7 +880,6 @@ impl HostedGpuShared {
             surface.window.clone(),
             wgpu::Features::empty(),
             &surface.target,
-            None,
             choice,
         )?
         .acquire()
@@ -1187,12 +1146,8 @@ pub(crate) struct DeviceRequest {
     instance: wgpu::Instance,
     surface: wgpu::Surface<'static>,
     required_features: wgpu::Features,
-    /// The backends `instance` was created for, to enumerate when nothing
-    /// was probed.
+    /// The backends `instance` was created for, to enumerate.
     backends: wgpu::Backends,
-    /// What a bootstrap probe already enumerated on `instance`; empty when
-    /// nothing was probed.
-    adapters: Vec<wgpu::Adapter>,
     choice: GpuAdapterChoice,
 }
 
@@ -1234,12 +1189,10 @@ impl PendingPrimarySurface {
         want_transparent: bool,
         mode: HostedSurfaceMode,
         policy: SurfacePresentationPolicy,
-        instance: Option<ProbedInstance>,
         choice: GpuAdapterChoice,
     ) -> Result<(Self, DeviceRequest), HostedGpuError> {
         let target = HostedSurfaceTarget::new(mode, window.clone())?;
-        let request =
-            DeviceRequest::new(window.clone(), required_features, &target, instance, choice)?;
+        let request = DeviceRequest::new(window.clone(), required_features, &target, choice)?;
         Ok((
             Self {
                 window,
@@ -1274,7 +1227,6 @@ impl DeviceRequest {
         window: Arc<dyn winit::window::Window>,
         required_features: wgpu::Features,
         target: &HostedSurfaceTarget,
-        instance: Option<ProbedInstance>,
         choice: GpuAdapterChoice,
     ) -> Result<Self, HostedGpuError> {
         #[allow(unused_mut)]
@@ -1288,20 +1240,13 @@ impl DeviceRequest {
                 ));
             }
         }
-        let (instance, adapters) = match instance {
-            Some(ProbedInstance { instance, adapters }) => (instance, adapters),
-            None => (
-                wgpu::Instance::new(instance_descriptor(backends)),
-                Vec::new(),
-            ),
-        };
+        let instance = wgpu::Instance::new(instance_descriptor(backends));
         let surface = target.create_surface(&instance, window)?;
         Ok(Self {
             instance,
             surface,
             required_features,
             backends,
-            adapters,
             choice,
         })
     }
@@ -1314,12 +1259,9 @@ impl DeviceRequest {
             surface,
             required_features,
             backends,
-            mut adapters,
             choice,
         } = self;
-        if adapters.is_empty() {
-            adapters = instance.enumerate_adapters(backends).await;
-        }
+        let adapters = instance.enumerate_adapters(backends).await;
         let compatible: Vec<wgpu::Adapter> = adapters
             .into_iter()
             .filter(|adapter| adapter.is_surface_supported(&surface))
@@ -2233,21 +2175,15 @@ mod tests {
     fn an_embedded_host_only_offers_composition_on_dx12() {
         use super::GpuBootstrap;
 
-        let mut vulkan = GpuBootstrap::probe(Some(wgpu::Backend::Vulkan));
+        let vulkan = GpuBootstrap::probe(Some(wgpu::Backend::Vulkan));
         assert!(!vulkan.composition_available());
-        assert!(vulkan.take_instance().is_none());
 
-        let mut dx12 = GpuBootstrap::probe(Some(wgpu::Backend::Dx12));
+        let dx12 = GpuBootstrap::probe(Some(wgpu::Backend::Dx12));
         assert_eq!(dx12.composition_available(), cfg!(target_os = "windows"));
-        assert!(
-            dx12.take_instance().is_none(),
-            "an embedder's device brought its own instance"
-        );
 
-        // A process that never asked probes nothing at all.
-        let mut plain = GpuBootstrap::plain();
+        // A process that never asked is offered nothing.
+        let plain = GpuBootstrap::plain();
         assert!(!plain.composition_available());
-        assert!(plain.take_instance().is_none());
     }
 
     #[test]

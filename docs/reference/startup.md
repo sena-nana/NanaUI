@@ -67,7 +67,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/validate-startup-han
 | `--bad-logo` | `Failed(Logo(NotPng))`，应用照常启动 | — |
 | `--no-splash` | `Skipped(NotConfigured)` | 修复前有一帧（约 30 ms）是只有边框的空窗口；修复后窗口第一次出现时已带内容，无空帧 |
 
-观察到的两点：没有 Splash 时主窗口在 `UiReady` 显示、约 150 ms 后才有第一帧。现在宿主在显示前 Cloak 它（照常显示与取得焦点，只是不合成到屏幕），等第一帧的 GPU 工作完成再解除；1 s 内仍没有第一帧时照样解除，画不出来的窗口也会出现。不能 Cloak 的平台照旧直接显示。有 Splash 时事件线程曾最长阻塞 260–445 ms，几乎都是建 Splash 的 D3D11 设备（加载驱动）；现在这个设备在 `nana-splash-device` 线程上与窗口、设备请求同时创建，建好后唤醒事件循环再显示 Splash，最长阻塞降到 36–65 ms（无 Splash 约 50 ms），Splash 提交于 214–326 ms。`--composition` 仍阻塞约 320–460 ms：`GpuBootstrap::probe`（创建 DX12 实例并枚举适配器）在建窗口之前运行，它的结果决定窗口是否保留重定向位图。截屏频率分辨不出单帧（16 ms）的重复或空帧。macOS 未执行（没有机器）；Linux 按上表报 `Skipped(PlatformUnsupported)`，本次没有在真实 Linux 上运行。
+观察到的两点：没有 Splash 时主窗口在 `UiReady` 显示、约 150 ms 后才有第一帧。现在宿主在显示前 Cloak 它（照常显示与取得焦点，只是不合成到屏幕），等第一帧的 GPU 工作完成再解除；1 s 内仍没有第一帧时照样解除，画不出来的窗口也会出现。不能 Cloak 的平台照旧直接显示。有 Splash 时事件线程曾最长阻塞 260–445 ms，几乎都是建 Splash 的 D3D11 设备（加载驱动）；现在这个设备在 `nana-splash-device` 线程上与窗口、设备请求同时创建，建好后唤醒事件循环再显示 Splash，最长阻塞降到 36–65 ms（无 Splash 约 50 ms），Splash 提交于 214–326 ms。`--composition`（窗口走 DirectComposition）曾因建窗前的 DX12 适配器探测阻塞 320–460 ms；现在建窗前只看 `WGPU_BACKEND` 是否允许 DX12，直接按合成目标建窗，枚举放到 `nana-startup-gpu` 线程上，最长阻塞 35–81 ms，设备只请求一次。合成目标建不成时照旧回退普通窗口（`NANA_FORCE_COMPOSITION_FAILURE=1` 下请求两次设备，探针通过）。截屏频率分辨不出单帧（16 ms）的重复或空帧。macOS 未执行（没有机器）；Linux 按上表报 `Skipped(PlatformUnsupported)`，本次没有在真实 Linux 上运行。
 
 ### 从 `early-splash` 资源包读取 Logo
 
@@ -99,7 +99,7 @@ startup.cancel_takeover(ticket)?;    // 撤回接管请求并使旧 ticket 作�
 独立宿主（`run_runtime`）在窗口线程创建窗口与 Surface 后，立即将 GPU 适配器选择、设备请求与 `SceneWgpuPainter` 的管线编译放到后台的 `nana-startup-gpu` 线程执行，同时在主线程挂载原生 Splash——因此 **Splash 的显示与 GPU 初始化完全并行重叠**。
 
 在 `nana-startup-gpu` 线程内部：
-1. 若请求了合成后端（`CompositionCapable`），直接复用建窗前 DX12 合成探测已枚举出的适配器列表，省去第二次重复枚举（耗时从约 `0.74 s` 降至 `0.08 s`）；没有探测时在此枚举一次。在这份列表上按 `StartupOptions::adapter` 选卡，规则见 [GPU · 适配器选择](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/gpu.md#适配器选择)；
+1. 枚举一次适配器（合成目标只枚举 DX12），建窗前不再为合成单独探测、也不重复枚举。在这份列表上按 `StartupOptions::adapter` 选卡，规则见 [GPU · 适配器选择](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/gpu.md#适配器选择)；
 2. `SceneWgpuPainter` 的各大管线家族（quad、mesh/path、icon、text、HostTexture、backdrop）在 scoped 线程上并行编译，总构建耗时取决于最慢的单个家族（quad）而非全部累加；仅用于测试回读的 motion 求值管线不在产品启动路径中编译。
 3. macOS 上唯一较慢的 Dock 图标重采样与 PNG 编码放在独立的 `nana-startup-icons` 线程异步完成，不阻塞 `UiReady`。
 

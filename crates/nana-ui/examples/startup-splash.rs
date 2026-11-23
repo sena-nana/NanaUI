@@ -22,7 +22,8 @@
 //! --exit-before-handoff     exit from UiReady without ever taking over
 //! --hidden                  start hidden (a tray start: no splash), show later
 //! --composition             ask for a compositor-capable backend (DX12 and
-//!                           DirectComposition on Windows), as overlay apps do
+//!                           DirectComposition on Windows) and present the
+//!                           window through it, as overlay apps do
 //! --probe                   exit after the handoff and check the record
 //! --pipeline-cache=DIR      keep the GPU shader and pipeline cache in DIR
 //!                           between runs (one file per cache key)
@@ -508,6 +509,9 @@ fn main() {
     }
     let mut window = WindowDescriptor::new("NanaUI Startup").initial_size(640.0, 420.0);
     window.visible = !options.hidden;
+    if options.composition {
+        window = window.surface(nana_ui_platform::WindowSurfacePreference::Composition);
+    }
     let result = builder.run::<RuntimeApplication<Demo>>(window);
     if let Err(error) = result {
         eprintln!("startup-splash: {error}");

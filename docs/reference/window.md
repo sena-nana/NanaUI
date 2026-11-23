@@ -118,9 +118,9 @@ DX12 的 HWND swapchain 硬编码只上报 `Opaque`（`wgpu-hal` `dx12/adapter.r
 
 #### 可用性在开窗之前判定，窗口本身是临时的
 
-`WS_EX_NOREDIRECTIONBITMAP` 是创建时的标志：winit 从自己的 `NO_BACK_BUFFER` 推导它。`apply_diff` 会整体覆写 `GWL_EXSTYLE`。事后设不住。所以「这台机器能不能合成」必须在第一扇窗口之前答完。`GpuBootstrap` 做这件事：独立进程建一个 DX12-only instance 枚举适配器（无 surface。`WGPU_BACKEND` 仍然优先）。**并把这个 instance 留给正式的 device 请求复用**。探测和选设备是同一份 bootstrap。不重复初始化 DX12。也不会互相矛盾。嵌入式宿主的 device 已经存在。没有收窄余地。也不建 instance。只有宿主本来就是 DX12 时才可能走合成。
+`WS_EX_NOREDIRECTIONBITMAP` 是创建时的标志：winit 从自己的 `NO_BACK_BUFFER` 推导它。`apply_diff` 会整体覆写 `GWL_EXSTYLE`。事后设不住。所以「这台机器能不能合成」必须在第一扇窗口之前答完。`GpuBootstrap` 做这件事，而且是乐观地答：只要 `WGPU_BACKEND` 允许 DX12 就答「能」，不碰 GPU。真去建 DX12 instance、枚举适配器（会在每块适配器上建一个 device）要几百毫秒，放在建窗前就是事件线程上的长阻塞。枚举留给离开事件线程的正式 device 请求：合成目标只枚举 DX12，没有可用适配器时它和下面任何一步失败一样，回退普通窗口。嵌入式宿主的 device 已经存在。没有收窄余地。只有宿主本来就是 DX12 时才可能走合成。
 
-但「有 DX12 适配器」只证明后端在。真正的合成路径还要过：composition device → `CreateTargetForHwnd` → `CreateVisual` → wgpu `CompositionVisual` surface → `PreMultiplied` 协商。这些全在 HWND 已经按 `WS_EX_NOREDIRECTIONBITMAP` 创建**之后**。所以合成窗口是**临时的**：任一步失败就释放它的 composition 对象、丢掉窗口（winit 投递销毁消息）。再建一扇普通窗口顶上。绝不拿那个 HWND 当普通 HWND surface 用。理由很具体。没有重定向位图就没有东西给 `DwmExtendFrameIntoClientArea` 混合。而那是 DX12 HWND swapchain 唯一的逐像素 alpha 来源。留下来的话这扇窗口在两条路上都永远不可能透明。窗口是隐藏创建的。屏幕上从没出现过。
+就算有 DX12 适配器，也只证明后端在。真正的合成路径还要过：composition device → `CreateTargetForHwnd` → `CreateVisual` → wgpu `CompositionVisual` surface → `PreMultiplied` 协商。这些全在 HWND 已经按 `WS_EX_NOREDIRECTIONBITMAP` 创建**之后**。所以合成窗口是**临时的**：任一步失败就释放它的 composition 对象、丢掉窗口（winit 投递销毁消息）。再建一扇普通窗口顶上。绝不拿那个 HWND 当普通 HWND surface 用。理由很具体。没有重定向位图就没有东西给 `DwmExtendFrameIntoClientArea` 混合。而那是 DX12 HWND swapchain 唯一的逐像素 alpha 来源。留下来的话这扇窗口在两条路上都永远不可能透明。窗口是隐藏创建的。屏幕上从没出现过。
 
 设备换了（device loss 恢复）之后。「这个进程还能不能合成」按新设备的后端重新判定。不沿用旧答案：新设备可能落在别的后端上。而窗口是按这个答案创建的。
 

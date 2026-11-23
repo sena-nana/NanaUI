@@ -284,7 +284,7 @@ impl<Message: Send + 'static> PendingStartup<Message> {
                 });
         let store = prepare_primary_descriptor(&mut settings)?;
         let policy = Program::gpu_backend_policy();
-        let mut bootstrap = gpu_bootstrap(policy, None);
+        let bootstrap = gpu_bootstrap(policy, None);
         let startup_material_mode = Program::startup_window_material_mode();
         let target = primary_surface_target(&settings, policy, &bootstrap, startup_material_mode)?;
         let icons = spawn_icon_render(&settings, &proxy);
@@ -309,15 +309,7 @@ impl<Message: Send + 'static> PendingStartup<Message> {
             splash_ready: None,
             attempt: None,
         };
-        // The probe's instance is narrowed to the composition backend, and
-        // that narrowing is the process-wide policy taking effect. It is
-        // dropped only once composition has been given up on.
-        let instance = target
-            .fallback
-            .is_none()
-            .then(|| bootstrap.take_instance())
-            .flatten();
-        pending.start(event_loop, instance)?;
+        pending.start(event_loop)?;
         Ok(pending)
     }
 
@@ -370,13 +362,9 @@ impl<Message: Send + 'static> PendingStartup<Message> {
 
     /// Starts the current target, falling back to the plain one while there
     /// is one to fall back to.
-    fn start(
-        &mut self,
-        event_loop: &dyn ActiveEventLoop,
-        mut instance: Option<crate::hosted_context::ProbedInstance>,
-    ) -> Result<(), String> {
+    fn start(&mut self, event_loop: &dyn ActiveEventLoop) -> Result<(), String> {
         loop {
-            match self.start_attempt(event_loop, instance.take()) {
+            match self.start_attempt(event_loop) {
                 Ok(()) => return Ok(()),
                 Err(error) => self.fall_back(error)?,
             }
@@ -391,11 +379,7 @@ impl<Message: Send + 'static> PendingStartup<Message> {
         Ok(())
     }
 
-    fn start_attempt(
-        &mut self,
-        event_loop: &dyn ActiveEventLoop,
-        instance: Option<crate::hosted_context::ProbedInstance>,
-    ) -> Result<(), String> {
+    fn start_attempt(&mut self, event_loop: &dyn ActiveEventLoop) -> Result<(), String> {
         let target = self.target.resolved;
         let (window, provisional, requested_material, applied_material) = create_primary_window(
             event_loop,
@@ -413,7 +397,6 @@ impl<Message: Send + 'static> PendingStartup<Message> {
             requested_material.wants_transparent_surface(),
             surface_mode_for(target),
             self.settings.presentation_policy,
-            instance,
             self.options.adapter.clone(),
         )
         .map_err(|error| error.to_string())?;
@@ -646,7 +629,7 @@ impl<Message: Send + 'static> PendingStartup<Message> {
                 drop(splash);
                 drop(provisional);
                 self.fall_back(error)?;
-                self.start(event_loop, None)?;
+                self.start(event_loop)?;
                 return Ok(StartupStep::Retry(Box::new(self)));
             }
         };
