@@ -1080,7 +1080,18 @@ x86_64 Windows、release、新旧两个二进制交替跑：
 - **Phase 4（纯 `Flex + Grid + Inline + Layers` + 模态 `Overlay`，移除遗留 `Block` 组件）**：去除 `Block` / `FlowRoot` / `InlineBlock` / `Contents` 与 `float` / `clear` 历史包袱，并以 `Stack` 统一容器控件；`taffy-reference -- check` 全树最坏偏差 `0.0000 px`，`--release` 下 `issue259_local_frame_time_scales_flat_to_100k` 测得 `1k p95 25.75µs`、`10k p95 19.875µs`、`100k p95 30.209µs`（`100k / 1k` `p95` 比值 `1.17`，门禁 `<= 1.75`）。
 - **Phase 5（离线预编译着色器 + `[profile.dist]` LTO/strip）**：Apple Metal（非 `runtime-wgsl`）采用离线预编译 zlib 压缩 MSL 归档（`msl_precompiled/stages.msl.zz` + `wgpu::Device::create_shader_module_passthrough`），CPU 堆常驻 `0 B` 未压缩 MSL 与 `0 B` `naga` IR；非 Apple 平台采用按入口裁剪、compact 且逐 stage zlib 压缩的 `naga::Module` IR（`wgpu::ShaderSource::Naga` + 编译期 `const` FNV-1a 散列 `program!` / `program_joined!` / `program_concat!`）。`gpu` / `hosted` 默认不拉入 `wgpu/wgsl` 与 `naga/wgsl-{in,out}`，配合 `[profile.dist]`（`opt-level = "z"`、`lto = "fat"`、`codegen-units = 1`、`panic = "abort"`、`strip = "symbols"`），`target/dist/reactive-sfc` 可执行体积从 `2026-11-11` 基线 `15.80 MiB` 降至 `5.56 MiB`（`5,835,088 B`，`-64.8%`）。
 
-**dist 体积门禁（2026-11-23，Issue #152）。** 同样条件（aarch64 macOS，rustc 1.99.0）在 `a97929839` 上复测 `target/dist/reactive-sfc` 为 `6,067,856 B`（`5.79 MiB`），比 Phase 5 的记录多 `+4.0%`；两次之间的增长没有逐项归因。这个数记进 `scripts/baselines/dist-size.json`，CI 的 `dist-size` job 在 macOS arm64 上构建并检查，超过 5% 失败、缩小超过 5% 时提示重新记录。
+**dist 体积门禁（2026-11-23，Issue #152）。** 同样条件（aarch64 macOS，rustc 1.99.0）在 `a97929839` 上复测 `target/dist/reactive-sfc` 为 `6,067,856 B`（`5.79 MiB`），比 Phase 5 的记录多 `+4.0%`。这个数记进 `scripts/baselines/dist-size.json`，CI 的 `dist-size` job 在 macOS arm64 上构建并检查，超过 5% 失败、缩小超过 5% 时提示重新记录。
+
+**这 4% 的来历（2026-11-23）。** 同一工具链下重建 `6a80e848e` 得 `5,851,712 B`：与 Phase 5 记录差的 16 KB 是工具链，到 `a97929839` 的 `+216,144 B` 全部来自代码。逐提交构建（Mach-O 段按 16 KB 对齐，小增长会量化成整页）：
+
+| 提交 | 增长 | 主要内容 |
+| --- | ---: | --- |
+| `0adb3fd4e` subgrid、WorkCounters、预编译着色器 | +50,016 B | `vector-boolean` 关闭时编进来的平面布尔回退（`custom_paint` +8.7 KB，外加它的排序单态化）、`nana_ui_core::work`、MSL 归档解压 |
+| `2106f10b0` 动态主题收敛 | +49,728 B | `style_model::PAIR_PAGES`：1024 个 `OnceLock` 的静态数组初值不是全零，落进 `__DATA,__data`，单项 24,576 B；样式解析 +12 KB |
+| `4d98c860c` 主题体系收口 | +49,840 B | `world::theme_scope` +16 KB，`theme::patch` / `dependency` / `definition` 合计约 +14 KB |
+| `74861335b` ThemeScope 补齐；截至 `2314aa02f`、`5fc2cbb2f`、`a97929839` 的三组提交（各 4 个） | 各约 +16.6 KB | 都在一页之内，没再细分到单个提交 |
+
+按符号看（同两端的不剥符号构建）`__text` +175 KB：`nana_ui_runtime` +92 KB，`nana_ui_core` +26 KB（主题模块 18 → 34 KB），`core::slice` +18 KB（新排序调用点的单态化）；`framework::frame` +11 KB 与 `RuntimeDocument` −17 KB 是代码搬家。`__DATA,__data` +29 KB 里 24.5 KB 是 `PAIR_PAGES`。
 
 ## 待办
 

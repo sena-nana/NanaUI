@@ -134,5 +134,6 @@ python3 scripts/check-dist-size.py --update   # intentional change: re-record, t
 
 `darwin-arm64` `target/dist/reactive-sfc`: 6,067,856 B at `a97929839`, rustc
 1.99.0. The Phase 5 figure in `docs/reference/resource-budgets.md` (5,835,088 B,
-measured at `6a80e848e`) is 4.0% lower; the growth between the two commits is
-not attributed yet.
+measured at `6a80e848e`) is 4.0% lower. Rebuilt with the same toolchain, `6a80e848e` is 5,851,712 B, so
+the toolchain accounts for 16 KB and code for the rest; the per-commit
+attribution is in `docs/reference/resource-budgets.md`.

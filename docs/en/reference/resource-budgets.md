@@ -1080,7 +1080,18 @@ A five-phase refactoring across node record & arena density, stack safety, layou
 - **Phase 4 (Pure `Flex + Grid + Inline + Layers` + modal `Overlay`, legacy `Block` widget removed in favor of `Stack`)**: removed `Block`, `FlowRoot`, `InlineBlock`, `Contents`, `Float`, and `Clear`; `taffy-reference -- check` reports `0.0000 px` worst box diff across all checks, and under `--release`, `issue259_local_frame_time_scales_flat_to_100k` measures `1k p95 25.75µs`, `10k p95 19.875µs`, and `100k p95 30.209µs` (`100k / 1k` `p95` ratio `1.17`, budget `<= 1.75`).
 - **Phase 5 (Offline precompiled shaders + `[profile.dist]` LTO/strip)**: on Apple Metal (without `runtime-wgsl`), built-in shaders use an offline precompiled zlib-compressed MSL archive (`msl_precompiled/stages.msl.zz` via `wgpu::Device::create_shader_module_passthrough`), retaining `0 B` of uncompressed MSL and `0 B` of `naga` IR on the CPU heap; non-Apple targets use entry-point-cut, compacted, per-stage zlib-compressed `naga::Module` IR (`wgpu::ShaderSource::Naga` with compile-time `const` FNV-1a WGSL hashing `program!` / `program_joined!` / `program_concat!`). Default `gpu` / `hosted` graphs omit `wgpu/wgsl` and `naga/wgsl-{in,out}`; paired with `[profile.dist]` (`opt-level = "z"`, `lto = "fat"`, `codegen-units = 1`, `panic = "abort"`, `strip = "symbols"`), `target/dist/reactive-sfc` binary size dropped from the `2026-11-11` baseline of `15.80 MiB` to `5.56 MiB` (`5,835,088 B`, `-64.8%`).
 
-**Dist size gate (2026-11-23, Issue #152).** Under the same conditions (aarch64 macOS, rustc 1.99.0), `target/dist/reactive-sfc` re-measures at `6,067,856 B` (`5.79 MiB`) on `a97929839`, `+4.0%` over the Phase 5 record; the growth between the two has not been attributed. That number is recorded in `scripts/baselines/dist-size.json`, and CI's `dist-size` job builds and checks it on macOS arm64: more than 5% growth fails, and more than 5% shrinkage asks for a re-record.
+**Dist size gate (2026-11-23, Issue #152).** Under the same conditions (aarch64 macOS, rustc 1.99.0), `target/dist/reactive-sfc` re-measures at `6,067,856 B` (`5.79 MiB`) on `a97929839`, `+4.0%` over the Phase 5 record. That number is recorded in `scripts/baselines/dist-size.json`, and CI's `dist-size` job builds and checks it on macOS arm64: more than 5% growth fails, and more than 5% shrinkage asks for a re-record.
+
+**Where the 4% came from (2026-11-23).** Rebuilding `6a80e848e` with the same toolchain gives `5,851,712 B`: the 16 KB off the Phase 5 record is the toolchain, and all `+216,144 B` up to `a97929839` is code. Per-commit builds (Mach-O segments are 16 KB aligned, so small growth is quantized to whole pages):
+
+| Commit | Growth | Mainly |
+| --- | ---: | --- |
+| `0adb3fd4e` subgrid, WorkCounters, precompiled shaders | +50,016 B | the planar boolean fallback compiled in when `vector-boolean` is off (`custom_paint` +8.7 KB, plus its sort monomorphizations), `nana_ui_core::work`, MSL archive decompression |
+| `2106f10b0` dynamic theme convergence | +49,728 B | `style_model::PAIR_PAGES`: a static array of 1024 `OnceLock`s whose initial value is not all zeros, so it lands in `__DATA,__data`, 24,576 B on its own; style resolution +12 KB |
+| `4d98c860c` theme system wrap-up | +49,840 B | `world::theme_scope` +16 KB, `theme::patch` / `dependency` / `definition` about +14 KB together |
+| `74861335b` ThemeScope follow-up; the three groups of 4 commits ending at `2314aa02f`, `5fc2cbb2f`, `a97929839` | about +16.6 KB each | each within one page, not narrowed to a single commit |
+
+By symbol (unstripped builds of the same two ends), `__text` grew 175 KB: `nana_ui_runtime` +92 KB, `nana_ui_core` +26 KB (the theme module 18 → 34 KB), `core::slice` +18 KB (monomorphized sorts at new call sites); `framework::frame` +11 KB against `RuntimeDocument` −17 KB is code that moved. Of `__DATA,__data`'s +29 KB, 24.5 KB is `PAIR_PAGES`.
 
 ## To do
 
