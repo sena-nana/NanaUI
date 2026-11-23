@@ -419,6 +419,7 @@ impl RuntimeDocument {
             let presentation = world.presentation_store();
             let descriptors = world.motion_descriptors();
             let now = world.animation_now();
+            let frame_interval = world.presentation_frame_interval();
             // Font-axis overlays are the style's, read when it resolves; only
             // compositor ones are the scene's to present.
             if presentation.has_class(nana_ui_core::motion::AnimationClass::Compositor)
@@ -427,11 +428,9 @@ impl RuntimeDocument {
                 // `context` and `scene` are disjoint: bind compositor overlays
                 // from the live stores. Cloning the descriptor slab would copy
                 // Occupied boxes / keyframes every compositor-only frame.
-                Arc::make_mut(&mut self.scene).apply_presentation(
-                    presentation,
-                    now,
-                    Some(descriptors),
-                );
+                let scene = Arc::make_mut(&mut self.scene);
+                scene.set_presentation_frame_interval(frame_interval);
+                scene.apply_presentation(presentation, now, Some(descriptors));
             }
         }
         self.context.finish_frame_profile();

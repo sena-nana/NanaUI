@@ -231,6 +231,16 @@ pub fn pack_value(value: MotionValue) -> MotionGpuValue {
             channels: [p.a, p.b, p.c, p.d],
             extra: [p.e, p.f, 0.0, 0.0],
         },
+        // No GPU codec evaluates a filter: the scene samples it on the CPU
+        // and hands the dest group its uniform (Issue #312). Never packed by
+        // a compiled descriptor; a stray one reads as an inert scalar.
+        MotionValue::Filter(_) => MotionGpuValue {
+            kind: MOTION_GPU_KIND_SCALAR,
+            discrete: 0,
+            _pad: [0; 2],
+            channels: [0.0; 4],
+            extra: [0.0; 4],
+        },
         MotionValue::Discrete(tag) => MotionGpuValue {
             kind: MOTION_GPU_KIND_DISCRETE,
             discrete: tag,

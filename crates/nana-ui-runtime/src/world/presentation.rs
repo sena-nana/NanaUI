@@ -270,9 +270,20 @@ impl UiWorld {
                     .or_else(|| self.computed_style(id).and_then(|s| s.color))
                     .map(MotionValue::Color)
             }
+            AnimatableProperty::Filter => {
+                // No filter is the identity filter, so `none` and a filter
+                // interpolate. A theme-tracked shadow colour starts from what
+                // the theme resolves it to now.
+                let mut filter = layout.paint.filter.unwrap_or_default();
+                if let Some(shadow) = filter.drop_shadow.as_mut()
+                    && let Some(paint) = shadow.paint_color
+                {
+                    shadow.color = paint.resolve_srgb(self.node_style_model(id));
+                }
+                Some(MotionValue::Filter(filter.into()))
+            }
             AnimatableProperty::Clip
             | AnimatableProperty::Blur
-            | AnimatableProperty::Filter
             | AnimatableProperty::Shadow
             | AnimatableProperty::ShaderParameter
             | AnimatableProperty::FontSize

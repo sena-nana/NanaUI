@@ -83,27 +83,27 @@ pub(super) static STAGES: &[(u64, &str, &[u8])] = &[
         include_bytes!("chart__chart_shape_fs.naga"),
     ),
     (
-        0x5115976fc6aa134f,
+        0x404e2bcecf61d4b3,
         "vs_main",
         include_bytes!("group_blend__vs_main.naga"),
     ),
     (
-        0x5115976fc6aa134f,
+        0x404e2bcecf61d4b3,
         "fs_main",
         include_bytes!("group_blend__fs_main.naga"),
     ),
     (
-        0x5115976fc6aa134f,
+        0x404e2bcecf61d4b3,
         "fs_blend",
         include_bytes!("group_blend__fs_blend.naga"),
     ),
     (
-        0x0603b3020eba0d6a,
+        0x22523026890e7e86,
         "vs_main",
         include_bytes!("group__vs_main.naga"),
     ),
     (
-        0x0603b3020eba0d6a,
+        0x22523026890e7e86,
         "fs_main",
         include_bytes!("group__fs_main.naga"),
     ),

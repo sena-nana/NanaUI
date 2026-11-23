@@ -1043,7 +1043,7 @@ mask 在节点的布局盒上求值，只作用于节点自己画的东西，不
 
 `clip-path` 支持 `inset(...)`、`polygon(...)`、`circle(...)`、`ellipse(...)`。inset 的 `round` 写入 rounded-box SDF。非平移 transform 下仍保留半径。polygon 对自身和子项做点内多边形测试。子项经 dest-group 合成。不是包围盒 clip。
 
-`filter` 支持 `brightness()`、`saturate()`、`contrast()`、`hue-rotate()`、`invert()`、`opacity()`、`blur()`、`drop-shadow()`。`blur` 和 `drop-shadow` 是元素自身的滤镜。blur 上限 16px。它们和 `backdrop-filter` 分开。
+`filter` 支持 `brightness()`、`saturate()`、`contrast()`、`hue-rotate()`、`invert()`、`opacity()`、`blur()`、`drop-shadow()`。`blur` 和 `drop-shadow` 是元素自身的滤镜。blur 上限 16px；节点的隔离组用 `PaintStyle::wide_filter_blur` 选择放宽时为 64px，上限按组各自施加。它们和 `backdrop-filter` 分开。
 
 `drop-shadow` 在 dest 合成组里采样已经画好的 alpha 轮廓，再 offset，再用同一个核 blur。它不是 `box-shadow` 的盒几何。
 
@@ -1053,7 +1053,7 @@ mask 在节点的布局盒上求值，只作用于节点自己画的东西，不
 
 `outline` 只画 solid 的额外描边。它不进布局。
 
-`mix-blend-mode` 的 GPU 子集是 `normal`、`multiply`、`screen`。它们走 dest-group 的 BlendState。其余关键字 fail closed。
+`mix-blend-mode` 的 16 个 CSS 关键字都在隔离组合成时完成：`multiply` 和 `screen` 走 dest-group 的 BlendState，其余在组合成时读取背景、用着色器混合。整张 pass 的混合状态不变，未知关键字 fail closed。
 
 `line-clamp` 和 `-webkit-line-clamp` 走已有的文本 ellipsis，并设 overflow hidden。
 

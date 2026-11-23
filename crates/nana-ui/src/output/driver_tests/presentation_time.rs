@@ -29,6 +29,26 @@ fn frame_time(now: u64, interval: u64) -> PresentationFrameTime {
 /// A free board filling the viewport, holding one opaque red layer placed by
 /// its explicit rectangle and fading in over 400 ms on the compositor.
 fn free_layer_document() -> RuntimeDocument {
+    layer_document(|layer| {
+        AnimationSpec::new(
+            AnimationId::new(1).unwrap(),
+            layer,
+            Duration::ZERO,
+            ms(400),
+            ms(16),
+            Easing::Linear,
+        )
+        .with_property(AnimatableProperty::Opacity)
+        .with_range(
+            MotionValue::Scalar(0.0),
+            MotionTo::Value(MotionValue::Scalar(1.0)),
+        )
+    })
+}
+
+/// The board and layer of [`free_layer_document`], the layer running the
+/// track `animation` makes for it.
+fn layer_document(animation: impl FnOnce(StableNodeId) -> AnimationSpec) -> RuntimeDocument {
     let document_id = DocumentId::new(1).unwrap();
     let mut document = RuntimeDocument::new(document_id);
     let root = StableNodeId::new(1).unwrap();
@@ -68,21 +88,7 @@ fn free_layer_document() -> RuntimeDocument {
         },
     );
     queue.set_explicit_rect(layer, Some(LAYER));
-    queue.start_animation(
-        AnimationSpec::new(
-            AnimationId::new(1).unwrap(),
-            layer,
-            Duration::ZERO,
-            ms(400),
-            ms(16),
-            Easing::Linear,
-        )
-        .with_property(AnimatableProperty::Opacity)
-        .with_range(
-            MotionValue::Scalar(0.0),
-            MotionTo::Value(MotionValue::Scalar(1.0)),
-        ),
-    );
+    queue.start_animation(animation(layer));
     document.context_mut().commit_mutations(queue).unwrap();
     document
         .context_mut()
@@ -213,4 +219,58 @@ fn a_frame_time_needs_an_interval() {
     let time = frame_time(10, 25);
     assert_eq!(time.next().now(), ms(35));
     assert_eq!(time.next().interval(), ms(25));
+}
+
+/// Issue #312: a group's filter is evaluated at the frame's `now` with the
+/// rest of the compositor: each time draws its own sample, and going back
+/// draws the earlier pixels again.
+#[test]
+fn a_group_filter_is_drawn_at_the_frame_time() {
+    use nana_ui_core::ColorFilter;
+    let mut driver = PresentationDriver::new(&test_gpu::context());
+    driver.configure(&[consumer(1)]).unwrap();
+    let mut document = layer_document(|layer| {
+        AnimationSpec::new(
+            AnimationId::new(1).unwrap(),
+            layer,
+            Duration::ZERO,
+            ms(400),
+            ms(16),
+            Easing::Linear,
+        )
+        .with_property(AnimatableProperty::Filter)
+        .with_range(
+            MotionValue::Filter(ColorFilter::default().into()),
+            MotionTo::Value(MotionValue::Filter(
+                ColorFilter {
+                    brightness: 0.0,
+                    ..ColorFilter::default()
+                }
+                .into(),
+            )),
+        )
+    });
+    let red = |pixels: &[u8]| texel(pixels, 16, 16)[2];
+    let (_, early) = draw_at(&mut driver, &mut document, frame_time(100, 40));
+    let early = read_pixels(early.texture().unwrap());
+    let (_, late) = draw_at(&mut driver, &mut document, frame_time(300, 40));
+    let late = read_pixels(late.texture().unwrap());
+    assert!(
+        red(&late) < red(&early),
+        "darker at 300 ms than at 100 ms: {} vs {}",
+        red(&late),
+        red(&early)
+    );
+    // The layer's style holds no filter: the sample lives in the compositor.
+    let layer = StableNodeId::new(3).unwrap();
+    assert_eq!(
+        document
+            .context()
+            .world()
+            .node_style(layer)
+            .and_then(|style| style.layout.paint.filter),
+        None
+    );
+    let (_, again) = draw_at(&mut driver, &mut document, frame_time(100, 40));
+    assert_eq!(read_pixels(again.texture().unwrap()), early);
 }

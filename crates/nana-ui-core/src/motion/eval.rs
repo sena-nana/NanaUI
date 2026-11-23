@@ -8,7 +8,7 @@ use std::time::Duration;
 use super::{
     DecayParams, SpringParams,
     easing::Easing,
-    ir::{Keyframe, MotionCurve, MotionSample, MotionTo, MotionTrack, MotionValue},
+    ir::{FilterValue, Keyframe, MotionCurve, MotionSample, MotionTo, MotionTrack, MotionValue},
     playback::{AnimationPlayState, AnimationPlayback, MotionTiming, TimedProgress},
     property::AnimationClass,
 };
@@ -333,6 +333,7 @@ fn max_abs(value: MotionValue) -> f32 {
         MotionValue::Transform(p) => [p.a, p.b, p.c, p.d, p.e, p.f]
             .into_iter()
             .fold(0.0_f32, |m, x| m.max(x.abs())),
+        MotionValue::Filter(v) => v.0.iter().fold(0.0_f32, |m, x| m.max(x.abs())),
         MotionValue::Discrete(_) => 0.0,
     }
 }
@@ -392,6 +393,19 @@ fn spring_state(
                     e: vel[4],
                     f: vel[5],
                 }),
+            )
+        }
+        (MotionValue::Filter(a), MotionValue::Filter(b), MotionValue::Filter(v)) => {
+            let mut pos = [0.0_f32; FilterValue::CHANNELS];
+            let mut vel = [0.0_f32; FilterValue::CHANNELS];
+            for i in 0..FilterValue::CHANNELS {
+                let (x, dv) = damped_harmonic(a.0[i] - b.0[i], v.0[i], params, t);
+                pos[i] = b.0[i] + x;
+                vel[i] = dv;
+            }
+            (
+                MotionValue::Filter(FilterValue(pos)),
+                MotionValue::Filter(FilterValue(vel)),
             )
         }
         _ => {
@@ -467,6 +481,19 @@ fn decay_state(
                     e: vel[4],
                     f: vel[5],
                 }),
+            )
+        }
+        (MotionValue::Filter(a), MotionValue::Filter(v)) => {
+            let mut pos = [0.0_f32; FilterValue::CHANNELS];
+            let mut vel = [0.0_f32; FilterValue::CHANNELS];
+            for i in 0..FilterValue::CHANNELS {
+                let (x, dv) = scalar(a.0[i], v.0[i], tau, t);
+                pos[i] = x;
+                vel[i] = dv;
+            }
+            (
+                MotionValue::Filter(FilterValue(pos)),
+                MotionValue::Filter(FilterValue(vel)),
             )
         }
         _ => (from, velocity.zero_velocity()),

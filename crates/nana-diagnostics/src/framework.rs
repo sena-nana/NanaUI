@@ -184,6 +184,17 @@ pub mod runtime {
         Severity::Warn,
         &[],
     );
+    /// A node's non-identity `filter` sits below `depth` filtering groups on
+    /// its ancestor chain, the most one chain composites
+    /// (`ColorFilter::MAX_CHAIN_DEPTH`): it draws unfiltered, its subtree
+    /// still drawn. Reported once per node.
+    pub static PAINT_FILTER_DEPTH_EXCEEDED: EventDescriptor = EventDescriptor::new(
+        D,
+        8,
+        "runtime.paint.filter_depth_exceeded",
+        Severity::Warn,
+        &[F::u64("node"), F::u64("depth")],
+    );
 }
 
 pub mod layout {

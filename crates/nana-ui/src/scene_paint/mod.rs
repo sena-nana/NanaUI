@@ -1976,6 +1976,12 @@ impl SceneWgpuPainter {
                 ) {
                     batching.close_all();
                 }
+                self.quads.set_filtering_groups(
+                    group_stack
+                        .iter()
+                        .filter(|group| !group.filter.is_identity())
+                        .count(),
+                );
                 // Both ends of a painter layer reach here whatever they
                 // cover, so no culling below can leave one open.
                 match &primitive.kind {
@@ -3495,7 +3501,9 @@ fn sync_opacity_groups(
         .take_while(|(open, want)| {
             open.node == want.node
                 && open.opacity == want.opacity
+                && open.filter == want.filter
                 && open.edge_fade == want.edge_fade
+                && open.motion_streak == want.motion_streak
         })
         .count();
     let mut emitted = false;
@@ -3523,7 +3531,9 @@ fn dest_group_slot(
     scale: f32,
 ) -> GroupSlot {
     let filter = group.filter;
-    let pad = filter.dest_extent_pad();
+    let [streak_x, streak_y] = group.motion_streak;
+    // A streak reaches back along its own length; the clip grows to keep it.
+    let pad = filter.dest_extent_pad().max(streak_x.hypot(streak_y));
     let clip = if pad > 0.0 {
         scene
             .draw_node_bounds(group.node)
@@ -3561,6 +3571,17 @@ fn dest_group_slot(
         clip,
     );
     slot.filter_invert = filter.invert;
+    slot.filter_blur_taps = dest::element_blur_taps(
+        filter
+            .blur_radius
+            .max(filter.drop_shadow.map_or(0.0, |shadow| shadow.blur_radius)),
+    );
+    let physical = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    slot.motion_streak = [streak_x * physical, streak_y * physical];
     if let Some(shadow) = filter.drop_shadow {
         let (ox, oy, blur) = if scale.is_finite() && scale > 0.0 {
             (

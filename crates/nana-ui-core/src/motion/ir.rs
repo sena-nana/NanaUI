@@ -47,8 +47,93 @@ pub enum MotionValue {
     Scalar(f32),
     Color([f32; 4]),
     Transform(PaintTransform),
+    /// A node's whole [`crate::ColorFilter`] (`filter`), one value per node.
+    Filter(FilterValue),
     /// Topology / `display`. Snaps at the end of the timed run.
     Discrete(u32),
+}
+
+/// A [`crate::ColorFilter`] as an interpolable value (Issue #312): brightness,
+/// saturate, contrast, hue rotation, invert, filter opacity, blur radius and
+/// the one drop shadow (offset, blur, sRGB colour), channel by channel.
+///
+/// A missing drop shadow is the transparent one at the origin, so `none` and a
+/// shadow interpolate through its colour fading in. Interpolation does not
+/// clamp; [`Self::to_color_filter`] clamps each channel to what it may hold, so
+/// an overshooting curve overshoots where the channel allows it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FilterValue(pub [f32; FilterValue::CHANNELS]);
+
+impl FilterValue {
+    /// Channels: brightness, saturate, contrast, hue (deg), invert, opacity,
+    /// blur, shadow x, shadow y, shadow blur, shadow r, g, b, a.
+    pub const CHANNELS: usize = 14;
+    /// The identity filter.
+    pub const IDENTITY: Self = Self([
+        1.0, 1.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    ]);
+
+    /// `filter`'s channels. A theme-tracked shadow colour is read as its
+    /// sRGB value, which the caller resolves first when it can.
+    pub fn from_color_filter(filter: crate::ColorFilter) -> Self {
+        let shadow = filter.drop_shadow;
+        let [r, g, b, a] = shadow.map_or([0.0; 4], |shadow| shadow.color);
+        Self([
+            filter.brightness,
+            filter.saturate,
+            filter.contrast,
+            filter.hue_rotate_deg,
+            filter.invert,
+            filter.opacity,
+            filter.blur_radius,
+            shadow.map_or(0.0, |shadow| shadow.offset_x),
+            shadow.map_or(0.0, |shadow| shadow.offset_y),
+            shadow.map_or(0.0, |shadow| shadow.blur_radius),
+            r,
+            g,
+            b,
+            a,
+        ])
+    }
+
+    /// The filter these channels describe, each clamped to its range. A
+    /// shadow whose colour has no alpha left is no shadow. The blur radius
+    /// is not capped here: the group that composites it applies its cap.
+    pub fn to_color_filter(self) -> crate::ColorFilter {
+        let c = self.0.map(|v| if v.is_finite() { v } else { 0.0 });
+        let alpha = c[13].clamp(0.0, 1.0);
+        crate::ColorFilter {
+            brightness: c[0].max(0.0),
+            saturate: c[1].max(0.0),
+            contrast: c[2].max(0.0),
+            hue_rotate_deg: c[3],
+            invert: c[4].clamp(0.0, 1.0),
+            opacity: c[5].clamp(0.0, 1.0),
+            blur_radius: c[6].max(0.0),
+            drop_shadow: (alpha > 1e-5).then(|| crate::FilterDropShadow {
+                paint_color: None,
+                offset_x: c[7],
+                offset_y: c[8],
+                blur_radius: c[9].max(0.0),
+                color: [
+                    c[10].clamp(0.0, 1.0),
+                    c[11].clamp(0.0, 1.0),
+                    c[12].clamp(0.0, 1.0),
+                    alpha,
+                ],
+            }),
+        }
+    }
+
+    fn zip(self, other: Self, f: impl Fn(f32, f32) -> f32) -> Self {
+        Self(std::array::from_fn(|i| f(self.0[i], other.0[i])))
+    }
+}
+
+impl From<crate::ColorFilter> for FilterValue {
+    fn from(filter: crate::ColorFilter) -> Self {
+        Self::from_color_filter(filter)
+    }
 }
 
 impl MotionValue {
@@ -73,6 +158,7 @@ impl MotionValue {
                 e: 0.0,
                 f: 0.0,
             }),
+            Self::Filter(_) => Self::Filter(FilterValue([0.0; FilterValue::CHANNELS])),
             Self::Discrete(tag) => Self::Discrete(tag),
         }
     }
@@ -104,6 +190,7 @@ impl MotionValue {
                 e: a.e + (b.e - a.e) * t,
                 f: a.f + (b.f - a.f) * t,
             }),
+            (Self::Filter(a), Self::Filter(b)) => Self::Filter(a.zip(b, |a, b| a + (b - a) * t)),
             (from, to) => {
                 if t >= 1.0 {
                     to
@@ -126,6 +213,7 @@ impl MotionValue {
                 e: p.e * k,
                 f: p.f * k,
             }),
+            Self::Filter(v) => Self::Filter(FilterValue(v.0.map(|c| c * k))),
             discrete @ Self::Discrete(_) => discrete,
         }
     }
@@ -146,6 +234,7 @@ impl std::ops::Add for MotionValue {
                 e: a.e + b.e,
                 f: a.f + b.f,
             }),
+            (Self::Filter(a), Self::Filter(b)) => Self::Filter(a.zip(b, |a, b| a + b)),
             (left, _) => left,
         }
     }
@@ -435,11 +524,11 @@ pub(super) fn value_fits(property: AnimatableProperty, value: MotionValue) -> bo
         (AnimatableProperty::Display, _) => false,
         (AnimatableProperty::Transform, MotionValue::Transform(_)) => true,
         (AnimatableProperty::Color | AnimatableProperty::Background, MotionValue::Color(_)) => true,
+        (AnimatableProperty::Filter, MotionValue::Filter(_)) => true,
         (
             AnimatableProperty::Opacity
             | AnimatableProperty::Clip
             | AnimatableProperty::Blur
-            | AnimatableProperty::Filter
             | AnimatableProperty::Shadow
             | AnimatableProperty::ShaderParameter
             | AnimatableProperty::Width
@@ -460,6 +549,7 @@ fn finite(value: MotionValue) -> bool {
         MotionValue::Scalar(v) => v.is_finite(),
         MotionValue::Color(channels) => channels.iter().all(|c| c.is_finite()),
         MotionValue::Transform(t) => [t.a, t.b, t.c, t.d, t.e, t.f].iter().all(|v| v.is_finite()),
+        MotionValue::Filter(v) => v.0.iter().all(|c| c.is_finite()),
         MotionValue::Discrete(_) => true,
     }
 }
@@ -582,6 +672,7 @@ impl Spring {
         match self.to {
             MotionValue::Transform(_) => Some(AnimatableProperty::Transform),
             MotionValue::Color(_) => Some(AnimatableProperty::Color),
+            MotionValue::Filter(_) => Some(AnimatableProperty::Filter),
             MotionValue::Discrete(_) => Some(AnimatableProperty::Display),
             MotionValue::Scalar(_) => None,
         }

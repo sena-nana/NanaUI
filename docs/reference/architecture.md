@@ -83,7 +83,8 @@ nana_ui::runtime → UiWorld → ExtractedNode → UiScene → SceneWgpuPainter
 | `transform` / `opacity` | `Compositor` | 呈现 overlay；Quad 走 GPU `evaluate()`，非 Quad 走 CPU overlay | 稳态不写 `UiWorld`；非 Quad 仍为 CPU 呈现 |
 | `clip` / `clip-path` | `Compositor` | 呈现 overlay；Painter 当前仅将 transform / opacity 的 `motion_id` 传给着色器 | 稳态不写 `UiWorld`；裁剪呈现走 CPU overlay |
 | `shader-parameter` | `Compositor` | 呈现 overlay（需注册类型化编解码器） | 无默认 Quad GPU 路径 |
-| `color` / `background` / `blur` / `filter` / `shadow` | `Paint` | CPU 插值 | 每次采样可能标脏 paint / extract；无 GPU 滤镜轨道 |
+| `filter` | `Compositor` | 场景在文档 `now` 采样，写入隔离组 uniform | 稳态不写 `UiWorld`，不脏布局和文字 |
+| `color` / `background` / `blur` / `shadow` | `Paint` | CPU 插值 | 每次采样可能标脏 paint / extract |
 | `width` / `height` / `padding` / `margin` | `Layout` | CPU 布局求值，写回像素尺寸 | 每次采样触发局部布局；严禁偷换成 `scale` 变换 |
 | `font-size` | `Layout` | 非合成器路径（影响排版与绘制） | 不强制走 GPU |
 | `font-variation-settings`（`FontAxis(tag)`，每轴一条轨道） | `Layout` | 轨道存于 `PresentationStore`，样式解析时叠入计算样式的 `font_variations` 并向下继承（显式声明该轴的子树不受影响）；按 `SHAPE_STYLE` 脏图触发重新整形、排版与栅格化（采样值未变则零工作） | 每次有效采样均为真实字形实例，严禁替换成几何缩放（[#85](https://github.com/sena-nana/NanaUI/issues/85)）。字体缺失的轴照常计时但不生效，通过 `inspect_motion` 的 `ineffective_reason` 与 `nana.css` 警告上报，不映射为 `wght` |

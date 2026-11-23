@@ -904,15 +904,19 @@ pub fn parse_color_filter(input: &str) -> Option<ColorFilter> {
         } else if let Some(value) = strip_complete_function(&token, "opacity") {
             filter.opacity = parse_filter_scalar(value).unwrap_or(1.0).clamp(0.0, 1.0);
         } else if let Some(value) = strip_complete_function(&token, "blur") {
+            // Held to the widest cap any group allows: the group the filter
+            // composites in applies its own (Issue #314).
             let px = parse_blur_radius(value).unwrap_or(0.0);
-            filter.blur_radius = px.clamp(0.0, ColorFilter::MAX_BLUR_RADIUS);
+            filter.blur_radius = px.clamp(0.0, ColorFilter::MAX_WIDE_BLUR_RADIUS);
         } else {
             let value = strip_complete_function(&token, "drop-shadow")?;
             if filter.drop_shadow.is_some() {
                 return None;
             }
             let mut shadow = crate::css_map::parse_drop_shadow(value)?;
-            shadow.blur_radius = shadow.blur_radius.clamp(0.0, ColorFilter::MAX_BLUR_RADIUS);
+            shadow.blur_radius = shadow
+                .blur_radius
+                .clamp(0.0, ColorFilter::MAX_WIDE_BLUR_RADIUS);
             filter.drop_shadow = Some(shadow);
         }
     }
@@ -3006,8 +3010,12 @@ mod tests {
 
     #[test]
     fn filter_clamps_element_blur() {
+        // Parsing holds the value to the widest cap; the group applies its
+        // own (16 px unless it opted into 64 px, Issue #314).
         let filter = parse_color_filter("blur(200px)").unwrap();
-        assert!((filter.blur_radius - ColorFilter::MAX_BLUR_RADIUS).abs() < 0.01);
+        assert!((filter.blur_radius - ColorFilter::MAX_WIDE_BLUR_RADIUS).abs() < 0.01);
+        let filter = parse_color_filter("blur(40px)").unwrap();
+        assert!((filter.blur_radius - 40.0).abs() < 0.01);
     }
 
     #[test]
@@ -3037,7 +3045,8 @@ mod tests {
     fn filter_drop_shadow_clamps_blur_and_rejects_spread() {
         let filter = parse_color_filter("drop-shadow(0 0 200px black)").unwrap();
         assert!(
-            (filter.drop_shadow.unwrap().blur_radius - ColorFilter::MAX_BLUR_RADIUS).abs() < 0.01
+            (filter.drop_shadow.unwrap().blur_radius - ColorFilter::MAX_WIDE_BLUR_RADIUS).abs()
+                < 0.01
         );
         assert!(parse_color_filter("drop-shadow(0 0 4px 2px black)").is_none());
         assert!(parse_color_filter("drop-shadow(inset 0 0 4px black)").is_none());

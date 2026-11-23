@@ -450,6 +450,8 @@ pub mod set {
             text_stroke: Option<TextStrokeSpec>,
             paint_order_stroke_first: bool,
             mix_blend: MixBlendMode,
+            wide_filter_blur: bool,
+            motion_shutter: f32,
             unsupported_border_image: bool,
             border_image: Option<BorderImageSpec>,
             background_image: Option<BackgroundImage>,

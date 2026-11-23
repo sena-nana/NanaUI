@@ -1054,7 +1054,7 @@ Neither child nodes nor the node's own text are affected by the mask. CSS's mask
 
 `clip-path` supports `inset(...)`, `polygon(...)`, `circle(...)`, `ellipse(...)`. An inset's `round` writes into the rounded-box SDF. The radii survive a non-translational transform. A polygon is point-in-polygon tested against itself and its children. Children composite through a dest group. It is not a bounding-box clip.
 
-`filter` supports `brightness()`, `saturate()`, `contrast()`, `hue-rotate()`, `invert()`, `opacity()`, `blur()`, `drop-shadow()`. `blur` and `drop-shadow` are the element's own filters. blur is capped at 16 px. They are separate from `backdrop-filter`.
+`filter` supports `brightness()`, `saturate()`, `contrast()`, `hue-rotate()`, `invert()`, `opacity()`, `blur()`, `drop-shadow()`. `blur` and `drop-shadow` are the element's own filters. blur is capped at 16 px, or 64 px when the node's isolation group opts in with `PaintStyle::wide_filter_blur`; each group applies its own cap. They are separate from `backdrop-filter`.
 
 `drop-shadow` samples the already painted alpha outline in the dest compositing group, then offsets it, then blurs it with the same kernel. It is not `box-shadow`'s box geometry.
 
@@ -1064,7 +1064,7 @@ A dest compositing group is used when there are children, text, custom painting,
 
 `outline` paints only a solid extra stroke. It does not enter layout.
 
-The GPU subset of `mix-blend-mode` is `normal`, `multiply`, `screen`. They go through the dest group's BlendState. The other keywords fail closed.
+All 16 CSS `mix-blend-mode` keywords are completed when the isolation group composites: `multiply` and `screen` use the dest group's BlendState, the others read the backdrop and blend in the shader. The pass's own blend state does not change, and unknown keywords fail closed.
 
 `line-clamp` and `-webkit-line-clamp` use the existing text ellipsis and set overflow hidden.
 

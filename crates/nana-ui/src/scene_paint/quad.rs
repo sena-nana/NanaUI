@@ -205,6 +205,9 @@ pub(super) struct QuadPipeline {
     motion_dummy: wgpu::BindGroup,
     motion_ids: (u32, u32),
     motion_origin: [f32; 2],
+    /// Whether the groups open around the next quad leave room for its own
+    /// filter on the ancestor chain (Issue #324); set per primitive.
+    filter_room: bool,
     /// Physical px per logical px this frame: the grid a translated quad's
     /// position is put on (`clip::on_grid`).
     grid_scale: f32,
@@ -465,6 +468,7 @@ impl QuadPipeline {
             motion_dummy,
             motion_ids: (0, 0),
             motion_origin: [0.0, 0.0],
+            filter_room: true,
             grid_scale: 1.0,
             corner_exponent: 2.0,
             shrink_frames: 0,
@@ -579,6 +583,7 @@ impl QuadPipeline {
         self.pending_materials.clear();
         self.motion_ids = (0, 0);
         self.motion_origin = [0.0, 0.0];
+        self.filter_room = true;
     }
 
     fn prune_materials(&mut self) {
@@ -616,6 +621,13 @@ impl QuadPipeline {
     pub(super) fn set_motion(&mut self, ids: (u32, u32), origin: [f32; 2]) {
         self.motion_ids = ids;
         self.motion_origin = origin;
+    }
+
+    /// `filtering` groups composite a filter around the next quad. At
+    /// [`nana_ui_core::ColorFilter::MAX_CHAIN_DEPTH`] its own filter is one
+    /// layer too many and it draws unfiltered (Issue #324).
+    pub(super) fn set_filtering_groups(&mut self, filtering: usize) {
+        self.filter_room = filtering < nana_ui_core::ColorFilter::MAX_CHAIN_DEPTH;
     }
 
     pub(super) fn invalidate_image_bindings(&mut self) {
@@ -709,6 +721,16 @@ impl QuadPipeline {
         surface: &QuadSurfacePaint,
         work: Option<&crate::gpu_work::GpuWorkSink>,
     ) -> Option<u32> {
+        let unfiltered;
+        let surface = if !self.filter_room && surface.filter.is_some_and(|f| !f.is_identity()) {
+            unfiltered = QuadSurfacePaint {
+                filter: None,
+                ..surface.clone()
+            };
+            &unfiltered
+        } else {
+            surface
+        };
         if bounds.width <= 0.0 || bounds.height <= 0.0 {
             // A replaced box with no area may be waiting for its image's
             // natural size to get one (Issue #263): start the image where

@@ -118,6 +118,8 @@ impl PaintStyle {
         box_shadows: Vec<BoxShadowSpec>,
         outline: OutlineSpec,
         mix_blend: MixBlendMode,
+        wide_filter_blur: bool,
+        motion_shutter: f32,
         unsupported_border_image: bool,
         background_layers: Vec<BackgroundImage>,
         background_size_list: Vec<BackgroundImageFit>,

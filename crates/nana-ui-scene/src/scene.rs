@@ -185,6 +185,13 @@ pub struct UiScene {
     /// queried node itself; a zero here proves no walk can find a group, so no
     /// frame of a scene without isolation pays for it at all.
     dest_group_candidates: usize,
+    /// Nodes already reported for a filter past the chain's depth
+    /// (Issue #324), so the diagnostic is one per node, not one per frame.
+    filter_depth_reported: std::sync::Mutex<NodeSet>,
+    /// The document's frame interval, which an open shutter exposes a
+    /// fraction of (Issue #323). Set by the host before each
+    /// [`UiScene::apply_presentation`].
+    presentation_frame_interval: std::time::Duration,
     /// Text nodes presenting per glyph, and until when what they draw keeps
     /// changing (`None`: a looping effect). What keeps frames coming while a
     /// reveal plays and stops them once it has finished.
@@ -247,6 +254,8 @@ impl Default for UiScene {
             custom_paint: NodeMap::default(),
             widget_vector_paint: NodeMap::default(),
             dest_group_candidates: 0,
+            filter_depth_reported: std::sync::Mutex::new(NodeSet::default()),
+            presentation_frame_interval: std::time::Duration::from_millis(16),
             glyph_live: NodeMap::default(),
             gpu_payload_live: NodeMap::default(),
             glyph_objects: NodeMap::default(),
@@ -302,6 +311,8 @@ impl Clone for UiScene {
             custom_paint: self.custom_paint.clone(),
             widget_vector_paint: self.widget_vector_paint.clone(),
             dest_group_candidates: self.dest_group_candidates,
+            filter_depth_reported: std::sync::Mutex::new(NodeSet::default()),
+            presentation_frame_interval: self.presentation_frame_interval,
             glyph_live: self.glyph_live.clone(),
             gpu_payload_live: self.gpu_payload_live.clone(),
             glyph_objects: self.glyph_objects.clone(),
@@ -504,6 +515,7 @@ impl UiScene {
                                 .is_some_and(nana_ui_core::PaintColor::is_extended_srgb)
                         })
                 })
+                || self.compositor.presents_extended_filter()
         })
     }
 }
@@ -532,6 +544,10 @@ pub(super) struct SceneNodes {
     /// Keeping it beside the retained nodes lets ordering, projection and paint
     /// agree on the same boundaries, including before a layer is promoted.
     opacity_motion: NodeSet,
+    /// Nodes whose `filter` the compositor presents (Issue #312): each is a
+    /// dest group for as long as a filter track applies, whatever its
+    /// logical filter, and its group takes the sampled filter.
+    filter_motion: NodeSet,
 }
 
 impl std::ops::Deref for SceneNodes {

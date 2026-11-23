@@ -92,7 +92,7 @@ fn dest_group_layout_key() -> u64 {
 
 const GROUP_UNIFORM_STRIDE: u64 = 256;
 const GROUP_UNIFORM_SLOTS: u64 = 64;
-const GROUP_UNIFORM_SIZE: u64 = 192;
+const GROUP_UNIFORM_SIZE: u64 = 208;
 const PRESENTATION_UNIFORM_SIZE: u64 = 16;
 
 #[derive(Debug, Clone, Copy)]
@@ -111,6 +111,12 @@ pub(super) struct GroupSlot {
     /// the lengths of the bands the alpha ramps across below and above
     /// them. Zero lengths fade nothing.
     pub edge_fade: [f32; 4],
+    /// An open shutter's streak in dest pixels: where the group's content
+    /// was at the start of the exposure, relative to now (Issue #323).
+    pub motion_streak: [f32; 2],
+    /// Taps either side of the centre the element blur samples per axis:
+    /// 2 (a 5×5 kernel) up to the 16 px cap, more past it (Issue #314).
+    pub filter_blur_taps: f32,
 }
 
 impl GroupSlot {
@@ -119,6 +125,7 @@ impl GroupSlot {
     /// leave a transparent pixel transparent.
     pub fn spreads(&self) -> bool {
         self.filter_blur > 0.5
+            || self.motion_streak != [0.0, 0.0]
             || self.drop_shadow_color[3] > 0.001
             || self.filter != [1.0, 1.0, 1.0]
             || self.filter_hue.abs() > 0.0001
@@ -145,6 +152,8 @@ impl GroupSlot {
             filter_invert: 0.0,
             drop_shadow_color: [0.0, 0.0, 0.0, 0.0],
             edge_fade: [0.0; 4],
+            motion_streak: [0.0, 0.0],
+            filter_blur_taps: 2.0,
         }
     }
 
@@ -211,7 +220,23 @@ fn pack_group_slot(slot: &GroupSlot, corner_exponent: f32) -> [u8; GROUP_UNIFORM
         let offset = 176 + index * 4;
         bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
     }
+    bytes[192..196].copy_from_slice(&slot.motion_streak[0].to_le_bytes());
+    bytes[196..200].copy_from_slice(&slot.motion_streak[1].to_le_bytes());
+    bytes[200..204].copy_from_slice(&slot.filter_blur_taps.to_le_bytes());
     bytes
+}
+
+/// Taps either side of the centre the element blur of a `logical_blur` px
+/// filter samples per axis. Up to [`nana_ui_core::ColorFilter::MAX_BLUR_RADIUS`]
+/// it is the 5×5 kernel every group has always used; past it, only a group
+/// that opted into the wide cap gets here (Issue #314), and the taps grow so
+/// that they stay at most 8 px apart, up to 17×17 at 64 px.
+pub(super) fn element_blur_taps(logical_blur: f32) -> f32 {
+    if logical_blur <= nana_ui_core::ColorFilter::MAX_BLUR_RADIUS {
+        2.0
+    } else {
+        (logical_blur / 8.0).ceil().clamp(2.0, 8.0)
+    }
 }
 
 fn blend_multiply() -> wgpu::BlendState {

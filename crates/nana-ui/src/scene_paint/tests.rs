@@ -2227,6 +2227,7 @@ fn translucent_parent_composites_overlapping_children_as_a_group() {
             mix_blend: nana_ui_core::MixBlendMode::Normal,
             inset_shadow: None,
             edge_fade: None,
+            motion_streak: [0.0, 0.0],
         }]
     );
     let viewport = ScenePaintViewport {

@@ -15,6 +15,10 @@ pub struct OpacityGroup {
     /// The scroll edge fade the group's alpha ramps across, for a scroll
     /// container styled with one ([`nana_ui_core::PaintStyle::scroll_edge_fade`]).
     pub edge_fade: Option<EdgeFadeMask>,
+    /// The directional streak an open shutter draws the group along, in
+    /// logical pixels on the page: where its content was at the start of the
+    /// exposure, relative to now (Issue #323). Zero draws none.
+    pub motion_streak: [f32; 2],
 }
 
 impl OpacityGroup {
@@ -26,6 +30,7 @@ impl OpacityGroup {
             && self.mix_blend.is_normal()
             && self.inset_shadow.is_none()
             && self.edge_fade.is_none_or(|fade| !fade.is_visible())
+            && self.motion_streak == [0.0, 0.0]
     }
 
     /// Whether the group only fades its scroll edges: compositing it moves
@@ -97,7 +102,10 @@ impl UiScene {
     }
 
     pub(super) fn visual_opacity_groups(&self, vn: VisualNode) -> Arc<[OpacityGroup]> {
-        if self.dest_group_candidates == 0 && self.nodes.opacity_motion.is_empty() {
+        if self.dest_group_candidates == 0
+            && self.nodes.opacity_motion.is_empty()
+            && self.nodes.filter_motion.is_empty()
+        {
             return empty_opacity_groups();
         }
         if !self.nodes.contains_key(&vn.node_id()) {
@@ -116,10 +124,46 @@ impl UiScene {
         };
         if let Some(own) = self.visual_node_own_opacity_group(vn) {
             let mut groups = base.to_vec();
-            groups.push(own);
+            groups.push(self.within_filter_depth(&base, own));
             return Arc::from(groups);
         }
         base
+    }
+
+    /// `own` as it composites below `base`: a non-identity filter past
+    /// [`ColorFilter::MAX_CHAIN_DEPTH`] filtering groups stays the identity
+    /// (Issue #324). The group itself stays, so its opacity, blend and the
+    /// subtree it holds are untouched.
+    fn within_filter_depth(&self, base: &[OpacityGroup], mut own: OpacityGroup) -> OpacityGroup {
+        if own.filter.is_identity() {
+            return own;
+        }
+        let depth = filtering_groups(base);
+        if depth < ColorFilter::MAX_CHAIN_DEPTH {
+            return own;
+        }
+        own.filter = ColorFilter::default();
+        self.report_filter_depth(own.node, depth);
+        own
+    }
+
+    /// One [`PAINT_FILTER_DEPTH_EXCEEDED`] per node, however often its
+    /// groups are asked for.
+    ///
+    /// [`PAINT_FILTER_DEPTH_EXCEEDED`]: nana_diagnostics::framework::runtime::PAINT_FILTER_DEPTH_EXCEEDED
+    pub(super) fn report_filter_depth(&self, node: StableNodeId, depth: usize) {
+        let first = self
+            .filter_depth_reported
+            .lock()
+            .map(|mut reported| reported.insert(node))
+            .unwrap_or(false);
+        if first {
+            nana_diagnostics::event!(
+                nana_diagnostics::framework::runtime::PAINT_FILTER_DEPTH_EXCEEDED,
+                node = node.get(),
+                depth = depth as u64,
+            );
+        }
     }
 
     fn ancestor_visual_opacity_groups(
@@ -148,7 +192,7 @@ impl UiScene {
         };
         let groups = if let Some(own) = self.visual_node_own_opacity_group(vn) {
             let mut groups = base.to_vec();
-            groups.push(own);
+            groups.push(self.within_filter_depth(&base, own));
             Arc::from(groups)
         } else {
             base
@@ -194,23 +238,33 @@ impl UiScene {
                     return None;
                 }
                 let menu = self.nodes.get(&id)?;
-                let presented = self.compositor.opacity(id)?;
-                let logical = local_opacity(menu);
-                let fade = if logical > 1e-6 {
-                    (presented / logical).clamp(0.0, 1.0)
-                } else {
-                    presented.clamp(0.0, 1.0)
+                let fade = match self.compositor.opacity(id) {
+                    Some(presented) => {
+                        let logical = local_opacity(menu);
+                        if logical > 1e-6 {
+                            (presented / logical).clamp(0.0, 1.0)
+                        } else {
+                            presented.clamp(0.0, 1.0)
+                        }
+                    }
+                    None => 1.0,
                 };
-                if (fade - 1.0).abs() < 1e-6 {
+                // A triggered menu's presented filter, like its fade, is
+                // its hanging surface's: the trigger keeps its own paint.
+                let filter = self.compositor.effect(id).unwrap_or_default();
+                if (fade - 1.0).abs() < 1e-6 && filter.is_identity() {
                     return None;
                 }
                 Some(OpacityGroup {
                     node: id,
                     opacity: fade,
-                    filter: ColorFilter::default(),
+                    filter: filter.with_blur_cap(ColorFilter::blur_cap(
+                        menu.source_style.layout.paint.wide_filter_blur,
+                    )),
                     mix_blend: MixBlendMode::Normal,
                     inset_shadow: None,
                     edge_fade: None,
+                    motion_streak: [0.0, 0.0],
                 })
             }
         }
@@ -253,6 +307,21 @@ impl UiScene {
     fn presented_dest_group(&self, id: StableNodeId, node: &ExtractedNode) -> OpacityGroup {
         let mut group = dest_group(&self.nodes, id, node, self.placed_layout(node));
         group.opacity = self.resolved_local_opacity(node);
+        // The filter track's sample at `now` stands for the whole filter:
+        // it started from the logical one, so it already holds what the
+        // style says where the track leaves a channel alone.
+        let presents = !is_triggered_menu(node);
+        if let Some(filter) = self.compositor.effect(id).filter(|_| presents) {
+            group.filter = filter;
+        }
+        // Each group holds its blur to its own cap: one that opted into the
+        // wide cap widens nobody else's (Issue #314).
+        group.filter = group.filter.with_blur_cap(ColorFilter::blur_cap(
+            node.source_style.layout.paint.wide_filter_blur,
+        ));
+        if let Some(streak) = self.compositor.motion_streak(id).filter(|_| presents) {
+            group.motion_streak = streak;
+        }
         group
     }
 
@@ -260,6 +329,14 @@ impl UiScene {
     pub fn filter_groups(&self, node: StableNodeId) -> Vec<FilterGroup> {
         filter_groups_from(&self.nodes, node)
     }
+}
+
+/// How many of `groups` composite a non-identity filter.
+pub(super) fn filtering_groups(groups: &[OpacityGroup]) -> usize {
+    groups
+        .iter()
+        .filter(|group| !group.filter.is_identity())
+        .count()
 }
 
 pub(super) fn local_opacity(node: &ExtractedNode) -> f32 {
@@ -325,7 +402,8 @@ pub(super) fn may_be_dest_group(node: &ExtractedNode) -> bool {
 
 pub(super) fn is_opacity_group(nodes: &SceneNodes, node: &ExtractedNode) -> bool {
     let translucent = is_translucent(node) && has_extracted_child(nodes, node);
-    (nodes.opacity_motion.contains(&node.id) && !is_triggered_menu(node))
+    ((nodes.opacity_motion.contains(&node.id) || nodes.filter_motion.contains(&node.id))
+        && !is_triggered_menu(node))
         || translucent
         || dest_filter_applies(nodes, node)
         || !node.source_style.layout.paint.mix_blend.is_normal()
@@ -338,7 +416,7 @@ pub(super) fn visual_is_opacity_group(nodes: &SceneNodes, vn: VisualNode) -> boo
             .get(&id)
             .is_some_and(|node| is_opacity_group(nodes, node)),
         VisualNode::Overlay(id) => {
-            nodes.opacity_motion.contains(&id)
+            (nodes.opacity_motion.contains(&id) || nodes.filter_motion.contains(&id))
                 && nodes.get(&id).is_some_and(|node| is_triggered_menu(node))
         }
     }
@@ -445,6 +523,13 @@ pub(super) fn is_filter_group(nodes: &SceneNodes, node: &ExtractedNode) -> bool 
     dest_filter_applies(nodes, node)
 }
 
+/// Whether `node`'s group composites a presented filter (Issue #312), which
+/// stands for its whole filter, or an open shutter's streak (Issue #323):
+/// its own quad then draws unfiltered.
+pub(super) fn presents_filter(nodes: &SceneNodes, node: &ExtractedNode) -> bool {
+    nodes.filter_motion.contains(&node.id) && !is_triggered_menu(node)
+}
+
 fn is_dest_group(nodes: &SceneNodes, node: &ExtractedNode) -> bool {
     is_opacity_group(nodes, node)
 }
@@ -498,6 +583,7 @@ fn dest_group(
         mix_blend: candidate.source_style.layout.paint.mix_blend,
         inset_shadow: inset_shadow_overlay(candidate, placed),
         edge_fade: edge_fade_mask(candidate, placed),
+        motion_streak: [0.0, 0.0],
     }
 }
 

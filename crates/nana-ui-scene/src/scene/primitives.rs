@@ -250,7 +250,9 @@ impl UiScene {
                                 bounds.width,
                                 bounds.height,
                             );
-                            if is_filter_group(&self.nodes, &node) {
+                            if is_filter_group(&self.nodes, &node)
+                                || presents_filter(&self.nodes, &node)
+                            {
                                 surface.filter = None;
                             }
                             let component_owns_border = widget_root.is_some_and(|rs| {

@@ -127,7 +127,7 @@ Built-in framework probes are spread across 9 subdomains in `nana_diagnostics::f
 
 | Framework domain | Core metrics and events |
 | --- | --- |
-| `Runtime` | Total CPU time per `flush` and 9 phase histograms (reusing `FrameProfiler`), `flush` count and rounds, style/hit-test/extract counters (`runtime.style.nodes_resolved`, `runtime.hit_test.nodes_rebuilt`, `runtime.extract.nodes_{extracted,changed}`), one-shot `runtime.snippet.transform_unavailable` when `snippet-transforms` is disabled, and counts of non-convergence and style/text layout failures |
+| `Runtime` | Total CPU time per `flush` and 9 phase histograms (reusing `FrameProfiler`), `flush` count and rounds, style/hit-test/extract counters (`runtime.style.nodes_resolved`, `runtime.hit_test.nodes_rebuilt`, `runtime.extract.nodes_{extracted,changed}`), one-shot `runtime.snippet.transform_unavailable` when `snippet-transforms` is disabled, `runtime.paint.filter_depth_exceeded` once per node whose non-identity filter is a fifth on its ancestor chain and stays the identity, and counts of non-convergence and style/text layout failures |
 | `Input` | Events received, coalesces, payload bytes, routing rejections, clip rejections, routing time, hit queries, and focus/capture/hover changes (`runtime.input.*`, IDs 20–37) |
 | `Layout` | Layout time, call count, full-tree layout count, dirty root count, and measure/placement node counts (`layout.measure_nodes`, `layout.placement_nodes`); for Dynamic Layout, row solves, envelope rebuilds, and budget fallbacks |
 | `Text` | Shaping and layout cache hits/misses, glyph resolutions, glyph atlas page opens and total bytes, budget rejection events (rate-limited to one per 10 s), and atlas compaction and eviction counts |

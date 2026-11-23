@@ -57,9 +57,9 @@ pub use inspector::{
     MotionEvaluatorBackend, MotionInspectorEntry, MotionWorkCounters, cpu_fallback_reason,
 };
 pub use ir::{
-    DecayParams, Keyframe, MotionCurve, MotionGraph, MotionInterrupt, MotionSample, MotionTargetId,
-    MotionTo, MotionTrack, MotionTrackId, MotionValue, PresentationPair, Spring, SpringParams,
-    StepJump, Timeline, track_completion_deadline,
+    DecayParams, FilterValue, Keyframe, MotionCurve, MotionGraph, MotionInterrupt, MotionSample,
+    MotionTargetId, MotionTo, MotionTrack, MotionTrackId, MotionValue, PresentationPair, Spring,
+    SpringParams, StepJump, Timeline, track_completion_deadline,
 };
 pub use playback::{
     AnimationDirection, AnimationFillMode, AnimationIteration, AnimationPlayState,

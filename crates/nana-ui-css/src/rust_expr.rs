@@ -1622,6 +1622,8 @@ pub(crate) fn emit_patch_stmt(layout: &LayoutStyle, path: &str, m: &str, out: &m
                 emit_set(&setter, &layout.paint.paint_order_stroke_first, m, out)
             }
             "mix_blend" => emit_set(&setter, &layout.paint.mix_blend, m, out),
+            "wide_filter_blur" => emit_set(&setter, &layout.paint.wide_filter_blur, m, out),
+            "motion_shutter" => emit_set(&setter, &layout.paint.motion_shutter, m, out),
             "unsupported_border_image" => {
                 emit_set(&setter, &layout.paint.unsupported_border_image, m, out)
             }

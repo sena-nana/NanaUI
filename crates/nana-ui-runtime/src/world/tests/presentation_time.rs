@@ -428,3 +428,69 @@ mod media_time {
         assert!(world.media_time_mappings.is_empty());
     }
 }
+
+/// Issue #312: a group's `filter` animates on the compositor. Its steady
+/// frames write nothing to the document and schedule no layout or text work;
+/// only `now` moves, and the presented filter is the track's sample there.
+#[test]
+fn a_filter_track_moves_only_now() {
+    use nana_ui_core::{ColorFilter, FilterValue};
+    let dimmed = ColorFilter {
+        brightness: 0.5,
+        saturate: 0.0,
+        blur_radius: 8.0,
+        ..ColorFilter::default()
+    };
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(node(1), document(1), NodeKind::Document);
+    queue.start_animation(
+        AnimationSpec::new(
+            AnimationId::new(1).unwrap(),
+            node(1),
+            Duration::ZERO,
+            ms(400),
+            ms(16),
+            Easing::Linear,
+        )
+        .with_property(AnimatableProperty::Filter)
+        .with_range(
+            MotionValue::Filter(FilterValue::IDENTITY),
+            MotionTo::Value(MotionValue::Filter(dimmed.into())),
+        ),
+    );
+    world.commit(queue).unwrap();
+    world.advance_animations(Duration::ZERO);
+    let _ = world.take_system_work();
+    let generation = world.generation();
+    let style = world.node_style(node(1)).cloned();
+
+    let steady = world.advance_animations(ms(100));
+    assert!(steady.samples.is_empty());
+    assert!(world.take_system_work().is_empty());
+    assert_eq!(world.generation(), generation);
+    assert_eq!(world.node_style(node(1)).cloned(), style);
+    assert_eq!(world.animation_now(), ms(100));
+    let filter = |world: &UiWorld| match world.presentation_motion_value(
+        node(1),
+        AnimatableProperty::Filter,
+        world.animation_now(),
+    ) {
+        Some(MotionValue::Filter(value)) => value.to_color_filter(),
+        other => panic!("{other:?}"),
+    };
+    assert!((filter(&world).brightness - 0.875).abs() < 1e-4);
+    assert!((filter(&world).blur_radius - 2.0).abs() < 1e-4);
+
+    // A seek puts the sample at the new time, and back again.
+    world.set_presentation_playback(PresentationPlayback::Paused);
+    world.seek_presentation(ms(300));
+    assert!((filter(&world).saturate - 0.25).abs() < 1e-4);
+    world.seek_presentation(ms(100));
+    assert!((filter(&world).brightness - 0.875).abs() < 1e-4);
+    assert_eq!(world.node_style(node(1)).cloned(), style);
+    assert!(
+        world.take_system_work().is_empty(),
+        "a seek of a compositor-only track schedules no document work"
+    );
+}

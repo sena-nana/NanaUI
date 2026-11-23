@@ -22,11 +22,12 @@ pub const LAYER_PROMOTE_HOLD: Duration = Duration::from_millis(16);
 /// gaps (hover flicker) reuse the same identity instead of demote/promote.
 pub const LAYER_DEMOTE_HOLD: Duration = Duration::from_millis(120);
 
-const COMPOSITOR_PROPERTIES: [AnimatableProperty; 4] = [
+const COMPOSITOR_PROPERTIES: [AnimatableProperty; 5] = [
     AnimatableProperty::Transform,
     AnimatableProperty::Opacity,
     AnimatableProperty::Clip,
     AnimatableProperty::ShaderParameter,
+    AnimatableProperty::Filter,
 ];
 
 /// Stable layer identity. Equals the promoting node's [`StableNodeId`].
@@ -109,6 +110,9 @@ pub struct CompositorLayer {
     pub opacity: f32,
     pub clip: Option<ClipRegion>,
     pub effect: Option<ColorFilter>,
+    /// An open shutter's streak on the page, in logical pixels (Issue #323);
+    /// `None` while the shutter is closed or no transform track applies.
+    pub motion_streak: Option<[f32; 2]>,
     pub bindings: Vec<CompositorMotionBinding>,
     /// Increments when topology or primitive structure of the covered subtree
     /// changes. Motion timestamp must not bump this.
@@ -179,6 +183,37 @@ impl CompositorRegistry {
         self.layer(node)
             .map(|layer| layer.opacity)
             .or_else(|| self.pending.get(&node).map(|pending| pending.opacity))
+    }
+
+    /// The filter `node`'s group presents now, sampled at the document's
+    /// `now` (Issue #312); `None` while no filter track applies to it.
+    pub(super) fn effect(&self, node: StableNodeId) -> Option<ColorFilter> {
+        self.layer(node)
+            .map(|layer| layer.effect)
+            .or_else(|| self.pending.get(&node).map(|pending| pending.effect))
+            .flatten()
+    }
+
+    /// The streak an open shutter draws `node`'s group along now.
+    pub(super) fn motion_streak(&self, node: StableNodeId) -> Option<[f32; 2]> {
+        self.layer(node)
+            .map(|layer| layer.motion_streak)
+            .or_else(|| self.pending.get(&node).map(|pending| pending.motion_streak))
+            .flatten()
+    }
+
+    /// Whether a presented filter needs a floating-point working target, as
+    /// the same filter written in the style would.
+    pub(super) fn presents_extended_filter(&self) -> bool {
+        self.layers
+            .values()
+            .filter_map(|layer| layer.effect.as_ref())
+            .chain(
+                self.pending
+                    .values()
+                    .filter_map(|pending| pending.effect.as_ref()),
+            )
+            .any(super::kinds::color_filter_has_extended_color)
     }
 
     fn transform(&self, node: StableNodeId) -> Option<AffineTransform> {
@@ -336,6 +371,13 @@ impl UiScene {
 
     /// Host hook after surface/device generation changes. Layers record the new
     /// generation so GPU resources can be rebuilt; this does not extract.
+    /// The document's frame interval (`presentation_frame_interval`): an
+    /// open shutter exposes a fraction of it (Issue #323). Hosts set it
+    /// before [`Self::apply_presentation`]; it defaults to 16 ms.
+    pub fn set_presentation_frame_interval(&mut self, interval: Duration) {
+        self.presentation_frame_interval = interval;
+    }
+
     pub fn set_surface_generation(&mut self, generation: u64) {
         if self.compositor.surface_generation == generation {
             return;
@@ -418,7 +460,10 @@ impl UiScene {
             })
         });
 
-        if candidates.is_empty() && self.nodes.opacity_motion.is_empty() {
+        if candidates.is_empty()
+            && self.nodes.opacity_motion.is_empty()
+            && self.nodes.filter_motion.is_empty()
+        {
             return;
         }
 
@@ -426,6 +471,8 @@ impl UiScene {
         let mut changed = false;
         let mut needs_bounds_refresh = false;
         let mut opacity_groups = NodeSet::default();
+        let mut filter_groups = NodeSet::default();
+        let extended_before = self.compositor.presents_extended_filter();
 
         for node in candidates {
             let Some(extracted) = self.nodes.get(&node) else {
@@ -445,6 +492,7 @@ impl UiScene {
                 self.placed_layout(extracted),
                 store,
                 now,
+                self.presentation_frame_interval,
                 descriptors,
             );
             if snapshot.has_opacity
@@ -454,6 +502,12 @@ impl UiScene {
                     || self.node_primitive_count(node) > 1)
             {
                 opacity_groups.insert(node);
+            }
+            // A presented filter always isolates its node, a leaf included:
+            // the quad's own filter is baked at extraction, and the sample
+            // reaches paint only as the group's uniform.
+            if snapshot.effect.is_some() || snapshot.motion_streak.is_some() {
+                filter_groups.insert(node);
             }
             let eligible = snapshot.eligible || self.compositor.requested.contains(&node);
             let previous = self.compositor.phases.get(&node).cloned();
@@ -485,10 +539,13 @@ impl UiScene {
                 let projection_changed = layer.transform != snapshot.transform
                     || layer.kind != snapshot.kind
                     || layer.clip != snapshot.clip
-                    || layer.effect != snapshot.effect
                     || layer.z_index != extracted.z_index;
+                // A filter sample, like an opacity sample, changes the
+                // group's uniform: no geometry, layout or extraction.
                 changed |= projection_changed
                     || layer.opacity != snapshot.opacity
+                    || layer.effect != snapshot.effect
+                    || layer.motion_streak != snapshot.motion_streak
                     || layer.bindings != snapshot.bindings;
                 needs_bounds_refresh |= projection_changed;
                 layer.transform = snapshot.transform;
@@ -497,6 +554,7 @@ impl UiScene {
                 layer.bindings.clone_from(&snapshot.bindings);
                 layer.clip.clone_from(&snapshot.clip);
                 layer.effect = snapshot.effect;
+                layer.motion_streak = snapshot.motion_streak;
                 layer.z_index = extracted.z_index;
             }
             match (eligible, previous) {
@@ -583,10 +641,16 @@ impl UiScene {
             .nodes
             .opacity_motion
             .symmetric_difference(&opacity_groups)
+            .chain(
+                self.nodes
+                    .filter_motion
+                    .symmetric_difference(&filter_groups),
+            )
             .copied()
             .collect();
         if !changed_groups.is_empty() {
             self.nodes.opacity_motion = opacity_groups;
+            self.nodes.filter_motion = filter_groups;
             self.attribute_epoch = self.attribute_epoch.wrapping_add(1);
             let mut rebuild = NodeSet::default();
             let mut pending = changed_groups;
@@ -634,6 +698,9 @@ impl UiScene {
             self.attribute_epoch = self.attribute_epoch.wrapping_add(1);
             self.compositor.presentation_epoch = self.compositor.presentation_epoch.wrapping_add(1);
         }
+        if extended_before != self.compositor.presents_extended_filter() {
+            self.extended_color.take();
+        }
         // Opacity-only compositor frames keep the visibility index hot;
         // projection or topology changes re-derive its retained bounds.
         if (needs_bounds_refresh
@@ -650,6 +717,12 @@ impl UiScene {
 
     pub(super) fn forget_compositor_node(&mut self, id: StableNodeId) {
         self.nodes.opacity_motion.remove(&id);
+        self.nodes.filter_motion.remove(&id);
+        if let Ok(reported) = self.filter_depth_reported.get_mut()
+            && !reported.is_empty()
+        {
+            reported.remove(&id);
+        }
         self.compositor.layers.remove(&id);
         self.compositor.pending.remove(&id);
         self.compositor.phases.remove(&id);
@@ -1189,6 +1262,7 @@ fn make_layer(
         opacity: snapshot.opacity,
         clip: snapshot.clip,
         effect: snapshot.effect,
+        motion_streak: snapshot.motion_streak,
         bindings: snapshot.bindings,
         cache_generation: 1,
         surface_generation,
@@ -1221,6 +1295,7 @@ struct LayerSnapshot {
     has_opacity: bool,
     clip: Option<ClipRegion>,
     effect: Option<ColorFilter>,
+    motion_streak: Option<[f32; 2]>,
     bindings: Vec<CompositorMotionBinding>,
 }
 
@@ -1230,6 +1305,7 @@ fn layer_snapshot(
     placed: nana_ui_runtime::LayoutBox,
     store: &PresentationStore,
     now: Duration,
+    frame_interval: Duration,
     descriptors: Option<&MotionDescriptorStore>,
 ) -> LayerSnapshot {
     let target = MotionTargetId::new(node.id.get());
@@ -1237,6 +1313,7 @@ fn layer_snapshot(
     let mut has_clip = false;
     let mut presentation_transform = None;
     let mut presentation_opacity = None;
+    let mut presentation_filter = None;
     let mut eligible_since: Option<Duration> = None;
     if let Some(target) = target {
         for property in COMPOSITOR_PROPERTIES {
@@ -1269,6 +1346,13 @@ fn layer_snapshot(
                     }
                 }
                 AnimatableProperty::Clip => has_clip = true,
+                AnimatableProperty::Filter => {
+                    if let Some(MotionValue::Filter(value)) =
+                        store.applied_value(target, property, now)
+                    {
+                        presentation_filter = Some(value.to_color_filter());
+                    }
+                }
                 AnimatableProperty::ShaderParameter => {}
                 _ => {}
             }
@@ -1308,8 +1392,9 @@ fn layer_snapshot(
         || node.compositor.request_layer
         || presentation_transform.is_some()
         || presentation_opacity.is_some()
+        || presentation_filter.is_some()
         || has_clip;
-    let kind = if has_clip {
+    let kind = if has_clip || presentation_filter.is_some() {
         CompositorLayerKind::FilterClip
     } else {
         CompositorLayerKind::TransformOpacity
@@ -1319,6 +1404,23 @@ fn layer_snapshot(
         None => node_scene_transform(node.source_style.layout.as_ref(), placed, false, None),
     };
     let opacity = presentation_opacity.unwrap_or_else(|| local_opacity(node));
+    let motion_streak = presentation_transform.and_then(|value| {
+        let shutter = node.source_style.layout.paint.motion_shutter;
+        // Closed, or not a number: no shutter.
+        if shutter.is_nan() || shutter <= 0.0 {
+            return None;
+        }
+        let exposure = frame_interval.as_secs_f32() * shutter.min(1.0);
+        let velocity = target
+            .and_then(|target| store.sample(target, AnimatableProperty::Transform, now))
+            .map(|sample| sample.velocity);
+        Some(match velocity {
+            Some(MotionValue::Transform(velocity)) => {
+                shutter_streak(node, placed, value, velocity, exposure)
+            }
+            _ => [0.0, 0.0],
+        })
+    });
     LayerSnapshot {
         eligible,
         eligible_since,
@@ -1327,9 +1429,53 @@ fn layer_snapshot(
         opacity,
         has_opacity: presentation_opacity.is_some(),
         clip: None,
-        effect: None,
+        effect: presentation_filter,
+        motion_streak,
         bindings,
     }
+}
+
+/// Where the centre of `node`'s box stood `exposure` seconds before `now`,
+/// relative to where it stands now, under its own transform track only
+/// (Issue #323): the value now and the value its velocity at `now` puts
+/// `exposure` earlier. A cut has no velocity and draws no streak. At most
+/// [`nana_ui_core::MAX_MOTION_STREAK`] long.
+fn shutter_streak(
+    node: &ExtractedNode,
+    placed: nana_ui_runtime::LayoutBox,
+    value: PaintTransform,
+    velocity: PaintTransform,
+    exposure: f32,
+) -> [f32; 2] {
+    let earlier = PaintTransform {
+        a: value.a - velocity.a * exposure,
+        b: value.b - velocity.b * exposure,
+        c: value.c - velocity.c * exposure,
+        d: value.d - velocity.d * exposure,
+        e: value.e - velocity.e * exposure,
+        f: value.f - velocity.f * exposure,
+    };
+    let centre = [
+        placed.x + placed.width * 0.5,
+        placed.y + placed.height * 0.5,
+    ];
+    let now_at = map_point(affine_from_paint(node, placed, value), centre);
+    let then_at = map_point(affine_from_paint(node, placed, earlier), centre);
+    let streak = [then_at[0] - now_at[0], then_at[1] - now_at[1]];
+    let length = streak[0].hypot(streak[1]);
+    if !length.is_finite() || length < 1e-3 {
+        return [0.0, 0.0];
+    }
+    let keep = length.min(nana_ui_core::MAX_MOTION_STREAK) / length;
+    [streak[0] * keep, streak[1] * keep]
+}
+
+fn map_point(transform: AffineTransform, [x, y]: [f32; 2]) -> [f32; 2] {
+    let [a, b, c, d, e, f] = transform.0;
+    let [g, h] = transform.1;
+    let w = g * x + h * y + 1.0;
+    let w = if w.abs() < 1e-6 { 1.0 } else { w };
+    [(a * x + c * y + e) / w, (b * x + d * y + f) / w]
 }
 
 /// `transform` about `node`'s pivot, on the page, its box at `placed`.
@@ -3257,5 +3403,260 @@ mod tests {
                 "{after} ms: drawn at {drawn}, not on its own transform"
             );
         }
+    }
+
+    fn filter_track(
+        track: u64,
+        target: u64,
+        duration_ms: u64,
+        from: ColorFilter,
+        to: ColorFilter,
+    ) -> MotionTrack {
+        let mut track = MotionTrack::transition(
+            MotionTrackId::new(track).unwrap(),
+            MotionTargetId::new(target).unwrap(),
+            AnimatableProperty::Filter,
+            MotionValue::Filter(from.into()),
+            MotionValue::Filter(to.into()),
+            MotionTiming::new(
+                Duration::ZERO,
+                Duration::from_millis(duration_ms),
+                Duration::from_millis(16),
+            ),
+            MotionCurve::Easing(Easing::Linear),
+            AnimationPlayback::default(),
+        );
+        track.playback.fill_mode = nana_ui_core::motion::AnimationFillMode::Forwards;
+        track
+    }
+
+    fn dimmed() -> ColorFilter {
+        ColorFilter {
+            brightness: 0.5,
+            blur_radius: 4.0,
+            ..ColorFilter::default()
+        }
+    }
+
+    fn quad_filter(scene: &UiScene, node: u64) -> Option<ColorFilter> {
+        scene
+            .primitives()
+            .find_map(|primitive| match &primitive.kind {
+                crate::ScenePrimitiveKind::Quad { surface, .. } if primitive.node == id(node) => {
+                    Some(surface.filter)
+                }
+                _ => None,
+            })
+            .flatten()
+    }
+
+    /// Issue #312: a group's filter is the compositor's sample at `now`. Each
+    /// sample changes the group uniform only: no primitive is rebuilt, the
+    /// logical style keeps no filter, and removing the track restores it.
+    #[test]
+    fn a_presented_filter_isolates_its_group_and_samples_without_rebuilding() {
+        let mut scene = UiScene::new();
+        scene.apply_delta([node(1, None, &[2]), node(2, Some(1), &[])], []);
+        let mut store = PresentationStore::new();
+        let track = filter_track(1, 1, 100, ColorFilter::default(), dimmed());
+        store.insert(track, MotionValue::Filter(ColorFilter::default().into()));
+        scene.apply_presentation(&store, Duration::ZERO, None);
+        let revisions: Vec<_> = scene
+            .primitives()
+            .map(|p| (p.id, scene.draw_primitive(p.id).unwrap().revision))
+            .collect();
+        let mut epoch = scene.presentation_epoch();
+        for ms in [8, 16, 50, 100, 140] {
+            scene.apply_presentation(&store, Duration::from_millis(ms), None);
+            let progress = (ms as f32 / 100.0).min(1.0);
+            let groups = scene.opacity_groups(id(2));
+            assert_eq!(groups.len(), 1, "{ms} ms");
+            assert_eq!(groups[0].node, id(1));
+            assert!((groups[0].filter.brightness - (1.0 - 0.5 * progress)).abs() < 1e-5);
+            assert!((groups[0].filter.blur_radius - 4.0 * progress).abs() < 1e-5);
+            assert_eq!(
+                revisions,
+                scene
+                    .primitives()
+                    .map(|p| (p.id, scene.draw_primitive(p.id).unwrap().revision))
+                    .collect::<Vec<_>>(),
+                "{ms} ms: a sample rebuilt primitives"
+            );
+            assert_eq!(scene.nodes[&id(1)].source_style.layout.paint.filter, None);
+            if ms <= 100 {
+                assert!(
+                    scene.presentation_epoch() > epoch,
+                    "{ms} ms: uniform not new"
+                );
+            }
+            epoch = scene.presentation_epoch();
+        }
+        // The held end samples the same value: nothing left to tick.
+        assert!(!scene.compositor_needs_tick());
+        scene.apply_presentation(&PresentationStore::new(), Duration::from_millis(400), None);
+        assert!(scene.opacity_groups(id(2)).is_empty());
+    }
+
+    /// A leaf's own filter is baked into its quad at extraction. While a
+    /// track presents the filter, the group composites the sample and the
+    /// quad draws unfiltered, so the filter applies once.
+    #[test]
+    fn a_presented_filter_on_a_leaf_replaces_its_quads_own_filter() {
+        let mut leaf = node(1, None, &[]);
+        let mut style = (*leaf.source_style.layout).clone();
+        style.paint.filter = Some(ColorFilter {
+            brightness: 0.8,
+            ..ColorFilter::default()
+        });
+        leaf.source_style.layout = Arc::new(style);
+        let mut scene = UiScene::new();
+        scene.apply_delta([leaf], []);
+        assert_eq!(quad_filter(&scene, 1).map(|f| f.brightness), Some(0.8));
+        assert!(scene.opacity_groups(id(1)).is_empty());
+
+        let mut store = PresentationStore::new();
+        let logical = ColorFilter {
+            brightness: 0.8,
+            ..ColorFilter::default()
+        };
+        store.insert(
+            filter_track(1, 1, 100, logical, dimmed()),
+            MotionValue::Filter(logical.into()),
+        );
+        scene.apply_presentation(&store, Duration::from_millis(50), None);
+        assert_eq!(quad_filter(&scene, 1), None);
+        let groups = scene.opacity_groups(id(1));
+        assert_eq!(groups.len(), 1);
+        assert!((groups[0].filter.brightness - 0.65).abs() < 1e-5);
+
+        scene.apply_presentation(&PresentationStore::new(), Duration::from_millis(60), None);
+        assert!(scene.opacity_groups(id(1)).is_empty());
+        assert_eq!(quad_filter(&scene, 1).map(|f| f.brightness), Some(0.8));
+    }
+
+    /// Issue #324: a chain composites at most four non-identity filters. The
+    /// fifth group keeps its opacity and its subtree but filters nothing,
+    /// and groups that only fade do not count.
+    #[test]
+    fn a_fifth_filter_on_one_ancestor_chain_stays_identity() {
+        let filtered = ColorFilter {
+            brightness: 0.9,
+            ..ColorFilter::default()
+        };
+        // 1 fades, 2 filters, 3 fades, 4–7 filter; 8 is the leaf.
+        let nodes = (1..=8u64).map(|n| {
+            let parent = (n > 1).then(|| n - 1);
+            let children: Vec<u64> = if n < 8 { vec![n + 1] } else { vec![] };
+            let mut extracted = node(n, parent, &children);
+            let mut style = (*extracted.source_style.layout).clone();
+            match n {
+                1 | 3 => style.opacity = Some(0.5),
+                2 | 4..=7 => {
+                    style.paint.filter = Some(filtered);
+                    if n == 7 {
+                        style.opacity = Some(0.5);
+                    }
+                }
+                _ => {}
+            }
+            extracted.source_style.layout = Arc::new(style);
+            extracted
+        });
+        let mut scene = UiScene::new();
+        scene.apply_delta(nodes.collect::<Vec<_>>(), []);
+        let groups = scene.opacity_groups(id(8));
+        let nodes: Vec<_> = groups.iter().map(|group| group.node.get()).collect();
+        assert_eq!(nodes, [1, 2, 3, 4, 5, 6, 7], "every group stays");
+        let filtering: Vec<_> = groups
+            .iter()
+            .filter(|group| !group.filter.is_identity())
+            .map(|group| group.node.get())
+            .collect();
+        assert_eq!(filtering, [2, 4, 5, 6]);
+        assert_eq!(groups[6].opacity, 0.5, "the fifth keeps its own opacity");
+        assert!(groups[0].filter.is_identity() && groups[2].filter.is_identity());
+        // Asked again (per primitive, per frame), it is reported once.
+        assert!(scene.filter_depth_reported.lock().unwrap().contains(&id(7)));
+        let _ = scene.opacity_groups(id(8));
+        assert_eq!(scene.filter_depth_reported.lock().unwrap().len(), 1);
+    }
+
+    fn shuttered(shutter: f32) -> ExtractedNode {
+        let mut leaf = node(1, None, &[]);
+        let mut style = (*leaf.source_style.layout).clone();
+        style.paint.motion_shutter = shutter;
+        leaf.source_style.layout = Arc::new(style);
+        leaf
+    }
+
+    fn streak_at(shutter: f32, track: MotionTrack, interval_ms: u64, now_ms: u64) -> [f32; 2] {
+        let mut scene = UiScene::new();
+        scene.apply_delta([shuttered(shutter)], []);
+        scene.set_presentation_frame_interval(Duration::from_millis(interval_ms));
+        let mut store = PresentationStore::new();
+        store.insert(track, MotionValue::Transform(PaintTransform::default()));
+        scene.apply_presentation(&store, Duration::from_millis(now_ms), None);
+        let groups = scene.opacity_groups(id(1));
+        groups
+            .last()
+            .map_or([0.0, 0.0], |group| group.motion_streak)
+    }
+
+    fn slide(duration_ms: u64, to_x: f32) -> MotionTrack {
+        let mut track = transform_track(
+            1,
+            1,
+            0,
+            duration_ms,
+            PaintTransform::default(),
+            PaintTransform {
+                e: to_x,
+                ..PaintTransform::default()
+            },
+        );
+        track.playback.fill_mode = nana_ui_core::motion::AnimationFillMode::Forwards;
+        track
+    }
+
+    /// Issue #323: the streak is the group's own transform velocity at `now`
+    /// times the exposure, which is at most one frame interval; a cut has no
+    /// velocity, and a streak longer than 64 px is cut to 64.
+    #[test]
+    fn a_shutter_streak_follows_velocity_and_stays_bounded() {
+        // 200 px/s for a 100 ms frame: 20 px, pointing back where it came from.
+        let streak = streak_at(1.0, slide(1_000, 200.0), 100, 500);
+        assert!(
+            (streak[0] + 20.0).abs() < 0.05 && streak[1].abs() < 1e-3,
+            "{streak:?}"
+        );
+        // Half a shutter, half the streak; past 1, one frame interval.
+        let half = streak_at(0.5, slide(1_000, 200.0), 100, 500);
+        assert!((half[0] + 10.0).abs() < 0.05, "{half:?}");
+        assert_eq!(streak_at(5.0, slide(1_000, 200.0), 100, 500), streak);
+        // A closed shutter has no streak, and no group for it.
+        assert_eq!(streak_at(0.0, slide(1_000, 200.0), 100, 500), [0.0, 0.0]);
+        // A hard cut moves 500 px in no time: velocity 0, no streak.
+        assert_eq!(streak_at(1.0, slide(0, 500.0), 100, 50), [0.0, 0.0]);
+        // 10 000 px/s would streak 1 000 px: cut to 64.
+        let fast = streak_at(1.0, slide(1_000, 10_000.0), 100, 500);
+        assert!((fast[0].hypot(fast[1]) - nana_ui_core::MAX_MOTION_STREAK).abs() < 0.05);
+    }
+
+    /// An open shutter isolates its node while a transform applies, and
+    /// changes nothing the hit index or layout reads.
+    #[test]
+    fn an_open_shutter_changes_paint_only() {
+        let mut scene = UiScene::new();
+        scene.apply_delta([shuttered(1.0)], []);
+        let mut store = PresentationStore::new();
+        store.insert(
+            slide(1_000, 200.0),
+            MotionValue::Transform(PaintTransform::default()),
+        );
+        scene.apply_presentation(&store, Duration::from_millis(500), None);
+        assert_eq!(scene.opacity_groups(id(1)).len(), 1);
+        assert_eq!(scene.nodes[&id(1)].layout.x, 0.0, "the box is not moved");
+        scene.apply_presentation(&PresentationStore::new(), Duration::from_millis(600), None);
+        assert!(scene.opacity_groups(id(1)).is_empty());
     }
 }

@@ -9,9 +9,10 @@
 /// `UiWorld` property writes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AnimationClass {
-    /// Transform / opacity / clip / shader parameter: presentation overlay.
+    /// Transform / opacity / clip / shader parameter / `filter`:
+    /// presentation overlay.
     Compositor,
-    /// Color, filter, shadow: paint without layout.
+    /// Color, background, shadow: paint without layout.
     Paint,
     /// Width / height / padding / font-size: retained layout.
     Layout,
@@ -71,19 +72,18 @@ impl AnimatableProperty {
         }
     }
 
-    /// Default execution class. Color / filter / shadow default to Paint;
-    /// compositor promotion is Workstream C/D.
+    /// Default execution class. A node's `filter` is evaluated by the
+    /// compositor into its isolation group's uniform at the document's `now`
+    /// (Issue #312). Text colour, background and the control's own shadow
+    /// stay Paint: a button's hover does not move onto the compositor.
     pub fn animation_class(self) -> AnimationClass {
         match self {
-            Self::Transform | Self::Opacity | Self::Clip | Self::ShaderParameter => {
+            Self::Transform | Self::Opacity | Self::Clip | Self::ShaderParameter | Self::Filter => {
                 AnimationClass::Compositor
             }
-            Self::Color
-            | Self::Background
-            | Self::Blur
-            | Self::Filter
-            | Self::Shadow
-            | Self::Progress => AnimationClass::Paint,
+            Self::Color | Self::Background | Self::Blur | Self::Shadow | Self::Progress => {
+                AnimationClass::Paint
+            }
             Self::Width
             | Self::Height
             | Self::Padding
@@ -235,7 +235,7 @@ mod tests {
             ("color", AnimationClass::Paint),
             ("background", AnimationClass::Paint),
             ("blur", AnimationClass::Paint),
-            ("filter", AnimationClass::Paint),
+            ("filter", AnimationClass::Compositor),
             ("box-shadow", AnimationClass::Paint),
             ("shader-parameter", AnimationClass::Compositor),
             ("width", AnimationClass::Layout),

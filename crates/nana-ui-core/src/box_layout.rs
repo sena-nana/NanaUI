@@ -2736,6 +2736,14 @@ impl Default for ColorFilter {
 impl ColorFilter {
     /// Product cap for element-filter blur (tighter than backdrop frost).
     pub const MAX_BLUR_RADIUS: f32 = 16.0;
+    /// Element-filter blur cap for an isolation group that opted in
+    /// ([`PaintStyle::wide_filter_blur`], Issue #314). The most any filter
+    /// value holds; the group it composites in applies its own cap.
+    pub const MAX_WIDE_BLUR_RADIUS: f32 = 64.0;
+    /// Non-identity filters one ancestor chain composites (Issue #324): a
+    /// deeper one stays the identity, so a deep interface cannot keep
+    /// opening filter passes. Groups with only opacity do not count.
+    pub const MAX_CHAIN_DEPTH: usize = 4;
 
     pub fn is_identity(self) -> bool {
         (self.brightness - 1.0).abs() < 1e-5
@@ -2748,6 +2756,25 @@ impl ColorFilter {
             && self.drop_shadow.is_none()
     }
 
+    /// The blur cap a group compositing this filter applies: wide when it
+    /// opted in ([`PaintStyle::wide_filter_blur`]).
+    pub fn blur_cap(wide: bool) -> f32 {
+        if wide {
+            Self::MAX_WIDE_BLUR_RADIUS
+        } else {
+            Self::MAX_BLUR_RADIUS
+        }
+    }
+
+    /// `self` with its blur and drop-shadow blur held to `cap`.
+    pub fn with_blur_cap(mut self, cap: f32) -> Self {
+        self.blur_radius = self.blur_radius.clamp(0.0, cap);
+        if let Some(shadow) = self.drop_shadow.as_mut() {
+            shadow.blur_radius = shadow.blur_radius.clamp(0.0, cap);
+        }
+        self
+    }
+
     /// Dest-group composite clip pad: element blur and/or drop-shadow extent.
     pub fn dest_extent_pad(self) -> f32 {
         let drop = self
@@ -2757,6 +2784,10 @@ impl ColorFilter {
         self.blur_radius.max(drop)
     }
 }
+
+/// The longest streak an open shutter draws, in logical pixels (Issue #323).
+/// What lies past it is cut off.
+pub const MAX_MOTION_STREAK: f32 = 64.0;
 
 /// Per-node CSS `backdrop-filter` (dest sampling, not window material).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -2825,6 +2856,20 @@ pub struct PaintStyle {
     pub outline: OutlineSpec,
     /// GPU-capable `mix-blend-mode`. Other keywords stay [`MixBlendMode::Normal`].
     pub mix_blend: MixBlendMode,
+    /// This node's isolation group opts into the wide element-blur cap
+    /// ([`ColorFilter::MAX_WIDE_BLUR_RADIUS`], 64 px) for its own `filter`
+    /// (Issue #314). Off, the cap is [`ColorFilter::MAX_BLUR_RADIUS`]
+    /// (16 px), whatever any other group chose. The one group pass is what
+    /// costs more; `backdrop-filter` keeps its own cap.
+    pub wide_filter_blur: bool,
+    /// The shutter this node's isolation group exposes for, as a fraction of
+    /// the document's frame interval (`0.0`, the default, is closed; values
+    /// clamp to `0.0..=1.0`). Open, the group is streaked along the velocity
+    /// its own `transform` track has at `now`, at most
+    /// [`MAX_MOTION_STREAK`] long (Issue #323). Children's motion inside the
+    /// group does not count, hit testing keeps the unstreaked box, and a cut
+    /// has no velocity, so it leaves no streak.
+    pub motion_shutter: f32,
     /// `url()` / `linear-gradient` + slice 9-slice. Other sources/repeat/width
     /// stay fail-closed and sticky; source/slice longhands must not clear it.
     pub unsupported_border_image: bool,
