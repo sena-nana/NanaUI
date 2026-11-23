@@ -1198,11 +1198,15 @@ fn tree_view_recipe_overrides_reach_rows_toggles_and_drop_mark() {
     let make_tree = || {
         let mut tree = crate::TreeView::new([
             nana_ui_core::TreeNode::leaf(Arc::from("n1"), "Selected")
-                .selected(true)
                 .icon(nana_ui_core::Icon::File)
                 .toggles([true]),
             nana_ui_core::TreeNode::leaf(Arc::from("n2"), "Target"),
         ])
+        .selection({
+            let mut selection = nana_ui_core::SelectionState::single();
+            selection.select_only(Arc::from("n1"));
+            selection
+        })
         .columns([crate::TreeToggleColumn::new(
             nana_ui_core::Icon::Eye,
             "Mark",

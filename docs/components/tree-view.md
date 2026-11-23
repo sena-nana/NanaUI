@@ -4,15 +4,18 @@
 
 ## 基本用法
 
-`TreeView::new(nodes)` 接收 `TreeNode<Arc<str>>`。叶子用 `TreeNode::leaf(id, label)`，分支用 `TreeNode::branch(id, label, expanded, children)`。`.icon`、`.selected`、`.disabled` 写在节点上。
+`TreeView::new(nodes)` 接收 `TreeNode<Arc<str>>`。叶子用 `TreeNode::leaf(id, label)`，分支用 `TreeNode::branch(id, label, expanded, children)`。`.icon`、`.disabled` 写在节点上。选中哪些行不写在节点上，由 `.selection(选择)` 给出，见下文“选择”。
 
-树的 `.size` 默认小号。`.style` 整份替换样式，要放在会改布局的构造之前。控件表里没有 `<TreeView>`。
+树的 `.size` 默认小号。`.style` 整份替换样式，要放在会改布局的构造之前。控件表里的 `<TreeView>` 绑定 `nodes`、`selection` 和 `label`，`on_select` 收 `TreeSelectionRequested`。
 
 :::api
 
 ```rust view
 use nana_ui::runtime::view;
-use nana_ui::runtime::{TreeNode, TreeView};
+use nana_ui::runtime::{SelectionState, TreeNode, TreeView};
+
+let mut selection = SelectionState::single();
+selection.select_only("main".into());
 
 view! {
     <Widget
@@ -21,49 +24,59 @@ view! {
                 "src".into(),
                 "src",
                 true,
-                [TreeNode::leaf("main".into(), "main.rs").selected(true)],
+                [TreeNode::leaf("main".into(), "main.rs")],
             ),
             TreeNode::leaf("cargo".into(), "Cargo.toml"),
-        ])}
+        ])
+        .selection(selection)}
     />
 }
 ```
 
 ```rust rust
 use nana_ui::runtime::view::widget;
-use nana_ui::runtime::{TreeNode, TreeView};
+use nana_ui::runtime::{SelectionState, TreeNode, TreeView};
 
-widget(TreeView::new([
-    TreeNode::branch(
-        "src".into(),
-        "src",
-        true,
-        [TreeNode::leaf("main".into(), "main.rs").selected(true)],
-    ),
-    TreeNode::leaf("cargo".into(), "Cargo.toml"),
-]))
+let mut selection = SelectionState::single();
+selection.select_only("main".into());
+
+widget(
+    TreeView::new([
+        TreeNode::branch(
+            "src".into(),
+            "src",
+            true,
+            [TreeNode::leaf("main".into(), "main.rs")],
+        ),
+        TreeNode::leaf("cargo".into(), "Cargo.toml"),
+    ])
+    .selection(selection),
+)
 ```
 
 :::
 
-默认宽度是填满，高度按可见行数和内边距算出。你自己写了高度时，这个高度会留下，方便放进固定视口。选中项的 id 用 `selected_id` 读。禁用节点不会被选中。
+默认宽度是填满，高度按可见行数和内边距算出。你自己写了高度时，这个高度会留下，方便放进固定视口。
 
-## 展开和选中
+## 展开
 
-`apply_event` 由树自己改展开和选中：`Toggle` 只翻转分支，`Select` 选中那个还没禁用的节点，并清掉其他选中。
+`apply_event(TreeViewEvent::Toggle(id))` 翻转一个分支，按三角、方向键左右和读屏的展开 / 折叠都走这里，并发 `TreeViewEvent::Toggle`。`TreeViewEvent::Select(id)` 只把键盘所在的行（活动行，`active_id`）移到那里，不改选中。
 
-`navigate` 按 `TreeNavigation` 在可见行上移动，然后应用得到的事件。可见行从 `visible_rows` 读，深度记在 `TreeRowData` 里。
+`navigate` 按 `TreeNavigation` 在可见行上移动活动行。可见行从 `visible_rows` 读，深度记在 `TreeRowData` 里。
 
-## 多选
+## 选择
 
-`.multiple(true)` 让树维护一个选中集合，以及集合里的一个活动项：
+选中哪些行是你的状态：一份 `SelectionState<Arc<str>>`，和表格、列表用的是同一个类型（见 [Table 的 SelectionState](https://github.com/sena-nana/NanaUI/blob/main/docs/components/table.md#selectionstate)）。用 `.selection(选择)` 交给树，树只读它来画选中底色、报告给读屏；`SelectionState::multiple()` 时树对读屏报告可以多选。
 
-- 按下一行：只选它。
-- Ctrl（macOS 上是 Cmd）+ 按下：把这一行加入或移出选中集合。
-- Shift + 按下：选中从锚点到这一行之间的所有可见行。
-- 焦点在树上时，Shift + 方向键 / Home / End 移动活动项并扩展范围。
+树不改选择，只在 `TreeView` 上发 `TreeSelectionRequested { id, gesture }`：
 
-每次选中集合变化都发 `TreeSelectionChanged { selected, active }`，`selected` 按树的顺序排列。单选时仍然发 `TreeViewEvent::Select`。`selected_ids` 读选中集合，`active_id` 读活动项。
+- 按下一行：`Press`。Ctrl（macOS 上是 Cmd）是切换，Shift 是从锚点连成一段。
+- 焦点在树上时，方向键上下发 `Move`，带 Shift（以及 Shift + Home / End）是从锚点扩展；Ctrl 加上下方向键只移动活动行、不改选中；Ctrl+Space 发 `Toggle`；Ctrl+A 发 `SelectAll`。
+- 读屏的点击和按下相同，聚焦和方向键相同。
+
+收到后调用 `request.apply_to(&mut 选择, &nodes)`（即 `SelectionState::apply` 配上 `TreeOrder::visible(&nodes)`），再把结果交回树。没变就不必交回，树什么也不重算。在响应式视图里，把选择放进 `Signal`，`selection` 绑到它上面。
+
+节点增删、改名之后，用 `选择.reconcile(&TreeOrder::all(&nodes))` 清掉已经不在的行。`TreeOrder::all` 包括折叠起来的子行，所以收起一个分支不会丢掉里面的选中；Shift 连选、方向键和全选只走可见行。禁用的行不能被选中。
 
 ## 开关列
 
@@ -85,7 +98,7 @@ widget(TreeView::new([
 - 指针在下四分之一：`After`，在行的下缘画一条线。
 - 指针在中间：`Inside`，给整行画框。
 
-被拖的是选中集合（从选中的行开始拖时），否则只是这一行。目标是被拖行自己或它的子孙时不显示落点。松手发 `TreeDropRequested { rows, intent }`，树本身不移动任何节点，由应用决定接不接受。拖出树外再松手发 `TreeDragReleased { rows, x, y }`，`x`、`y` 是窗口坐标，应用可以用 `UiWorld::pointer_layout_position` 换算到别的控件里，把行放进另一个列表。不拖动、直接松开一个已选中的行，会只选中这一行。
+被拖的是选中集合（从选中的行开始拖时，按树的顺序），否则只是这一行。目标是被拖行自己或它的子孙时不显示落点。松手发 `TreeDropRequested { rows, intent }`，树本身不移动任何节点，由应用决定接不接受。拖出树外再松手发 `TreeDragReleased { rows, x, y }`，`x`、`y` 是窗口坐标，应用可以用 `UiWorld::pointer_layout_position` 换算到别的控件里，把行放进另一个列表。在多选里按下一个已选中的行时，选择请求留到松开再发：拖动就带走整个选中集合，不拖动直接松开就请求只选这一行。
 
 ## 行内重命名
 
@@ -109,15 +122,15 @@ widget(TreeView::new([
 - 名字：行的标签。
 - 层级：顶层是 1，每深一层加 1。
 - 展开：只有分支行有，表示展开或折叠。
-- 选中：是否在选中集合里。
+- 选中：是否在你给的选择里。
 - 禁用：禁用节点的行是禁用的。
 
-被折叠的子行不在无障碍树里，展开以后才出现。树有焦点时，读屏的焦点落在活动行上；没有活动行时落在树本身。
+被折叠的子行不在无障碍树里，展开以后才出现。树有焦点时，读屏的焦点落在活动行上（键盘最后到的行，否则是选择的当前项）；没有活动行时落在树本身。
 
 读屏可以对行做这些操作，结果和指针、键盘一样，事件也一样：
 
-- 点击：和单击这一行相同，只选中它，并让树获得焦点。
-- 聚焦：和方向键移到这一行相同，把活动行移到这里，并让树获得焦点。
+- 点击：和单击这一行相同，请求只选中它，并让树获得焦点。
+- 聚焦：和方向键移到这一行相同，把活动行移到这里、请求选中它，并让树获得焦点。
 - 展开 / 折叠：只对分支行，和点它的三角相同，发 `TreeViewEvent::Toggle`。
 
 禁用的行、已经不存在的行，以及行做不了的操作（例如对叶子展开、对已展开的分支再展开），都会被拒绝，不发事件。
@@ -143,10 +156,9 @@ widget(TreeView::new([
 | `TreeNode::leaf(id, label)` | — | 叶子 |
 | `TreeNode::branch(id, label, expanded, children)` | — | 分支。`expanded` 是展开事实 |
 | `.icon` | — | 写在节点上 |
-| `.selected` | — | 写在节点上 |
 | `.disabled` | — | 写在节点上。禁用节点不会被选中 |
 | `.size` | — | 默认小号 |
-| `.multiple(bool)` | `bool` | 多选：Ctrl 切换、Shift 范围、活动项 |
+| `.selection(选择)` | `SelectionState<Arc<str>>`（存为 `TreeSelection`） | 你的选择；`multiple()` 时报告可多选 |
 | `.columns(列)` | `TreeToggleColumn` | 行尾的开关列；状态写在 `TreeNode::toggles`。列名是读屏里每个开关的名字 |
 | `.reorderable(bool)` | `bool` | 行可以拖到别的行之前、之内或之后 |
 | `.renamable(bool)` | `bool` | F2 或双击时行内重命名 |
@@ -157,9 +169,8 @@ widget(TreeView::new([
 
 | 事件 | 载荷 | 说明 |
 | --- | --- | --- |
-| `TreeViewEvent::Toggle` | `id` | `apply_event` 只翻转分支 |
-| `TreeViewEvent::Select` | `id` | 选中那个还没禁用的节点，并清掉其他选中 |
-| `TreeSelectionChanged` | `selected`, `active` | 选中集合或活动项变了 |
+| `TreeViewEvent::Toggle` | `id` | 一个分支展开或收起了 |
+| `TreeSelectionRequested` | `id`, `gesture` | 按下、按键或读屏请求改变选择，见“选择” |
 | `TreeToggleChanged` | `id`, `column`, `on` | 一行的开关被设成 `on`：按下、拖过，或读屏点击开关 |
 | `TreeDropRequested` | `rows`, `intent` | 拖放请求；`intent` 是目标与 `Before` / `Inside` / `After` |
 | `TreeDragReleased` | `rows`, `x`, `y` | 行被拖出树外松手；`x`、`y` 是窗口坐标 |

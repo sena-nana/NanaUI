@@ -16,8 +16,8 @@ use nana_ui::runtime::{
     SemanticColorRole, SidebarFooter, SidebarFooterButton, SidebarFrame, SidebarRow,
     SidebarRowIcon, SidebarRowState, SidebarSection, Skeleton, Spinner, StableNodeId, StatusBadge,
     Switch, TabOption, Tabs, TabsEvent, TerminalScreen, TerminalView, Text, TextArea, TextChanged,
-    TextInput, Thumbnail, Toast, ToggleChanged, TreeNode, TreeView, TreeViewEvent,
-    ValidationMessage, XYPad, XYPadEvent,
+    TextInput, Thumbnail, Toast, ToggleChanged, TreeNode, TreeSelectionRequested, TreeView,
+    TreeViewEvent, ValidationMessage, XYPad, XYPadEvent,
 };
 use nana_ui::theme::{SpacingStep, ThemeToken, space, type_scale};
 use nana_ui::{
@@ -1705,17 +1705,23 @@ fn mount_surfaces(
             "层级树",
             "点按箭头展开文件夹，点按行或下方的芯片选中文件。",
             (
-                widget(gallery_tree(state)).entity_ref(tree).on(queue(
-                    pending,
-                    |event: &TreeViewEvent<Arc<str>>| match event {
-                        TreeViewEvent::Toggle(id) => {
-                            GalleryMessage::TreeView(TreeViewEvent::Toggle(id.to_string()))
-                        }
-                        TreeViewEvent::Select(id) => {
-                            GalleryMessage::TreeView(TreeViewEvent::Select(id.to_string()))
-                        }
-                    },
-                )),
+                widget(gallery_tree(state))
+                    .entity_ref(tree)
+                    .on(queue(
+                        pending,
+                        |event: &TreeViewEvent<Arc<str>>| match event {
+                            TreeViewEvent::Toggle(id) => {
+                                GalleryMessage::TreeView(TreeViewEvent::Toggle(id.to_string()))
+                            }
+                            TreeViewEvent::Select(id) => {
+                                GalleryMessage::TreeView(TreeViewEvent::Select(id.to_string()))
+                            }
+                        },
+                    ))
+                    // one file at a time: any request selects the row it names
+                    .on(queue(pending, |event: &TreeSelectionRequested| {
+                        GalleryMessage::TreeView(TreeViewEvent::Select(event.id.to_string()))
+                    })),
                 chip_row,
             ),
         );
@@ -3645,20 +3651,18 @@ fn gallery_tree(state: &GalleryState) -> TreeView {
             "src",
             state.tree_expanded,
             [
-                TreeNode::leaf(Arc::<str>::from("src/lib.rs"), "lib.rs")
-                    .icon(Icon::File)
-                    .selected(state.tree_selected == "src/lib.rs"),
-                TreeNode::leaf(Arc::<str>::from("src/main.rs"), "main.rs")
-                    .icon(Icon::File)
-                    .selected(state.tree_selected == "src/main.rs"),
+                TreeNode::leaf(Arc::<str>::from("src/lib.rs"), "lib.rs").icon(Icon::File),
+                TreeNode::leaf(Arc::<str>::from("src/main.rs"), "main.rs").icon(Icon::File),
             ],
         )
-        .icon(Icon::Folder)
-        .selected(state.tree_selected == "src"),
-        TreeNode::leaf(Arc::<str>::from("README.md"), "README.md")
-            .icon(Icon::File)
-            .selected(state.tree_selected == "README.md"),
+        .icon(Icon::Folder),
+        TreeNode::leaf(Arc::<str>::from("README.md"), "README.md").icon(Icon::File),
     ])
+    .selection({
+        let mut selection = nana_ui::SelectionState::single();
+        selection.select_only(Arc::<str>::from(state.tree_selected.as_str()));
+        selection
+    })
 }
 
 fn pane_tree_node(

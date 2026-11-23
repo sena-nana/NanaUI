@@ -1,5 +1,9 @@
 //! Backend-neutral tree navigation. Runtime consumes this walk.
 //!
+//! Nodes carry no selection: which rows are selected is the application's
+//! [`crate::SelectionState`], over the order [`TreeOrder`] reads from the
+//! nodes.
+//!
 //! A tree's depth is its data's, with no bound (a file system, a JSON
 //! document), so nothing here recurses by it: walks keep their open levels
 //! on the heap ([`tree_preorder`]), and a node clones, compares and drops
@@ -12,7 +16,6 @@ pub struct TreeNode<Id> {
     pub icon: Option<crate::Icon>,
     pub branch: bool,
     pub expanded: bool,
-    pub selected: bool,
     pub disabled: bool,
     /// The row's on / off states, one per toggle column of the tree
     /// (visible, locked). Missing entries read as off.
@@ -32,7 +35,6 @@ impl<Id> TreeNode<Id> {
             icon: None,
             branch: false,
             expanded: false,
-            selected: false,
             disabled: false,
             toggles: Vec::new(),
             hidden_toggles: 0,
@@ -52,7 +54,6 @@ impl<Id> TreeNode<Id> {
             icon: None,
             branch: true,
             expanded,
-            selected: false,
             disabled: false,
             toggles: Vec::new(),
             hidden_toggles: 0,
@@ -62,11 +63,6 @@ impl<Id> TreeNode<Id> {
 
     pub fn icon(mut self, icon: crate::Icon) -> Self {
         self.icon = Some(icon);
-        self
-    }
-
-    pub fn selected(mut self, selected: bool) -> Self {
-        self.selected = selected;
         self
     }
 
@@ -119,7 +115,6 @@ impl<Id> TreeNode<Id> {
             icon: self.icon,
             branch: self.branch,
             expanded: self.expanded,
-            selected: self.selected,
             disabled: self.disabled,
             toggles: self.toggles.clone(),
             hidden_toggles: self.hidden_toggles,
@@ -137,7 +132,6 @@ impl<Id> TreeNode<Id> {
             && self.icon == other.icon
             && self.branch == other.branch
             && self.expanded == other.expanded
-            && self.selected == other.selected
             && self.disabled == other.disabled
             && self.toggles == other.toggles
             && self.hidden_toggles == other.hidden_toggles
@@ -252,6 +246,56 @@ where
     }
 }
 
+/// A tree's rows in the order the user sees them, as a
+/// [`crate::SelectionOrder`]: [`Self::visible`] (expanded branches only) is
+/// what Shift ranges, the arrow keys and select-all run over;
+/// [`Self::all`] (collapsed children too) is what
+/// [`crate::SelectionState::reconcile`] checks against, so collapsing a
+/// branch does not drop the selection inside it. Disabled rows cannot be
+/// selected. Built once per use: one vector of references, no copies of the
+/// nodes.
+pub struct TreeOrder<'a, Id> {
+    rows: Vec<&'a TreeNode<Id>>,
+}
+
+impl<'a, Id> TreeOrder<'a, Id> {
+    /// The rows a user can see: children of collapsed branches left out.
+    pub fn visible(nodes: &'a [TreeNode<Id>]) -> Self {
+        Self {
+            rows: tree_preorder(nodes, |node| node.branch && node.expanded)
+                .map(|step| step.node)
+                .collect(),
+        }
+    }
+
+    /// Every node, collapsed branches' children too.
+    pub fn all(nodes: &'a [TreeNode<Id>]) -> Self {
+        Self {
+            rows: tree_preorder(nodes, |_| true)
+                .map(|step| step.node)
+                .collect(),
+        }
+    }
+}
+
+impl<Id: Clone + PartialEq> crate::SelectionOrder<Id> for TreeOrder<'_, Id> {
+    fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    fn key_at(&self, index: usize) -> Option<Id> {
+        self.rows.get(index).map(|node| node.id.clone())
+    }
+
+    fn index_of(&self, key: &Id) -> Option<usize> {
+        self.rows.iter().position(|node| node.id == *key)
+    }
+
+    fn is_selectable(&self, index: usize) -> bool {
+        self.rows.get(index).is_some_and(|node| !node.disabled)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TreeViewEvent<Id> {
     Toggle(Id),
@@ -288,9 +332,12 @@ fn collect_visible_nodes<'a, Id>(
     );
 }
 
+/// Where `navigation` goes from the row `current` (the first row when
+/// `None`): [`TreeViewEvent::Select`] names the row the keyboard moves to,
+/// [`TreeViewEvent::Toggle`] the branch it opens or closes.
 pub fn tree_navigation_event<Id: Clone + Eq>(
     nodes: &[TreeNode<Id>],
-    selected: Option<&Id>,
+    current: Option<&Id>,
     navigation: TreeNavigation,
 ) -> Option<TreeViewEvent<Id>> {
     let mut visible = Vec::new();
@@ -298,9 +345,9 @@ pub fn tree_navigation_event<Id: Clone + Eq>(
     if visible.is_empty() {
         return None;
     }
-    let selected_index =
-        selected.and_then(|selected| visible.iter().position(|entry| &entry.node.id == selected));
-    let current_index = selected_index.unwrap_or(0);
+    let current_index = current
+        .and_then(|current| visible.iter().position(|entry| &entry.node.id == current))
+        .unwrap_or(0);
     let current = &visible[current_index];
     match navigation {
         TreeNavigation::Previous => visible
@@ -373,5 +420,40 @@ mod tests {
             tree_navigation_event(&tree(true), Some(&"main"), TreeNavigation::Parent),
             Some(TreeViewEvent::Select("src"))
         );
+    }
+
+    #[test]
+    fn orders_walk_visible_or_every_row_and_skip_disabled_ones() {
+        use crate::{SelectionGesture, SelectionModifiers, SelectionOrder, SelectionState};
+        let mut nodes = tree(false);
+        nodes[1].disabled = true;
+        let visible = TreeOrder::visible(&nodes);
+        let all = TreeOrder::all(&nodes);
+        assert_eq!(
+            (0..visible.len())
+                .filter_map(|index| visible.key_at(index))
+                .collect::<Vec<_>>(),
+            ["src", "readme"]
+        );
+        assert_eq!(all.index_of(&"main"), Some(2));
+        assert!(!all.is_selectable(3), "README.md is disabled");
+
+        let mut selection = SelectionState::multiple();
+        selection.set_selection(["lib", "main"]);
+        // the collapsed branch's rows are still nodes: nothing is dropped
+        assert!(!selection.reconcile(&all));
+        assert!(selection.is_selected(&"main"));
+        // a range over visible rows skips the hidden ones and the disabled one
+        selection.apply(
+            SelectionGesture::Press(SelectionModifiers::NONE),
+            "src",
+            &visible,
+        );
+        selection.apply(
+            SelectionGesture::Press(SelectionModifiers::EXTEND),
+            "readme",
+            &visible,
+        );
+        assert_eq!(selection.selected_in(&all), ["src"]);
     }
 }

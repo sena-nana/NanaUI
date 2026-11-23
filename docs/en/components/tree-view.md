@@ -4,15 +4,18 @@
 
 ## Basic usage
 
-`TreeView::new(nodes)` takes `TreeNode<Arc<str>>`. Leaves use `TreeNode::leaf(id, label)`; branches use `TreeNode::branch(id, label, expanded, children)`. `.icon`, `.selected`, and `.disabled` are set on the node.
+`TreeView::new(nodes)` takes `TreeNode<Arc<str>>`. Leaves use `TreeNode::leaf(id, label)`; branches use `TreeNode::branch(id, label, expanded, children)`. `.icon` and `.disabled` are set on the node. Which rows are selected is not set on the nodes but given with `.selection(selection)`; see Selection below.
 
-The tree's `.size` defaults to small. `.style` replaces the whole style and must come before builder calls that change layout. The control table has no `<TreeView>`.
+The tree's `.size` defaults to small. `.style` replaces the whole style and must come before builder calls that change layout. `<TreeView>` in the control table binds `nodes`, `selection`, and `label`, and `on_select` receives `TreeSelectionRequested`.
 
 :::api
 
 ```rust view
 use nana_ui::runtime::view;
-use nana_ui::runtime::{TreeNode, TreeView};
+use nana_ui::runtime::{SelectionState, TreeNode, TreeView};
+
+let mut selection = SelectionState::single();
+selection.select_only("main".into());
 
 view! {
     <Widget
@@ -21,49 +24,59 @@ view! {
                 "src".into(),
                 "src",
                 true,
-                [TreeNode::leaf("main".into(), "main.rs").selected(true)],
+                [TreeNode::leaf("main".into(), "main.rs")],
             ),
             TreeNode::leaf("cargo".into(), "Cargo.toml"),
-        ])}
+        ])
+        .selection(selection)}
     />
 }
 ```
 
 ```rust rust
 use nana_ui::runtime::view::widget;
-use nana_ui::runtime::{TreeNode, TreeView};
+use nana_ui::runtime::{SelectionState, TreeNode, TreeView};
 
-widget(TreeView::new([
-    TreeNode::branch(
-        "src".into(),
-        "src",
-        true,
-        [TreeNode::leaf("main".into(), "main.rs").selected(true)],
-    ),
-    TreeNode::leaf("cargo".into(), "Cargo.toml"),
-]))
+let mut selection = SelectionState::single();
+selection.select_only("main".into());
+
+widget(
+    TreeView::new([
+        TreeNode::branch(
+            "src".into(),
+            "src",
+            true,
+            [TreeNode::leaf("main".into(), "main.rs")],
+        ),
+        TreeNode::leaf("cargo".into(), "Cargo.toml"),
+    ])
+    .selection(selection),
+)
 ```
 
 :::
 
-The default width fills; the height is computed from the visible row count and padding. If you write a height yourself, that height is kept, which makes it easy to put the tree in a fixed viewport. Read the selected id with `selected_id`. Disabled nodes are never selected.
+The default width fills; the height is computed from the visible row count and padding. If you write a height yourself, that height is kept, which makes it easy to put the tree in a fixed viewport.
 
-## Expansion and selection
+## Expansion
 
-`apply_event` lets the tree change expansion and selection itself: `Toggle` only flips a branch; `Select` selects a node that is not disabled and clears any other selection.
+`apply_event(TreeViewEvent::Toggle(id))` flips a branch; the disclosure, the left and right arrow keys, and assistive-technology expand / collapse all go through it and emit `TreeViewEvent::Toggle`. `TreeViewEvent::Select(id)` only moves the row the keyboard is on (the active row, `active_id`) there; it does not change the selection.
 
-`navigate` moves over the visible rows according to `TreeNavigation`, then applies the resulting event. Visible rows are read from `visible_rows`, with depth recorded in `TreeRowData`.
+`navigate` moves the active row over the visible rows according to `TreeNavigation`. Visible rows are read from `visible_rows`, with depth recorded in `TreeRowData`.
 
-## Multiple selection
+## Selection
 
-`.multiple(true)` makes the tree maintain a selection set and one active item within it:
+Which rows are selected is your state: a `SelectionState<Arc<str>>`, the same type tables and lists use (see [Table's SelectionState](https://github.com/sena-nana/NanaUI/blob/main/docs/en/components/table.md#selectionstate)). Hand it to the tree with `.selection(selection)`; the tree only reads it to paint the selected background and report it to assistive technology. With `SelectionState::multiple()` the tree reports that it is multi-selectable.
 
-- Press a row: select only it.
-- Ctrl (Cmd on macOS) + press: add the row to or remove it from the selection set.
-- Shift + press: select every visible row from the anchor to this row.
-- With focus on the tree, Shift + arrow keys / Home / End move the active item and extend the range.
+The tree does not change the selection. It emits `TreeSelectionRequested { id, gesture }` on the `TreeView`:
 
-Every change to the selection set emits `TreeSelectionChanged { selected, active }`, with `selected` in tree order. Single selection still emits `TreeViewEvent::Select`. `selected_ids` reads the selection set; `active_id` reads the active item.
+- Pressing a row: `Press`. Ctrl (Cmd on macOS) toggles; Shift selects a range from the anchor.
+- With focus on the tree, the up and down arrow keys emit `Move`; with Shift (and Shift + Home / End) they extend from the anchor; Ctrl with up or down moves the active row without changing the selection; Ctrl+Space emits `Toggle`; Ctrl+A emits `SelectAll`.
+- An assistive-technology click is the same as a press, and focus the same as an arrow key.
+
+On receipt, call `request.apply_to(&mut selection, &nodes)` (that is, `SelectionState::apply` with `TreeOrder::visible(&nodes)`) and hand the result back to the tree. If nothing changed there is nothing to hand back, and the tree recomputes nothing. In a reactive view, keep the selection in a `Signal` and bind `selection` to it.
+
+After nodes are added, removed, or renamed, call `selection.reconcile(&TreeOrder::all(&nodes))` to drop rows that no longer exist. `TreeOrder::all` includes the children of collapsed branches, so collapsing a branch does not lose the selection inside it; Shift ranges, arrow keys, and select-all only walk visible rows. Disabled rows cannot be selected.
 
 ## Toggle columns
 
@@ -85,7 +98,7 @@ With `.reorderable(true)`, a row can be dragged onto another row, with three kin
 - Pointer in the bottom quarter: `After`, drawing a line at the row's bottom edge.
 - Pointer in the middle: `Inside`, outlining the whole row.
 
-What is dragged is the selection set (when the drag starts from a selected row), otherwise just that row. No drop target is shown when the target is a dragged row itself or one of its descendants. Releasing emits `TreeDropRequested { rows, intent }`; the tree itself moves no nodes, and the application decides whether to accept. Dragging out of the tree and releasing emits `TreeDragReleased { rows, x, y }`, where `x` and `y` are window coordinates; the application can convert them into another control with `UiWorld::pointer_layout_position` to drop the rows into another list. Releasing an already selected row without dragging selects only that row.
+What is dragged is the selection set, in tree order (when the drag starts from a selected row), otherwise just that row. No drop target is shown when the target is a dragged row itself or one of its descendants. Releasing emits `TreeDropRequested { rows, intent }`; the tree itself moves no nodes, and the application decides whether to accept. Dragging out of the tree and releasing emits `TreeDragReleased { rows, x, y }`, where `x` and `y` are window coordinates; the application can convert them into another control with `UiWorld::pointer_layout_position` to drop the rows into another list. Pressing an already selected row of a multiple selection holds its selection request until release: a drag takes the whole selection set, and releasing without dragging asks for only that row.
 
 ## Inline rename
 
@@ -109,15 +122,15 @@ Each visible row is a TreeItem under the tree. These rows are not retained nodes
 - Name: the row's label.
 - Level: 1 at the top level, plus 1 for each level deeper.
 - Expanded: only on branch rows, indicating expanded or collapsed.
-- Selected: whether it is in the selection set.
+- Selected: whether it is in the selection you give.
 - Disabled: rows of disabled nodes are disabled.
 
-Collapsed child rows are not in the accessibility tree; they appear after expansion. While the tree has focus, the screen reader's focus is on the active row; with no active row it is on the tree itself.
+Collapsed child rows are not in the accessibility tree; they appear after expansion. While the tree has focus, the screen reader's focus is on the active row (where the keyboard last went, else the selection's current item); with no active row it is on the tree itself.
 
 The screen reader can perform these actions on rows, with the same results and the same events as pointer and keyboard:
 
-- Click: same as clicking the row; selects only it and gives the tree focus.
-- Focus: same as moving to the row with arrow keys; moves the active row here and gives the tree focus.
+- Click: same as clicking the row; asks for only it to be selected and gives the tree focus.
+- Focus: same as moving to the row with arrow keys; moves the active row here, asks for it to be selected, and gives the tree focus.
 - Expand / collapse: branch rows only; same as clicking its triangle, emitting `TreeViewEvent::Toggle`.
 
 Actions on disabled rows, on rows that no longer exist, and actions a row cannot perform (for example expanding a leaf, or expanding an already expanded branch) are rejected without an event.
@@ -143,10 +156,9 @@ The screen reader can only click a toggle: the same as pressing it, which flips 
 | `TreeNode::leaf(id, label)` | — | Leaf |
 | `TreeNode::branch(id, label, expanded, children)` | — | Branch. `expanded` is the expansion fact |
 | `.icon` | — | Set on the node |
-| `.selected` | — | Set on the node |
 | `.disabled` | — | Set on the node. Disabled nodes are never selected |
 | `.size` | — | Defaults to small |
-| `.multiple(bool)` | `bool` | Multiple selection: Ctrl toggles, Shift selects a range, active item |
+| `.selection(selection)` | `SelectionState<Arc<str>>` (stored as `TreeSelection`) | Your selection; reported as multi-selectable with `multiple()` |
 | `.columns(columns)` | `TreeToggleColumn` | Toggle columns at the end of rows; state lives in `TreeNode::toggles`. The column name is each toggle's name for the screen reader |
 | `.reorderable(bool)` | `bool` | Rows can be dragged before, inside, or after other rows |
 | `.renamable(bool)` | `bool` | Inline rename on F2 or double-click |
@@ -157,9 +169,8 @@ The screen reader can only click a toggle: the same as pressing it, which flips 
 
 | Event | Payload | Description |
 | --- | --- | --- |
-| `TreeViewEvent::Toggle` | `id` | `apply_event` only flips a branch |
-| `TreeViewEvent::Select` | `id` | Selects a node that is not disabled and clears any other selection |
-| `TreeSelectionChanged` | `selected`, `active` | The selection set or active item changed |
+| `TreeViewEvent::Toggle` | `id` | A branch was expanded or collapsed |
+| `TreeSelectionRequested` | `id`, `gesture` | A press, key, or assistive-technology action asked to change the selection; see Selection |
 | `TreeToggleChanged` | `id`, `column`, `on` | A row's toggle was set to `on`: a press, a drag over, or a screen reader click on the toggle |
 | `TreeDropRequested` | `rows`, `intent` | Drop request; `intent` is the target plus `Before` / `Inside` / `After` |
 | `TreeDragReleased` | `rows`, `x`, `y` | Rows were dragged out of the tree and released; `x` and `y` are window coordinates |

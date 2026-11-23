@@ -397,15 +397,16 @@ pub use nana_ui_core::{
     TabStripPaint, TableCursor, TableNavigation, TextAlignSpec, TextShadowSpec, ThemeAppearance,
     ThemeCategoryGenerations, ThemeDependencyMask, ThemeId, ThemeMetricsPatch, ThemePackage,
     ThemePackageError, ThemePatch, ThemeRecipeFamily, ThemeRegistry, ThemeScopeId,
-    ThemeWorkCounters, TransformOrigin, TreeNavigation, TreeNode, TreeViewEvent, UserSelectSpec,
-    ValidationIntent, ViewportAxis, VirtualAlignment, VirtualFrozenWindow, VirtualListLayout,
-    VirtualListMaterialization, VirtualListMaterializationError, VirtualListMaterializer,
-    VirtualListMount, VirtualListWindow, VirtualScrollAnchor, VirtualTableFrozenWindow,
-    VirtualTableLayout, VirtualTableMaterialization, VirtualTableMaterializer, VirtualTableWindow,
-    VirtualTreeLayout, VirtualTreeRow, VirtualTreeWindow, VirtualViewport, VisibilitySpec,
-    WINDOW_CONTROL_GAP, WINDOW_CONTROL_WIDTH, WhiteSpaceSpec, WordBreakSpec, WorkCounters,
-    WritingContext, WritingModeSpec, custom_window_controls_width, graph_node_fitted_height,
-    port_tangent, space, tree_navigation_event, type_scale,
+    ThemeWorkCounters, TransformOrigin, TreeNavigation, TreeNode, TreeOrder, TreeViewEvent,
+    UserSelectSpec, ValidationIntent, ViewportAxis, VirtualAlignment, VirtualFrozenWindow,
+    VirtualListLayout, VirtualListMaterialization, VirtualListMaterializationError,
+    VirtualListMaterializer, VirtualListMount, VirtualListWindow, VirtualScrollAnchor,
+    VirtualTableFrozenWindow, VirtualTableLayout, VirtualTableMaterialization,
+    VirtualTableMaterializer, VirtualTableWindow, VirtualTreeLayout, VirtualTreeRow,
+    VirtualTreeWindow, VirtualViewport, VisibilitySpec, WINDOW_CONTROL_GAP, WINDOW_CONTROL_WIDTH,
+    WhiteSpaceSpec, WordBreakSpec, WorkCounters, WritingContext, WritingModeSpec,
+    custom_window_controls_width, graph_node_fitted_height, port_tangent, space,
+    tree_navigation_event, type_scale,
 };
 pub use nana_ui_core::{
     KeyedOrder, SelectionGesture, SelectionMode, SelectionModifiers, SelectionOrder,
@@ -521,8 +522,8 @@ pub use toast::{Toast, ToastAction, ToastDismissed, ToastProgress, ToastTone, To
 pub use toast_stack::ToastStack;
 pub use tree_view::{
     TreeDragReleased, TreeDropIntent, TreeDropMark, TreeDropPosition, TreeDropRequested,
-    TreeRenameRequested, TreeRowData, TreeRowGeometry, TreeSelectionChanged, TreeToggleChanged,
-    TreeToggleColumn, TreeView, TreeViewLayout, TreeViewVisual,
+    TreeRenameRequested, TreeRowData, TreeRowGeometry, TreeSelection, TreeSelectionRequested,
+    TreeToggleChanged, TreeToggleColumn, TreeView, TreeViewLayout, TreeViewVisual,
 };
 pub use video::Video;
 pub use view_components::{

@@ -621,7 +621,12 @@ routed_calls! {
     end_focused_scrub_edit: fn(&mut AppContext, DocumentId) -> Result<bool, FrameworkError>,
     adjust_focused_scrub_field: fn(&mut AppContext, DocumentId, RangeAdjustment) -> Result<bool, FrameworkError>,
     step_scrub_field: fn(&mut AppContext, Entity<ScrubField>, i32) -> Result<bool, FrameworkError>,
-    focused_tree_key: fn(&mut AppContext, DocumentId, &str, bool) -> Result<bool, FrameworkError>,
+    focused_tree_key: fn(
+        &mut AppContext,
+        DocumentId,
+        &str,
+        nana_ui_core::SelectionModifiers,
+    ) -> Result<bool, FrameworkError>,
     end_focused_tree_rename: fn(&mut AppContext, DocumentId, bool) -> Result<bool, FrameworkError>,
     apply_tree_item_action: fn(&mut AppContext, DocumentId, StableNodeId, u16, &crate::AccessibilityAction) -> Result<bool, FrameworkError>,
     apply_tree_toggle_action: fn(&mut AppContext, StableNodeId, u16, usize, &crate::AccessibilityAction) -> Result<bool, FrameworkError>,

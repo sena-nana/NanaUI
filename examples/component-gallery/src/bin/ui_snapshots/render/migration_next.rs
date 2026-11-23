@@ -1599,10 +1599,19 @@ fn runtime_fixture(
             )?
             .stable_id(),
         Component::TreeView if matches!(fixture.state, "multi" | "drag-preview" | "renaming") => {
-            document
-                .context_mut()
-                .create_component(document_id, outliner_tree_fixture())?
-                .stable_id()
+            let context = document.context_mut();
+            let tree = context.create_component(document_id, outliner_tree_fixture())?;
+            // the selection is the application's: apply what the tree asks for
+            context.on(
+                tree,
+                |tree, request: &nana_ui::runtime::TreeSelectionRequested, _| {
+                    let mut selection = nana_ui::runtime::SelectionState::clone(&tree.selection);
+                    if request.apply_to(&mut selection, &tree.nodes) {
+                        tree.selection = std::sync::Arc::new(selection);
+                    }
+                },
+            )?;
+            tree.stable_id()
         }
         Component::TreeView => document
             .context_mut()
@@ -1613,13 +1622,18 @@ fn runtime_fixture(
                         std::sync::Arc::<str>::from("src"),
                         "src",
                         true,
-                        [
-                            TreeNode::leaf(std::sync::Arc::<str>::from("main"), "main.rs")
-                                .selected(true),
-                        ],
+                        [TreeNode::leaf(
+                            std::sync::Arc::<str>::from("main"),
+                            "main.rs",
+                        )],
                     ),
                     TreeNode::leaf(std::sync::Arc::<str>::from("readme"), "README.md"),
-                ]),
+                ])
+                .selection({
+                    let mut selection = nana_ui::runtime::SelectionState::single();
+                    selection.select_only(std::sync::Arc::<str>::from("main"));
+                    selection
+                }),
             )?
             .stable_id(),
         Component::SidebarRow => mount_root(&mut document, || {
@@ -1899,7 +1913,7 @@ fn outliner_tree_fixture() -> RuntimeTreeView {
         .toggles([true]),
         TreeNode::leaf(id("body"), "body").toggles([true]),
     ])
-    .multiple(true)
+    .selection(nana_ui::runtime::SelectionState::multiple())
     .columns([nana_ui::runtime::TreeToggleColumn::new(
         nana_ui_core::Icon::Eye,
         "Visible",
@@ -1971,7 +1985,7 @@ fn exercise_outliner_tree(
             document.flush(viewport, shaper)?;
             Ok(document
                 .context()
-                .read(tree, |tree| tree.selected_ids().len() == 2)?)
+                .read(tree, |tree| tree.selection.len() == 2)?)
         }
         "renaming" => {
             let eye = at("eye");

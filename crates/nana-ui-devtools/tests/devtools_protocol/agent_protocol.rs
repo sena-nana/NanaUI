@@ -67,12 +67,13 @@ fn accessibility_dump_carries_state_not_only_labels() {
 
 /// A tree's rows are nodes of their own: the tree names itself with
 /// `.label()`, each row carries its name, level, selection and, on a branch,
-/// whether it is open, and a click on a row selects it.
+/// whether it is open, and a click on a row selects it once the
+/// application applies what the tree asks for.
 #[test]
 fn accessibility_dump_carries_tree_rows() {
-    use nana_ui::runtime::{TreeNode, TreeView};
+    use nana_ui::runtime::{TreeNode, TreeSelectionRequested, TreeView};
     let mut session = session_with(|document, id| {
-        document
+        let tree = document
             .context_mut()
             .create_component(
                 id,
@@ -83,10 +84,24 @@ fn accessibility_dump_carries_tree_rows() {
                         true,
                         [TreeNode::leaf("model".into(), "模型")],
                     ),
-                    TreeNode::leaf("camera".into(), "相机").selected(true),
+                    TreeNode::leaf("camera".into(), "相机"),
                 ])
+                .selection({
+                    let mut selection = nana_ui::SelectionState::single();
+                    selection.select_only("camera".into());
+                    selection
+                })
                 .label("大纲"),
             )
+            .unwrap();
+        document
+            .context_mut()
+            .on(tree, |tree, request: &TreeSelectionRequested, _| {
+                let mut selection = nana_ui::SelectionState::clone(&tree.selection);
+                if request.apply_to(&mut selection, &tree.nodes) {
+                    tree.selection = selection.into();
+                }
+            })
             .unwrap();
     });
     session.flush().expect("flush");
@@ -143,11 +158,14 @@ fn accessibility_dump_carries_tree_row_toggles() {
             .create_component(
                 id,
                 TreeView::new([
-                    TreeNode::leaf("model".into(), "模型")
-                        .selected(true)
-                        .toggles([true, false]),
+                    TreeNode::leaf("model".into(), "模型").toggles([true, false]),
                     TreeNode::leaf("camera".into(), "相机").toggles([false, false]),
                 ])
+                .selection({
+                    let mut selection = nana_ui::SelectionState::single();
+                    selection.select_only("model".into());
+                    selection
+                })
                 .columns([
                     TreeToggleColumn::new(nana_ui_core::Icon::Eye, "显示"),
                     TreeToggleColumn::new(nana_ui_core::Icon::ShieldCheck, "锁定"),

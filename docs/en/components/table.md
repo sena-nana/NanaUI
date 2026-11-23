@@ -76,7 +76,7 @@ Which rows are selected is your state, usually a `SelectionState<RowKey>` (see b
 
 ## SelectionState
 
-`nana_ui::SelectionState<K>` is pure-data selection state tied to no control, shared by `each_virtual`, `List`, grids and virtual tables alike. It stores only your business keys: the selected set, the current item (where the keyboard is) and the anchor (where a Shift range starts). It stores no positions, rows or nodes, so a row scrolled out of view and never built stays selected.
+`nana_ui::SelectionState<K>` is pure-data selection state tied to no control, shared by `each_virtual`, `List`, grids, virtual tables and `TreeView` (see [TreeView's Selection](https://github.com/sena-nana/NanaUI/blob/main/docs/en/components/tree-view.md#selection)) alike. It stores only your business keys: the selected set, the current item (where the keyboard is) and the anchor (where a Shift range starts). It stores no positions, rows or nodes, so a row scrolled out of view and never built stays selected.
 
 Operations that need order (Shift ranges, arrow keys, select all, cleanup after the data changes) read it from a `SelectionOrder` you pass in: a slice of keys, or `keyed_order(&items, |item| item.id)`, narrowed with `.selectable(..)` to leave out disabled items. The order is never copied into the state.
 

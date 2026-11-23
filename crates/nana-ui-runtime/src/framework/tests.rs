@@ -1858,9 +1858,9 @@ fn timeline_editor_clips_that_are_not_editable_only_select() {
 fn tree_view_selects_toggles_drags_and_renames() {
     use crate::{
         TreeDragReleased, TreeDropIntent, TreeDropPosition, TreeDropRequested, TreeRenameRequested,
-        TreeSelectionChanged, TreeToggleChanged, TreeToggleColumn, TreeView,
+        TreeSelectionRequested, TreeToggleChanged, TreeToggleColumn, TreeView,
     };
-    use nana_ui_core::{Icon, TreeNode};
+    use nana_ui_core::{Icon, SelectionState, TreeNode, TreeOrder};
     use nana_ui_input::{
         InputModifiers, InputPayload, KeyInput, KeyState, LogicalKey, PhysicalKey, PointerInput,
         PointerPhase,
@@ -1885,7 +1885,7 @@ fn tree_view_selects_toggles_drags_and_renames() {
                 ),
                 TreeNode::leaf(id("body"), "body"),
             ])
-            .multiple(true)
+            .selection(SelectionState::multiple())
             .columns([TreeToggleColumn::new(Icon::Eye, "Visible")])
             .reorderable(true)
             .renamable(true),
@@ -1893,12 +1893,22 @@ fn tree_view_selects_toggles_drags_and_renames() {
         .unwrap();
     let heard = |s: String| HEARD.lock().unwrap().push(s);
     context
-        .on(tree, move |_, e: &TreeSelectionChanged, _| {
-            heard(format!(
-                "selected {:?} active {:?}",
-                e.selected.iter().map(|s| s.as_ref()).collect::<Vec<_>>(),
-                e.active.as_deref()
-            ))
+        .on(tree, move |t, e: &TreeSelectionRequested, _| {
+            // as the application does: apply the request to its state and
+            // give the tree the result
+            let mut selection = SelectionState::clone(&t.selection);
+            if e.apply_to(&mut selection, &t.nodes) {
+                heard(format!(
+                    "selected {:?} active {:?}",
+                    selection
+                        .selected_in(&TreeOrder::all(&t.nodes))
+                        .iter()
+                        .map(|s| s.as_ref())
+                        .collect::<Vec<_>>(),
+                    selection.current().map(|s| s.as_ref())
+                ));
+                t.selection = Arc::new(selection);
+            }
         })
         .unwrap();
     context
@@ -2000,7 +2010,8 @@ fn tree_view_selects_toggles_drags_and_renames() {
     let selected = |context: &AppContext| {
         context
             .read(tree, |t| {
-                t.selected_ids()
+                t.selection
+                    .selected_in(&TreeOrder::all(&t.nodes))
                     .iter()
                     .map(|s| s.to_string())
                     .collect::<Vec<_>>()

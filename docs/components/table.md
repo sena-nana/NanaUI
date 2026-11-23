@@ -76,7 +76,7 @@ widget(Table::new().label("文件")).children((
 
 ## SelectionState
 
-`nana_ui::SelectionState<K>` 是不依附任何控件的纯数据选择状态，`each_virtual`、`List`、网格和虚拟表格都能共用。它只存你的业务键：选中集合、当前项（键盘所在）和锚点（Shift 连选的起点），不存位置、行或节点，所以滚出视口、没有建出来的行照样保持选中。
+`nana_ui::SelectionState<K>` 是不依附任何控件的纯数据选择状态，`each_virtual`、`List`、网格、虚拟表格和 `TreeView`（见 [TreeView 的选择](https://github.com/sena-nana/NanaUI/blob/main/docs/components/tree-view.md#选择)）都能共用。它只存你的业务键：选中集合、当前项（键盘所在）和锚点（Shift 连选的起点），不存位置、行或节点，所以滚出视口、没有建出来的行照样保持选中。
 
 需要顺序的操作（Shift 连选、方向键、全选、数据变化后的清理）从你传入的 `SelectionOrder` 读顺序：一个键的切片，或者 `keyed_order(&items, |item| item.id)`，用 `.selectable(..)` 排除禁用项。顺序不会被复制进状态。
 

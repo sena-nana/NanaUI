@@ -253,8 +253,10 @@ macro_rules! for_each_control {
             with { on_change: TabsEvent };
             TreeView => tree_view() for TreeView {
                 nodes: Vec<TreeNode<Arc<str>>> = set,
+                selection: TreeSelection = set,
                 label: Option<Arc<str>> = set,
-            };
+            }
+            with { on_select: TreeSelectionRequested };
             SizeField => size_field() for SizeField {
                 value: [f64; 2] = builder,
                 presets: Vec<SizePreset> = set,

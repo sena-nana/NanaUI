@@ -479,7 +479,13 @@ impl AppContext {
             }
             let id = Arc::clone(&rows[index].id);
             return self.update_component(entity, |tree, cx| {
-                crate::tree_view::apply_tree_event(tree, cx, crate::TreeViewEvent::Select(id))
+                crate::tree_view::request_tree_selection(
+                    tree,
+                    cx,
+                    &id,
+                    nana_ui_core::SelectionGesture::Press(nana_ui_core::SelectionModifiers::NONE),
+                );
+                true
             });
         }
         Ok(false)
@@ -501,12 +507,12 @@ impl AppContext {
             return Ok(false);
         }
         self.update_component(Entity::<TreeView>::from_stable_id(target), |tree, cx| {
-            if let Some(event) = tree.navigate(navigation) {
-                cx.emit(event);
-                true
-            } else {
-                false
-            }
+            crate::tree_view::navigate_tree(
+                tree,
+                cx,
+                navigation,
+                nana_ui_core::SelectionModifiers::NONE,
+            )
         })
     }
 

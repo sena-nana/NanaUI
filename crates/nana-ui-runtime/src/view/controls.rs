@@ -11,7 +11,7 @@ use super::prop::{FieldWrite, IntoProp, Writable};
 use crate::{
     ActionMenu, ActionMenuItem, ColorChanged, ColorField, ColorSubmitted, InlineContent,
     ListItemRole, SizeField, SizeFieldChanged, SizeFieldSubmitted, SizePreset, TabsEvent,
-    TextSelection, ThumbnailState, TreeNode, TreeView,
+    TextSelection, ThumbnailState, TreeNode, TreeSelection, TreeSelectionRequested, TreeView,
 };
 use crate::{
     Activate, AppContext, Avatar, Button, Card, Checkbox, Chip, CurveChanged, CurveField,
@@ -1182,7 +1182,8 @@ edited_in_code!(
     [f32; 4],
     [f64; 2],
     Vec<SizePreset>,
-    Vec<TreeNode<Arc<str>>>
+    Vec<TreeNode<Arc<str>>>,
+    TreeSelection
 );
 
 impl FieldText for Vec<SelectOption> {

@@ -1,9 +1,15 @@
 //! Flattened disclosure tree. Application owns node identities and expansion.
 //!
-//! With [`TreeView::multiple`] the tree keeps a selection set with an active
-//! row (#342): a press selects one row, Ctrl (Cmd) toggles a row in or out,
-//! Shift selects the range from the anchor, Shift with the arrows extends it;
-//! every change emits [`TreeSelectionChanged`]. [`TreeView::columns`] puts on
+//! Which rows are selected is the application's: a
+//! [`nana_ui_core::SelectionState`] handed to [`TreeView::selection`], the
+//! same contract a table, a list or a grid uses (#117). The tree draws and
+//! announces it, and asks for changes with [`TreeSelectionRequested`]: a
+//! press asks for [`SelectionGesture::Press`] with its modifiers (Ctrl or
+//! Cmd toggles, Shift ranges from the anchor), the arrow keys for
+//! [`SelectionGesture::Move`] (Shift extends, Ctrl moves without selecting),
+//! Ctrl+Space for [`SelectionGesture::Toggle`] and Ctrl+A for
+//! [`SelectionGesture::SelectAll`]. The application applies the request over
+//! [`TreeOrder::visible`] and hands the result back. [`TreeView::columns`] puts on
 //! / off icons at the end of each row (visible, locked): a press flips one
 //! without touching the selection, and dragging across rows sets the same
 //! value on each ([`TreeToggleChanged`]). [`TreeView::reorderable`] lets rows
@@ -24,8 +30,9 @@
 use std::sync::Arc;
 
 use nana_ui_core::{
-    ControlSize, Icon, LengthSpec, PositionSpec, TreeNavigation, TreeNode, TreeViewEvent,
-    tree_navigation_event, tree_preorder,
+    ControlSize, Icon, LengthSpec, PositionSpec, SelectionGesture, SelectionModifiers,
+    SelectionState, TreeNavigation, TreeNode, TreeOrder, TreeViewEvent, tree_navigation_event,
+    tree_preorder,
 };
 
 use crate::view_components::{TextChanged, TextInput, project_common};
@@ -72,12 +79,35 @@ impl TreeToggleColumn {
     }
 }
 
-/// The selection changed: every selected row in tree order, and the active
-/// one.
+/// The selection a [`TreeView`] shows: the application's, shared. A new
+/// value is a new `Arc`; an unchanged one compares by pointer.
+pub type TreeSelection = Arc<SelectionState<Arc<str>>>;
+
+/// A press, a key or an assistive-technology action on the row `id` asked
+/// for the selection to change. Apply it to the application's
+/// [`SelectionState`] over [`TreeOrder::visible`] and give the tree the
+/// result ([`TreeView::selection`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TreeSelectionChanged {
-    pub selected: Vec<Arc<str>>,
-    pub active: Option<Arc<str>>,
+pub struct TreeSelectionRequested {
+    pub id: Arc<str>,
+    pub gesture: SelectionGesture,
+}
+
+impl TreeSelectionRequested {
+    /// Apply the request to `selection` over the rows `nodes` shows, as
+    /// [`SelectionState::apply`] with [`TreeOrder::visible`]. Returns whether
+    /// anything changed.
+    pub fn apply_to(
+        &self,
+        selection: &mut SelectionState<Arc<str>>,
+        nodes: &[TreeNode<Arc<str>>],
+    ) -> bool {
+        selection.apply(
+            self.gesture,
+            Arc::clone(&self.id),
+            &TreeOrder::visible(nodes),
+        )
+    }
 }
 
 /// A row's toggle in `column` was set to `on`.
@@ -141,8 +171,10 @@ pub struct TreeView {
     pub nodes: Vec<TreeNode<Arc<str>>>,
     pub size: ControlSize,
     pub style: NodeStyle,
-    /// Ctrl and Shift build a selection of several rows.
-    pub multiple: bool,
+    /// Which rows are selected and which is current: the application's.
+    /// In [`nana_ui_core::SelectionMode::Multiple`] the tree is announced as
+    /// multi-selectable.
+    pub selection: TreeSelection,
     /// On / off icons at the end of each row; a node's states are its
     /// [`TreeNode::toggles`].
     pub columns: Vec<TreeToggleColumn>,
@@ -152,8 +184,9 @@ pub struct TreeView {
     pub renamable: bool,
     /// The tree's name for assistive technology: `Layers`.
     pub label: Option<Arc<str>>,
-    pub(crate) active: Option<Arc<str>>,
-    pub(crate) anchor: Option<Arc<str>>,
+    /// The row the keyboard last moved to, until the application's
+    /// selection catches up with it (several keys in one frame).
+    pub(crate) cursor: Option<Arc<str>>,
     pub(crate) gesture: Option<TreeGesture>,
     pub(crate) drop: Option<TreeDropIntent>,
     pub(crate) renaming: Option<Arc<str>>,
@@ -214,13 +247,12 @@ impl TreeView {
             nodes: nodes.into_iter().collect(),
             size: ControlSize::Small,
             style: NodeStyle::default(),
-            multiple: false,
+            selection: TreeSelection::default(),
             columns: Vec::new(),
             reorderable: false,
             renamable: false,
             label: None,
-            active: None,
-            anchor: None,
+            cursor: None,
             gesture: None,
             drop: None,
             renaming: None,
@@ -234,8 +266,9 @@ impl TreeView {
         self
     }
 
-    pub fn multiple(mut self, multiple: bool) -> Self {
-        self.multiple = multiple;
+    /// The selection to show: the application's [`SelectionState`].
+    pub fn selection(mut self, selection: impl Into<TreeSelection>) -> Self {
+        self.selection = selection.into();
         self
     }
 
@@ -263,29 +296,21 @@ impl TreeView {
 
     pub fn visible_rows(&self) -> Vec<TreeRowData> {
         let mut rows = Vec::new();
-        collect_rows(&self.nodes, 0, &mut rows);
+        collect_rows(&self.nodes, &self.selection, 0, &mut rows);
         rows
     }
 
-    /// The first selected row in tree order.
-    pub fn selected_id(&self) -> Option<&Arc<str>> {
-        find_selected(&self.nodes)
-    }
-
-    /// Every selected row, in tree order.
-    pub fn selected_ids(&self) -> Vec<Arc<str>> {
-        let mut out = Vec::new();
-        collect_selected(&self.nodes, &mut out);
-        out
-    }
-
-    /// The row the selection is about: the last one clicked, if it is
-    /// still selected, else the first selected.
+    /// The row the keyboard is on: where it last moved, else the
+    /// selection's current row.
     pub fn active_id(&self) -> Option<&Arc<str>> {
-        self.active
+        self.cursor
             .as_ref()
-            .filter(|id| is_selected(&self.nodes, id))
-            .or_else(|| self.selected_id())
+            .filter(|id| find_node(&self.nodes, id).is_some())
+            .or_else(|| {
+                self.selection
+                    .current()
+                    .filter(|id| find_node(&self.nodes, id).is_some())
+            })
     }
 
     /// The row being renamed.
@@ -293,83 +318,29 @@ impl TreeView {
         self.renaming.as_ref()
     }
 
+    /// Apply a navigation step: [`TreeViewEvent::Toggle`] opens or closes a
+    /// branch, [`TreeViewEvent::Select`] moves the keyboard to a row (the
+    /// selection is the application's). Returns whether anything moved.
     pub fn apply_event(&mut self, event: TreeViewEvent<Arc<str>>) -> bool {
         match event {
             TreeViewEvent::Toggle(id) => toggle_node(&mut self.nodes, &id),
             TreeViewEvent::Select(id) => {
-                self.active = Some(Arc::clone(&id));
-                self.anchor = Some(Arc::clone(&id));
-                select_node(&mut self.nodes, &id)
+                if find_node(&self.nodes, &id).is_none() {
+                    return false;
+                }
+                let moved = self.active_id() != Some(&id);
+                self.cursor = Some(id);
+                moved
             }
         }
     }
 
+    /// Step the keyboard by `navigation` from the active row.
     pub fn navigate(&mut self, navigation: TreeNavigation) -> Option<TreeViewEvent<Arc<str>>> {
         let from = self.active_id().cloned();
         let event = tree_navigation_event(&self.nodes, from.as_ref(), navigation)?;
         self.apply_event(event.clone());
         Some(event)
-    }
-
-    /// Select only `id`; it becomes active and the range anchor.
-    pub fn select_only(&mut self, id: &Arc<str>) -> bool {
-        self.apply_event(TreeViewEvent::Select(Arc::clone(id)))
-    }
-
-    /// Add `id` to the selection or take it out (Ctrl / Cmd); it becomes
-    /// active and the anchor.
-    pub fn toggle_in_selection(&mut self, id: &Arc<str>) -> bool {
-        let on = !is_selected(&self.nodes, id);
-        self.active = Some(Arc::clone(id));
-        self.anchor = Some(Arc::clone(id));
-        set_selected(&mut self.nodes, id, on)
-    }
-
-    /// Select the visible rows from the anchor to `id` (Shift); `id` becomes
-    /// active, the anchor stays.
-    pub fn select_range_to(&mut self, id: &Arc<str>) -> bool {
-        let rows = self.visible_rows();
-        let to = rows.iter().position(|row| &row.id == id);
-        let from = self
-            .anchor
-            .as_ref()
-            .and_then(|anchor| rows.iter().position(|row| &row.id == anchor))
-            .or(to);
-        let (Some(from), Some(to)) = (from, to) else {
-            return false;
-        };
-        let (low, high) = (from.min(to), from.max(to));
-        let range = rows[low..=high]
-            .iter()
-            .map(|row| Arc::clone(&row.id))
-            .collect::<Vec<_>>();
-        if self.anchor.is_none() {
-            self.anchor = Some(Arc::clone(id));
-        }
-        self.active = Some(Arc::clone(id));
-        set_selection(&mut self.nodes, &range)
-    }
-
-    /// Move the active row by `navigation` and select the range from the
-    /// anchor to it (Shift with the arrows).
-    pub fn extend(&mut self, navigation: TreeNavigation) -> bool {
-        let from = self.active_id().cloned();
-        let Some(TreeViewEvent::Select(to)) =
-            tree_navigation_event(&self.nodes, from.as_ref(), navigation)
-        else {
-            return false;
-        };
-        if self.anchor.is_none() {
-            self.anchor = from;
-        }
-        self.select_range_to(&to)
-    }
-
-    fn selection_event(&self) -> TreeSelectionChanged {
-        TreeSelectionChanged {
-            selected: self.selected_ids(),
-            active: self.active_id().cloned(),
-        }
     }
 
     fn intrinsic_height(&self, metrics: nana_ui_core::ThemeMetrics) -> f32 {
@@ -400,9 +371,11 @@ impl ComponentView for TreeView {
     }
 
     fn reconcile(&mut self, mut next: Self) {
-        // a gesture, a rename and the active row are the tree's own
-        next.active = self.active.take();
-        next.anchor = self.anchor.take();
+        // a gesture, a rename and the keyboard row are the tree's own; once
+        // the application moves its current row, the keyboard follows it
+        if next.selection.current() == self.selection.current() {
+            next.cursor = self.cursor.take();
+        }
         next.gesture = self.gesture.take();
         next.drop = self.drop.take();
         next.renaming = self.renaming.take();
@@ -484,6 +457,7 @@ impl ComponentView for TreeView {
                 role: AccessibilityRole::Tree,
                 label: self.label.clone(),
                 disabled: false,
+                multiselectable: self.selection.mode() == nana_ui_core::SelectionMode::Multiple,
                 ..AccessibilityState::default()
             },
         );
@@ -494,7 +468,12 @@ impl ComponentView for TreeView {
 // these walks recurses by it: the read-only ones go through
 // `tree_preorder`, the others keep their open levels on the heap.
 
-fn collect_rows(nodes: &[TreeNode<Arc<str>>], depth: u8, rows: &mut Vec<TreeRowData>) {
+fn collect_rows(
+    nodes: &[TreeNode<Arc<str>>],
+    selection: &SelectionState<Arc<str>>,
+    depth: u8,
+    rows: &mut Vec<TreeRowData>,
+) {
     for step in tree_preorder(nodes, |node| node.branch && node.expanded) {
         let node = step.node;
         rows.push(TreeRowData {
@@ -504,7 +483,7 @@ fn collect_rows(nodes: &[TreeNode<Arc<str>>], depth: u8, rows: &mut Vec<TreeRowD
             depth: depth.saturating_add(u8::try_from(step.depth).unwrap_or(u8::MAX)),
             branch: node.branch,
             expanded: node.expanded,
-            selected: node.selected,
+            selected: selection.is_selected(&node.id),
             disabled: node.disabled,
             toggles: node.toggles.clone(),
             hidden_toggles: node.hidden_toggles,
@@ -517,35 +496,8 @@ fn every_node(nodes: &[TreeNode<Arc<str>>]) -> impl Iterator<Item = &TreeNode<Ar
     tree_preorder(nodes, |_| true).map(|step| step.node)
 }
 
-fn find_selected(nodes: &[TreeNode<Arc<str>>]) -> Option<&Arc<str>> {
-    every_node(nodes)
-        .find(|node| node.selected)
-        .map(|node| &node.id)
-}
-
-fn collect_selected(nodes: &[TreeNode<Arc<str>>], out: &mut Vec<Arc<str>>) {
-    out.extend(
-        every_node(nodes)
-            .filter(|node| node.selected)
-            .map(|node| Arc::clone(&node.id)),
-    );
-}
-
 fn find_node<'a>(nodes: &'a [TreeNode<Arc<str>>], id: &Arc<str>) -> Option<&'a TreeNode<Arc<str>>> {
     every_node(nodes).find(|node| &node.id == id)
-}
-
-/// Visits every node in document order.
-fn for_each_mut(nodes: &mut [TreeNode<Arc<str>>], mut visit: impl FnMut(&mut TreeNode<Arc<str>>)) {
-    let mut open = vec![nodes.iter_mut()];
-    while let Some(level) = open.last_mut() {
-        let Some(node) = level.next() else {
-            open.pop();
-            continue;
-        };
-        visit(node);
-        open.push(node.children.iter_mut());
-    }
 }
 
 fn find_node_mut<'a>(
@@ -566,36 +518,10 @@ fn find_node_mut<'a>(
     None
 }
 
-fn is_selected(nodes: &[TreeNode<Arc<str>>], id: &Arc<str>) -> bool {
-    find_node(nodes, id).is_some_and(|node| node.selected)
-}
-
 /// `inner` is `outer` or one of its descendants.
 fn is_within(nodes: &[TreeNode<Arc<str>>], outer: &Arc<str>, inner: &Arc<str>) -> bool {
     find_node(nodes, outer)
         .is_some_and(|node| &node.id == inner || find_node(&node.children, inner).is_some())
-}
-
-fn set_selected(nodes: &mut [TreeNode<Arc<str>>], id: &Arc<str>, on: bool) -> bool {
-    match find_node_mut(nodes, id) {
-        Some(node) if !node.disabled && node.selected != on => {
-            node.selected = on;
-            true
-        }
-        _ => false,
-    }
-}
-
-fn set_selection(nodes: &mut [TreeNode<Arc<str>>], ids: &[Arc<str>]) -> bool {
-    let mut changed = false;
-    for_each_mut(nodes, |node| {
-        let selected = !node.disabled && ids.contains(&node.id);
-        if node.selected != selected {
-            node.selected = selected;
-            changed = true;
-        }
-    });
-    changed
 }
 
 fn toggle_node(nodes: &mut [TreeNode<Arc<str>>], id: &Arc<str>) -> bool {
@@ -606,18 +532,6 @@ fn toggle_node(nodes: &mut [TreeNode<Arc<str>>], id: &Arc<str>) -> bool {
         }
         _ => false,
     }
-}
-
-fn select_node(nodes: &mut [TreeNode<Arc<str>>], id: &Arc<str>) -> bool {
-    let mut changed = false;
-    for_each_mut(nodes, |node| {
-        let selected = &node.id == id && !node.disabled;
-        if node.selected != selected {
-            node.selected = selected;
-            changed = true;
-        }
-    });
-    changed
 }
 
 const TREE_TOGGLE_SLOTS: u64 = 1 << 32;
@@ -1031,27 +945,20 @@ fn tree_pressed(
     }
     let id = Arc::clone(&rows[index].id);
     let rename = pointer.click_count >= 2;
-    let modifiers = pointer.modifiers;
-    let primary = modifiers.control || modifiers.meta;
+    let modifiers = crate::selection_modifiers(pointer.modifiers);
     cx.update_component(tree, |tree, view| {
-        let before = tree.selected_ids();
-        let already = is_selected(&tree.nodes, &id);
-        let mut select_on_release = false;
-        if tree.multiple && primary {
-            tree.toggle_in_selection(&id);
-        } else if tree.multiple && modifiers.shift {
-            tree.select_range_to(&id);
-        } else if already && tree.reorderable && before.len() > 1 {
-            // a drag takes the whole selection; a click selects this alone
-            select_on_release = true;
-            tree.active = Some(Arc::clone(&id));
-        } else if tree.select_only(&id) {
-            view.emit(TreeViewEvent::Select(Arc::clone(&id)));
-        } else {
-            tree.active = Some(Arc::clone(&id));
-        }
-        if tree.selected_ids() != before {
-            view.emit(tree.selection_event());
+        // A plain press on a row of a several-row selection may start a
+        // drag of all of them: it selects that row alone on release.
+        let select_on_release = modifiers == SelectionModifiers::NONE
+            && tree.reorderable
+            && tree.selection.len() > 1
+            && tree.selection.is_selected(&id);
+        tree.cursor = Some(Arc::clone(&id));
+        if !select_on_release {
+            view.emit(TreeSelectionRequested {
+                id: Arc::clone(&id),
+                gesture: SelectionGesture::Press(modifiers),
+            });
         }
         tree.gesture = Some(TreeGesture::Press {
             row: Arc::clone(&id),
@@ -1208,21 +1115,59 @@ pub(crate) fn apply_tree_event(
     }
 }
 
-/// Select `id` alone, as a plain click does, and report what changed.
+/// Ask for `gesture` on `id`, the keyboard moving there too.
+pub(crate) fn request_tree_selection(
+    tree: &mut TreeView,
+    view: &mut crate::ViewContext<'_, TreeView>,
+    id: &Arc<str>,
+    gesture: SelectionGesture,
+) {
+    tree.cursor = Some(Arc::clone(id));
+    view.emit(TreeSelectionRequested {
+        id: Arc::clone(id),
+        gesture,
+    });
+}
+
+/// Ask for `id` alone, as a plain click does.
 fn select_alone(tree: &mut TreeView, view: &mut crate::ViewContext<'_, TreeView>, id: &Arc<str>) {
-    let before = tree.selected_ids();
-    if tree.select_only(id) {
-        view.emit(TreeViewEvent::Select(Arc::clone(id)));
-    }
-    if tree.selected_ids() != before {
-        view.emit(tree.selection_event());
+    request_tree_selection(
+        tree,
+        view,
+        id,
+        SelectionGesture::Press(SelectionModifiers::NONE),
+    );
+}
+
+/// Step the keyboard by `navigation` and ask for the selection to follow
+/// with `modifiers`; a branch it opens or closes is reported as before.
+pub(crate) fn navigate_tree(
+    tree: &mut TreeView,
+    view: &mut crate::ViewContext<'_, TreeView>,
+    navigation: TreeNavigation,
+    modifiers: SelectionModifiers,
+) -> bool {
+    match tree.navigate(navigation) {
+        Some(TreeViewEvent::Select(id)) => {
+            view.emit(TreeSelectionRequested {
+                id,
+                gesture: SelectionGesture::Move(modifiers),
+            });
+            true
+        }
+        Some(event @ TreeViewEvent::Toggle(_)) => {
+            view.emit(event);
+            true
+        }
+        None => false,
     }
 }
 
-/// What a drag from `row` carries: the selection when `row` is in it.
+/// What a drag from `row` carries: the selection, in tree order, when `row`
+/// is in it.
 fn dragged_rows(tree: &TreeView, row: &Arc<str>) -> Vec<Arc<str>> {
-    if is_selected(&tree.nodes, row) {
-        tree.selected_ids()
+    if tree.selection.is_selected(row) {
+        tree.selection.selected_in(&TreeOrder::all(&tree.nodes))
     } else {
         vec![Arc::clone(row)]
     }
@@ -1304,7 +1249,16 @@ impl AppContext {
             crate::AccessibilityAction::Focus => {
                 let focused = self.focus_node(document, tree)?;
                 let moved = self.update_component(entity, |tree, view| {
-                    apply_tree_event(tree, view, TreeViewEvent::Select(id))
+                    if tree.active_id() == Some(&id) {
+                        return false;
+                    }
+                    request_tree_selection(
+                        tree,
+                        view,
+                        &id,
+                        SelectionGesture::Move(SelectionModifiers::NONE),
+                    );
+                    true
                 })?;
                 Ok(focused || moved)
             }
@@ -1441,13 +1395,16 @@ impl AppContext {
         self.end_tree_rename(tree, commit)
     }
 
-    /// F2 on a focused tree, or Shift with an arrow: rename the active row,
-    /// or extend the selection.
+    /// A selection key on a focused tree: F2 renames the active row; Shift
+    /// with ArrowUp / ArrowDown / Home / End extends from the anchor; Ctrl
+    /// (Cmd) with ArrowUp / ArrowDown moves without selecting, with Space
+    /// toggles the active row and with A selects all. `modifiers` says which
+    /// the dispatcher saw.
     pub(crate) fn focused_tree_key(
         &mut self,
         document: DocumentId,
         key: &str,
-        shift: bool,
+        modifiers: SelectionModifiers,
     ) -> Result<bool, FrameworkError> {
         let Some(tree) = self
             .world()
@@ -1456,31 +1413,49 @@ impl AppContext {
         else {
             return Ok(false);
         };
-        if key == "F2" && !shift {
+        if key == "F2" && modifiers == SelectionModifiers::NONE {
             let Some(active) = self.read(tree, |tree| tree.active_id().cloned())? else {
                 return Ok(false);
             };
             return self.begin_tree_rename(tree, &active);
         }
         let navigation = match key {
-            "ArrowUp" => TreeNavigation::Previous,
-            "ArrowDown" => TreeNavigation::Next,
-            "Home" => TreeNavigation::First,
-            "End" => TreeNavigation::Last,
-            _ => return Ok(false),
+            "ArrowUp" => Some(TreeNavigation::Previous),
+            "ArrowDown" => Some(TreeNavigation::Next),
+            "Home" if modifiers.extend => Some(TreeNavigation::First),
+            "End" if modifiers.extend => Some(TreeNavigation::Last),
+            _ => None,
         };
-        if !shift {
+        if let Some(navigation) = navigation {
+            if modifiers == SelectionModifiers::NONE {
+                return Ok(false);
+            }
+            return self.update_component(tree, |tree, view| {
+                navigate_tree(tree, view, navigation, modifiers)
+            });
+        }
+        if !modifiers.toggle || modifiers.extend {
             return Ok(false);
         }
+        let gesture = match key {
+            " " | "Space" => SelectionGesture::Toggle,
+            _ if key.eq_ignore_ascii_case("a") => SelectionGesture::SelectAll,
+            _ => return Ok(false),
+        };
         self.update_component(tree, |tree, view| {
-            if !tree.multiple {
+            let id = tree
+                .active_id()
+                .cloned()
+                .or_else(|| tree.nodes.first().map(|node| Arc::clone(&node.id)));
+            let Some(id) = id else {
+                return false;
+            };
+            if gesture == SelectionGesture::Toggle
+                && find_node(&tree.nodes, &id).is_none_or(|node| node.disabled)
+            {
                 return false;
             }
-            let before = tree.selected_ids();
-            tree.extend(navigation);
-            if tree.selected_ids() != before {
-                view.emit(tree.selection_event());
-            }
+            request_tree_selection(tree, view, &id, gesture);
             true
         })
     }
@@ -1566,9 +1541,20 @@ mod tests {
     use super::*;
     use crate::DocumentId;
     use crate::framework::AppContext;
+    use nana_ui_core::SelectionMode;
 
     fn document() -> DocumentId {
         DocumentId::new(1).unwrap()
+    }
+
+    /// The application's selection: `ids` selected, the first current.
+    fn selection(mode: SelectionMode, ids: &[&str]) -> TreeSelection {
+        let mut selection = SelectionState::new(mode);
+        selection.set_selection(ids.iter().map(|id| Arc::from(*id)));
+        if let Some(first) = ids.first() {
+            selection.set_current(Arc::from(*first));
+        }
+        Arc::new(selection)
     }
 
     fn sample() -> TreeView {
@@ -1581,10 +1567,10 @@ mod tests {
                     TreeNode::leaf(Arc::from("lib"), "lib.rs"),
                     TreeNode::leaf(Arc::from("main"), "main.rs"),
                 ],
-            )
-            .selected(true),
+            ),
             TreeNode::leaf(Arc::from("readme"), "README.md"),
         ])
+        .selection(selection(SelectionMode::Single, &["src"]))
     }
 
     #[test]
@@ -1595,13 +1581,15 @@ mod tests {
         assert_eq!(tree.visible_rows().len(), 2);
         let event = tree.navigate(TreeNavigation::Next).expect("next");
         assert_eq!(event, TreeViewEvent::Select(Arc::from("readme")));
-        assert_eq!(tree.selected_id().map(Arc::as_ref), Some("readme"));
+        assert_eq!(tree.active_id().map(Arc::as_ref), Some("readme"));
+        // the selection is the application's: the step only moved the keyboard
+        assert!(tree.selection.is_selected(&Arc::from("src")));
     }
 
-    /// A chain of `depth` expanded branches with a selected leaf at the
-    /// bottom, built without recursion.
+    /// A chain of `depth` expanded branches with a leaf at the bottom, built
+    /// without recursion.
     fn chain(depth: usize) -> TreeNode<Arc<str>> {
-        let mut node = TreeNode::leaf(Arc::from("leaf"), "leaf").selected(true);
+        let mut node = TreeNode::leaf(Arc::from("leaf"), "leaf");
         for level in (0..depth).rev() {
             node = TreeNode::branch(Arc::from(format!("n{level}")), "branch", true, [node]);
         }
@@ -1617,9 +1605,11 @@ mod tests {
             .stack_size(512 << 10)
             .spawn(|| {
                 let depth = 20_000;
-                let mut tree = TreeView::new([chain(depth)]);
+                let mut tree = TreeView::new([chain(depth)])
+                    .selection(selection(SelectionMode::Single, &["leaf"]));
                 assert_eq!(tree.visible_rows().len(), depth + 1);
-                assert_eq!(tree.selected_id().map(Arc::as_ref), Some("leaf"));
+                assert!(tree.visible_rows()[depth].selected);
+                assert_eq!(tree.active_id().map(Arc::as_ref), Some("leaf"));
                 let copy = tree.clone();
                 assert_eq!(copy, tree);
                 assert!(tree.apply_event(TreeViewEvent::Select(Arc::from("n7"))));
@@ -1684,8 +1674,22 @@ mod tests {
 
     type Heard = Arc<std::sync::Mutex<Vec<String>>>;
 
-    /// A laid-out tree, and every selection, disclosure and toggle event it
-    /// reports.
+    /// A selection request, short: `press+shift(main)`.
+    fn describe(request: &TreeSelectionRequested) -> String {
+        let (kind, modifiers) = match request.gesture {
+            SelectionGesture::Press(modifiers) => ("press", modifiers),
+            SelectionGesture::Move(modifiers) => ("move", modifiers),
+            SelectionGesture::Toggle => ("toggle", SelectionModifiers::NONE),
+            SelectionGesture::SelectAll => ("all", SelectionModifiers::NONE),
+        };
+        let ctrl = if modifiers.toggle { "+ctrl" } else { "" };
+        let shift = if modifiers.extend { "+shift" } else { "" };
+        format!("{kind}{ctrl}{shift}({})", request.id)
+    }
+
+    /// A laid-out tree, and every selection request, disclosure and toggle
+    /// event it reports. Selection requests are applied as an application
+    /// would: to its state, which it gives back to the tree.
     fn heard_tree(tree: TreeView) -> (AppContext, Entity<TreeView>, Heard) {
         let mut context = AppContext::new();
         let entity = context.create_component(document(), tree).unwrap();
@@ -1698,8 +1702,12 @@ mod tests {
             .unwrap();
         let events = Arc::clone(&heard);
         context
-            .on(entity, move |_, event: &TreeSelectionChanged, _| {
-                events.lock().unwrap().push(format!("{event:?}"));
+            .on(entity, move |tree, event: &TreeSelectionRequested, _| {
+                events.lock().unwrap().push(describe(event));
+                let mut selection = SelectionState::clone(&tree.selection);
+                if event.apply_to(&mut selection, &tree.nodes) {
+                    tree.selection = Arc::new(selection);
+                }
             })
             .unwrap();
         let events = Arc::clone(&heard);
@@ -1835,7 +1843,9 @@ mod tests {
         // a selection that moves nothing on screen still reaches the delta
         context.take_system_work();
         context
-            .update_component(tree, |tree, _| tree.select_only(&Arc::from("main")))
+            .update_component(tree, |tree, _| {
+                tree.selection = selection(SelectionMode::Single, &["main"]);
+            })
             .unwrap();
         let work = context.take_system_work();
         let delta = context.world().project_accessibility_delta(&work);
@@ -1881,6 +1891,89 @@ mod tests {
     }
 
     #[test]
+    fn keys_ask_the_application_for_selection_changes() {
+        use nana_ui_input::{
+            InputModifiers, InputPayload, KeyInput, KeyState, LogicalKey, PhysicalKey,
+        };
+        let multiple = sample().selection(selection(SelectionMode::Multiple, &["src"]));
+        let (mut context, tree, heard) = heard_tree(multiple);
+        let (root, _) = semantics(&context, tree);
+        assert!(root.multiselectable, "a multiple selection is announced");
+        context.focus_node(document(), tree.stable_id()).unwrap();
+        let mut input = crate::HeadlessInput::bind(&mut context, document());
+        let key = |name: &'static str, modifiers| {
+            InputPayload::Key(KeyInput {
+                physical: PhysicalKey(name.into()),
+                logical: LogicalKey(name.into()),
+                state: KeyState::Pressed,
+                repeat: false,
+                modifiers,
+            })
+        };
+        let ctrl = InputModifiers {
+            control: true,
+            ..InputModifiers::empty()
+        };
+        let shift = InputModifiers {
+            shift: true,
+            ..InputModifiers::empty()
+        };
+        let selected = |context: &AppContext| {
+            context
+                .read(tree, |tree| {
+                    tree.selection
+                        .selected_in(&TreeOrder::all(&tree.nodes))
+                        .iter()
+                        .map(|id| id.to_string())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap()
+        };
+
+        // Ctrl with an arrow moves the keyboard without selecting
+        input.route(&mut context, key("ArrowDown", ctrl)).unwrap();
+        assert_eq!(take(&heard), ["move+ctrl(lib)"]);
+        assert_eq!(selected(&context), ["src"]);
+        // Ctrl+Space toggles the row the keyboard is on
+        input.route(&mut context, key(" ", ctrl)).unwrap();
+        assert_eq!(take(&heard), ["toggle(lib)"]);
+        assert_eq!(selected(&context), ["src", "lib"]);
+        // Shift with End extends from the anchor
+        input.route(&mut context, key("End", shift)).unwrap();
+        assert_eq!(take(&heard), ["move+shift(readme)"]);
+        assert_eq!(selected(&context), ["lib", "main", "readme"]);
+        // Ctrl+A selects every visible row
+        input.route(&mut context, key("a", ctrl)).unwrap();
+        assert_eq!(take(&heard), ["all(readme)"]);
+        assert_eq!(selected(&context), ["src", "lib", "main", "readme"]);
+        // a plain arrow moves and selects that row alone
+        input
+            .route(&mut context, key("ArrowUp", InputModifiers::empty()))
+            .unwrap();
+        assert_eq!(take(&heard), ["move(main)"]);
+        assert_eq!(selected(&context), ["main"]);
+
+        // a single selection is not announced as multi-selectable
+        let (context, tree, _) = heard_tree(sample());
+        assert!(!semantics(&context, tree).0.multiselectable);
+    }
+
+    #[test]
+    fn collapsing_a_branch_keeps_the_selection_inside_it() {
+        let mut tree = sample().selection(selection(SelectionMode::Multiple, &["main", "readme"]));
+        assert!(tree.apply_event(TreeViewEvent::Toggle(Arc::from("src"))));
+        let mut state = SelectionState::clone(&tree.selection);
+        // the application checks its selection against every node, so a
+        // hidden row stays selected; the visible order would drop it
+        assert!(!state.reconcile(&TreeOrder::all(&tree.nodes)));
+        assert!(state.is_selected(&Arc::from("main")));
+        tree.selection = Arc::new(state);
+        assert!(tree.apply_event(TreeViewEvent::Toggle(Arc::from("src"))));
+        let rows = tree.visible_rows();
+        assert!(rows[2].selected && rows[3].selected);
+    }
+
+    #[test]
     fn a_tree_without_a_label_has_no_name() {
         let (context, tree, _) = heard_tree(sample());
         let (root, _) = semantics(&context, tree);
@@ -1893,7 +1986,7 @@ mod tests {
         let main = mid(row_geometry(&pointer, pointer_tree)[2].bounds);
         pointer_click(&mut pointer, main);
         let clicked = take(&pointer_heard);
-        assert_eq!(clicked.len(), 2, "{clicked:?}");
+        assert_eq!(clicked, ["press(main)"]);
 
         let (mut reader, reader_tree, reader_heard) = heard_tree(sample());
         assert!(act(
@@ -1935,7 +2028,7 @@ mod tests {
             )
             .unwrap();
         let stepped = take(&keyboard_heard);
-        assert_eq!(stepped, [r#"Select("lib")"#]);
+        assert_eq!(stepped, ["move(lib)"]);
 
         let (mut reader, reader_tree, reader_heard) = heard_tree(sample());
         assert!(act(
@@ -2097,7 +2190,6 @@ mod tests {
                 true,
                 [TreeNode::leaf(Arc::from("model"), "model").toggles([false, true])],
             )
-            .selected(true)
             .toggles([true, false]),
             TreeNode::leaf(Arc::from("light"), "light")
                 .toggles([true])
@@ -2107,6 +2199,7 @@ mod tests {
             TreeToggleColumn::new(Icon::Eye, "显示"),
             TreeToggleColumn::new(Icon::ShieldCheck, "锁定"),
         ])
+        .selection(selection(SelectionMode::Single, &["scene"]))
     }
 
     fn toggle_node(tree: Entity<TreeView>, slot: u16, column: usize) -> StableNodeId {
@@ -2340,7 +2433,7 @@ mod tests {
         assert_eq!(take(&reader_heard), pressed);
         let read = |context: &AppContext, tree: Entity<TreeView>| {
             context
-                .read(tree, |tree| (tree.nodes.clone(), tree.selected_ids()))
+                .read(tree, |tree| (tree.nodes.clone(), tree.selection.clone()))
                 .unwrap()
         };
         assert_eq!(read(&reader, reader_tree), read(&pointer, pointer_tree));

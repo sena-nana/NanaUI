@@ -217,8 +217,8 @@ pub use theme::{
     compile_theme_packages, linear_scrim_alpha, migrate_theme_package_json, space, type_scale,
 };
 pub use tree::{
-    TreeNavigation, TreeNode, TreePreorder, TreeStep, TreeViewEvent, tree_navigation_event,
-    tree_preorder,
+    TreeNavigation, TreeNode, TreeOrder, TreePreorder, TreeStep, TreeViewEvent,
+    tree_navigation_event, tree_preorder,
 };
 pub use typography::{
     FontKerningSpec, FontVariationSetting, LineBreakSpec, TextAutospaceSpec, TextEmphasis,

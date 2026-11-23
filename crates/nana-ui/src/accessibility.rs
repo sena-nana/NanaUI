@@ -2648,10 +2648,15 @@ mod tests {
                         "scene".into(),
                         "场景",
                         true,
-                        [TreeNode::leaf("model".into(), "模型").selected(true)],
+                        [TreeNode::leaf("model".into(), "模型")],
                     ),
                     TreeNode::branch("light".into(), "灯光", false, []),
                 ])
+                .selection({
+                    let mut selection = nana_ui_runtime::SelectionState::multiple();
+                    selection.select_only("model".into());
+                    selection
+                })
                 .label("大纲"),
             )
             .unwrap();
@@ -2672,6 +2677,7 @@ mod tests {
         let root = node(tree.stable_id());
         assert_eq!(root.role(), Role::Tree);
         assert_eq!(root.label(), Some("大纲"));
+        assert!(root.is_multiselectable());
         assert_eq!(
             root.children(),
             [

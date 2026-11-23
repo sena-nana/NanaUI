@@ -1193,8 +1193,12 @@ impl AppContext {
             if let Some(navigation) = navigation {
                 via!(self.navigate_focused_table(document, navigation, TABLE_PAGE_ROWS))?
             } else if primary {
-                // Ctrl with ArrowUp / ArrowDown, Space or A in a table
-                via!(self.table_selection_key(
+                // Ctrl with ArrowUp / ArrowDown, Space or A in a tree or a table
+                via!(self.focused_tree_key(
+                    document,
+                    key,
+                    nana_ui_core::SelectionModifiers::TOGGLE
+                ))? || via!(self.table_selection_key(
                     document,
                     key,
                     nana_ui_core::SelectionModifiers::TOGGLE
@@ -1210,7 +1214,7 @@ impl AppContext {
             }
         } else if modifiers.shift && !modifiers.alt && !modifiers.control && !modifiers.meta {
             // Shift with an arrow extends a tree's or a table's selection
-            via!(self.focused_tree_key(document, key, true))?
+            via!(self.focused_tree_key(document, key, nana_ui_core::SelectionModifiers::EXTEND))?
                 || via!(self.table_selection_key(
                     document,
                     key,
@@ -1251,7 +1255,9 @@ impl AppContext {
         if primary {
             return Ok(false);
         }
-        if key == "F2" && via!(self.focused_tree_key(document, key, false))? {
+        if key == "F2"
+            && via!(self.focused_tree_key(document, key, nana_ui_core::SelectionModifiers::NONE))?
+        {
             return Ok(true);
         }
         if matches!(key, "Delete" | "Backspace")
