@@ -46,6 +46,33 @@ Compatibility compares presentation, viewport mapping identity, physical size, p
 
 SDR sRGB `BGRA8_UNORM`, `BGRA8_UNORM_SRGB`, `RGBA8_UNORM` and `RGBA8_UNORM_SRGB` can share one draw: the final transfer handles channel order and sRGB encode/decode through texture views and keeps the encoded premultiplied channel values; when a `BGRA8_UNORM` consumer exists, it is preferred as the canonical. The linear direct-write compatibility profile stays a separate group. Subpixel versus grayscale, different alpha, HDR/P3 and different pixel densities are never quietly degraded to gain sharing. Consumer targets are always single-sampled textures, and requirements have no sample-count field. Rasterization MSAA is internal to the Scene painter: the painter resolves before a consumer reads.
 
+## Drawing a frame at a presentation time (Issue #304)
+
+Share cards, snapshots and fixed-step output draw one frame of a document at one time on the existing output base: no visible window, no Surface acquired, no new painter and no movie mode. Encoders, audio and muxing stay in the application and only consume finished targets.
+
+```rust
+let mut time = PresentationFrameTime::new(Duration::ZERO, Duration::from_millis(40)).unwrap();
+document.context_mut().set_presentation_playback(PresentationPlayback::Paused);
+for _ in 0..frames {
+    let frame = driver.render_document_at(
+        &mut document, time, [640.0, 360.0], host_revision, [0.0; 4], None, None,
+    )?;
+    // A Deferred group in frame.outcomes: poll, then retry with render_scene(document.scene(), ..);
+    // hand the frame to the encoder once sample returns the content_revision Submitted reported.
+    time = time.next();
+}
+```
+
+`PresentationDriver::render_document_at` runs one frame in a fixed order: set the document's `now` and frame interval (`AppContext::seek_presentation_frame`), flush (styles, text and explicit rectangles), then have the compositor evaluate at that `now` and draw each group. Size comes only from the consumers' target pixels and the logical viewport the caller passes; no window size is read, so an occluded, minimized or zero-sized window does not affect this path.
+
+- **Frame interval.** `PresentationFrameTime` carries `now` and the interval the frame stands for; the interval cannot be zero. During live playback the document's frame interval is the display interval; for fixed-step output it is the caller's step. Sampling tolerances read it, never the display interval or a resource node's own frame duration. Seeking backwards works the same way.
+- **Result.** The returned `DocumentFrame` carries the time, the samples the seek produced, the flush result and each group's outcome. `is_drawn()` is false when a group was `Deferred` and that time is not drawn yet: `poll`, then retry with `render_scene(document.scene(), ...)` without seeking again. An unchanged time and content returns `Reused` with zero submissions.
+- **Clock.** A document used only for output has no host time moving it. If the same document also presents in a window, hold it with `PresentationPlayback::Paused` first, or the next host time carries it away.
+- **Colour.** The output boundary keeps the existing profile contract: an SDR target is encoded to the target's sRGB at the painter's output and the Scene's working colour is unchanged. Devtools snapshots still refuse to treat extended-linear, PQ or HLG as an SDR snapshot.
+- **Ordinary applications.** With only ordinary windows this entry is never called, so there is no extra texture allocation or readback.
+
+Half-frame alignment of time-sampled resources (#303) and group effects evaluated at `now` (#302) join the same order when they land: resource alignment before the flush, group effects inside compositor evaluation. The current contract test covers free layers and compositor evaluation at a time (`output::driver_tests::presentation_time`).
+
 The original `ApplicationState` / `RuntimeApplication` / `RuntimeProgramContext` remain the compatibility entry for window applications. A windowless application is driven by `RuntimeDocument` + `PresentationDriver`; `EmbeddedRuntime`, which still depends on a winit window, is not this entry.
 
 ## Retained resources, versions and leases
@@ -93,7 +120,7 @@ fn window_output(&self, id: WindowId) -> Option<WindowOutputConfig> {
 ```
 
 - **Shared and separate drawing.** A transparent SDR window plus output of the same size/viewport and grayscale draws the gamma-premultiplied canonical once, then does the final Surface transfer; a straight output converts separately and does not require redrawing the UI. The default output is 1920×1080 `Contain`, and an opaque window may use subpixel and a different alpha contract; when incompatible, each group draws separately, still sharing the host's submission for that frame and never laying out twice.
-- **Static and throttled.** Unchanged output records no output; `max_fps` controls only the production cadence. A hidden, minimized or occluded window still drains messages and flushes under `while_hidden`, and encodes only for outputs or producers that changed; hidden static content is 0 UI renders / submits. A zero size produces no frame.
+- **Static and throttled.** Unchanged output records no output; `max_fps` controls only the production cadence. A hidden, minimized or occluded window still drains messages and flushes under `while_hidden`, and encodes only for outputs or producers that changed; hidden static content is 0 UI renders / submits. A zero-sized window (minimized on Windows, for example) still flushes and produces `while_hidden` output: the document is laid out at the last size the window could draw at, and a `Fixed` output uses its own target pixels; a window that was never drawable produces no frame (Issue #304).
 - **Fit and alpha.** `Fixed`, `MatchWindow`, `Scale` and proportional `Contain` / `Cover` are supported. `Premultiplied` uses gamma-space premultiplication suited to an external compositor; `Straight` uses a conversion target per canonical slot, and the extra pass is observable.
 - **Async lifecycle migration.** `WindowOutputFrame::texture()` keeps the in-callback read entry; asynchronous consumption must take `frame.lease()`. `WindowOutputLease` can be cloned, and the caller's frame uses `keep_alive_until_complete` before sampling. The "reused after two frames" assumption is gone: a slow consumer makes the pool return `Deferred` instead of overwriting a slot still in use.
 - **Slot capacity.** The window output pool has one more slot than the host's in-flight frame slots (3 + 1 = 4 by default, at most 8): the host already holds the current frame's slot before planning output, each remaining in-flight frame holds one output slot until it completes, and a published frame holds one more. With fewer, any GPU lag (Windows WARP, for example) defers output periodically under `SourceSlots`, and the window presents while the output drops frames.

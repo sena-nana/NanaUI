@@ -100,6 +100,15 @@ impl UiWorld {
         self.seek_presentation(to)
     }
 
+    /// Set the time to `to` as one frame of `interval`, as a caller drawing
+    /// the document at its own step does (Issue #304): samples as
+    /// [`Self::seek_presentation`] does, and `interval` is the frame interval
+    /// until the document plays again, whether `to` lies ahead or behind.
+    pub fn seek_presentation_frame(&mut self, to: Duration, interval: Duration) -> AnimationFrame {
+        self.presentation_clock.note_step(interval);
+        self.seek_presentation(to)
+    }
+
     fn resample_all_at(&mut self, to: Duration) -> AnimationFrame {
         self.animation_now = to;
         self.begin_motion_frame();

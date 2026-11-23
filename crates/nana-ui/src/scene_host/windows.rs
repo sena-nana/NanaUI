@@ -1083,6 +1083,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 material_override: None,
                 surface,
                 geometry,
+                drawable_geometry: geometry,
                 content_zoom: 1.0,
                 maximum_size: None,
                 input: InputTracker::default(),
@@ -1687,6 +1688,9 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let previous = self.geometry_of(id);
         if let Some(host) = self.window_contexts.get_mut(&id) {
             host.geometry = window_geometry(host.surface.window().as_ref());
+            if super::schedule::drawable_surface(host.geometry.physical_size) {
+                host.drawable_geometry = host.geometry;
+            }
         }
         let changed = self.geometry_of(id) != previous;
         let maximized = self.geometry_of(id).maximized;

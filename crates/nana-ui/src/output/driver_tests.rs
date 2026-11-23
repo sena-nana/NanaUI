@@ -20,6 +20,8 @@ mod diagnostics;
 mod headless_fetch;
 #[path = "driver_tests/headless_resources.rs"]
 mod headless_resources;
+#[path = "driver_tests/presentation_time.rs"]
+mod presentation_time;
 #[path = "driver_tests/retained_dependencies.rs"]
 mod retained_dependencies;
 #[path = "driver_tests/scoped_textures.rs"]

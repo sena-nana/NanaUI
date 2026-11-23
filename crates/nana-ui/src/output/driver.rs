@@ -66,6 +66,67 @@ pub struct PresentationDriver {
     traces: Option<Vec<super::trace::OutputTraceSnapshot>>,
 }
 
+/// The presentation time one drawn frame stands for, and the interval it
+/// covers (Issue #304). The interval is the document's frame interval for
+/// that frame: the display interval for live playback, the caller's step for
+/// fixed-step output. Sampling tolerances read it, never a resource's own
+/// frame duration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PresentationFrameTime {
+    now: std::time::Duration,
+    interval: std::time::Duration,
+}
+
+impl PresentationFrameTime {
+    /// `None` for a zero interval: a frame always stands for some time.
+    pub const fn new(now: std::time::Duration, interval: std::time::Duration) -> Option<Self> {
+        if interval.is_zero() {
+            None
+        } else {
+            Some(Self { now, interval })
+        }
+    }
+
+    pub const fn now(self) -> std::time::Duration {
+        self.now
+    }
+
+    pub const fn interval(self) -> std::time::Duration {
+        self.interval
+    }
+
+    /// The frame after this one: `now` advanced by the interval.
+    pub const fn next(self) -> Self {
+        Self {
+            now: self.now.saturating_add(self.interval),
+            interval: self.interval,
+        }
+    }
+}
+
+/// What [`PresentationDriver::render_document_at`] did for one frame.
+#[derive(Debug)]
+pub struct DocumentFrame {
+    /// The time the document was set to and drawn at.
+    pub time: PresentationFrameTime,
+    /// The samples and events setting the time produced.
+    pub animation: nana_ui_runtime::AnimationFrame,
+    /// The flush that brought the document to that time.
+    pub update: RuntimeFrameUpdate,
+    /// One per configured group, in plan order.
+    pub outcomes: Vec<ExternalRenderOutcome>,
+}
+
+impl DocumentFrame {
+    /// Whether every group drew or reused its frame for this time; `false`
+    /// while any group was deferred and must be rendered again.
+    pub fn is_drawn(&self) -> bool {
+        self.outcomes
+            .iter()
+            .all(|outcome| !matches!(outcome, ExternalRenderOutcome::Deferred))
+    }
+}
+
 #[derive(Debug)]
 pub enum PresentationError {
     Runtime(FrameworkError),
@@ -511,6 +572,64 @@ impl PresentationDriver {
                 }
             }
         }
+    }
+
+    /// Draw `document` as it presents at `time` (Issue #304): set the
+    /// document's time and frame interval, flush it at `logical_size` (styles,
+    /// text and every explicit rectangle), then have the compositor evaluate
+    /// at that time and draw each configured group at its own target pixels.
+    ///
+    /// No window, Surface or window size is read, so a hidden or zero-sized
+    /// window does not stop it. Live playback and fixed-step output are the
+    /// same call: a caller stepping at its own rate passes its step as the
+    /// interval. Hold the document
+    /// ([`nana_ui_runtime::PresentationPlayback::Paused`]) if anything else
+    /// observes host time on it, or that time moves the document on.
+    ///
+    /// The returned outcomes say what each group did. A `Deferred` group drew
+    /// nothing: retry with [`Self::render_scene`] on `document.scene()` once
+    /// [`Self::poll`] frees a slot. A consumer waits for the `Submitted`
+    /// content revision in [`Self::sample`] before it reads the frame.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_document_at(
+        &mut self,
+        document: &mut RuntimeDocument,
+        time: PresentationFrameTime,
+        logical_size: [f32; 2],
+        host_revision: u64,
+        clear_color: [f32; 4],
+        textures: Option<&HostTextureRegistry>,
+        renderers: Option<&SceneGpuRendererRegistry>,
+    ) -> Result<DocumentFrame, PresentationError> {
+        if !logical_size
+            .iter()
+            .all(|value| value.is_finite() && *value > 0.0)
+        {
+            return Err(PresentationError::InvalidViewport);
+        }
+        let animation = document
+            .context_mut()
+            .seek_presentation_frame(time.now, time.interval);
+        let update = flush_presentation(
+            document,
+            LayoutViewport::new(logical_size[0], logical_size[1]),
+            &mut self.text,
+        )
+        .map_err(PresentationError::Runtime)?;
+        let outcomes = self.render_scene(
+            document.scene(),
+            logical_size,
+            host_revision,
+            clear_color,
+            textures,
+            renderers,
+        )?;
+        Ok(DocumentFrame {
+            time,
+            animation,
+            update,
+            outcomes,
+        })
     }
 
     /// Flush the same RuntimeDocument used by window hosts, then produce its

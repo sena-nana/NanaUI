@@ -647,6 +647,23 @@ pub(super) fn drawable_surface(physical_size: (u32, u32)) -> bool {
     physical_size.0 > 0 && physical_size.1 > 0
 }
 
+/// The geometry a window's output lays out and draws at (Issue #304): the
+/// window's own while it has a surface to draw, otherwise the last one that
+/// did. A minimised window reports zero size on some platforms; its output
+/// keeps the layout it was showing rather than collapsing it, and a fixed
+/// output extent is the target's pixels whatever the window's size. Before
+/// the window was ever drawable this stays zero and the output draws nothing.
+pub(super) fn output_geometry(
+    current: nana_ui_platform::WindowGeometry,
+    last_drawable: nana_ui_platform::WindowGeometry,
+) -> nana_ui_platform::WindowGeometry {
+    if drawable_surface(current.physical_size) {
+        current
+    } else {
+        last_drawable
+    }
+}
+
 /// Per-window present demand. Compositor overlay may keep presenting this
 /// window without a CPU animation deadline. Hidden/minimized compositor does
 /// not drive GpuOnly ticks: resume presents at absolute time. The program's
@@ -854,6 +871,45 @@ mod tests {
         assert!(!drawable_surface((0, 100)));
         assert!(!drawable_surface((200, 0)));
         assert!(drawable_surface((200, 100)));
+    }
+
+    /// Issue #304: a minimised window reporting zero size keeps its output
+    /// at the last drawable geometry, and a fixed output extent stays the
+    /// target's pixels: the output still has a viewport to draw.
+    #[test]
+    fn a_zero_sized_window_outputs_at_its_last_drawable_geometry() {
+        use crate::output::window_output::{WindowOutputConfig, WindowOutputExtent};
+        use nana_ui_platform::WindowGeometry;
+        let shown = WindowGeometry {
+            physical_size: (1600, 1200),
+            logical_size: (800.0, 600.0),
+            scale_factor: 2.0,
+            ..WindowGeometry::default()
+        };
+        let minimised = WindowGeometry {
+            physical_size: (0, 0),
+            logical_size: (0.0, 0.0),
+            ..shown
+        };
+        assert_eq!(super::output_geometry(shown, shown), shown);
+        let geometry = super::output_geometry(minimised, shown);
+        assert_eq!(geometry, shown);
+        let config = WindowOutputConfig::default().with_extent(WindowOutputExtent::Fixed {
+            width: 320,
+            height: 240,
+        });
+        let extent = config.resolve_extent(&geometry).expect("target pixels");
+        assert_eq!(extent, [320, 240]);
+        let viewport = config
+            .viewport(&geometry, extent, [0.0; 4])
+            .expect("a viewport to draw");
+        assert_eq!(viewport.physical_size, [320, 240]);
+        assert!((viewport.scale_factor - 0.4).abs() < 1e-6);
+        // The window's own zero size has no viewport: that is what stopped it.
+        assert!(config.viewport(&minimised, extent, [0.0; 4]).is_none());
+        // A window never drawn has no last geometry; its output stays idle.
+        let never = super::output_geometry(minimised, WindowGeometry::default());
+        assert!(!drawable_surface(never.physical_size));
     }
 
     fn fps(n: u32) -> FrameDemand {

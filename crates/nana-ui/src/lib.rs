@@ -167,12 +167,13 @@ pub use nana_gpu::{
 };
 #[cfg(feature = "gpu")]
 pub use output::{
-    EmbeddedBindError, EmbeddedFrameBinding, EmbeddedInputMapping, EmbeddedMetadataError,
-    EmbeddedOutputMetadata, EmbeddedSurfaceNode, ExternalFrame, ExternalRenderOutcome,
-    ExternalSurface, ExternalSurfaceConfig, ExternalSurfaceError, OutputProvenance,
-    OutputSurfaceId, OutputWorkObservation, OverlayAdapterError, OverlayAdapterState,
-    OverlayFramePlan, OverlayHostAdapter, OverlayRelease, OverlayTransport, OverlayTransportError,
-    PresentationDriver, PresentationError, PresentationWork,
+    DocumentFrame, EmbeddedBindError, EmbeddedFrameBinding, EmbeddedInputMapping,
+    EmbeddedMetadataError, EmbeddedOutputMetadata, EmbeddedSurfaceNode, ExternalFrame,
+    ExternalRenderOutcome, ExternalSurface, ExternalSurfaceConfig, ExternalSurfaceError,
+    OutputProvenance, OutputSurfaceId, OutputWorkObservation, OverlayAdapterError,
+    OverlayAdapterState, OverlayFramePlan, OverlayHostAdapter, OverlayRelease, OverlayTransport,
+    OverlayTransportError, PresentationDriver, PresentationError, PresentationFrameTime,
+    PresentationWork,
 };
 #[cfg(all(feature = "gpu", feature = "hosted"))]
 pub use output::{

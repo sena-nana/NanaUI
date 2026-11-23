@@ -935,6 +935,16 @@ impl AppContext {
         self.settle_animation_frame(now, frame)
     }
 
+    /// Set the presentation time to `to` as one frame of `interval`: the
+    /// sampling of [`Self::seek_presentation`], with `interval` the frame
+    /// interval until the document plays again (see
+    /// [`crate::UiWorld::seek_presentation_frame`]).
+    pub fn seek_presentation_frame(&mut self, to: Duration, interval: Duration) -> AnimationFrame {
+        let frame = self.world.seek_presentation_frame(to, interval);
+        let now = self.component_lifecycle.now;
+        self.settle_animation_frame(now, frame)
+    }
+
     /// The interval the current frame stands for (display interval while
     /// playing, or the last step).
     pub fn presentation_frame_interval(&self) -> Duration {

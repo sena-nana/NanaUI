@@ -191,6 +191,10 @@ struct WindowContext {
     material_override: Option<nana_window::MaterialEffect>,
     surface: HostedGpuSurface,
     geometry: WindowGeometry,
+    /// The last geometry the window had a drawable surface at. While the
+    /// window is zero-sized (minimised on Windows), a hidden output lays the
+    /// document out and draws at this instead (Issue #304).
+    drawable_geometry: WindowGeometry,
     /// What the content is zoomed by on top of the display scale
     /// ([`WindowCommand::SetContentZoom`]); `geometry` stays the window's.
     content_zoom: f32,
@@ -1311,6 +1315,7 @@ fn complete_startup<Program: RuntimeProgram>(
         material_override: None,
         surface,
         geometry,
+        drawable_geometry: geometry,
         content_zoom: 1.0,
         maximum_size: None,
         input: InputTracker::default(),
@@ -1685,6 +1690,17 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     /// keeps [`Self::geometry_of`].
     fn content_geometry_of(&self, id: WindowId) -> WindowGeometry {
         self.geometry_of(id).content(self.content_zoom_of(id))
+    }
+
+    /// What `id`'s output lays the document out and draws at: the content
+    /// geometry, or the last drawable one while the window has no surface to
+    /// draw (see [`schedule::output_geometry`]).
+    fn output_geometry_of(&self, id: WindowId) -> WindowGeometry {
+        self.window_contexts
+            .get(&id)
+            .map(|host| schedule::output_geometry(host.geometry, host.drawable_geometry))
+            .unwrap_or_default()
+            .content(self.content_zoom_of(id))
     }
 
     /// What `id` presents, and how. A window that is gone presents nothing, so

@@ -207,6 +207,26 @@ fn stepping_advances_by_the_interval_and_makes_it_the_frame_interval() {
     assert!(close(width(&world), 8.5));
 }
 
+/// Issue #304: a caller drawing at its own step sets the time and the
+/// interval together, forwards or back; playing returns to the display's.
+#[test]
+fn a_frame_seek_sets_the_time_and_the_callers_interval_in_either_direction() {
+    let mut world = animated_world();
+    world.set_presentation_playback(PresentationPlayback::Paused);
+    world.set_presentation_display_interval(ms(8));
+    world.seek_presentation_frame(ms(600), ms(40));
+    assert_eq!(world.animation_now(), ms(600));
+    assert_eq!(world.presentation_frame_interval(), ms(40));
+    assert!(close(width(&world), 60.0));
+    assert!(close(opacity(&world), 0.6));
+    world.seek_presentation_frame(ms(250), ms(20));
+    assert_eq!(world.presentation_frame_interval(), ms(20));
+    assert!(close(width(&world), 25.0));
+    assert!(close(opacity(&world), 0.25));
+    world.set_presentation_playback(PresentationPlayback::REAL_TIME);
+    assert_eq!(world.presentation_frame_interval(), ms(8));
+}
+
 #[test]
 fn a_seek_back_before_the_start_waits_for_the_start_again() {
     let mut world = UiWorld::new();

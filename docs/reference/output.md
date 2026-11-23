@@ -46,6 +46,33 @@ let completed = driver.sample(consumer_id)?;
 
 SDR sRGB 的 `BGRA8_UNORM`、`BGRA8_UNORM_SRGB`、`RGBA8_UNORM`、`RGBA8_UNORM_SRGB` 可以共享绘制：最终 transfer 通过纹理视图处理通道顺序与 sRGB 编解码，保留 encoded 预乘通道值；存在 `BGRA8_UNORM` 消费方时优先以它作为 canonical。线性直写兼容 profile 仍独立分组。subpixel 与 grayscale、不同 alpha、HDR/P3 或不同像素密度不会被悄悄降级以取得共享。consumer 目标一律是单采样纹理，requirements 里没有采样数字段。光栅化 MSAA 属于 Scene painter 内部：painter 在 consumer 读取前完成 resolve。
 
+## 按呈现时间出帧（Issue #304）
+
+分享卡片、快照和按步长出图都在既有输出底座上画文档某一时刻的一帧，不需要可见窗口、不获取 Surface，也不新增 painter 或成片模式；编码器、音频与封装留在应用里，只消费画完的目标。
+
+```rust
+let mut time = PresentationFrameTime::new(Duration::ZERO, Duration::from_millis(40)).unwrap();
+document.context_mut().set_presentation_playback(PresentationPlayback::Paused);
+for _ in 0..frames {
+    let frame = driver.render_document_at(
+        &mut document, time, [640.0, 360.0], host_revision, [0.0; 4], None, None,
+    )?;
+    // frame.outcomes 里某组为 Deferred 时，poll 之后用 render_scene(document.scene(), ..) 重试；
+    // 等 sample 到 Submitted 报告的 content_revision 再交给编码器。
+    time = time.next();
+}
+```
+
+`PresentationDriver::render_document_at` 按固定顺序完成一帧：设定文档 `now` 与帧间隔（`AppContext::seek_presentation_frame`），flush（样式、文字与显式矩形落位），合成器在同一 `now` 求值并绘制各组。尺寸只来自 consumer 的目标像素与调用方给的逻辑视口，不读任何窗口尺寸，所以窗口被遮挡、最小化或尺寸为 0 都不影响这条路径。
+
+- **帧间隔。** `PresentationFrameTime` 同时携带 `now` 和这一帧代表的间隔，间隔不能为 0。实时播放时文档帧间隔是显示间隔；按步长出图时就是调用方的步长，取样容差读它，不读显示间隔，也不读某个资源节点自己的帧时长。往回 seek 同样生效。
+- **结果。** 返回的 `DocumentFrame` 带着这次的时间、seek 产生的采样、flush 结果与各组 outcome。`is_drawn()` 为假说明某组被 `Deferred`，这一时刻还没画；调用方 `poll` 后用 `render_scene(document.scene(), ...)` 重试，不重复 seek。时间与内容都没变时返回 `Reused`，0 提交。
+- **时钟。** 只给出帧使用的文档没有宿主时间推进它；若同一文档还在窗口里呈现，应先 `PresentationPlayback::Paused` 停住，否则下一次宿主时间会把它带走。
+- **色彩。** 出帧边界沿用既有 profile 合同：SDR 目标在 painter 输出处编码为目标的 sRGB，Scene 的工作色彩不变；devtools 快照仍拒绝把 extended-linear、PQ 或 HLG 当成 SDR 快照。
+- **普通应用。** 只有普通窗口时不调用这条入口，因此不多一次纹理分配或回读。
+
+按时间取样的资源半帧对齐（#303）与隔离组效果按 `now` 求值（#302）落地后接入同一顺序：资源对齐在 flush 之前，组效果在合成器求值里；当前合同测试覆盖自由图层与合成器按时间求值（`output::driver_tests::presentation_time`）。
+
 原 `ApplicationState` / `RuntimeApplication` / `RuntimeProgramContext` 仍是窗口应用的兼容入口。无窗口应用通过 `RuntimeDocument` + `PresentationDriver` 驱动；不应把仍依赖 winit Window 的 `EmbeddedRuntime` 当作此入口。
 
 ## 持久资源、版本与租约
@@ -93,7 +120,7 @@ fn window_output(&self, id: WindowId) -> Option<WindowOutputConfig> {
 ```
 
 - **共享与独立绘制。** 透明 SDR、相同尺寸/视口、grayscale 的 Window + output 只绘制一次 gamma 预乘 canonical，再做最终 Surface transfer；straight 输出另作转换，不要求重画 UI。默认 output 是 1920×1080 `Contain`，且 opaque Window 可能使用 subpixel 与不同 alpha 合同；不兼容时各组独立绘制，仍共用宿主当帧提交，不二次布局。
-- **静态与节流。** 输出不变时不录制输出；`max_fps` 只控制生产节拍。隐藏、最小化或遮挡窗口在 `while_hidden` 下继续排空消息/flush，并只为有变更的输出或 producer 编码；隐藏静态内容 0 UI render / submit。0 尺寸不产出帧。
+- **静态与节流。** 输出不变时不录制输出；`max_fps` 只控制生产节拍。隐藏、最小化或遮挡窗口在 `while_hidden` 下继续排空消息/flush，并只为有变更的输出或 producer 编码；隐藏静态内容 0 UI render / submit。窗口尺寸为 0（如 Windows 上最小化）时，`while_hidden` 输出仍 flush 并出帧：文档按窗口最后一次可绘制的尺寸排版，`Fixed` 输出用自己的目标像素；窗口从未可绘制过时不出帧（Issue #304）。
 - **适配与 alpha。** 支持 `Fixed`、`MatchWindow`、`Scale`，以及等比 `Contain` / `Cover`。`Premultiplied` 使用适合外部 compositor 的 gamma 空间预乘；`Straight` 对每个 canonical slot 使用对应的转换目标，额外 pass 可观测。
 - **异步生命周期迁移。** `WindowOutputFrame::texture()` 保留回调内读取入口；异步消费必须取 `frame.lease()`。`WindowOutputLease` 可 clone，并在采样前对调用方帧使用 `keep_alive_until_complete`。不再依赖“两帧后复用”假设，慢 consumer 令池返回 `Deferred`，不会覆盖仍在使用的 slot。
 - **槽位容量。** 窗口输出池的槽数是宿主在途帧槽数加一（默认 3 + 1 = 4，上限 8）：宿主在规划输出之前已占住当帧槽位，其余在途帧各占一个输出槽直到完成，已发布帧再占一个。少于这个数时，GPU 一落后（例如 Windows WARP）输出就会按 `SourceSlots` 周期性延后，窗口照常呈现而输出缺帧。

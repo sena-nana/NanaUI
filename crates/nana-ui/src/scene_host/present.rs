@@ -41,14 +41,19 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 .program
                 .window_output(id)
                 .is_some_and(|config| config.while_hidden);
-        if !super::schedule::drawable_surface(self.geometry_of(id).physical_size) {
-            return true;
-        }
         if output {
+            // A zero-sized window still flushes and draws its output, at the
+            // last size it had a surface for (Issue #304).
+            if !super::schedule::drawable_surface(self.output_geometry_of(id).physical_size) {
+                return true;
+            }
             // The output needs the document flushed; it shares the frame
             // with the window's producers.
             let producers = self.program.scene_resource_producers(id);
             return self.tick_hidden_output(event_loop, id, producers);
+        }
+        if !super::schedule::drawable_surface(self.geometry_of(id).physical_size) {
+            return true;
         }
         let Some(producers) = self.program.scene_resource_producers(id) else {
             self.producer_frames.remove(id);
