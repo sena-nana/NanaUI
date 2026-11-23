@@ -1162,9 +1162,12 @@ mod present_order_tests {
             before_acquire.contains("retry_frame_soon"),
             "a full pipeline skips the frame and tries again"
         );
-        assert!(
-            !body.contains("begin_frame("),
-            "the window thread never blocks on a frame slot"
-        );
+        // `GpuContext::begin_frame` waits for a slot; the damage tracker's
+        // own `begin_frame` is bookkeeping and may appear.
+        let blocking = body.match_indices("begin_frame(").any(|(index, _)| {
+            let before = &body[..index];
+            !before.ends_with("try_") && !before.ends_with("tracker.")
+        });
+        assert!(!blocking, "the window thread never blocks on a frame slot");
     }
 }
