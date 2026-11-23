@@ -325,7 +325,7 @@ impl UiWorld {
             active_descendant: None,
             position_in_set: None,
             set_size: None,
-            multiselectable: false,
+            multiselectable: state.multiselectable,
             has_popup: state.has_popup,
             multiline: state.multiline,
             editable: state.editable,

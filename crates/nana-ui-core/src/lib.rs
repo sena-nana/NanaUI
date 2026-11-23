@@ -45,6 +45,7 @@ pub mod persist;
 pub mod rich_text;
 pub mod scrollbar;
 pub mod selection;
+pub mod selection_state;
 pub mod semantics;
 pub mod settings;
 pub mod shared;
@@ -166,6 +167,10 @@ pub use scrollbar::{
     scrollbar_layout, scrollbar_track,
 };
 pub use selection::{SelectionMove, SingleSelection};
+pub use selection_state::{
+    KeyedOrder, SelectionGesture, SelectionMode, SelectionModifiers, SelectionOrder,
+    SelectionState, SelectionStep, keyed_order,
+};
 pub use semantics::{
     AnchoredMenuPlacement, ButtonKind, CardKind, ControlSize, DrawerSide, DropdownEvent,
     DropdownSelection, PopoverAlignment, PopoverPlacement, RADIO_ROW_INSET, StatusTone,

@@ -3224,6 +3224,10 @@ pub struct AccessibilityState {
     /// Layout direction of a composite such as a radio group or tab list.
     pub orientation: Option<crate::SelectionOrientation>,
     pub selected: Option<bool>,
+    /// More than one of its items can be selected at once
+    /// (`aria-multiselectable`): a table, list or grid driven by a
+    /// [`nana_ui_core::SelectionState`] in multiple mode.
+    pub multiselectable: bool,
     /// This control opens a menu (`aria-haspopup="menu"`): a menu button,
     /// the entry a dock stacks its items above. Assistive technology hears
     /// that it opens one, and ArrowUp / ArrowDown on it, when the control

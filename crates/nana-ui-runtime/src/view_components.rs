@@ -9979,6 +9979,9 @@ impl ComponentView for Stack {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Table {
     pub label: Option<Arc<str>>,
+    /// More than one row can be selected: assistive technology hears it
+    /// (`aria-multiselectable`). The selection itself is the application's.
+    pub multiselectable: bool,
     pub style: NodeStyle,
 }
 
@@ -9989,6 +9992,11 @@ impl Table {
 
     pub fn label(mut self, label: impl Into<Arc<str>>) -> Self {
         self.label = Some(label.into());
+        self
+    }
+
+    pub fn multiselectable(mut self, multiselectable: bool) -> Self {
+        self.multiselectable = multiselectable;
         self
     }
 
@@ -10034,6 +10042,7 @@ impl ComponentView for Table {
             AccessibilityState {
                 role: AccessibilityRole::Table,
                 label: self.label.clone(),
+                multiselectable: self.multiselectable,
                 ..AccessibilityState::default()
             },
         );
@@ -10081,7 +10090,7 @@ impl ComponentView for TableRow {
             id,
             world,
             mutations,
-            &self.style,
+            &selected_table_style(&self.style, self.selected),
             InteractionState {
                 pointer_events: false,
                 focusable: false,
@@ -10095,12 +10104,33 @@ impl ComponentView for TableRow {
     }
 }
 
+/// A selected row or cell paints the theme's selection behind its content,
+/// over whatever background it set.
+fn selected_table_style(style: &NodeStyle, selected: bool) -> std::borrow::Cow<'_, NodeStyle> {
+    if selected && style.background != Some(nana_ui_core::SemanticColorRole::Selected) {
+        let mut style = style.clone();
+        style.background = Some(nana_ui_core::SemanticColorRole::Selected);
+        std::borrow::Cow::Owned(style)
+    } else {
+        std::borrow::Cow::Borrowed(style)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TableCell {
     pub value: String,
     pub column_header: bool,
     pub selected: bool,
+    /// The key of the column the cell is in. A resizable header reports
+    /// drags under it ([`crate::TableColumnResized`]).
+    pub column: Option<Arc<str>>,
+    /// On a column header with a [`Self::column`]: dragging its trailing
+    /// edge resizes the column.
+    pub resizable: bool,
+    /// What a header drag clamps the column's width to, px.
+    pub extent_limits: (f32, f32),
     pub style: NodeStyle,
+    pub(crate) resize: Option<crate::data_table::ColumnResizeDrag>,
 }
 
 impl TableCell {
@@ -10109,17 +10139,44 @@ impl TableCell {
             value: value.into(),
             column_header: false,
             selected: false,
+            column: None,
+            resizable: false,
+            extent_limits: (0.0, f32::INFINITY),
             style: NodeStyle {
                 control_padding_x: Some(nana_ui_core::ControlPadding::ListItem),
                 text_vertical_alignment: TextVerticalAlignment::Center,
                 ..NodeStyle::default()
             },
+            resize: None,
         }
     }
 
     pub fn column_header(mut self, column_header: bool) -> Self {
         self.column_header = column_header;
         self
+    }
+
+    /// The key of the column this cell is in.
+    pub fn column(mut self, column: impl Into<Arc<str>>) -> Self {
+        self.column = Some(column.into());
+        self
+    }
+
+    /// On a column header: dragging the trailing edge resizes the column.
+    pub fn resizable(mut self, resizable: bool) -> Self {
+        self.resizable = resizable;
+        self
+    }
+
+    /// The header of `column`: its key, whether it resizes and the width
+    /// limits a drag clamps to.
+    pub fn header_for(self, column: &nana_ui_core::TableColumn) -> Self {
+        let mut cell = self
+            .column_header(true)
+            .column(column.key.as_str())
+            .resizable(column.resizable);
+        cell.extent_limits = (column.min_extent, column.max_extent);
+        cell
     }
 
     pub fn selected(mut self, selected: bool) -> Self {
@@ -10135,6 +10192,17 @@ impl TableCell {
 
 impl ComponentView for TableCell {
     const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::TABLE_CELL.type_id);
+
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        pointer: Some(&crate::data_table::TABLE_CELL_POINTER),
+        ..crate::TypeBehavior::NONE
+    };
+
+    fn reconcile(&mut self, mut next: Self) {
+        // a header drag in progress is the cell's own
+        next.resize = self.resize.take();
+        *self = next;
+    }
 
     fn share_layouts(
         &mut self,
@@ -10162,7 +10230,7 @@ impl ComponentView for TableCell {
             id,
             world,
             mutations,
-            &self.style,
+            &selected_table_style(&self.style, self.selected),
             InteractionState {
                 pointer_events: true,
                 focusable: true,

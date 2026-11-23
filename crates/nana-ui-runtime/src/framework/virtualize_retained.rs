@@ -974,19 +974,32 @@ impl AppContext {
         R: Clone + Eq + Hash,
         C: Clone + Eq + Hash,
     {
+        // Asked on every sync, so it allocates nothing unless a cell is
+        // active: the document comes without a node snapshot, and a cell is
+        // told by where it sits (a row's child under the table; commits
+        // keep exactly those) instead of a set of every mounted cell.
         let document = self
             .world
-            .node(table.id)
-            .ok_or(FrameworkError::MissingView(table.id))?
-            .document;
+            .document_of(table.id)
+            .ok_or(FrameworkError::MissingView(table.id))?;
         let focused = self.world.focused(document);
         let ime = self.virtual_ime_target(focused, items.ime_owner);
-        Ok(self.activity_items(
-            table.id,
-            items.cells.values().map(|entity| entity.id),
-            focused,
-            ime,
-        ))
+        let mut activity = HashSet::new();
+        for target in [focused, ime].into_iter().flatten() {
+            let mut current = Some(target);
+            while let Some(id) = current {
+                if id == table.id {
+                    break;
+                }
+                let parent = self.world.parent_id(id);
+                if parent.and_then(|row| self.world.parent_id(row)) == Some(table.id) {
+                    activity.insert(id);
+                    break;
+                }
+                current = parent;
+            }
+        }
+        Ok(activity)
     }
 
     /// The part of `scroll`'s viewport that falls on `list`, in the list's

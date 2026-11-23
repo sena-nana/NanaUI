@@ -37,6 +37,7 @@ mod theme_intent;
 /// [`UiWorld::set_default_language`] take.
 pub use nana_text::font::LanguageTag;
 pub use paint_script::PaintScript;
+mod data_table;
 mod date_picker;
 mod diff_view;
 mod dock;
@@ -268,6 +269,9 @@ pub use custom_paint::{
     PaintText, Painter, PathVerb, Radius, ResolvedGradient, ResolvedPaint, StrokeStyle, TextSize,
     affine_multiply,
 };
+pub use data_table::{
+    TABLE_RESIZE_HANDLE, TableColumnResized, TableSelectionRequested, selection_modifiers,
+};
 pub use date_picker::{DateChanged, DateCursorMoved, DatePicker, DatePickerSlots};
 pub use diff_view::{DiffEvent, DiffHunk, DiffLayout, DiffLine, DiffLineKind, DiffView};
 pub use dock::{
@@ -397,6 +401,10 @@ pub use nana_ui_core::{
     WINDOW_CONTROL_GAP, WINDOW_CONTROL_WIDTH, WhiteSpaceSpec, WordBreakSpec, WorkCounters,
     WritingContext, WritingModeSpec, custom_window_controls_width, graph_node_fitted_height,
     port_tangent, space, tree_navigation_event, type_scale,
+};
+pub use nana_ui_core::{
+    KeyedOrder, SelectionGesture, SelectionMode, SelectionModifiers, SelectionOrder,
+    SelectionState, SelectionStep, TableColumn, keyed_order,
 };
 pub use overlay_surfaces::{
     ConfirmDialog, ConfirmIntent, ConfirmSlots, Drawer, ModalBehavior, ModalFrameGeometry,

@@ -406,6 +406,19 @@ impl VirtualTableLayout {
         true
     }
 
+    /// Where the column keyed `key` is.
+    pub fn column_index(&self, key: &str) -> Option<usize> {
+        self.columns.iter().position(|column| column.key == key)
+    }
+
+    /// [`Self::resize_column`] by the column's key, as a header drag reports
+    /// it. Clamped to the column's limits; a column that is not resizable,
+    /// or one the table does not have, is left alone.
+    pub fn resize_column_by_key(&mut self, key: &str, extent: f32) -> bool {
+        self.column_index(key)
+            .is_some_and(|column| self.resize_column(column, extent))
+    }
+
     pub fn resize_column(&mut self, column: usize, extent: f32) -> bool {
         let Some(model) = self.columns.get_mut(column) else {
             return false;

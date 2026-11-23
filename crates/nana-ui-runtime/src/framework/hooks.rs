@@ -634,6 +634,8 @@ routed_calls! {
     focus_segmented_option: fn(&mut AppContext, DocumentId, StableNodeId) -> Result<bool, FrameworkError>,
     segmented_option_is_tab_stop: fn(&AppContext, StableNodeId) -> bool,
     navigate_focused_table: fn(&mut AppContext, DocumentId, crate::TableNavigation, usize) -> Result<bool, FrameworkError>,
+    table_selection_key: fn(&mut AppContext, DocumentId, &str, nana_ui_core::SelectionModifiers) -> Result<bool, FrameworkError>,
+    table_column_edge_at: fn(&AppContext, StableNodeId, f32, f32) -> bool,
     end_text_area_resize: fn(&mut AppContext, DocumentId, u64, bool) -> Result<bool, FrameworkError>,
     update_text_area_resize: fn(&mut AppContext, DocumentId, u64, f32, f32) -> Result<bool, FrameworkError>,
     begin_text_area_resize: fn(&mut AppContext, u64, StableNodeId, f32, f32) -> Result<bool, FrameworkError>,

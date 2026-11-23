@@ -58,14 +58,46 @@ You do the sort comparison. A header activation goes through `toggle_sort(column
 
 When a header is activated, you call `toggle_sort`, read the current `TableSort`, sort your own data by that column key and direction, and then change the order of the table's child nodes.
 
+## Resizing columns
+
+Build header cells as `TableCell::new(title).header_for(&column)`: that carries the column key, whether it resizes, and the width range `.limits` gave. Over the trailing 5 px of a resizable header (`TABLE_RESIZE_HANDLE`) the pointer shows a horizontal resize cursor, and dragging there emits `TableColumnResized { column, extent, finished }` on the `Table`: `finished: false` on each move of the drag, then `finished: true` on release, the width already clamped to the range. A cancelled drag ends at the width it started from.
+
+The table does not change its own geometry. When you receive it, call `layout.resize_column_by_key(&column, extent)` and sync again (`sync_virtual_table_retained_in`): header and body cells are placed from the same column extents, so they stay aligned, frozen columns and header included. To resize only on release, handle only `finished: true`.
+
+## Selection
+
+Which rows are selected is your state, usually a `SelectionState<RowKey>` (see below). The table only reports requests:
+
+- A press on a body cell emits `TableSelectionRequested { row, cell, gesture: SelectionGesture::Press(modifiers) }`. Ctrl (Cmd on macOS) toggles, Shift selects the range from the anchor, both together add a range.
+- With focus on a body cell, the arrows, Home / End and Page Up / Down move focus and emit `Move`; with Shift they extend from the anchor; Ctrl with ArrowUp / ArrowDown moves focus without selecting; Ctrl+Space emits `Toggle`; Ctrl+A emits `SelectAll`.
+- Header rows raise no selection requests.
+
+`row` is the row node; `VirtualTableItems::row_key_of(&cx, row)` turns it into your row key. Hand the request to `SelectionState::apply(gesture, row_key, &order)`, then call `cx.sync_virtual_table_selection(&items, |key| selection.is_selected(key))`: mounted rows and their cells get `selected`, paint the theme's selection background and report selected to assistive technology; rows not mounted need nothing, as `build_row` builds them from the same predicate when they scroll in. With an unchanged selection this writes nothing and allocates nothing. `Table::multiselectable(true)` tells assistive technology several rows can be selected.
+
+## SelectionState
+
+`nana_ui::SelectionState<K>` is pure-data selection state tied to no control, shared by `each_virtual`, `List`, grids and virtual tables alike. It stores only your business keys: the selected set, the current item (where the keyboard is) and the anchor (where a Shift range starts). It stores no positions, rows or nodes, so a row scrolled out of view and never built stays selected.
+
+Operations that need order (Shift ranges, arrow keys, select all, cleanup after the data changes) read it from a `SelectionOrder` you pass in: a slice of keys, or `keyed_order(&items, |item| item.id)`, narrowed with `.selectable(..)` to leave out disabled items. The order is never copied into the state.
+
+- `SelectionState::single()` holds at most one item; `multiple()` any number.
+- `apply(gesture, key, &order)` is the one entry point for pointer and keyboard; `navigate(step, modifiers, &order)` takes one `SelectionStep` and applies it.
+- `reconcile(&order)` is called after the data gains, loses or reorders items: keys missing from the order are dropped; a current item that went away moves to the selectable item nearest where it was; reordering loses nothing.
+- `is_selected`, `selected_in(&order)` (in order), `current`, `anchor`, `revision` (bumped on every change).
+
+In a reactive view keep it in a `Signal<SelectionState<K>>` and bind rows with `.selected(sel.map(move |s| s.is_selected(&key)))`.
+
 ## Properties
 
 | Property | Type | Description |
 | --- | --- | --- |
 | `.label` | — | On `Table::new()`, gives the whole table a name. The accessible role is table |
+| `.multiselectable` | `bool` | On `Table::new()`, tells assistive technology several rows can be selected |
 | `.selected` | — | On one row of `TableRow::new()`, marks the current row |
 | `value` | — | The text of `TableCell::new(value)` is that value |
 | `.column_header` | — | `true` projects the cell as a column header, otherwise it is a data cell |
+| `.header_for(&column)` | `&TableColumn` | A header cell: column key, whether it resizes, width range |
+| `.column` / `.resizable` | — | Set the column key, or whether dragging the trailing edge resizes, on their own |
 | `row_extents` | — | Each row's height taken by `VirtualTableLayout::new` |
 | `columns` | A set of `nana_ui::TableColumn` | Same as above |
 | `key` | — | The column key of `TableColumn::new(key, extent)` |
@@ -76,7 +108,13 @@ When a header is activated, you call `toggle_sort`, read the current `TableSort`
 
 ## Events
 
-There is no separate event type. Sorting from a header is done by calling `toggle_sort` or `set_sort` yourself; see above.
+| Event | Emitted on | Description |
+| --- | --- | --- |
+| `TableCellFocused` | `Table` | An arrow key moved focus to a cell |
+| `TableColumnResized` | `Table` | A header drag resized a column; see “Resizing columns” |
+| `TableSelectionRequested` | `Table` | A press or key asked for the selection to change; see “Selection” |
+
+Sorting from a header is done by calling `toggle_sort` or `set_sort` yourself; see above.
 
 ## Slots
 

@@ -380,7 +380,10 @@ pub use scene_paint::{
     pq_oetf, resolve_background_image_url, set_background_image_url_base, set_material_policy,
     tone_map_headroom_rgb,
 };
-pub use selection::{SelectionMove, SingleSelection};
+pub use selection::{
+    KeyedOrder, SelectionGesture, SelectionMode, SelectionModifiers, SelectionMove, SelectionOrder,
+    SelectionState, SelectionStep, SingleSelection, keyed_order,
+};
 pub use settings::{
     AppearancePreference, AppearanceSettings, BackdropTarget, SettingsError, SettingsModel,
     SettingsState, SettingsTab, SettingsTabId, WindowMaterialMode,

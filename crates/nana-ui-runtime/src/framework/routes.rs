@@ -182,7 +182,7 @@ pub(crate) fn segmented(hooks: &mut TypeHooks) {
 }
 
 pub(crate) fn table(hooks: &mut TypeHooks) {
-    route!(hooks; navigate_focused_table);
+    route!(hooks; navigate_focused_table, table_selection_key, table_column_edge_at);
 }
 
 pub(crate) fn text_area(hooks: &mut TypeHooks) {

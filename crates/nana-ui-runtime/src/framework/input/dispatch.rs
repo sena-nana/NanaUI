@@ -1192,7 +1192,14 @@ impl AppContext {
             };
             if let Some(navigation) = navigation {
                 via!(self.navigate_focused_table(document, navigation, TABLE_PAGE_ROWS))?
-            } else if !primary {
+            } else if primary {
+                // Ctrl with ArrowUp / ArrowDown, Space or A in a table
+                via!(self.table_selection_key(
+                    document,
+                    key,
+                    nana_ui_core::SelectionModifiers::TOGGLE
+                ))?
+            } else {
                 match key {
                     "Backspace" => self.delete_focused_text_backward(document)?,
                     _ => match text {
@@ -1200,12 +1207,15 @@ impl AppContext {
                         None => false,
                     },
                 }
-            } else {
-                false
             }
         } else if modifiers.shift && !modifiers.alt && !modifiers.control && !modifiers.meta {
-            // Shift with an arrow extends a tree's selection
+            // Shift with an arrow extends a tree's or a table's selection
             via!(self.focused_tree_key(document, key, true))?
+                || via!(self.table_selection_key(
+                    document,
+                    key,
+                    nana_ui_core::SelectionModifiers::EXTEND
+                ))?
         } else if modifiers.alt && !modifiers.shift && !modifiers.control && !modifiers.meta {
             // Alt with an arrow moves a reorder list's row
             optional_input!("controls", self.focused_reorder_list_key(document, key))?

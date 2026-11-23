@@ -1293,6 +1293,11 @@ where
         self.rows.get(key).copied()
     }
 
+    /// The mounted rows, by key, in no particular order.
+    pub(crate) fn rows(&self) -> impl Iterator<Item = (&R, &Entity<TableRow>)> {
+        self.rows.iter()
+    }
+
     pub fn cell_entity(&self, row: &R, column: &C) -> Option<Entity<TableCell>> {
         self.cells.get(&(row.clone(), column.clone())).copied()
     }
@@ -4027,11 +4032,32 @@ impl AppContext {
     /// Move table focus using backend-neutral navigation intent. The retained
     /// hierarchy is the row/cell authority; no parallel selection matrix is
     /// stored by the component or platform adapter.
+    ///
+    /// A move onto a body cell also raises
+    /// [`crate::TableSelectionRequested`] with a plain
+    /// [`nana_ui_core::SelectionGesture::Move`].
     pub fn navigate_table(
         &mut self,
         table: Entity<Table>,
         navigation: crate::TableNavigation,
         page_rows: usize,
+    ) -> Result<bool, FrameworkError> {
+        self.navigate_table_with(
+            table,
+            navigation,
+            page_rows,
+            nana_ui_core::SelectionModifiers::NONE,
+        )
+    }
+
+    /// [`Self::navigate_table`] with the selection modifiers the key came
+    /// with: Shift extends from the anchor, Ctrl moves without selecting.
+    pub fn navigate_table_with(
+        &mut self,
+        table: Entity<Table>,
+        navigation: crate::TableNavigation,
+        page_rows: usize,
+        modifiers: nana_ui_core::SelectionModifiers,
     ) -> Result<bool, FrameworkError> {
         self.read(table, |_| ())?;
         let table_node = self
@@ -4086,6 +4112,7 @@ impl AppContext {
                 cell,
             });
         })?;
+        self.request_table_move_selection(table, cell, modifiers)?;
         Ok(true)
     }
 

@@ -151,6 +151,9 @@ impl AppContext {
                 CursorIcon::NsResize
             };
         }
+        if target.is_some_and(|node| via!(self.table_column_edge_at(node, x, y))) {
+            return CursorIcon::EwResize;
+        }
         let css = target
             .and_then(|node| self.world.computed_style(node))
             .and_then(|style| style.cursor_specified.then_some(style.cursor));
