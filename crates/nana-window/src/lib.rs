@@ -99,9 +99,10 @@ pub use reveal::{RevealError, reveal_in_file_manager};
 pub use size_move::LiveSizeMove;
 pub use splash::{
     LogoInfo, MAX_LOGO_DECODED_BYTES, MAX_LOGO_EDGE, MAX_LOGO_ENCODED_BYTES, NativeSplash,
-    SplashAnimation, SplashAnimationOutcome, SplashBackground, SplashFailure, SplashHandoff,
-    SplashLogo, SplashLogoError, SplashLogoSource, SplashOutcome, SplashPackageError, SplashSkip,
-    SplashSpec, SplashStaticReason, SplashWork, validate_logo,
+    PendingSplashRenderer, SplashAnimation, SplashAnimationOutcome, SplashBackground,
+    SplashFailure, SplashHandoff, SplashLogo, SplashLogoError, SplashLogoSource, SplashOutcome,
+    SplashPackageError, SplashRenderer, SplashSkip, SplashSpec, SplashStaticReason, SplashWork,
+    validate_logo,
 };
 pub use text_scale_preference::{set_text_scale_waker, system_text_scale, take_text_scale_change};
 pub use transparency_preference::{system_reduced_transparency, take_reduced_transparency_change};

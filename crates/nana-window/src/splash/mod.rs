@@ -314,6 +314,9 @@ pub enum SplashSkip {
     Embedded,
     /// This platform has no native splash path.
     PlatformUnsupported,
+    /// The UI was ready before the splash's rendering resources were: there
+    /// was nothing left for it to cover.
+    UiReadyFirst,
 }
 
 impl SplashSkip {
@@ -323,6 +326,7 @@ impl SplashSkip {
             Self::HiddenStart => "window starts hidden",
             Self::Embedded => "embedded host",
             Self::PlatformUnsupported => "platform has no native splash",
+            Self::UiReadyFirst => "the UI was ready first",
         }
     }
 }
@@ -464,6 +468,82 @@ pub struct SplashWork {
     pub live_resources: usize,
 }
 
+/// The rendering resources a splash needs, made off the thread that shows
+/// it. On Windows that is a D3D11 device, whose driver load takes hundreds
+/// of milliseconds on a cold start; made on the event thread, it blocks that
+/// thread for as long. Other platforms need nothing and are ready at once.
+#[derive(Clone)]
+pub struct SplashRenderer {
+    #[cfg(target_os = "windows")]
+    device: platform::RenderDevice,
+}
+
+/// A [`SplashRenderer`] being made.
+pub struct PendingSplashRenderer {
+    /// `None` once the result was handed over.
+    #[cfg(target_os = "windows")]
+    receiver: Option<std::sync::mpsc::Receiver<Result<SplashRenderer, SplashFailure>>>,
+    #[cfg(not(target_os = "windows"))]
+    ready: Option<SplashRenderer>,
+}
+
+impl SplashRenderer {
+    /// Starts making the renderer on a thread of its own. `ready` is called
+    /// from that thread once [`PendingSplashRenderer::try_take`] has a
+    /// result; it must only wake the caller's event loop. Where nothing has
+    /// to be made, the result is there at once and `ready` is not called.
+    pub fn prepare(ready: impl FnOnce() + Send + 'static) -> PendingSplashRenderer {
+        #[cfg(target_os = "windows")]
+        {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let failed = sender.clone();
+            let spawned = std::thread::Builder::new()
+                .name("nana-splash-device".into())
+                .spawn(move || {
+                    let made = platform::RenderDevice::create().map(|device| Self { device });
+                    let _ = sender.send(made);
+                    ready();
+                });
+            if let Err(error) = spawned {
+                let _ = failed.send(Err(SplashFailure::Native(error.to_string())));
+            }
+            PendingSplashRenderer {
+                receiver: Some(receiver),
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            drop(ready);
+            PendingSplashRenderer {
+                ready: Some(Self {}),
+            }
+        }
+    }
+}
+
+impl PendingSplashRenderer {
+    /// The renderer, or why it could not be made, once there is a result.
+    /// Returns it once.
+    pub fn try_take(&mut self) -> Option<Result<SplashRenderer, SplashFailure>> {
+        #[cfg(target_os = "windows")]
+        {
+            let made = match self.receiver.as_ref()?.try_recv() {
+                Ok(made) => made,
+                Err(std::sync::mpsc::TryRecvError::Empty) => return None,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(SplashFailure::Native(
+                    "the splash device thread stopped".into(),
+                )),
+            };
+            self.receiver = None;
+            Some(made)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            self.ready.take().map(Ok)
+        }
+    }
+}
+
 /// The one owner of every native object an Early Splash creates. Dropping it
 /// removes and releases all of them.
 pub struct NativeSplash {
@@ -498,6 +578,37 @@ impl NativeSplash {
         system_background: FallbackColor,
         reduced_motion: bool,
     ) -> (Option<Self>, SplashOutcome) {
+        Self::show_inner(window, None, spec, png, system_background, reduced_motion)
+    }
+
+    /// [`Self::show`] with rendering resources made beforehand
+    /// ([`SplashRenderer::prepare`]), so this call does not make them.
+    pub fn show_with<W: HasWindowHandle + ?Sized>(
+        window: &W,
+        renderer: &SplashRenderer,
+        spec: &SplashSpec,
+        png: &[u8],
+        system_background: FallbackColor,
+        reduced_motion: bool,
+    ) -> (Option<Self>, SplashOutcome) {
+        Self::show_inner(
+            window,
+            Some(renderer),
+            spec,
+            png,
+            system_background,
+            reduced_motion,
+        )
+    }
+
+    fn show_inner<W: HasWindowHandle + ?Sized>(
+        window: &W,
+        renderer: Option<&SplashRenderer>,
+        spec: &SplashSpec,
+        png: &[u8],
+        system_background: FallbackColor,
+        reduced_motion: bool,
+    ) -> (Option<Self>, SplashOutcome) {
         let info = match validate_png(png) {
             Ok(info) => info,
             Err(error) => return (None, SplashOutcome::Failed(SplashFailure::Logo(error))),
@@ -522,7 +633,19 @@ impl NativeSplash {
                 animation,
             };
             let mut work = SplashWork::default();
-            match platform::Splash::show(window, &request, &mut work) {
+            #[cfg(target_os = "windows")]
+            let shown = platform::Splash::show(
+                window,
+                &request,
+                renderer.map(|renderer| &renderer.device),
+                &mut work,
+            );
+            #[cfg(target_os = "macos")]
+            let shown = {
+                let _ = renderer;
+                platform::Splash::show(window, &request, &mut work)
+            };
+            match shown {
                 Ok((splash, animated)) => {
                     let outcome = animation_outcome(spec.animation, reduced_motion, animated);
                     work.live_resources = splash.live_resources();
@@ -539,7 +662,7 @@ impl NativeSplash {
         }
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         {
-            let _ = (window, png, info, background, animation);
+            let _ = (window, renderer, png, info, background, animation);
             (
                 None,
                 SplashOutcome::Skipped(SplashSkip::PlatformUnsupported),
@@ -781,6 +904,41 @@ mod tests {
         assert_eq!(
             fit_logo((50.0, 50.0), (100.0, 100.0), (10, 10)),
             (0.0, 0.0, 50.0, 50.0)
+        );
+    }
+
+    /// The renderer is made off the calling thread and handed over once:
+    /// `ready` fires after the result is there, and nothing is waited for.
+    #[test]
+    fn a_prepared_renderer_arrives_once_and_wakes_its_caller() {
+        let (woke, woken) = std::sync::mpsc::channel();
+        let mut pending = SplashRenderer::prepare(move || {
+            let _ = woke.send(());
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        let made = loop {
+            if let Some(made) = pending.try_take() {
+                break made;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the renderer never arrived"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        // A machine without a GPU still gets WARP; a failure is reported,
+        // not waited on.
+        if cfg!(target_os = "windows") {
+            assert!(made.is_ok(), "{:?}", made.err());
+            woken
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("the caller is woken");
+        } else {
+            assert!(made.is_ok());
+        }
+        assert!(
+            pending.try_take().is_none(),
+            "the result is handed over once"
         );
     }
 }

@@ -46,7 +46,7 @@ NanaApplication::builder(identity)
 | **Windows** | 独立无激活 `WS_POPUP` 窗口上的 DirectComposition 视觉树（由短生命周期 D3D11 设备上传一次位图，交接后立即释放） | `IDCompositionAnimation`（由 DWM 推进） | 主窗口在 Splash 期间通过 `DWMWA_CLOAK` 隐身；接管目标帧 `present` 并等待 `on_submitted_work_done` 完成后，取消 Cloak → `DwmFlush()` → 移除 Splash 视觉并释放 D3D11/DComp |
 | **Linux 及其他** | 不显示原生 Splash，直接上报 `Skipped(PlatformUnsupported)` | — | `UiReady` 与接管 ticket 合同照常工作，应用代码无需分支判断 |
 
-实际生效结果记录在 `StartupStatus::splash`（`SplashOutcome`）中，绝不把申请值当作结果：`Shown { animation: Applied(..) | Static { requested, reason } }`（当系统开启“减少动态效果”或合成器拒绝动画时自动降级为静态 Logo 并注明 `ReducedMotion` / `NativeAnimationFailed`）、`Skipped(..)`（未配置、隐藏启动 `visible = false`、嵌入式宿主或平台不支持）或 `Failed(Logo(..) | Package(..) | Native(..))`（Logo 损坏或超限时不阻断应用启动，仅跳过 Splash）。
+实际生效结果记录在 `StartupStatus::splash`（`SplashOutcome`）中，绝不把申请值当作结果：`Shown { animation: Applied(..) | Static { requested, reason } }`（当系统开启“减少动态效果”或合成器拒绝动画时自动降级为静态 Logo 并注明 `ReducedMotion` / `NativeAnimationFailed`）、`Skipped(..)`（未配置、隐藏启动 `visible = false`、嵌入式宿主、平台不支持，或 Splash 的渲染资源还没建好 UI 已就绪的 `UiReadyFirst`）或 `Failed(Logo(..) | Package(..) | Native(..))`（Logo 损坏或超限时不阻断应用启动，仅跳过 Splash）。
 
 ### Windows 实机交接验收（Issue #273）
 
@@ -67,7 +67,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/validate-startup-han
 | `--bad-logo` | `Failed(Logo(NotPng))`，应用照常启动 | — |
 | `--no-splash` | `Skipped(NotConfigured)` | 修复前有一帧（约 30 ms）是只有边框的空窗口；修复后窗口第一次出现时已带内容，无空帧 |
 
-观察到的两点：没有 Splash 时主窗口在 `UiReady` 显示、约 150 ms 后才有第一帧。现在宿主在显示前 Cloak 它（照常显示与取得焦点，只是不合成到屏幕），等第一帧的 GPU 工作完成再解除；1 s 内仍没有第一帧时照样解除，画不出来的窗口也会出现。不能 Cloak 的平台照旧直接显示；有 Splash 时事件线程最长阻塞 260–445 ms（无 Splash 约 50 ms），即建 Splash 的时间。截屏频率分辨不出单帧（16 ms）的重复或空帧。macOS 未执行（没有机器）；Linux 按上表报 `Skipped(PlatformUnsupported)`，本次没有在真实 Linux 上运行。
+观察到的两点：没有 Splash 时主窗口在 `UiReady` 显示、约 150 ms 后才有第一帧。现在宿主在显示前 Cloak 它（照常显示与取得焦点，只是不合成到屏幕），等第一帧的 GPU 工作完成再解除；1 s 内仍没有第一帧时照样解除，画不出来的窗口也会出现。不能 Cloak 的平台照旧直接显示。有 Splash 时事件线程曾最长阻塞 260–445 ms，几乎都是建 Splash 的 D3D11 设备（加载驱动）；现在这个设备在 `nana-splash-device` 线程上与窗口、设备请求同时创建，建好后唤醒事件循环再显示 Splash，最长阻塞降到 36–65 ms（无 Splash 约 50 ms），Splash 提交于 214–326 ms。`--composition` 仍阻塞约 320–460 ms：`GpuBootstrap::probe`（创建 DX12 实例并枚举适配器）在建窗口之前运行，它的结果决定窗口是否保留重定向位图。截屏频率分辨不出单帧（16 ms）的重复或空帧。macOS 未执行（没有机器）；Linux 按上表报 `Skipped(PlatformUnsupported)`，本次没有在真实 Linux 上运行。
 
 ### 从 `early-splash` 资源包读取 Logo
 

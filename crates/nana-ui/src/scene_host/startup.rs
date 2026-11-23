@@ -209,6 +209,9 @@ pub(super) struct StartupPainter {
 /// the splash comes off before the window it covers goes.
 struct Attempt {
     splash: Option<NativeSplash>,
+    /// The splash is wanted but its renderer is still being made; the
+    /// window is not shown until it is, or until the UI is ready instead.
+    splash_waiting: bool,
     /// The primary is shown but held invisible behind the splash.
     held: bool,
     #[cfg(not(target_os = "android"))]
@@ -237,7 +240,18 @@ pub(super) struct PendingStartup<Message> {
     handle: StartupHandle,
     longest_block: Duration,
     icons: Option<Receiver<SceneIcons>>,
+    /// The splash's rendering resources, being made off this thread.
+    splash_renderer: Option<nana_window::PendingSplashRenderer>,
+    /// Kept once made: a fallback attempt shows its splash with it too.
+    splash_ready: Option<nana_window::SplashRenderer>,
     attempt: Option<Attempt>,
+}
+
+/// What [`PendingStartup::show_splash`] did.
+enum SplashStep {
+    Done(Option<NativeSplash>, SplashOutcome),
+    /// The renderer is not made yet; nothing was shown.
+    Waiting,
 }
 
 pub(super) enum StartupStep<Program: RuntimeProgram> {
@@ -260,6 +274,14 @@ impl<Message: Send + 'static> PendingStartup<Message> {
             options,
             entry,
         } = loading;
+        // First: the splash's renderer is made while the window, the surface
+        // and the device request are, and the event thread never waits for it.
+        let splash_renderer =
+            (options.splash.is_some() && settings.visible && NativeSplash::platform_supported())
+                .then(|| {
+                    let wake = proxy.clone();
+                    nana_window::SplashRenderer::prepare(move || wake.wake_up())
+                });
         let store = prepare_primary_descriptor(&mut settings)?;
         let policy = Program::gpu_backend_policy();
         let mut bootstrap = gpu_bootstrap(policy, None);
@@ -283,6 +305,8 @@ impl<Message: Send + 'static> PendingStartup<Message> {
             handle: StartupHandle::new(entry, SplashOutcome::Skipped(SplashSkip::NotConfigured)),
             longest_block: Duration::ZERO,
             icons,
+            splash_renderer,
+            splash_ready: None,
             attempt: None,
         };
         // The probe's instance is narrowed to the composition backend, and
@@ -406,30 +430,18 @@ impl<Message: Send + 'static> PendingStartup<Message> {
             true,
             window.scale_factor() as f32,
         ));
-        let (splash, outcome) = self.show_splash(window.as_ref());
-        let committed = splash.is_some().then(|| self.handle.elapsed());
-        // The takeover frame has to be presented before the splash comes off,
-        // and a hidden window never presents. So the primary is shown now but
-        // held invisible to the user until the handoff releases it; where the
-        // platform cannot hold it, it is simply shown behind the splash.
-        let held = splash.is_some() && nana_window::set_presentation_hold(window.as_ref(), true);
-        if splash.is_some() {
-            let focus = !held && self.settings.focus_on_show;
-            windows::set_native_visible(window.as_ref(), true, focus);
-        }
-        nana_diagnostics::event!(host::SPLASH_OUTCOME, outcome = outcome.code());
-        if let Some(at) = committed {
-            startup_event(StartupMark::SplashCommitted, at);
-        }
-        let work = splash.as_ref().map(NativeSplash::work).unwrap_or_default();
-        self.handle.update(|status| {
-            status.splash = outcome;
-            status.timeline.splash_committed = committed;
-            status.work.splash = work;
-            status.work.devices_requested += 1;
-        });
+        self.handle
+            .update(|status| status.work.devices_requested += 1);
+        let (splash, splash_waiting, held) = match self.show_splash(window.as_ref()) {
+            SplashStep::Done(splash, outcome) => {
+                let held = self.commit_splash(window.as_ref(), splash.as_ref(), outcome);
+                (splash, false, held)
+            }
+            SplashStep::Waiting => (None, true, false),
+        };
         self.attempt = Some(Attempt {
             splash,
+            splash_waiting,
             held,
             #[cfg(not(target_os = "android"))]
             accessibility,
@@ -443,27 +455,97 @@ impl<Message: Send + 'static> PendingStartup<Message> {
         Ok(())
     }
 
-    fn show_splash(
+    /// Records the splash `start` or [`Self::poll_splash`] showed (or why
+    /// none was) and puts the primary on screen behind it. Returns whether
+    /// the primary is held invisible.
+    fn commit_splash(
         &self,
         window: &dyn winit::window::Window,
-    ) -> (Option<NativeSplash>, SplashOutcome) {
+        splash: Option<&NativeSplash>,
+        outcome: SplashOutcome,
+    ) -> bool {
+        let committed = splash.is_some().then(|| self.handle.elapsed());
+        // The takeover frame has to be presented before the splash comes off,
+        // and a hidden window never presents. So the primary is shown now but
+        // held invisible to the user until the handoff releases it; where the
+        // platform cannot hold it, it is simply shown behind the splash.
+        let held = splash.is_some() && nana_window::set_presentation_hold(window, true);
+        if splash.is_some() {
+            let focus = !held && self.settings.focus_on_show;
+            windows::set_native_visible(window, true, focus);
+        }
+        nana_diagnostics::event!(host::SPLASH_OUTCOME, outcome = outcome.code());
+        if let Some(at) = committed {
+            startup_event(StartupMark::SplashCommitted, at);
+        }
+        let work = splash.map(NativeSplash::work).unwrap_or_default();
+        self.handle.update(|status| {
+            status.splash = outcome;
+            status.timeline.splash_committed = committed;
+            status.work.splash = work;
+        });
+        held
+    }
+
+    /// Shows the splash a waiting attempt wanted, once its renderer is made.
+    pub(super) fn poll_splash(&mut self) {
+        let Some(window) = self
+            .attempt
+            .as_ref()
+            .filter(|attempt| attempt.splash_waiting)
+            .map(|attempt| Arc::clone(&attempt.window))
+        else {
+            return;
+        };
+        let SplashStep::Done(splash, outcome) = self.show_splash(window.as_ref()) else {
+            return;
+        };
+        let held = self.commit_splash(window.as_ref(), splash.as_ref(), outcome);
+        if let Some(attempt) = self.attempt.as_mut() {
+            attempt.splash_waiting = false;
+            attempt.splash = splash;
+            attempt.held = held;
+        }
+    }
+
+    /// The renderer once made, without waiting for it.
+    fn splash_renderer(
+        &mut self,
+    ) -> Option<Result<nana_window::SplashRenderer, crate::SplashFailure>> {
+        if let Some(ready) = &self.splash_ready {
+            return Some(Ok(ready.clone()));
+        }
+        let made = self.splash_renderer.as_mut()?.try_take()?;
+        self.splash_renderer = None;
+        if let Ok(ready) = &made {
+            self.splash_ready = Some(ready.clone());
+        }
+        Some(made)
+    }
+
+    fn show_splash(&mut self, window: &dyn winit::window::Window) -> SplashStep {
         let Some(spec) = self.options.splash else {
-            return (None, SplashOutcome::Skipped(SplashSkip::NotConfigured));
+            return SplashStep::Done(None, SplashOutcome::Skipped(SplashSkip::NotConfigured));
         };
         if !self.settings.visible {
-            return (None, SplashOutcome::Skipped(SplashSkip::HiddenStart));
+            return SplashStep::Done(None, SplashOutcome::Skipped(SplashSkip::HiddenStart));
         }
         // Before the logo is resolved: a platform without a splash reads
         // nothing for one.
         if !NativeSplash::platform_supported() {
-            return (
+            return SplashStep::Done(
                 None,
                 SplashOutcome::Skipped(SplashSkip::PlatformUnsupported),
             );
         }
+        let renderer = match self.splash_renderer() {
+            Some(Ok(renderer)) => renderer,
+            Some(Err(failure)) => return SplashStep::Done(None, SplashOutcome::Failed(failure)),
+            None => return SplashStep::Waiting,
+        };
         let png = match self.read_splash_logo(spec.logo) {
             Ok(png) => png,
-            Err(failure) => return (None, SplashOutcome::Failed(failure)),
+            Err(failure) => return SplashStep::Done(None, SplashOutcome::Failed(failure)),
         };
         let theme = match window.theme() {
             Some(WinitTheme::Light) => crate::ThemeAppearance::Light,
@@ -471,13 +553,15 @@ impl<Message: Send + 'static> PendingStartup<Message> {
             None => crate::ThemeAppearance::default(),
         };
         let (red, green, blue, alpha) = theme.palette().background.to_u8_rgba();
-        NativeSplash::show(
+        let (splash, outcome) = NativeSplash::show_with(
             window,
+            &renderer,
             &spec,
             &png,
             FallbackColor::rgba(red, green, blue, alpha),
             nana_window::system_reduced_motion().unwrap_or(false),
-        )
+        );
+        SplashStep::Done(splash, outcome)
     }
 
     /// The logo's PNG. A packaged one is one read of the package's
@@ -521,6 +605,7 @@ impl<Message: Send + 'static> PendingStartup<Message> {
     ) -> Result<StartupStep<Program>, String> {
         let Attempt {
             splash,
+            splash_waiting,
             held,
             #[cfg(not(target_os = "android"))]
             accessibility,
@@ -534,6 +619,14 @@ impl<Message: Send + 'static> PendingStartup<Message> {
             .attempt
             .take()
             .expect("a device result belongs to an attempt");
+        if splash_waiting {
+            // The device came first: by the time a splash could be shown
+            // there is no wait left for it to cover.
+            self.splash_renderer = None;
+            let outcome = SplashOutcome::Skipped(SplashSkip::UiReadyFirst);
+            nana_diagnostics::event!(host::SPLASH_OUTCOME, outcome = outcome.code());
+            self.handle.update(|status| status.splash = outcome);
+        }
         let target = self.target;
         record_device_start(&self.handle, start.device_request, None);
         let painter = start.painter.zip(

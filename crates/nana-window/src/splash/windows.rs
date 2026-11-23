@@ -46,6 +46,25 @@ use crate::material::FallbackColor;
 const SUBCLASS_ID: usize = 0x4E_41_53_50;
 const OWNER_SUBCLASS_ID: usize = SUBCLASS_ID + 1;
 
+/// The D3D11 device a splash uploads its surfaces with. Making one loads
+/// the GPU's user-mode driver, most of a splash's cost, so it is made on a
+/// thread of its own ([`super::SplashRenderer::prepare`]).
+#[derive(Clone)]
+pub(super) struct RenderDevice(ID3D11Device);
+
+// SAFETY: an ID3D11Device is free-threaded. Its immediate context is used
+// only by the splash, on the one thread that shows it.
+unsafe impl Send for RenderDevice {}
+unsafe impl Sync for RenderDevice {}
+
+impl RenderDevice {
+    pub(super) fn create() -> Result<Self, SplashFailure> {
+        d3d_device()
+            .map(Self)
+            .map_err(|error| SplashFailure::Native(error.to_string()))
+    }
+}
+
 pub(super) struct Request<'a> {
     pub(super) png: &'a [u8],
     pub(super) info: LogoInfo,
@@ -123,6 +142,7 @@ impl Splash {
     pub(super) fn show<W: HasWindowHandle + ?Sized>(
         window: &W,
         request: &Request<'_>,
+        device: Option<&RenderDevice>,
         work: &mut SplashWork,
     ) -> Result<(Self, bool), SplashFailure> {
         let native = |error: windows::core::Error| SplashFailure::Native(error.to_string());
@@ -137,7 +157,10 @@ impl Splash {
         let pixels = super::decode_premultiplied_bgra(request.png, request.info)
             .map_err(SplashFailure::Logo)?;
 
-        let d3d = d3d_device().map_err(native)?;
+        let d3d = match device {
+            Some(device) => device.0.clone(),
+            None => d3d_device().map_err(native)?,
+        };
         // Keep the startup surface independent from the primary window even
         // on the plain HWND path. The primary window is a GPU host and may be
         // much larger than the logo; it must not become the splash hit area.

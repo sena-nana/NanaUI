@@ -549,6 +549,7 @@ impl<Program: RuntimeProgram> SceneRunner<Program> {
         let Self::Starting(pending) = self else {
             return;
         };
+        pending.poll_splash();
         let Some(result) = pending.take_device() else {
             return;
         };
