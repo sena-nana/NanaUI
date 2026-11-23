@@ -6989,7 +6989,7 @@ fn parent_perspective_and_backface_visibility_render_on_gpu() {
     // 180° with `backface-visibility: hidden`: all pixels stay clear black.
     let back_pixels = paint_card(&mut painter, 180.0, true);
     assert!(
-        back_pixels.chunks_exact(4).all(|px| px[0] == 0),
+        back_pixels.as_chunks::<4>().0.iter().all(|px| px[0] == 0),
         "backface-visibility: hidden at 180deg must not paint red pixels"
     );
 }

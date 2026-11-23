@@ -1372,12 +1372,11 @@ impl SceneWgpuPainter {
             return;
         };
         for command in &batch.commands {
-            if let DrawCommand::HostTexture(prepared) = command {
-                if let Some((current_rev, _)) =
+            if let DrawCommand::HostTexture(prepared) = command
+                && let Some((current_rev, _)) =
                     registry.slot_damage_since(&prepared.slot_name, u64::MAX)
-                {
-                    last_slot_revs.insert(prepared.slot_name.clone(), current_rev);
-                }
+            {
+                last_slot_revs.insert(prepared.slot_name.clone(), current_rev);
             }
         }
     }

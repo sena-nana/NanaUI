@@ -59,24 +59,23 @@ fn same_action_fires_consistently_across_keymap_menu_action_menu_palette_and_pro
         .expect("menu entry from registry + keymap");
     let menu_bar_events = Arc::new(Mutex::new(Vec::<u32>::new()));
     let menu_bar_sink = Arc::clone(&menu_bar_events);
-    let _mounted = cx
-        .mount_view_root(doc, || {
-            let bar = nana_ui::runtime::view::entity_ref::<AppMenuBar>();
-            let view = column().children((
-                widget(AppMenuBar::new(MenuBar::new([Menu::new(
-                    "画布",
-                    [menu_entry.clone()],
-                )])))
-                .entity_ref(bar)
-                .on(move |event: &MenuBarActivated| {
-                    menu_bar_sink.lock().unwrap().push(event.id);
-                }),
-                button("占位"),
-            ));
-            nana_ui::runtime::view::with_refs(view, bar)
-        })
-        .map(|(_, bar)| bar_entity.set(Some(bar)))
-        .unwrap();
+    cx.mount_view_root(doc, || {
+        let bar = nana_ui::runtime::view::entity_ref::<AppMenuBar>();
+        let view = column().children((
+            widget(AppMenuBar::new(MenuBar::new([Menu::new(
+                "画布",
+                [menu_entry.clone()],
+            )])))
+            .entity_ref(bar)
+            .on(move |event: &MenuBarActivated| {
+                menu_bar_sink.lock().unwrap().push(event.id);
+            }),
+            button("占位"),
+        ));
+        nana_ui::runtime::view::with_refs(view, bar)
+    })
+    .map(|(_, bar)| bar_entity.set(Some(bar)))
+    .unwrap();
     let bar = bar_entity.get().unwrap();
 
     // Drain any prior menu activations from other tests in the process.
