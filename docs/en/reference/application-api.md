@@ -248,6 +248,8 @@ Rich text: `nana_ui::runtime::rich` is the value vocabulary (`RichText`, `RichSp
 
 `AppContext::animation_now()` is the document's animation clock: the time the compositor last used to sample animations. Presentation the application schedules itself (typewriter reveals, the start of per-glyph effects) reads it, using the same clock as the compositor instead of a wall clock that drifts.
 
+A document's presentation time can be set, played and paused (Issue #300): `set_presentation_playback(PresentationPlayback::Paused)` holds this one document at the current frame, `seek_presentation(t)` puts layout-class samples and the compositor clock at `t` together, `step_presentation(interval)` advances by a step, and `Playing { rate }` plays at a rate. At rate 1 without pausing it advances exactly as the wall clock did; input and delays keep the wall clock. A tour that stops at a step and a headless screenshot aimed at the middle of a transition both use it. See the [Runtime and Scene contract](https://github.com/sena-nana/NanaUI/blob/main/docs/en/reference/runtime-scene.md#document-presentation-clock-issue-300).
+
 `RuntimeProgramUpdate.redraw` supports `None`, `Window(id)`, `Windows(ids)`, and `All`.
 Merging partial updates keeps the actual set of windows. `RuntimeRedraw::for_windows` sorts and deduplicates.
 `RuntimeRedraw::merge` and `RuntimeProgramUpdate::merge` are public: `All` absorbs the other side, `None` adds no windows, and window lists are unioned; the updates' window commands are concatenated in order, and exit is requested if either side requests it. The host itself also uses them to combine the updates from one callback into one.

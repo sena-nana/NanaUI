@@ -1053,9 +1053,7 @@ impl AppContext {
         if now > self.component_lifecycle.now {
             self.component_lifecycle.now = now;
         }
-        if now > self.world.animation_now {
-            self.world.animation_now = now;
-        }
+        self.world.note_host_time(now);
     }
 
     /// Whether `scroll`'s bars are drawn now: present on at least one axis

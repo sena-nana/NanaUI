@@ -3492,7 +3492,7 @@ impl AppContext {
         now: Duration,
     ) -> Result<Option<StableNodeId>, FrameworkError> {
         self.component_lifecycle.now = now;
-        self.world.animation_now = now;
+        self.world.observe_host_time(now);
         if target.is_none() {
             // A pointer that left, or was cancelled, is on no lane.
             via!(self.sync_scrollbar_hot(document, pointer_id, None))?;

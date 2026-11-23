@@ -29,6 +29,17 @@ Runtime 按节点的脏标记（`DirtyMask`）确定性地生成各阶段工作�
 - **浮层退场终值**：模态框与菜单的透明度、位移轨道独立结束；先结束的退场轨道通过 forwards fill 保留终值，直到重开 retarget 或节点销毁，不回落到逻辑样式。宿主等所有退场轨道完成后才发 `OverlayChanged { active: None }`，应用收到后才能停放子树；`OverlayClosing` 和组件 `open=false` 表示确认已关闭，不表示可以立即停放。保留终值不产生动画唤醒。
 - **稀疏采样与唤醒分离**：`advance_animations` 对 CPU / Layout / Paint 类轨道按 `frame_interval` 采样，对合成器安全（`AnimationClass::Compositor`）轨道仅注册启动与结束两个 deadline。`compositor_needs_tick` 只把存在活动合成轨道的那扇窗口切入轻量 present，不进入 CPU 动画 deadline，也不触发其他窗口重绘。活动指还会随时间变：已播完、靠 forwards fill 停在终值的轨道（显隐落定后的淡出、浮层退场终值）与暂停的轨道不算，它们的层照旧保留、终值照旧显示，但不再让窗口持续出帧；等待提升或降级的保持期仍算。
 
+### 文档呈现时钟（Issue #300）
+
+一个文档（一个 `UiWorld`，即一个 `RuntimeDocument`）只有一份呈现时间 `animation_now`。轨道、合成器 overlay、揭示与图表过渡都在它上面采样。宿主的单调时钟只是播放驱动：`advance_animations(now)`、`sync_presentation_clock(now)` 与输入时间戳传入的都是宿主时间，由文档的呈现时钟映射到 `animation_now`。
+
+- **播放与停住**：`AppContext::set_presentation_playback(PresentationPlayback::Playing { rate } | Paused)`。默认 `Playing { rate: 1.0 }` 且锚点为 0，映射是恒等，与此前直接写入宿主时间相同。停住后宿主帧、合成器 present 与输入都不再改它；重新播放时，下一次观测到的宿主时间与停住的时间配对，停住期间不计入。速率非有限或不为正时按停住处理。停住只影响这一份文档。
+- **设定时间**：`AppContext::seek_presentation(t)` 一步完成两条求值路径：`animation_now` 设为 `t`（合成器与 `sync_presentation_clock` 读它），所有运行中的轨道无论下一 deadline 在何处都在 `t` 采样，Layout 类属性写成 `t` 时刻的绝对值，因此可以倒回。合成器轨道只读时间，不写 `UiWorld`。seek 越过终点的轨道照常结束，`Finished` 留给下一次 advance 送达，仍是恰好一次；已结束的轨道不会因倒回而复活。往返 seek 的结果与两次之间是否 present 无关。在程序回调里 seek 后照常返回该窗口的 `redraw`。
+- **步进与帧间隔**：`step_presentation(interval)` 等于 seek 到 `now + interval`，并把 `interval` 记为当前帧间隔；播放时帧间隔是宿主报告的显示间隔（`set_presentation_display_interval`，窗口宿主按合成器节拍与 `max_frame_rate` 取小）。快门与取样容差读 `presentation_frame_interval()`。
+- **唤醒**：`AppContext::next_animation_deadline` 返回宿主时间：文档 deadline 经呈现时钟反向映射，停住时只对已到期的事项（待送达事件）立即唤醒。停住的文档 `RuntimeDocument::compositor_needs_tick()` 为假，没有其他刷新原因时窗口保持 `FrameDemand::OnDemand`。
+- **仍用墙钟**：输入、滚轮与触摸惯性滚动、光标闪烁、tooltip / hover card 延迟、拖动与防抖读宿主时间（`presentation_host_now`），不随文档停住。
+- **整段替换轨道（Issue #325）**：`UiWorld::animation_tracks(node)` 列出节点上运行中的轨道；`MutationQueue::replace_animation(spec)` 以同一 id 整段替换，按原样采用新 spec，不从旧值 retarget，不发 `Cancelled`，不新建 id，由下一次 advance 在文档当前时间求值。停住的文档因此停在当前帧显示改后的曲线，而不是从 0 重播。id 不存在时提交失败（`MissingAnimation`）。拖动播放头只走 `seek_presentation`。
+
 ### 动画属性分类表
 
 逻辑值存放在 `UiWorld`，瞬态呈现值存放在 `PresentationStore`（通过 `UiWorld::presentation_pair` 或 `applied_value()` 查询，严禁每帧把 `transform` 或 `opacity` 写回 `UiWorld`）：

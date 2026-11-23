@@ -446,6 +446,20 @@ impl<'a> ValidationPlan<'a> {
                     self.animations_mut()
                         .insert(animation.id, animation.clone());
                 }
+                UiMutation::ReplaceAnimation { animation } => {
+                    self.node(animation.target)?;
+                    if !animation.is_valid() {
+                        return Err(UiWorldError::InvalidAnimation(animation.id));
+                    }
+                    if self.is_parked(animation.target) && !animation.uses_presentation_overlay() {
+                        return Err(UiWorldError::InvalidAnimation(animation.id));
+                    }
+                    if !self.animations_mut().contains_key(&animation.id) {
+                        return Err(UiWorldError::MissingAnimation(animation.id));
+                    }
+                    self.animations_mut()
+                        .insert(animation.id, animation.clone());
+                }
                 UiMutation::StopAnimation { id } => {
                     // A finished run that fills forwards still holds its
                     // property; stopping it is how its owner gives it back.
@@ -2205,6 +2219,9 @@ impl UiWorld {
             }
             UiMutation::StartAnimation { animation } => {
                 self.install_animation(animation.clone());
+            }
+            UiMutation::ReplaceAnimation { animation } => {
+                self.replace_animation(animation.clone());
             }
             UiMutation::StopAnimation { id } => {
                 self.cancel_animation(*id);

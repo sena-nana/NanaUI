@@ -845,9 +845,12 @@ impl AppContext {
         self.record_stage(FrameStage::HitTest, started);
     }
 
+    /// The next host time a wake is due: the document's animation deadline
+    /// mapped through its presentation clock, and the framework's own
+    /// wall-clock timers (tooltips, wheel and touch scrolling, caret blink).
     pub fn next_animation_deadline(&self) -> Option<Duration> {
         self.world
-            .next_animation_deadline()
+            .next_presentation_wakeup()
             .into_iter()
             .chain(
                 self.component_lifecycle
@@ -897,6 +900,62 @@ impl AppContext {
         if let Some(id) = self.advance_plain_drag(now) {
             frame.component_updates.push(id);
         }
+        self.settle_animation_frame(now, frame)
+    }
+
+    /// The document's presentation playback (Issue #300).
+    pub fn presentation_playback(&self) -> crate::PresentationPlayback {
+        self.world.presentation_playback()
+    }
+
+    /// Play the document's presentation time at a rate, or hold it. Only
+    /// this document is affected. Input, wheel and touch scrolling, caret
+    /// blink, tooltips and other timers keep the host's clock.
+    pub fn set_presentation_playback(&mut self, playback: crate::PresentationPlayback) {
+        self.world.set_presentation_playback(playback);
+    }
+
+    /// Set the document's presentation time: every running track is sampled
+    /// at `to` and the compositor reads `to`, in one step (see
+    /// [`crate::UiWorld::seek_presentation`]). The framework's own consumers
+    /// of the samples (surfaces, toasts, sidebar sections, spinners) react as
+    /// on a frame; ends the seek reached are delivered by the next advance.
+    /// The returned frame carries the samples and component updates.
+    pub fn seek_presentation(&mut self, to: Duration) -> AnimationFrame {
+        let frame = self.world.seek_presentation(to);
+        let now = self.component_lifecycle.now;
+        self.settle_animation_frame(now, frame)
+    }
+
+    /// Advance the presentation time by `interval` and sample there; that
+    /// interval is the frame interval until the document plays again.
+    pub fn step_presentation(&mut self, interval: Duration) -> AnimationFrame {
+        let frame = self.world.step_presentation(interval);
+        let now = self.component_lifecycle.now;
+        self.settle_animation_frame(now, frame)
+    }
+
+    /// The interval the current frame stands for (display interval while
+    /// playing, or the last step).
+    pub fn presentation_frame_interval(&self) -> Duration {
+        self.world.presentation_frame_interval()
+    }
+
+    /// Host hook: the display interval, the frame interval while playing.
+    pub fn set_presentation_display_interval(&mut self, interval: Duration) {
+        self.world.set_presentation_display_interval(interval);
+    }
+
+    /// React to a frame's samples and events on the framework's side. `now`
+    /// is host time, for the wall-clock timers this also runs.
+    fn settle_animation_frame(
+        &mut self,
+        now: Duration,
+        mut frame: AnimationFrame,
+    ) -> AnimationFrame {
+        // Runs the samples start or finish are stamped on the document's
+        // presentation time, as the samples were.
+        let presented = self.world.animation_now();
         let finished_surfaces = frame
             .samples
             .iter()
@@ -1080,7 +1139,7 @@ impl AppContext {
             .map(|sample| (sample.target, sample.property))
             .collect::<Vec<_>>();
         for (target, property) in flashes {
-            let _ = via!(self.advance_settings_row_flash(target, property, now));
+            let _ = via!(self.advance_settings_row_flash(target, property, presented));
         }
         let workspace_targets = frame
             .samples
@@ -1094,7 +1153,7 @@ impl AppContext {
             .map(|sample| sample.target)
             .collect::<Vec<_>>();
         for id in workspace_targets {
-            let advanced = via!(self.advance_workspace_animation(id, now));
+            let advanced = via!(self.advance_workspace_animation(id, presented));
             if advanced && !frame.component_updates.contains(&id) {
                 frame.component_updates.push(id);
             }

@@ -471,6 +471,32 @@ impl ActiveAnimation {
         if now < self.next_deadline {
             return None;
         }
+        self.sample_at(now)
+    }
+
+    /// Sample at `now` whatever the next deadline says: a seek may move the
+    /// document's time before it, or back past an earlier sample. The next
+    /// deadline follows from `now`, so a run seeked back before its start
+    /// waits for its start again.
+    pub(crate) fn resample(&mut self, now: Duration) -> Option<AnimationSample> {
+        let sample = self.sample_at(now)?;
+        if !sample.finished && self.has_follow_up_deadline() {
+            let start = if self.spec.playback.fill_mode.applies_backwards() {
+                Duration::ZERO
+            } else {
+                self.spec
+                    .timing
+                    .effective_start()
+                    .unwrap_or(self.spec.timing.start)
+            };
+            if now < start {
+                self.next_deadline = start;
+            }
+        }
+        Some(sample)
+    }
+
+    fn sample_at(&mut self, now: Duration) -> Option<AnimationSample> {
         let track = self.spec.to_motion_track()?;
         let motion = evaluate_track(&track, now);
         let finished = motion.finished;

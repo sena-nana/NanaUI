@@ -74,7 +74,9 @@ impl AppContext {
         } else {
             None
         };
-        let now = self.animation_now();
+        // A wheel is input: it runs on the host's clock, not the document's
+        // presentation time, which may be paused.
+        let now = self.world.presentation_host_now();
         let mut current = hit;
         let mut hops = 0;
         while let Some(id) = current {

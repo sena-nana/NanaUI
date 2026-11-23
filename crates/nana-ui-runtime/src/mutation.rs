@@ -228,6 +228,10 @@ pub enum UiMutation {
     StartAnimation {
         animation: AnimationSpec,
     },
+    /// Replace a running track whole under its id (Issue #325).
+    ReplaceAnimation {
+        animation: AnimationSpec,
+    },
     StopAnimation {
         id: AnimationId,
     },
@@ -779,6 +783,17 @@ impl MutationQueue {
         if let Some(spec) = crate::layout_flip_play_spec(target, invert, now, duration, easing) {
             self.start_animation(spec);
         }
+    }
+
+    /// Replace the running track `animation.id` whole, as written: no
+    /// retarget from the old run, no `Cancelled`, no new id. The document
+    /// samples it at its current presentation time, so a paused document
+    /// shows the edited curve at the frame it holds instead of replaying it
+    /// from 0. Read the current tracks with `UiWorld::animation_tracks`.
+    /// Fails with `MissingAnimation` when no run has that id.
+    pub fn replace_animation(&mut self, animation: AnimationSpec) {
+        self.mutations
+            .push(UiMutation::ReplaceAnimation { animation });
     }
 
     pub fn stop_animation(&mut self, id: AnimationId) {

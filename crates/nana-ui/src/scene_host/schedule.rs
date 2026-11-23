@@ -604,7 +604,13 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
 
     pub(super) fn sync_compositor_clock_at(&mut self, id: WindowId, at: Instant) {
         let now = self.animation_clock.runtime_time(at);
+        // The cadence compositor frames present at is the document's frame
+        // interval while it plays (Issue #300).
+        let interval = presentation_display_interval(self.program.max_frame_rate(id));
         let _ = self.program.write_document(id, |document| {
+            document
+                .context_mut()
+                .set_presentation_display_interval(interval);
             document.sync_presentation_clock(now);
         });
     }
@@ -658,6 +664,13 @@ pub(super) fn window_present_demand(
         FrameDemand::OnDemand
     };
     cap_frame_demand(merge_frame_demand(program, compositor), max_rate)
+}
+
+/// The interval between compositor presents for a window held to
+/// `max_rate`.
+pub(super) fn presentation_display_interval(max_rate: Option<NonZeroU32>) -> Duration {
+    let hz = max_rate.map_or(COMPOSITOR_PRESENT_HZ, |max| COMPOSITOR_PRESENT_HZ.min(max));
+    Duration::from_secs(1) / hz.get()
 }
 
 /// A continuous cadence held to `max_rate`. A one-shot deadline is the
@@ -948,6 +961,22 @@ mod tests {
             super::window_present_demand(FrameDemand::OnDemand, true, true, rate(240)),
             fps(120),
             "a cap above the compositor cadence does not raise it"
+        );
+    }
+
+    #[test]
+    fn the_presentation_display_interval_follows_the_capped_cadence() {
+        assert_eq!(
+            super::presentation_display_interval(None),
+            Duration::from_secs(1) / 120
+        );
+        assert_eq!(
+            super::presentation_display_interval(rate(60)),
+            Duration::from_secs(1) / 60
+        );
+        assert_eq!(
+            super::presentation_display_interval(rate(240)),
+            Duration::from_secs(1) / 120
         );
     }
 

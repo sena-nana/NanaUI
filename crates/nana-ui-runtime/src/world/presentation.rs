@@ -2,6 +2,7 @@
 //! remains the logical authority.
 
 use super::*;
+use crate::PresentationPlayback;
 use nana_ui_core::{
     DisplaySpec, LengthSpec, PaintTransform, ParentPerspective,
     motion::{
@@ -43,8 +44,75 @@ impl UiWorld {
 
     /// Host compositor present clock. Does not sample CPU/Layout tracks or
     /// mark dirty; GPU evaluate and layer hysteresis read this timestamp.
+    ///
+    /// `now` is host time. It moves the document's time only while the
+    /// document plays (see [`Self::set_presentation_playback`]): a paused
+    /// document presents the time it holds, so a compositor-only frame cannot
+    /// pull compositor samples away from the layout samples a seek wrote.
     pub fn sync_presentation_clock(&mut self, now: Duration) {
-        self.animation_now = now;
+        self.observe_host_time(now);
+    }
+
+    /// Whether the document's time plays or holds.
+    pub fn presentation_playback(&self) -> PresentationPlayback {
+        self.presentation_clock.playback()
+    }
+
+    /// Play at a rate or hold the document's time, from the time it presents
+    /// now. Only this document is affected; another keeps its own time.
+    /// Playing again does not count the time spent paused: the next host time
+    /// observed pairs with the held time. A rate that is not finite and
+    /// positive pauses.
+    pub fn set_presentation_playback(&mut self, playback: PresentationPlayback) {
+        self.presentation_clock
+            .set_playback(playback, self.animation_now);
+    }
+
+    /// Whether host time currently moves the document's time. A paused
+    /// document asks for no compositor frames of its own.
+    pub fn presentation_advancing(&self) -> bool {
+        self.presentation_clock.playback().is_playing()
+    }
+
+    /// The interval the current frame stands for: the display interval while
+    /// the document plays, or the interval a caller last stepped by. Shutter
+    /// and sampling tolerances read this.
+    pub fn presentation_frame_interval(&self) -> Duration {
+        self.presentation_clock.frame_interval()
+    }
+
+    /// The host reports its display interval; it is the frame interval while
+    /// the document plays.
+    pub fn set_presentation_display_interval(&mut self, interval: Duration) {
+        self.presentation_clock.set_display_interval(interval);
+    }
+
+    /// The latest host time this document observed. Input, debounce and
+    /// other wall-clock work read this rather than the presentation time.
+    pub fn presentation_host_now(&self) -> Duration {
+        self.presentation_clock.host_now()
+    }
+
+    /// The host time the next animation wake falls due at:
+    /// [`Self::next_animation_deadline`] mapped back through the document's
+    /// clock. A paused document wakes only to deliver what is already due.
+    pub fn next_presentation_wakeup(&self) -> Option<Duration> {
+        let deadline = self.next_animation_deadline()?;
+        self.presentation_clock
+            .host_deadline(deadline, self.animation_now)
+    }
+
+    /// Bring the document to host time `now`.
+    pub(crate) fn observe_host_time(&mut self, now: Duration) {
+        self.animation_now = self.presentation_clock.observe(now);
+    }
+
+    /// Bring the document to host time `now` unless it already saw a later
+    /// one (an input stamped before the last frame).
+    pub(crate) fn note_host_time(&mut self, now: Duration) {
+        if now > self.presentation_clock.host_now() {
+            self.observe_host_time(now);
+        }
     }
 
     pub fn motion_descriptor_store(&self) -> &nana_ui_core::motion::MotionDescriptorStore {

@@ -1168,6 +1168,9 @@ pub struct UiWorld {
     /// order: what a node's layout overlay reads instead of every animation.
     layout_length_tracks: HashMap<StableNodeId, Vec<AnimationId>, BuildIdHasher>,
     pub(crate) animation_now: Duration,
+    /// Host time → `animation_now` (Issue #300). The identity unless the
+    /// document is paused, re-timed or seeked.
+    pub(crate) presentation_clock: crate::presentation_clock::PresentationClock,
     /// Editors whose caret is in the hidden half of its blink. Paint only:
     /// extraction leaves their caret out; nothing else reads it.
     hidden_carets: Vec<StableNodeId>,
@@ -1543,6 +1546,7 @@ impl UiWorld {
             animations: HashMap::new(),
             layout_length_tracks: HashMap::default(),
             animation_now: Duration::ZERO,
+            presentation_clock: Default::default(),
             hidden_carets: Vec::new(),
             presentation: nana_ui_core::motion::PresentationStore::new(),
             presentation_query_samples: Cell::new(0),

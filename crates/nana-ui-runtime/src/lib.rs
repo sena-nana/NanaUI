@@ -152,6 +152,7 @@ pub use snippet::{
     expand_text_snippet_with_variables,
 };
 mod node_space;
+mod presentation_clock;
 mod store;
 mod tabs;
 mod terminal;
@@ -419,6 +420,7 @@ pub use presentation::{
 };
 #[cfg(feature = "syntax-highlighting")]
 pub use presentation::{HighlightPresentation, SyntectHighlighter};
+pub use presentation_clock::PresentationPlayback;
 pub use profiler::{FrameProfile, FrameProfiler, StageStatus, StageTiming};
 pub use property_grid::{
     PropertyGrid, PropertyLabelWidthChanged, PropertyRow, PropertySection, PropertySectionToggled,

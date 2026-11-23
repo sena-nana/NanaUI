@@ -378,7 +378,7 @@ impl AppContext {
             // A newer generation is the source starting over: what the old
             // one held (a press, a capture, a preedit) is cancelled as an
             // unbind cancels it, not dropped with its state.
-            let now = self.world.animation_now;
+            let now = self.world.presentation_host_now();
             let _ = self.unbind_input_source(source, now);
         }
         self.input
@@ -535,7 +535,7 @@ impl AppContext {
                     // Hover follows, as a browser's does after the frame.
                     let under = self.world.hit_test(document, x, y);
                     if under != self.world.pointer_hover(document, local) {
-                        let now = self.world.animation_now;
+                        let now = self.world.presentation_host_now();
                         let _ = self.set_pointer_hover_at(document, local, under, now);
                     }
                     under

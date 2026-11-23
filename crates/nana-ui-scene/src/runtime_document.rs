@@ -99,6 +99,7 @@ impl RuntimeDocument {
     }
 
     /// Lightweight compositor present clock. Does not run style/layout.
+    /// `now` is host time; a paused document keeps the time it holds.
     pub fn sync_presentation_clock(&mut self, now: std::time::Duration) {
         self.context.compat_world_mut().sync_presentation_clock(now);
     }
@@ -108,8 +109,12 @@ impl RuntimeDocument {
         Arc::make_mut(&mut self.scene).set_surface_generation(generation);
     }
 
+    /// Whether the compositor has something to show at a later clock. A
+    /// document whose presentation time is paused has nothing: its motion,
+    /// layer holds and live glyphs all read the time it holds, so it stays
+    /// on demand until something else changes (Issue #300).
     pub fn compositor_needs_tick(&self) -> bool {
-        self.scene.compositor_needs_tick()
+        self.context.world().presentation_advancing() && self.scene.compositor_needs_tick()
     }
 
     /// Whether a sliced layout left subtrees out of view to place (see
@@ -658,6 +663,75 @@ mod tests {
         assert_eq!(opacity.runtime_samples_this_frame, 0);
         assert!(opacity.format_summary().contains("Class: Compositor"));
         assert!(opacity.format_summary().contains("Layer: #1"));
+    }
+
+    /// Issue #300: a paused document with a running compositor track asks
+    /// for no frames (the host keeps it on demand), presents the time it
+    /// holds, and its sibling document keeps its own clock.
+    #[test]
+    fn a_paused_document_stays_on_demand_and_presents_its_held_time() {
+        fn opacity_document(id: u64) -> (RuntimeDocument, StableNodeId) {
+            let document_id = DocumentId::new(id).unwrap();
+            let mut runtime = RuntimeDocument::new(document_id);
+            let root = StableNodeId::new(1).unwrap();
+            let mut queue = MutationQueue::new();
+            queue.create(root, document_id, NodeKind::Document);
+            queue.start_animation(
+                AnimationSpec::new(
+                    AnimationId::new(1).unwrap(),
+                    root,
+                    Duration::ZERO,
+                    Duration::from_millis(400),
+                    Duration::from_millis(16),
+                    Easing::Linear,
+                )
+                .with_property(AnimatableProperty::Opacity)
+                .with_range(
+                    MotionValue::Scalar(0.0),
+                    MotionTo::Value(MotionValue::Scalar(1.0)),
+                ),
+            );
+            let world = runtime.context_mut().compat_world_mut();
+            world.commit(queue).unwrap();
+            for at in [0, 16] {
+                runtime
+                    .context_mut()
+                    .compat_world_mut()
+                    .advance_animations(Duration::from_millis(at));
+                runtime.flush_with(|_, _| Ok(())).expect("frame");
+            }
+            (runtime, root)
+        }
+        let (mut paused, _) = opacity_document(1);
+        let (mut playing, _) = opacity_document(2);
+        assert!(paused.compositor_needs_tick());
+
+        paused
+            .context_mut()
+            .set_presentation_playback(nana_ui_runtime::PresentationPlayback::Paused);
+        paused
+            .context_mut()
+            .seek_presentation(Duration::from_millis(100));
+        assert!(!paused.compositor_needs_tick(), "held: nothing to tick");
+        assert_eq!(paused.context().next_animation_deadline(), None);
+
+        for host in [48, 64] {
+            for runtime in [&mut paused, &mut playing] {
+                runtime.sync_presentation_clock(Duration::from_millis(host));
+                runtime.flush_with(|_, _| Ok(())).expect("present");
+            }
+        }
+        assert_eq!(paused.scene().motion_gpu_now(), Duration::from_millis(100));
+        assert_eq!(playing.scene().motion_gpu_now(), Duration::from_millis(64));
+        assert!(playing.compositor_needs_tick());
+
+        paused
+            .context_mut()
+            .set_presentation_playback(nana_ui_runtime::PresentationPlayback::REAL_TIME);
+        assert!(paused.compositor_needs_tick());
+        paused.sync_presentation_clock(Duration::from_millis(500));
+        paused.sync_presentation_clock(Duration::from_millis(516));
+        assert_eq!(paused.context().animation_now(), Duration::from_millis(116));
     }
 
     /// A page of `sections` blocks 300 px tall, four rows each, in a 600 px
