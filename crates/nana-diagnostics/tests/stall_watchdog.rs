@@ -65,7 +65,17 @@ fn a_stuck_callback_is_reported_with_its_stack_and_its_recovery() {
         })
         .expect("stall fault");
     assert!(message.contains("inside window_event"), "{message}");
-    if cfg!(all(windows, target_arch = "x86_64")) {
+    let sampled = cfg!(all(
+        any(
+            windows,
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "linux",
+            target_os = "android"
+        ),
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ));
+    if sampled {
         assert!(message.contains("% of one core"), "{message}");
         assert!(message.contains("sample 1:"), "{message}");
         assert!(

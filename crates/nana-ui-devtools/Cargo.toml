@@ -51,6 +51,10 @@ runtime-agent = [
 # A whole RuntimeProgram offscreen: its hooks driven by the framework's
 # headless host, its windows painted and read back.
 headless-host = ["runtime-agent", "nana-ui/hosted"]
+# Live inspection overlay draw data for a development host window: box
+# model under the pointer, relayout highlights, bindings. Runtime only, no
+# GPU; the host paints the data. Off, it costs product frames nothing.
+inspect-overlay = ["dep:nana-ui"]
 # Why a node last changed, in the runtime session's view inspector.
 reactive-trace = ["runtime-agent", "nana-ui/reactive-trace"]
 

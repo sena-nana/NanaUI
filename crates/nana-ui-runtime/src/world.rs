@@ -6657,7 +6657,8 @@ impl UiWorld {
             .flat_map(|ids| ids.iter().copied())
     }
 
-    pub(crate) fn document_of(&self, id: StableNodeId) -> Option<DocumentId> {
+    /// The document `id` belongs to; `None` for a node that does not exist.
+    pub fn document_of(&self, id: StableNodeId) -> Option<DocumentId> {
         self.nodes.get(id).map(|node| node.document)
     }
 

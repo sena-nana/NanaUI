@@ -125,7 +125,7 @@ impl RunMarker {
 
     /// Leave a native exception in the marker and put it on disk. Allocation
     /// free.
-    #[cfg_attr(not(any(test, windows)), allow(dead_code))]
+    #[cfg_attr(not(any(test, all(windows, target_arch = "x86_64"))), allow(dead_code))]
     pub(crate) fn record_exception(&mut self, code: u64, address: u64, unix_ns: u64) {
         self.last_unix_ns = unix_ns;
         self.exception = Some((code, address));

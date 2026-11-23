@@ -257,6 +257,13 @@ impl AppContext {
         std::mem::take(&mut self.last_layout_scope)
     }
 
+    /// Nodes recomputed by the most recent layout pass, without draining
+    /// them: a laid-out node outside it kept its cached layout. Empty once
+    /// [`Self::take_last_layout_scope`] has read the pass.
+    pub fn last_layout_scope(&self) -> &[StableNodeId] {
+        &self.last_layout_scope
+    }
+
     /// Frontier counters of the most recent layout pass for `document`,
     /// including the size of the dependency graph it built.
     pub fn layout_frontier_stats(&self, document: DocumentId) -> crate::LayoutFrontierStats {

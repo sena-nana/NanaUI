@@ -26,6 +26,10 @@ path = "src/bin/nana-diagnostics-benchmark.rs"
 required-features = ["benchmark"]
 test = false
 
+# The stall watchdog's stack samples and symbols on Apple and Linux/Android.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.190"
+
 # Worker thread priority, the monotonic clock origin, the stall
 # watchdog's stack samples, and the native crash handler.
 [target.'cfg(windows)'.dependencies]

@@ -19,7 +19,7 @@ title: 外围支撑 crate 一览
 | `nana-package` | 打包契约的**运行时只读侧**（解析 `package.json` 与 `.nrpack`） | 仅含只读逻辑与纯 Rust 解码器，不含打包或密钥生成代码 |
 | `nana-packager` | 打包契约的**构建期写侧** CLI | 将已编译可执行文件、资源树与 `nana-package.toml` 打成交付物，绝不随应用发布 |
 | `nana-ui-dev` | 开发期热重载公共底座（文件监视、防抖与安全读取） | 顶部带 `#[cfg(not(debug_assertions))] compile_error!`，绝不进入 release/dist 构建 |
-| `nana-ui-devtools` | 开发期无头 Agent 自动化会话与离屏快照 | 不含任何面向最终用户的产品 UI；CPU 回读仅限于此处的离屏快照 |
+| `nana-ui-devtools` | 开发期无头 Agent 自动化会话、离屏快照与窗口内检查叠加层数据 | 不含任何面向最终用户的产品 UI；CPU 回读仅限于此处的离屏快照 |
 
 ## 内部结构与源码锚点
 
@@ -67,7 +67,7 @@ title: 外围支撑 crate 一览
 ### 6. `nana-ui-dev` 与 `nana-ui-devtools`：开发期热重载与无头验证
 
 - **`nana-ui-dev`（`crates/nana-ui-dev/src/lib.rs`，87 行）**：封装路径级静默防抖器 `Debouncer`（`watch.rs:25`）以及两档重载请求 `ReloadRequest { Full, Template }`（`lib.rs:46`）。第 `:22` 行的 `#[cfg(not(debug_assertions))] compile_error!(...)` 从编译期杜绝它进入发布包（详见 [开发期热重载合同](/reference/hot-reload)）。
-- **`nana-ui-devtools`（`crates/nana-ui-devtools/src/lib.rs`）**：提供按 feature 逐层递进的无头自动化会话（`offscreen` ⊂ `runtime-agent`，见 `lib.rs` 头部与 `agent/mod.rs`）：纯 Rust 的 `RuntimeAgentSession` 通过标准输入输出 JSON 协议执行指针点击、键盘输入、无障碍树导出与离屏 PNG 截图比对。`headless-host` 在 `runtime-agent` 之上加 `HeadlessHost<P>`：用 `nana_ui::headless::HeadlessRuntime` 按原生宿主的钩子顺序跑整个 `RuntimeProgram`（含它开的辅助窗口），再画出、回读各窗口。**全仓唯一的 GPU → CPU 像素回读严格限制在 `offscreen` 模块内**，产品 `run_runtime` 呈现路径绝不调用它。
+- **`nana-ui-devtools`（`crates/nana-ui-devtools/src/lib.rs`）**：提供按 feature 逐层递进的无头自动化会话（`offscreen` ⊂ `runtime-agent`，见 `lib.rs` 头部与 `agent/mod.rs`）：纯 Rust 的 `RuntimeAgentSession` 通过标准输入输出 JSON 协议执行指针点击、键盘输入、无障碍树导出与离屏 PNG 截图比对。`headless-host` 在 `runtime-agent` 之上加 `HeadlessHost<P>`：用 `nana_ui::headless::HeadlessRuntime` 按原生宿主的钩子顺序跑整个 `RuntimeProgram`（含它开的辅助窗口），再画出、回读各窗口。**全仓唯一的 GPU → CPU 像素回读严格限制在 `offscreen` 模块内**，产品 `run_runtime` 呈现路径绝不调用它。独立的 `inspect-overlay` feature（只依赖 Runtime）提供 `inspect::InspectOverlay`：开发期宿主每帧在布局之后调用 `update`，拿到悬停节点的盒模型矩形与尺寸标签、最近一次布局重算的节点高亮（`AppContext::last_layout_scope`，不消耗该集合）和绑定/布局原因文字，自己画在产品帧之上；关闭时 `update` 零分配、不做命中测试、不产生任何绘制数据。
 
 ## 仓库周边生态全景
 

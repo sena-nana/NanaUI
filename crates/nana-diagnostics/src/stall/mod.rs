@@ -5,8 +5,10 @@
 //! stall — the platform stops delivering input and paints, and Windows soon
 //! labels the window "Not Responding". The watchdog then records a
 //! [`MAIN_THREAD_STALLED`] fault naming the callback, the share of one core
-//! the thread burned meanwhile (a spin and a wait look different), and, on
-//! Windows x64, a few stack samples of the stuck thread. A stall that goes on
+//! the thread burned meanwhile (a spin and a wait look different), and a
+//! few stack samples of the stuck thread: suspended and copied on Windows
+//! (x64, ARM64) and Apple (Mach), copied by a signal handler on Linux and
+//! Android (x86_64, aarch64). A stall that goes on
 //! is reported again at each [`FOLLOW_UPS`] mark; when the callback returns, a
 //! [`MAIN_THREAD_RECOVERED`] event records the whole stall.
 //!
@@ -27,12 +29,146 @@ use std::time::{Duration, Instant};
 use crate::Field;
 use crate::framework::diagnostics::{MAIN_THREAD_RECOVERED, MAIN_THREAD_STALLED};
 
-#[cfg(all(windows, target_arch = "x86_64"))]
+/// Copies of the spin test every sampling backend runs: a sample of a
+/// spinning thread names the function it spins in, and its CPU time grows.
+#[cfg(test)]
+macro_rules! sampling_tests {
+    () => {
+        use super::*;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        #[inline(never)]
+        fn stall_test_spin(stop: &AtomicBool) {
+            while !stop.load(Ordering::Relaxed) {
+                std::hint::spin_loop();
+            }
+        }
+
+        struct StopOnDrop(Arc<AtomicBool>);
+        impl Drop for StopOnDrop {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Relaxed);
+            }
+        }
+
+        #[test]
+        fn samples_name_the_function_a_thread_spins_in() {
+            let stop = Arc::new(AtomicBool::new(false));
+            let _stop_guard = StopOnDrop(Arc::clone(&stop));
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let spinning = {
+                let stop = Arc::clone(&stop);
+                std::thread::spawn(move || {
+                    sender.send(Thread::current()).unwrap();
+                    stall_test_spin(&stop);
+                })
+            };
+            let thread = receiver
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("spinner thread started within 5s");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            let before = thread.cpu_time().unwrap();
+            let mut frames = Vec::new();
+            let sampled = thread.sample(&mut frames);
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let used = thread.cpu_time().unwrap() - before;
+            stop.store(true, Ordering::Relaxed);
+            spinning.join().unwrap();
+
+            assert!(sampled);
+            let mut text = String::new();
+            describe(&frames, &mut text);
+            assert!(text.contains("stall_test_spin"), "{text}");
+            assert!(
+                used >= std::time::Duration::from_millis(50),
+                "spinning used {used:?}"
+            );
+        }
+    };
+}
+#[cfg(test)]
+pub(crate) use sampling_tests;
+
+#[cfg(all(windows, any(target_arch = "x86_64", target_arch = "aarch64")))]
 pub(crate) mod windows;
-#[cfg(all(windows, target_arch = "x86_64"))]
+#[cfg(all(windows, any(target_arch = "x86_64", target_arch = "aarch64")))]
 use windows as platform;
 
-#[cfg(not(all(windows, target_arch = "x86_64")))]
+#[cfg(all(
+    any(target_os = "macos", target_os = "ios"),
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+mod apple;
+#[cfg(all(
+    any(target_os = "macos", target_os = "ios"),
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+use apple as platform;
+
+#[cfg(all(
+    any(target_os = "linux", target_os = "android"),
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+mod linux;
+#[cfg(all(
+    any(target_os = "linux", target_os = "android"),
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+use linux as platform;
+
+#[cfg(all(
+    any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "linux",
+        target_os = "android"
+    ),
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+mod unix_symbols;
+
+#[cfg(any(
+    test,
+    all(
+        any(
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "linux",
+            target_os = "android"
+        ),
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    )
+))]
+mod demangle;
+
+#[cfg(any(
+    test,
+    all(windows, target_arch = "aarch64"),
+    all(
+        any(
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "linux",
+            target_os = "android"
+        ),
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    )
+))]
+mod frames;
+
+#[cfg(not(any(
+    all(windows, any(target_arch = "x86_64", target_arch = "aarch64")),
+    all(
+        any(
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "linux",
+            target_os = "android"
+        ),
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    )
+)))]
 mod platform {
     use std::time::Duration;
 

@@ -1,12 +1,14 @@
-//! Stack samples of the watched thread on Windows x64, and the stack walk
-//! and symbolization the native crash writer shares.
+//! Stack samples of the watched thread on Windows x64 and ARM64, and (on
+//! x64) the stack walk and symbolization the native crash writer shares.
 //!
 //! The thread is suspended only long enough to read its registers and copy
 //! its stack: while it is suspended it may hold the heap or loader lock, so
 //! nothing in between allocates, locks or looks up unwind data. Unwinding
-//! then runs on the copy, with pointers into the original stack rewritten
-//! to point into the copy, and stops at the first frame it cannot follow
-//! inside the copy rather than read memory it cannot vouch for.
+//! then runs on the copy. On x64 it follows the unwind tables, with pointers
+//! into the original stack rewritten to point into the copy; on ARM64 it
+//! follows the x29 frame-record chain the ABI requires for exactly this kind
+//! of walk. Either stops at the first frame it cannot follow inside the copy
+//! rather than read memory it cannot vouch for.
 
 use std::fmt::Write as _;
 use std::time::Duration;
@@ -15,10 +17,17 @@ use windows_sys::Win32::Foundation::{
     CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, FILETIME, HANDLE, HMODULE,
 };
 use windows_sys::Win32::System::Diagnostics::Debug::{
-    CONTEXT, CONTEXT_CONTROL_AMD64, CONTEXT_INTEGER_AMD64, GetThreadContext,
-    IMAGE_RUNTIME_FUNCTION_ENTRY, RtlLookupFunctionEntry, RtlVirtualUnwind, SYMBOL_INFOW,
-    SYMOPT_DEFERRED_LOADS, SYMOPT_FAIL_CRITICAL_ERRORS, SYMOPT_NO_PROMPTS, SYMOPT_UNDNAME,
-    SymCleanup, SymFromAddrW, SymInitializeW, SymSetOptions, UNW_FLAG_NHANDLER,
+    CONTEXT, GetThreadContext, SYMBOL_INFOW, SYMOPT_DEFERRED_LOADS, SYMOPT_FAIL_CRITICAL_ERRORS,
+    SYMOPT_NO_PROMPTS, SYMOPT_UNDNAME, SymCleanup, SymFromAddrW, SymInitializeW, SymSetOptions,
+};
+#[cfg(target_arch = "x86_64")]
+use windows_sys::Win32::System::Diagnostics::Debug::{
+    CONTEXT_CONTROL_AMD64, CONTEXT_INTEGER_AMD64, IMAGE_RUNTIME_FUNCTION_ENTRY,
+    RtlLookupFunctionEntry, RtlVirtualUnwind, UNW_FLAG_NHANDLER,
+};
+#[cfg(target_arch = "aarch64")]
+use windows_sys::Win32::System::Diagnostics::Debug::{
+    CONTEXT_CONTROL_ARM64, CONTEXT_INTEGER_ARM64,
 };
 use windows_sys::Win32::System::LibraryLoader::{
     GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
@@ -29,7 +38,9 @@ use windows_sys::Win32::System::Threading::{
     SuspendThread,
 };
 
+#[cfg(target_arch = "x86_64")]
 pub(crate) const MAX_FRAMES: usize = 64;
+#[cfg(target_arch = "x86_64")]
 /// Zeroed bytes past the copied stack, so an unwind step that reads a few
 /// words beyond the last frame stays inside the buffer.
 const SLACK_WORDS: usize = 512;
@@ -106,6 +117,7 @@ impl Thread {
     }
 
     /// Fill `frames` with the thread's current call stack, innermost first.
+    #[cfg(target_arch = "x86_64")]
     pub(super) fn sample(&self, frames: &mut Vec<u64>) -> bool {
         if self.handle.is_null() || self.stack_high <= self.stack_low {
             return false;
@@ -176,6 +188,59 @@ impl Thread {
         frames.extend_from_slice(&found[..count]);
         !frames.is_empty()
     }
+
+    /// Fill `frames` with the thread's current call stack, innermost first.
+    #[cfg(target_arch = "aarch64")]
+    pub(super) fn sample(&self, frames: &mut Vec<u64>) -> bool {
+        use super::frames::{MAX_FRAMES, StackCopy, walk};
+        if self.handle.is_null() || self.stack_high <= self.stack_low {
+            return false;
+        }
+        // Everything the suspended window needs is allocated before it.
+        let mut copy = vec![0u64; (self.stack_high - self.stack_low) / 8];
+        // SAFETY: zeroed CONTEXT is a valid all-default value.
+        let mut context = Context(unsafe { std::mem::zeroed() });
+        context.0.ContextFlags = CONTEXT_CONTROL_ARM64 | CONTEXT_INTEGER_ARM64;
+
+        // SAFETY: suspend, read registers, copy the committed part of the
+        // stack ([sp, high), which a suspended thread cannot release), and
+        // resume — no allocation, lock or loader call in between.
+        let (pc, sp, fp, words) = unsafe {
+            if SuspendThread(self.handle) == u32::MAX {
+                return false;
+            }
+            let read = GetThreadContext(self.handle, &mut context.0) != 0;
+            let sp = context.0.Sp as usize;
+            let usable =
+                read && sp >= self.stack_low && sp < self.stack_high && sp.is_multiple_of(8);
+            let words = if usable {
+                (self.stack_high - sp) / 8
+            } else {
+                0
+            };
+            if usable {
+                std::ptr::copy_nonoverlapping(sp as *const u64, copy.as_mut_ptr(), words);
+            }
+            ResumeThread(self.handle);
+            if !usable {
+                return false;
+            }
+            (
+                context.0.Pc,
+                sp as u64,
+                context.0.Anonymous.Anonymous.Fp,
+                words,
+            )
+        };
+        let stack = StackCopy {
+            words: &copy[..words],
+            low: sp,
+        };
+        let mut found = [0u64; MAX_FRAMES];
+        let count = walk(pc, fp, &stack, &mut found);
+        frames.extend_from_slice(&found[..count]);
+        !frames.is_empty()
+    }
 }
 
 impl Drop for Thread {
@@ -187,6 +252,7 @@ impl Drop for Thread {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 /// Walk `context` outwards, innermost frame first, into `frames`; returns
 /// how many were found. Reads only the words in `[low, high)`, which must be
 /// readable and not change meanwhile (a copy, or the stack of a thread that
@@ -250,6 +316,7 @@ pub(crate) fn unwind(context: &mut CONTEXT, low: u64, high: u64, frames: &mut [u
     count
 }
 
+#[cfg(target_arch = "x86_64")]
 /// An x64 unwind register number's value in `context`.
 fn register(context: &CONTEXT, number: u8) -> u64 {
     match number {
@@ -374,52 +441,5 @@ fn symbol(process: HANDLE, pc: u64) -> Option<(String, u64)> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    #[inline(never)]
-    fn stall_test_spin(stop: &AtomicBool) {
-        while !stop.load(Ordering::Relaxed) {
-            std::hint::spin_loop();
-        }
-    }
-
-    struct StopOnDrop(Arc<AtomicBool>);
-    impl Drop for StopOnDrop {
-        fn drop(&mut self) {
-            self.0.store(true, Ordering::Relaxed);
-        }
-    }
-
-    #[test]
-    fn samples_name_the_function_a_thread_spins_in() {
-        let stop = Arc::new(AtomicBool::new(false));
-        let _stop_guard = StopOnDrop(Arc::clone(&stop));
-        let (sender, receiver) = std::sync::mpsc::channel();
-        let spinning = {
-            let stop = Arc::clone(&stop);
-            std::thread::spawn(move || {
-                sender.send(Thread::current()).unwrap();
-                stall_test_spin(&stop);
-            })
-        };
-        let thread = receiver
-            .recv_timeout(Duration::from_secs(5))
-            .expect("spinner thread started within 5s");
-        std::thread::sleep(Duration::from_millis(50));
-        let before = thread.cpu_time().unwrap();
-        let mut frames = Vec::new();
-        let sampled = thread.sample(&mut frames);
-        std::thread::sleep(Duration::from_millis(100));
-        let used = thread.cpu_time().unwrap() - before;
-        stop.store(true, Ordering::Relaxed);
-        spinning.join().unwrap();
-
-        assert!(sampled);
-        let mut text = String::new();
-        describe(&frames, &mut text);
-        assert!(text.contains("stall_test_spin"), "{text}");
-        assert!(used >= Duration::from_millis(50), "spinning used {used:?}");
-    }
+    super::super::sampling_tests!();
 }

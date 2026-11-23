@@ -17,6 +17,8 @@ NanaUI 的无头会话与离屏快照，给开发工具和测试用。
 - `headless-host`：在 `runtime-agent` 之上加 `HeadlessHost`，按原生宿主的钩子顺序运行整个 `RuntimeProgram`（并提供可控时钟与稳态推进、目标定位、命中测试、场景探针、视图检查、直通 PNG 导出与像素比对）。
 - `reactive-trace`：视图检查结果附带节点最近一次变化的原因。
 
+这条链之外，`inspect-overlay`（只依赖 Runtime，不含 GPU）给开发期宿主一个窗口内实时检查叠加层：`inspect::InspectOverlay` 把文档转成绘制数据——指针下节点的 margin、border、padding、content 四层盒子和尺寸标签，最近一次布局重算过的节点（布局缓存未命中；没高亮的已布局节点复用了缓存），以及悬停节点的绑定位置和布局原因，开 `reactive-trace` 时再附上最近一次修补它的信号写入。矩形和标签由宿主画在自己那一帧之上，保留树和场景里不增加任何东西。叠加层关闭时 `update` 在第一个判断就返回：不分配、不做命中测试、没有要画的东西。
+
 ## 示例
 
 ```bash
@@ -28,6 +30,7 @@ cargo run -p nana-ui-devtools --features runtime-agent --bin nana-runtime-agent 
 
 ```bash
 cargo test -p nana-ui-devtools --features runtime-agent
+cargo test -p nana-ui-devtools --features inspect-overlay --lib inspect
 ```
 
 没有可用 GPU 适配器时，像素类测试直接返回。其余检查见 [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)。
