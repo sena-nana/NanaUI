@@ -45,7 +45,7 @@ fn todos(empty: Signal<bool>) -> impl IntoView {
 
 模板里的 `<style>` 放在最前面，编译成一张 `Sheet`。`class="todos"` 展开成 `.class(…)`，`class:empty={empty}` 展开成 `.class_when(…)`。`stylesheet!` 为每个类生成一个 `Class` 常量，`-` 换成 `_`，所以上面的 `.empty` 是 `todo_styles::empty`。`mod todo_styles;` 的常量只给父模块用，写成 `pub mod` 才公开。
 
-一个元素的类必须来自同一张表。固定类、条件类和交互伪类上的 `transition`（支持 `transition-delay`）会在状态变化改变 `opacity`、`transform`、`width`、`height`、`background` 或 `color` 时，沿着合成器轨道播到新值；`@keyframes` 和 `animation` 同样编译成 `#87 MotionTrack` 轨道并在运行时按当前主题求值。逻辑样式直接取新值。
+一个元素的类必须来自同一张表。固定类、条件类和交互伪类上的 `transition`（支持 `transition-delay`）会在状态变化改变 `opacity`、`transform`、`filter`、`width`、`height`、`background` 或 `color` 时，沿着合成器轨道播到新值；`@keyframes` 和 `animation` 同样编译成 `#87 MotionTrack` 轨道并在运行时按当前主题求值。逻辑样式直接取新值。
 
 只给一个元素写几条声明，用 `css!`，并且放在别的布局属性之前：
 

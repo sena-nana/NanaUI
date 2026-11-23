@@ -1738,3 +1738,10 @@ pub fn emit_paint_color_rust(color: &PaintColor, patch_mod: &str) -> String {
     color.emit_rust(patch_mod, &mut out);
     out
 }
+
+/// Emit Rust tokens for one [`ColorFilter`] referencing the caller's `__nana_patch` module alias.
+pub fn emit_color_filter_rust(filter: &ColorFilter, patch_mod: &str) -> String {
+    let mut out = String::new();
+    filter.emit_rust(patch_mod, &mut out);
+    out
+}

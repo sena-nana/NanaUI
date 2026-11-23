@@ -1974,9 +1974,7 @@ impl AppContext {
             let mut next_tracks = Vec::with_capacity(desired.len());
             for anim in desired {
                 let id = css_keyframe_animation_id(node, anim.name, anim.property);
-                let has_dynamic_color = anim.keyframes.iter().any(
-                    |k| matches!(k.value, CompiledMotionValue::Color(color_fn) if color_fn().is_theme_dynamic()),
-                );
+                let has_dynamic_color = anim.keyframes.iter().any(|k| k.value.is_theme_dynamic());
                 let existing = previous.iter().find(|t| t.id == id);
                 if let Some(prev) = existing {
                     let mut same_except_play = prev.spec;
@@ -2030,6 +2028,15 @@ impl AppContext {
                                 MotionValue::Color(color_fn().resolve_srgb(model))
                             }
                             CompiledMotionValue::Transform(t) => MotionValue::Transform(t),
+                            CompiledMotionValue::Filter(filter_fn) => {
+                                let mut filter = filter_fn();
+                                if let Some(shadow) = filter.drop_shadow.as_mut()
+                                    && let Some(paint) = shadow.paint_color
+                                {
+                                    shadow.color = paint.resolve_srgb(model);
+                                }
+                                MotionValue::Filter(filter.into())
+                            }
                         },
                         easing: stop.easing,
                     })

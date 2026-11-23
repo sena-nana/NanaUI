@@ -2027,6 +2027,72 @@ mod styles {
     }
 
     #[test]
+    fn filter_keyframes_and_transitions_run_as_whole_filter_tracks() {
+        use nana_ui_core::{AnimatableProperty, MotionValue};
+        use std::time::Duration;
+
+        let t0 = Duration::from_secs(1);
+        let mut cx = AppContext::new();
+        cx.advance_animations(t0);
+        let document = DocumentId::new(1).unwrap();
+        let flag = std::cell::Cell::new(None);
+        let mounted = cx
+            .mount_view_root(document, || {
+                let dim = signal(false);
+                flag.set(Some(dim));
+                view! {
+                    <style>
+                        .box { filter: none; transition: filter 200ms linear; }
+                        .box.dim { filter: saturate(0); }
+                        @keyframes glow {
+                            from { filter: brightness(1); }
+                            to { filter: brightness(0.5) blur(4px) drop-shadow(0 2px 6px #ff0000); }
+                        }
+                        .anim { animation: glow 200ms linear infinite; }
+                    </style>
+                    <Column>
+                        <Column class="box" class:dim={dim} />
+                        <Column class="anim" />
+                    </Column>
+                }
+            })
+            .unwrap();
+        let root = mounted.roots()[0];
+        let trans_node = cx.world().node(root).unwrap().children[0];
+        let anim_node = cx.world().node(root).unwrap().children[1];
+        let filter_at = |cx: &AppContext, node, at| match cx
+            .world()
+            .presentation_motion_value(node, AnimatableProperty::Filter, at)
+            .unwrap()
+        {
+            MotionValue::Filter(filter) => filter.to_color_filter(),
+            other => panic!("expected a filter, got {other:?}"),
+        };
+
+        // Halfway through the keyframes every channel is halfway, the
+        // drop shadow included, as one track.
+        let mid = t0 + Duration::from_millis(100);
+        cx.advance_animations(mid);
+        let pulse = filter_at(&cx, anim_node, mid);
+        assert!((pulse.brightness - 0.75).abs() < 1e-2, "{pulse:?}");
+        assert!((pulse.blur_radius - 2.0).abs() < 1e-2, "{pulse:?}");
+        let shadow = pulse.drop_shadow.expect("half-faded shadow");
+        assert!((shadow.offset_y - 1.0).abs() < 1e-2, "{shadow:?}");
+        assert!((shadow.blur_radius - 3.0).abs() < 1e-2, "{shadow:?}");
+        assert!((shadow.color[3] - 0.5).abs() < 1e-2, "{shadow:?}");
+
+        // `transition: filter` follows a class change from `none`.
+        let dim = flag.get().unwrap();
+        dim.set(true);
+        cx.flush_reactive().unwrap();
+        let half = mid + Duration::from_millis(100);
+        cx.advance_animations(half);
+        let dimming = filter_at(&cx, trans_node, half);
+        assert!((dimming.saturate - 0.5).abs() < 1e-2, "{dimming:?}");
+        assert!((dimming.brightness - 1.0).abs() < 1e-3, "{dimming:?}");
+    }
+
+    #[test]
     fn static_child_and_descendant_combinators_support_conditional_ancestors_and_subject_pseudos() {
         use std::time::Duration;
 

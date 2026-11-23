@@ -83,7 +83,7 @@ pub use css_map::{
 };
 pub use css_motion::{ParsedAnimation, motion_curve_from_css_token, parse_animation_declarations};
 pub use css_written::{WrittenLayout, written_layout};
-pub use rust_expr::emit_paint_color_rust;
+pub use rust_expr::{emit_color_filter_rust, emit_paint_color_rust};
 mod css_theme;
 pub use css_theme::parse_theme_expr;
 pub use style::{

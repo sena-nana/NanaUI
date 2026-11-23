@@ -45,7 +45,7 @@ fn todos(empty: Signal<bool>) -> impl IntoView {
 
 The `<style>` in a template goes first and compiles into one `Sheet`. `class="todos"` expands to `.class(…)`, and `class:empty={empty}` expands to `.class_when(…)`. `stylesheet!` generates a `Class` constant for every class, with `-` replaced by `_`, so `.empty` above is `todo_styles::empty`. The constants of `mod todo_styles;` are visible only to the parent module; write `pub mod` to make them public.
 
-The classes of one element must come from the same table. A `transition` (including `transition-delay`) on fixed classes, conditional classes, or interactive pseudos plays along the compositor track to the new value when a state change updates `opacity`, `transform`, `width`, `height`, `background`, or `color`. `@keyframes` and `animation` also compile to `#87 MotionTrack` tracks and resolve theme colors live. Logical styles take the new value directly.
+The classes of one element must come from the same table. A `transition` (including `transition-delay`) on fixed classes, conditional classes, or interactive pseudos plays along the compositor track to the new value when a state change updates `opacity`, `transform`, `filter`, `width`, `height`, `background`, or `color`. `@keyframes` and `animation` also compile to `#87 MotionTrack` tracks and resolve theme colors live. Logical styles take the new value directly.
 
 To write a few declarations for a single element, use `css!`, and put it before the other layout calls:
 

@@ -37,8 +37,8 @@ use std::ops::Range;
 
 use crate::{Attr, AttrName, AttrValue, Element, Node};
 use nana_ui_core::{
-    AnimationDirection, AnimationFillMode, AnimationIteration, AnimationPlayState, Easing,
-    LengthSpec, MotionCurve, PaintColor, PaintTransform, StepJump,
+    AnimationDirection, AnimationFillMode, AnimationIteration, AnimationPlayState, ColorFilter,
+    Easing, LengthSpec, MotionCurve, PaintColor, PaintTransform, StepJump,
 };
 use nana_ui_css::css_motion::{
     ParsedAnimation, css_list_at, easing_from_css_keyword, first_timing_token,
@@ -51,8 +51,9 @@ use nana_ui_css::{
     InteractivePseudo, InteractiveSelector, InteractiveStyleRule, KeyframeSelector, KeyframesRule,
     LayoutStyleCss, MAX_CONTAINER_BREAKPOINTS, MotionDeclarations, ParsedStylesheet, Selector,
     Specificity, StyleRule, WrittenLayout, collect_document_custom_properties_from_rules,
-    emit_paint_color_rust, parse_container_prelude, parse_grid_track_list_result,
-    parse_stylesheet_full, plan_container_queries, with_dynamic_light_dark, written_layout,
+    emit_color_filter_rust, emit_paint_color_rust, parse_container_prelude,
+    parse_grid_track_list_result, parse_stylesheet_full, plan_container_queries,
+    with_dynamic_light_dark, written_layout,
 };
 use proc_macro2::{Span, TokenStream};
 use quote::{ToTokens, format_ident, quote};
@@ -107,6 +108,7 @@ enum CompiledKfValue {
     Scalar(f32),
     Color(PaintColor),
     Transform(PaintTransform),
+    Filter(ColorFilter),
 }
 
 #[derive(Clone)]
@@ -310,6 +312,7 @@ fn animatable(property: &str) -> &'static [&'static str] {
         "height" => &["Height"],
         "background" | "background-color" => &["Background"],
         "color" => &["Color"],
+        "filter" => &["Filter"],
         _ => &[],
     }
 }
@@ -379,8 +382,8 @@ fn transition_items(
         let variants = animatable(property);
         if variants.is_empty() {
             warnings.push(format!(
-                "`transition: {property}` is not animated: only opacity, transform, width, \
-                 height, background and color are"
+                "`transition: {property}` is not animated: only opacity, transform, filter, \
+                 width, height, background and color are"
             ));
         }
         items.extend(variants.iter().map(|variant| TransitionItem {
@@ -472,6 +475,11 @@ fn extract_keyframe_props(written: &WrittenLayout) -> Vec<(&'static str, Compile
                     saw_color = true;
                     out.push(("Color", CompiledKfValue::Color(pc)));
                 }
+            }
+            // `filter: none` is the identity, so it interpolates with a filter.
+            "paint.filter" => {
+                let filter = layout.paint.filter.unwrap_or_default();
+                out.push(("Filter", CompiledKfValue::Filter(filter)));
             }
             "width" => {
                 if let Some(LengthSpec::Px(px)) = layout.width {
@@ -1282,8 +1290,8 @@ fn check_keyframes_block(
                 warnings.push(StyleWarning {
                     at: StyleAt::Sheet(at),
                     message: format!(
-                        "`{}` in `@keyframes` is not animated: only opacity, transform, width, \
-                         height, padding, margin, color and background are",
+                        "`{}` in `@keyframes` is not animated: only opacity, transform, filter, \
+                         width, height, padding, margin, color and background are",
                         entry.text()
                     ),
                 });
@@ -1911,6 +1919,18 @@ fn keyframe_stop_tokens(stop: &CompiledKfStop, runtime: &TokenStream) -> TokenSt
                 .expect("compiled PaintColor tokens parse as Rust expr");
             quote! {
                 #runtime::view::CompiledMotionValue::Color(|| {
+                    #[allow(unused_imports)]
+                    use #runtime::view::__patch as __nana_patch;
+                    #expr
+                })
+            }
+        }
+        CompiledKfValue::Filter(filter) => {
+            let expr: TokenStream = emit_color_filter_rust(filter, "__nana_patch")
+                .parse()
+                .expect("compiled ColorFilter tokens parse as Rust expr");
+            quote! {
+                #runtime::view::CompiledMotionValue::Filter(|| {
                     #[allow(unused_imports)]
                     use #runtime::view::__patch as __nana_patch;
                     #expr
@@ -3192,9 +3212,9 @@ mod tests {
         let css = "\
             @keyframes fade-shift {\n\
                 from { opacity: 0.2; transform: translateX(0px); }\n\
-                to { opacity: 1.0; transform: translateX(12px); color: light-dark(#111, #eee); }\n\
+                to { opacity: 1.0; transform: translateX(12px); color: light-dark(#111, #eee); filter: blur(2px); }\n\
             }\n\
-            .card { animation: fade-shift 300ms 50ms steps(4, start) infinite alternate both; }\n\
+            .card { animation: fade-shift 300ms 50ms steps(4, start) infinite alternate both; transition: filter 120ms; }\n\
             .card:hover { animation-play-state: paused; }\n\
             .bad { animation: missing 200ms; }";
         let sheet = parse(css);
@@ -3222,6 +3242,7 @@ mod tests {
         assert!(tokens.contains("AnimationDirection::Alternate"), "{tokens}");
         assert!(tokens.contains("AnimationFillMode::Both"), "{tokens}");
         assert!(tokens.contains("AnimationPlayState::Paused"), "{tokens}");
+        assert!(tokens.contains("CompiledMotionValue::Filter"), "{tokens}");
     }
 
     #[test]

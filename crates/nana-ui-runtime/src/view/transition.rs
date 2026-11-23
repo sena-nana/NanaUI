@@ -142,6 +142,23 @@ pub enum CompiledMotionValue {
     Scalar(f32),
     Color(fn() -> nana_ui_core::PaintColor),
     Transform(nana_ui_core::PaintTransform),
+    /// A whole `filter` value; a theme-tracked drop-shadow colour resolves at
+    /// playback start like [`Self::Color`].
+    Filter(fn() -> nana_ui_core::ColorFilter),
+}
+
+impl CompiledMotionValue {
+    /// Whether the value follows the theme, so a palette change restarts it.
+    pub fn is_theme_dynamic(&self) -> bool {
+        match self {
+            Self::Color(color) => color().is_theme_dynamic(),
+            Self::Filter(filter) => filter()
+                .drop_shadow
+                .and_then(|shadow| shadow.paint_color)
+                .is_some_and(|paint| paint.is_theme_dynamic()),
+            Self::Scalar(_) | Self::Transform(_) => false,
+        }
+    }
 }
 
 impl std::fmt::Debug for CompiledMotionValue {
@@ -150,6 +167,7 @@ impl std::fmt::Debug for CompiledMotionValue {
             Self::Scalar(v) => f.debug_tuple("Scalar").field(v).finish(),
             Self::Color(_) => f.write_str("Color(<fn>)"),
             Self::Transform(t) => f.debug_tuple("Transform").field(t).finish(),
+            Self::Filter(filter) => f.debug_tuple("Filter").field(&filter()).finish(),
         }
     }
 }
@@ -160,6 +178,7 @@ impl PartialEq for CompiledMotionValue {
             (Self::Scalar(a), Self::Scalar(b)) => a == b,
             (Self::Color(a), Self::Color(b)) => a() == b(),
             (Self::Transform(a), Self::Transform(b)) => a == b,
+            (Self::Filter(a), Self::Filter(b)) => a() == b(),
             _ => false,
         }
     }
