@@ -661,6 +661,10 @@ CSS 路径只产出数据，不量容器（见下文「`@container`」）。
 
 能这样切的前提是：一棵子树的放置只读它自己的输入（站在哪、多大、包含块、字体、视口），不读兄弟子树放置时写下的东西，所以延后调度队列放完后结果相同。
 
+除了 `SPAN` 处的切点，滚动容器（`overflow: auto | scroll` 或 `ScrollView`）和隔离布局的盒子（`UiWorld::layout_isolated`：两个方向都是固定 px、在流内）在任何深度都作为边界入队（`placement::natural_boundary`），它们是以后调度器整块拿走的单位；`LayoutExecutionStats::placement_natural_boundaries` 记本趟有几个，也计入 `WorkCounters::layout_placement_boundaries`。
+
+一趟布局只读上一趟留下的保留缓存，只写自己的表（盒子、计划、上下文等），提交时在帧边界一起合并进保留缓存：`ContainerPlan` 不再有内部可变的字段，回放沿用上一趟的计划时，把挪动的行和主轴范围记成 `PlanPatch` 交给本趟的计划表，提交时再写进去，所以尾部编辑仍只付被挪动的行，不复制整份计划。这样一趟没做完的部分，上一趟的结果仍完整可用。
+
 一层的放置分两步：`lay_out_children` 走一遍容器的子项：测量、分行、对齐、求解 2D grid，给每个流内子项定好盒子，返回待放置的 `Descend` 列表和计划草稿，自己不放置任何子树；`place_node_body` 等这一帧退出后再依次进入这些子树，然后记录计划并放置定位子项。`place_node_head` 在 `place_node_body` 运行前返回，复用计划的两条快速路径（`place_edited_child_list`、`place_from_plan`，经 `replay_plan`）与 `lay_out_children` 各自成函数，避免同时把所有局部变量留在同一递归栈帧内。
 
 回放路径同样分两步：顺序回放（`replay_sequential_run`）、反向主轴前缀平移（`shift_reversed_prefix`）、换行 flex 行平移（`replay_wrapped_flex_line`）、grid 回放（`replay_grid`）和计划不变时重入受影响子项，都只给子项定盒子、把要重放的子树交成 `Descend`（回放中途拒绝时收回已交出的项），自己不调用 `place_node_scoped`；`replay_plan` 返回 `PlanReplay` 后，`place_node_body` 在回放的帧退出后依次进入这些子树，再由 `finish_plan_replay` 放置定位子项。所以一层回放的栈与冷布局一层相同。定位子项（`place_positioned_child`）仍在自己的帧里进入子树。
@@ -675,8 +679,9 @@ CSS 路径只产出数据，不量容器（见下文「`@container`」）。
 
 1. 已完成：`stacker` 彻底退出；测量迭代化（`0 B`/层），放置分成“定盒子”（`lay_out_children` / `place_node_head`）与“进入子树”（`place_node_body`）并立每层栈预算。
 2. 已完成：放置边界。到达 `SPAN` 层的节点成为队列中的任务单元（`Boundary`），调用栈深度不超过 `SPAN`；边界的结果只取决于它的输入。
-3. 后续：继续压缩单层放置栈帧与调度切片——按帧预算分片（未完成子树整体沿用双缓冲结果）、按视口距离排序、变更失效时取消在途边界，并将队列长度和分片次数计入 `WorkCounters`；滚动容器和 `layout_isolation` 节点可作为自然边界切点。
-4. 并行：互相独立的边界子树并行放置：每棵子树写自己的输出，最后合并。
+3. 已完成：回放路径也交出 `Descend`，增量一层的栈与冷布局一层相同；滚动容器和 `layout_isolation` 节点作为自然边界切点；一趟只写自己的表，回放的改动记成补丁在提交时合并（双缓冲）。
+4. 后续：调度切片——按帧预算分片（未完成的边界整体沿用上一趟的结果）、按视口距离排序、变更失效时取消在途边界，并将队列长度和分片次数计入 `WorkCounters`。
+5. 并行：互相独立的边界子树并行放置：每棵子树写自己的输出，最后合并。
 
 测量阶段的分片粒度受内容依赖限制：尺寸由内容决定的容器会把依赖一直传给祖先，这样的一串只能作为一个单元。超大的扁平列表靠虚拟化，不靠调度。
 

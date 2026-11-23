@@ -69,6 +69,7 @@ fn children_reaching_affected(
 fn descend_unvisited_reaching(
     container: StableNodeId,
     plan: &ContainerPlan,
+    patch: Option<&PlanPatch>,
     descend: &mut Vec<Descend>,
     nodes: &LayoutInputMap<'_>,
     output: &PassOutput,
@@ -85,11 +86,12 @@ fn descend_unvisited_reaching(
         (reaching.len() > 8).then(|| descend.iter().map(|visit| visit.child).collect());
     let mut unvisited = Vec::new();
     for index in reaching {
-        let (child, origin, size) = {
-            let entries = plan.entries.borrow();
-            let entry = &entries[index as usize];
-            (entry.child, entry.origin, entry.size)
+        // Where the replay left it, which the pass commits with the plan.
+        let entry = match patch {
+            Some(patch) => patch.entry(plan, index as usize),
+            None => &plan.entries[index as usize],
         };
+        let (child, origin, size) = (entry.child, entry.origin, entry.size);
         let replayed = match &visited {
             Some(visited) => visited.contains(&child),
             None => descend.iter().any(|visit| visit.child == child),
@@ -142,7 +144,7 @@ fn check_plan_children(
     let mut first_changed: Option<usize> = None;
     for index in plan.affected_entries(scope) {
         let index = index as usize;
-        let entry = plan.entries.borrow()[index].clone();
+        let entry = plan.entries[index].clone();
         let child = entry.child;
         let Some(current) = nodes.style(child) else {
             return Ok(PlanCheck::ChangedFrom(
@@ -258,7 +260,7 @@ fn kept_size(
         return None;
     }
     let style = nodes.style(child)?;
-    let entries = plan.entries.borrow();
+    let entries = &plan.entries;
     let entry = entries.get(plan.entry_index(child)? as usize)?;
     (entry.child == child
         && (Arc::ptr_eq(&style, &entry.style) || layout_inputs_equal(&style, &entry.style))
@@ -301,32 +303,37 @@ fn replay_sequential_suffix(
     intrinsic: &mut PassIntrinsicCache,
     descend: &mut Vec<Descend>,
     scope: &ScopeContext<'_>,
-) -> Result<bool, UiWorldError> {
-    let (cursor, run) = {
-        let entries = plan.entries.borrow();
-        let cursor = entries.get(from).map_or(0.0, |entry| entry.cursor_before);
-        let run: Vec<RunChild> = entries[from..].iter().map(RunChild::planned).collect();
-        (cursor, run)
-    };
+) -> Result<Option<PlanPatch>, UiWorldError> {
+    let cursor = plan
+        .entries
+        .get(from)
+        .map_or(0.0, |entry| entry.cursor_before);
+    let run: Vec<RunChild> = plan.entries[from..].iter().map(RunChild::planned).collect();
     let Some(replayed) = replay_sequential_run(
         plan, cursor, run, content, viewport, nodes, intrinsic, descend, scope,
     )?
     else {
-        return Ok(false);
+        return Ok(None);
     };
     let shifted = shift_reversed_prefix(plan, from, content, descend);
-    // Commit only after the whole suffix succeeded, so a bail-out above leaves
-    // the cached plan exactly as it was.
-    let mut entries = plan.entries.borrow_mut();
-    for (index, origin) in shifted {
-        entries[index].origin = origin;
-    }
-    for (slot, entry) in entries[from..].iter_mut().zip(replayed) {
-        *slot = entry;
-    }
-    plan.placed_main
-        .set(main_extent(content, plan.main_direction));
-    Ok(true)
+    // The plan stays the previous pass's; what moved is a patch the pass
+    // commits, and a bail-out above leaves nothing.
+    let mut rows = Vec::with_capacity(shifted.len() + replayed.len());
+    rows.extend(shifted.into_iter().map(|(index, origin)| {
+        let mut entry = plan.entries[index].clone();
+        entry.origin = origin;
+        (index as u32, entry)
+    }));
+    rows.extend(
+        replayed
+            .into_iter()
+            .enumerate()
+            .map(|(offset, entry)| ((from + offset) as u32, entry)),
+    );
+    Ok(Some(PlanPatch {
+        rows,
+        placed_main: Some(main_extent(content, plan.main_direction)),
+    }))
 }
 
 /// Give `run`, children of a sequential container in placement order, their
@@ -573,14 +580,14 @@ fn shift_reversed_prefix(
 ) -> Vec<(usize, Point)> {
     let direction = plan.main_direction;
     let shift = if plan.main_reversed {
-        main_extent(content, direction) - plan.placed_main.get()
+        main_extent(content, direction) - plan.placed_main
     } else {
         0.0
     };
     if shift == 0.0 {
         return Vec::new();
     }
-    let prefix: Vec<(usize, StableNodeId, Point, Size)> = plan.entries.borrow()[..from]
+    let prefix: Vec<(usize, StableNodeId, Point, Size)> = plan.entries[..from]
         .iter()
         .enumerate()
         .map(|(index, entry)| {
@@ -718,7 +725,7 @@ fn replay_child_list_edit(
         arrivals.push(child);
     }
     let (from, cursor, run, prefix) = {
-        let entries = plan.entries.borrow();
+        let entries = &plan.entries;
         // Entries run in placement order. A stable sort by `order` keeps the
         // children that set none in document order, next to each other, so
         // around an edit among them the children that left are the entries
@@ -827,8 +834,8 @@ fn replay_child_list_edit(
         content_origin: plan.content_origin,
         gap: plan.gap,
         sequential: true,
-        entries: RefCell::new(entries),
-        placed_main: Cell::new(main_extent(content, direction)),
+        entries,
+        placed_main: main_extent(content, direction),
         by_child,
         grid: None,
         cross_independent: plan.cross_independent && !reads_cross,
@@ -838,8 +845,8 @@ fn replay_child_list_edit(
 }
 
 /// Shift later wrap lines when one item's cross size changed and the line
-/// breaks did not. Anything else returns `false` so the caller lays out this
-/// flex container from scratch.
+/// breaks did not, and return the rows that moved. Anything else returns
+/// `None` so the caller lays out this flex container from scratch.
 fn replay_wrapped_flex_line(
     plan: &ContainerPlan,
     viewport: LayoutViewport,
@@ -847,11 +854,11 @@ fn replay_wrapped_flex_line(
     intrinsic: &mut PassIntrinsicCache,
     descend: &mut Vec<Descend>,
     scope: &ScopeContext<'_>,
-) -> Result<bool, UiWorldError> {
+) -> Result<Option<PlanPatch>, UiWorldError> {
     let style = plan.style.as_ref();
     if plan.sequential || !flex_line_local_style(style) || plan.main_reversed || plan.cross_reversed
     {
-        return Ok(false);
+        return Ok(None);
     }
     let direction = plan.main_direction;
     let tracks = match direction {
@@ -859,14 +866,14 @@ fn replay_wrapped_flex_line(
         FlexDirection::Column => style.active_grid_rows(),
     };
     if tracks.is_some_and(|tracks| !tracks.is_empty()) {
-        return Ok(false);
+        return Ok(None);
     }
-    let entries = plan.entries.borrow();
+    let entries = &plan.entries;
     let mut flow = Vec::with_capacity(entries.len());
     let mut old_sizes = Vec::with_capacity(entries.len());
     for entry in entries.iter() {
         if child_blocks_flex_line_local(entry.style.as_ref()) {
-            return Ok(false);
+            return Ok(None);
         }
         if scope.affected.contains(&entry.child)
             && !nodes.style(entry.child).is_some_and(|current| {
@@ -874,21 +881,20 @@ fn replay_wrapped_flex_line(
                     || super::same_but_cross(&current, &entry.style, direction)
             })
         {
-            return Ok(false);
+            return Ok(None);
         }
         let cross = match direction {
             FlexDirection::Row => entry.style.height,
             FlexDirection::Column => entry.style.width,
         };
         if matches!(cross, Some(LengthSpec::Percent(_)) | Some(LengthSpec::Fill)) {
-            return Ok(false);
+            return Ok(None);
         }
         flow.push(entry.child);
         old_sizes.push(entry.intrinsic);
     }
-    drop(entries);
     if flow.is_empty() {
-        return Ok(false);
+        return Ok(None);
     }
     let mut sizes = old_sizes.clone();
     let mut patched = false;
@@ -909,7 +915,7 @@ fn replay_wrapped_flex_line(
         if main_extent(measured, direction).to_bits()
             != main_extent(old_sizes[index], direction).to_bits()
         {
-            return Ok(false);
+            return Ok(None);
         }
         if measured != sizes[index] {
             sizes[index] = measured;
@@ -917,7 +923,7 @@ fn replay_wrapped_flex_line(
         }
     }
     if !patched {
-        return Ok(false);
+        return Ok(None);
     }
     let edge_base = plan
         .writing
@@ -949,7 +955,7 @@ fn replay_wrapped_flex_line(
         false,
     );
     if old_lines != new_lines {
-        return Ok(false);
+        return Ok(None);
     }
     let line_cross = |line: &[usize], sizes: &[Size]| -> f32 {
         let mut cross = 0.0f32;
@@ -977,8 +983,7 @@ fn replay_wrapped_flex_line(
             if carried == 0.0 && !moved {
                 continue;
             }
-            let entries = plan.entries.borrow();
-            let mut origin = entries[index].origin;
+            let mut origin = plan.entries[index].origin;
             match direction {
                 FlexDirection::Row => origin.y += carried,
                 FlexDirection::Column => origin.x += carried,
@@ -994,18 +999,25 @@ fn replay_wrapped_flex_line(
         containing: plan.content,
         inherited: None,
     }));
-    let mut entries = plan.entries.borrow_mut();
-    for (child, origin, size, index) in jobs {
-        let entry = &mut entries[index];
-        entry.child = child;
-        entry.origin = origin;
-        entry.size = size;
-        entry.intrinsic = size;
-        if let Some(child_style) = nodes.style(child) {
-            entry.style = child_style;
-        }
-    }
-    Ok(true)
+    let mut rows: Vec<(u32, PlannedChild)> = jobs
+        .into_iter()
+        .map(|(child, origin, size, index)| {
+            let mut entry = plan.entries[index].clone();
+            entry.child = child;
+            entry.origin = origin;
+            entry.size = size;
+            entry.intrinsic = size;
+            if let Some(child_style) = nodes.style(child) {
+                entry.style = child_style;
+            }
+            (index as u32, entry)
+        })
+        .collect();
+    rows.sort_unstable_by_key(|(index, _)| *index);
+    Ok(Some(PlanPatch {
+        rows,
+        placed_main: None,
+    }))
 }
 
 /// Re-solve this grid's tracks from cached contributions.
@@ -1034,7 +1046,7 @@ fn replay_grid(
     if style.is_subgrid_columns() || style.is_subgrid_rows() {
         return Ok(false);
     }
-    let entries = plan.entries.borrow().clone();
+    let entries = plan.entries.clone();
     let entry_of = |child: StableNodeId| {
         plan.entry_index(child)
             .and_then(|index| entries.get(index as usize))
@@ -1161,7 +1173,7 @@ fn replay_grid(
     updated.content_origin = content_origin;
     updated.grid = Some(Box::new(GridTrackPlan::from_layout(&solved)));
     updated.by_child = super::build_by_child_index(&recorded);
-    updated.entries = RefCell::new(recorded);
+    updated.entries = recorded;
     nodes.container_plans.rebuild(id, updated);
     Ok(true)
 }
@@ -1310,7 +1322,16 @@ fn place_level(
             // A leaf has no subtree to wait: placing it here descends no
             // further.
             let leaf = head.facts.children.is_empty() && head.facts.modal.is_none();
-            if depth >= super::recursion::SPAN && !leaf {
+            // Under the span, a scroll container or an isolated box is cut
+            // too: a unit of the pass's queue whatever its depth.
+            let natural = !leaf
+                && depth > 0
+                && depth < super::recursion::SPAN
+                && natural_boundary(id, head.facts.style.as_ref(), nodes);
+            if natural {
+                intrinsic.execution_stats.placement_natural_boundaries += 1;
+            }
+            if (depth >= super::recursion::SPAN || natural) && !leaf {
                 queue_boundary(
                     intrinsic,
                     super::recursion::Boundary {
@@ -1338,6 +1359,19 @@ fn place_level(
             )
         },
     )
+}
+
+/// Whether `id` is where a subtree is cut whatever its depth: a scroll
+/// container, whose content scrolls inside a box its parent sized, or a box
+/// that isolates its layout (`UiWorld::layout_isolated`: fixed in both
+/// extents and in flow). Both are where a later pass can take the subtree as
+/// one unit, scheduled apart from what is around it (see `recursion`).
+#[inline(never)]
+fn natural_boundary(id: StableNodeId, style: &LayoutStyle, nodes: &LayoutInputMap<'_>) -> bool {
+    style.overflow_x.scrolls()
+        || style.overflow_y.scrolls()
+        || (style.layout_isolation && nodes.world.layout_isolated(id))
+        || nodes.world.is_scroll_container(id)
 }
 
 /// Whether `id`, whose own box the head just wrote, keeps everything under
@@ -1831,8 +1865,8 @@ fn place_node_body<'a>(
                 writing,
                 main_reversed,
                 cross_reversed,
-                entries: RefCell::new(entries),
-                placed_main: Cell::new(main_extent(content, direction)),
+                entries,
+                placed_main: main_extent(content, direction),
                 grid: recorded_grid,
                 cross_independent,
                 main_dependent,
@@ -2099,7 +2133,7 @@ fn place_edited_child_list(
         scope,
     )?;
     let answered = edited.map(|edited| {
-        descend_unvisited_reaching(id, &edited, &mut descend, nodes, output, scope);
+        descend_unvisited_reaching(id, &edited, None, &mut descend, nodes, output, scope);
         // In before the overlay, which writes its geometry into it. The edit
         // moved no positioned child, so the old plan's overlay is this one's.
         nodes.container_plans.rebuild(id, edited);
@@ -2157,7 +2191,7 @@ fn place_from_plan(
     // moved with the far edge, even with no child changed.
     let far_edge_moved = plan.sequential
         && plan.main_reversed
-        && main_extent(content, plan.main_direction).to_bits() != plan.placed_main.get().to_bits();
+        && main_extent(content, plan.main_direction).to_bits() != plan.placed_main.to_bits();
     let check = check_plan_children(plan, viewport, nodes, intrinsic, scope)?;
     let check = match check {
         PlanCheck::Unchanged if far_edge_moved => PlanCheck::ChangedFrom(plan.child_count()),
@@ -2172,7 +2206,7 @@ fn place_from_plan(
             // closure.
             for index in children_reaching_affected(id, plan, scope) {
                 let (child, origin, size) = {
-                    let entries = plan.entries.borrow();
+                    let entries = &plan.entries;
                     let entry = &entries[index as usize];
                     (entry.child, entry.origin, entry.size)
                 };
@@ -2199,13 +2233,16 @@ fn place_from_plan(
             &mut descend,
             scope,
         )?
-        .then_some(true),
+        .map(|patch| (true, Some(patch))),
         PlanCheck::Stale => None,
         PlanCheck::Unchanged | PlanCheck::ChangedFrom(_) => {
-            if !grid_geometry_moved
-                && replay_wrapped_flex_line(plan, viewport, nodes, intrinsic, &mut descend, scope)?
-            {
-                Some(false)
+            let wrapped = if grid_geometry_moved {
+                None
+            } else {
+                replay_wrapped_flex_line(plan, viewport, nodes, intrinsic, &mut descend, scope)?
+            };
+            if let Some(patch) = wrapped {
+                Some((false, Some(patch)))
             } else {
                 replay_grid(
                     id,
@@ -2220,14 +2257,18 @@ fn place_from_plan(
                     &mut descend,
                     scope,
                 )?
-                .then_some(false)
+                .then_some((false, None))
             }
         }
     };
-    if answered.is_some() {
-        descend_unvisited_reaching(id, plan, &mut descend, nodes, output, scope);
+    let Some((suffix, patch)) = answered else {
+        return Ok(plan_replay(descend, None, nodes));
+    };
+    descend_unvisited_reaching(id, plan, patch.as_ref(), &mut descend, nodes, output, scope);
+    if let Some(patch) = patch {
+        nodes.container_plans.patch(id, patch);
     }
-    Ok(plan_replay(descend, answered, nodes))
+    Ok(plan_replay(descend, Some(suffix), nodes))
 }
 
 /// A child subtree a container's walk gave a box, placed once the walk's frame
@@ -4131,7 +4172,9 @@ fn publish_overlay_plan(
         write(existing);
         return;
     }
-    let mut updated = plan.clone();
+    // The retained plan with what the pass's replay patched in it: the
+    // overlay lands on the plan the pass commits.
+    let mut updated = nodes.container_plans.patched_copy(id, plan);
     write(&mut updated);
     nodes.container_plans.rebuild(id, updated);
 }

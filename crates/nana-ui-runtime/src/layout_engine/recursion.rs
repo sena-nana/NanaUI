@@ -5,7 +5,13 @@
 //!
 //! Placement descends at most [`SPAN`] levels before queuing remaining subtrees
 //! as [`Boundary`] items, so placement call-stack depth is independent of tree
-//! depth. Each pass records peak per-level stack usage in
+//! depth. A scroll container or a layout-isolated box is queued at any depth
+//! (`placement::natural_boundary`): the units a scheduler can take apart.
+//!
+//! A pass reads the previous pass's retained cache and writes only its own
+//! tables, merged when it commits; a replay that keeps a container's plan
+//! records what it moved as a `PlanPatch`. So the previous pass's results
+//! stay whole for whatever a pass does not finish. Each pass records peak per-level stack usage in
 //! `LayoutExecutionStats::{measure,placement}_stack_per_level`.
 
 use super::{PassIntrinsicCache, Size};

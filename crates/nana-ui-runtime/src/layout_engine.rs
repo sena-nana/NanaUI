@@ -1810,7 +1810,7 @@ impl DocumentLayoutCache {
     fn retained_plan_entries(&self) -> usize {
         let mut count = 0usize;
         for plan in self.container_plans.values() {
-            count = count.saturating_add(plan.entries.borrow().len());
+            count = count.saturating_add(plan.entries.len());
             count = count.saturating_add(plan.overlay.len());
             if let Some(grid) = &plan.grid {
                 count = count.saturating_add(grid.items.len());
@@ -2288,13 +2288,13 @@ struct ContainerPlan {
     /// so the pass can keep the prefix and replay only the suffix.
     sequential: bool,
     /// In placement order.
-    entries: RefCell<Vec<PlannedChild>>,
+    entries: Vec<PlannedChild>,
     /// Main extent of the content box the entries' origins were placed in.
     /// On a reversed main axis an origin is measured back from the far edge,
     /// so when the container's main size moves, every child before the first
     /// changed one moves with that edge. The replay shifts them by the
     /// difference and records the new extent here.
-    placed_main: Cell<f32>,
+    placed_main: f32,
     /// `(child, index into entries)`, sorted by child for large containers so
     /// the pass can probe the change closure without scanning every entry.
     /// Small containers (`<= BY_CHILD_LINEAR_CAP` children) omit the side
@@ -2475,7 +2475,7 @@ impl ContainerPlan {
     }
 
     fn child_count(&self) -> usize {
-        self.entries.borrow().len()
+        self.entries.len()
     }
 
     /// The index in `entries` of `child`'s recorded placement.
@@ -2487,7 +2487,6 @@ impl ContainerPlan {
                 .map(|slot| by_child[slot].1);
         }
         self.entries
-            .borrow()
             .iter()
             .position(|entry| entry.child == child)
             .map(|index| index as u32)
@@ -3253,6 +3252,47 @@ impl<'a> PassScratch<'a> {
 struct PassContainerPlans {
     rebuilt: HashMap<StableNodeId, ContainerPlan>,
     retired: crate::NodeSet,
+    /// What replays changed in a retained plan they kept, by container:
+    /// applied when the pass commits, so the pass reads the previous pass's
+    /// plans without writing them (see [`PlanPatch`]).
+    patched: HashMap<StableNodeId, PlanPatch>,
+}
+
+/// The rows a replay moved in a retained [`ContainerPlan`] it kept, and the
+/// main extent it placed them against.
+///
+/// A pass reads the retained cache and writes only its own tables, which
+/// the commit merges at the frame boundary: what a pass has not finished
+/// leaves the previous pass's results whole (#399). A replay that keeps a
+/// long list's plan and moves its tail records just the tail here, rather
+/// than a copy of the plan, so a tail edit stays as cheap as the replay.
+#[derive(Default)]
+struct PlanPatch {
+    /// Replaced entries, by index, ascending.
+    rows: Vec<(u32, PlannedChild)>,
+    placed_main: Option<f32>,
+}
+
+impl PlanPatch {
+    /// The entry at `index`, as the patch leaves it.
+    fn entry<'a>(&'a self, plan: &'a ContainerPlan, index: usize) -> &'a PlannedChild {
+        match self
+            .rows
+            .binary_search_by_key(&(index as u32), |(row, _)| *row)
+        {
+            Ok(slot) => &self.rows[slot].1,
+            Err(_) => &plan.entries[index],
+        }
+    }
+
+    fn apply(self, plan: &mut ContainerPlan) {
+        for (index, entry) in self.rows {
+            plan.entries[index as usize] = entry;
+        }
+        if let Some(placed_main) = self.placed_main {
+            plan.placed_main = placed_main;
+        }
+    }
 }
 
 impl PassContainerPlans {
@@ -3260,16 +3300,36 @@ impl PassContainerPlans {
         self.rebuilt.reserve(containers);
     }
 
-    /// `plan` is `id`'s from this pass on.
+    /// `plan` is `id`'s from this pass on. It replaces any patch the pass
+    /// recorded for the retained one; see [`Self::patched_copy`].
     fn rebuild(&mut self, id: StableNodeId, plan: ContainerPlan) {
         self.retired.remove(&id);
+        self.patched.remove(&id);
         self.rebuilt.insert(id, plan);
     }
 
     /// `id` keeps no plan: neither one this pass rebuilt nor the retained one.
     fn retire(&mut self, id: StableNodeId) {
         self.rebuilt.remove(&id);
+        self.patched.remove(&id);
         self.retired.insert(id);
+    }
+
+    /// `id` keeps its retained plan, with `patch` applied when the pass
+    /// commits.
+    fn patch(&mut self, id: StableNodeId, patch: PlanPatch) {
+        debug_assert!(!self.rebuilt.contains_key(&id) && !self.retired.contains(&id));
+        self.patched.insert(id, patch);
+    }
+
+    /// A copy of `retained`, `id`'s retained plan, with what this pass
+    /// patched in it: where the pass rebuilds a plan it kept.
+    fn patched_copy(&mut self, id: StableNodeId, retained: &ContainerPlan) -> ContainerPlan {
+        let mut plan = retained.clone();
+        if let Some(patch) = self.patched.remove(&id) {
+            patch.apply(&mut plan);
+        }
+        plan
     }
 
     /// What this pass decided for `id`: `Some(None)` when it retired the
@@ -3296,6 +3356,11 @@ impl PassContainerPlans {
         for id in self.retired {
             retained.remove(&id);
             remote_overlays.remove(&id);
+        }
+        for (id, patch) in self.patched {
+            if let Some(plan) = retained.get_mut(&id) {
+                patch.apply(plan);
+            }
         }
         let mut rebuilt = self.rebuilt;
         for (id, plan) in &mut rebuilt {
@@ -4414,6 +4479,9 @@ pub(crate) struct LayoutExecutionStats {
     pub placement_stack_per_level: usize,
     /// Subtrees placed from the boundary queue. See `recursion`.
     pub placement_boundaries: usize,
+    /// Of those, the ones cut above the span because their root is a scroll
+    /// container or isolates its layout (`placement::natural_boundary`).
+    pub placement_natural_boundaries: usize,
     /// Boxes a line-box question settled by walking rather than from the
     /// retained memo ([`UiWorld::holds_line_box_in`]): what a seed that drops
     /// the memo up its ancestors costs the next pass.
@@ -5247,10 +5315,10 @@ fn build_by_child_index(entries: &[PlannedChild]) -> Option<Box<[(StableNodeId, 
 }
 
 fn bound_container_plan(plan: &mut ContainerPlan) {
-    let before = plan.entries.borrow().len();
-    dedupe_plan_rows(&mut plan.entries.borrow_mut(), |entry| entry.child);
-    if plan.entries.borrow().len() != before {
-        plan.by_child = build_by_child_index(&plan.entries.borrow());
+    let before = plan.entries.len();
+    dedupe_plan_rows(&mut plan.entries, |entry| entry.child);
+    if plan.entries.len() != before {
+        plan.by_child = build_by_child_index(&plan.entries);
     }
     dedupe_plan_rows(&mut plan.overlay, |entry| entry.child);
     if let Some(grid) = plan.grid.as_mut() {

@@ -142,8 +142,9 @@ pub struct WorkCounters {
     pub layout_measure_stack_per_level: usize,
     /// The same for the placement recursion.
     pub layout_placement_stack_per_level: usize,
-    /// Subtrees placement queued at its span and placed from the queue: one
-    /// per `SPAN` levels of depth below the outermost placement call.
+    /// Subtrees placement queued and placed from the queue: one per `SPAN`
+    /// levels of depth below the outermost placement call, and one per
+    /// scroll container or layout-isolated box above that depth.
     pub layout_placement_boundaries: usize,
     /// Publish batches that wrote at least one changed layout result.
     pub layout_delta_commits: usize,

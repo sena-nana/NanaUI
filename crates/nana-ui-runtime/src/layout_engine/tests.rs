@@ -7567,3 +7567,111 @@ fn fit_content_row_respects_non_shrinkable_min_content_and_clamps_when_wrapping(
         shrink_boxes["box"]
     );
 }
+
+/// Restyles the container of [`column_tree`]: sized by its rows, and laid
+/// out by `edit` beside that.
+fn restyle_column(world: &mut UiWorld, edit: impl FnOnce(&mut LayoutStyle)) {
+    let mut style = LayoutStyle {
+        width: Some(LengthSpec::Px(300.0)),
+        direction: Some(FlexDirection::Column),
+        ..LayoutStyle::default()
+    };
+    edit(&mut style);
+    let mut queue = MutationQueue::new();
+    queue.set_style(
+        id(2),
+        NodeStyle {
+            layout: Arc::new(style),
+            ..NodeStyle::default()
+        },
+    );
+    world.commit(queue).unwrap();
+}
+
+/// What a plan records of its children that a later pass places from.
+fn plan_rows(plan: &ContainerPlan) -> (Vec<(StableNodeId, Point, Size, f32)>, f32) {
+    let rows = plan
+        .entries
+        .iter()
+        .map(|entry| (entry.child, entry.origin, entry.size, entry.cursor_before))
+        .collect();
+    (rows, plan.placed_main)
+}
+
+/// A pass reads the previous pass's plans and writes only its own tables
+/// (#399): a replay that keeps a container's plan records what it moved as
+/// a patch the pass commits. After each edit the retained plan is the one a
+/// cold layout records, on a forward axis and on a reversed one, where the
+/// replay also moves the prefix with the far edge.
+#[test]
+fn a_replayed_plan_commits_what_a_cold_layout_records() {
+    const ROWS: u64 = 12;
+    let viewport = LayoutViewport::new(300.0, 800.0);
+    for reversed in [false, true] {
+        let (mut world, document) = column_tree(ROWS);
+        restyle_column(&mut world, |style| style.flex_reverse = reversed);
+        let mut retained = RetainedLayoutCache::default();
+        let _ = world.take_system_work();
+        let emitted = RuntimeLayoutEngine
+            .layout_document_with_frontier(&world, document, viewport, &[], &mut retained, true)
+            .unwrap();
+        write_changed_boxes(&mut world, &emitted);
+        let _ = world.take_system_work();
+        for (step, (row, height)) in [(5, 32.0), (9, 12.0), (5, 20.0)].into_iter().enumerate() {
+            resize_row(&mut world, row, height);
+            let step = scoped_step_matches_full(
+                &mut world,
+                document,
+                viewport,
+                &mut retained,
+                &format!("reversed {reversed} step {step}"),
+            );
+            assert!(step.suffixes_replayed > 0, "reversed {reversed}: no replay");
+            let mut cold = RetainedLayoutCache::default();
+            RuntimeLayoutEngine
+                .layout_document_with_frontier(&world, document, viewport, &[], &mut cold, true)
+                .unwrap();
+            assert_eq!(
+                plan_rows(&retained.documents[&document].container_plans[&id(2)]),
+                plan_rows(&cold.documents[&document].container_plans[&id(2)]),
+                "reversed {reversed}: the committed plan is not the cold one"
+            );
+        }
+    }
+}
+
+/// A scroll container and a box that isolates its layout are cut from the
+/// pass's placement as boundaries above the span, and an edit inside one
+/// still lays out as a cold layout does.
+#[test]
+fn scroll_containers_and_isolated_boxes_are_natural_boundaries() {
+    let viewport = LayoutViewport::new(300.0, 800.0);
+    let shapes: [(&str, fn(&mut LayoutStyle)); 3] = [
+        ("plain", |_| {}),
+        ("scroll", |style| {
+            style.height = Some(LengthSpec::Px(200.0));
+            style.overflow_y = nana_ui_core::OverflowSpec::Auto;
+        }),
+        ("isolated", |style| {
+            style.height = Some(LengthSpec::Px(400.0));
+            style.layout_isolation = true;
+        }),
+    ];
+    for (name, shape) in shapes {
+        let (mut world, document) = column_tree(6);
+        restyle_column(&mut world, shape);
+        let mut retained = RetainedLayoutCache::default();
+        let _ = world.take_system_work();
+        let emitted = RuntimeLayoutEngine
+            .layout_document_with_frontier(&world, document, viewport, &[], &mut retained, true)
+            .unwrap();
+        let natural = retained
+            .execution_stats(document)
+            .placement_natural_boundaries;
+        assert_eq!(natural, usize::from(name != "plain"), "{name}");
+        write_changed_boxes(&mut world, &emitted);
+        let _ = world.take_system_work();
+        resize_row(&mut world, 2, 28.0);
+        scoped_step_matches_full(&mut world, document, viewport, &mut retained, name);
+    }
+}

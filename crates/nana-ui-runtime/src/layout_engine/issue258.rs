@@ -402,7 +402,7 @@ fn repeated_container_edits_do_not_grow_plan_entries() {
         let cache = &retained.documents[&document];
         for plan in cache.container_plans.values() {
             assert!(
-                plan.entries.borrow().len() <= plan.children.len(),
+                plan.entries.len() <= plan.children.len(),
                 "flow entries exceeded direct children"
             );
             assert!(
