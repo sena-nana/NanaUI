@@ -210,6 +210,9 @@ struct WindowContext {
     accessibility: Option<HostedAccessibility>,
     accessibility_pending: PendingAccessibility,
     size_move: LiveSizeMove,
+    /// Pen facts the windowing backend drops: cancellation, a reported zero
+    /// pressure, and leaving the sensing range.
+    pen: nana_window::PenInput,
     /// A content aspect ratio is set but the window has not been brought to
     /// it yet, because it was maximized or fullscreen when it was set.
     aspect_conform_pending: bool,
@@ -1327,6 +1330,13 @@ fn complete_startup<Program: RuntimeProgram>(
             )?;
             size_move.set_content_aspect_ratio(windows::content_aspect_ratio(&settings));
             size_move
+        },
+        pen: {
+            let pen_wake = proxy.clone();
+            nana_window::PenInput::install_with_wake(
+                window.as_ref(),
+                Arc::new(move || pen_wake.wake_up()),
+            )?
         },
         aspect_conform_pending: false,
         requested_level: if settings.always_on_top {
@@ -3067,6 +3077,11 @@ fn tablet_pointer_id(device_id: Option<DeviceId>, kind: TabletToolKind) -> u64 {
     1000 + device.saturating_mul(2) + kind_index
 }
 
+/// The pointer id of a pen whose events carry no device, as Win32 pens do.
+fn pen_pointer_id() -> u64 {
+    tablet_pointer_id(None, TabletToolKind::Pen)
+}
+
 fn canonical_device_id(device_id: Option<DeviceId>) -> nana_ui_platform::DeviceId {
     nana_ui_platform::DeviceId(
         device_id
@@ -3176,6 +3191,41 @@ fn map_button_source(
             map_pointer_kind(&PointerKind::Mouse, primary, device_id)
         }
     }
+}
+
+/// Apply what the platform reported for the pen frame being delivered (see
+/// [`nana_window::PenInput`]) to the event the backend lowered from it: a
+/// cancelled contact ends in `Cancel`, not `Up`, and a reported pressure,
+/// zero included, replaces the default a pressed pen without one gets.
+fn apply_pen_frame(payload: &mut InputPayload, frame: Option<nana_window::PenFrame>) {
+    let (InputPayload::Pointer(pointer), Some(frame)) = (payload, frame) else {
+        return;
+    };
+    if pointer.pointer_type != PointerType::Pen {
+        return;
+    }
+    if frame.canceled && pointer.phase == PointerPhase::Up {
+        pointer.phase = PointerPhase::Cancel;
+    }
+    if pointer.buttons != 0
+        && let Some(pressure) = frame.pressure
+    {
+        pointer.pressure = pressure;
+    }
+}
+
+/// A leave the backend reports for a pen whose leaves the host takes from
+/// [`nana_window::PenInput`] instead: winit's Win32 backend sends one after
+/// every lift while the pen still hovers.
+fn is_backend_pen_leave(event: &WinitWindowEvent, pen: &nana_window::PenInput) -> bool {
+    pen.reports_leave()
+        && matches!(
+            event,
+            WinitWindowEvent::PointerLeft {
+                kind: PointerKind::TabletTool(_),
+                ..
+            }
+        )
 }
 
 /// One native event lowered to canonical input, not yet stamped: the device
@@ -3792,14 +3842,15 @@ mod tests {
     use super::{
         Desktop, DisplayBounds, FileDragInput, FileDragKind, ForwardPointerAction, FrameMoveStep,
         InputTracker, PRIMARY_MOUSE_BUTTON, RoutedWindowCommand, allows_modal_parent_event,
-        desktop_position, frame_edge_cursor, frame_move_step, frame_resize_edge_for,
-        held_mouse_button, invalidate_program_host_textures, mouse_button_code, mouse_button_mask,
-        platform_composition, platform_input_key, platform_input_modifiers, platform_physical_key,
-        platform_window_event, remove_image_target_index, replace_image_target_index,
-        route_window_command, scene_clear_color, scene_runtime_input_update,
-        scene_window_attributes, screen_position, surface_image_keys, tablet_pointer_id,
-        window_cursor_override, window_level, window_surface_effect,
-        window_wants_transparent_surface, windows_scene_chrome, windows_to_redraw, winit_icon,
+        apply_pen_frame, desktop_position, frame_edge_cursor, frame_move_step,
+        frame_resize_edge_for, held_mouse_button, invalidate_program_host_textures,
+        mouse_button_code, mouse_button_mask, platform_composition, platform_input_key,
+        platform_input_modifiers, platform_physical_key, platform_window_event,
+        remove_image_target_index, replace_image_target_index, route_window_command,
+        scene_clear_color, scene_runtime_input_update, scene_window_attributes, screen_position,
+        surface_image_keys, tablet_pointer_id, window_cursor_override, window_level,
+        window_surface_effect, window_wants_transparent_surface, windows_scene_chrome,
+        windows_to_redraw, winit_icon,
     };
     use crate::presentation::{
         ResolvedSurfaceTarget, ResolvedWindowPresentation, WindowSurfaceTarget,
@@ -5991,5 +6042,93 @@ mod tests {
             forward_pointer_action(MousePassthroughMode::Forward, false, false, false, &left),
             ForwardPointerAction::RestorePassthrough
         );
+    }
+
+    /// A pen stroke as the Win32 backend lowers it, then corrected by the
+    /// frame facts the window procedure saw: a reported zero pressure stays
+    /// zero, and a cancelled lift ends in `Cancel` with no buttons held.
+    #[test]
+    fn pen_frame_facts_correct_pressure_and_cancellation() {
+        let mut tracker = InputTracker::default();
+        let pen_button = |state| WinitWindowEvent::PointerButton {
+            device_id: None,
+            state,
+            position: PhysicalPosition::new(20.0, 40.0),
+            primary: true,
+            button: ButtonSource::TabletTool {
+                kind: TabletToolKind::Pen,
+                button: winit::event::TabletToolButton::Contact,
+                data: TabletToolData::default(),
+            },
+            is_macos_activation_click: false,
+        };
+        let zero = nana_window::PenFrame {
+            pressure: Some(0.0),
+            canceled: false,
+        };
+
+        let mut down =
+            map_input(&mut tracker, &pen_button(ElementState::Pressed), 1.0, None).expect("down");
+        apply_pen_frame(&mut down, None);
+        let InputPayload::Pointer(PointerInput { pressure, .. }) = down else {
+            panic!("expected pointer");
+        };
+        assert_eq!(
+            pressure, 0.5,
+            "a pen without pressure facts keeps the default"
+        );
+
+        let mut down =
+            map_input(&mut tracker, &pen_button(ElementState::Pressed), 1.0, None).expect("down");
+        apply_pen_frame(&mut down, Some(zero));
+        let InputPayload::Pointer(PointerInput {
+            phase, pressure, ..
+        }) = down
+        else {
+            panic!("expected pointer");
+        };
+        assert_eq!((phase, pressure), (PointerPhase::Down, 0.0));
+
+        let mut up =
+            map_input(&mut tracker, &pen_button(ElementState::Released), 1.0, None).expect("up");
+        apply_pen_frame(
+            &mut up,
+            Some(nana_window::PenFrame {
+                pressure: Some(0.0),
+                canceled: true,
+            }),
+        );
+        let InputPayload::Pointer(PointerInput {
+            phase,
+            buttons,
+            pointer_type,
+            ..
+        }) = up
+        else {
+            panic!("expected pointer");
+        };
+        assert_eq!(pointer_type, PointerType::Pen);
+        assert_eq!((phase, buttons), (PointerPhase::Cancel, 0));
+
+        // Facts about a pen never touch a mouse event.
+        let mut mouse = map_input(
+            &mut tracker,
+            &WinitWindowEvent::PointerButton {
+                device_id: None,
+                state: ElementState::Pressed,
+                position: PhysicalPosition::new(1.0, 1.0),
+                primary: true,
+                button: ButtonSource::Mouse(MouseButton::Left),
+                is_macos_activation_click: false,
+            },
+            1.0,
+            None,
+        )
+        .expect("mouse down");
+        apply_pen_frame(&mut mouse, Some(zero));
+        let InputPayload::Pointer(PointerInput { pressure, .. }) = mouse else {
+            panic!("expected pointer");
+        };
+        assert_eq!(pressure, 0.5);
     }
 }

@@ -1018,6 +1018,11 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             Arc::new(move || native_wake.wake_up()),
         )?;
         size_move.set_content_aspect_ratio(content_aspect_ratio(&settings));
+        let pen_wake = self.proxy.clone();
+        let pen = nana_window::PenInput::install_with_wake(
+            window.as_ref(),
+            Arc::new(move || pen_wake.wake_up()),
+        )?;
         self.windows.register(id);
         let context = program_context(
             self.message_tx.clone(),
@@ -1091,6 +1096,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 accessibility,
                 accessibility_pending: PendingAccessibility::default(),
                 size_move,
+                pen,
                 aspect_conform_pending: false,
                 level,
                 requested_level,

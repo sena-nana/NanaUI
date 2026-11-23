@@ -49,9 +49,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -Mta -File scripts/validate-input-
 | 按住笔杆键接触映射为 `button = 2`（副键），抬起清空 `buttons` | 通过 |
 | 笔画中途失焦：送达 `Focus { focused: false }`，笔画结束且无残留按键 | 通过 |
 | 笔之后的鼠标移动：`pointer_type = Mouse`、`buttons = 0`、`pressure = 0`，无串扰 | 通过 |
-| 取消（`POINTER_FLAG_CANCELED`） | **未通过**：送达普通 `Up`。winit 0.31 的 Win32 后端不读这个标志，取消的笔画会像正常完成一样提交 |
-| 离开感应范围 | **未通过**：没有 `PointerLeave`。winit 在每次抬笔后就发 `PointerLeft`（笔仍在悬停），路由器因此给每一笔新的指针 id；笔真正离开范围时悬停停在最后的元素上 |
-| 首帧压力为 0 的接触 | **未通过**：设备报 0、40/1024、80/1024，送达 0.5、0.039、0.078。winit 把压力 0 报为 `None`，宿主在有按键时补 `0.5`，接触瞬间跳到 0.5 |
+| 取消（`POINTER_FLAG_CANCELED`） | 注入无法验证：系统把注入帧上的取消标志去掉，抬笔以 `UP \| PRIMARY \| CONFIDENCE` 到达窗口，所以记为 not executed。宿主已在窗口过程里读消息 `wParam` 与笔帧上的取消标志，带标志的抬起送达 `Cancel`（`scene_host` 单元测试覆盖）；要用真实笔的取消（防误触、别的窗口夺走指针）确认 |
+| 离开感应范围 | 通过：笔移出范围时送达 `PointerLeave`。宿主忽略 winit 在每次抬笔后发的笔 `PointerLeft`（那时笔仍在悬停），改由窗口过程里的 `WM_POINTERLEAVE` 报告离开。抬起的笔下一次悬停仍是新的指针 id，这是路由器的规则（抬起的触控与笔不留悬停），不是离开事件造成的 |
+| 首帧压力为 0 的接触 | 通过：设备报 0、40/1024、80/1024，送达 0、0.039、0.078。宿主从窗口过程读到“报了压力且为 0”，不再补 `0.5`；不报压力的设备按下时仍是 `0.5` |
 | 微软拼音 `nihao` + 空格：预编辑 `ni'hao` 逐键送达，候选窗贴在 caret 下方、不挤动布局，提交 `你好`，焦点不变 | 通过 |
 | 微软日语输入法 `konnnichiha` + 空格 + 回车：预编辑与提交 `こんにちは`，焦点不变 | 通过 |
 | UIA：编辑器为 `ControlType.Edit`，`ValuePattern` 值与提交后的值一致（两种输入法） | 通过 |
@@ -59,4 +59,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -Mta -File scripts/validate-input-
 | 组字中途失焦后的提交 | 通过：宿主发 `End` 之后，微软拼音仍发 `Commit("ceshi")`；路由器在失焦取消预编辑后、焦点回来之前丢掉这一来源的组字编辑，编辑器保持空值（`ime.focus_loss.no_late_commit`）。与窗口参考（`docs/reference/window.md`）IME 段的“原生窗口失焦时 Runtime 取消预编辑”一致 |
 | 物理 XP-Pen 数位板 | 未执行，需要人手 |
 
-笔的三项未通过都在 winit 的 Win32 指针处理里（不处理 `WM_POINTERLEAVE` 与 `POINTER_FLAG_CANCELED`，压力 0 与“无压力”不分），修复要改 winit 或在宿主里另接 `WM_POINTER`。物理笔的验收用同一个探针手动进行：启动探针、把 stdout 存为轨迹，然后用真实笔完成悬停、带压力的笔画、按笔杆键、中途切走窗口、移出范围。
+winit 的 Win32 指针处理不读 `POINTER_FLAG_CANCELED`、不处理 `WM_POINTERLEAVE`、不分压力 0 与“无压力”。宿主不改 winit：`nana-window` 的 `PenInput` 在 winit 之前看同一条 `WM_POINTER*` 消息，记下这一帧的取消与压力，宿主把它们用到 winit 为这一帧交付的事件上；笔离开由 `WM_POINTERLEAVE` 唤醒宿主送达。其他平台不安装，行为不变。物理笔的验收用同一个探针手动进行：启动探针、把 stdout 存为轨迹，然后用真实笔完成悬停、带压力的笔画、按笔杆键、中途切走窗口、移出范围，并触发一次取消。

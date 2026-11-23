@@ -83,6 +83,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         self.complete_color_samplers(event_loop);
         self.drain_all_color_pick_requests(event_loop);
         self.drain_host_messages(event_loop);
+        self.deliver_pen_leaves(event_loop);
         self.drain_browser_events(event_loop);
         self.drain_web_surface_events(event_loop);
         // Views' futures whose wakers fired: what they write lands in the

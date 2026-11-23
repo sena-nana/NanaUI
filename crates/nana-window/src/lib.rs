@@ -27,6 +27,7 @@ mod login_item;
 mod material;
 mod menu;
 mod motion_preference;
+mod pen;
 mod platform;
 mod reveal;
 pub mod shadow;
@@ -92,6 +93,7 @@ pub use menu::{
     install_menu_bar, installed_menu_bar, menu_bar_support, take_menu_activations,
 };
 pub use motion_preference::{system_reduced_motion, take_reduced_motion_change};
+pub use pen::{PenFrame, PenInput};
 pub use pointer::pointer_in_client_area;
 pub use reveal::{RevealError, reveal_in_file_manager};
 pub use size_move::LiveSizeMove;

@@ -447,7 +447,16 @@ try {
         [NanaInputProbe]::PenFrame($x + 40, $y + 100, $P -bor [NanaInputProbe]::Up -bor [NanaInputProbe]::Canceled, 0, 0, 0, 0, 2)
         Start-Sleep -Milliseconds 250
         $cancel = @(Inputs $start | Where-Object { $_.kind -eq 'pointer' -and $_.pointer_type -eq 'Pen' })
-        Check 'pen.cancel.reported_as_cancel' (@($cancel | Where-Object { $_.phase -eq 'Cancel' }).Count -eq 1) ($cancel | Select-Object -Last 2)
+        # Windows strips POINTER_FLAG_CANCELED from injected frames: the lift
+        # reaches the window as UP | PRIMARY | CONFIDENCE. Only a delivered
+        # Cancel proves anything; without one the check needs a real pen.
+        if (@($cancel | Where-Object { $_.phase -eq 'Cancel' }).Count -eq 1) {
+            Check 'pen.cancel.reported_as_cancel' $true ($cancel | Select-Object -Last 2)
+        }
+        else {
+            $results['pen.cancel.reported_as_cancel'] = [ordered]@{ pass = $null; detail = 'not executed: the system does not deliver POINTER_FLAG_CANCELED for injected pen frames; cancel a stroke with a real pen (palm rejection, or another window taking the pointer)' }
+            Write-Host ("{0,-44} {1}" -f 'pen.cancel.reported_as_cancel', 'not executed (injection drops the cancel flag)')
+        }
         Check 'pen.cancel.no_stuck_buttons' ($cancel.Count -gt 0 -and $cancel[-1].buttons -eq 0) ($cancel | Select-Object -Last 1)
 
         # 5. Focus loss during a stroke: the stroke must end without stuck buttons.

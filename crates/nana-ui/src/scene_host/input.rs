@@ -86,6 +86,18 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         }
         #[cfg(not(target_os = "android"))]
         self.drain_color_pick_requests(event_loop, id);
+        // A pen that left goes before whatever this event is.
+        self.deliver_pen_leave(event_loop, id);
+        if !self.window_contexts.contains_key(&id) {
+            return;
+        }
+        if self
+            .window_contexts
+            .get(&id)
+            .is_some_and(|host| super::is_backend_pen_leave(&event, &host.pen))
+        {
+            return;
+        }
         // Presence is window state, reported even while a modal child or Forward
         // passthrough keeps the pointer itself from reaching widgets. A window
         // the host is moving is the exception: the pointer holds it, so every
@@ -148,7 +160,12 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             .window(id)
             .and_then(|window| window_screen_origin(window.as_ref(), self.content_zoom_of(id)));
         let now = self.animation_clock.runtime_time(Instant::now());
-        if let Some(lowered) = self.input_mut(id).map(&event, scale, origin, now) {
+        let pen_frame = self
+            .window_contexts
+            .get(&id)
+            .and_then(|host| host.pen.current_frame());
+        if let Some(mut lowered) = self.input_mut(id).map(&event, scale, origin, now) {
+            super::apply_pen_frame(&mut lowered.payload, pen_frame);
             let resample_cursor = !forward_pointer_event(&event);
             if self.consume_frame_move(event_loop, id, &lowered.payload)
                 || self.consume_frame_resize(event_loop, id, &lowered.payload)
@@ -700,6 +717,35 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 return;
             }
             self.drain_window_input(event_loop, id);
+        }
+    }
+
+    /// Report a pen that left the window or its sensing range, which the
+    /// backend does not deliver (see [`nana_window::PenInput`]).
+    pub(super) fn deliver_pen_leave(&mut self, event_loop: &dyn ActiveEventLoop, id: WindowId) {
+        if !self
+            .window_contexts
+            .get(&id)
+            .is_some_and(|host| host.pen.take_leave())
+        {
+            return;
+        }
+        self.deliver_host_input(
+            event_loop,
+            id,
+            InputPayload::PointerLeave {
+                pointer_id: nana_ui_platform::PointerId(super::pen_pointer_id()),
+            },
+        );
+    }
+
+    pub(super) fn deliver_pen_leaves(&mut self, event_loop: &dyn ActiveEventLoop) {
+        let ids: Vec<WindowId> = self.window_contexts.keys().copied().collect();
+        for id in ids {
+            if event_loop.exiting() {
+                return;
+            }
+            self.deliver_pen_leave(event_loop, id);
         }
     }
 
