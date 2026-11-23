@@ -158,6 +158,8 @@ nana-packager validate "out/app/Nana Fixture.app" --trust-key ed25519:… --run 
 4. `--run`: launch the application in an unrelated working directory with `NANA_PACKAGE_VALIDATE=1` to run the pre-window self-check;
 5. `--tamper-suite`: first run the untampered control group (`tamper.control`), then inject six kinds of tampering in turn — “corrupt the manifest, corrupt the pack Header, corrupt the TOC, corrupt the first real data block, delete a pack, strip key environment variables” — and verify that the application's self-check reports and blocks every one accurately, without crashing or hanging.
 
+The `schema_version` of `package.json` is 2: `static_app_plan`, which version 1 always recorded as unavailable, is removed (Issue #152). A manifest whose schema or version differs is refused as an unsupported schema before any field is parsed, so a package built by an older packager has to be repackaged with the current one.
+
 ## 6. Platform signing adapters
 
 NanaUI does not reimplement codesign, notarization, Authenticode, GPG, apksigner or the HarmonyOS hap-sign-tool: each adapter wraps the platform tool and reports what actually happened in this run. When the tool cannot run here — wrong host, tool missing, credentials missing, nothing to sign — it reports `not-executed` with the reason, never signed. Credentials are read only from CI environment variables, never from `nana-package.toml`, the manifest or a report; a password a tool can take from its environment or stdin never goes on its command line, and those that can only go there (signtool's PFX password, hap-sign-tool) are masked in every report and error.

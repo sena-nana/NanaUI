@@ -410,6 +410,8 @@ cargo run -p nana-packager -- macos-app --exe target/dist/component-gallery --na
 
 Use `scripts/report-artifact-size.py <artifact>` to check size section by section: it counts how many copies of fonts are embedded in the binary, and it also warns when it finds a debug build.
 
+CI's `dist-size` job (macOS arm64) builds `reactive-sfc` with the dist profile and runs `scripts/check-dist-size.py`, which compares it with the bytes recorded per platform in `scripts/baselines/dist-size.json` and fails past 5% growth. When the size changes on purpose, build on that platform, run `python3 scripts/check-dist-size.py --update`, and commit the new record together with the reason (in `scripts/baselines/README.md`).
+
 ## Materials
 
 Request **one** system effect through `RuntimeProgram::window_material_mode`. When the host provides an Appearance setting, Mica / Acrylic / Vibrancy can be selected. On failure it falls back to solid and gives a reason. It does not retry another effect.

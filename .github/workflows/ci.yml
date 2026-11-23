@@ -400,6 +400,25 @@ jobs:
       - name: Cross-check OHOS ARM64 crates
         run: bash scripts/check-ohos-arm64.sh
 
+  dist-size:
+    # Issue #152: the shipped size only moves when someone builds `[profile.dist]`
+    # and reads it, so a dependency or asset that grows the binary landed silently.
+    # One platform: sizes are recorded per platform in
+    # scripts/baselines/dist-size.json, and only darwin-arm64 is recorded.
+    runs-on: macos-latest
+    env:
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build the dist binary
+        run: cargo build --profile dist -p reactive-sfc --bin reactive-sfc --locked
+      - name: Check the dist binary against its recorded size
+        run: python3 scripts/check-dist-size.py
+      - name: Break the dist binary down by section
+        if: always()
+        run: python3 scripts/report-artifact-size.py target/dist/reactive-sfc
+
   msrv:
     # Every manifest declares rust-version = "1.98"; the other jobs use the
     # stable toolchain, so without this job the declared minimum is untested.

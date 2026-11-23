@@ -116,3 +116,23 @@ identity opacities (`1.0`), `999.0` pill radii pinned by the `chip` and
 `status-badge` semantic snapshot baselines (`radius=999.00`), internal
 constants/physics tolerances (`touch_scroll.rs`, `submenu_aim.rs`, `dock.rs`,
 `timeline.rs`), and public literal builder defaults.
+
+# Dist size baseline
+
+`dist-size.json` records the byte size of each `[profile.dist]` artifact per
+platform (`<sys.platform>-<machine>`); `scripts/check-dist-size.py` fails when
+an artifact grows past `tolerance` (5%) of its record. CI's `dist-size` job
+builds and checks `target/dist/reactive-sfc` on macOS arm64.
+
+```sh
+cargo build --profile dist -p reactive-sfc --bin reactive-sfc --locked
+python3 scripts/check-dist-size.py
+python3 scripts/check-dist-size.py --update   # intentional change: re-record, then add a section below
+```
+
+## 2026-11-23 first record
+
+`darwin-arm64` `target/dist/reactive-sfc`: 6,067,856 B at `a97929839`, rustc
+1.99.0. The Phase 5 figure in `docs/reference/resource-budgets.md` (5,835,088 B,
+measured at `6a80e848e`) is 4.0% lower; the growth between the two commits is
+not attributed yet.

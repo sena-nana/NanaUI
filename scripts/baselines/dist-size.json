@@ -1,0 +1,8 @@
+{
+  "tolerance": 0.05,
+  "platforms": {
+    "darwin-arm64": {
+      "target/dist/reactive-sfc": 6067856
+    }
+  }
+}

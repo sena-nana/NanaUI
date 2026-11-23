@@ -928,11 +928,10 @@ mod tests {
     #[test]
     fn empty_and_missing_vendor_are_the_same_identity() {
         let mut manifest = PackageManifest::from_json(
-            br#"{"schema":"nana.package-manifest","schema_version":1,
+            br#"{"schema":"nana.package-manifest","schema_version":2,
             "application":{"id":"a.b","name":"A","version":"1","vendor":"","build_id":null},
             "target":{"triple":"t","platform":"linux"},"nana":{"version":"0"},
             "build":{"profile":"dist","debug_assertions_suspected":false},
-            "static_app_plan":{"status":"unavailable","reason":"r"},
             "distribution":{"backend":"portable","self_update":false},
             "layout":{"executable":"A","runtime_bin":"runtime/bin","runtime_resources":"runtime/resources",
               "runtime_plugins":"runtime/plugins","runtime_tools":"runtime/tools",

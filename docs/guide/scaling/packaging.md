@@ -88,7 +88,7 @@ CLI 还有 `package`、`keygen content|publisher`、`inspect`、`delta OLD NEW`�
 
 平台签名（codesign、公证、Authenticode、GPG、apksigner、hap-sign-tool）、安装包（dmg、msi、NSIS、deb、AppImage、Flatpak）、Linux FHS 安装路径、Android APK 资源挂载与更新清单契约见参考文档第 6–9 节。CLI 另有 `sign`、`update-manifest`、`android-assets`。
 
-还没有的：内置的自更新器、打包校验里的真窗口 Early Splash / UiReady、StaticAppPlan 指纹、安装包装卸的自动往返、分页 TOC。
+还没有的：内置的自更新器、打包校验里的真窗口 Early Splash / UiReady、安装包装卸的自动往返、分页 TOC。
 
 字段、读取顺序和每一项检查在 [打包与分发](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/packaging.md)。
 

@@ -158,6 +158,8 @@ nana-packager validate "out/app/Nana Fixture.app" --trust-key ed25519:… --run 
 4. `--run`：在无关工作目录下以 `NANA_PACKAGE_VALIDATE=1` 启动应用执行开窗前自检；
 5. `--tamper-suite`：先跑未篡改对照组（`tamper.control`），再依次注入「破坏 manifest、破坏 pack Header、破坏 TOC、破坏首个真实数据块、删除 pack、剥离密钥环境变量」六类篡改，验证应用自检全部准确报错拦截且不崩溃、不挂起。
 
+`package.json` 的 `schema_version` 是 2：版本 1 里一直记为 unavailable 的 `static_app_plan` 已删除（Issue #152）。schema 或版本不符的 manifest 在逐字段解析之前就以 unsupported schema 拒绝，所以旧版 packager 打的包要用当前版本重新打包。
+
 ## 6. 平台签名适配器
 
 NanaUI 不重写 codesign、公证、Authenticode、GPG、apksigner 或鸿蒙 hap-sign-tool，每个适配器包一层平台工具，并如实报告这一次发生了什么。工具在这里跑不了——主机不对、找不到工具、缺凭据、没有可签的产物——一律报 `not-executed` 并写明原因，绝不报已签名。凭据只从 CI 环境变量读，不进 `nana-package.toml`、manifest 或报告；能经环境或 stdin 交给工具的口令就不放进命令行，只能走命令行的（signtool 的 PFX 口令、hap-sign-tool）在所有报告与错误里打码。

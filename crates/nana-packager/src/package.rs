@@ -22,7 +22,7 @@ use nana_package::PublisherKey;
 use nana_package::manifest::{
     DistributionBackend, FileKind, ManifestApplication, ManifestBuild, ManifestDistribution,
     ManifestFile, ManifestNana, ManifestPack, ManifestPlugin, ManifestTarget, PackageManifest,
-    PlatformSigning, RootException, SignStatus, SigningReport, StaticAppPlanStatus,
+    PlatformSigning, RootException, SignStatus, SigningReport,
 };
 use serde::Serialize;
 
@@ -407,9 +407,6 @@ fn package_into(options: &PackageOptions, prepared: &mut bool) -> Result<Package
         build: ManifestBuild {
             profile: options.profile.clone(),
             debug_assertions_suspected: debug_assertions,
-        },
-        static_app_plan: StaticAppPlanStatus::Unavailable {
-            reason: "StaticAppPlan is not produced yet (Issue #158)".into(),
         },
         distribution: ManifestDistribution {
             backend: config.distribution.backend,

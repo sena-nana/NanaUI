@@ -88,7 +88,7 @@ The CLI also has `package`, `keygen content|publisher`, `inspect`, `delta OLD NE
 
 Platform signing (codesign, notarization, Authenticode, GPG, apksigner, hap-sign-tool), installers (dmg, msi, NSIS, deb, AppImage, Flatpak), Linux FHS install paths, Android APK resource mounting and the update manifest contract are in sections 6–9 of the reference. The CLI also has `sign`, `update-manifest` and `android-assets`.
 
-Not yet available: a built-in self-updater, real-window Early Splash / UiReady in package validation, StaticAppPlan fingerprints, automated install/uninstall round trips of installers, paged TOC.
+Not yet available: a built-in self-updater, real-window Early Splash / UiReady in package validation, automated install/uninstall round trips of installers, paged TOC.
 
 Fields, read order and every check are in [Packaging and distribution](../../reference/packaging.md).
 

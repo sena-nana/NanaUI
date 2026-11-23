@@ -18,7 +18,9 @@ use crate::pack::ResourceClass;
 pub const MANIFEST_FILE: &str = "package.json";
 pub const MANIFEST_SIGNATURE_FILE: &str = "package.json.sig";
 pub const MANIFEST_SCHEMA: &str = "nana.package-manifest";
-pub const MANIFEST_SCHEMA_VERSION: u32 = 1;
+/// 2: the `static_app_plan` field is gone (Issue #152). A version-1 manifest
+/// is refused as an unsupported schema rather than as an unknown field.
+pub const MANIFEST_SCHEMA_VERSION: u32 = 2;
 pub const MANIFEST_SIGNATURE_CONTEXT: &[u8] = b"nana.package-manifest.v1\0";
 /// Refuse to parse anything larger.
 pub const MAX_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
@@ -32,7 +34,6 @@ pub struct PackageManifest {
     pub target: ManifestTarget,
     pub nana: ManifestNana,
     pub build: ManifestBuild,
-    pub static_app_plan: StaticAppPlanStatus,
     pub distribution: ManifestDistribution,
     pub layout: ManifestLayout,
     pub resource_packs: Vec<ManifestPack>,
@@ -87,15 +88,6 @@ pub struct ManifestBuild {
     /// The executable carries overflow-check panic text: always true of a
     /// dev-profile build, occasionally of a release one. A hint, not proof.
     pub debug_assertions_suspected: bool,
-}
-
-/// The StaticAppPlan fingerprint (Issue #158). Recorded as unavailable until
-/// the dist pipeline produces one; never invented.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "status", rename_all = "kebab-case", deny_unknown_fields)]
-pub enum StaticAppPlanStatus {
-    Unavailable { reason: String },
-    Present { fingerprint: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -309,15 +301,24 @@ impl PackageManifest {
     }
 
     pub fn from_json(bytes: &[u8]) -> Result<Self, ManifestError> {
-        let manifest: Self = serde_json::from_slice(bytes)
+        // The schema is read before the strict parse: another version's
+        // fields are unknown to this one, and that must surface as the
+        // version mismatch it is, not as an unknown field.
+        #[derive(Deserialize)]
+        struct SchemaHeader {
+            schema: String,
+            schema_version: u32,
+        }
+        let header: SchemaHeader = serde_json::from_slice(bytes)
             .map_err(|error| ManifestError::Parse(error.to_string()))?;
-        if manifest.schema != MANIFEST_SCHEMA || manifest.schema_version != MANIFEST_SCHEMA_VERSION
-        {
+        if header.schema != MANIFEST_SCHEMA || header.schema_version != MANIFEST_SCHEMA_VERSION {
             return Err(ManifestError::UnsupportedSchema {
-                schema: manifest.schema,
-                version: manifest.schema_version,
+                schema: header.schema,
+                version: header.schema_version,
             });
         }
+        let manifest: Self = serde_json::from_slice(bytes)
+            .map_err(|error| ManifestError::Parse(error.to_string()))?;
         manifest.check().map_err(ManifestError::Parse)?;
         Ok(manifest)
     }
@@ -559,9 +560,6 @@ pub(crate) mod tests {
                 profile: "dist".into(),
                 debug_assertions_suspected: false,
             },
-            static_app_plan: StaticAppPlanStatus::Unavailable {
-                reason: "Issue #158 not implemented".into(),
-            },
             distribution: ManifestDistribution {
                 backend: DistributionBackend::Steam,
                 self_update: false,
@@ -616,11 +614,27 @@ pub(crate) mod tests {
             PackageManifest::from_json(with_secret.as_bytes()),
             Err(ManifestError::Parse(_))
         ));
-        let other_schema = json.replace("\"schema_version\": 1", "\"schema_version\": 9");
+        let other_schema = json.replace("\"schema_version\": 2", "\"schema_version\": 9");
         assert!(matches!(
             PackageManifest::from_json(other_schema.as_bytes()),
             Err(ManifestError::UnsupportedSchema { .. })
         ));
+    }
+
+    #[test]
+    fn version_one_manifest_is_an_unsupported_schema_not_an_unknown_field() {
+        let json = sample().to_json().replacen(
+            "\"schema_version\": 2,",
+            "\"schema_version\": 1,\n  \"static_app_plan\": {\"status\": \"unavailable\", \"reason\": \"r\"},",
+            1,
+        );
+        assert_eq!(
+            PackageManifest::from_json(json.as_bytes()),
+            Err(ManifestError::UnsupportedSchema {
+                schema: MANIFEST_SCHEMA.into(),
+                version: 1,
+            })
+        );
     }
 
     #[test]

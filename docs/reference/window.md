@@ -409,6 +409,8 @@ cargo run -p nana-packager -- macos-app --exe target/dist/component-gallery --na
 
 用 `scripts/report-artifact-size.py <artifact>` 逐段核对体积：它会数出二进制里内嵌了几份字体。发现 debug 构建时也会报警。
 
+CI 的 `dist-size` job（macOS arm64）构建 `reactive-sfc` 的 dist 版本，用 `scripts/check-dist-size.py` 对照 `scripts/baselines/dist-size.json` 里按平台记录的字节数，超出 5% 就失败。体积有意变化时，在该平台构建后跑 `python3 scripts/check-dist-size.py --update`，把新记录和原因（写进 `scripts/baselines/README.md`）一起提交。
+
 ## 材质
 
 通过 `RuntimeProgram::window_material_mode` 申请**一种**系统效果。Appearance 设置在宿主提供时可选 Mica / Acrylic / Vibrancy。失败回实色。并给出原因。不会改试另一种。

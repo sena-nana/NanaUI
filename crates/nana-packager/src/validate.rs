@@ -291,10 +291,6 @@ pub fn validate(options: &ValidateOptions) -> Result<ValidationReport, String> {
              (`installers` in package-report.json). Installing, launching and uninstalling an \
              installer on its target system is not automated",
         ),
-        (
-            "static-app-plan",
-            "StaticAppPlan fingerprints are not produced yet (Issue #158)",
-        ),
     ] {
         report.push(name, Status::NotExecuted(reason.into()));
     }
