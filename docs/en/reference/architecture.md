@@ -124,4 +124,15 @@ Rust declarative views (`nana_ui::runtime` builders and `view!`) and the `.vue` 
 
 `nana-ui` sets `default = []` (no features are enabled by default): opening a desktop window requires explicitly enabling `hosted` (which implies `gpu` and pulls only the platform's primary graphics backend); enable `wgpu-backends` if you need all standard cross-platform backends, or enable `full`. It never creates a second host or GPU owner.
 
-Control family features (`calendar`, `charts`, `controls`, `graph-canvas`, `image-viewer`, `rich-text`) control conditional compilation of `nana-ui-runtime` and `nana-ui-scene` together and determine `ComponentSupport::compiled`. Disabled control families and their dedicated dependencies are not compiled, and `nana_ui::runtime` exports only the controls actually compiled into the current build (for the full table, see [Application API](application-api.md)). `component-gallery` is a separate example crate; its category navigation and demo state are not part of the public API of `nana-ui`.
+Control family features (`calendar`, `charts`, `controls`, `diff-view`, `dock`, `graph-canvas`, `image-viewer`, `rich-text`, `terminal`) control conditional compilation of `nana-ui-runtime` and `nana-ui-scene` together and determine `ComponentSupport::compiled`. Disabled control families and their dedicated dependencies are not compiled, and `nana_ui::runtime` exports only the controls actually compiled into the current build (for the full table, see [Application API](application-api.md)). `component-gallery` is a separate example crate; its category navigation and demo state are not part of the public API of `nana-ui`.
+
+Control families are split by measured compile cost, at the granularity of capability islands; basic controls get no features of their own. `Workspace`, `SplitPane` and the Shell are always compiled: `assemble_desktop_shell` creates its own `Workspace`, so splitting it out would split the Shell. `BrowserView` is a 67-line anchor declaration, and a family of its own would gain nothing. `TerminalView`'s input routing (keyboard, pointer, paste, IME) is reached only through routed calls that take a `StableNodeId`; the router does not name the type, so input dispatch needs no conditional compilation when `terminal` is off.
+
+Measured on 2026-11-23 (macOS Apple Silicon, `dev` profile, `CARGO_INCREMENTAL=0`, `sccache` off, dependencies already built; each run `touch`es and rebuilds only the `nana-ui-runtime` unit; the two configurations alternate for 5 rounds each and the minimum is read; load 3.3–4.7):
+
+| `nana-ui-runtime` unit | `diff-view` + `dock` + `terminal` | all three off | change |
+| --- | --- | --- | --- |
+| `cargo build` | 11.58 s | 11.01 s | −4.9% |
+| `cargo check` | 5.73 s | 5.52 s | −3.7% |
+
+Every control family (`components`) against none: `cargo build` 12.40 s against 11.26 s (−9.2%, 4 rounds). The remaining ~11 s is layout, the world, the framework and the basic controls that every application uses; going lower needs a crate split, not more features. When re-measuring, pass `--features` to cargo as two separate arguments (zsh does not split words) and make sure `RUSTC_WRAPPER` is empty: `sccache` hits otherwise bring a rebuild under 2 s.

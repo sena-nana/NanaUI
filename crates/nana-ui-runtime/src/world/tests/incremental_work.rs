@@ -5878,6 +5878,7 @@ mod resize_propagation {
     /// the flex factors of its frames: the boxes under them that read a frame's
     /// width measure again, the ones that read only its height do not.
     #[test]
+    #[cfg(feature = "dock")]
     fn issue264_a_dock_split_drag_measures_only_the_width_readers() {
         use crate::{Dock, DockAxis, DockNode};
         let document = DocumentId::new(1).unwrap();

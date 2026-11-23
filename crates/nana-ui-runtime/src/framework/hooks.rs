@@ -558,12 +558,15 @@ macro_rules! routed_calls {
 
 routed_calls! {
     set_terminal_preedit: fn(&mut AppContext, DocumentId, &str) -> Result<bool, FrameworkError>,
-    focused_terminal: fn(&AppContext, DocumentId) -> Option<Entity<TerminalView>>,
+    focused_terminal_node: fn(&AppContext, DocumentId) -> Option<StableNodeId>,
+    terminal_accepts_input: fn(&AppContext, DocumentId) -> bool,
+    terminal_caret_bounds: fn(&AppContext, DocumentId) -> Option<LayoutBox>,
+    terminal_selected_text: fn(&AppContext, DocumentId) -> Option<String>,
     terminal_pointer: fn(&mut AppContext, DocumentId, Option<StableNodeId>, u64, u8, f32, f32) -> Result<bool, FrameworkError>,
     terminal_key: fn(&mut AppContext, DocumentId, &str, Option<&str>, bool, bool, bool) -> Result<bool, FrameworkError>,
     terminal_input: fn(&mut AppContext, DocumentId, Vec<u8>) -> Result<bool, FrameworkError>,
     paste_terminal: fn(&mut AppContext, DocumentId, &str) -> Result<bool, FrameworkError>,
-    resize_terminal_view: fn(&mut AppContext, Entity<TerminalView>, f32, f32) -> Result<bool, FrameworkError>,
+    resize_terminal_node: fn(&mut AppContext, StableNodeId, f32, f32) -> Result<bool, FrameworkError>,
     end_xy_pad_drag: fn(&mut AppContext, DocumentId, u64, bool) -> Result<bool, FrameworkError>,
     update_xy_pad_drag: fn(&mut AppContext, DocumentId, u64, f32, f32, bool) -> Result<bool, FrameworkError>,
     begin_xy_pad_drag: fn(&mut AppContext, DocumentId, u64, StableNodeId, f32, f32) -> Result<bool, FrameworkError>,

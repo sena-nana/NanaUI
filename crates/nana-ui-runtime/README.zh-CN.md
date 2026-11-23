@@ -34,7 +34,7 @@ let view = cx.mount_view_root(document, counter).unwrap();
 默认不开启任何 feature（`default = []`）。
 
 - `icu`（可选）：用 ICU4X 和编译进来的 CLDR 数据格式化数字、日期和复数；关闭后用 `PlainFormatter`。
-- `calendar`、`charts`、`controls`、`graph-canvas`、`image-viewer`、`qr-code`、`rich-text`：可选的控件族，`components` 一次打开全部。`rich-text` 包含 Markdown、Mermaid 图和数学公式。
+- `calendar`、`charts`、`controls`、`diff-view`、`dock`、`graph-canvas`、`image-viewer`、`qr-code`、`rich-text`、`terminal`：可选的控件族，`components` 一次打开全部。`dock` 是 `Dock` / `DockPanel` / `DockWorkspace`；`Workspace` 与 `SplitPane` 属于 Shell，始终编入。`rich-text` 包含 Markdown、Mermaid 图和数学公式。
 - `snippet-transforms`（可选）：snippet 里的正则变换；关闭后变换原样返回、不链接 `fancy-regex`，并在首次触发时发出 `runtime.snippet.transform_unavailable`。
 - `syntax-highlighting`：代码块语法高亮。
 - `view-macro`：`view!` 模板宏。

@@ -173,9 +173,9 @@ component_catalog! {
     THUMBNAIL => { id: "thumbnail", name: "Thumbnail", family: Primitive, feature: None, compiled: true, capabilities: [Render, Gpu, Animation, Accessibility] },
     CHIP => { id: "chip", name: "Chip", family: Control, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     AVATAR => { id: "avatar", name: "Avatar", family: Primitive, feature: None, compiled: true, capabilities: [Render, Gpu, Accessibility] },
-    DOCK_PANEL => { id: "dock-panel", name: "DockPanel", family: Workspace, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Persistence] },
+    DOCK_PANEL => { id: "dock-panel", name: "DockPanel", family: Workspace, feature: Some("dock"), compiled: nana_ui_runtime::component_descriptors::DOCK.compiled, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Persistence] },
     WORKSPACE => { id: "workspace", name: "Workspace", family: Workspace, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Animation, Persistence] },
-    DOCK => { id: "dock", name: "Dock", family: Workspace, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Animation, Persistence] },
+    DOCK => { id: "dock", name: "Dock", family: Workspace, feature: Some("dock"), compiled: nana_ui_runtime::component_descriptors::DOCK.compiled, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Animation, Persistence] },
     SPLIT_PANE => { id: "split-pane", name: "SplitPane", family: Workspace, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Persistence] },
     PANE_CHROME => { id: "pane-chrome", name: "PaneChrome", family: Workspace, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     PANE_TREE => { id: "pane-tree", name: "PaneTree", family: Workspace, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Persistence] },
@@ -523,9 +523,12 @@ mod tests {
             crate::components::SettingsCollapsibleCard::new(true);
 
         let _: nana_ui_runtime::Workspace = crate::runtime::Workspace::new();
-        let _: nana_ui_runtime::Dock =
-            crate::runtime::Dock::new(nana_ui_runtime::DockNode::item("main", None));
-        let _: nana_ui_runtime::DockPanel = crate::runtime::DockPanel::new();
+        #[cfg(feature = "dock")]
+        {
+            let _: nana_ui_runtime::Dock =
+                crate::runtime::Dock::new(nana_ui_runtime::DockNode::item("main", None));
+            let _: nana_ui_runtime::DockPanel = crate::runtime::DockPanel::new();
+        }
         let _: fn(
             &nana_ui_core::SplitPaneModel,
             nana_ui_runtime::StableNodeId,

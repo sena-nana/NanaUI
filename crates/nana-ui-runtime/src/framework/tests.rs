@@ -11243,11 +11243,12 @@ fn builtin_and_plugin_components_share_one_registry() {
             .map(ComponentTypeId::as_str),
         Some("nana.tabs")
     );
+    // Declared in every build, registered only where `dock` compiles it.
     assert_eq!(
         context
             .resolve_component_tag("dock")
             .map(ComponentTypeId::as_str),
-        Some("nana.dock")
+        cfg!(feature = "dock").then_some("nana.dock")
     );
     assert_eq!(
         context
@@ -11346,19 +11347,22 @@ fn builtin_and_plugin_components_share_one_registry() {
             .map(ComponentTypeId::as_str),
         Some("nana.select")
     );
-    let dock = context
-        .create_component(
-            document,
-            crate::Dock::new(crate::DockNode::item("dock", None)),
-        )
-        .unwrap();
-    assert_eq!(
-        context
-            .world()
-            .component_type(dock.stable_id())
-            .map(ComponentTypeId::as_str),
-        Some("nana.dock")
-    );
+    #[cfg(feature = "dock")]
+    {
+        let dock = context
+            .create_component(
+                document,
+                crate::Dock::new(crate::DockNode::item("dock", None)),
+            )
+            .unwrap();
+        assert_eq!(
+            context
+                .world()
+                .component_type(dock.stable_id())
+                .map(ComponentTypeId::as_str),
+            Some("nana.dock")
+        );
+    }
 
     assert_eq!(
         context

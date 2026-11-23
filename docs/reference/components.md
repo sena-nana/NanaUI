@@ -250,9 +250,9 @@ Dock 那种从入口上方升起的一列胶囊就是两者合用：入口 `has_
 
 `TextArea` 的行号、诊断沟、minimap、git gutter 是视图属性：`line_numbers` / `diagnostics` / `minimap` / `git_gutter`。buffer revision、LSP、git 状态仍由应用喂入。
 
-`TerminalView` 是保留式网格。应用通过 `sync_terminal_screen` 喂入 `TerminalScreen` 单元格与样式。框架发 `TerminalEvent::Input` / `Resize` / `SelectionChanged`。PTY、submit、interrupt 归应用（通常把 Enter / Ctrl+C 解释成对 PTY 的写入）。
+`TerminalView` 是保留式网格。应用通过 `sync_terminal_screen` 喂入 `TerminalScreen` 单元格与样式。框架发 `TerminalEvent::Input` / `Resize` / `SelectionChanged`。PTY、submit、interrupt 归应用（通常把 Enter / Ctrl+C 解释成对 PTY 的写入）。它在 Cargo feature `terminal` 后面；关闭时输入路由里终端的键盘、指针、粘贴与 IME 分支也一起不编入。
 
-`DiffView` 展示应用喂入的 hunk。`DiffEvent` 的接受/拒绝只是请求。不改 buffer。`assemble_diff_view` 用现有 `ScrollView` + `Button` + `Text` 装配。只读审阅（提交、工作区改动）用 `.review_actions(false)`：不装配接受/拒绝按钮。增删行以低透明度的成功/危险色铺底。
+`DiffView` 展示应用喂入的 hunk。`DiffEvent` 的接受/拒绝只是请求。不改 buffer。`assemble_diff_view` 用现有 `ScrollView` + `Button` + `Text` 装配。只读审阅（提交、工作区改动）用 `.review_actions(false)`：不装配接受/拒绝按钮。增删行以低透明度的成功/危险色铺底。它在 Cargo feature `diff-view` 后面。
 
 需要开窗、换 GPU、写盘时，在闭包里 `cx.dispatch_program(msg)`。下一帧进入 `RuntimeProgram::update`。不要在指针处理里做重活。
 

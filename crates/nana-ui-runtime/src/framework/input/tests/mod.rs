@@ -49,6 +49,7 @@ mod row_tools;
 mod scrollbar_lane;
 mod select_menu;
 mod settings_help;
+#[cfg(feature = "terminal")]
 mod terminal;
 
 /// One thing a fixture does to a document, as a host would deliver it.

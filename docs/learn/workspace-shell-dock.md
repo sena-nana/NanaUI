@@ -9,7 +9,7 @@ title: 工作台：Shell、Workspace、Dock 与 Overlay
 ## 职责与边界
 
 - **`nana-ui-core` 持有后端中立的逻辑模型**：`WorkspaceModel` / `WorkspaceLayout` / `RegionState`（`workspace_model.rs`、`layout.rs`）、`AppearanceSettings` / `SettingsModel`（`settings.rs`）以及带版本信封的视图状态持久化 `ViewStateStore`（`persist.rs`）。它们不依赖任何窗口或渲染后端（`crates/nana-ui-core/src/workspace_model.rs:83`）。
-- **`nana-ui-runtime` 持有组件组装与交互编排**：`Workspace` / `DesktopShell` / `AppShell` / `AppTitleBar`（`workspace.rs`、`shell.rs`）、`DockNode` / `DockWorkspace` / `Dock`（`dock.rs`）、DCC 式切分 `AreaLayout`（`area_layout.rs`）与属性检查器 `PropertyGrid`（`property_grid.rs`）、浮层激活与路由（`framework/overlay.rs`、`framework/modal.rs`），以及侧栏、分栏与通知栈组件（`sidebar.rs`、`panel.rs`、`pane.rs`、`pane_section.rs`、`toast_stack.rs`、`overlay_surfaces.rs`）。
+- **`nana-ui-runtime` 持有组件组装与交互编排**：`Workspace` / `DesktopShell` / `AppShell` / `AppTitleBar`（`workspace.rs`、`shell.rs`）、`DockNode` / `DockWorkspace` / `Dock`（`dock.rs`，在 Cargo feature `dock` 后面；`Workspace` 与 Shell 始终编入）、DCC 式切分 `AreaLayout`（`area_layout.rs`）与属性检查器 `PropertyGrid`（`property_grid.rs`）、浮层激活与路由（`framework/overlay.rs`、`framework/modal.rs`），以及侧栏、分栏与通知栈组件（`sidebar.rs`、`panel.rs`、`pane.rs`、`pane_section.rs`、`toast_stack.rs`、`overlay_surfaces.rs`）。
 - **宿主层（`nana-ui`）只做薄适配**：`WorkspaceController` 仅将 `Instant` 时钟与窗口指针事件翻译为 `WorkspaceMutation`，绝不存储第二份区域状态（`crates/nana-ui/src/workspace.rs:74`）。
 - **业务内容与序列化边界**：区域和窗格内部展示什么业务内容、如何路由导航完全归应用所有；只有纯数据逻辑模型写入存档，运行期挂载的子节点句柄与浮层激活态不进入持久化 JSON（`crates/nana-ui-runtime/src/dock.rs:555`）。
 

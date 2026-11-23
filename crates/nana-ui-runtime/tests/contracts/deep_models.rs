@@ -7,14 +7,17 @@
 
 use nana_ui_core::SplitAxis;
 use nana_ui_runtime::{
-    AppContext, Area, AreaAxis, AreaLayout, AreaLayoutModel, AreaNode, Dock, DockAxis, DockNode,
-    DockWorkspace, DocumentId, LayoutBox, LayoutViewport, MAX_SPLIT_DEPTH, PaneTree, PaneTreeNode,
+    AppContext, Area, AreaAxis, AreaLayout, AreaLayoutModel, AreaNode, DocumentId, LayoutBox,
+    LayoutViewport, MAX_SPLIT_DEPTH, PaneTree, PaneTreeNode,
 };
+#[cfg(feature = "dock")]
+use nana_ui_runtime::{Dock, DockAxis, DockNode, DockWorkspace};
 
 /// Far deeper than `MAX_SPLIT_DEPTH`: an application's own tree, built in
 /// a loop. Unfolded, the framework's walks over it run out of stack.
 const APPLICATION_DEPTH: usize = 5_000;
 
+#[cfg(feature = "dock")]
 fn deep_dock(depth: usize) -> DockNode {
     let mut node = DockNode::item("leaf", None);
     for n in 0..depth {
@@ -85,6 +88,7 @@ fn on_a_small_stack(run: impl FnOnce() + Send + 'static) {
 }
 
 #[test]
+#[cfg(feature = "dock")]
 fn a_dock_as_deep_as_allowed_clones_compares_persists_and_drops() {
     on_a_small_stack(|| {
         let mut node = DockNode::item("leaf", None);
@@ -157,6 +161,7 @@ fn a_pane_tree_as_deep_as_allowed_visits_clones_and_drops() {
 }
 
 #[test]
+#[cfg(feature = "dock")]
 fn the_deepest_dock_layout_json_can_hold_still_restores() {
     // Hand-edited or foreign, a saved layout can nest past MAX_SPLIT_DEPTH,
     // up to what `serde_json` reads; restoring it must not run out of stack.
@@ -174,6 +179,7 @@ fn the_deepest_dock_layout_json_can_hold_still_restores() {
 }
 
 /// A saved dock layout `depth` splits deep, written out by hand.
+#[cfg(feature = "dock")]
 fn dock_json(depth: usize) -> String {
     let mut node = String::from(r#"{"kind":"item","id":"leaf"}"#);
     for n in 0..depth {
@@ -185,6 +191,7 @@ fn dock_json(depth: usize) -> String {
 }
 
 #[test]
+#[cfg(feature = "dock")]
 fn a_dock_an_application_built_too_deep_is_folded_into_tabs_and_shown() {
     on_a_small_stack(|| {
         // Through the constructor: every item survives, in one tab group.

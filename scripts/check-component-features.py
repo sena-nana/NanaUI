@@ -34,6 +34,9 @@ FAMILIES = {
     "calendar": missing_type("CalendarHeatmap"),
     "charts": missing_type("Chart", ("nana-ui-charts",)),
     "controls": missing_type("ReorderList"),
+    "diff-view": missing_type("DiffView"),
+    # The host adapters (`nana_ui::dock`, `runtime_dock_window_update`) go with it.
+    "dock": missing_type("DockWorkspace"),
     "graph-canvas": missing_type("GraphCanvas"),
     "image-viewer": missing_type("ImageViewer"),
     # `QrCodeCanvas` paints a module matrix in every build; only the encoder is optional.
@@ -44,6 +47,7 @@ FAMILIES = {
         ("qrcode",),
     ),
     "rich-text": missing_type("NativeMarkdown", ("pulldown-cmark", "nana-ui-diagram")),
+    "terminal": missing_type("TerminalView"),
     # Path boolean ops in the scene; without it the scene falls back to its own
     # contour code, so there is no API to miss, only the dependency.
     "vector-boolean": Family(None, None, None, ("i_overlay",)),

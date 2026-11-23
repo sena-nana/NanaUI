@@ -35,7 +35,8 @@ RUNTIME_BIN = {
 FRAMEWORK_BIN = {
     "package": "nana-ui-runtime",
     "binary": "nana-framework-benchmark",
-    "features": "benchmark",
+    # Its DockWorkspace workload needs the `dock` component family.
+    "features": "benchmark,dock",
     "key": "framework",
 }
 SCENE_BIN = {

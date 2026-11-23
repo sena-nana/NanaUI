@@ -4,6 +4,8 @@
 
 There is no `<Dock>` in the control table.
 
+This type is behind the Cargo feature `dock` (included in `components`); the host adapters `nana_ui::dock` and `runtime_dock_window_update` come with it.
+
 ## Basic usage
 
 The framework computes ratios, floating windows, and hit strips.

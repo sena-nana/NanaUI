@@ -58,15 +58,25 @@ components = [
     "calendar",
     "charts",
     "controls",
+    "diff-view",
+    "dock",
     "graph-canvas",
     "image-viewer",
     "qr-code",
     "rich-text",
+    "terminal",
     "vector-boolean",
 ]
 calendar = ["nana-ui-runtime/calendar", "nana-ui-scene/calendar"]
 charts = ["dep:nana-ui-charts", "nana-ui-runtime/charts", "nana-ui-scene/charts"]
 controls = ["nana-ui-runtime/controls", "nana-ui-scene/controls"]
+# `DiffView`.
+diff-view = ["nana-ui-runtime/diff-view"]
+# `Dock` / `DockPanel` / `DockWorkspace`, and their host adapters:
+# `nana_ui::dock::DockController` and `runtime_dock_window_update`.
+dock = ["nana-ui-runtime/dock"]
+# `TerminalView`.
+terminal = ["nana-ui-runtime/terminal"]
 syntax-highlighting = [
     "nana-ui-runtime/syntax-highlighting",
 ]

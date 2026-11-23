@@ -23,7 +23,9 @@ mod modal;
 mod registry;
 pub(crate) mod routes;
 mod roving_focus;
-pub(crate) use hooks::{ChoiceHooks, DockHooks, NavigateHooks, WorkspaceHooks, hooked, route, via};
+#[cfg(feature = "dock")]
+pub(crate) use hooks::DockHooks;
+pub(crate) use hooks::{ChoiceHooks, NavigateHooks, WorkspaceHooks, hooked, route, via};
 pub use hooks::{NodePointer, NodePointerHooks, NodeWheel, TypeBehavior, TypeHooks};
 pub(crate) use lifecycle::{TOOLTIP_ANCHOR_TAG, lifecycle_hooks};
 pub(crate) use text_edit::Editable;

@@ -124,4 +124,15 @@ Rust 声明式视图（`nana_ui::runtime` 构建器与 `view!`）和 `.vue` 方�
 
 `nana-ui` 默认不开启任何 feature（`default = []`）：打开桌面窗口必须显式启用 `hosted`（隐含 `gpu` 并仅拉起当前平台主图形后端）；需要全部跨平台标准后端时加 `wgpu-backends`，或直接启用 `full`。它绝不会创建第二套宿主或 GPU 所有者。
 
-控件族 feature（`calendar`、`charts`、`controls`、`graph-canvas`、`image-viewer`、`rich-text`）同步控制 `nana-ui-runtime` 与 `nana-ui-scene` 的条件编译，并决定 `ComponentSupport::compiled`。未启用的控件族及其专属依赖不参与编译，`nana_ui::runtime` 仅导出当前构建实际编入的控件（完整对照表见 [应用 API](application-api.md)）。`component-gallery` 是独立的示例 crate，其分类导航与演示状态不属于 `nana-ui` 的公共 API。
+控件族 feature（`calendar`、`charts`、`controls`、`diff-view`、`dock`、`graph-canvas`、`image-viewer`、`rich-text`、`terminal`）同步控制 `nana-ui-runtime` 与 `nana-ui-scene` 的条件编译，并决定 `ComponentSupport::compiled`。未启用的控件族及其专属依赖不参与编译，`nana_ui::runtime` 仅导出当前构建实际编入的控件（完整对照表见 [应用 API](application-api.md)）。`component-gallery` 是独立的示例 crate，其分类导航与演示状态不属于 `nana-ui` 的公共 API。
+
+控件族按实测编译成本划分，粒度停在能力岛，不为基础控件拆 feature。`Workspace`、`SplitPane` 与 Shell 始终编入：`assemble_desktop_shell` 自己创建 `Workspace`，拆开等于拆 Shell。`BrowserView` 只是 67 行的锚点声明，单独成族没有收益。`TerminalView` 的输入路由（键盘、指针、粘贴、IME）只通过按 `StableNodeId` 传参的路由调用到达，路由器不点名类型，所以关掉 `terminal` 时输入分发代码不需要条件编译。
+
+实测（2026-11-23，macOS Apple Silicon，`dev` 配置，`CARGO_INCREMENTAL=0`、关闭 `sccache`，依赖已就绪，每次 `touch` 后只重编 `nana-ui-runtime` 这一个单元；两种组合交替各 5 轮、读最小值，负载 3.3–4.7）：
+
+| `nana-ui-runtime` 单元 | `diff-view` + `dock` + `terminal` | 三者都关 | 差 |
+| --- | --- | --- | --- |
+| `cargo build` | 11.58 s | 11.01 s | −4.9% |
+| `cargo check` | 5.73 s | 5.52 s | −3.7% |
+
+全部控件族（`components`）对比都关：`cargo build` 12.40 s 对 11.26 s（−9.2%，4 轮）。剩下约 11 s 是布局、世界、框架与基础控件这些每个应用都用的部分，再往下降要靠拆 crate，feature 拆不出来。复测时 `--features` 要作为两个独立参数传给 cargo（zsh 不做单词切分），并确认 `RUSTC_WRAPPER` 为空，否则 `sccache` 命中会把重编时间压到 2 s 以内。

@@ -47,7 +47,7 @@ cargo run -p nana-ui --example application-counter --features hosted,bundled-fon
 - `vector-boolean`（可选）：在 `nana-ui-scene` 中启用 `i_overlay` 路径布尔运算（`components` 与 `rich-text` 会启用）；关闭时自定义绘制改用内置整数平面扫描线布尔回退求解器，支持自交、孔洞/孤岛、裁剪交差、描边与 miter 轮廓化简。
 - `full`：桌面全量集合，打开 `bundled-fonts`、`components`、`hosted`、`http-fetch`、`icu`、`image-codecs-extra`、`runtime-wgsl`、`snippet-transforms`、`svg`、`syntax-highlighting` 和 `wgpu-backends`。
 - `bundled-fonts`：注册内置的 Noto Sans SC 并设为界面默认字体（约 4.2 MiB）。不开则界面文字与 SVG 文字都用系统字体；缺中日韩字体的 Linux 上会显示不出中文。
-- `components`：打开 `calendar`、`charts`、`controls`、`graph-canvas`、`image-viewer`、`qr-code`、`rich-text` 与 `vector-boolean`。
+- `components`：打开 `calendar`、`charts`、`controls`、`diff-view`、`dock`、`graph-canvas`、`image-viewer`、`qr-code`、`rich-text`、`terminal` 与 `vector-boolean`。`dock` 同时带上宿主适配 `nana_ui::dock` 与 `runtime_dock_window_update`。
 - `syntax-highlighting`：代码块语法高亮。
 - `view-macro`：`view!`、`css!` 和 `stylesheet!` 宏。
 - `icons-tabler`：完整的 Tabler 图标目录（`nana_ui::icons_tabler`）。

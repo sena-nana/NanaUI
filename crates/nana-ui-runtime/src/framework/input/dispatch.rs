@@ -1096,7 +1096,7 @@ impl AppContext {
                 prevent_default: keyboard_barrier,
             });
         }
-        if !keyboard_barrier && via!(self.focused_terminal(document)).is_some() {
+        if !keyboard_barrier && via!(self.focused_terminal_node(document)).is_some() {
             return self.terminal_keystroke(document, stroke, services);
         }
         if !keyboard_barrier
@@ -1436,9 +1436,8 @@ impl AppContext {
         } = stroke;
         let clipboard_chord = modifiers.control && modifiers.shift || modifiers.meta;
         let handled = if clipboard_chord && key.eq_ignore_ascii_case("c") {
-            let copied = self
-                .terminal_selected_text(document)
-                .filter(|text| !text.is_empty());
+            let copied =
+                via!(self.terminal_selected_text(document)).filter(|text| !text.is_empty());
             copied.is_some_and(|text| services.write_clipboard(&text).is_ok())
         } else if clipboard_chord && key.eq_ignore_ascii_case("v") {
             match services.read_clipboard() {
@@ -1521,7 +1520,7 @@ impl AppContext {
         composition: &CompositionInput,
     ) -> Result<InputDisposition, FrameworkError> {
         let overlay_blocks = self.has_blocking_runtime_overlay(document);
-        if !overlay_blocks && via!(self.focused_terminal(document)).is_some() {
+        if !overlay_blocks && via!(self.focused_terminal_node(document)).is_some() {
             match composition {
                 CompositionInput::Start => {
                     via!(self.set_terminal_preedit(document, ""))?;

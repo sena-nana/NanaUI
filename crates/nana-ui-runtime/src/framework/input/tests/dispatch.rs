@@ -4,14 +4,16 @@ use nana_ui_core::{LayoutStyle, OverflowSpec};
 
 use super::*;
 use crate::{
-    ActionMenu, ActionMenuItem, Activate, Button, Card, Dialog, Dock, DockAxis, DockNode, Entity,
-    LayoutBox, MeasureTextShaper, ModalSlots, MutationQueue, NodeKind, NodeStyle, OverlayHost,
+    ActionMenu, ActionMenuItem, Activate, Button, Card, Dialog, Entity, LayoutBox,
+    MeasureTextShaper, ModalSlots, MutationQueue, NodeKind, NodeStyle, OverlayHost,
     OverlayHostState, RangeField, ScrollAxes, ScrollMetrics, ScrollView, SegmentedControl,
     SegmentedOption, SegmentedSelectionRequested, Table, TableCell, TableRow, Text, TextArea,
     TextChanged, TextFindScope, TextInput, TextSearchOptions, TextSelection, UserSelectSpec,
 };
 #[cfg(feature = "calendar")]
 use crate::{CalendarHeatmap, CalendarHeatmapDatum};
+#[cfg(feature = "dock")]
+use crate::{Dock, DockAxis, DockNode};
 #[cfg(feature = "graph-canvas")]
 use crate::{
     GraphMinimap, GraphMinimapEvent, GraphModel, GraphNode, GraphPoint, GraphSize, GraphViewport,
@@ -3037,6 +3039,7 @@ fn overlay_keyboard_ignores_primary_tab_and_repeated_escape() {
 }
 
 #[test]
+#[cfg(feature = "dock")]
 fn pointer_on_dock_handle_changes_split_ratio() {
     let mut context = AppContext::new();
     let document = DocumentId::new(1).unwrap();
@@ -3124,6 +3127,7 @@ fn pointer_on_dock_handle_changes_split_ratio() {
 }
 
 #[test]
+#[cfg(feature = "dock")]
 fn keyboard_arrow_right_on_focused_dock_handle_changes_ratio() {
     let mut context = AppContext::new();
     let document = DocumentId::new(1).unwrap();

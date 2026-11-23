@@ -34,6 +34,7 @@ mod default_gpu_view;
 pub mod dialog;
 /// Host adapter (`nana_ui::dock::*`): pointer/dwell/frame → [`dock::DockMutation`].
 /// Product dock is Runtime `nana_ui::runtime::DockWorkspace`.
+#[cfg(feature = "dock")]
 pub mod dock;
 #[cfg(feature = "gpu")]
 mod font_face_ingest;
@@ -124,7 +125,7 @@ pub use presentation::{
     SurfaceTargetFallback, WindowSurfaceTarget,
 };
 mod runtime_animation;
-#[cfg(feature = "hosted")]
+#[cfg(all(feature = "hosted", feature = "dock"))]
 mod runtime_dock;
 #[cfg(feature = "hosted")]
 mod runtime_host;
@@ -353,7 +354,7 @@ pub use nana_window::{RevealError, reveal_in_file_manager};
 pub use overlay::{ExclusiveOverlay, OverlayMount};
 pub use pane::ratio_pane_split;
 pub use runtime_animation::RuntimeAnimationClock;
-#[cfg(feature = "hosted")]
+#[cfg(all(feature = "hosted", feature = "dock"))]
 pub use runtime_dock::{dock_workspace_window_id, runtime_dock_window_update};
 #[cfg(feature = "hosted")]
 pub use runtime_host::{

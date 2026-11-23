@@ -300,7 +300,7 @@ cargo build --profile dist
 | `gpu` | `SceneWgpuPainter`, `HostTexture`, `FrameExchange`, windowless output (primary backend only, precompiled shader archives) |
 | `bundled-fonts` | Embeds Noto Sans SC as the default UI font (~4.2 MiB); without it, text uses system fonts |
 | `view-macro` | The `view!`, `css!` and `stylesheet!` compile-time macros |
-| `components` | Enables `calendar`, `charts`, `controls`, `graph-canvas`, `image-viewer`, `qr-code`, `rich-text` and `vector-boolean` |
+| `components` | Enables `calendar`, `charts`, `controls`, `diff-view`, `dock`, `graph-canvas`, `image-viewer`, `qr-code`, `rich-text`, `terminal` and `vector-boolean` |
 | `wgpu-backends` | Enables all standard cross-platform WGPU backends (`dx12`, `vulkan`, `gles`, `metal`) when `gpu` is active |
 | `runtime-wgsl` | Runtime WGSL shader compilation (`naga` / `wgpu` WGSL) for custom user `MaterialProgram` shaders |
 | `wgpu-interop` | Escape hatch exposing underlying WGPU objects on `GpuContext` and `FrameContext` |

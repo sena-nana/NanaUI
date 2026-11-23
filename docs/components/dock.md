@@ -4,6 +4,8 @@
 
 控件表里没有 `<Dock>`。
 
+这个类型在 Cargo feature `dock` 后面（`components` 包含它），宿主适配 `nana_ui::dock` 与 `runtime_dock_window_update` 也随它编入。
+
 ## 基本用法
 
 比例、浮动窗和命中条由框架算。

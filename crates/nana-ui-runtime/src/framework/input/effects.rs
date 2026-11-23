@@ -206,7 +206,7 @@ impl AppContext {
     }
 
     fn text_input_key(&self, document: DocumentId) -> Option<TextInputKey> {
-        if self.terminal_accepts_input(document) {
+        if via!(self.terminal_accepts_input(document)) {
             return Some(TextInputKey::Terminal {
                 node: self.world.focused(document),
                 caret: self.projected_terminal_caret(document),
@@ -232,7 +232,7 @@ impl AppContext {
     /// purpose, where the IME anchors its candidates, and at most
     /// [`SurroundingText::MAX_BYTES`] of the text around the selection.
     pub(super) fn text_input_context(&self, document: DocumentId) -> Option<TextInputContext> {
-        if self.terminal_accepts_input(document) {
+        if via!(self.terminal_accepts_input(document)) {
             return Some(TextInputContext {
                 owner: self.world.focused(document).map_or(0, StableNodeId::get),
                 purpose: TextInputPurpose::Terminal,
@@ -297,10 +297,10 @@ impl AppContext {
         )
     }
 
-    /// [`Self::terminal_caret_bounds`] where it shows in the window.
+    /// The focused terminal's caret cell where it shows in the window.
     fn projected_terminal_caret(&self, document: DocumentId) -> Option<LayoutBox> {
-        let caret = self.terminal_caret_bounds(document)?;
-        let terminal = via!(self.focused_terminal(document))?.stable_id();
+        let caret = via!(self.terminal_caret_bounds(document))?;
+        let terminal = via!(self.focused_terminal_node(document))?;
         Some(
             self.world
                 .project_input_bounds(terminal, caret)
@@ -379,7 +379,7 @@ fn surrounding_window(text: &str, cursor: usize, anchor: usize) -> Option<Surrou
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{LayoutBox, MutationQueue, TextArea, TextInput};
+    use crate::{TextArea, TextInput};
 
     fn document() -> DocumentId {
         DocumentId::new(1).unwrap()
@@ -421,6 +421,7 @@ mod tests {
         assert_eq!(context.text_input_context(document()), None);
     }
 
+    #[cfg(feature = "terminal")]
     #[test]
     fn a_terminal_anchors_the_ime_at_its_grid_cursor() {
         let mut context = AppContext::new();
@@ -433,10 +434,10 @@ mod tests {
         let terminal = context
             .create_component(document(), crate::TerminalView::new(screen))
             .unwrap();
-        let mut layout = MutationQueue::new();
+        let mut layout = crate::MutationQueue::new();
         layout.write_layout(
             terminal.stable_id(),
-            LayoutBox {
+            crate::LayoutBox {
                 x: 10.0,
                 y: 20.0,
                 width: 80.0,

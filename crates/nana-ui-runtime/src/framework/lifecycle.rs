@@ -2108,6 +2108,7 @@ pub(crate) mod lifecycle_hooks {
         Ok(())
     }
 
+    #[cfg(feature = "terminal")]
     pub(crate) fn terminal(
         context: &mut AppContext,
         entity: Entity<crate::TerminalView>,

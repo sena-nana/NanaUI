@@ -249,9 +249,9 @@ Platform file drag and drop is lowered by the host into `InputPayload::FileDrag`
 
 The line numbers, diagnostics gutter, minimap and git gutter of `TextArea` are view properties: `line_numbers` / `diagnostics` / `minimap` / `git_gutter`. Buffer revision, LSP and git state are still fed in by the application.
 
-`TerminalView` is a retained grid. The application feeds `TerminalScreen` cells and styles through `sync_terminal_screen`. The framework emits `TerminalEvent::Input` / `Resize` / `SelectionChanged`. The PTY, submit and interrupt belong to the application (usually by interpreting Enter / Ctrl+C as writes to the PTY).
+`TerminalView` is a retained grid. The application feeds `TerminalScreen` cells and styles through `sync_terminal_screen`. The framework emits `TerminalEvent::Input` / `Resize` / `SelectionChanged`. The PTY, submit and interrupt belong to the application (usually by interpreting Enter / Ctrl+C as writes to the PTY). It is behind the Cargo feature `terminal`; without it the terminal's keyboard, pointer, paste and IME handling is not compiled into input routing either.
 
-`DiffView` shows hunks fed in by the application. Accept / reject in `DiffEvent` is only a request. It does not change the buffer. `assemble_diff_view` assembles from the existing `ScrollView` + `Button` + `Text`. For read-only review (commits, workspace changes) use `.review_actions(false)`: accept / reject buttons are not assembled. Added and removed lines are backed with the success / danger colors at low opacity.
+`DiffView` shows hunks fed in by the application. Accept / reject in `DiffEvent` is only a request. It does not change the buffer. `assemble_diff_view` assembles from the existing `ScrollView` + `Button` + `Text`. For read-only review (commits, workspace changes) use `.review_actions(false)`: accept / reject buttons are not assembled. Added and removed lines are backed with the success / danger colors at low opacity. It is behind the Cargo feature `diff-view`.
 
 When you need to open a window, switch GPUs or write to disk, call `cx.dispatch_program(msg)` in the closure. It enters `RuntimeProgram::update` on the next frame. Do not do heavy work in a pointer handler.
 

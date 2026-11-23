@@ -19,6 +19,6 @@ test = false
 nana-app-icon = { workspace = true, features = ["embed"] }
 
 [dependencies]
-nana-ui = { workspace = true, features = ["hosted", "wgpu-interop"] }
+nana-ui = { workspace = true, features = ["dock", "hosted", "wgpu-interop"] }
 nana-ui-platform.workspace = true
 wgpu.workspace = true

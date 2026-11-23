@@ -34,7 +34,7 @@ jobs:
           # Catalog windows via the Nana runner; standalone default is 200px overscan.
           FRAMEWORK_WINDOW_ARGS=$(python3 perf/runners/nana/run.py --print-framework-window-args)
           cargo run --quiet --release --locked -p nana-ui-runtime --features benchmark --bin nana-runtime-benchmark -- --output target/performance/runtime.json
-          cargo run --quiet --release --locked -p nana-ui-runtime --features benchmark --bin nana-framework-benchmark -- --output target/performance/framework.json ${FRAMEWORK_WINDOW_ARGS}
+          cargo run --quiet --release --locked -p nana-ui-runtime --features benchmark,dock --bin nana-framework-benchmark -- --output target/performance/framework.json ${FRAMEWORK_WINDOW_ARGS}
           cargo run --quiet --release --locked -p nana-ui-scene --features benchmark --bin nana-scene-benchmark -- --output target/performance/scene.json
       - name: Enforce incremental and latency gates
         run: |

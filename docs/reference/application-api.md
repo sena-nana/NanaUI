@@ -148,7 +148,7 @@ Android、XR 与 accessibility provider 的设备验收。
 | `svg` | SVG 图片：`url()` 纹理和 `Image` 里的 SVG 文档，以及宿主包的只有 SVG、没有 shapes 的图标。图标按自己的几何绘制，不需要它。关闭后 SVG 图片按无法读取的文件处理并发出 `resource.image_codec_unavailable`，`usvg`、`resvg`、`tiny-skia`（约 0.8 MiB）不链接。只在 `gpu` 开启时生效 |
 | `snippet-transforms` | snippet 里的正则变换（`${1/(.*)/${1:/upcase}/}`）。关闭后 snippet 照常解析、展开、联动占位符，变换原样返回并在首次触发时发出 `runtime.snippet.transform_unavailable`；正则引擎（约 0.7 MiB）不链接 |
 | `vector-boolean` | `nana-ui-scene` 中基于 `i_overlay` 的路径布尔化简（默认关闭，开启 `components` / `rich-text` 时自动打开；关闭时使用内置整数平面扫描线布尔回退求解器处理自交、孔洞/孤岛、裁剪、描边与 miter 轮廓化简） |
-| `calendar` / `charts` / `controls` / `graph-canvas` / `image-viewer` / `qr-code` / `rich-text` | 打开对应 runtime/scene `cfg` 并再导出该族。未启用则该族不参与编译。历史 no-op 别名（`overlays`、`selects` 等）已删除，改用 `components` / `full` |
+| `calendar` / `charts` / `controls` / `diff-view` / `dock` / `graph-canvas` / `image-viewer` / `qr-code` / `rich-text` / `terminal` | 打开对应 runtime/scene `cfg` 并再导出该族（`dock` 还带上宿主适配 `nana_ui::dock` 与 `runtime_dock_window_update`）。未启用则该族不参与编译。历史 no-op 别名（`overlays`、`selects` 等）已删除，改用 `components` / `full` |
 | `syntax-highlighting` | `TextArea` 的 `"highlight"` presenter |
 | `no-default-app-icon` | 应用总是注册自己的图标：不链接默认图标标记，没有图标的窗口沿用平台默认。只由应用打开 |
 | `accesskit-tree` | `AccessTreeProjector` 的 TreeUpdate 投影导出，给自接平台适配器的宿主（如 Android `accesskit_android`）；`hosted` 已隐含 |

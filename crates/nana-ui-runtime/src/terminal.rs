@@ -509,6 +509,24 @@ impl AppContext {
         Ok(changed)
     }
 
+    /// [`Self::resize_terminal_view`] for the frame loop, which reaches it
+    /// through the routed calls and does not name the type.
+    pub(crate) fn resize_terminal_node(
+        &mut self,
+        id: StableNodeId,
+        width: f32,
+        height: f32,
+    ) -> Result<bool, FrameworkError> {
+        self.resize_terminal_view(Entity::from_stable_id(id), width, height)
+    }
+
+    /// [`Self::focused_terminal`] for the input router, which does not name
+    /// the type.
+    pub(crate) fn focused_terminal_node(&self, document: DocumentId) -> Option<StableNodeId> {
+        self.focused_terminal(document)
+            .map(|entity| entity.stable_id())
+    }
+
     pub fn focused_terminal(&self, document: DocumentId) -> Option<Entity<TerminalView>> {
         let id = self.world().focused(document)?;
         let entity = Entity::from_stable_id(id);

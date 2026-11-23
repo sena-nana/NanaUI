@@ -39,7 +39,9 @@ pub use nana_text::font::LanguageTag;
 pub use paint_script::PaintScript;
 mod data_table;
 mod date_picker;
+#[cfg(feature = "diff-view")]
 mod diff_view;
+#[cfg(feature = "dock")]
 mod dock;
 mod dropdown;
 mod dynamic_form;
@@ -157,6 +159,7 @@ mod node_space;
 mod presentation_clock;
 mod store;
 mod tabs;
+#[cfg(feature = "terminal")]
 mod terminal;
 mod text_editing;
 mod text_engine_shaper;
@@ -273,7 +276,9 @@ pub use data_table::{
     TABLE_RESIZE_HANDLE, TableColumnResized, TableSelectionRequested, selection_modifiers,
 };
 pub use date_picker::{DateChanged, DateCursorMoved, DatePicker, DatePickerSlots};
+#[cfg(feature = "diff-view")]
 pub use diff_view::{DiffEvent, DiffHunk, DiffLayout, DiffLine, DiffLineKind, DiffView};
+#[cfg(feature = "dock")]
 pub use dock::{
     DOCK_DIVIDER_HIT_SIZE, DOCK_SPLIT_KEYBOARD_STEP, Dock, DockAxis, DockBoundsPersist,
     DockCommand, DockCommandOutcome, DockDropZone, DockFloatingPersist, DockFloatingSurface,
@@ -485,6 +490,7 @@ pub use sidebar::{
 };
 pub use split_pane::SplitPane;
 pub use tabs::{TabOption, Tabs, TabsEvent};
+#[cfg(feature = "terminal")]
 pub use terminal::{
     MAX_TERMINAL_CELLS, TerminalCell, TerminalCursor, TerminalCursorShape, TerminalEvent,
     TerminalPosition, TerminalScreen, TerminalSelection, TerminalView,

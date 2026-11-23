@@ -2900,6 +2900,7 @@ fn a_keyed_list_inside_a_reorder_list_puts_its_rows_straight_into_it() {
     assert_eq!(rows, ["a", "b"]);
 }
 
+#[cfg(feature = "dock")]
 fn dock_layout(
     files: Option<StableNodeId>,
     preview: Option<StableNodeId>,
@@ -2919,6 +2920,7 @@ fn dock_layout(
 }
 
 #[test]
+#[cfg(feature = "dock")]
 fn dock_panels_are_the_children_keyed_with_their_ids() {
     use crate::Dock;
     let (mut cx, document, _) = setup();
@@ -7354,6 +7356,7 @@ mod issue420_boxless_fragments {
     }
 
     #[test]
+    #[cfg(feature = "dock")]
     fn ac3_composites_penetrate_boxless_control_flow() {
         let (mut cx, document, parent) = setup();
         let controls = std::cell::Cell::new(None);

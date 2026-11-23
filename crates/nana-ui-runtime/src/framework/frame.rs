@@ -560,7 +560,10 @@ impl AppContext {
                 }
             }
             let mut settings_rows = Vec::new();
-            let mut terminal_sizes = Vec::new();
+            // Filled only when terminals are compiled in; the resize below
+            // goes through the routed call either way.
+            #[cfg_attr(not(feature = "terminal"), allow(unused_mut))]
+            let mut terminal_sizes: Vec<StableNodeId> = Vec::new();
             let mut adaptive_editors = Vec::new();
             for id in &scope {
                 let Some(view) = self.views.get(id) else {
@@ -572,9 +575,12 @@ impl AppContext {
                 {
                     adaptive_editors.push(*id);
                 }
+                #[cfg(feature = "terminal")]
                 if view.is::<crate::TerminalView>() {
                     terminal_sizes.push(*id);
-                } else if view
+                    continue;
+                }
+                if view
                     .downcast_ref::<crate::SettingsRow>()
                     .is_some_and(|row| row.stack_below.is_some() && !row.stacked)
                 {
@@ -616,11 +622,7 @@ impl AppContext {
             }
             for id in terminal_sizes {
                 if let Some(bounds) = self.world.component_layout_box(id) {
-                    via!(self.resize_terminal_view(
-                        Entity::from_stable_id(id),
-                        bounds.width,
-                        bounds.height,
-                    ))?;
+                    via!(self.resize_terminal_node(id, bounds.width, bounds.height))?;
                 }
             }
             completed(2);

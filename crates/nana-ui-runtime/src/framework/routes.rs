@@ -110,10 +110,12 @@ impl AppContext {
     }
 }
 
+#[cfg(feature = "terminal")]
 pub(crate) fn terminal(hooks: &mut TypeHooks) {
     route!(hooks;
-        set_terminal_preedit, focused_terminal, terminal_pointer, terminal_key,
-        terminal_input, paste_terminal, resize_terminal_view,
+        set_terminal_preedit, focused_terminal_node, terminal_accepts_input,
+        terminal_caret_bounds, terminal_selected_text, terminal_pointer, terminal_key,
+        terminal_input, paste_terminal, resize_terminal_node,
     );
 }
 

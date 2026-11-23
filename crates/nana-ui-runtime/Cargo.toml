@@ -10,11 +10,20 @@ license = "MIT OR Apache-2.0"
 calendar = []
 charts = ["dep:nana-ui-charts"]
 controls = []
+# `DiffView`: unified and side-by-side diff hunks.
+diff-view = []
+# `Dock`, `DockPanel` and `DockWorkspace`: splittable, persistable panel
+# trees with floating surfaces. `Workspace` and `SplitPane` belong to the
+# Shell and are always compiled.
+dock = []
 graph-canvas = []
 image-viewer = []
 qr-code = ["dep:qrcode"]
 rich-text = ["dep:pulldown-cmark", "dep:nana-ui-diagram", "dep:ratex-parser", "dep:ratex-layout", "dep:ratex-svg", "dep:ratex-types"]
-components = ["calendar", "charts", "controls", "graph-canvas", "image-viewer", "qr-code", "rich-text"]
+# `TerminalView`: a cell grid fed by the application's PTY, with its own
+# keyboard, pointer, paste and IME routing.
+terminal = []
+components = ["calendar", "charts", "controls", "diff-view", "dock", "graph-canvas", "image-viewer", "qr-code", "rich-text", "terminal"]
 default = []
 # Locale-aware message formatting with ICU4X and its compiled CLDR data:
 # plural rules, numbers, dates and times. Without it messages format with
@@ -98,7 +107,7 @@ test = false
 [[bin]]
 name = "nana-framework-benchmark"
 path = "src/bin/nana-framework-benchmark.rs"
-required-features = ["benchmark"]
+required-features = ["benchmark", "dock"]
 test = false
 
 [[bin]]
