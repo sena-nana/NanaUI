@@ -137,3 +137,11 @@ python3 scripts/check-dist-size.py --update   # intentional change: re-record, t
 measured at `6a80e848e`) is 4.0% lower. Rebuilt with the same toolchain, `6a80e848e` is 5,851,712 B, so
 the toolchain accounts for 16 KB and code for the rest; the per-commit
 attribution is in `docs/reference/resource-budgets.md`.
+
+## 2026-11-23 re-record: `PAIR_PAGES` zero-initialized
+
+`darwin-arm64` `target/dist/reactive-sfc`: 6,067,856 → 6,034,928 B. The theme
+color pair page table in `nana-ui-core` (`style_model::PAIR_PAGES`) was an
+array of 1024 `OnceLock`s whose initial value is not all zeros, so it shipped
+24,576 B in `__DATA,__data`; it is now an all-zero `AtomicPtr` directory. On
+the same HEAD the binary went from 6,067,968 to 6,034,928 B.

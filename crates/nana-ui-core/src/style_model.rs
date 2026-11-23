@@ -122,8 +122,13 @@ const PAIR_PAGE_SHIFT: usize = 10;
 const PAIR_PAGE_SIZE: usize = 1 << PAIR_PAGE_SHIFT;
 const PAIR_MAX_PAGES: usize = 1024;
 
-static PAIR_PAGES: [OnceLock<Box<[AtomicPtr<ThemeColorPair>]>>; PAIR_MAX_PAGES] =
-    [const { OnceLock::new() }; PAIR_MAX_PAGES];
+type PairPage = [AtomicPtr<ThemeColorPair>; PAIR_PAGE_SIZE];
+
+/// Page directory. Null pointers are all-zero bytes, so the 8 KiB table goes
+/// to zero-fill instead of the executable: an array of `OnceLock`s here
+/// shipped 24 KiB of initial state in `__DATA,__data` (Issue #152).
+static PAIR_PAGES: [AtomicPtr<PairPage>; PAIR_MAX_PAGES] =
+    [const { AtomicPtr::new(std::ptr::null_mut()) }; PAIR_MAX_PAGES];
 
 #[derive(Default)]
 struct ThemeColorPairInternTable {
@@ -140,10 +145,12 @@ fn pair_intern() -> &'static Mutex<ThemeColorPairInternTable> {
 impl ThemeColorPairRef {
     fn inner(self) -> &'static ThemeColorPair {
         let idx = (self.0.get() - 1) as usize;
-        let page = PAIR_PAGES[idx >> PAIR_PAGE_SHIFT]
-            .get()
-            .expect("valid ThemeColorPairRef page");
-        let ptr = page[idx & (PAIR_PAGE_SIZE - 1)].load(Ordering::Acquire);
+        let page = PAIR_PAGES[idx >> PAIR_PAGE_SHIFT].load(Ordering::Acquire);
+        assert!(!page.is_null(), "valid ThemeColorPairRef page");
+        // SAFETY: `intern_theme_color_pair` publishes the leaked page with
+        // `Ordering::Release` before any reference into it exists, and never
+        // frees or replaces it.
+        let ptr = unsafe { &*page }[idx & (PAIR_PAGE_SIZE - 1)].load(Ordering::Acquire);
         // SAFETY: `intern_theme_color_pair` publishes a non-null `Box::leak`
         // pointer with `Ordering::Release` before returning `ThemeColorPairRef`.
         unsafe { &*ptr }
@@ -259,12 +266,16 @@ pub fn intern_theme_color_pair(light: PaintColor, dark: PaintColor) -> ThemeColo
         "theme color pair intern table overflow ({} pairs)",
         idx
     );
-    let page = PAIR_PAGES[page_idx].get_or_init(|| {
-        (0..PAIR_PAGE_SIZE)
-            .map(|_| AtomicPtr::new(std::ptr::null_mut()))
-            .collect::<Vec<_>>()
-            .into_boxed_slice()
-    });
+    // Pages are only created under the intern lock held here.
+    let mut page = PAIR_PAGES[page_idx].load(Ordering::Acquire);
+    if page.is_null() {
+        page = Box::leak(Box::new(
+            [const { AtomicPtr::new(std::ptr::null_mut()) }; PAIR_PAGE_SIZE],
+        ));
+        PAIR_PAGES[page_idx].store(page, Ordering::Release);
+    }
+    // SAFETY: a published page is leaked and lives for the process.
+    let page: &'static PairPage = unsafe { &*page };
     let leaked = Box::leak(Box::new(candidate));
     page[slot_idx].store(leaked, Ordering::Release);
     table.next_index = idx + 1;
@@ -1576,10 +1587,36 @@ impl Default for ControlSemantics {
 #[cfg(test)]
 mod tests {
     use super::{
-        OpacityTokens, PaintColor, SemanticColor, SemanticColorRole, SemanticPalette,
-        StyleModelRef, oklch_to_srgb, srgb_to_oklch,
+        OpacityTokens, PAIR_PAGE_SIZE, PaintColor, SemanticColor, SemanticColorRole,
+        SemanticPalette, StyleModelRef, intern_theme_color_pair, oklch_to_srgb, srgb_to_oklch,
     };
     use crate::theme::ThemeAppearance;
+
+    /// More pairs than one page holds, so at least one new page is published
+    /// mid-run; every reference reads back its own pair, and interning the
+    /// same pair again returns the same reference.
+    #[test]
+    fn theme_color_pairs_resolve_across_page_boundaries() {
+        let pair = |i: usize| {
+            let v = i as f32 / 4096.0;
+            (
+                PaintColor::srgb([v, 0.25, 0.5, 1.0]),
+                PaintColor::srgb([0.75, v, 0.125, 1.0]),
+            )
+        };
+        let count = PAIR_PAGE_SIZE * 2 + 3;
+        let refs: Vec<_> = (0..count)
+            .map(|i| {
+                let (light, dark) = pair(i);
+                intern_theme_color_pair(light, dark)
+            })
+            .collect();
+        for (i, r) in refs.iter().enumerate() {
+            assert_eq!(r.pair(), pair(i));
+            let (light, dark) = pair(i);
+            assert_eq!(intern_theme_color_pair(light, dark), *r);
+        }
+    }
 
     /// `Highlight` is opt-in: a built-in theme that never names it must look
     /// exactly as it did before the role existed, so it resolves to the accent
