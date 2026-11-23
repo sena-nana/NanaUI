@@ -99,6 +99,19 @@ pub(super) fn retained_matches_full_layout(
             stack.extend(world.child_ids(id).iter().copied());
         }
     }
+    // Under a boundary a sliced pass left for later, nothing is placed yet:
+    // no box at all, never one half laid out. The rest is the full layout's.
+    let mut waiting = crate::NodeSet::default();
+    let mut stack: Vec<StableNodeId> = cache
+        .deferred
+        .keys()
+        .flat_map(|&root| world.child_ids(root).iter().copied())
+        .collect();
+    while let Some(id) = stack.pop() {
+        if waiting.insert(id) {
+            stack.extend(world.child_ids(id).iter().copied());
+        }
+    }
     let bits = |b: LayoutBox| {
         [
             b.x.to_bits(),
@@ -109,6 +122,15 @@ pub(super) fn retained_matches_full_layout(
     };
     let mut wrong = Vec::new();
     for (id, expected, frame) in full {
+        if waiting.contains(&id) {
+            let kept = cache.boxes.get(&id).copied().unwrap_or_default();
+            assert_eq!(
+                kept,
+                LayoutBox::default(),
+                "{id:?} waits under a deferred boundary but holds a box"
+            );
+            continue;
+        }
         let omitted = expected.width == 0.0 && expected.height == 0.0;
         if exact.contains(&id)
             && !omitted

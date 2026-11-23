@@ -1149,6 +1149,13 @@ pub struct AppContext {
     frame_profiler: FrameProfiler,
     last_profile: FrameProfile,
     profiling: bool,
+    /// How much placement a frame may do before it leaves what is out of
+    /// view to later frames; `None` places everything. See
+    /// [`Self::set_layout_slice_budget`].
+    layout_slice_budget: Option<crate::LayoutSliceBudget>,
+    /// Boxes this frame's layout passes placed, and when its first began:
+    /// what the slice budget is spent against.
+    frame_layout_spent: (usize, Option<Instant>),
     /// Cross-frame layout memo for [`Self::layout_document_with_frontier`].
     layout_cache: crate::RetainedLayoutCache,
     /// Nodes recomputed by the last layout pass (relayout + shape scope).
@@ -1507,6 +1514,8 @@ impl AppContext {
             frame_profiler: FrameProfiler::new(),
             last_profile: FrameProfile::default(),
             profiling: false,
+            layout_slice_budget: None,
+            frame_layout_spent: (0, None),
             layout_cache: crate::RetainedLayoutCache::default(),
             last_layout_scope: Vec::new(),
             layout_full_invocations: 0,

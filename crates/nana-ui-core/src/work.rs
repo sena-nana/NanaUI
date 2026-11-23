@@ -146,6 +146,16 @@ pub struct WorkCounters {
     /// levels of depth below the outermost placement call, and one per
     /// scroll container or layout-isolated box above that depth.
     pub layout_placement_boundaries: usize,
+    /// Boundaries a sliced layout left out of view for later frames, the
+    /// most any pass of the frame left pending. See
+    /// `AppContext::set_layout_slice_budget`.
+    pub layout_boundaries_pending: usize,
+    /// Layout passes that stopped at their slice budget and deferred.
+    pub layout_placement_slices: usize,
+    /// Deferred boundaries dropped before they were placed: the root left
+    /// the document or stopped generating a box, or a pass placed its box
+    /// with other inputs and redid the work from them.
+    pub layout_deferrals_cancelled: usize,
     /// Publish batches that wrote at least one changed layout result.
     pub layout_delta_commits: usize,
     /// Children result publication looked at: the covered children a held
@@ -661,7 +671,8 @@ accumulate_counters! {
     /// recorded them.
     WorkCounters {
         latest: entities_total;
-        max: layout_measure_stack_per_level, layout_placement_stack_per_level;
+        max: layout_measure_stack_per_level, layout_placement_stack_per_level,
+            layout_boundaries_pending;
         nested: i18n, dynamic;
         sum: entities_changed, entities_spawned, entities_despawned, style_processed, text_shaped,
             layout_nodes, layout_frontier_seeds, layout_frontier_seed_merges,
@@ -673,7 +684,7 @@ accumulate_counters! {
             layout_result_reused, layout_result_changed, layout_origin_only_updates,
             layout_translations, layout_translated_nodes,
             layout_delta_commits, layout_result_children_visited, layout_context_transitions,
-            layout_placement_boundaries,
+            layout_placement_boundaries, layout_placement_slices, layout_deferrals_cancelled,
             layout_invalidations_created,
             layout_invalidations_zero_delta, layout_equivalent_mutations_skipped,
             layout_placement_plans_reused, layout_measure_plans_reused, layout_suffixes_replayed,
@@ -983,6 +994,14 @@ impl WorkCounters {
     pub fn record_layout_placement_boundaries(&mut self, boundaries: usize) {
         self.layout_placement_boundaries =
             self.layout_placement_boundaries.saturating_add(boundaries);
+    }
+
+    /// What a sliced layout pass left and stopped: boundaries pending after
+    /// it, whether it stopped at its budget, deferrals it dropped.
+    pub fn record_layout_slicing(&mut self, pending: usize, slices: usize, cancelled: usize) {
+        self.layout_boundaries_pending = self.layout_boundaries_pending.max(pending);
+        self.layout_placement_slices = self.layout_placement_slices.saturating_add(slices);
+        self.layout_deferrals_cancelled = self.layout_deferrals_cancelled.saturating_add(cancelled);
     }
 
     /// `delta_commits` is 1 only when at least one result object was replaced.

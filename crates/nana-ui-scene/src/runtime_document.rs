@@ -112,6 +112,13 @@ impl RuntimeDocument {
         self.scene.compositor_needs_tick()
     }
 
+    /// Whether a sliced layout left subtrees out of view to place (see
+    /// `AppContext::set_layout_slice_budget`): the host runs another frame,
+    /// whose flush continues it.
+    pub fn layout_pending(&self) -> bool {
+        self.context.layout_pending(self.document)
+    }
+
     /// Drain one Runtime frame: host shaping, framework layout. A viewport
     /// change lays out the roots again and the boxes that consume the axis it
     /// moved on, and reuses every subtree the new size did not reach.
@@ -122,9 +129,12 @@ impl RuntimeDocument {
     ) -> Result<RuntimeFrameUpdate, FrameworkError> {
         let document = self.document;
         let viewport_changed = self.viewport != Some(viewport);
-        let mut force_layout = viewport_changed;
+        // A sliced layout left subtrees to place: this frame continues it,
+        // edits or not.
+        let pending = self.context.layout_pending(document);
+        let mut force_layout = viewport_changed || pending;
         self.context.compat_world_mut().observe_text_shaper(shaper);
-        let update = self.flush_loop(viewport_changed, |context, work| {
+        let update = self.flush_loop(viewport_changed || pending, |context, work| {
             context.compat_world_mut().reconcile_focus(&work.focus_ime);
             context.shape_text(&work.text, shaper)?;
             // Text shaping can discover an intrinsic metric change and emit a
@@ -133,7 +143,7 @@ impl RuntimeDocument {
             let mut seeds = work.layout_frontier_seeds.clone();
             seeds.extend(context.take_layout_frontier_seeds(document));
             if force_layout || !seeds.is_empty() {
-                if force_layout {
+                if viewport_changed && force_layout {
                     context.layout_document_for_viewport(document, viewport, &seeds)?;
                 } else {
                     context.layout_document_with_frontier(document, viewport, &seeds)?;
@@ -648,6 +658,122 @@ mod tests {
         assert_eq!(opacity.runtime_samples_this_frame, 0);
         assert!(opacity.format_summary().contains("Class: Compositor"));
         assert!(opacity.format_summary().contains("Layer: #1"));
+    }
+
+    /// A page of `sections` blocks 300 px tall, four rows each, in a 600 px
+    /// viewport: the shape a sliced first layout spreads over frames.
+    fn sectioned_runtime(sections: u64) -> (RuntimeDocument, Vec<StableNodeId>) {
+        let document_id = DocumentId::new(1).unwrap();
+        let mut runtime = RuntimeDocument::new(document_id);
+        let id = |value: u64| StableNodeId::new(value).unwrap();
+        let styled = |layout: LayoutStyle| NodeStyle {
+            layout: Arc::new(layout),
+            ..NodeStyle::default()
+        };
+        let mut queue = MutationQueue::new();
+        queue.create(id(1), document_id, NodeKind::Document);
+        queue.create(id(2), document_id, NodeKind::Element { tag: "main".into() });
+        queue.insert(id(1), id(2), None);
+        queue.set_style(
+            id(2),
+            styled(LayoutStyle {
+                width: Some(LengthSpec::Px(800.0)),
+                direction: Some(nana_ui_core::FlexDirection::Column),
+                ..LayoutStyle::default()
+            }),
+        );
+        let mut all = vec![id(2)];
+        for section in 0..sections {
+            let block = id(100 + section * 10);
+            queue.create(
+                block,
+                document_id,
+                NodeKind::Element {
+                    tag: "section".into(),
+                },
+            );
+            queue.insert(id(2), block, None);
+            queue.set_style(
+                block,
+                styled(LayoutStyle {
+                    width: Some(LengthSpec::Px(800.0)),
+                    height: Some(LengthSpec::Px(300.0)),
+                    direction: Some(nana_ui_core::FlexDirection::Column),
+                    ..LayoutStyle::default()
+                }),
+            );
+            all.push(block);
+            for row in 0..4 {
+                let node = id(101 + section * 10 + row);
+                queue.create(node, document_id, NodeKind::Element { tag: "div".into() });
+                queue.insert(block, node, None);
+                queue.set_style(
+                    node,
+                    styled(LayoutStyle {
+                        width: Some(LengthSpec::Px(200.0)),
+                        height: Some(LengthSpec::Px(50.0)),
+                        ..LayoutStyle::default()
+                    }),
+                );
+                all.push(node);
+            }
+        }
+        runtime
+            .context_mut()
+            .compat_world_mut()
+            .commit(queue)
+            .unwrap();
+        (runtime, all)
+    }
+
+    /// With a slice budget a frame lays out what is in view and reports the
+    /// rest pending; every later flush continues it with no edit, and the
+    /// finished page is the one an unsliced frame lays out.
+    #[test]
+    fn a_sliced_layout_finishes_over_later_flushes() {
+        let viewport = LayoutViewport::new(800.0, 600.0);
+        let (mut whole, nodes) = sectioned_runtime(16);
+        whole
+            .flush(viewport, &mut nana_ui_runtime::MeasureTextShaper)
+            .unwrap();
+        assert!(!whole.layout_pending());
+        let (mut sliced, _) = sectioned_runtime(16);
+        sliced
+            .context_mut()
+            .set_layout_slice_budget(Some(nana_ui_runtime::LayoutSliceBudget::placement_nodes(8)));
+        // Boxes not yet where the unsliced frame put them.
+        let unplaced = |runtime: &RuntimeDocument| {
+            nodes
+                .iter()
+                .filter(|&&node| {
+                    runtime.context().world().layout_box(node)
+                        != whole.context().world().layout_box(node)
+                })
+                .count()
+        };
+        sliced
+            .flush(viewport, &mut nana_ui_runtime::MeasureTextShaper)
+            .unwrap();
+        assert!(sliced.layout_pending());
+        let mut left = unplaced(&sliced);
+        assert!(left > 0);
+        let mut frames = 1;
+        while sliced.layout_pending() {
+            let update = sliced
+                .flush(viewport, &mut nana_ui_runtime::MeasureTextShaper)
+                .unwrap();
+            assert!(!update.is_idle(), "a pending layout's flush did nothing");
+            let now = unplaced(&sliced);
+            assert!(now < left, "frame {frames} placed nothing");
+            left = now;
+            frames += 1;
+            assert!(frames < 32, "the sliced layout did not finish");
+        }
+        assert_eq!(left, 0, "the finished layout differs from an unsliced one");
+        let idle = sliced
+            .flush(viewport, &mut nana_ui_runtime::MeasureTextShaper)
+            .unwrap();
+        assert!(idle.is_idle(), "a finished layout keeps flushing");
     }
 
     #[test]

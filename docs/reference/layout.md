@@ -665,6 +665,18 @@ CSS 路径只产出数据，不量容器（见下文「`@container`」）。
 
 一趟布局只读上一趟留下的保留缓存，只写自己的表（盒子、计划、上下文等），提交时在帧边界一起合并进保留缓存：`ContainerPlan` 不再有内部可变的字段，回放沿用上一趟的计划时，把挪动的行和主轴范围记成 `PlanPatch` 交给本趟的计划表，提交时再写进去，所以尾部编辑仍只付被挪动的行，不复制整份计划。这样一趟没做完的部分，上一趟的结果仍完整可用。
 
+### 分帧布局（切片预算）
+
+宿主可以用 `AppContext::set_layout_slice_budget(Some(LayoutSliceBudget::placement_nodes(n)))`（或 `LayoutSliceBudget::time(d)`）让一帧的布局只放一部分，看不见的部分留给后面的帧；默认是 `None`，一帧放完。预算按帧计（从 `begin_frame_profile` 起，帧内各趟共用；帧外按每次布局调用计）。
+
+- 测量不切：每个盒子都按内容得到尺寸，祖先（例如滚动内容的高度）当帧就对。
+- 切的是放置：有预算的一趟把队列改成按离视口的距离排（页面坐标减去祖先滚动容器的滚动量），并且把完全在视口外的非叶盒子也切成边界，所以看不见的部分在任何深度都能整块留下。视口内的边界总是当帧放；视口外的按距离从近到远放，预算用完后其余的推迟，但每趟至少放一个视口外的，所以总会放完。
+- 只推迟下面没有任何保留盒子的子树（首帧，或刚挂上的子树）：以后哪一趟都不会在里面读到过期的计划或盒子。推迟的子树在放好之前没有盒子，放的时候整棵一起放，不会半新半旧；验证守卫检查推迟子树下没有盒子，其余部分与冷布局逐节点一致。已有布局的子树哪怕在视口外也照常放。
+- 推迟的边界记在保留缓存里（`DocumentLayoutCache::deferred`，带根的尺寸、包含块、字体等输入）。下一趟放置走到它的根时，用这一趟的输入重新排队（输入变了就算作一次取消）；没走到的，按记下的输入放。根离开文档或不再生成盒子时丢弃并计入取消。
+- `AppContext::layout_pending(document)` / `RuntimeDocument::layout_pending()` 表示还有没放完的；`RuntimeDocument::flush` 在没有编辑的帧里也会继续，窗口宿主与无头宿主在此期间持续请求帧。
+- 计数：`LayoutExecutionStats::{placement_boundaries_deferred, placement_slices, placement_deferrals_cancelled}`，公开为 `WorkCounters::{layout_boundaries_pending, layout_placement_slices, layout_deferrals_cancelled}`。
+- 不包含：超大扁平列表在一个容器里的中途暂停（用虚拟化）；推迟已有布局的子树（要先解决它里面保留状态与新测量结果之间的一致性）。
+
 一层的放置分两步：`lay_out_children` 走一遍容器的子项：测量、分行、对齐、求解 2D grid，给每个流内子项定好盒子，返回待放置的 `Descend` 列表和计划草稿，自己不放置任何子树；`place_node_body` 等这一帧退出后再依次进入这些子树，然后记录计划并放置定位子项。`place_node_head` 在 `place_node_body` 运行前返回，复用计划的两条快速路径（`place_edited_child_list`、`place_from_plan`，经 `replay_plan`）与 `lay_out_children` 各自成函数，避免同时把所有局部变量留在同一递归栈帧内。
 
 回放路径同样分两步：顺序回放（`replay_sequential_run`）、反向主轴前缀平移（`shift_reversed_prefix`）、换行 flex 行平移（`replay_wrapped_flex_line`）、grid 回放（`replay_grid`）和计划不变时重入受影响子项，都只给子项定盒子、把要重放的子树交成 `Descend`（回放中途拒绝时收回已交出的项），自己不调用 `place_node_scoped`；`replay_plan` 返回 `PlanReplay` 后，`place_node_body` 在回放的帧退出后依次进入这些子树，再由 `finish_plan_replay` 放置定位子项。所以一层回放的栈与冷布局一层相同。定位子项（`place_positioned_child`）仍在自己的帧里进入子树。
@@ -680,8 +692,8 @@ CSS 路径只产出数据，不量容器（见下文「`@container`」）。
 1. 已完成：`stacker` 彻底退出；测量迭代化（`0 B`/层），放置分成“定盒子”（`lay_out_children` / `place_node_head`）与“进入子树”（`place_node_body`）并立每层栈预算。
 2. 已完成：放置边界。到达 `SPAN` 层的节点成为队列中的任务单元（`Boundary`），调用栈深度不超过 `SPAN`；边界的结果只取决于它的输入。
 3. 已完成：回放路径也交出 `Descend`，增量一层的栈与冷布局一层相同；滚动容器和 `layout_isolation` 节点作为自然边界切点；一趟只写自己的表，回放的改动记成补丁在提交时合并（双缓冲）。
-4. 后续：调度切片——按帧预算分片（未完成的边界整体沿用上一趟的结果）、按视口距离排序、变更失效时取消在途边界，并将队列长度和分片次数计入 `WorkCounters`。
-5. 并行：互相独立的边界子树并行放置：每棵子树写自己的输出，最后合并。
+4. 已完成：调度切片——按帧预算分片、按视口距离排序、变更失效时取消在途边界，队列长度、分片次数和取消次数计入 `WorkCounters`（见上文“分帧布局”）。
+5. 后续：并行——互相独立的边界子树并行放置：每棵子树写自己的输出，最后合并。
 
 测量阶段的分片粒度受内容依赖限制：尺寸由内容决定的容器会把依赖一直传给祖先，这样的一串只能作为一个单元。超大的扁平列表靠虚拟化，不靠调度。
 

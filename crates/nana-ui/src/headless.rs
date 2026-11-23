@@ -375,6 +375,7 @@ impl<P: RuntimeProgram> HeadlessRuntime<P> {
                     .program
                     .with_document(*id, |document| {
                         document.compositor_needs_tick()
+                            || document.layout_pending()
                             || clock.next_wakeup(document.context()).is_some()
                     })
                     .ok()

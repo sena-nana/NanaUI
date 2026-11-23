@@ -11,6 +11,7 @@ pub(super) struct GridPlacedItem {
     pub(super) intrinsic: Size,
 }
 
+#[derive(Clone)]
 pub(super) struct InheritedGridTracks {
     /// Inline size of the subgrid's grid area in the parent (spanned
     /// columns plus their gaps): the base for the subgrid's percentage

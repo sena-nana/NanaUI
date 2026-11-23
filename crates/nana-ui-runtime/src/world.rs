@@ -3940,6 +3940,11 @@ impl UiWorld {
                 stats.placement_stack_per_level,
             );
             counters.record_layout_placement_boundaries(stats.placement_boundaries);
+            counters.record_layout_slicing(
+                stats.placement_boundaries_deferred,
+                stats.placement_slices,
+                stats.placement_deferrals_cancelled,
+            );
             counters.record_layout_plans(
                 stats.placement_plans_reused,
                 stats.measure_plans_reused,

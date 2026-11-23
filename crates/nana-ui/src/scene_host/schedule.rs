@@ -574,9 +574,13 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
 
     pub(super) fn window_frame_demand(&mut self, id: WindowId) -> FrameDemand {
         let program = self.program.frame_demand(id);
+        // A sliced layout left subtrees out of view to place: each frame's
+        // flush continues it, so frames keep coming until it is done.
         let compositor = self
             .program
-            .read_document(id, |document| document.compositor_needs_tick())
+            .read_document(id, |document| {
+                document.compositor_needs_tick() || document.layout_pending()
+            })
             .unwrap_or(false);
         let can_present = self.can_present(id);
         let max_rate = self.program.max_frame_rate(id);

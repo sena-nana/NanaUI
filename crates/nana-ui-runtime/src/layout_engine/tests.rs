@@ -7675,3 +7675,406 @@ fn scroll_containers_and_isolated_boxes_are_natural_boundaries() {
         scoped_step_matches_full(&mut world, document, viewport, &mut retained, name);
     }
 }
+
+/// Sections of a tall page for the sliced-layout tests: each 300 px tall
+/// with four rows, the page a column 800 px wide inside `page`'s style.
+const SECTIONS: u64 = 12;
+const SECTION_ROWS: u64 = 4;
+
+fn section(index: u64) -> StableNodeId {
+    id(100 + index * 10)
+}
+
+fn section_row(index: u64, row: u64) -> StableNodeId {
+    id(100 + index * 10 + 1 + row)
+}
+
+fn styled(layout: LayoutStyle) -> NodeStyle {
+    NodeStyle {
+        layout: Arc::new(layout),
+        ..NodeStyle::default()
+    }
+}
+
+fn row_style(height: f32) -> LayoutStyle {
+    LayoutStyle {
+        width: Some(LengthSpec::Px(200.0)),
+        height: Some(LengthSpec::Px(height)),
+        ..LayoutStyle::default()
+    }
+}
+
+fn add_section(queue: &mut MutationQueue, document: DocumentId, index: u64) {
+    queue.create(
+        section(index),
+        document,
+        NodeKind::Element {
+            tag: "section".into(),
+        },
+    );
+    queue.insert(id(2), section(index), None);
+    queue.set_style(
+        section(index),
+        styled(LayoutStyle {
+            width: Some(LengthSpec::Px(800.0)),
+            height: Some(LengthSpec::Px(300.0)),
+            direction: Some(FlexDirection::Column),
+            ..LayoutStyle::default()
+        }),
+    );
+    for row in 0..SECTION_ROWS {
+        let node = section_row(index, row);
+        queue.create(node, document, NodeKind::Element { tag: "div".into() });
+        queue.insert(section(index), node, None);
+        queue.set_style(node, styled(row_style(50.0)));
+    }
+}
+
+fn sectioned_page(page: LayoutStyle) -> (UiWorld, DocumentId) {
+    let document = DocumentId::new(1).unwrap();
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(id(1), document, NodeKind::Document);
+    queue.create(id(2), document, NodeKind::Element { tag: "main".into() });
+    queue.insert(id(1), id(2), None);
+    queue.set_style(id(2), styled(page));
+    for index in 0..SECTIONS {
+        add_section(&mut queue, document, index);
+    }
+    world.commit(queue).unwrap();
+    (world, document)
+}
+
+fn page_column() -> LayoutStyle {
+    LayoutStyle {
+        width: Some(LengthSpec::Px(800.0)),
+        direction: Some(FlexDirection::Column),
+        ..LayoutStyle::default()
+    }
+}
+
+/// One pass with `placement_nodes` of budget (`None`: unsliced), its boxes
+/// written back as a frame does.
+fn sliced_pass(
+    world: &mut UiWorld,
+    document: DocumentId,
+    retained: &mut RetainedLayoutCache,
+    placement_nodes: Option<usize>,
+    force_full: bool,
+) -> LayoutExecutionStats {
+    let viewport = LayoutViewport::new(800.0, 600.0);
+    let work = world.take_system_work();
+    world.resolve_styles(&work.style).unwrap();
+    retained.set_slice_limit(placement_nodes.map(|nodes| SliceLimit {
+        placement_nodes: Some(nodes),
+        deadline: None,
+    }));
+    let emitted = RuntimeLayoutEngine
+        .layout_document_with_frontier(
+            world,
+            document,
+            viewport,
+            &work.layout_frontier_seeds,
+            retained,
+            force_full,
+        )
+        .unwrap();
+    write_changed_boxes(world, &emitted);
+    let _ = world.take_system_work();
+    retained.execution_stats(document)
+}
+
+/// Which sections have their rows placed.
+fn placed_sections(retained: &RetainedLayoutCache, document: DocumentId) -> Vec<u64> {
+    let cache = &retained.documents[&document];
+    (0..SECTIONS)
+        .filter(|&index| cache.boxes.contains_key(&section_row(index, 0)))
+        .collect()
+}
+
+/// Passes with no edit and no budget left until nothing is pending: one
+/// out-of-view boundary each. Returns how many it took.
+fn finish_sliced(
+    world: &mut UiWorld,
+    document: DocumentId,
+    retained: &mut RetainedLayoutCache,
+) -> usize {
+    for passes in 1..=64 {
+        sliced_pass(world, document, retained, Some(0), false);
+        if !retained.layout_pending(document) {
+            return passes;
+        }
+    }
+    panic!("a sliced layout did not finish");
+}
+
+fn assert_full_layout(world: &UiWorld, document: DocumentId, retained: &RetainedLayoutCache) {
+    let viewport = LayoutViewport::new(800.0, 600.0);
+    let expected = full_boxes(world, document, viewport);
+    let cached = retained.documents[&document].page_boxes(world);
+    for (node, box_) in &expected {
+        assert_eq!(
+            cached.get(&node).copied().unwrap_or_default(),
+            *box_,
+            "a finished sliced layout differs from a full layout at {node:?}"
+        );
+    }
+}
+
+/// A first layout with no budget left places the sections in view, one out
+/// of view, and leaves the rest without a box below them; each later pass
+/// places the next nearest, and the finished layout is the full one. Every
+/// pass on the way is checked by the verify guard: the rest of the page is
+/// the full layout's, and nothing under a deferred section is placed.
+#[test]
+fn a_sliced_first_layout_places_what_is_in_view_first() {
+    let (mut world, document) = sectioned_page(page_column());
+    let mut retained = RetainedLayoutCache::default();
+    let stats = sliced_pass(&mut world, document, &mut retained, Some(0), true);
+    // In view: sections 0 and 1 (0–600 px); then the nearest out of view.
+    assert_eq!(placed_sections(&retained, document), vec![0, 1, 2]);
+    assert_eq!(stats.placement_slices, 1);
+    assert_eq!(stats.placement_boundaries_deferred, (SECTIONS - 3) as usize);
+    assert!(retained.layout_pending(document));
+    // Every section has its box: measurement is not sliced.
+    let cache = &retained.documents[&document];
+    for index in 0..SECTIONS {
+        assert!(cache.boxes.contains_key(&section(index)), "section {index}");
+    }
+    sliced_pass(&mut world, document, &mut retained, Some(0), false);
+    assert_eq!(placed_sections(&retained, document), vec![0, 1, 2, 3]);
+    let passes = finish_sliced(&mut world, document, &mut retained);
+    assert_eq!(passes, (SECTIONS - 4) as usize);
+    assert_full_layout(&world, document, &retained);
+    // With room in the budget, a pass places everything at once.
+    let (mut world, document) = sectioned_page(page_column());
+    let mut retained = RetainedLayoutCache::default();
+    let stats = sliced_pass(&mut world, document, &mut retained, Some(10_000), true);
+    assert_eq!(stats.placement_boundaries_deferred, 0);
+    assert!(!retained.layout_pending(document));
+}
+
+/// What is in view is measured on the scrolled page: a page scrolled to its
+/// end places its last sections first.
+#[test]
+fn a_sliced_layout_ranks_by_what_the_scroll_shows() {
+    let (mut world, document) = sectioned_page(LayoutStyle {
+        height: Some(LengthSpec::Px(600.0)),
+        overflow_y: nana_ui_core::OverflowSpec::Auto,
+        ..page_column()
+    });
+    let mut queue = MutationQueue::new();
+    queue.set_scroll_overscroll(
+        id(2),
+        crate::ScrollOffset {
+            x: 0.0,
+            y: 300.0 * (SECTIONS - 2) as f32,
+        },
+    );
+    world.commit(queue).unwrap();
+    let mut retained = RetainedLayoutCache::default();
+    sliced_pass(&mut world, document, &mut retained, Some(0), true);
+    assert_eq!(
+        placed_sections(&retained, document),
+        vec![SECTIONS - 3, SECTIONS - 2, SECTIONS - 1]
+    );
+    finish_sliced(&mut world, document, &mut retained);
+    assert_full_layout(&world, document, &retained);
+}
+
+/// Edits while sections wait: one inside a deferred section, one that
+/// resizes every section (its deferral is redone from the new inputs and
+/// counted as cancelled), and one that removes a deferred section (dropped,
+/// counted). Each pass is checked against a full layout outside what waits,
+/// and the finished layout is the full one.
+#[test]
+fn edits_while_a_sliced_layout_waits_land_in_it() {
+    let (mut world, document) = sectioned_page(page_column());
+    let mut retained = RetainedLayoutCache::default();
+    sliced_pass(&mut world, document, &mut retained, Some(0), true);
+    let mut queue = MutationQueue::new();
+    queue.set_style(section_row(SECTIONS - 1, 2), styled(row_style(90.0)));
+    world.commit(queue).unwrap();
+    sliced_pass(&mut world, document, &mut retained, Some(0), false);
+    assert!(retained.layout_pending(document));
+
+    let mut queue = MutationQueue::new();
+    queue.set_style(
+        id(2),
+        styled(LayoutStyle {
+            width: Some(LengthSpec::Px(640.0)),
+            ..page_column()
+        }),
+    );
+    for index in 0..SECTIONS {
+        queue.set_style(
+            section(index),
+            styled(LayoutStyle {
+                width: Some(LengthSpec::Fill),
+                height: Some(LengthSpec::Px(300.0)),
+                direction: Some(FlexDirection::Column),
+                ..LayoutStyle::default()
+            }),
+        );
+    }
+    world.commit(queue).unwrap();
+    let stats = sliced_pass(&mut world, document, &mut retained, Some(0), false);
+    assert!(stats.placement_deferrals_cancelled > 0, "{stats:?}");
+
+    let mut queue = MutationQueue::new();
+    queue.despawn_subtree(section(SECTIONS - 2));
+    world.commit(queue).unwrap();
+    let stats = sliced_pass(&mut world, document, &mut retained, Some(0), false);
+    assert!(stats.placement_deferrals_cancelled > 0, "{stats:?}");
+
+    finish_sliced(&mut world, document, &mut retained);
+    assert_full_layout(&world, document, &retained);
+}
+
+/// Only what nothing retained is placed under is deferred: on a laid-out
+/// page an edit that resizes every section places them all, whatever the
+/// budget, while sections just mounted out of view are left but one.
+#[test]
+fn a_sliced_pass_defers_only_subtrees_with_nothing_placed() {
+    let (mut world, document) = sectioned_page(page_column());
+    let mut retained = RetainedLayoutCache::default();
+    sliced_pass(&mut world, document, &mut retained, None, true);
+    // Every section resized: each is placed again, in view or not.
+    let mut queue = MutationQueue::new();
+    for index in 0..SECTIONS {
+        queue.set_style(
+            section(index),
+            styled(LayoutStyle {
+                width: Some(LengthSpec::Px(640.0)),
+                height: Some(LengthSpec::Px(320.0)),
+                direction: Some(FlexDirection::Column),
+                ..LayoutStyle::default()
+            }),
+        );
+    }
+    world.commit(queue).unwrap();
+    let stats = sliced_pass(&mut world, document, &mut retained, Some(0), false);
+    assert_eq!(stats.placement_boundaries_deferred, 0);
+    assert!(
+        stats.placement_boundaries >= (SECTIONS - 2) as usize,
+        "{stats:?}"
+    );
+
+    let mut queue = MutationQueue::new();
+    for index in SECTIONS..SECTIONS + 3 {
+        add_section(&mut queue, document, index);
+    }
+    world.commit(queue).unwrap();
+    let stats = sliced_pass(&mut world, document, &mut retained, Some(0), false);
+    assert_eq!(stats.placement_boundaries_deferred, 2, "{stats:?}");
+    finish_sliced(&mut world, document, &mut retained);
+    assert_full_layout(&world, document, &retained);
+}
+
+/// Gives section `index` of [`sectioned_page`] a shape of its own: grid,
+/// reversed axis, a positioned child, a nested scroll container, text.
+fn reshape_section(queue: &mut MutationQueue, document: DocumentId, index: u64) {
+    let base = LayoutStyle {
+        width: Some(LengthSpec::Px(800.0)),
+        height: Some(LengthSpec::Px(300.0)),
+        direction: Some(FlexDirection::Column),
+        ..LayoutStyle::default()
+    };
+    let style = match index % 6 {
+        0 => base,
+        1 => {
+            let mut style = LayoutStyle {
+                display: Some(DisplaySpec::Grid),
+                ..base
+            };
+            style.grid.columns = Some(vec![GridTrack::Fr(1.0), GridTrack::Fr(2.0)]);
+            style
+        }
+        2 => LayoutStyle {
+            flex_reverse: true,
+            ..base
+        },
+        3 => LayoutStyle {
+            position: PositionSpec::Relative,
+            ..base
+        },
+        4 => LayoutStyle {
+            overflow_y: nana_ui_core::OverflowSpec::Auto,
+            ..base
+        },
+        _ => LayoutStyle {
+            height: None,
+            ..base
+        },
+    };
+    queue.set_style(section(index), styled(style));
+    let extra = id(100 + index * 10 + 9);
+    match index % 6 {
+        3 => {
+            queue.create(extra, document, NodeKind::Element { tag: "div".into() });
+            queue.insert(section(index), extra, None);
+            queue.set_style(
+                extra,
+                styled(LayoutStyle {
+                    position: PositionSpec::Absolute,
+                    offset_right: Some(LengthSpec::Px(8.0)),
+                    offset_bottom: Some(LengthSpec::Px(8.0)),
+                    ..row_style(20.0)
+                }),
+            );
+        }
+        4 => {
+            // The rows go into a nested scroll container.
+            queue.create(extra, document, NodeKind::Element { tag: "div".into() });
+            queue.insert(section(index), extra, Some(section_row(index, 0)));
+            queue.set_style(
+                extra,
+                styled(LayoutStyle {
+                    height: Some(LengthSpec::Px(120.0)),
+                    overflow_y: nana_ui_core::OverflowSpec::Scroll,
+                    direction: Some(FlexDirection::Column),
+                    ..LayoutStyle::default()
+                }),
+            );
+            for row in 0..SECTION_ROWS {
+                queue.insert(extra, section_row(index, row), None);
+            }
+        }
+        5 => {
+            queue.create(extra, document, NodeKind::Text);
+            queue.insert(section(index), extra, None);
+            queue.set_text(
+                extra,
+                TextContent {
+                    value: "a paragraph of text under the rows".into(),
+                },
+            );
+        }
+        _ => {}
+    }
+}
+
+/// A sliced first layout of a page whose sections take every shape the
+/// placement has, edited while it waits, finishes as the full layout does;
+/// every pass on the way is checked by the verify guard.
+#[test]
+fn a_sliced_layout_of_mixed_sections_finishes_as_a_full_one() {
+    let (mut world, document) = sectioned_page(page_column());
+    let mut queue = MutationQueue::new();
+    for index in 0..SECTIONS {
+        reshape_section(&mut queue, document, index);
+    }
+    world.commit(queue).unwrap();
+    let mut retained = RetainedLayoutCache::default();
+    let stats = sliced_pass(&mut world, document, &mut retained, Some(0), true);
+    assert!(stats.placement_boundaries_deferred > 0);
+    sliced_pass(&mut world, document, &mut retained, Some(0), false);
+    // A row resized in a section still waiting, and one in a placed one.
+    let mut queue = MutationQueue::new();
+    queue.set_style(section_row(SECTIONS - 2, 1), styled(row_style(70.0)));
+    queue.set_style(section_row(1, 1), styled(row_style(70.0)));
+    world.commit(queue).unwrap();
+    sliced_pass(&mut world, document, &mut retained, Some(4), false);
+    finish_sliced(&mut world, document, &mut retained);
+    assert_full_layout(&world, document, &retained);
+}

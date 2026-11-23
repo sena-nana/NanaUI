@@ -70,6 +70,7 @@ impl AppContext {
 
     /// Open a product-frame profiler and work-counter accumulator.
     pub fn begin_frame_profile(&mut self) {
+        self.frame_layout_spent = (0, None);
         self.frame_profiler = FrameProfiler::new();
         self.frame_profiler.mark_runtime_unsupported();
         self.profiling = true;
@@ -262,6 +263,48 @@ impl AppContext {
         self.layout_cache.frontier_stats(document)
     }
 
+    /// Let a frame's layout place up to `budget` and leave what is out of
+    /// view to later frames, or (`None`, the default) place everything.
+    ///
+    /// Measurement is never sliced: every box keeps the size its content
+    /// gives it. The boundaries in view are always placed, then the others
+    /// nearest the viewport first until the budget is spent, at least one a
+    /// pass. Only a subtree with nothing placed under it yet is left (a
+    /// first layout, a subtree just mounted): it has no boxes until a later
+    /// frame places all of it. While [`Self::layout_pending`] holds, a host
+    /// keeps running frames; each one's layout continues where the last
+    /// stopped. The budget counts per frame (from
+    /// [`Self::begin_frame_profile`]); outside one, per layout call.
+    pub fn set_layout_slice_budget(&mut self, budget: Option<crate::LayoutSliceBudget>) {
+        self.layout_slice_budget = budget;
+    }
+
+    pub fn layout_slice_budget(&self) -> Option<crate::LayoutSliceBudget> {
+        self.layout_slice_budget
+    }
+
+    /// Whether a sliced layout of `document` left subtrees to place: the
+    /// next layout pass places them, with or without new edits.
+    pub fn layout_pending(&self, document: DocumentId) -> bool {
+        self.layout_cache.layout_pending(document)
+    }
+
+    /// What is left of the frame's slice budget for the next pass.
+    fn layout_slice_limit(&mut self) -> Option<crate::layout_engine::SliceLimit> {
+        let budget = self.layout_slice_budget?;
+        if !self.profiling {
+            self.frame_layout_spent = (0, None);
+        }
+        let placed = self.frame_layout_spent.0;
+        let started = *self.frame_layout_spent.1.get_or_insert_with(Instant::now);
+        Some(crate::layout_engine::SliceLimit {
+            placement_nodes: budget
+                .placement_nodes
+                .map(|nodes| nodes.saturating_sub(placed)),
+            deadline: budget.time.map(|time| started + time),
+        })
+    }
+
     /// Work the most recent layout pass for `document` ran.
     #[cfg(test)]
     pub(crate) fn layout_execution_stats(
@@ -428,6 +471,8 @@ impl AppContext {
         let result = (|| {
             self.position_open_tooltips(document)?;
             completed(0);
+            let slice = self.layout_slice_limit();
+            self.layout_cache.set_slice_limit(slice);
             let layouts = crate::RuntimeLayoutEngine.layout_document_with_frontier_local(
                 &self.world,
                 document,
@@ -441,6 +486,10 @@ impl AppContext {
                 .record_intrinsic_measure_counters(intrinsic_counters);
             let frontier = self.layout_cache.frontier_stats(document);
             let execution = self.layout_cache.execution_stats(document);
+            self.frame_layout_spent.0 = self
+                .frame_layout_spent
+                .0
+                .saturating_add(execution.placement_nodes);
             self.world.record_layout_frontier(frontier);
             self.world.record_layout_execution(execution);
             if execution.dynamic.contexts_considered > 0 {

@@ -1322,6 +1322,10 @@ fn place_level(
             // A leaf has no subtree to wait: placing it here descends no
             // further.
             let leaf = head.facts.children.is_empty() && head.facts.modal.is_none();
+            // A boundary an earlier pass deferred, reached again: placed
+            // from this pass's inputs, and through the queue, which may defer
+            // it again.
+            let resumed = intrinsic.slice.reach(id, size, containing, parent_font_px);
             // Under the span, a scroll container or an isolated box is cut
             // too: a unit of the pass's queue whatever its depth.
             let natural = !leaf
@@ -1331,16 +1335,31 @@ fn place_level(
             if natural {
                 intrinsic.execution_stats.placement_natural_boundaries += 1;
             }
-            if (depth >= super::recursion::SPAN || natural) && !leaf {
+            // A sliced pass also cuts a box wholly out of view, so what is out
+            // of view can wait however shallow it lies.
+            let out_of_view = if !leaf && depth > 0 && intrinsic.slice.active() {
+                distance_out_of_view(id, size, nodes, intrinsic, output, scope)
+            } else {
+                None
+            };
+            if (depth >= super::recursion::SPAN || natural || resumed || out_of_view.is_some())
+                && !leaf
+            {
                 queue_boundary(
-                    intrinsic,
                     super::recursion::Boundary {
                         id,
                         size,
                         containing,
                         parent_font_px,
                         inherited,
+                        distance: out_of_view.unwrap_or(0.0),
+                        resumed,
                     },
+                    out_of_view.is_some(),
+                    nodes,
+                    intrinsic,
+                    output,
+                    scope,
                 );
                 return Ok(());
             }
@@ -1467,15 +1486,183 @@ fn keeps_moved_subtree(
 }
 
 /// Queues a subtree for the outermost call: taken once per span, so out of
-/// the level's frame.
+/// the level's frame. A sliced pass ranks it by how far it lies from view.
 #[cold]
 #[inline(never)]
-fn queue_boundary(intrinsic: &mut PassIntrinsicCache, boundary: super::recursion::Boundary) {
-    intrinsic.boundaries.push_back(boundary);
+fn queue_boundary(
+    mut boundary: super::recursion::Boundary,
+    ranked_already: bool,
+    nodes: &LayoutInputMap<'_>,
+    intrinsic: &mut PassIntrinsicCache,
+    output: &PassOutput,
+    scope: Option<&ScopeContext<'_>>,
+) {
+    let ranked = intrinsic.slice.active();
+    if ranked && !ranked_already {
+        boundary.distance = distance_from_view(
+            boundary.id,
+            boundary.size,
+            intrinsic.slice.viewport,
+            nodes,
+            output,
+            scope,
+        );
+    }
+    intrinsic.boundaries.push(boundary, ranked);
 }
 
-/// Places every subtree the pass queued, in the order they were queued; one
-/// placed here can queue more.
+/// In a sliced pass, how far `id`'s box lies out of view, when it does.
+#[inline(never)]
+fn distance_out_of_view(
+    id: StableNodeId,
+    size: Size,
+    nodes: &LayoutInputMap<'_>,
+    intrinsic: &PassIntrinsicCache,
+    output: &PassOutput,
+    scope: Option<&ScopeContext<'_>>,
+) -> Option<f32> {
+    let distance = distance_from_view(id, size, intrinsic.slice.viewport, nodes, output, scope);
+    (distance > 0.0).then_some(distance)
+}
+
+/// How far `id`'s box, of `size`, lies outside the viewport, in px: on the
+/// page, less what the scroll containers above it scrolled. `0` in view.
+fn distance_from_view(
+    id: StableNodeId,
+    size: Size,
+    viewport: Size,
+    nodes: &LayoutInputMap<'_>,
+    output: &PassOutput,
+    scope: Option<&ScopeContext<'_>>,
+) -> f32 {
+    let page = origin_in(None, id, nodes, output, scope);
+    let (mut x, mut y) = (page.x, page.y);
+    let world = nodes.world;
+    let mut ancestor = world.parent_id(id);
+    while let Some(node) = ancestor {
+        if let Some(offset) = world.scroll_offset(node) {
+            x -= offset.x;
+            y -= offset.y;
+        }
+        ancestor = world.parent_id(node);
+    }
+    // How far one axis's span lies past the view's, in px; negative while
+    // they overlap. A span that only touches the view's edge is outside.
+    let past = |start: f32, extent: f32, view: f32| (start - view).max(-(start + extent));
+    let past = past(x, size.width, viewport.width).max(past(y, size.height, viewport.height));
+    if past < 0.0 { 0.0 } else { past + 1.0 }
+}
+
+/// Whether no box under `id` is retained: a subtree a pass may leave whole
+/// for a later one, since no later pass can find a stale plan or box in it.
+fn holds_no_retained_placement(
+    id: StableNodeId,
+    nodes: &LayoutInputMap<'_>,
+    scope: Option<&ScopeContext<'_>>,
+) -> bool {
+    let Some(scope) = scope else {
+        // A full pass: nothing is retained.
+        return true;
+    };
+    let world = nodes.world;
+    let mut stack: Vec<StableNodeId> = world.child_ids(id).to_vec();
+    while let Some(node) = stack.pop() {
+        if scope.retained.boxes.contains_key(&node) {
+            return false;
+        }
+        stack.extend_from_slice(world.child_ids(node));
+    }
+    true
+}
+
+/// Whether a sliced pass leaves `boundary` for a later one: out of view,
+/// with the budget spent, after at least one out-of-view boundary this pass
+/// (so a sliced layout always finishes), and with nothing retained under it.
+fn defers(
+    boundary: &super::recursion::Boundary,
+    nodes: &LayoutInputMap<'_>,
+    intrinsic: &PassIntrinsicCache,
+    scope: Option<&ScopeContext<'_>>,
+) -> bool {
+    let slice = &intrinsic.slice;
+    slice.active()
+        && boundary.distance > 0.0
+        && slice.placed_offscreen > 0
+        && slice.spent(intrinsic.execution_stats.placement_nodes)
+        && (boundary.resumed || holds_no_retained_placement(boundary.id, nodes, scope))
+}
+
+/// Places every boundary earlier passes deferred that this pass did not
+/// reach, from the inputs recorded for it: nothing above it moved it, so they
+/// still hold. One under another still waiting is reached when that one is
+/// placed, and waits with it otherwise. One whose root left the document or
+/// generates no box is dropped.
+pub(super) fn resume_deferred(
+    document: DocumentId,
+    viewport: LayoutViewport,
+    nodes: &mut LayoutInputMap<'_>,
+    intrinsic: &mut PassIntrinsicCache,
+    output: &mut PassOutput,
+    scope: Option<&ScopeContext<'_>>,
+) -> Result<(), UiWorldError> {
+    if intrinsic.slice.pending.is_empty() {
+        return Ok(());
+    }
+    let world = nodes.world;
+    let mut roots: Vec<StableNodeId> = intrinsic.slice.pending.keys().copied().collect();
+    roots.sort_unstable();
+    let deferred: HashSet<StableNodeId> =
+        intrinsic.slice.deferred.iter().map(|(id, _)| *id).collect();
+    for id in roots {
+        let mut gone = !world.contains(id) || world.document_of(id) != Some(document);
+        let mut waits = false;
+        let mut cursor = (!gone).then_some(id);
+        while let Some(node) = cursor {
+            if nodes.style_ref(node).is_some_and(|style| style.omits_box()) {
+                gone = true;
+                break;
+            }
+            if node != id
+                && (intrinsic.slice.pending.contains_key(&node) || deferred.contains(&node))
+            {
+                waits = true;
+            }
+            cursor = world.parent_id(node);
+        }
+        if gone {
+            intrinsic.slice.pending.remove(&id);
+            intrinsic.slice.cancelled += 1;
+            continue;
+        }
+        if waits {
+            continue;
+        }
+        let Some(record) = intrinsic.slice.pending.remove(&id) else {
+            continue;
+        };
+        queue_boundary(
+            super::recursion::Boundary {
+                id,
+                size: record.size,
+                containing: record.containing,
+                parent_font_px: record.parent_font_px,
+                inherited: record.inherited,
+                distance: 0.0,
+                resumed: true,
+            },
+            false,
+            nodes,
+            intrinsic,
+            output,
+            scope,
+        );
+    }
+    place_boundaries(viewport, nodes, intrinsic, output, scope)
+}
+
+/// Places every subtree the pass queued, in the order they were queued (a
+/// sliced pass: nearest the viewport first, deferring what its budget leaves
+/// out); one placed here can queue more.
 fn place_boundaries(
     viewport: LayoutViewport,
     nodes: &mut LayoutInputMap<'_>,
@@ -1483,7 +1670,15 @@ fn place_boundaries(
     output: &mut PassOutput,
     scope: Option<&ScopeContext<'_>>,
 ) -> Result<(), UiWorldError> {
-    while let Some(boundary) = intrinsic.boundaries.pop_front() {
+    while let Some(boundary) = intrinsic.boundaries.pop() {
+        if defers(&boundary, nodes, intrinsic, scope) {
+            let deferred = super::recursion::DeferredBoundary::of(boundary);
+            intrinsic.slice.deferred.push(deferred);
+            continue;
+        }
+        if boundary.distance > 0.0 {
+            intrinsic.slice.placed_offscreen += 1;
+        }
         intrinsic.execution_stats.placement_boundaries += 1;
         super::recursion::level(
             intrinsic,

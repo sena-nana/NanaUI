@@ -337,7 +337,7 @@ pub use key_layers::{
 #[doc(hidden)]
 pub use layout_engine::parts::{CONTENT_PART_SLOTS, ContentParts, LeadingParts, NO_CONTENT_PARTS};
 pub use layout_engine::{
-    LayoutViewport, RetainedLayoutCache, RuntimeLayoutEngine, StyleLayoutNode,
+    LayoutSliceBudget, LayoutViewport, RetainedLayoutCache, RuntimeLayoutEngine, StyleLayoutNode,
 };
 pub use layout_frontier::{
     LayoutDependencyGraph, LayoutFrontier, LayoutFrontierSeed, LayoutFrontierStats,

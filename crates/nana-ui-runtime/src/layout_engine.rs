@@ -243,6 +243,8 @@ impl RuntimeLayoutEngine {
         force_full: bool,
     ) -> Result<Vec<(StableNodeId, LayoutBox)>, UiWorldError> {
         let roots = world.document_roots(document);
+        // The budget is this pass's alone, whichever document it lays out.
+        let slice_limit = retained.slice.take();
         if roots.is_empty() {
             retained.remove_document(document);
             return Ok(Vec::new());
@@ -313,6 +315,7 @@ impl RuntimeLayoutEngine {
                 retained.remote_overlays.clear();
                 retained.measure_plans.clear();
                 retained.line_boxes.clear();
+                retained.deferred.clear();
                 retained.materialized_inputs = emitted.len();
                 return Ok(emitted);
             }
@@ -445,6 +448,12 @@ impl RuntimeLayoutEngine {
         // first layout of a document is the base of the scoped passes after
         // it, and records them as a scoped pass would.
         intrinsic.records_measure_plans = !requested_full;
+        intrinsic.slice.limit = slice_limit;
+        intrinsic.slice.viewport = Size::new(viewport.width, viewport.height);
+        // What earlier passes deferred: placed where this pass reaches it,
+        // or after the roots from what was recorded. A full pass cleared it
+        // with the rest, and places everything anew.
+        intrinsic.slice.pending = std::mem::take(&mut retained.deferred);
         let available = Size::new(viewport.width, viewport.height);
         let islands = if force_full {
             Vec::new()
@@ -590,6 +599,14 @@ impl RuntimeLayoutEngine {
             #[cfg(feature = "benchmark")]
             phase.lap(2);
         }
+        placement::resume_deferred(
+            document,
+            viewport,
+            &mut nodes,
+            &mut intrinsic,
+            &mut output,
+            scope_ref,
+        )?;
         if let Some(scope) = scope_ref {
             place_remote_overlays(viewport, &mut nodes, &mut intrinsic, &mut output, scope)?;
         }
@@ -726,6 +743,14 @@ impl RuntimeLayoutEngine {
             }
         }
         intrinsic.execution_stats.dynamic = intrinsic.dynamic.counters;
+        // Pending for the next pass: what this pass deferred, and what
+        // earlier passes deferred that it did not reach.
+        let slice = std::mem::take(&mut intrinsic.slice);
+        intrinsic.execution_stats.placement_slices = usize::from(!slice.deferred.is_empty());
+        intrinsic.execution_stats.placement_deferrals_cancelled = slice.cancelled;
+        retained.deferred = slice.pending;
+        retained.deferred.extend(slice.deferred);
+        intrinsic.execution_stats.placement_boundaries_deferred = retained.deferred.len();
         intrinsic.execution_stats.measure_stack_per_level = 0;
         intrinsic.execution_stats.placement_stack_per_level = intrinsic.placement_levels.per_level;
         let intrinsic_counters = intrinsic.counters();
@@ -840,7 +865,8 @@ impl RuntimeLayoutEngine {
         }
         #[cfg(feature = "benchmark")]
         phase.lap(3);
-        if requested_full && world.layout_source_reusable() {
+        // A sliced layout is not the full page.
+        if requested_full && world.layout_source_reusable() && retained.deferred.is_empty() {
             let snapshot = FullLayoutSnapshot {
                 viewport_width: viewport.width.to_bits(),
                 viewport_height: viewport.height.to_bits(),
@@ -1032,9 +1058,28 @@ fn page_boxes(
 #[derive(Default)]
 pub struct RetainedLayoutCache {
     documents: HashMap<DocumentId, DocumentLayoutCache>,
+    /// What is left of the frame's slice budget for the next pass; taken by
+    /// that pass. See `recursion::LayoutSliceBudget`.
+    slice: Option<recursion::SliceLimit>,
 }
 
+pub use recursion::LayoutSliceBudget;
+pub(crate) use recursion::SliceLimit;
+
 impl RetainedLayoutCache {
+    /// What is left of the frame's slice budget, for the next pass only.
+    pub(crate) fn set_slice_limit(&mut self, limit: Option<recursion::SliceLimit>) {
+        self.slice = limit;
+    }
+
+    /// Whether a sliced pass left boundaries of `document` unplaced, which
+    /// the next pass places.
+    pub(crate) fn layout_pending(&self, document: DocumentId) -> bool {
+        self.documents
+            .get(&document)
+            .is_some_and(|cache| !cache.deferred.is_empty())
+    }
+
     /// Cumulative intrinsic measurement work observed by scoped layout.  The
     /// snapshot is cumulative across documents and remains available to the
     /// frame driver until the next read/reset.
@@ -1313,6 +1358,10 @@ struct DocumentLayoutCache {
     /// The viewport the cache was last laid out against. A pass against
     /// another one plants the resize's seeds itself.
     viewport: Option<LayoutViewport>,
+    /// Boundaries a sliced pass left unplaced, by root: nothing retained is
+    /// placed under them, and the next pass places them (see
+    /// `recursion::LayoutSliceBudget`).
+    deferred: crate::NodeMap<recursion::DeferredBoundary>,
 }
 
 /// Entries one document's retained layout cache holds. The memory gate of
@@ -1890,6 +1939,7 @@ impl DocumentLayoutCache {
         self.last_frontier = LayoutFrontier::default();
         self.execution_stats = LayoutExecutionStats::default();
         self.materialized_inputs = 0;
+        self.deferred.clear();
     }
 }
 
@@ -4482,6 +4532,16 @@ pub(crate) struct LayoutExecutionStats {
     /// Of those, the ones cut above the span because their root is a scroll
     /// container or isolates its layout (`placement::natural_boundary`).
     pub placement_natural_boundaries: usize,
+    /// Boundaries out of view that a sliced pass left for later passes,
+    /// including those earlier passes left that it did not reach: what is
+    /// pending once it commits.
+    pub placement_boundaries_deferred: usize,
+    /// 1 when this pass stopped at its budget and deferred a boundary.
+    pub placement_slices: usize,
+    /// Deferred boundaries dropped before they were finished: the root left
+    /// the document or stopped generating a box, or a pass placed its box
+    /// with other inputs and the work was redone from them.
+    pub placement_deferrals_cancelled: usize,
     /// Boxes a line-box question settled by walking rather than from the
     /// retained memo ([`UiWorld::holds_line_box_in`]): what a seed that drops
     /// the memo up its ancestors costs the next pass.
@@ -4532,7 +4592,9 @@ struct PassIntrinsicCache {
     placement_levels: recursion::LevelStack,
     /// Subtrees placement queued at its span, placed before the outermost
     /// placement call returns. See `recursion`.
-    boundaries: std::collections::VecDeque<recursion::Boundary>,
+    boundaries: recursion::BoundaryQueue,
+    /// The pass's budget and deferrals. See `recursion::LayoutSliceBudget`.
+    slice: recursion::PassSlice,
 }
 
 impl PassIntrinsicCache {
@@ -4553,7 +4615,8 @@ impl PassIntrinsicCache {
             records_measure_plans: false,
             dynamic: dynamic::DynamicPass::default(),
             placement_levels: recursion::LevelStack::default(),
-            boundaries: std::collections::VecDeque::new(),
+            boundaries: recursion::BoundaryQueue::default(),
+            slice: recursion::PassSlice::default(),
         }
     }
 
