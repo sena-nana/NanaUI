@@ -667,6 +667,7 @@ routed_calls! {
     expire_toast: fn(&mut AppContext, StableNodeId, Duration),
     advance_workspace_animation: fn(&mut AppContext, StableNodeId, Duration) -> bool,
     drive_due_auto_overlays: fn(&mut AppContext) -> Vec<StableNodeId>,
+    sync_media_bound_bars: fn(&mut AppContext) -> Vec<StableNodeId>,
     drive_auto_overlay: fn(&mut AppContext, Entity<MediaTransportBar>, Option<bool>) -> Result<bool, FrameworkError>,
     release_scrollbar_holds: fn(&mut AppContext, Duration) -> Vec<StableNodeId>,
     hold_scrollbars: fn(&mut AppContext, StableNodeId) -> Result<(), FrameworkError>,

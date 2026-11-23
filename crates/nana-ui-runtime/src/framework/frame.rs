@@ -1013,6 +1013,13 @@ impl AppContext {
                 frame.component_updates.push(bar);
             }
         }
+        // A bar bound to a time-sampled resource reads the resource time the
+        // document's `now` maps to (Issue #303).
+        for bar in via!(self.sync_media_bound_bars()) {
+            if !frame.component_updates.contains(&bar) {
+                frame.component_updates.push(bar);
+            }
+        }
         for scroll in via!(self.release_scrollbar_holds(now)) {
             if !frame.component_updates.contains(&scroll) {
                 frame.component_updates.push(scroll);

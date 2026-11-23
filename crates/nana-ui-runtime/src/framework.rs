@@ -651,6 +651,10 @@ struct ComponentLifecycle {
     pane_tree_slots: HashMap<StableNodeId, HashMap<Arc<str>, StableNodeId>, crate::BuildIdHasher>,
     /// Media transport bars whose idle hide the runtime drives.
     auto_overlays: std::collections::BTreeMap<StableNodeId, auto_overlay::AutoOverlay>,
+    /// Media transport bars bound to a time-sampled resource node
+    /// ([`crate::MediaTransportBar::source`]), with the resource time each
+    /// last showed: a frame that moves it refreshes the bar.
+    pub(crate) media_bound_bars: std::collections::BTreeMap<StableNodeId, Option<f64>>,
     /// When each scroll view's hold on its auto-hiding bars runs out.
     scrollbar_holds: HashMap<StableNodeId, Duration, crate::BuildIdHasher>,
     /// When each menu bar's submenu aim runs out.

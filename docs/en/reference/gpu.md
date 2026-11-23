@@ -682,6 +682,15 @@ let mut binding = FrameBinding::new(
 - **GPU-side copy or zero-copy write and lock-free exchange**: `copy_from` performs one `copy_texture_to_texture` inside the texture pool (the source texture must have `COPY_SRC`, be single-sampled 2D, and be a non-depth format). Producers that render directly into the pool texture can instead reserve a `WriteSlot` (`RENDER_TARGET | SAMPLED | COPY_SRC | COPY_DST`) via `try_begin_write(width, height, format)`, submit rendering on the shared queue, and call `commit_write` / `commit_write_with_payload` for zero-copy publication (dropping an uncommitted `WriteSlot` returns the slot immediately, and matching-size/format acquires reuse the slot's texture object). For a single consuming window, allocate `3` slots (write/copy in flight, currently displayed, replaced and awaiting present); add `2` slots for each additional window sharing the consumer.
 - **Lease order and epoch filtering**: after `prepare` swaps in a new frame, the old frame is kept until `presented` and only then returned; the producer reuses that slot only after the UI submission that sampled it completes. An application can advance the scene generation with `set_epoch` (immediately hiding frames of the old generation in the inbox; while no frame of the new generation has been published and `accept` still allows old frames, `FrameBinding` keeps the displayed content instead of flashing back to transparent blank).
 
+### Sampling frames at resource time (Issue #303)
+
+Nodes sampled at presentation time (see the [Runtime contract](runtime-scene.md#resources-sampled-at-presentation-time-issue-303)) still get their textures from the host through `FrameExchange` in `prepare_window_frame`. The resource time is recorded on the existing frame payload: the payload type implements `MediaTimestamp` (the framework provides `MediaFrame<T> { media_time, data }`, and `f64` works directly). On the window side, `FrameBinding::prepare_media(inbox, accept, &request)` replaces `prepare`:
+
+- A frame binds only when its payload time is within half the document's frame interval of `request.media_time` (`MediaSampleRequest::tolerance()`). While playing that interval is the display interval; while stepping it is the step the caller gave. There is no separate video fps and no per-node frame duration.
+- `MediaSampleOutcome::Aligned` means the picture is the requested time. In real-time playback (`MediaPacing::Realtime`) with no aligned frame the outcome is `Repeated`: the last aligned texture keeps showing, and a late or early frame is never drawn as another time. When stepped (`Stepped`) the outcome is `Unaligned`: the caller waits for the producer and prepares again, or fails explicitly, and must not present this frame as that time. An unaligned frame waiting in the inbox does not make `presented` ask for redraws over and over.
+- The color contract is unchanged: the binding still accepts only premultiplied full-range sRGB or 80-nit linear scRGB frames, and a PQ or HLG frame is never bound as sRGB even when its time aligns.
+- `FrameBinding::set_poster(Some(texture))` shows a poster while the slot has never had a frame; once a frame was bound, a mapping held on an end or at `rate` 0 keeps that frame and never goes back to the poster.
+
 ## GpuView: same-pass direct drawing without an intermediate texture
 
 When content has no intermediate texture and must be encoded directly into the current UI render pass, use `GpuView::new(slot_id)` (it projects a `CustomRenderNode` with renderer key `"gpu-view"`; see the `gpu-view-demo` example):
@@ -696,7 +705,7 @@ When content has no intermediate texture and must be encoded directly into the c
 | --- | --- | --- |
 | `GpuTextureView` | `"nana.host-texture"` + the slot name registered by the host | Standard host texture node |
 | `GpuView` | `"gpu-view"` + decimal `slot_id` | The host must register a matching `SceneGpuRenderer` |
-| `Video` | `"nana.host-texture"` + `video:{id}` | The host pushes frames (with a slot, `poster` is not drawn; without a slot only the static `poster` image is shown, and no audio/video is decoded) |
+| `Video` | `"nana.host-texture"` + `video:{id}` | The host pushes frames (with a slot the node draws no `poster` image, and `FrameBinding::set_poster` shows a poster while the slot has never had a frame; without a slot only the static `poster` image is shown, and no audio/video is decoded); a `media_time` mapping samples frames at presentation time |
 | `BrowserView` | Runtime layout anchor + host native child view | macOS `WKWebView` only (Windows/Linux return `Unsupported`); see the next section |
 
 ### Preparing content at the actual painted pixel size

@@ -97,9 +97,102 @@ impl UiWorld {
     /// [`Self::next_animation_deadline`] mapped back through the document's
     /// clock. A paused document wakes only to deliver what is already due.
     pub fn next_presentation_wakeup(&self) -> Option<Duration> {
-        let deadline = self.next_animation_deadline()?;
+        let deadline = self
+            .next_animation_deadline()
+            .into_iter()
+            .chain(self.next_media_motion())
+            .min()?;
         self.presentation_clock
             .host_deadline(deadline, self.animation_now)
+    }
+
+    /// The presentation-time mapping of a time-sampled host-texture node
+    /// (Issue #303).
+    pub fn media_time_mapping(&self, id: StableNodeId) -> Option<&crate::MediaTimeMapping> {
+        if self.media_time_mappings.is_empty() {
+            return None;
+        }
+        self.media_time_mappings.get(&id)
+    }
+
+    /// The resource time, in seconds, a time-sampled node shows at the
+    /// document's current presentation time.
+    pub fn media_time(&self, id: StableNodeId) -> Option<f64> {
+        self.media_time_mapping(id)
+            .map(|mapping| mapping.media_time(self.animation_now))
+    }
+
+    /// Every visible time-sampled host-texture node with the slot it samples
+    /// and the resource time this frame shows, in node order. Read it before
+    /// the frame is flushed (`prepare_window_frame`). Empty, and free, in a
+    /// tree without such nodes. `document` limits it to one document.
+    pub fn media_sample_requests(
+        &self,
+        document: Option<DocumentId>,
+    ) -> Vec<crate::MediaSampleRequest> {
+        if self.media_time_mappings.is_empty() {
+            return Vec::new();
+        }
+        let frame_interval = self.presentation_frame_interval();
+        let pacing = if self.presentation_advancing() {
+            crate::MediaPacing::Realtime
+        } else {
+            crate::MediaPacing::Stepped
+        };
+        let mut requests = self
+            .media_time_mappings
+            .iter()
+            .filter(|(id, _)| {
+                document.is_none_or(|document| self.document_of(**id) == Some(document))
+            })
+            .filter_map(|(&node, mapping)| {
+                let slot = self.media_sampled_slot(node)?;
+                Some(crate::MediaSampleRequest {
+                    node,
+                    slot: crate::TextureSlotName::new(slot),
+                    media_time: mapping.media_time(self.animation_now),
+                    frame_interval,
+                    pacing,
+                })
+            })
+            .collect::<Vec<_>>();
+        requests.sort_unstable_by_key(|request| request.node);
+        requests
+    }
+
+    /// The earliest document time a visible time-sampled node's resource time
+    /// moves at; `None` while every one holds. While the document is paused
+    /// nothing moves, so nothing wakes the host.
+    pub(crate) fn next_media_motion(&self) -> Option<Duration> {
+        if self.media_time_mappings.is_empty() || !self.presentation_advancing() {
+            return None;
+        }
+        self.media_time_mappings
+            .iter()
+            .filter_map(|(&node, mapping)| {
+                let next = mapping.next_motion(self.animation_now)?;
+                self.media_sampled_slot(node)?;
+                Some(next)
+            })
+            .min()
+    }
+
+    /// The host-texture slot `id` samples while it is part of a live,
+    /// visible document; `None` for a detached, parked, hidden or slotless
+    /// node.
+    fn media_sampled_slot(&self, id: StableNodeId) -> Option<Arc<str>> {
+        let custom = self.custom_render(id)?;
+        if custom.renderer.as_ref() != crate::HOST_TEXTURE_RENDERER || !self.is_mounted(id) {
+            return None;
+        }
+        let mut root = id;
+        while let Some(parent) = self.parent_id(root) {
+            root = parent;
+        }
+        if !self.is_document_node(root) || !self.is_overlay_reachable(id) {
+            return None;
+        }
+        Some(Arc::clone(&custom.resource))
     }
 
     /// Bring the document to host time `now`.

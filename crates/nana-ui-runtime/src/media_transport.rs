@@ -205,8 +205,20 @@ pub struct MediaTransportBar {
     /// loading or have no known duration). When false the range stays in
     /// place, disabled; live media shows its meter regardless.
     pub seekable: bool,
+    /// The playback position in seconds. Ignored while [`Self::source`] is
+    /// set: the bar then shows the source's resource time.
     pub position: f64,
+    /// The media's duration in seconds, always the application's.
     pub duration: f64,
+    /// A time-sampled resource node ([`crate::Video`] or
+    /// [`crate::GpuTextureView`] with a [`crate::MediaTimeMapping`]) the bar
+    /// reads its position from (Issue #303). The progress and the picture are
+    /// then the same moment, and the bar keeps no playhead of its own: a drag
+    /// previews only the readout, and the committed
+    /// [`MediaTransportEvent::Seek`] is the application's to write into the
+    /// mapping (see [`crate::MediaTimeMapping::seeked`]) or the document's
+    /// presentation time.
+    pub source: Option<StableNodeId>,
     /// Marks copied onto the seek range. The volume range never receives them.
     pub markers: Arc<[RangeMarker]>,
     pub volume: f64,
@@ -289,6 +301,7 @@ impl MediaTransportBar {
             seekable: true,
             position: 0.0,
             duration: 0.0,
+            source: None,
             markers: Arc::from([]),
             volume: 100.0,
             max_width: BAR_MAX_WIDTH,
@@ -319,6 +332,13 @@ impl MediaTransportBar {
 
     pub fn live(mut self, live: bool) -> Self {
         self.live = live;
+        self
+    }
+
+    /// Read the position from a time-sampled resource node; see
+    /// [`Self::source`].
+    pub fn source(mut self, node: Option<StableNodeId>) -> Self {
+        self.source = node;
         self
     }
 
@@ -992,9 +1012,14 @@ impl AppContext {
             // hears of it and reassemble, so the ranges hold the new value
             // instead of snapping back to the stale host value until the host
             // catches up. The host's next write stays authoritative.
+            // A bar bound to a resource keeps no position of its own: the
+            // range holds the committed value, and the resource time the
+            // application commits the seek to is what the bar shows next.
             self.observe(seek, bar, |bar, event: &RangeChanged, cx| {
-                bar.position = event.value;
-                cx.reassemble();
+                if bar.source.is_none() {
+                    bar.position = event.value;
+                    cx.reassemble();
+                }
                 cx.emit(MediaTransportEvent::Seek(event.value));
             })?;
             // The readout follows a drag even while a paused host sends no
@@ -1092,6 +1117,10 @@ impl AppContext {
     ) -> Result<(), FrameworkError> {
         let snapshot = self.read(bar, Clone::clone)?;
         self.sync_auto_overlay(bar, &snapshot)?;
+        let source_time = snapshot
+            .source
+            .and_then(|source| self.world().media_time(source));
+        self.note_media_bound_bar(bar, snapshot.source.map(|_| source_time));
         let labels = snapshot.labels(self.world().framework_strings());
         let slots = &snapshot.slots;
         let chrome = snapshot.chrome_layout();
@@ -1107,7 +1136,7 @@ impl AppContext {
             };
             sync_icon_button(self, play, icon, label, Some(snapshot.disabled))?;
         }
-        let (position, duration) = media_time(&snapshot);
+        let (position, duration) = media_time(&snapshot, source_time);
         let seek = slots.seek.map(Entity::<RangeField>::from_stable_id);
         // A drag previews its value until release commits it through Seek;
         // the readout follows the preview instead of the host position.
@@ -1602,8 +1631,10 @@ fn chrome_icon(icon: Icon, label: &str) -> IconButton {
 }
 
 /// `(position, duration)` shared by the readout and the seek range. Non-finite
-/// or negative seconds become zero; a position past the end clamps to it.
-fn media_time(bar: &MediaTransportBar) -> (f64, f64) {
+/// or negative seconds become zero; a position past the end clamps to it. A
+/// bound bar's position is its source's resource time; a source without a
+/// mapping reads as the start.
+fn media_time(bar: &MediaTransportBar, source_time: Option<f64>) -> (f64, f64) {
     let seconds = |value: f64| {
         if value.is_finite() {
             value.max(0.0)
@@ -1612,7 +1643,11 @@ fn media_time(bar: &MediaTransportBar) -> (f64, f64) {
         }
     };
     let duration = seconds(bar.duration);
-    (seconds(bar.position).min(duration), duration)
+    let position = match bar.source {
+        Some(_) => source_time.unwrap_or(0.0),
+        None => bar.position,
+    };
+    (seconds(position).min(duration), duration)
 }
 
 fn time_readout(position: f64, duration: f64) -> String {
@@ -2653,6 +2688,112 @@ mod tests {
             ],
             "a cancelled drag never seeks, and still ends"
         );
+    }
+
+    #[test]
+    fn a_bar_bound_to_a_resource_shows_its_media_time_and_keeps_no_playhead() {
+        use crate::{MediaTimeMapping, Video};
+        use std::time::Duration;
+
+        let mut stage = Stage::new(
+            document(),
+            MediaTransportBar::new().density(MediaTransportDensity::Compact),
+        );
+        let mapping = MediaTimeMapping::new(Duration::ZERO, 10.0);
+        let video = stage
+            .cx
+            .create_detached_component(document(), Video::new("video:9").media_time(Some(mapping)))
+            .unwrap();
+        stage.cx.append_child(stage.sibling, video).unwrap();
+        let (bar, slots) = (stage.bar, stage.slots());
+        stage
+            .cx
+            .update_component(bar, |bar, _| {
+                bar.source = Some(video.stable_id());
+                bar.duration = 100.0;
+            })
+            .unwrap();
+        stage.cx.sync_media_transport_bar(bar).unwrap();
+        stage.layout(document());
+        assert_eq!(readout(&stage.cx, &slots), "0:10 / 1:40");
+
+        // The document's time moves the bar; nobody writes its position.
+        stage.cx.advance_animations(Duration::from_secs(5));
+        assert_eq!(readout(&stage.cx, &slots), "0:15 / 1:40");
+        assert_eq!(seek_value(&stage.cx, &slots), 15.0);
+        assert_eq!(stage.cx.read(bar, |bar| bar.position).unwrap(), 0.0);
+
+        let seen = StdArc::new(Mutex::new(Vec::new()));
+        let out = StdArc::clone(&seen);
+        stage
+            .cx
+            .on(bar, move |_, event: &MediaTransportEvent, _| {
+                out.lock().unwrap().push(*event);
+            })
+            .unwrap();
+        let seek = slots.seek.unwrap();
+        stage.layout(document());
+        let track = stage
+            .cx
+            .world()
+            .range_geometry(seek)
+            .expect("seek range geometry")
+            .track;
+        let at = |fraction: f32| track.x + track.width * fraction;
+        stage
+            .cx
+            .begin_range_drag(document(), 1, seek, at(0.3))
+            .unwrap();
+        stage.cx.update_range_drag(document(), 1, at(0.6)).unwrap();
+        assert_eq!(readout(&stage.cx, &slots), "1:00 / 1:40");
+        let world_now = stage.cx.world().animation_now();
+        // A frame and a host write during the drag: the preview stays on the
+        // bar's readout, the clock and the mapping stay where they were, and
+        // the preview never becomes the bar's position.
+        stage.cx.advance_animations(Duration::from_secs(6));
+        stage
+            .cx
+            .update_component(bar, |bar, _| bar.playing = true)
+            .unwrap();
+        assert_eq!(readout(&stage.cx, &slots), "1:00 / 1:40");
+        assert_eq!(stage.cx.read(bar, |bar| bar.position).unwrap(), 0.0);
+        assert_eq!(
+            stage.cx.world().media_time_mapping(video.stable_id()),
+            Some(&mapping)
+        );
+        assert_eq!(
+            stage.cx.world().animation_now(),
+            world_now + Duration::from_secs(1),
+            "only the frame moved the clock"
+        );
+
+        stage.cx.end_range_drag(document(), 1, false).unwrap();
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![
+                MediaTransportEvent::SeekStarted,
+                MediaTransportEvent::Seek(60.0),
+                MediaTransportEvent::SeekEnded,
+            ]
+        );
+        assert_eq!(stage.cx.read(bar, |bar| bar.position).unwrap(), 0.0);
+        assert_eq!(
+            stage.cx.world().media_time_mapping(video.stable_id()),
+            Some(&mapping),
+            "the bar does not seek the resource itself"
+        );
+
+        // The application commits the seek to the mapping.
+        let now = stage.cx.world().animation_now();
+        stage
+            .cx
+            .update_component(video, |video, _| {
+                video.media_time = Some(mapping.seeked(now, 60.0));
+            })
+            .unwrap();
+        stage.cx.advance_animations(Duration::from_secs(7));
+        assert_eq!(readout(&stage.cx, &slots), "1:01 / 1:40");
+        assert_eq!(seek_value(&stage.cx, &slots), 61.0);
     }
 
     #[test]

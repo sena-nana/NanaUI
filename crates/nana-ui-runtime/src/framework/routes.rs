@@ -259,7 +259,7 @@ pub(crate) fn workspace(hooks: &mut TypeHooks) {
 }
 
 pub(crate) fn media_transport(hooks: &mut TypeHooks) {
-    route!(hooks; drive_due_auto_overlays, drive_auto_overlay);
+    route!(hooks; drive_due_auto_overlays, drive_auto_overlay, sync_media_bound_bars);
 }
 
 pub(crate) fn scroll_view(hooks: &mut TypeHooks) {

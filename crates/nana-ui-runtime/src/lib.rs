@@ -151,6 +151,7 @@ pub use snippet::{
     SnippetExpansion, SnippetPlaceholder, SnippetTransform, expand_text_snippet,
     expand_text_snippet_with_variables,
 };
+mod media_time;
 mod node_space;
 mod presentation_clock;
 mod store;
@@ -350,6 +351,7 @@ pub use layout_result::{
     LayoutChildPlacement, LayoutFragment, LayoutFragmentKind, LayoutFrame, LayoutPart,
     LayoutPartKind, LayoutResult, LayoutResultSource,
 };
+pub use media_time::{MediaPacing, MediaSampleRequest, MediaTimeMapping};
 pub use media_transport::{
     MediaTransportBar, MediaTransportDensity, MediaTransportEvent, MediaTransportIcons,
     MediaTransportPlacement, MediaTransportSlots, media_clock,

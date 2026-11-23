@@ -280,3 +280,151 @@ fn replacing_a_missing_track_is_rejected() {
     queue.replace_animation(width_spec(9, node(1), 100));
     assert!(world.commit(queue).is_err());
 }
+
+// Issue #303: host-texture resources sampled at presentation time.
+
+mod media_time {
+    use super::*;
+    use crate::{ComponentView, MediaPacing, MediaTimeMapping, UiMutation, Video};
+
+    fn secs(seconds: f64) -> Duration {
+        Duration::from_secs_f64(seconds)
+    }
+
+    fn project(world: &UiWorld, id: StableNodeId, video: &Video) -> MutationQueue {
+        let mut queue = MutationQueue::new();
+        video.project(id, world, &mut queue);
+        queue
+    }
+
+    /// A document (node 1) holding a video (node 2) on slot `video:2`.
+    fn media_world(mapping: Option<MediaTimeMapping>) -> (UiWorld, Video) {
+        let mut world = UiWorld::new();
+        let video = Video::new("video:2").media_time(mapping);
+        let mut queue = MutationQueue::new();
+        queue.create(node(1), document(1), NodeKind::Document);
+        queue.create(node(2), document(1), video.node_kind());
+        queue.insert(node(1), node(2), None);
+        video.project(node(2), &world, &mut queue);
+        world.commit(queue).unwrap();
+        (world, video)
+    }
+
+    #[test]
+    fn reversing_and_changing_speed_rewrite_only_the_mapping() {
+        let mapping = MediaTimeMapping::new(Duration::ZERO, 0.0);
+        let (mut world, video) = media_world(Some(mapping));
+        world.sync_presentation_clock(secs(2.0));
+        assert_eq!(world.media_time(node(2)), Some(2.0));
+        let custom = world.custom_render(node(2)).cloned();
+
+        for rate in [-1.0, 2.5, 0.0] {
+            let now = world.animation_now();
+            let retimed = video.clone().media_time(Some(
+                world
+                    .media_time_mapping(node(2))
+                    .unwrap()
+                    .retimed(now, rate),
+            ));
+            let queue = project(&world, node(2), &retimed);
+            assert!(
+                queue
+                    .as_slice()
+                    .iter()
+                    .all(|mutation| matches!(mutation, UiMutation::SetMediaTime { .. })),
+                "only the mapping changes: {:?}",
+                queue.as_slice()
+            );
+            assert_eq!(queue.len(), 1);
+            let before = world.media_time(node(2));
+            world.commit(queue).unwrap();
+            assert!(world.is_mounted(node(2)));
+            assert_eq!(world.custom_render(node(2)).cloned(), custom);
+            // No jump where the rate changed.
+            assert_eq!(world.media_time(node(2)), before);
+            assert_eq!(world.media_time_mapping(node(2)).unwrap().rate, rate);
+            world.sync_presentation_clock(world.presentation_host_now() + secs(1.0));
+        }
+        // 2.0, reversed to 1.0, at 2.5x to 3.5, then held.
+        assert_eq!(world.media_time(node(2)), Some(3.5));
+    }
+
+    #[test]
+    fn requests_cover_visible_time_sampled_slots_only() {
+        let (mut world, video) = media_world(Some(MediaTimeMapping::new(secs(1.0), 4.0)));
+        world.sync_presentation_clock(secs(1.5));
+        let requests = world.media_sample_requests(Some(document(1)));
+        assert_eq!(requests.len(), 1);
+        let request = &requests[0];
+        assert_eq!(request.node, node(2));
+        assert_eq!(request.slot.as_str(), "video:2");
+        assert_eq!(request.media_time, 4.5);
+        assert_eq!(request.frame_interval, world.presentation_frame_interval());
+        assert_eq!(request.pacing, MediaPacing::Realtime);
+        assert!(world.media_sample_requests(Some(document(2))).is_empty());
+
+        // A detached video samples nothing.
+        let mut queue = MutationQueue::new();
+        let detached = video.clone();
+        queue.create(node(3), document(1), detached.node_kind());
+        detached.project(node(3), &world, &mut queue);
+        world.commit(queue).unwrap();
+        assert_eq!(world.media_sample_requests(None).len(), 1);
+
+        // A hidden video samples nothing.
+        let mut hidden = video.clone();
+        Arc::make_mut(&mut hidden.style.layout).paint.visibility =
+            Some(nana_ui_core::VisibilitySpec::Hidden);
+        let queue = project(&world, node(2), &hidden);
+        world.commit(queue).unwrap();
+        assert!(world.media_sample_requests(None).is_empty());
+        assert_eq!(world.next_presentation_wakeup(), None);
+    }
+
+    #[test]
+    fn a_tree_without_time_sampled_nodes_requests_nothing_and_never_wakes() {
+        let (world, _) = media_world(None);
+        assert!(world.media_sample_requests(None).is_empty());
+        assert_eq!(world.next_presentation_wakeup(), None);
+    }
+
+    #[test]
+    fn a_held_or_stepped_document_requests_stepped_frames_and_does_not_wake() {
+        let (mut world, _) = media_world(Some(MediaTimeMapping::new(Duration::ZERO, 0.0)));
+        world.sync_presentation_clock(secs(1.0));
+        assert!(
+            world.next_presentation_wakeup().is_some(),
+            "playing media wakes"
+        );
+        world.set_presentation_playback(PresentationPlayback::Paused);
+        world.step_presentation(Duration::from_millis(40));
+        assert_eq!(world.next_presentation_wakeup(), None);
+        let request = world.media_sample_requests(None).remove(0);
+        assert_eq!(request.pacing, MediaPacing::Stepped);
+        assert_eq!(request.frame_interval, Duration::from_millis(40));
+        assert!((request.media_time - 1.04).abs() < 1e-9);
+        assert!((request.tolerance() - 0.02).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_mapping_held_on_its_out_point_stops_waking_the_host() {
+        let mapping = MediaTimeMapping::new(Duration::ZERO, 0.0).with_out_point(Some(1.0));
+        let (mut world, _) = media_world(Some(mapping));
+        world.sync_presentation_clock(secs(0.5));
+        assert!(world.next_presentation_wakeup().is_some());
+        world.sync_presentation_clock(secs(2.0));
+        // Still requested, at the out point's frame, but nothing moves.
+        assert_eq!(world.media_sample_requests(None)[0].media_time, 1.0);
+        assert_eq!(world.next_presentation_wakeup(), None);
+    }
+
+    #[test]
+    fn removing_the_node_forgets_its_mapping() {
+        let (mut world, _) = media_world(Some(MediaTimeMapping::held(3.0)));
+        let mut queue = MutationQueue::new();
+        queue.despawn_subtree(node(2));
+        world.commit(queue).unwrap();
+        assert_eq!(world.media_time(node(2)), None);
+        assert!(world.media_time_mappings.is_empty());
+    }
+}

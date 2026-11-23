@@ -1173,6 +1173,9 @@ pub struct UiWorld {
     /// Painters set on nodes apart from their style
     /// ([`crate::UiMutation::SetPainter`]). Empty in a tree nobody paints.
     painter_overrides: crate::NodeMap<crate::NodePainter>,
+    /// Presentation-time mappings of time-sampled host-texture nodes
+    /// ([`crate::UiMutation::SetMediaTime`]). Empty in a tree without them.
+    pub(crate) media_time_mappings: crate::NodeMap<crate::MediaTimeMapping>,
     pending_render_removals: Vec<StableNodeId>,
     pending_accessibility_removals: Vec<StableNodeId>,
     animations: HashMap<AnimationId, ActiveAnimation>,
@@ -1549,6 +1552,7 @@ impl UiWorld {
             modal_surface_recordings: RefCell::new(crate::NodeMap::default()),
             paint_text_engine: None,
             painter_overrides: crate::NodeMap::default(),
+            media_time_mappings: crate::NodeMap::default(),
             pending_render_removals: Vec::new(),
             pending_accessibility_removals: Vec::new(),
             animations: HashMap::new(),

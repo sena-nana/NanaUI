@@ -250,6 +250,8 @@ device/surface 丢失后宿主调用 `RuntimeDocument::set_surface_generation`�
 
 文档的呈现时间可以设定、播放和停住（Issue #300）：`set_presentation_playback(PresentationPlayback::Paused)` 让这一份文档停在当前帧，`seek_presentation(t)` 把布局类采样与合成器时钟一起放到 `t`，`step_presentation(interval)` 按步长推进，`Playing { rate }` 按速率播放。速率为 1 且不停住时与墙钟推进相同；输入与各种延迟仍用墙钟。引导停在某一步、无头截图对准过渡中间帧都用它。细节见 [Runtime 与 Scene 合同](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/runtime-scene.md#文档呈现时钟issue-300)。
 
+视频、图像序列和精灵帧按文档时间取帧（Issue #303）：给 `Video` 或 `GpuTextureView` 设 `media_time(Some(MediaTimeMapping::new(origin, in_point)))`，倒放与变速只改这份映射；宿主在 `prepare_window_frame` 里读 `RuntimeDocument::media_sample_requests()`，按其中的 `media_time` 发布帧，窗口侧用 `FrameBinding::prepare_media` 按半帧容差绑定。`MediaTransportBar::source(Some(node))` 让进度条显示该节点的资源时间，松手后的 `Seek` 由应用写回映射。细节见 [Runtime 与 Scene 合同](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/runtime-scene.md#按呈现时间取样的资源issue-303)。
+
 `RuntimeProgramUpdate.redraw` 支持 `None`、`Window(id)`、`Windows(ids)`、`All`。
 合并局部更新会保留实际窗口集合。`RuntimeRedraw::for_windows` 会排序去重。
 `RuntimeRedraw::merge` 与 `RuntimeProgramUpdate::merge` 是公开的：`All` 吸收另一方，`None` 不加窗口，窗口列表取并集；更新的窗口命令按先后拼接，任一方要求退出即退出。宿主自己也用它们把一次回调里的各个更新合成一个。

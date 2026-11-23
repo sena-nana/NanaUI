@@ -315,6 +315,10 @@ pub struct GpuTextureView {
     /// 采样方式。默认单层双线性，宿主按 `painted_extent` 准备纹理尺寸；
     /// [`nana_ui_core::ImageSampling::Mipmap`] 对宿主提供的 mip 链做三线性采样。
     pub sampling: nana_ui_core::ImageSampling,
+    /// Samples the slot at presentation time (Issue #303): the document's
+    /// `now` maps to the resource time the host publishes a frame for. An
+    /// image sequence or sprite sheet uses the same mapping a video does.
+    pub media_time: Option<crate::MediaTimeMapping>,
 }
 
 impl GpuTextureView {
@@ -368,7 +372,15 @@ impl GpuTextureView {
             checkerboard: false,
             zoom: 1.0,
             sampling: nana_ui_core::ImageSampling::Resample,
+            media_time: None,
         }
+    }
+
+    /// Sample the slot at presentation time through `mapping`; see
+    /// [`crate::MediaTimeMapping`].
+    pub fn media_time(mut self, mapping: Option<crate::MediaTimeMapping>) -> Self {
+        self.media_time = mapping;
+        self
     }
 
     /// Gives this rendered texture an accessible name. Empty names clear the
@@ -536,6 +548,7 @@ impl ComponentView for GpuTextureView {
         if world.custom_render(id) != custom.as_ref() {
             mutations.set_custom_render(id, custom);
         }
+        project_media_time(id, world, mutations, self.media_time);
         project_common(
             id,
             world,
@@ -589,6 +602,19 @@ pub(crate) fn finite_radius(radius: f32) -> f32 {
 
 fn finite_seed(seed: f32) -> f32 {
     if seed.is_finite() { seed } else { 0.0 }
+}
+
+/// Write a time-sampled node's mapping when it changed; the node and its
+/// custom render stay as they are.
+pub(crate) fn project_media_time(
+    id: StableNodeId,
+    world: &UiWorld,
+    mutations: &mut MutationQueue,
+    mapping: Option<crate::MediaTimeMapping>,
+) {
+    if world.media_time_mapping(id) != mapping.as_ref() {
+        mutations.set_media_time(id, mapping);
+    }
 }
 
 #[cfg(test)]

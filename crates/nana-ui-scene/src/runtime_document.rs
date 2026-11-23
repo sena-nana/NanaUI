@@ -104,6 +104,17 @@ impl RuntimeDocument {
         self.context.compat_world_mut().sync_presentation_clock(now);
     }
 
+    /// The visible time-sampled host-texture nodes of this document, with the
+    /// slot each samples and the resource time this frame shows (Issue #303).
+    /// Read it in `prepare_window_frame`, after the presentation clock is
+    /// synced and before the flush, and publish each slot's frame for that
+    /// time. Empty when the document has no such node.
+    pub fn media_sample_requests(&self) -> Vec<nana_ui_runtime::MediaSampleRequest> {
+        self.context
+            .world()
+            .media_sample_requests(Some(self.document))
+    }
+
     /// Host hook after device/surface generation changes.
     pub fn set_surface_generation(&mut self, generation: u64) {
         Arc::make_mut(&mut self.scene).set_surface_generation(generation);

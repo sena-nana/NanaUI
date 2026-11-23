@@ -214,7 +214,7 @@ pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
 #[cfg(feature = "gpu")]
 pub use font_face_ingest::{HostFontFaceSpec, ingest_host_font_faces};
 #[cfg(feature = "gpu")]
-pub use frame_binding::FrameBinding;
+pub use frame_binding::{FrameBinding, MediaFrame, MediaSampleOutcome, MediaTimestamp};
 pub use geometry::{LogicalPoint, LogicalRect, PhysicalRect, RegionRect, WorkspaceGeometry};
 #[cfg(feature = "gpu")]
 pub use gpu_texture::{

@@ -361,7 +361,7 @@ impl<'a> ValidationPlan<'a> {
                     self.require_exists(*id)?;
                     self.interactions.insert(*id, *interaction);
                 }
-                UiMutation::SetPainter { id, .. } => {
+                UiMutation::SetPainter { id, .. } | UiMutation::SetMediaTime { id, .. } => {
                     self.require_exists(*id)?;
                 }
                 UiMutation::SetCustomRender { id, content } => {
@@ -1498,6 +1498,9 @@ impl UiWorld {
                     if !self.painter_overrides.is_empty() {
                         self.painter_overrides.remove(&id);
                     }
+                    if !self.media_time_mappings.is_empty() {
+                        self.media_time_mappings.remove(&id);
+                    }
                     self.write_overlay_host(id, None);
                     self.reindex_component(id, None);
                     self.forget_labelled_by(id);
@@ -1736,6 +1739,20 @@ impl UiWorld {
                         .pending_drain_counts
                         .replaced_content_only_layout_invalidations +=
                         (self.layout_seeds_created - seeds_before) as usize;
+                }
+            }
+            UiMutation::SetMediaTime { id, mapping } => {
+                let changed = match mapping {
+                    Some(mapping) => self
+                        .media_time_mappings
+                        .insert(*id, *mapping)
+                        .is_none_or(|previous| previous != *mapping),
+                    None => self.media_time_mappings.remove(id).is_some(),
+                };
+                // The node's box and paint are unchanged; the frame it shows
+                // is the host's to replace. Marking render asks for that frame.
+                if changed {
+                    self.mark(*id, DirtyMask::RENDER);
                 }
             }
             UiMutation::SetPainter { id, painter } => {

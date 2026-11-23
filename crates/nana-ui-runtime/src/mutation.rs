@@ -172,6 +172,13 @@ pub enum UiMutation {
         id: StableNodeId,
         content: Option<CustomRenderNode>,
     },
+    /// Map the document's presentation time onto the time a host-texture
+    /// node samples its resource at (Issue #303); `None` removes it. Changing
+    /// it rebuilds nothing: only the time the next frame requests moves.
+    SetMediaTime {
+        id: StableNodeId,
+        mapping: Option<crate::MediaTimeMapping>,
+    },
     /// A painter for the node whatever its style says (Issue #217). It wins
     /// over [`NodeStyle::painter`] and survives a component rewriting the
     /// node's style. `None` removes it.
@@ -649,6 +656,12 @@ impl MutationQueue {
     pub fn set_custom_render(&mut self, id: StableNodeId, content: Option<CustomRenderNode>) {
         self.mutations
             .push(UiMutation::SetCustomRender { id, content });
+    }
+
+    /// See [`UiMutation::SetMediaTime`].
+    pub fn set_media_time(&mut self, id: StableNodeId, mapping: Option<crate::MediaTimeMapping>) {
+        self.mutations
+            .push(UiMutation::SetMediaTime { id, mapping });
     }
 
     pub fn set_widget_visual<V: crate::WidgetVisual>(

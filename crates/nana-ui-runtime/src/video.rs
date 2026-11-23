@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use nana_ui_core::ContentFit;
 
-use crate::gpu_slots::{fill_layout, finite_opacity, finite_radius};
+use crate::gpu_slots::{fill_layout, finite_opacity, finite_radius, project_media_time};
 use crate::view_components::project_common;
 use crate::{
     AccessibilityRole, AccessibilityState, ComponentView, CustomRenderNode, InteractionState,
@@ -34,6 +34,10 @@ pub struct Video {
     pub autoplay: bool,
     pub loop_: bool,
     pub muted: bool,
+    /// Samples the slot at presentation time (Issue #303); see
+    /// [`crate::MediaTimeMapping`]. Reversing or changing speed rewrites
+    /// only this mapping.
+    pub media_time: Option<crate::MediaTimeMapping>,
 }
 
 impl Video {
@@ -56,7 +60,14 @@ impl Video {
             autoplay: false,
             loop_: false,
             muted: false,
+            media_time: None,
         }
+    }
+
+    /// Sample the slot at presentation time through `mapping`.
+    pub fn media_time(mut self, mapping: Option<crate::MediaTimeMapping>) -> Self {
+        self.media_time = mapping;
+        self
     }
 
     /// Host-texture Scene node. Empty identities are omitted so the world
@@ -106,6 +117,7 @@ impl ComponentView for Video {
         if world.custom_render(id) != custom.as_ref() {
             mutations.set_custom_render(id, custom);
         }
+        project_media_time(id, world, mutations, self.media_time);
         project_common(
             id,
             world,

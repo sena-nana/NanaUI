@@ -40,6 +40,15 @@ Runtime 按节点的脏标记（`DirtyMask`）确定性地生成各阶段工作�
 - **仍用墙钟**：输入、滚轮与触摸惯性滚动、光标闪烁、tooltip / hover card 延迟、拖动与防抖读宿主时间（`presentation_host_now`），不随文档停住。
 - **整段替换轨道（Issue #325）**：`UiWorld::animation_tracks(node)` 列出节点上运行中的轨道；`MutationQueue::replace_animation(spec)` 以同一 id 整段替换，按原样采用新 spec，不从旧值 retarget，不发 `Cancelled`，不新建 id，由下一次 advance 在文档当前时间求值。停住的文档因此停在当前帧显示改后的曲线，而不是从 0 重播。id 不存在时提交失败（`MissingAnimation`）。拖动播放头只走 `seek_presentation`。
 
+### 按呈现时间取样的资源（Issue #303）
+
+视频帧、图像序列和精灵帧是不同的生产者，用同一份映射对齐文档时间；槽仍然是 HostTexture，解码、音频与封装留在应用里。
+
+- **映射**：`Video` 与 `GpuTextureView` 的 `media_time: Option<MediaTimeMapping>`（`MutationQueue::set_media_time` 是底层写法）。`media_time = in_point + rate * (now - origin)`，`now` 是文档的 `animation_now`，资源时间以秒计。`rate` 为 0 时停在入点，为负时倒放；设了 `out_point` 时结果夹在入点与出点之间，停在到达的那一端。倒放和变速只改映射（`MediaTimeMapping::retimed(now, rate)` 从当前位置接着走），节点、自定义绘制与布局都不重建。`UiWorld::media_time(node)` 读当前值。
+- **绘制前的请求**：`UiWorld::media_sample_requests(document)` / `RuntimeDocument::media_sample_requests()` 交出每个可见（已挂载、在文档树上、未被隐藏）且带映射的宿主纹理节点的 `MediaSampleRequest`：节点、槽名、`media_time`、文档帧间隔与 `MediaPacing`（播放时 `Realtime`，停住或按步长推进时 `Stepped`）。宿主在 `prepare_window_frame` 里读它，此时呈现时钟已同步、flush 尚未开始，再用 `FrameExchange` 发布对应时刻的帧，资源时间记在帧载荷上（见 [GPU 合同](gpu.md#按资源时间取帧-issue-303)）。没有这类节点时请求为空，也不为它唤醒。
+- **唤醒**：播放中的文档在有可见资源的时间仍在走时持续出帧；映射停在端点、`rate` 为 0 或文档停住时不唤醒，静止的文档保持按需刷新。改映射只标记该节点重绘，下一帧按新时间请求。
+- **进度条**：`MediaTransportBar::source(Some(node))` 让进度条的位置读该节点的 `media_time`，`duration` 仍由应用给出，条上不另存播放头。拖动只改条上的读数，不写映射，也不写文档 `now`；拖动期间宿主对进度条的写入不会把预览读数当成位置。松手后的 `MediaTransportEvent::Seek(t)` 由应用写进映射（`MediaTimeMapping::seeked(now, t)`）或文档时间。
+
 ### 动画属性分类表
 
 逻辑值存放在 `UiWorld`，瞬态呈现值存放在 `PresentationStore`（通过 `UiWorld::presentation_pair` 或 `applied_value()` 查询，严禁每帧把 `transform` 或 `opacity` 写回 `UiWorld`）：

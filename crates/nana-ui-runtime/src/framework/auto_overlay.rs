@@ -53,6 +53,60 @@ fn instant(now: Duration) -> Instant {
 }
 
 impl AppContext {
+    /// Refresh every bar bound to a time-sampled resource whose resource time
+    /// moved since the bar last showed it; answers the bars refreshed. A bar
+    /// that went away stops being followed.
+    pub(crate) fn sync_media_bound_bars(&mut self) -> Vec<StableNodeId> {
+        if self.component_lifecycle.media_bound_bars.is_empty() {
+            return Vec::new();
+        }
+        let mut moved = Vec::new();
+        let mut gone = Vec::new();
+        for (&bar, &shown) in &self.component_lifecycle.media_bound_bars {
+            let Some(entity) = self.view_entity::<MediaTransportBar>(bar) else {
+                gone.push(bar);
+                continue;
+            };
+            if !self.world.is_mounted(bar) {
+                continue;
+            }
+            let now = self
+                .read(entity, |bar| bar.source)
+                .ok()
+                .flatten()
+                .and_then(|source| self.world.media_time(source));
+            if now != shown {
+                moved.push(entity);
+            }
+        }
+        for bar in gone {
+            self.component_lifecycle.media_bound_bars.remove(&bar);
+        }
+        moved
+            .into_iter()
+            .filter(|&bar| self.sync_media_transport_bar(bar).is_ok())
+            .map(|bar| bar.stable_id())
+            .collect()
+    }
+
+    /// Follow `bar`'s source from now on, remembering the resource time it
+    /// shows (`Some`), or stop following it (`None`, an unbound bar).
+    pub(crate) fn note_media_bound_bar(
+        &mut self,
+        bar: Entity<MediaTransportBar>,
+        shown: Option<Option<f64>>,
+    ) {
+        let bars = &mut self.component_lifecycle.media_bound_bars;
+        match shown {
+            Some(shown) => {
+                bars.insert(bar.stable_id(), shown);
+            }
+            None => {
+                bars.remove(&bar.stable_id());
+            }
+        }
+    }
+
     /// Start or stop driving `bar` as `snapshot` (its current value) asks,
     /// and run its policy when what the policy reads from the bar changed
     /// since it last ran: playback started or stopped, the bar was enabled or

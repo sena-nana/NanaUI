@@ -14,6 +14,92 @@ use nana_gpu::{
 };
 
 use crate::gpu_texture::{HostTexture, HostTextureAlphaMode, TextureSlot};
+use nana_ui_runtime::{MediaPacing, MediaSampleRequest};
+
+/// The resource time a published frame shows, in seconds, read from the
+/// frame's payload (Issue #303). The producer records it when it publishes
+/// the frame for a [`MediaSampleRequest`]; the binding compares it with the
+/// time the document asks for.
+pub trait MediaTimestamp {
+    /// `None` when the frame carries no resource time: it never aligns.
+    fn media_time(&self) -> Option<f64>;
+}
+
+impl MediaTimestamp for f64 {
+    fn media_time(&self) -> Option<f64> {
+        Some(*self)
+    }
+}
+
+/// A frame payload carrying the frame's resource time beside the
+/// application's own data. Video frames, image sequences and sprite frames
+/// all use it, through the same mapping.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct MediaFrame<T = ()> {
+    /// The resource time this frame shows, in seconds.
+    pub media_time: f64,
+    pub data: T,
+}
+
+impl<T> MediaFrame<T> {
+    pub fn new(media_time: f64, data: T) -> Self {
+        Self { media_time, data }
+    }
+}
+
+impl<T> MediaTimestamp for MediaFrame<T> {
+    fn media_time(&self) -> Option<f64> {
+        Some(self.media_time)
+    }
+}
+
+/// What [`FrameBinding::prepare_media`] showed for a request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaSampleOutcome {
+    /// The bound frame stands for the request. `changed` when it was bound
+    /// just now, so the window redraws.
+    Aligned { changed: bool },
+    /// Real-time playback found no frame for the request: the last aligned
+    /// frame repeats (or, before the first one, the poster or placeholder).
+    /// A late frame is never shown as this time.
+    Repeated,
+    /// Stepped presentation found no frame for the request. Nothing was put
+    /// in its place: wait for the producer and prepare again, or fail the
+    /// export explicitly; do not present this frame as that time.
+    Unaligned,
+}
+
+impl MediaSampleOutcome {
+    /// Whether the slot binding changed.
+    pub fn changed(self) -> bool {
+        matches!(self, Self::Aligned { changed: true })
+    }
+
+    /// Whether this frame shows the time it was asked for.
+    pub fn aligned(self) -> bool {
+        matches!(self, Self::Aligned { .. })
+    }
+}
+
+/// Reads a payload's resource time; kept beside the last request so a present
+/// can judge a waiting frame without a `MediaTimestamp` bound.
+type MediaStamp<M> = fn(&M) -> Option<f64>;
+
+/// What a request shows, given the resource time of the frame bound after
+/// preparing (`None` while the poster or placeholder shows).
+fn media_outcome(
+    request: &MediaSampleRequest,
+    bound: Option<f64>,
+    changed: bool,
+) -> MediaSampleOutcome {
+    if bound.is_some_and(|time| request.aligned(time)) {
+        return MediaSampleOutcome::Aligned { changed };
+    }
+    match request.pacing {
+        MediaPacing::Realtime => MediaSampleOutcome::Repeated,
+        MediaPacing::Stepped => MediaSampleOutcome::Unaligned,
+    }
+}
 
 /// Binds exchanged frames to one [`TextureSlot`].
 ///
@@ -36,6 +122,13 @@ pub struct FrameBinding<E = u64, M = ()> {
     /// The frame replaced since the last present. The extracted UI frame may
     /// still sample it, so its slot is not returned before presentation.
     retired: Option<Arc<FrameLease<E, M>>>,
+    /// Shown in place of the placeholder until the slot has had a frame.
+    poster: Option<GpuTexture>,
+    /// A frame has been bound at least once: the poster is over for good.
+    had_frame: bool,
+    /// The resource time the last media request asked for, so a present can
+    /// tell whether the frame waiting is one worth redrawing for.
+    media_request: Option<(MediaSampleRequest, MediaStamp<M>)>,
 }
 
 impl<E: Copy + Eq + Send + Sync + 'static> FrameBinding<E> {
@@ -75,6 +168,23 @@ impl<E: Copy + Eq + Send + Sync + 'static, M: Send + Sync + 'static> FrameBindin
             awaiting_present: false,
             current: None,
             retired: None,
+            poster: None,
+            had_frame: false,
+            media_request: None,
+        }
+    }
+
+    /// Show `poster` in the slot while it has never had a frame (Issue #303).
+    /// Once a frame was bound the poster is not shown again: a mapping that
+    /// holds on its end keeps that end's frame. `None` goes back to the
+    /// transparent placeholder.
+    pub fn set_poster(&mut self, poster: Option<GpuTexture>) {
+        self.poster = poster;
+        if self.showing_placeholder && !self.had_frame {
+            // Re-enter the placeholder state to show the poster or drop it.
+            self.showing_placeholder = false;
+            self.bind_placeholder();
+            self.awaiting_present = true;
         }
     }
 
@@ -120,6 +230,18 @@ impl<E: Copy + Eq + Send + Sync + 'static, M: Send + Sync + 'static> FrameBindin
         inbox: Option<&FrameInbox<E, M>>,
         accept: impl Fn(&FrameToken<E>) -> bool,
     ) -> bool {
+        self.media_request = None;
+        self.prepare_admitting(inbox, accept, |_| true)
+    }
+
+    /// [`Self::prepare`] for frames that bind only when `admit` lets them;
+    /// the frame already bound stays usable on `accept` alone.
+    fn prepare_admitting(
+        &mut self,
+        inbox: Option<&FrameInbox<E, M>>,
+        accept: impl Fn(&FrameToken<E>) -> bool,
+        admit: impl Fn(&FrameLease<E, M>) -> bool,
+    ) -> bool {
         if self.awaiting_present {
             return false;
         }
@@ -146,13 +268,11 @@ impl<E: Copy + Eq + Send + Sync + 'static, M: Send + Sync + 'static> FrameBindin
         }
         // Acknowledging loads again, so a frame published since `latest` is
         // bound here instead of raising a wake of its own.
+        let bindable =
+            |frame: &FrameLease<E, M>| can_bind(frame, &accept, self.alpha) && admit(frame);
         if let Some(inbox) = inbox
-            && inbox
-                .latest()
-                .is_none_or(|frame| can_bind(&frame, &accept, self.alpha))
-            && let Some(frame) = inbox
-                .try_take_latest()
-                .filter(|frame| can_bind(frame, &accept, self.alpha))
+            && inbox.latest().is_none_or(|frame| bindable(&frame))
+            && let Some(frame) = inbox.try_take_latest().filter(|frame| bindable(frame))
             && self.token() != Some(frame.token())
         {
             let (width, height) = frame.size();
@@ -182,6 +302,7 @@ impl<E: Copy + Eq + Send + Sync + 'static, M: Send + Sync + 'static> FrameBindin
             self.slot
                 .replace_with_damage(self.texture.clone(), width, height, self.alpha, damage);
             let from_placeholder = std::mem::replace(&mut self.showing_placeholder, false);
+            self.had_frame = true;
             self.awaiting_present = true;
             self.retired = self.current.replace(frame);
             // Every new frame is a replacement, sixty a second for a live
@@ -236,7 +357,13 @@ impl<E: Copy + Eq + Send + Sync + 'static, M: Send + Sync + 'static> FrameBindin
             return true;
         }
         inbox.and_then(FrameInbox::latest).is_some_and(|latest| {
-            can_bind(&latest, &accept, self.alpha) && self.token() != Some(latest.token())
+            can_bind(&latest, &accept, self.alpha)
+                && self.token() != Some(latest.token())
+                && self.media_request.as_ref().is_none_or(|(request, stamp)| {
+                    // A frame that does not stand for the time asked for is
+                    // not worth a redraw; the next request asks again.
+                    stamp(latest.payload()).is_some_and(|time| request.aligned(time))
+                })
         })
     }
 
@@ -244,9 +371,55 @@ impl<E: Copy + Eq + Send + Sync + 'static, M: Send + Sync + 'static> FrameBindin
         if self.showing_placeholder {
             return;
         }
-        self.texture.replace_texture(&self.placeholder);
-        self.slot.replace(self.texture.clone(), 1, 1, self.alpha);
+        let shown = match &self.poster {
+            Some(poster) if !self.had_frame => poster,
+            _ => &self.placeholder,
+        };
+        let (width, height) = shown.size();
+        self.texture.replace_texture(shown);
+        self.slot
+            .replace(self.texture.clone(), width, height, self.alpha);
         self.showing_placeholder = true;
+    }
+}
+
+impl<E, M> FrameBinding<E, M>
+where
+    E: Copy + Eq + Send + Sync + 'static,
+    M: MediaTimestamp + Send + Sync + 'static,
+{
+    /// Bind the frame that stands for `request` (Issue #303): a frame whose
+    /// payload time is within half the document's frame interval of
+    /// [`MediaSampleRequest::media_time`]. Call it from
+    /// `prepare_window_frame` with the request
+    /// `RuntimeDocument::media_sample_requests` gave for this slot.
+    ///
+    /// A frame further away is never shown as this time. While the document
+    /// plays ([`MediaPacing::Realtime`]) the last aligned frame repeats; while
+    /// it is stepped or held ([`MediaPacing::Stepped`]) the outcome is
+    /// [`MediaSampleOutcome::Unaligned`], and the caller waits for the
+    /// producer or fails. The bound frame's color contract is checked as by
+    /// [`Self::prepare`]: PQ, HLG or wide-gamut frames are never bound as
+    /// sRGB.
+    pub fn prepare_media(
+        &mut self,
+        inbox: Option<&FrameInbox<E, M>>,
+        accept: impl Fn(&FrameToken<E>) -> bool,
+        request: &MediaSampleRequest,
+    ) -> MediaSampleOutcome {
+        self.media_request = Some((request.clone(), M::media_time));
+        let aligned = |frame: &FrameLease<E, M>| {
+            frame
+                .payload()
+                .media_time()
+                .is_some_and(|time| request.aligned(time))
+        };
+        let changed = self.prepare_admitting(inbox, accept, aligned);
+        let bound = self
+            .current
+            .as_deref()
+            .and_then(|frame| frame.payload().media_time());
+        media_outcome(request, bound, changed)
     }
 }
 
@@ -319,6 +492,188 @@ mod tests {
     use nana_frame_exchange::{CopyOutcome, DEFAULT_CAPACITY, FrameExchange};
     use nana_gpu::__framework;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn media_request(media_time: f64, pacing: MediaPacing) -> MediaSampleRequest {
+        MediaSampleRequest {
+            node: nana_ui_runtime::StableNodeId::new(1).unwrap(),
+            slot: "media".into(),
+            media_time,
+            frame_interval: std::time::Duration::from_millis(40),
+            pacing,
+        }
+    }
+
+    #[test]
+    fn an_unaligned_frame_repeats_in_real_time_and_fails_when_stepped() {
+        let realtime = media_request(1.0, MediaPacing::Realtime);
+        let stepped = media_request(1.0, MediaPacing::Stepped);
+        assert_eq!(
+            media_outcome(&realtime, Some(1.019), true),
+            MediaSampleOutcome::Aligned { changed: true }
+        );
+        assert_eq!(
+            media_outcome(&stepped, Some(0.981), false),
+            MediaSampleOutcome::Aligned { changed: false }
+        );
+        for bound in [None, Some(0.9), Some(1.05)] {
+            assert_eq!(
+                media_outcome(&realtime, bound, false),
+                MediaSampleOutcome::Repeated
+            );
+            assert_eq!(
+                media_outcome(&stepped, bound, false),
+                MediaSampleOutcome::Unaligned
+            );
+        }
+    }
+
+    #[test]
+    fn media_frames_bind_only_within_half_a_frame_interval() {
+        use nana_frame_exchange::FrameAlphaMode;
+
+        let gpu = crate::test_gpu::context();
+        let mut exchange = FrameExchange::<_, MediaFrame>::new_with_payload(
+            &gpu,
+            DEFAULT_CAPACITY,
+            1u64,
+            Arc::new(|| {}),
+        );
+        let inbox = exchange.inbox();
+        let registry = HostTextureRegistry::new();
+        let mut binding = FrameBinding::<_, MediaFrame>::new_with_payload(
+            &gpu,
+            registry.slot("media"),
+            HostTextureAlphaMode::Premultiplied,
+        );
+        let poster = gpu
+            .create_texture(&GpuTextureDescriptor {
+                label: Some("frame binding test poster"),
+                width: 3,
+                height: 3,
+                format: GpuTextureFormat::RGBA8_UNORM,
+                usage: GpuTextureUsages::SAMPLED,
+            })
+            .expect("poster");
+        let width = || registry.get("media").map(|binding| binding.width);
+        binding.set_poster(Some(poster.clone()));
+        assert_eq!(width(), Some(3), "no frame yet: the poster shows");
+        binding.presented(Some(&inbox), |_| true);
+
+        let publish = |exchange: &mut FrameExchange<u64, MediaFrame>,
+                       width,
+                       time: f64,
+                       metadata: FrameColorMetadata| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            loop {
+                match exchange.copy_from_with_payload(
+                    &source(&gpu, width),
+                    1,
+                    metadata,
+                    MediaFrame::new(time, ()),
+                ) {
+                    CopyOutcome::Submitted => break,
+                    CopyOutcome::PoolFull => {
+                        assert!(std::time::Instant::now() < deadline, "no slot came back");
+                        exchange.poll();
+                        std::thread::yield_now();
+                    }
+                    other => panic!("copy {other:?}"),
+                }
+            }
+            while !exchange.poll() {
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::yield_now();
+            }
+        };
+        let unknown = FrameColorMetadata::unknown();
+
+        // A frame for 1.0 is not 1.1's frame, in real time or stepped.
+        publish(&mut exchange, 4, 1.0, unknown);
+        let late = media_request(1.1, MediaPacing::Realtime);
+        assert_eq!(
+            binding.prepare_media(Some(&inbox), |_| true, &late),
+            MediaSampleOutcome::Repeated
+        );
+        assert!(
+            !binding.presented(Some(&inbox), |_| true),
+            "an unaligned frame waiting is no reason to redraw"
+        );
+        assert_eq!(
+            binding.prepare_media(
+                Some(&inbox),
+                |_| true,
+                &media_request(1.1, MediaPacing::Stepped)
+            ),
+            MediaSampleOutcome::Unaligned
+        );
+        assert_eq!(width(), Some(3), "still the poster, not another time");
+
+        // Within half the 40 ms interval it binds.
+        assert_eq!(
+            binding.prepare_media(
+                Some(&inbox),
+                |_| true,
+                &media_request(1.015, MediaPacing::Stepped)
+            ),
+            MediaSampleOutcome::Aligned { changed: true }
+        );
+        assert_eq!(width(), Some(4));
+        binding.presented(Some(&inbox), |_| true);
+
+        // A frame arriving late keeps the last aligned one up in real time.
+        publish(&mut exchange, 8, 1.04, unknown);
+        assert_eq!(
+            binding.prepare_media(
+                Some(&inbox),
+                |_| true,
+                &media_request(1.2, MediaPacing::Realtime)
+            ),
+            MediaSampleOutcome::Repeated
+        );
+        assert_eq!(width(), Some(4));
+        assert_eq!(binding.payload().map(|frame| frame.media_time), Some(1.0));
+        binding.presented(Some(&inbox), |_| true);
+        assert_eq!(
+            binding.prepare_media(
+                Some(&inbox),
+                |_| true,
+                &media_request(1.04, MediaPacing::Realtime)
+            ),
+            MediaSampleOutcome::Aligned { changed: true }
+        );
+        assert_eq!(width(), Some(8));
+        binding.presented(Some(&inbox), |_| true);
+
+        // Holding on the end frame: the poster never comes back.
+        binding.set_poster(Some(poster));
+        assert_eq!(
+            binding.prepare_media(
+                Some(&inbox),
+                |_| true,
+                &media_request(1.04, MediaPacing::Stepped)
+            ),
+            MediaSampleOutcome::Aligned { changed: false }
+        );
+        assert_eq!(width(), Some(8));
+
+        // PQ and HLG frames are never bound as sRGB, aligned or not.
+        for metadata in [
+            FrameColorMetadata::bt2020_pq(FrameAlphaMode::Premultiplied),
+            FrameColorMetadata::bt2020_hlg(FrameAlphaMode::Premultiplied),
+        ] {
+            publish(&mut exchange, 12, 1.08, metadata);
+            assert_eq!(
+                binding.prepare_media(
+                    Some(&inbox),
+                    |_| true,
+                    &media_request(1.08, MediaPacing::Stepped)
+                ),
+                MediaSampleOutcome::Unaligned
+            );
+            assert_eq!(width(), Some(8));
+            binding.presented(Some(&inbox), |_| true);
+        }
+    }
 
     #[test]
     fn payload_is_the_bound_frames_data_until_the_next_present() {
