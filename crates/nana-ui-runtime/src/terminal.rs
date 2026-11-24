@@ -227,14 +227,34 @@ impl TerminalView {
     }
 }
 
+static TERMINAL_CAPABILITIES: crate::framework::TerminalCapabilities =
+    crate::framework::TerminalCapabilities {
+        pointer: AppContext::terminal_pointer,
+        focused_node: AppContext::focused_terminal_node,
+        accepts_input: AppContext::terminal_accepts_input,
+        caret_bounds: AppContext::terminal_caret_bounds,
+        selected_text: AppContext::terminal_selected_text,
+        paste: AppContext::paste_terminal,
+        key: AppContext::terminal_key,
+        set_preedit: AppContext::set_terminal_preedit,
+        input_bytes: AppContext::terminal_input,
+    };
+
 impl ComponentView for TerminalView {
     const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::TERMINAL.type_id);
 
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
-        hooks: Some(|hooks| {
-            crate::framework::routes::terminal(hooks);
+        capabilities: Some(|caps| {
+            caps.terminal = Some(&TERMINAL_CAPABILITIES);
         }),
         lifecycle: Some(crate::framework::lifecycle_hooks::terminal),
+        post_layout: Some(|cx, id| {
+            if let Some(bounds) = cx.world().component_layout_box(id) {
+                cx.resize_terminal_node(id, bounds.width, bounds.height)
+            } else {
+                Ok(false)
+            }
+        }),
         ..crate::TypeBehavior::NONE
     };
 

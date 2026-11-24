@@ -1612,6 +1612,9 @@ impl ComponentView for NativeMarkdown {
         Some(crate::component_descriptors::NATIVE_MARKDOWN.type_id);
 
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        capabilities: Some(|caps| {
+            caps.rich_text_pointer = Some(crate::AppContext::begin_rich_text_pointer);
+        }),
         slot_assembler: Some(crate::AppContext::assemble_markdown),
         ..crate::TypeBehavior::NONE
     };
@@ -2206,6 +2209,13 @@ impl SelectableRichText {
 }
 
 impl ComponentView for SelectableRichText {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        capabilities: Some(|caps| {
+            caps.rich_text_pointer = Some(crate::AppContext::begin_rich_text_pointer);
+        }),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn share_layouts(
         &mut self,
         share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),

@@ -727,10 +727,7 @@ mod tests {
         );
         context.commit_mutations(mutations).unwrap();
         let work = context.take_system_work();
-        context
-            .compat_world_mut()
-            .resolve_styles(&work.style)
-            .unwrap();
+        context.resolve_styles(&work.style).unwrap();
         let paint = context.world().widget_paint(id).unwrap();
         let crate::WidgetPaintOp::Text(support) = &paint
             .ops

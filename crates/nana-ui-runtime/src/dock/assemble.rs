@@ -48,10 +48,10 @@ impl AppContext {
 
     pub fn assemble_dock(&mut self, dock: Entity<Dock>) -> Result<bool, FrameworkError> {
         let document = document_of(self, dock.stable_id())?;
-        let old = self.update_component(dock, |dock, _| {
+        self.update_component(dock, |dock, _| {
             dock.root.clamp_ratios();
-            dock.chrome.take()
         })?;
+        let old = self.take_assembled_slot::<DockChrome>(dock.stable_id());
         let (visible, drop_target, locked, titles, hosts) = self.read(dock, |dock| {
             let visible = visible_branch(&dock.root, &dock.hidden)
                 .map(|node| node.into_owned())
@@ -80,9 +80,8 @@ impl AppContext {
             true,
         )?;
         let children = branch_children(&chrome, &visible);
-        self.update_component(dock, |dock, _| {
-            dock.chrome = Some(chrome);
-        })?;
+        self.set_assembled_slot(dock.stable_id(), chrome);
+        self.reproject_component(dock)?;
         reconcile_children(self, dock, &children)
     }
 
@@ -167,13 +166,11 @@ impl AppContext {
         self.world()
             .nodes_of_component(document, crate::component_descriptors::DOCK.type_id)
             .find_map(|dock| {
-                self.read(Entity::<Dock>::from_stable_id(dock), |dock| {
-                    (!dock.locked)
-                        .then(|| dock.chrome.as_ref().and_then(&find))
-                        .flatten()
-                })
-                .ok()
-                .flatten()
+                self.read(Entity::<Dock>::from_stable_id(dock), |dock| !dock.locked)
+                    .ok()
+                    .filter(|unlocked| *unlocked)
+                    .and_then(|_| self.assembled_slot::<DockChrome>(dock))
+                    .and_then(&find)
             })
     }
 
@@ -236,8 +233,10 @@ impl AppContext {
         if self.read(dock, |dock| dock.locked)? {
             return Ok(false);
         }
+        let Some(chrome) = self.assembled_slot::<DockChrome>(dock.stable_id()) else {
+            return Ok(false);
+        };
         let Some((frame, axis, ratio, first_ids)) = self.read(dock, |dock| {
-            let chrome = dock.chrome.as_ref()?;
             let visible = dock.visible_root()?;
             split_info_for_handle(chrome, &visible, handle)
         })?
@@ -248,7 +247,7 @@ impl AppContext {
             DockAxis::Horizontal => x,
             DockAxis::Vertical => y,
         };
-        self.update_component(dock, |dock, cx| {
+        let started = self.update_component(dock, |dock, cx| {
             dock.item_drag = None;
             dock.split_resize = Some(DockSplitResize {
                 handle,
@@ -261,7 +260,11 @@ impl AppContext {
             cx.mutations().request_focus(document, Some(handle));
             cx.mutations().capture_pointer(pointer_id, handle);
             true
-        })
+        })?;
+        if started {
+            self.begin_active_drag(document, pointer_id, dock.stable_id(), &DOCK_SPLIT_DRAG_OPS);
+        }
+        Ok(started)
     }
 
     pub fn update_dock_split_resize(
@@ -333,6 +336,7 @@ impl AppContext {
         let Some(dock) = self.dock_entity_of(handle) else {
             return Ok(false);
         };
+        self.clear_active_drag(document, pointer_id, dock.stable_id());
         self.update_component(dock, |dock, cx| {
             let Some(session) = dock.split_resize.take() else {
                 return false;
@@ -367,8 +371,10 @@ impl AppContext {
         if self.read(dock, |dock| dock.locked)? {
             return Ok(false);
         }
+        let Some(chrome) = self.assembled_slot::<DockChrome>(dock.stable_id()) else {
+            return Ok(false);
+        };
         let Some((_, _, ratio, first_ids)) = self.read(dock, |dock| {
-            let chrome = dock.chrome.as_ref()?;
             let visible = dock.visible_root()?;
             split_info_for_handle(chrome, &visible, handle)
         })?
@@ -415,14 +421,18 @@ impl AppContext {
         if self.read(dock, |dock| dock.primary.as_deref() == Some(id.as_ref()))? {
             return Ok(false);
         }
-        self.update_component(dock, |dock, cx| {
+        let started = self.update_component(dock, |dock, cx| {
             activate_runtime_dock_tab(&mut dock.root, id.as_ref());
             dock.split_resize = None;
             dock.drop_target = None;
             dock.item_drag = Some(DockItemDrag { id, reorder: None });
             cx.mutations().capture_pointer(pointer_id, target);
             true
-        })
+        })?;
+        if started {
+            self.begin_active_drag(document, pointer_id, dock.stable_id(), &DOCK_ITEM_DRAG_OPS);
+        }
+        Ok(started)
     }
 
     pub fn update_dock_item_drag(
@@ -482,6 +492,7 @@ impl AppContext {
         let Some(dock) = self.dock_entity_of(target) else {
             return Ok(false);
         };
+        self.clear_active_drag(document, pointer_id, dock.stable_id());
         let Some((dragged, reorder)) = self.read(dock, |dock| {
             dock.item_drag
                 .as_ref()
@@ -563,14 +574,9 @@ impl AppContext {
         {
             let dock = self.dock_entity_of(id)?;
             return self
-                .read(dock, |dock| {
-                    dock.chrome
-                        .as_ref()
-                        .is_some_and(|chrome| chrome_has_handle(chrome, id))
-                })
-                .ok()
-                .filter(|matches| *matches)
-                .map(|_| id);
+                .assembled_slot::<DockChrome>(dock.stable_id())
+                .is_some_and(|chrome| chrome_has_handle(chrome, id))
+                .then_some(id);
         }
         let parent = self.world().parent_id(id)?;
         if self
@@ -590,14 +596,9 @@ impl AppContext {
             return None;
         }
         let dock = self.dock_entity_of(id)?;
-        self.read(dock, |dock| {
-            dock.chrome
-                .as_ref()
-                .is_some_and(|chrome| chrome_has_title(chrome, id))
-        })
-        .ok()
-        .filter(|matches| *matches)
-        .map(|_| id)
+        self.assembled_slot::<DockChrome>(dock.stable_id())
+            .is_some_and(|chrome| chrome_has_title(chrome, id))
+            .then_some(id)
     }
 
     fn dock_tab_strip_id(&self, id: StableNodeId) -> Option<StableNodeId> {
@@ -607,14 +608,9 @@ impl AppContext {
         {
             let dock = self.dock_entity_of(id)?;
             return self
-                .read(dock, |dock| {
-                    dock.chrome
-                        .as_ref()
-                        .is_some_and(|chrome| chrome_has_strip(chrome, id))
-                })
-                .ok()
-                .filter(|matches| *matches)
-                .map(|_| id);
+                .assembled_slot::<DockChrome>(dock.stable_id())
+                .is_some_and(|chrome| chrome_has_strip(chrome, id))
+                .then_some(id);
         }
         None
     }
@@ -628,8 +624,10 @@ impl AppContext {
             Found(Arc<str>),
             Strip(StableNodeId),
         }
+        let Some(chrome) = self.assembled_slot::<DockChrome>(dock.stable_id()) else {
+            return Ok(None);
+        };
         let found = self.read(dock, |dock| {
-            let chrome = dock.chrome.as_ref()?;
             let visible = visible_branch(&dock.root, &dock.hidden)?;
             if let Some(id) = title_item_id(chrome, visible.as_ref(), target) {
                 return Some(TargetMatch::Found(id));
@@ -660,7 +658,6 @@ impl AppContext {
                     return Ok(Some(value));
                 }
                 self.read(dock, |dock| {
-                    let chrome = dock.chrome.as_ref()?;
                     let visible = visible_branch(&dock.root, &dock.hidden)?;
                     strip_for_tabs(chrome, visible.as_ref(), id)
                 })
@@ -676,8 +673,10 @@ impl AppContext {
         x: f32,
         y: f32,
     ) -> Result<Option<(Arc<str>, bool)>, FrameworkError> {
+        let Some(chrome) = self.assembled_slot::<DockChrome>(dock.stable_id()) else {
+            return Ok(None);
+        };
         let Some(strip) = self.read(dock, |dock| {
-            let chrome = dock.chrome.as_ref()?;
             let visible = visible_branch(&dock.root, &dock.hidden)?;
             strip_containing_item(chrome, visible.as_ref(), dragged)
         })?
@@ -709,16 +708,17 @@ impl AppContext {
         x: f32,
         y: f32,
     ) -> Result<Option<(Arc<str>, DockDropZone)>, FrameworkError> {
-        let leaves = self.read(dock, |dock| {
-            let mut leaves = Vec::new();
-            if let (Some(chrome), Some(visible)) = (
-                dock.chrome.as_ref(),
-                visible_branch(&dock.root, &dock.hidden),
-            ) {
-                collect_drop_leaves(chrome, visible.as_ref(), &mut leaves);
-            }
-            leaves
-        })?;
+        let leaves = if let Some(chrome) = self.assembled_slot::<DockChrome>(dock.stable_id()) {
+            self.read(dock, |dock| {
+                let mut leaves = Vec::new();
+                if let Some(visible) = visible_branch(&dock.root, &dock.hidden) {
+                    collect_drop_leaves(chrome, visible.as_ref(), &mut leaves);
+                }
+                leaves
+            })?
+        } else {
+            Vec::new()
+        };
         for (id, frame) in leaves {
             if id.as_ref() == dragged {
                 continue;
@@ -1313,20 +1313,31 @@ fn reconcile_ids(
     context.reconcile_children(parent, ordered)
 }
 
-/// The router reaches dock handles and drags only once a dock exists.
-pub(crate) static DOCK_HOOKS: crate::framework::DockHooks = crate::framework::DockHooks {
-    handle_near_hit: AppContext::dock_handle_near_hit,
-    tab_strip_near_hit: AppContext::dock_tab_strip_near_hit,
-    is_handle: AppContext::is_dock_handle,
-    is_item_source: AppContext::is_dock_item_source,
-    begin_split: AppContext::begin_dock_split_resize,
-    update_split: AppContext::update_dock_split_resize,
-    end_split: AppContext::end_dock_split_resize,
-    begin_item: AppContext::begin_dock_item_drag,
-    update_item: AppContext::update_dock_item_drag,
-    end_item: AppContext::end_dock_item_drag,
-    adjust_focused_split: AppContext::adjust_focused_dock_split,
+static DOCK_SPLIT_DRAG_OPS: crate::framework::ActiveDragOps = crate::framework::ActiveDragOps {
+    pre_gesture: false,
+    cancel_on_touch_scroll: false,
+    update: |cx, doc, _, ptr, x, y, _| cx.update_dock_split_resize(doc, ptr, x, y),
+    end: |cx, doc, _, ptr, _, _, _, cancel| cx.end_dock_split_resize(doc, ptr, cancel),
 };
+
+static DOCK_ITEM_DRAG_OPS: crate::framework::ActiveDragOps = crate::framework::ActiveDragOps {
+    pre_gesture: false,
+    cancel_on_touch_scroll: false,
+    update: |cx, doc, _, ptr, x, y, _| cx.update_dock_item_drag(doc, ptr, x, y),
+    end: |cx, doc, _, ptr, x, y, _, cancel| cx.end_dock_item_drag(doc, ptr, x, y, cancel),
+};
+
+/// The router reaches dock handles and drags only once a dock exists.
+pub(crate) static DOCK_CAPABILITIES: crate::framework::DockCapabilities =
+    crate::framework::DockCapabilities {
+        handle_near_hit: AppContext::dock_handle_near_hit,
+        tab_strip_near_hit: AppContext::dock_tab_strip_near_hit,
+        is_handle: AppContext::is_dock_handle,
+        is_item_source: AppContext::is_dock_item_source,
+        begin_split: AppContext::begin_dock_split_resize,
+        begin_item: AppContext::begin_dock_item_drag,
+        adjust_focused_split: AppContext::adjust_focused_dock_split,
+    };
 
 #[cfg(test)]
 mod tests {
@@ -1630,8 +1641,8 @@ mod tests {
             .unwrap();
         context.assemble_dock(dock).unwrap();
         let chrome = context
-            .read(dock, |dock| dock.chrome.clone())
-            .unwrap()
+            .assembled_slot::<DockChrome>(dock.stable_id())
+            .cloned()
             .unwrap();
         let (first_frame, handle, second_frame) = chrome.split_children().unwrap();
         assert_eq!(
@@ -2103,8 +2114,8 @@ mod tests {
             .unwrap();
         context.assemble_dock(dock).unwrap();
         let chrome = context
-            .read(dock, |dock| dock.chrome.clone())
-            .unwrap()
+            .assembled_slot::<DockChrome>(dock.stable_id())
+            .cloned()
             .unwrap();
         let (first_frame, handle, second_frame) = chrome.split_children().unwrap();
         let mut layout = MutationQueue::new();
@@ -2213,8 +2224,8 @@ mod tests {
             .unwrap();
         context.assemble_dock(dock).unwrap();
         let chrome = context
-            .read(dock, |dock| dock.chrome.clone())
-            .unwrap()
+            .assembled_slot::<DockChrome>(dock.stable_id())
+            .cloned()
             .unwrap();
         let (first_frame, _handle, second_frame) = chrome.split_children().unwrap();
         let titles = find_tag(&context, dock.stable_id(), "dock-title");
@@ -2298,8 +2309,8 @@ mod tests {
             .unwrap();
         context.assemble_dock(dock).unwrap();
         let chrome = context
-            .read(dock, |dock| dock.chrome.clone())
-            .unwrap()
+            .assembled_slot::<DockChrome>(dock.stable_id())
+            .cloned()
             .unwrap();
         let (first_frame, _handle, second_frame) = chrome.split_children().unwrap();
         let titles = find_tag(&context, dock.stable_id(), "dock-title");
@@ -2403,8 +2414,8 @@ mod tests {
         dock: crate::Entity<Dock>,
     ) -> Vec<(Arc<str>, StableNodeId)> {
         let chrome = context
-            .read(dock, |dock| dock.chrome.clone())
-            .unwrap()
+            .assembled_slot::<DockChrome>(dock.stable_id())
+            .cloned()
             .unwrap();
         let strip = match chrome {
             DockChrome::Tabs { strip, .. } => strip,

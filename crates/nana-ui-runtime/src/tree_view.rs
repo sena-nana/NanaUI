@@ -192,8 +192,10 @@ pub struct TreeView {
     pub(crate) renaming: Option<Arc<str>>,
     /// What the rename input holds, for a commit by leaving.
     pub(crate) rename_text: String,
-    pub(crate) rename_input: Option<StableNodeId>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TreeRenameInput(pub(crate) StableNodeId);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TreeRowData {
@@ -257,7 +259,6 @@ impl TreeView {
             drop: None,
             renaming: None,
             rename_text: String::new(),
-            rename_input: None,
         }
     }
 
@@ -355,9 +356,8 @@ impl ComponentView for TreeView {
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         activate_at: Some(crate::AppContext::activate_tree_at),
         assembler: Some(AppContext::assemble_tree_rename),
-        hooks: Some(|hooks| {
-            hooks.tree = Some(&TREE_HOOKS);
-            crate::framework::routes::tree_view(hooks);
+        capabilities: Some(|caps| {
+            caps.tree = Some(&TREE_CAPABILITIES);
         }),
         pointer: Some(&TREE_POINTER),
         ..crate::TypeBehavior::NONE
@@ -380,14 +380,7 @@ impl ComponentView for TreeView {
         next.drop = self.drop.take();
         next.renaming = self.renaming.take();
         next.rename_text = std::mem::take(&mut self.rename_text);
-        next.rename_input = self.rename_input.take();
         *self = next;
-    }
-
-    fn keep_framework_state(&mut self, previous: &Self) {
-        if self.rename_input.is_none() {
-            self.rename_input = previous.rename_input;
-        }
     }
 
     fn node_kind(&self) -> NodeKind {
@@ -877,10 +870,13 @@ fn tree_toggle_at(rows: &[TreeRowGeometry], x: f32, y: f32) -> Option<(usize, us
 }
 
 /// The router reaches this picker's keyboard only once one exists.
-pub(crate) static TREE_HOOKS: crate::framework::NavigateHooks<crate::TreeNavigation> =
-    crate::framework::NavigateHooks {
-        navigate: crate::AppContext::navigate_focused_tree,
-    };
+static TREE_CAPABILITIES: crate::framework::TreeCapabilities = crate::framework::TreeCapabilities {
+    focused_key: AppContext::focused_tree_key,
+    end_rename: AppContext::end_focused_tree_rename,
+    navigate: AppContext::navigate_focused_tree,
+    apply_item_action: AppContext::apply_tree_item_action,
+    apply_toggle_action: AppContext::apply_tree_toggle_action,
+};
 
 const TREE_POINTER: NodePointerHooks<TreeView> = NodePointerHooks {
     moved: tree_moved,
@@ -1336,7 +1332,8 @@ impl AppContext {
             true
         })?;
         let Some(input) = self
-            .read(tree, |tree| tree.rename_input)?
+            .assembled_slot::<TreeRenameInput>(tree.stable_id())
+            .map(|input| input.0)
             .filter(|_| started)
         else {
             return Ok(false);
@@ -1356,9 +1353,10 @@ impl AppContext {
         tree: Entity<TreeView>,
         commit: bool,
     ) -> Result<bool, FrameworkError> {
-        let Some((id, input)) =
-            self.read(tree, |tree| tree.renaming.clone().zip(tree.rename_input))?
-        else {
+        let Some((id, input)) = self.read(tree, |tree| tree.renaming.clone())?.zip(
+            self.assembled_slot::<TreeRenameInput>(tree.stable_id())
+                .map(|input| input.0),
+        ) else {
             return Ok(false);
         };
         let text = self.read(Entity::<TextInput>::from_stable_id(input), |input| {
@@ -1463,16 +1461,18 @@ impl AppContext {
     /// The input a rename shows, over the row's label; gone when no rename
     /// is open.
     pub fn assemble_tree_rename(&mut self, tree: Entity<TreeView>) -> Result<bool, FrameworkError> {
-        let (renaming, input) =
-            self.read(tree, |tree| (tree.renaming.clone(), tree.rename_input))?;
-        let input = input.filter(|input| self.world().contains(*input));
+        let renaming = self.read(tree, |tree| tree.renaming.clone())?;
+        let input = self
+            .assembled_slot::<TreeRenameInput>(tree.stable_id())
+            .map(|input| input.0)
+            .filter(|input| self.world().contains(*input));
         let Some(id) = renaming else {
             if let Some(input) = input {
                 let mut mutations = MutationQueue::new();
                 mutations.despawn_subtree(input);
                 self.commit_mutations(mutations)?;
-                self.update_component(tree, |tree, _| tree.rename_input = None)?;
             }
+            self.take_assembled_slot::<TreeRenameInput>(tree.stable_id());
             return Ok(false);
         };
         let label = self
@@ -1516,7 +1516,7 @@ impl AppContext {
                         cx.emit(TreeRenameRequested { id, text });
                     }
                 })?;
-                self.update_component(tree, |tree, _| tree.rename_input = Some(input.stable_id()))?;
+                self.set_assembled_slot(tree.stable_id(), TreeRenameInput(input.stable_id()));
                 input.stable_id()
             }
         };

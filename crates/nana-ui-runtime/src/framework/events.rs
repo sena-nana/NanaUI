@@ -84,29 +84,29 @@ impl AppContext {
         // An editor's undo journal dies with the editor.
         for id in removed {
             self.text_histories.forget(*id);
-            self.key_handlers.remove(id);
-            self.roving_focus_groups.remove(id);
-            self.clamp_watchers.remove(id);
-            self.size_watchers.remove(id);
+            self.lifecycle.key_handlers.remove(id);
+            self.lifecycle.roving_focus_groups.remove(id);
+            self.lifecycle.clamp_watchers.remove(id);
+            self.lifecycle.size_watchers.remove(id);
         }
         let affected = removed
             .iter()
-            .filter_map(|id| self.event_dependencies.remove(id))
+            .filter_map(|id| self.lifecycle.event_dependencies.remove(id))
             .flatten()
             .collect::<HashSet<_>>();
         let visited = affected.len();
         for key in affected {
-            let Some(mut handlers) = self.event_handlers.remove(&key) else {
+            let Some(mut handlers) = self.lifecycle.event_handlers.remove(&key) else {
                 continue;
             };
             let owners = std::iter::once(key.0)
                 .chain(handlers.iter().map(|handler| handler.observer))
                 .collect::<HashSet<_>>();
             for owner in owners {
-                if let Some(keys) = self.event_dependencies.get_mut(&owner) {
+                if let Some(keys) = self.lifecycle.event_dependencies.get_mut(&owner) {
                     keys.remove(&key);
                     if keys.is_empty() {
-                        self.event_dependencies.remove(&owner);
+                        self.lifecycle.event_dependencies.remove(&owner);
                     }
                 }
             }
@@ -118,7 +118,7 @@ impl AppContext {
                 for handler in &handlers {
                     self.index_event_handler(key, handler.observer);
                 }
-                self.event_handlers.insert(key, handlers);
+                self.lifecycle.event_handlers.insert(key, handlers);
             }
         }
         visited
@@ -127,7 +127,7 @@ impl AppContext {
     /// Drop every handler `observer` registered on `source` with
     /// [`Self::observe`]; the handlers of anyone else stay.
     pub(crate) fn unobserve(&mut self, source: StableNodeId, observer: StableNodeId) {
-        let Some(keys) = self.event_dependencies.get(&source) else {
+        let Some(keys) = self.lifecycle.event_dependencies.get(&source) else {
             return;
         };
         let keys = keys
@@ -136,13 +136,13 @@ impl AppContext {
             .filter(|key| key.0 == source)
             .collect::<Vec<_>>();
         for key in keys {
-            let Some(handlers) = self.event_handlers.get_mut(&key) else {
+            let Some(handlers) = self.lifecycle.event_handlers.get_mut(&key) else {
                 continue;
             };
             handlers.retain(|handler| handler.observer != observer);
             let empty = handlers.is_empty();
             if empty {
-                self.event_handlers.remove(&key);
+                self.lifecycle.event_handlers.remove(&key);
             }
             let owners = if empty {
                 vec![source, observer]
@@ -150,10 +150,10 @@ impl AppContext {
                 vec![observer]
             };
             for owner in owners {
-                if let Some(dependencies) = self.event_dependencies.get_mut(&owner) {
+                if let Some(dependencies) = self.lifecycle.event_dependencies.get_mut(&owner) {
                     dependencies.remove(&key);
                     if dependencies.is_empty() {
-                        self.event_dependencies.remove(&owner);
+                        self.lifecycle.event_dependencies.remove(&owner);
                     }
                 }
             }
@@ -161,18 +161,21 @@ impl AppContext {
     }
 
     fn index_event_handler(&mut self, key: (StableNodeId, TypeId), observer: StableNodeId) {
-        self.event_dependencies
+        self.lifecycle
+            .event_dependencies
             .entry(key.0)
             .or_default()
             .insert(key);
-        self.event_dependencies
+        self.lifecycle
+            .event_dependencies
             .entry(observer)
             .or_default()
             .insert(key);
     }
 
     pub(super) fn has_event_listeners<E: 'static>(&self, source: StableNodeId) -> bool {
-        self.event_handlers
+        self.lifecycle
+            .event_handlers
             .get(&(source, TypeId::of::<E>()))
             .is_some_and(|handlers| !handlers.is_empty())
     }
@@ -221,14 +224,15 @@ impl AppContext {
         self.index_event_handler(slot, observer);
         self.note_gesture_listener(on.event);
         if on.event == TypeId::of::<TextClamped>() {
-            self.clamp_watchers.entry(source).or_insert(None);
+            self.lifecycle.clamp_watchers.entry(source).or_insert(None);
         }
         if let Some(emit) = on.size_emit {
-            self.size_watchers
+            self.lifecycle
+                .size_watchers
                 .entry(source)
                 .or_insert(SizeWatch { sent: None, emit });
         }
-        let handlers = self.event_handlers.entry(slot).or_default();
+        let handlers = self.lifecycle.event_handlers.entry(slot).or_default();
         let existing = key.as_ref().and_then(|key| {
             handlers
                 .iter_mut()
@@ -267,10 +271,11 @@ impl AppContext {
         &mut self,
         document: DocumentId,
     ) -> Result<(), FrameworkError> {
-        if self.size_watchers.is_empty() {
+        if self.lifecycle.size_watchers.is_empty() {
             return Ok(());
         }
         let changed = self
+            .lifecycle
             .size_watchers
             .iter()
             .filter_map(|(&id, watch)| {
@@ -283,7 +288,7 @@ impl AppContext {
             })
             .collect::<Vec<_>>();
         for (id, (width, height), emit) in changed {
-            if let Some(watch) = self.size_watchers.get_mut(&id) {
+            if let Some(watch) = self.lifecycle.size_watchers.get_mut(&id) {
                 watch.sent = Some((width, height));
             }
             emit(self, id, SizeChanged { width, height })?;
@@ -294,10 +299,11 @@ impl AppContext {
     /// Send [`TextClamped`] to each listening text whose clamp changed with
     /// the shaping that just ran.
     pub(super) fn announce_text_clamps(&mut self) -> Result<(), FrameworkError> {
-        if self.clamp_watchers.is_empty() {
+        if self.lifecycle.clamp_watchers.is_empty() {
             return Ok(());
         }
         let changed = self
+            .lifecycle
             .clamp_watchers
             .iter()
             .filter_map(|(id, sent)| {
@@ -310,7 +316,7 @@ impl AppContext {
             })
             .collect::<Vec<_>>();
         for (id, clamped) in changed {
-            self.clamp_watchers.insert(id, Some(clamped));
+            self.lifecycle.clamp_watchers.insert(id, Some(clamped));
             self.update(Entity::<crate::Text>::from_stable_id(id), |_, cx| {
                 cx.emit(TextClamped { clamped });
             })?;
@@ -361,7 +367,7 @@ impl AppContext {
         when: ContextPredicate,
         handler: impl FnMut(&mut AppContext) -> Result<(), FrameworkError> + Send + 'static,
     ) -> Result<(), FrameworkError> {
-        insert_action(&mut self.actions, id, when, handler)
+        insert_action(&mut self.lifecycle.actions, id, when, handler)
     }
 
     /// Binds an execution handler to `id` with an always-true predicate.
@@ -374,7 +380,12 @@ impl AppContext {
         id: impl Into<ActionId>,
         handler: impl FnMut(&mut AppContext) -> Result<(), FrameworkError> + Send + 'static,
     ) -> Result<(), FrameworkError> {
-        insert_action(&mut self.actions, id, ContextPredicate::always(), handler)
+        insert_action(
+            &mut self.lifecycle.actions,
+            id,
+            ContextPredicate::always(),
+            handler,
+        )
     }
 
     /// Removes the execution handler registered for `id`.
@@ -382,7 +393,7 @@ impl AppContext {
         let Some(id) = id.normalized() else {
             return false;
         };
-        self.actions.remove(&id).is_some()
+        self.lifecycle.actions.remove(&id).is_some()
     }
 
     /// Returns whether an execution handler is currently bound for `id`.
@@ -390,7 +401,7 @@ impl AppContext {
         let Some(id) = id.normalized() else {
             return false;
         };
-        self.actions.contains_key(&id)
+        self.lifecycle.actions.contains_key(&id)
     }
 
     /// Augments `base` with Runtime focus, modal, editable text-input, and IME
@@ -424,6 +435,7 @@ impl AppContext {
         };
         registry.is_available(&id, context)
             && self
+                .lifecycle
                 .actions
                 .get(&id)
                 .is_some_and(|action| action.when.matches(context))
@@ -436,15 +448,16 @@ impl AppContext {
     ) -> Result<(), FrameworkError> {
         let id = normalized_action_id(id.clone())?;
         let mut action = self
+            .lifecycle
             .actions
             .remove(&id)
             .ok_or_else(|| FrameworkError::MissingAction(id.clone()))?;
         if !action.when.matches(context) {
-            self.actions.insert(id.clone(), action);
+            self.lifecycle.actions.insert(id.clone(), action);
             return Err(FrameworkError::ActionUnavailable(id));
         }
         let result = (action.handler)(self);
-        self.actions.insert(id, action);
+        self.lifecycle.actions.insert(id, action);
         result
     }
 
@@ -575,7 +588,7 @@ impl AppContext {
                 return Err(FrameworkError::EventOverflow(emitter));
             }
             let key = (emitter, event_type);
-            let Some(mut handlers) = self.event_handlers.remove(&key) else {
+            let Some(mut handlers) = self.lifecycle.event_handlers.remove(&key) else {
                 continue;
             };
             for handler in &mut handlers {
@@ -591,7 +604,8 @@ impl AppContext {
                     );
                     continue;
                 }
-                let (mut observer, before_stack) = match self.views.remove(&handler.observer) {
+                let (mut observer, before_stack) = match self.store.views.remove(&handler.observer)
+                {
                     Some(observer) => (observer, None),
                     None => match self.world.elided_stack(handler.observer) {
                         Some(stack) => {
@@ -624,9 +638,9 @@ impl AppContext {
                         reassemble: asked,
                     }),
                 }
-                self.views.insert(handler.observer, observer);
+                self.store.views.insert(handler.observer, observer);
             }
-            self.event_handlers.insert(key, handlers);
+            self.lifecycle.event_handlers.insert(key, handlers);
         }
         Ok(touched)
     }
@@ -659,15 +673,15 @@ mod dependency_tests {
         cx.on_keyed::<_, Activate>(source, "binding", |_, _, _| {})
             .unwrap();
         assert_eq!(cx.remove_event_handlers_for(&HashSet::from([first.id])), 1);
-        assert!(!cx.event_dependencies.contains_key(&first.id));
+        assert!(!cx.lifecycle.event_dependencies.contains_key(&first.id));
         let key = (source.id, TypeId::of::<Activate>());
-        assert_eq!(cx.event_handlers[&key].len(), 2);
-        assert!(cx.event_dependencies[&second.id].contains(&key));
+        assert_eq!(cx.lifecycle.event_handlers[&key].len(), 2);
+        assert!(cx.lifecycle.event_dependencies[&second.id].contains(&key));
         assert_eq!(cx.remove_event_handlers_for(&HashSet::from([source.id])), 1);
-        assert!(!cx.event_dependencies.contains_key(&source.id));
-        assert!(!cx.event_dependencies.contains_key(&second.id));
-        assert_eq!(cx.event_handlers.len(), 1000);
-        assert_eq!(cx.event_dependencies.len(), 1000);
+        assert!(!cx.lifecycle.event_dependencies.contains_key(&source.id));
+        assert!(!cx.lifecycle.event_dependencies.contains_key(&second.id));
+        assert_eq!(cx.lifecycle.event_handlers.len(), 1000);
+        assert_eq!(cx.lifecycle.event_dependencies.len(), 1000);
         assert_eq!(cx.remove_event_handlers_for(&HashSet::new()), 0);
     }
 }

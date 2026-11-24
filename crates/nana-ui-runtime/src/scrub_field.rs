@@ -88,7 +88,6 @@ pub struct ScrubField {
     pub editing: bool,
     pub style: NodeStyle,
     pub(crate) drag: Option<ScrubDrag>,
-    pub(crate) parts: Option<ScrubParts>,
 }
 
 impl ScrubField {
@@ -105,7 +104,6 @@ impl ScrubField {
             editing: false,
             style: field_style(ControlSize::Medium),
             drag: None,
-            parts: None,
         }
     }
 
@@ -224,15 +222,22 @@ impl ScrubField {
     }
 }
 
+static SCRUB_A11Y: crate::framework::A11yBehavior = crate::framework::A11yBehavior {
+    step: Some(|cx, id, steps| cx.step_scrub_field(Entity::from_stable_id(id), steps)),
+    ..crate::framework::A11yBehavior::EMPTY
+};
+
 impl ComponentView for ScrubField {
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
-        hooks: Some(|hooks| {
-            crate::framework::routes::scrub_field(hooks);
-            crate::framework::routes::number_input(hooks);
+        capabilities: Some(|caps| {
+            caps.add_step_adjuster(AppContext::adjust_focused_scrub_field);
+            caps.add_edit_ender(AppContext::end_focused_scrub_edit);
+            crate::view_components::install_number_input_capabilities(caps);
         }),
         activation: Some(activate_scrub_field),
         assembler: Some(AppContext::assemble_scrub_field),
         pointer: Some(&SCRUB_POINTER),
+        a11y: Some(&SCRUB_A11Y),
         ..crate::TypeBehavior::NONE
     };
 
@@ -241,11 +246,9 @@ impl ComponentView for ScrubField {
     }
 
     fn reconcile(&mut self, mut next: Self) {
-        // A drag or typing in progress is the field's own; the parts are the
-        // runtime's.
+        // A drag or typing in progress is the field's own.
         next.drag = self.drag;
         next.editing = self.editing && !next.disabled;
-        next.parts = self.parts;
         *self = next;
     }
 
@@ -450,11 +453,14 @@ impl AppContext {
     ) -> Result<bool, FrameworkError> {
         let document = self.document_of_node(field.stable_id())?;
         let snapshot = self.read(field, Clone::clone)?;
-        let alive = snapshot.parts.filter(|p| {
-            [p.label, p.value, p.input]
-                .iter()
-                .all(|id| self.world().contains(*id))
-        });
+        let alive = self
+            .assembled_slot::<ScrubParts>(field.stable_id())
+            .copied()
+            .filter(|p| {
+                [p.label, p.value, p.input]
+                    .iter()
+                    .all(|id| self.world().contains(*id))
+            });
         let created = alive.is_none();
         let parts = match alive {
             Some(parts) => parts,
@@ -514,7 +520,7 @@ impl AppContext {
             },
         )?;
         if created {
-            self.update_component(field, |field, _| field.parts = Some(parts))?;
+            self.set_assembled_slot(field.stable_id(), parts);
         }
         self.append_children(field.stable_id(), &[parts.label, parts.value, parts.input])?;
         Ok(created)
@@ -542,7 +548,10 @@ impl AppContext {
         else {
             return Ok(false);
         };
-        let Some(parts) = self.read(field, |field| field.parts)? else {
+        let Some(parts) = self
+            .assembled_slot::<ScrubParts>(field.stable_id())
+            .copied()
+        else {
             return Ok(false);
         };
         let input = Entity::<NumberInput>::from_stable_id(parts.input);
@@ -690,8 +699,8 @@ mod tests {
             .unwrap();
         let field = context.world().node(root.stable_id()).unwrap().children[0];
         let parts = context
-            .read(Entity::<ScrubField>::from_stable_id(field), |f| f.parts)
-            .unwrap()
+            .assembled_slot::<ScrubParts>(field)
+            .copied()
             .expect("assembled");
         assert_eq!(context.world().text(parts.value), Some("2.5 °"));
     }

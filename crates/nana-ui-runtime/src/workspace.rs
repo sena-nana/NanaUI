@@ -105,6 +105,17 @@ impl ComponentView for WorkspaceResizeHandle {
     }
 }
 
+/// Framework-assembled child containers and resize handles for [`Workspace`],
+/// kept on `AppContext::assembled_slots` rather than on the component value.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct WorkspaceSlots {
+    pub(crate) handles: HashMap<RegionId, StableNodeId>,
+    pub(crate) middle: Option<StableNodeId>,
+    pub(crate) primary_column: Option<StableNodeId>,
+    pub(crate) primary_row: Option<StableNodeId>,
+    pub(crate) editor_stack: Option<StableNodeId>,
+}
+
 /// Backend-neutral workspace chrome. Snapshot the model; `project` never owns a clock.
 ///
 /// Region visibility / overlay / extent / resize-highlight are queried through
@@ -116,11 +127,6 @@ pub struct Workspace {
     pub style: NodeStyle,
     pub layout: WorkspaceLayout,
     pub workspace_corners: bool,
-    pub handles: HashMap<RegionId, StableNodeId>,
-    pub middle: Option<StableNodeId>,
-    pub primary_column: Option<StableNodeId>,
-    pub primary_row: Option<StableNodeId>,
-    pub editor_stack: Option<StableNodeId>,
     pub model: WorkspaceModel,
 }
 
@@ -138,11 +144,6 @@ impl Workspace {
             style: NodeStyle::default(),
             layout: model.layout().clone(),
             workspace_corners: true,
-            handles: HashMap::new(),
-            middle: None,
-            primary_column: None,
-            primary_row: None,
-            editor_stack: None,
             model: model.clone(),
         }
     }
@@ -170,28 +171,8 @@ impl Workspace {
         self
     }
 
-    pub fn handle(mut self, id: RegionId, handle: StableNodeId) -> Self {
-        self.handles.insert(id, handle);
-        self
-    }
-
     pub fn style(mut self, style: NodeStyle) -> Self {
         self.style = style;
-        self
-    }
-
-    pub fn middle(mut self, middle: StableNodeId) -> Self {
-        self.middle = Some(middle);
-        self
-    }
-
-    pub fn primary_column(mut self, primary_column: StableNodeId) -> Self {
-        self.primary_column = Some(primary_column);
-        self
-    }
-
-    pub fn primary_row(mut self, primary_row: StableNodeId) -> Self {
-        self.primary_row = Some(primary_row);
         self
     }
 
@@ -209,11 +190,6 @@ impl Workspace {
 
     pub fn editor_stack() -> List {
         track_host(FlexDirection::Column, true)
-    }
-
-    pub fn editor_stack_host(mut self, editor_stack: StableNodeId) -> Self {
-        self.editor_stack = Some(editor_stack);
-        self
     }
 
     pub fn region_extent(&self, id: &RegionId) -> f32 {
@@ -334,6 +310,7 @@ impl Workspace {
         state: &RegionState,
         content: StableNodeId,
         edges: RegionEdges,
+        handle: Option<StableNodeId>,
         world: &UiWorld,
         mutations: &mut MutationQueue,
     ) {
@@ -381,17 +358,18 @@ impl Workspace {
                 },
             );
         }
-        self.project_handle(state, content, world, mutations);
+        self.project_handle(state, content, handle, world, mutations);
     }
 
     fn project_handle(
         &self,
         state: &RegionState,
         region: StableNodeId,
+        handle: Option<StableNodeId>,
         world: &UiWorld,
         mutations: &mut MutationQueue,
     ) {
-        let Some(&handle) = self.handles.get(state.id()) else {
+        let Some(handle) = handle else {
             return;
         };
         if !world.contains(handle) {
@@ -515,11 +493,15 @@ impl ComponentView for Workspace {
 
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         lifecycle: Some(crate::framework::lifecycle_hooks::workspace),
-        hooks: Some(|hooks| {
-            hooks.workspace = Some(&WORKSPACE_HOOKS);
-            crate::framework::routes::workspace(hooks);
+        capabilities: Some(|caps| caps.workspace = Some(&WORKSPACE_CAPABILITIES)),
+        animation_sample: Some(|cx, id, _, now| {
+            cx.update_component(Entity::<Self>::from_stable_id(id), |workspace, _| {
+                workspace.apply(nana_ui_core::WorkspaceMutation::AdvanceAnimations, now)
+            })
+            .unwrap_or(false)
         }),
         slot_assembler: Some(crate::AppContext::assemble_workspace),
+        slot_projector: Some(Self::project_with_slots),
         ..crate::TypeBehavior::NONE
     };
 
@@ -540,24 +522,53 @@ impl ComponentView for Workspace {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        self.project_with_assembled_slots(id, world, mutations, None);
+    }
+}
+
+impl Workspace {
+    fn project_with_slots(
+        cx: &crate::AppContext,
+        id: StableNodeId,
+        view: &Self,
+        world: &UiWorld,
+        mutations: &mut MutationQueue,
+    ) {
+        view.project_with_assembled_slots(
+            id,
+            world,
+            mutations,
+            cx.assembled_slot::<WorkspaceSlots>(id),
+        );
+    }
+
+    fn project_with_assembled_slots(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+        mutations: &mut MutationQueue,
+        assembled: Option<&WorkspaceSlots>,
+    ) {
         self.project_root(id, world, mutations);
         let groups = self.visible_groups();
-        let chrome = match (
-            self.middle,
-            self.primary_column,
-            self.primary_row,
-            self.editor_stack,
-        ) {
-            (Some(middle), Some(primary_column), Some(primary_row), Some(editor_stack))
-                if world.contains(middle)
-                    && world.contains(primary_column)
-                    && world.contains(primary_row)
-                    && world.contains(editor_stack) =>
-            {
-                Some((middle, primary_column, primary_row, editor_stack))
+        let chrome = assembled.and_then(|slots| {
+            match (
+                slots.middle,
+                slots.primary_column,
+                slots.primary_row,
+                slots.editor_stack,
+            ) {
+                (Some(middle), Some(primary_column), Some(primary_row), Some(editor_stack))
+                    if world.contains(middle)
+                        && world.contains(primary_column)
+                        && world.contains(primary_row)
+                        && world.contains(editor_stack) =>
+                {
+                    Some((middle, primary_column, primary_row, editor_stack))
+                }
+                _ => None,
             }
-            _ => None,
-        };
+        });
         if let Some((middle, primary_column, primary_row, editor_stack)) = chrome {
             self.project_track_host(Some(middle), FlexDirection::Row, true, world, mutations);
             self.project_track_host(
@@ -585,7 +596,16 @@ impl ComponentView for Workspace {
 
         for item in groups.iter() {
             if world.contains(item.content) {
-                self.project_region(item.state, item.content, item.edges, world, mutations);
+                let handle =
+                    assembled.and_then(|slots| slots.handles.get(item.state.id()).copied());
+                self.project_region(
+                    item.state,
+                    item.content,
+                    item.edges,
+                    handle,
+                    world,
+                    mutations,
+                );
             }
         }
 
@@ -909,50 +929,37 @@ impl AppContext {
             .node(workspace.stable_id())
             .map(|node| node.document)
             .ok_or(FrameworkError::MissingView(workspace.stable_id()))?;
-        let snapshot = self.read(workspace, |workspace| {
-            (
-                workspace.middle,
-                workspace.primary_column,
-                workspace.primary_row,
-                workspace.editor_stack,
-                workspace.handles.clone(),
-                workspace.layout.clone(),
-                workspace.slots.clone(),
-            )
+        let mut assembled = self
+            .assembled_slot::<WorkspaceSlots>(workspace.stable_id())
+            .cloned()
+            .unwrap_or_default();
+        let (layout, slots) = self.read(workspace, |workspace| {
+            (workspace.layout.clone(), workspace.slots.clone())
         })?;
-        let (
-            mut middle,
-            mut primary_column,
-            mut primary_row,
-            mut editor_stack,
-            mut handles,
-            layout,
-            slots,
-        ) = snapshot;
         let mut chrome_changed = false;
-        if middle.is_none() {
-            middle = Some(
+        if assembled.middle.is_none() {
+            assembled.middle = Some(
                 self.create_detached_component(document, Workspace::middle_track())?
                     .stable_id(),
             );
             chrome_changed = true;
         }
-        if primary_column.is_none() {
-            primary_column = Some(
+        if assembled.primary_column.is_none() {
+            assembled.primary_column = Some(
                 self.create_detached_component(document, Workspace::primary_stack())?
                     .stable_id(),
             );
             chrome_changed = true;
         }
-        if primary_row.is_none() {
-            primary_row = Some(
+        if assembled.primary_row.is_none() {
+            assembled.primary_row = Some(
                 self.create_detached_component(document, Workspace::primary_track())?
                     .stable_id(),
             );
             chrome_changed = true;
         }
-        if editor_stack.is_none() {
-            editor_stack = Some(
+        if assembled.editor_stack.is_none() {
+            assembled.editor_stack = Some(
                 self.create_detached_component(document, Workspace::editor_stack())?
                     .stable_id(),
             );
@@ -966,7 +973,8 @@ impl AppContext {
             if !wants_resize_handle(state) {
                 continue;
             }
-            let existing = handles
+            let existing = assembled
+                .handles
                 .get(&slot.id)
                 .copied()
                 .filter(|id| self.world().contains(*id));
@@ -974,17 +982,12 @@ impl AppContext {
                 continue;
             }
             let handle = create_workspace_handle(self, document, slot.id.clone())?;
-            handles.insert(slot.id.clone(), handle);
+            assembled.handles.insert(slot.id.clone(), handle);
             handles_changed = true;
         }
         if chrome_changed || handles_changed {
-            self.update_component(workspace, |workspace, _| {
-                workspace.middle = middle;
-                workspace.primary_column = primary_column;
-                workspace.primary_row = primary_row;
-                workspace.editor_stack = editor_stack;
-                workspace.handles = handles;
-            })?;
+            self.set_assembled_slot(workspace.stable_id(), assembled);
+            self.reproject_component(workspace)?;
         }
         Ok(chrome_changed || handles_changed)
     }
@@ -1021,10 +1024,9 @@ impl AppContext {
         self.world()
             .nodes_of_component(document, crate::component_descriptors::WORKSPACE.type_id)
             .find_map(|workspace| {
-                self.read(
-                    Entity::<Workspace>::from_stable_id(workspace),
-                    |workspace| {
-                        workspace.handles.values().copied().find(|&handle| {
+                self.assembled_slot::<WorkspaceSlots>(workspace)
+                    .and_then(|slots| {
+                        slots.handles.values().copied().find(|&handle| {
                             self.workspace_handle_id(handle).is_some()
                                 && self
                                     .world()
@@ -1033,10 +1035,7 @@ impl AppContext {
                                         point_near_box(bounds, x, y, HANDLE_HIT_SLOP)
                                     })
                         })
-                    },
-                )
-                .ok()
-                .flatten()
+                    })
             })
     }
 
@@ -1069,6 +1068,12 @@ impl AppContext {
         })?;
         if changed {
             write_back_shell_model(self, workspace)?;
+            self.begin_active_drag(
+                document,
+                pointer_id,
+                workspace.stable_id(),
+                &WORKSPACE_DRAG_OPS,
+            );
         }
         Ok(changed)
     }
@@ -1114,6 +1119,7 @@ impl AppContext {
         let Some(workspace) = self.workspace_for_handle(handle) else {
             return Ok(false);
         };
+        self.clear_active_drag(document, pointer_id, workspace.stable_id());
         let changed = self.update_component(workspace, |workspace, cx| {
             let changed = workspace.apply(WorkspaceMutation::ResizeEnd, now);
             cx.mutations().release_pointer(pointer_id, handle);
@@ -1148,11 +1154,8 @@ impl AppContext {
             {
                 let entity = Entity::<Workspace>::from_stable_id(id);
                 let owns = self
-                    .read(entity, |workspace| {
-                        workspace.handles.values().any(|&id| id == handle)
-                    })
-                    .ok()
-                    .unwrap_or(false);
+                    .assembled_slot::<WorkspaceSlots>(id)
+                    .is_some_and(|slots| slots.handles.values().any(|&h| h == handle));
                 if owns {
                     return Some(entity);
                 }
@@ -1228,14 +1231,23 @@ fn reconcile_children(
     crate::framework::reconcile_child_order(parent, desired, world, mutations);
 }
 
+static WORKSPACE_DRAG_OPS: crate::framework::ActiveDragOps = crate::framework::ActiveDragOps {
+    pre_gesture: false,
+    cancel_on_touch_scroll: false,
+    update: |cx, document, _, pointer_id, x, y, now| {
+        cx.update_workspace_resize(document, pointer_id, x, y, now)
+    },
+    end: |cx, document, _, pointer_id, _, _, now, _| {
+        cx.end_workspace_resize(document, pointer_id, now)
+    },
+};
+
 /// The router reaches workspace resize handles only once a workspace exists.
-pub(crate) static WORKSPACE_HOOKS: crate::framework::WorkspaceHooks =
-    crate::framework::WorkspaceHooks {
+static WORKSPACE_CAPABILITIES: crate::framework::WorkspaceCapabilities =
+    crate::framework::WorkspaceCapabilities {
         handle_near_hit: AppContext::workspace_handle_near_hit,
         is_resize_handle: AppContext::is_workspace_resize_handle,
         begin_resize: AppContext::begin_workspace_resize,
-        update_resize: AppContext::update_workspace_resize,
-        end_resize: AppContext::end_workspace_resize,
     };
 
 #[cfg(test)]
@@ -1781,15 +1793,18 @@ mod tests {
                 WorkspaceRegionSlot::new(RegionId::Primary, primary),
                 WorkspaceRegionSlot::new(disabled_id.clone(), disabled),
             ],
-        )
-        .handle(RegionId::Resources, resources_handle)
-        .handle(RegionId::Primary, primary_handle)
-        .handle(disabled_id.clone(), disabled_handle);
+        );
         assert!(idle.shows_resize_handle(&RegionId::Resources));
         assert!(!idle.shows_resize_handle(&RegionId::Primary));
         assert!(!idle.shows_resize_handle(&disabled_id));
 
         let entity = mount(&mut context, idle);
+        let mut slots = WorkspaceSlots::default();
+        slots.handles.insert(RegionId::Resources, resources_handle);
+        slots.handles.insert(RegionId::Primary, primary_handle);
+        slots.handles.insert(disabled_id.clone(), disabled_handle);
+        context.set_assembled_slot(entity.stable_id(), slots);
+        context.reproject_component(entity).unwrap();
         assert_eq!(
             context.world().node(resources).unwrap().children,
             vec![resources_handle]
@@ -1911,8 +1926,10 @@ mod tests {
         );
         assert!(context.assemble_workspace(entity).unwrap());
         let handles = context
-            .read(entity, |workspace| workspace.handles.clone())
-            .unwrap();
+            .assembled_slot::<WorkspaceSlots>(entity.stable_id())
+            .unwrap()
+            .handles
+            .clone();
         let resources_handle = *handles.get(&RegionId::Resources).expect("resources handle");
         let inspector_handle = *handles.get(&RegionId::Inspector).expect("inspector handle");
         assert!(!handles.contains_key(&RegionId::Primary));
@@ -1959,10 +1976,8 @@ mod tests {
         );
         context.assemble_workspace(entity).unwrap();
         let handle = context
-            .read(entity, |workspace| {
-                workspace.handles.get(&RegionId::Resources).copied()
-            })
-            .unwrap()
+            .assembled_slot::<WorkspaceSlots>(entity.stable_id())
+            .and_then(|slots| slots.handles.get(&RegionId::Resources).copied())
             .expect("resources handle");
         context
             .commit_mutations({
@@ -2058,8 +2073,10 @@ mod tests {
             .unwrap();
 
         let handles = context
-            .read(entity, |workspace| workspace.handles.clone())
-            .unwrap();
+            .assembled_slot::<WorkspaceSlots>(entity.stable_id())
+            .unwrap()
+            .handles
+            .clone();
         for (id, content, start_edge) in [
             (RegionId::Resources, sidebar, false),
             (RegionId::Inspector, inspector, true),

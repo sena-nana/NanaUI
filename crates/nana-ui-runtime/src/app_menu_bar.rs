@@ -125,7 +125,6 @@ pub struct AppMenuBar {
     pub shortcut_notation: ShortcutNotation,
     pub style: NodeStyle,
     pub(crate) state: MenuBarState,
-    pub(crate) parts: Option<MenuBarParts>,
 }
 
 impl AppMenuBar {
@@ -136,7 +135,6 @@ impl AppMenuBar {
             shortcut_notation: ShortcutNotation::HOST,
             style: bar_style(),
             state: MenuBarState::default(),
-            parts: None,
         }
     }
 
@@ -598,10 +596,18 @@ pub fn menu_shortcut_label(shortcut: &MenuShortcut) -> String {
     ShortcutNotation::HOST.label(shortcut)
 }
 
+static MENU_BAR_CAPABILITIES: crate::framework::MenuBarCapabilities =
+    crate::framework::MenuBarCapabilities {
+        toggle_keyboard: |cx, id| cx.toggle_menu_bar_keyboard(Entity::from_stable_id(id)),
+        route_key: AppContext::route_menu_bar_key,
+        cancel_alt: AppContext::cancel_menu_bar_alt,
+    };
+
 impl ComponentView for AppMenuBar {
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
-        hooks: Some(|hooks| {
-            crate::framework::routes::menu_bar(hooks);
+        capabilities: Some(|caps| {
+            caps.menu_bar = Some(&MENU_BAR_CAPABILITIES);
+            caps.add_frame_ticker(AppContext::settle_menu_aims);
         }),
         assembler: Some(AppContext::assemble_app_menu_bar),
         // a press elsewhere lets go of a bar the keyboard holds; an open menu
@@ -629,14 +635,7 @@ impl ComponentView for AppMenuBar {
         if next.bar == self.bar {
             next.state = std::mem::take(&mut self.state);
         }
-        next.parts = self.parts.take();
         *self = next;
-    }
-
-    fn keep_framework_state(&mut self, previous: &Self) {
-        if self.parts.is_none() {
-            self.parts = previous.parts.clone();
-        }
     }
 
     fn node_kind(&self) -> NodeKind {
@@ -1089,7 +1088,10 @@ impl AppContext {
             return Ok(false);
         };
         let at = (pointer.x + origin.x, pointer.y + origin.y);
-        let Some(parts) = self.read(bar, |bar| bar.parts.clone())? else {
+        let Some(parts) = self
+            .assembled_slot::<MenuBarParts>(bar.stable_id())
+            .cloned()
+        else {
             return Ok(false);
         };
         let hit = self.menu_bar_hit(&parts, at);
@@ -1190,9 +1192,9 @@ impl AppContext {
         let typography = node_theme.typography();
         let surf_pad = spacing.resolve(menu_recipe.surface_padding);
         let row = ControlSize::Small.height_in(metrics);
-        let alive = snapshot
-            .parts
-            .clone()
+        let alive = self
+            .assembled_slot::<MenuBarParts>(bar.stable_id())
+            .cloned()
             .filter(|parts| self.world().contains(parts.scrim));
         let created = alive.is_none();
         let mut parts = match alive {
@@ -1481,9 +1483,8 @@ impl AppContext {
             }
             self.commit_mutations(mutations)?;
         }
-        if snapshot.parts.as_ref() != Some(&parts) {
-            let stored = parts.clone();
-            self.update_component(bar, |bar, _| bar.parts = Some(stored))?;
+        if self.assembled_slot::<MenuBarParts>(bar.stable_id()) != Some(&parts) {
+            self.set_assembled_slot(bar.stable_id(), parts.clone());
         }
         let children = parts
             .titles

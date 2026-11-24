@@ -3,7 +3,6 @@
 //! event: pointer and wheel through one shared hit, keys and committed text
 //! through one key chain, composition into the focused editor.
 
-use crate::framework::{hooked, via};
 use std::time::Duration;
 
 use nana_ui_core::TableNavigation;
@@ -17,26 +16,6 @@ use crate::{
     OverlayPointerPhase, RangeAdjustment, RovingFocusIntent, ScrollOffset, StableNodeId,
     TextCaretIntent, TextDeleteKind, TextLineDirection, TextShaper, XYPadAdjustment,
 };
-#[cfg(feature = "graph-canvas")]
-use crate::{GraphCanvasAdjustment, GraphPointerButton, GraphScrollDelta};
-
-macro_rules! optional_input {
-    // A fallible dispatch into an optional component: absent, it handled
-    // nothing.
-    ($feature:literal, $call:expr) => {
-        optional_input!($feature, $call, Ok::<bool, FrameworkError>(false))
-    };
-    ($feature:literal, $call:expr, $absent:expr) => {{
-        #[cfg(feature = $feature)]
-        {
-            $call
-        }
-        #[cfg(not(feature = $feature))]
-        {
-            $absent
-        }
-    }};
-}
 
 /// Logical pixels one wheel line scrolls.
 pub(crate) const LINE_SCROLL_EXTENT: f32 = 60.0;
@@ -182,7 +161,9 @@ impl AppContext {
         let lane = if captured || touch || matches!(phase, PointerPhase::Cancel) {
             None
         } else {
-            via!(self.scrollbar_target_near_hit(*x, *y, overlay.target))
+            self.capabilities
+                .scrollbar
+                .and_then(|s| (s.near_hit)(self, *x, *y, overlay.target))
         };
         let target = lane.map_or(overlay.target, |(view, _)| Some(view));
         *landed = target;
@@ -191,8 +172,8 @@ impl AppContext {
         }
         self.set_pointer_location(document, *pointer_id, Some((*x, *y)));
         self.set_pointer_hover_at(document, *pointer_id, target, now)?;
-        if !captured {
-            via!(self.sync_scrollbar_hot(document, *pointer_id, lane))?;
+        if !captured && let Some(scrollbar) = self.capabilities.scrollbar {
+            (scrollbar.hot_sync)(self, document, *pointer_id, lane)?;
         }
         self.update_text_diagnostic_hover_hit(document, *x, *y, target)?;
         if *phase == PointerPhase::Move {
@@ -207,14 +188,17 @@ impl AppContext {
         };
         if !overlay.prevent_default
             && let Some(phase) = terminal_phase
-            && via!(self.terminal_pointer(document, target, *pointer_id, phase, *x, *y))?
+            && let Some(term) = self.capabilities.terminal
+            && (term.pointer)(self, document, target, *pointer_id, phase, *x, *y)?
         {
             return Ok(CONSUMED);
         }
         if !overlay.prevent_default
             && !activation_click
             && let Some(phase) = terminal_phase
-            && via!(self.rich_editor_pointer(
+            && let Some(rich_editor) = self.capabilities.rich_editor
+            && (rich_editor.pointer)(
+                self,
                 document,
                 target,
                 *pointer_id,
@@ -223,38 +207,18 @@ impl AppContext {
                 *y,
                 modifiers.shift,
                 now,
-            ))?
+            )?
         {
             return Ok(CONSUMED);
         }
 
-        #[cfg(feature = "graph-canvas")]
-        let graph_button = match *button {
-            1 => GraphPointerButton::Middle,
-            _ => GraphPointerButton::Primary,
-        };
         let mut number_selected_all = false;
         let component_handled = match phase {
             PointerPhase::Move => {
                 if self.move_view_drag(document, *pointer_id, *x, *y, *modifiers, now)? {
                     return Ok(CONSUMED);
                 }
-                if via!(self.update_text_area_resize(document, *pointer_id, *x, *y))? {
-                    return Ok(CONSUMED);
-                }
-                if optional_input!(
-                    "rich-text",
-                    self.update_rich_text_pointer(document, *pointer_id, *x, *y)
-                )? {
-                    return Ok(CONSUMED);
-                }
-                #[cfg(feature = "image-viewer")]
-                if let Some(viewer) = self
-                    .world()
-                    .pointer_capture(document, *pointer_id)
-                    .and_then(|target| self.view_entity::<crate::ImageViewer>(target))
-                    && self.image_viewer_pointer_move(viewer, *pointer_id, *x, *y)?
-                {
+                if self.update_active_drag(document, *pointer_id, true, *x, *y, now)? {
                     return Ok(CONSUMED);
                 }
                 if let Some(shaper) = reborrow_text_shaper(&mut text_shaper)
@@ -265,92 +229,30 @@ impl AppContext {
                     && self.document_text_pointer_drag(document, *pointer_id, *x, *y, shaper)?
                 {
                     true
+                } else if self.update_active_drag(document, *pointer_id, false, *x, *y, now)? {
+                    true
                 } else {
-                    via!(self.update_scrollbar_drag(document, *pointer_id, *x, *y))?
-                        || via!(self.update_range_drag_at(
-                            document,
-                            *pointer_id,
-                            *x,
-                            *y,
-                            modifiers.alt,
-                        ))?
-                        || via!(self.update_range_span_drag_at(document, *pointer_id, *x, *y))?
-                        || via!(self.update_curve_drag_at(document, *pointer_id, *x, *y))?
-                        || via!(self.update_xy_pad_drag(
-                            document,
-                            *pointer_id,
-                            *x,
-                            *y,
-                            modifiers.shift,
-                        ))?
-                        || optional_input!(
-                            "graph-canvas",
-                            self.update_graph_canvas_pointer(document, *pointer_id, *x, *y,)
-                        )?
-                        || optional_input!(
-                            "graph-canvas",
-                            self.update_graph_minimap_pointer(document, *pointer_id, *x, *y,)
-                        )?
-                        || optional_input!(
-                            "controls",
-                            self.update_reorder_list_pointer(document, *pointer_id, *x, *y,)
-                        )?
-                        || via!(self.update_split_resize(document, *pointer_id, *x, *y))?
-                        || hooked!(self, dock, |h| (h.update_split)(
-                            self,
-                            document,
-                            *pointer_id,
-                            *x,
-                            *y
-                        ))?
-                        || hooked!(self, workspace, |h| (h.update_resize)(
-                            self,
-                            document,
-                            *pointer_id,
-                            *x,
-                            *y,
-                            now
-                        ))?
-                        || hooked!(self, dock, |h| (h.update_item)(
-                            self,
-                            document,
-                            *pointer_id,
-                            *x,
-                            *y
-                        ))?
-                        || target
-                            .map(|_target| {
-                                optional_input!(
-                                    "graph-canvas",
-                                    self.hover_graph_canvas(_target, *x, *y)
-                                )
-                            })
-                            .transpose()?
-                            .unwrap_or(false)
-                        || target
-                            .map(|_target| {
-                                optional_input!(
-                                    "calendar",
-                                    self.hover_calendar_heatmap(_target, *x, *y)
-                                )
-                            })
-                            .transpose()?
-                            .unwrap_or(false)
-                        || optional_input!("calendar", self.clear_calendar_heatmap_hover(document))?
-                        || via!(
-                            self.sync_split_handle_hover_near_hit(document, *x, *y, target, now)
-                        )?
-                        || target.is_some()
+                    let mut hovered = false;
+                    for i in 0..self.capabilities.hover_moves.len() {
+                        hovered |= (self.capabilities.hover_moves[i])(
+                            self, document, target, *x, *y, now,
+                        )?;
+                    }
+                    hovered || target.is_some()
                 }
             }
             PointerPhase::Down if *button == 2 => {
                 // A secondary press outside an open popover dismisses
                 // it and goes no further, matching the primary press.
-                if via!(self.dismiss_popovers_outside(target))? {
+                if let Some(popover) = self.capabilities.popover
+                    && (popover.dismiss_outside)(self, target)?
+                {
                     *landed = None;
                     return Ok(CONSUMED);
                 }
-                via!(self.cancel_menu_bar_alt());
+                if let Some(menu_bar) = self.capabilities.menu_bar {
+                    (menu_bar.cancel_alt)(self);
+                }
                 self.dismiss_detached_menus(target)?;
                 if let Some(target) = target
                     && self.press_pointer_hook(
@@ -365,11 +267,17 @@ impl AppContext {
                     return Ok(CONSUMED);
                 }
                 if let Some(target) = target {
-                    if let Some(editor) = self.view_entity::<crate::RichTextEditor>(target)
-                        && self.read(editor, |editor| !editor.disabled)?
+                    if let Some(prep) = self
+                        .behavior(target)
+                        .and_then(|b| b.pointer_ops)
+                        .and_then(|p| p.prepare_context_menu)
+                        && self
+                            .world()
+                            .accessibility(target)
+                            .is_some_and(|a| !a.disabled)
                     {
                         self.focus_node(document, target)?;
-                        via!(self.prepare_rich_editor_context_menu(editor, *x, *y))?;
+                        prep(self, target, *x, *y)?;
                     } else if self.world().text_input(target).is_some()
                         && self
                             .world()
@@ -379,11 +287,11 @@ impl AppContext {
                         let unfocused = self.world().focused(document) != Some(target);
                         self.focus_node(document, target)?;
                         if unfocused
-                            && via!(self.select_focused_number_on_entry(
-                                document,
-                                target,
-                                Some((*x, *y))
-                            ))?
+                            && let Some(select_entry) = self
+                                .behavior(target)
+                                .and_then(|b| b.pointer_ops)
+                                .and_then(|p| p.select_on_focus_entry)
+                            && select_entry(self, document, target, Some((*x, *y)))?
                         {
                             self.text_edit.text_pointer_drag = None;
                             self.text_edit.text_pointer_click = None;
@@ -417,7 +325,9 @@ impl AppContext {
                 self.release_pointer_hook(document, *pointer_id, *x, *y, modifiers.shift, 2)?
             }
             PointerPhase::Down if (*is_primary && *button == 0) || *button == 1 => {
-                if via!(self.dismiss_popovers_outside(target))? {
+                if let Some(popover) = self.capabilities.popover
+                    && (popover.dismiss_outside)(self, target)?
+                {
                     // Consume the press that dismissed the popover.
                     // Activation needs a press recorded here to match
                     // on release, so skipping it also stops this click
@@ -425,20 +335,27 @@ impl AppContext {
                     *landed = None;
                     return Ok(CONSUMED);
                 }
-                via!(self.cancel_menu_bar_alt());
+                if let Some(menu_bar) = self.capabilities.menu_bar {
+                    (menu_bar.cancel_alt)(self);
+                }
                 self.dismiss_detached_menus(target)?;
                 // Scrollbars overlay content, so they claim the press
                 // before the node underneath sees it.
                 if *button == 0
                     && !activation_click
                     && let Some(target) = target
-                    && via!(self.begin_text_area_resize(*pointer_id, target, *x, *y))?
+                    && let Some(corner_press) = self
+                        .behavior(target)
+                        .and_then(|b| b.pointer_ops)
+                        .and_then(|p| p.corner_press)
+                    && corner_press(self, *pointer_id, target, *x, *y)?
                 {
                     return Ok(CONSUMED);
                 }
                 if *button == 0
                     && let Some((view, axis)) = lane
-                    && via!(self.begin_scrollbar_drag(*pointer_id, view, axis, *x, *y))?
+                    && let Some(scrollbar) = self.capabilities.scrollbar
+                    && (scrollbar.begin_drag)(self, *pointer_id, view, axis, *x, *y)?
                 {
                     return Ok(CONSUMED);
                 }
@@ -450,17 +367,15 @@ impl AppContext {
                 } else {
                     [None; 3]
                 };
-                let dock_source = target
-                    .filter(|id| hooked!(self, dock, |h| (h.is_item_source)(self, *id)))
-                    .or_else(|| {
-                        reachable
-                            .then(|| {
-                                hooked!(self, dock, |h| (h.tab_strip_near_hit)(
-                                    self, document, *x, *y, target
-                                ))
-                            })
-                            .flatten()
-                    });
+                let dock_source = self.capabilities.dock.and_then(|dock| {
+                    target
+                        .filter(|id| (dock.is_item_source)(self, *id))
+                        .or_else(|| {
+                            reachable
+                                .then(|| (dock.tab_strip_near_hit)(self, document, *x, *y, target))
+                                .flatten()
+                        })
+                });
                 let hit = dock_handle.or(split_handle).or(workspace_handle).or(target);
                 let focus_target = hit.and_then(|id| nearest_focusable(self, id));
                 let unfocused =
@@ -485,11 +400,11 @@ impl AppContext {
                         && unfocused == Some(focus)
                         && !modifiers.shift
                         && !modifiers.alt
-                        && via!(self.select_focused_number_on_entry(
-                            document,
-                            focus,
-                            Some((*x, *y))
-                        ))?
+                        && let Some(select_entry) = self
+                            .behavior(focus)
+                            .and_then(|b| b.pointer_ops)
+                            .and_then(|p| p.select_on_focus_entry)
+                        && select_entry(self, document, focus, Some((*x, *y)))?
                     {
                         self.text_edit.text_pointer_drag = None;
                         self.text_edit.text_pointer_click = None;
@@ -542,118 +457,72 @@ impl AppContext {
                     }
                     if *button == 0
                         && !activation_click
-                        && optional_input!(
-                            "rich-text",
-                            self.begin_rich_text_pointer(document, *pointer_id, target, *x, *y)
-                        )?
+                        && let Some(rich_text_pointer) = self.capabilities.rich_text_pointer
+                        && rich_text_pointer(self, document, *pointer_id, target, *x, *y)?
                     {
                         return Ok(CONSUMED);
                     }
-                    #[cfg(feature = "image-viewer")]
-                    if *button == 0
-                        && !activation_click
-                        && let Some(viewer) = self.view_entity::<crate::ImageViewer>(target)
-                        && self
-                            .image_viewer_pointer_down(viewer, *pointer_id, *x, *y)?
-                            .is_some()
+                    let pointer_ops = self.behavior(target).and_then(|b| b.pointer_ops);
+                    if let Some(ops) = pointer_ops.filter(|ops| ops.early_press)
+                        && (!*activation_click || !ops.skip_on_activation_click)
+                        && let Some(press) = ops.press
                     {
-                        return Ok(CONSUMED);
-                    }
-                    if optional_input!("graph-canvas", self.is_graph_canvas(target), false) {
-                        optional_input!(
-                            "graph-canvas",
-                            self.begin_graph_canvas_pointer(
-                                document,
-                                *pointer_id,
-                                target,
-                                *x,
-                                *y,
-                                graph_button,
-                            )
-                        )?;
-                    } else if optional_input!("graph-canvas", self.is_graph_minimap(target), false)
-                    {
-                        optional_input!(
-                            "graph-canvas",
-                            self.begin_graph_minimap_pointer(*pointer_id, target, *x, *y)
-                        )?;
+                        let press_button = *button;
+                        let handled =
+                            press(self, document, target, *pointer_id, press_button, *x, *y)?;
+                        if !ops.skips_press_pointer && handled {
+                            return Ok(CONSUMED);
+                        }
                     } else if *button == 0
-                        && optional_input!(
-                            "controls",
-                            self.begin_reorder_list_pointer(document, *pointer_id, target, *x, *y,)
-                        )?
+                        && let Some(reorder) = self.capabilities.reorder_list
+                        && (reorder.begin_pointer)(self, document, *pointer_id, target, *x, *y)?
                     {
-                    } else if hooked!(self, dock, |h| (h.is_handle)(self, target)) && *button == 0 {
-                        hooked!(self, dock, |h| (h.begin_split)(
-                            self,
-                            document,
-                            *pointer_id,
-                            target,
-                            *x,
-                            *y
-                        ))?;
-                    } else if via!(self.is_split_handle(target)) && *button == 0 {
-                        via!(self.begin_split_resize(document, *pointer_id, target, *x, *y))?;
-                    } else if hooked!(self, workspace, |h| (h.is_resize_handle)(self, target))
-                        && *button == 0
+                    } else if *button == 0
+                        && let Some(dock) = self.capabilities.dock
+                        && (dock.is_handle)(self, target)
                     {
-                        hooked!(self, workspace, |h| (h.begin_resize)(
-                            self,
-                            document,
-                            *pointer_id,
-                            target,
-                            *x,
-                            *y,
-                            now
-                        ))?;
+                        (dock.begin_split)(self, document, *pointer_id, target, *x, *y)?;
+                    } else if *button == 0
+                        && let Some(split) = self.capabilities.split_pane
+                        && (split.is_handle)(self, target)
+                    {
+                        (split.begin_resize)(self, document, *pointer_id, target, *x, *y)?;
+                    } else if *button == 0
+                        && let Some(ws) = self.capabilities.workspace
+                        && (ws.is_resize_handle)(self, target)
+                    {
+                        (ws.begin_resize)(self, document, *pointer_id, target, *x, *y, now)?;
                     } else if *button == 0 {
-                        if let Some(source) = dock_source {
-                            hooked!(self, dock, |h| (h.begin_item)(
-                                self,
-                                document,
-                                *pointer_id,
-                                source,
-                                *x,
-                                *y
-                            ))?;
+                        if let Some(source) = dock_source
+                            && let Some(dock) = self.capabilities.dock
+                        {
+                            (dock.begin_item)(self, document, *pointer_id, source, *x, *y)?;
                         } else {
                             self.press_pointer(document, *pointer_id, target)?;
-                            if !*activation_click
-                                && via!(self.press_number_stepper(target, *x, *y))?
+                            if let Some(ops) = pointer_ops.filter(|ops| !ops.early_press)
+                                && (!*activation_click || !ops.skip_on_activation_click)
+                                && let Some(press) = ops.press
                             {
-                                self.release_pointer(document, *pointer_id);
-                            } else if via!(self.is_range_field(target)) {
-                                via!(self.begin_range_drag_at(
-                                    document,
-                                    *pointer_id,
-                                    target,
-                                    *x,
-                                    *y
-                                ))?;
-                            } else if via!(self.range_span_target(target)).is_some() {
-                                via!(self.begin_range_span_drag_at(
+                                if press(self, document, target, *pointer_id, *button, *x, *y)?
+                                    && ops.releases_pointer_on_press
+                                {
+                                    self.release_pointer(document, *pointer_id);
+                                }
+                            } else if let Some(range_span) = self.capabilities.range_span
+                                && (range_span.target)(self, target).is_some()
+                            {
+                                (range_span.begin_drag)(
+                                    self,
                                     document,
                                     *pointer_id,
                                     target,
                                     *x,
                                     *y,
-                                ))?;
-                            } else if via!(self.curve_target(target)).is_some() {
-                                via!(self.begin_curve_drag_at(
-                                    document,
-                                    *pointer_id,
-                                    target,
-                                    *x,
-                                    *y
-                                ))?;
-                            } else if via!(self.is_xy_pad(target)) {
-                                via!(self.begin_xy_pad_drag(
-                                    document,
-                                    *pointer_id,
-                                    target,
-                                    *x,
-                                    *y
-                                ))?;
+                                )?;
+                            } else if let Some(curve) = self.capabilities.curve_field
+                                && (curve.target)(self, target).is_some()
+                            {
+                                (curve.begin_drag)(self, document, *pointer_id, target, *x, *y)?;
                             }
                         }
                     }
@@ -666,7 +535,7 @@ impl AppContext {
                 if self.end_view_drag(document, *pointer_id, *x, *y, *modifiers, false)? {
                     return Ok(CONSUMED);
                 }
-                if via!(self.end_text_area_resize(document, *pointer_id, false))? {
+                if self.end_active_drag(document, *pointer_id, true, *x, *y, now, false)? {
                     return Ok(CONSUMED);
                 }
                 if self.release_pointer_hook(
@@ -677,21 +546,6 @@ impl AppContext {
                     modifiers.shift,
                     *button,
                 )? {
-                    return Ok(CONSUMED);
-                }
-                if optional_input!(
-                    "rich-text",
-                    self.end_rich_text_pointer(document, *pointer_id, *x, *y, false)
-                )? {
-                    return Ok(CONSUMED);
-                }
-                #[cfg(feature = "image-viewer")]
-                if let Some(viewer) = self
-                    .world()
-                    .pointer_capture(document, *pointer_id)
-                    .and_then(|target| self.view_entity::<crate::ImageViewer>(target))
-                    && self.image_viewer_pointer_up(viewer, *pointer_id)?
-                {
                     return Ok(CONSUMED);
                 }
                 // 拖拽移动选中的落点执行先于通用释放清理：active 态
@@ -707,45 +561,7 @@ impl AppContext {
                     self.release_pointer(document, *pointer_id);
                     return Ok(CONSUMED);
                 }
-                if via!(self.end_scrollbar_drag(document, *pointer_id, false))?
-                    || via!(self.end_range_drag(document, *pointer_id, false))?
-                    || via!(self.end_range_span_drag(document, *pointer_id, false))?
-                    || via!(self.end_curve_drag(document, *pointer_id, false))?
-                    || via!(self.end_xy_pad_drag(document, *pointer_id, false))?
-                    || optional_input!(
-                        "graph-canvas",
-                        self.end_graph_canvas_pointer(document, *pointer_id, *x, *y, false,)
-                    )?
-                    || optional_input!(
-                        "graph-canvas",
-                        self.end_graph_minimap_pointer(document, *pointer_id, false)
-                    )?
-                    || optional_input!(
-                        "controls",
-                        self.end_reorder_list_pointer(document, *pointer_id, *x, *y, false,)
-                    )?
-                    || via!(self.end_split_resize(document, *pointer_id, false))?
-                    || hooked!(self, dock, |h| (h.end_split)(
-                        self,
-                        document,
-                        *pointer_id,
-                        false
-                    ))?
-                    || hooked!(self, workspace, |h| (h.end_resize)(
-                        self,
-                        document,
-                        *pointer_id,
-                        now
-                    ))?
-                    || hooked!(self, dock, |h| (h.end_item)(
-                        self,
-                        document,
-                        *pointer_id,
-                        *x,
-                        *y,
-                        false
-                    ))?
-                {
+                if self.end_active_drag(document, *pointer_id, false, *x, *y, now, false)? {
                     self.release_pointer(document, *pointer_id);
                     return Ok(CONSUMED);
                 }
@@ -760,85 +576,22 @@ impl AppContext {
                 }
             }
             PointerPhase::Cancel => {
-                via!(self.end_text_area_resize(document, *pointer_id, true))?;
-                optional_input!(
-                    "rich-text",
-                    self.end_rich_text_pointer(document, *pointer_id, *x, *y, true)
-                )?;
-                #[cfg(feature = "image-viewer")]
-                if let Some(viewer) = self
-                    .world()
-                    .pointer_capture(document, *pointer_id)
-                    .and_then(|target| self.view_entity::<crate::ImageViewer>(target))
-                {
-                    self.image_viewer_pointer_up(viewer, *pointer_id)?;
-                }
+                let pre_gesture_drag =
+                    self.end_active_drag(document, *pointer_id, true, *x, *y, now, true)?;
                 self.text_editor_pointer_release(*pointer_id);
                 self.document_text_pointer_release(*pointer_id);
-                let scrollbar = via!(self.end_scrollbar_drag(document, *pointer_id, true))?;
-                let range = via!(self.end_range_drag(document, *pointer_id, true))?;
-                let range_span = via!(self.end_range_span_drag(document, *pointer_id, true))?;
-                let curve = via!(self.end_curve_drag(document, *pointer_id, true))?;
-                let xy_pad = via!(self.end_xy_pad_drag(document, *pointer_id, true))?;
-                let graph = optional_input!(
-                    "graph-canvas",
-                    self.end_graph_canvas_pointer(document, *pointer_id, *x, *y, true,)
-                )?;
-                let minimap = optional_input!(
-                    "graph-canvas",
-                    self.end_graph_minimap_pointer(document, *pointer_id, true)
-                )?;
-                let reorder = optional_input!(
-                    "controls",
-                    self.end_reorder_list_pointer(document, *pointer_id, *x, *y, true,)
-                )?;
-                let split = via!(self.end_split_resize(document, *pointer_id, true))?;
-                let dock_split = hooked!(self, dock, |h| (h.end_split)(
-                    self,
-                    document,
-                    *pointer_id,
-                    true
-                ))?;
-                let workspace = hooked!(self, workspace, |h| (h.end_resize)(
-                    self,
-                    document,
-                    *pointer_id,
-                    now
-                ))?;
-                let dock_item = hooked!(self, dock, |h| (h.end_item)(
-                    self,
-                    document,
-                    *pointer_id,
-                    *x,
-                    *y,
-                    true
-                ))?;
+                let drag = self.end_active_drag(document, *pointer_id, false, *x, *y, now, true)?;
                 let view_drag =
                     self.end_view_drag(document, *pointer_id, *x, *y, *modifiers, true)?;
                 let pressed = self.release_pointer(document, *pointer_id).is_some();
                 // Before the hover clears, so the hooked node hears it leave.
                 let hooked = self.cancel_pointer_hook(document, *pointer_id)?;
                 self.set_pointer_hover_at(document, *pointer_id, None, now)?;
-                let calendar =
-                    optional_input!("calendar", self.clear_calendar_heatmap_hover(document))?;
-                let split_hover = via!(self.sync_split_handle_hover(document, None))?;
-                scrollbar
-                    || range
-                    || range_span
-                    || curve
-                    || xy_pad
-                    || graph
-                    || minimap
-                    || reorder
-                    || split
-                    || dock_split
-                    || workspace
-                    || dock_item
-                    || calendar
-                    || split_hover
-                    || pressed
-                    || hooked
-                    || view_drag
+                let mut hover_cleared = false;
+                for i in 0..self.capabilities.hover_clears.len() {
+                    hover_cleared |= (self.capabilities.hover_clears[i])(self, document)?;
+                }
+                pre_gesture_drag || drag || hover_cleared || pressed || hooked || view_drag
             }
             _ => false,
         };
@@ -915,12 +668,12 @@ impl AppContext {
         {
             return Ok(CONSUMED);
         }
-        // 锚定浮层（补全弹层 / hover 浮窗）优先：指针落在浮层面板
-        #[cfg(feature = "image-viewer")]
-        if let Some(viewer) = overlay
-            .target
-            .and_then(|target| self.view_entity::<crate::ImageViewer>(target))
-            && self.image_viewer_wheel(viewer, *x, *y, dy)?
+        if let Some(target) = overlay.target
+            && let Some(wheel) = self
+                .behavior(target)
+                .and_then(|b| b.pointer_ops)
+                .and_then(|p| p.wheel_pre_overlay)
+            && wheel(self, target, *x, *y, dy)?
         {
             return Ok(CONSUMED);
         }
@@ -936,13 +689,6 @@ impl AppContext {
         if overlay_rows != 0 && self.scroll_text_overlay_at(document, *x, *y, overlay_rows)? {
             return Ok(CONSUMED);
         }
-        #[cfg(feature = "graph-canvas")]
-        let graph_delta = if *line_delta {
-            GraphScrollDelta::Lines { y: -dy }
-        } else {
-            GraphScrollDelta::Pixels { y: -dy }
-        };
-        let graph_target = overlay.target;
         let scrolled = if overlay.prevent_default {
             overlay
                 .target
@@ -952,19 +698,13 @@ impl AppContext {
                 .transpose()?
                 .flatten()
                 .is_some()
-        } else if graph_target.is_some_and(|_target| {
-            optional_input!("graph-canvas", self.is_graph_canvas(_target), false)
-        }) {
-            optional_input!(
-                "graph-canvas",
-                self.scroll_graph_canvas(
-                    document,
-                    graph_target.expect("graph target"),
-                    *x,
-                    *y,
-                    graph_delta,
-                )
-            )?
+        } else if let Some(target) = overlay.target
+            && let Some(wheel) = self
+                .behavior(target)
+                .and_then(|b| b.pointer_ops)
+                .and_then(|p| p.wheel_post_overlay)
+        {
+            wheel(self, document, target, *x, *y, dy, *line_delta)?
         } else {
             self.wheel_scroll_from(document, overlay.target, delta, *line_delta, false)?
                 .is_some()
@@ -1011,7 +751,8 @@ impl AppContext {
             && !modifiers.alt
             && !modifiers.control
             && !modifiers.meta
-            && optional_input!("controls", self.cancel_reorder_list_drag(document))?
+            && let Some(rl) = self.capabilities.reorder_list
+            && (rl.cancel_drag)(self, document)?
         {
             return Ok(CONSUMED);
         }
@@ -1019,7 +760,8 @@ impl AppContext {
         // An open menu bar, or one the keyboard holds, takes its keys first.
         if !keyboard_barrier
             && !stroke.is_text()
-            && via!(self.route_menu_bar_key(document, key, pressed, repeat, modifiers))?
+            && let Some(menu_bar) = self.capabilities.menu_bar
+            && (menu_bar.route_key)(self, document, key, pressed, repeat, modifiers)?
         {
             return Ok(CONSUMED);
         }
@@ -1043,7 +785,8 @@ impl AppContext {
                 return Ok(CONSUMED);
             }
             if matches!(overlay_key, Some(OverlayKey::Escape))
-                && via!(self.dismiss_popovers_on_escape())?
+                && let Some(popover) = self.capabilities.popover
+                && (popover.dismiss_on_escape)(self)?
             {
                 return Ok(CONSUMED);
             }
@@ -1062,21 +805,13 @@ impl AppContext {
             {
                 return Ok(CONSUMED);
             }
-            // Context-menu rows are virtual. Claim arrows and confirmation
-            // before a text field or the focused control underneath sees them,
-            // including while this menu is a blocking overlay.
-            if via!(self.navigate_open_context_menu(document, key, repeat))? {
-                return Ok(CONSUMED);
-            }
-            // An open action menu's commands are real focus stops; the
-            // arrows walk them, through keyed lists of commands too.
-            if via!(self.navigate_open_action_menu(document, key))? {
-                return Ok(CONSUMED);
-            }
-            // A menu built from components: the arrows walk whatever focus
-            // stops it holds.
-            if via!(self.navigate_open_anchored_menu(document, key))? {
-                return Ok(CONSUMED);
+            // Open menus (context menu, action menu, anchored menu) claim
+            // arrows and confirmation before a text field or focused control.
+            for i in 0..self.capabilities.open_menu_navigators.len() {
+                let nav = self.capabilities.open_menu_navigators[i];
+                if nav(self, document, key, repeat)? {
+                    return Ok(CONSUMED);
+                }
             }
         }
         // The application's key policy sees keys, not text.
@@ -1096,12 +831,18 @@ impl AppContext {
                 prevent_default: keyboard_barrier,
             });
         }
-        if !keyboard_barrier && via!(self.focused_terminal_node(document)).is_some() {
+        if !keyboard_barrier
+            && self
+                .capabilities
+                .terminal
+                .is_some_and(|term| (term.focused_node)(self, document).is_some())
+        {
             return self.terminal_keystroke(document, stroke, services);
         }
         if !keyboard_barrier
+            && let Some(rich_editor) = self.capabilities.rich_editor
             && let Some(handled) =
-                via!(self.rich_editor_key(document, key, text, modifiers, services))?
+                (rich_editor.key)(self, document, key, text, modifiers, services)?
             && handled
         {
             return Ok(CONSUMED);
@@ -1112,7 +853,8 @@ impl AppContext {
             && !modifiers.alt
             && !modifiers.control
             && !modifiers.meta
-            && via!(self.end_focused_tree_rename(document, key == "Enter"))?
+            && let Some(tree) = self.capabilities.tree
+            && (tree.end_rename)(self, document, key == "Enter")?
         {
             return Ok(CONSUMED);
         }
@@ -1144,13 +886,17 @@ impl AppContext {
                 _ => None,
             };
             if let Some(intent) = segmented_navigation
-                && via!(self.navigate_focused_segmented(document, intent))?
+                && let Some(nav) = self.capabilities.segmented_navigate
+                && nav(self, document, intent)?
             {
                 return Ok(CONSUMED);
             }
             if matches!(key, " " | "Space" | "Enter")
                 && let Some(target) = self.world().focused(document)
-                && via!(self.is_segmented_option_node(target))
+                && self
+                    .behavior(target)
+                    .and_then(|b| b.pointer_ops)
+                    .is_some_and(|p| p.is_segmented_option)
             {
                 if !repeat {
                     self.activate_node(target)?;
@@ -1191,18 +937,31 @@ impl AppContext {
                 _ => None,
             };
             if let Some(navigation) = navigation {
-                via!(self.navigate_focused_table(document, navigation, TABLE_PAGE_ROWS))?
+                match self.capabilities.data_table {
+                    Some(t) => (t.navigate)(self, document, navigation, TABLE_PAGE_ROWS)?,
+                    None => false,
+                }
             } else if primary {
                 // Ctrl with ArrowUp / ArrowDown, Space or A in a tree or a table
-                via!(self.focused_tree_key(
-                    document,
-                    key,
-                    nana_ui_core::SelectionModifiers::TOGGLE
-                ))? || via!(self.table_selection_key(
-                    document,
-                    key,
-                    nana_ui_core::SelectionModifiers::TOGGLE
-                ))?
+                let tree_handled = match self.capabilities.tree {
+                    Some(tree) => (tree.focused_key)(
+                        self,
+                        document,
+                        key,
+                        nana_ui_core::SelectionModifiers::TOGGLE,
+                    )?,
+                    None => false,
+                };
+                tree_handled
+                    || match self.capabilities.data_table {
+                        Some(t) => (t.selection_key)(
+                            self,
+                            document,
+                            key,
+                            nana_ui_core::SelectionModifiers::TOGGLE,
+                        )?,
+                        None => false,
+                    }
             } else {
                 match key {
                     "Backspace" => self.delete_focused_text_backward(document)?,
@@ -1214,15 +973,31 @@ impl AppContext {
             }
         } else if modifiers.shift && !modifiers.alt && !modifiers.control && !modifiers.meta {
             // Shift with an arrow extends a tree's or a table's selection
-            via!(self.focused_tree_key(document, key, nana_ui_core::SelectionModifiers::EXTEND))?
-                || via!(self.table_selection_key(
+            let tree_handled = match self.capabilities.tree {
+                Some(tree) => (tree.focused_key)(
+                    self,
                     document,
                     key,
-                    nana_ui_core::SelectionModifiers::EXTEND
-                ))?
+                    nana_ui_core::SelectionModifiers::EXTEND,
+                )?,
+                None => false,
+            };
+            tree_handled
+                || match self.capabilities.data_table {
+                    Some(t) => (t.selection_key)(
+                        self,
+                        document,
+                        key,
+                        nana_ui_core::SelectionModifiers::EXTEND,
+                    )?,
+                    None => false,
+                }
         } else if modifiers.alt && !modifiers.shift && !modifiers.control && !modifiers.meta {
             // Alt with an arrow moves a reorder list's row
-            optional_input!("controls", self.focused_reorder_list_key(document, key))?
+            match self.capabilities.reorder_list {
+                Some(rl) => (rl.focused_key)(self, document, key)?,
+                None => false,
+            }
         } else {
             false
         };
@@ -1256,19 +1031,22 @@ impl AppContext {
             return Ok(false);
         }
         if key == "F2"
-            && via!(self.focused_tree_key(document, key, nana_ui_core::SelectionModifiers::NONE))?
+            && let Some(tree) = self.capabilities.tree
+            && (tree.focused_key)(self, document, key, nana_ui_core::SelectionModifiers::NONE)?
         {
             return Ok(true);
         }
         if matches!(key, "Delete" | "Backspace")
-            && via!(self.request_focused_timeline_clip_delete(document))?
+            && let Some(delete_clip) = self.capabilities.timeline_clip_delete
+            && delete_clip(self, document)?
         {
             return Ok(true);
         }
         // Across a curve the side arrows walk its points; the others step
         // the focused one as on a vertical slider.
         if matches!(key, "ArrowLeft" | "ArrowRight")
-            && via!(self.focus_curve_neighbour(document, key == "ArrowRight"))?
+            && let Some(curve) = self.capabilities.curve_field
+            && (curve.focus_neighbour)(self, document, key == "ArrowRight")?
         {
             return Ok(true);
         }
@@ -1281,13 +1059,13 @@ impl AppContext {
             "End" => Some(RangeAdjustment::Maximum),
             _ => None,
         };
-        if let Some(adjustment) = range_adjustment
-            && (via!(self.adjust_focused_range(document, adjustment))?
-                || via!(self.adjust_focused_range_span(document, adjustment))?
-                || via!(self.adjust_focused_curve(document, adjustment))?
-                || via!(self.adjust_focused_scrub_field(document, adjustment))?)
-        {
-            return Ok(true);
+        if let Some(adjustment) = range_adjustment {
+            for i in 0..self.capabilities.step_adjusters.len() {
+                let adjust = self.capabilities.step_adjusters[i];
+                if adjust(self, document, adjustment)? {
+                    return Ok(true);
+                }
+            }
         }
         let xy_adjustment = match key {
             "ArrowLeft" => Some(XYPadAdjustment::Left),
@@ -1297,68 +1075,63 @@ impl AppContext {
             _ => None,
         };
         if let Some(adjustment) = xy_adjustment
-            && via!(self.adjust_focused_xy_pad(document, adjustment))?
+            && let Some(adjust) = self.capabilities.adjust_xy_pad
+            && adjust(self, document, adjustment)?
         {
             return Ok(true);
         }
-        #[cfg(feature = "image-viewer")]
-        {
-            let step = match key {
+        if let Some(step_viewer) = self.capabilities.image_viewer_step {
+            let forward = match key {
                 "ArrowLeft" => Some(false),
                 "ArrowRight" => Some(true),
                 _ => None,
             };
-            if let Some(forward) = step
-                && self.step_focused_image_viewer(document, forward)?
+            if let Some(forward) = forward
+                && step_viewer(self, document, forward)?
             {
                 return Ok(true);
             }
         }
-        #[cfg(feature = "graph-canvas")]
+        if let Some(graph_key) = self.capabilities.graph_canvas_key
+            && graph_key(self, document, key)?
         {
-            let graph_adjustment = match key {
-                "ArrowLeft" => Some(GraphCanvasAdjustment::PanLeft),
-                "ArrowRight" => Some(GraphCanvasAdjustment::PanRight),
-                "ArrowUp" => Some(GraphCanvasAdjustment::PanUp),
-                "ArrowDown" => Some(GraphCanvasAdjustment::PanDown),
-                "Home" | "0" => Some(GraphCanvasAdjustment::Fit),
-                "+" | "=" => Some(GraphCanvasAdjustment::ZoomIn),
-                "-" => Some(GraphCanvasAdjustment::ZoomOut),
-                "Escape" => Some(GraphCanvasAdjustment::ClearSelection),
-                _ => None,
-            };
-            if let Some(adjustment) = graph_adjustment
-                && self.adjust_focused_graph_canvas(document, adjustment)?
-            {
-                return Ok(true);
-            }
+            return Ok(true);
         }
         let split_direction = match key {
             "ArrowLeft" | "ArrowUp" => Some(-1.0),
             "ArrowRight" | "ArrowDown" => Some(1.0),
             _ => None,
         };
-        if let Some(direction) = split_direction
-            && (via!(self.adjust_focused_split(document, direction))?
-                || hooked!(self, dock, |h| (h.adjust_focused_split)(
-                    self, document, direction
-                ))?)
-        {
-            return Ok(true);
+        if let Some(direction) = split_direction {
+            if let Some(sp) = self.capabilities.split_pane
+                && (sp.adjust_focused)(self, document, direction)?
+            {
+                return Ok(true);
+            }
+            if let Some(dock) = self.capabilities.dock
+                && (dock.adjust_focused_split)(self, document, direction)?
+            {
+                return Ok(true);
+            }
         }
         // A numeric field's step and commit keys are routed with its other
         // editing keys in `text_editor_key`; Escape is not an editing key and
         // reverts the draft here.
         if key == "Escape" {
-            let cancelled = via!(self.cancel_focused_number_input(document))?;
-            if cancelled {
-                // a scrub field's typing ends with its revert
-                via!(self.end_focused_scrub_edit(document))?;
+            let mut cancelled = false;
+            for i in 0..self.capabilities.edit_cancellers.len() {
+                let cancel = self.capabilities.edit_cancellers[i];
+                if cancel(self, document)? {
+                    cancelled = true;
+                    break;
+                }
             }
-            // a range's typing ends with Escape, whether the draft changed
-            let range = via!(self.end_focused_range_edit(document))?
-                | via!(self.end_focused_range_span_edit(document))?;
-            if cancelled || range {
+            let mut ended = false;
+            for i in 0..self.capabilities.edit_enders.len() {
+                let end = self.capabilities.edit_enders[i];
+                ended |= end(self, document)?;
+            }
+            if cancelled || ended {
                 return Ok(true);
             }
         }
@@ -1372,9 +1145,8 @@ impl AppContext {
             _ => None,
         };
         if let Some(navigation) = palette_nav
-            && hooked!(self, command_palette, |h| (h.navigate)(
-                self, document, navigation
-            ))?
+            && let Some(nav) = self.capabilities.command_palette_navigate
+            && nav(self, document, navigation)?
         {
             return Ok(true);
         }
@@ -1383,21 +1155,23 @@ impl AppContext {
             "ArrowDown" => Some(1),
             _ => None,
         };
-        if let Some(delta) = select_delta
-            && (hooked!(self, select, |h| (h.adjust)(self, document, delta))?
-                || hooked!(self, dropdown, |h| (h.adjust)(self, document, delta))?
-                || hooked!(self, search_dropdown, |h| (h.adjust)(self, document, delta))?)
-        {
-            return Ok(true);
+        if let Some(delta) = select_delta {
+            for i in 0..self.capabilities.choice_hooks.len() {
+                let hook = self.capabilities.choice_hooks[i];
+                if (hook.adjust)(self, document, delta)? {
+                    return Ok(true);
+                }
+            }
         }
-        if matches!(key, " " | "Space" | "Enter")
-            && (hooked!(self, select, |h| (h.commit)(self, document))?
-                || hooked!(self, dropdown, |h| (h.commit)(self, document))?)
-        {
-            return Ok(true);
-        }
-        if key == "Enter" && hooked!(self, search_dropdown, |h| (h.commit)(self, document))? {
-            return Ok(true);
+        let is_enter = key == "Enter";
+        let is_space = matches!(key, " " | "Space");
+        if is_enter || is_space {
+            for i in 0..self.capabilities.choice_hooks.len() {
+                let hook = self.capabilities.choice_hooks[i];
+                if (is_enter || hook.commit_on_space) && (hook.commit)(self, document)? {
+                    return Ok(true);
+                }
+            }
         }
         let tree_nav = match key {
             "ArrowUp" => Some(crate::TreeNavigation::Previous),
@@ -1411,7 +1185,8 @@ impl AppContext {
             _ => None,
         };
         if let Some(navigation) = tree_nav
-            && hooked!(self, tree, |h| (h.navigate)(self, document, navigation))?
+            && let Some(tree) = self.capabilities.tree
+            && (tree.navigate)(self, document, navigation)?
         {
             return Ok(true);
         }
@@ -1434,6 +1209,12 @@ impl AppContext {
         stroke: KeyStroke<'_>,
         services: &mut dyn HostServices,
     ) -> Result<InputDisposition, FrameworkError> {
+        let Some(term) = self.capabilities.terminal else {
+            return Ok(InputDisposition {
+                handled: false,
+                prevent_default: true,
+            });
+        };
         let KeyStroke {
             key,
             text,
@@ -1442,23 +1223,23 @@ impl AppContext {
         } = stroke;
         let clipboard_chord = modifiers.control && modifiers.shift || modifiers.meta;
         let handled = if clipboard_chord && key.eq_ignore_ascii_case("c") {
-            let copied =
-                via!(self.terminal_selected_text(document)).filter(|text| !text.is_empty());
+            let copied = (term.selected_text)(self, document).filter(|text| !text.is_empty());
             copied.is_some_and(|text| services.write_clipboard(&text).is_ok())
         } else if clipboard_chord && key.eq_ignore_ascii_case("v") {
             match services.read_clipboard() {
-                Ok(Some(text)) if !text.is_empty() => via!(self.paste_terminal(document, &text))?,
+                Ok(Some(text)) if !text.is_empty() => (term.paste)(self, document, &text)?,
                 _ => false,
             }
         } else {
-            via!(self.terminal_key(
+            (term.key)(
+                self,
                 document,
                 key,
                 text,
                 modifiers.control,
                 modifiers.alt,
                 modifiers.shift,
-            ))?
+            )?
         };
         Ok(InputDisposition {
             handled,
@@ -1526,27 +1307,31 @@ impl AppContext {
         composition: &CompositionInput,
     ) -> Result<InputDisposition, FrameworkError> {
         let overlay_blocks = self.has_blocking_runtime_overlay(document);
-        if !overlay_blocks && via!(self.focused_terminal_node(document)).is_some() {
+        if !overlay_blocks
+            && let Some(term) = self.capabilities.terminal
+            && (term.focused_node)(self, document).is_some()
+        {
             match composition {
                 CompositionInput::Start => {
-                    via!(self.set_terminal_preedit(document, ""))?;
+                    (term.set_preedit)(self, document, "")?;
                 }
                 CompositionInput::Update { text, .. } => {
-                    via!(self.set_terminal_preedit(document, text))?;
+                    (term.set_preedit)(self, document, text)?;
                 }
                 CompositionInput::Commit(text) => {
-                    via!(self.set_terminal_preedit(document, ""))?;
-                    via!(self.terminal_input(document, text.as_bytes().to_vec()))?;
+                    (term.set_preedit)(self, document, "")?;
+                    (term.input_bytes)(self, document, text.as_bytes().to_vec())?;
                 }
                 CompositionInput::Disabled | CompositionInput::End => {
-                    via!(self.set_terminal_preedit(document, ""))?;
+                    (term.set_preedit)(self, document, "")?;
                 }
                 CompositionInput::Enabled | CompositionInput::DeleteSurrounding { .. } => {}
             }
             return Ok(CONSUMED);
         }
         if !overlay_blocks
-            && let Some(handled) = via!(self.rich_editor_composition(document, composition))?
+            && let Some(rich_editor) = self.capabilities.rich_editor
+            && let Some(handled) = (rich_editor.composition)(self, document, composition)?
         {
             return Ok(InputDisposition {
                 handled,
@@ -1619,18 +1404,25 @@ impl AppContext {
             match key {
                 "ArrowUp" | "ArrowDown" if !modifiers.shift && !modifiers.alt => {
                     let steps = if key == "ArrowUp" { 1 } else { -1 };
-                    via!(self.step_focused_number_input(document, steps))?;
+                    if let Some(step) = self.capabilities.number_step {
+                        step(self, document, steps)?;
+                    }
                     return Ok(true);
                 }
                 "Enter" => {
                     if self.world().ime(focused.node).is_some() {
                         return Ok(true);
                     }
-                    let submitted = via!(self.submit_focused_number_input(document))?;
+                    let submitted = match self.capabilities.number_submit {
+                        Some(submit) => submit(self, document)?,
+                        None => false,
+                    };
                     // a scrub field's typing ends with Enter, committed or not
-                    let ended = via!(self.end_focused_scrub_edit(document))?
-                        | via!(self.end_focused_range_edit(document))?
-                        | via!(self.end_focused_range_span_edit(document))?;
+                    let mut ended = false;
+                    for i in 0..self.capabilities.edit_enders.len() {
+                        let end = self.capabilities.edit_enders[i];
+                        ended |= end(self, document)?;
+                    }
                     return Ok(submitted || ended);
                 }
                 _ => {}

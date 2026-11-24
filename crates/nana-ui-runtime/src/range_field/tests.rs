@@ -301,7 +301,10 @@ fn a_click_on_the_value_thumb_types_enter_commits_and_escape_reverts() {
     input
         .route(&mut cx, pointer(PointerPhase::Up, x + 1.0))
         .unwrap();
-    let parts = cx.read(range, |range| range.parts).unwrap().unwrap();
+    let parts = cx
+        .assembled_slot::<crate::view_components::RangeParts>(range.stable_id())
+        .copied()
+        .unwrap();
     assert!(cx.read(range, |range| range.editing).unwrap());
     assert_eq!(cx.world().focused(document()), Some(parts.input));
     assert!(take(&heard).is_empty());
@@ -368,7 +371,10 @@ fn the_reset_button_is_disabled_at_the_default_and_puts_it_back() {
     let (mut cx, range) =
         laid_out(RangeField::new(50.0, 0.0, 100.0, 1.0).default_value(Some(50.0)));
     let heard = listen(&mut cx, range);
-    let parts = cx.read(range, |range| range.parts).unwrap().unwrap();
+    let parts = cx
+        .assembled_slot::<crate::view_components::RangeParts>(range.stable_id())
+        .copied()
+        .unwrap();
     let reset = Entity::<IconButton>::from_stable_id(parts.reset);
     let node = |cx: &AppContext| cx.world().accessibility(parts.reset).unwrap().into_owned();
     assert_eq!(node(&cx).role, AccessibilityRole::Button);
@@ -467,16 +473,14 @@ fn a_view_binds_the_default_value_and_assembles_the_button() {
     let range = Entity::<RangeField>::from_stable_id(
         cx.world().node(root.stable_id()).unwrap().children[0],
     );
-    let (thumb, bounds, wanted, parts) = cx
+    let (thumb, bounds, wanted) = cx
         .read(range, |range| {
-            (
-                range.value_thumb,
-                range.show_bounds,
-                range.default_value,
-                range.parts,
-            )
+            (range.value_thumb, range.show_bounds, range.default_value)
         })
         .unwrap();
+    let parts = cx
+        .assembled_slot::<crate::view_components::RangeParts>(range.stable_id())
+        .copied();
     assert!(thumb && bounds);
     assert_eq!(wanted, Some(40.0));
     let parts = parts.expect("assembled by the view");
@@ -580,7 +584,10 @@ fn clicking_or_activating_a_value_thumb_in_a_scrolled_list_preserves_scroll_offs
     input
         .route(&mut cx, pointer(PointerPhase::Up, x, screen_y))
         .unwrap();
-    let parts = cx.read(visible, |range| range.parts).unwrap().unwrap();
+    let parts = cx
+        .assembled_slot::<crate::view_components::RangeParts>(visible.stable_id())
+        .copied()
+        .unwrap();
     assert!(cx.read(visible, |range| range.editing).unwrap());
     assert_eq!(cx.world().focused(document()), Some(parts.input));
     assert_eq!(

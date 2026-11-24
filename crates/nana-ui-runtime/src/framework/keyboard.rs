@@ -20,7 +20,7 @@ impl AppContext {
         mut handler: impl FnMut(&V, &nana_ui_input::KeyInput) -> bool + Send + 'static,
     ) -> Result<(), FrameworkError> {
         self.read(entity, |_| ())?;
-        self.key_handlers.insert(
+        self.lifecycle.key_handlers.insert(
             entity.id,
             Box::new(move |view, key| {
                 view.downcast_ref::<V>()
@@ -49,8 +49,9 @@ impl AppContext {
         {
             return false;
         }
-        if let Some(view) = self.views.get(&target) {
+        if let Some(view) = self.store.views.get(&target) {
             return self
+                .lifecycle
                 .key_handlers
                 .get_mut(&target)
                 .is_some_and(|handler| handler(view.as_ref(), key));
@@ -58,7 +59,8 @@ impl AppContext {
         let Some(stack) = self.world.elided_stack(target) else {
             return false;
         };
-        self.key_handlers
+        self.lifecycle
+            .key_handlers
             .get_mut(&target)
             .is_some_and(|handler| handler(&stack, key))
     }
@@ -131,6 +133,6 @@ mod tests {
             )
         ));
         cx.remove_view(area).unwrap();
-        assert!(!cx.key_handlers.contains_key(&area.id));
+        assert!(!cx.lifecycle.key_handlers.contains_key(&area.id));
     }
 }

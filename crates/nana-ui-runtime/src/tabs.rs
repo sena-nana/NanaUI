@@ -385,9 +385,7 @@ impl ComponentView for Tabs {
     const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::TABS.type_id);
 
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
-        hooks: Some(|hooks| {
-            crate::framework::routes::segmented(hooks);
-        }),
+        capabilities: Some(crate::selection::install_segmented_capabilities),
         activation: Some(crate::AppContext::activate_tabs),
         lifecycle: Some(crate::AppContext::sync_tabs_options),
         ..crate::TypeBehavior::NONE

@@ -7,9 +7,9 @@ use nana_ui_core::{ControlSize, DropdownEvent, DropdownSelection};
 use crate::select::{menu_option_label, select_option_at};
 use crate::view_components::project_common;
 use crate::{
-    AccessibilityRole, AccessibilityState, ComponentView, InteractionState, MutationQueue,
-    NodeKind, NodeStyle, SelectMenuScroll, SelectOptionData, SelectVisual, SemanticPaint,
-    StableNodeId, TextContent, UiWorld,
+    AccessibilityRole, AccessibilityState, AppContext, ComponentView, Entity, InteractionState,
+    MutationQueue, NodeKind, NodeStyle, SelectMenuScroll, SelectOptionData, SelectVisual,
+    SemanticPaint, StableNodeId, TextContent, UiWorld,
 };
 
 /// Option identity stays application-owned. Disabled options remain visible.
@@ -474,11 +474,10 @@ impl ComponentView for Dropdown {
                 }
             })
         }),
-        hooks: Some(|hooks| {
-            hooks.dropdown = Some(&DROPDOWN_HOOKS);
-            crate::framework::routes::option_list(hooks);
-            crate::framework::routes::dropdown(hooks);
+        capabilities: Some(|caps| {
+            caps.add_choice_hook(&DROPDOWN_KEY_HOOKS);
         }),
+        a11y: Some(&DROPDOWN_A11Y),
         pointer: Some(&crate::framework::DROPDOWN_MENU_POINTER),
         ..crate::TypeBehavior::NONE
     };
@@ -626,10 +625,17 @@ fn multiple_label(values: &[Arc<str>], options: &[DropdownOption]) -> String {
     }
 }
 
+static DROPDOWN_A11Y: crate::framework::A11yBehavior = crate::framework::A11yBehavior {
+    activate_select_option: Some(AppContext::activate_select_option),
+    set_expanded: Some(|cx, id, expand| cx.set_dropdown_opened(Entity::from_stable_id(id), expand)),
+    ..crate::framework::A11yBehavior::EMPTY
+};
+
 /// The router reaches this list's keyboard only once one exists.
-pub(crate) static DROPDOWN_HOOKS: crate::framework::ChoiceHooks = crate::framework::ChoiceHooks {
+static DROPDOWN_KEY_HOOKS: crate::framework::ChoiceKeyHooks = crate::framework::ChoiceKeyHooks {
     adjust: crate::AppContext::adjust_focused_dropdown,
     commit: crate::AppContext::commit_focused_dropdown,
+    commit_on_space: true,
 };
 
 #[cfg(test)]

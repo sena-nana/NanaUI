@@ -2,6 +2,34 @@
 
 use super::*;
 
+static RANGE_DRAG_OPS: crate::framework::ActiveDragOps = crate::framework::ActiveDragOps {
+    pre_gesture: false,
+    cancel_on_touch_scroll: true,
+    update: |cx, doc, _, ptr, x, y, _| {
+        let alt = cx
+            .input
+            .pointer_details
+            .get(&(doc, ptr))
+            .is_some_and(|d| d.modifiers.alt);
+        cx.update_range_drag_at(doc, ptr, x, y, alt)
+    },
+    end: |cx, doc, _, ptr, _, _, _, cancel| cx.end_range_drag(doc, ptr, cancel),
+};
+
+static XY_PAD_DRAG_OPS: crate::framework::ActiveDragOps = crate::framework::ActiveDragOps {
+    pre_gesture: false,
+    cancel_on_touch_scroll: false,
+    update: |cx, doc, _, ptr, x, y, _| {
+        let shift = cx
+            .input
+            .pointer_details
+            .get(&(doc, ptr))
+            .is_some_and(|d| d.modifiers.shift);
+        cx.update_xy_pad_drag(doc, ptr, x, y, shift)
+    },
+    end: |cx, doc, _, ptr, _, _, _, cancel| cx.end_xy_pad_drag(doc, ptr, cancel),
+};
+
 impl AppContext {
     /// Publish a numeric value using the field's bounds and discrete or
     /// continuous policy; hosts do not reimplement numeric normalization.
@@ -32,7 +60,7 @@ impl AppContext {
     /// that refuses input are refused outright: nothing changes, the pending
     /// draft and its undo history included. A number within bounds is taken,
     /// snapped to the grid, even when the field already holds it.
-    pub(super) fn set_number_text(
+    pub(crate) fn set_number_text(
         &mut self,
         entity: Entity<NumberInput>,
         text: &str,
@@ -161,7 +189,11 @@ impl AppContext {
                 });
             })?;
             if self.world.focused(document) != Some(entity.id) {
-                self.sync_interactive_style_states();
+                self.sync_interactive_style_nodes(&[
+                    Some(entity.id),
+                    self.world.focused(document),
+                    self.world.focus_visible(document),
+                ]);
             }
         }
         Ok(committed || observed)
@@ -171,7 +203,7 @@ impl AppContext {
     /// pending draft and emitting [`crate::NumberCancelled`]. IME composition
     /// is left alone. Returns whether the draft reverted or a cancellation
     /// listener observed the event.
-    pub(super) fn cancel_focused_number_input(
+    pub(crate) fn cancel_focused_number_input(
         &mut self,
         document: DocumentId,
     ) -> Result<bool, FrameworkError> {
@@ -188,7 +220,11 @@ impl AppContext {
                 cx.emit(crate::NumberCancelled);
             })?;
             if self.world.focused(document) != Some(entity.id) {
-                self.sync_interactive_style_states();
+                self.sync_interactive_style_nodes(&[
+                    Some(entity.id),
+                    self.world.focused(document),
+                    self.world.focus_visible(document),
+                ]);
             }
         }
         Ok(reverted || observed)
@@ -197,7 +233,7 @@ impl AppContext {
     /// Select all text when focus enters a [`NumberInput`] on pointer entry
     /// (excluding stepper hits) or sequential Tab navigation. Returns `true`
     /// when `node` is the focused [`NumberInput`] and accepts selection.
-    pub(super) fn select_focused_number_on_entry(
+    pub(crate) fn select_focused_number_on_entry(
         &mut self,
         document: DocumentId,
         node: StableNodeId,
@@ -246,7 +282,7 @@ impl AppContext {
     /// Leaving focus cancels an unfinished composition (the world drops it on
     /// blur), so it is cancelled first and the draft beneath it committed,
     /// rather than committed under a live preedit.
-    pub(super) fn settle_focused_number_input(
+    pub(crate) fn settle_focused_number_input(
         &mut self,
         document: DocumentId,
     ) -> Result<bool, FrameworkError> {
@@ -367,7 +403,11 @@ impl AppContext {
         let Some(target) = self.world.focused(document) else {
             return Ok(false);
         };
-        if !via!(self.is_range_field(target)) {
+        if !self
+            .behavior(target)
+            .and_then(|b| b.pointer_ops)
+            .is_some_and(|p| p.is_value_range)
+        {
             return Ok(false);
         }
         self.adjust_range(Entity::from_stable_id(target), adjustment)
@@ -424,7 +464,7 @@ impl AppContext {
         target: StableNodeId,
         x: f32,
     ) -> Result<bool, FrameworkError> {
-        if !via!(self.is_range_field(target)) {
+        if !self.is_range_field(target) {
             return Ok(false);
         }
         let (disabled, initial_value, value_thumb) = self
@@ -452,6 +492,7 @@ impl AppContext {
             cx.mutations().capture_pointer(pointer_id, target);
             cx.emit(RangeDragging { dragging: true });
         })?;
+        self.begin_active_drag(document, pointer_id, target, &RANGE_DRAG_OPS);
         let moved = self.update_range_drag(document, pointer_id, x)?;
         if value_thumb && !on_thumb {
             // A press beside the capsule jumps there, then drags from it.
@@ -488,7 +529,7 @@ impl AppContext {
         let Some(target) = self.world.pointer_capture(document, pointer_id) else {
             return Ok(false);
         };
-        if !via!(self.is_range_field(target)) {
+        if !self.is_range_field(target) {
             return Ok(false);
         }
         let Some(geometry) = self.world.range_geometry(target) else {
@@ -541,7 +582,7 @@ impl AppContext {
         let Some(target) = self.world.pointer_capture(document, pointer_id) else {
             return Ok(false);
         };
-        via!(self.end_range_drag_on(target, pointer_id, cancel))
+        self.end_range_drag_on(target, pointer_id, cancel)
     }
 
     /// A commit released `pointer_id`'s capture of `target` without the
@@ -555,24 +596,12 @@ impl AppContext {
             if !self.world.contains(target) {
                 continue;
             }
-            if via!(self.is_range_field(target))
-                && self.read(Entity::<RangeField>::from_stable_id(target), |range| {
-                    range
-                        .dragging
-                        .is_some_and(|drag| drag.pointer_id == pointer_id)
-                })?
+            if let Some(end) = self
+                .behavior(target)
+                .and_then(|b| b.pointer_ops)
+                .and_then(|p| p.end_value_drag)
             {
-                via!(self.end_range_drag_on(target, pointer_id, true))?;
-            } else if self.range_span_drags(target, pointer_id) {
-                via!(self.end_range_span_drag_on(target, pointer_id, true))?;
-            } else if self.curve_drags(target, pointer_id) {
-                via!(self.end_curve_drag_on(target, pointer_id, true))?;
-            } else if via!(self.is_xy_pad(target))
-                && self.read(Entity::<XYPad>::from_stable_id(target), |pad| {
-                    pad.dragging.is_some()
-                })?
-            {
-                via!(self.end_xy_pad_drag_on(target, pointer_id, true))?;
+                let _ = end(self, target, pointer_id, true)?;
             }
         }
         Ok(())
@@ -591,8 +620,11 @@ impl AppContext {
         pointer_id: u64,
         cancel: bool,
     ) -> Result<bool, FrameworkError> {
-        if !via!(self.is_range_field(target)) {
+        if !self.is_range_field(target) {
             return Ok(false);
+        }
+        if let Some(document) = self.world.document_of(target) {
+            self.clear_active_drag(document, pointer_id, target);
         }
         let held = self.holds_capture(target, pointer_id);
         let mut clicked_thumb = false;
@@ -631,7 +663,7 @@ impl AppContext {
         x: f32,
         y: f32,
     ) -> Result<bool, FrameworkError> {
-        if !via!(self.is_xy_pad(target)) {
+        if !self.is_xy_pad(target) {
             return Ok(false);
         }
         if self.read(Entity::<XYPad>::from_stable_id(target), XYPad::inactive)? {
@@ -651,7 +683,8 @@ impl AppContext {
             });
             cx.mutations().capture_pointer(pointer_id, target);
         })?;
-        via!(self.update_xy_pad_drag(document, pointer_id, x, y, false))
+        self.begin_active_drag(document, pointer_id, target, &XY_PAD_DRAG_OPS);
+        self.update_xy_pad_drag(document, pointer_id, x, y, false)
     }
 
     pub fn update_xy_pad_drag(
@@ -665,7 +698,7 @@ impl AppContext {
         let Some(target) = self.world.pointer_capture(document, pointer_id) else {
             return Ok(false);
         };
-        if !via!(self.is_xy_pad(target)) {
+        if !self.is_xy_pad(target) {
             return Ok(false);
         }
         let Some(bounds) = self.world.component_layout_box(target) else {
@@ -712,7 +745,7 @@ impl AppContext {
         let Some(target) = self.world.pointer_capture(document, pointer_id) else {
             return Ok(false);
         };
-        via!(self.end_xy_pad_drag_on(target, pointer_id, cancel))
+        self.end_xy_pad_drag_on(target, pointer_id, cancel)
     }
 
     pub(crate) fn end_xy_pad_drag_on(
@@ -721,8 +754,11 @@ impl AppContext {
         pointer_id: u64,
         cancel: bool,
     ) -> Result<bool, FrameworkError> {
-        if !via!(self.is_xy_pad(target)) {
+        if !self.is_xy_pad(target) {
             return Ok(false);
+        }
+        if let Some(document) = self.world.document_of(target) {
+            self.clear_active_drag(document, pointer_id, target);
         }
         let held = self.holds_capture(target, pointer_id);
         let initial = self.read(Entity::<XYPad>::from_stable_id(target), |pad| {

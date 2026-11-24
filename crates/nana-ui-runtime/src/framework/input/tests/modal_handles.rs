@@ -106,10 +106,8 @@ fn a_dialog_button_beside_a_sidebar_handle_takes_the_press() {
         cx.read(shell, |shell| shell.workspace.unwrap()).unwrap(),
     );
     let handle = cx
-        .read(workspace, |workspace| {
-            workspace.handles.get(&RegionId::Resources).copied()
-        })
-        .unwrap()
+        .assembled_slot::<crate::workspace::WorkspaceSlots>(workspace.stable_id())
+        .and_then(|slots| slots.handles.get(&RegionId::Resources).copied())
         .expect("the sidebar has a resize handle");
     let handle_box = cx.world().layout_box(handle).unwrap();
     let button_box = cx.world().layout_box(button.stable_id()).unwrap();
@@ -171,10 +169,8 @@ fn a_press_on_content_beside_a_sidebar_handle_resizes() {
         cx.read(shell, |shell| shell.workspace.unwrap()).unwrap(),
     );
     let handle = cx
-        .read(workspace, |workspace| {
-            workspace.handles.get(&RegionId::Resources).copied()
-        })
-        .unwrap()
+        .assembled_slot::<crate::workspace::WorkspaceSlots>(workspace.stable_id())
+        .and_then(|slots| slots.handles.get(&RegionId::Resources).copied())
         .expect("the sidebar has a resize handle");
     let handle_box = cx.world().layout_box(handle).unwrap();
     let (x, y) = (

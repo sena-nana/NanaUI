@@ -231,17 +231,15 @@ mod tests {
 
         let row = children(&cx, root.stable_id())[0];
         let entity = Entity::<SettingsRow>::from_stable_id(row);
-        let (control, label_slot, hint_slot, copy) = cx
-            .read(entity, |row| {
-                (row.control, row.label_slot, row.hint_slot, row.copy_slot)
-            })
+        let (control, label_slot, hint_slot) = cx
+            .read(entity, |row| (row.control, row.label_slot, row.hint_slot))
             .unwrap();
-        let (control, label_slot, hint_slot, copy) = (
-            control.unwrap(),
-            label_slot.unwrap(),
-            hint_slot.unwrap(),
-            copy.unwrap(),
-        );
+        let copy = cx
+            .assembled_slot::<crate::settings::SettingsRowAssembled>(row)
+            .and_then(|s| s.copy_slot)
+            .unwrap();
+        let (control, label_slot, hint_slot) =
+            (control.unwrap(), label_slot.unwrap(), hint_slot.unwrap());
         assert_eq!(children(&cx, row), [copy, control]);
         assert_eq!(children(&cx, copy), [label_slot, hint_slot]);
         assert!(
@@ -399,15 +397,21 @@ mod tests {
         StableNodeId,
         Option<StableNodeId>,
     ) {
-        cx.read(Entity::<SettingsRow>::from_stable_id(row), |row| {
-            (
-                row.copy_slot.unwrap(),
-                row.label_slot.unwrap(),
-                row.hint_slot.unwrap(),
-                row.label_line_slot,
-            )
-        })
-        .unwrap()
+        let (label, hint) = cx
+            .read(Entity::<SettingsRow>::from_stable_id(row), |row| {
+                (row.label_slot.unwrap(), row.hint_slot.unwrap())
+            })
+            .unwrap();
+        let assembled = cx
+            .assembled_slot::<crate::settings::SettingsRowAssembled>(row)
+            .copied()
+            .unwrap();
+        (
+            assembled.copy_slot.unwrap(),
+            label,
+            hint,
+            assembled.label_line_slot,
+        )
     }
 
     /// Lay `document` out with its text shaped, as a frame does.
@@ -552,7 +556,11 @@ mod tests {
             !cx.world().contains(line),
             "the line went with the accessory"
         );
-        assert_eq!(cx.read(entity, |row| row.label_line_slot).unwrap(), None);
+        assert_eq!(
+            cx.assembled_slot::<crate::settings::SettingsRowAssembled>(entity.stable_id())
+                .and_then(|s| s.label_line_slot),
+            None
+        );
         let style = cx.world().node_style(label).unwrap();
         assert_eq!(style.layout.width, Some(nana_ui_core::LengthSpec::Fill));
         assert_eq!(style.layout.flex_grow, Some(1.0));
@@ -598,7 +606,8 @@ mod tests {
         }
 
         fn help_of(cx: &AppContext, id: StableNodeId) -> Option<StableNodeId> {
-            cx.read(row(cx, id), |row| row.help_slot).unwrap()
+            cx.assembled_slot::<crate::settings::SettingsRowAssembled>(id)
+                .and_then(|s| s.help_slot)
         }
 
         /// Every settings row under `id`, in order.
@@ -828,17 +837,20 @@ mod tests {
                     .unwrap()
             );
             lay_out(&mut cx, document, 480.0);
-            let (main, opened, notice, control, label) = cx
+            let assembled = cx
+                .assembled_slot::<crate::settings::SettingsRowAssembled>(id)
+                .copied()
+                .unwrap();
+            let (control, label) = cx
                 .read(entity, |row| {
-                    (
-                        row.main_slot.unwrap(),
-                        row.help_text_slot.unwrap(),
-                        row.notice_slot.unwrap(),
-                        row.control.unwrap(),
-                        row.label_slot.unwrap(),
-                    )
+                    (row.control.unwrap(), row.label_slot.unwrap())
                 })
                 .unwrap();
+            let (main, opened, notice) = (
+                assembled.main_slot.unwrap(),
+                assembled.help_text_slot.unwrap(),
+                assembled.notice_slot.unwrap(),
+            );
             assert!(cx.read(entity, |row| row.help_open).unwrap());
             assert_eq!(children(&cx, id), [main, opened, notice]);
             assert!(!cx.world().node_style(opened).unwrap().layout.hidden);
@@ -909,10 +921,9 @@ mod tests {
             let (id, plain) = (rows[0], rows[1]);
             let height = |cx: &AppContext, id: StableNodeId| bounds(cx, id).height;
             let slots = |cx: &AppContext| {
-                cx.read(row(cx, id), |row| {
-                    (row.notice_slot, row.notice_glyph_slot, row.notice_text_slot)
-                })
-                .unwrap()
+                cx.assembled_slot::<crate::settings::SettingsRowAssembled>(id)
+                    .map(|s| (s.notice_slot, s.notice_glyph_slot, s.notice_text_slot))
+                    .unwrap_or((None, None, None))
             };
             assert_eq!(slots(&cx).0, None);
             assert!((height(&cx, id) - height(&cx, plain)).abs() < 0.5);
@@ -985,10 +996,8 @@ mod tests {
         const FRAME: Duration = Duration::from_millis(16);
 
         fn flash_of(cx: &AppContext, row: StableNodeId) -> Option<StableNodeId> {
-            cx.read(Entity::<SettingsRow>::from_stable_id(row), |row| {
-                row.flash_slot
-            })
-            .unwrap()
+            cx.assembled_slot::<crate::settings::SettingsRowAssembled>(row)
+                .and_then(|s| s.flash_slot)
         }
 
         fn opacity(cx: &AppContext, id: StableNodeId, at: Duration) -> Option<f32> {
@@ -1241,10 +1250,16 @@ mod tests {
         settle(&mut cx);
         let rows = children(&cx, view.roots()[0]);
         let parts = |cx: &AppContext, row: StableNodeId| {
-            cx.read(Entity::<SettingsRow>::from_stable_id(row), |row| {
-                (row.control.unwrap(), row.copy_slot.unwrap(), row.trailing)
-            })
-            .unwrap()
+            let (control, trailing) = cx
+                .read(Entity::<SettingsRow>::from_stable_id(row), |row| {
+                    (row.control.unwrap(), row.trailing)
+                })
+                .unwrap();
+            let copy = cx
+                .assembled_slot::<crate::settings::SettingsRowAssembled>(row)
+                .and_then(|s| s.copy_slot)
+                .unwrap();
+            (control, copy, trailing)
         };
         let layout =
             |cx: &AppContext, id: StableNodeId| cx.world().canonical_layout_box(id).unwrap();

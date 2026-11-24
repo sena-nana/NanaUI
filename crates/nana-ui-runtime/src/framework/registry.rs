@@ -4,13 +4,13 @@ use super::*;
 
 impl AppContext {
     pub fn resolve_component_tag(&self, tag: &str) -> Option<&ComponentTypeId> {
-        self.components.resolve_tag(tag)
+        self.store.components.resolve_tag(tag)
     }
 
     /// Every component type this context can instantiate.
     #[cfg(test)]
     pub(crate) fn component_type_ids(&self) -> impl Iterator<Item = &ComponentTypeId> {
-        self.components.type_ids()
+        self.store.components.type_ids()
     }
 
     /// Resolve an already-normalized tag (see [`normalize_tag`]).
@@ -18,7 +18,7 @@ impl AppContext {
         &self,
         normalized_tag: &str,
     ) -> Option<&ComponentTypeId> {
-        self.components.resolve_normalized(normalized_tag)
+        self.store.components.resolve_normalized(normalized_tag)
     }
 
     pub fn install(&mut self, extension: &impl UiExtension) -> Result<(), FrameworkError> {
@@ -26,7 +26,7 @@ impl AppContext {
         if name.is_empty() {
             return Err(FrameworkError::InvalidExtension);
         }
-        if self.extensions.contains(&name) {
+        if self.lifecycle.extensions.contains(&name) {
             return Err(FrameworkError::DuplicateExtension(name));
         }
         let mut registrar = ExtensionRegistrar::default();
@@ -34,7 +34,7 @@ impl AppContext {
         if let Some(id) = registrar
             .actions
             .keys()
-            .find(|id| self.actions.contains_key(*id))
+            .find(|id| self.lifecycle.actions.contains_key(*id))
         {
             return Err(FrameworkError::DuplicateAction(id.clone()));
         }
@@ -50,22 +50,22 @@ impl AppContext {
         if registrar
             .activations
             .keys()
-            .any(|type_id| self.activations.contains_key(type_id))
+            .any(|type_id| self.store.activations.contains_key(type_id))
             || registrar
                 .pointers
                 .keys()
-                .any(|type_id| self.pointer_extensions.contains_key(type_id))
+                .any(|type_id| self.store.pointer_extensions.contains_key(type_id))
         {
             return Err(FrameworkError::DuplicateActivation);
         }
-        self.components.extend(registrar.components)?;
-        self.actions.extend(registrar.actions);
-        self.activations.extend(registrar.activations);
-        self.pointer_extensions.extend(registrar.pointers);
+        self.store.components.extend(registrar.components)?;
+        self.lifecycle.actions.extend(registrar.actions);
+        self.store.activations.extend(registrar.activations);
+        self.store.pointer_extensions.extend(registrar.pointers);
         for presenter in registrar.presenters {
             self.world.register_presenter(presenter)?;
         }
-        self.extensions.insert(name);
+        self.lifecycle.extensions.insert(name);
         Ok(())
     }
 
@@ -92,31 +92,42 @@ impl AppContext {
     #[inline(never)]
     fn register_view_type_erased(&mut self, view: &ViewType) {
         let type_id = view.type_id;
-        if self.behaviors.contains_key(&type_id) {
+        if self.store.behaviors.contains_key(&type_id) {
             return;
         }
-        self.reprojectors.entry(type_id).or_insert(view.update);
-        self.behaviors.insert(type_id, (view.behavior)());
+        self.store
+            .reprojectors
+            .entry(type_id)
+            .or_insert(view.update);
+        self.store.behaviors.insert(type_id, (view.behavior)());
         if view.metrics_reproject {
-            self.metrics_reproject_types.insert(type_id, view.reproject);
+            self.store
+                .metrics_reproject_types
+                .insert(type_id, view.reproject);
         }
         if view.recipe_reproject {
-            self.recipe_reproject_types
+            self.store
+                .recipe_reproject_types
                 .insert(type_id, (view.reproject, view.recipe_dependency_mask));
         }
         if view.reduced_motion_reproject {
-            self.reduced_motion_reproject_types
+            self.store
+                .reduced_motion_reproject_types
                 .insert(type_id, view.reproject);
         }
         if view.text_backend_reproject {
-            self.text_backend_reproject_types
+            self.store
+                .text_backend_reproject_types
                 .insert(type_id, view.reproject);
         }
-        if let Some(install) = view.hooks {
-            install(&mut self.type_hooks);
+        if let Some(install) = view.capabilities {
+            install(&mut self.capabilities);
         }
         if let Some(activation) = view.activation {
-            self.activations.entry(type_id).or_insert_with(activation);
+            self.store
+                .activations
+                .entry(type_id)
+                .or_insert_with(activation);
         }
     }
 
@@ -126,11 +137,11 @@ impl AppContext {
         if TypeId::of::<C>() == TypeId::of::<crate::Stack>() {
             // SAFETY: `TypeId` matched `Stack`.
             let stack = unsafe { &*std::ptr::from_ref(&view).cast::<crate::Stack>() };
-            self.views.remove(&id);
+            self.store.views.remove(&id);
             self.world.set_elided_stack_flags(id, stack.elided_flags());
         } else {
             self.world.set_elided_stack_flags(id, 0);
-            self.views.insert(id, Box::new(view));
+            self.store.views.insert(id, Box::new(view));
         }
     }
 
@@ -151,24 +162,28 @@ impl AppContext {
     ) {
         if let Some(component_id) = view.component_id {
             queue.set_component_type(id, Some(ComponentTypeId::from_static(component_id)));
-        } else if let Some(component_id) = self.components.type_id_for(view.type_id) {
+        } else if let Some(component_id) = self.store.components.type_id_for(view.type_id) {
             queue.set_component_type(id, Some(component_id.clone()));
         }
         self.register_view_type_erased(view);
 
         if view.child_reproject {
-            self.child_reproject_views.insert(id, view.reproject);
+            self.store.child_reproject_views.insert(id, view.reproject);
         }
         if view.hover_tracking {
             self.component_lifecycle.hover_cards.entry(id).or_default();
         }
-        self.emitters.entry(view.type_id).or_insert(view.update);
+        self.store
+            .emitters
+            .entry(view.type_id)
+            .or_insert(view.update);
     }
 
     pub(super) fn allocate_id(&mut self) -> StableNodeId {
         loop {
-            let id = StableNodeId::new(self.next_id).expect("allocator never emits zero");
-            self.next_id = self
+            let id = StableNodeId::new(self.store.next_id).expect("allocator never emits zero");
+            self.store.next_id = self
+                .store
                 .next_id
                 .checked_add(1)
                 .expect("stable ID space exhausted");
@@ -187,7 +202,7 @@ pub(super) struct ViewType {
     update: UpdateErasedFn,
     reproject: ChildReprojectFn,
     behavior: fn() -> hooks::ErasedBehavior,
-    hooks: Option<fn(&mut TypeHooks)>,
+    capabilities: Option<fn(&mut hooks::Capabilities)>,
     activation: Option<fn() -> ActivationFn>,
     child_reproject: bool,
     metrics_reproject: bool,
@@ -206,7 +221,7 @@ impl ViewType {
             update: update_erased::<C>,
             reproject: reproject_typed::<C>,
             behavior: hooks::ErasedBehavior::of::<C>,
-            hooks: C::BEHAVIOR.hooks,
+            capabilities: C::BEHAVIOR.capabilities,
             activation: C::BEHAVIOR
                 .activation
                 .map(|_| activation_of::<C> as fn() -> ActivationFn),

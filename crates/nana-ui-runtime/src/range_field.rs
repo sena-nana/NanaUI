@@ -26,15 +26,19 @@ impl AppContext {
         &mut self,
         range: Entity<RangeField>,
     ) -> Result<bool, FrameworkError> {
-        let wanted = self.read(range, |range| {
-            range.parts.is_some() || range.default_value.is_some() || range.draws_value_thumb()
-        })?;
+        let existing_parts = self
+            .assembled_slot::<RangeParts>(range.stable_id())
+            .copied();
+        let wanted = existing_parts.is_some()
+            || self.read(range, |range| {
+                range.default_value.is_some() || range.draws_value_thumb()
+            })?;
         if !wanted {
             return Ok(false);
         }
         let document = self.document_of_node(range.stable_id())?;
         let snapshot = self.read(range, Clone::clone)?;
-        let alive = snapshot.parts.filter(|parts| {
+        let alive = existing_parts.filter(|parts| {
             [parts.reset, parts.input]
                 .iter()
                 .all(|id| self.world().contains(*id))
@@ -97,7 +101,8 @@ impl AppContext {
         let half_square = self.world().theme().spacing().page / 2.0;
         self.append_children(range.stable_id(), &[parts.reset, parts.input])?;
         if created {
-            self.update_component(range, |range, _| range.parts = Some(parts))?;
+            self.set_assembled_slot(range.stable_id(), parts);
+            self.reproject_component(range)?;
         }
         self.update_component(
             Entity::<IconButton>::from_stable_id(parts.reset),
@@ -203,7 +208,10 @@ impl AppContext {
         else {
             return Ok(false);
         };
-        let Some(parts) = self.read(range, |range| range.parts)? else {
+        let Some(parts) = self
+            .assembled_slot::<RangeParts>(range.stable_id())
+            .copied()
+        else {
             return Ok(false);
         };
         let input = Entity::<NumberInput>::from_stable_id(parts.input);

@@ -4,13 +4,15 @@ use nana_ui_core::{ControlSize, LengthSpec, SemanticColorRole, SemanticPalette};
 
 use crate::view_components::project_common;
 use crate::{
-    AccessibilityRole, AccessibilityState, ComponentElevation, ComponentImage, ComponentTextRegion,
-    ComputedStyle, InteractionState, InteractionStyle, LayoutBox, MutationQueue, NodeKind,
-    NodeStyle, SelectMenuGeometry, SelectMenuScroll, SelectOptionData, SemanticPaint, StableNodeId,
-    TextContent, TextHorizontalAlignment, TextVerticalAlignment, TextureSlotName, UiWorld,
+    AccessibilityRole, AccessibilityState, AppContext, ComponentElevation, ComponentImage,
+    ComponentTextRegion, ComputedStyle, Entity, InteractionState, InteractionStyle, LayoutBox,
+    MutationQueue, NodeKind, NodeStyle, SelectMenuGeometry, SelectMenuScroll, SelectOptionData,
+    SemanticPaint, StableNodeId, TextContent, TextHorizontalAlignment, TextVerticalAlignment,
+    TextureSlotName, UiWorld,
 };
 
 /// Width of the drop-down arrow at the end of the field.
+#[cfg(test)]
 pub(crate) const HANDLE_WIDTH: f32 = nana_ui_core::TypographyTokens::DEFAULT.line;
 /// The menu surface's stroke, inside its box: the rows scroll within it.
 const MENU_BORDER: f32 = nana_ui_core::HAIRLINE;
@@ -453,12 +455,12 @@ impl crate::ComponentView for Select {
                 true
             })
         }),
-        hooks: Some(|hooks| {
-            hooks.select = Some(&SELECT_HOOKS);
-            crate::framework::routes::option_list(hooks);
-            crate::framework::routes::select(hooks);
+        capabilities: Some(|caps| {
+            caps.add_choice_hook(&SELECT_KEY_HOOKS);
         }),
         pointer: Some(&crate::framework::SELECT_MENU_POINTER),
+        a11y: Some(&SELECT_A11Y),
+        focus: Some(&SELECT_FOCUS),
         ..crate::TypeBehavior::NONE
     };
 
@@ -1791,10 +1793,22 @@ pub(crate) fn field_style_for_size(size: ControlSize) -> NodeStyle {
     }
 }
 
+static SELECT_A11Y: crate::framework::A11yBehavior = crate::framework::A11yBehavior {
+    activate_select_option: Some(AppContext::activate_select_option),
+    set_expanded: Some(|cx, id, expand| cx.set_select_opened(Entity::from_stable_id(id), expand)),
+    ..crate::framework::A11yBehavior::EMPTY
+};
+
+static SELECT_FOCUS: crate::framework::FocusBehavior = crate::framework::FocusBehavior {
+    on_blur_settle: None,
+    on_focus_lost: Some(|cx, id| cx.set_select_opened(Entity::from_stable_id(id), false)),
+};
+
 /// The router reaches this list's keyboard only once one exists.
-pub(crate) static SELECT_HOOKS: crate::framework::ChoiceHooks = crate::framework::ChoiceHooks {
+static SELECT_KEY_HOOKS: crate::framework::ChoiceKeyHooks = crate::framework::ChoiceKeyHooks {
     adjust: crate::AppContext::adjust_focused_select,
     commit: crate::AppContext::commit_focused_select,
+    commit_on_space: true,
 };
 
 #[cfg(test)]

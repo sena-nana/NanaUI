@@ -6,6 +6,13 @@ use super::*;
 /// only: a target set back round to where the turn started ends there.
 const MAX_WHEEL_REDIRECTS: usize = 16;
 
+static SCROLLBAR_DRAG_OPS: crate::framework::ActiveDragOps = crate::framework::ActiveDragOps {
+    pre_gesture: false,
+    cancel_on_touch_scroll: false,
+    update: |cx, doc, _, ptr, x, y, _| cx.update_scrollbar_drag(doc, ptr, x, y),
+    end: |cx, doc, _, ptr, _, _, _, cancel| cx.end_scrollbar_drag(doc, ptr, cancel),
+};
+
 impl AppContext {
     /// Change follow mode and immediately move to the current end when enabled.
     /// Later layout passes also follow any newly measured content extent.
@@ -128,7 +135,7 @@ impl AppContext {
 
     fn emit_user_scroll(&mut self, scroll: Entity<ScrollView>) -> Result<(), FrameworkError> {
         // A user scroll reveals auto-hiding bars even without subscribers.
-        via!(self.hold_scrollbars(scroll.id))?;
+        let _ = self.hold_scrollbars(scroll.id)?;
         if !self.has_scroll_listener::<crate::UserScroll>(scroll.id) {
             return Ok(());
         }
@@ -143,7 +150,8 @@ impl AppContext {
     }
 
     fn has_scroll_listener<E: 'static>(&self, id: StableNodeId) -> bool {
-        self.event_handlers
+        self.lifecycle
+            .event_handlers
             .get(&(id, TypeId::of::<E>()))
             .is_some_and(|handlers| !handlers.is_empty())
     }
@@ -163,7 +171,7 @@ impl AppContext {
     /// Send `scroll` a [`ScrollLaidOut`] after the next layout pass of its
     /// document.
     pub(crate) fn notify_laid_out(&mut self, scroll: Entity<ScrollView>) {
-        self.laid_out_notices.insert(scroll.id);
+        self.lifecycle.laid_out_notices.insert(scroll.id);
     }
 
     pub fn scroll_to(
@@ -285,7 +293,8 @@ impl AppContext {
     }
 
     fn owns_text_scroll(&self, id: StableNodeId) -> bool {
-        self.views
+        self.store
+            .views
             .get(&id)
             .is_some_and(|view| view.is::<TextArea>() || view.is::<TextInput>())
     }
@@ -301,7 +310,7 @@ impl AppContext {
         if self.is_scroll_view(scroll) {
             let moved = self.scroll_to(Entity::from_stable_id(scroll), next)?;
             if moved {
-                via!(self.hold_scrollbars(scroll))?;
+                self.hold_scrollbars(scroll)?;
             }
             return Ok(moved);
         }
@@ -511,7 +520,8 @@ impl AppContext {
     /// Whether a node is a [`ScrollView`]. Scrollbar drag and hover chrome
     /// key off this; wheel also routes to CSS `overflow: auto|scroll` boxes.
     pub fn is_scroll_view(&self, id: StableNodeId) -> bool {
-        self.views
+        self.store
+            .views
             .get(&id)
             .is_some_and(|view| view.is::<ScrollView>())
     }
@@ -557,10 +567,15 @@ impl AppContext {
         id: StableNodeId,
         offset: ScrollOffset,
     ) -> Result<bool, FrameworkError> {
-        if self.is_scroll_view(id) {
-            return via!(self.apply_scroll_view_to(id, offset));
+        if let Some(apply) = self
+            .behavior(id)
+            .and_then(|b| b.pointer_ops)
+            .and_then(|p| p.apply_scroll)
+        {
+            return apply(self, id, offset);
         }
         let editor = self
+            .store
             .views
             .get(&id)
             .is_some_and(|view| view.is::<TextArea>() || view.is::<crate::RichTextEditor>());
@@ -593,10 +608,12 @@ impl AppContext {
             // Pinned to the request, which the caret reveal then yields to.
             let applied = self.world.scroll_request(id).unwrap_or(next);
             self.world.set_text_viewport_pin(id, Some(applied));
-            if self.view_entity::<TextArea>(id).is_some() {
-                via!(self.note_text_area_scroll(id, applied))?;
-            } else {
-                via!(self.note_rich_editor_scroll(id, applied))?;
+            if let Some(note_scroll) = self
+                .behavior(id)
+                .and_then(|b| b.pointer_ops)
+                .and_then(|p| p.note_scroll)
+            {
+                note_scroll(self, id, applied)?;
             }
         }
         Ok(true)
@@ -747,7 +764,9 @@ impl AppContext {
         x: f32,
         y: f32,
     ) -> Option<(StableNodeId, nana_ui_core::ScrollbarAxis)> {
-        via!(self.scrollbar_target_near_hit(x, y, self.pointer_target(document, x, y)))
+        self.capabilities
+            .scrollbar
+            .and_then(|s| (s.near_hit)(self, x, y, self.pointer_target(document, x, y)))
     }
 
     /// [`Self::scrollbar_target_near`] with the point already hit-tested.
@@ -806,6 +825,9 @@ impl AppContext {
             });
             cx.mutations().capture_pointer(pointer_id, target);
         })?;
+        if let Some(document) = self.world.document_of(target) {
+            self.begin_active_drag(document, pointer_id, target, &SCROLLBAR_DRAG_OPS);
+        }
         Ok(true)
     }
 
@@ -874,11 +896,12 @@ impl AppContext {
         if cancel {
             self.scroll_to(entity, drag.initial_offset)?;
         }
+        self.clear_active_drag(document, pointer_id, target);
         self.update_scroll_view_visual(entity, |scroll, cx| {
             scroll.dragging = None;
             cx.mutations().release_pointer(pointer_id, target);
         })?;
-        via!(self.hold_scrollbars(target))?;
+        self.hold_scrollbars(target)?;
         Ok(true)
     }
 
@@ -896,16 +919,16 @@ impl AppContext {
             return Ok(());
         }
         for &id in left.iter().filter(|id| !entered.contains(id)) {
-            via!(self.set_scroll_view_hover(id, false))?;
-            via!(self.hold_scrollbars(id))?;
+            self.set_scroll_view_hover(id, false)?;
+            self.hold_scrollbars(id)?;
         }
         for &id in entered.iter().filter(|id| !left.contains(id)) {
-            via!(self.set_scroll_view_hover(id, true))?;
+            self.set_scroll_view_hover(id, true)?;
         }
         Ok(())
     }
 
-    pub(super) fn set_scroll_view_hover(
+    pub(crate) fn set_scroll_view_hover(
         &mut self,
         id: StableNodeId,
         hovered: bool,
@@ -945,7 +968,7 @@ impl AppContext {
     /// Keep `id`'s auto-hiding bars shown for the theme's hide delay: after a
     /// scroll, a drag, or the pointer leaving. Resident and hidden bars and a
     /// zero delay take no hold.
-    pub(super) fn hold_scrollbars(&mut self, id: StableNodeId) -> Result<(), FrameworkError> {
+    pub(crate) fn hold_scrollbars(&mut self, id: StableNodeId) -> Result<(), FrameworkError> {
         let entity = Entity::<ScrollView>::from_stable_id(id);
         let Ok(visibility) = self.read(entity, |scroll| scroll.scrollbars) else {
             return Ok(());
@@ -977,7 +1000,7 @@ impl AppContext {
 
     /// Let go of the holds that ran out by `now`, so those bars fade out
     /// unless something else still shows them. Returns the views released.
-    pub(super) fn release_scrollbar_holds(&mut self, now: Duration) -> Vec<StableNodeId> {
+    pub(crate) fn release_scrollbar_holds(&mut self, now: Duration) -> Vec<StableNodeId> {
         let due: Vec<_> = self
             .component_lifecycle
             .scrollbar_holds
@@ -1004,7 +1027,7 @@ impl AppContext {
 
     /// Note which lane, if any, a pointer is on: that axis's thumb grows and
     /// its track shows, and moving off it lets them settle back.
-    pub(super) fn sync_scrollbar_hot(
+    pub(crate) fn sync_scrollbar_hot(
         &mut self,
         document: DocumentId,
         pointer_id: u64,

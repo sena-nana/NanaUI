@@ -70,7 +70,7 @@ impl AppContext {
     ) -> Result<(), FrameworkError> {
         let emit = self
             .view_type_id(id)
-            .and_then(|type_id| self.emitters.get(&type_id))
+            .and_then(|type_id| self.store.emitters.get(&type_id))
             .copied();
         match emit {
             Some(emit) => emit_erased(self, emit, id, event),
@@ -93,6 +93,7 @@ impl AppContext {
         let mut current = target;
         while let Some(id) = current {
             if self
+                .lifecycle
                 .event_handlers
                 .contains_key(&(id, TypeId::of::<PointerMoved>()))
             {
@@ -137,6 +138,7 @@ impl AppContext {
         let mut current = Some(pressed);
         while let Some(id) = current {
             if self
+                .lifecycle
                 .event_handlers
                 .contains_key(&(id, TypeId::of::<PointerDragged>()))
             {

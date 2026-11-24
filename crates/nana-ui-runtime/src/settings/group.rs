@@ -153,9 +153,6 @@ impl SettingsGroup {
 
 impl ComponentView for SettingsGroup {
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
-        hooks: Some(|hooks| {
-            crate::framework::routes::settings_group(hooks);
-        }),
         lifecycle: Some(sync_settings_group),
         ..crate::TypeBehavior::NONE
     };
@@ -266,10 +263,17 @@ fn sync_settings_group(
     context: &mut AppContext,
     group: Entity<SettingsGroup>,
 ) -> Result<(), FrameworkError> {
-    if context.defer_settings_group(group.stable_id()) {
+    if context.defer_post_flush(group.stable_id(), mark_settings_group_node) {
         return Ok(());
     }
     mark_settings_group(context, group)
+}
+
+fn mark_settings_group_node(
+    context: &mut AppContext,
+    group: StableNodeId,
+) -> Result<(), FrameworkError> {
+    mark_settings_group(context, Entity::from_stable_id(group))
 }
 
 /// Mark `group`'s edges now.
@@ -381,7 +385,7 @@ pub(crate) fn resolve_row_hint_placement(
     context: &mut AppContext,
     row: StableNodeId,
 ) -> Result<(), FrameworkError> {
-    if context.defer_settings_row(row) {
+    if context.defer_post_flush(row, resolve_row_hint_placement_now) {
         return Ok(());
     }
     resolve_row_hint_placement_now(context, row)

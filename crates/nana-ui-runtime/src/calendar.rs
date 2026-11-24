@@ -1018,6 +1018,21 @@ where
     const TYPE_ID: Option<&'static str> =
         Some(crate::component_descriptors::CALENDAR_HEATMAP.type_id);
 
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        capabilities: Some(|caps| {
+            caps.add_hover_move(|cx, doc, target, x, y, _| {
+                if let Some(t) = target
+                    && cx.hover_calendar_heatmap(t, x, y)?
+                {
+                    return Ok(true);
+                }
+                cx.clear_calendar_heatmap_hover(doc)
+            });
+            caps.add_hover_clear(crate::AppContext::clear_calendar_heatmap_hover);
+        }),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "calendar-heatmap".into(),

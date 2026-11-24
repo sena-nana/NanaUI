@@ -313,12 +313,40 @@ impl CurveField {
     }
 }
 
+static CURVE_DRAG_OPS: crate::framework::ActiveDragOps = crate::framework::ActiveDragOps {
+    pre_gesture: false,
+    cancel_on_touch_scroll: false,
+    update: |cx, doc, _, ptr, x, y, _| cx.update_curve_drag_at(doc, ptr, x, y),
+    end: |cx, doc, _, ptr, _, _, _, cancel| cx.end_curve_drag(doc, ptr, cancel),
+};
+
+static CURVE_CAPABILITIES: crate::framework::CurveCapabilities =
+    crate::framework::CurveCapabilities {
+        target: |cx, id| {
+            cx.curve_target(id)
+                .map(|(entity, point)| (entity.stable_id(), point))
+        },
+        begin_drag: AppContext::begin_curve_drag_at,
+        focus_neighbour: AppContext::focus_curve_neighbour,
+        adjust_point: |cx, id, index, adj| {
+            cx.adjust_curve_point(Entity::from_stable_id(id), index, adj)
+        },
+        set_point: |cx, id, index, val| cx.set_curve_point(Entity::from_stable_id(id), index, val),
+    };
+
+static CURVE_POINTER_OPS: crate::framework::PointerOps = crate::framework::PointerOps {
+    end_value_drag: Some(AppContext::end_curve_drag_on),
+    ..crate::framework::PointerOps::EMPTY
+};
+
 impl ComponentView for CurveField {
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
-        hooks: Some(|hooks| {
-            crate::framework::routes::curve_field(hooks);
+        capabilities: Some(|caps| {
+            caps.curve_field = Some(&CURVE_CAPABILITIES);
+            caps.add_step_adjuster(AppContext::adjust_focused_curve);
         }),
         lifecycle: Some(crate::AppContext::sync_curve_field),
+        pointer_ops: Some(&CURVE_POINTER_OPS),
         ..crate::TypeBehavior::NONE
     };
 
@@ -755,6 +783,7 @@ impl AppContext {
             cx.mutations().capture_pointer(pointer_id, field_id);
             cx.emit(CurveDragging { dragging: true });
         })?;
+        self.begin_active_drag(document, pointer_id, field_id, &CURVE_DRAG_OPS);
         if let Some(node) = snapshot.point_node(point) {
             self.focus_node_in_place(document, node)?;
         }
@@ -820,11 +849,12 @@ impl AppContext {
         let Some(field) = self.view_entity::<CurveField>(target) else {
             return Ok(false);
         };
-        let held = self
-            .world()
-            .document_of(target)
-            .and_then(|document| self.world().pointer_capture(document, pointer_id))
+        let document = self.world().document_of(target);
+        let held = document.and_then(|document| self.world().pointer_capture(document, pointer_id))
             == Some(target);
+        if let Some(document) = document {
+            self.clear_active_drag(document, pointer_id, target);
+        }
         self.update_component(field, |field, cx| {
             if held {
                 cx.mutations().release_pointer(pointer_id, target);
@@ -851,21 +881,6 @@ impl AppContext {
             cx.emit(CurveDragging { dragging: false });
             true
         })
-    }
-
-    /// Whether `pointer_id` drags the field at `target`.
-    pub(crate) fn curve_drags(&self, target: StableNodeId, pointer_id: u64) -> bool {
-        self.view_entity::<CurveField>(target)
-            .and_then(|field| {
-                self.read(field, |field| {
-                    field
-                        .dragging
-                        .as_ref()
-                        .is_some_and(|drag| drag.pointer_id == pointer_id)
-                })
-                .ok()
-            })
-            .unwrap_or(false)
     }
 
     /// Lifecycle: create one point node per height, again when their

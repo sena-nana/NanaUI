@@ -5,7 +5,7 @@ use nana_ui_core::{
     SemanticColorRole,
 };
 
-use super::DOCK_HOOKS;
+use super::DOCK_CAPABILITIES;
 use super::model::{
     DEFAULT_FLOATING_HEIGHT, DEFAULT_FLOATING_WIDTH, DEFAULT_FLOATING_X, DEFAULT_FLOATING_Y,
     DOCK_DIVIDER_HIT_SIZE, DockAxis, DockDropZone, DockFloatingSurface, DockNode, can_hide_id,
@@ -308,7 +308,6 @@ pub struct Dock {
     pub hidden: Vec<Arc<str>>,
     /// Center item that cannot hide, matching Gallery `gallery.primary`.
     pub primary: Option<Arc<str>>,
-    pub(super) chrome: Option<DockChrome>,
     pub(super) split_resize: Option<DockSplitResize>,
     pub(super) item_drag: Option<DockItemDrag>,
 }
@@ -325,7 +324,6 @@ impl Dock {
             style: NodeStyle::default(),
             hidden: Vec::new(),
             primary: None,
-            chrome: None,
             split_resize: None,
             item_drag: None,
         }
@@ -521,8 +519,9 @@ impl ComponentView for Dock {
     const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::DOCK.type_id);
 
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
-        hooks: Some(|hooks| hooks.dock = Some(&DOCK_HOOKS)),
+        capabilities: Some(|caps| caps.dock = Some(&DOCK_CAPABILITIES)),
         slot_assembler: Some(crate::AppContext::assemble_dock_panels),
+        slot_projector: Some(Self::project_with_slots),
         ..crate::TypeBehavior::NONE
     };
 
@@ -542,9 +541,31 @@ impl ComponentView for Dock {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        self.project_with_chrome(id, world, mutations, None);
+    }
+}
+
+impl Dock {
+    fn project_with_slots(
+        cx: &crate::AppContext,
+        id: StableNodeId,
+        view: &Self,
+        world: &UiWorld,
+        mutations: &mut MutationQueue,
+    ) {
+        view.project_with_chrome(id, world, mutations, cx.assembled_slot::<DockChrome>(id));
+    }
+
+    fn project_with_chrome(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+        mutations: &mut MutationQueue,
+        chrome: Option<&DockChrome>,
+    ) {
         let visible = visible_branch(&self.root, &self.hidden);
         let root = visible.as_deref().unwrap_or(&self.root);
-        if let Some(chrome) = &self.chrome {
+        if let Some(chrome) = chrome {
             project_chrome(self, chrome, root, world, mutations);
         } else {
             project_common(

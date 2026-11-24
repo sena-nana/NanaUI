@@ -70,43 +70,43 @@ impl AppContext {
 
     /// Open a product-frame profiler and work-counter accumulator.
     pub fn begin_frame_profile(&mut self) {
-        self.frame_layout_spent = (0, None);
-        self.frame_profiler = FrameProfiler::new();
-        self.frame_profiler.mark_runtime_unsupported();
-        self.profiling = true;
+        self.layout.frame_layout_spent = (0, None);
+        self.layout.frame_profiler = FrameProfiler::new();
+        self.layout.frame_profiler.mark_runtime_unsupported();
+        self.layout.profiling = true;
         self.world.begin_frame();
     }
 
     pub fn finish_frame_profile(&mut self) {
         self.world.end_frame();
-        self.profiling = false;
-        let profile = std::mem::take(&mut self.frame_profiler).finish();
+        self.layout.profiling = false;
+        let profile = std::mem::take(&mut self.layout.frame_profiler).finish();
         // Match last_work_counters: an idle flush (no stage ran) must not wipe
         // the last non-empty product profile.
         if profile.any_stage_ran() {
             record_frame_diagnostics(&profile);
-            self.last_profile = profile;
+            self.layout.last_profile = profile;
         }
     }
 
     pub fn last_frame_profile(&self) -> &FrameProfile {
-        &self.last_profile
+        &self.layout.last_profile
     }
 
     pub(super) fn stage_clock(&self) -> Option<Instant> {
-        self.profiling.then(Instant::now)
+        self.layout.profiling.then(Instant::now)
     }
 
     pub(super) fn record_stage(&mut self, stage: FrameStage, started: Option<Instant>) {
         if let Some(started) = started {
-            self.frame_profiler.record(stage, started.elapsed());
+            self.layout.frame_profiler.record(stage, started.elapsed());
         }
     }
 
     /// Record a stage duration while a product frame is open.
     pub fn time_stage_duration(&mut self, stage: FrameStage, duration: Duration) {
-        if self.profiling {
-            self.frame_profiler.record(stage, duration);
+        if self.layout.profiling {
+            self.layout.frame_profiler.record(stage, duration);
         }
     }
 
@@ -254,20 +254,20 @@ impl AppContext {
 
     /// Nodes recomputed by the most recent layout pass; drains on read.
     pub fn take_last_layout_scope(&mut self) -> Vec<StableNodeId> {
-        std::mem::take(&mut self.last_layout_scope)
+        std::mem::take(&mut self.layout.last_layout_scope)
     }
 
     /// Nodes recomputed by the most recent layout pass, without draining
     /// them: a laid-out node outside it kept its cached layout. Empty once
     /// [`Self::take_last_layout_scope`] has read the pass.
     pub fn last_layout_scope(&self) -> &[StableNodeId] {
-        &self.last_layout_scope
+        &self.layout.last_layout_scope
     }
 
     /// Frontier counters of the most recent layout pass for `document`,
     /// including the size of the dependency graph it built.
     pub fn layout_frontier_stats(&self, document: DocumentId) -> crate::LayoutFrontierStats {
-        self.layout_cache.frontier_stats(document)
+        self.layout.layout_cache.frontier_stats(document)
     }
 
     /// Let a frame's layout place up to `budget` and leave what is out of
@@ -283,27 +283,31 @@ impl AppContext {
     /// stopped. The budget counts per frame (from
     /// [`Self::begin_frame_profile`]); outside one, per layout call.
     pub fn set_layout_slice_budget(&mut self, budget: Option<crate::LayoutSliceBudget>) {
-        self.layout_slice_budget = budget;
+        self.layout.layout_slice_budget = budget;
     }
 
     pub fn layout_slice_budget(&self) -> Option<crate::LayoutSliceBudget> {
-        self.layout_slice_budget
+        self.layout.layout_slice_budget
     }
 
     /// Whether a sliced layout of `document` left subtrees to place: the
     /// next layout pass places them, with or without new edits.
     pub fn layout_pending(&self, document: DocumentId) -> bool {
-        self.layout_cache.layout_pending(document)
+        self.layout.layout_cache.layout_pending(document)
     }
 
     /// What is left of the frame's slice budget for the next pass.
     fn layout_slice_limit(&mut self) -> Option<crate::layout_engine::SliceLimit> {
-        let budget = self.layout_slice_budget?;
-        if !self.profiling {
-            self.frame_layout_spent = (0, None);
+        let budget = self.layout.layout_slice_budget?;
+        if !self.layout.profiling {
+            self.layout.frame_layout_spent = (0, None);
         }
-        let placed = self.frame_layout_spent.0;
-        let started = *self.frame_layout_spent.1.get_or_insert_with(Instant::now);
+        let placed = self.layout.frame_layout_spent.0;
+        let started = *self
+            .layout
+            .frame_layout_spent
+            .1
+            .get_or_insert_with(Instant::now);
         Some(crate::layout_engine::SliceLimit {
             placement_nodes: budget
                 .placement_nodes
@@ -318,7 +322,7 @@ impl AppContext {
         &self,
         document: DocumentId,
     ) -> crate::layout_engine::LayoutExecutionStats {
-        self.layout_cache.execution_stats(document)
+        self.layout.layout_cache.execution_stats(document)
     }
 
     /// What the retained layout cache holds for `document`.
@@ -327,7 +331,7 @@ impl AppContext {
         &self,
         document: DocumentId,
     ) -> crate::layout_engine::RetainedLayoutFootprint {
-        self.layout_cache.footprint(document)
+        self.layout.layout_cache.footprint(document)
     }
 
     /// Drain typed layout seeds emitted after the current work batch, such as
@@ -341,12 +345,12 @@ impl AppContext {
 
     /// Full (`force_full`) layout passes, which discard the retained cache.
     pub fn layout_full_invocations(&self) -> usize {
-        self.layout_full_invocations
+        self.layout.layout_full_invocations
     }
 
     /// Layout passes, scoped and full.
     pub fn layout_invocations(&self) -> usize {
-        self.layout_invocations
+        self.layout.layout_invocations
     }
 
     pub(super) fn layout_document_impl(
@@ -405,7 +409,7 @@ impl AppContext {
                     started = Instant::now();
                 },
             );
-            for (total, elapsed) in self.layout_substage_totals.iter_mut().zip(substages) {
+            for (total, elapsed) in self.layout.layout_substage_totals.iter_mut().zip(substages) {
                 *total += elapsed;
             }
             result
@@ -420,7 +424,7 @@ impl AppContext {
     /// `[position_open_tooltips, engine, writeback + commit, scroll metrics]`.
     #[cfg(feature = "benchmark")]
     pub fn take_layout_substage_totals(&mut self) -> [Duration; 4] {
-        std::mem::take(&mut self.layout_substage_totals)
+        std::mem::take(&mut self.layout.layout_substage_totals)
     }
 
     /// Diagnostic timings for the canonical full layout path. The production
@@ -449,9 +453,9 @@ impl AppContext {
         force_full: bool,
         mut completed: impl FnMut(usize),
     ) -> Result<crate::CommitReport, FrameworkError> {
-        self.layout_invocations += 1;
+        self.layout.layout_invocations += 1;
         if force_full {
-            self.layout_full_invocations += 1;
+            self.layout.layout_full_invocations += 1;
         }
         let started = self.stage_clock();
         // Diagnostics time layout even outside a profiled frame.
@@ -479,21 +483,22 @@ impl AppContext {
             self.position_open_tooltips(document)?;
             completed(0);
             let slice = self.layout_slice_limit();
-            self.layout_cache.set_slice_limit(slice);
+            self.layout.layout_cache.set_slice_limit(slice);
             let layouts = crate::RuntimeLayoutEngine.layout_document_with_frontier_local(
                 &self.world,
                 document,
                 viewport,
                 typed_seeds,
-                &mut self.layout_cache,
+                &mut self.layout.layout_cache,
                 force_full,
             )?;
-            let intrinsic_counters = self.layout_cache.take_intrinsic_counters();
+            let intrinsic_counters = self.layout.layout_cache.take_intrinsic_counters();
             self.world
                 .record_intrinsic_measure_counters(intrinsic_counters);
-            let frontier = self.layout_cache.frontier_stats(document);
-            let execution = self.layout_cache.execution_stats(document);
-            self.frame_layout_spent.0 = self
+            let frontier = self.layout.layout_cache.frontier_stats(document);
+            let execution = self.layout.layout_cache.execution_stats(document);
+            self.layout.frame_layout_spent.0 = self
+                .layout
                 .frame_layout_spent
                 .0
                 .saturating_add(execution.placement_nodes);
@@ -520,11 +525,13 @@ impl AppContext {
             for (id, layout) in layouts {
                 scope.push(id);
                 let padding_changed = self
+                    .layout
                     .layout_cache
                     .used_padding(document, id)
                     .is_some_and(|padding| self.world.write_layout_padding(id, padding));
                 // A turned scroll origin re-measures even when no box moved.
                 let far_start_changed = self
+                    .layout
                     .layout_cache
                     .far_start(document, id)
                     .is_some_and(|far| self.world.write_layout_far_start(id, far));
@@ -534,11 +541,11 @@ impl AppContext {
                 // its box keeps no context, as in a cold layout (#392).
                 if self.world.write_formatting_context(
                     id,
-                    self.layout_cache.formatting_context(document, id),
+                    self.layout.layout_cache.formatting_context(document, id),
                 ) {
                     context_children.extend_from_slice(self.world.child_ids(id));
                 }
-                let frame = self.layout_cache.frame(document, id);
+                let frame = self.layout.layout_cache.frame(document, id);
                 if padding_changed
                     || far_start_changed
                     || self.world.local_layout_box(id) != Some(layout)
@@ -559,32 +566,10 @@ impl AppContext {
                     }
                 }
             }
-            let mut settings_rows = Vec::new();
-            // Filled only when terminals are compiled in; the resize below
-            // goes through the routed call either way.
-            #[cfg_attr(not(feature = "terminal"), allow(unused_mut))]
-            let mut terminal_sizes: Vec<StableNodeId> = Vec::new();
-            let mut adaptive_editors = Vec::new();
-            for id in &scope {
-                let Some(view) = self.views.get(id) else {
-                    continue;
-                };
-                if view
-                    .downcast_ref::<TextArea>()
-                    .is_some_and(TextArea::uses_adaptive_footer)
-                {
-                    adaptive_editors.push(*id);
-                }
-                #[cfg(feature = "terminal")]
-                if view.is::<crate::TerminalView>() {
-                    terminal_sizes.push(*id);
-                    continue;
-                }
-                if view
-                    .downcast_ref::<crate::SettingsRow>()
-                    .is_some_and(|row| row.stack_below.is_some() && !row.stacked)
-                {
-                    settings_rows.push(*id);
+            let mut post_layout_nodes = Vec::new();
+            for &id in &scope {
+                if let Some(post_layout) = self.behavior(id).and_then(|b| b.post_layout) {
+                    post_layout_nodes.push((id, post_layout));
                 }
             }
             #[cfg(feature = "benchmark")]
@@ -602,28 +587,21 @@ impl AppContext {
             // sibling box in the scope has been committed.
             self.world
                 .publish_layout_results(&scope, crate::LayoutResultSource::RuntimeLayout);
-            let inline_objects = self.layout_cache.take_inline_objects(document);
+            let inline_objects = self.layout.layout_cache.take_inline_objects(document);
             self.world.sync_inline_metrics(
                 &scope,
                 |id, first_only| {
-                    self.layout_cache
+                    self.layout
+                        .layout_cache
                         .intrinsic_baseline(document, id, first_only)
                 },
                 inline_objects,
             );
             #[cfg(feature = "benchmark")]
             phase.lap(13);
-            self.last_layout_scope = scope;
-            for id in adaptive_editors {
-                via!(self.refresh_text_area_compact_layout(id))?;
-            }
-            for id in settings_rows {
-                via!(self.refresh_settings_row_layout(id))?;
-            }
-            for id in terminal_sizes {
-                if let Some(bounds) = self.world.component_layout_box(id) {
-                    via!(self.resize_terminal_node(id, bounds.width, bounds.height))?;
-                }
+            self.layout.last_layout_scope = scope;
+            for (id, post_layout) in post_layout_nodes {
+                post_layout(self, id)?;
             }
             completed(2);
             self.apply_document_scroll_retention(document, force_full)?;
@@ -634,7 +612,10 @@ impl AppContext {
             self.play_layout_moves(document);
             // A toast stack's new toasts were measured by this pass: what
             // shows follows from their heights.
-            via!(self.reconcile_toast_stacks(document))?;
+            for i in 0..self.capabilities.post_layout_docs.len() {
+                let hook = self.capabilities.post_layout_docs[i];
+                hook(self, document)?;
+            }
             completed(3);
             Ok(report)
         })();
@@ -653,8 +634,8 @@ impl AppContext {
             };
             metric!(layout::DIRTY_ROOTS, dirty_roots);
             if result.is_ok() {
-                let execution = self.layout_cache.execution_stats(document);
-                metric!(layout::BOXES_LAID_OUT, self.last_layout_scope.len());
+                let execution = self.layout.layout_cache.execution_stats(document);
+                metric!(layout::BOXES_LAID_OUT, self.layout.last_layout_scope.len());
                 metric!(layout::MEASURE_NODES, execution.measure_nodes);
                 metric!(layout::PLACEMENT_NODES, execution.placement_nodes);
             }
@@ -680,6 +661,7 @@ impl AppContext {
             })?;
         }
         let asked: Vec<_> = self
+            .lifecycle
             .laid_out_notices
             .iter()
             .copied()
@@ -690,7 +672,7 @@ impl AppContext {
             })
             .collect();
         for id in asked {
-            self.laid_out_notices.remove(&id);
+            self.lifecycle.laid_out_notices.remove(&id);
             if self.is_scroll_view(id) {
                 self.update(Entity::<ScrollView>::from_stable_id(id), |_, cx| {
                     cx.emit(ScrollLaidOut);
@@ -731,7 +713,7 @@ impl AppContext {
         // A first layout's scope is the whole document: sets hashed by id.
         let mut visited = crate::NodeSet::default();
         let mut targets = crate::NodeSet::default();
-        for &id in &self.last_layout_scope {
+        for &id in &self.layout.last_layout_scope {
             if self.world.document_of(id) != Some(document) {
                 continue;
             }
@@ -903,9 +885,6 @@ impl AppContext {
         self.advance_wheel_scrolls(now, &mut frame);
         self.advance_touch_scrolls(now, &mut frame);
         self.advance_caret_blink(now, &mut frame);
-        if let Some(id) = via!(self.advance_rich_drag(now)) {
-            frame.component_updates.push(id);
-        }
         if let Some(id) = self.advance_plain_drag(now) {
             frame.component_updates.push(id);
         }
@@ -1017,29 +996,14 @@ impl AppContext {
                 frame.component_updates.push(target);
             }
         }
-        for bar in via!(self.drive_due_auto_overlays()) {
-            if !frame.component_updates.contains(&bar) {
-                frame.component_updates.push(bar);
+        for i in 0..self.capabilities.frame_tickers.len() {
+            let tick = self.capabilities.frame_tickers[i];
+            for updated in tick(self, now) {
+                if !frame.component_updates.contains(&updated) {
+                    frame.component_updates.push(updated);
+                }
             }
         }
-        // A bar bound to a time-sampled resource reads the resource time the
-        // document's `now` maps to (Issue #303).
-        for bar in via!(self.sync_media_bound_bars()) {
-            if !frame.component_updates.contains(&bar) {
-                frame.component_updates.push(bar);
-            }
-        }
-        for scroll in via!(self.release_scrollbar_holds(now)) {
-            if !frame.component_updates.contains(&scroll) {
-                frame.component_updates.push(scroll);
-            }
-        }
-        for bar in via!(self.settle_menu_aims(now)) {
-            if !frame.component_updates.contains(&bar) {
-                frame.component_updates.push(bar);
-            }
-        }
-        via!(self.sweep_hover_cards());
         let hover_targets = self
             .component_lifecycle
             .hover_cards
@@ -1056,132 +1020,74 @@ impl AppContext {
             })
             .collect::<Vec<_>>();
         for (target, open) in hover_targets {
-            let changed = if open {
-                via!(self.open_hover_card(target)).unwrap_or(false)
+            let changed = if let Some(overlay) = self.behavior(target).and_then(|b| b.overlay) {
+                if open {
+                    overlay
+                        .open_hover_card
+                        .is_some_and(|f| f(self, target).unwrap_or(false))
+                } else {
+                    overlay
+                        .close_hover_card
+                        .is_some_and(|f| f(self, target).unwrap_or(false))
+                }
             } else {
-                via!(self.close_hover_card(target)).unwrap_or(false)
+                false
             };
             if changed {
                 frame.component_updates.push(target);
             }
         }
-        let loading_targets = frame
-            .samples
-            .iter()
-            .filter(|sample| {
-                crate::component_animation_id(
-                    crate::component_animation_kinds::LOADING,
-                    sample.target,
-                ) == Some(sample.id)
-            })
-            .map(|sample| (sample.target, sample.progress))
-            .collect::<Vec<_>>();
-        for (target, phase) in loading_targets {
-            let Some(kind) = self.component_lifecycle.loading.get(&target).copied() else {
-                continue;
-            };
-            let changed = match kind {
-                LoadingComponent::Button => self
+        for sample in &frame.samples {
+            let target = sample.target;
+            let sample_time =
+                if crate::component_animation_id(crate::component_animation_kinds::TOAST, target)
+                    == Some(sample.id)
+                {
+                    now
+                } else {
+                    presented
+                };
+            let is_loading =
+                crate::component_animation_id(crate::component_animation_kinds::LOADING, target)
+                    == Some(sample.id);
+            if is_loading
+                && self.component_lifecycle.loading.get(&target).copied()
+                    == Some(LoadingComponent::Button)
+            {
+                let changed = self
                     .update_component(Entity::<Button>::from_stable_id(target), |button, _| {
-                        button.loading_phase = phase;
+                        button.loading_phase = sample.progress;
                     })
-                    .is_ok(),
-                LoadingComponent::Switch => via!(self.set_switch_loading_phase(target, phase)),
-                LoadingComponent::Card => via!(self.set_card_loading_phase(target, phase)),
-            };
-            if changed && !frame.component_updates.contains(&target) {
-                frame.component_updates.push(target);
+                    .is_ok();
+                if changed && !frame.component_updates.contains(&target) {
+                    frame.component_updates.push(target);
+                }
+                continue;
             }
-        }
-        let section_targets = frame
-            .samples
-            .iter()
-            .filter(|sample| {
-                crate::component_animation_id(
-                    crate::component_animation_kinds::SIDEBAR,
-                    sample.target,
-                ) == Some(sample.id)
-            })
-            .map(|sample| (sample.target, sample.progress, sample.value))
-            .collect::<Vec<_>>();
-        for (target, progress, value) in section_targets {
-            let expansion = match value {
-                crate::MotionValue::Scalar(value) => value,
-                _ => progress,
-            };
-            if via!(self.set_sidebar_section_progress(target, expansion))
-                // `advance_animations` already pushed this target for the
-                // SIDEBAR sample, and the host reprojects once per entry:
-                // without the guard its sibling loops all carry, a toggling
-                // section is uploaded twice every frame of its transition.
-                && !frame.component_updates.contains(&target)
-            {
-                frame.component_updates.push(target);
-            }
-        }
-        let spinner_targets = frame
-            .samples
-            .iter()
-            .filter(|sample| {
-                crate::component_animation_id(
-                    crate::component_animation_kinds::SPINNER,
-                    sample.target,
-                ) == Some(sample.id)
-            })
-            .map(|sample| (sample.target, sample.progress))
-            .collect::<Vec<_>>();
-        for (target, phase) in spinner_targets {
-            if via!(self.set_spinner_phase(target, phase))
-                && !frame.component_updates.contains(&target)
-            {
-                frame.component_updates.push(target);
-            }
-        }
-        let expired_toasts = frame
-            .samples
-            .iter()
-            .filter(|sample| {
-                sample.finished
-                    && crate::component_animation_id(
-                        crate::component_animation_kinds::TOAST,
-                        sample.target,
-                    ) == Some(sample.id)
-            })
-            .map(|sample| sample.target)
-            .collect::<Vec<_>>();
-        for target in expired_toasts {
-            via!(self.expire_toast(target, now));
-        }
-        let flashes = frame
-            .samples
-            .iter()
-            .filter(|sample| {
-                sample.finished
-                    && crate::component_animation_id(
-                        crate::component_animation_kinds::ATTENTION,
-                        sample.target,
-                    ) == Some(sample.id)
-            })
-            .map(|sample| (sample.target, sample.property))
-            .collect::<Vec<_>>();
-        for (target, property) in flashes {
-            let _ = via!(self.advance_settings_row_flash(target, property, presented));
-        }
-        let workspace_targets = frame
-            .samples
-            .iter()
-            .filter(|sample| {
-                crate::component_animation_id(
+            let wants_sample = is_loading
+                || crate::component_animation_id(crate::component_animation_kinds::SIDEBAR, target)
+                    == Some(sample.id)
+                || crate::component_animation_id(crate::component_animation_kinds::SPINNER, target)
+                    == Some(sample.id)
+                || crate::component_animation_id(
                     crate::component_animation_kinds::WORKSPACE,
-                    sample.target,
+                    target,
                 ) == Some(sample.id)
-            })
-            .map(|sample| sample.target)
-            .collect::<Vec<_>>();
-        for id in workspace_targets {
-            let advanced = via!(self.advance_workspace_animation(id, presented));
-            if advanced && !frame.component_updates.contains(&id) {
-                frame.component_updates.push(id);
+                || (sample.finished
+                    && (crate::component_animation_id(
+                        crate::component_animation_kinds::TOAST,
+                        target,
+                    ) == Some(sample.id)
+                        || crate::component_animation_id(
+                            crate::component_animation_kinds::ATTENTION,
+                            target,
+                        ) == Some(sample.id)));
+            if wants_sample
+                && let Some(apply) = self.behavior(target).and_then(|b| b.animation_sample)
+                && apply(self, target, sample, sample_time)
+                && !frame.component_updates.contains(&target)
+            {
+                frame.component_updates.push(target);
             }
         }
         frame.next_deadline = self.next_animation_deadline();

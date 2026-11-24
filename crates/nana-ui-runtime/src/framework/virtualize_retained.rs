@@ -323,7 +323,7 @@ impl AppContext {
             // views, and the scopes and bindings of a row built as a view.
             self.forget_subtree(&removed);
         }
-        self.views.insert(list.id, Box::new(content));
+        self.store.views.insert(list.id, Box::new(content));
         for (id, component) in staged_items {
             self.install_view(id, component);
         }
@@ -339,6 +339,7 @@ impl AppContext {
                 continue;
             };
             if let Some(stack) = self
+                .store
                 .views
                 .get_mut(&id)
                 .and_then(|view| view.downcast_mut::<Stack>())

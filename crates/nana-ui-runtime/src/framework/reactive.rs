@@ -13,6 +13,8 @@ use crate::{
     AnimationPlayback, Easing, MotionTo, MotionValue,
 };
 
+type PostFlushFn = fn(&mut AppContext, StableNodeId) -> Result<(), FrameworkError>;
+
 /// Rounds a flush runs before it gives up on effects that keep re-queueing
 /// each other.
 const MAX_ROUNDS: usize = 64;
@@ -98,16 +100,16 @@ pub(crate) struct ReactiveHost {
     layout_moves: HashMap<StableNodeId, LayoutMove, crate::BuildIdHasher>,
     /// Interactive pseudo-state signals (`:hover`, `:focus`, `:focus-visible`, `:active`).
     interactive_styles: HashMap<StableNodeId, InteractiveStyleBinding, crate::BuildIdHasher>,
+    /// Nodes in `interactive_styles` whose pseudo-state mask is currently non-zero.
+    active_interactive_nodes: HashSet<StableNodeId, crate::BuildIdHasher>,
+    /// Documents that have mounted interactive-style bindings.
+    interactive_documents: Vec<DocumentId>,
     /// Nodes carrying compiled CSS dynamic transitions / `@keyframes`.
     motion_bindings: HashMap<StableNodeId, MotionBinding, crate::BuildIdHasher>,
     /// Currently registered `#87 MotionTrack` keyframe tracks per node.
     keyframe_tracks: HashMap<StableNodeId, Vec<RunningKeyframeTrack>, crate::BuildIdHasher>,
-    /// Settings groups to mark once the flush has installed every node it
-    /// patched ([`AppContext::defer_settings_group`]).
-    settings_groups: Vec<StableNodeId>,
-    /// Settings rows to look up their hint placement for once the flush has
-    /// installed every node it patched ([`AppContext::defer_settings_row`]).
-    settings_rows: Vec<StableNodeId>,
+    /// Deduplicated hooks run once a reactive flush has installed every node it patched.
+    post_flush_hooks: Vec<(StableNodeId, PostFlushFn)>,
 }
 
 impl Default for ReactiveHost {
@@ -128,10 +130,11 @@ impl Default for ReactiveHost {
             implicit: HashMap::default(),
             layout_moves: HashMap::default(),
             interactive_styles: HashMap::default(),
+            active_interactive_nodes: HashSet::default(),
+            interactive_documents: Vec::new(),
             motion_bindings: HashMap::default(),
             keyframe_tracks: HashMap::default(),
-            settings_groups: Vec::new(),
-            settings_rows: Vec::new(),
+            post_flush_hooks: Vec::new(),
         }
     }
 }
@@ -215,7 +218,7 @@ pub(crate) fn bound_view<C: ComponentView>(
     cx: &AppContext,
     id: StableNodeId,
 ) -> Result<std::borrow::Cow<'_, C>, FrameworkError> {
-    if let Some(view) = cx.views.get(&id) {
+    if let Some(view) = cx.store.views.get(&id) {
         return view
             .downcast_ref::<C>()
             .map(std::borrow::Cow::Borrowed)
@@ -251,14 +254,14 @@ pub(crate) fn stage_bound_node<C: ComponentView>(
             return Ok(None);
         }
         let mut probe = MutationQueue::new();
-        staged.project(id, &cx.world, &mut probe);
+        cx.project_component(id, &staged, &cx.world, &mut probe);
         if cx.world.is_noop_batch(&probe) {
             return Ok(None);
         }
         mutations.append(probe);
         return Ok(Some(Box::new(staged)));
     }
-    staged.project(id, &cx.world, mutations);
+    cx.project_component(id, &staged, &cx.world, mutations);
     Ok(Some(Box::new(staged)))
 }
 
@@ -531,9 +534,16 @@ impl AppContext {
                 );
             }
         }
+        let mut mounted_interactive = Vec::with_capacity(parts.interactive.len());
         for (id, interactive) in parts.interactive {
             if self.world.contains(id) {
                 self.reactive.interactive_styles.insert(id, interactive);
+                if let Some(doc) = self.world.document_of(id)
+                    && !self.reactive.interactive_documents.contains(&doc)
+                {
+                    self.reactive.interactive_documents.push(doc);
+                }
+                mounted_interactive.push(Some(id));
             }
         }
         for (id, motion) in parts.motion {
@@ -551,7 +561,7 @@ impl AppContext {
         for (id, type_id) in std::mem::take(&mut parts.assemble) {
             self.run_built_assembler(id, type_id)?;
         }
-        self.sync_interactive_style_states();
+        self.sync_interactive_style_nodes(&mounted_interactive);
         self.sync_keyframe_animations(false)?;
         Ok(())
     }
@@ -576,7 +586,7 @@ impl AppContext {
         let started = Instant::now();
         let outcome = self.flush_reactive_rounds();
         self.reactive.flushing = false;
-        let outcome = outcome.and(via!(self.mark_deferred_settings_groups()));
+        let outcome = outcome.and(self.run_post_flush_hooks());
         nana_diagnostics::metric!(nana_diagnostics::framework::runtime::REACTIVE_FLUSHES);
         nana_diagnostics::metric!(
             nana_diagnostics::framework::runtime::REACTIVE_FLUSH_NS,
@@ -672,50 +682,34 @@ impl AppContext {
     }
 
     /// Whether a settings group must wait to mark its rows: during a flush a
-    /// row's view can lag the world until the patched views are installed,
-    /// and writing it then would project the lag back. Queues `group` for
-    /// the end of the flush when it must.
-    pub(crate) fn defer_settings_group(&mut self, group: StableNodeId) -> bool {
+    /// While a flush is patching nodes, a control's view can lag the world
+    /// until the patched views are installed; queues `(node, hook)` deduplicated
+    /// to run once the flush completes.
+    pub(crate) fn defer_post_flush(&mut self, node: StableNodeId, hook: PostFlushFn) -> bool {
         if !self.reactive.flushing {
             return false;
         }
-        if !self.reactive.settings_groups.contains(&group) {
-            self.reactive.settings_groups.push(group);
+        if !self
+            .reactive
+            .post_flush_hooks
+            .iter()
+            .any(|&(id, f)| id == node && f as usize == hook as usize)
+        {
+            self.reactive.post_flush_hooks.push((node, hook));
         }
         true
     }
 
-    /// Whether a flush is patching nodes now; see
-    /// [`Self::defer_settings_group`].
+    /// Whether a flush is patching nodes now; see [`Self::defer_post_flush`].
     pub(crate) fn reactive_flushing(&self) -> bool {
         self.reactive.flushing
     }
 
-    /// [`Self::defer_settings_group`] for a settings row looking up the hint
-    /// placement its containers give it: they may not hold it yet.
-    pub(crate) fn defer_settings_row(&mut self, row: StableNodeId) -> bool {
-        if !self.reactive.flushing {
-            return false;
-        }
-        if !self.reactive.settings_rows.contains(&row) {
-            self.reactive.settings_rows.push(row);
-        }
-        true
-    }
-
-    pub(crate) fn mark_deferred_settings_groups(&mut self) -> Result<(), FrameworkError> {
+    pub(crate) fn run_post_flush_hooks(&mut self) -> Result<(), FrameworkError> {
         let mut outcome = Ok(());
-        for group in std::mem::take(&mut self.reactive.settings_groups) {
-            if self.world.contains(group) {
-                outcome = outcome.and(crate::settings::mark_settings_group(
-                    self,
-                    Entity::from_stable_id(group),
-                ));
-            }
-        }
-        for row in std::mem::take(&mut self.reactive.settings_rows) {
-            if self.world.contains(row) {
-                outcome = outcome.and(crate::settings::resolve_row_hint_placement_now(self, row));
+        for (node, hook) in std::mem::take(&mut self.reactive.post_flush_hooks) {
+            if self.world.contains(node) {
+                outcome = outcome.and(hook(self, node));
             }
         }
         outcome
@@ -1138,7 +1132,7 @@ impl AppContext {
                 }
                 if self.declared_assembly_parent(node).is_some() {
                     self.promote_auto_view_slot(node);
-                    self.placed_assembled.insert(node);
+                    self.store.placed_assembled.insert(node);
                 }
                 if self.world.parent_id(node) != Some(target) {
                     mutations.insert(target, node, None);
@@ -1154,7 +1148,7 @@ impl AppContext {
                 .declared_assembly_parent(node)
                 .is_some_and(|(declared, _)| declared == host)
             {
-                self.placed_assembled.remove(&node);
+                self.store.placed_assembled.remove(&node);
             }
         }
         self.splice_fragment_children(frag, nodes)?;
@@ -1357,7 +1351,7 @@ impl AppContext {
                         .declared_assembly_parent(node)
                         .is_some_and(|(declared, _)| declared == host)
                     {
-                        self.placed_assembled.remove(&node);
+                        self.store.placed_assembled.remove(&node);
                     }
                     rescued.insert(host, node, before);
                 }
@@ -1506,6 +1500,7 @@ impl AppContext {
             host.implicit.remove(id);
             host.layout_moves.remove(id);
             host.interactive_styles.remove(id);
+            host.active_interactive_nodes.remove(id);
             host.motion_bindings.remove(id);
             host.keyframe_tracks.remove(id);
             if let Some(entry) = host.nodes.remove(id) {
@@ -1560,7 +1555,11 @@ impl AppContext {
 
     pub(crate) fn view_is<C: 'static>(&self, node: StableNodeId) -> bool {
         (TypeId::of::<C>() == TypeId::of::<crate::Stack>() && self.world.is_elided_stack(node))
-            || self.views.get(&node).is_some_and(|view| view.is::<C>())
+            || self
+                .store
+                .views
+                .get(&node)
+                .is_some_and(|view| view.is::<C>())
     }
 
     /// `node` as the view layer sees it: its control's fields and values
@@ -1588,6 +1587,7 @@ impl AppContext {
             })
         };
         let (control, fields) = self
+            .store
             .views
             .get(&node)
             .and_then(|view| crate::view::inspect_control(&**view))
@@ -1615,7 +1615,7 @@ impl AppContext {
             dynamic: self
                 .world
                 .document_of(node)
-                .and_then(|document| self.layout_cache.dynamic_inspection(document, node)),
+                .and_then(|document| self.layout.layout_cache.dynamic_inspection(document, node)),
             layout_node: self.inspect_layout_node(node),
         })
     }
@@ -1626,10 +1626,11 @@ impl AppContext {
         node: StableNodeId,
     ) -> Option<crate::view::LayoutNodeInspection> {
         let view = self.world.layout_node(node)?;
-        let metrics_generation = self
-            .world
-            .document_of(node)
-            .and_then(|document| self.layout_cache.intrinsic_generation(document, node));
+        let metrics_generation = self.world.document_of(node).and_then(|document| {
+            self.layout
+                .layout_cache
+                .intrinsic_generation(document, node)
+        });
         Some(crate::view::LayoutNodeInspection {
             view,
             metrics_generation,
@@ -1649,6 +1650,7 @@ impl AppContext {
             });
         }
         let frontier = self
+            .layout
             .layout_cache
             .last_frontier(self.world.document_of(node)?)?;
         Some(crate::view::LayoutCause {
@@ -1890,9 +1892,16 @@ impl AppContext {
         self.commit_mutations(mutations).map(|_| ())
     }
 
-    pub(crate) fn sync_interactive_style_states(&mut self) {
-        if self.reactive.interactive_styles.is_empty() {
+    fn sync_interactive_style_node(&mut self, node: StableNodeId) {
+        let Some(binding) = self.reactive.interactive_styles.get(&node) else {
             return;
+        };
+        let Some(doc) = self.world.document_of(node) else {
+            self.reactive.active_interactive_nodes.remove(&node);
+            return;
+        };
+        if !self.reactive.interactive_documents.contains(&doc) {
+            self.reactive.interactive_documents.push(doc);
         }
         let is_self_or_descendant = |mut cur: StableNodeId, ancestor: StableNodeId| loop {
             if cur == ancestor {
@@ -1903,39 +1912,108 @@ impl AppContext {
             };
             cur = parent;
         };
-        for (&node, binding) in &self.reactive.interactive_styles {
-            let Some(doc) = self.world.document_of(node) else {
-                continue;
-            };
-            let mut bits = 0u8;
-            if binding.used_pseudos & PSEUDO_HOVER != 0
-                && self
-                    .world
-                    .pointer_hover_targets(doc)
-                    .any(|target| is_self_or_descendant(target, node))
-            {
-                bits |= PSEUDO_HOVER;
-            }
-            if binding.used_pseudos & PSEUDO_ACTIVE != 0
-                && self
-                    .world
-                    .pointer_press_targets(doc)
-                    .any(|target| is_self_or_descendant(target, node))
-            {
-                bits |= PSEUDO_ACTIVE;
-            }
-            if binding.used_pseudos & PSEUDO_FOCUS != 0 && self.world.focused(doc) == Some(node) {
-                bits |= PSEUDO_FOCUS;
-            }
-            if binding.used_pseudos & PSEUDO_FOCUS_VISIBLE != 0
-                && self.world.focus_visible(doc) == Some(node)
-            {
-                bits |= PSEUDO_FOCUS_VISIBLE;
-            }
-            if binding.signal.get_untracked() != bits {
-                binding.signal.set(bits);
+        let mut bits = 0u8;
+        if binding.used_pseudos & PSEUDO_HOVER != 0
+            && self
+                .world
+                .pointer_hover_targets(doc)
+                .any(|target| is_self_or_descendant(target, node))
+        {
+            bits |= PSEUDO_HOVER;
+        }
+        if binding.used_pseudos & PSEUDO_ACTIVE != 0
+            && self
+                .world
+                .pointer_press_targets(doc)
+                .any(|target| is_self_or_descendant(target, node))
+        {
+            bits |= PSEUDO_ACTIVE;
+        }
+        if binding.used_pseudos & PSEUDO_FOCUS != 0 && self.world.focused(doc) == Some(node) {
+            bits |= PSEUDO_FOCUS;
+        }
+        if binding.used_pseudos & PSEUDO_FOCUS_VISIBLE != 0
+            && self.world.focus_visible(doc) == Some(node)
+        {
+            bits |= PSEUDO_FOCUS_VISIBLE;
+        }
+        if bits != 0 {
+            self.reactive.active_interactive_nodes.insert(node);
+        } else {
+            self.reactive.active_interactive_nodes.remove(&node);
+        }
+        if binding.signal.get_untracked() != bits {
+            binding.signal.set(bits);
+        }
+    }
+
+    pub(crate) fn sync_interactive_style_ancestors(&mut self, targets: &[Option<StableNodeId>]) {
+        if self.reactive.interactive_styles.is_empty() {
+            return;
+        }
+        let mut seen = Vec::new();
+        for &start in targets {
+            let mut cur = start;
+            while let Some(id) = cur {
+                if self.reactive.interactive_styles.contains_key(&id) && !seen.contains(&id) {
+                    seen.push(id);
+                    self.sync_interactive_style_node(id);
+                }
+                cur = self.world.node(id).and_then(|node| node.parent);
             }
         }
+    }
+
+    pub(crate) fn sync_interactive_style_nodes(&mut self, targets: &[Option<StableNodeId>]) {
+        if self.reactive.interactive_styles.is_empty() {
+            return;
+        }
+        let mut seen = Vec::new();
+        for &target in targets {
+            if let Some(id) = target
+                && self.reactive.interactive_styles.contains_key(&id)
+                && !seen.contains(&id)
+            {
+                seen.push(id);
+                self.sync_interactive_style_node(id);
+            }
+        }
+    }
+
+    pub(crate) fn sync_interactive_style_states(&mut self) {
+        if self.reactive.interactive_styles.is_empty() {
+            return;
+        }
+        let previous_active: Vec<StableNodeId> = self
+            .reactive
+            .active_interactive_nodes
+            .iter()
+            .copied()
+            .collect();
+        for id in previous_active {
+            self.sync_interactive_style_node(id);
+        }
+        let mut docs: Vec<DocumentId> = self.reactive.interactive_documents.clone();
+        for doc in self.world.focused_documents() {
+            if !docs.contains(&doc) {
+                docs.push(doc);
+            }
+        }
+        let mut targets: Vec<Option<StableNodeId>> = Vec::new();
+        for doc in docs {
+            if !self.world.has_document(doc) {
+                continue;
+            }
+            targets.extend(self.world.pointer_hover_targets(doc).map(Some));
+            targets.extend(self.world.pointer_press_targets(doc).map(Some));
+            if let Some(focused) = self.world.focused(doc) {
+                targets.push(Some(focused));
+            }
+            if let Some(focus_visible) = self.world.focus_visible(doc) {
+                targets.push(Some(focus_visible));
+            }
+        }
+        self.sync_interactive_style_ancestors(&targets);
     }
 
     pub(crate) fn sync_keyframe_animations(
@@ -2400,6 +2478,6 @@ fn presence_values(
 #[cfg(test)]
 impl AppContext {
     pub(crate) fn event_handler_count(&self) -> usize {
-        self.event_handlers.values().map(Vec::len).sum()
+        self.lifecycle.event_handlers.values().map(Vec::len).sum()
     }
 }

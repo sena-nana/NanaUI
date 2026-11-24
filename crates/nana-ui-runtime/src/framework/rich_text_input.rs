@@ -1,6 +1,13 @@
 use super::*;
 use crate::{NativeMarkdown, RichTextEvent, SelectableRichText};
 
+static RICH_TEXT_DRAG_OPS: crate::framework::ActiveDragOps = crate::framework::ActiveDragOps {
+    pre_gesture: true,
+    cancel_on_touch_scroll: false,
+    update: |cx, doc, _, ptr, x, y, _| cx.update_rich_text_pointer(doc, ptr, x, y),
+    end: |cx, doc, _, ptr, x, y, _, cancel| cx.end_rich_text_pointer(doc, ptr, x, y, cancel),
+};
+
 impl AppContext {
     pub fn begin_rich_text_pointer(
         &mut self,
@@ -28,6 +35,7 @@ impl AppContext {
             self.component_lifecycle
                 .rich_text_presses
                 .insert((document, pointer), target);
+            self.begin_active_drag(document, pointer, target, &RICH_TEXT_DRAG_OPS);
         }
         Ok(handled)
     }
@@ -73,6 +81,7 @@ impl AppContext {
         else {
             return Ok(false);
         };
+        self.clear_active_drag(document, pointer, target);
         let cancelled = cancelled
             || self.world.pointer_capture(document, pointer) != Some(target)
             || !self.world.is_mounted(target)

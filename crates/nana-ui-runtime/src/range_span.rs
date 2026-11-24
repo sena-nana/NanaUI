@@ -546,13 +546,41 @@ impl RangeSpanField {
     }
 }
 
+static RANGE_SPAN_DRAG_OPS: crate::framework::ActiveDragOps = crate::framework::ActiveDragOps {
+    pre_gesture: false,
+    cancel_on_touch_scroll: true,
+    update: |cx, doc, _, ptr, x, y, _| cx.update_range_span_drag_at(doc, ptr, x, y),
+    end: |cx, doc, _, ptr, _, _, _, cancel| cx.end_range_span_drag(doc, ptr, cancel),
+};
+
+static RANGE_SPAN_CAPABILITIES: crate::framework::RangeSpanCapabilities =
+    crate::framework::RangeSpanCapabilities {
+        target: |cx, id| cx.range_span_target(id).map(|(e, t)| (e.stable_id(), t)),
+        begin_drag: AppContext::begin_range_span_drag_at,
+        adjust_thumb: |cx, id, thumb, adj| {
+            cx.adjust_range_span(Entity::from_stable_id(id), thumb, adj)
+        },
+        set_thumb: |cx, id, thumb, val| {
+            cx.set_range_span_thumb(Entity::from_stable_id(id), thumb, val)
+        },
+    };
+
+static RANGE_SPAN_POINTER_OPS: crate::framework::PointerOps = crate::framework::PointerOps {
+    is_value_range: true,
+    end_value_drag: Some(AppContext::end_range_span_drag_on),
+    ..crate::framework::PointerOps::EMPTY
+};
+
 impl ComponentView for RangeSpanField {
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
-        hooks: Some(|hooks| {
-            crate::framework::routes::range_span(hooks);
-            crate::framework::routes::number_input(hooks);
+        capabilities: Some(|caps| {
+            caps.range_span = Some(&RANGE_SPAN_CAPABILITIES);
+            caps.add_step_adjuster(AppContext::adjust_focused_range_span);
+            caps.add_edit_ender(AppContext::end_focused_range_span_edit);
+            crate::view_components::install_number_input_capabilities(caps);
         }),
         lifecycle: Some(crate::AppContext::sync_range_span),
+        pointer_ops: Some(&RANGE_SPAN_POINTER_OPS),
         ..crate::TypeBehavior::NONE
     };
 
@@ -1190,6 +1218,7 @@ impl AppContext {
             cx.mutations().capture_pointer(pointer_id, field_id);
             cx.emit(RangeSpanDragging { dragging: true });
         })?;
+        self.begin_active_drag(document, pointer_id, field_id, &RANGE_SPAN_DRAG_OPS);
         if let Some(focus) = thumb
             .or(grabbed)
             .and_then(|thumb| snapshot.thumb_node(thumb))
@@ -1297,11 +1326,12 @@ impl AppContext {
         let Some(field) = self.view_entity::<RangeSpanField>(target) else {
             return Ok(false);
         };
-        let held = self
-            .world()
-            .document_of(target)
-            .and_then(|document| self.world().pointer_capture(document, pointer_id))
+        let document = self.world().document_of(target);
+        let held = document.and_then(|document| self.world().pointer_capture(document, pointer_id))
             == Some(target);
+        if let Some(document) = document {
+            self.clear_active_drag(document, pointer_id, target);
+        }
         let mut clicked = None;
         let ended = self.update_component(field, |field, cx| {
             if held {
@@ -1336,20 +1366,6 @@ impl AppContext {
             self.begin_range_span_edit_focus(field, thumb, false)?;
         }
         Ok(ended)
-    }
-
-    /// Whether `pointer_id` drags the field at `target`.
-    pub(crate) fn range_span_drags(&self, target: StableNodeId, pointer_id: u64) -> bool {
-        self.view_entity::<RangeSpanField>(target)
-            .and_then(|field| {
-                self.read(field, |field| {
-                    field
-                        .dragging
-                        .is_some_and(|drag| drag.pointer_id == pointer_id)
-                })
-                .ok()
-            })
-            .unwrap_or(false)
     }
 
     /// Lifecycle: create the two thumb nodes (and, with value thumbs, the

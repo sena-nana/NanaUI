@@ -198,7 +198,8 @@ impl<'a> UiBuilder<'a> {
         self.context.share_layouts(&mut component);
         let id = self.context.allocate_id();
         self.queue.create(id, self.document, component.node_kind());
-        component.project(id, &self.context.world, &mut self.queue);
+        self.context
+            .project_component(id, &component, &self.context.world, &mut self.queue);
         self.install_component(id, component);
         Entity::from_stable_id(id)
     }
@@ -223,6 +224,7 @@ impl<'a> UiBuilder<'a> {
         if !self.working.contains_key(&parent) {
             let inherited = self
                 .context
+                .store
                 .assembled
                 .get(&parent)
                 .cloned()
@@ -263,7 +265,12 @@ impl<'a> UiBuilder<'a> {
         match self.claim_child(key.into(), type_id) {
             ChildClaim::Failed => Entity::from_stable_id(DUMMY_NODE),
             ChildClaim::Reuse(id) => {
-                component.project(id, &self.context.world, &mut self.queue);
+                self.context.project_component(
+                    id,
+                    &component,
+                    &self.context.world,
+                    &mut self.queue,
+                );
                 self.install_component(id, component);
                 Entity::from_stable_id(id)
             }
@@ -390,7 +397,7 @@ impl<'a> UiBuilder<'a> {
         if self.error.is_some() || root == DUMMY_NODE {
             return;
         }
-        self.context.slot_keys.insert(root, key);
+        self.context.store.slot_keys.insert(root, key);
     }
 
     /// Place `child`, built detached, under the current parent, keyed
@@ -586,10 +593,10 @@ impl<'a> UiBuilder<'a> {
             self.context.store_assembled(parent, slots);
         }
         for (id, flags) in pending_stacks {
-            self.context.views.remove(&id);
+            self.context.store.views.remove(&id);
             self.context.world.set_elided_stack_flags(id, flags);
         }
-        self.context.views.extend(pending_views);
+        self.context.store.views.extend(pending_views);
         for id in lifecycle {
             if self.context.world.contains(id) {
                 self.context.sync_component_lifecycle(id)?;

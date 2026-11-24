@@ -18,9 +18,9 @@ use crate::gpu_slots::{HOST_TEXTURE_RENDERER, TextureSlotName};
 use crate::popover::{MENU_OVERLAY_Z_INDEX, trigger_button_style};
 use crate::view_components::project_common;
 use crate::{
-    AccessibilityRole, AccessibilityState, ComponentView, CustomRenderNode, InteractionState,
-    MenuSurfaceKind, MenuSurfaceVisual, MutationQueue, NodeKind, NodeStyle, StableNodeId,
-    TriggeredMenuOverlay, UiWorld,
+    AccessibilityRole, AccessibilityState, AppContext, ComponentView, CustomRenderNode,
+    InteractionState, MenuSurfaceKind, MenuSurfaceVisual, MutationQueue, NodeKind, NodeStyle,
+    StableNodeId, TriggeredMenuOverlay, UiWorld,
 };
 
 pub(crate) const HOVER_CARD_WIDTH: f32 = crate::popover::POPOVER_WIDTH;
@@ -252,13 +252,25 @@ impl Default for HoverCard {
     }
 }
 
+static HOVER_CARD_OVERLAY: crate::framework::OverlayBehavior = crate::framework::OverlayBehavior {
+    open_hover_card: Some(AppContext::open_hover_card),
+    close_hover_card: Some(AppContext::close_hover_card),
+    ..crate::framework::OverlayBehavior::EMPTY
+};
+
 impl ComponentView for HoverCard {
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
-        hooks: Some(|hooks| {
-            crate::framework::routes::hover_card(hooks);
+        capabilities: Some(|caps| {
+            caps.close_hover_card = Some(AppContext::close_hover_card);
+            caps.popover = Some(&crate::popover::POPOVER_CAPABILITIES);
+            caps.add_frame_ticker(|cx, _| {
+                cx.sweep_hover_cards();
+                Vec::new()
+            });
         }),
         activation: Some(crate::AppContext::activate_hover_card),
         activate_at: Some(crate::AppContext::activate_hover_card_at),
+        overlay: Some(&HOVER_CARD_OVERLAY),
         ..crate::TypeBehavior::NONE
     };
 

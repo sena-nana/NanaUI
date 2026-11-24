@@ -439,8 +439,8 @@ impl ComponentView for AppTitleBar {
     const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::APP_TITLE_BAR.type_id);
 
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
-        hooks: Some(|hooks| {
-            crate::framework::routes::title_bar(hooks);
+        capabilities: Some(|caps| {
+            caps.set_title_bars_maximized = Some(AppContext::set_title_bars_maximized);
         }),
         slot_assembler: Some(AppContext::assemble_app_title_bar),
         ..crate::TypeBehavior::NONE
@@ -1043,6 +1043,40 @@ fn window_control_buttons(
         button(WindowChromeAction::ToggleMaximize)?,
         button(WindowChromeAction::Close)?,
     ])
+}
+
+impl AppContext {
+    /// Align every title bar of `document` with the window's maximized
+    /// state, touching only bars that differ.
+    pub(crate) fn set_title_bars_maximized(&mut self, document: DocumentId, maximized: bool) {
+        let stale = self
+            .world()
+            .nodes_of_component(
+                document,
+                crate::component_descriptors::APP_TITLE_BAR.type_id,
+            )
+            .filter(|&node| {
+                self.read(Entity::<AppTitleBar>::from_stable_id(node), |bar| {
+                    bar.maximized != maximized
+                })
+                .unwrap_or(false)
+            })
+            .collect::<Vec<_>>();
+        for bar in stale {
+            let _ = self.update_component(Entity::<AppTitleBar>::from_stable_id(bar), |bar, _| {
+                bar.maximized = maximized;
+            });
+        }
+    }
+
+    /// What a host calls when its window is maximized or restored: the
+    /// title bars of `document` show the matching control. A document
+    /// without one has nothing to do.
+    pub fn sync_title_bars_maximized(&mut self, document: DocumentId, maximized: bool) {
+        if let Some(set_maximized) = self.capabilities.set_title_bars_maximized {
+            set_maximized(self, document, maximized);
+        }
+    }
 }
 
 fn ensure_window_controls(

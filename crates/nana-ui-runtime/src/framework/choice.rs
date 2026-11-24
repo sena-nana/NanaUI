@@ -130,6 +130,7 @@ impl AppContext {
             return Ok(false);
         };
         if !self
+            .store
             .views
             .get(&target)
             .is_some_and(|view| view.is::<Select>())
@@ -166,6 +167,7 @@ impl AppContext {
             return Ok(false);
         };
         if !self
+            .store
             .views
             .get(&target)
             .is_some_and(|view| view.is::<Dropdown>())
@@ -206,6 +208,7 @@ impl AppContext {
             return Ok(false);
         };
         if !self
+            .store
             .views
             .get(&target)
             .is_some_and(|view| view.is::<Dropdown>())
@@ -230,6 +233,7 @@ impl AppContext {
             return Ok(false);
         };
         if !self
+            .store
             .views
             .get(&target)
             .is_some_and(|view| view.is::<Select>())
@@ -319,6 +323,7 @@ impl AppContext {
             return Ok(false);
         };
         if !self
+            .store
             .views
             .get(&target)
             .is_some_and(|view| view.is::<SearchDropdown>())
@@ -356,6 +361,7 @@ impl AppContext {
             return Ok(false);
         };
         if !self
+            .store
             .views
             .get(&target)
             .is_some_and(|view| view.is::<SearchDropdown>())
@@ -411,6 +417,7 @@ impl AppContext {
             return Ok(false);
         };
         if !self
+            .store
             .views
             .get(&target)
             .is_some_and(|view| view.is::<CommandPalette>())
@@ -500,6 +507,7 @@ impl AppContext {
             return Ok(false);
         };
         if !self
+            .store
             .views
             .get(&target)
             .is_some_and(|view| view.is::<TreeView>())
@@ -606,11 +614,12 @@ impl AppContext {
         let mut current = Some(press.target);
         while let Some(id) = current {
             if self
+                .lifecycle
                 .event_handlers
                 .contains_key(&(id, TypeId::of::<SecondaryPress>()))
                 && let Some(emit) = self
                     .view_type_id(id)
-                    .and_then(|type_id| self.emitters.get(&type_id))
+                    .and_then(|type_id| self.store.emitters.get(&type_id))
                     .copied()
             {
                 super::emit_erased(self, emit, id, press)?;
@@ -647,7 +656,7 @@ impl AppContext {
         &mut self,
         keep: Option<StableNodeId>,
     ) -> Result<(), FrameworkError> {
-        let ids = self.views.keys().copied().collect::<Vec<_>>();
+        let ids = self.store.views.keys().copied().collect::<Vec<_>>();
         for id in ids {
             if Some(id) == keep {
                 continue;
@@ -667,16 +676,19 @@ impl AppContext {
         inside: Option<StableNodeId>,
         allows: fn(&Popover) -> bool,
     ) -> Result<bool, FrameworkError> {
-        via!(self.close_open_popovers_within(None, inside, allows))
+        match self.capabilities.popover {
+            Some(p) => (p.close_within)(self, None, inside, allows),
+            None => Ok(false),
+        }
     }
 
-    pub(super) fn close_open_popovers_within(
+    pub(crate) fn close_open_popovers_within(
         &mut self,
         root: Option<StableNodeId>,
         inside: Option<StableNodeId>,
         allows: fn(&Popover) -> bool,
     ) -> Result<bool, FrameworkError> {
-        let ids = self.views.keys().copied().collect::<Vec<_>>();
+        let ids = self.store.views.keys().copied().collect::<Vec<_>>();
         let mut dismissed = false;
         for id in ids {
             if root.is_some_and(|root| !self.overlay_descendant(root, id)) {
@@ -727,7 +739,12 @@ impl AppContext {
                 .view_entity::<crate::HoverCard>(target)
                 .and_then(|entity| self.read(entity, |card| card.close_on_escape).ok())
                 .unwrap_or(false);
-            if allows_escape && via!(self.close_hover_card(target))? {
+            if allows_escape
+                && self
+                    .capabilities
+                    .close_hover_card
+                    .is_some_and(|close| close(self, target).unwrap_or(false))
+            {
                 dismissed = true;
             }
         }
@@ -1046,6 +1063,7 @@ impl AppContext {
         while let Some(id) = current {
             if let Some(menu) = self.view_entity::<ActionMenu>(id) {
                 return self
+                    .store
                     .views
                     .get(&id)
                     .and_then(|view| view.downcast_ref::<ActionMenu>())
@@ -1062,6 +1080,7 @@ impl AppContext {
     /// another menu, popover, or the content that draws its trigger.
     pub fn action_menu_items(&self, menu: Entity<ActionMenu>) -> Vec<StableNodeId> {
         let trigger = self
+            .store
             .views
             .get(&menu.stable_id())
             .and_then(|view| view.downcast_ref::<ActionMenu>())
@@ -1098,6 +1117,7 @@ impl AppContext {
             .into_iter()
             .filter(|&item| {
                 let enabled = self
+                    .store
                     .views
                     .get(&item)
                     .and_then(|view| view.downcast_ref::<ActionMenuItem>())

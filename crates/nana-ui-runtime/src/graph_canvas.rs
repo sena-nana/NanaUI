@@ -28,9 +28,9 @@ use nana_ui_core::{GRAPH_MAX_ZOOM, GraphEdge, GraphNode, GraphPort};
 
 use crate::view_components::project_common;
 use crate::{
-    AccessibilityRole, AccessibilityState, ComponentTextRegion, ComponentView, ComputedStyle,
-    CustomRenderNode, HOST_TEXTURE_RENDERER, InteractionState, InteractionStyle, LayoutBox,
-    LineCap, MutationQueue, NodeKind, NodeStyle, SemanticPaint, StableNodeId,
+    AccessibilityRole, AccessibilityState, AppContext, ComponentTextRegion, ComponentView,
+    ComputedStyle, CustomRenderNode, HOST_TEXTURE_RENDERER, InteractionState, InteractionStyle,
+    LayoutBox, LineCap, MutationQueue, NodeKind, NodeStyle, SemanticPaint, StableNodeId,
     TextHorizontalAlignment, UiWorld, WidgetBatchColors, WidgetPaintCtx, WidgetPaintOp,
     WidgetPaintOutput, WidgetQuad, WidgetQuadBatch, WidgetStroke, WidgetVisual,
 };
@@ -1381,11 +1381,66 @@ impl GraphCanvas {
     }
 }
 
+static GRAPH_CANVAS_DRAG_OPS: crate::framework::ActiveDragOps = crate::framework::ActiveDragOps {
+    pre_gesture: false,
+    cancel_on_touch_scroll: false,
+    update: |cx, doc, _, ptr, x, y, _| cx.update_graph_canvas_pointer(doc, ptr, x, y),
+    end: |cx, doc, _, ptr, x, y, _, cancel| cx.end_graph_canvas_pointer(doc, ptr, x, y, cancel),
+};
+
+static GRAPH_CANVAS_POINTER_OPS: crate::framework::PointerOps = crate::framework::PointerOps {
+    early_press: true,
+    skips_press_pointer: true,
+    press: Some(|cx, doc, id, ptr, button, x, y| {
+        let button = match button {
+            1 => GraphPointerButton::Middle,
+            _ => GraphPointerButton::Primary,
+        };
+        cx.begin_graph_canvas_pointer(doc, ptr, id, x, y, button)
+    }),
+    wheel_post_overlay: Some(|cx, doc, id, x, y, dy, line_delta| {
+        let delta = if line_delta {
+            GraphScrollDelta::Lines { y: -dy }
+        } else {
+            GraphScrollDelta::Pixels { y: -dy }
+        };
+        cx.scroll_graph_canvas(doc, id, x, y, delta)
+    }),
+    ..crate::framework::PointerOps::EMPTY
+};
+
+fn graph_canvas_key(
+    cx: &mut AppContext,
+    document: crate::DocumentId,
+    key: &str,
+) -> Result<bool, crate::FrameworkError> {
+    let adjustment = match key {
+        "ArrowLeft" => GraphCanvasAdjustment::PanLeft,
+        "ArrowRight" => GraphCanvasAdjustment::PanRight,
+        "ArrowUp" => GraphCanvasAdjustment::PanUp,
+        "ArrowDown" => GraphCanvasAdjustment::PanDown,
+        "Home" | "0" => GraphCanvasAdjustment::Fit,
+        "+" | "=" => GraphCanvasAdjustment::ZoomIn,
+        "-" => GraphCanvasAdjustment::ZoomOut,
+        "Escape" => GraphCanvasAdjustment::ClearSelection,
+        _ => return Ok(false),
+    };
+    cx.adjust_focused_graph_canvas(document, adjustment)
+}
+
 impl ComponentView for GraphCanvas {
     const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::GRAPH_CANVAS.type_id);
 
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        capabilities: Some(|caps| {
+            caps.add_hover_move(|cx, _doc, target, x, y, _| match target {
+                Some(t) => cx.hover_graph_canvas(t, x, y),
+                None => Ok(false),
+            });
+            caps.graph_canvas_key = Some(graph_canvas_key);
+        }),
         slot_assembler: Some(crate::AppContext::assemble_graph_canvas_contents),
+        pointer_ops: Some(&GRAPH_CANVAS_POINTER_OPS),
         ..crate::TypeBehavior::NONE
     };
 
@@ -1472,7 +1527,7 @@ impl crate::AppContext {
         if !point_in_bounds(bounds, x, y) {
             return Ok(false);
         }
-        self.update_component(entity, |canvas, cx| {
+        let started = self.update_component(entity, |canvas, cx| {
             cx.mutations().request_focus(document, Some(target));
             cx.mutations().capture_pointer(pointer_id, target);
             if let Some(event) = canvas.pointer_press(
@@ -1484,7 +1539,11 @@ impl crate::AppContext {
                 cx.emit(event);
             }
             true
-        })
+        })?;
+        if started {
+            self.begin_active_drag(document, pointer_id, target, &GRAPH_CANVAS_DRAG_OPS);
+        }
+        Ok(started)
     }
 
     pub fn update_graph_canvas_pointer(
@@ -1503,6 +1562,7 @@ impl crate::AppContext {
         let Some(bounds) = self.world().component_layout_box(target) else {
             return Ok(false);
         };
+        self.clear_active_drag(document, pointer_id, target);
         self.update_component(entity, |canvas, cx| {
             if let Some(event) =
                 canvas.pointer_move(pointer_id, local_point(bounds, x, y), GraphPoint::new(x, y))

@@ -2,7 +2,6 @@ use super::{
     AppContext, DocumentId, Entity, FrameworkError, StableNodeId, TEXT_SELECTION_DRAG_THRESHOLD,
     TextArea, TextDeleteKind, TextEditorKind, TextInputState, TextSelection, TextSelectionDrag,
 };
-use crate::framework::via;
 use crate::text_editing::{
     CursorEdit, TextCaretIntent, TextLineDirection, TextReplacement, atoms_in, auto_indent_newline,
     auto_pair_edit, caret_focus, caret_offset_at_point, delete_backward_atoms,
@@ -1164,7 +1163,14 @@ impl AppContext {
         // 选区；滚轮不经过本路径，落在条上仍按编辑器常规滚动。
         if let Some(target) = self.world.text_minimap_scroll_target(node, x, y) {
             self.text_edit.text_pointer_drag = None;
-            return via!(self.text_editor_minimap_navigate(node, focused.kind, pointer_id, target));
+            return match self
+                .behavior(node)
+                .and_then(|b| b.pointer_ops)
+                .and_then(|p| p.minimap_navigate)
+            {
+                Some(nav) => nav(self, node, focused.kind, pointer_id, target),
+                None => Ok(false),
+            };
         }
         if count == 1
             && !extend
@@ -1172,7 +1178,14 @@ impl AppContext {
             && let Some(token) = self.world.text_atom_close_hit(node, x, y)
         {
             self.text_edit.text_pointer_drag = None;
-            return via!(self.close_focused_text_atom(document, &token));
+            return match self
+                .behavior(node)
+                .and_then(|b| b.pointer_ops)
+                .and_then(|p| p.close_text_atom)
+            {
+                Some(close) => close(self, document, &token),
+                None => Ok(false),
+            };
         }
         // 折叠交互优先：gutter 箭头与折叠摘要标记的点击切换折叠态，不落
         // 光标（单击且无修饰时）。
@@ -1341,11 +1354,14 @@ impl AppContext {
             }
             let (x, y) = self.editor_point(drag_node, x, y);
             return match self.world.text_minimap_scroll_target(drag_node, x, y) {
-                Some(target) => {
-                    via!(
-                        self.text_editor_minimap_navigate(drag_node, drag_kind, pointer_id, target)
-                    )
-                }
+                Some(target) => match self
+                    .behavior(drag_node)
+                    .and_then(|b| b.pointer_ops)
+                    .and_then(|p| p.minimap_navigate)
+                {
+                    Some(nav) => nav(self, drag_node, drag_kind, pointer_id, target),
+                    None => Ok(false),
+                },
                 None => Ok(true),
             };
         }

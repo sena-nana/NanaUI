@@ -1,11 +1,10 @@
-//! Per-type hooks: behavior the input router reaches only through a type
-//! that needs it.
+//! Per-type behavior and lazy capabilities.
 //!
-//! A type installs its hooks with its first node
-//! ([`TypeBehavior::hooks`]), so a program that never creates the
-//! type links none of the code behind them. Until then a router call does
-//! what it always did for a document without such a node: nothing
-//! ([`Absent`]), so the order and outcome of the routing chain are unchanged.
+//! A type registers its node-level behavior (`PointerOps`, `A11yBehavior`,
+//! `OverlayBehavior`, `FocusBehavior`, `post_layout`, `animation_sample`)
+//! and context-level [`Capabilities`] (`TypeBehavior::capabilities`) once
+//! when its first node is created, so feature-gated or unused controls link
+//! none of their code until instantiated.
 
 use std::time::Duration;
 
@@ -18,42 +17,38 @@ use super::*;
 use crate::*;
 
 type Handled = Result<bool, FrameworkError>;
-type NearHit = fn(&AppContext, DocumentId, f32, f32, Option<StableNodeId>) -> Option<StableNodeId>;
+pub(crate) type NearHit =
+    fn(&AppContext, DocumentId, f32, f32, Option<StableNodeId>) -> Option<StableNodeId>;
 
-/// Dock split handles and item drags.
-pub(crate) struct DockHooks {
-    pub(crate) handle_near_hit: NearHit,
-    pub(crate) tab_strip_near_hit: NearHit,
-    pub(crate) is_handle: fn(&AppContext, StableNodeId) -> bool,
-    pub(crate) is_item_source: fn(&AppContext, StableNodeId) -> bool,
-    pub(crate) begin_split: fn(&mut AppContext, DocumentId, u64, StableNodeId, f32, f32) -> Handled,
-    pub(crate) update_split: fn(&mut AppContext, DocumentId, u64, f32, f32) -> Handled,
-    pub(crate) end_split: fn(&mut AppContext, DocumentId, u64, bool) -> Handled,
-    pub(crate) begin_item: fn(&mut AppContext, DocumentId, u64, StableNodeId, f32, f32) -> Handled,
-    pub(crate) update_item: fn(&mut AppContext, DocumentId, u64, f32, f32) -> Handled,
-    pub(crate) end_item: fn(&mut AppContext, DocumentId, u64, f32, f32, bool) -> Handled,
-    pub(crate) adjust_focused_split: fn(&mut AppContext, DocumentId, f32) -> Handled,
+/// Drag lifecycle callbacks registered on `InputState::active_drags` when a
+/// pointer down begins (or arms) a drag, allowing `O(1)` Move/Up/Cancel dispatch.
+#[derive(Clone, Copy)]
+pub(crate) struct ActiveDragOps {
+    pub(crate) pre_gesture: bool,
+    pub(crate) cancel_on_touch_scroll: bool,
+    pub(crate) update:
+        fn(&mut AppContext, DocumentId, StableNodeId, u64, f32, f32, Duration) -> Handled,
+    pub(crate) end:
+        fn(&mut AppContext, DocumentId, StableNodeId, u64, f32, f32, Duration, bool) -> Handled,
 }
 
-/// Workspace region resize handles.
-pub(crate) struct WorkspaceHooks {
-    pub(crate) handle_near_hit: NearHit,
-    pub(crate) is_resize_handle: fn(&AppContext, StableNodeId) -> bool,
-    pub(crate) begin_resize:
-        fn(&mut AppContext, DocumentId, u64, StableNodeId, f32, f32, Duration) -> Handled,
-    pub(crate) update_resize: fn(&mut AppContext, DocumentId, u64, f32, f32, Duration) -> Handled,
-    pub(crate) end_resize: fn(&mut AppContext, DocumentId, u64, Duration) -> Handled,
+/// One in-flight or armed pointer drag.
+#[derive(Clone, Copy)]
+pub(crate) struct ActiveDrag {
+    pub(crate) document: DocumentId,
+    pub(crate) pointer_id: u64,
+    pub(crate) node: StableNodeId,
+    pub(crate) ops: &'static ActiveDragOps,
 }
 
-/// A focused option list's keyboard: move the highlight, commit it.
-pub(crate) struct ChoiceHooks {
-    pub(crate) adjust: fn(&mut AppContext, DocumentId, i32) -> Handled,
-    pub(crate) commit: fn(&mut AppContext, DocumentId) -> Handled,
-}
-
-/// A focused picker's keyboard navigation.
-pub(crate) struct NavigateHooks<N: 'static> {
-    pub(crate) navigate: fn(&mut AppContext, DocumentId, N) -> Handled,
+impl std::fmt::Debug for ActiveDrag {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ActiveDrag")
+            .field("document", &self.document)
+            .field("pointer_id", &self.pointer_id)
+            .field("node", &self.node)
+            .finish()
+    }
 }
 
 type EntityFn<C, R = bool> = fn(&mut AppContext, Entity<C>) -> Result<R, FrameworkError>;
@@ -95,7 +90,7 @@ pub struct NodePointer {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PointerDetail {
     buttons: u16,
-    modifiers: InputModifiers,
+    pub(super) modifiers: InputModifiers,
     pointer_type: PointerType,
     pressure: f32,
     tilt_x: i16,
@@ -207,12 +202,28 @@ pub struct TypeBehavior<C: View> {
     /// Upkeep after each create or write: a tab strip's options, a
     /// terminal's rows, a workspace's transition.
     pub lifecycle: Option<EntityFn<C, ()>>,
-    /// The router hooks this type needs.
-    pub hooks: Option<fn(&mut TypeHooks)>,
+    /// Context-level lazy capabilities registered once when the first node of this type is created.
+    pub(crate) capabilities: Option<fn(&mut Capabilities)>,
     /// Text editing, for an editor or a composite with a search field.
     pub editable: Option<&'static super::text_edit::EditableHooks>,
     /// Hover, drags and wheel over the whole node.
     pub pointer: Option<&'static NodePointerHooks<C>>,
+    /// Node-level pointer/scroll dispatch table.
+    pub(crate) pointer_ops: Option<&'static PointerOps>,
+    /// Node-level accessibility action dispatch table.
+    pub(crate) a11y: Option<&'static A11yBehavior>,
+    /// Node-level modal/menu/tooltip/hover-card overlay behavior.
+    pub(crate) overlay: Option<&'static OverlayBehavior>,
+    /// Node-level focus settlement/loss behavior.
+    pub(crate) focus: Option<&'static FocusBehavior>,
+    /// Post-layout adjustment hook for instances of this type.
+    pub(crate) post_layout: Option<fn(&mut AppContext, StableNodeId) -> Handled>,
+    /// Animation sample / expiry hook for instances of this type.
+    pub(crate) animation_sample:
+        Option<fn(&mut AppContext, StableNodeId, &crate::AnimationSample, Duration) -> bool>,
+    /// Extra projection over framework-owned assembled slots stored on `AppContext`.
+    #[doc(hidden)]
+    pub slot_projector: Option<fn(&AppContext, StableNodeId, &C, &UiWorld, &mut MutationQueue)>,
 }
 
 impl<C: View> TypeBehavior<C> {
@@ -223,9 +234,16 @@ impl<C: View> TypeBehavior<C> {
         activate_at: None,
         close_options: None,
         lifecycle: None,
-        hooks: None,
+        capabilities: None,
         editable: None,
         pointer: None,
+        pointer_ops: None,
+        a11y: None,
+        overlay: None,
+        focus: None,
+        post_layout: None,
+        animation_sample: None,
+        slot_projector: None,
     };
 }
 
@@ -239,6 +257,13 @@ pub(crate) struct ErasedBehavior {
     pub(crate) lifecycle: Option<fn(&mut AppContext, StableNodeId) -> Result<(), FrameworkError>>,
     pub(crate) editable: Option<&'static super::text_edit::EditableHooks>,
     pub(crate) pointer: Option<&'static dyn ErasedPointer>,
+    pub(crate) pointer_ops: Option<&'static PointerOps>,
+    pub(crate) a11y: Option<&'static A11yBehavior>,
+    pub(crate) overlay: Option<&'static OverlayBehavior>,
+    pub(crate) focus: Option<&'static FocusBehavior>,
+    pub(crate) post_layout: Option<fn(&mut AppContext, StableNodeId) -> Handled>,
+    pub(crate) animation_sample:
+        Option<fn(&mut AppContext, StableNodeId, &crate::AnimationSample, Duration) -> bool>,
 }
 
 impl ErasedBehavior {
@@ -274,6 +299,12 @@ impl ErasedBehavior {
             pointer: behavior
                 .pointer
                 .map(|hooks| hooks as &'static dyn ErasedPointer),
+            pointer_ops: behavior.pointer_ops,
+            a11y: behavior.a11y,
+            overlay: behavior.overlay,
+            focus: behavior.focus,
+            post_layout: behavior.post_layout,
+            animation_sample: behavior.animation_sample,
         }
     }
 }
@@ -282,16 +313,17 @@ impl AppContext {
     /// The behavior of the node's type, if the node has a view.
     pub(crate) fn behavior(&self, id: StableNodeId) -> Option<ErasedBehavior> {
         let type_id = self.view_type_id(id)?;
-        self.behaviors.get(&type_id).copied()
+        self.store.behaviors.get(&type_id).copied()
     }
 
     /// The node's pointer hooks: its type's, or an extension's.
     pub(crate) fn pointer_hooks(&self, id: StableNodeId) -> Option<&'static dyn ErasedPointer> {
         let type_id = self.view_type_id(id)?;
-        self.behaviors
+        self.store
+            .behaviors
             .get(&type_id)
             .and_then(|behavior| behavior.pointer)
-            .or_else(|| self.pointer_extensions.get(&type_id).copied())
+            .or_else(|| self.store.pointer_extensions.get(&type_id).copied())
     }
 
     /// Record a pointer sample's details for the [`NodePointer`]s built
@@ -508,276 +540,434 @@ impl AppContext {
     }
 }
 
-/// The hooks installed so far. See the module docs.
+/// Kept only as an empty placeholder so `lib.rs` re-exports stay intact until Wave 5.
 #[doc(hidden)]
 #[derive(Clone, Copy, Default)]
-pub struct TypeHooks {
-    pub(crate) dock: Option<&'static DockHooks>,
-    pub(crate) workspace: Option<&'static WorkspaceHooks>,
-    pub(crate) select: Option<&'static ChoiceHooks>,
-    pub(crate) dropdown: Option<&'static ChoiceHooks>,
-    pub(crate) search_dropdown: Option<&'static ChoiceHooks>,
-    pub(crate) command_palette: Option<&'static NavigateHooks<ActionPickerNavigation>>,
-    pub(crate) tree: Option<&'static NavigateHooks<crate::TreeNavigation>>,
-    pub(crate) calls: RoutedCalls,
+pub struct TypeHooks;
+
+/// Per-node pointer, scroll, drag-end and focus-entry dispatch behavior.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct PointerOps {
+    pub(crate) press:
+        Option<fn(&mut AppContext, DocumentId, StableNodeId, u64, i16, f32, f32) -> Handled>,
+    pub(crate) early_press: bool,
+    pub(crate) skips_press_pointer: bool,
+    pub(crate) skip_on_activation_click: bool,
+    pub(crate) releases_pointer_on_press: bool,
+    pub(crate) corner_press: Option<fn(&mut AppContext, u64, StableNodeId, f32, f32) -> Handled>,
+    pub(crate) prepare_context_menu:
+        Option<fn(&mut AppContext, StableNodeId, f32, f32) -> Result<(), FrameworkError>>,
+    pub(crate) select_on_focus_entry:
+        Option<fn(&mut AppContext, DocumentId, StableNodeId, Option<(f32, f32)>) -> Handled>,
+    pub(crate) column_edge_at: Option<fn(&AppContext, StableNodeId, f32, f32) -> bool>,
+    pub(crate) wheel_pre_overlay:
+        Option<fn(&mut AppContext, StableNodeId, f32, f32, f32) -> Handled>,
+    pub(crate) wheel_post_overlay:
+        Option<fn(&mut AppContext, DocumentId, StableNodeId, f32, f32, f32, bool) -> Handled>,
+    pub(crate) is_value_range: bool,
+    pub(crate) end_value_drag: Option<fn(&mut AppContext, StableNodeId, u64, bool) -> Handled>,
+    pub(crate) is_segmented_option: bool,
+    pub(crate) segmented_option_tab_stop: Option<fn(&AppContext, StableNodeId) -> bool>,
+    pub(crate) focus_segmented_option:
+        Option<fn(&mut AppContext, DocumentId, StableNodeId) -> Handled>,
+    pub(crate) apply_scroll: Option<fn(&mut AppContext, StableNodeId, ScrollOffset) -> Handled>,
+    pub(crate) note_scroll:
+        Option<fn(&mut AppContext, StableNodeId, ScrollOffset) -> Result<(), FrameworkError>>,
+    pub(crate) hold_scrollbars:
+        Option<fn(&mut AppContext, StableNodeId) -> Result<(), FrameworkError>>,
+    pub(crate) minimap_navigate: Option<
+        fn(
+            &mut AppContext,
+            StableNodeId,
+            super::text_edit::TextEditorKind,
+            u64,
+            ScrollOffset,
+        ) -> Handled,
+    >,
+    pub(crate) close_text_atom: Option<fn(&mut AppContext, DocumentId, &str) -> Handled>,
 }
 
-/// Declares [`RoutedCalls`]: a field per call, and the calls' names for the
-/// check that each has a type to bring it.
-macro_rules! routed_calls {
-    ($($name:ident: $call:ty,)*) => {
-        /// Calls the router makes into one type's own handling, each reached
-        /// through the type that needs it ([`via`]). A field is named after
-        /// the `AppContext` method it stands for and holds that method once a
-        /// type whose nodes it serves has one; until then the call answers
-        /// [`Absent`], which is what the method answers for a document
-        /// without such a node.
-        #[doc(hidden)]
-        #[derive(Clone, Copy, Default)]
-        pub struct RoutedCalls {
-            $(pub(crate) $name: Option<$call>,)*
-        }
-
-        impl RoutedCalls {
-            /// Every call, by the name of its method.
-            #[cfg(test)]
-            pub(crate) const NAMES: &'static [&'static str] = &[$(stringify!($name)),*];
-
-            /// The calls a type has brought so far.
-            #[cfg(test)]
-            pub(crate) fn installed(&self) -> Vec<&'static str> {
-                let mut installed = Vec::new();
-                $(if self.$name.is_some() {
-                    installed.push(stringify!($name));
-                })*
-                installed
-            }
-        }
+impl PointerOps {
+    pub(crate) const EMPTY: Self = Self {
+        press: None,
+        early_press: false,
+        skips_press_pointer: false,
+        skip_on_activation_click: false,
+        releases_pointer_on_press: false,
+        corner_press: None,
+        prepare_context_menu: None,
+        select_on_focus_entry: None,
+        column_edge_at: None,
+        wheel_pre_overlay: None,
+        wheel_post_overlay: None,
+        is_value_range: false,
+        end_value_drag: None,
+        is_segmented_option: false,
+        segmented_option_tab_stop: None,
+        focus_segmented_option: None,
+        apply_scroll: None,
+        note_scroll: None,
+        hold_scrollbars: None,
+        minimap_navigate: None,
+        close_text_atom: None,
     };
 }
 
-routed_calls! {
-    set_terminal_preedit: fn(&mut AppContext, DocumentId, &str) -> Result<bool, FrameworkError>,
-    focused_terminal_node: fn(&AppContext, DocumentId) -> Option<StableNodeId>,
-    terminal_accepts_input: fn(&AppContext, DocumentId) -> bool,
-    terminal_caret_bounds: fn(&AppContext, DocumentId) -> Option<LayoutBox>,
-    terminal_selected_text: fn(&AppContext, DocumentId) -> Option<String>,
-    terminal_pointer: fn(&mut AppContext, DocumentId, Option<StableNodeId>, u64, u8, f32, f32) -> Result<bool, FrameworkError>,
-    terminal_key: fn(&mut AppContext, DocumentId, &str, Option<&str>, bool, bool, bool) -> Result<bool, FrameworkError>,
-    terminal_input: fn(&mut AppContext, DocumentId, Vec<u8>) -> Result<bool, FrameworkError>,
-    paste_terminal: fn(&mut AppContext, DocumentId, &str) -> Result<bool, FrameworkError>,
-    resize_terminal_node: fn(&mut AppContext, StableNodeId, f32, f32) -> Result<bool, FrameworkError>,
-    end_xy_pad_drag: fn(&mut AppContext, DocumentId, u64, bool) -> Result<bool, FrameworkError>,
-    update_xy_pad_drag: fn(&mut AppContext, DocumentId, u64, f32, f32, bool) -> Result<bool, FrameworkError>,
-    begin_xy_pad_drag: fn(&mut AppContext, DocumentId, u64, StableNodeId, f32, f32) -> Result<bool, FrameworkError>,
-    is_xy_pad: fn(&AppContext, StableNodeId) -> bool,
-    adjust_focused_xy_pad: fn(&mut AppContext, crate::DocumentId, XYPadAdjustment) -> Result<bool, FrameworkError>,
-    end_xy_pad_drag_on: fn(&mut AppContext, StableNodeId, u64, bool) -> Result<bool, FrameworkError>,
-    end_range_drag: fn(&mut AppContext, DocumentId, u64, bool) -> Result<bool, FrameworkError>,
-    update_range_drag_at: fn(&mut AppContext, DocumentId, u64, f32, f32, bool) -> Result<bool, FrameworkError>,
-    begin_range_drag_at: fn(&mut AppContext, DocumentId, u64, StableNodeId, f32, f32) -> Result<bool, FrameworkError>,
-    adjust_focused_range: fn(&mut AppContext, DocumentId, RangeAdjustment) -> Result<bool, FrameworkError>,
-    is_range_field: fn(&AppContext, StableNodeId) -> bool,
-    end_focused_range_edit: fn(&mut AppContext, DocumentId) -> Result<bool, FrameworkError>,
-    end_range_drag_on: fn(&mut AppContext, StableNodeId, u64, bool) -> Result<bool, FrameworkError>,
-    adjust_range: fn(&mut AppContext, Entity<RangeField>, RangeAdjustment) -> Result<bool, FrameworkError>,
-    set_range_value: fn(&mut AppContext, Entity<RangeField>, f64) -> Result<bool, FrameworkError>,
-    step_focused_number_input: fn(&mut AppContext, DocumentId, i32) -> Result<bool, FrameworkError>,
-    revert_focused_number_input: fn(&mut AppContext, DocumentId) -> Result<bool, FrameworkError>,
-    press_number_stepper: fn(&mut AppContext, StableNodeId, f32, f32) -> Result<bool, FrameworkError>,
-    commit_focused_number_input: fn(&mut AppContext, DocumentId) -> Result<bool, FrameworkError>,
-    submit_focused_number_input: fn(&mut AppContext, DocumentId) -> Result<bool, FrameworkError>,
-    cancel_focused_number_input: fn(&mut AppContext, DocumentId) -> Result<bool, FrameworkError>,
-    select_focused_number_on_entry:
-        fn(&mut AppContext, DocumentId, StableNodeId, Option<(f32, f32)>) -> Result<bool, FrameworkError>,
-    settle_focused_number_input: fn(&mut AppContext, DocumentId) -> Result<bool, FrameworkError>,
-    step_number_input: fn(&mut AppContext, Entity<NumberInput>, i32) -> Result<bool, FrameworkError>,
-    set_number_text: fn(&mut AppContext, Entity<NumberInput>, &str) -> Result<bool, FrameworkError>,
-    end_split_resize: fn(&mut AppContext, crate::DocumentId, u64, bool) -> Result<bool, FrameworkError>,
-    update_split_resize: fn(&mut AppContext, crate::DocumentId, u64, f32, f32) -> Result<bool, FrameworkError>,
-    sync_split_handle_hover_near_hit: fn(&mut AppContext, crate::DocumentId, f32, f32, Option<StableNodeId>, std::time::Duration) -> Result<bool, FrameworkError>,
-    sync_split_handle_hover: fn(&mut AppContext, crate::DocumentId, Option<StableNodeId>) -> Result<bool, FrameworkError>,
-    is_split_handle: fn(&AppContext, StableNodeId) -> bool,
-    begin_split_resize: fn(&mut AppContext, crate::DocumentId, u64, StableNodeId, f32, f32) -> Result<bool, FrameworkError>,
-    adjust_focused_split: fn(&mut AppContext, crate::DocumentId, f32) -> Result<bool, FrameworkError>,
-    end_range_span_drag: fn(&mut AppContext, DocumentId, u64, bool) -> Result<bool, FrameworkError>,
-    end_focused_range_span_edit: fn(&mut AppContext, DocumentId) -> Result<bool, FrameworkError>,
-    update_range_span_drag_at: fn(&mut AppContext, DocumentId, u64, f32, f32) -> Result<bool, FrameworkError>,
-    range_span_target: fn(&AppContext, StableNodeId) -> Option<(Entity<RangeSpanField>, Option<RangeSpanThumb>)>,
-    begin_range_span_drag_at: fn(&mut AppContext, DocumentId, u64, StableNodeId, f32, f32) -> Result<bool, FrameworkError>,
-    adjust_focused_range_span: fn(&mut AppContext, DocumentId, RangeAdjustment) -> Result<bool, FrameworkError>,
-    end_range_span_drag_on: fn(&mut AppContext, StableNodeId, u64, bool) -> Result<bool, FrameworkError>,
-    adjust_range_span: fn(&mut AppContext, Entity<RangeSpanField>, RangeSpanThumb, RangeAdjustment) -> Result<bool, FrameworkError>,
-    set_range_span_thumb: fn(&mut AppContext, Entity<RangeSpanField>, RangeSpanThumb, f64) -> Result<bool, FrameworkError>,
-    end_curve_drag: fn(&mut AppContext, DocumentId, u64, bool) -> Result<bool, FrameworkError>,
-    update_curve_drag_at: fn(&mut AppContext, DocumentId, u64, f32, f32) -> Result<bool, FrameworkError>,
-    curve_target: fn(&AppContext, StableNodeId) -> Option<(Entity<CurveField>, Option<usize>)>,
-    begin_curve_drag_at: fn(&mut AppContext, DocumentId, u64, StableNodeId, f32, f32) -> Result<bool, FrameworkError>,
-    focus_curve_neighbour: fn(&mut AppContext, DocumentId, bool) -> Result<bool, FrameworkError>,
-    adjust_focused_curve: fn(&mut AppContext, DocumentId, RangeAdjustment) -> Result<bool, FrameworkError>,
-    end_curve_drag_on: fn(&mut AppContext, StableNodeId, u64, bool) -> Result<bool, FrameworkError>,
-    adjust_curve_point: fn(&mut AppContext, Entity<CurveField>, usize, RangeAdjustment) -> Result<bool, FrameworkError>,
-    set_curve_point: fn(&mut AppContext, Entity<CurveField>, usize, f64) -> Result<bool, FrameworkError>,
-    end_focused_scrub_edit: fn(&mut AppContext, DocumentId) -> Result<bool, FrameworkError>,
-    adjust_focused_scrub_field: fn(&mut AppContext, DocumentId, RangeAdjustment) -> Result<bool, FrameworkError>,
-    step_scrub_field: fn(&mut AppContext, Entity<ScrubField>, i32) -> Result<bool, FrameworkError>,
-    focused_tree_key: fn(
+/// Per-node accessibility action dispatch behavior.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct A11yBehavior {
+    pub(crate) activate_context_menu_index:
+        Option<fn(&mut AppContext, StableNodeId, usize) -> Handled>,
+    pub(crate) focus_context_menu_index:
+        Option<fn(&mut AppContext, StableNodeId, usize) -> Handled>,
+    pub(crate) activate_select_option:
+        Option<fn(&mut AppContext, StableNodeId, u16) -> Result<Option<bool>, FrameworkError>>,
+    pub(crate) adjust_range: Option<fn(&mut AppContext, StableNodeId, RangeAdjustment) -> Handled>,
+    pub(crate) step: Option<fn(&mut AppContext, StableNodeId, i32) -> Handled>,
+    pub(crate) set_expanded: Option<fn(&mut AppContext, StableNodeId, bool) -> Handled>,
+    pub(crate) set_text: Option<fn(&mut AppContext, StableNodeId, &str) -> Handled>,
+    pub(crate) set_range_value: Option<fn(&mut AppContext, StableNodeId, f64) -> Handled>,
+}
+
+impl A11yBehavior {
+    pub(crate) const EMPTY: Self = Self {
+        activate_context_menu_index: None,
+        focus_context_menu_index: None,
+        activate_select_option: None,
+        adjust_range: None,
+        step: None,
+        set_expanded: None,
+        set_text: None,
+        set_range_value: None,
+    };
+}
+
+/// Per-node overlay/modal/menu/tooltip behavior.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct OverlayBehavior {
+    pub(crate) note_modal_open:
+        Option<fn(&mut AppContext, StableNodeId, bool) -> Result<(), FrameworkError>>,
+    pub(crate) sync_modal_open:
+        Option<fn(&mut AppContext, StableNodeId) -> Result<(), FrameworkError>>,
+    pub(crate) announce_close_request: Option<
+        fn(
+            &mut AppContext,
+            StableNodeId,
+            nana_ui_core::DialogCloseTrigger,
+        ) -> Result<(), FrameworkError>,
+    >,
+    pub(crate) announce_confirm_intent: Option<
+        fn(&mut AppContext, StableNodeId, crate::ConfirmIntent) -> Result<(), FrameworkError>,
+    >,
+    pub(crate) note_anchored_menu_dismissed:
+        Option<fn(&mut AppContext, StableNodeId) -> Result<(), FrameworkError>>,
+    pub(crate) dismiss_context_menu: Option<fn(&mut AppContext, StableNodeId) -> Handled>,
+    pub(crate) note_tooltip:
+        Option<fn(&mut AppContext, StableNodeId, bool) -> Result<(), FrameworkError>>,
+    pub(crate) open_hover_card: Option<fn(&mut AppContext, StableNodeId) -> Handled>,
+    pub(crate) close_hover_card: Option<fn(&mut AppContext, StableNodeId) -> Handled>,
+}
+
+impl OverlayBehavior {
+    pub(crate) const EMPTY: Self = Self {
+        note_modal_open: None,
+        sync_modal_open: None,
+        announce_close_request: None,
+        announce_confirm_intent: None,
+        note_anchored_menu_dismissed: None,
+        dismiss_context_menu: None,
+        note_tooltip: None,
+        open_hover_card: None,
+        close_hover_card: None,
+    };
+}
+
+/// Per-node focus change/settle behavior.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct FocusBehavior {
+    pub(crate) on_blur_settle: Option<fn(&mut AppContext, DocumentId) -> Handled>,
+    pub(crate) on_focus_lost: Option<fn(&mut AppContext, StableNodeId) -> Handled>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct DockCapabilities {
+    pub(crate) handle_near_hit: NearHit,
+    pub(crate) tab_strip_near_hit: NearHit,
+    pub(crate) is_handle: fn(&AppContext, StableNodeId) -> bool,
+    pub(crate) is_item_source: fn(&AppContext, StableNodeId) -> bool,
+    pub(crate) begin_split: fn(&mut AppContext, DocumentId, u64, StableNodeId, f32, f32) -> Handled,
+    pub(crate) begin_item: fn(&mut AppContext, DocumentId, u64, StableNodeId, f32, f32) -> Handled,
+    pub(crate) adjust_focused_split: fn(&mut AppContext, DocumentId, f32) -> Handled,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct WorkspaceCapabilities {
+    pub(crate) handle_near_hit: NearHit,
+    pub(crate) is_resize_handle: fn(&AppContext, StableNodeId) -> bool,
+    pub(crate) begin_resize:
+        fn(&mut AppContext, DocumentId, u64, StableNodeId, f32, f32, Duration) -> Handled,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct SplitPaneCapabilities {
+    pub(crate) handle_near_hit: NearHit,
+    pub(crate) is_handle: fn(&AppContext, StableNodeId) -> bool,
+    pub(crate) begin_resize:
+        fn(&mut AppContext, DocumentId, u64, StableNodeId, f32, f32) -> Handled,
+    pub(crate) adjust_focused: fn(&mut AppContext, DocumentId, f32) -> Handled,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ScrollbarCapabilities {
+    pub(crate) near_hit: fn(
+        &AppContext,
+        f32,
+        f32,
+        Option<StableNodeId>,
+    ) -> Option<(StableNodeId, nana_ui_core::ScrollbarAxis)>,
+    pub(crate) hot_sync: fn(
+        &mut AppContext,
+        DocumentId,
+        u64,
+        Option<(StableNodeId, nana_ui_core::ScrollbarAxis)>,
+    ) -> Result<(), FrameworkError>,
+    pub(crate) begin_drag:
+        fn(&mut AppContext, u64, StableNodeId, nana_ui_core::ScrollbarAxis, f32, f32) -> Handled,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ReorderListCapabilities {
+    pub(crate) begin_pointer:
+        fn(&mut AppContext, DocumentId, u64, StableNodeId, f32, f32) -> Handled,
+    pub(crate) cancel_drag: fn(&mut AppContext, DocumentId) -> Handled,
+    pub(crate) focused_key: fn(&mut AppContext, DocumentId, &str) -> Handled,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct RangeSpanCapabilities {
+    pub(crate) target:
+        fn(&AppContext, StableNodeId) -> Option<(StableNodeId, Option<RangeSpanThumb>)>,
+    pub(crate) begin_drag: fn(&mut AppContext, DocumentId, u64, StableNodeId, f32, f32) -> Handled,
+    pub(crate) adjust_thumb:
+        fn(&mut AppContext, StableNodeId, RangeSpanThumb, RangeAdjustment) -> Handled,
+    pub(crate) set_thumb: fn(&mut AppContext, StableNodeId, RangeSpanThumb, f64) -> Handled,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct CurveCapabilities {
+    pub(crate) target: fn(&AppContext, StableNodeId) -> Option<(StableNodeId, Option<usize>)>,
+    pub(crate) begin_drag: fn(&mut AppContext, DocumentId, u64, StableNodeId, f32, f32) -> Handled,
+    pub(crate) focus_neighbour: fn(&mut AppContext, DocumentId, bool) -> Handled,
+    pub(crate) adjust_point: fn(&mut AppContext, StableNodeId, usize, RangeAdjustment) -> Handled,
+    pub(crate) set_point: fn(&mut AppContext, StableNodeId, usize, f64) -> Handled,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct TerminalCapabilities {
+    pub(crate) pointer:
+        fn(&mut AppContext, DocumentId, Option<StableNodeId>, u64, u8, f32, f32) -> Handled,
+    pub(crate) focused_node: fn(&AppContext, DocumentId) -> Option<StableNodeId>,
+    pub(crate) accepts_input: fn(&AppContext, DocumentId) -> bool,
+    pub(crate) caret_bounds: fn(&AppContext, DocumentId) -> Option<LayoutBox>,
+    pub(crate) selected_text: fn(&AppContext, DocumentId) -> Option<String>,
+    pub(crate) paste: fn(&mut AppContext, DocumentId, &str) -> Handled,
+    pub(crate) key:
+        fn(&mut AppContext, DocumentId, &str, Option<&str>, bool, bool, bool) -> Handled,
+    pub(crate) set_preedit: fn(&mut AppContext, DocumentId, &str) -> Handled,
+    pub(crate) input_bytes: fn(&mut AppContext, DocumentId, Vec<u8>) -> Handled,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct RichEditorCapabilities {
+    pub(crate) pointer: fn(
+        &mut AppContext,
+        DocumentId,
+        Option<StableNodeId>,
+        u64,
+        u8,
+        f32,
+        f32,
+        bool,
+        Duration,
+    ) -> Handled,
+    pub(crate) key: fn(
         &mut AppContext,
         DocumentId,
         &str,
-        nana_ui_core::SelectionModifiers,
-    ) -> Result<bool, FrameworkError>,
-    end_focused_tree_rename: fn(&mut AppContext, DocumentId, bool) -> Result<bool, FrameworkError>,
-    apply_tree_item_action: fn(&mut AppContext, DocumentId, StableNodeId, u16, &crate::AccessibilityAction) -> Result<bool, FrameworkError>,
-    apply_tree_toggle_action: fn(&mut AppContext, StableNodeId, u16, usize, &crate::AccessibilityAction) -> Result<bool, FrameworkError>,
-    request_focused_timeline_clip_delete: fn(&mut AppContext, crate::DocumentId) -> Result<bool, FrameworkError>,
-    rich_editor_pointer: fn(&mut AppContext, DocumentId, Option<StableNodeId>, u64, u8, f32, f32, bool, std::time::Duration) -> Result<bool, FrameworkError>,
-    rich_editor_key: fn(&mut AppContext, DocumentId, &str, Option<&str>, InputModifiers, &mut dyn HostServices) -> Result<Option<bool>, FrameworkError>,
-    rich_editor_composition: fn(&mut AppContext, DocumentId, &CompositionInput) -> Result<Option<bool>, FrameworkError>,
-    prepare_rich_editor_context_menu: fn(&mut AppContext, Entity<RichTextEditor>, f32, f32) -> Result<(), FrameworkError>,
-    advance_rich_drag: fn(&mut AppContext, std::time::Duration) -> Option<StableNodeId>,
-    note_rich_editor_scroll: fn(&mut AppContext, StableNodeId, ScrollOffset) -> Result<(), FrameworkError>,
-    navigate_focused_segmented: fn(&mut AppContext, DocumentId, RovingFocusIntent) -> Result<bool, FrameworkError>,
-    is_segmented_option_node: fn(&AppContext, StableNodeId) -> bool,
-    focus_segmented_option: fn(&mut AppContext, DocumentId, StableNodeId) -> Result<bool, FrameworkError>,
-    segmented_option_is_tab_stop: fn(&AppContext, StableNodeId) -> bool,
-    navigate_focused_table: fn(&mut AppContext, DocumentId, crate::TableNavigation, usize) -> Result<bool, FrameworkError>,
-    table_selection_key: fn(&mut AppContext, DocumentId, &str, nana_ui_core::SelectionModifiers) -> Result<bool, FrameworkError>,
-    table_column_edge_at: fn(&AppContext, StableNodeId, f32, f32) -> bool,
-    end_text_area_resize: fn(&mut AppContext, DocumentId, u64, bool) -> Result<bool, FrameworkError>,
-    update_text_area_resize: fn(&mut AppContext, DocumentId, u64, f32, f32) -> Result<bool, FrameworkError>,
-    begin_text_area_resize: fn(&mut AppContext, u64, StableNodeId, f32, f32) -> Result<bool, FrameworkError>,
-    refresh_text_area_compact_layout: fn(&mut AppContext, StableNodeId) -> Result<bool, FrameworkError>,
-    note_text_area_scroll: fn(&mut AppContext, StableNodeId, ScrollOffset) -> Result<(), FrameworkError>,
-    text_editor_minimap_navigate: fn(&mut AppContext, StableNodeId, super::text_edit::TextEditorKind, u64, ScrollOffset) -> Result<bool, FrameworkError>,
-    close_focused_text_atom: fn(&mut AppContext, DocumentId, &str) -> Result<bool, FrameworkError>,
-    note_modal_open: fn(&mut AppContext, StableNodeId, bool) -> Result<(), FrameworkError>,
-    sync_modal_open_at: fn(&mut AppContext, StableNodeId) -> Result<(), FrameworkError>,
-    announce_close_request: fn(&mut AppContext, StableNodeId, nana_ui_core::DialogCloseTrigger) -> Result<(), FrameworkError>,
-    announce_confirm_intent: fn(&mut AppContext, StableNodeId, crate::ConfirmIntent) -> Result<(), FrameworkError>,
-    note_anchored_menu_dismissed: fn(&mut AppContext, StableNodeId) -> Result<(), FrameworkError>,
-    navigate_open_anchored_menu: fn(&mut AppContext, DocumentId, &str) -> Result<bool, FrameworkError>,
-    sync_sidebar_section_hover: fn(&mut AppContext, Option<StableNodeId>, Option<StableNodeId>) -> Result<(), FrameworkError>,
-    set_sidebar_section_progress: fn(&mut AppContext, StableNodeId, f32) -> bool,
-    activate_select_option: fn(&mut AppContext, StableNodeId, u16) -> Result<Option<bool>, FrameworkError>,
-    set_dropdown_opened: fn(&mut AppContext, Entity<Dropdown>, bool) -> Result<bool, FrameworkError>,
-    close_hover_card: fn(&mut AppContext, StableNodeId) -> Result<bool, FrameworkError>,
-    sweep_hover_cards: fn(&mut AppContext),
-    open_hover_card: fn(&mut AppContext, StableNodeId) -> Result<bool, FrameworkError>,
-    dismiss_popovers_on_escape: fn(&mut AppContext) -> Result<bool, FrameworkError>,
-    close_open_popovers_within: fn(&mut AppContext, Option<StableNodeId>, Option<StableNodeId>, fn(&Popover) -> bool,) -> Result<bool, FrameworkError>,
-    dismiss_popovers_outside: fn(&mut AppContext, Option<StableNodeId>) -> Result<bool, FrameworkError>,
-    navigate_open_action_menu: fn(&mut AppContext, DocumentId, &str) -> Result<bool, FrameworkError>,
-    reconcile_toast_stacks: fn(&mut AppContext, DocumentId) -> Result<(), FrameworkError>,
-    refresh_settings_row_layout: fn(&mut AppContext, StableNodeId) -> Result<(), FrameworkError>,
-    advance_settings_row_flash: fn(&mut AppContext, StableNodeId, crate::AnimatableProperty, std::time::Duration) -> Result<(), FrameworkError>,
-    set_switch_loading_phase: fn(&mut AppContext, StableNodeId, f32) -> bool,
-    set_card_loading_phase: fn(&mut AppContext, StableNodeId, f32) -> bool,
-    set_spinner_phase: fn(&mut AppContext, StableNodeId, f32) -> bool,
-    expire_toast: fn(&mut AppContext, StableNodeId, Duration),
-    advance_workspace_animation: fn(&mut AppContext, StableNodeId, Duration) -> bool,
-    drive_due_auto_overlays: fn(&mut AppContext) -> Vec<StableNodeId>,
-    sync_media_bound_bars: fn(&mut AppContext) -> Vec<StableNodeId>,
-    drive_auto_overlay: fn(&mut AppContext, Entity<MediaTransportBar>, Option<bool>) -> Result<bool, FrameworkError>,
-    release_scrollbar_holds: fn(&mut AppContext, Duration) -> Vec<StableNodeId>,
-    hold_scrollbars: fn(&mut AppContext, StableNodeId) -> Result<(), FrameworkError>,
-    apply_scroll_view_to: fn(&mut AppContext, StableNodeId, ScrollOffset) -> Result<bool, FrameworkError>,
-    sync_scrollbar_hot: fn(&mut AppContext, DocumentId, u64, Option<(StableNodeId, nana_ui_core::ScrollbarAxis)>) -> Result<(), FrameworkError>,
-    scrollbar_target_near_hit: fn(&AppContext, f32, f32, Option<StableNodeId>) -> Option<(StableNodeId, nana_ui_core::ScrollbarAxis)>,
-    begin_scrollbar_drag: fn(&mut AppContext, u64, StableNodeId, nana_ui_core::ScrollbarAxis, f32, f32) -> Result<bool, FrameworkError>,
-    update_scrollbar_drag: fn(&mut AppContext, DocumentId, u64, f32, f32) -> Result<bool, FrameworkError>,
-    end_scrollbar_drag: fn(&mut AppContext, DocumentId, u64, bool) -> Result<bool, FrameworkError>,
-    set_scroll_view_hover: fn(&mut AppContext, StableNodeId, bool) -> Result<(), FrameworkError>,
-    settle_menu_aims: fn(&mut AppContext, Duration) -> Vec<StableNodeId>,
-    toggle_menu_bar_keyboard: fn(&mut AppContext, Entity<AppMenuBar>) -> Result<bool, FrameworkError>,
-    route_menu_bar_key: fn(&mut AppContext, DocumentId, &str, bool, bool, InputModifiers) -> Result<bool, FrameworkError>,
-    cancel_menu_bar_alt: fn(&mut AppContext),
-    sync_row_tools: fn(&mut AppContext, Option<StableNodeId>, Option<bool>, Option<bool>) -> Result<(), FrameworkError>,
-    set_select_opened: fn(&mut AppContext, Entity<Select>, bool) -> Result<bool, FrameworkError>,
-    activate_context_menu_index: fn(&mut AppContext, Entity<ContextMenu>, usize) -> Result<bool, FrameworkError>,
-    focus_context_menu_index: fn(&mut AppContext, Entity<ContextMenu>, usize) -> Result<bool, FrameworkError>,
-    navigate_open_context_menu: fn(&mut AppContext, DocumentId, &str, bool) -> Result<bool, FrameworkError>,
-    dismiss_context_menu: fn(&mut AppContext, Entity<ContextMenu>) -> Result<bool, FrameworkError>,
-    set_search_dropdown_opened: fn(&mut AppContext, Entity<SearchDropdown>, bool) -> Result<bool, FrameworkError>,
-    mark_deferred_settings_groups: fn(&mut AppContext) -> Result<(), FrameworkError>,
-    note_icon_button_tooltip: fn(&mut AppContext, StableNodeId, bool) -> Result<(), FrameworkError>,
-    set_title_bars_maximized: fn(&mut AppContext, crate::DocumentId, bool),
+        Option<&str>,
+        InputModifiers,
+        &mut dyn HostServices,
+    ) -> Result<Option<bool>, FrameworkError>,
+    pub(crate) composition:
+        fn(&mut AppContext, DocumentId, &CompositionInput) -> Result<Option<bool>, FrameworkError>,
 }
 
-/// Fills fields of [`RoutedCalls`] with the `AppContext` methods of the same
-/// names: `route!(hooks; end_split_resize, ...)`.
-macro_rules! route {
-    ($hooks:expr; $($method:ident),* $(,)?) => {
-        $( $hooks.calls.$method = Some(crate::AppContext::$method); )*
-    };
+#[derive(Clone, Copy)]
+pub(crate) struct MenuBarCapabilities {
+    pub(crate) toggle_keyboard: fn(&mut AppContext, StableNodeId) -> Handled,
+    pub(crate) route_key:
+        fn(&mut AppContext, DocumentId, &str, bool, bool, InputModifiers) -> Handled,
+    pub(crate) cancel_alt: fn(&mut AppContext),
 }
-pub(crate) use route;
 
-/// `via!(self.method(args))`: `AppContext::method` through [`RoutedCalls`],
-/// or [`Absent`] while no type has installed it.
-macro_rules! via {
-    ($cx:ident . $method:ident ( $($arg:expr),* $(,)? )) => {
-        match $cx.type_hooks.calls.$method {
-            Some(call) => call($cx, $($arg),*),
-            None => $crate::framework::hooks::Absent::absent(),
+#[derive(Clone, Copy)]
+pub(crate) struct PopoverCapabilities {
+    pub(crate) dismiss_on_escape: fn(&mut AppContext) -> Handled,
+    pub(crate) close_within: fn(
+        &mut AppContext,
+        Option<StableNodeId>,
+        Option<StableNodeId>,
+        fn(&Popover) -> bool,
+    ) -> Handled,
+    pub(crate) dismiss_outside: fn(&mut AppContext, Option<StableNodeId>) -> Handled,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct TreeCapabilities {
+    pub(crate) focused_key:
+        fn(&mut AppContext, DocumentId, &str, nana_ui_core::SelectionModifiers) -> Handled,
+    pub(crate) end_rename: fn(&mut AppContext, DocumentId, bool) -> Handled,
+    pub(crate) navigate: fn(&mut AppContext, DocumentId, crate::TreeNavigation) -> Handled,
+    pub(crate) apply_item_action:
+        fn(&mut AppContext, DocumentId, StableNodeId, u16, &crate::AccessibilityAction) -> Handled,
+    pub(crate) apply_toggle_action:
+        fn(&mut AppContext, StableNodeId, u16, usize, &crate::AccessibilityAction) -> Handled,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct TableCapabilities {
+    pub(crate) navigate: fn(&mut AppContext, DocumentId, crate::TableNavigation, usize) -> Handled,
+    pub(crate) selection_key:
+        fn(&mut AppContext, DocumentId, &str, nana_ui_core::SelectionModifiers) -> Handled,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ChoiceKeyHooks {
+    pub(crate) adjust: fn(&mut AppContext, DocumentId, i32) -> Handled,
+    pub(crate) commit: fn(&mut AppContext, DocumentId) -> Handled,
+    pub(crate) commit_on_space: bool,
+}
+
+#[derive(Default)]
+pub(crate) struct Capabilities {
+    pub(crate) dock: Option<&'static DockCapabilities>,
+    pub(crate) workspace: Option<&'static WorkspaceCapabilities>,
+    pub(crate) split_pane: Option<&'static SplitPaneCapabilities>,
+    pub(crate) scrollbar: Option<&'static ScrollbarCapabilities>,
+    pub(crate) reorder_list: Option<&'static ReorderListCapabilities>,
+    pub(crate) range_span: Option<&'static RangeSpanCapabilities>,
+    pub(crate) curve_field: Option<&'static CurveCapabilities>,
+    pub(crate) terminal: Option<&'static TerminalCapabilities>,
+    pub(crate) rich_editor: Option<&'static RichEditorCapabilities>,
+    pub(crate) menu_bar: Option<&'static MenuBarCapabilities>,
+    pub(crate) popover: Option<&'static PopoverCapabilities>,
+    pub(crate) tree: Option<&'static TreeCapabilities>,
+    pub(crate) data_table: Option<&'static TableCapabilities>,
+    pub(crate) auto_overlay_drive:
+        Option<fn(&mut AppContext, StableNodeId, Option<bool>) -> Handled>,
+    pub(crate) close_hover_card: Option<fn(&mut AppContext, StableNodeId) -> Handled>,
+    pub(crate) set_title_bars_maximized: Option<fn(&mut AppContext, DocumentId, bool)>,
+    pub(crate) sync_sidebar_section_hover: Option<
+        fn(
+            &mut AppContext,
+            Option<StableNodeId>,
+            Option<StableNodeId>,
+        ) -> Result<(), FrameworkError>,
+    >,
+    pub(crate) sync_row_tools: Option<
+        fn(
+            &mut AppContext,
+            Option<StableNodeId>,
+            Option<bool>,
+            Option<bool>,
+        ) -> Result<(), FrameworkError>,
+    >,
+    pub(crate) hover_moves:
+        Vec<fn(&mut AppContext, DocumentId, Option<StableNodeId>, f32, f32, Duration) -> Handled>,
+    pub(crate) hover_clears: Vec<fn(&mut AppContext, DocumentId) -> Handled>,
+    pub(crate) post_layout_docs: Vec<fn(&mut AppContext, DocumentId) -> Result<(), FrameworkError>>,
+    pub(crate) frame_tickers: Vec<fn(&mut AppContext, Duration) -> Vec<StableNodeId>>,
+    pub(crate) open_menu_navigators: Vec<fn(&mut AppContext, DocumentId, &str, bool) -> Handled>,
+    pub(crate) choice_hooks: Vec<&'static ChoiceKeyHooks>,
+    pub(crate) segmented_navigate:
+        Option<fn(&mut AppContext, DocumentId, RovingFocusIntent) -> Handled>,
+    pub(crate) timeline_clip_delete: Option<fn(&mut AppContext, DocumentId) -> Handled>,
+    pub(crate) image_viewer_step: Option<fn(&mut AppContext, DocumentId, bool) -> Handled>,
+    pub(crate) graph_canvas_key: Option<fn(&mut AppContext, DocumentId, &str) -> Handled>,
+    pub(crate) command_palette_navigate:
+        Option<fn(&mut AppContext, DocumentId, ActionPickerNavigation) -> Handled>,
+    pub(crate) step_adjusters: Vec<fn(&mut AppContext, DocumentId, RangeAdjustment) -> Handled>,
+    pub(crate) adjust_xy_pad: Option<fn(&mut AppContext, DocumentId, XYPadAdjustment) -> Handled>,
+    pub(crate) edit_cancellers: Vec<fn(&mut AppContext, DocumentId) -> Handled>,
+    pub(crate) edit_enders: Vec<fn(&mut AppContext, DocumentId) -> Handled>,
+    pub(crate) number_step: Option<fn(&mut AppContext, DocumentId, i32) -> Handled>,
+    pub(crate) number_submit: Option<fn(&mut AppContext, DocumentId) -> Handled>,
+    pub(crate) rich_text_pointer:
+        Option<fn(&mut AppContext, DocumentId, u64, StableNodeId, f32, f32) -> Handled>,
+}
+
+impl Capabilities {
+    #[inline]
+    pub(crate) fn push_unique<T: Copy>(list: &mut Vec<T>, item: T, eq: fn(T, T) -> bool) {
+        if !list.iter().any(|&existing| eq(existing, item)) {
+            list.push(item);
         }
-    };
-}
-pub(crate) use via;
+    }
 
-/// What a hooked call answers while its type has no node.
-pub(crate) trait Absent {
-    fn absent() -> Self;
-}
+    pub(crate) fn add_hover_move(
+        &mut self,
+        f: fn(&mut AppContext, DocumentId, Option<StableNodeId>, f32, f32, Duration) -> Handled,
+    ) {
+        Self::push_unique(&mut self.hover_moves, f, |a, b| a as usize == b as usize);
+    }
 
-impl Absent for Handled {
-    fn absent() -> Self {
-        Ok(false)
+    pub(crate) fn add_hover_clear(&mut self, f: fn(&mut AppContext, DocumentId) -> Handled) {
+        Self::push_unique(&mut self.hover_clears, f, |a, b| a as usize == b as usize);
+    }
+
+    pub(crate) fn add_post_layout_doc(
+        &mut self,
+        f: fn(&mut AppContext, DocumentId) -> Result<(), FrameworkError>,
+    ) {
+        Self::push_unique(&mut self.post_layout_docs, f, |a, b| {
+            a as usize == b as usize
+        });
+    }
+
+    pub(crate) fn add_frame_ticker(
+        &mut self,
+        f: fn(&mut AppContext, Duration) -> Vec<StableNodeId>,
+    ) {
+        Self::push_unique(&mut self.frame_tickers, f, |a, b| a as usize == b as usize);
+    }
+
+    pub(crate) fn add_open_menu_navigator(
+        &mut self,
+        f: fn(&mut AppContext, DocumentId, &str, bool) -> Handled,
+    ) {
+        Self::push_unique(&mut self.open_menu_navigators, f, |a, b| {
+            a as usize == b as usize
+        });
+    }
+
+    pub(crate) fn add_choice_hook(&mut self, hook: &'static ChoiceKeyHooks) {
+        Self::push_unique(&mut self.choice_hooks, hook, |a, b| std::ptr::eq(a, b));
+    }
+
+    pub(crate) fn add_step_adjuster(
+        &mut self,
+        f: fn(&mut AppContext, DocumentId, RangeAdjustment) -> Handled,
+    ) {
+        Self::push_unique(&mut self.step_adjusters, f, |a, b| a as usize == b as usize);
+    }
+
+    pub(crate) fn add_edit_canceller(&mut self, f: fn(&mut AppContext, DocumentId) -> Handled) {
+        Self::push_unique(&mut self.edit_cancellers, f, |a, b| {
+            a as usize == b as usize
+        });
+    }
+
+    pub(crate) fn add_edit_ender(&mut self, f: fn(&mut AppContext, DocumentId) -> Handled) {
+        Self::push_unique(&mut self.edit_enders, f, |a, b| a as usize == b as usize);
     }
 }
-
-impl<T> Absent for Option<T> {
-    fn absent() -> Self {
-        None
-    }
-}
-
-impl Absent for bool {
-    fn absent() -> Self {
-        false
-    }
-}
-
-impl Absent for Result<(), FrameworkError> {
-    fn absent() -> Self {
-        Ok(())
-    }
-}
-
-impl<T> Absent for Result<Option<T>, FrameworkError> {
-    fn absent() -> Self {
-        Ok(None)
-    }
-}
-
-impl Absent for () {
-    fn absent() -> Self {}
-}
-
-impl<T> Absent for Vec<T> {
-    fn absent() -> Self {
-        Vec::new()
-    }
-}
-
-/// Call `$call` with the hook table in `$field` bound to `$hooks`, or answer
-/// [`Absent`] when that table is not installed.
-macro_rules! hooked {
-    ($cx:expr, $field:ident, |$hooks:ident| $call:expr) => {
-        match $cx.type_hooks.$field {
-            Some($hooks) => $call,
-            None => $crate::framework::hooks::Absent::absent(),
-        }
-    };
-}
-pub(crate) use hooked;

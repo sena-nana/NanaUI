@@ -21,11 +21,15 @@ mod menu_bar_aim;
 mod menu_bar_keys;
 mod modal;
 mod registry;
-pub(crate) mod routes;
 mod roving_focus;
-#[cfg(feature = "dock")]
-pub(crate) use hooks::DockHooks;
-pub(crate) use hooks::{ChoiceHooks, NavigateHooks, WorkspaceHooks, hooked, route, via};
+#[allow(unused_imports)]
+pub(crate) use hooks::{
+    A11yBehavior, ActiveDragOps, Capabilities, ChoiceKeyHooks, CurveCapabilities, DockCapabilities,
+    FocusBehavior, MenuBarCapabilities, OverlayBehavior, PointerOps, PopoverCapabilities,
+    RangeSpanCapabilities, ReorderListCapabilities, RichEditorCapabilities, ScrollbarCapabilities,
+    SplitPaneCapabilities, TableCapabilities, TerminalCapabilities, TreeCapabilities,
+    WorkspaceCapabilities,
+};
 pub use hooks::{NodePointer, NodePointerHooks, NodeWheel, TypeBehavior, TypeHooks};
 pub(crate) use lifecycle::{TOOLTIP_ANCHOR_TAG, lifecycle_hooks};
 pub(crate) use text_edit::Editable;
@@ -1056,15 +1060,9 @@ impl From<FrameworkError> for String {
     }
 }
 
-/// Owns typed view state while [`UiWorld`] remains the retained UI authority.
-pub struct AppContext {
-    pub(crate) theme_signals: Vec<crate::view::Signal<Arc<nana_ui_core::CompiledTheme>>>,
-    /// Boxed: the world is about 15 KiB, four fifths of the context, and
-    /// held inline every move of a context (construction, `RuntimeDocument`)
-    /// copied it through a frame over the 16 KiB stack budget. One pointer
-    /// away costs the hot paths nothing measurable; see
-    /// `docs/reference/resource-budgets.md`.
-    world: Box<UiWorld>,
+/// Stored view instances, type-erased dispatch registries, reproject triggers,
+/// and framework-assembled child slot tables.
+struct ComponentStore {
     views: crate::NodeMap<Box<dyn Any + Send>>,
     /// Opt-in reproject entry points keyed by node, registered from
     /// [`ComponentView::wants_child_reproject`] when a component view is
@@ -1085,12 +1083,129 @@ pub struct AppContext {
     text_backend_reproject_types: HashMap<TypeId, ChildReprojectFn, crate::BuildIdHasher>,
     /// Nodes whose children another view's projection reads, and that view:
     /// a child-structure change under the node reprojects it as well
-    /// ([`Self::watch_child_structure`]).
+    /// ([`AppContext::watch_child_structure`]).
     child_structure_owners: HashMap<StableNodeId, StableNodeId, crate::BuildIdHasher>,
     /// Nodes queued for one child-structure reproject; deduplicated per drain.
     pending_child_reprojects: Vec<StableNodeId>,
     /// Guards reentrant drains while a reproject commits its own mutations.
     draining_child_reprojects: bool,
+    components: ComponentRegistry,
+    activations: HashMap<TypeId, ActivationFn, crate::BuildIdHasher>,
+    /// Pointer hooks extensions registered ([`ExtensionRegistrar::register_pointer`]).
+    pointer_extensions: HashMap<TypeId, &'static dyn hooks::ErasedPointer, crate::BuildIdHasher>,
+    /// [`update_erased`] per component type stamped through this context:
+    /// emits the secondary-press, hover, focus-within and file-drop events on
+    /// a node whose concrete type the router no longer knows.
+    emitters: HashMap<TypeId, UpdateErasedFn, crate::BuildIdHasher>,
+    /// [`update_erased`] per component type created through this context.
+    reprojectors: HashMap<TypeId, UpdateErasedFn, crate::BuildIdHasher>,
+    /// [`ComponentView::BEHAVIOR`] per component type created through this
+    /// context.
+    behaviors: HashMap<TypeId, hooks::ErasedBehavior, crate::BuildIdHasher>,
+    assembled: HashMap<StableNodeId, assemble::ParentAssembly, crate::BuildIdHasher>,
+    /// Reverse of `assembled`: a keyed child's declared parent and key when
+    /// not kept inline on `NodeRecord::auto_view_slot`. The declared parent is
+    /// identity; the world parent is placement, and the two differ only for
+    /// nodes in `placed_assembled`.
+    assembled_parent:
+        HashMap<StableNodeId, (StableNodeId, assemble::AssemblyKey), crate::BuildIdHasher>,
+    /// Keyed children [`AppContext::place_assembled`] moved out from under their
+    /// declared parent. Reassembling that parent leaves them where they are;
+    /// despawning it despawns them.
+    placed_assembled: HashSet<StableNodeId, crate::BuildIdHasher>,
+    /// Framework-assembled internal slot IDs and composite chrome bookkeeping,
+    /// stored outside `ComponentView` values so caller writes cannot clobber
+    /// them and views stay pure value descriptions.
+    assembled_slots: HashMap<StableNodeId, Box<dyn Any + Send>, crate::BuildIdHasher>,
+    /// The key a slot's root was declared with (`El::slot`): the composite
+    /// places it, not the assembly, so it is no keyed child of anything, but
+    /// [`AppContext::assembly_path`] still names it by that key.
+    slot_keys: HashMap<StableNodeId, assemble::AssemblyKey, crate::BuildIdHasher>,
+    /// Components whose assembler is running, so the `update_component` calls
+    /// an assembler makes do not re-enter it.
+    assembling: HashSet<StableNodeId, crate::BuildIdHasher>,
+    next_id: u64,
+}
+
+impl Default for ComponentStore {
+    fn default() -> Self {
+        Self {
+            views: crate::NodeMap::default(),
+            child_reproject_views: HashMap::default(),
+            metrics_reproject_types: HashMap::default(),
+            recipe_reproject_types: HashMap::default(),
+            reduced_motion_reproject_types: HashMap::default(),
+            text_backend_reproject_types: HashMap::default(),
+            child_structure_owners: HashMap::default(),
+            pending_child_reprojects: Vec::new(),
+            draining_child_reprojects: false,
+            components: ComponentRegistry::default(),
+            activations: HashMap::default(),
+            pointer_extensions: HashMap::default(),
+            emitters: HashMap::default(),
+            reprojectors: HashMap::default(),
+            behaviors: HashMap::default(),
+            assembled: HashMap::default(),
+            assembled_parent: HashMap::default(),
+            placed_assembled: HashSet::default(),
+            assembled_slots: HashMap::default(),
+            slot_keys: HashMap::default(),
+            assembling: HashSet::default(),
+            next_id: 1,
+        }
+    }
+}
+
+/// Cross-frame layout memo, slice budget, and layout/frame profiling state.
+struct LayoutDriver {
+    frame_profiler: FrameProfiler,
+    last_profile: FrameProfile,
+    profiling: bool,
+    /// How much placement a frame may do before it leaves what is out of
+    /// view to later frames; `None` places everything. See
+    /// [`AppContext::set_layout_slice_budget`].
+    layout_slice_budget: Option<crate::LayoutSliceBudget>,
+    /// Boxes this frame's layout passes placed, and when its first began:
+    /// what the slice budget is spent against.
+    frame_layout_spent: (usize, Option<Instant>),
+    /// Cross-frame layout memo for [`AppContext::layout_document_with_frontier`].
+    layout_cache: crate::RetainedLayoutCache,
+    /// Nodes recomputed by the last layout pass (relayout + shape scope).
+    last_layout_scope: Vec<StableNodeId>,
+    /// Full (`force_full`) [`AppContext::layout_document`] calls on this context.
+    layout_full_invocations: usize,
+    /// Layout passes on this context, scoped and full.
+    layout_invocations: usize,
+    /// Cumulative wall time of the four `layout_document_observed` sub-stages
+    /// (tooltip positioning, engine, writeback + commit, scroll metrics) over
+    /// every layout pass since the last drain. Attribution inside the Layout
+    /// stage, which the 13 `FrameStage`s report as one number.
+    #[cfg(feature = "benchmark")]
+    layout_substage_totals: [Duration; 4],
+}
+
+impl Default for LayoutDriver {
+    fn default() -> Self {
+        Self {
+            frame_profiler: FrameProfiler::new(),
+            last_profile: FrameProfile::default(),
+            profiling: false,
+            layout_slice_budget: None,
+            frame_layout_spent: (0, None),
+            layout_cache: crate::RetainedLayoutCache::default(),
+            last_layout_scope: Vec::new(),
+            layout_full_invocations: 0,
+            layout_invocations: 0,
+            #[cfg(feature = "benchmark")]
+            layout_substage_totals: [Duration::ZERO; 4],
+        }
+    }
+}
+
+/// Event listeners, actions, extensions, focus-within, layout/size/clamp
+/// observers, modal sync queues, and environment requests.
+#[derive(Default)]
+struct LifecycleHub {
     /// Modal surfaces whose declared `open` met a host or surface in the
     /// middle of its own update; they ask again once both are back
     /// (`drain_modal_syncs`).
@@ -1104,14 +1219,6 @@ pub struct AppContext {
         HashMap<StableNodeId, HashSet<(StableNodeId, TypeId)>, crate::BuildIdHasher>,
     actions: HashMap<ActionId, RegisteredAction>,
     extensions: HashSet<String>,
-    components: ComponentRegistry,
-    activations: HashMap<TypeId, ActivationFn, crate::BuildIdHasher>,
-    /// Pointer hooks extensions registered ([`ExtensionRegistrar::register_pointer`]).
-    pointer_extensions: HashMap<TypeId, &'static dyn hooks::ErasedPointer, crate::BuildIdHasher>,
-    /// [`update_erased`] per component type stamped through this context:
-    /// emits the secondary-press, hover, focus-within and file-drop events on
-    /// a node whose concrete type the router no longer knows.
-    emitters: HashMap<TypeId, UpdateErasedFn, crate::BuildIdHasher>,
     /// Per document, the focused node the focus-within listeners last heard
     /// about and the listeners told it is inside them.
     focus_within: HashMap<DocumentId, (StableNodeId, Vec<StableNodeId>)>,
@@ -1119,64 +1226,36 @@ pub struct AppContext {
     /// out being updated.
     pending_focus_within: Vec<(StableNodeId, bool)>,
     draining_focus_within: bool,
-    /// [`update_erased`] per component type created through this context.
-    reprojectors: HashMap<TypeId, UpdateErasedFn, crate::BuildIdHasher>,
-    /// [`ComponentView::BEHAVIOR`] per component type created through this
-    /// context.
-    behaviors: HashMap<TypeId, hooks::ErasedBehavior, crate::BuildIdHasher>,
     /// ScrollViews to send [`ScrollLaidOut`] after the next layout pass.
     laid_out_notices: HashSet<StableNodeId, crate::BuildIdHasher>,
     /// Texts listening for [`TextClamped`], with the answer last sent.
     clamp_watchers: HashMap<StableNodeId, Option<bool>, crate::BuildIdHasher>,
     /// Nodes listening for [`SizeChanged`], with the size last sent.
     size_watchers: HashMap<StableNodeId, events::SizeWatch, crate::BuildIdHasher>,
-    /// Router hooks installed by the types created so far.
-    type_hooks: TypeHooks,
-    assembled: HashMap<StableNodeId, assemble::ParentAssembly, crate::BuildIdHasher>,
-    /// Reverse of `assembled`: a keyed child's declared parent and key when
-    /// not kept inline on `NodeRecord::auto_view_slot`. The declared parent is
-    /// identity; the world parent is placement, and the two differ only for
-    /// nodes in `placed_assembled`.
-    assembled_parent:
-        HashMap<StableNodeId, (StableNodeId, assemble::AssemblyKey), crate::BuildIdHasher>,
-    /// Keyed children [`Self::place_assembled`] moved out from under their
-    /// declared parent. Reassembling that parent leaves them where they are;
-    /// despawning it despawns them.
-    placed_assembled: HashSet<StableNodeId, crate::BuildIdHasher>,
-    /// The key a slot's root was declared with (`El::slot`): the composite
-    /// places it, not the assembly, so it is no keyed child of anything, but
-    /// [`Self::assembly_path`] still names it by that key.
-    slot_keys: HashMap<StableNodeId, assemble::AssemblyKey, crate::BuildIdHasher>,
-    /// Components whose assembler is running, so the `update_component` calls
-    /// an assembler makes do not re-enter it.
-    assembling: HashSet<StableNodeId, crate::BuildIdHasher>,
-    component_lifecycle: ComponentLifecycle,
-    next_id: u64,
-    frame_profiler: FrameProfiler,
-    last_profile: FrameProfile,
-    profiling: bool,
-    /// How much placement a frame may do before it leaves what is out of
-    /// view to later frames; `None` places everything. See
-    /// [`Self::set_layout_slice_budget`].
-    layout_slice_budget: Option<crate::LayoutSliceBudget>,
-    /// Boxes this frame's layout passes placed, and when its first began:
-    /// what the slice budget is spent against.
-    frame_layout_spent: (usize, Option<Instant>),
-    /// Cross-frame layout memo for [`Self::layout_document_with_frontier`].
-    layout_cache: crate::RetainedLayoutCache,
-    /// Nodes recomputed by the last layout pass (relayout + shape scope).
-    last_layout_scope: Vec<StableNodeId>,
-    /// Full (`force_full`) [`Self::layout_document`] calls on this context.
-    layout_full_invocations: usize,
-    /// Layout passes on this context, scoped and full.
-    layout_invocations: usize,
-    /// Cumulative wall time of the four `layout_document_observed` sub-stages
-    /// (tooltip positioning, engine, writeback + commit, scroll metrics) over
-    /// every layout pass since the last drain. Attribution inside the Layout
-    /// stage, which the 13 `FrameStage`s report as one number.
-    #[cfg(feature = "benchmark")]
-    layout_substage_totals: [Duration; 4],
     program_messages: Vec<ProgramMessage>,
+    /// The system's reduce-motion preference as the host last reported it.
+    system_reduced_motion: bool,
+    /// The application's own choice, which wins over the system's.
+    reduced_motion_override: Option<bool>,
+    /// `ColorField` nodes waiting for the host to launch a native screen color sampler.
+    color_pick_requests: Vec<StableNodeId>,
+}
+
+/// Owns typed view state while [`UiWorld`] remains the retained UI authority.
+pub struct AppContext {
+    pub(crate) theme_signals: Vec<crate::view::Signal<Arc<nana_ui_core::CompiledTheme>>>,
+    /// Boxed: the world is about 15 KiB, four fifths of the context, and
+    /// held inline every move of a context (construction, `RuntimeDocument`)
+    /// copied it through a frame over the 16 KiB stack budget. One pointer
+    /// away costs the hot paths nothing measurable; see
+    /// `docs/reference/resource-budgets.md`.
+    world: Box<UiWorld>,
+    store: ComponentStore,
+    layout: LayoutDriver,
+    lifecycle: LifecycleHub,
+    component_lifecycle: ComponentLifecycle,
+    /// Context-level capabilities registered lazily by the types created so far.
+    pub(crate) capabilities: hooks::Capabilities,
     text_edit: text_edit::TextEditSession,
     /// Undo journals, one per editor node.
     text_histories: text_history::TextHistories,
@@ -1186,12 +1265,6 @@ pub struct AppContext {
     /// Bindings, keyed lists and scopes of views mounted with
     /// [`Self::mount_view`].
     reactive: reactive::ReactiveHost,
-    /// The system's reduce-motion preference as the host last reported it.
-    system_reduced_motion: bool,
-    /// The application's own choice, which wins over the system's.
-    reduced_motion_override: Option<bool>,
-    /// `ColorField` nodes waiting for the host to launch a native screen color sampler.
-    color_pick_requests: Vec<StableNodeId>,
 }
 
 /// Bookkeeping for multi-click selection inside a text editor.
@@ -1484,63 +1557,17 @@ impl AppContext {
     pub fn from_world(world: UiWorld) -> Self {
         #[allow(unused_mut)]
         let mut context = Self {
-            world: Box::new(world),
-            views: crate::NodeMap::default(),
-            child_reproject_views: HashMap::default(),
             theme_signals: Vec::new(),
-            metrics_reproject_types: HashMap::default(),
-            recipe_reproject_types: HashMap::default(),
-            reduced_motion_reproject_types: HashMap::default(),
-            text_backend_reproject_types: HashMap::default(),
-            child_structure_owners: HashMap::default(),
-            pending_child_reprojects: Vec::new(),
-            draining_child_reprojects: false,
-            pending_modal_syncs: Vec::new(),
-            event_handlers: HashMap::default(),
-            key_handlers: HashMap::default(),
-            roving_focus_groups: HashMap::default(),
-            event_dependencies: HashMap::default(),
-            actions: HashMap::new(),
-            extensions: HashSet::new(),
-            components: ComponentRegistry::default(),
-            activations: HashMap::default(),
-            pointer_extensions: HashMap::default(),
-            emitters: HashMap::default(),
-            focus_within: HashMap::new(),
-            pending_focus_within: Vec::new(),
-            draining_focus_within: false,
-            reprojectors: HashMap::default(),
-            behaviors: HashMap::default(),
-            laid_out_notices: HashSet::default(),
-            clamp_watchers: HashMap::default(),
-            size_watchers: HashMap::default(),
-            type_hooks: TypeHooks::default(),
-            assembled: HashMap::default(),
-            assembled_parent: HashMap::default(),
-            placed_assembled: HashSet::default(),
-            slot_keys: HashMap::default(),
-            assembling: HashSet::default(),
+            world: Box::new(world),
+            store: ComponentStore::default(),
+            layout: LayoutDriver::default(),
+            lifecycle: LifecycleHub::default(),
             component_lifecycle: ComponentLifecycle::default(),
-            next_id: 1,
-            frame_profiler: FrameProfiler::new(),
-            last_profile: FrameProfile::default(),
-            profiling: false,
-            layout_slice_budget: None,
-            frame_layout_spent: (0, None),
-            layout_cache: crate::RetainedLayoutCache::default(),
-            last_layout_scope: Vec::new(),
-            layout_full_invocations: 0,
-            layout_invocations: 0,
-            #[cfg(feature = "benchmark")]
-            layout_substage_totals: [Duration::ZERO; 4],
-            program_messages: Vec::new(),
+            capabilities: hooks::Capabilities::default(),
             text_edit: text_edit::TextEditSession::default(),
             text_histories: text_history::TextHistories::default(),
             input: input::InputState::default(),
             reactive: reactive::ReactiveHost::default(),
-            system_reduced_motion: false,
-            reduced_motion_override: None,
-            color_pick_requests: Vec::new(),
         };
         #[cfg(feature = "syntax-highlighting")]
         {
@@ -1605,21 +1632,22 @@ impl AppContext {
     /// [`Self::set_reduced_motion`] wins; otherwise this follows the system
     /// preference the host reports.
     pub fn reduced_motion(&self) -> bool {
-        self.reduced_motion_override
-            .unwrap_or(self.system_reduced_motion)
+        self.lifecycle
+            .reduced_motion_override
+            .unwrap_or(self.lifecycle.system_reduced_motion)
     }
 
     /// The application's own choice, over the system preference (a
     /// "reduce motion" setting of its own). [`Self::follow_system_reduced_motion`]
     /// drops it.
     pub fn set_reduced_motion(&mut self, reduced: bool) {
-        self.reduced_motion_override = Some(reduced);
+        self.lifecycle.reduced_motion_override = Some(reduced);
         self.apply_reduced_motion();
     }
 
     /// Follow the system preference again.
     pub fn follow_system_reduced_motion(&mut self) {
-        self.reduced_motion_override = None;
+        self.lifecycle.reduced_motion_override = None;
         self.apply_reduced_motion();
     }
 
@@ -1627,7 +1655,7 @@ impl AppContext {
     /// when a window's document is created and whenever it changes; an
     /// embedding host calls this itself.
     pub fn set_system_reduced_motion(&mut self, reduced: bool) {
-        self.system_reduced_motion = reduced;
+        self.lifecycle.system_reduced_motion = reduced;
         self.apply_reduced_motion();
     }
 
@@ -1644,9 +1672,10 @@ impl AppContext {
             self.finish_wheel_scrolls();
             self.finish_touch_scrolls();
         }
-        for (id, reproject) in self.collect_reproject_targets(&self.reduced_motion_reproject_types)
+        for (id, reproject) in
+            self.collect_reproject_targets(&self.store.reduced_motion_reproject_types)
         {
-            if !self.views.contains_key(&id) {
+            if !self.store.views.contains_key(&id) {
                 continue;
             }
             // A view that cannot project now (one mid-update) reads the
@@ -1663,9 +1692,10 @@ impl AppContext {
             return;
         }
         if !supported {
-            self.color_pick_requests.clear();
+            self.lifecycle.color_pick_requests.clear();
         }
         let ids: Vec<StableNodeId> = self
+            .store
             .views
             .iter()
             .filter_map(|(&id, view)| view.is::<crate::ColorField>().then_some(id))
@@ -1679,8 +1709,8 @@ impl AppContext {
     }
 
     pub(crate) fn request_color_pick(&mut self, id: StableNodeId) {
-        if !self.color_pick_requests.contains(&id) {
-            self.color_pick_requests.push(id);
+        if !self.lifecycle.color_pick_requests.contains(&id) {
+            self.lifecycle.color_pick_requests.push(id);
         }
     }
 
@@ -1689,6 +1719,7 @@ impl AppContext {
     pub fn color_pick_active(&self, id: StableNodeId) -> bool {
         self.world.eyedropper_supported()
             && self
+                .store
                 .views
                 .get(&id)
                 .and_then(|view| view.downcast_ref::<crate::ColorField>())
@@ -1697,7 +1728,7 @@ impl AppContext {
 
     /// Takes queued [`crate::ColorField`] node ids requesting native screen color sampling.
     pub fn take_color_pick_requests(&mut self) -> Vec<StableNodeId> {
-        let requests = std::mem::take(&mut self.color_pick_requests);
+        let requests = std::mem::take(&mut self.lifecycle.color_pick_requests);
         requests
             .into_iter()
             .filter(|&id| self.color_pick_active(id))
@@ -1726,7 +1757,7 @@ impl AppContext {
     /// `create_component` were never keyed and have none; callers must have a
     /// second way to address those.
     pub fn assembly_key(&self, parent: StableNodeId, child: StableNodeId) -> Option<&str> {
-        if let Some((declared, key)) = self.assembled_parent.get(&child) {
+        if let Some((declared, key)) = self.store.assembled_parent.get(&child) {
             return (*declared == parent).then_some(key.as_str());
         }
         (self.world.parent_id(child) == Some(parent))
@@ -1742,7 +1773,7 @@ impl AppContext {
         &self,
         child: StableNodeId,
     ) -> Option<(StableNodeId, assemble::AssemblyKey)> {
-        if let Some((declared, key)) = self.assembled_parent.get(&child) {
+        if let Some((declared, key)) = self.store.assembled_parent.get(&child) {
             return Some((*declared, key.clone()));
         }
         let declared = self.world.parent_id(child)?;
@@ -1751,14 +1782,14 @@ impl AppContext {
     }
 
     fn promote_auto_view_slot(&mut self, id: StableNodeId) {
-        if self.assembled_parent.contains_key(&id) {
+        if self.store.assembled_parent.contains_key(&id) {
             return;
         }
         if let (Some(declared), Some(slot)) =
             (self.world.parent_id(id), self.world.auto_view_slot(id))
         {
             self.world.set_auto_view_slot(id, None);
-            self.assembled_parent.insert(
+            self.store.assembled_parent.insert(
                 id,
                 (declared, assemble::AssemblyKey::auto_view(slot as usize)),
             );
@@ -1778,7 +1809,7 @@ impl AppContext {
         let mut cursor = Some(id);
         let mut steps = 0usize;
         while let Some(node) = cursor {
-            cursor = match self.assembled_parent.get(&node) {
+            cursor = match self.store.assembled_parent.get(&node) {
                 Some((parent, key)) => {
                     segments.push(std::borrow::Cow::Borrowed(key.as_str()));
                     Some(*parent)
@@ -1786,7 +1817,7 @@ impl AppContext {
                 None => {
                     if let Some(slot) = self.world.auto_view_slot(node) {
                         segments.push(std::borrow::Cow::Owned(format!("#v{slot}")));
-                    } else if let Some(key) = self.slot_keys.get(&node) {
+                    } else if let Some(key) = self.store.slot_keys.get(&node) {
                         segments.push(std::borrow::Cow::Borrowed(key.as_str()));
                     }
                     self.world.parent_id(node)
@@ -1818,7 +1849,11 @@ impl AppContext {
         }
         path.split(ASSEMBLY_PATH_SEPARATOR)
             .try_fold(root, |parent, key| {
-                self.assembled.get(&parent)?.get(key).map(|child| child.id)
+                self.store
+                    .assembled
+                    .get(&parent)?
+                    .get(key)
+                    .map(|child| child.id)
             })
     }
 
@@ -1880,10 +1915,10 @@ impl AppContext {
             self.commit_mutations(mutations)?;
         }
         if parent == declared {
-            self.placed_assembled.remove(&node);
+            self.store.placed_assembled.remove(&node);
         } else {
             self.promote_auto_view_slot(node);
-            self.placed_assembled.insert(node);
+            self.store.placed_assembled.insert(node);
         }
         Ok(())
     }
@@ -1894,14 +1929,15 @@ impl AppContext {
         parent: StableNodeId,
         slots: assemble::ParentAssembly,
     ) {
-        if let Some(previous) = self.assembled.remove(&parent) {
+        if let Some(previous) = self.store.assembled.remove(&parent) {
             for child in previous.values() {
                 if self
+                    .store
                     .assembled_parent
                     .get(&child.id)
                     .is_some_and(|(declared, _)| *declared == parent)
                 {
-                    self.assembled_parent.remove(&child.id);
+                    self.store.assembled_parent.remove(&child.id);
                 } else if self.world.parent_id(child.id) == Some(parent)
                     && self.world.auto_view_slot(child.id).is_some()
                 {
@@ -1915,16 +1951,16 @@ impl AppContext {
         for (key, child) in slots.iter() {
             if let Some(slot) = assemble::AssemblyKey::parse_auto_view(key.as_str())
                 && self.world.parent_id(child.id) == Some(parent)
-                && !self.placed_assembled.contains(&child.id)
+                && !self.store.placed_assembled.contains(&child.id)
             {
-                self.assembled_parent.remove(&child.id);
+                self.store.assembled_parent.remove(&child.id);
                 self.world.set_auto_view_slot(child.id, Some(slot as u16));
             } else {
                 self.world.set_auto_view_slot(child.id, None);
-                self.assembled_parent.insert(child.id, (parent, key));
+                self.store.assembled_parent.insert(child.id, (parent, key));
             }
         }
-        self.assembled.insert(parent, slots);
+        self.store.assembled.insert(parent, slots);
     }
 
     /// The key `child` holds under `parent`, to put back with
@@ -1935,7 +1971,7 @@ impl AppContext {
         child: StableNodeId,
     ) -> Option<AssembledKey> {
         let (declared, key) = self.declared_assembly_parent(child)?;
-        let entry = self.assembled.get(&declared)?.get(key.as_str())?;
+        let entry = self.store.assembled.get(&declared)?.get(key.as_str())?;
         (declared == parent && entry.id == child).then_some(AssembledKey { key, child: *entry })
     }
 
@@ -1946,16 +1982,17 @@ impl AppContext {
         if !self.world.contains(parent) || !self.world.contains(key.child.id) {
             return;
         }
-        let slots = self.assembled.entry(parent).or_default();
+        let slots = self.store.assembled.entry(parent).or_default();
         if let Some(previous) = slots.insert(key.key.clone(), key.child)
             && previous.id != key.child.id
         {
             if self
+                .store
                 .assembled_parent
                 .get(&previous.id)
                 .is_some_and(|(declared, held)| *declared == parent && *held == key.key)
             {
-                self.assembled_parent.remove(&previous.id);
+                self.store.assembled_parent.remove(&previous.id);
             } else if self.world.parent_id(previous.id) == Some(parent)
                 && self.world.auto_view_slot(previous.id).is_some_and(|slot| {
                     assemble::AssemblyKey::parse_auto_view(key.key.as_str())
@@ -1967,43 +2004,45 @@ impl AppContext {
         }
         if let Some(slot) = assemble::AssemblyKey::parse_auto_view(key.key.as_str())
             && self.world.parent_id(key.child.id) == Some(parent)
-            && !self.placed_assembled.contains(&key.child.id)
+            && !self.store.placed_assembled.contains(&key.child.id)
         {
-            self.assembled_parent.remove(&key.child.id);
+            self.store.assembled_parent.remove(&key.child.id);
             self.world
                 .set_auto_view_slot(key.child.id, Some(slot as u16));
         } else {
             self.world.set_auto_view_slot(key.child.id, None);
-            self.assembled_parent
+            self.store
+                .assembled_parent
                 .insert(key.child.id, (parent, key.key));
         }
     }
 
     /// Whether `id` is a keyed child placed away from its declared parent.
     pub(super) fn is_placed_elsewhere(&self, id: StableNodeId) -> bool {
-        self.placed_assembled.contains(&id)
+        self.store.placed_assembled.contains(&id)
     }
 
     /// Messages queued by [`ViewContext::dispatch_program`] since the last take.
     /// The Scene host drains these into `RuntimeProgram::update` on the next frame.
     pub fn take_program_messages(&mut self) -> Vec<Box<dyn Any + Send>> {
-        std::mem::take(&mut self.program_messages)
+        std::mem::take(&mut self.lifecycle.program_messages)
     }
 
     pub fn has_program_messages(&self) -> bool {
-        !self.program_messages.is_empty()
+        !self.lifecycle.program_messages.is_empty()
     }
 
     /// Resolve a retained node only when it currently owns the requested view type.
     pub fn view_entity<C: View>(&self, id: StableNodeId) -> Option<Entity<C>> {
-        let matches = self.views.get(&id).is_some_and(|view| view.is::<C>())
+        let matches = self.store.views.get(&id).is_some_and(|view| view.is::<C>())
             || (TypeId::of::<C>() == TypeId::of::<Stack>() && self.world.is_elided_stack(id));
         matches.then(|| Entity::from_stable_id(id))
     }
 
     #[inline]
     pub(crate) fn view_type_id(&self, id: StableNodeId) -> Option<TypeId> {
-        self.views
+        self.store
+            .views
             .get(&id)
             .map(|view| view.as_ref().type_id())
             .or_else(|| {
@@ -2019,11 +2058,11 @@ impl AppContext {
         component: Box<dyn Any + Send>,
     ) {
         if let Some(stack) = component.downcast_ref::<Stack>() {
-            self.views.remove(&id);
+            self.store.views.remove(&id);
             self.world.set_elided_stack_flags(id, stack.elided_flags());
         } else {
             self.world.set_elided_stack_flags(id, 0);
-            self.views.insert(id, component);
+            self.store.views.insert(id, component);
         }
     }
 
@@ -2034,7 +2073,8 @@ impl AppContext {
         if types.is_empty() {
             return Vec::new();
         }
-        self.views
+        self.store
+            .views
             .iter()
             .filter_map(|(&id, view)| {
                 types
@@ -2204,7 +2244,7 @@ impl AppContext {
                 _ => None,
             };
             if let Some(id) = target
-                && !self.assembled_parent.contains_key(&id)
+                && !self.store.assembled_parent.contains_key(&id)
                 && let (Some(declared), Some(slot)) =
                     (self.world.parent_id(id), self.world.auto_view_slot(id))
             {
@@ -2221,7 +2261,8 @@ impl AppContext {
             if self.world.contains(id) {
                 self.world.set_auto_view_slot(id, None);
             }
-            self.assembled_parent
+            self.store
+                .assembled_parent
                 .entry(id)
                 .or_insert_with(|| (declared, assemble::AssemblyKey::auto_view(slot as usize)));
         }
@@ -2272,7 +2313,7 @@ impl AppContext {
             self.seal_blurred_editor_history(document, Some(previous));
         }
         for (document, id) in deleted_layout_nodes {
-            self.layout_cache.remove_node(document, id);
+            self.layout.layout_cache.remove_node(document, id);
         }
         // Views, handlers and assembly records of despawned nodes go with
         // them whichever path queued the despawn.
@@ -2287,9 +2328,14 @@ impl AppContext {
         for id in parked {
             // A parked surface has lost its host (the world let go of it),
             // and its own `open` says so, as when the host closes it.
-            suspended = suspended
-                .and(self.suspend(id))
-                .and(via!(self.note_modal_open(id, false)));
+            suspended = suspended.and(self.suspend(id));
+            if let Some(note) = self
+                .behavior(id)
+                .and_then(|b| b.overlay)
+                .and_then(|o| o.note_modal_open)
+            {
+                suspended = suspended.and(note(self, id, false));
+            }
         }
         for id in inserted {
             if self.world.is_mounted(id) {
@@ -2314,12 +2360,12 @@ impl AppContext {
     /// reproject through the `update_component` pipeline.
     fn collect_child_reprojects(&mut self) {
         for parent in self.world.take_structural_change_parents() {
-            let owner = self.child_structure_owners.get(&parent).copied();
+            let owner = self.store.child_structure_owners.get(&parent).copied();
             for id in std::iter::once(parent).chain(owner) {
-                if self.child_reproject_views.contains_key(&id)
-                    && !self.pending_child_reprojects.contains(&id)
+                if self.store.child_reproject_views.contains_key(&id)
+                    && !self.store.pending_child_reprojects.contains(&id)
                 {
-                    self.pending_child_reprojects.push(id);
+                    self.store.pending_child_reprojects.push(id);
                 }
             }
         }
@@ -2342,10 +2388,11 @@ impl AppContext {
     /// reprojects when the children of any of `nodes` change, and stops
     /// watching the nodes it watched before that are not in `nodes`.
     pub(crate) fn watch_child_structures(&mut self, owner: StableNodeId, nodes: &[StableNodeId]) {
-        self.child_structure_owners
+        self.store
+            .child_structure_owners
             .retain(|watched, watcher| *watcher != owner || nodes.contains(watched));
         for node in nodes {
-            self.child_structure_owners.insert(*node, owner);
+            self.store.child_structure_owners.insert(*node, owner);
         }
     }
 
@@ -2354,8 +2401,8 @@ impl AppContext {
     /// temporarily absent (mid-update or not yet installed by a build) wait
     /// for the next commit instead.
     fn reproject_metrics_views(&mut self) -> Result<(), FrameworkError> {
-        for (id, reproject) in self.collect_reproject_targets(&self.metrics_reproject_types) {
-            if self.views.contains_key(&id)
+        for (id, reproject) in self.collect_reproject_targets(&self.store.metrics_reproject_types) {
+            if self.store.views.contains_key(&id)
                 && !self
                     .world
                     .document_of(id)
@@ -2371,12 +2418,16 @@ impl AppContext {
     /// last text pass saw a new backend. Returns whether any did, since their
     /// projection can move layout the pass already measured against.
     pub(crate) fn reproject_text_backend_views(&mut self) -> Result<bool, FrameworkError> {
-        if !self.world.take_text_backend_changed() || self.text_backend_reproject_types.is_empty() {
+        if !self.world.take_text_backend_changed()
+            || self.store.text_backend_reproject_types.is_empty()
+        {
             return Ok(false);
         }
         let mut ran = false;
-        for (id, reproject) in self.collect_reproject_targets(&self.text_backend_reproject_types) {
-            if self.views.contains_key(&id) {
+        for (id, reproject) in
+            self.collect_reproject_targets(&self.store.text_backend_reproject_types)
+        {
+            if self.store.views.contains_key(&id) {
                 reproject(self, id)?;
                 ran = true;
             }
@@ -2388,23 +2439,31 @@ impl AppContext {
     fn drain_scope_reprojects(&mut self) -> Result<(), FrameworkError> {
         let targets = self.world.take_scope_reprojects();
         if targets.is_empty()
-            || (self.metrics_reproject_types.is_empty() && self.recipe_reproject_types.is_empty())
+            || (self.store.metrics_reproject_types.is_empty()
+                && self.store.recipe_reproject_types.is_empty())
         {
             return Ok(());
         }
         for (id, changed) in targets {
-            let Some(type_id) = self.views.get(&id).map(|view| view.as_ref().type_id()) else {
+            let Some(type_id) = self
+                .store
+                .views
+                .get(&id)
+                .map(|view| view.as_ref().type_id())
+            else {
                 continue;
             };
             let metrics_hit = changed.intersects(
                 nana_ui_core::ThemeDependencyMask::METRICS
                     .union(nana_ui_core::ThemeDependencyMask::TYPOGRAPHY_ANY),
             );
-            if metrics_hit && let Some(&reproject) = self.metrics_reproject_types.get(&type_id) {
+            if metrics_hit
+                && let Some(&reproject) = self.store.metrics_reproject_types.get(&type_id)
+            {
                 reproject(self, id)?;
                 continue;
             }
-            if let Some(&(reproject, mask)) = self.recipe_reproject_types.get(&type_id)
+            if let Some(&(reproject, mask)) = self.store.recipe_reproject_types.get(&type_id)
                 && (mask.is_empty() || mask.intersects(changed))
             {
                 reproject(self, id)?;
@@ -2417,10 +2476,11 @@ impl AppContext {
         &mut self,
         changed: nana_ui_core::ThemeDependencyMask,
     ) -> Result<(), FrameworkError> {
-        if self.recipe_reproject_types.is_empty() || changed.is_empty() {
+        if self.store.recipe_reproject_types.is_empty() || changed.is_empty() {
             return Ok(());
         }
         let targets: Vec<(StableNodeId, ChildReprojectFn)> = self
+            .store
             .views
             .iter()
             .filter(|(id, _)| {
@@ -2430,14 +2490,15 @@ impl AppContext {
                     .is_some_and(|doc| self.world.has_document_theme(doc))
             })
             .filter_map(|(&id, view)| {
-                self.recipe_reproject_types
+                self.store
+                    .recipe_reproject_types
                     .get(&view.as_ref().type_id())
                     .filter(|(_, mask)| mask.is_empty() || mask.intersects(changed))
                     .map(|&(reproject, _)| (id, reproject))
             })
             .collect();
         for (id, reproject) in targets {
-            if self.views.contains_key(&id) {
+            if self.store.views.contains_key(&id) {
                 reproject(self, id)?;
             }
         }
@@ -2445,35 +2506,35 @@ impl AppContext {
     }
 
     fn drain_child_reprojects(&mut self) -> Result<(), FrameworkError> {
-        if self.draining_child_reprojects {
+        if self.store.draining_child_reprojects {
             return Ok(());
         }
-        self.draining_child_reprojects = true;
+        self.store.draining_child_reprojects = true;
         let result = self.drain_child_reprojects_inner();
-        self.draining_child_reprojects = false;
+        self.store.draining_child_reprojects = false;
         result
     }
 
     fn drain_child_reprojects_inner(&mut self) -> Result<(), FrameworkError> {
         loop {
-            let pending = std::mem::take(&mut self.pending_child_reprojects);
+            let pending = std::mem::take(&mut self.store.pending_child_reprojects);
             if pending.is_empty() {
                 return Ok(());
             }
             let mut deferred = Vec::new();
             let mut progressed = false;
             for id in pending {
-                let Some(reproject) = self.child_reproject_views.get(&id).copied() else {
+                let Some(reproject) = self.store.child_reproject_views.get(&id).copied() else {
                     continue;
                 };
-                if !self.views.contains_key(&id) && !self.world.is_elided_stack(id) {
+                if !self.store.views.contains_key(&id) && !self.world.is_elided_stack(id) {
                     deferred.push(id);
                     continue;
                 }
                 progressed = true;
                 reproject(self, id)?;
             }
-            self.pending_child_reprojects = deferred;
+            self.store.pending_child_reprojects = deferred;
             if !progressed {
                 // Every entry is waiting on a view no reproject created; leave
                 // them pending for a later drain instead of spinning forever.
@@ -2520,12 +2581,17 @@ impl AppContext {
             return Ok(());
         }
         self.world.set_framework_strings(strings);
-        let ids: Vec<_> = self.views.keys().copied().collect();
+        let ids: Vec<_> = self.store.views.keys().copied().collect();
         for id in ids {
             if !self.world.contains(id) {
                 continue;
             }
-            if let Some(type_id) = self.views.get(&id).map(|view| view.as_ref().type_id()) {
+            if let Some(type_id) = self
+                .store
+                .views
+                .get(&id)
+                .map(|view| view.as_ref().type_id())
+            {
                 self.run_built_assembler(id, type_id)?;
             }
             self.reproject_view(id, Projection::ProjectOnly)?;
@@ -2719,7 +2785,7 @@ impl AppContext {
         // Creation, the projection's few writes and the type stamp.
         let mut queue = MutationQueue::with_capacity(8);
         queue.create(id, document, component.node_kind());
-        component.project(id, &self.world, &mut queue);
+        self.project_component(id, &component, &self.world, &mut queue);
         if TypeId::of::<C>() == TypeId::of::<Stack>() {
             // SAFETY: `TypeId` matched `Stack`.
             let flags = unsafe { &*std::ptr::from_ref(&component).cast::<Stack>() }.elided_flags();
@@ -2760,7 +2826,7 @@ impl AppContext {
             queue.park_subtree(id);
         }
         self.world.commit(queue)?;
-        self.views.insert(id, component);
+        self.store.views.insert(id, component);
         self.sync_component_lifecycle(id)
     }
 
@@ -2808,17 +2874,18 @@ impl AppContext {
             return Err(FrameworkError::MissingView(id));
         }
         let mut queue = MutationQueue::new();
-        component.project(id, &self.world, &mut queue);
+        self.store.assembled_slots.remove(&id);
+        self.project_component(id, &component, &self.world, &mut queue);
         self.stamp_component_type::<C>(id, &mut queue);
         self.commit_mutations(queue)?;
         if TypeId::of::<C>() == TypeId::of::<Stack>() {
             // SAFETY: `TypeId` matched `Stack`.
             let flags = unsafe { &*std::ptr::from_ref(&component).cast::<Stack>() }.elided_flags();
-            self.views.remove(&id);
+            self.store.views.remove(&id);
             self.world.set_elided_stack_flags(id, flags);
         } else {
             self.world.set_elided_stack_flags(id, 0);
-            self.views.insert(id, Box::new(component));
+            self.store.views.insert(id, Box::new(component));
         }
         self.sync_component_lifecycle(id)?;
         Ok(Entity::from_stable_id(id))
@@ -2836,7 +2903,7 @@ impl AppContext {
         // Creation, the projection's few writes, the type stamp and parking.
         let mut queue = MutationQueue::with_capacity(8);
         queue.create(id, document, component.node_kind());
-        component.project(id, &self.world, &mut queue);
+        self.project_component(id, &component, &self.world, &mut queue);
         if TypeId::of::<C>() == TypeId::of::<Stack>() {
             // SAFETY: `TypeId` matched `Stack`.
             let flags = unsafe { &*std::ptr::from_ref(&component).cast::<Stack>() }.elided_flags();
@@ -2953,6 +3020,7 @@ impl AppContext {
             let mut current = from;
             while let Some(id) = current {
                 if context
+                    .lifecycle
                     .event_handlers
                     .contains_key(&(id, TypeId::of::<PointerHoverChanged>()))
                 {
@@ -2968,7 +3036,7 @@ impl AppContext {
             for &id in ids.iter().filter(|id| !others.contains(id)) {
                 let emit = self
                     .view_type_id(id)
-                    .and_then(|type_id| self.emitters.get(&type_id))
+                    .and_then(|type_id| self.store.emitters.get(&type_id))
                     .copied();
                 if let Some(emit) = emit {
                     emit_erased(self, emit, id, PointerHoverChanged { hovered })?;
@@ -2983,6 +3051,7 @@ impl AppContext {
     /// of a select focus left.
     fn sync_focus_within_listeners(&mut self) -> Result<(), FrameworkError> {
         let mut moved = self
+            .lifecycle
             .focus_within
             .iter()
             .filter(|(document, (node, _))| self.world.focused(**document) != Some(*node))
@@ -2991,7 +3060,7 @@ impl AppContext {
         moved.extend(
             self.world
                 .focused_documents()
-                .filter(|document| !self.focus_within.contains_key(document)),
+                .filter(|document| !self.lifecycle.focus_within.contains_key(document)),
         );
         let mut blurred = Vec::new();
         for document in moved {
@@ -3000,6 +3069,7 @@ impl AppContext {
             let mut current = focused;
             while let Some(id) = current {
                 if self
+                    .lifecycle
                     .event_handlers
                     .contains_key(&(id, TypeId::of::<FocusWithinChanged>()))
                     || self.is_tools_row(id)
@@ -3009,8 +3079,11 @@ impl AppContext {
                 current = self.world.parent_id(id);
             }
             let previous = match focused {
-                Some(node) => self.focus_within.insert(document, (node, entered.clone())),
-                None => self.focus_within.remove(&document),
+                Some(node) => self
+                    .lifecycle
+                    .focus_within
+                    .insert(document, (node, entered.clone())),
+                None => self.lifecycle.focus_within.remove(&document),
             };
             let left = previous
                 .map(|(node, listeners)| {
@@ -3018,12 +3091,12 @@ impl AppContext {
                     listeners
                 })
                 .unwrap_or_default();
-            self.pending_focus_within.extend(
+            self.lifecycle.pending_focus_within.extend(
                 left.iter()
                     .filter(|id| !entered.contains(id))
                     .map(|&id| (id, false)),
             );
-            self.pending_focus_within.extend(
+            self.lifecycle.pending_focus_within.extend(
                 entered
                     .iter()
                     .filter(|id| !left.contains(id))
@@ -3033,8 +3106,12 @@ impl AppContext {
         // A select's menu goes with its focus, as a native one's does. One
         // out being updated is closing itself or keeps what that update says.
         for id in blurred {
-            if self.views.get(&id).is_some_and(|view| view.is::<Select>()) {
-                via!(self.set_select_opened(Entity::<Select>::from_stable_id(id), false))?;
+            if let Some(on_focus_lost) = self
+                .behavior(id)
+                .and_then(|b| b.focus)
+                .and_then(|f| f.on_focus_lost)
+            {
+                on_focus_lost(self, id)?;
             }
         }
         self.drain_focus_within()
@@ -3043,14 +3120,14 @@ impl AppContext {
     /// Deliver queued focus-within notices. One for a listener that is out
     /// being updated waits for the end of that update.
     fn drain_focus_within(&mut self) -> Result<(), FrameworkError> {
-        if self.draining_focus_within {
+        if self.lifecycle.draining_focus_within {
             return Ok(());
         }
-        self.draining_focus_within = true;
+        self.lifecycle.draining_focus_within = true;
         let mut outcome = Ok(());
         let mut waiting = Vec::new();
-        while !self.pending_focus_within.is_empty() {
-            for (id, focused) in std::mem::take(&mut self.pending_focus_within) {
+        while !self.lifecycle.pending_focus_within.is_empty() {
+            for (id, focused) in std::mem::take(&mut self.lifecycle.pending_focus_within) {
                 if !self.world.contains(id) {
                     continue;
                 }
@@ -3058,11 +3135,14 @@ impl AppContext {
                     waiting.push((id, focused));
                     continue;
                 };
-                let emit = self.emitters.get(&type_id).copied();
-                if self.is_tools_row(id) {
-                    outcome = outcome.and(via!(self.sync_row_tools(Some(id), None, Some(focused))));
+                let emit = self.store.emitters.get(&type_id).copied();
+                if self.is_tools_row(id)
+                    && let Some(sync) = self.capabilities.sync_row_tools
+                {
+                    outcome = outcome.and(sync(self, Some(id), None, Some(focused)));
                 }
                 if !self
+                    .lifecycle
                     .event_handlers
                     .contains_key(&(id, TypeId::of::<FocusWithinChanged>()))
                 {
@@ -3074,15 +3154,15 @@ impl AppContext {
                 }
             }
         }
-        self.pending_focus_within = waiting;
-        self.draining_focus_within = false;
+        self.lifecycle.pending_focus_within = waiting;
+        self.lifecycle.draining_focus_within = false;
         outcome
     }
 
     /// A row whose tools the pointer and keyboard focus reveal: every
     /// sidebar row, and a list item whose trailing slot holds tools.
     fn is_tools_row(&self, id: StableNodeId) -> bool {
-        self.views.get(&id).is_some_and(|view| {
+        self.store.views.get(&id).is_some_and(|view| {
             view.is::<SidebarRow>()
                 || view
                     .downcast_ref::<ListItem>()
@@ -3125,7 +3205,7 @@ impl AppContext {
             set(&mut presence);
             (presence != before).then_some(presence)
         };
-        let Some(view) = self.views.get(&row) else {
+        let Some(view) = self.store.views.get(&row) else {
             return Ok(());
         };
         if let Some(item) = view.downcast_ref::<ListItem>() {
@@ -3166,6 +3246,7 @@ impl AppContext {
         let mut current = Some(id);
         while let Some(id) = current {
             if self
+                .store
                 .views
                 .get(&id)
                 .is_some_and(|view| view.is::<SidebarSection>())
@@ -3224,7 +3305,7 @@ impl AppContext {
             || self.node_is_or_under(disclosure, hover)
     }
 
-    fn sync_sidebar_section_hover(
+    pub(crate) fn sync_sidebar_section_hover(
         &mut self,
         node: Option<StableNodeId>,
         hover: Option<StableNodeId>,
@@ -3364,7 +3445,13 @@ impl AppContext {
                 return Ok(true);
             }
         }
-        via!(self.note_anchored_menu_dismissed(entity.id))?;
+        if let Some(note) = self
+            .behavior(entity.id)
+            .and_then(|b| b.overlay)
+            .and_then(|o| o.note_anchored_menu_dismissed)
+        {
+            note(self, entity.id)?;
+        }
         Ok(true)
     }
 
@@ -3394,6 +3481,7 @@ impl AppContext {
             return Ok(false);
         };
         if self
+            .store
             .views
             .get(&parent)
             .is_some_and(|view| view.is::<SegmentedControl>())
@@ -3401,6 +3489,7 @@ impl AppContext {
             return self.request_segmented_selection(Entity::from_stable_id(parent), entity);
         }
         if self
+            .store
             .views
             .get(&parent)
             .is_some_and(|view| view.is::<Tabs>())
@@ -3423,7 +3512,7 @@ impl AppContext {
         }
         let handler = self
             .view_type_id(id)
-            .and_then(|type_id| self.activations.get(&type_id).cloned());
+            .and_then(|type_id| self.store.activations.get(&type_id).cloned());
         match handler {
             Some(handler) => handler(self, id),
             None => Ok(false),
@@ -3431,13 +3520,17 @@ impl AppContext {
     }
 
     pub fn is_range_field(&self, id: StableNodeId) -> bool {
-        self.views
+        self.store
+            .views
             .get(&id)
             .is_some_and(|view| view.is::<RangeField>())
     }
 
     pub fn is_xy_pad(&self, id: StableNodeId) -> bool {
-        self.views.get(&id).is_some_and(|view| view.is::<XYPad>())
+        self.store
+            .views
+            .get(&id)
+            .is_some_and(|view| view.is::<XYPad>())
     }
 
     pub fn pointer_target(&self, document: DocumentId, x: f32, y: f32) -> Option<StableNodeId> {
@@ -3504,9 +3597,11 @@ impl AppContext {
     ) -> Result<Option<StableNodeId>, FrameworkError> {
         self.component_lifecycle.now = now;
         self.world.observe_host_time(now);
-        if target.is_none() {
+        if target.is_none()
+            && let Some(scrollbar) = self.capabilities.scrollbar
+        {
             // A pointer that left, or was cancelled, is on no lane.
-            via!(self.sync_scrollbar_hot(document, pointer_id, None))?;
+            (scrollbar.hot_sync)(self, document, pointer_id, None)?;
         }
         let previous = self.world.set_pointer_hover(document, pointer_id, target)?;
         if previous != target {
@@ -3542,23 +3637,29 @@ impl AppContext {
             let next_section = target
                 .and_then(|id| self.enclosing_sidebar_section(id))
                 .map(Entity::stable_id);
-            if previous_section != next_section {
-                via!(self.sync_sidebar_section_hover(previous, target))?;
+            if let Some(sync) = self.capabilities.sync_sidebar_section_hover {
+                if previous_section != next_section {
+                    sync(self, previous, target)?;
+                }
+                sync(self, target, target)?;
             }
-            via!(self.sync_sidebar_section_hover(target, target))?;
             self.sync_scroll_view_hover(previous, target)?;
-            let previous_row = previous.and_then(|id| self.enclosing_tools_row(id));
-            let next_row = target.and_then(|id| self.enclosing_tools_row(id));
-            if previous_row != next_row {
-                via!(self.sync_row_tools(previous_row, Some(false), None))?;
+            if let Some(sync) = self.capabilities.sync_row_tools {
+                let previous_row = previous.and_then(|id| self.enclosing_tools_row(id));
+                let next_row = target.and_then(|id| self.enclosing_tools_row(id));
+                if previous_row != next_row {
+                    sync(self, previous_row, Some(false), None)?;
+                }
+                sync(self, next_row, Some(true), None)?;
             }
-            via!(self.sync_row_tools(next_row, Some(true), None))?;
             self.sync_pointer_hover_listeners(previous, target)?;
         } else if let Some(target) = target {
             self.reposition_follow_cursor_tooltip(target)?;
         }
         self.sync_pointer_hooks(document, pointer_id, previous, target)?;
-        self.sync_interactive_style_states();
+        if previous != target {
+            self.sync_interactive_style_ancestors(&[previous, target]);
+        }
         Ok(previous)
     }
 
@@ -3589,7 +3690,7 @@ impl AppContext {
         target: StableNodeId,
     ) -> Result<Option<StableNodeId>, FrameworkError> {
         let previous = self.world.press_pointer(document, pointer_id, target)?;
-        self.sync_interactive_style_states();
+        self.sync_interactive_style_ancestors(&[previous, Some(target)]);
         Ok(previous)
     }
 
@@ -3599,7 +3700,7 @@ impl AppContext {
         pointer_id: u64,
     ) -> Option<StableNodeId> {
         let previous = self.world.release_pointer_press(document, pointer_id);
-        self.sync_interactive_style_states();
+        self.sync_interactive_style_ancestors(&[previous]);
         previous
     }
 
@@ -3650,19 +3751,37 @@ impl AppContext {
         }
         // A numeric draft settles before focus leaves it, so a half-typed value
         // never survives as the visible text of an unfocused field.
-        if self.world.focused(document) != Some(target) {
-            via!(self.settle_focused_number_input(document))?;
+        if let Some(focused) = self.world.focused(document)
+            && Some(focused) != Some(target)
+            && let Some(settle) = self
+                .behavior(focused)
+                .and_then(|b| b.focus)
+                .and_then(|f| f.on_blur_settle)
+        {
+            settle(self, document)?;
         }
-        if via!(self.is_segmented_option_node(target)) {
-            return via!(self.focus_segmented_option(document, target));
+        if let Some(focus_opt) = self
+            .behavior(target)
+            .and_then(|b| b.pointer_ops)
+            .filter(|p| p.is_segmented_option)
+            .and_then(|p| p.focus_segmented_option)
+        {
+            return focus_opt(self, document, target);
         }
-        if self.world.focused(document) == Some(target) {
+        let previous_focus = self.world.focused(document);
+        if previous_focus == Some(target) {
             return Ok(false);
         }
+        let previous_focus_visible = self.world.focus_visible(document);
         let mut mutations = MutationQueue::new();
         mutations.request_focus(document, Some(target));
         self.commit_mutations(mutations)?;
-        self.sync_interactive_style_states();
+        self.sync_interactive_style_nodes(&[
+            previous_focus,
+            previous_focus_visible,
+            self.world.focused(document),
+            self.world.focus_visible(document),
+        ]);
         Ok(true)
     }
 
@@ -3671,11 +3790,23 @@ impl AppContext {
         if previous_focus.is_none() {
             return Ok(false);
         }
-        via!(self.settle_focused_number_input(document))?;
+        let previous_focus_visible = self.world.focus_visible(document);
+        if let Some(settle) = self
+            .behavior(previous_focus.unwrap())
+            .and_then(|b| b.focus)
+            .and_then(|f| f.on_blur_settle)
+        {
+            settle(self, document)?;
+        }
         let mut mutations = MutationQueue::new();
         mutations.request_focus(document, None);
         self.commit_mutations(mutations)?;
-        self.sync_interactive_style_states();
+        self.sync_interactive_style_nodes(&[
+            previous_focus,
+            previous_focus_visible,
+            self.world.focused(document),
+            self.world.focus_visible(document),
+        ]);
         Ok(true)
     }
 
@@ -3693,13 +3824,23 @@ impl AppContext {
             if self.world.document_of(tree) != Some(document) || self.world.is_inert(tree) {
                 return Ok(false);
             }
-            return via!(self.apply_tree_item_action(document, tree, slot, &request.action));
+            return match self.capabilities.tree {
+                Some(tree_caps) => {
+                    (tree_caps.apply_item_action)(self, document, tree, slot, &request.action)
+                }
+                None => Ok(false),
+            };
         }
         if let Some((tree, slot, column)) = crate::decode_virtual_tree_toggle(request.target) {
             if self.world.document_of(tree) != Some(document) || self.world.is_inert(tree) {
                 return Ok(false);
             }
-            return via!(self.apply_tree_toggle_action(tree, slot, column, &request.action));
+            return match self.capabilities.tree {
+                Some(tree_caps) => {
+                    (tree_caps.apply_toggle_action)(self, tree, slot, column, &request.action)
+                }
+                None => Ok(false),
+            };
         }
         let owner = match &request.action {
             AccessibilityAction::ActivateMenuItem { menu, .. } => *menu,
@@ -3720,15 +3861,22 @@ impl AppContext {
         match request.action {
             AccessibilityAction::Click => {
                 if let Some((menu, slot)) = crate::decode_virtual_menu_item(request.target)
-                    && let Some(entity) = self.view_entity::<ContextMenu>(menu)
+                    && let Some(activate) = self
+                        .behavior(menu)
+                        .and_then(|b| b.a11y)
+                        .and_then(|a| a.activate_context_menu_index)
                 {
                     let Some(index) = self.world.virtual_menu_row_index(menu, slot) else {
                         return Ok(false);
                     };
-                    return via!(self.activate_context_menu_index(entity, index));
+                    return activate(self, menu, index);
                 }
                 if let Some((field, slot)) = crate::decode_virtual_menu_item(request.target)
-                    && let Some(handled) = via!(self.activate_select_option(field, slot))?
+                    && let Some(activate) = self
+                        .behavior(field)
+                        .and_then(|b| b.a11y)
+                        .and_then(|a| a.activate_select_option)
+                    && let Some(handled) = activate(self, field, slot)?
                 {
                     return Ok(handled);
                 }
@@ -3749,80 +3897,75 @@ impl AppContext {
                 if crate::decode_virtual_menu_item(request.target) != Some((menu, slot)) {
                     return Ok(false);
                 }
-                if let Some(handled) = via!(self.activate_select_option(menu, slot))? {
+                if let Some(activate) = self
+                    .behavior(menu)
+                    .and_then(|b| b.a11y)
+                    .and_then(|a| a.activate_select_option)
+                    && let Some(handled) = activate(self, menu, slot)?
+                {
                     return Ok(handled);
                 }
-                let Some(entity) = self.view_entity::<ContextMenu>(menu) else {
+                let Some(activate) = self
+                    .behavior(menu)
+                    .and_then(|b| b.a11y)
+                    .and_then(|a| a.activate_context_menu_index)
+                else {
                     return Ok(false);
                 };
                 let Some(index) = self.world.virtual_menu_row_index(menu, slot) else {
                     return Ok(false);
                 };
-                via!(self.activate_context_menu_index(entity, index))
+                activate(self, menu, index)
             }
             AccessibilityAction::Focus => {
                 if let Some((menu, slot)) = crate::decode_virtual_menu_item(request.target)
-                    && let Some(entity) = self.view_entity::<ContextMenu>(menu)
+                    && let Some(focus_index) = self
+                        .behavior(menu)
+                        .and_then(|b| b.a11y)
+                        .and_then(|a| a.focus_context_menu_index)
                 {
                     let Some(index) = self.world.virtual_menu_row_index(menu, slot) else {
                         return Ok(false);
                     };
-                    return via!(self.focus_context_menu_index(entity, index));
+                    return focus_index(self, menu, index);
                 }
                 self.focus_node(document, request.target)
             }
             AccessibilityAction::Increment | AccessibilityAction::Decrement => {
                 let steps = matches!(request.action, AccessibilityAction::Increment) as i32 * 2 - 1;
-                if let Some(entity) = self.view_entity::<RangeField>(request.target) {
-                    return via!(self.adjust_range(
-                        entity,
-                        if steps > 0 {
-                            RangeAdjustment::Increment
-                        } else {
-                            RangeAdjustment::Decrement
-                        },
-                    ));
+                let adjustment = if steps > 0 {
+                    RangeAdjustment::Increment
+                } else {
+                    RangeAdjustment::Decrement
+                };
+                if let Some(a11y) = self.behavior(request.target).and_then(|b| b.a11y) {
+                    if let Some(adjust) = a11y.adjust_range {
+                        return adjust(self, request.target, adjustment);
+                    }
+                    if let Some(step) = a11y.step {
+                        return step(self, request.target, steps);
+                    }
                 }
-                if let Some(entity) = self.view_entity::<NumberInput>(request.target) {
-                    return via!(self.step_number_input(entity, steps));
+                if let Some(curve) = self.capabilities.curve_field
+                    && let Some((entity, Some(index))) = (curve.target)(self, request.target)
+                {
+                    return (curve.adjust_point)(self, entity, index, adjustment);
                 }
-                if let Some(entity) = self.view_entity::<crate::ScrubField>(request.target) {
-                    return via!(self.step_scrub_field(entity, steps));
-                }
-                if let Some((entity, Some(index))) = via!(self.curve_target(request.target)) {
-                    return via!(self.adjust_curve_point(
-                        entity,
-                        index,
-                        if steps > 0 {
-                            RangeAdjustment::Increment
-                        } else {
-                            RangeAdjustment::Decrement
-                        },
-                    ));
-                }
-                if let Some((entity, Some(thumb))) = via!(self.range_span_target(request.target)) {
-                    return via!(self.adjust_range_span(
-                        entity,
-                        thumb,
-                        if steps > 0 {
-                            RangeAdjustment::Increment
-                        } else {
-                            RangeAdjustment::Decrement
-                        },
-                    ));
+                if let Some(span) = self.capabilities.range_span
+                    && let Some((entity, Some(thumb))) = (span.target)(self, request.target)
+                {
+                    return (span.adjust_thumb)(self, entity, thumb, adjustment);
                 }
                 Ok(false)
             }
             AccessibilityAction::Expand | AccessibilityAction::Collapse => {
                 let expand = matches!(request.action, AccessibilityAction::Expand);
-                if let Some(entity) = self.view_entity::<Select>(request.target) {
-                    return via!(self.set_select_opened(entity, expand));
-                }
-                if let Some(entity) = self.view_entity::<Dropdown>(request.target) {
-                    return via!(self.set_dropdown_opened(entity, expand));
-                }
-                if let Some(entity) = self.view_entity::<SearchDropdown>(request.target) {
-                    return via!(self.set_search_dropdown_opened(entity, expand));
+                if let Some(set_expanded) = self
+                    .behavior(request.target)
+                    .and_then(|b| b.a11y)
+                    .and_then(|a| a.set_expanded)
+                {
+                    return set_expanded(self, request.target, expand);
                 }
                 Ok(false)
             }
@@ -3850,40 +3993,44 @@ impl AppContext {
                 )
             }
             AccessibilityAction::SetValue(value) => {
-                if let Some(entity) = self.view_entity::<NumberInput>(request.target) {
-                    return via!(self.set_number_text(entity, &value));
+                if let Some(set_text) = self
+                    .behavior(request.target)
+                    .and_then(|b| b.a11y)
+                    .and_then(|a| a.set_text)
+                {
+                    return set_text(self, request.target, &value);
                 }
                 // Every other editor and search field: its type's own hooks.
                 if let Some(hooks) = self.editable_hooks(request.target) {
                     return (hooks.set_value)(self, request.target, value);
                 }
-                if self
-                    .views
-                    .get(&request.target)
-                    .is_some_and(|view| view.is::<RangeField>())
+                if let Some(set_range) = self
+                    .behavior(request.target)
+                    .and_then(|b| b.a11y)
+                    .and_then(|a| a.set_range_value)
                 {
                     return value
                         .parse::<f64>()
                         .ok()
-                        .map(|value| {
-                            via!(
-                                self.set_range_value(Entity::from_stable_id(request.target), value)
-                            )
-                        })
+                        .map(|value| set_range(self, request.target, value))
                         .transpose()
                         .map(|changed| changed.unwrap_or(false));
                 }
-                if let Some((entity, Some(thumb))) = via!(self.range_span_target(request.target)) {
+                if let Some(span) = self.capabilities.range_span
+                    && let Some((entity, Some(thumb))) = (span.target)(self, request.target)
+                {
                     return value
                         .trim()
                         .parse::<f64>()
                         .ok()
                         .filter(|value| value.is_finite())
-                        .map(|value| via!(self.set_range_span_thumb(entity, thumb, value)))
+                        .map(|value| (span.set_thumb)(self, entity, thumb, value))
                         .transpose()
                         .map(|changed| changed.unwrap_or(false));
                 }
-                if let Some((entity, Some(index))) = via!(self.curve_target(request.target)) {
+                if let Some(curve) = self.capabilities.curve_field
+                    && let Some((entity, Some(index))) = (curve.target)(self, request.target)
+                {
                     // A point reads as a percentage; "35%" and "0.35" both
                     // set it to 0.35.
                     let text = value.trim();
@@ -3894,7 +4041,7 @@ impl AppContext {
                     return parsed
                         .ok()
                         .filter(|value| value.is_finite())
-                        .map(|value| via!(self.set_curve_point(entity, index, value)))
+                        .map(|value| (curve.set_point)(self, entity, index, value))
                         .transpose()
                         .map(|changed| changed.unwrap_or(false));
                 }
@@ -3912,7 +4059,7 @@ impl AppContext {
     /// Choose the option in accessibility `slot` of select `field`'s open
     /// menu, as a press on its row does. `None` when `field` is no Select,
     /// Dropdown or SearchDropdown.
-    fn activate_select_option(
+    pub(crate) fn activate_select_option(
         &mut self,
         field: StableNodeId,
         slot: u16,
@@ -3977,7 +4124,13 @@ impl AppContext {
                 return self.close_gesture(root, nana_ui_core::DialogCloseTrigger::CloseButton);
             }
             if let Some(intent) = intent {
-                via!(self.announce_confirm_intent(root, intent))?;
+                if let Some(announce) = self
+                    .behavior(root)
+                    .and_then(|b| b.overlay)
+                    .and_then(|o| o.announce_confirm_intent)
+                {
+                    announce(self, root, intent)?;
+                }
                 return Ok(true);
             }
         }
@@ -4023,7 +4176,12 @@ impl AppContext {
     ) -> Result<bool, FrameworkError> {
         let mut current = self.world.focused(document);
         while let Some(id) = current {
-            if self.views.get(&id).is_some_and(|view| view.is::<Table>()) {
+            if self
+                .store
+                .views
+                .get(&id)
+                .is_some_and(|view| view.is::<Table>())
+            {
                 return self.navigate_table(Entity::from_stable_id(id), navigation, page_rows);
             }
             current = self.world.parent_id(id);
@@ -4126,7 +4284,7 @@ impl AppContext {
         if !self.world.contains(entity.id) {
             return Err(FrameworkError::MissingView(entity.id));
         }
-        if let Some(view) = self.views.get(&entity.id) {
+        if let Some(view) = self.store.views.get(&entity.id) {
             let view = view
                 .downcast_ref::<V>()
                 .ok_or(FrameworkError::ViewType(entity.id))?;
@@ -4153,7 +4311,7 @@ impl AppContext {
             return;
         };
         // Tabs own their options directly, with the tab chrome.
-        let parent = self.views.get(&parent);
+        let parent = self.store.views.get(&parent);
         let surface = parent
             .and_then(|view| view.downcast_ref::<SegmentedControl>())
             .map(SegmentedControl::option_surface)
@@ -4277,7 +4435,7 @@ impl AppContext {
         if !self.world.contains(entity.id) {
             return Err(FrameworkError::MissingView(entity.id));
         }
-        let removed_box = self.views.remove(&entity.id);
+        let removed_box = self.store.views.remove(&entity.id);
         let elided_stack = if removed_box.is_none() {
             if !self.world.is_elided_stack(entity.id) {
                 return Err(FrameworkError::MissingView(entity.id));
@@ -4297,7 +4455,8 @@ impl AppContext {
             Some(boxed) => match boxed.downcast_ref::<C>() {
                 Some(component) => component,
                 None => {
-                    self.views
+                    self.store
+                        .views
                         .insert(entity.id, removed_box.expect("some boxed"));
                     return Err(FrameworkError::ViewType(entity.id));
                 }
@@ -4312,7 +4471,7 @@ impl AppContext {
         let mut staged = component.clone();
         let mut mutations = MutationQueue::new();
         let mut events = VecDeque::new();
-        let mut program_messages = std::mem::take(&mut self.program_messages);
+        let mut program_messages = std::mem::take(&mut self.lifecycle.program_messages);
         update(
             &mut staged,
             &mut ViewContext {
@@ -4325,7 +4484,6 @@ impl AppContext {
             },
         );
         staged.fit_framework_limits();
-        staged.keep_framework_state(component);
         self.inherit_segmented_option_surface(entity.id, &mut staged);
         staged.announce_change(
             component,
@@ -4346,11 +4504,11 @@ impl AppContext {
         {
             // `PartialEq` cannot see what these read, so project and look.
             if C::ALWAYS_REPROJECT {
-                staged.project(entity.id, &self.world, &mut mutations);
+                self.project_component(entity.id, &staged, &self.world, &mut mutations);
                 projected = true;
             }
             if !projected || self.world.is_noop_batch(&mutations) {
-                self.program_messages = program_messages;
+                self.lifecycle.program_messages = program_messages;
                 if let Some(boxed) = removed_box {
                     self.store_component_view(entity.id, boxed);
                 }
@@ -4400,11 +4558,11 @@ impl AppContext {
             &mut events,
             &mut program_messages,
         );
-        self.program_messages = program_messages;
+        self.lifecycle.program_messages = program_messages;
         if delivered.is_ok()
             && let Some(project) = project
         {
-            project(staged.as_ref(), id, &self.world, &mut mutations);
+            project(self, staged.as_ref(), id, &self.world, &mut mutations);
         }
         let commit =
             delivered.and_then(|observers| self.commit_mutations(mutations).map(|_| observers));
@@ -4505,7 +4663,7 @@ impl AppContext {
     /// The type-erased [`Self::reproject_component`] for a component type,
     /// known once any instance of it was created.
     fn reprojector(&self, type_id: TypeId) -> Option<UpdateErasedFn> {
-        self.reprojectors.get(&type_id).copied()
+        self.store.reprojectors.get(&type_id).copied()
     }
 
     fn run_component_assembler(
@@ -4513,7 +4671,7 @@ impl AppContext {
         id: StableNodeId,
         type_id: TypeId,
     ) -> Result<(), FrameworkError> {
-        let assembler = self.behaviors.get(&type_id).and_then(|b| b.assembler);
+        let assembler = self.store.behaviors.get(&type_id).and_then(|b| b.assembler);
         self.run_assembler(id, assembler)
     }
 
@@ -4523,7 +4681,11 @@ impl AppContext {
         id: StableNodeId,
         type_id: TypeId,
     ) -> Result<(), FrameworkError> {
-        let assembler = self.behaviors.get(&type_id).and_then(|b| b.slot_assembler);
+        let assembler = self
+            .store
+            .behaviors
+            .get(&type_id)
+            .and_then(|b| b.slot_assembler);
         self.run_assembler(id, assembler)
     }
 
@@ -4534,7 +4696,7 @@ impl AppContext {
         id: StableNodeId,
         type_id: TypeId,
     ) -> Result<(), FrameworkError> {
-        let behavior = self.behaviors.get(&type_id);
+        let behavior = self.store.behaviors.get(&type_id);
         let assembler = behavior.and_then(|b| b.slot_assembler.or(b.assembler));
         self.run_assembler(id, assembler)
     }
@@ -4547,11 +4709,11 @@ impl AppContext {
         let Some(assembler) = assembler else {
             return Ok(());
         };
-        if !self.world.contains(id) || !self.assembling.insert(id) {
+        if !self.world.contains(id) || !self.store.assembling.insert(id) {
             return Ok(());
         }
         let outcome = assembler(self, id);
-        self.assembling.remove(&id);
+        self.store.assembling.remove(&id);
         outcome.map(|_| ())
     }
 
@@ -4564,7 +4726,7 @@ impl AppContext {
         if !self.world.contains(entity.id) {
             return Err(FrameworkError::MissingView(entity.id));
         }
-        let mut boxed = match self.views.remove(&entity.id) {
+        let mut boxed = match self.store.views.remove(&entity.id) {
             Some(boxed) => boxed,
             None if self.world.is_elided_stack(entity.id) => {
                 if TypeId::of::<V>() != TypeId::of::<Stack>() {
@@ -4587,7 +4749,7 @@ impl AppContext {
             .expect("view type was checked before update");
         let mut mutations = MutationQueue::new();
         let mut events = VecDeque::new();
-        let mut program_messages = std::mem::take(&mut self.program_messages);
+        let mut program_messages = std::mem::take(&mut self.lifecycle.program_messages);
         let result = update(
             view,
             &mut ViewContext {
@@ -4607,7 +4769,7 @@ impl AppContext {
             &mut events,
             &mut program_messages,
         );
-        self.program_messages = program_messages;
+        self.lifecycle.program_messages = program_messages;
         if delivered.is_ok() {
             project(view, &self.world, &mut mutations);
         }
@@ -4633,7 +4795,7 @@ impl AppContext {
     #[doc(hidden)]
     pub fn remove_view<V: View>(&mut self, entity: Entity<V>) -> Result<V, FrameworkError> {
         self.read(entity, |_| ())?;
-        let boxed = match self.views.remove(&entity.id) {
+        let boxed = match self.store.views.remove(&entity.id) {
             Some(boxed) => boxed,
             None if TypeId::of::<V>() == TypeId::of::<Stack>() => Box::new(
                 self.world
@@ -4720,7 +4882,7 @@ impl AppContext {
 
     fn release_empty_document_layout(&mut self, document: DocumentId) {
         if !self.world.has_document_roots(document) {
-            self.layout_cache.remove_document(document);
+            self.layout.layout_cache.remove_document(document);
             self.world.clear_document_viewport(document);
         }
     }
@@ -4735,7 +4897,7 @@ impl AppContext {
         &mut self,
         mutations: &mut MutationQueue,
     ) -> Option<MutationQueue> {
-        if self.placed_assembled.is_empty() {
+        if self.store.placed_assembled.is_empty() {
             return None;
         }
         let mut roots: HashSet<StableNodeId> = mutations
@@ -4755,12 +4917,14 @@ impl AppContext {
         };
         loop {
             let found: Vec<_> = self
+                .store
                 .placed_assembled
                 .iter()
                 .copied()
                 .filter(|&node| !under(&roots, node))
                 .filter(|node| {
-                    self.assembled_parent
+                    self.store
+                        .assembled_parent
                         .get(node)
                         .is_some_and(|(declared, _)| under(&roots, *declared))
                 })
@@ -4774,12 +4938,13 @@ impl AppContext {
             }
         }
         let mut rescued: Vec<(StableNodeId, StableNodeId)> = self
+            .store
             .placed_assembled
             .iter()
             .copied()
             .filter(|node| !roots.contains(node) && under(&roots, *node))
             .filter_map(|node| {
-                let (declared, _) = self.assembled_parent.get(&node)?;
+                let (declared, _) = self.store.assembled_parent.get(&node)?;
                 (!under(&roots, *declared)).then_some((node, *declared))
             })
             .collect();
@@ -4797,7 +4962,7 @@ impl AppContext {
         let mut first = MutationQueue::new();
         for (node, declared) in rescued {
             first.insert(declared, node, None);
-            self.placed_assembled.remove(&node);
+            self.store.placed_assembled.remove(&node);
         }
         Some(first)
     }
@@ -4822,29 +4987,38 @@ impl AppContext {
             }
             self.component_lifecycle.loading.remove(id);
             self.component_lifecycle.toast_timers.remove(id);
-            self.views.remove(id);
+            self.store.views.remove(id);
         }
         #[cfg(feature = "charts")]
         self.component_lifecycle
             .chart_tooltips
             .retain(|owner, tooltip| !removed.contains(owner) && !removed.contains(tooltip));
-        self.pending_child_reprojects
+        self.store
+            .pending_child_reprojects
             .retain(|id| !removed.contains(id));
-        self.child_structure_owners
+        self.store
+            .child_structure_owners
             .retain(|node, owner| !removed.contains(node) && !removed.contains(owner));
-        self.pending_modal_syncs.retain(|id| !removed.contains(id));
-        self.color_pick_requests.retain(|id| !removed.contains(id));
+        self.lifecycle
+            .pending_modal_syncs
+            .retain(|id| !removed.contains(id));
+        self.lifecycle
+            .color_pick_requests
+            .retain(|id| !removed.contains(id));
         // The tables below hold an entry per component or per keyed child.
         // Walked in full, they made removing one node cost the size of the
         // whole tree (2.4 ms among 100,000 buttons), and an assembly
         // dropping a hundred children paid that two hundred times.
-        forget_nodes(&mut self.child_reproject_views, removed);
-        forget_nodes(&mut self.slot_keys, removed);
-        if self.placed_assembled.len() <= removed.len() {
-            self.placed_assembled.retain(|id| !removed.contains(id));
+        forget_nodes(&mut self.store.child_reproject_views, removed);
+        forget_nodes(&mut self.store.slot_keys, removed);
+        forget_nodes(&mut self.store.assembled_slots, removed);
+        if self.store.placed_assembled.len() <= removed.len() {
+            self.store
+                .placed_assembled
+                .retain(|id| !removed.contains(id));
         } else {
             for id in removed {
-                self.placed_assembled.remove(id);
+                self.store.placed_assembled.remove(id);
             }
         }
         self.forget_assembled(removed);
@@ -4862,32 +5036,34 @@ impl AppContext {
     fn forget_assembled(&mut self, removed: &HashSet<StableNodeId>) {
         // As [`forget_nodes`] chooses: the walk when the tables are the
         // shorter side, which is every teardown of a tree that keys little.
-        if self.assembled.len() + self.assembled_parent.len() <= removed.len() {
-            self.assembled.retain(|parent, slots| {
+        if self.store.assembled.len() + self.store.assembled_parent.len() <= removed.len() {
+            self.store.assembled.retain(|parent, slots| {
                 if removed.contains(parent) {
                     return false;
                 }
                 slots.retain(|_, child| !removed.contains(&child.id));
                 true
             });
-            self.assembled_parent
+            self.store
+                .assembled_parent
                 .retain(|child, (parent, _)| !removed.contains(child) && !removed.contains(parent));
             return;
         }
         let mut thinned = crate::NodeSet::default();
         for id in removed {
-            if let Some(slots) = self.assembled.remove(id) {
+            if let Some(slots) = self.store.assembled.remove(id) {
                 for child in slots.values() {
                     if self
+                        .store
                         .assembled_parent
                         .get(&child.id)
                         .is_some_and(|(declared, _)| declared == id)
                     {
-                        self.assembled_parent.remove(&child.id);
+                        self.store.assembled_parent.remove(&child.id);
                     }
                 }
             }
-            if let Some((declared, _)) = self.assembled_parent.remove(id)
+            if let Some((declared, _)) = self.store.assembled_parent.remove(id)
                 && !removed.contains(&declared)
             {
                 thinned.insert(declared);
@@ -4895,7 +5071,7 @@ impl AppContext {
         }
         // Once per parent, however many of its children went.
         for parent in thinned {
-            if let Some(slots) = self.assembled.get_mut(&parent) {
+            if let Some(slots) = self.store.assembled.get_mut(&parent) {
                 slots.retain(|_, child| !removed.contains(&child.id));
             }
         }
@@ -4909,7 +5085,7 @@ impl AppContext {
     fn assert_forgotten(&self, removed: &HashSet<StableNodeId>) {
         let gone = |id: &StableNodeId| removed.contains(id);
         assert!(
-            !self.child_reproject_views.keys().any(gone),
+            !self.store.child_reproject_views.keys().any(gone),
             "a removed node is still registered for reprojection"
         );
         assert!(
@@ -4924,17 +5100,20 @@ impl AppContext {
             "a removed node still has, or is part of, a tooltip"
         );
         assert!(
-            !self.placed_assembled.iter().any(gone) && !self.slot_keys.keys().any(gone),
-            "a removed node still holds a placement or a slot key"
+            !self.store.placed_assembled.iter().any(gone)
+                && !self.store.slot_keys.keys().any(gone)
+                && !self.store.assembled_slots.keys().any(gone),
+            "a removed node still holds a placement, slot key, or assembled slots"
         );
         assert!(
-            self.assembled.iter().all(
+            self.store.assembled.iter().all(
                 |(parent, slots)| !gone(parent) && !slots.values().any(|child| gone(&child.id))
             ),
             "a removed node is still a keyed parent or a keyed child"
         );
         assert!(
-            self.assembled_parent
+            self.store
+                .assembled_parent
                 .iter()
                 .all(|(child, (parent, _))| !gone(child) && !gone(parent)),
             "a removed node still has, or is, a declared parent"
@@ -5072,17 +5251,47 @@ struct StagedUpdate {
     program_messages: Vec<ProgramMessage>,
 }
 
+impl AppContext {
+    pub(crate) fn assembled_slot<T: 'static>(&self, id: StableNodeId) -> Option<&T> {
+        self.store.assembled_slots.get(&id)?.downcast_ref::<T>()
+    }
+
+    pub(crate) fn set_assembled_slot<T: Send + 'static>(&mut self, id: StableNodeId, slot: T) {
+        self.store.assembled_slots.insert(id, Box::new(slot));
+    }
+
+    pub(crate) fn take_assembled_slot<T: 'static>(&mut self, id: StableNodeId) -> Option<T> {
+        let boxed = self.store.assembled_slots.remove(&id)?;
+        boxed.downcast::<T>().ok().map(|b| *b)
+    }
+
+    pub(crate) fn project_component<C: ComponentView>(
+        &self,
+        id: StableNodeId,
+        component: &C,
+        world: &UiWorld,
+        mutations: &mut MutationQueue,
+    ) {
+        if let Some(slot_projector) = C::BEHAVIOR.slot_projector {
+            slot_projector(self, id, component, world, mutations);
+        } else {
+            component.project(id, world, mutations);
+        }
+    }
+}
+
 /// Projects the staged component behind a type-erased view.
-type ProjectStagedFn = fn(&dyn Any, StableNodeId, &UiWorld, &mut MutationQueue);
+type ProjectStagedFn = fn(&AppContext, &dyn Any, StableNodeId, &UiWorld, &mut MutationQueue);
 
 fn project_staged<C: ComponentView>(
+    cx: &AppContext,
     staged: &dyn Any,
     id: StableNodeId,
     world: &UiWorld,
     mutations: &mut MutationQueue,
 ) {
     if let Some(staged) = staged.downcast_ref::<C>() {
-        staged.project(id, world, mutations);
+        cx.project_component(id, staged, world, mutations);
     }
 }
 

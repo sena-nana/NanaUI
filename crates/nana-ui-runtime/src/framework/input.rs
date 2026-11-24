@@ -286,6 +286,10 @@ pub(crate) struct InputState {
     /// Which pointer gesture events any node has listened for, ever: until
     /// one has, routing does no work for them.
     pub(super) gesture_listeners: gestures::GestureListeners,
+    /// Active framework-managed pointer drags for `O(1)` Move/Up/Cancel dispatch.
+    pub(crate) active_drags: Vec<super::hooks::ActiveDrag>,
+    /// Pre-capture armed drags (e.g. `ReorderList` press on a child control).
+    pub(crate) armed_drags: Vec<super::hooks::ActiveDrag>,
 }
 
 impl Default for InputState {
@@ -304,7 +308,162 @@ impl Default for InputState {
             caret_blink: blink::CaretBlink::default(),
             drags: HashMap::new(),
             gesture_listeners: gestures::GestureListeners::default(),
+            active_drags: Vec::new(),
+            armed_drags: Vec::new(),
         }
+    }
+}
+
+impl AppContext {
+    pub(crate) fn begin_active_drag(
+        &mut self,
+        document: DocumentId,
+        pointer_id: u64,
+        node: StableNodeId,
+        ops: &'static super::hooks::ActiveDragOps,
+    ) {
+        self.input.active_drags.retain(|drag| {
+            !(drag.document == document
+                && drag.pointer_id == pointer_id
+                && drag.ops.pre_gesture == ops.pre_gesture)
+        });
+        self.input.active_drags.push(super::hooks::ActiveDrag {
+            document,
+            pointer_id,
+            node,
+            ops,
+        });
+    }
+
+    #[cfg_attr(not(feature = "controls"), allow(dead_code))]
+    pub(crate) fn arm_drag(
+        &mut self,
+        document: DocumentId,
+        pointer_id: u64,
+        node: StableNodeId,
+        ops: &'static super::hooks::ActiveDragOps,
+    ) {
+        self.input
+            .armed_drags
+            .retain(|drag| !(drag.document == document && drag.pointer_id == pointer_id));
+        self.input.armed_drags.push(super::hooks::ActiveDrag {
+            document,
+            pointer_id,
+            node,
+            ops,
+        });
+    }
+
+    pub(crate) fn clear_active_drag(
+        &mut self,
+        document: DocumentId,
+        pointer_id: u64,
+        node: StableNodeId,
+    ) {
+        self.input.active_drags.retain(|drag| {
+            !(drag.document == document && drag.pointer_id == pointer_id && drag.node == node)
+        });
+        self.input.armed_drags.retain(|drag| {
+            !(drag.document == document && drag.pointer_id == pointer_id && drag.node == node)
+        });
+    }
+
+    pub(crate) fn update_active_drag(
+        &mut self,
+        document: DocumentId,
+        pointer_id: u64,
+        pre_gesture: bool,
+        x: f32,
+        y: f32,
+        now: Duration,
+    ) -> Result<bool, FrameworkError> {
+        if let Some(drag) = self
+            .input
+            .active_drags
+            .iter()
+            .find(|drag| {
+                drag.document == document
+                    && drag.pointer_id == pointer_id
+                    && drag.ops.pre_gesture == pre_gesture
+            })
+            .copied()
+        {
+            let handled = (drag.ops.update)(self, document, drag.node, pointer_id, x, y, now)?;
+            return Ok(handled);
+        }
+        if !pre_gesture
+            && let Some(idx) = self
+                .input
+                .armed_drags
+                .iter()
+                .position(|drag| drag.document == document && drag.pointer_id == pointer_id)
+        {
+            let drag = self.input.armed_drags[idx];
+            if (drag.ops.update)(self, document, drag.node, pointer_id, x, y, now)? {
+                self.input.armed_drags.retain(|d| {
+                    !(d.document == document && d.pointer_id == pointer_id && d.node == drag.node)
+                });
+                self.begin_active_drag(document, pointer_id, drag.node, drag.ops);
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    pub(crate) fn end_active_drag(
+        &mut self,
+        document: DocumentId,
+        pointer_id: u64,
+        pre_gesture: bool,
+        x: f32,
+        y: f32,
+        now: Duration,
+        cancel: bool,
+    ) -> Result<bool, FrameworkError> {
+        let mut handled = false;
+        while let Some(idx) = self.input.active_drags.iter().position(|drag| {
+            drag.document == document
+                && drag.pointer_id == pointer_id
+                && drag.ops.pre_gesture == pre_gesture
+        }) {
+            let drag = self.input.active_drags.remove(idx);
+            if (drag.ops.end)(self, document, drag.node, pointer_id, x, y, now, cancel)? {
+                handled = true;
+                if !cancel {
+                    return Ok(true);
+                }
+            }
+        }
+        if !pre_gesture {
+            while let Some(idx) = self
+                .input
+                .armed_drags
+                .iter()
+                .position(|drag| drag.document == document && drag.pointer_id == pointer_id)
+            {
+                let drag = self.input.armed_drags.remove(idx);
+                handled |=
+                    (drag.ops.end)(self, document, drag.node, pointer_id, x, y, now, cancel)?;
+            }
+        }
+        Ok(handled)
+    }
+
+    pub(crate) fn cancel_touch_scroll_drags(
+        &mut self,
+        document: DocumentId,
+        pointer_id: u64,
+    ) -> Result<(), FrameworkError> {
+        let now = Duration::ZERO;
+        while let Some(idx) = self.input.active_drags.iter().position(|drag| {
+            drag.document == document
+                && drag.pointer_id == pointer_id
+                && drag.ops.cancel_on_touch_scroll
+        }) {
+            let drag = self.input.active_drags.remove(idx);
+            let _ = (drag.ops.end)(self, document, drag.node, pointer_id, 0.0, 0.0, now, true)?;
+        }
+        Ok(())
     }
 }
 

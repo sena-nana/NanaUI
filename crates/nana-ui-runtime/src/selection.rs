@@ -7,8 +7,8 @@ use nana_ui_core::{
 
 use crate::view_components::project_common;
 use crate::{
-    AccessibilityRole, AccessibilityState, ComponentView, InteractionState, InteractionStyle,
-    MutationQueue, NodeKind, NodeStyle, SemanticPaint, StableNodeId, TextContent,
+    AccessibilityRole, AccessibilityState, AppContext, ComponentView, InteractionState,
+    InteractionStyle, MutationQueue, NodeKind, NodeStyle, SemanticPaint, StableNodeId, TextContent,
     TextHorizontalAlignment, TextVerticalAlignment, UiWorld,
 };
 
@@ -309,14 +309,23 @@ impl Default for SegmentedControl {
     }
 }
 
+pub(crate) fn install_segmented_capabilities(caps: &mut crate::framework::Capabilities) {
+    caps.segmented_navigate = Some(crate::AppContext::navigate_focused_segmented);
+}
+
+static SEGMENTED_OPTION_POINTER_OPS: crate::framework::PointerOps = crate::framework::PointerOps {
+    is_segmented_option: true,
+    segmented_option_tab_stop: Some(AppContext::segmented_option_is_tab_stop),
+    focus_segmented_option: Some(AppContext::focus_segmented_option),
+    ..crate::framework::PointerOps::EMPTY
+};
+
 impl ComponentView for SegmentedControl {
     const TYPE_ID: Option<&'static str> =
         Some(crate::component_descriptors::SEGMENTED_CONTROL.type_id);
 
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
-        hooks: Some(|hooks| {
-            crate::framework::routes::segmented(hooks);
-        }),
+        capabilities: Some(install_segmented_capabilities),
         slot_assembler: Some(crate::AppContext::assemble_segmented_control),
         ..crate::TypeBehavior::NONE
     };
@@ -958,11 +967,10 @@ fn segmented_option_style(size: ControlSize, chrome: SelectionChrome, fill: bool
 
 impl ComponentView for SegmentedOption {
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
-        hooks: Some(|hooks| {
-            crate::framework::routes::segmented(hooks);
-        }),
+        capabilities: Some(install_segmented_capabilities),
         activation: Some(crate::AppContext::activate_segmented_option),
         slot_assembler: Some(crate::AppContext::assemble_segmented_option),
+        pointer_ops: Some(&SEGMENTED_OPTION_POINTER_OPS),
         ..crate::TypeBehavior::NONE
     };
 

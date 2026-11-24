@@ -155,8 +155,8 @@ impl ToastStack {
 
 impl ComponentView for ToastStack {
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
-        hooks: Some(|hooks| {
-            crate::framework::routes::toast_stack(hooks);
+        capabilities: Some(|caps| {
+            caps.add_post_layout_doc(AppContext::reconcile_toast_stacks);
         }),
         assembler: Some(AppContext::reconcile_toast_stack),
         ..crate::TypeBehavior::NONE
@@ -239,8 +239,8 @@ pub(crate) struct ToastSlot {
 
 impl ComponentView for ToastSlot {
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
-        hooks: Some(|hooks| {
-            crate::framework::routes::toast_stack(hooks);
+        capabilities: Some(|caps| {
+            caps.add_post_layout_doc(AppContext::reconcile_toast_stacks);
         }),
         ..crate::TypeBehavior::NONE
     };
@@ -1079,7 +1079,11 @@ mod tests {
         let toast = context
             .push_toast(stack, notice("Optimizing").timeout(Duration::from_secs(4)))
             .unwrap();
-        assert!(context.read(toast, |toast| toast.parts.is_some()).unwrap());
+        assert!(
+            context
+                .assembled_slot::<crate::toast::ToastParts>(toast.stable_id())
+                .is_some()
+        );
         let slot = slot_of(&context, toast);
         assert_eq!(status(&context, toast), Some(Slot::Measuring));
         assert!(context.shown_toasts(stack).is_empty());
@@ -1418,8 +1422,8 @@ mod tests {
         context.advance_animations(seconds(22) + ms(16));
         // Focus inside the stack holds them a second before the end.
         let close = context
-            .read(older, |toast| toast.parts)
-            .unwrap()
+            .assembled_slot::<crate::toast::ToastParts>(older.stable_id())
+            .copied()
             .unwrap()
             .close;
         context.focus_node(document(), close).unwrap();
@@ -1486,7 +1490,10 @@ mod tests {
         context.advance_animations(Duration::from_secs(1));
         let actions = counter::<ToastAction>(&mut context, toast);
         let dismissals = counter::<ToastDismissed>(&mut context, toast);
-        let parts = context.read(toast, |toast| toast.parts).unwrap().unwrap();
+        let parts = context
+            .assembled_slot::<crate::toast::ToastParts>(toast.stable_id())
+            .copied()
+            .unwrap();
         let mut input = crate::HeadlessInput::bind(&mut context, document());
         for part in [parts.action, parts.close] {
             let target = bounds(&context, part);
@@ -1609,8 +1616,8 @@ mod tests {
             })
             .unwrap();
         let parts = context
-            .read(scene.toast, |toast| toast.parts)
-            .unwrap()
+            .assembled_slot::<crate::toast::ToastParts>(scene.toast.stable_id())
+            .copied()
             .unwrap();
 
         press(&mut context, parts.action);
@@ -1676,8 +1683,8 @@ mod tests {
         let scene = modal_scene(&mut context, 10);
         let actions = counter::<ToastAction>(&mut context, scene.toast);
         let parts = context
-            .read(scene.toast, |toast| toast.parts)
-            .unwrap()
+            .assembled_slot::<crate::toast::ToastParts>(scene.toast.stable_id())
+            .copied()
             .unwrap();
         press(&mut context, parts.action);
         assert_eq!(heard(&actions), 0, "the modal takes it");

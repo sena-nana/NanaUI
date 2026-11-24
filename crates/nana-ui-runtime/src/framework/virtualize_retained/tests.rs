@@ -245,12 +245,12 @@ fn retained_virtual_list_tracks_descendant_focus_and_cleans_descendant_views() {
     cx.commit_mutations(mutations).unwrap();
     fill(&mut cx, &mut items, 1000.0);
     assert!(!cx.world().contains(editor.id));
-    assert!(!cx.views.contains_key(&editor.id));
+    assert!(!cx.store.views.contains_key(&editor.id));
     let remaining_row = items.entity(&50).unwrap();
     assert!(cx.world().is_elided_stack(remaining_row.id));
-    assert!(!cx.views.contains_key(&remaining_row.id));
+    assert!(!cx.store.views.contains_key(&remaining_row.id));
     assert_eq!(
-        cx.views.len(),
+        cx.store.views.len(),
         1,
         "list stays in views while retained row Stacks and placement containers are elided"
     );
@@ -364,7 +364,7 @@ fn retained_virtual_list_failed_runtime_commit_keeps_the_previous_window() {
     .unwrap();
     let generation = cx.world().generation();
     let revision = items.materializer.revision();
-    let views = cx.views.len();
+    let views = cx.store.views.len();
     let editor = items.entity(&0).unwrap();
     assert!(
         cx.materialize_virtual_list_retained_in(
@@ -381,7 +381,7 @@ fn retained_virtual_list_failed_runtime_commit_keeps_the_previous_window() {
     );
     assert_eq!(cx.world().generation(), generation);
     assert_eq!(items.materializer.revision(), revision);
-    assert_eq!(cx.views.len(), views);
+    assert_eq!(cx.store.views.len(), views);
     assert_eq!(items.entity(&0), Some(editor));
     assert!(cx.world().contains(editor.id));
 }
@@ -469,8 +469,8 @@ fn retained_virtual_table_freezes_both_axes_and_preserves_nested_editor() {
     fill(&mut cx, &mut items, [320000.0, 10000000.0]);
     assert_eq!(items.cells.len(), 25);
     assert!(!cx.world().contains(editor.id));
-    assert!(!cx.views.contains_key(&editor.id));
-    assert!(!cx.event_dependencies.contains_key(&editor.id));
+    assert!(!cx.store.views.contains_key(&editor.id));
+    assert!(!cx.lifecycle.event_dependencies.contains_key(&editor.id));
 }
 
 fn scroll_port(cx: &mut AppContext, width: f32, height: f32) -> Entity<crate::ScrollView> {

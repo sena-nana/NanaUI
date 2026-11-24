@@ -42,7 +42,7 @@ impl AppContext {
         self.read(entity, |_| ())?;
         match group {
             Some(group) => {
-                self.roving_focus_groups.insert(
+                self.lifecycle.roving_focus_groups.insert(
                     entity.id,
                     RovingGroupEntry {
                         group,
@@ -51,7 +51,7 @@ impl AppContext {
                 );
             }
             None => {
-                self.roving_focus_groups.remove(&entity.id);
+                self.lifecycle.roving_focus_groups.remove(&entity.id);
             }
         }
         Ok(())
@@ -59,14 +59,17 @@ impl AppContext {
 
     /// The group `id` was declared as, if any.
     pub fn roving_focus_group(&self, id: StableNodeId) -> Option<RovingFocusGroup> {
-        self.roving_focus_groups.get(&id).map(|entry| entry.group)
+        self.lifecycle
+            .roving_focus_groups
+            .get(&id)
+            .map(|entry| entry.group)
     }
 
     /// The nearest group strictly above `id`.
     fn enclosing_roving_group(&self, id: StableNodeId) -> Option<StableNodeId> {
         let mut current = self.world.parent_id(id);
         while let Some(candidate) = current {
-            if self.roving_focus_groups.contains_key(&candidate) {
+            if self.lifecycle.roving_focus_groups.contains_key(&candidate) {
                 return Some(candidate);
             }
             current = self.world.parent_id(candidate);
@@ -95,7 +98,7 @@ impl AppContext {
             {
                 items.push(id);
             }
-            if self.roving_focus_groups.contains_key(&id) {
+            if self.lifecycle.roving_focus_groups.contains_key(&id) {
                 continue;
             }
             if let Some(node) = self.world.node(id) {
@@ -130,7 +133,7 @@ impl AppContext {
         edge: RovingEdge,
     ) -> Result<Option<StableNodeId>, FrameworkError> {
         self.flush_reactive()?;
-        if !self.roving_focus_groups.contains_key(&group) {
+        if !self.lifecycle.roving_focus_groups.contains_key(&group) {
             return Ok(None);
         }
         let Some(document) = self.world.document_of(group) else {
@@ -156,7 +159,7 @@ impl AppContext {
         document: DocumentId,
         key: &str,
     ) -> Result<bool, FrameworkError> {
-        if self.roving_focus_groups.is_empty() {
+        if self.lifecycle.roving_focus_groups.is_empty() {
             return Ok(false);
         }
         let Some(focused) = self.world.focused(document) else {
@@ -165,7 +168,8 @@ impl AppContext {
         let Some(group_id) = self.enclosing_roving_group(focused) else {
             return Ok(false);
         };
-        let Some(&RovingGroupEntry { group, emit_edge }) = self.roving_focus_groups.get(&group_id)
+        let Some(&RovingGroupEntry { group, emit_edge }) =
+            self.lifecycle.roving_focus_groups.get(&group_id)
         else {
             return Ok(false);
         };

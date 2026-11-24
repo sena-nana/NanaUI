@@ -864,15 +864,13 @@ mod tests {
             .unwrap()
             .expect("workspace");
         let workspace = Entity::<Workspace>::from_stable_id(workspace_id);
-        let (slots, middle, primary_column) = context
-            .read(workspace, |workspace| {
-                (
-                    workspace.slots.clone(),
-                    workspace.middle,
-                    workspace.primary_column,
-                )
-            })
+        let slots = context
+            .read(workspace, |workspace| workspace.slots.clone())
             .unwrap();
+        let (middle, primary_column) = context
+            .assembled_slot::<crate::workspace::WorkspaceSlots>(workspace_id)
+            .map(|assembled| (assembled.middle, assembled.primary_column))
+            .unwrap_or((None, None));
         assert_eq!(
             slots,
             vec![
@@ -928,10 +926,8 @@ mod tests {
             .expect("workspace");
         let workspace = Entity::<Workspace>::from_stable_id(workspace_id);
         let handle = context
-            .read(workspace, |workspace| {
-                workspace.handles.get(&RegionId::Resources).copied()
-            })
-            .unwrap()
+            .assembled_slot::<crate::workspace::WorkspaceSlots>(workspace_id)
+            .and_then(|assembled| assembled.handles.get(&RegionId::Resources).copied())
             .expect("resources handle");
         assert!(
             context

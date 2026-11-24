@@ -1,6 +1,14 @@
 use super::*;
 use crate::view_components::TextAreaResizeDrag;
 
+static TEXT_AREA_RESIZE_DRAG_OPS: crate::framework::ActiveDragOps =
+    crate::framework::ActiveDragOps {
+        pre_gesture: true,
+        cancel_on_touch_scroll: false,
+        update: |cx, doc, _, ptr, x, y, _| cx.update_text_area_resize(doc, ptr, x, y),
+        end: |cx, doc, _, ptr, _, _, _, cancel| cx.end_text_area_resize(doc, ptr, cancel),
+    };
+
 impl AppContext {
     /// Starts a height-only drag on the editor's projected resize grip.
     pub fn begin_text_area_resize(
@@ -106,6 +114,7 @@ impl AppContext {
         self.component_lifecycle
             .text_area_resizes
             .insert((document, pointer), target);
+        self.begin_active_drag(document, pointer, target, &TEXT_AREA_RESIZE_DRAG_OPS);
         Ok(true)
     }
 
@@ -138,7 +147,7 @@ impl AppContext {
                 area.disabled || !area.supports_vertical_resize()
             })?
         {
-            return via!(self.end_text_area_resize(document, pointer, true));
+            return self.end_text_area_resize(document, pointer, true);
         }
         let Some((_, y)) = self.world.pointer_layout_position(target, x, y) else {
             return Ok(false);
@@ -162,6 +171,7 @@ impl AppContext {
         else {
             return Ok(false);
         };
+        self.clear_active_drag(document, pointer, target);
         let Some(entity) = self.view_entity::<TextArea>(target) else {
             return Ok(false);
         };

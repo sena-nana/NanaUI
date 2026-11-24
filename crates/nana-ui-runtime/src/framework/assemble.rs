@@ -369,7 +369,11 @@ impl AppContext {
 
     /// Last `mount` key for `parent`; omitted keys disappear after remount.
     pub fn assembled_child(&self, parent: StableNodeId, key: &str) -> Option<StableNodeId> {
-        self.assembled.get(&parent)?.get(key).map(|child| child.id)
+        self.store
+            .assembled
+            .get(&parent)?
+            .get(key)
+            .map(|child| child.id)
     }
 
     /// Every keyed child of `parent`, with its key, in no particular order.
@@ -377,9 +381,12 @@ impl AppContext {
         &self,
         parent: StableNodeId,
     ) -> Vec<(AssemblyKey, StableNodeId)> {
-        self.assembled.get(&parent).map_or_else(Vec::new, |slots| {
-            slots.iter().map(|(key, child)| (key, child.id)).collect()
-        })
+        self.store
+            .assembled
+            .get(&parent)
+            .map_or_else(Vec::new, |slots| {
+                slots.iter().map(|(key, child)| (key, child.id)).collect()
+            })
     }
 
     /// Reconcile keyed children of `parent` without rebuilding the tree.
@@ -489,6 +496,7 @@ impl AssemblyScope<'_> {
         self.seen.push(key.clone());
         if let Some(existing) = self
             .context
+            .store
             .assembled
             .get(&self.parent)
             .and_then(|slots| slots.get(key.as_str()))
@@ -523,6 +531,7 @@ impl AssemblyScope<'_> {
     fn finish(self) -> Result<(), FrameworkError> {
         let unused: Vec<_> = self
             .context
+            .store
             .assembled
             .get(&self.parent)
             .into_iter()
@@ -531,7 +540,7 @@ impl AssemblyScope<'_> {
             .map(|(_, child)| child.id)
             .collect();
         self.context.despawn_nodes(&unused)?;
-        if let Some(mut slots) = self.context.assembled.get(&self.parent).cloned() {
+        if let Some(mut slots) = self.context.store.assembled.get(&self.parent).cloned() {
             slots.retain(|key, _| self.seen_keys.contains(key));
             self.context.store_assembled(self.parent, slots);
         }
@@ -542,6 +551,7 @@ impl AssemblyScope<'_> {
             .iter()
             .filter_map(|key| {
                 self.context
+                    .store
                     .assembled
                     .get(&self.parent)?
                     .get(key.as_str())

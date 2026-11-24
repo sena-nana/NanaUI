@@ -5,7 +5,7 @@ mod commands;
 mod component;
 mod model;
 
-pub(crate) use assemble::DOCK_HOOKS;
+pub(crate) use assemble::DOCK_CAPABILITIES;
 pub use commands::{DockCommand, DockCommandOutcome, DockItemLimits};
 pub use component::{Dock, DockPanel};
 pub use model::{

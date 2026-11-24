@@ -4,7 +4,7 @@ use nana_ui_core::{ControlSize, LengthSpec, SemanticColorRole, StyleModelRef};
 
 use crate::view_components::project_common;
 use crate::{
-    AccessibilityRole, AccessibilityState, CompiledTheme, ComponentView, ComputedStyle,
+    AccessibilityRole, AccessibilityState, AppContext, CompiledTheme, ComponentView, ComputedStyle,
     ContrastRing, InteractionState, InteractionStyle, LayoutBox, MutationQueue, NodeKind,
     NodeStyle, SemanticPaint, StableNodeId, UiWorld, WidgetPaintCtx, WidgetPaintOp,
     WidgetPaintOutput, WidgetQuad, WidgetVisual,
@@ -307,13 +307,26 @@ impl XYPad {
     }
 }
 
+static XY_PAD_POINTER_OPS: crate::framework::PointerOps = crate::framework::PointerOps {
+    press: Some(|cx, doc, id, ptr, button, x, y| {
+        if button == 0 {
+            cx.begin_xy_pad_drag(doc, ptr, id, x, y)
+        } else {
+            Ok(false)
+        }
+    }),
+    end_value_drag: Some(AppContext::end_xy_pad_drag_on),
+    ..crate::framework::PointerOps::EMPTY
+};
+
 impl ComponentView for XYPad {
     const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::X_Y_PAD.type_id);
 
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
-        hooks: Some(|hooks| {
-            crate::framework::routes::xy_pad(hooks);
+        capabilities: Some(|caps| {
+            caps.adjust_xy_pad = Some(AppContext::adjust_focused_xy_pad);
         }),
+        pointer_ops: Some(&XY_PAD_POINTER_OPS),
         ..crate::TypeBehavior::NONE
     };
 

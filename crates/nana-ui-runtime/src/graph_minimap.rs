@@ -365,7 +365,26 @@ impl GraphMinimap {
     }
 }
 
+static GRAPH_MINIMAP_DRAG_OPS: crate::framework::ActiveDragOps = crate::framework::ActiveDragOps {
+    pre_gesture: false,
+    cancel_on_touch_scroll: false,
+    update: |cx, doc, _, ptr, x, y, _| cx.update_graph_minimap_pointer(doc, ptr, x, y),
+    end: |cx, doc, _, ptr, _, _, _, cancel| cx.end_graph_minimap_pointer(doc, ptr, cancel),
+};
+
+static GRAPH_MINIMAP_POINTER_OPS: crate::framework::PointerOps = crate::framework::PointerOps {
+    early_press: true,
+    skips_press_pointer: true,
+    press: Some(|cx, _doc, id, ptr, _button, x, y| cx.begin_graph_minimap_pointer(ptr, id, x, y)),
+    ..crate::framework::PointerOps::EMPTY
+};
+
 impl ComponentView for GraphMinimap {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        pointer_ops: Some(&GRAPH_MINIMAP_POINTER_OPS),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn share_layouts(
         &mut self,
         share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
@@ -444,7 +463,7 @@ impl crate::AppContext {
         if !point_in_bounds(bounds, x, y) {
             return Ok(false);
         }
-        self.update_component(entity, |minimap, cx| {
+        let started = self.update_component(entity, |minimap, cx| {
             let initial = minimap.viewport;
             cx.mutations().capture_pointer(pointer_id, target);
             if let Some(event) = minimap.navigate(
@@ -458,7 +477,11 @@ impl crate::AppContext {
                 initial,
             });
             true
-        })
+        })?;
+        if started && let Some(document) = self.world().document_of(target) {
+            self.begin_active_drag(document, pointer_id, target, &GRAPH_MINIMAP_DRAG_OPS);
+        }
+        Ok(started)
     }
 
     pub fn update_graph_minimap_pointer(
@@ -506,6 +529,7 @@ impl crate::AppContext {
         let Some(entity) = self.graph_minimap_entity(target) else {
             return Ok(false);
         };
+        self.clear_active_drag(document, pointer_id, target);
         self.update_component(entity, |minimap, cx| {
             let drag = minimap
                 .dragging

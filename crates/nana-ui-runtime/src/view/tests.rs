@@ -5806,7 +5806,10 @@ fn composer_action_slot_is_retained_replaces_content_and_stays_hidden_after_remo
         )
         .unwrap();
     assert!(cx.assemble_text_area(area).unwrap());
-    let slot = cx.read(area, |area| area.action_slot).unwrap().unwrap();
+    let slot = cx
+        .assembled_slot::<crate::view_components::TextAreaActionSlot>(area.stable_id())
+        .unwrap()
+        .0;
     let count = cx.world().len();
     assert!(!cx.assemble_text_area(area).unwrap());
     assert_eq!(cx.world().len(), count);
@@ -6602,20 +6605,24 @@ fn a_settings_rows_error_shows_on_its_notice_line() {
     let row = Entity::<crate::SettingsRow>::from_stable_id(row);
     let hidden =
         |cx: &AppContext, id: StableNodeId| cx.world().node_style(id).unwrap().layout.hidden;
-    let (hint, slot) = cx
-        .read(row, |row| (row.hint_slot.unwrap(), row.notice_slot))
-        .unwrap();
+    let hint = cx.read(row, |row| row.hint_slot.unwrap()).unwrap();
+    let slot = cx
+        .assembled_slot::<crate::settings::SettingsRowAssembled>(row.stable_id())
+        .and_then(|s| s.notice_slot);
     assert_eq!(slot, None, "no error, no notice line");
     assert!(!hidden(&cx, hint));
 
     error.set(Some("Another app uses this port".into()));
     cx.flush_reactive().unwrap();
-    let (slot, text, main) = cx
-        .read(row, |row| {
-            (row.notice_slot, row.notice_text_slot, row.main_slot)
-        })
+    let assembled = cx
+        .assembled_slot::<crate::settings::SettingsRowAssembled>(row.stable_id())
+        .copied()
         .unwrap();
-    let (slot, text, main) = (slot.expect("a notice line"), text.unwrap(), main.unwrap());
+    let (slot, text, main) = (
+        assembled.notice_slot.expect("a notice line"),
+        assembled.notice_text_slot.unwrap(),
+        assembled.main_slot.unwrap(),
+    );
     assert_eq!(
         cx.world().node(slot).unwrap().parent,
         Some(row.stable_id()),
@@ -6639,7 +6646,8 @@ fn a_settings_rows_error_shows_on_its_notice_line() {
     error.set(None);
     cx.flush_reactive().unwrap();
     assert_eq!(
-        cx.read(row, |row| row.notice_slot).unwrap(),
+        cx.assembled_slot::<crate::settings::SettingsRowAssembled>(row.stable_id())
+            .and_then(|s| s.notice_slot),
         Some(slot),
         "kept"
     );
@@ -6821,16 +6829,11 @@ fn list_item_after_label_places_a_mark_between_name_and_detail_and_updates_copy(
     cx.shape_text(&work.text, &mut shaper).unwrap();
     cx.layout_document(document, LayoutViewport::new(240.0, 80.0))
         .unwrap();
-    let label_node = cx
-        .read(Entity::<ListItem>::from_stable_id(item), |r| r.label_slot())
-        .unwrap()
+    let assembled = cx
+        .assembled_slot::<crate::view_components::ListItemAssembled>(item)
         .unwrap();
-    let detail_node = cx
-        .read(Entity::<ListItem>::from_stable_id(item), |r| {
-            r.detail_slot()
-        })
-        .unwrap()
-        .unwrap();
+    let label_node = assembled.label_slot.unwrap();
+    let detail_node = assembled.detail_slot.unwrap();
     let label_box = cx.world().layout_box(label_node).unwrap();
     let detail_box = cx.world().layout_box(detail_node).unwrap();
     assert!(

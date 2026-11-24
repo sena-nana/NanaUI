@@ -127,46 +127,25 @@ pub struct SettingsRow {
     pub trailing: Option<StableNodeId>,
     pub label_slot: Option<StableNodeId>,
     pub hint_slot: Option<StableNodeId>,
-    /// The help button after the label, only while the hint goes behind
-    /// one ([`HintPlacement::Help`]) and there is a hint.
+    pub style: NodeStyle,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct SettingsRowAssembled {
     pub(crate) help_slot: Option<StableNodeId>,
-    /// The hint opened in place under the row, made with the help button
-    /// and hidden while it is closed.
     pub(crate) help_text_slot: Option<StableNodeId>,
-    /// The notice line under the row (its tinted box, glyph and text), made
-    /// the first time the row has a notice or an error and hidden while it
-    /// has neither.
     pub(crate) notice_slot: Option<StableNodeId>,
     pub(crate) notice_glyph_slot: Option<StableNodeId>,
     pub(crate) notice_text_slot: Option<StableNodeId>,
-    /// The row's main line (the copy, then the control), only once the row
-    /// has something under it (an opened hint, a notice): the row is then a
-    /// column of that line and what is under it, and the control stays
-    /// centred on the line.
     pub(crate) main_slot: Option<StableNodeId>,
-    /// Whether the last assembly showed an error; `None` before the first.
-    /// A reason that appears on a row already there takes the focus to the
-    /// row's control (see [`AppContext::assemble_settings_row`]).
     pub(crate) error_shown: Option<bool>,
     pub(crate) copy_slot: Option<StableNodeId>,
-    /// The line holding the label, its help button and its accessory, only
-    /// while there is a help button or an accessory: without either the
-    /// label sits in the copy itself.
     pub(crate) label_line_slot: Option<StableNodeId>,
-    /// The tint [`AppContext::flash_settings_row`] paints under the row, only
-    /// while it flashes.
     pub(crate) flash_slot: Option<StableNodeId>,
-    /// Holds the control and the trailing node, only while the row has a
-    /// label column or a trailing node.
     pub(crate) control_slot: Option<StableNodeId>,
-    /// Hold the control and the trailing node apart, only while there is a
-    /// trailing node: the control keeps at least [`row_control_min`] and the
-    /// trailing node gives way, so one that asks for the full width (a plain
-    /// row of buttons) cannot squeeze the control out.
     pub(crate) value_slot: Option<StableNodeId>,
     pub(crate) trailing_slot: Option<StableNodeId>,
     pub(crate) last_generates_box: Option<bool>,
-    pub style: NodeStyle,
 }
 
 impl SettingsRow {
@@ -196,20 +175,6 @@ impl SettingsRow {
             trailing: None,
             label_slot: None,
             hint_slot: None,
-            help_slot: None,
-            help_text_slot: None,
-            notice_slot: None,
-            notice_glyph_slot: None,
-            notice_text_slot: None,
-            main_slot: None,
-            error_shown: None,
-            copy_slot: None,
-            label_line_slot: None,
-            flash_slot: None,
-            control_slot: None,
-            value_slot: None,
-            trailing_slot: None,
-            last_generates_box: None,
             style: NodeStyle::default(),
         }
     }
@@ -370,11 +335,6 @@ impl SettingsRow {
         self
     }
 
-    pub fn copy_slot(mut self, copy: StableNodeId) -> Self {
-        self.copy_slot = Some(copy);
-        self
-    }
-
     pub fn style(mut self, style: NodeStyle) -> Self {
         self.style = style;
         self
@@ -407,7 +367,7 @@ impl SettingsRow {
             })
     }
 
-    fn effective_style(&self, stacked: bool) -> NodeStyle {
+    fn effective_style(&self, stacked: bool, main_slot: Option<StableNodeId>) -> NodeStyle {
         let mut style = self.style.clone();
         style.foreground = Some(SemanticColorRole::Text);
         style.background = None;
@@ -424,7 +384,7 @@ impl SettingsRow {
             layout.position = nana_ui_core::PositionSpec::Relative;
         }
         layout.width = Some(LengthSpec::Percent(100.0));
-        if self.main_slot.is_some() {
+        if main_slot.is_some() {
             // The main line, then what is under it (the opened hint, the
             // notice), each across the row.
             layout.direction = Some(FlexDirection::Column);
@@ -551,23 +511,19 @@ impl SettingsRow {
             }));
         }
     }
-
-    /// The node whose direction says whether the row is stacked: the row,
-    /// or its main line.
-    pub(super) fn line_node(&self, id: StableNodeId) -> StableNodeId {
-        self.main_slot.unwrap_or(id)
-    }
 }
 
 impl ComponentView for SettingsRow {
     const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::SETTINGS_ROW.type_id);
 
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
-        hooks: Some(|hooks| {
-            crate::framework::routes::settings_row(hooks);
-        }),
         slot_assembler: Some(AppContext::assemble_settings_row),
+        slot_projector: Some(Self::project_with_slots),
         lifecycle: Some(sync_settings_row),
+        post_layout: Some(|cx, id| {
+            cx.refresh_settings_row_layout(id)?;
+            Ok(false)
+        }),
         ..crate::TypeBehavior::NONE
     };
 
@@ -588,12 +544,41 @@ impl ComponentView for SettingsRow {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        self.project_with_assembled(id, world, mutations, None);
+    }
+}
+
+impl SettingsRow {
+    fn project_with_slots(
+        cx: &AppContext,
+        id: StableNodeId,
+        view: &Self,
+        world: &UiWorld,
+        mutations: &mut MutationQueue,
+    ) {
+        view.project_with_assembled(
+            id,
+            world,
+            mutations,
+            cx.assembled_slot::<SettingsRowAssembled>(id),
+        );
+    }
+
+    fn project_with_assembled(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+        mutations: &mut MutationQueue,
+        assembled: Option<&SettingsRowAssembled>,
+    ) {
+        let copy_slot = assembled.and_then(|s| s.copy_slot);
+        let main_slot = assembled.and_then(|s| s.main_slot);
         // Structured children/slots paint label and hint. Rust-only rows without
         // a tree keep the label as node text so Scene can still show it.
         let has_slots = self.label_slot.is_some()
             || self.hint_slot.is_some()
             || self.control.is_some()
-            || self.copy_slot.is_some()
+            || copy_slot.is_some()
             || self.label_mark.is_some()
             || self.label_accessory.is_some();
         let has_children = world.node(id).is_some_and(|node| !node.children.is_empty());
@@ -618,7 +603,7 @@ impl ComponentView for SettingsRow {
             id,
             world,
             mutations,
-            &self.effective_style(stacked),
+            &self.effective_style(stacked, main_slot),
             InteractionState {
                 pointer_events: false,
                 focusable: false,
@@ -643,43 +628,48 @@ impl ComponentView for SettingsRow {
                 }
             },
         );
-        self.project_slots(world, mutations, stacked);
+        self.project_slots(world, mutations, stacked, assembled);
     }
-}
 
-impl SettingsRow {
-    fn project_slots(&self, world: &UiWorld, mutations: &mut MutationQueue, stacked: bool) {
-        if let Some(copy) = self.copy_slot {
+    fn project_slots(
+        &self,
+        world: &UiWorld,
+        mutations: &mut MutationQueue,
+        stacked: bool,
+        assembled: Option<&SettingsRowAssembled>,
+    ) {
+        let assembled = assembled.copied().unwrap_or_default();
+        if let Some(copy) = assembled.copy_slot {
             SettingsRowCopy {
                 stacked,
                 column: self.label_column,
             }
             .project(copy, world, mutations);
         }
-        if let Some(line) = self.label_line_slot {
+        if let Some(line) = assembled.label_line_slot {
             SettingsRowLabelLine.project(line, world, mutations);
         }
         if let Some(label) = self.label_slot {
             let mut text = Text::new(self.label.as_ref());
             text.style = label_slot_style(
                 self.label.is_empty(),
-                self.label_line_slot.is_some(),
+                assembled.label_line_slot.is_some(),
                 self.label_column.is_some(),
             );
             text.style.color_overrides = self.label_colors.clone();
             text.project(label, world, mutations);
         }
-        if let Some(control) = self.control_slot {
+        if let Some(control) = assembled.control_slot {
             SettingsRowControl {
                 stacked,
                 grows: self.label_column.is_some(),
             }
             .project(control, world, mutations);
         }
-        if let Some(flash) = self.flash_slot {
+        if let Some(flash) = assembled.flash_slot {
             SettingsRowFlash.project(flash, world, mutations);
         }
-        if let Some(main) = self.main_slot {
+        if let Some(main) = assembled.main_slot {
             SettingsRowMain {
                 line: {
                     let mut style = NodeStyle::default();
@@ -690,20 +680,20 @@ impl SettingsRow {
             .project(main, world, mutations);
         }
         let help = self.shows_help();
-        if let Some(text) = self.help_text_slot {
+        if let Some(text) = assembled.help_text_slot {
             Text::new(self.hint.as_deref().unwrap_or(""))
                 .style(hint_slot_style(!(help && self.help_open)))
                 .project(text, world, mutations);
         }
         let notice = self.shown_notice();
-        if let Some(slot) = self.notice_slot {
+        if let Some(slot) = assembled.notice_slot {
             notice_box_style(notice.map(|(_, tone)| tone)).project(slot, world, mutations);
         }
         let tone = notice.map_or(nana_ui_core::ValidationIntent::Warning, |(_, tone)| tone);
-        if let Some(glyph) = self.notice_glyph_slot {
+        if let Some(glyph) = assembled.notice_glyph_slot {
             notice_glyph(tone).project(glyph, world, mutations);
         }
-        if let Some(text) = self.notice_text_slot {
+        if let Some(text) = assembled.notice_text_slot {
             notice_text(notice.map_or("", |(text, _)| text.as_ref()), tone)
                 .project(text, world, mutations);
         }
@@ -1177,8 +1167,9 @@ impl SettingsRowFlash {
 
 impl ComponentView for SettingsRowFlash {
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
-        hooks: Some(|hooks| {
-            crate::framework::routes::settings_row(hooks);
+        animation_sample: Some(|cx, id, sample, now| {
+            let _ = cx.advance_settings_row_flash(id, sample.property, now);
+            false
         }),
         ..crate::TypeBehavior::NONE
     };
@@ -1271,10 +1262,13 @@ pub(super) fn sync_settings_row(
     resolve_row_hint_placement(context, row.stable_id())?;
     sync_row_parts(context, row)?;
     let visible_box = generates_box(context.world(), row.stable_id());
-    if context.read(row, |row| row.last_generates_box != Some(visible_box))? {
-        context.update_component(row, |row, _| {
-            row.last_generates_box = Some(visible_box);
-        })?;
+    let mut assembled = context
+        .assembled_slot::<SettingsRowAssembled>(row.stable_id())
+        .copied()
+        .unwrap_or_default();
+    if assembled.last_generates_box != Some(visible_box) {
+        assembled.last_generates_box = Some(visible_box);
+        context.set_assembled_slot(row.stable_id(), assembled);
         sync_row_group(context, row)?;
     }
     Ok(())
@@ -1291,11 +1285,15 @@ fn sync_row_parts(
 ) -> Result<(), FrameworkError> {
     let world = context.world();
     let live = |slot: Option<StableNodeId>| slot.filter(|id| world.contains(*id));
-    let lacking = context.read(row, |row| {
-        live(row.copy_slot).is_some()
-            && (row.shows_help() != live(row.help_slot).is_some()
-                || (row.shown_notice().is_some() && live(row.notice_slot).is_none()))
-    })?;
+    let assembled = context
+        .assembled_slot::<SettingsRowAssembled>(row.stable_id())
+        .copied()
+        .unwrap_or_default();
+    let lacking = live(assembled.copy_slot).is_some()
+        && context.read(row, |row| {
+            row.shows_help() != live(assembled.help_slot).is_some()
+                || (row.shown_notice().is_some() && live(assembled.notice_slot).is_none())
+        })?;
     if lacking && !context.reactive_flushing() {
         context.assemble_settings_row(row)?;
         return Ok(());
@@ -1348,13 +1346,15 @@ fn help_button(hint: &Arc<str>, open: bool) -> crate::IconButton {
 /// open: named by the hint, saying whether it is expanded, and previewing
 /// the hint on hover only while it is closed.
 fn sync_row_help(context: &mut AppContext, row: Entity<SettingsRow>) -> Result<(), FrameworkError> {
-    let Some((button, hint, open)) = context.read(row, |row| {
-        row.help_slot
-            .map(|id| (id, row.hint.clone().unwrap_or_default(), row.help_open))
-    })?
+    let Some(button) = context
+        .assembled_slot::<SettingsRowAssembled>(row.stable_id())
+        .and_then(|s| s.help_slot)
     else {
         return Ok(());
     };
+    let (hint, open) = context.read(row, |row| {
+        (row.hint.clone().unwrap_or_default(), row.help_open)
+    })?;
     let button = Entity::<crate::IconButton>::from_stable_id(button);
     let next = help_button(&hint, open);
     let stale = context
@@ -1458,15 +1458,17 @@ pub(super) fn mount_settings_row(
     let mut hint_slot = None;
     let mut copy_slot = None;
     if let Some(row_id) = *slot {
-        if let Ok((existing_label, existing_hint, existing_copy)) = context
+        if let Ok((existing_label, existing_hint)) = context
             .read(Entity::<SettingsRow>::from_stable_id(row_id), |row| {
-                (row.label_slot, row.hint_slot, row.copy_slot)
+                (row.label_slot, row.hint_slot)
             })
         {
             label_slot = existing_label;
             hint_slot = existing_hint;
-            copy_slot = existing_copy;
         }
+        copy_slot = context
+            .assembled_slot::<SettingsRowAssembled>(row_id)
+            .and_then(|s| s.copy_slot);
         if label_slot.is_none()
             && let Some(first_child) = context
                 .world()
@@ -1516,10 +1518,15 @@ pub(super) fn mount_settings_row(
         row.control = Some(control);
         row.label_slot = Some(label_text.stable_id());
         row.hint_slot = hint_id;
-        row.copy_slot = copy_id;
     };
     let row = if let Some(id) = *slot {
         let entity = Entity::<SettingsRow>::from_stable_id(id);
+        let mut assembled = context
+            .assembled_slot::<SettingsRowAssembled>(id)
+            .copied()
+            .unwrap_or_default();
+        assembled.copy_slot = copy_id;
+        context.set_assembled_slot(id, assembled);
         context.update_component(entity, apply)?;
         entity
     } else {
@@ -1538,8 +1545,15 @@ pub(super) fn mount_settings_row(
         if last {
             row = row.last_in_group();
         }
-        row.copy_slot = copy_slot;
         let entity = context.create_detached_component(document, row)?;
+        context.set_assembled_slot(
+            entity.stable_id(),
+            SettingsRowAssembled {
+                copy_slot,
+                ..Default::default()
+            },
+        );
+        context.reproject_component(entity)?;
         *slot = Some(entity.stable_id());
         entity
     };
@@ -1554,7 +1568,8 @@ pub(super) fn mount_settings_row(
         .map(|node| node.children.to_vec())
         .unwrap_or_default();
     let flash = context
-        .read(row, |row| row.flash_slot)?
+        .assembled_slot::<SettingsRowAssembled>(row.stable_id())
+        .and_then(|s| s.flash_slot)
         .filter(|id| context.world().contains(*id));
     let children: Vec<_> = flash
         .into_iter()
@@ -1566,11 +1581,18 @@ pub(super) fn mount_settings_row(
 }
 
 impl AppContext {
+    pub(crate) fn settings_row_line_node(&self, id: StableNodeId) -> StableNodeId {
+        self.assembled_slot::<SettingsRowAssembled>(id)
+            .and_then(|s| s.main_slot)
+            .unwrap_or(id)
+    }
+
     pub(crate) fn refresh_settings_row_layout(
         &mut self,
         id: StableNodeId,
     ) -> Result<(), FrameworkError> {
         let row = Entity::<SettingsRow>::from_stable_id(id);
+        let line_node = self.settings_row_line_node(id);
         let needs_projection = self
             .read(row, |row| {
                 let direction = if row.effective_stacked(id, self.world()) {
@@ -1579,7 +1601,7 @@ impl AppContext {
                     FlexDirection::Row
                 };
                 self.world()
-                    .node_style(row.line_node(id))
+                    .node_style(line_node)
                     .is_some_and(|style| style.layout.direction != Some(direction))
             })
             .unwrap_or(false);
@@ -1622,8 +1644,8 @@ impl AppContext {
     ) -> Result<bool, FrameworkError> {
         let document = document_of(self, row.stable_id())?;
         resolve_row_hint_placement(self, row.stable_id())?;
-        let (label, hint, hint_is_path, control, label_slot, mut hint_slot, copy_slot) = self
-            .read(row, |row| {
+        let (label, hint, hint_is_path, control, label_slot, mut hint_slot) =
+            self.read(row, |row| {
                 (
                     row.label.clone(),
                     row.hint.clone(),
@@ -1631,55 +1653,31 @@ impl AppContext {
                     row.control,
                     row.label_slot,
                     row.hint_slot,
-                    row.copy_slot,
                 )
             })?;
-        let (mark, accessory, line_slot, flash_slot) = self.read(row, |row| {
-            (
-                row.label_mark,
-                row.label_accessory,
-                row.label_line_slot,
-                row.flash_slot,
-            )
+        let existing_assembled = self
+            .assembled_slot::<SettingsRowAssembled>(row.stable_id())
+            .copied()
+            .unwrap_or_default();
+        let copy_slot = existing_assembled.copy_slot;
+        let (mark, accessory) = self.read(row, |row| (row.label_mark, row.label_accessory))?;
+        let line_slot = existing_assembled.label_line_slot;
+        let flash_slot = existing_assembled.flash_slot;
+        let (error, wants_notice) = self.read(row, |row| {
+            (row.error.is_some(), row.shown_notice().is_some())
         })?;
-        let (error, error_shown, wants_notice) = self.read(row, |row| {
-            (
-                row.error.is_some(),
-                row.error_shown,
-                row.shown_notice().is_some(),
-            )
-        })?;
-        let (
-            wants_help,
-            help_open,
-            help_slot,
-            help_text_slot,
-            notice_slot,
-            notice_glyph_slot,
-            notice_text_slot,
-            main_slot,
-        ) = self.read(row, |row| {
-            (
-                row.shows_help(),
-                row.help_open,
-                row.help_slot,
-                row.help_text_slot,
-                row.notice_slot,
-                row.notice_glyph_slot,
-                row.notice_text_slot,
-                row.main_slot,
-            )
-        })?;
-        let (column, trailing, control_slot, value_slot, trailing_slot) =
-            self.read(row, |row| {
-                (
-                    row.label_column,
-                    row.trailing,
-                    row.control_slot,
-                    row.value_slot,
-                    row.trailing_slot,
-                )
-            })?;
+        let error_shown = existing_assembled.error_shown;
+        let (wants_help, help_open) = self.read(row, |row| (row.shows_help(), row.help_open))?;
+        let help_slot = existing_assembled.help_slot;
+        let help_text_slot = existing_assembled.help_text_slot;
+        let notice_slot = existing_assembled.notice_slot;
+        let notice_glyph_slot = existing_assembled.notice_glyph_slot;
+        let notice_text_slot = existing_assembled.notice_text_slot;
+        let main_slot = existing_assembled.main_slot;
+        let (column, trailing) = self.read(row, |row| (row.label_column, row.trailing))?;
+        let control_slot = existing_assembled.control_slot;
+        let value_slot = existing_assembled.value_slot;
+        let trailing_slot = existing_assembled.trailing_slot;
 
         let live = |context: &Self, slot: Option<StableNodeId>| {
             slot.filter(|id| context.world().contains(*id))
@@ -1957,24 +1955,33 @@ impl AppContext {
             || trailing_box != trailing_slot
             || box_changed;
         if slots_changed {
-            // Single atomic write once all slots exist, so lifecycle does not
-            // observe half-assembled row slots.
-            self.update_component(row, |row, _| {
-                row.label_slot = Some(next_label_slot);
-                row.hint_slot = Some(next_hint_slot);
-                row.copy_slot = Some(next_copy_slot);
-                row.help_slot = help;
-                row.help_text_slot = help_text;
-                row.notice_slot = notice;
-                row.notice_glyph_slot = next_notice_glyph;
-                row.notice_text_slot = next_notice_text;
-                row.main_slot = main;
-                row.label_line_slot = line;
-                row.error_shown = Some(error);
-                row.value_slot = value_box;
-                row.trailing_slot = trailing_box;
-                row.control_slot = control_box;
-            })?;
+            self.set_assembled_slot(
+                row.stable_id(),
+                SettingsRowAssembled {
+                    help_slot: help,
+                    help_text_slot: help_text,
+                    notice_slot: notice,
+                    notice_glyph_slot: next_notice_glyph,
+                    notice_text_slot: next_notice_text,
+                    main_slot: main,
+                    error_shown: Some(error),
+                    copy_slot: Some(next_copy_slot),
+                    label_line_slot: line,
+                    flash_slot,
+                    control_slot: control_box,
+                    value_slot: value_box,
+                    trailing_slot: trailing_box,
+                    last_generates_box: existing_assembled.last_generates_box,
+                },
+            );
+            if label_slot != Some(next_label_slot) || hint_slot != Some(next_hint_slot) {
+                self.update_component(row, |row, _| {
+                    row.label_slot = Some(next_label_slot);
+                    row.hint_slot = Some(next_hint_slot);
+                })?;
+            } else {
+                self.reproject_component(row)?;
+            }
         }
 
         // Hand back children from retired slots before removing them.
@@ -2040,14 +2047,22 @@ impl AppContext {
     /// leaves with the row, should the row go first.
     pub fn flash_settings_row(&mut self, row: Entity<SettingsRow>) -> Result<(), FrameworkError> {
         let document = document_of(self, row.stable_id())?;
-        let flash = self.read(row, |row| row.flash_slot)?;
+        let flash = self
+            .assembled_slot::<SettingsRowAssembled>(row.stable_id())
+            .and_then(|s| s.flash_slot);
         let flash = match flash.filter(|id| self.world().contains(*id)) {
             Some(id) => id,
             None => {
                 let id = self
                     .create_detached_component(document, SettingsRowFlash)?
                     .stable_id();
-                self.update_component(row, |row, _| row.flash_slot = Some(id))?;
+                let mut assembled = self
+                    .assembled_slot::<SettingsRowAssembled>(row.stable_id())
+                    .copied()
+                    .unwrap_or_default();
+                assembled.flash_slot = Some(id);
+                self.set_assembled_slot(row.stable_id(), assembled);
+                self.reproject_component(row)?;
                 // First, so it paints under everything else in the row.
                 let children: Vec<_> = std::iter::once(id)
                     .chain(
@@ -2097,12 +2112,13 @@ impl AppContext {
             return Ok(());
         }
         if let Some(parent) = self.world().parent_id(flash) {
-            let row = Entity::<SettingsRow>::from_stable_id(parent);
-            if self
-                .read(row, |row| row.flash_slot == Some(flash))
-                .unwrap_or(false)
+            if let Some(mut assembled) =
+                self.assembled_slot::<SettingsRowAssembled>(parent).copied()
+                && assembled.flash_slot == Some(flash)
             {
-                self.update_component(row, |row, _| row.flash_slot = None)?;
+                assembled.flash_slot = None;
+                self.set_assembled_slot(parent, assembled);
+                self.reproject_component(Entity::<SettingsRow>::from_stable_id(parent))?;
             }
         }
         self.remove_view(entity)?;

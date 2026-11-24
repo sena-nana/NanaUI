@@ -109,9 +109,6 @@ pub struct Toast {
     /// inside it are not announced again. Assembled toasts only.
     pub quiet: bool,
     pub style: NodeStyle,
-    /// The nodes [`AppContext::assemble_toast`] built; `None` for a bare
-    /// toast.
-    pub(crate) parts: Option<ToastParts>,
 }
 
 impl Toast {
@@ -128,7 +125,6 @@ impl Toast {
             close_label: None,
             quiet: false,
             style: NodeStyle::default(),
-            parts: None,
         }
     }
 
@@ -453,7 +449,10 @@ impl AppContext {
             .node(toast.stable_id())
             .ok_or(FrameworkError::MissingView(toast.stable_id()))?
             .document;
-        if self.read(toast, |toast| toast.parts.is_some())? {
+        if self
+            .assembled_slot::<ToastParts>(toast.stable_id())
+            .is_some()
+        {
             self.reconcile_toast(toast)?;
             return Ok(false);
         }
@@ -498,7 +497,8 @@ impl AppContext {
         // toast: the write that delivers either reconciles it.
         self.on(toast, |_, _: &PointerHoverChanged, _| {})?;
         self.on(toast, |_, _: &FocusWithinChanged, _| {})?;
-        self.update_component(toast, |toast, _| toast.parts = Some(parts))?;
+        self.set_assembled_slot(toast.stable_id(), parts);
+        self.reproject_component(toast)?;
         Ok(true)
     }
 
@@ -506,12 +506,13 @@ impl AppContext {
     /// its fields and the installed recipe after every write. Nothing for a
     /// bare toast.
     pub(crate) fn reconcile_toast(&mut self, toast: Entity<Toast>) -> Result<bool, FrameworkError> {
-        let Some(snapshot) = self.read(toast, |toast| toast.parts.map(|_| toast.clone()))? else {
+        let Some(parts) = self
+            .assembled_slot::<ToastParts>(toast.stable_id())
+            .copied()
+        else {
             return Ok(false);
         };
-        let Some(parts) = snapshot.parts else {
-            return Ok(false);
-        };
+        let snapshot = self.read(toast, Clone::clone)?;
         let world = self.world();
         // Assembly is for good: a part something else removed is not built
         // again.
@@ -696,11 +697,19 @@ impl ComponentView for Toast {
     const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::TOAST.type_id);
 
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
-        hooks: Some(|hooks| {
-            crate::framework::routes::toast_stack(hooks);
-            crate::framework::routes::toast(hooks);
+        capabilities: Some(|caps| {
+            caps.add_post_layout_doc(AppContext::reconcile_toast_stacks);
         }),
         assembler: Some(AppContext::reconcile_toast),
+        animation_sample: Some(|cx, target, _, now| {
+            if cx.advance_toast_timer(target, now).unwrap_or(false) {
+                let _ = cx.update_component(Entity::<Self>::from_stable_id(target), |_, cx| {
+                    cx.emit(crate::ToastDismissed)
+                });
+            }
+            false
+        }),
+        slot_projector: Some(Self::project_with_slots),
         ..crate::TypeBehavior::NONE
     };
 
@@ -709,18 +718,6 @@ impl ComponentView for Toast {
         share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
     ) {
         share(&mut self.style.layout);
-    }
-
-    /// A toast rebuilt from declared props stays assembled.
-    fn reconcile(&mut self, next: Self) {
-        let parts = self.parts;
-        *self = next;
-        self.parts = self.parts.or(parts);
-    }
-
-    /// A toast written whole (`*toast = Toast::new(..)`) stays assembled.
-    fn keep_framework_state(&mut self, previous: &Self) {
-        self.parts = self.parts.or(previous.parts);
     }
 
     fn node_kind(&self) -> NodeKind {
@@ -752,10 +749,6 @@ impl ComponentView for Toast {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        if self.parts.is_some() {
-            self.project_assembled(id, world, mutations);
-            return;
-        }
         let visual = ToastVisual {
             title: Arc::clone(&self.title),
             description: self.resolved_description(),
@@ -792,6 +785,22 @@ impl ComponentView for Toast {
                 ..AccessibilityState::default()
             },
         );
+    }
+}
+
+impl Toast {
+    fn project_with_slots(
+        cx: &AppContext,
+        id: StableNodeId,
+        view: &Self,
+        world: &UiWorld,
+        mutations: &mut MutationQueue,
+    ) {
+        if cx.assembled_slot::<ToastParts>(id).is_some() {
+            view.project_assembled(id, world, mutations);
+        } else {
+            view.project(id, world, mutations);
+        }
     }
 }
 
@@ -1519,8 +1528,8 @@ mod tests {
     /// The parts `assemble_toast` built for `toast`.
     fn parts_of(context: &AppContext, toast: Entity<Toast>) -> ToastParts {
         context
-            .read(toast, |toast| toast.parts)
-            .unwrap()
+            .assembled_slot::<ToastParts>(toast.stable_id())
+            .copied()
             .expect("the toast is assembled")
     }
 
@@ -2230,7 +2239,7 @@ mod tests {
             context.world().node_style(id).unwrap().layout.width,
             Some(LengthSpec::Fill)
         );
-        assert!(context.read(toast, |toast| toast.parts.is_none()).unwrap());
+        assert!(context.assembled_slot::<ToastParts>(id).is_none());
     }
 
     /// Writing a whole new toast over an assembled one keeps it assembled:

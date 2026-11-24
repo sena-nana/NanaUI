@@ -23,11 +23,11 @@ impl AppContext {
         // Opening and closing update the host and the surface: one that is
         // out being updated right now (the insert came from its own update)
         // is asked again once it is back.
-        if (!self.views.contains_key(&root) && !self.world.is_elided_stack(root))
-            || (!self.views.contains_key(&host) && !self.world.is_elided_stack(host))
+        if (!self.store.views.contains_key(&root) && !self.world.is_elided_stack(root))
+            || (!self.store.views.contains_key(&host) && !self.world.is_elided_stack(host))
         {
-            if !self.pending_modal_syncs.contains(&root) {
-                self.pending_modal_syncs.push(root);
+            if !self.lifecycle.pending_modal_syncs.contains(&root) {
+                self.lifecycle.pending_modal_syncs.push(root);
             }
             return Ok(());
         }
@@ -61,13 +61,18 @@ impl AppContext {
     /// Ask the surfaces that met a view mid-update again
     /// ([`Self::sync_modal_open`]).
     pub(super) fn drain_modal_syncs(&mut self) -> Result<(), FrameworkError> {
-        if self.pending_modal_syncs.is_empty() {
+        if self.lifecycle.pending_modal_syncs.is_empty() {
             return Ok(());
         }
         let mut outcome = Ok(());
-        for id in std::mem::take(&mut self.pending_modal_syncs) {
-            if self.world.contains(id) {
-                outcome = outcome.and(via!(self.sync_modal_open_at(id)));
+        for id in std::mem::take(&mut self.lifecycle.pending_modal_syncs) {
+            if self.world.contains(id)
+                && let Some(sync_modal) = self
+                    .behavior(id)
+                    .and_then(|b| b.overlay)
+                    .and_then(|o| o.sync_modal_open)
+            {
+                outcome = outcome.and(sync_modal(self, id));
             }
         }
         outcome
@@ -75,7 +80,7 @@ impl AppContext {
 
     /// [`Self::sync_modal_open`] for a node whose surface type is not known
     /// statically: an insert.
-    pub(super) fn sync_modal_open_at(&mut self, id: StableNodeId) -> Result<(), FrameworkError> {
+    pub(crate) fn sync_modal_open_at(&mut self, id: StableNodeId) -> Result<(), FrameworkError> {
         if self.view_is::<crate::Dialog>(id) {
             self.sync_modal_open(Entity::<crate::Dialog>::from_stable_id(id))
         } else if self.view_is::<crate::ConfirmDialog>(id) {
@@ -91,7 +96,7 @@ impl AppContext {
     /// lost, when the surface was parked), so the field says what the host
     /// shows, and tell the surface ([`crate::DialogToggled`]) when that
     /// changed it.
-    pub(super) fn note_modal_open(
+    pub(crate) fn note_modal_open(
         &mut self,
         id: StableNodeId,
         open: bool,
@@ -344,10 +349,21 @@ impl AppContext {
         motion.set_surface_open(final_active, true, final_kind == RuntimeOverlayKind::Menu);
         self.commit_mutations(motion)?;
         self.prepare_blocking_overlay_activation(overlay_node.document, final_active);
-        if let Some(replaced) = previous.active.filter(|replaced| *replaced != final_active) {
-            via!(self.note_modal_open(replaced, false))?;
+        if let Some(replaced) = previous.active.filter(|replaced| *replaced != final_active)
+            && let Some(note) = self
+                .behavior(replaced)
+                .and_then(|b| b.overlay)
+                .and_then(|o| o.note_modal_open)
+        {
+            note(self, replaced, false)?;
         }
-        via!(self.note_modal_open(final_active, true))?;
+        if let Some(note) = self
+            .behavior(final_active)
+            .and_then(|b| b.overlay)
+            .and_then(|o| o.note_modal_open)
+        {
+            note(self, final_active, true)?;
+        }
         Ok(true)
     }
 
@@ -394,20 +410,32 @@ impl AppContext {
             )?;
         }
         // A modal surface's own `open` says the host closed it.
-        via!(self.note_modal_open(root, false))?;
+        if let Some(note) = self
+            .behavior(root)
+            .and_then(|b| b.overlay)
+            .and_then(|o| o.note_modal_open)
+        {
+            note(self, root, false)?;
+        }
         // A context menu keeps its own `open` flag, so an exit driven by the
         // host has to reach the view as well. Without this the surface closes
         // while the component still reports itself open and the application
         // never observes the dismissal it would observe from a selection.
-        if self
-            .views
-            .get(&root)
-            .is_some_and(|view| view.downcast_ref::<ContextMenu>().is_some())
+        if let Some(dismiss) = self
+            .behavior(root)
+            .and_then(|b| b.overlay)
+            .and_then(|o| o.dismiss_context_menu)
         {
-            via!(self.dismiss_context_menu(Entity::from_stable_id(root)))?;
+            dismiss(self, root)?;
         }
         // So does a menu built from components.
-        via!(self.note_anchored_menu_dismissed(root))?;
+        if let Some(note) = self
+            .behavior(root)
+            .and_then(|b| b.overlay)
+            .and_then(|o| o.note_anchored_menu_dismissed)
+        {
+            note(self, root)?;
+        }
         Ok(true)
     }
 
@@ -440,7 +468,13 @@ impl AppContext {
         root: StableNodeId,
         trigger: nana_ui_core::DialogCloseTrigger,
     ) -> Result<bool, FrameworkError> {
-        via!(self.announce_close_request(root, trigger))?;
+        if let Some(announce) = self
+            .behavior(root)
+            .and_then(|b| b.overlay)
+            .and_then(|o| o.announce_close_request)
+        {
+            announce(self, root, trigger)?;
+        }
         let Some(host) = self.world.parent_id(root).filter(|host| {
             self.world
                 .overlay_host(*host)
@@ -528,6 +562,7 @@ impl AppContext {
         let preserve_focus = next.active.is_some_and(|root| {
             passive(root)
                 || self
+                    .store
                     .views
                     .get(&root)
                     .and_then(|view| view.downcast_ref::<crate::Panel>())
@@ -598,6 +633,7 @@ impl AppContext {
                 cx.emit(OverlayChanged { active: None });
             })?;
         } else if self
+            .store
             .views
             .get(&root)
             .is_some_and(|view| super::is_menu_surface(view.as_ref().type_id()))

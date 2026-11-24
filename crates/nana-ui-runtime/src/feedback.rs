@@ -6,11 +6,12 @@ use crate::widget_visual::{styled_text_region, widget_text_region};
 use crate::{
     AccessibilityRole, AccessibilityState, AlignSpec, AnimationDirection, AnimationFillMode,
     AnimationIteration, AnimationPlayState, AnimationPlayback, AnimationSpec, ComponentTextRegion,
-    ComponentView, Easing, FlexDirection, InteractionState, JustifySpec, LayoutBox, LayoutPartKind,
-    LengthSpec, MutationQueue, NodeKind, NodeStyle, SemanticColorRole, StableNodeId, TextContent,
-    TextHorizontalAlignment, TextValue, TextVerticalAlignment, UiWorld, WidgetIcon, WidgetPaintCtx,
-    WidgetPaintOp, WidgetPaintOutput, WidgetQuad, WidgetRootSurface, WidgetTaggedOp, WidgetVisual,
-    WidgetVisualContent, component_animation_id, component_animation_kinds,
+    ComponentView, Easing, Entity, FlexDirection, InteractionState, JustifySpec, LayoutBox,
+    LayoutPartKind, LengthSpec, MutationQueue, NodeKind, NodeStyle, SemanticColorRole,
+    StableNodeId, TextContent, TextHorizontalAlignment, TextValue, TextVerticalAlignment, UiWorld,
+    WidgetIcon, WidgetPaintCtx, WidgetPaintOp, WidgetPaintOutput, WidgetQuad, WidgetRootSurface,
+    WidgetTaggedOp, WidgetVisual, WidgetVisualContent, component_animation_id,
+    component_animation_kinds,
 };
 use nana_ui_core::{ComponentRecipeId, Icon, SemanticColorMix};
 
@@ -2095,8 +2096,11 @@ impl ComponentView for Spinner {
     const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::SPINNER.type_id);
 
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
-        hooks: Some(|hooks| {
-            crate::framework::routes::spinner(hooks);
+        animation_sample: Some(|cx, target, sample, _| {
+            cx.update_component(Entity::<Self>::from_stable_id(target), |spinner, _| {
+                spinner.phase = sample.progress;
+            })
+            .is_ok()
         }),
         ..crate::TypeBehavior::NONE
     };
@@ -2230,10 +2234,7 @@ mod tests {
         );
         context.commit_mutations(mutations).unwrap();
         let work = context.take_system_work();
-        context
-            .compat_world_mut()
-            .resolve_styles(&work.style)
-            .unwrap();
+        context.resolve_styles(&work.style).unwrap();
     }
 
     #[test]
@@ -2324,10 +2325,7 @@ mod tests {
         theme.set_preset_theme(crate::ThemeAppearance::Light);
         context.commit_mutations(theme).unwrap();
         let work = context.take_system_work();
-        context
-            .compat_world_mut()
-            .resolve_styles(&work.style)
-            .unwrap();
+        context.resolve_styles(&work.style).unwrap();
         let (_, _, _, foreground) = badge_paint(&context);
         assert_ne!(foreground, dark_foreground);
     }
@@ -2443,10 +2441,7 @@ mod tests {
             .set_empty_state_action(empty, Some(action.stable_id()))
             .unwrap();
         let work = context.take_system_work();
-        context
-            .compat_world_mut()
-            .resolve_styles(&work.style)
-            .unwrap();
+        context.resolve_styles(&work.style).unwrap();
         let mut shaper = WrappingShaper;
         context.shape_text(&work.text, &mut shaper).unwrap();
         context
@@ -2494,10 +2489,7 @@ mod tests {
             .set_preset_theme(crate::ThemeAppearance::Light)
             .unwrap();
         let work = context.take_system_work();
-        context
-            .compat_world_mut()
-            .resolve_styles(&work.style)
-            .unwrap();
+        context.resolve_styles(&work.style).unwrap();
         assert!(
             !context
                 .shape_text_for_layout(document(), &mut shaper)
@@ -2528,10 +2520,7 @@ mod tests {
             .create_component(document(), EmptyState::new("空").compact(true))
             .unwrap();
         let work = context.take_system_work();
-        context
-            .compat_world_mut()
-            .resolve_styles(&work.style)
-            .unwrap();
+        context.resolve_styles(&work.style).unwrap();
         let mut shaper = WrappingShaper;
         context.shape_text(&work.text, &mut shaper).unwrap();
         context
@@ -2587,10 +2576,7 @@ mod tests {
             )
             .unwrap();
         let work = context.take_system_work();
-        context
-            .compat_world_mut()
-            .resolve_styles(&work.style)
-            .unwrap();
+        context.resolve_styles(&work.style).unwrap();
         let mut shaper = WrappingShaper;
         context.shape_text(&work.text, &mut shaper).unwrap();
         context
@@ -2644,10 +2630,7 @@ mod tests {
             .set_empty_state_action(empty, Some(action.stable_id()))
             .unwrap();
         let work = context.take_system_work();
-        context
-            .compat_world_mut()
-            .resolve_styles(&work.style)
-            .unwrap();
+        context.resolve_styles(&work.style).unwrap();
         let mut shaper = WrappingShaper;
         context.shape_text(&work.text, &mut shaper).unwrap();
         context
@@ -2717,7 +2700,7 @@ mod tests {
             },
         );
         context.commit_mutations(layouts).unwrap();
-        context.compat_world_mut().rebuild_hit_test(document());
+        context.rebuild_hit_test(document());
 
         assert_eq!(
             context.world().hit_test(document(), 95.0, 45.0),
@@ -2754,7 +2737,7 @@ mod tests {
             },
         );
         context.commit_mutations(outside).unwrap();
-        context.compat_world_mut().rebuild_hit_test(document());
+        context.rebuild_hit_test(document());
         assert_ne!(
             context.world().hit_test(document(), 115.0, 45.0),
             Some(action.stable_id())
@@ -2791,10 +2774,7 @@ mod tests {
             .set_empty_state_action(empty, Some(action.stable_id()))
             .unwrap();
         let work = context.take_system_work();
-        context
-            .compat_world_mut()
-            .resolve_styles(&work.style)
-            .unwrap();
+        context.resolve_styles(&work.style).unwrap();
         let mut shaper = WrappingShaper;
         context.shape_text(&work.text, &mut shaper).unwrap();
         context

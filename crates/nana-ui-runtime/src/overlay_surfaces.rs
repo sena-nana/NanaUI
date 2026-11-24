@@ -844,11 +844,9 @@ impl ComponentView for ConfirmDialog {
         Some(crate::component_descriptors::CONFIRM_DIALOG.type_id);
 
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
-        hooks: Some(|hooks| {
-            crate::framework::routes::modal(hooks);
-        }),
         slot_assembler: Some(crate::AppContext::assemble_confirm_dialog),
         lifecycle: Some(crate::AppContext::sync_modal_open::<Self>),
+        overlay: Some(&crate::view_components::MODAL_OVERLAY_BEHAVIOR),
         ..crate::TypeBehavior::NONE
     };
 
@@ -972,11 +970,9 @@ impl ComponentView for Drawer {
     const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::DRAWER.type_id);
 
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
-        hooks: Some(|hooks| {
-            crate::framework::routes::modal(hooks);
-        }),
         slot_assembler: Some(crate::AppContext::assemble_modal_slots::<Self>),
         lifecycle: Some(crate::AppContext::sync_modal_open::<Self>),
+        overlay: Some(&crate::view_components::MODAL_OVERLAY_BEHAVIOR),
         ..crate::TypeBehavior::NONE
     };
 

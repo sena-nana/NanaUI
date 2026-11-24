@@ -663,8 +663,11 @@ impl ComponentView for MediaTransportBar {
         Some(crate::component_descriptors::MEDIA_TRANSPORT_BAR.type_id);
 
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
-        hooks: Some(|hooks| {
-            crate::framework::routes::media_transport(hooks);
+        capabilities: Some(|caps| {
+            caps.auto_overlay_drive =
+                Some(|cx, id, reveal| cx.drive_auto_overlay(Entity::from_stable_id(id), reveal));
+            caps.add_frame_ticker(|cx, _| cx.drive_due_auto_overlays());
+            caps.add_frame_ticker(|cx, _| cx.sync_media_bound_bars());
         }),
         assembler: Some(crate::AppContext::assemble_media_transport_bar),
         ..crate::TypeBehavior::NONE

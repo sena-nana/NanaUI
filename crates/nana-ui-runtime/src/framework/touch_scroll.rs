@@ -313,6 +313,7 @@ impl AppContext {
         self.world.is_mounted(id)
             && self.world.is_overlay_reachable(id)
             && !self
+                .store
                 .views
                 .get(&id)
                 .is_some_and(|view| view.is::<TextArea>() || view.is::<crate::RichTextEditor>())
@@ -654,8 +655,15 @@ impl AppContext {
         y: f32,
     ) -> Result<bool, FrameworkError> {
         if let Some(owner) = self.world.pointer_capture(document, pointer_id) {
-            let range =
-                via!(self.is_range_field(owner)) || via!(self.range_span_target(owner)).is_some();
+            let range = self
+                .behavior(owner)
+                .and_then(|b| b.pointer_ops)
+                .is_some_and(|p| p.is_value_range)
+                || self
+                    .capabilities
+                    .range_span
+                    .and_then(|r| (r.target)(self, owner))
+                    .is_some();
             let text = self
                 .text_edit
                 .text_pointer_drag
@@ -668,8 +676,7 @@ impl AppContext {
                     .get(&(document, pointer_id))
                     == Some(&owner);
             if range && axis == Axis::Vertical {
-                via!(self.end_range_drag(document, pointer_id, true))?;
-                via!(self.end_range_span_drag(document, pointer_id, true))?;
+                self.cancel_touch_scroll_drags(document, pointer_id)?;
             } else if text {
                 self.text_editor_pointer_release(pointer_id);
                 #[cfg(feature = "rich-text")]
@@ -766,7 +773,13 @@ impl AppContext {
                             last: current,
                         },
                     );
-                    via!(self.hold_scrollbars(id))?;
+                    if let Some(hold) = self
+                        .behavior(id)
+                        .and_then(|b| b.pointer_ops)
+                        .and_then(|p| p.hold_scrollbars)
+                    {
+                        hold(self, id)?;
+                    }
                     return Ok(());
                 }
                 None if position != edge => {

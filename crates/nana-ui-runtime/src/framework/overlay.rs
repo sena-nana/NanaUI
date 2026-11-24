@@ -5,7 +5,6 @@ use std::collections::HashMap;
 use nana_ui_core::DialogCloseTrigger;
 
 use super::{AppContext, Entity, FrameworkError};
-use crate::framework::{hooked, via};
 use crate::{
     CommandPalette, ComponentView, ConfirmDialog, Dialog, DocumentId, Drawer, IconButton,
     ModalInitialFocus, ModalSurface, MutationQueue, RangeField, ScrollOffset, StableNodeId,
@@ -175,16 +174,18 @@ impl AppContext {
                 || self.world.is_descendant_or_self(owner, hit)
         };
         [
-            self.split_handle_near_hit(document, x, y, target)
+            self.capabilities
+                .split_pane
+                .and_then(|s| (s.handle_near_hit)(self, document, x, y, target))
                 .filter(|handle| reachable(*handle, SPLIT_PANE.type_id)),
-            hooked!(self, dock, |h| (h.handle_near_hit)(
-                self, document, x, y, target
-            ))
-            .filter(|handle| reachable(*handle, DOCK.type_id)),
-            hooked!(self, workspace, |h| (h.handle_near_hit)(
-                self, document, x, y, target
-            ))
-            .filter(|handle| reachable(*handle, WORKSPACE.type_id)),
+            self.capabilities
+                .dock
+                .and_then(|d| (d.handle_near_hit)(self, document, x, y, target))
+                .filter(|handle| reachable(*handle, DOCK.type_id)),
+            self.capabilities
+                .workspace
+                .and_then(|w| (w.handle_near_hit)(self, document, x, y, target))
+                .filter(|handle| reachable(*handle, WORKSPACE.type_id)),
         ]
     }
 
@@ -316,11 +317,11 @@ impl AppContext {
                 // is not another OverlayHost entry. Escape must dismiss that
                 // inner surface before closing the card and parking its tree.
                 // Popovers behind a different active modal do not take its key.
-                if via!(
-                    self.close_open_popovers_within(Some(overlay.root), None, |popover| {
+                if let Some(p) = self.capabilities.popover
+                    && (p.close_within)(self, Some(overlay.root), None, |popover| {
                         popover.close_on_escape
-                    })
-                )? {
+                    })?
+                {
                     return Ok(true);
                 }
                 match overlay.kind {
@@ -329,6 +330,7 @@ impl AppContext {
                     }
                     RuntimeOverlayKind::Panel => {
                         if !self
+                            .store
                             .views
                             .get(&overlay.root)
                             .and_then(|view| view.downcast_ref::<crate::Panel>())
@@ -467,6 +469,7 @@ impl AppContext {
                 continue;
             }
             let button = self
+                .store
                 .views
                 .get(&target)
                 .and_then(|view| view.downcast_ref::<IconButton>())
@@ -482,8 +485,13 @@ impl AppContext {
         let captures = self.world.pointer_captures(document);
         let mut cancelled_ranges = Vec::new();
         for (_, target) in &captures {
-            if via!(self.is_range_field(*target)) {
+            if self
+                .behavior(*target)
+                .and_then(|b| b.pointer_ops)
+                .is_some_and(|p| p.is_value_range)
+            {
                 let Some(mut range) = self
+                    .store
                     .views
                     .get(target)
                     .and_then(|view| view.downcast_ref::<RangeField>())
@@ -520,7 +528,7 @@ impl AppContext {
             }
         }
         for (target, range) in cancelled_ranges {
-            self.views.insert(target, Box::new(range));
+            self.store.views.insert(target, Box::new(range));
         }
         self.world.clear_pointer_interactions(document);
     }
@@ -639,7 +647,7 @@ impl AppContext {
     }
 
     pub(super) fn dialog_allows(&self, root: StableNodeId, trigger: DialogCloseTrigger) -> bool {
-        let Some(view) = self.views.get(&root) else {
+        let Some(view) = self.store.views.get(&root) else {
             return false;
         };
         #[cfg(feature = "image-viewer")]
@@ -668,7 +676,7 @@ impl AppContext {
     )> {
         let mut current = Some(id);
         while let Some(root) = current {
-            let view = self.views.get(&root)?;
+            let view = self.store.views.get(&root)?;
             if let Some(dialog) = view.downcast_ref::<Dialog>() {
                 return Some((root, dialog.slots.close_action, false, None));
             }
@@ -721,7 +729,7 @@ impl AppContext {
         document: DocumentId,
         root: StableNodeId,
     ) -> Result<Option<StableNodeId>, FrameworkError> {
-        let Some(view) = self.views.get(&root) else {
+        let Some(view) = self.store.views.get(&root) else {
             return Ok(None);
         };
         let (initial, actions) = if let Some(dialog) = view.downcast_ref::<Dialog>() {
@@ -766,7 +774,7 @@ impl AppContext {
         &self,
         root: StableNodeId,
     ) -> Result<(), FrameworkError> {
-        let Some(view) = self.views.get(&root) else {
+        let Some(view) = self.store.views.get(&root) else {
             return Err(FrameworkError::MissingView(root));
         };
         let expected = if let Some(dialog) = view.downcast_ref::<Dialog>() {

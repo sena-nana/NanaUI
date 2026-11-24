@@ -30,7 +30,7 @@ impl AppContext {
             && self.world.is_overlay_reachable(id)
             && (self.is_scroll_view(id)
                 || self.overflow_scrolls(id)
-                || self.views.get(&id).is_some_and(|view| {
+                || self.store.views.get(&id).is_some_and(|view| {
                     view.is::<TextArea>() || view.is::<crate::RichTextEditor>()
                 }))
     }
@@ -102,6 +102,7 @@ impl AppContext {
             return Ok(false);
         }
         let area = self
+            .store
             .views
             .get(&id)
             .is_some_and(|view| view.is::<TextArea>() || view.is::<crate::RichTextEditor>());
@@ -168,7 +169,13 @@ impl AppContext {
                 next: now.saturating_add(INTERVAL),
             },
         );
-        via!(self.hold_scrollbars(id))?;
+        if let Some(hold) = self
+            .behavior(id)
+            .and_then(|b| b.pointer_ops)
+            .and_then(|p| p.hold_scrollbars)
+        {
+            hold(self, id)?;
+        }
         Ok(true)
     }
 

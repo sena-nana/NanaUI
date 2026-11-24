@@ -155,7 +155,6 @@ pub struct AreaLayout {
     /// goes there.
     pub(crate) hosts: std::collections::BTreeMap<String, String>,
     pub(crate) drag: Option<CornerDrag>,
-    pub(crate) parts: Option<AreaParts>,
 }
 
 /// How every area is painted. The default is the tiled look: small corners and
@@ -228,7 +227,6 @@ impl AreaLayout {
             editor_select: None,
             hosts: Default::default(),
             drag: None,
-            parts: None,
         }
     }
 
@@ -297,14 +295,7 @@ impl ComponentView for AreaLayout {
         next.model = std::mem::replace(&mut self.model, next.model);
         next.hosts = std::mem::take(&mut self.hosts);
         next.drag = self.drag.take();
-        next.parts = self.parts.take();
         *self = next;
-    }
-
-    fn keep_framework_state(&mut self, previous: &Self) {
-        if self.parts.is_none() {
-            self.parts = previous.parts.clone();
-        }
     }
 
     fn node_kind(&self) -> NodeKind {
@@ -856,7 +847,9 @@ impl AppContext {
         &self,
         layout: Entity<AreaLayout>,
     ) -> Result<Vec<(String, LayoutBox)>, FrameworkError> {
-        let parts = self.read(layout, |layout| layout.parts.clone())?;
+        let parts = self
+            .assembled_slot::<AreaParts>(layout.stable_id())
+            .cloned();
         Ok(parts
             .map(|parts| {
                 parts
@@ -1077,7 +1070,10 @@ impl AppContext {
         let document = self.document_of_node(layout.stable_id())?;
         let snapshot = self.read(layout, Clone::clone)?;
         let shape = shape_of(&snapshot.model.root);
-        let alive = snapshot.parts.clone().filter(|parts| {
+        let existing_parts = self
+            .assembled_slot::<AreaParts>(layout.stable_id())
+            .cloned();
+        let alive = existing_parts.filter(|parts| {
             [parts.top, parts.preview, parts.stash]
                 .iter()
                 .all(|id| self.world().contains(*id))
@@ -1263,10 +1259,9 @@ impl AppContext {
             }
             self.commit_mutations(mutations)?;
         }
-        if snapshot.parts.as_ref() != Some(&parts) {
+        if self.assembled_slot::<AreaParts>(layout.stable_id()) != Some(&parts) {
             parts.shape = shape_of(&model.root);
-            let stored = parts;
-            self.update_component(layout, |layout, _| layout.parts = Some(stored))?;
+            self.set_assembled_slot(layout.stable_id(), parts);
         }
         Ok(created)
     }

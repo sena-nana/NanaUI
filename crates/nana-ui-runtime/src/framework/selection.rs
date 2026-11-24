@@ -242,7 +242,7 @@ impl AppContext {
     ) -> Result<(), FrameworkError> {
         let Some(emit) = self
             .view_type_id(id)
-            .and_then(|type_id| self.emitters.get(&type_id))
+            .and_then(|type_id| self.store.emitters.get(&type_id))
             .copied()
         else {
             return Ok(());
@@ -309,6 +309,7 @@ impl AppContext {
             .ok_or(FrameworkError::MissingView(control.id))?;
         if control_node.children.iter().any(|child| {
             !self
+                .store
                 .views
                 .get(child)
                 .is_some_and(|view| view.is::<SegmentedOption>())
@@ -320,6 +321,7 @@ impl AppContext {
                     .iter()
                     .find(|child| {
                         !self
+                            .store
                             .views
                             .get(child)
                             .is_some_and(|view| view.is::<SegmentedOption>())
@@ -422,7 +424,7 @@ impl AppContext {
         for (id, option) in staged_options {
             self.install_view(id, option);
         }
-        self.views.insert(control.id, Box::new(next_control));
+        self.store.views.insert(control.id, Box::new(next_control));
         Ok(true)
     }
 
@@ -508,7 +510,7 @@ impl AppContext {
         for (id, option) in staged_options {
             self.install_view(id, option);
         }
-        self.views.insert(control.id, Box::new(next_control));
+        self.store.views.insert(control.id, Box::new(next_control));
         Ok(true)
     }
 
@@ -568,8 +570,8 @@ impl AppContext {
             mutations.request_focus(document, next_control.focus_target);
         }
         self.commit_mutations(mutations)?;
-        self.views.insert(option.id, Box::new(next_option));
-        self.views.insert(control.id, Box::new(next_control));
+        self.store.views.insert(option.id, Box::new(next_option));
+        self.store.views.insert(control.id, Box::new(next_control));
         Ok(true)
     }
 
@@ -652,6 +654,7 @@ impl AppContext {
             return Ok(false);
         };
         if self
+            .store
             .views
             .get(&parent)
             .is_some_and(|view| view.is::<SegmentedControl>())
@@ -668,10 +671,11 @@ impl AppContext {
             next.project(parent, &self.world, &mut mutations);
             mutations.request_focus(document, Some(target));
             self.commit_mutations(mutations)?;
-            self.views.insert(parent, Box::new(next));
+            self.store.views.insert(parent, Box::new(next));
             return Ok(true);
         }
         if self
+            .store
             .views
             .get(&parent)
             .is_some_and(|view| view.is::<Tabs>())
@@ -691,7 +695,7 @@ impl AppContext {
             next.project(parent, &self.world, &mut mutations);
             mutations.request_focus(document, Some(target));
             self.commit_mutations(mutations)?;
-            self.views.insert(parent, Box::new(next));
+            self.store.views.insert(parent, Box::new(next));
             return Ok(true);
         }
         Ok(false)
@@ -710,6 +714,7 @@ impl AppContext {
             return Ok(false);
         };
         if self
+            .store
             .views
             .get(&parent)
             .is_some_and(|view| view.is::<Tabs>())
@@ -717,6 +722,7 @@ impl AppContext {
             return self.navigate_tabs(Entity::from_stable_id(parent), intent);
         }
         if !self
+            .store
             .views
             .get(&parent)
             .is_some_and(|view| view.is::<SegmentedControl>())
@@ -732,7 +738,8 @@ impl AppContext {
             .map(|id| {
                 (
                     *id,
-                    self.views
+                    self.store
+                        .views
                         .get(id)
                         .and_then(|view| view.downcast_ref::<SegmentedOption>())
                         .is_some_and(|option| !option.disabled),
@@ -747,13 +754,17 @@ impl AppContext {
 
     pub(super) fn is_roving_tab_stop(&self, id: StableNodeId) -> bool {
         if !self
+            .store
             .views
             .get(&id)
             .is_some_and(|view| view.is::<SegmentedOption>())
         {
             return true;
         }
-        via!(self.segmented_option_is_tab_stop(id))
+        self.behavior(id)
+            .and_then(|b| b.pointer_ops)
+            .and_then(|p| p.segmented_option_tab_stop)
+            .is_some_and(|is_stop| is_stop(self, id))
     }
 
     /// Whether `id`, an option of a segmented control or a tab strip, is
@@ -763,20 +774,23 @@ impl AppContext {
             return false;
         };
         if let Some(control) = self
+            .store
             .views
             .get(&parent)
             .and_then(|view| view.downcast_ref::<SegmentedControl>())
         {
             return control.focus_target == Some(id);
         }
-        self.views
+        self.store
+            .views
             .get(&parent)
             .and_then(|view| view.downcast_ref::<Tabs>())
             .is_some_and(|tabs| tabs.roving_target() == Some(id))
     }
 
     pub fn is_segmented_option_node(&self, id: StableNodeId) -> bool {
-        self.views
+        self.store
+            .views
             .get(&id)
             .is_some_and(|view| view.is::<SegmentedOption>())
     }
@@ -837,8 +851,13 @@ impl AppContext {
             })
             .unwrap_or_else(|| if reverse { candidates.len() - 1 } else { 0 });
         if self.world.focused(document) != Some(candidates[next]) {
-            if self.focus_node(document, candidates[next])? {
-                via!(self.select_focused_number_on_entry(document, candidates[next], None))?;
+            if self.focus_node(document, candidates[next])?
+                && let Some(select_entry) = self
+                    .behavior(candidates[next])
+                    .and_then(|b| b.pointer_ops)
+                    .and_then(|p| p.select_on_focus_entry)
+            {
+                select_entry(self, document, candidates[next], None)?;
             }
         }
         Ok(true)
@@ -940,6 +959,7 @@ impl AppContext {
                                 || (node.parent.is_none()
                                     && self.world.mount_state(*id) == Some(MountState::Parked)))
                     }) && self
+                        .store
                         .views
                         .get(id)
                         .is_some_and(|view| view.is::<SegmentedOption>())
@@ -1013,7 +1033,7 @@ impl AppContext {
         for subtree in stale_subtrees {
             for id in subtree {
                 removed.insert(id);
-                self.views.remove(&id);
+                self.store.views.remove(&id);
                 self.component_lifecycle.remove_tooltip(id);
                 self.component_lifecycle.loading.remove(&id);
                 self.component_lifecycle.toast_timers.remove(&id);
@@ -1027,6 +1047,7 @@ impl AppContext {
             self.install_view(id, option);
         }
         if let Some(tabs) = self
+            .store
             .views
             .get_mut(&entity.id)
             .and_then(|view| view.downcast_mut::<Tabs>())

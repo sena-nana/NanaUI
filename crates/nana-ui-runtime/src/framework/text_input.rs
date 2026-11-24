@@ -7,8 +7,10 @@ impl AppContext {
     /// Assemble a retained small-control bottom trailing action slot without owning
     /// application action state or its activation semantics.
     pub fn assemble_text_area(&mut self, area: Entity<TextArea>) -> Result<bool, FrameworkError> {
-        let (action, action_slot) =
-            self.read(area, |area| (area.trailing_action, area.action_slot))?;
+        let action = self.read(area, |area| area.trailing_action)?;
+        let action_slot = self
+            .assembled_slot::<crate::view_components::TextAreaActionSlot>(area.stable_id())
+            .map(|slot| slot.0);
         let Some(action) = action else {
             if let Some(slot) = action_slot.filter(|id| self.world().contains(*id)) {
                 self.update_component(Entity::<Stack>::from_stable_id(slot), |slot, _| {
@@ -46,7 +48,10 @@ impl AppContext {
         if !mutations.is_empty() {
             self.commit_mutations(mutations)?;
         }
-        self.update_component(area, |area, _| area.action_slot = Some(slot.stable_id()))?;
+        self.set_assembled_slot(
+            area.stable_id(),
+            crate::view_components::TextAreaActionSlot(slot.stable_id()),
+        );
         Ok(created)
     }
 
@@ -54,12 +59,11 @@ impl AppContext {
         &mut self,
         area: Entity<TextArea>,
     ) -> Result<(), FrameworkError> {
-        let (slot, hidden, expanded) = self.read(area, |area| {
-            (
-                area.action_slot,
-                area.trailing_action.is_none(),
-                area.uses_expanded_footer(),
-            )
+        let slot = self
+            .assembled_slot::<crate::view_components::TextAreaActionSlot>(area.stable_id())
+            .map(|slot| slot.0);
+        let (hidden, expanded) = self.read(area, |area| {
+            (area.trailing_action.is_none(), area.uses_expanded_footer())
         })?;
         let Some(slot) = slot.filter(|id| self.world().contains(*id)) else {
             return Ok(());
@@ -131,7 +135,9 @@ impl AppContext {
         ids.sort_unstable();
         ids.dedup();
         for id in ids {
-            changed |= via!(self.refresh_text_area_compact_layout(id))?;
+            if let Some(refresh) = self.behavior(id).and_then(|b| b.post_layout) {
+                changed |= refresh(self, id)?;
+            }
         }
         Ok(changed)
     }
@@ -170,7 +176,11 @@ impl AppContext {
                 });
             })?;
             if self.world.focused(document) != Some(entity.id) {
-                self.sync_interactive_style_states();
+                self.sync_interactive_style_nodes(&[
+                    Some(entity.id),
+                    self.world.focused(document),
+                    self.world.focus_visible(document),
+                ]);
             }
             return Ok(true);
         }
@@ -186,7 +196,11 @@ impl AppContext {
             });
         })?;
         if self.world.focused(document) != Some(entity.id) {
-            self.sync_interactive_style_states();
+            self.sync_interactive_style_nodes(&[
+                Some(entity.id),
+                self.world.focused(document),
+                self.world.focus_visible(document),
+            ]);
         }
         Ok(true)
     }

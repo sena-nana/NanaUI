@@ -1385,8 +1385,8 @@ fn menu_recipe_overrides_reach_menus_and_menu_bar() {
     assert!((ctx_geom.options[0].bounds.x - ctx_geom.surface.x - spacing.lg).abs() < 0.01);
 
     let parts = context
-        .read(menu_bar, |bar| bar.parts.clone())
-        .unwrap()
+        .assembled_slot::<crate::app_menu_bar::MenuBarParts>(menu_bar.stable_id())
+        .cloned()
         .unwrap();
     let title_style = context.world().layout_style(parts.titles[0].0).unwrap();
     assert_eq!(
@@ -1931,15 +1931,17 @@ fn live_opacity_tokens_disabled_updates_icon_button_and_property_grid() {
     layout(&mut context, doc);
 
     let root_disabled_slot = context
-        .read(root_grid, |g| {
-            g.parts.as_ref().unwrap().sections[0].rows[1].slot
-        })
-        .unwrap();
+        .assembled_slot::<crate::property_grid::GridParts>(root_grid.stable_id())
+        .unwrap()
+        .sections[0]
+        .rows[1]
+        .slot;
     let scoped_disabled_slot = context
-        .read(scoped_grid, |g| {
-            g.parts.as_ref().unwrap().sections[0].rows[1].slot
-        })
-        .unwrap();
+        .assembled_slot::<crate::property_grid::GridParts>(scoped_grid.stable_id())
+        .unwrap()
+        .sections[0]
+        .rows[1]
+        .slot;
 
     assert_eq!(
         context

@@ -34,7 +34,7 @@ impl AppContext {
     }
 
     /// Settle the aims that ran out by `now`. Returns the bars that changed.
-    pub(super) fn settle_menu_aims(&mut self, now: Duration) -> Vec<StableNodeId> {
+    pub(crate) fn settle_menu_aims(&mut self, now: Duration) -> Vec<StableNodeId> {
         let due: Vec<_> = self
             .component_lifecycle
             .menu_aims

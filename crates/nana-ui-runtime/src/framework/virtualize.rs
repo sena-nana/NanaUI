@@ -77,6 +77,7 @@ impl AppContext {
             };
             if row_node.parent != Some(table.id)
                 || self
+                    .store
                     .views
                     .get(&row_entity.id)
                     .is_none_or(|view| !view.is::<TableRow>())
@@ -94,6 +95,7 @@ impl AppContext {
                         .node(cell.id)
                         .is_none_or(|node| node.parent != Some(row_entity.id))
                     || self
+                        .store
                         .views
                         .get(&cell.id)
                         .is_none_or(|view| !view.is::<TableCell>())
@@ -362,13 +364,13 @@ impl AppContext {
             self.install_view(entity.id, component);
         }
         for (entity, component) in positioned_rows {
-            self.views.insert(entity.id, Box::new(component));
+            self.store.views.insert(entity.id, Box::new(component));
         }
         for (entity, component) in positioned_cells {
-            self.views.insert(entity.id, Box::new(component));
+            self.store.views.insert(entity.id, Box::new(component));
         }
         if let Some(component) = positioned_table {
-            self.views.insert(table.id, Box::new(component));
+            self.store.views.insert(table.id, Box::new(component));
         }
         items.rows = next_rows;
         items.cells = next_cells;

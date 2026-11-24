@@ -10,10 +10,10 @@ use nana_ui_core::{
 use crate::view_components::project_common;
 use crate::widget_visual::push_component_image;
 use crate::{
-    AccessibilityRole, AccessibilityState, CONTEXT_MENU_HINTS, CONTEXT_MENU_IMAGE_BACKDROPS,
-    CONTEXT_MENU_IMAGES, ComponentElevation, ComponentTextRegion, ComponentTriggerSurface,
-    ComputedStyle, InteractionState, LayoutBox, MenuSurfaceKind, MutationQueue, NodeKind,
-    NodeStyle, SelectOptionData, SelectOptionGeometry, StableNodeId,
+    AccessibilityRole, AccessibilityState, AppContext, CONTEXT_MENU_HINTS,
+    CONTEXT_MENU_IMAGE_BACKDROPS, CONTEXT_MENU_IMAGES, ComponentElevation, ComponentTextRegion,
+    ComponentTriggerSurface, ComputedStyle, InteractionState, LayoutBox, MenuSurfaceKind,
+    MutationQueue, NodeKind, NodeStyle, SelectOptionData, SelectOptionGeometry, StableNodeId,
     TRIGGERED_OVERLAY_SURFACE_SLOT, TextHorizontalAlignment, TextVerticalAlignment,
     TriggeredMenuOverlay, UiWorld, WidgetFloatingOverlay, WidgetFloatingOverlayKind, WidgetGlyph,
     WidgetIcon, WidgetPaintCtx, WidgetPaintOp, WidgetPaintOutput, WidgetQuad, WidgetTaggedOp,
@@ -279,13 +279,23 @@ impl Default for Popover {
     }
 }
 
+pub(crate) static POPOVER_CAPABILITIES: crate::framework::PopoverCapabilities =
+    crate::framework::PopoverCapabilities {
+        dismiss_on_escape: AppContext::dismiss_popovers_on_escape,
+        close_within: AppContext::close_open_popovers_within,
+        dismiss_outside: AppContext::dismiss_popovers_outside,
+    };
+
+fn install_popover_capabilities(caps: &mut crate::framework::Capabilities) {
+    caps.popover = Some(&POPOVER_CAPABILITIES);
+    caps.add_open_menu_navigator(|cx, doc, key, _| cx.navigate_open_action_menu(doc, key));
+}
+
 impl crate::ComponentView for Popover {
     const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::POPOVER.type_id);
 
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
-        hooks: Some(|hooks| {
-            crate::framework::routes::popover(hooks);
-        }),
+        capabilities: Some(install_popover_capabilities),
         activation: Some(crate::AppContext::toggle_popover),
         activate_at: Some(crate::AppContext::activate_popover_at),
         lifecycle: Some(crate::AppContext::settle_popover),
@@ -483,9 +493,7 @@ impl crate::ComponentView for ActionMenu {
     }
 
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
-        hooks: Some(|hooks| {
-            crate::framework::routes::popover(hooks);
-        }),
+        capabilities: Some(install_popover_capabilities),
         activation: Some(crate::AppContext::toggle_action_menu),
         activate_at: Some(crate::AppContext::activate_action_menu_at),
         lifecycle: Some(crate::AppContext::settle_action_menu),

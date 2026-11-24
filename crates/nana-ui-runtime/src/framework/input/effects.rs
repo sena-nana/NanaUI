@@ -3,7 +3,6 @@
 //! derived from the world after an event, compared with what the host was
 //! last told through a cheap key, and sent only when it differs.
 
-use crate::framework::via;
 use std::time::Duration;
 
 use nana_ui_core::{CursorSpec, LogicalRect};
@@ -151,7 +150,12 @@ impl AppContext {
                 CursorIcon::NsResize
             };
         }
-        if target.is_some_and(|node| via!(self.table_column_edge_at(node, x, y))) {
+        if target.is_some_and(|node| {
+            self.behavior(node)
+                .and_then(|b| b.pointer_ops)
+                .and_then(|p| p.column_edge_at)
+                .is_some_and(|edge_at| edge_at(self, node, x, y))
+        }) {
             return CursorIcon::EwResize;
         }
         let css = target
@@ -206,7 +210,11 @@ impl AppContext {
     }
 
     fn text_input_key(&self, document: DocumentId) -> Option<TextInputKey> {
-        if via!(self.terminal_accepts_input(document)) {
+        if self
+            .capabilities
+            .terminal
+            .is_some_and(|term| (term.accepts_input)(self, document))
+        {
             return Some(TextInputKey::Terminal {
                 node: self.world.focused(document),
                 caret: self.projected_terminal_caret(document),
@@ -232,7 +240,11 @@ impl AppContext {
     /// purpose, where the IME anchors its candidates, and at most
     /// [`SurroundingText::MAX_BYTES`] of the text around the selection.
     pub(super) fn text_input_context(&self, document: DocumentId) -> Option<TextInputContext> {
-        if via!(self.terminal_accepts_input(document)) {
+        if self
+            .capabilities
+            .terminal
+            .is_some_and(|term| (term.accepts_input)(self, document))
+        {
             return Some(TextInputContext {
                 owner: self.world.focused(document).map_or(0, StableNodeId::get),
                 purpose: TextInputPurpose::Terminal,
@@ -299,8 +311,9 @@ impl AppContext {
 
     /// The focused terminal's caret cell where it shows in the window.
     fn projected_terminal_caret(&self, document: DocumentId) -> Option<LayoutBox> {
-        let caret = via!(self.terminal_caret_bounds(document))?;
-        let terminal = via!(self.focused_terminal_node(document))?;
+        let term = self.capabilities.terminal?;
+        let caret = (term.caret_bounds)(self, document)?;
+        let terminal = (term.focused_node)(self, document)?;
         Some(
             self.world
                 .project_input_bounds(terminal, caret)

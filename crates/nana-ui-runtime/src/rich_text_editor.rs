@@ -1010,14 +1010,33 @@ impl Geometry {
     }
 }
 
+static RICH_EDITOR_CAPABILITIES: crate::framework::RichEditorCapabilities =
+    crate::framework::RichEditorCapabilities {
+        pointer: AppContext::rich_editor_pointer,
+        key: AppContext::rich_editor_key,
+        composition: AppContext::rich_editor_composition,
+    };
+
+static RICH_EDITOR_POINTER_OPS: crate::framework::PointerOps = crate::framework::PointerOps {
+    prepare_context_menu: Some(|cx, id, x, y| {
+        cx.prepare_rich_editor_context_menu(Entity::from_stable_id(id), x, y)
+    }),
+    note_scroll: Some(AppContext::note_rich_editor_scroll),
+    minimap_navigate: Some(AppContext::text_editor_minimap_navigate),
+    close_text_atom: Some(AppContext::close_focused_text_atom),
+    ..crate::framework::PointerOps::EMPTY
+};
+
 impl ComponentView for RichTextEditor {
     const TYPE_ID: Option<&'static str> =
         Some(crate::component_descriptors::RICH_TEXT_EDITOR.type_id);
 
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
-        hooks: Some(|hooks| {
-            crate::framework::routes::rich_text_editor(hooks);
+        capabilities: Some(|caps| {
+            caps.rich_editor = Some(&RICH_EDITOR_CAPABILITIES);
+            caps.add_frame_ticker(|cx, now| cx.advance_rich_drag(now).into_iter().collect());
         }),
+        pointer_ops: Some(&RICH_EDITOR_POINTER_OPS),
         ..crate::TypeBehavior::NONE
     };
 

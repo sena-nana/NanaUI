@@ -400,11 +400,20 @@ impl AnchoredActionMenu {
     }
 }
 
+static ANCHORED_MENU_OVERLAY: crate::framework::OverlayBehavior =
+    crate::framework::OverlayBehavior {
+        note_anchored_menu_dismissed: Some(AppContext::note_anchored_menu_dismissed),
+        ..crate::framework::OverlayBehavior::EMPTY
+    };
+
 impl crate::ComponentView for AnchoredActionMenu {
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
-        hooks: Some(|hooks| {
-            crate::framework::routes::anchored_menu(hooks);
+        capabilities: Some(|caps| {
+            caps.add_open_menu_navigator(|cx, doc, key, _| {
+                cx.navigate_open_anchored_menu(doc, key)
+            });
         }),
+        overlay: Some(&ANCHORED_MENU_OVERLAY),
         ..crate::TypeBehavior::NONE
     };
 
@@ -818,17 +827,36 @@ fn context_menu_moved(
     }
 }
 
+static CONTEXT_MENU_A11Y: crate::framework::A11yBehavior = crate::framework::A11yBehavior {
+    activate_context_menu_index: Some(|cx, id, index| {
+        cx.activate_context_menu_index(Entity::from_stable_id(id), index)
+    }),
+    focus_context_menu_index: Some(|cx, id, index| {
+        cx.focus_context_menu_index(Entity::from_stable_id(id), index)
+    }),
+    ..crate::framework::A11yBehavior::EMPTY
+};
+
+static CONTEXT_MENU_OVERLAY: crate::framework::OverlayBehavior =
+    crate::framework::OverlayBehavior {
+        note_anchored_menu_dismissed: Some(AppContext::note_anchored_menu_dismissed),
+        dismiss_context_menu: Some(|cx, id| cx.dismiss_context_menu(Entity::from_stable_id(id))),
+        ..crate::framework::OverlayBehavior::EMPTY
+    };
+
 impl crate::ComponentView for ContextMenu {
     const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::CONTEXT_MENU.type_id);
 
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
-        hooks: Some(|hooks| {
-            crate::framework::routes::context_menu(hooks);
+        capabilities: Some(|caps| {
+            caps.add_open_menu_navigator(AppContext::navigate_open_context_menu);
         }),
         activation: Some(crate::AppContext::dismiss_context_menu),
         activate_at: Some(crate::AppContext::activate_context_menu_at),
         editable: Some(&crate::framework::Editable::<Self>::HOOKS),
         pointer: Some(&CONTEXT_MENU_POINTER),
+        a11y: Some(&CONTEXT_MENU_A11Y),
+        overlay: Some(&CONTEXT_MENU_OVERLAY),
         ..crate::TypeBehavior::NONE
     };
 

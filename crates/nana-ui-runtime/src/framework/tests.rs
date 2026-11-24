@@ -192,22 +192,22 @@ fn scoped_scroll_targets_follow_document_order_and_skip_unrelated_branches() {
     let foreign = context
         .create_component(other, ScrollView::new(ScrollAxes::Vertical))
         .unwrap();
-    context.last_layout_scope = vec![leaf.id, leaf.id, foreign.id];
+    context.layout.last_layout_scope = vec![leaf.id, leaf.id, foreign.id];
     assert_eq!(
         context.scoped_scroll_retention_targets(document),
         vec![first.id, inner.id]
     );
-    context.last_layout_scope.push(second.id);
+    context.layout.last_layout_scope.push(second.id);
     assert_eq!(
         context.scoped_scroll_retention_targets(document),
         vec![second.id, first.id, inner.id]
     );
-    context.last_layout_scope = vec![root.id];
+    context.layout.last_layout_scope = vec![root.id];
     assert!(context.scoped_scroll_retention_targets(document).is_empty());
     let mut mutations = MutationQueue::new();
     mutations.park_subtree(first.id);
     context.commit_mutations(mutations).unwrap();
-    context.last_layout_scope = vec![leaf.id];
+    context.layout.last_layout_scope = vec![leaf.id];
     assert!(context.scoped_scroll_retention_targets(document).is_empty());
 }
 
@@ -227,6 +227,7 @@ fn deleting_a_child_releases_its_layout_cache_before_another_frame() {
         .unwrap();
     assert!(
         context
+            .layout
             .layout_cache
             .used_padding(document, child.id)
             .is_some()
@@ -236,12 +237,14 @@ fn deleting_a_child_releases_its_layout_cache_before_another_frame() {
     context.commit_mutations(mutations).unwrap();
     assert!(
         context
+            .layout
             .layout_cache
             .used_padding(document, child.id)
             .is_none()
     );
     assert!(
         context
+            .layout
             .layout_cache
             .used_padding(document, root.id)
             .is_some()
@@ -262,12 +265,14 @@ fn closing_one_document_releases_its_layout_without_invalidating_another() {
     context.layout_document(second, viewport).unwrap();
     assert!(
         context
+            .layout
             .layout_cache
             .used_padding(first, first_root.id)
             .is_some()
     );
     assert!(
         context
+            .layout
             .layout_cache
             .used_padding(second, second_root.id)
             .is_some()
@@ -275,12 +280,14 @@ fn closing_one_document_releases_its_layout_without_invalidating_another() {
     context.remove_view(first_root).unwrap();
     assert!(
         context
+            .layout
             .layout_cache
             .used_padding(first, first_root.id)
             .is_none()
     );
     assert!(
         context
+            .layout
             .layout_cache
             .used_padding(second, second_root.id)
             .is_some()
@@ -290,6 +297,7 @@ fn closing_one_document_releases_its_layout_without_invalidating_another() {
     context.commit_mutations(mutations).unwrap();
     assert!(
         context
+            .layout
             .layout_cache
             .used_padding(second, second_root.id)
             .is_none()
@@ -301,6 +309,7 @@ fn closing_one_document_releases_its_layout_without_invalidating_another() {
     context.layout_document(second, viewport).unwrap();
     assert!(
         context
+            .layout
             .layout_cache
             .used_padding(second, second_root.id)
             .is_some()
@@ -1296,7 +1305,12 @@ fn property_grid_places_controls_drags_its_column_folds_and_disables() {
     };
     relayout(&mut context);
     let take = || std::mem::take(&mut *HEARD.lock().unwrap());
-    let parts = |context: &AppContext| context.read(grid, |g| g.parts.clone()).unwrap().unwrap();
+    let parts = |context: &AppContext| {
+        context
+            .assembled_slot::<crate::property_grid::GridParts>(grid.stable_id())
+            .cloned()
+            .unwrap()
+    };
     let row = |context: &AppContext, section: usize, row: usize| {
         parts(context).sections[section].rows[row].clone()
     };
@@ -2138,7 +2152,10 @@ fn tree_view_selects_toggles_drags_and_renames() {
         context.read(tree, |t| t.renaming().cloned()).unwrap(),
         Some(id("eye"))
     );
-    let field = context.read(tree, |t| t.rename_input).unwrap().unwrap();
+    let field = context
+        .assembled_slot::<crate::tree_view::TreeRenameInput>(tree.stable_id())
+        .unwrap()
+        .0;
     assert_eq!(context.world().focused(document), Some(field));
     assert!(context.replace_focused_text(document, "eyes").unwrap());
     input.route(&mut context, key("Enter", false)).unwrap();
@@ -2242,8 +2259,10 @@ fn area_layout_chrome_paints_every_frame_and_header() {
         context.world().node(root.stable_id()).unwrap().children[0],
     );
     let parts = context
-        .read(layout, |l| l.parts.as_ref().unwrap().nodes.clone())
-        .unwrap();
+        .assembled_slot::<crate::area_layout::AreaParts>(layout.stable_id())
+        .unwrap()
+        .nodes
+        .clone();
     let style = |context: &AppContext, id| {
         context
             .read(Entity::<AreaBox>::from_stable_id(id), |b| b.style.clone())
@@ -2317,7 +2336,12 @@ fn area_layout_places_editor_contents_and_switches_them_from_the_header() {
             .assembled_child(layout.stable_id(), key)
             .expect("keyed child")
     };
-    let parts = |context: &AppContext| context.read(layout, |l| l.parts.clone()).unwrap().unwrap();
+    let parts = |context: &AppContext| {
+        context
+            .assembled_slot::<crate::area_layout::AreaParts>(layout.stable_id())
+            .cloned()
+            .unwrap()
+    };
     let area = |context: &AppContext, id: &str| {
         parts(context)
             .nodes
@@ -2453,15 +2477,14 @@ fn area_layout_places_editor_contents_and_switches_them_from_the_header() {
 /// `id`'s header node in `layout`.
 fn area_header(context: &AppContext, layout: Entity<crate::AreaLayout>, id: &str) -> StableNodeId {
     context
-        .read(layout, |l| l.parts.clone())
-        .unwrap()
+        .assembled_slot::<crate::area_layout::AreaParts>(layout.stable_id())
         .unwrap()
         .nodes
-        .into_iter()
+        .iter()
         .find_map(|part| match part {
             crate::area_layout::AreaPart::Area {
                 id: area, header, ..
-            } if area == id => Some(header),
+            } if area == id => Some(*header),
             _ => None,
         })
         .expect("the area")
@@ -2510,7 +2533,12 @@ fn area_layout_resizes_splits_joins_maximizes_and_keeps_contents() {
             .assembled_child(layout.stable_id(), key)
             .expect("keyed child")
     };
-    let parts = |context: &AppContext| context.read(layout, |l| l.parts.clone()).unwrap().unwrap();
+    let parts = |context: &AppContext| {
+        context
+            .assembled_slot::<crate::area_layout::AreaParts>(layout.stable_id())
+            .cloned()
+            .unwrap()
+    };
     let area = |context: &AppContext, id: &str| {
         parts(context)
             .nodes
@@ -2794,7 +2822,12 @@ fn app_menu_bar_opens_switches_cascades_and_reports_ids() {
             .unwrap();
         context.rebuild_hit_test(document);
     };
-    let parts = |context: &AppContext| context.read(bar, |b| b.parts.clone()).unwrap().unwrap();
+    let parts = |context: &AppContext| {
+        context
+            .assembled_slot::<crate::app_menu_bar::MenuBarParts>(bar.stable_id())
+            .cloned()
+            .unwrap()
+    };
     let center = |context: &AppContext, id| {
         let b = context.world().component_layout_box(id).unwrap();
         (b.x + b.width / 2.0, b.y + b.height / 2.0)
@@ -3132,7 +3165,10 @@ fn scrub_field_drags_types_steps_and_shows_mixed_values() {
     };
     relayout(&mut context);
     let texts = |context: &AppContext| -> Vec<String> {
-        let parts = context.read(field, |f| f.parts).unwrap().unwrap();
+        let parts = context
+            .assembled_slot::<crate::scrub_field::ScrubParts>(field.stable_id())
+            .copied()
+            .unwrap();
         [parts.label, parts.value]
             .iter()
             .map(|id| context.world().text(*id).unwrap_or("").to_owned())
@@ -3202,7 +3238,10 @@ fn scrub_field_drags_types_steps_and_shows_mixed_values() {
     input
         .route(&mut context, at(PointerPhase::Up, 50.0, none))
         .unwrap();
-    let parts = context.read(field, |f| f.parts).unwrap().unwrap();
+    let parts = context
+        .assembled_slot::<crate::scrub_field::ScrubParts>(field.stable_id())
+        .copied()
+        .unwrap();
     assert!(context.read(field, |f| f.editing).unwrap());
     assert_eq!(context.world().focused(document), Some(parts.input));
     // typing replaces the selected value
@@ -14794,8 +14833,8 @@ fn equal_stacks_share_one_style_with_their_records() {
         .unwrap();
     context.append_child(root, other).unwrap();
     let other = other.id;
-    assert!(!context.views.contains_key(&cells[0]));
-    assert!(!context.views.contains_key(&other));
+    assert!(!context.store.views.contains_key(&cells[0]));
+    assert!(!context.store.views.contains_key(&other));
     let view_style = |id: StableNodeId| {
         context
             .read(Entity::<Stack>::from_stable_id(id), |stack| {

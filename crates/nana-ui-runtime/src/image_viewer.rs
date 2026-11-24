@@ -740,11 +740,44 @@ impl Default for ImageViewer {
     }
 }
 
+static IMAGE_VIEWER_DRAG_OPS: crate::framework::ActiveDragOps = crate::framework::ActiveDragOps {
+    pre_gesture: true,
+    cancel_on_touch_scroll: false,
+    update: |cx, _, node, ptr, x, y, _| {
+        cx.image_viewer_pointer_move(crate::Entity::from_stable_id(node), ptr, x, y)
+    },
+    end: |cx, _, node, ptr, _, _, _, _| {
+        cx.image_viewer_pointer_up(crate::Entity::from_stable_id(node), ptr)
+    },
+};
+
+static IMAGE_VIEWER_POINTER_OPS: crate::framework::PointerOps = crate::framework::PointerOps {
+    early_press: true,
+    skip_on_activation_click: true,
+    press: Some(|cx, _doc, id, ptr, button, x, y| {
+        if button == 0 {
+            let viewer = crate::Entity::<ImageViewer>::from_stable_id(id);
+            Ok(cx.image_viewer_pointer_down(viewer, ptr, x, y)?.is_some())
+        } else {
+            Ok(false)
+        }
+    }),
+    wheel_pre_overlay: Some(|cx, id, x, y, dy| {
+        let viewer = crate::Entity::<ImageViewer>::from_stable_id(id);
+        cx.image_viewer_wheel(viewer, x, y, dy)
+    }),
+    ..crate::framework::PointerOps::EMPTY
+};
+
 impl ComponentView for ImageViewer {
     const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::IMAGE_VIEWER.type_id);
 
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        capabilities: Some(|caps| {
+            caps.image_viewer_step = Some(AppContext::step_focused_image_viewer);
+        }),
         assembler: Some(AppContext::assemble_image_viewer),
+        pointer_ops: Some(&IMAGE_VIEWER_POINTER_OPS),
         ..crate::TypeBehavior::NONE
     };
 
@@ -1064,16 +1097,21 @@ impl AppContext {
         };
         let metrics = self.world().theme_metrics();
         let id = viewer.stable_id();
-        self.update_component(viewer, |viewer, cx| {
+        let (dragging, event) = self.update_component(viewer, |viewer, cx| {
             let event = viewer.pointer_down(&viewer.geometry(bounds, metrics), pointer_id, x, y);
-            if viewer.dragging.is_some() {
+            let dragging = viewer.dragging.is_some();
+            if dragging {
                 cx.mutations().capture_pointer(pointer_id, id);
             }
             if let Some(event) = event {
                 cx.emit(event);
             }
-            event
-        })
+            (dragging, event)
+        })?;
+        if dragging && let Some(document) = self.world().document_of(id) {
+            self.begin_active_drag(document, pointer_id, id, &IMAGE_VIEWER_DRAG_OPS);
+        }
+        Ok(event)
     }
 
     pub fn image_viewer_pointer_move(
@@ -1117,6 +1155,9 @@ impl AppContext {
         pointer_id: u64,
     ) -> Result<bool, crate::FrameworkError> {
         let id = viewer.stable_id();
+        if let Some(document) = self.world().document_of(id) {
+            self.clear_active_drag(document, pointer_id, id);
+        }
         self.update_component(viewer, |viewer, cx| {
             let ended = viewer.pointer_up(pointer_id);
             if ended {

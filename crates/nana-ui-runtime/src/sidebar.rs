@@ -652,8 +652,8 @@ impl ComponentView for SidebarRow {
     const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::SIDEBAR_ROW.type_id);
 
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
-        hooks: Some(|hooks| {
-            crate::framework::routes::tools_row(hooks);
+        capabilities: Some(|caps| {
+            caps.sync_row_tools = Some(AppContext::sync_row_tools);
         }),
         activation: Some(crate::AppContext::activate_sidebar_row),
         slot_assembler: Some(assemble_sidebar_row_tools),
@@ -1329,11 +1329,21 @@ impl ComponentView for SidebarSection {
         Some(crate::component_descriptors::SIDEBAR_SECTION.type_id);
 
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
-        hooks: Some(|hooks| {
-            crate::framework::routes::sidebar_section(hooks);
+        capabilities: Some(|caps| {
+            caps.sync_sidebar_section_hover = Some(AppContext::sync_sidebar_section_hover);
         }),
         activation: Some(crate::AppContext::activate_sidebar_section),
         slot_assembler: Some(AppContext::assemble_sidebar_section),
+        animation_sample: Some(|cx, target, sample, _| {
+            let expansion = match sample.value {
+                crate::MotionValue::Scalar(value) => value,
+                _ => sample.progress,
+            };
+            cx.update_component(Entity::<Self>::from_stable_id(target), |section, _| {
+                section.animation_progress = expansion.clamp(0.0, 1.0);
+            })
+            .is_ok()
+        }),
         ..crate::TypeBehavior::NONE
     };
 

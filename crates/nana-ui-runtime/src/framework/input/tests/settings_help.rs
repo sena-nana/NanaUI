@@ -63,8 +63,8 @@ impl Fixture {
 
     fn button(&self) -> StableNodeId {
         self.cx
-            .read(self.row, |row| row.help_slot)
-            .unwrap()
+            .assembled_slot::<crate::settings::SettingsRowAssembled>(self.row.stable_id())
+            .and_then(|s| s.help_slot)
             .expect("a row with a hint behind a help button has one")
     }
 
@@ -75,8 +75,8 @@ impl Fixture {
     fn opened_text_shown(&self) -> bool {
         let text = self
             .cx
-            .read(self.row, |row| row.help_text_slot)
-            .unwrap()
+            .assembled_slot::<crate::settings::SettingsRowAssembled>(self.row.stable_id())
+            .and_then(|s| s.help_text_slot)
             .unwrap();
         !self.cx.world().node_style(text).unwrap().layout.hidden
     }

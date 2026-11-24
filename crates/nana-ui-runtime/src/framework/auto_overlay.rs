@@ -2,7 +2,6 @@
 //! ([`crate::MediaTransportBar::auto_hide`]): routed input reveals or
 //! conceals them, and the animation clock hides them when idle.
 
-use crate::framework::via;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
@@ -126,7 +125,11 @@ impl AppContext {
         if ran == Some(active) && !snapshot.menu_toggled {
             return Ok(());
         }
-        via!(self.drive_auto_overlay(bar, None)).map(drop)
+        if let Some(drive) = self.capabilities.auto_overlay_drive {
+            drive(self, bar.stable_id(), None).map(drop)
+        } else {
+            Ok(())
+        }
     }
 
     pub(crate) fn has_auto_overlays(&self) -> bool {
@@ -203,7 +206,9 @@ impl AppContext {
                 }
                 continue;
             }
-            let _ = via!(self.drive_auto_overlay(bar, reveal));
+            if let Some(drive) = self.capabilities.auto_overlay_drive {
+                let _ = drive(self, bar.stable_id(), reveal);
+            }
         }
     }
 
@@ -218,7 +223,12 @@ impl AppContext {
                     bar.visibility.wakeup().is_some_and(|wakeup| wakeup <= now)
                 })
                 .unwrap_or(false);
-            if due && via!(self.drive_auto_overlay(bar, None)).unwrap_or(false) {
+            if due
+                && self
+                    .capabilities
+                    .auto_overlay_drive
+                    .is_some_and(|drive| drive(self, bar.stable_id(), None).unwrap_or(false))
+            {
                 flipped.push(bar.stable_id());
             }
         }

@@ -8,9 +8,9 @@ use crate::query::query_matches;
 use crate::select::{field_style_for_size, menu_option_label, select_option_at};
 use crate::view_components::project_common;
 use crate::{
-    AccessibilityRole, AccessibilityState, ComponentView, InteractionState, MutationQueue,
-    NodeKind, NodeStyle, SelectMenuScroll, SelectOptionData, SelectVisual, SemanticPaint,
-    StableNodeId, TextContent, TextInputState, UiWorld,
+    AccessibilityRole, AccessibilityState, AppContext, ComponentView, Entity, InteractionState,
+    MutationQueue, NodeKind, NodeStyle, SelectMenuScroll, SelectOptionData, SelectVisual,
+    SemanticPaint, StableNodeId, TextContent, TextInputState, UiWorld,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -371,13 +371,12 @@ impl ComponentView for SearchDropdown {
                 }
             })
         }),
-        hooks: Some(|hooks| {
-            hooks.search_dropdown = Some(&SEARCH_DROPDOWN_HOOKS);
-            crate::framework::routes::option_list(hooks);
-            crate::framework::routes::search_dropdown(hooks);
+        capabilities: Some(|caps| {
+            caps.add_choice_hook(&SEARCH_DROPDOWN_KEY_HOOKS);
         }),
         editable: Some(&crate::framework::Editable::<Self>::HOOKS),
         pointer: Some(&crate::framework::SEARCH_DROPDOWN_MENU_POINTER),
+        a11y: Some(&SEARCH_DROPDOWN_A11Y),
         ..crate::TypeBehavior::NONE
     };
 
@@ -553,11 +552,20 @@ fn option_matches(option: &SearchDropdownOption, query: &str) -> bool {
             .is_some_and(|hint| query_matches(hint, query))
 }
 
+static SEARCH_DROPDOWN_A11Y: crate::framework::A11yBehavior = crate::framework::A11yBehavior {
+    activate_select_option: Some(AppContext::activate_select_option),
+    set_expanded: Some(|cx, id, expand| {
+        cx.set_search_dropdown_opened(Entity::from_stable_id(id), expand)
+    }),
+    ..crate::framework::A11yBehavior::EMPTY
+};
+
 /// The router reaches this list's keyboard only once one exists.
-pub(crate) static SEARCH_DROPDOWN_HOOKS: crate::framework::ChoiceHooks =
-    crate::framework::ChoiceHooks {
+static SEARCH_DROPDOWN_KEY_HOOKS: crate::framework::ChoiceKeyHooks =
+    crate::framework::ChoiceKeyHooks {
         adjust: crate::AppContext::adjust_focused_search_dropdown,
         commit: crate::AppContext::commit_focused_search_dropdown,
+        commit_on_space: false,
     };
 
 #[cfg(test)]

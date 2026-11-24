@@ -340,12 +340,31 @@ pub(crate) fn split_direction(axis: SplitAxis) -> FlexDirection {
     }
 }
 
+static SPLIT_PANE_DRAG_OPS: crate::framework::ActiveDragOps = crate::framework::ActiveDragOps {
+    pre_gesture: false,
+    cancel_on_touch_scroll: false,
+    update: |cx, doc, _, ptr, x, y, _| cx.update_split_resize(doc, ptr, x, y),
+    end: |cx, doc, _, ptr, _, _, _, cancel| cx.end_split_resize(doc, ptr, cancel),
+};
+
+static SPLIT_PANE_CAPABILITIES: crate::framework::SplitPaneCapabilities =
+    crate::framework::SplitPaneCapabilities {
+        handle_near_hit: AppContext::split_handle_near_hit,
+        is_handle: AppContext::is_split_handle,
+        begin_resize: AppContext::begin_split_resize,
+        adjust_focused: AppContext::adjust_focused_split,
+    };
+
 impl ComponentView for SplitPane {
     const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::SPLIT_PANE.type_id);
 
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
-        hooks: Some(|hooks| {
-            crate::framework::routes::split_pane(hooks);
+        capabilities: Some(|caps| {
+            caps.split_pane = Some(&SPLIT_PANE_CAPABILITIES);
+            caps.add_hover_move(|cx, doc, target, x, y, now| {
+                cx.sync_split_handle_hover_near_hit(doc, x, y, target, now)
+            });
+            caps.add_hover_clear(|cx, doc| cx.sync_split_handle_hover(doc, None));
         }),
         slot_assembler: Some(crate::AppContext::assemble_split_pane),
         ..crate::TypeBehavior::NONE
@@ -529,14 +548,23 @@ impl AppContext {
         let Some(entity) = self.split_for_handle(target) else {
             return Ok(false);
         };
-        self.update_component(entity, |pane, cx| {
+        let started = self.update_component(entity, |pane, cx| {
             cx.mutations().request_focus(document, Some(target));
             cx.mutations().capture_pointer(pointer_id, target);
             pane.apply(SplitPaneMutation::Focus);
             pane.apply(SplitPaneMutation::ResizeStart);
             pane.apply(SplitPaneMutation::ResizeMove { x, y });
             true
-        })
+        })?;
+        if started {
+            self.begin_active_drag(
+                document,
+                pointer_id,
+                entity.stable_id(),
+                &SPLIT_PANE_DRAG_OPS,
+            );
+        }
+        Ok(started)
     }
 
     pub fn update_split_resize(
@@ -569,6 +597,7 @@ impl AppContext {
         let Some(entity) = self.split_for_handle(target) else {
             return Ok(false);
         };
+        self.clear_active_drag(document, pointer_id, entity.stable_id());
         self.update_component(entity, |pane, cx| {
             if cancel {
                 pane.apply(SplitPaneMutation::Reset);

@@ -4,12 +4,13 @@ mod row;
 mod sections;
 
 pub use group::{SettingsCard, SettingsCollapsibleCard, SettingsGroup};
-pub(crate) use group::{mark_settings_group, resolve_row_hint_placement_now};
 pub use page::{
     SettingsBack, SettingsPage, SettingsPageAssembly, SettingsSidebar, SettingsSidebarAssembly,
     SettingsTabSelected,
 };
 pub(crate) use row::ASSEMBLED_ROW_STACK_BELOW;
+#[cfg(test)]
+pub(crate) use row::SettingsRowAssembled;
 pub use row::{HintPlacement, SettingsRow};
 pub use sections::{
     AboutMetadata, AboutSection, AboutSectionAssembly, AppearanceSection,
@@ -85,7 +86,10 @@ mod tests {
             .unwrap();
         context.append_child(parent, row).unwrap();
         let viewport = crate::LayoutViewport::new(1200.0, 800.0);
-        let copy = context.read(row, |row| row.copy_slot.unwrap()).unwrap();
+        let copy = context
+            .assembled_slot::<row::SettingsRowAssembled>(row.stable_id())
+            .and_then(|s| s.copy_slot)
+            .unwrap();
         for (width, stacked) in [(360.0, true), (480.0, false), (640.0, false), (479.0, true)] {
             context
                 .update_component(parent, |parent, _| {
@@ -216,7 +220,10 @@ mod tests {
             );
             let style = context.world().node_style(row.stable_id()).unwrap();
             assert_eq!(style.layout.align_items, AlignSpec::Center, "{kind}");
-            let copy = context.read(row, |row| row.copy_slot).unwrap().unwrap();
+            let copy = context
+                .assembled_slot::<row::SettingsRowAssembled>(row.stable_id())
+                .and_then(|s| s.copy_slot)
+                .unwrap();
             let offset = middle(&context, control) - middle(&context, copy);
             assert!(offset.abs() <= 1.0, "{kind}: {offset}");
             // the hint stays right under the name, the copy's own gap away
@@ -258,7 +265,7 @@ mod tests {
         for (case, hint, edit, align) in cases {
             for (kind, control) in row_controls(&mut context) {
                 let (row, label) = laid_out_row(&mut context, control, hint, edit);
-                let line = context.read(row, |r| r.line_node(row.stable_id())).unwrap();
+                let line = context.settings_row_line_node(row.stable_id());
                 let style = context.world().node_style(line).unwrap();
                 assert_eq!(style.layout.align_items, align, "{case}, {kind}");
                 if case == "error" {
@@ -283,8 +290,10 @@ mod tests {
         let row = context
             .mount_settings_leaf_row(document(), "Preference", None, control.stable_id())
             .unwrap();
-        let (hint, copy) = context
-            .read(row, |row| (row.hint_slot.unwrap(), row.copy_slot.unwrap()))
+        let hint = context.read(row, |row| row.hint_slot.unwrap()).unwrap();
+        let copy = context
+            .assembled_slot::<row::SettingsRowAssembled>(row.stable_id())
+            .and_then(|s| s.copy_slot)
             .unwrap();
         for next in [Some("Details"), None, Some("Updated details")] {
             context

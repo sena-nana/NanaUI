@@ -145,7 +145,6 @@ pub struct PropertyGrid {
     pub label_width: f32,
     pub style: NodeStyle,
     pub(crate) dragging: bool,
-    pub(crate) parts: Option<GridParts>,
 }
 
 impl PropertyGrid {
@@ -155,7 +154,6 @@ impl PropertyGrid {
             label_width: 96.0,
             style: grid_style(),
             dragging: false,
-            parts: None,
         }
     }
 
@@ -200,14 +198,7 @@ impl ComponentView for PropertyGrid {
         }
         next.label_width = self.label_width;
         next.dragging = self.dragging;
-        next.parts = self.parts.take();
         *self = next;
-    }
-
-    fn keep_framework_state(&mut self, previous: &Self) {
-        if self.parts.is_none() {
-            self.parts = previous.parts.clone();
-        }
     }
 
     fn node_kind(&self) -> NodeKind {
@@ -604,7 +595,8 @@ impl AppContext {
                 )
             })
             .collect::<Vec<_>>();
-        let alive = snapshot.parts.clone().filter(|parts| {
+        let existing_parts = self.assembled_slot::<GridParts>(grid.stable_id()).cloned();
+        let alive = existing_parts.clone().filter(|parts| {
             self.world().contains(parts.divider)
                 && self.world().contains(parts.stash)
                 && parts.sections.len() == shape.len()
@@ -624,11 +616,11 @@ impl AppContext {
             Some(parts) => parts,
             None => {
                 // controls move out of the old rows before those go
-                if let Some(old) = &snapshot.parts {
+                if let Some(old) = &existing_parts {
                     gone.extend(old.sections.iter().map(|section| section.header));
                     gone.extend(old.sections.iter().map(|section| section.body));
                 }
-                let divider = match &snapshot.parts {
+                let divider = match &existing_parts {
                     Some(old) if self.world().contains(old.divider) => old.divider,
                     _ => self
                         .create_detached_component(
@@ -640,7 +632,7 @@ impl AppContext {
                         )?
                         .stable_id(),
                 };
-                let stash = match &snapshot.parts {
+                let stash = match &existing_parts {
                     Some(old) if self.world().contains(old.stash) => old.stash,
                     _ => {
                         let mut stash = GridBox::new("property-stash");
@@ -760,9 +752,8 @@ impl AppContext {
             }
             self.commit_mutations(mutations)?;
         }
-        if snapshot.parts.as_ref() != Some(&parts) {
-            let stored = parts.clone();
-            self.update_component(grid, |grid, _| grid.parts = Some(stored))?;
+        if self.assembled_slot::<GridParts>(grid.stable_id()) != Some(&parts) {
+            self.set_assembled_slot(grid.stable_id(), parts.clone());
         }
         let mut children = Vec::new();
         for section in &parts.sections {

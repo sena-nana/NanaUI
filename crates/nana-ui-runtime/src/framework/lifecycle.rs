@@ -40,31 +40,26 @@ impl AppContext {
             .node(item.id)
             .ok_or(FrameworkError::MissingView(item.id))?
             .document;
-        let (
-            after_label,
-            content,
-            label,
-            note,
-            detail,
-            copy_slot,
-            label_line_slot,
-            label_slot,
-            note_slot,
-            detail_slot,
-        ) = self.read(item, |row| {
+        let (after_label, content, label, note, detail) = self.read(item, |row| {
             (
                 row.after_label,
                 row.slots.content,
                 row.label.clone(),
                 row.note.clone(),
                 row.detail.clone(),
-                row.copy_slot(),
-                row.label_line_slot(),
-                row.label_slot(),
-                row.note_slot(),
-                row.detail_slot(),
             )
         })?;
+        let existing_assembled = self
+            .assembled_slot::<crate::view_components::ListItemAssembled>(item.id)
+            .cloned()
+            .unwrap_or_default();
+        let (copy_slot, label_line_slot, label_slot, note_slot, detail_slot) = (
+            existing_assembled.copy_slot,
+            existing_assembled.label_line_slot,
+            existing_assembled.label_slot,
+            existing_assembled.note_slot,
+            existing_assembled.detail_slot,
+        );
         let live = |cx: &Self, id: Option<StableNodeId>| id.filter(|id| cx.world.contains(*id));
         let mark = if content.is_none() {
             live(self, after_label)
@@ -97,16 +92,17 @@ impl AppContext {
                 || note_slot.is_some()
                 || detail_slot.is_some()
             {
-                self.update_component(item, |row, _| {
-                    if let Some(assembled) = row.assembled.as_mut() {
-                        assembled.copy_slot = None;
-                        assembled.label_line_slot = None;
-                        assembled.label_slot = None;
-                        assembled.note_slot = None;
-                        assembled.detail_slot = None;
-                        row.clear_assembled_if_empty();
-                    }
-                })?;
+                let mut assembled = existing_assembled;
+                assembled.copy_slot = None;
+                assembled.label_line_slot = None;
+                assembled.label_slot = None;
+                assembled.note_slot = None;
+                assembled.detail_slot = None;
+                if assembled.is_empty() {
+                    self.take_assembled_slot::<crate::view_components::ListItemAssembled>(item.id);
+                } else {
+                    self.set_assembled_slot(item.id, assembled);
+                }
                 cleared = true;
             }
             return Ok(cleared);
@@ -269,14 +265,13 @@ impl AppContext {
             || note_slot != note_id
             || detail_slot != detail_id
         {
-            self.update_component(item, |row, _| {
-                let assembled = row.assembled_mut();
-                assembled.copy_slot = Some(copy_id);
-                assembled.label_line_slot = Some(line_id);
-                assembled.label_slot = Some(label_id);
-                assembled.note_slot = note_id;
-                assembled.detail_slot = detail_id;
-            })?;
+            let mut assembled = existing_assembled;
+            assembled.copy_slot = Some(copy_id);
+            assembled.label_line_slot = Some(line_id);
+            assembled.label_slot = Some(label_id);
+            assembled.note_slot = note_id;
+            assembled.detail_slot = detail_id;
+            self.set_assembled_slot(item.id, assembled);
             changed = true;
         }
         Ok(changed)
@@ -287,7 +282,13 @@ impl AppContext {
         item: Entity<ListItem>,
         slots: ListItemSlots,
     ) -> Result<bool, FrameworkError> {
-        let (banded, copy_slot) = self.read(item, |row| (row.bands_slots(), row.copy_slot()))?;
+        let banded = self.read(item, ListItem::bands_slots)?;
+        let existing_assembled = self
+            .assembled_slot::<crate::view_components::ListItemAssembled>(item.id)
+            .cloned()
+            .unwrap_or_default();
+        let copy_slot = existing_assembled.copy_slot;
+        let trailing_auto_margin = existing_assembled.trailing_auto_margin;
         let ordered = [slots.leading, slots.content, slots.trailing]
             .into_iter()
             .flatten()
@@ -392,11 +393,8 @@ impl AppContext {
             || held
                 .iter()
                 .any(|&(band, slot)| self.world.child_ids(band) != [slot])
-            || self.read(item, |row| {
-                row.slots != slots
-                    || (auto_margin_target.is_some()
-                        && row.trailing_auto_margin() != auto_margin_target)
-            })?;
+            || self.read(item, |row| row.slots != slots)?
+            || (auto_margin_target.is_some() && trailing_auto_margin != auto_margin_target);
         if !changed {
             return Ok(false);
         }
@@ -415,11 +413,13 @@ impl AppContext {
         })?;
         let item_id = item.id;
         let document = item_node.document;
+        if auto_margin_target.is_some() {
+            let mut assembled = existing_assembled;
+            assembled.trailing_auto_margin = auto_margin_target;
+            self.set_assembled_slot(item_id, assembled);
+        }
         self.update_component(item, |row, cx| {
             row.slots = slots;
-            if auto_margin_target.is_some() {
-                row.assembled_mut().trailing_auto_margin = auto_margin_target;
-            }
             let mutations = cx.mutations();
             for &band in &created {
                 mutations.create(
@@ -1036,6 +1036,7 @@ impl AppContext {
                 // A host shows only its active child: a row hangs the
                 // tooltip under an anchor of its own, so its slots stay.
                 let host = if self
+                    .store
                     .views
                     .get(&id)
                     .is_some_and(|view| view.is::<ListItem>())
@@ -1093,13 +1094,14 @@ impl AppContext {
                     mutations.despawn_subtree(existing.host);
                 }
                 self.world.commit(mutations)?;
-                self.views.remove(&existing.overlay);
+                self.store.views.remove(&existing.overlay);
                 self.component_lifecycle.remove_tooltip(id);
             }
             (None, None) => {}
         }
 
         let has_timeout = self
+            .store
             .views
             .get(&id)
             .and_then(|view| view.downcast_ref::<crate::Toast>())
@@ -1110,7 +1112,7 @@ impl AppContext {
             self.stop_toast_timer(id)?;
         }
 
-        let desired_loading = self.views.get(&id).and_then(|view| {
+        let desired_loading = self.store.views.get(&id).and_then(|view| {
             if view
                 .downcast_ref::<Button>()
                 .is_some_and(|button| button.loading)
@@ -1159,6 +1161,7 @@ impl AppContext {
 
     pub(super) fn sync_sidebar_section_body_port(&mut self, id: StableNodeId) {
         let Some(body) = self
+            .store
             .views
             .get(&id)
             .and_then(|view| view.downcast_ref::<SidebarSection>())
@@ -1170,6 +1173,7 @@ impl AppContext {
             return;
         };
         let Some(list) = self
+            .store
             .views
             .get_mut(&body)
             .and_then(|view| view.downcast_mut::<List>())
@@ -1209,6 +1213,7 @@ impl AppContext {
                 .rich_text_presses
                 .retain(|_, target| *target != id);
             if let Some(markdown) = self
+                .store
                 .views
                 .get(&id)
                 .and_then(|view| view.downcast_ref::<crate::NativeMarkdown>())
@@ -1216,6 +1221,7 @@ impl AppContext {
                 markdown.clear_selection();
             }
             if let Some(text) = self
+                .store
                 .views
                 .get(&id)
                 .and_then(|view| view.downcast_ref::<crate::SelectableRichText>())
@@ -1227,6 +1233,7 @@ impl AppContext {
             .text_area_resizes
             .retain(|_, target| *target != id);
         if let Some(area) = self
+            .store
             .views
             .get_mut(&id)
             .and_then(|view| view.downcast_mut::<TextArea>())
@@ -1237,6 +1244,7 @@ impl AppContext {
         }
         #[cfg(feature = "image-viewer")]
         if let Some(viewer) = self
+            .store
             .views
             .get_mut(&id)
             .and_then(|view| view.downcast_mut::<crate::ImageViewer>())
@@ -1246,6 +1254,7 @@ impl AppContext {
         }
         #[cfg(feature = "charts")]
         if let Some(chart) = self
+            .store
             .views
             .get_mut(&id)
             .and_then(|view| view.downcast_mut::<crate::Chart>())
@@ -1257,6 +1266,7 @@ impl AppContext {
             }
         }
         if let Some(button) = self
+            .store
             .views
             .get_mut(&id)
             .and_then(|view| view.downcast_mut::<IconButton>())
@@ -1274,6 +1284,7 @@ impl AppContext {
     /// Arms a mounted toast's dismiss timer, once per mount.
     fn start_toast_timer(&mut self, id: StableNodeId) -> Result<(), FrameworkError> {
         let timeout = self
+            .store
             .views
             .get(&id)
             .and_then(|view| view.downcast_ref::<crate::Toast>())
@@ -1326,7 +1337,7 @@ impl AppContext {
 
     /// A toast timeline finished at `now`: an armed timer starts counting,
     /// a counting one has run out. Returns whether the toast expired.
-    pub(super) fn advance_toast_timer(
+    pub(crate) fn advance_toast_timer(
         &mut self,
         id: StableNodeId,
         now: Duration,
@@ -1458,14 +1469,20 @@ impl AppContext {
         }
         // A modal surface declared open opens once it is in the tree, as
         // when a block built detached is first inserted.
-        if self.world.is_mounted(id) {
-            via!(self.sync_modal_open_at(id))?;
+        if self.world.is_mounted(id)
+            && let Some(sync_modal) = self
+                .behavior(id)
+                .and_then(|b| b.overlay)
+                .and_then(|o| o.sync_modal_open)
+        {
+            sync_modal(self, id)?;
         }
         // Parking cancels a component's own timeline; remounting restarts it.
         // Projections only start timelines and surface motion for mounted
         // nodes, and a remount may never project again on its own.
         if self.world.is_mounted(id) {
             if self
+                .store
                 .views
                 .get(&id)
                 .is_some_and(|view| super::reprojects_on_mount(view.as_ref().type_id()))
@@ -1474,6 +1491,7 @@ impl AppContext {
             }
             let mut mutations = MutationQueue::new();
             if self
+                .store
                 .views
                 .get(&id)
                 .is_some_and(|view| view.is::<crate::Skeleton>())
@@ -1491,6 +1509,7 @@ impl AppContext {
                 mutations.start_animation_with_playback(spec, crate::Skeleton::PULSE_PLAYBACK);
             }
             if self
+                .store
                 .views
                 .get(&id)
                 .is_some_and(|view| view.is::<crate::Spinner>())
@@ -1516,6 +1535,7 @@ impl AppContext {
 
     fn tooltip_configuration(&self, id: StableNodeId) -> Option<crate::IconButtonTooltip> {
         if let Some(button) = self
+            .store
             .views
             .get(&id)
             .and_then(|view| view.downcast_ref::<IconButton>())
@@ -1523,6 +1543,7 @@ impl AppContext {
             return (!button.disabled).then(|| button.tooltip.clone()).flatten();
         }
         if let Some(item) = self
+            .store
             .views
             .get(&id)
             .and_then(|view| view.downcast_ref::<ListItem>())
@@ -1566,12 +1587,12 @@ impl AppContext {
         target: StableNodeId,
         overlay: Option<StableNodeId>,
     ) -> Result<(), FrameworkError> {
-        if self
-            .views
-            .get(&target)
-            .is_some_and(|view| view.is::<IconButton>())
+        if let Some(note_tooltip) = self
+            .behavior(target)
+            .and_then(|b| b.overlay)
+            .and_then(|o| o.note_tooltip)
         {
-            via!(self.note_icon_button_tooltip(target, overlay.is_some()))?;
+            note_tooltip(self, target, overlay.is_some())?;
         }
         let host = self
             .component_lifecycle
@@ -1661,6 +1682,7 @@ impl AppContext {
 
     fn sync_hover_card_focus(&mut self, id: StableNodeId) {
         let Some(card) = self
+            .store
             .views
             .get(&id)
             .and_then(|view| view.downcast_ref::<crate::HoverCard>())
@@ -1776,7 +1798,13 @@ impl AppContext {
             .map(|(id, _)| *id)
             .collect::<Vec<_>>();
         for id in others {
-            via!(self.close_hover_card(id))?;
+            if let Some(close) = self
+                .behavior(id)
+                .and_then(|b| b.overlay)
+                .and_then(|o| o.close_hover_card)
+            {
+                close(self, id)?;
+            }
         }
         let Some(lifecycle) = self.component_lifecycle.hover_cards.get_mut(&target) else {
             return Ok(());
@@ -1784,7 +1812,13 @@ impl AppContext {
         lifecycle.close_at = None;
         if delay == 0 {
             lifecycle.show_at = None;
-            via!(self.open_hover_card(target))?;
+            if let Some(open) = self
+                .behavior(target)
+                .and_then(|b| b.overlay)
+                .and_then(|o| o.open_hover_card)
+            {
+                open(self, target)?;
+            }
             return Ok(());
         }
         lifecycle.show_at = now.checked_add(Duration::from_millis(delay));
@@ -1814,7 +1848,7 @@ impl AppContext {
         Ok(())
     }
 
-    pub(super) fn open_hover_card(&mut self, target: StableNodeId) -> Result<bool, FrameworkError> {
+    pub(crate) fn open_hover_card(&mut self, target: StableNodeId) -> Result<bool, FrameworkError> {
         if self
             .component_lifecycle
             .hover_cards
@@ -1836,7 +1870,7 @@ impl AppContext {
         Ok(true)
     }
 
-    pub(super) fn close_hover_card(
+    pub(crate) fn close_hover_card(
         &mut self,
         target: StableNodeId,
     ) -> Result<bool, FrameworkError> {
@@ -1863,9 +1897,9 @@ impl AppContext {
     }
 
     /// Drop lifecycle entries whose component is gone.
-    pub(super) fn sweep_hover_cards(&mut self) {
+    pub(crate) fn sweep_hover_cards(&mut self) {
         self.component_lifecycle.hover_cards.retain(|target, _| {
-            self.views.contains_key(target) || self.world.is_elided_stack(*target)
+            self.store.views.contains_key(target) || self.world.is_elided_stack(*target)
         });
     }
 
@@ -2134,6 +2168,7 @@ pub(crate) mod lifecycle_hooks {
     ) -> Result<(), FrameworkError> {
         let id = entity.stable_id();
         let origin = context
+            .store
             .views
             .get(&id)
             .and_then(|view| view.downcast_ref::<Workspace>())

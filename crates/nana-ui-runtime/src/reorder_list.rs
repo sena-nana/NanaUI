@@ -12,6 +12,7 @@ use std::sync::Arc;
 use nana_ui_core::UI_METRICS;
 use nana_ui_core::{ControlSize, FlexDirection, FlexWrap, LengthSpec};
 
+use crate::AppContext;
 use crate::view_components::project_common;
 use crate::{
     AccessibilityRole, AccessibilityState, ComponentView, InteractionState, LayoutBox,
@@ -2119,8 +2120,29 @@ impl Default for ReorderList {
     }
 }
 
+static REORDER_DRAG_OPS: crate::framework::ActiveDragOps = crate::framework::ActiveDragOps {
+    pre_gesture: false,
+    cancel_on_touch_scroll: false,
+    update: |cx, doc, _, ptr, x, y, _| cx.update_reorder_list_pointer(doc, ptr, x, y),
+    end: |cx, doc, _, ptr, x, y, _, cancel| cx.end_reorder_list_pointer(doc, ptr, x, y, cancel),
+};
+
+static REORDER_LIST_CAPABILITIES: crate::framework::ReorderListCapabilities =
+    crate::framework::ReorderListCapabilities {
+        begin_pointer: AppContext::begin_reorder_list_pointer,
+        cancel_drag: AppContext::cancel_reorder_list_drag,
+        focused_key: AppContext::focused_reorder_list_key,
+    };
+
 impl ComponentView for ReorderList {
     const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::REORDER_LIST.type_id);
+
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        capabilities: Some(|caps| {
+            caps.reorder_list = Some(&REORDER_LIST_CAPABILITIES);
+        }),
+        ..crate::TypeBehavior::NONE
+    };
 
     fn share_layouts(
         &mut self,
@@ -2355,14 +2377,19 @@ impl crate::AppContext {
             return Ok(false);
         }
         let on_control = self.is_reorder_row_control(list_id, target);
-        self.update_component(entity, |list, cx| {
+        enum Outcome {
+            Ignored,
+            Armed,
+            Started,
+        }
+        let outcome = self.update_component(entity, |list, cx| {
             // A new press replaces one armed before it whose release went to
             // whatever its control started (a slider's drag, say).
             list.armed = None;
             let in_flight = list.is_dragging();
             list.apply_pointer_with_rows(ReorderListPointer::Down { x, y }, &rows, &exclude);
             if !list.is_dragging() {
-                return false;
+                return Outcome::Ignored;
             }
             if !in_flight && let Some(drag) = list.drag.as_mut() {
                 drag.origin = Some([bounds.x, bounds.y]);
@@ -2373,12 +2400,23 @@ impl crate::AppContext {
                     control: target,
                     drag,
                 });
-                return false;
+                return Outcome::Armed;
             }
             cx.mutations().capture_pointer(pointer_id, list_id);
             cx.mutations().request_focus(document, Some(list_id));
-            true
-        })
+            Outcome::Started
+        })?;
+        match outcome {
+            Outcome::Ignored => Ok(false),
+            Outcome::Armed => {
+                self.arm_drag(document, pointer_id, list_id, &REORDER_DRAG_OPS);
+                Ok(false)
+            }
+            Outcome::Started => {
+                self.begin_active_drag(document, pointer_id, list_id, &REORDER_DRAG_OPS);
+                Ok(true)
+            }
+        }
     }
 
     /// Moves the drag that holds `pointer_id`. Over another list of its
@@ -2516,6 +2554,7 @@ impl crate::AppContext {
         let Some(entity) = self.reorder_list_entity(target) else {
             return Ok(false);
         };
+        self.clear_active_drag(document, pointer_id, target);
         // A point that no longer maps into the list cancels; either way the
         // capture is released.
         let point = self.world().pointer_layout_position(target, x, y);
