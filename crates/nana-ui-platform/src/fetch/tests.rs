@@ -14,6 +14,7 @@ use ureq::unversioned::transport::{LazyBuffers, NextTimeout, Transport};
 #[cfg(feature = "fetch")]
 use url::Url;
 
+#[cfg(feature = "fetch")]
 use super::transport::CancellableTcpTransport;
 use super::*;
 
