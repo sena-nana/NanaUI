@@ -1592,7 +1592,7 @@ fn an_alignment_change_is_not_text_work_for_a_host_measured_label() {
 fn a_font_set_change_drops_cached_glyph_advances() {
     struct GlyphHost {
         generation: u64,
-        misses: usize,
+        shapes: usize,
     }
     impl TextShaper for GlyphHost {
         fn shape(
@@ -1602,23 +1602,8 @@ fn a_font_set_change_drops_cached_glyph_advances() {
             style: &nana_ui_runtime::ComputedStyle,
             constraints: nana_ui_runtime::TextShapeConstraints,
         ) -> nana_ui_runtime::TextMetrics {
+            self.shapes += 1;
             MeasureTextShaper.shape(id, text, style, constraints)
-        }
-
-        fn shape_cached(
-            &mut self,
-            id: StableNodeId,
-            text: &TextContent,
-            style: &nana_ui_runtime::ComputedStyle,
-            constraints: nana_ui_runtime::TextShapeConstraints,
-            glyphs: &mut nana_ui_runtime::GlyphCache,
-        ) -> nana_ui_runtime::TextMetrics {
-            self.misses += text
-                .value
-                .chars()
-                .filter(|&ch| glyphs.peek(ch, style).is_none())
-                .count();
-            MeasureTextShaper.shape_cached(id, text, style, constraints, glyphs)
         }
 
         fn font_generation(&self) -> u64 {
@@ -1628,17 +1613,17 @@ fn a_font_set_change_drops_cached_glyph_advances() {
     let (mut runtime, _) = document(["x".to_owned()]);
     let mut shaper = GlyphHost {
         generation: 0,
-        misses: 0,
+        shapes: 0,
     };
     settle(&mut runtime, &mut shaper);
-    let settled_misses = shaper.misses;
-    assert!(settled_misses > 0);
+    let settled_shapes = shaper.shapes;
+    assert!(settled_shapes > 0);
     shaper.generation = 1;
     runtime.flush(viewport(), &mut shaper).unwrap();
     assert!(
-        shaper.misses > settled_misses,
-        "the advance was measured again under the new font set: before={settled_misses}, after={}",
-        shaper.misses
+        shaper.shapes > settled_shapes,
+        "the text was measured again under the new font set: before={settled_shapes}, after={}",
+        shaper.shapes
     );
 }
 

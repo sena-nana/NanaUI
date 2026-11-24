@@ -17,7 +17,28 @@ use super::glyph::{
 use super::ordinals::GraphemeOrdinals;
 use super::pipeline::{self, CONTENT_MASK, GlyphInstance};
 use super::raster;
-use super::shape_cache::ShapeHasher;
+
+#[derive(Default)]
+pub(super) struct ShapeHasher(u64);
+
+impl Hasher for ShapeHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        let mut state = if self.0 == 0 {
+            0xcbf2_9ce4_8422_2325
+        } else {
+            self.0
+        };
+        for byte in bytes {
+            state ^= u64::from(*byte);
+            state = state.wrapping_mul(0x1000_0000_01b3);
+        }
+        self.0 = state;
+    }
+}
 
 /// Open or extend the segment an entry's glyph at `offset` belongs to.
 ///

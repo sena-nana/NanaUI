@@ -3135,8 +3135,6 @@ impl UiWorld {
             allocations: 0,
             allocated_bytes: 0,
             text_shaped_runs: 0,
-            text_layout_cache_hits: 0,
-            text_layout_cache_misses: 0,
             text_wrap_layouts: 0,
             intrinsic_measure_requests: 0,
             intrinsic_measure_cache_hits: 0,
@@ -3146,9 +3144,6 @@ impl UiWorld {
             baseline_queries: 0,
             cross_context_measure_hits: 0,
             cross_context_measure_misses: 0,
-            glyph_cache_hits: None,
-            glyph_cache_misses: None,
-            cache_eviction: None,
             // A drain always follows the commits it drains, so 0 here is an
             // observed "validated nothing", not a missing measurement.
             validation_nodes_scanned: Some(std::mem::take(

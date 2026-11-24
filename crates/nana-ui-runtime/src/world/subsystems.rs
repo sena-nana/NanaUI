@@ -218,14 +218,12 @@ impl Default for WorldMotion {
     }
 }
 
-/// Text shaping caches, presenters, language/scale defaults, and editor caches.
+/// Text presenters, language/scale defaults, and editor caches.
 pub(in crate::world) struct WorldText {
     pub(in crate::world) hidden_carets: Vec<StableNodeId>,
     pub(in crate::world) presenters: HashMap<String, Box<dyn TextPresenter>>,
     #[cfg(feature = "rich-text")]
     pub(in crate::world) code_presentations: RefCell<Vec<(u64, Arc<[crate::TextSpan]>)>>,
-    pub(in crate::world) text_layout_cache: crate::text_layout_cache::TextLayoutCache,
-    pub(in crate::world) glyph_cache: crate::GlyphCache,
     pub(in crate::world) text_backend: Option<crate::text_node::TextBackendEpoch>,
     pub(in crate::world) default_language: Option<nana_text::font::LanguageTag>,
     pub(in crate::world) engine_fallback_language: Option<nana_text::font::LanguageTag>,
@@ -250,8 +248,6 @@ impl Default for WorldText {
             presenters: HashMap::new(),
             #[cfg(feature = "rich-text")]
             code_presentations: RefCell::new(Vec::new()),
-            text_layout_cache: crate::text_layout_cache::TextLayoutCache::default(),
-            glyph_cache: crate::GlyphCache::default(),
             text_backend: None,
             default_language: None,
             engine_fallback_language: None,

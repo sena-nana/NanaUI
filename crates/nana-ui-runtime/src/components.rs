@@ -2368,23 +2368,6 @@ pub trait TextShaper {
         nana_text::TextWorkCounters::default()
     }
 
-    /// Shape using the Runtime-owned [`crate::GlyphCache`].
-    ///
-    /// The default ignores the cache so hosts without a glyph backend leave
-    /// `glyph_cache_*` as `None`. [`MeasureTextShaper`] and `NanaTextShaper`
-    /// record per-glyph advances here.
-    fn shape_cached(
-        &mut self,
-        id: StableNodeId,
-        text: &TextContent,
-        style: &ComputedStyle,
-        constraints: TextShapeConstraints,
-        glyphs: &mut crate::GlyphCache,
-    ) -> TextMetrics {
-        let _ = glyphs;
-        self.shape(id, text, style, constraints)
-    }
-
     /// Return the exact horizontal position of a UTF-8 boundary in one
     /// unwrapped line. Backends should override this with their paragraph
     /// engine; the prefix-shaped default keeps lightweight test shapers valid.
@@ -2555,8 +2538,7 @@ pub trait TextShaper {
 }
 
 /// Finite-metrics shaper for CPU hosts (framework `text-table`, layout-stop).
-/// Wrap height stays against the last content box. Per-character advances go
-/// through Runtime [`crate::GlyphCache`] lookup/insert.
+/// Wrap height stays against the last content box.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct MeasureTextShaper;
 
@@ -2569,25 +2551,6 @@ impl TextShaper for MeasureTextShaper {
         constraints: TextShapeConstraints,
     ) -> TextMetrics {
         measure_em_text(text, style, constraints)
-    }
-
-    fn shape_cached(
-        &mut self,
-        _id: StableNodeId,
-        text: &TextContent,
-        style: &ComputedStyle,
-        constraints: TextShapeConstraints,
-        glyphs: &mut crate::GlyphCache,
-    ) -> TextMetrics {
-        if constraints.preserve_lines {
-            return measure_em_text(text, style, constraints);
-        }
-        let em = style.font_size.max(1.0);
-        let mut intrinsic = 0.0;
-        for ch in text.value.chars() {
-            intrinsic += glyphs.lookup_or_insert(ch, style, em);
-        }
-        em_metrics(intrinsic, em, constraints)
     }
 }
 

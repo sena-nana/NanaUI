@@ -5749,8 +5749,8 @@ fn occurrence_geometry_updates_without_reshaping_unchanged_text() {
         ..crate::TextEditorRenderOptions::default()
     };
     let value = "alpha beta gamma\nalpha beta gamma";
-    let present = |selection: crate::TextSelection,
-                   cache: &mut crate::text_layout_cache::TextLayoutCache| {
+    let mut inner = super::reflow_oracle::bundled_face_shaper();
+    let present = |selection: crate::TextSelection, inner: &mut crate::NanaTextEngineShaper| {
         let state = TextInputState {
             value: value.into(),
             selection,
@@ -5772,37 +5772,40 @@ fn occurrence_geometry_updates_without_reshaping_unchanged_text() {
             None,
             None,
         );
-        let mut glyphs = crate::GlyphCache::default();
-        let mut inner = FunctionalShaper::default();
-        let mut shaper = CountingShaper::new(&mut inner, cache, &mut glyphs);
-        shape_text_input_presentation(
+        let mut shaper = CountingShaper::new(inner);
+        let presentation = shape_text_input_presentation(
             node(1),
             source,
             &style,
             crate::TextShapeConstraints::default(),
             &crate::components::TextOverlayMetrics::default(),
             &mut shaper,
-        )
+        );
+        (presentation, shaper.take_text_work())
     };
 
-    let mut cache = crate::text_layout_cache::TextLayoutCache::default();
-    let first = present(crate::TextSelection::caret(1), &mut cache);
+    let (first, first_work) = present(crate::TextSelection::caret(1), &mut inner);
     assert_eq!(first.occurrence_marks.len(), 1);
-    let (_, first_misses, _) = cache.take_counters();
-    assert!(first_misses > 0, "first derivation must shape");
+    assert!(
+        first_work.layout_cache_misses.unwrap_or(0) > 0,
+        "first derivation must shape"
+    );
 
-    let second = present(crate::TextSelection::caret(1), &mut cache);
-    let (_, rerun_misses, _) = cache.take_counters();
-    assert_eq!(rerun_misses, 0, "same layout inputs must not shape again");
+    let (second, rerun_work) = present(crate::TextSelection::caret(1), &mut inner);
+    assert_eq!(
+        rerun_work.layout_cache_misses.unwrap_or(0),
+        0,
+        "same layout inputs must not shape again"
+    );
     assert_eq!(second.occurrence_marks, first.occurrence_marks);
 
-    let moved = present(
+    let (moved, moved_work) = present(
         crate::TextSelection::caret(value.len().saturating_sub(2)),
-        &mut cache,
+        &mut inner,
     );
-    let (_, moved_misses, _) = cache.take_counters();
     assert_eq!(
-        moved_misses, 0,
+        moved_work.layout_cache_misses.unwrap_or(0),
+        0,
         "moving the caret must reuse unchanged text layout"
     );
     assert_ne!(moved.occurrence_marks, first.occurrence_marks);
@@ -8219,12 +8222,8 @@ fn hot_path_allocations_and_text_shape_are_idle_zero_and_rise_on_mutation() {
         .unwrap();
     let after_shape = world.last_text_work_counters();
     assert!(after_shape.text_nodes_shaped > 0);
-    assert!(after_shape.layout_cache_misses > Some(0));
-    assert_eq!(after_shape.layout_cache_hits, Some(0));
     let after_shape_work = world.last_work_counters();
     assert!(after_shape_work.text_shaped_runs > 0);
-    assert!(after_shape_work.text_layout_cache_misses > 0);
-    assert_eq!(after_shape_work.text_layout_cache_hits, 0);
     assert!(after_shape_work.allocations > 0);
 
     let ids = seed_nodes(&work.layout_frontier_seeds);
@@ -8247,7 +8246,6 @@ fn hot_path_allocations_and_text_shape_are_idle_zero_and_rise_on_mutation() {
     assert_eq!(idle.counters().allocations, 0);
     assert_eq!(idle.counters().allocated_bytes, 0);
     assert_eq!(idle.counters().text_shaped_runs, 0);
-    assert_eq!(idle.counters().text_layout_cache_misses, 0);
     assert!(world.last_work_counters().allocations > 0);
     world
         .shape_text(&idle.text, &mut FunctionalShaper::default())
@@ -8272,11 +8270,10 @@ fn hot_path_allocations_and_text_shape_are_idle_zero_and_rise_on_mutation() {
         .unwrap();
     let mutated_shape = world.last_text_work_counters();
     assert!(mutated_shape.text_nodes_shaped > 0);
-    assert!(mutated_shape.layout_cache_misses > Some(0));
 }
 
 #[test]
-fn text_layout_cache_miss_then_hit_and_shaper_without_glyph_backend_omits_glyph_cache() {
+fn engine_layout_cache_miss_then_hit_and_shaper_omits_glyph_cache() {
     let mut world = UiWorld::new();
     let mut queue = MutationQueue::new();
     queue.create(node(1), document(1), NodeKind::Text);
@@ -8289,37 +8286,24 @@ fn text_layout_cache_miss_then_hit_and_shaper_without_glyph_backend_omits_glyph_
     world.commit(queue).unwrap();
     let work = world.take_system_work();
     world.resolve_styles(&work.style).unwrap();
-    assert_eq!(
-        world
-            .text
-            .glyph_cache
-            .peek('c', world.computed_style(node(1)).unwrap()),
-        None
-    );
 
-    // Default TextShaper::shape_cached ignores GlyphCache.
-    let mut shaper = FunctionalShaper::default();
+    let mut shaper = super::reflow_oracle::bundled_face_shaper();
     world.shape_text(&work.text, &mut shaper).unwrap();
     let missed = world.last_text_work_counters();
     assert!(missed.layout_cache_misses >= Some(1));
     assert_eq!(missed.layout_cache_hits, Some(0));
     assert!(missed.text_nodes_shaped >= 1);
-    assert_eq!(
-        world
-            .text
-            .glyph_cache
-            .peek('c', world.computed_style(node(1)).unwrap()),
-        None
-    );
+    assert_eq!(world.last_work_counters().glyph_cache_hits, None);
+    assert_eq!(world.last_work_counters().glyph_cache_misses, None);
 
     // The same node again is not a cache question at all: nothing about it
-    // changed, so the pass skips it on revision before building a key.
+    // changed, so the pass skips it on revision before touching the engine.
     world.shape_text(&work.text, &mut shaper).unwrap();
     let repeat = world.last_text_work_counters();
     assert_eq!(repeat.text_nodes_revision_skipped, 1);
     assert_eq!(repeat.text_source_clones, 0);
 
-    // Another node with the same text and style is the cache hit.
+    // Another node with the same text and style hits NativeTextEngine's LayoutCache.
     let mut twin = MutationQueue::new();
     twin.create(node(2), document(1), NodeKind::Text);
     twin.set_text(
@@ -8336,13 +8320,6 @@ fn text_layout_cache_miss_then_hit_and_shaper_without_glyph_backend_omits_glyph_
     assert!(hit.layout_cache_hits >= Some(1));
     assert_eq!(hit.layout_cache_misses, Some(0));
     assert_eq!(hit.text_nodes_shaped, 0);
-    assert_eq!(
-        world
-            .text
-            .glyph_cache
-            .peek('c', world.computed_style(node(2)).unwrap()),
-        None
-    );
 
     let mut place = MutationQueue::new();
     place.write_layout(
@@ -8378,13 +8355,6 @@ fn text_layout_cache_miss_then_hit_and_shaper_without_glyph_backend_omits_glyph_
     assert!(skipped.skipped_unchanged >= 1);
     assert_eq!(skipped.key_builds, 0);
     assert_eq!(skipped.cache_lookups, 0);
-    assert_eq!(
-        world
-            .text
-            .glyph_cache
-            .peek('c', world.computed_style(node(1)).unwrap()),
-        None
-    );
 }
 
 #[test]
@@ -8483,7 +8453,7 @@ fn layout_scoped_shape_reshapes_when_wrap_width_or_text_changes() {
     world.commit(queue).unwrap();
     let work = world.take_system_work();
     world.resolve_styles(&work.style).unwrap();
-    let mut shaper = FunctionalShaper::default();
+    let mut shaper = super::reflow_oracle::bundled_face_shaper();
     world.shape_text(&work.text, &mut shaper).unwrap();
     let mut place = MutationQueue::new();
     place.write_layout(
@@ -8521,8 +8491,6 @@ fn layout_scoped_shape_reshapes_when_wrap_width_or_text_changes() {
     let width_stats = crate::text_shape_stats::snapshot();
     assert!(after_width.layout_cache_misses >= Some(1));
     assert_eq!(width_stats.skipped_unchanged, 0);
-    assert_eq!(width_stats.key_builds, 1);
-    assert_eq!(width_stats.cache_lookups, 1);
 
     let mut rewrite = MutationQueue::new();
     rewrite.set_text(
@@ -8536,10 +8504,10 @@ fn layout_scoped_shape_reshapes_when_wrap_width_or_text_changes() {
     world.resolve_styles(&mutated.style).unwrap();
     crate::text_shape_stats::reset();
     world.shape_text(&mutated.text, &mut shaper).unwrap();
-    let after_text = crate::text_shape_stats::snapshot();
-    assert_eq!(after_text.skipped_unchanged, 0);
-    assert!(after_text.key_builds >= 1);
-    assert!(after_text.cache_lookups >= 1);
+    let after_text = world.last_text_work_counters();
+    let after_text_stats = crate::text_shape_stats::snapshot();
+    assert_eq!(after_text_stats.skipped_unchanged, 0);
+    assert!(after_text.layout_cache_misses >= Some(1));
     // The scheduled pass already resolved the new text against the unchanged
     // box, so the layout-scoped pass has nothing left to do.
     crate::text_shape_stats::reset();
@@ -8579,7 +8547,7 @@ fn layout_scoped_shape_duplicate_and_long_text_skip_without_rebuilding_keys() {
     world.commit(queue).unwrap();
     let work = world.take_system_work();
     world.resolve_styles(&work.style).unwrap();
-    let mut shaper = FunctionalShaper::default();
+    let mut shaper = super::reflow_oracle::bundled_face_shaper();
     world.shape_text(&work.text, &mut shaper).unwrap();
     let scheduled = world.last_text_work_counters();
     assert!(scheduled.layout_cache_hits >= Some(1));
@@ -8614,42 +8582,7 @@ fn layout_scoped_shape_duplicate_and_long_text_skip_without_rebuilding_keys() {
 }
 
 #[test]
-fn glyph_cache_miss_then_hit_on_measure_text_shaper() {
-    #[derive(Default)]
-    struct CountingMeasureShaper {
-        hits: usize,
-        misses: usize,
-    }
-    impl TextShaper for CountingMeasureShaper {
-        fn shape(
-            &mut self,
-            id: StableNodeId,
-            text: &TextContent,
-            style: &ComputedStyle,
-            constraints: crate::TextShapeConstraints,
-        ) -> TextMetrics {
-            MeasureTextShaper.shape(id, text, style, constraints)
-        }
-
-        fn shape_cached(
-            &mut self,
-            id: StableNodeId,
-            text: &TextContent,
-            style: &ComputedStyle,
-            constraints: crate::TextShapeConstraints,
-            glyphs: &mut crate::GlyphCache,
-        ) -> TextMetrics {
-            for ch in text.value.chars() {
-                if glyphs.peek(ch, style).is_some() {
-                    self.hits += 1;
-                } else {
-                    self.misses += 1;
-                }
-            }
-            MeasureTextShaper.shape_cached(id, text, style, constraints, glyphs)
-        }
-    }
-
+fn measure_text_shaper_skips_on_revision_and_omits_glyph_cache() {
     let mut world = UiWorld::new();
     let mut queue = MutationQueue::new();
     queue.create(node(1), document(1), NodeKind::Text);
@@ -8657,47 +8590,18 @@ fn glyph_cache_miss_then_hit_on_measure_text_shaper() {
     world.commit(queue).unwrap();
     let work = world.take_system_work();
     world.resolve_styles(&work.style).unwrap();
-    assert_eq!(
-        world
-            .text
-            .glyph_cache
-            .peek('a', world.computed_style(node(1)).unwrap()),
-        None
-    );
 
-    // text-table / framework bench production shaper, via UiWorld::shape_text.
-    let mut shaper = CountingMeasureShaper::default();
+    let mut shaper = MeasureTextShaper;
     world.shape_text(&work.text, &mut shaper).unwrap();
-    let missed = world.last_text_work_counters();
-    assert_eq!((shaper.misses, shaper.hits), (2, 0));
-    assert!(missed.layout_cache_misses >= Some(1));
-    assert!(
-        world
-            .text
-            .glyph_cache
-            .peek('a', world.computed_style(node(1)).unwrap())
-            .is_some()
-    );
+    assert_eq!(world.last_text_work_counters().text_nodes_shaped, 1);
+    assert_eq!(world.last_work_counters().glyph_cache_hits, None);
+    assert_eq!(world.last_work_counters().glyph_cache_misses, None);
 
-    // Unchanged: skipped on revision, so neither cache is consulted again.
     world.shape_text(&work.text, &mut shaper).unwrap();
     assert_eq!(
         world.last_text_work_counters().text_nodes_revision_skipped,
         1
     );
-    assert_eq!((shaper.misses, shaper.hits), (2, 0));
-
-    let mut patch = MutationQueue::new();
-    patch.set_text(node(1), TextContent { value: "ba".into() });
-    world.commit(patch).unwrap();
-    let reused = world.take_system_work();
-    world.resolve_styles(&reused.style).unwrap();
-    shaper.hits = 0;
-    shaper.misses = 0;
-    world.shape_text(&reused.text, &mut shaper).unwrap();
-    let hit = world.last_text_work_counters();
-    assert_eq!((shaper.misses, shaper.hits), (0, 2));
-    assert!(hit.layout_cache_misses >= Some(1));
 }
 
 fn confirm_modal_visual() -> crate::ModalFrameVisual {
@@ -12668,12 +12572,14 @@ fn an_invalid_measurement_neither_drops_nor_poisons_the_layout_cache() {
     world.resolve_styles(&work.style).unwrap();
     assert!(world.shape_text(&work.text, &mut shaper).is_err());
 
-    // The retry measures the failed text again instead of reading the NaN back,
-    // and the text measured before the failure is still cached.
+    // The retry measures the failed batch again instead of keeping NaN, and the
+    // node resolved before the failure remains intact.
     world.shape_text(&work.text, &mut shaper).unwrap();
     let retried = world.last_text_work_counters();
-    assert!(retried.layout_cache_hits >= Some(1), "{retried:?}");
+    assert_eq!(retried.text_nodes_shaped, 2, "{retried:?}");
+    assert!(world.text_metrics(node(1)).unwrap().width.is_finite());
     assert!(world.text_metrics(node(2)).unwrap().width.is_finite());
+    assert!(world.text_metrics(node(3)).unwrap().width.is_finite());
 }
 
 #[test]

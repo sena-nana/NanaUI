@@ -50,7 +50,6 @@ mod file_tab;
 mod find_replace;
 mod form_surfaces;
 mod framework;
-mod glyph_cache;
 mod gpu_slots;
 #[cfg(feature = "graph-canvas")]
 mod graph_canvas;
@@ -164,7 +163,6 @@ mod terminal;
 mod text_editing;
 mod text_engine_shaper;
 mod text_input_limit;
-mod text_layout_cache;
 mod text_node;
 #[cfg(any(test, feature = "benchmark"))]
 pub mod text_shape_stats;
@@ -308,7 +306,6 @@ pub use framework::{
 };
 #[doc(hidden)]
 pub use framework::{EditableHooks, TypeBehavior, TypeHooks};
-pub use glyph_cache::GlyphCache;
 pub use gpu_slots::{
     GPU_TEXTURE_VIEW_RENDERER, GPU_VIEW_RENDERER, GpuTextureView, GpuView, GpuViewMode,
     GpuViewPalette, HOST_TEXTURE_RENDERER, TextureSlotName, gpu_view_params, pack_gpu_revision,

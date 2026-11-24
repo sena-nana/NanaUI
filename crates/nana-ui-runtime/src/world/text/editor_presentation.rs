@@ -1,602 +1,17 @@
-//! Text shaping, editor presentation and display mappings.
+//! Editor presentation, display views, decorations, overlays, and coordinate frames.
 
-use super::*;
 use std::collections::HashMap;
-
-use crate::text_node::TextBackendEpoch;
-use nana_text::TextEngine as _;
 
 use crate::components::{
     TextDiagnosticHit, TextDiagnosticLabel, TextDiagnosticMark, TextDiagnosticSeverity,
     TextDiagnosticSpan,
 };
+use crate::world::*;
 
-pub(super) struct CountingShaper<'a, S: TextShaper> {
-    pub(super) inner: &'a mut S,
-    pub(super) cache: &'a mut crate::text_layout_cache::TextLayoutCache,
-    pub(super) glyphs: &'a mut crate::GlyphCache,
-    pub(super) runs: usize,
-    pub(super) wrap_layouts: usize,
-    /// Cache keys built, and the text bytes each one copied and hashed.
-    pub(super) keys: usize,
-    pub(super) key_bytes: usize,
-    /// The host's font generation, read once for the pass's keys.
-    font_generation: u64,
-}
-
-impl<'a, S: TextShaper> CountingShaper<'a, S> {
-    pub(super) fn new(
-        inner: &'a mut S,
-        cache: &'a mut crate::text_layout_cache::TextLayoutCache,
-        glyphs: &'a mut crate::GlyphCache,
-    ) -> Self {
-        let font_generation = inner.font_generation();
-        Self {
-            inner,
-            cache,
-            glyphs,
-            runs: 0,
-            wrap_layouts: 0,
-            keys: 0,
-            key_bytes: 0,
-            font_generation,
-        }
-    }
-}
-
-impl<S: TextShaper> TextShaper for CountingShaper<'_, S> {
-    fn strut_metrics(&mut self, style: &ComputedStyle) -> Option<crate::FontStrut> {
-        self.inner.strut_metrics(style)
-    }
-
-    fn font_generation(&self) -> u64 {
-        self.inner.font_generation()
-    }
-
-    fn retains_measurement(&self, id: StableNodeId) -> bool {
-        self.inner.retains_measurement(id)
-    }
-
-    fn text_engine(&self) -> Option<nana_text::SharedTextEngine> {
-        self.inner.text_engine()
-    }
-
-    fn take_text_work(&mut self) -> nana_text::TextWorkCounters {
-        self.inner.take_text_work()
-    }
-
-    fn with_text_probes<R>(
-        &mut self,
-        text: &TextContent,
-        style: &ComputedStyle,
-        constraints: crate::TextShapeConstraints,
-        consume: impl FnOnce(&mut dyn TextShaper) -> R,
-    ) -> R {
-        let Self {
-            inner,
-            cache,
-            glyphs,
-            runs,
-            wrap_layouts,
-            keys,
-            key_bytes,
-            font_generation,
-        } = self;
-        inner.with_text_probes(text, style, constraints, |prepared| {
-            let mut adapter = PreparedCountingShaper {
-                inner: prepared,
-                cache,
-                glyphs,
-                runs,
-                wrap_layouts,
-                keys,
-                key_bytes,
-                font_generation: *font_generation,
-            };
-            consume(&mut adapter)
-        })
-    }
-
-    fn horizontal_offset(
-        &mut self,
-        id: StableNodeId,
-        text: &TextContent,
-        offset: usize,
-        style: &ComputedStyle,
-    ) -> f32 {
-        self.inner.horizontal_offset(id, text, offset, style)
-    }
-
-    fn text_position(
-        &mut self,
-        id: StableNodeId,
-        text: &TextContent,
-        offset: usize,
-        style: &ComputedStyle,
-        constraints: crate::TextShapeConstraints,
-    ) -> (f32, f32, f32) {
-        self.inner
-            .text_position(id, text, offset, style, constraints)
-    }
-
-    fn text_caret_position(
-        &mut self,
-        id: StableNodeId,
-        text: &TextContent,
-        offset: usize,
-        affinity: crate::TextAffinity,
-        style: &ComputedStyle,
-        constraints: crate::TextShapeConstraints,
-    ) -> (f32, f32, f32) {
-        self.inner
-            .text_caret_position(id, text, offset, affinity, style, constraints)
-    }
-
-    fn text_hit_at_point(
-        &mut self,
-        id: StableNodeId,
-        text: &TextContent,
-        x: f32,
-        y: f32,
-        style: &ComputedStyle,
-        constraints: crate::TextShapeConstraints,
-    ) -> Option<crate::TextHit> {
-        self.inner
-            .text_hit_at_point(id, text, x, y, style, constraints)
-    }
-
-    fn text_caret_visual_step(
-        &mut self,
-        id: StableNodeId,
-        text: &TextContent,
-        offset: usize,
-        affinity: crate::TextAffinity,
-        rightwards: bool,
-        style: &ComputedStyle,
-        constraints: crate::TextShapeConstraints,
-    ) -> Option<crate::TextHit> {
-        self.inner.text_caret_visual_step(
-            id,
-            text,
-            offset,
-            affinity,
-            rightwards,
-            style,
-            constraints,
-        )
-    }
-
-    fn text_highlights(
-        &mut self,
-        id: StableNodeId,
-        text: &TextContent,
-        selection: (usize, usize),
-        style: &ComputedStyle,
-        constraints: crate::TextShapeConstraints,
-    ) -> Vec<LayoutBox> {
-        self.inner
-            .text_highlights(id, text, selection, style, constraints)
-    }
-
-    fn shape(
-        &mut self,
-        id: StableNodeId,
-        text: &TextContent,
-        style: &ComputedStyle,
-        constraints: crate::TextShapeConstraints,
-    ) -> TextMetrics {
-        // A node the host measures from a retained layout: keying the cache
-        // would copy and hash the whole text to find what the host answers
-        // with one read. Editors are exactly that, and their text is the
-        // longest in the document. The measurement still counts as a run the
-        // cache did not answer -- only the key and the lookup are skipped.
-        if self.inner.retains_measurement(id) {
-            self.runs = self.runs.saturating_add(1);
-            if constraints.wrap {
-                self.wrap_layouts = self.wrap_layouts.saturating_add(1);
-            }
-            return inner_shape_cached(self.inner, id, text, style, constraints, self.glyphs);
-        }
-        let key = layout_cache_key(text, style, constraints, self.font_generation);
-        self.keys += 1;
-        self.key_bytes += text.value.len();
-        if let Some(metrics) = layout_cache_lookup(self.cache, &key) {
-            return metrics;
-        }
-        self.runs = self.runs.saturating_add(1);
-        if constraints.wrap {
-            self.wrap_layouts = self.wrap_layouts.saturating_add(1);
-        }
-        let metrics = inner_shape_cached(self.inner, id, text, style, constraints, self.glyphs);
-        // An invalid measurement fails the pass; caching it would fail every
-        // retry with the same answer the host has since stopped giving.
-        if validate_text_metrics(id, metrics).is_ok() {
-            self.cache.insert(key, metrics);
-        }
-        metrics
-    }
-
-    fn shape_cached(
-        &mut self,
-        id: StableNodeId,
-        text: &TextContent,
-        style: &ComputedStyle,
-        constraints: crate::TextShapeConstraints,
-        _glyphs: &mut crate::GlyphCache,
-    ) -> TextMetrics {
-        self.shape(id, text, style, constraints)
-    }
-}
-
-// Keep the host's prepared geometry batch while retaining Runtime measurement
-// accounting for any shapes requested by editor decorations inside the batch.
-struct PreparedCountingShaper<'a> {
-    inner: &'a mut dyn TextShaper,
-    cache: &'a mut crate::text_layout_cache::TextLayoutCache,
-    glyphs: &'a mut crate::GlyphCache,
-    runs: &'a mut usize,
-    wrap_layouts: &'a mut usize,
-    keys: &'a mut usize,
-    key_bytes: &'a mut usize,
-    font_generation: u64,
-}
-impl TextShaper for PreparedCountingShaper<'_> {
-    fn strut_metrics(&mut self, style: &ComputedStyle) -> Option<crate::FontStrut> {
-        self.inner.strut_metrics(style)
-    }
-
-    fn font_generation(&self) -> u64 {
-        self.inner.font_generation()
-    }
-
-    fn retains_measurement(&self, id: StableNodeId) -> bool {
-        self.inner.retains_measurement(id)
-    }
-
-    fn text_engine(&self) -> Option<nana_text::SharedTextEngine> {
-        self.inner.text_engine()
-    }
-
-    fn take_text_work(&mut self) -> nana_text::TextWorkCounters {
-        self.inner.take_text_work()
-    }
-
-    fn shape(
-        &mut self,
-        id: StableNodeId,
-        text: &TextContent,
-        style: &ComputedStyle,
-        constraints: crate::TextShapeConstraints,
-    ) -> TextMetrics {
-        // See [`CountingShaper::shape`]: no cache in front of a retained
-        // measurement, and the run is still counted.
-        if self.inner.retains_measurement(id) {
-            *self.runs = self.runs.saturating_add(1);
-            if constraints.wrap {
-                *self.wrap_layouts = self.wrap_layouts.saturating_add(1);
-            }
-            return inner_shape_cached(self.inner, id, text, style, constraints, self.glyphs);
-        }
-        let key = layout_cache_key(text, style, constraints, self.font_generation);
-        *self.keys += 1;
-        *self.key_bytes += text.value.len();
-        if let Some(metrics) = layout_cache_lookup(self.cache, &key) {
-            return metrics;
-        }
-        *self.runs = self.runs.saturating_add(1);
-        if constraints.wrap {
-            *self.wrap_layouts = self.wrap_layouts.saturating_add(1);
-        }
-        let metrics = inner_shape_cached(self.inner, id, text, style, constraints, self.glyphs);
-        // An invalid measurement fails the pass; caching it would fail every
-        // retry with the same answer the host has since stopped giving.
-        if validate_text_metrics(id, metrics).is_ok() {
-            self.cache.insert(key, metrics);
-        }
-        metrics
-    }
-    fn shape_cached(
-        &mut self,
-        id: StableNodeId,
-        text: &TextContent,
-        style: &ComputedStyle,
-        constraints: crate::TextShapeConstraints,
-        _glyphs: &mut crate::GlyphCache,
-    ) -> TextMetrics {
-        self.shape(id, text, style, constraints)
-    }
-    fn horizontal_offset(
-        &mut self,
-        id: StableNodeId,
-        text: &TextContent,
-        offset: usize,
-        style: &ComputedStyle,
-    ) -> f32 {
-        self.inner.horizontal_offset(id, text, offset, style)
-    }
-    fn text_position(
-        &mut self,
-        id: StableNodeId,
-        text: &TextContent,
-        offset: usize,
-        style: &ComputedStyle,
-        constraints: crate::TextShapeConstraints,
-    ) -> (f32, f32, f32) {
-        self.inner
-            .text_position(id, text, offset, style, constraints)
-    }
-
-    fn text_caret_position(
-        &mut self,
-        id: StableNodeId,
-        text: &TextContent,
-        offset: usize,
-        affinity: crate::TextAffinity,
-        style: &ComputedStyle,
-        constraints: crate::TextShapeConstraints,
-    ) -> (f32, f32, f32) {
-        self.inner
-            .text_caret_position(id, text, offset, affinity, style, constraints)
-    }
-    fn text_hit_at_point(
-        &mut self,
-        id: StableNodeId,
-        text: &TextContent,
-        x: f32,
-        y: f32,
-        style: &ComputedStyle,
-        constraints: crate::TextShapeConstraints,
-    ) -> Option<crate::TextHit> {
-        self.inner
-            .text_hit_at_point(id, text, x, y, style, constraints)
-    }
-
-    fn text_caret_visual_step(
-        &mut self,
-        id: StableNodeId,
-        text: &TextContent,
-        offset: usize,
-        affinity: crate::TextAffinity,
-        rightwards: bool,
-        style: &ComputedStyle,
-        constraints: crate::TextShapeConstraints,
-    ) -> Option<crate::TextHit> {
-        self.inner.text_caret_visual_step(
-            id,
-            text,
-            offset,
-            affinity,
-            rightwards,
-            style,
-            constraints,
-        )
-    }
-
-    fn text_highlights(
-        &mut self,
-        id: StableNodeId,
-        text: &TextContent,
-        selection: (usize, usize),
-        style: &ComputedStyle,
-        constraints: crate::TextShapeConstraints,
-    ) -> Vec<LayoutBox> {
-        self.inner
-            .text_highlights(id, text, selection, style, constraints)
-    }
-}
-
-fn layout_cache_key(
-    text: &TextContent,
-    style: &ComputedStyle,
-    constraints: crate::TextShapeConstraints,
-    font_generation: u64,
-) -> crate::text_layout_cache::TextLayoutKey {
-    #[cfg(any(test, feature = "benchmark"))]
-    {
-        crate::text_shape_stats::note_key_build();
-        crate::text_shape_stats::timed_key(|| {
-            crate::text_layout_cache::TextLayoutKey::new(text, style, constraints, font_generation)
-        })
-    }
-    #[cfg(not(any(test, feature = "benchmark")))]
-    {
-        crate::text_layout_cache::TextLayoutKey::new(text, style, constraints, font_generation)
-    }
-}
-
-fn layout_cache_lookup(
-    cache: &mut crate::text_layout_cache::TextLayoutCache,
-    key: &crate::text_layout_cache::TextLayoutKey,
-) -> Option<TextMetrics> {
-    #[cfg(any(test, feature = "benchmark"))]
-    {
-        crate::text_shape_stats::note_lookup();
-        crate::text_shape_stats::timed_lookup(|| cache.lookup(key))
-    }
-    #[cfg(not(any(test, feature = "benchmark")))]
-    {
-        cache.lookup(key)
-    }
-}
-
-fn inner_shape_cached(
-    shaper: &mut (impl TextShaper + ?Sized),
-    id: StableNodeId,
-    text: &TextContent,
-    style: &ComputedStyle,
-    constraints: crate::TextShapeConstraints,
-    glyphs: &mut crate::GlyphCache,
-) -> TextMetrics {
-    #[cfg(any(test, feature = "benchmark"))]
-    {
-        crate::text_shape_stats::timed_inner_shape(|| {
-            shaper.shape_cached(id, text, style, constraints, glyphs)
-        })
-    }
-    #[cfg(not(any(test, feature = "benchmark")))]
-    {
-        shaper.shape_cached(id, text, style, constraints, glyphs)
-    }
-}
-
-fn clone_shaped_text(
-    world: &UiWorld,
-    id: StableNodeId,
-    presentation: Option<&TextInputPresentationSource>,
-) -> TextContent {
-    let clone = || {
-        presentation.as_ref().map_or_else(
-            || world.nodes.text_content(id).clone(),
-            |source| source.text.clone(),
-        )
-    };
-    #[cfg(any(test, feature = "benchmark"))]
-    let text = crate::text_shape_stats::timed_clone(clone);
-    #[cfg(not(any(test, feature = "benchmark")))]
-    let text = clone();
-    world.record_string_clone(text.value.len());
-    #[cfg(any(test, feature = "benchmark"))]
-    crate::text_shape_stats::note_clone(text.value.len());
-    text
-}
-
-pub(super) fn shape_empty_state_text(
-    id: StableNodeId,
-    visual: &crate::EmptyStateVisual,
-    inherited: &ComputedStyle,
-    max_width: Option<f32>,
-    shaper: &mut impl TextShaper,
-    typography: nana_ui_core::TypographyTokens,
-) -> EmptyStateTextPresentation {
-    let crate::EmptyStateVisual {
-        title,
-        message,
-        compact,
-        ..
-    } = visual;
-    let mut title_style = inherited.clone();
-    title_style.font_size = if *compact {
-        typography.meta
-    } else {
-        typography.body
-    };
-    title_style.font_weight = Some(typography.semibold);
-    title_style.line_height = None;
-    let mut message_style = inherited.clone();
-    message_style.font_size = if *compact {
-        typography.hint
-    } else {
-        typography.meta
-    };
-    message_style.font_weight = None;
-    message_style.line_height = None;
-    let constraints = crate::TextShapeConstraints {
-        max_width,
-        wrap: max_width.is_some(),
-        shaping: crate::TextShaping::Auto,
-        ..crate::TextShapeConstraints::default()
-    };
-    EmptyStateTextPresentation {
-        title: shaper.shape(
-            id,
-            &TextContent {
-                value: title.to_string().into(),
-            },
-            &title_style,
-            constraints,
-        ),
-        message: message.as_ref().map(|message| {
-            shaper.shape(
-                id,
-                &TextContent {
-                    value: message.to_string().into(),
-                },
-                &message_style,
-                constraints,
-            )
-        }),
-    }
-}
-
-/// `max_width` wraps the title and its description; `body_width` wraps the
-/// message, which runs across the body rather than beside the icon and the
-/// close button, and under no title cap.
-pub(super) fn shape_modal_text(
-    id: StableNodeId,
-    visual: &crate::ModalFrameVisual,
-    inherited: &ComputedStyle,
-    recipe: &nana_ui_core::DialogRecipe,
-    max_width: Option<f32>,
-    body_width: Option<f32>,
-    shaper: &mut impl TextShaper,
-    typography: nana_ui_core::TypographyTokens,
-) -> ModalTextPresentation {
-    let crate::ModalFrameVisual {
-        title,
-        description,
-        body_text,
-        kind,
-        ..
-    } = visual;
-    let constraints = crate::TextShapeConstraints {
-        max_width,
-        wrap: max_width.is_some(),
-        shaping: crate::TextShaping::Auto,
-        ..Default::default()
-    };
-    let body_constraints = crate::TextShapeConstraints {
-        max_width: body_width,
-        wrap: body_width.is_some(),
-        ..constraints
-    };
-    let title_type = crate::overlay_surfaces::modal_title_type(*kind, recipe, typography);
-    let mut title_style = inherited.clone();
-    title_style.font_size = title_type.size;
-    if let Some(weight) = title_type.weight {
-        title_style.font_weight = Some(weight);
-    }
-    title_style.line_height = None;
-    let mut description_style = inherited.clone();
-    description_style.font_size = typography.meta;
-    description_style.font_weight = None;
-    description_style.line_height = None;
-    let mut body_style = inherited.clone();
-    body_style.font_size = typography.body;
-    body_style.font_weight = None;
-    body_style.line_height = None;
-    ModalTextPresentation {
-        title: shaper.shape(
-            id,
-            &TextContent {
-                value: title.to_string().into(),
-            },
-            &title_style,
-            constraints,
-        ),
-        description: description.as_ref().map(|value| {
-            shaper.shape(
-                id,
-                &TextContent {
-                    value: value.to_string().into(),
-                },
-                &description_style,
-                constraints,
-            )
-        }),
-        body: body_text.as_ref().map(|value| {
-            shaper.shape(
-                id,
-                &TextContent {
-                    value: value.to_string().into(),
-                },
-                &body_style,
-                body_constraints,
-            )
-        }),
-    }
-}
-
-pub(super) fn text_input_placeholder_color(layout: &LayoutStyle, faint: [f32; 4]) -> [f32; 4] {
+pub(in crate::world) fn text_input_placeholder_color(
+    layout: &LayoutStyle,
+    faint: [f32; 4],
+) -> [f32; 4] {
     let text_ext = &*layout.text_ext;
     let mut color = text_ext.placeholder_color.unwrap_or(faint);
     if let Some(opacity) = text_ext.placeholder_opacity {
@@ -606,7 +21,7 @@ pub(super) fn text_input_placeholder_color(layout: &LayoutStyle, faint: [f32; 4]
 }
 
 /// 折叠摘要标记前缀：折叠起始行行尾显示 ` …N`（N 为隐藏行数）。
-pub(super) const TEXT_FOLD_MARK_PREFIX: &str = " …";
+pub(in crate::world) const TEXT_FOLD_MARK_PREFIX: &str = " …";
 
 /// 一个显示视图片段的形态：折叠替换（隐藏值区间并显示摘要）或纯插入
 /// （inlay，值域空区间 + 锚点处插入装饰文本）。
@@ -758,7 +173,7 @@ impl TextDisplaySpan {
 /// [`crate::UiMutation::SetTextInputFoldCollapsed`] 的规范化风格，不做
 /// 整体拒绝）——inlay 是宿主随语义快照防抖重喂的视图装饰，钳除让
 /// 部分陈旧的喂入不至于拖垮整批。
-pub(super) fn normalize_text_inlays(
+pub(in crate::world) fn normalize_text_inlays(
     value: &str,
     inlays: &[crate::TextInlay],
 ) -> Vec<crate::TextInlay> {
@@ -784,7 +199,7 @@ pub(super) fn normalize_text_inlays(
 /// 的隐藏范围内）时跳过——父折叠已经把这些行隐藏。inlay 锚点落在折叠
 /// 隐藏区间内（锚点字符被替换）时丢弃，照抄诊断/匹配 span 的隐藏丢弃
 /// 先例，不强制展开；同锚点的多条 inlay 按标签序依次插入。
-pub(super) fn build_text_display_view(
+pub(in crate::world) fn build_text_display_view(
     value: &str,
     collapsed: &[crate::TextCodeFold],
     inlays: &[crate::TextInlay],
@@ -895,7 +310,7 @@ pub(super) fn build_text_display_view(
 ///   inlay 自己的着色 span 整段覆盖，值空间 span 不越过）。
 ///
 /// 输出片段按折叠顺序排列，均落在可见文本上（不覆盖任何摘要文本）。
-pub(super) fn remap_span_to_display(
+pub(in crate::world) fn remap_span_to_display(
     span: (usize, usize),
     view: &TextDisplayView,
 ) -> Vec<(usize, usize)> {
@@ -942,7 +357,7 @@ pub(super) fn remap_span_to_display(
 
 /// 最小变更区间：`(old 中被替换的 start, old 中被替换的 end, 长度差)`。
 /// 与 [`crate::text_editing`] 的 transform diff 同构：按公共前后缀夹取。
-pub(super) fn value_edit_span(old: &str, new: &str) -> (usize, usize, isize) {
+pub(in crate::world) fn value_edit_span(old: &str, new: &str) -> (usize, usize, isize) {
     let prefix = old
         .chars()
         .zip(new.chars())
@@ -968,7 +383,7 @@ pub(super) fn value_edit_span(old: &str, new: &str) -> (usize, usize, isize) {
 /// 1. 折叠区间与被编辑区间相交 → 受影响折叠自动展开；
 /// 2. 完全在被编辑区间之后的折叠按长度差整体平移；
 /// 3. 其余保持不动。平移后再按新值校验可折叠性，失效的展开。
-pub(super) fn remap_collapsed_after_edit(
+pub(in crate::world) fn remap_collapsed_after_edit(
     collapsed: &[crate::TextCodeFold],
     new_value: &str,
     changed_start: usize,
@@ -995,7 +410,7 @@ pub(super) fn remap_collapsed_after_edit(
 
 /// 值被编辑后的 snippet 跳位重映射：跳位落在被编辑区间内 → 会话失效
 /// （`None`）；否则按长度差平移并钳制到新值的字符边界。
-pub(super) fn remap_snippet_session(
+pub(in crate::world) fn remap_snippet_session(
     session: &crate::components::TextSnippetSession,
     new_value: &str,
     changed_start: usize,
@@ -1056,7 +471,7 @@ pub(super) fn remap_snippet_session(
 ///    配对长度相等且 start 差唯一非零（典型场景：折叠区上方的编辑使
 ///    所有区间平移同一偏移）时，把条目按该位移平移，命中新区间的保留；
 /// 3. 其余失效条目自动展开。
-pub(super) fn reconcile_collapsed_folds(
+pub(in crate::world) fn reconcile_collapsed_folds(
     previous_offered: &[crate::TextCodeFold],
     offered: &[crate::TextCodeFold],
     collapsed: &[crate::TextCodeFold],
@@ -1103,66 +518,66 @@ pub(super) fn reconcile_collapsed_folds(
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct TextInputPresentationSource {
-    pub(super) text: TextContent,
-    pub(super) placeholder: bool,
-    pub(super) selection: Option<(usize, usize)>,
-    pub(super) caret: usize,
+pub(in crate::world) struct TextInputPresentationSource {
+    pub(in crate::world) text: TextContent,
+    pub(in crate::world) placeholder: bool,
+    pub(in crate::world) selection: Option<(usize, usize)>,
+    pub(in crate::world) caret: usize,
     /// `caret` 落在软换行 / BiDi 边界时画在哪一侧。占位符与组字期的 caret
     /// 由本模块自己派生（不是用户落的点），一律 downstream。
-    pub(super) caret_affinity: crate::TextAffinity,
+    pub(in crate::world) caret_affinity: crate::TextAffinity,
     /// 附加多光标的显示空间 `(start, end)` 区间与 caret 的 affinity（收起时
     /// 光标也在 `caret` 表）。
-    pub(super) additional: Vec<(usize, usize, crate::TextAffinity)>,
-    pub(super) preedit: Option<(usize, usize)>,
-    pub(super) multiline: bool,
+    pub(in crate::world) additional: Vec<(usize, usize, crate::TextAffinity)>,
+    pub(in crate::world) preedit: Option<(usize, usize)>,
+    pub(in crate::world) multiline: bool,
     /// 代码编辑器扩展：诊断标记 / 查找匹配高亮 / 行号栏（占位符态跳过行号）。
-    pub(super) diagnostics: Arc<[TextDiagnosticSpan]>,
-    pub(super) matches: Arc<[TextMatchSpan]>,
+    pub(in crate::world) diagnostics: Arc<[TextDiagnosticSpan]>,
+    pub(in crate::world) matches: Arc<[TextMatchSpan]>,
     /// 颜色装饰 span（宿主喂入；仅多行态派生几何）。
-    pub(super) color_swatches: Arc<[TextColorSwatchSpan]>,
-    pub(super) atoms: Arc<[crate::TextAtomSpan]>,
-    pub(super) line_numbers: bool,
-    pub(super) indent_guides: Option<Arc<str>>,
+    pub(in crate::world) color_swatches: Arc<[TextColorSwatchSpan]>,
+    pub(in crate::world) atoms: Arc<[crate::TextAtomSpan]>,
+    pub(in crate::world) line_numbers: bool,
+    pub(in crate::world) indent_guides: Option<Arc<str>>,
     /// git gutter 标记：宿主行号已校验并映射为显示行索引（0 基）；行号
     /// 无效或所在行被折叠隐藏的标记在构建时剔除。
-    pub(super) git_marks: Arc<[(u32, TextGitMarkKind)]>,
+    pub(in crate::world) git_marks: Arc<[(u32, TextGitMarkKind)]>,
     /// 内部派生渲染选项（出现高亮、相对行号、空白显示、wrap guide）。
     /// 占位符/IME 组合态置默认（全部关闭）。
-    pub(super) editor: TextEditorRenderOptions,
+    pub(in crate::world) editor: TextEditorRenderOptions,
     /// 节点是否持有文档焦点。出现高亮按聚焦派生（不聚焦零分配跳过，
     /// 绘制层再按焦点门控一次）。
-    pub(super) focused: bool,
+    pub(in crate::world) focused: bool,
     /// 折叠显示视图（存在折叠态区间时 Some；`text` 等偏移已在显示空间）。
-    pub(super) fold: Option<TextDisplayView>,
+    pub(in crate::world) fold: Option<TextDisplayView>,
     /// 补全候选（宿主过滤后的非空列表；占位符/组合态不弹出）。
-    pub(super) completions: Option<Arc<[crate::TextCompletion]>>,
+    pub(in crate::world) completions: Option<Arc<[crate::TextCompletion]>>,
     /// hover 文档（宿主喂入时 Some）。
-    pub(super) hover: Option<crate::TextHover>,
+    pub(in crate::world) hover: Option<crate::TextHover>,
     /// minimap 行条长度表（原始文档每逻辑行的非空白字符数，含折叠隐藏
     /// 行）。仅开启选项的多行态收集，其余为空向量（零分配短路）。
-    pub(super) minimap_line_lengths: Vec<u32>,
+    pub(in crate::world) minimap_line_lengths: Vec<u32>,
     /// 括号配对着色 span 表 `(start, end, depth)`（显示空间；未配对括号
     /// depth 为 [`TEXT_BRACKET_UNMATCHED_DEPTH`]）。仅多行且开启选项的
     /// 非占位/非组合态收集，随文本版本 memo。
-    pub(super) bracket_color_spans: Arc<[(usize, usize, usize)]>,
+    pub(in crate::world) bracket_color_spans: Arc<[(usize, usize, usize)]>,
 }
 
 /// 从 [`crate::TextInputVisual`] 提取的代码编辑器扩展。
 #[derive(Debug, Clone, Default)]
-pub(super) struct TextInputEditorExtras {
-    pub(super) diagnostics: Arc<[TextDiagnosticSpan]>,
-    pub(super) matches: Arc<[TextMatchSpan]>,
-    pub(super) color_swatches: Arc<[TextColorSwatchSpan]>,
-    pub(super) atoms: Arc<[crate::TextAtomSpan]>,
-    pub(super) line_numbers: bool,
-    pub(super) indent_guides: Option<Arc<str>>,
-    pub(super) git_marks: Arc<[TextGitMark]>,
-    pub(super) editor: TextEditorRenderOptions,
+pub(in crate::world) struct TextInputEditorExtras {
+    pub(in crate::world) diagnostics: Arc<[TextDiagnosticSpan]>,
+    pub(in crate::world) matches: Arc<[TextMatchSpan]>,
+    pub(in crate::world) color_swatches: Arc<[TextColorSwatchSpan]>,
+    pub(in crate::world) atoms: Arc<[crate::TextAtomSpan]>,
+    pub(in crate::world) line_numbers: bool,
+    pub(in crate::world) indent_guides: Option<Arc<str>>,
+    pub(in crate::world) git_marks: Arc<[TextGitMark]>,
+    pub(in crate::world) editor: TextEditorRenderOptions,
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn build_text_input_presentation_source(
+pub(in crate::world) fn build_text_input_presentation_source(
     state: crate::TextInputView<'_>,
     ime: Option<crate::ImeView<'_>>,
     placeholder: &str,
@@ -1445,7 +860,7 @@ pub(super) fn build_text_input_presentation_source(
 /// 排版的显示值（行索引按它计数）。行号 0、超过文档逻辑行数（尾随换行
 /// 不产生幻影行，与行号栏语义一致）或所在行被折叠隐藏的标记静默跳过。
 /// 空列表原样返回（零分配零遍历）。
-pub(super) fn map_git_marks(
+pub(in crate::world) fn map_git_marks(
     value: &str,
     display: &str,
     marks: Arc<[TextGitMark]>,
@@ -1493,7 +908,7 @@ pub(super) fn map_git_marks(
 }
 
 /// 文档行起点表：首项 0，其后每项为对应换行符后的第一个字节偏移。
-pub(super) fn line_starts(value: &str) -> Vec<usize> {
+pub(in crate::world) fn line_starts(value: &str) -> Vec<usize> {
     std::iter::once(0)
         .chain(value.match_indices('\n').map(|(index, _)| index + 1))
         .collect()
@@ -1503,7 +918,7 @@ pub(super) fn line_starts(value: &str) -> Vec<usize> {
 /// （accent 蓝 / success 绿 / warning 黄 / danger 红 / muted 中性灰），
 /// 与调色板同源保证明暗主题都和谐；未配对括号用 faint 淡化前景（与
 /// 语法高亮对 punctuation 的弱化一致）。
-pub(super) fn bracket_depth_color(
+pub(in crate::world) fn bracket_depth_color(
     palette: &nana_ui_core::SemanticPalette,
     depth: usize,
 ) -> [f32; 4] {
@@ -1523,7 +938,7 @@ pub(super) fn bracket_depth_color(
 /// 把括号配对着色 span 合并进语法高亮 span：括号字符的覆盖色优先，
 /// 与括号重叠的语法 span 在括号边界处切分。两侧输入各自不重叠且有序；
 /// 输出按起点有序、互不重叠（场景文本渲染按游标推进消费 span）。
-pub(super) fn merge_bracket_glyph_spans(
+pub(in crate::world) fn merge_bracket_glyph_spans(
     mut spans: Vec<ExtractedTextSpan>,
     brackets: &[(usize, usize, usize)],
     bracket_color: impl Fn(usize) -> [f32; 4],
@@ -1595,7 +1010,7 @@ pub(super) fn merge_bracket_glyph_spans(
 /// inlay 重叠的基础层被切分丢弃），inlay 区间以给定颜色整段重发。两侧
 /// 输入各自不重叠且有序；输出按起点有序、互不重叠（场景文本渲染按
 /// 游标推进消费 span）。
-pub(super) fn merge_inlay_glyph_spans(
+pub(in crate::world) fn merge_inlay_glyph_spans(
     spans: Vec<ExtractedTextSpan>,
     inlays: &[(usize, usize)],
     color: [f32; 4],
@@ -1603,7 +1018,7 @@ pub(super) fn merge_inlay_glyph_spans(
     merge_inlay_glyph_spans_with_paint(spans, inlays, color, None)
 }
 
-pub(super) fn merge_inlay_glyph_spans_with_paint(
+pub(in crate::world) fn merge_inlay_glyph_spans_with_paint(
     mut spans: Vec<ExtractedTextSpan>,
     inlays: &[(usize, usize)],
     color: [f32; 4],
@@ -1679,7 +1094,7 @@ pub(super) fn merge_inlay_glyph_spans_with_paint(
 /// minimap 行长收集：每个逻辑行的非空白字符数（O(文档) 单趟扫描）。
 /// 行数与滚动换算的 `matches('\n') + 1` 语义一致（尾随换行是可滚动到
 /// 的空逻辑行）；空白行计 0（绘制层不产生行条）。
-pub(super) fn collect_non_whitespace_line_lengths(value: &str) -> Vec<u32> {
+pub(in crate::world) fn collect_non_whitespace_line_lengths(value: &str) -> Vec<u32> {
     value
         .split('\n')
         .map(|line| {
@@ -1837,7 +1252,7 @@ fn derive_diagnostic_decorations(
 /// constraints is asking about geometry the editor is not drawn from, and a
 /// host that retains its geometry would lay the whole text out again for each
 /// of the two.
-pub(super) fn text_input_presentation_constraints(
+pub(in crate::world) fn text_input_presentation_constraints(
     constraints: crate::TextShapeConstraints,
     multiline: bool,
     vertical: bool,
@@ -1865,7 +1280,7 @@ pub(super) fn text_input_presentation_constraints(
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
-pub(super) fn shape_text_input_presentation(
+pub(in crate::world) fn shape_text_input_presentation(
     id: StableNodeId,
     source: TextInputPresentationSource,
     style: &ComputedStyle,
@@ -1884,7 +1299,7 @@ pub(super) fn shape_text_input_presentation(
     )
 }
 
-pub(super) fn shape_text_input_presentation_in_theme(
+pub(in crate::world) fn shape_text_input_presentation_in_theme(
     id: StableNodeId,
     source: TextInputPresentationSource,
     style: &ComputedStyle,
@@ -2599,10 +2014,10 @@ fn layout_atom_chip(
 
 /// 锚定浮层的共享输入：锚点行在节点空间的位置（x 为锚点字形左缘）。
 #[derive(Debug, Clone, Copy)]
-pub(super) struct OverlayAnchor {
-    pub(super) x: f32,
-    pub(super) line_top: f32,
-    pub(super) line_height: f32,
+pub(in crate::world) struct OverlayAnchor {
+    pub(in crate::world) x: f32,
+    pub(in crate::world) line_top: f32,
+    pub(in crate::world) line_height: f32,
 }
 
 const TEXT_OVERLAY_MAX_WIDTH: f32 = 420.0;
@@ -2701,7 +2116,7 @@ pub(crate) fn text_minimap_geometry(
 /// 锚定浮层的共享定位（补全弹层与 hover 浮窗共用，避免两套定位代码）：
 /// 优先放在锚点行下方，视口底部放不下且上方放得下时翻转到行上方，
 /// 最后整体钳进视口。返回面板矩形（节点空间）。
-pub(super) fn anchored_overlay_panel(
+pub(in crate::world) fn anchored_overlay_panel(
     anchor: OverlayAnchor,
     width: f32,
     height: f32,
@@ -2737,7 +2152,7 @@ pub(super) fn anchored_overlay_panel(
 /// doc 行不参与宽度自适应，按内容宽截断），高度最多
 /// [`crate::components::TEXT_COMPLETION_VISIBLE_ROWS`] 行（带文档行的
 /// 候选占两行高）。
-pub(super) fn completion_popup_geometry(
+pub(in crate::world) fn completion_popup_geometry(
     state: &crate::store::TextCompletionViewState,
     metrics: &crate::components::TextCompletionPopupMetrics,
     anchor: OverlayAnchor,
@@ -2881,7 +2296,7 @@ pub(super) fn completion_popup_geometry(
 /// hover 浮窗几何：面板 + 标题行（强调）+ 正文逻辑行切片。宽度取
 /// 视口与上限的较小值；正文超出 [`crate::components::TEXT_HOVER_MAX_BODY_ROWS`] 行
 /// 时滚轮滚动（切片由框架命令写回的滚动位置决定）。
-pub(super) fn hover_popup_geometry(
+pub(in crate::world) fn hover_popup_geometry(
     state: &crate::store::TextHoverViewState,
     anchor: OverlayAnchor,
     viewport: LayoutBox,
@@ -2950,7 +2365,7 @@ pub(super) fn hover_popup_geometry(
 }
 
 /// 签名帮助浮窗：签名行拆成前缀 / 活动参数 / 后缀，文档行取活动参数说明。
-pub(super) fn signature_popup_geometry(
+pub(in crate::world) fn signature_popup_geometry(
     help: &crate::TextSignatureHelp,
     anchor: OverlayAnchor,
     viewport: LayoutBox,
@@ -3098,7 +2513,7 @@ pub(super) fn signature_popup_geometry(
 
 /// 补全弹层行宽度量。`items` 指针与上一次度量一致时整段复用（打字重
 /// 喂之外的每次 shape 不再逐行测量）；测量只发生在宿主喂入新列表之后。
-pub(super) fn completion_popup_metrics(
+pub(in crate::world) fn completion_popup_metrics(
     id: StableNodeId,
     source: &TextInputPresentationSource,
     previous: &crate::components::TextOverlayMetrics,
@@ -3145,7 +2560,7 @@ pub(super) fn completion_popup_metrics(
 ///
 /// Horizontal and vertical editors both draw it from here, in text space, so
 /// the two cannot drift apart.
-pub(super) fn caret_rule(x: f32, y: f32, line_height: f32) -> LayoutBox {
+pub(in crate::world) fn caret_rule(x: f32, y: f32, line_height: f32) -> LayoutBox {
     LayoutBox {
         x,
         y,
@@ -3158,7 +2573,7 @@ pub(super) fn caret_rule(x: f32, y: f32, line_height: f32) -> LayoutBox {
 /// line box, the rule spans its inline extent (at least a pixel) and sits at
 /// its block end — below a horizontal line — or, for a vertical column, at its
 /// block start, where CJK sets its sidelines.
-pub(super) fn preedit_rule(run: LayoutBox, at_block_end: bool) -> LayoutBox {
+pub(in crate::world) fn preedit_rule(run: LayoutBox, at_block_end: bool) -> LayoutBox {
     let rule = LayoutBox {
         width: run.width.max(1.0),
         height: 2.0,
@@ -3173,7 +2588,7 @@ pub(super) fn preedit_rule(run: LayoutBox, at_block_end: bool) -> LayoutBox {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn text_input_decorations(
+pub(in crate::world) fn text_input_decorations(
     presentation: &TextInputPresentation,
     multiline: bool,
     content: LayoutBox,
@@ -3240,265 +2655,7 @@ pub(super) fn text_input_decorations(
 }
 
 impl UiWorld {
-    /// Shape against the last published content box when it exists so wrap
-    /// height can stop or propagate LAYOUT. Unmeasured nodes stay unconstrained.
-    pub(crate) fn text_shape_constraints(&self, id: StableNodeId) -> crate::TextShapeConstraints {
-        self.text_shape_constraints_for(id, self.text_input_kind(id))
-    }
-
-    /// Whether an authored newline is a line break for this node.
-    ///
-    /// A multiline editor's value keeps its line breaks whatever
-    /// `white-space` says: they are the text being edited, not authored markup
-    /// whitespace. Everywhere else CSS decides.
-    ///
-    /// One function because two consumers answer it: the constraints this node
-    /// is *measured* with, and the scene the renderer *paints* from. A second
-    /// spelling would measure one line and paint two.
-    fn preserves_lines(style: &NodeStyle, text_input_multiline: bool) -> bool {
-        style.layout.white_space.preserve_newlines() || text_input_multiline
-    }
-
-    /// [`Self::preserves_lines`] for one node, as the scene carries it.
-    pub(crate) fn text_preserves_lines(&self, id: StableNodeId) -> bool {
-        Self::preserves_lines(
-            &self.record(id).style,
-            self.text_input_kind(id).unwrap_or(false) || self.nodes.rich_editor_marks(id).is_some(),
-        )
-    }
-
-    /// Whether the node is an editor, and whether it is multiline: the only
-    /// two things [`Self::text_shape_constraints_for`] needs to know about its
-    /// presentation.
-    ///
-    /// Derived from the node rather than from a built presentation source: a
-    /// caret move asks for the constraints it should probe with, and building
-    /// a whole presentation (display text, decorations and all) to learn two
-    /// booleans is O(document) per key press.
-    pub(super) fn text_input_kind(&self, id: StableNodeId) -> Option<bool> {
-        if !self.nodes.has_widget_visuals() {
-            return None;
-        }
-        if self.text_input_visual_ref(id).is_none() || self.nodes.text_input(id).is_none() {
-            return None;
-        }
-        Some(self.nodes.contains(id) && self.nodes.accessibility(id).multiline)
-    }
-
-    /// Whether the editor draws bullets instead of its value.
-    pub(crate) fn text_input_is_secure(&self, id: StableNodeId) -> bool {
-        self.text_input_visual_ref(id).is_some_and(|v| v.secure)
-    }
-
-    /// [`Self::text_shape_constraints`] for a caller that already knows
-    /// whether the node is an editor and whether it is multiline (the built
-    /// presentation source's `multiline`).
-    pub(super) fn text_shape_constraints_for(
-        &self,
-        id: StableNodeId,
-        editor_multiline: Option<bool>,
-    ) -> crate::TextShapeConstraints {
-        let source = &self.record(id).style;
-        let layout = self
-            .component_layout_box(id)
-            .expect("text node layout is available");
-        let text_input_multiline =
-            editor_multiline.unwrap_or(false) || self.nodes.rich_editor_marks(id).is_some();
-        let is_text_input =
-            editor_multiline.is_some() || self.nodes.rich_editor_marks(id).is_some();
-        // A card's title is one line and a bare toast's title at most two
-        // (#388: one line loses a medium title's meaning, two keep the
-        // toast's height bounded), each cut to the lane it paints in. The
-        // recipe's `title_max_lines` is the assembled notice's.
-        let card_title = self
-            .widget_visual_ref(id)
-            .is_some_and(crate::WidgetVisualHandle::uses_card_title_typography);
-        let clamped = if card_title {
-            Some(1)
-        } else {
-            self.widget_visual_ref(id)
-                .and_then(crate::WidgetVisualHandle::clamped_node_text_lines)
-        };
-        let wrap = if let Some(lines) = clamped {
-            lines > 1
-        } else if is_text_input {
-            text_input_multiline && source.layout.text_wraps()
-        } else {
-            source.layout.text_wraps()
-        };
-        let preserve_lines =
-            clamped.is_none() && Self::preserves_lines(source, text_input_multiline);
-        let wrap_break = source.layout.text_wrap_break();
-        let ellipsis = clamped.is_some() || (!is_text_input && source.layout.uses_text_ellipsis());
-        let max_lines = if let Some(lines) = clamped {
-            Some(u16::try_from(lines).unwrap_or(u16::MAX))
-        } else {
-            (!is_text_input)
-                .then(|| source.layout.resolved_line_clamp())
-                .flatten()
-        };
-        let measured = layout.width > 0.0 || layout.height > 0.0;
-        let vertical = self
-            .nodes
-            .get(id)
-            .is_some_and(|node| node.resolved.0.writing_mode.is_vertical());
-        if !measured {
-            return crate::TextShapeConstraints {
-                wrap,
-                ellipsis,
-                max_lines,
-                shaping: self.text_shaping(id),
-                preserve_lines,
-                wrap_break,
-                ..crate::TextShapeConstraints::default()
-            };
-        }
-        let padding = self.used_layout_padding(id);
-        let border = source.layout.resolved_border_edges();
-        let counter_reserved = self
-            .text_input_character_counter(id)
-            .map(|counter| {
-                self.component_content_box(id)
-                    .map_or(0.0, |content| content.width - counter.editor_bounds.width)
-            })
-            .unwrap_or(0.0);
-        crate::TextShapeConstraints {
-            max_width: if is_text_input && !text_input_multiline {
-                None
-            } else {
-                let available = (layout.width
-                    - padding.left
-                    - padding.right
-                    - border.left
-                    - border.right
-                    - counter_reserved)
-                    .max(0.0);
-                let content = crate::layout_engine::Size::new(
-                    available,
-                    (layout.height - padding.top - padding.bottom - border.top - border.bottom)
-                        .max(0.0),
-                );
-                Some(
-                    self.widget_visual_ref(id)
-                        .and_then(|v| {
-                            v.node_text_max_width(id, self, layout, available, content.height)
-                        })
-                        .unwrap_or(available),
-                )
-            },
-            // A vertical paragraph's lines run down the box, so its height is
-            // the line budget the way a horizontal one's width is: always
-            // given once the box is measured. A vertical editor wraps down its
-            // height when it wraps at all — a multiline one, as a horizontal
-            // editor wraps across its width (#59).
-            max_height: if card_title {
-                self.content_part_box(id, crate::LayoutPartKind::Header)
-                    .map(|part| part.height.max(0.0))
-            } else {
-                ((vertical && (!is_text_input || text_input_multiline))
-                    || (!is_text_input
-                        && (self
-                            .presentation_length_overlay(id)
-                            .and_then(|overlay| overlay.get(crate::AnimatableProperty::Height))
-                            .is_some()
-                            || source
-                                .layout
-                                .height
-                                .is_some_and(nana_ui_core::LengthSpec::is_definite_declared)
-                            || source
-                                .layout
-                                .max_height
-                                .is_some_and(nana_ui_core::LengthSpec::is_definite_declared))))
-                .then(|| {
-                    (layout.height - padding.top - padding.bottom - border.top - border.bottom)
-                        .max(0.0)
-                })
-            },
-            wrap,
-            ellipsis,
-            max_lines,
-            shaping: self.text_shaping(id),
-            preserve_lines,
-            wrap_break,
-        }
-    }
-}
-
-/// Ellipsized text paints within its measured box, but asks layout for its
-/// unclipped natural width. This includes line-clamp: it enables wrapping,
-/// then substitutes an ellipsis on the last visible line. Exporting that
-/// shortened line's width would pin a shrink-to-fit parent to its old size.
-fn cut_to_its_box(constraints: &crate::TextShapeConstraints) -> bool {
-    constraints.ellipsis
-        && (constraints.max_lines.is_some() || (!constraints.wrap && !constraints.preserve_lines))
-        && constraints.max_width.is_some()
-}
-
-/// Text that wraps to its measured box: its lines may be narrower than the
-/// text is on its own.
-fn wraps_to_its_box(constraints: &crate::TextShapeConstraints) -> bool {
-    constraints.wrap && constraints.max_width.is_some()
-}
-
-/// One plain text node's resolution: [`UiWorld::resolve_plain_text`].
-pub(super) struct PlainText {
-    metrics: TextMetrics,
-    /// Its unwrapped width, when it wrapped narrower than that.
-    natural: Option<f32>,
-    /// The `nana-text` layout it retains, with an engine.
-    layout: Option<Arc<nana_text::TextLayout>>,
-    /// Resolved to its unwrapped lines, not to its box's width, which only
-    /// held the text it replaced.
-    provisional: bool,
-    /// Through the host shaper, whose widest line cannot break
-    /// ([`UiWorld::host_widest_line_cannot_break`]). An engine's layout says
-    /// so itself.
-    host_unbroken: bool,
-}
-
-/// The same constraints without the box width: the line as long as it runs.
-fn unbounded(constraints: crate::TextShapeConstraints) -> crate::TextShapeConstraints {
-    crate::TextShapeConstraints {
-        max_width: None,
-        ..constraints
-    }
-}
-
-/// True when two authored styles give a plain text node the same
-/// constraints for the same box: everything [`UiWorld::text_shape_constraints`]
-/// reads from [`NodeStyle`]. Alignment only matters to a retained layout and is
-/// handled where the style is set. Paint, transform and
-/// opacity live on the same `LayoutStyle` and are deliberately not compared;
-/// fonts are classified when the computed style resolves.
-pub(super) fn same_text_constraint_layouts(
-    previous: &Arc<nana_ui_core::LayoutStyle>,
-    next: &Arc<nana_ui_core::LayoutStyle>,
-) -> bool {
-    if Arc::ptr_eq(previous, next) {
-        return true;
-    }
-    let (a, b) = (previous.as_ref(), next.as_ref());
-    let definite = |length: Option<nana_ui_core::LengthSpec>| {
-        length.is_some_and(nana_ui_core::LengthSpec::is_definite_declared)
-    };
-    a.text_wraps() == b.text_wraps()
-        && a.white_space.preserve_newlines() == b.white_space.preserve_newlines()
-        && a.text_wrap_break() == b.text_wrap_break()
-        && a.uses_text_ellipsis() == b.uses_text_ellipsis()
-        && a.resolved_line_clamp() == b.resolved_line_clamp()
-        && definite(a.height) == definite(b.height)
-        && definite(a.max_height) == definite(b.max_height)
-        && a.resolved_border_edges() == b.resolved_border_edges()
-        && a.padding == b.padding
-        && a.padding_top == b.padding_top
-        && a.padding_right == b.padding_right
-        && a.padding_bottom == b.padding_bottom
-        && a.padding_left == b.padding_left
-        && a.font_size.map(f32::to_bits) == b.font_size.map(f32::to_bits)
-}
-
-impl UiWorld {
-    pub(super) fn text_shaping(&self, id: StableNodeId) -> crate::TextShaping {
+    pub(in crate::world) fn text_shaping(&self, id: StableNodeId) -> crate::TextShaping {
         if self.nodes.text_input(id).is_some() {
             crate::TextShaping::Advanced
         } else {
@@ -3510,7 +2667,10 @@ impl UiWorld {
 impl UiWorld {
     /// minimap 行长的单条缓存：值未变（纯光标/选区同步）时复用上一次
     /// O(文档) 单趟扫描结果，避免每趟 shape 全文档重扫。
-    pub(super) fn minimap_line_lengths_cached(&self, value: &crate::TextValue) -> Vec<u32> {
+    pub(in crate::world) fn minimap_line_lengths_cached(
+        &self,
+        value: &crate::TextValue,
+    ) -> Vec<u32> {
         let mut cache = self.text.editor_caches.minimap_line_lengths.borrow_mut();
         // The same text is recognised by its stamp: a caret move compares
         // nothing, and the cache holds a shared copy, not a second one.
@@ -3534,7 +2694,7 @@ impl UiWorld {
     ///
     /// 平移是 O(括号数)；重扫是 O(文档)，在 310 KB 文档上是 ~0.37 ms，
     /// 以前每次编辑都要付一次。
-    pub(super) fn bracket_color_spans_cached(
+    pub(in crate::world) fn bracket_color_spans_cached(
         &self,
         value: &crate::TextValue,
     ) -> Arc<[(usize, usize, usize)]> {
@@ -3606,7 +2766,7 @@ fn shifted_bracket_spans(
 }
 
 impl UiWorld {
-    pub(super) fn text_input_presentation_source(
+    pub(in crate::world) fn text_input_presentation_source(
         &self,
         id: StableNodeId,
     ) -> Option<TextInputPresentationSource> {
@@ -3686,7 +2846,7 @@ impl UiWorld {
 impl UiWorld {
     /// Publishes the shaped title/message block and reports whether anything
     /// changed, so a pass that only re-confirms the current block stays idle.
-    pub(super) fn apply_empty_state_text_presentation(
+    pub(in crate::world) fn apply_empty_state_text_presentation(
         &mut self,
         id: StableNodeId,
         presentation: EmptyStateTextPresentation,
@@ -3717,1626 +2877,6 @@ impl UiWorld {
             }
         }
         true
-    }
-}
-
-impl UiWorld {
-    pub(super) fn shape_text_for_layout_impl(
-        &mut self,
-        ids: Vec<StableNodeId>,
-        host: &mut impl TextShaper,
-    ) -> Result<bool, UiWorldError> {
-        let backend = PlainTextBackend::of(host);
-        self.paint_text_engine = backend.engine.clone();
-        self.observe_text_backend(backend.epoch);
-        let mut work = nana_text::TextWorkCounters::default();
-        // Same production adapter as [`Self::shape_text`].
-        let mut cache = std::mem::take(&mut self.text.text_layout_cache);
-        let mut glyphs = std::mem::take(&mut self.text.glyph_cache);
-        let mut shaper = CountingShaper::new(host, &mut cache, &mut glyphs);
-        let mut shaped = Vec::new();
-        let mut adaptive_updates = Vec::new();
-        let mut empty_shaped = Vec::new();
-        let mut modal_shaped = Vec::new();
-        let mut resolved = Vec::new();
-        // Re-resolved text whose exported metrics held: the change stopped
-        // at the text and reached no parent.
-        let mut stopped = 0usize;
-        let mut max_text_id: Option<StableNodeId> = None;
-        let mut text_count = 0usize;
-        for &id in &ids {
-            if let Some(record) = self.nodes.get(id)
-                && (record.has_text || matches!(record.kind.as_ref(), NodeKind::Text))
-            {
-                text_count += 1;
-                max_text_id = Some(max_text_id.map_or(id, |current| current.max(id)));
-            }
-        }
-        if let Some(highest) = max_text_id {
-            self.nodes
-                .reserve_text_nodes_through(highest, self.nodes.text_nodes_len() + text_count);
-        }
-        #[cfg(any(test, feature = "benchmark"))]
-        crate::text_shape_stats::note_scope(ids.len());
-        // Run the loop as one fallible unit so an invalid metric still hands
-        // the caches back to the world instead of dropping them.
-        let outcome = (|| -> Result<(), UiWorldError> {
-            for id in ids {
-                // The whole per-node decision for text that is already resolved:
-                // a few integers on the record, before any text is read.
-                if self.plain_text_is_current(id, backend.epoch, &mut work) {
-                    continue;
-                }
-                if self
-                    .widget_visual_ref(id)
-                    .is_some_and(crate::WidgetVisualHandle::owns_intrinsic_text)
-                {
-                    // Its text is the visual's own now; a layout it held as
-                    // plain text is not drawn any more.
-                    self.nodes.release_text_layout(id);
-                }
-                let computed = self.record(id).resolved.0.as_ref();
-                if let Some(empty_visual) = self.widget_visual_as::<crate::EmptyStateVisual>(id) {
-                    if computed.visible {
-                        let Some(layout) = self.component_layout_box(id) else {
-                            continue;
-                        };
-                        // The content box is its paragraph budget.
-                        let width = self
-                            .component_content_box(id)
-                            .map_or(layout.width, |content| content.width);
-                        let runs = shaper.runs;
-                        let typography = self.node_theme(id).typography();
-                        let intrinsic = shape_empty_state_text(
-                            id,
-                            empty_visual,
-                            computed,
-                            Some(width),
-                            &mut shaper,
-                            typography,
-                        );
-                        work.record_text_pass(1, usize::from(shaper.runs > runs));
-                        validate_text_metrics(id, intrinsic.title)?;
-                        if let Some(message) = intrinsic.message {
-                            validate_text_metrics(id, message)?;
-                        }
-                        // The shaped block is republished even when the metrics
-                        // are unchanged: it lives in `NodeStyle`, which
-                        // `EmptyState::project` rewrites from its own static
-                        // style, so an unrelated re-projection can drop it.
-                        empty_shaped.push((id, intrinsic));
-                    }
-                    continue;
-                }
-                if let Some(modal_visual) = self.widget_visual_as::<crate::ModalFrameVisual>(id) {
-                    if computed.visible {
-                        let Some(root) = self.component_layout_box(id) else {
-                            continue;
-                        };
-                        // The title and description wrap to their parts' width
-                        // and the body copy to its own, the parts layout
-                        // publishes (#384); their widths read only the card.
-                        let parts = self.modal_text_parts(id, root);
-                        let width = |kind| {
-                            crate::layout_engine::parts::part_bounds(&parts, kind)
-                                .map(|part| part.width)
-                        };
-                        let Some(wrap_width) = width(crate::LayoutPartKind::Header) else {
-                            continue;
-                        };
-                        let body_width = width(crate::LayoutPartKind::Note).unwrap_or(wrap_width);
-                        let runs = shaper.runs;
-                        let node_theme = self.node_theme(id);
-                        let intrinsic = shape_modal_text(
-                            id,
-                            modal_visual,
-                            computed,
-                            node_theme.recipes().dialog(),
-                            Some(wrap_width),
-                            Some(body_width),
-                            &mut shaper,
-                            node_theme.typography(),
-                        );
-                        work.record_text_pass(1, usize::from(shaper.runs > runs));
-                        validate_text_metrics(id, intrinsic.title)?;
-                        if let Some(description) = intrinsic.description {
-                            validate_text_metrics(id, description)?;
-                        }
-                        if let Some(body) = intrinsic.body {
-                            validate_text_metrics(id, body)?;
-                        }
-                        if self.nodes.modal_text(id) != Some(&intrinsic) {
-                            modal_shaped.push((id, intrinsic));
-                        }
-                    }
-                    continue;
-                }
-                if !computed.visible {
-                    continue;
-                }
-                let presentation = self
-                    .widget_visual_ref(id)
-                    .is_some_and(crate::WidgetVisualHandle::is_text_input)
-                    .then(|| self.text_input_presentation_source(id))
-                    .flatten();
-                let empty = presentation.as_ref().map_or_else(
-                    || self.nodes.text_content(id).value.is_empty(),
-                    |source| source.text.value.is_empty(),
-                );
-                if presentation.is_some() {
-                    // An editor's text is not plain text: nothing may keep
-                    // drawing a layout of what it used to say.
-                    self.nodes.release_text_layout(id);
-                }
-                // An editor is reshaped with nothing in it too: its empty
-                // line, where the caret stands, follows the box like any line.
-                if empty && presentation.is_none() {
-                    // A box with no text of its own resolves to nothing, and
-                    // stays resolved until text or a text-bearing visual
-                    // arrives: a scope of containers costs one read of the text
-                    // table each, not a visual lookup and a style read every
-                    // pass. An empty Text node is not such a box: its line box
-                    // is measured by the scheduled pass, which this pass must
-                    // not pre-empt with a stamp that carries no metrics.
-                    if !matches!(self.record(id).kind.as_ref(), NodeKind::Text) {
-                        resolved.push(PlainResolution::nothing(id));
-                    }
-                    continue;
-                }
-                #[cfg(any(test, feature = "benchmark"))]
-                if !empty {
-                    crate::text_shape_stats::note_nonempty();
-                }
-                let constraints =
-                    self.text_shape_constraints_for(id, presentation.as_ref().map(|s| s.multiline));
-                let Some(presentation) = presentation else {
-                    let PlainText {
-                        metrics,
-                        natural,
-                        layout,
-                        provisional,
-                        host_unbroken,
-                    } = self.resolve_plain_text(
-                        id,
-                        constraints,
-                        backend.engine.as_ref(),
-                        &mut shaper,
-                        &mut work,
-                    );
-                    validate_text_metrics(id, metrics)?;
-                    let resolved_before = self.text_resolved_before(id);
-                    resolved.push(PlainResolution::text(
-                        id,
-                        constraints,
-                        layout,
-                        provisional,
-                        host_unbroken,
-                    ));
-                    if self.nodes.text_metrics(id) != metrics
-                        || self.text_natural_width(id) != natural
-                    {
-                        shaped.push((id, metrics, natural, None));
-                    } else if resolved_before {
-                        stopped += 1;
-                    }
-                    continue;
-                };
-                let style = Arc::clone(&self.record(id).resolved.0);
-                let computed = style.as_ref();
-                let text = clone_shaped_text(self, id, Some(&presentation));
-                work.text_source_clones += 1;
-                let runs = shaper.runs;
-                let metrics = shaper.shape(id, &text, computed, constraints);
-                work.record_text_pass(1, usize::from(shaper.runs > runs));
-                validate_text_metrics(id, metrics)?;
-                let previous_overlays = self
-                    .nodes
-                    .text_input_presentation(id)
-                    .map(|stored| stored.overlay_metrics.clone())
-                    .unwrap_or_default();
-                if presentation.editor.adaptive_footer {
-                    adaptive_updates.push(id);
-                }
-                let presentation = shape_text_input_presentation_in_theme(
-                    id,
-                    presentation,
-                    computed,
-                    constraints,
-                    &previous_overlays,
-                    self.node_theme(id),
-                    &mut shaper,
-                );
-                let metrics_held = self.nodes.text_metrics(id) == metrics;
-                if metrics_held && self.text_resolved_before(id) {
-                    stopped += 1;
-                }
-                if !metrics_held || self.nodes.text_input_presentation(id) != Some(&presentation) {
-                    shaped.push((id, metrics, None, Some(presentation)));
-                }
-            }
-            Ok(())
-        })();
-        let runs = shaper.runs;
-        let wrap_layouts = shaper.wrap_layouts;
-        let host_keys = shaper.keys;
-        work.text_source_clones += shaper.keys;
-        work.text_bytes_hashed += shaper.key_bytes;
-        if outcome.is_err() {
-            // Nothing of a failed pass is reported, or left to be reported by
-            // the next one.
-            let _ = cache.take_counters();
-            let _ = glyphs.take_counters();
-            let _ = host.take_text_work();
-            self.text.text_layout_cache = cache;
-            self.text.glyph_cache = glyphs;
-            return outcome.map(|()| false);
-        }
-        self.text
-            .text_input_adaptive_updates
-            .extend(adaptive_updates);
-        let (mut scaled, mut unbreakable_moved, inline_placement_changed) =
-            self.apply_plain_resolutions(resolved, backend.epoch, &mut work);
-        // Text whose widest line was found not to break, or to break after
-        // all, asks layout for another width with the metrics it held: it
-        // did not stop at itself, and reaches layout below.
-        unbreakable_moved.retain(|id| !shaped.iter().any(|(shaped, ..)| shaped == id));
-        self.note_text_propagations_stopped(stopped.saturating_sub(unbreakable_moved.len()));
-        let mut changed = !shaped.is_empty()
-            || !modal_shaped.is_empty()
-            || !unbreakable_moved.is_empty()
-            || inline_placement_changed;
-        let mut scale_parent_reflows = 0usize;
-        for id in unbreakable_moved {
-            self.note_layout_source_change();
-            if self.propagate_layout_from_node(id) && scaled.contains(&id) {
-                scale_parent_reflows += 1;
-            }
-        }
-        for (id, metrics, natural, presentation) in shaped {
-            let previous = self.nodes.text_metrics(id);
-            let previous_natural = self.text_natural_width(id);
-            if previous != metrics || previous_natural != natural {
-                // Layout reads every metric, not only those that seed it: a
-                // full-layout snapshot taken before this write is stale.
-                self.note_layout_source_change();
-            }
-            self.nodes.set_text_metrics(id, metrics);
-            self.nodes.set_text_natural_width(id, natural);
-            if let Some(presentation) = presentation {
-                self.nodes
-                    .set_text_input_presentation(id, Some(presentation));
-                if self.nodes.take_text_scale_pending(id) {
-                    scaled.insert(id);
-                }
-            }
-            // Scoped shaping runs after a layout pass. Publish the same typed
-            // metric seed as the initial shaping path so a wrapping change is
-            // not lost when another node has a pending typed seed in the same
-            // post-layout drain.
-            if (text_intrinsic_changed(previous, metrics) || previous_natural != natural)
-                && self.propagate_layout_from_node(id)
-                && scaled.contains(&id)
-            {
-                scale_parent_reflows += 1;
-            }
-        }
-        self.note_text_scale_relayouts(scaled.len(), scale_parent_reflows);
-        for (id, presentation) in empty_shaped {
-            changed |= self.apply_empty_state_text_presentation(id, presentation);
-        }
-        for (id, presentation) in modal_shaped {
-            self.nodes.set_modal_text(id, Some(presentation));
-            self.record_layout_invalidation(
-                id,
-                nana_ui_core::LayoutInvalidation::new(
-                    nana_ui_core::LayoutInvalidationSource::Text,
-                    nana_ui_core::InvalidationReason::TEXT,
-                    nana_ui_core::InvalidationKind::MEASURE
-                        .union(nana_ui_core::InvalidationKind::PLACEMENT),
-                    nana_ui_core::LayoutStyleChange::INTRINSIC,
-                    METRIC_EXPORTS,
-                ),
-            );
-            self.mark(id, DirtyMask::RENDER);
-        }
-        let (hits, misses, evictions) = cache.take_counters();
-        if host_keys > 0 {
-            // The host path's layout cache is the Runtime `TextLayoutCache`.
-            work.record_layout_cache(hits, misses);
-            work.layout_cache_lookups += hits + misses;
-        }
-        let glyph_stats = glyphs.take_counters();
-        self.text.text_layout_cache = cache;
-        self.text.glyph_cache = glyphs;
-        self.refresh_document_text_highlights(host);
-        // Taken last: document highlights measure through the host too.
-        work.accumulate(host.take_text_work());
-        // This pass lays text out at the boxes layout just gave it: what it
-        // laid out again is what a resize cost text.
-        let (relayouts, reshapes) = (work.constraint_only_relayouts, work.text_nodes_shaped);
-        self.bump_last_counters(|counters| counters.record_resize_text(relayouts, reshapes));
-        self.finish_text_pass(
-            work,
-            runs,
-            hits,
-            misses,
-            evictions,
-            wrap_layouts,
-            glyph_stats,
-        );
-        Ok(changed)
-    }
-
-    /// True, and counted as a revision skip, when `id` is plain text already
-    /// resolved by `backend` at its current revisions. Reads one small entry of
-    /// the text side table and no text.
-    fn plain_text_is_current(
-        &self,
-        id: StableNodeId,
-        backend: TextBackendEpoch,
-        work: &mut nana_text::TextWorkCounters,
-    ) -> bool {
-        let Some(text) = self.nodes.text_node(id) else {
-            return self.nodes.is_empty_text_current(id, backend);
-        };
-        if !text.is_current(backend) {
-            return false;
-        }
-        let stamp = text.stamp().expect("a current node is stamped");
-        // A resolved box without text is not a text node; only text nodes count.
-        if stamp.text_node {
-            work.text_nodes_considered += 1;
-            work.text_nodes_revision_skipped += 1;
-            #[cfg(any(test, feature = "benchmark"))]
-            {
-                crate::text_shape_stats::note_nonempty();
-                crate::text_shape_stats::note_skipped_unchanged();
-            }
-        }
-        #[cfg(debug_assertions)]
-        if let Some(constraints) = stamp.constraints {
-            // A revision that should have moved and did not would leave this
-            // node on stale constraints. Catch the missing invalidation where
-            // it is cheap to explain rather than as a wrong wrap on screen.
-            let (recorded, alignment) = constraints;
-            if !text.layout.is_null() {
-                debug_assert_eq!(
-                    alignment,
-                    self.record(id).style.text_horizontal_alignment,
-                    "text node {id:?} retains a layout at a stale alignment"
-                );
-            }
-            debug_assert_eq!(
-                recorded,
-                self.text_shape_constraints(id),
-                "text node {id:?} is current by revision but its constraints changed: \
-                 a CONSTRAINT invalidation is missing"
-            );
-        }
-        true
-    }
-
-    /// Resolves one plain (non-editor) text node at its current revisions; the
-    /// caller stamps it once the metrics validate. With an engine a node with
-    /// text retains the `nana-text` layout its metrics were read from; without
-    /// one the host shaper measures it. Text that wrapped to its box also
-    /// reports its unwrapped width when that is wider (see
-    /// [`UiWorld::text_natural_width`]).
-    ///
-    /// Text shaped anew in a box only as wide as the text it replaces (see
-    /// [`Self::shapes_anew_in_a_hugging_box`]) is not held to that width:
-    /// when it wraps there, it resolves to its unwrapped lines instead,
-    /// provisionally, and layout gives it the room the box really has. A
-    /// longer label in a wide column lays out once, on the line it fits,
-    /// rather than tall for a pass that moves everything after it down and
-    /// back.
-    fn resolve_plain_text<S: TextShaper>(
-        &mut self,
-        id: StableNodeId,
-        constraints: crate::TextShapeConstraints,
-        engine: Option<&nana_text::SharedTextEngine>,
-        shaper: &mut CountingShaper<'_, S>,
-        work: &mut nana_text::TextWorkCounters,
-    ) -> PlainText {
-        let base_style = Arc::clone(&self.record(id).resolved.0);
-        // The title has component-owned typography, while the Card's base
-        // style continues to inherit normally into its body children.
-        let title_style = self
-            .widget_visual_ref(id)
-            .is_some_and(crate::WidgetVisualHandle::uses_card_title_typography)
-            .then(|| {
-                let typography = self.node_theme(id).typography();
-                let mut style = base_style.as_ref().clone();
-                style.font_size = typography.body;
-                style.font_weight = Some(typography.semibold);
-                style.line_height =
-                    Some(nana_ui_core::LineHeightSpec::Absolute(typography.line_tall));
-                style
-            });
-        let style = title_style.as_ref().unwrap_or(base_style.as_ref());
-        let text_bytes = self.nodes.text_content(id).value.len();
-        // A box without text that a scheduled pass still measures is not a
-        // text node: its measurement is counted, but not as a node.
-        let is_text_node =
-            text_bytes > 0 || matches!(self.record(id).kind.as_ref(), NodeKind::Text);
-        // Read before the engine borrows the node's source.
-        let hugged = self.shapes_anew_in_a_hugging_box(id, &constraints);
-        let mut node_work = nana_text::TextWorkCounters::default();
-        let mut resolved = match engine {
-            Some(engine) => {
-                let alignment = self.record(id).style.text_horizontal_alignment;
-                let (source, copied) = self
-                    .nodes
-                    .text_source(id, style)
-                    .expect("a resolved node exists");
-                // Locked per resolution, never across the pass: the same pass
-                // measures component text through the host's `shape`, which
-                // may lay out through this very engine.
-                let kind = crate::text_node::text_kind(&constraints);
-                let layout = nana_text::lock_text_engine(engine).layout(
-                    kind,
-                    source,
-                    &crate::text_node::nana_text_style(style),
-                    &crate::text_node::nana_text_constraints(style, &constraints, alignment),
-                    &mut node_work,
-                );
-                let mut metrics = crate::text_node::text_metrics_of_layout(&layout);
-                // A capped paragraph's last line can be ellipsized instead of
-                // reporting a soft wrap. Keep its natural width separately
-                // from the measured visible lines, just as for ordinary wrap.
-                let unwrapped = (!layout.is_vertical()
-                    && ((cut_to_its_box(&constraints)
-                        && layout
-                            .overflow
-                            .contains(nana_text::OverflowFlags::ELLIPSIZED))
-                        || (wraps_to_its_box(&constraints)
-                            && layout
-                                .lines
-                                .iter()
-                                .any(|line| line.break_cause == nana_text::LineBreakCause::Wrap))))
-                .then(|| {
-                    let natural = nana_text::lock_text_engine(engine).layout(
-                        kind,
-                        source,
-                        &crate::text_node::nana_text_style(style),
-                        &crate::text_node::nana_text_constraints(
-                            style,
-                            &unbounded(constraints),
-                            alignment,
-                        ),
-                        &mut node_work,
-                    );
-                    (crate::text_node::text_metrics_of_layout(&natural), natural)
-                })
-                .filter(|(natural, _)| !constraints.wrap || natural.width > metrics.width);
-                let unwrapped = if !constraints.wrap {
-                    if let Some((natural, _)) = unwrapped {
-                        metrics.width = natural.width;
-                    }
-                    None
-                } else {
-                    unwrapped
-                };
-                if copied {
-                    node_work.text_source_clones += 1;
-                    self.record_string_clone(text_bytes);
-                }
-                let (metrics, natural, layout, provisional) = match unwrapped {
-                    Some((natural, unwrapped)) if hugged => (natural, None, unwrapped, true),
-                    unwrapped => (
-                        metrics,
-                        unwrapped.map(|(natural, _)| natural.width),
-                        layout,
-                        false,
-                    ),
-                };
-                // An empty Text node still has a line box to measure, but
-                // nothing to draw: it retains no layout. An empty rich editor
-                // keeps its one empty line: the caret is drawn on it and the
-                // IME anchors to it.
-                let retained = text_bytes > 0 || self.nodes.rich_editor_marks(id).is_some();
-                PlainText {
-                    metrics,
-                    natural,
-                    layout: retained.then_some(layout),
-                    provisional,
-                    host_unbroken: false,
-                }
-            }
-            None => {
-                let runs = shaper.runs;
-                let constraint_only = self.nodes.text_node(id).is_some_and(
-                    crate::text_node::TextNodeState::constraint_moved_without_reshaping,
-                );
-                let mut metrics = shaper.shape(id, self.nodes.text_content(id), style, constraints);
-                let lines_tall = crate::components::resolved_text_line_height(style) * 1.5;
-                // Host-only shapers expose no overflow flags. A clamped run
-                // can end short of its budget because the ellipsis has width.
-                // Some size-only host shapers cap even a no-wrap run. When
-                // chrome takes space from a control's old box, preserve the
-                // label's intrinsic width so auto sizing can grow that box.
-                let control_capped = !constraints.wrap
-                    && self
-                        .widget_visual_ref(id)
-                        .is_some_and(crate::WidgetVisualHandle::caps_control_text)
-                    && constraints
-                        .max_width
-                        .is_some_and(|max| metrics.width >= max - 0.5);
-                let needs_natural = control_capped
-                    || (cut_to_its_box(&constraints)
-                        && (constraints.max_lines.is_some()
-                            || constraints
-                                .max_width
-                                .is_some_and(|max| metrics.width >= max - 0.5)))
-                    || (wraps_to_its_box(&constraints) && metrics.height > lines_tall);
-                let unwrapped = needs_natural
-                    .then(|| {
-                        shaper.shape(
-                            id,
-                            self.nodes.text_content(id),
-                            style,
-                            unbounded(constraints),
-                        )
-                    })
-                    .filter(|natural| !constraints.wrap || natural.width > metrics.width);
-                let unwrapped = if !constraints.wrap {
-                    if let Some(natural) = unwrapped {
-                        metrics.width = natural.width;
-                    }
-                    None
-                } else {
-                    unwrapped
-                };
-                if constraint_only {
-                    // `shape` still runs; a width constraint is not a new shaped run.
-                    shaper.runs = runs;
-                }
-                node_work.record_text_pass(1, usize::from(shaper.runs > runs));
-                let (metrics, natural, provisional) = match unwrapped {
-                    Some(natural) if hugged => (natural, None, true),
-                    unwrapped => (metrics, unwrapped.map(|natural| natural.width), false),
-                };
-                let host_unbroken = !provisional
-                    && self.host_widest_line_cannot_break(id, style, constraints, metrics, shaper);
-                // No layout: one from an engine this host no longer offers is
-                // not what the host measures now.
-                PlainText {
-                    metrics,
-                    natural,
-                    layout: None,
-                    provisional,
-                    host_unbroken,
-                }
-            }
-        };
-        // A select that sizes to its options asks layout for the widest one,
-        // whichever it shows.
-        if let Some(widest) = self.widest_fitted_option(id, style, constraints, shaper)
-            && widest > resolved.metrics.width
-        {
-            resolved.natural = Some(
-                resolved
-                    .natural
-                    .map_or(widest, |natural| natural.max(widest)),
-            );
-        }
-        if !is_text_node {
-            node_work.text_nodes_considered = 0;
-            node_work.text_nodes_shaped = 0;
-        }
-        work.accumulate(node_work);
-        resolved
-    }
-
-    /// The widest option label of a select that sizes to its options
-    /// ([`crate::Select::fit_options`]), measured on one line in the field's
-    /// own style, the way its label is; an option with a hint holds the hint
-    /// after it too, which the field draws a step smaller, so it never comes
-    /// short. `None` for any other node.
-    fn widest_fitted_option<S: TextShaper>(
-        &self,
-        id: StableNodeId,
-        style: &ComputedStyle,
-        constraints: crate::TextShapeConstraints,
-        shaper: &mut CountingShaper<'_, S>,
-    ) -> Option<f32> {
-        let Some(crate::SelectVisual {
-            fit_options: true,
-            options,
-            ..
-        }) = self.widget_visual_as::<crate::SelectVisual>(id)
-        else {
-            return None;
-        };
-        let line = crate::TextShapeConstraints {
-            max_width: None,
-            wrap: false,
-            ellipsis: false,
-            max_lines: None,
-            ..constraints
-        };
-        options
-            .iter()
-            .map(|option| {
-                let label = TextContent::new(Arc::clone(&option.label));
-                let width = shaper.shape(id, &label, style, line).width;
-                match option.hint.as_ref().filter(|hint| !hint.is_empty()) {
-                    Some(hint) => {
-                        let hint = TextContent::new(Arc::clone(hint));
-                        width + crate::select::HINT_GAP + shaper.shape(id, &hint, style, line).width
-                    }
-                    None => width,
-                }
-            })
-            .reduce(f32::max)
-    }
-
-    /// Whether `id` shapes anew (new content, font, shaping style or
-    /// language) in a wrapping box only as wide as the text it held: lines
-    /// that did not wrap and filled it. That width was the old text's, not
-    /// room the box was given -- a box that shrinks to its content has what
-    /// its parent offers, which only layout knows -- so it is no width to
-    /// wrap new lines to.
-    ///
-    /// A paragraph that wrapped fills the room it has: its box's width is a
-    /// constraint, and it keeps wrapping to it.
-    fn shapes_anew_in_a_hugging_box(
-        &self,
-        id: StableNodeId,
-        constraints: &crate::TextShapeConstraints,
-    ) -> bool {
-        let Some(width) = constraints.max_width.filter(|_| constraints.wrap) else {
-            return false;
-        };
-        self.nodes
-            .text_node(id)
-            .is_some_and(crate::text_node::TextNodeState::reshapes)
-            && self.text_natural_width(id).is_none()
-            && (self.nodes.text_metrics(id).width - width).abs() <= 0.5
-    }
-
-    /// Applies a successful pass's plain text resolutions: retains or releases
-    /// each node's layout, then stamps it at the revisions it was resolved at.
-    /// Nothing is applied for a pass that failed, so a retry resolves the same
-    /// nodes again rather than skipping them with metrics never written.
-    /// Returns the text among them a typography scale change had reached, and
-    /// the text whose widest line was found not to break, or to break after
-    /// all: the width it asks of layout moved, whether or not its metrics did.
-    fn apply_plain_resolutions(
-        &mut self,
-        resolutions: Vec<PlainResolution>,
-        backend: TextBackendEpoch,
-        work: &mut nana_text::TextWorkCounters,
-    ) -> (HashSet<StableNodeId>, HashSet<StableNodeId>, bool) {
-        let mut scaled = HashSet::new();
-        let mut unbreakable_moved = HashSet::new();
-        let mut fragments_changed = Vec::new();
-        let mut inline_placement_changed = false;
-        let mut max_text_id: Option<StableNodeId> = None;
-        let mut text_count = 0usize;
-        for resolution in &resolutions {
-            let needs_text_node = resolution.layout.is_some()
-                || self.nodes.get(resolution.id).is_some_and(|record| {
-                    record.has_text || matches!(record.kind.as_ref(), NodeKind::Text)
-                });
-            if needs_text_node {
-                text_count += 1;
-                max_text_id =
-                    Some(max_text_id.map_or(resolution.id, |current| current.max(resolution.id)));
-            }
-        }
-        if let Some(highest) = max_text_id {
-            self.nodes
-                .reserve_text_nodes_through(highest, self.nodes.text_nodes_len() + text_count);
-        }
-        for resolution in resolutions {
-            fragments_changed.push(resolution.id);
-            // What the metrics this resolution wrote were wrapped against:
-            // the box width, or none yet. Layout reads it to know whether the
-            // width of those lines is one this node keeps in a given box. A
-            // widest line that cannot break is that wide in every box, so it
-            // counts as wrapped against less than any.
-            let unbreakable = |limit: Option<f32>| limit == Some(f32::NEG_INFINITY);
-            let previous = self.text_wrap_limit(resolution.id);
-            let wrap_limit = resolution
-                .constraints
-                .filter(|constraints| constraints.wrap)
-                .map(|constraints| {
-                    if resolution.host_unbroken
-                        || self.widest_line_cannot_break(
-                            resolution.id,
-                            &constraints,
-                            resolution.layout.as_deref(),
-                            unbreakable(previous),
-                            work,
-                        )
-                    {
-                        f32::NEG_INFINITY
-                    } else {
-                        constraints.max_width.unwrap_or(f32::INFINITY)
-                    }
-                });
-            if unbreakable(previous) != unbreakable(wrap_limit) {
-                unbreakable_moved.insert(resolution.id);
-            }
-            let objects_moved = self.inline_record(resolution.id).is_some()
-                && self
-                    .text_layout(resolution.id)
-                    .zip(resolution.layout.as_ref())
-                    .is_some_and(|((_, old), new)| old.objects != new.objects);
-            if objects_moved {
-                self.record_layout_invalidation(
-                    resolution.id,
-                    nana_ui_core::LayoutInvalidation::new(
-                        nana_ui_core::LayoutInvalidationSource::Text,
-                        nana_ui_core::InvalidationReason::TEXT,
-                        nana_ui_core::InvalidationKind::PLACEMENT,
-                        nana_ui_core::LayoutStyleChange::FLOW,
-                        nana_ui_core::LayoutDependencyFootprint::NONE,
-                    ),
-                );
-                inline_placement_changed = true;
-            }
-            match resolution.layout {
-                Some(layout) => {
-                    if self.nodes.retain_text_layout(resolution.id, layout) {
-                        work.text_layouts_reused += 1;
-                    }
-                }
-                None => self.nodes.release_text_layout(resolution.id),
-            }
-            self.nodes.set_text_wrap_limit(resolution.id, wrap_limit);
-            if self
-                .nodes
-                .mark_text_resolved(resolution.id, backend, resolution.constraints)
-            {
-                self.bump_last_counters(|counters| counters.record_text_language(0, 1));
-            }
-            if resolution.provisional {
-                // Not resolved at its box: stamped one constraint revision
-                // behind, so the pass after layout, which its new metrics
-                // reach, lays it out again at the box layout gave it.
-                self.nodes
-                    .invalidate_text(resolution.id, crate::text_node::TextDirty::CONSTRAINT);
-            }
-            if self.nodes.take_text_scale_pending(resolution.id) {
-                scaled.insert(resolution.id);
-            }
-        }
-        self.publish_layout_results(&fragments_changed, crate::LayoutResultSource::RuntimeLayout);
-        (scaled, unbreakable_moved, inline_placement_changed)
-    }
-
-    /// Whether the widest line `id` was just laid out to cannot break, so the
-    /// text is that wide in a box of any width (see
-    /// [`UiWorld::text_wrap_limit`]).
-    ///
-    /// A line wider than the box it wrapped to cannot: it would have broken.
-    /// Once its box has grown to hold that line, the line fits and shows
-    /// nothing; laid out half a pixel narrower, a line that cannot break
-    /// sticks out again just as wide. Only text whose widest line could not
-    /// break when it last resolved (`unbroken_before`) is laid out that
-    /// second time, so a label as wide as its line costs nothing more. Only
-    /// an engine's layout says where its lines stuck out; a host shaper's
-    /// metrics say it of the widest line
-    /// ([`Self::host_widest_line_cannot_break`]).
-    fn widest_line_cannot_break(
-        &mut self,
-        id: StableNodeId,
-        constraints: &crate::TextShapeConstraints,
-        layout: Option<&nana_text::TextLayout>,
-        unbroken_before: bool,
-        work: &mut nana_text::TextWorkCounters,
-    ) -> bool {
-        let Some(layout) = layout.filter(|layout| !layout.is_vertical()) else {
-            return false;
-        };
-        if constraints.max_width.is_none() {
-            return false;
-        }
-        if layout
-            .overflow
-            .contains(nana_text::OverflowFlags::CLIPPED_WIDTH)
-        {
-            return true;
-        }
-        let engine = match &self.paint_text_engine {
-            Some(engine) if unbroken_before => Arc::clone(engine),
-            _ => return false,
-        };
-        let widest = crate::text_node::text_metrics_of_layout(layout).width;
-        let inside = crate::TextShapeConstraints {
-            max_width: Some((widest - 0.5).max(0.0)),
-            ..*constraints
-        };
-        let style = Arc::clone(&self.record(id).resolved.0);
-        let alignment = self.record(id).style.text_horizontal_alignment;
-        let Some((source, _)) = self.nodes.text_source(id, &style) else {
-            return false;
-        };
-        let narrower = nana_text::lock_text_engine(&engine).layout(
-            crate::text_node::text_kind(&inside),
-            source,
-            &crate::text_node::nana_text_style(&style),
-            &crate::text_node::nana_text_constraints(&style, &inside, alignment),
-            work,
-        );
-        crate::text_node::text_metrics_of_layout(&narrower).width >= widest - 0.01
-    }
-
-    /// [`Self::widest_line_cannot_break`] for text the host shaper measured
-    /// at `constraints`, from what it measured (`metrics`): a host reports
-    /// no overflow, but a widest line wider than the box it wrapped to
-    /// stuck out of it. Text whose widest line could not break when it last
-    /// resolved is measured once more, half a pixel narrower than that
-    /// line, and still cannot break when it comes out as wide.
-    ///
-    /// Without this, text a host measured wider than its box asks layout
-    /// for the box's width before it is shaped there and for its own width
-    /// after (`text_inline_size` counts lines wrapped no wider than the
-    /// box), with the same metrics: no seed reaches layout, the frame keeps
-    /// the narrower box, and a later pass that measures the text again
-    /// widens it while one that reuses a retained measurement does not.
-    fn host_widest_line_cannot_break<S: TextShaper>(
-        &self,
-        id: StableNodeId,
-        style: &ComputedStyle,
-        constraints: crate::TextShapeConstraints,
-        metrics: TextMetrics,
-        shaper: &mut CountingShaper<'_, S>,
-    ) -> bool {
-        if style.writing_mode.is_vertical() || !constraints.wrap {
-            return false;
-        }
-        let Some(max_width) = constraints.max_width else {
-            return false;
-        };
-        if metrics.width > max_width + 0.5 {
-            return true;
-        }
-        if self.text_wrap_limit(id) != Some(f32::NEG_INFINITY) {
-            return false;
-        }
-        let inside = crate::TextShapeConstraints {
-            max_width: Some((metrics.width - 0.5).max(0.0)),
-            ..constraints
-        };
-        shaper
-            .shape(id, self.nodes.text_content(id), style, inside)
-            .width
-            >= metrics.width - 0.01
-    }
-
-    /// Counts what a typography scale change cost this pass's text: the text
-    /// it reached that laid out again, and of that the text whose metrics
-    /// moved its parent.
-    fn note_text_scale_relayouts(&mut self, relayouts: usize, parent_reflows: usize) {
-        if relayouts > 0 {
-            self.bump_last_counters(|counters| {
-                counters.record_typography_scale_text(0, relayouts, parent_reflows);
-            });
-        }
-    }
-
-    /// Folds one pass's counters into the frame.
-    #[allow(clippy::too_many_arguments)]
-    fn finish_text_pass(
-        &mut self,
-        work: nana_text::TextWorkCounters,
-        runs: usize,
-        hits: usize,
-        misses: usize,
-        evictions: usize,
-        wrap_layouts: usize,
-        glyph_stats: Option<(usize, usize)>,
-    ) {
-        // `WorkCounters` keeps its host-shaper meaning: `TextShaper::shape`
-        // runs and `TextLayoutCache` hits and misses. Engine work is reported
-        // on the text work counters, where its caches are named.
-        self.bump_last_counters(|counters| {
-            counters.record_text_shape(
-                runs,
-                hits,
-                misses,
-                wrap_layouts,
-                work.constraint_only_relayouts,
-            );
-            counters.record_cache_eviction(evictions);
-            if let Some((glyph_hits, glyph_misses)) = glyph_stats {
-                counters.record_glyph_cache(glyph_hits, glyph_misses);
-            }
-        });
-        record_text_diagnostics(&work);
-        self.record_text_work(work);
-    }
-
-    /// Notes the backend plain text resolves against. A different font set
-    /// than the last pass saw makes every resolved text node stale; nodes this
-    /// pass does not visit are scheduled so none keeps metrics from the old
-    /// fonts.
-    fn observe_text_backend(&mut self, epoch: TextBackendEpoch) {
-        let previous = self.text.text_backend.replace(epoch);
-        if previous != Some(epoch) {
-            self.text.text_backend_changed = true;
-            self.note_layout_source_change();
-        }
-        if previous.is_none_or(|previous| previous == epoch) {
-            return;
-        }
-        // Glyph advances and cached metrics are keyed by character, text and
-        // style, not by who measured them: another shaper at the same font
-        // generation must not be answered with the last one's numbers.
-        self.text.glyph_cache.clear();
-        self.text.text_layout_cache.clear();
-        // So does every block's strut: a face that serves its font now, or
-        // stopped serving it, moves its lines.
-        let struts = self.nodes.strut_holders().collect::<Vec<_>>();
-        self.text.strut_candidates.extend(struts);
-        // Every resolved text shapes again against the new fonts. Layout hears
-        // only from the text whose exported metrics moved, as after any other
-        // reshape: a font registration that changes no text's metrics lays
-        // nothing out.
-        let stale = self.nodes.text_bearing_nodes().collect::<Vec<_>>();
-        for id in stale {
-            self.nodes
-                .invalidate_text(id, crate::text_node::TextDirty::FONT);
-            self.mark(id, DirtyMask::TEXT | DirtyMask::RENDER);
-        }
-        // A painter that measured text re-records against the new backend;
-        // one that did not is untouched.
-        let mut painted = self
-            .invalidation
-            .paint_recordings
-            .get_mut()
-            .iter()
-            .filter(|(_, held)| held.measured_text.is_some())
-            .map(|(id, _)| *id)
-            .collect::<Vec<_>>();
-        painted.extend(
-            self.invalidation
-                .modal_surface_recordings
-                .get_mut()
-                .iter()
-                .filter(|(_, held)| held.measured_text.is_some())
-                .map(|(id, _)| *id),
-        );
-        for id in painted {
-            self.mark_repaint(id);
-        }
-    }
-}
-
-impl UiWorld {
-    /// Text-bearing nodes style resolution turned visible since the last
-    /// scheduled pass and not already in `ids`, for this pass to re-resolve.
-    fn take_shown_text(&mut self, ids: &[StableNodeId]) -> Vec<StableNodeId> {
-        if self.text.text_shown.is_empty() {
-            return Vec::new();
-        }
-        let scheduled: HashSet<StableNodeId> = ids.iter().copied().collect();
-        let mut shown = std::mem::take(&mut self.text.text_shown);
-        shown.sort_unstable();
-        shown.dedup();
-        shown.retain(|id| {
-            // Editor, EmptyState and ModalFrame text is re-measured whenever a
-            // layout scope reaches it and is never stamped; showing it again
-            // is not a reason to measure it here as well.
-            !scheduled.contains(id)
-                && !self
-                    .widget_visual_ref(*id)
-                    .is_some_and(crate::WidgetVisualHandle::is_text_input)
-                && !self
-                    .widget_visual_ref(*id)
-                    .is_some_and(crate::WidgetVisualHandle::owns_intrinsic_text)
-                && self.nodes.get(*id).is_some_and(|record| {
-                    matches!(record.kind.as_ref(), NodeKind::Text) || record.has_text
-                })
-        });
-        shown
-    }
-
-    /// Schedules every text the host's current font set may measure
-    /// differently than the one this world last resolved against. A frame
-    /// driver calls this before draining work, so registering a font makes
-    /// a static document settle on the new fonts instead of waiting for
-    /// unrelated work to reach a text pass.
-    pub fn observe_text_shaper(&mut self, host: &(impl TextShaper + ?Sized)) {
-        let backend = PlainTextBackend::of(host);
-        self.paint_text_engine = backend.engine.clone();
-        self.observe_text_backend(backend.epoch);
-        self.observe_engine_fallback_language(backend.fallback_language);
-    }
-
-    /// Text revisions of `id` (Issue #95): which classes of change its text
-    /// has seen. Paint and compositor changes never move `content`, `shape`
-    /// or `constraint`.
-    pub fn text_revisions(&self, id: StableNodeId) -> Option<crate::TextRevisions> {
-        self.nodes
-            .text_node(id)
-            .map(|text| text.revisions)
-            .or_else(|| self.nodes.contains(id).then(crate::TextRevisions::default))
-    }
-
-    /// The `nana-text` layout plain text node `id` retains, with its handle.
-    /// `None` when the node's text resolved through the host shaper, is empty,
-    /// or is an editor's.
-    pub fn text_layout(
-        &self,
-        id: StableNodeId,
-    ) -> Option<(nana_text::TextLayoutId, &Arc<nana_text::TextLayout>)> {
-        let handle = self.nodes.text_node(id)?.layout;
-        self.nodes
-            .text_layouts()
-            .get(handle)
-            .map(|layout| (handle, layout))
-    }
-
-    /// Layouts retained across every plain text node of this world.
-    pub fn retained_text_layouts(&self) -> usize {
-        self.nodes.text_layouts().len()
-    }
-}
-
-/// One plain text node resolved by a pass, held until the pass succeeds.
-pub(super) struct PlainResolution {
-    id: StableNodeId,
-    /// The constraints a node with text was resolved at. `None` for a box with
-    /// no text, whose constraints nothing reads.
-    constraints: Option<crate::TextShapeConstraints>,
-    /// The layout to retain; `None` releases whatever the node held.
-    layout: Option<Arc<nana_text::TextLayout>>,
-    /// Resolved without its box's width ([`PlainText::provisional`]).
-    provisional: bool,
-    /// [`PlainText::host_unbroken`].
-    host_unbroken: bool,
-}
-
-impl PlainResolution {
-    /// A node with text, resolved in a box that gives it `constraints`, or
-    /// `provisional`ly without that box's width.
-    fn text(
-        id: StableNodeId,
-        constraints: crate::TextShapeConstraints,
-        layout: Option<Arc<nana_text::TextLayout>>,
-        provisional: bool,
-        host_unbroken: bool,
-    ) -> Self {
-        Self {
-            id,
-            constraints: Some(if provisional {
-                unbounded(constraints)
-            } else {
-                constraints
-            }),
-            layout,
-            provisional,
-            host_unbroken,
-        }
-    }
-
-    fn nothing(id: StableNodeId) -> Self {
-        Self {
-            id,
-            constraints: None,
-            layout: None,
-            provisional: false,
-            host_unbroken: false,
-        }
-    }
-}
-
-/// How plain text resolves for one pass, read once from the host.
-pub(super) struct PlainTextBackend {
-    pub epoch: TextBackendEpoch,
-    pub engine: Option<nana_text::SharedTextEngine>,
-    /// The engine's fallback language. Text depends on it through its
-    /// computed style, like on any other language, not through the epoch.
-    pub fallback_language: Option<nana_text::font::LanguageTag>,
-}
-
-impl PlainTextBackend {
-    pub(super) fn of<H: TextShaper + ?Sized>(host: &H) -> Self {
-        match host.text_engine() {
-            Some(engine) => {
-                let (epoch, fallback_language) = {
-                    let engine = nana_text::lock_text_engine(&engine);
-                    (engine.epoch(), engine.language().cloned())
-                };
-                // The fallback language reaches text as the root of the
-                // language its style inherits, so a change of it re-resolves
-                // the text that inherits it and nothing else. Kept in the
-                // epoch, it would make every resolved node stale.
-                let epoch = nana_text::TextEngineEpoch {
-                    language_generation: 0,
-                    ..epoch
-                };
-                Self {
-                    epoch: TextBackendEpoch::Engine(epoch),
-                    engine: Some(engine),
-                    fallback_language,
-                }
-            }
-            None => Self {
-                epoch: TextBackendEpoch::Host {
-                    shaper: {
-                        use std::hash::{Hash, Hasher};
-                        let mut hasher = std::hash::DefaultHasher::new();
-                        std::any::type_name::<H>().hash(&mut hasher);
-                        hasher.finish()
-                    },
-                    font_generation: host.font_generation(),
-                },
-                engine: None,
-                fallback_language: None,
-            },
-        }
-    }
-}
-
-impl UiWorld {
-    /// [`Self::shape_text_for_layout`] restricted to `ids` (typically the
-    /// relayout scope plus nodes whose published box changed). Nodes outside
-    /// the scope keep their previous shape, which already matches their
-    /// unchanged constraints.
-    pub fn shape_text_for_layout_scoped(
-        &mut self,
-        ids: &[StableNodeId],
-        shaper: &mut impl TextShaper,
-    ) -> Result<bool, UiWorldError> {
-        let mut scope = ids.to_vec();
-        scope.sort_unstable();
-        scope.dedup();
-        scope.retain(|id| self.nodes.contains(*id));
-        self.shape_text_for_layout_impl(scope, shaper)
-    }
-}
-
-impl UiWorld {
-    /// Re-shape visible text against its resolved content box after the first
-    /// layout pass. This closes wrapping/ellipsis height measurement without
-    /// moving layout ownership into the renderer adapter.
-    pub fn shape_text_for_layout(
-        &mut self,
-        document: DocumentId,
-        shaper: &mut impl TextShaper,
-    ) -> Result<bool, UiWorldError> {
-        self.shape_text_for_layout_impl(self.document_order(document), shaper)
-    }
-}
-
-impl UiWorld {
-    /// Whether a pass already resolved `id`'s text, so this pass changes text
-    /// that had exported metrics rather than laying it out for the first time.
-    fn text_resolved_before(&self, id: StableNodeId) -> bool {
-        self.nodes
-            .text_node(id)
-            .is_some_and(crate::text_node::TextNodeState::resolved_before)
-            || self.nodes.text_input_presentation(id).is_some()
-    }
-
-    /// Text that kept its exported metrics stops the change there. The
-    /// frontier never sees it, so the stop is counted where it happens.
-    fn note_text_propagations_stopped(&mut self, stopped: usize) {
-        if stopped > 0 {
-            self.bump_last_counters(|counters| {
-                counters.layout_propagations_stopped =
-                    counters.layout_propagations_stopped.saturating_add(stopped);
-                counters.record_text_metrics(0, stopped, 0);
-            });
-        }
-    }
-
-    /// Shape only explicitly scheduled text. The runtime owns invalidation and
-    /// storage while the renderer adapter supplies its real shaping backend.
-    pub fn shape_text(
-        &mut self,
-        ids: &[StableNodeId],
-        host: &mut impl TextShaper,
-    ) -> Result<(), UiWorldError> {
-        self.resolve_presentations(ids)?;
-        let shown = self.take_shown_text(ids);
-        let backend = PlainTextBackend::of(host);
-        self.paint_text_engine = backend.engine.clone();
-        self.observe_text_backend(backend.epoch);
-        let mut work = nana_text::TextWorkCounters::default();
-        // Production adapter: every host shaper (MeasureTextShaper, NanaTextShaper,
-        // tests) is wrapped once so lookup/insert hit the same UiWorld caches.
-        let mut cache = std::mem::take(&mut self.text.text_layout_cache);
-        let mut glyphs = std::mem::take(&mut self.text.glyph_cache);
-        let mut shaper = CountingShaper::new(host, &mut cache, &mut glyphs);
-        if !ids.is_empty() {
-            self.record_hot_path_allocation(
-                1,
-                ids.len().saturating_mul(size_of::<(
-                    StableNodeId,
-                    TextMetrics,
-                    Option<TextInputPresentation>,
-                )>()),
-            );
-        }
-        let mut shaped = Vec::with_capacity(ids.len());
-        let mut adaptive_updates = Vec::new();
-        let mut empty_shaped = Vec::new();
-        let mut modal_shaped = Vec::new();
-        let mut resolved = Vec::new();
-        let mut max_text_id: Option<StableNodeId> = None;
-        let mut text_count = 0usize;
-        for &id in ids.iter().chain(&shown) {
-            if let Some(record) = self.nodes.get(id)
-                && (record.has_text || matches!(record.kind.as_ref(), NodeKind::Text))
-            {
-                text_count += 1;
-                max_text_id = Some(max_text_id.map_or(id, |current| current.max(id)));
-            }
-        }
-        if let Some(highest) = max_text_id {
-            self.nodes
-                .reserve_text_nodes_through(highest, self.nodes.text_nodes_len() + text_count);
-        }
-        #[cfg(any(test, feature = "benchmark"))]
-        crate::text_shape_stats::note_scope(ids.len());
-        let outcome = (|| -> Result<(), UiWorldError> {
-            for &id in ids.iter().chain(&shown) {
-                if !self.contains(id) {
-                    return Err(UiWorldError::MissingNode(id));
-                }
-                if self.plain_text_is_current(id, backend.epoch, &mut work) {
-                    continue;
-                }
-                if self
-                    .widget_visual_ref(id)
-                    .is_some_and(crate::WidgetVisualHandle::owns_intrinsic_text)
-                {
-                    // Its text is the visual's own now; a layout it held as
-                    // plain text is not drawn any more.
-                    self.nodes.release_text_layout(id);
-                }
-                let presentation = self
-                    .widget_visual_ref(id)
-                    .is_some_and(crate::WidgetVisualHandle::is_text_input)
-                    .then(|| self.text_input_presentation_source(id))
-                    .flatten();
-                // A box whose text went empty has nothing to shape: it resolves
-                // to nothing and gives up the metrics that sized it, which
-                // leaves it as a box laid out cold without text.
-                if presentation.is_none()
-                    && !self.record(id).has_text
-                    && !matches!(self.record(id).kind.as_ref(), NodeKind::Text)
-                    && !self
-                        .widget_visual_ref(id)
-                        .is_some_and(crate::WidgetVisualHandle::owns_intrinsic_text)
-                {
-                    let resolved_before = self.text_resolved_before(id);
-                    resolved.push(PlainResolution::nothing(id));
-                    shaped.push((id, TextMetrics::default(), None, None, resolved_before));
-                    continue;
-                }
-                let style = Arc::clone(&self.record(id).resolved.0);
-                #[cfg(any(test, feature = "benchmark"))]
-                if presentation.as_ref().map_or_else(
-                    || self.record(id).has_text,
-                    |source| !source.text.value.is_empty(),
-                ) {
-                    crate::text_shape_stats::note_nonempty();
-                }
-                // EmptyState and ModalFrame own intrinsic text of their own and
-                // re-measure it every pass, so they are never stamped.
-                let mut stampable = true;
-                if let Some(empty_visual) = self.widget_visual_as::<crate::EmptyStateVisual>(id) {
-                    stampable = false;
-                    let runs = shaper.runs;
-                    let typography = self.node_theme(id).typography();
-                    let intrinsic = shape_empty_state_text(
-                        id,
-                        empty_visual,
-                        &style,
-                        None,
-                        &mut shaper,
-                        typography,
-                    );
-                    work.record_text_pass(1, usize::from(shaper.runs > runs));
-                    validate_text_metrics(id, intrinsic.title)?;
-                    if let Some(message) = intrinsic.message {
-                        validate_text_metrics(id, message)?;
-                    }
-                    empty_shaped.push((id, intrinsic));
-                }
-                if let Some(modal_visual) = self.widget_visual_as::<crate::ModalFrameVisual>(id) {
-                    stampable = false;
-                    let runs = shaper.runs;
-                    let node_theme = self.node_theme(id);
-                    let intrinsic = shape_modal_text(
-                        id,
-                        modal_visual,
-                        &style,
-                        node_theme.recipes().dialog(),
-                        None,
-                        None,
-                        &mut shaper,
-                        node_theme.typography(),
-                    );
-                    work.record_text_pass(1, usize::from(shaper.runs > runs));
-                    validate_text_metrics(id, intrinsic.title)?;
-                    if let Some(description) = intrinsic.description {
-                        validate_text_metrics(id, description)?;
-                    }
-                    if let Some(body) = intrinsic.body {
-                        validate_text_metrics(id, body)?;
-                    }
-                    modal_shaped.push((id, intrinsic));
-                }
-                let constraints =
-                    self.text_shape_constraints_for(id, presentation.as_ref().map(|s| s.multiline));
-                let Some(presentation) = presentation else {
-                    let PlainText {
-                        metrics,
-                        natural,
-                        layout,
-                        provisional,
-                        host_unbroken,
-                    } = self.resolve_plain_text(
-                        id,
-                        constraints,
-                        backend.engine.as_ref(),
-                        &mut shaper,
-                        &mut work,
-                    );
-                    validate_text_metrics(id, metrics)?;
-                    let resolved_before = self.text_resolved_before(id);
-                    if stampable {
-                        resolved.push(PlainResolution::text(
-                            id,
-                            constraints,
-                            layout,
-                            provisional,
-                            host_unbroken,
-                        ));
-                    }
-                    shaped.push((id, metrics, natural, None, resolved_before));
-                    continue;
-                };
-                self.nodes.release_text_layout(id);
-                let text = clone_shaped_text(self, id, Some(&presentation));
-                work.text_source_clones += 1;
-                let runs = shaper.runs;
-                let metrics = shaper.shape(id, &text, &style, constraints);
-                work.record_text_pass(1, usize::from(shaper.runs > runs));
-                validate_text_metrics(id, metrics)?;
-                let previous_overlays = self
-                    .nodes
-                    .text_input_presentation(id)
-                    .map(|stored| stored.overlay_metrics.clone())
-                    .unwrap_or_default();
-                if presentation.editor.adaptive_footer {
-                    adaptive_updates.push(id);
-                }
-                let presentation = shape_text_input_presentation_in_theme(
-                    id,
-                    presentation,
-                    &style,
-                    constraints,
-                    &previous_overlays,
-                    self.node_theme(id),
-                    &mut shaper,
-                );
-                let resolved_before = self.text_resolved_before(id);
-                shaped.push((id, metrics, None, Some(presentation), resolved_before));
-            }
-            Ok(())
-        })();
-        let runs = shaper.runs;
-        let wrap_layouts = shaper.wrap_layouts;
-        let host_keys = shaper.keys;
-        work.text_source_clones += shaper.keys;
-        work.text_bytes_hashed += shaper.key_bytes;
-        if outcome.is_err() {
-            let _ = cache.take_counters();
-            let _ = glyphs.take_counters();
-            let _ = host.take_text_work();
-            // Shown text this pass did not get to resolve stays owed.
-            self.text.text_shown.extend(shown);
-            self.text.text_layout_cache = cache;
-            self.text.glyph_cache = glyphs;
-            return outcome;
-        }
-        self.text
-            .text_input_adaptive_updates
-            .extend(adaptive_updates);
-        let (mut scaled, unbreakable_moved, _) =
-            self.apply_plain_resolutions(resolved, backend.epoch, &mut work);
-        let mut stopped = 0usize;
-        let mut scale_parent_reflows = 0usize;
-        for (id, metrics, natural, presentation, resolved_before) in shaped {
-            let previous = self.nodes.text_metrics(id);
-            let previous_natural = self.text_natural_width(id);
-            // A widest line found not to break, or to break after all, moves
-            // the width this text asks of layout with the metrics it held.
-            let width_moved = unbreakable_moved.contains(&id);
-            if previous != metrics || previous_natural != natural || width_moved {
-                // Layout reads every metric, not only those that seed it: a
-                // full-layout snapshot taken before this write is stale.
-                self.note_layout_source_change();
-            }
-            self.nodes.set_text_metrics(id, metrics);
-            self.nodes.set_text_natural_width(id, natural);
-            if let Some(presentation) = presentation {
-                // minimap 视口钉住随光标移动失效：reveal 恢复权威。上一趟
-                // 与本趟 shape 的光标位置不同即视为移动。
-                if self.nodes.text_viewport_pin(id).is_some() {
-                    let moved = match self.nodes.text_input_presentation(id) {
-                        Some(previous_presentation) => {
-                            (previous_presentation.caret_x, previous_presentation.caret_y)
-                                != (presentation.caret_x, presentation.caret_y)
-                        }
-                        None => true,
-                    };
-                    if moved {
-                        self.nodes.set_text_viewport_pin(id, None);
-                    }
-                }
-                self.nodes
-                    .set_text_input_presentation(id, Some(presentation));
-                if self.nodes.take_text_scale_pending(id) {
-                    scaled.insert(id);
-                }
-            }
-            if text_intrinsic_changed(previous, metrics)
-                || previous_natural != natural
-                || width_moved
-            {
-                if self.propagate_layout_from_node(id) && scaled.contains(&id) {
-                    scale_parent_reflows += 1;
-                }
-            } else if resolved_before {
-                // Re-shaped, and the width, height and baseline it exports
-                // held: the change stops at the text and reaches no parent.
-                stopped += 1;
-            }
-        }
-        self.note_text_propagations_stopped(stopped);
-        self.note_text_scale_relayouts(scaled.len(), scale_parent_reflows);
-        for (id, presentation) in empty_shaped {
-            self.apply_empty_state_text_presentation(id, presentation);
-        }
-        for (id, presentation) in modal_shaped {
-            self.nodes.set_modal_text(id, Some(presentation));
-        }
-        let (hits, misses, evictions) = cache.take_counters();
-        if host_keys > 0 {
-            // The host path's layout cache is the Runtime `TextLayoutCache`.
-            work.record_layout_cache(hits, misses);
-            work.layout_cache_lookups += hits + misses;
-        }
-        let glyph_stats = glyphs.take_counters();
-        self.text.text_layout_cache = cache;
-        self.text.glyph_cache = glyphs;
-        self.resolve_block_struts(ids, host);
-        self.refresh_document_text_highlights(host);
-        // Taken last: document highlights measure through the host too.
-        work.accumulate(host.take_text_work());
-        self.finish_text_pass(
-            work,
-            runs,
-            hits,
-            misses,
-            evictions,
-            wrap_layouts,
-            glyph_stats,
-        );
-        Ok(())
-    }
-}
-
-impl UiWorld {
-    /// The strut `id`'s line boxes start from, per px of its font size: its
-    /// own face's ascent and descent, as the shaper reported them. `None`
-    /// keeps layout's approximation.
-    pub(crate) fn block_strut(&self, id: StableNodeId) -> Option<crate::FontStrut> {
-        self.nodes.block_strut(id).copied()
-    }
-
-    /// Whether `id` lays its children's lines out with a strut of its own: an
-    /// ordinary block (not a flex or grid container) with no line box of its
-    /// own whose children include an inline-level one in flow (CSS 2.1
-    /// §10.8.1). It reads `id`'s kind, text and display, and its children's
-    /// display, position and float; each of those changing makes `id` a
-    /// strut candidate.
-    pub(crate) fn wants_block_strut(&self, id: StableNodeId) -> bool {
-        let Some(record) = self.nodes.get(id) else {
-            return false;
-        };
-        let style = &record.resolved_layout;
-        if matches!(record.kind.as_ref(), NodeKind::Text)
-            || self.lays_out_own_line(id)
-            || style.omits_box()
-            || style
-                .display
-                .is_some_and(|display| display.is_flex_container() || display.is_grid_container())
-        {
-            return false;
-        }
-        record.hierarchy.children.iter().any(|&child| {
-            self.nodes.get(child).is_some_and(|child| {
-                let child = &child.resolved_layout;
-                child.is_inline_level() && !child.position.is_out_of_flow()
-            })
-        })
-    }
-
-    /// The strut `id` holds when it [wants one](Self::wants_block_strut):
-    /// the shaper's metrics of its computed font's own face, per px of its
-    /// font size. A size change alone then lays the block out as before
-    /// without asking the shaper again.
-    fn fresh_block_strut(
-        &self,
-        id: StableNodeId,
-        shaper: &mut impl TextShaper,
-    ) -> Option<crate::FontStrut> {
-        if !self.wants_block_strut(id) {
-            return None;
-        }
-        let style = &self.nodes.get(id)?.resolved.0;
-        let size = style.font_size;
-        if !(size.is_finite() && size > 0.0) {
-            return None;
-        }
-        let metrics = shaper.strut_metrics(style)?;
-        let per_px = crate::FontStrut {
-            ascent: metrics.ascent / size,
-            descent: metrics.descent / size,
-        };
-        (per_px.ascent.is_finite() && per_px.descent.is_finite()).then_some(per_px)
-    }
-
-    /// Considers again the strut of every block that may have gained, lost
-    /// or changed one: the scheduled text (a box whose text came or went),
-    /// and the candidates since the last pass (a block whose font or child
-    /// list changed, or a child whose display did; every holder after a
-    /// font set change). A strut that moved lays its block out again, the
-    /// way moved text metrics do.
-    fn resolve_block_struts(&mut self, scheduled: &[StableNodeId], shaper: &mut impl TextShaper) {
-        if self.text.strut_candidates.is_empty() && scheduled.is_empty() {
-            return;
-        }
-        let mut candidates = std::mem::take(&mut self.text.strut_candidates);
-        candidates.extend_from_slice(scheduled);
-        candidates.sort_unstable();
-        candidates.dedup();
-        for id in candidates {
-            if !self.contains(id) {
-                continue;
-            }
-            let next = self.fresh_block_strut(id, shaper);
-            if self.nodes.block_strut(id).copied() == next {
-                continue;
-            }
-            self.nodes.set_block_strut(id, next);
-            self.note_layout_source_change();
-            if self.presence_live(id) {
-                self.propagate_layout_from_node(id);
-            }
-        }
-        #[cfg(any(test, feature = "layout-verify"))]
-        self.audit_block_struts(shaper);
-    }
-
-    /// Every block's retained strut is the one it would read fresh: what
-    /// the candidates missed would lay a block out with a stale strut that
-    /// no frame corrects. Checked on worlds small enough to scan.
-    #[cfg(any(test, feature = "layout-verify"))]
-    fn audit_block_struts(&self, shaper: &mut impl TextShaper) {
-        const AUDIT_LIMIT: usize = 512;
-        if self.nodes.len() > AUDIT_LIMIT {
-            return;
-        }
-        let ids = self.nodes.keys().collect::<Vec<_>>();
-        for id in ids {
-            assert_eq!(
-                self.nodes.block_strut(id).copied(),
-                self.fresh_block_strut(id, shaper),
-                "{id:?}: the retained strut disagrees with a fresh read"
-            );
-        }
     }
 }
 
@@ -5483,7 +3023,7 @@ impl UiWorld {
 
 impl UiWorld {
     /// 值被编辑后重映射折叠态与 snippet 会话。
-    pub(super) fn reconcile_text_view_state(
+    pub(in crate::world) fn reconcile_text_view_state(
         &mut self,
         id: StableNodeId,
         old_value: &str,
@@ -5524,7 +3064,7 @@ impl UiWorld {
 impl UiWorld {
     /// 宿主重喂折叠区间后对账折叠态（`offered` 为 `None` 表示宿主不再
     /// 喂入折叠，整个视图状态随之移除）。
-    pub(super) fn reconcile_text_fold_offered(
+    pub(in crate::world) fn reconcile_text_fold_offered(
         &mut self,
         id: StableNodeId,
         offered: Option<Arc<[crate::TextCodeFold]>>,
@@ -6053,115 +3593,6 @@ impl UiWorld {
     }
 }
 
-#[cfg(test)]
-mod counting_probe_tests {
-    use super::*;
-
-    #[derive(Default)]
-    struct GeometryShaper {
-        batches: usize,
-        shapes: usize,
-    }
-    impl TextShaper for GeometryShaper {
-        fn shape(
-            &mut self,
-            _: StableNodeId,
-            _: &TextContent,
-            _: &ComputedStyle,
-            _: crate::TextShapeConstraints,
-        ) -> TextMetrics {
-            self.shapes += 1;
-            TextMetrics {
-                width: 123.0,
-                height: 72.0,
-                ascent: None,
-            }
-        }
-        fn with_text_probes<R>(
-            &mut self,
-            _: &TextContent,
-            _: &ComputedStyle,
-            _: crate::TextShapeConstraints,
-            consume: impl FnOnce(&mut dyn TextShaper) -> R,
-        ) -> R {
-            self.batches += 1;
-            consume(self)
-        }
-        fn horizontal_offset(
-            &mut self,
-            _: StableNodeId,
-            _: &TextContent,
-            _: usize,
-            _: &ComputedStyle,
-        ) -> f32 {
-            31.0
-        }
-        fn text_position(
-            &mut self,
-            _: StableNodeId,
-            _: &TextContent,
-            _: usize,
-            _: &ComputedStyle,
-            _: crate::TextShapeConstraints,
-        ) -> (f32, f32, f32) {
-            (31.0, 48.0, 24.0)
-        }
-        fn text_highlights(
-            &mut self,
-            _: StableNodeId,
-            _: &TextContent,
-            _: (usize, usize),
-            _: &ComputedStyle,
-            _: crate::TextShapeConstraints,
-        ) -> Vec<LayoutBox> {
-            vec![LayoutBox {
-                x: 31.0,
-                y: 48.0,
-                width: 17.0,
-                height: 24.0,
-            }]
-        }
-    }
-
-    #[test]
-    fn counting_adapter_preserves_host_geometry_batch_and_measurement_cache() {
-        let mut host = GeometryShaper::default();
-        let mut cache = crate::text_layout_cache::TextLayoutCache::default();
-        let mut glyphs = crate::GlyphCache::default();
-        let id = StableNodeId::new(1).unwrap();
-        let text = TextContent {
-            value: "first\nsecond".into(),
-        };
-        let style = ComputedStyle::default();
-        let constraints = crate::TextShapeConstraints {
-            wrap: true,
-            ..Default::default()
-        };
-        let mut adapter = CountingShaper::new(&mut host, &mut cache, &mut glyphs);
-        assert_eq!(
-            adapter.text_position(id, &text, 8, &style, constraints),
-            (31.0, 48.0, 24.0)
-        );
-        adapter.with_text_probes(&text, &style, constraints, |prepared| {
-            assert_eq!(
-                prepared.text_position(id, &text, 8, &style, constraints),
-                (31.0, 48.0, 24.0)
-            );
-            assert_eq!(prepared.horizontal_offset(id, &text, 8, &style), 31.0);
-            assert_eq!(
-                prepared.text_highlights(id, &text, (6, 8), &style, constraints)[0].y,
-                48.0
-            );
-            assert_eq!(prepared.shape(id, &text, &style, constraints).height, 72.0);
-            assert_eq!(prepared.shape(id, &text, &style, constraints).height, 72.0);
-        });
-        assert_eq!(adapter.runs, 1);
-        assert_eq!(adapter.wrap_layouts, 1);
-        assert_eq!(host.shapes, 1);
-        assert_eq!(host.batches, 1);
-    }
-}
-
 /// How an editor's text space lands on the page, in every writing mode.
 ///
 /// An editor's geometry — caret, selection, preedit, hit-testing — is in the
@@ -6683,26 +4114,5 @@ impl UiWorld {
             inline_scroll,
             block_scroll,
         })
-    }
-}
-
-/// Aggregate one text pass into the process diagnostics (Issue #227). Pure
-/// counter adds; nothing when diagnostics are off.
-fn record_text_diagnostics(work: &nana_text::TextWorkCounters) {
-    use nana_diagnostics::framework::text;
-    if !nana_diagnostics::metrics_enabled() {
-        return;
-    }
-    let pairs = [
-        (&text::SHAPE_HITS, work.shape_cache_hits),
-        (&text::SHAPE_MISSES, work.shape_cache_misses),
-        (&text::LAYOUT_HITS, work.layout_cache_hits),
-        (&text::LAYOUT_MISSES, work.layout_cache_misses),
-        (&text::GLYPHS_RESOLVED, work.glyphs_resolved),
-    ];
-    for (metric, value) in pairs {
-        if let Some(value) = value.filter(|v| *v > 0) {
-            metric.record(value as u64);
-        }
     }
 }

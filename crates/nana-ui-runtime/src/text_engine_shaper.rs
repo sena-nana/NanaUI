@@ -23,8 +23,8 @@ use nana_text::{
 
 use crate::text_node::{nana_text_constraints, nana_text_style, text_kind, text_metrics_of_layout};
 use crate::{
-    ComputedStyle, GlyphCache, LayoutBox, StableNodeId, TextContent, TextHit,
-    TextHorizontalAlignment, TextMetrics, TextShapeConstraints, TextShaper,
+    ComputedStyle, LayoutBox, StableNodeId, TextContent, TextHit, TextHorizontalAlignment,
+    TextMetrics, TextShapeConstraints, TextShaper,
 };
 
 /// Editors whose geometry is kept. Each entry holds layouts of one editor's
@@ -607,17 +607,6 @@ impl TextShaper for PreparedEngineShaper<'_> {
         constraints: TextShapeConstraints,
     ) -> TextMetrics {
         self.host.measure(id, text, style, constraints)
-    }
-
-    fn shape_cached(
-        &mut self,
-        id: StableNodeId,
-        text: &TextContent,
-        style: &ComputedStyle,
-        constraints: TextShapeConstraints,
-        glyphs: &mut GlyphCache,
-    ) -> TextMetrics {
-        self.host.shape_cached(id, text, style, constraints, glyphs)
     }
 
     fn retains_measurement(&self, id: StableNodeId) -> bool {

@@ -1,8 +1,9 @@
 //! Unit tests for `scene_paint::text`.
 
-use super::shape_cache::SHAPE_CACHE_CAP;
 use super::*;
 use nana_ui_scene::SceneTextEffects;
+
+const SHAPE_CACHE_CAP: usize = 512;
 
 struct TextPipeline {
     inner: super::TextPipeline,
@@ -267,19 +268,25 @@ fn ellipsis_paint_keeps_exact_fit_and_truncates_only_narrow_boxes() {
                     true,
                 )
                 .expect("label must prepare");
-            let entry = pipeline
-                .shape_cache
-                .entries
-                .values()
-                .find(|entry| {
-                    entry.key.content == content
-                        && entry.key.width_bits == width.to_bits()
-                        && entry.key.ellipsis == ellipsis
-                })
-                .expect("prepared label must be cached at its own width");
-            let painted_width = measure(&entry.layout).0;
-            let painted_glyphs: Vec<_> = entry
-                .layout
+            let layout = pipeline.lay_out(
+                content,
+                None,
+                Some(600),
+                12.0,
+                12.0 * 1.2,
+                0.0,
+                false,
+                false,
+                nana_ui_core::TextWrapBreak::Word,
+                ellipsis,
+                None,
+                width,
+                24.0,
+                TextAlignSpec::Start,
+                &SceneTextOpenType::default(),
+            );
+            let painted_width = measure(&layout).0;
+            let painted_glyphs: Vec<_> = layout
                 .runs
                 .iter()
                 .flat_map(|run| {
@@ -423,13 +430,23 @@ fn rtl_latin_in_wide_box_places_first_glyph_on_the_right() {
             true,
         )
         .expect("rtl latin must prepare");
-    let layout = pipeline
-        .shape_cache
-        .entries
-        .values()
-        .next()
-        .map(|entry| Arc::clone(&entry.layout))
-        .expect("paint must cache the laid-out paragraph");
+    let layout = pipeline.lay_out(
+        "Hello",
+        None,
+        None,
+        16.0,
+        16.0 * 1.2,
+        0.0,
+        false,
+        false,
+        nana_ui_core::TextWrapBreak::Word,
+        false,
+        None,
+        200.0,
+        24.0,
+        TextAlignSpec::Start,
+        &opentype,
+    );
     let glyph_x = layout
         .runs
         .iter()
@@ -2264,95 +2281,6 @@ fn fallback_layout_follows_the_scene_typography() {
         );
     }
     assert!(ragged.lines[0].metrics.width_px < 101.0 - 0.05);
-
-    let plain = shape_key_ref(content);
-    let other = ShapeKeyRef {
-        typography: justified.typography,
-        ..shape_key_ref(content)
-    };
-    assert!(!plain.to_owned_key().matches(&other));
-    assert_ne!(plain.hash64(), other.hash64());
-}
-
-/// A shape key for `content` with everything else at its default.
-fn shape_key_ref(content: &str) -> ShapeKeyRef<'_> {
-    ShapeKeyRef {
-        content,
-        family: None,
-        weight: None,
-        font_size_bits: 16f32.to_bits(),
-        line_height_bits: 20f32.to_bits(),
-        wrap: false,
-        wrap_break: nana_ui_core::TextWrapBreak::Word,
-        italic: false,
-        ellipsis: false,
-        max_lines: None,
-        letter_spacing_bits: 0f32.to_bits(),
-        word_break: 0,
-        line_break: 0,
-        kerning: 0,
-        features: &[],
-        variations: &[],
-        width_bits: 100f32.to_bits(),
-        height_bits: 20f32.to_bits(),
-        align: 0,
-        direction: 0,
-        writing_mode: 0,
-        text_orientation: 0,
-        preserve_lines: false,
-        font_features: &[],
-        typography: nana_ui_core::UsedTextTypography::default(),
-    }
-}
-
-#[test]
-fn a_shape_hash_collision_reshapes_instead_of_painting_the_other_text() {
-    // The hash finds the entry; the stored key decides the hit. A weak
-    // hash may therefore cost a reshape, and may never paint the wrong
-    // letters — which is the whole reason the key is kept at all.
-    let (device, queue) = test_device();
-    let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-    let layout = pipeline.lay_out(
-        "first paragraph",
-        None,
-        None,
-        16.0,
-        20.0,
-        0.0,
-        false,
-        false,
-        nana_ui_core::TextWrapBreak::Word,
-        false,
-        None,
-        100.0,
-        20.0,
-        TextAlignSpec::Start,
-        &SceneTextOpenType::default(),
-    );
-    let collision = 0x5ca1_ab1e_u64;
-    pipeline.shape_cache.insert(
-        collision,
-        shape_key_ref("first paragraph").to_owned_key(),
-        layout,
-    );
-    let (hits, misses, _) = pipeline.shape_cache_stats();
-    assert!(
-        pipeline
-            .shape_cache
-            .get(collision, &shape_key_ref("first paragraph"))
-            .is_some(),
-        "its own key still hits"
-    );
-    assert!(
-        pipeline
-            .shape_cache
-            .get(collision, &shape_key_ref("a different paragraph"))
-            .is_none(),
-        "another paragraph at the same hash must miss, not read that buffer"
-    );
-    let (after_hits, after_misses, _) = pipeline.shape_cache_stats();
-    assert_eq!(after_hits, hits + 1);
-    assert_eq!(after_misses, misses + 1);
 }
 
 #[test]

@@ -172,10 +172,6 @@ pub struct SystemWork {
     pub allocated_bytes: usize,
     /// `TextShaper::shape` invocations. Zero until Runtime records shaping.
     pub text_shaped_runs: usize,
-    /// `TextLayoutCache` lookup hits. Zero until shaping records the cache.
-    pub text_layout_cache_hits: usize,
-    /// `TextLayoutCache` inserts after a miss. Zero until shaping.
-    pub text_layout_cache_misses: usize,
     /// Shape calls that requested wrapping. Zero until shaping.
     pub text_wrap_layouts: usize,
     pub intrinsic_measure_requests: usize,
@@ -186,12 +182,6 @@ pub struct SystemWork {
     pub baseline_queries: usize,
     pub cross_context_measure_hits: usize,
     pub cross_context_measure_misses: usize,
-    /// `GlyphCache` lookup hits. `None` until a glyph backend consults it.
-    pub glyph_cache_hits: Option<usize>,
-    /// `GlyphCache` inserts after a miss. `None` until consulted.
-    pub glyph_cache_misses: Option<usize>,
-    /// `TextLayoutCache` evictions. `None` until a shaping pass consults it.
-    pub cache_eviction: Option<usize>,
     /// Retained nodes visited validating the mutation batches behind this drain.
     /// `None` until a commit reports one.
     pub validation_nodes_scanned: Option<usize>,
@@ -235,8 +225,6 @@ impl SystemWork {
             allocations: self.allocations,
             allocated_bytes: self.allocated_bytes,
             text_shaped_runs: self.text_shaped_runs,
-            text_layout_cache_hits: self.text_layout_cache_hits,
-            text_layout_cache_misses: self.text_layout_cache_misses,
             text_wrap_layouts: self.text_wrap_layouts,
             intrinsic_measure_requests: self.intrinsic_measure_requests,
             intrinsic_measure_cache_hits: self.intrinsic_measure_cache_hits,
@@ -246,9 +234,6 @@ impl SystemWork {
             baseline_queries: self.baseline_queries,
             cross_context_measure_hits: self.cross_context_measure_hits,
             cross_context_measure_misses: self.cross_context_measure_misses,
-            glyph_cache_hits: self.glyph_cache_hits,
-            glyph_cache_misses: self.glyph_cache_misses,
-            cache_eviction: self.cache_eviction,
             validation_nodes_scanned: self.validation_nodes_scanned,
             // Every other count is recorded by the pass, authority or host
             // that does the work and folded onto the frame's counters. This
@@ -277,16 +262,8 @@ impl SystemWork {
     }
 
     /// Record shaping-path stats after the host `TextShaper` ran.
-    pub fn record_text_shape(
-        &mut self,
-        shaped_runs: usize,
-        cache_hits: usize,
-        cache_misses: usize,
-        wrap_layouts: usize,
-    ) {
+    pub fn record_text_shape(&mut self, shaped_runs: usize, wrap_layouts: usize) {
         self.text_shaped_runs = self.text_shaped_runs.saturating_add(shaped_runs);
-        self.text_layout_cache_hits = self.text_layout_cache_hits.saturating_add(cache_hits);
-        self.text_layout_cache_misses = self.text_layout_cache_misses.saturating_add(cache_misses);
         self.text_wrap_layouts = self.text_wrap_layouts.saturating_add(wrap_layouts);
     }
 
@@ -319,15 +296,6 @@ impl SystemWork {
         self.cross_context_measure_misses = self
             .cross_context_measure_misses
             .saturating_add(cross_context_misses);
-    }
-
-    pub fn record_cache_eviction(&mut self, evictions: usize) {
-        self.cache_eviction = Some(self.cache_eviction.unwrap_or(0).saturating_add(evictions));
-    }
-
-    pub fn record_glyph_cache(&mut self, hits: usize, misses: usize) {
-        self.glyph_cache_hits = Some(self.glyph_cache_hits.unwrap_or(0).saturating_add(hits));
-        self.glyph_cache_misses = Some(self.glyph_cache_misses.unwrap_or(0).saturating_add(misses));
     }
 }
 
@@ -566,23 +534,9 @@ mod tests {
         work.record_hot_path_allocation(1, 8);
         assert_eq!((work.allocations, work.allocated_bytes), (3, 72));
 
-        work.record_text_shape(1, 2, 3, 4);
-        work.record_text_shape(1, 1, 1, 1);
+        work.record_text_shape(1, 4);
+        work.record_text_shape(1, 1);
         assert_eq!(work.text_shaped_runs, 2);
-        assert_eq!(work.text_layout_cache_hits, 3);
-        assert_eq!(work.text_layout_cache_misses, 4);
         assert_eq!(work.text_wrap_layouts, 5);
-
-        assert_eq!(work.glyph_cache_hits, None);
-        work.record_glyph_cache(1, 0);
-        work.record_glyph_cache(2, 1);
-        assert_eq!(work.glyph_cache_hits, Some(3));
-        assert_eq!(work.glyph_cache_misses, Some(1));
-
-        assert_eq!(work.cache_eviction, None);
-        work.record_cache_eviction(0);
-        assert_eq!(work.cache_eviction, Some(0));
-        work.record_cache_eviction(2);
-        assert_eq!(work.cache_eviction, Some(2));
     }
 }

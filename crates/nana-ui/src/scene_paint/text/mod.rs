@@ -45,7 +45,6 @@ mod raster;
 mod raster_cache;
 #[cfg(windows)]
 mod raster_dwrite;
-mod shape_cache;
 mod upload;
 
 use nana_text::{TextEngine as _, TextLayout};
@@ -78,10 +77,16 @@ use self::pipeline::{
     ArenaWrite, CONTENT_COLOR, CONTENT_MASK, DrawSegment, FrameUpload, GlyphInstance, MotionClock,
     TextGpu, TextPresentationGpu, TextRunGpu, TextTargetGpu,
 };
-use self::shape_cache::{
-    PARAGRAPH_IS_RETAINED, ShapeCache, ShapeKeyRef, opentype_disc, opentype_kern_disc,
-    opentype_line_disc, retained_paragraph_id,
-};
+
+const PARAGRAPH_IS_RETAINED: u64 = 1 << 63;
+
+fn retained_paragraph_id(id: nana_text::TextLayoutId) -> u64 {
+    PARAGRAPH_IS_RETAINED | (u64::from(id.index() & 0x7fff_ffff) << 32) | u64::from(id.generation())
+}
+
+fn unretained_paragraph_id(id: nana_text::TextLayoutId) -> u64 {
+    retained_paragraph_id(id) & !PARAGRAPH_IS_RETAINED
+}
 /// The glyph rasterizer this platform draws with: DirectWrite on Windows,
 /// so text there matches every native app; swash elsewhere.
 #[cfg(windows)]
@@ -509,11 +514,10 @@ pub(super) struct TextPipeline {
     /// [`Self::take_ordered_flush`].
     ordered_flushed: bool,
     gpu: TextGpu,
-    /// Shaped paragraphs reused across frames. Shaping is the dominant CPU
-    /// cost of a text-heavy frame and identical text+style+box repeats on
-    /// every repaint (scroll, hover, unrelated animations), so the shaped
-    /// `Buffer` is cached and only glyph placement is redone per frame.
-    shape_cache: ShapeCache,
+    /// Layout cache hits/misses observed via `NativeTextEngine::layout` and
+    /// retained entry reuse of non-retained paragraphs.
+    layout_hits: usize,
+    layout_misses: usize,
     /// Resolver scratch, reused so a paragraph's runs cost no allocation.
     resolved: NanaGlyphBuffer,
     /// The same glyphs in paint order with their shadow and stroke layers,
@@ -643,7 +647,8 @@ impl TextPipeline {
             follows_in_frame: false,
             ordered_flushed: false,
             gpu,
-            shape_cache: ShapeCache::default(),
+            layout_hits: 0,
+            layout_misses: 0,
             resolved: NanaGlyphBuffer::default(),
             layered: NanaGlyphBuffer::default(),
             solids: Vec::new(),
@@ -786,12 +791,10 @@ impl TextPipeline {
     pub(super) fn begin_frame(&mut self, target: &mut TextPipelineTarget, physical_size: [u32; 2]) {
         let generation = crate::text_engine::engine_font_generation();
         if generation != self.font_generation {
-            // Faces were added, replaced or removed. Shaped paragraphs named
-            // the old face set and glyph bitmaps were scaled from it, so both
-            // are dropped rather than left to be keyed around — and with them
-            // every entry, whose instances were resolved through those ids.
+            // Faces were added, replaced or removed. Glyph bitmaps were
+            // scaled from the old face set and engine layouts carry old face
+            // ids, so the raster cache is dropped rather than keyed around.
             self.font_generation = generation;
-            self.shape_cache.clear();
             self.raster.invalidate();
         }
         if target.font_generation != generation {
@@ -802,7 +805,6 @@ impl TextPipeline {
         // goes cold instead of wrong, and ages out of the raster cache.
         let _ = self.rasterizer.begin_frame();
         self.atlas.begin_frame(self.raster.generation());
-        self.shape_cache.begin_frame();
         target.frame = target.frame.wrapping_add(1);
         target.live_runs = 0;
         target.flushed = 0;
@@ -877,14 +879,9 @@ impl TextPipeline {
         self.atlas.placement_epoch()
     }
 
-    /// Shape-cache counters for tests: (hits, misses, evictions). None until
-    /// consulted, mirroring the Runtime text cache contract.
+    /// Layout-cache counters for tests: (hits, misses, evictions).
     pub(super) fn shape_cache_stats(&self) -> (usize, usize, usize) {
-        (
-            self.shape_cache.hits,
-            self.shape_cache.misses,
-            self.shape_cache.evictions,
-        )
+        (self.layout_hits, self.layout_misses, 0)
     }
 
     /// Counters over every render target and the ones already closed.
@@ -1032,6 +1029,7 @@ impl TextPipeline {
             }
             (None, None) => 0.0,
         };
+        let _ = font_features;
         // Every path shapes with the full OpenType machinery. The scene still
         // carries the old `Auto | Advanced` distinction; `nana-text` has no
         // reduced mode to select, and a reduced one changed advances enough to
@@ -1108,97 +1106,45 @@ impl TextPipeline {
                     && entry.scale_bits == raster.to_bits()
                     && entry.font_generation == self.font_generation
             })
-            .map(|(id, entry)| (id, entry.layout, entry.measured))
-            // A paragraph the Runtime retains is kept alive by the scene, so
-            // only a painter-owned one has to still be in the cache.
-            .filter(|(_, hash, _)| {
-                *hash & PARAGRAPH_IS_RETAINED != 0 || self.shape_cache.holds(*hash)
-            });
-        let hash = match (retained, &retained_paragraph) {
-            (Some((_, hash, _)), _) => hash,
+            .map(|(id, entry)| (id, entry.layout, entry.measured));
+        let mut laid_out: Option<Arc<TextLayout>> = None;
+        let (hash, measured_width, laid_out_height) = match (retained, &retained_paragraph) {
+            (Some((_, hash, measured)), _) => {
+                if hash & PARAGRAPH_IS_RETAINED == 0 {
+                    self.layout_hits += 1;
+                }
+                (hash, measured[0], measured[1])
+            }
             // The Runtime's handle *is* the identity: two u32s of a
             // generational slot, never reissued at the same generation. No
             // string is read and nothing is hashed.
             (None, Some(paragraph)) => {
                 self.retained_layouts_drawn += 1;
-                retained_paragraph_id(paragraph.id)
+                let (w, h) = measure(paragraph);
+                (retained_paragraph_id(paragraph.id), w, h)
             }
             (None, None) => {
-                // Width, height and requested ellipsis uniquely determine the
-                // result; the cache lookup happens before layout so a repaint
-                // of unchanged text never reaches the engine.
-                let key = ShapeKeyRef {
+                let layout = self.lay_out(
                     content,
                     family,
                     weight,
-                    font_size_bits: size.to_bits(),
-                    line_height_bits: line_height.to_bits(),
+                    size,
+                    line_height,
+                    letter_spacing,
+                    italic,
                     wrap,
                     wrap_break,
-                    italic,
                     ellipsis,
                     max_lines,
-                    letter_spacing_bits: letter_spacing.to_bits(),
-                    word_break: opentype_disc(opentype.word_break),
-                    line_break: opentype_line_disc(opentype.line_break),
-                    kerning: opentype_kern_disc(opentype.kerning),
-                    features: &opentype.features,
-                    variations: &opentype.variations,
-                    width_bits: box_width.to_bits(),
-                    height_bits: box_height.to_bits(),
-                    align: match horizontal {
-                        TextHorizontalAlignment::Start => 0,
-                        TextHorizontalAlignment::Center => 1,
-                        TextHorizontalAlignment::End => 2,
-                    },
-                    direction: if opentype.direction.is_rtl() { 1 } else { 0 },
-                    writing_mode: match opentype.writing_mode {
-                        nana_ui_core::WritingModeSpec::HorizontalTb => 0,
-                        nana_ui_core::WritingModeSpec::VerticalRl => 1,
-                        nana_ui_core::WritingModeSpec::VerticalLr => 2,
-                    },
-                    text_orientation: match opentype.text_orientation {
-                        nana_ui_core::TextOrientationSpec::Mixed => 0,
-                        nana_ui_core::TextOrientationSpec::Upright => 1,
-                        nana_ui_core::TextOrientationSpec::Sideways => 2,
-                    },
-                    preserve_lines: opentype.preserve_lines,
-                    font_features,
-                    typography: opentype.typography,
-                };
-                let hash = key.hash64();
-                if self.shape_cache.get(hash, &key).is_none() {
-                    let layout = self.lay_out(
-                        content,
-                        family,
-                        weight,
-                        size,
-                        line_height,
-                        letter_spacing,
-                        italic,
-                        wrap,
-                        wrap_break,
-                        ellipsis,
-                        max_lines,
-                        box_width,
-                        box_height,
-                        align,
-                        opentype,
-                    );
-                    self.shape_cache.insert(hash, key.to_owned_key(), layout);
-                }
-                hash
-            }
-        };
-        // The widest line and the laid-out height are the layout's, in logical
-        // px, and the layout is the one this entry was built from, so a steady
-        // frame does not walk its lines again to find that out.
-        let (measured_width, laid_out_height) = match (retained, &retained_paragraph) {
-            (Some((_, _, measured)), _) => (measured[0], measured[1]),
-            (None, Some(paragraph)) => measure(paragraph),
-            (None, None) => {
-                let layout = self.shape_cache.layout(hash).expect("laid out above");
-                measure(layout)
+                    box_width,
+                    box_height,
+                    align,
+                    opentype,
+                );
+                let hash = unretained_paragraph_id(layout.id);
+                let (w, h) = measure(&layout);
+                laid_out = Some(layout);
+                (hash, w, h)
             }
         };
         // Vertical text is aligned inside its own layout, down the column's
@@ -1394,25 +1340,53 @@ impl TextPipeline {
                 target.counters.nodes_skipped += 1;
                 id
             }
-            None => self.build_entry(
-                target,
-                device,
-                entry_key,
-                hash,
-                phase,
-                (raster, step),
-                mode,
-                default_color,
-                &colors,
-                fingerprint,
-                EffectSource {
-                    rich: effects.as_deref(),
-                    legacy_shadow,
-                },
-                content,
-                revision,
-                retained_paragraph.as_deref(),
-            )?,
+            None => {
+                let fallback_layout = if retained_paragraph.is_none() && laid_out.is_none() {
+                    Some(self.lay_out(
+                        content,
+                        family,
+                        weight,
+                        size,
+                        line_height,
+                        letter_spacing,
+                        italic,
+                        wrap,
+                        wrap_break,
+                        ellipsis,
+                        max_lines,
+                        box_width,
+                        box_height,
+                        align,
+                        opentype,
+                    ))
+                } else {
+                    None
+                };
+                let layout = retained_paragraph
+                    .as_deref()
+                    .or(laid_out.as_deref())
+                    .or(fallback_layout.as_deref())
+                    .expect("laid out above");
+                self.build_entry(
+                    target,
+                    device,
+                    entry_key,
+                    hash,
+                    phase,
+                    (raster, step),
+                    mode,
+                    default_color,
+                    &colors,
+                    fingerprint,
+                    EffectSource {
+                        rich: effects.as_deref(),
+                        legacy_shadow,
+                    },
+                    content,
+                    revision,
+                    layout,
+                )?
+            }
         };
         let frame = target.frame;
         if let Some(entry) = target.entries.get_mut(entry) {
@@ -1596,9 +1570,14 @@ impl TextPipeline {
             nana_text::TextKind::Label
         };
         let mut counters = nana_text::TextWorkCounters::default();
-        let engine = Arc::clone(&self.engine);
-        let mut engine = crate::text_engine::lock_engine(&engine);
-        engine.layout(kind, &source, &style, &constraints, &mut counters)
+        let layout = {
+            let engine = Arc::clone(&self.engine);
+            let mut engine = crate::text_engine::lock_engine(&engine);
+            engine.layout(kind, &source, &style, &constraints, &mut counters)
+        };
+        self.layout_hits += counters.layout_cache_hits.unwrap_or(0);
+        self.layout_misses += counters.layout_cache_misses.unwrap_or(0);
+        layout
     }
 
     /// Turn one shaped paragraph into placed, atlas-resident glyphs, and keep
@@ -1633,14 +1612,12 @@ impl TextPipeline {
         // which its per-glyph presentation is looked up by, counts in.
         content: &str,
         revision: u64,
-        // The Runtime's own layout for this node, when it has one. `None`
-        // means the painter laid this paragraph out itself and it is in the
-        // shape cache under `hash`.
-        paragraph: Option<&TextLayout>,
+        // The layout for this paragraph (either retained by Runtime or
+        // produced by the engine above).
+        layout: &TextLayout,
     ) -> Option<u32> {
         let origin = [f32::from_bits(phase[0]), f32::from_bits(phase[1])];
         let Self {
-            shape_cache,
             resolved,
             layered,
             solids,
@@ -1648,10 +1625,6 @@ impl TextPipeline {
             font_generation,
             ..
         } = self;
-        let layout = match paragraph {
-            Some(paragraph) => paragraph,
-            None => shape_cache.layout(hash).expect("laid out above"),
-        };
         resolved.clear();
         let generation = *font_generation as u32;
         let vertical = layout.is_vertical();

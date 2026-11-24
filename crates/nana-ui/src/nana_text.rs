@@ -7,8 +7,8 @@
 //! holds no shaping of its own — it registers faces and forwards.
 
 use nana_ui_runtime::{
-    ComputedStyle, GlyphCache, LayoutBox, NanaTextEngineShaper, StableNodeId, TextContent,
-    TextMetrics, TextShapeConstraints, TextShaper,
+    ComputedStyle, LayoutBox, NanaTextEngineShaper, StableNodeId, TextContent, TextMetrics,
+    TextShapeConstraints, TextShaper,
 };
 use std::path::Path;
 
@@ -473,144 +473,46 @@ pub fn resolve_font_faces(family: &str, weight: u16, text: &str) -> Vec<Resolved
 /// hosts construct, and the measurement authority behind it is the same engine
 /// the painter resolves its glyphs from.
 #[derive(Debug, Clone)]
-pub struct NanaTextShaper {
-    engine: NanaTextEngineShaper,
-}
+pub struct NanaTextShaper(NanaTextEngineShaper);
 
 impl Default for NanaTextShaper {
     fn default() -> Self {
-        Self {
-            engine: NanaTextEngineShaper::new(crate::text_engine::nana_text_engine()),
-        }
+        Self(NanaTextEngineShaper::new(
+            crate::text_engine::nana_text_engine(),
+        ))
     }
 }
 
-// Every `TextShaper` method below forwards to the engine shaper. A wrapper
-// rather than a re-export: `NanaTextShaper` is the name hosts, examples and
-// tests construct, and #99 changes what measures behind it without changing
-// what they write.
+macro_rules! forward_text_shaper_methods {
+    () => {};
+    (fn $method:ident(&self $(, $arg:ident : $ty:ty)* $(,)?) -> $ret:ty; $($rest:tt)*) => {
+        fn $method(&self $(, $arg: $ty)*) -> $ret {
+            self.0.$method($($arg),*)
+        }
+        forward_text_shaper_methods!($($rest)*);
+    };
+    (fn $method:ident(&mut self $(, $arg:ident : $ty:ty)* $(,)?) -> $ret:ty; $($rest:tt)*) => {
+        fn $method(&mut self $(, $arg: $ty)*) -> $ret {
+            self.0.$method($($arg),*)
+        }
+        forward_text_shaper_methods!($($rest)*);
+    };
+}
+
 impl TextShaper for NanaTextShaper {
-    fn font_generation(&self) -> u64 {
-        self.engine.font_generation()
-    }
-
-    fn strut_metrics(&mut self, style: &ComputedStyle) -> Option<nana_ui_runtime::FontStrut> {
-        self.engine.strut_metrics(style)
-    }
-
-    fn retains_measurement(&self, id: StableNodeId) -> bool {
-        self.engine.retains_measurement(id)
-    }
-
-    fn text_engine(&self) -> Option<nana_text::SharedTextEngine> {
-        self.engine.text_engine()
-    }
-
-    fn take_text_work(&mut self) -> nana_text::TextWorkCounters {
-        self.engine.take_text_work()
-    }
-
-    fn shape(
-        &mut self,
-        id: StableNodeId,
-        text: &TextContent,
-        style: &ComputedStyle,
-        constraints: TextShapeConstraints,
-    ) -> TextMetrics {
-        self.engine.shape(id, text, style, constraints)
-    }
-
-    fn shape_cached(
-        &mut self,
-        id: StableNodeId,
-        text: &TextContent,
-        style: &ComputedStyle,
-        constraints: TextShapeConstraints,
-        glyphs: &mut GlyphCache,
-    ) -> TextMetrics {
-        self.engine
-            .shape_cached(id, text, style, constraints, glyphs)
-    }
-
-    fn horizontal_offset(
-        &mut self,
-        id: StableNodeId,
-        text: &TextContent,
-        byte_offset: usize,
-        style: &ComputedStyle,
-    ) -> f32 {
-        self.engine.horizontal_offset(id, text, byte_offset, style)
-    }
-
-    fn text_position(
-        &mut self,
-        id: StableNodeId,
-        text: &TextContent,
-        byte_offset: usize,
-        style: &ComputedStyle,
-        constraints: TextShapeConstraints,
-    ) -> (f32, f32, f32) {
-        self.engine
-            .text_position(id, text, byte_offset, style, constraints)
-    }
-
-    fn text_caret_position(
-        &mut self,
-        id: StableNodeId,
-        text: &TextContent,
-        byte_offset: usize,
-        affinity: nana_text::Affinity,
-        style: &ComputedStyle,
-        constraints: TextShapeConstraints,
-    ) -> (f32, f32, f32) {
-        self.engine
-            .text_caret_position(id, text, byte_offset, affinity, style, constraints)
-    }
-
-    fn text_highlights(
-        &mut self,
-        id: StableNodeId,
-        text: &TextContent,
-        selection: (usize, usize),
-        style: &ComputedStyle,
-        constraints: TextShapeConstraints,
-    ) -> Vec<LayoutBox> {
-        self.engine
-            .text_highlights(id, text, selection, style, constraints)
-    }
-
-    fn text_hit_at_point(
-        &mut self,
-        id: StableNodeId,
-        text: &TextContent,
-        x: f32,
-        y: f32,
-        style: &ComputedStyle,
-        constraints: TextShapeConstraints,
-    ) -> Option<nana_ui_runtime::TextHit> {
-        self.engine
-            .text_hit_at_point(id, text, x, y, style, constraints)
-    }
-
-    fn text_caret_visual_step(
-        &mut self,
-        id: StableNodeId,
-        text: &TextContent,
-        byte_offset: usize,
-        affinity: nana_text::Affinity,
-        rightwards: bool,
-        style: &ComputedStyle,
-        constraints: TextShapeConstraints,
-    ) -> Option<nana_ui_runtime::TextHit> {
-        self.engine.text_caret_visual_step(
-            id,
-            text,
-            byte_offset,
-            affinity,
-            rightwards,
-            style,
-            constraints,
-        )
+    forward_text_shaper_methods! {
+        fn font_generation(&self) -> u64;
+        fn strut_metrics(&mut self, style: &ComputedStyle) -> Option<nana_ui_runtime::FontStrut>;
+        fn retains_measurement(&self, id: StableNodeId) -> bool;
+        fn text_engine(&self) -> Option<nana_text::SharedTextEngine>;
+        fn take_text_work(&mut self) -> nana_text::TextWorkCounters;
+        fn shape(&mut self, id: StableNodeId, text: &TextContent, style: &ComputedStyle, constraints: TextShapeConstraints) -> TextMetrics;
+        fn horizontal_offset(&mut self, id: StableNodeId, text: &TextContent, byte_offset: usize, style: &ComputedStyle) -> f32;
+        fn text_position(&mut self, id: StableNodeId, text: &TextContent, byte_offset: usize, style: &ComputedStyle, constraints: TextShapeConstraints) -> (f32, f32, f32);
+        fn text_caret_position(&mut self, id: StableNodeId, text: &TextContent, byte_offset: usize, affinity: nana_text::Affinity, style: &ComputedStyle, constraints: TextShapeConstraints) -> (f32, f32, f32);
+        fn text_highlights(&mut self, id: StableNodeId, text: &TextContent, selection: (usize, usize), style: &ComputedStyle, constraints: TextShapeConstraints) -> Vec<LayoutBox>;
+        fn text_hit_at_point(&mut self, id: StableNodeId, text: &TextContent, x: f32, y: f32, style: &ComputedStyle, constraints: TextShapeConstraints) -> Option<nana_ui_runtime::TextHit>;
+        fn text_caret_visual_step(&mut self, id: StableNodeId, text: &TextContent, byte_offset: usize, affinity: nana_text::Affinity, rightwards: bool, style: &ComputedStyle, constraints: TextShapeConstraints) -> Option<nana_ui_runtime::TextHit>;
     }
 
     fn with_text_probes<R>(
@@ -620,8 +522,7 @@ impl TextShaper for NanaTextShaper {
         constraints: TextShapeConstraints,
         consume: impl FnOnce(&mut dyn TextShaper) -> R,
     ) -> R {
-        self.engine
-            .with_text_probes(text, style, constraints, consume)
+        self.0.with_text_probes(text, style, constraints, consume)
     }
 }
 
@@ -788,15 +689,14 @@ mod tests {
     fn a_measurement_does_not_depend_on_what_was_measured_before() {
         let _font_test = FONT_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let mut shaper = NanaTextShaper::default();
-        let mut glyphs = GlyphCache::default();
         let style = ComputedStyle::with(|s| {
             s.font_size = 14.0;
         });
         let id = StableNodeId::new(1).unwrap();
         let text = TextContent { value: "A".into() };
         let constraints = TextShapeConstraints::default();
-        let cold = shaper.shape_cached(id, &text, &style, constraints, &mut glyphs);
-        let warm = shaper.shape_cached(id, &text, &style, constraints, &mut glyphs);
+        let cold = shaper.shape(id, &text, &style, constraints);
+        let warm = shaper.shape(id, &text, &style, constraints);
         assert!(cold.ascent.is_some());
         assert_eq!(warm, cold);
     }
