@@ -539,7 +539,7 @@ mod tests {
         input
             .composition(
                 &mut context,
-                super::super::platform_composition(&winit::event::Ime::Preedit(
+                crate::winit_input::platform_composition(&winit::event::Ime::Preedit(
                     "ha".into(),
                     Some((2, 2)),
                 )),
@@ -556,7 +556,7 @@ mod tests {
         input
             .composition(
                 &mut context,
-                super::super::platform_composition(&winit::event::Ime::Preedit(
+                crate::winit_input::platform_composition(&winit::event::Ime::Preedit(
                     String::new(),
                     None,
                 )),

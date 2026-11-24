@@ -1,6 +1,7 @@
 //! Window-level pointer presence for hover-revealed chrome.
 
 use super::*;
+use winit::event::{PointerKind, PointerSource};
 
 /// What one platform pointer event says about the hovering pointer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,6 +124,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use winit::event::{PointerKind, PointerSource};
 
     #[test]
     fn presence_reports_changes_only() {

@@ -238,7 +238,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         };
         self.sync_native_browsers(id, scene.as_ref());
         self.sync_shadow_body(id, scene.as_ref());
-        self.update_image_targets(id, scene.as_ref());
+        let frame_plan = scene.frame_plan().ok();
+        self.update_image_targets(id, scene.instance_id(), frame_plan.as_deref());
         let Some(host) = self.window_contexts.get(&id) else {
             return;
         };
@@ -340,38 +341,42 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         stage_clock.mark(&stage::PRESENTATION_RESOURCES_NS);
         let host_textures = self.program.host_textures(id);
         if let Some(registry) = host_textures.as_ref() {
-            if let Ok(plan) = scene.frame_plan() {
-                let slots = plan
-                    .custom_nodes
-                    .iter()
-                    .filter_map(|node| {
-                        let primitive = scene.primitive(*node)?;
-                        match &primitive.kind {
-                            nana_ui_scene::ScenePrimitiveKind::Custom { node, .. }
-                                if node.renderer.as_ref() == "nana.host-texture" =>
-                            {
-                                Some(Arc::clone(&node.resource))
-                            }
-                            _ => None,
+            if let Some(plan) = frame_plan.as_ref() {
+                let instance_id = scene.instance_id();
+                let slots = plan.host_texture_slots();
+                let current = match self.texture_subscriptions.get_mut(&id) {
+                    Some((prev_instance, subscribed, subscription))
+                        if subscription.observes(registry) =>
+                    {
+                        if *prev_instance == instance_id {
+                            true
+                        } else if subscribed.as_ref() == slots {
+                            *prev_instance = instance_id;
+                            true
+                        } else {
+                            false
                         }
-                    })
-                    .collect::<HashSet<_>>();
-                let current = self.texture_subscriptions.get(&id).is_some_and(
-                    |(subscribed, subscription)| {
-                        *subscribed == slots && subscription.observes(registry)
-                    },
-                );
+                    }
+                    _ => false,
+                };
                 if !current {
                     let pending = Arc::clone(&self.texture_redraws);
                     let proxy = self.proxy.clone();
-                    let observed = slots.clone();
+                    let observed = Arc::clone(&plan.host_texture_slots);
                     let subscription = registry.subscribe(move |slot| {
-                        if slot.is_empty() || observed.contains(slot) {
+                        if slot.is_empty() || observed.iter().any(|entry| entry.as_str() == slot) {
                             pending.lock().expect("texture redraws").insert(id);
                             proxy.wake_up();
                         }
                     });
-                    self.texture_subscriptions.insert(id, (slots, subscription));
+                    self.texture_subscriptions.insert(
+                        id,
+                        (
+                            instance_id,
+                            Arc::clone(&plan.host_texture_slots),
+                            subscription,
+                        ),
+                    );
                 }
             }
         } else {
@@ -461,16 +466,11 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             .window_contexts
             .get(&id)
             .map_or(0, |host| host.surface.configure_generation());
-        let effective_profile = profile.effective_for_frame(
-            scene.as_ref(),
-            viewport.clear_color,
-            host_textures.as_ref(),
-        );
         let scene_key = super::damage::DamageSceneKey {
             instance_id: scene.instance_id(),
             presentation_epoch: scene.presentation_epoch(),
             viewport,
-            profile: effective_profile,
+            profile,
             alpha,
             text_aa,
             parameters: presentation_parameters,
@@ -484,7 +484,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                     Some(target_id),
                     scene.as_ref(),
                     viewport,
-                    effective_profile,
+                    profile,
                     host_textures.as_ref(),
                     &mut tracker.slot_revisions,
                 )
@@ -591,20 +591,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             prepared.submitted(&submission);
         }
         let submit = submission.cpu_duration();
-        let target_profile = if shared_paint {
-            crate::output::window_output::output_profile()
-        } else {
-            profile
-        };
-        match self.try_painter_mut(target_profile) {
-            Ok(painter) => painter.record_submit(&submission),
-            Err(error) => {
-                self.program
-                    .report_host_failure(HostFailure::UnpaintableScene {
-                        window: id,
-                        error: error.to_string(),
-                    });
-            }
+        if let Some(painter) = self.painter.as_mut() {
+            painter.record_submit(&submission);
         }
         stage_clock.mark(&stage::PRESENTATION_POST_SUBMIT_NS);
         if used_partial

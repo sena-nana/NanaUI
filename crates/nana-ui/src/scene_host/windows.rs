@@ -1,6 +1,10 @@
 //! Scene host windows coordination.
 
 use super::*;
+use crate::winit_input::{
+    FrameMoveStep, PRIMARY_MOUSE_BUTTON, PointerDescriptor, frame_move_step, held_mouse_button,
+    system_appearance_from_winit,
+};
 use nana_diagnostics::{framework::window as diagnostics_window, metric};
 
 /// Ownership adds a minimum band; an explicitly topmost auxiliary retains
@@ -574,7 +578,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let cursor = self
             .window_contexts
             .get(&id)
-            .map(|host| host.input.cursor)
+            .map(|host| host.input.cursor())
             .unwrap_or((0.0, 0.0));
         let size = self.content_geometry_of(id).logical_size;
         if !cursor.0.is_finite()
@@ -645,7 +649,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             if !self.window_contexts.contains_key(&id) {
                 continue;
             }
-            self.input_mut(id).cursor = point;
+            self.input_mut(id).set_cursor(point);
             if self.forward_hits_content(id) {
                 let _ = self.apply_os_mouse_passthrough(event_loop, id, false, false);
                 if !self.window_contexts.contains_key(&id) {
@@ -662,19 +666,17 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         id: WindowId,
         point: (f32, f32),
     ) {
-        self.input_mut(id).cursor = point;
+        self.input_mut(id).set_cursor(point);
         let origin = self
             .window(id)
             .and_then(|window| window_screen_origin(window.as_ref(), self.content_zoom_of(id)));
-        let modifiers = platform_input_modifiers(self.input_of(id).modifiers);
-        let buttons = self.input_of(id).buttons;
+        let buttons = self.input_of(id).buttons();
         let pointer = self.input_of(id).pointer_event(
-            mapped_pointer(1, PointerType::Mouse, true, None),
+            PointerDescriptor::simple(1, PointerType::Mouse, true, None),
             PointerPhase::Move,
             -1,
             buttons,
             false,
-            modifiers,
             origin,
             None,
         );
@@ -689,7 +691,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         if !self.window_contexts.contains_key(&id) {
             return;
         }
-        let pointer_id = mapped_pointer(1, PointerType::Mouse, true, None).pointer_id;
+        let pointer_id = PointerDescriptor::simple(1, PointerType::Mouse, true, None).pointer_id;
         let _ = self.deliver_host_input(
             event_loop,
             id,
@@ -780,7 +782,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         }
         if resample_cursor {
             match self.sample_client_pointer(id) {
-                Some(point) => self.input_mut(id).cursor = point,
+                Some(point) => self.input_mut(id).set_cursor(point),
                 None => {
                     self.restore_forward_passthrough(event_loop, id);
                     return;
@@ -899,68 +901,51 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let window_background = self.program.window_background();
         let initial_theme = self.resolve_window_theme_with_settings(id, &settings);
         let initial_appearance = initial_theme.appearance();
-        // A composed window is provisional here for the same reason the first
-        // window is: `WS_EX_NOREDIRECTIONBITMAP` is decided at creation, and
-        // every step that could reject the composition target comes after it.
-        // A failed attempt drops its window and retries on the plain path
-        // rather than opening nothing.
-        let mut attempt = surface_target;
-        let (window, surface, requested_material, applied) = loop {
-            let attributes = scene_aux_window_attributes(
-                &settings,
-                parent.as_deref(),
-                &desktop,
-                attempt.resolved,
-                initial_level,
-            )?;
-            let window: Arc<dyn winit::window::Window> = Arc::from(
-                event_loop
-                    .create_window(attributes.with_visible(false))
-                    .map_err(|error| error.to_string())?,
-            );
-            // Owns the window for the length of the attempt: an early exit
-            // drops it with the local below, destroying the HWND created for a
-            // target that did not work out.
-            let mut provisional = PendingNativeWindow(Some(window.clone()));
-            apply_scene_window_icon(
-                window.as_ref(),
-                settings.icon.as_ref(),
-                id == WindowId::PRIMARY,
-            );
-            let (requested_material, applied) = apply_window_material(
-                window.as_ref(),
-                initial_appearance,
-                &settings,
-                material_mode,
-                backdrop_opacity,
-                window_background,
-            );
-            match self.graphics.create_surface_with_mode_policy(
-                Arc::clone(&window),
-                requested_material.wants_transparent_surface(),
-                super::surface_mode_for(attempt.resolved),
-                settings.presentation_policy,
-            ) {
-                Ok(surface) => {
-                    provisional.0 = None;
-                    break (window, surface, requested_material, applied);
-                }
-                Err(error) => match super::next_bootstrap_attempt(attempt) {
-                    Some(next) => {
-                        // A composed target that could not be built for this
-                        // window will not build for the next one either, so
-                        // the failure narrows the whole process and no later
-                        // window pays for a doomed provisional HWND.
-                        self.composition =
-                            crate::presentation::CompositionAvailability::Unavailable;
-                        attempt = next;
-                    }
-                    None => return Err(error.to_string()),
-                },
-            }
-        };
-        let surface_target = attempt;
-        let mut pending_native = PendingNativeWindow(Some(window.clone()));
+        let mut composed_failed = false;
+        let graphics = &self.graphics;
+        let initial_attempt = window_factory::create_window_with_surface_retry(
+            window_factory::WindowRole::Auxiliary,
+            event_loop,
+            &settings,
+            surface_target,
+            initial_appearance,
+            material_mode,
+            backdrop_opacity,
+            window_background,
+            false,
+            true,
+            id == WindowId::PRIMARY,
+            |target| {
+                scene_aux_window_attributes(
+                    &settings,
+                    parent.as_deref(),
+                    &desktop,
+                    target,
+                    initial_level,
+                )
+            },
+            |window, target, requested_material| {
+                graphics
+                    .create_surface_with_mode_policy(
+                        Arc::clone(window),
+                        requested_material.wants_transparent_surface(),
+                        super::surface_mode_for(target),
+                        settings.presentation_policy,
+                    )
+                    .map_err(|error| error.to_string())
+            },
+            || composed_failed = true,
+        )?;
+        if composed_failed {
+            self.composition = crate::presentation::CompositionAvailability::Unavailable;
+        }
+        initial_attempt.provisional.keep();
+        let window = initial_attempt.window;
+        let surface = initial_attempt.surface;
+        let surface_target = initial_attempt.target;
+        let requested_material = initial_attempt.requested_material;
+        let applied = initial_attempt.applied_material;
+        let mut pending_native = PendingNativeWindow(Some(Arc::clone(&window)));
         // Glued beneath the parent before anything is shown, so the first
         // show already lands under it.
         let underlay = match (settings.role, parent.as_deref()) {
@@ -1012,17 +997,13 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let geometry = window_geometry(window.as_ref());
         #[cfg(target_os = "windows")]
         let modal_parent = settings.modal.then_some(settings.parent).flatten();
-        let native_wake = self.proxy.clone();
-        let size_move = LiveSizeMove::install_with_wake(
-            window.as_ref(),
-            Arc::new(move || native_wake.wake_up()),
-        )?;
-        size_move.set_content_aspect_ratio(content_aspect_ratio(&settings));
-        let pen_wake = self.proxy.clone();
-        let pen = nana_window::PenInput::install_with_wake(
-            window.as_ref(),
-            Arc::new(move || pen_wake.wake_up()),
-        )?;
+        let level = auxiliary_level(
+            requested_level,
+            settings
+                .parent
+                .filter(|_| auxiliary.is_some())
+                .and_then(|id| self.window_contexts.get(&id).map(|host| host.level)),
+        );
         self.windows.register(id);
         let context = program_context(
             self.message_tx.clone(),
@@ -1049,7 +1030,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             // PendingNativeWindow owns platform cleanup for every failed stage.
             return Err(error);
         }
-        pending_native.0 = None;
+        pending_native.disarm();
         let _ = self.program.with_document_mut(id, |document| {
             document
                 .context_mut()
@@ -1060,64 +1041,25 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         self.sync_document_eyedropper(id);
         self.window_ids.insert(window.id(), id);
         self.apply_high_contrast(id);
-        let level = auxiliary_level(
-            requested_level,
-            settings
-                .parent
-                .filter(|_| auxiliary.is_some())
-                .and_then(|id| self.window_contexts.get(&id).map(|host| host.level)),
-        );
         window.set_window_level(super::display::winit_level(level));
-        let pending_fullscreen = settings.fullscreen;
-        let skip_taskbar_report = descriptor_skip_taskbar(window.as_ref(), &settings);
         let generation = *self.input_generations.entry(id).or_insert(1);
-        self.window_contexts.insert(
+        let window_context = window_factory::WindowSessionBuilder {
+            role: window_factory::WindowRole::Auxiliary,
             id,
-            WindowContext {
-                surface_retry: None,
-                applied_appearance: None,
-                cursor_override: None,
-                cursor_visible_override: None,
-                passthrough_mode: MousePassthroughMode::Off,
-                os_mouse_passthrough: false,
-                material_override: None,
-                surface,
-                geometry,
-                drawable_geometry: geometry,
-                content_zoom: 1.0,
-                maximum_size: None,
-                input: InputTracker::default(),
-                input_source: WindowInputSource::new(
-                    nana_ui_platform::InputSourceId(id.0),
-                    nana_ui_platform::EndpointGeneration(generation),
-                ),
-                presentation,
-                settings,
-                #[cfg(not(target_os = "android"))]
-                accessibility,
-                accessibility_pending: PendingAccessibility::default(),
-                size_move,
-                pen,
-                aspect_conform_pending: false,
-                level,
-                requested_level,
-                presented: std::cell::Cell::new(false),
-                mode: None,
-                pending_fullscreen,
-                native_controls_visible: true,
-                native_controls: None,
-                native_controls_box: std::cell::Cell::new(None),
-                skip_taskbar: matches!(skip_taskbar_report, Some(Ok(()))),
-                skip_taskbar_report,
-                pointer_presence: presence::PointerPresence::default(),
-                monitor: window.current_monitor().map(|monitor| monitor.id()),
-                shadow: nana_window::shadow::WindowShadowState::default(),
-                shadow_body: None,
-                shadow_reported: Default::default(),
-                underlay,
-                auxiliary,
-            },
-        );
+            generation,
+            surface,
+            geometry,
+            presentation,
+            settings,
+            #[cfg(not(target_os = "android"))]
+            accessibility,
+            level,
+            requested_level,
+            underlay,
+            auxiliary,
+        }
+        .build(&self.proxy)?;
+        self.window_contexts.insert(id, window_context);
         self.sync_auxiliary_window(id);
         #[cfg(target_os = "windows")]
         if let Some(parent) = modal_parent.and_then(|parent| self.window(parent)) {
@@ -1940,7 +1882,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             return Err(winit::error::RequestError::Ignored);
         }
         #[cfg(any(target_os = "macos", target_os = "windows"))]
-        if let Some(button) = held_mouse_button(self.input_of(id).buttons)
+        if let Some(button) = held_mouse_button(self.input_of(id).buttons())
             && uses_host_managed_drag(
                 self.settings_of(id),
                 button,
@@ -2108,7 +2050,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             || self
                 .window_contexts
                 .get(&id)
-                .is_some_and(|host| host.input.buttons != 0)
+                .is_some_and(|host| host.input.buttons() != 0)
     }
     pub(super) fn consume_frame_resize(
         &mut self,
@@ -2888,75 +2830,8 @@ fn apply_changed_appearance<T>(
 }
 
 #[cfg(test)]
-mod appearance_tests {
-    use super::*;
-
-    #[test]
-    fn unchanged_windows_do_not_reapply_native_material() {
-        let original = WindowAppearance {
-            theme: crate::ThemeAppearance::Dark,
-            material: nana_window::MaterialEffect::Solid,
-            opacity: 1.0,
-            background: None,
-        };
-        let mut windows = [Some(original); 3];
-        let changed = WindowAppearance {
-            opacity: 0.5,
-            ..original
-        };
-        let mut calls = Vec::new();
-        for (index, cache) in windows.iter_mut().enumerate() {
-            let desired = if index == 1 { changed } else { original };
-            let result = apply_changed_appearance(cache, desired, || {
-                calls.push(index);
-                Ok(MaterialOutcome::chosen_solid())
-            })
-            .unwrap();
-            assert_eq!(result.is_some(), index == 1);
-        }
-        assert_eq!(calls, vec![1]);
-        assert_eq!(windows[1], Some(changed));
-        assert!(
-            apply_changed_appearance::<MaterialOutcome>(&mut windows[1], changed, || panic!(
-                "unchanged material was reapplied"
-            ))
-            .unwrap()
-            .is_none()
-        );
-        assert!(
-            apply_changed_appearance(&mut windows[1], original, || Err::<MaterialOutcome, _>(
-                HostedGpuError::SurfaceValidation
-            ))
-            .is_err()
-        );
-        assert_eq!(windows[1], Some(changed));
-    }
-    #[test]
-    fn theme_changes_and_device_replacement_invalidate_appearance() {
-        let original = WindowAppearance {
-            theme: crate::ThemeAppearance::Dark,
-            material: nana_window::MaterialEffect::Solid,
-            opacity: 1.0,
-            background: None,
-        };
-        let mut cached = Some(original);
-        let light = WindowAppearance {
-            theme: crate::ThemeAppearance::Light,
-            ..original
-        };
-        let calls = std::cell::Cell::new(0);
-        let apply = |cache: &mut Option<WindowAppearance>, desired| {
-            apply_changed_appearance(cache, desired, || {
-                calls.set(calls.get() + 1);
-                Err::<MaterialOutcome, _>(HostedGpuError::SurfaceValidation)
-            })
-        };
-        assert!(apply(&mut cached, light).is_err());
-        cached = None;
-        assert!(apply(&mut cached, original).is_err());
-        assert_eq!(calls.get(), 2);
-    }
-}
+#[path = "windows_tests.rs"]
+mod tests;
 
 /// Show or hide a native window. One whose descriptor declines focus on show
 /// is ordered front without activation where the platform supports it, both
@@ -3003,133 +2878,6 @@ fn window_request_error(error: winit::error::RequestError) -> crate::WindowError
             crate::WindowError::Unsupported(error.to_string())
         }
         _ => crate::WindowError::OperationFailed(error.to_string()),
-    }
-}
-
-#[cfg(test)]
-mod request_error_tests {
-    use super::*;
-
-    #[test]
-    fn auxiliary_inherits_current_owner_band_without_latching_topmost() {
-        use WindowLevel::{AlwaysOnBottom, AlwaysOnTop, Normal};
-        // Applies equally to a window created during an in-flight level
-        // request and an already-created hidden window shown again later.
-        for requested in [AlwaysOnBottom, Normal, AlwaysOnTop] {
-            assert_eq!(auxiliary_level(requested, Some(AlwaysOnTop)), AlwaysOnTop);
-            assert_eq!(auxiliary_level(requested, Some(Normal)), requested);
-            assert_eq!(auxiliary_level(requested, None), requested);
-        }
-        let child = Normal;
-        let owner = [Normal, AlwaysOnTop, Normal, AlwaysOnTop, Normal];
-        assert_eq!(
-            owner.map(|level| auxiliary_level(child, Some(level))),
-            owner
-        );
-    }
-
-    #[test]
-    #[should_panic(expected = "input endpoint generation exhausted")]
-    fn input_generation_exhaustion_does_not_reuse_the_last_identity() {
-        next_input_generation(u64::MAX);
-    }
-
-    #[test]
-    fn input_generation_advances_without_zero_wrap() {
-        assert_eq!(next_input_generation(0), 1);
-        assert_eq!(next_input_generation(u64::MAX - 1), u64::MAX);
-    }
-
-    #[test]
-    fn ignored_request_is_an_operation_failure_not_a_missing_capability() {
-        assert!(matches!(
-            window_request_error(winit::error::RequestError::Ignored),
-            crate::WindowError::OperationFailed(_)
-        ));
-        assert!(matches!(
-            window_request_error(winit::error::RequestError::NotSupported(
-                winit::error::NotSupportedError::new("fixture capability")
-            )),
-            crate::WindowError::Unsupported(_)
-        ));
-    }
-}
-
-#[cfg(test)]
-mod live_resize_coalesce_tests {
-    use super::*;
-
-    #[test]
-    fn the_first_step_commits_and_the_interval_starts_at_the_present() {
-        let mut clock = Instant::now();
-        let state = LiveResizeCoalescer::new();
-        let (state, step) = state.on_step(clock);
-        assert_eq!(step, LiveResizeStep::Commit);
-        assert!(!state.finish());
-
-        // The commit blocked the tracking loop. Stamp when it presents, not
-        // when it was chosen, or the next step would already look overdue.
-        clock += Duration::from_millis(40);
-        let state = state.on_presented(clock);
-        let (state, step) = state.on_step(clock);
-        assert_eq!(step, LiveResizeStep::Defer);
-        assert!(state.finish());
-
-        let (state, step) = state.on_step(clock + Duration::from_millis(15));
-        assert_eq!(step, LiveResizeStep::Defer);
-        assert!(state.finish());
-
-        let (state, step) = state.on_step(clock + LIVE_RESIZE_COMMIT_INTERVAL);
-        assert_eq!(step, LiveResizeStep::Commit);
-        let state = state.on_presented(clock + LIVE_RESIZE_COMMIT_INTERVAL);
-        assert!(!state.finish());
-    }
-
-    #[test]
-    fn a_gesture_that_only_deferred_still_owes_a_final_commit() {
-        let start = Instant::now();
-        let state = LiveResizeCoalescer::new().on_presented(start);
-        let (state, step) = state.on_step(start + Duration::from_millis(1));
-        assert_eq!(step, LiveResizeStep::Defer);
-        assert!(state.finish());
-    }
-}
-
-#[cfg(all(test, any(target_os = "macos", target_os = "windows")))]
-mod drag_policy_tests {
-    use super::*;
-
-    #[test]
-    fn host_managed_drag_overrides_the_primary_button_native_default() {
-        let native = WindowDescriptor::new("native");
-        assert!(!uses_host_managed_drag(
-            &native,
-            PRIMARY_MOUSE_BUTTON,
-            false
-        ));
-        assert!(uses_host_managed_drag(&native, 1, false));
-
-        let managed = WindowDescriptor::new("managed").host_managed_drag(true);
-        assert!(uses_host_managed_drag(
-            &managed,
-            PRIMARY_MOUSE_BUTTON,
-            false
-        ));
-    }
-
-    #[test]
-    fn independent_underlays_use_the_same_input_turn_for_macos_movement() {
-        let native = WindowDescriptor::new("native");
-        assert_eq!(
-            uses_host_managed_drag(&native, PRIMARY_MOUSE_BUTTON, true),
-            cfg!(target_os = "macos")
-        );
-        // Removing the underlay restores the descriptor's native policy.
-        assert!(!uses_host_managed_drag(
-            &native,
-            PRIMARY_MOUSE_BUTTON,
-            false
-        ));
     }
 }
 

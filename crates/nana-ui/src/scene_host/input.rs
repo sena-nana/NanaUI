@@ -1,14 +1,10 @@
 //! Scene host input coordination.
 
 use super::*;
-
-/// Actions a file drop accepts. AppKit narrows a Control-drag from Finder to
-/// Link and refuses the drop when nothing matches, so macOS takes Link too;
-/// elsewhere Link would only turn Shift-drags into shortcuts.
-#[cfg(target_os = "macos")]
-const FILE_DROP_ACTIONS: &[DndAction] = &[DndAction::Copy, DndAction::Link];
-#[cfg(not(target_os = "macos"))]
-const FILE_DROP_ACTIONS: &[DndAction] = &[DndAction::Copy];
+use crate::winit_input::{
+    LoweredInput, WinitInputAdapter, apply_pen_frame, is_backend_pen_leave, pen_pointer_id,
+    platform_window_event,
+};
 
 impl<Program: RuntimeProgram> WindowManager<Program> {
     /// Refresh the cached display HDR metadata after a window/display event.
@@ -94,7 +90,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         if self
             .window_contexts
             .get(&id)
-            .is_some_and(|host| super::is_backend_pen_leave(&event, &host.pen))
+            .is_some_and(|host| is_backend_pen_leave(&event, &host.pen))
         {
             return;
         }
@@ -122,7 +118,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             return;
         }
         if let WinitWindowEvent::ModifiersChanged(modifiers) = &event {
-            self.input_mut(id).modifiers = modifiers.state();
+            self.input_mut(id).set_modifiers(modifiers.state());
         }
         if self.forward_os_passthrough_ignores_pointer(id, &event) {
             // Sampling owns the pointer while OS hit-testing is still off.
@@ -165,7 +161,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             .get(&id)
             .and_then(|host| host.pen.current_frame());
         if let Some(mut lowered) = self.input_mut(id).map(&event, scale, origin, now) {
-            super::apply_pen_frame(&mut lowered.payload, pen_frame);
+            apply_pen_frame(&mut lowered.payload, pen_frame);
             let resample_cursor = !forward_pointer_event(&event);
             if self.consume_frame_move(event_loop, id, &lowered.payload)
                 || self.consume_frame_resize(event_loop, id, &lowered.payload)
@@ -389,65 +385,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         event: &WinitWindowEvent,
     ) -> Option<FileDragInput> {
         let scale = self.scale_factor(id);
-        match event {
-            WinitWindowEvent::DragEntered {
-                id: transfer,
-                position,
-            } => {
-                if let Some(position) = position {
-                    self.input_mut(id).set_cursor_physical(*position, scale);
-                }
-                if !dnd_advertises_files(event_loop, *transfer) {
-                    return None;
-                }
-                let _ = event_loop.set_valid_dnd_actions(*transfer, FILE_DROP_ACTIONS);
-                let serial = event_loop
-                    .fetch_data_transfer(*transfer, &TypeHint::UriList)
-                    .ok();
-                self.input_mut(id).begin_file_drag(*transfer, serial);
-                self.input_mut(id).map_file_window_event(event)
-            }
-            WinitWindowEvent::DragPosition { position, .. } => {
-                self.input_mut(id).set_cursor_physical(*position, scale);
-                self.input_mut(id).map_file_window_event(event)
-            }
-            WinitWindowEvent::DragDropped { id: transfer, .. } => {
-                if !self.input_mut(id).pending_file_paths.is_empty() {
-                    return self.input_mut(id).map_file_window_event(event);
-                }
-                match event_loop.fetch_data_transfer(*transfer, &TypeHint::UriList) {
-                    Ok(serial) => {
-                        self.input_mut(id).wait_for_drop_data(*transfer, serial);
-                        None
-                    }
-                    Err(_) => self.input_mut(id).map_file_window_event(event),
-                }
-            }
-            WinitWindowEvent::DragLeft { .. } => self.input_mut(id).map_file_window_event(event),
-            WinitWindowEvent::DataTransferReceived {
-                id: transfer,
-                serial,
-                value,
-            } => {
-                if !self.input_mut(id).accepts_dnd_serial(*transfer, *serial) {
-                    return None;
-                }
-                match value.try_as_file_paths() {
-                    Ok(paths) => self.input_mut(id).ingest_file_paths(*transfer, paths),
-                    Err(error)
-                        if matches!(
-                            error.kind(),
-                            io::ErrorKind::WouldBlock | io::ErrorKind::Deadlock
-                        ) =>
-                    {
-                        None
-                    }
-                    // A release waiting on these paths would otherwise never end.
-                    Err(_) => self.input_mut(id).abandon_drop(*transfer),
-                }
-            }
-            _ => None,
-        }
+        self.input_mut(id).handle_file_dnd(event_loop, scale, event)
     }
     /// Stamp `lowered` into the window's endpoint. A transition drains at
     /// once, with everything queued before it; a move or wheel waits for the
@@ -461,7 +399,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         payload: InputPayload,
     ) -> nana_ui_platform::InputDisposition {
         let now = self.animation_clock.runtime_time(Instant::now());
-        let device = self.input_of(id).last_device;
+        let device = self.input_of(id).last_device();
         self.deliver_input(event_loop, id, LoweredInput::event(device, payload, now))
     }
 
@@ -734,7 +672,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             event_loop,
             id,
             InputPayload::PointerLeave {
-                pointer_id: nana_ui_platform::PointerId(super::pen_pointer_id()),
+                pointer_id: nana_ui_platform::PointerId(pen_pointer_id()),
             },
         );
     }
@@ -790,7 +728,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let Some(host) = self.window_contexts.get(&id) else {
             return;
         };
-        let cursor = host.input.cursor;
+        let cursor = host.input.cursor();
         let frame_edge = self.frame_resize_edge_at(id, cursor.0, cursor.1);
         let Some(host) = self.window_contexts.get_mut(&id) else {
             return;
@@ -812,14 +750,14 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         }
     }
 
-    pub(super) fn input_of(&self, id: WindowId) -> &InputTracker {
+    pub(super) fn input_of(&self, id: WindowId) -> &WinitInputAdapter {
         &self
             .window_contexts
             .get(&id)
             .expect("input belongs to a live window")
             .input
     }
-    pub(super) fn input_mut(&mut self, id: WindowId) -> &mut InputTracker {
+    pub(super) fn input_mut(&mut self, id: WindowId) -> &mut WinitInputAdapter {
         &mut self
             .window_contexts
             .get_mut(&id)

@@ -375,36 +375,53 @@ impl<Message: Send + 'static> PendingStartup<Message> {
     /// next target, or gives up with the whole story.
     fn fall_back(&mut self, error: String) -> Result<(), String> {
         self.attempt = None;
-        self.target = next_primary_target(self.target, error, &mut self.composed_error)?;
+        self.target =
+            window_factory::next_target_attempt(self.target, error, &mut self.composed_error)?;
         Ok(())
     }
 
     fn start_attempt(&mut self, event_loop: &dyn ActiveEventLoop) -> Result<(), String> {
-        let target = self.target.resolved;
-        let (window, provisional, requested_material, applied_material) = create_primary_window(
+        let desktop = scene_desktop(event_loop, self.settings.constrain_to_work_area);
+        let settings = &self.settings;
+        let startup_material_mode = self.startup_material_mode;
+        let adapter = self.options.adapter.clone();
+        let pipeline_cache = self.options.pipeline_cache.clone();
+        let proxy = self.channels.proxy.clone();
+        let attempt = window_factory::create_window_with_surface_retry(
+            window_factory::WindowRole::PrimaryStandalone,
             event_loop,
-            &self.settings,
-            target,
+            settings,
+            self.target,
             crate::ThemeAppearance::default(),
-            self.startup_material_mode,
+            startup_material_mode,
+            AppearanceSettings::DEFAULT_BACKDROP_OPACITY,
+            None,
+            true,
+            false,
+            true,
+            |target| Ok(scene_window_attributes(settings, &desktop, target)),
+            |window, target, requested_material| {
+                let (surface, request) = PendingPrimarySurface::begin_with_policy(
+                    Arc::clone(window),
+                    wgpu::Features::empty(),
+                    requested_material.wants_transparent_surface(),
+                    surface_mode_for(target),
+                    settings.presentation_policy,
+                    adapter.clone(),
+                )
+                .map_err(|error| error.to_string())?;
+                let device = spawn_device_request(request, pipeline_cache.clone(), proxy.clone())?;
+                Ok((surface, device))
+            },
+            || {},
         )?;
-        // The device request goes first: the splash then overlaps it instead
-        // of delaying it. The splash sits above the surface whichever order
-        // the two reach the compositor in.
-        let (surface, request) = PendingPrimarySurface::begin_with_policy(
-            Arc::clone(&window),
-            wgpu::Features::empty(),
-            requested_material.wants_transparent_surface(),
-            surface_mode_for(target),
-            self.settings.presentation_policy,
-            self.options.adapter.clone(),
-        )
-        .map_err(|error| error.to_string())?;
-        let device = spawn_device_request(
-            request,
-            self.options.pipeline_cache.clone(),
-            self.channels.proxy.clone(),
-        )?;
+        self.target = attempt.target;
+        let window = attempt.window;
+        let provisional = attempt.provisional;
+        let (surface, device) = attempt.surface;
+        // Ensure `attempt` doesn't hold a duplicate reference when destructured.
+        let requested_material = attempt.requested_material;
+        let applied_material = attempt.applied_material;
         // The accessibility adapter belongs to the window before it is first
         // shown, which with a splash is now.
         #[cfg(not(target_os = "android"))]
@@ -531,8 +548,8 @@ impl<Message: Send + 'static> PendingStartup<Message> {
             Err(failure) => return SplashStep::Done(None, SplashOutcome::Failed(failure)),
         };
         let theme = match window.theme() {
-            Some(WinitTheme::Light) => crate::ThemeAppearance::Light,
-            Some(WinitTheme::Dark) => crate::ThemeAppearance::Dark,
+            Some(winit::window::Theme::Light) => crate::ThemeAppearance::Light,
+            Some(winit::window::Theme::Dark) => crate::ThemeAppearance::Dark,
             None => crate::ThemeAppearance::default(),
         };
         let (red, green, blue, alpha) = theme.palette().background.to_u8_rgba();
@@ -635,8 +652,11 @@ impl<Message: Send + 'static> PendingStartup<Message> {
         };
         provisional.keep();
         let (graphics, surface) = context.into_parts();
-        let composition =
-            settle_primary_target(target, self.policy, graphics.adapter_info().backend);
+        let composition = window_factory::settle_primary_target(
+            target,
+            self.policy,
+            graphics.adapter_info().backend,
+        );
         let startup = HostStartup::new(self.handle, splash, held, self.longest_block);
         complete_startup::<Program>(
             event_loop,

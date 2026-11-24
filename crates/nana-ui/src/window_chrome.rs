@@ -163,6 +163,20 @@ impl TitleBarDragTracker {
         document: DocumentId,
         event: &InputPayload,
     ) -> Vec<WindowChromeEvent> {
+        let mut events = Vec::new();
+        self.visit_events(context, document, event, |chrome_event| {
+            events.push(chrome_event);
+        });
+        events
+    }
+
+    fn visit_events(
+        &mut self,
+        context: &AppContext,
+        document: DocumentId,
+        event: &InputPayload,
+        mut emit: impl FnMut(WindowChromeEvent),
+    ) {
         if self.pressed
             && self.control.is_none()
             && self
@@ -171,40 +185,38 @@ impl TitleBarDragTracker {
         {
             self.pressed = false;
             self.drag_bar = None;
-            return vec![WindowChromeEvent::PointerCancelled];
+            emit(WindowChromeEvent::PointerCancelled);
+            return;
         }
         let InputPayload::Pointer(pointer) = event else {
-            return Vec::new();
+            return;
         };
         match pointer {
             PointerInput {
                 phase: PointerPhase::Down,
-                button: 0,
+                button,
                 is_primary: true,
                 activation_click,
                 x,
                 y,
                 ..
-            } => {
+            } if *button == nana_ui_input::PRIMARY_MOUSE_BUTTON => {
                 let hit = title_bar_pointer_hit(context, document, *x, *y);
                 if *activation_click && matches!(hit, TitleBarHit::Control(_)) {
-                    return Vec::new();
+                    return;
                 }
                 match hit {
-                    TitleBarHit::None => Vec::new(),
+                    TitleBarHit::None => {}
                     TitleBarHit::Control(action) => {
                         self.pressed = true;
                         self.control = Some(action);
-                        Vec::new()
                     }
                     TitleBarHit::Drag(bar) => {
                         self.pressed = true;
                         self.control = None;
                         self.drag_bar = Some(bar);
-                        vec![
-                            WindowChromeEvent::PointerMoved(LogicalPoint::new(*x, *y)),
-                            WindowChromeEvent::PointerPressed,
-                        ]
+                        emit(WindowChromeEvent::PointerMoved(LogicalPoint::new(*x, *y)));
+                        emit(WindowChromeEvent::PointerPressed);
                     }
                 }
             }
@@ -214,26 +226,24 @@ impl TitleBarDragTracker {
                 y,
                 ..
             } if self.pressed && self.control.is_none() => {
-                vec![WindowChromeEvent::PointerMoved(LogicalPoint::new(*x, *y))]
+                emit(WindowChromeEvent::PointerMoved(LogicalPoint::new(*x, *y)));
             }
             PointerInput {
                 phase: PointerPhase::Up,
-                button: 0,
+                button,
                 x,
                 y,
                 ..
-            } if self.pressed => {
+            } if self.pressed && *button == nana_ui_input::PRIMARY_MOUSE_BUTTON => {
                 self.pressed = false;
                 if let Some(action) = self.control.take() {
                     if title_bar_pointer_hit(context, document, *x, *y)
                         == TitleBarHit::Control(action)
                     {
-                        vec![WindowChromeEvent::Action(action)]
-                    } else {
-                        Vec::new()
+                        emit(WindowChromeEvent::Action(action));
                     }
                 } else {
-                    vec![WindowChromeEvent::PointerReleased]
+                    emit(WindowChromeEvent::PointerReleased);
                 }
             }
             PointerInput {
@@ -242,9 +252,9 @@ impl TitleBarDragTracker {
             } if self.pressed => {
                 self.pressed = false;
                 self.control = None;
-                vec![WindowChromeEvent::PointerCancelled]
+                emit(WindowChromeEvent::PointerCancelled);
             }
-            _ => Vec::new(),
+            _ => {}
         }
     }
 }
@@ -398,9 +408,9 @@ pub fn apply_title_bar_pointer(
     event: &InputPayload,
 ) -> Option<WindowChromeAction> {
     let mut action = None;
-    for chrome_event in tracker.events(context, document, event) {
+    tracker.visit_events(context, document, event, |chrome_event| {
         action = state.update(chrome_event).or(action);
-    }
+    });
     action
 }
 

@@ -421,7 +421,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         else {
             return false;
         };
-        self.update_image_targets(id, scene.as_ref());
+        let frame_plan = scene.frame_plan().ok();
+        self.update_image_targets(id, scene.instance_id(), frame_plan.as_deref());
         let producer_frame = self.producer_frames.prepare(
             id,
             self.graphics.gpu().generation().get(),

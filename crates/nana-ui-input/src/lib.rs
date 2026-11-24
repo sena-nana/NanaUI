@@ -9,6 +9,7 @@
 mod canonical;
 mod host_services;
 mod input;
+mod lowering;
 
 pub use canonical::{
     CanonicalInputEvent, CommittedText, CompositionInput, DeviceId, EndpointGeneration,
@@ -21,5 +22,9 @@ pub use host_services::{
     TextInputContext, TextInputPurpose, UnsupportedHostServices,
 };
 pub use input::{InputDisposition, InputModifiers, PointerPhase, PointerType};
+pub use lowering::{
+    DragTransferTracker, PRIMARY_MOUSE_BUTTON, PenFramePatch, PointerDescriptor, PointerState,
+    ScreenSpace, held_mouse_button, mouse_button_mask, screen_position, shift_wheel_axes,
+};
 /// The phase a [`FileDragInput`] reports.
 pub use nana_ui_core::FileDragKind;

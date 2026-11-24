@@ -146,6 +146,8 @@ mod scene_host;
 #[cfg(feature = "hosted")]
 pub mod startup;
 #[cfg(feature = "hosted")]
+mod winit_input;
+#[cfg(feature = "hosted")]
 pub use scene_host::CompositionWork;
 #[cfg(feature = "hosted")]
 pub use startup::{

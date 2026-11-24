@@ -2680,6 +2680,7 @@ dependencies = [
  "nana-text",
  "nana-ui-charts",
  "nana-ui-core",
+ "nana-ui-input",
  "nana-ui-platform",
  "nana-ui-runtime",
  "nana-ui-scene",
