@@ -33,8 +33,7 @@ let scene = runtime.scene();
 
 默认不开启任何 feature（`default = []`）。
 
-- `icu` 与 `calendar`、`charts`、`controls`、`graph-canvas`、`image-viewer`、`rich-text`、`components`（均默认关闭，按需启用）：转发到 `nana-ui-runtime` 的同名 feature，其中 `components` 和 `rich-text` 还会开启 `vector-boolean`。
-- `vector-boolean`（可选）：在 `custom_paint` 中启用基于 `i_overlay` 的矢量路径布尔化简；关闭时不链接 `i_overlay`，描边、填充、裁剪与轮廓扩张改用内置整数平面扫描线布尔回退求解器（同样支持自交多边形、`EvenOdd`/`NonZero` 填充、嵌套孔洞与孤岛、裁剪交/差集与 miter 轮廓化简）。
+- `icu` 与 `calendar`、`charts`、`controls`、`graph-canvas`、`image-viewer`、`rich-text`、`components`（均默认关闭，按需启用）：转发到 `nana-ui-runtime` 的同名 feature。
 - `benchmark`：只用于构建基准。
 
 ## 测试

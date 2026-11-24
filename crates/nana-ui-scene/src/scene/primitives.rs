@@ -48,7 +48,7 @@ impl UiScene {
             }
             return;
         };
-        if self.inside_ancestor_glyph(&node) {
+        if self.inside_ancestor_glyph_mut(&node) {
             if node.custom_paint.is_none() && !self.custom_paint.is_empty() {
                 self.custom_paint.remove(&id);
             }
@@ -58,7 +58,7 @@ impl UiScene {
             return;
         }
         let (parent_transform, parent_opacity, parent_clips, parent_3d) =
-            self.ancestor_state(&node);
+            self.ancestor_state_mut(&node);
         // Everything below is built in the node's own coordinates, its
         // border box at the origin, and drawn at the node's origin: a node
         // that only moves keeps it all ([`Self::record_box`]).
@@ -81,19 +81,15 @@ impl UiScene {
         // stale so the draw rebases it onto the current projection instead of
         // taking the retained fast path with the logical one.
         let epoch = if self.compositor.has_presentation() {
-            self.attribute_epoch.wrapping_sub(1)
+            self.epochs.attribute.wrapping_sub(1)
         } else {
-            self.attribute_epoch
+            self.epochs.attribute
         };
         self.projections
             .insert(id, (epoch, transform, parent_clips.len()));
         if super::attributes::inverse(transform).is_none() {
             self.unadjustable_projections.insert(id);
         }
-        self.draw_attributes
-            .get_mut()
-            .expect("scene attributes")
-            .remove(&id);
         let local_opacity = local_opacity(&node);
         let opacity = if is_opacity_group(&self.nodes, &node) {
             parent_opacity

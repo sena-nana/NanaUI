@@ -10593,7 +10593,8 @@ fn what_a_parent_hands_down_is_what_walking_the_chain_gives() {
     }
     let mut scene = UiScene::new();
     scene.apply_delta(nodes, []);
-    scene.rebuild_scratch.lock().unwrap().begin();
+    let mut scratch = RebuildScratch::default();
+    scratch.begin();
     // Innermost first, so the answers above are settled on the way down
     // rather than asked for one at a time.
     for value in (2..=DEPTH).rev() {
@@ -10603,14 +10604,14 @@ fn what_a_parent_hands_down_is_what_walking_the_chain_gives() {
         }
         for visual in [false, true] {
             let handed = scene
-                .handed_down(held.parent.unwrap(), visual)
+                .handed_down_with(&mut scratch, held.parent.unwrap(), visual)
                 .expect("a chain without a modal frame is the parent's alone");
             let (walked, dependent) = scene.compute_ancestor_state(&held, visual, false);
             assert!(!dependent);
             assert_eq!(handed, walked, "node {value}, visual {visual}");
         }
     }
-    scene.rebuild_scratch.lock().unwrap().end();
+    scratch.end();
 }
 
 #[test]
@@ -10820,7 +10821,7 @@ fn fading_within_translucency_retains_the_projection_and_crossing_out_rebuilds_i
             height: 1000.0,
         })
         .expect("index");
-    assert!(scene.visibility.get().is_some());
+    assert!(scene.has_visibility_index());
     let order: Vec<_> = scene.primitives().map(|primitive| primitive.id).collect();
 
     // Fade, twice, staying translucent.
@@ -10832,7 +10833,7 @@ fn fading_within_translucency_retains_the_projection_and_crossing_out_rebuilds_i
             "a fade rebuilt the frame plan"
         );
         assert!(
-            scene.visibility.get().is_some(),
+            scene.has_visibility_index(),
             "a fade dropped the visibility index"
         );
         assert_eq!(
@@ -10939,7 +10940,7 @@ fn rotating_a_container_refreshes_bounds_without_rebuilding_the_index() {
         "a transform change rebuilt the frame plan"
     );
     assert!(
-        scene.visibility.get().is_some(),
+        scene.has_visibility_index(),
         "a transform change dropped the visibility index"
     );
     assert!(
@@ -11020,7 +11021,7 @@ fn a_scrolled_list_answers_like_a_fresh_build(rows: u64, scroll: f32, probe_to: 
     // every frame. The audit runs on this one.
     scene.apply_delta([row(2)], []);
     assert!(
-        scene.visibility.get().is_some(),
+        scene.has_visibility_index(),
         "the delta rebuilt the index, so nothing here tested the retained one"
     );
 
@@ -11149,7 +11150,7 @@ fn a_colour_change_on_a_rotated_parent_does_not_move_its_descendants() {
     scene.apply_delta([container([0.0, 1.0, 0.0, 1.0])], []);
 
     assert!(
-        scene.visibility.get().is_some(),
+        scene.has_visibility_index(),
         "the delta rebuilt the index, so nothing here tested the retained one"
     );
     assert_eq!(
@@ -11252,7 +11253,7 @@ fn a_colour_change_tolerates_a_few_ulps_of_base_transform_drift() {
     };
     scene.apply_delta([container], []);
     assert!(
-        scene.visibility.get().is_some(),
+        scene.has_visibility_index(),
         "the delta rebuilt the index, so nothing here tested the retained one"
     );
     assert_eq!(
@@ -11774,7 +11775,7 @@ mod custom_paint {
 
         scene.apply_delta([painted(1, None, &[], recording(400.0))], []);
         assert!(
-            scene.visibility.get().is_some(),
+            scene.has_visibility_index(),
             "a new recording with the same operations must not drop the index"
         );
         let retained = scene.visible_operations(viewport).unwrap();
@@ -11808,14 +11809,14 @@ mod custom_paint {
 
         scene.apply_delta([node(1, None, &[])], []);
         assert!(
-            scene.visibility.get().is_none(),
+            !scene.has_visibility_index(),
             "removing a painter must invalidate its retained visibility index"
         );
         assert!(scene.visible_operations(viewport).unwrap().is_empty());
 
         scene.apply_delta([painted(1, None, &[], recording)], []);
         assert!(
-            scene.visibility.get().is_none(),
+            !scene.has_visibility_index(),
             "adding a painter must invalidate its retained visibility index"
         );
         assert_eq!(scene.visible_operations(viewport).unwrap().len(), 1);

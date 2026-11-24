@@ -323,57 +323,58 @@ impl SceneOrderKey {
     }
 }
 
-impl UiScene {
-    /// The paint-order key.
-    ///
-    /// Every primitive of a node sits under the same stack — the z-index and
-    /// document order in it are the node's — so while the rebuild pass runs it
-    /// is computed once per node and every primitive shares that `Arc`.
-    pub(super) fn scene_order_key(
-        &self,
-        primitive: &ScenePrimitive,
-        retained: Option<&GroupPrefix>,
-    ) -> SceneOrderKey {
-        let vn = primitive_visual_node(&self.nodes, primitive);
-        if let Ok(mut scratch) = self.rebuild_scratch.lock()
-            && scratch.active
+/// The paint-order key, using `scratch` when an active rebuild pass is running.
+pub(super) fn scene_order_key(
+    nodes: &SceneNodes,
+    node_order: &NodeMap<usize>,
+    custom_paint: &NodeMap<custom_paint::BuiltPaint>,
+    scratch: &mut RebuildScratch,
+    primitive: &ScenePrimitive,
+    retained: Option<&GroupPrefix>,
+) -> SceneOrderKey {
+    let vn = primitive_visual_node(nodes, primitive);
+    if scratch.active {
+        if let Some((node, stack)) = scratch.order_stack.as_ref()
+            && *node == primitive.node
         {
-            if let Some((node, stack)) = scratch.order_stack.as_ref()
-                && *node == primitive.node
-            {
-                return SceneOrderKey::at(Arc::clone(stack), primitive);
-            }
-            let prefix = self.group_prefix_of(&mut scratch, vn);
-            let stack = order_stack_reusing(&self.nodes, &prefix, vn, primitive, retained);
-            // A painted node's primitives do not share one stack, nor do a
-            // scroll view's own paint and its bars, or a menu/select with
-            // separate trigger and overlay branches.
-            if !self.splits_paint(primitive.node) {
-                scratch.order_stack = Some((primitive.node, Arc::clone(&stack)));
-            }
-            return SceneOrderKey::at(stack, primitive);
+            return SceneOrderKey::at(Arc::clone(stack), primitive);
         }
-        order_key(&self.nodes, &self.node_order, primitive)
+        let prefix = group_prefix_memo(nodes, node_order, &mut scratch.group_prefixes, vn);
+        let stack = order_stack_reusing(nodes, &prefix, vn, primitive, retained);
+        // A painted node's primitives do not share one stack, nor do a
+        // scroll view's own paint and its bars, or a menu/select with
+        // separate trigger and overlay branches.
+        if !splits_paint(nodes, custom_paint, primitive.node) {
+            scratch.order_stack = Some((primitive.node, Arc::clone(&stack)));
+        }
+        return SceneOrderKey::at(stack, primitive);
     }
+    order_key(nodes, node_order, primitive)
+}
 
-    /// Whether `node`'s primitives sort under more than one stack: a painted
-    /// node splits its paint around its children, a scroll view puts its
-    /// bars over them, and a triggered menu or open select splits trigger from
-    /// floating overlay.
+/// Whether `node`'s primitives sort under more than one stack.
+fn splits_paint(
+    nodes: &SceneNodes,
+    custom_paint: &NodeMap<custom_paint::BuiltPaint>,
+    node: StableNodeId,
+) -> bool {
+    (!custom_paint.is_empty() && has_custom_paint(nodes, node))
+        || nodes.get(&node).is_some_and(|node| {
+            has_scrollbar_chrome(node)
+                || node
+                    .widget_paint
+                    .as_deref()
+                    .is_some_and(|w| w.floating_overlay.is_some())
+                || is_triggered_menu(node)
+        })
+}
+
+impl UiScene {
     pub(super) fn splits_paint(&self, node: StableNodeId) -> bool {
-        (!self.custom_paint.is_empty() && has_custom_paint(&self.nodes, node))
-            || self.nodes.get(&node).is_some_and(|node| {
-                has_scrollbar_chrome(node)
-                    || node
-                        .widget_paint
-                        .as_deref()
-                        .is_some_and(|w| w.floating_overlay.is_some())
-                    || is_triggered_menu(node)
-            })
+        splits_paint(&self.nodes, &self.custom_paint, node)
     }
 
-    /// A visual node's paint-order prefix: what it inherits from the chain above
-    /// it, plus its own entry when it opens a stacking group.
+    #[cfg(test)]
     pub(super) fn group_prefix_of(
         &self,
         scratch: &mut RebuildScratch,

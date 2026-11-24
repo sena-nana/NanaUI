@@ -111,30 +111,18 @@ impl UiScene {
         if !self.nodes.contains_key(&vn.node_id()) {
             return empty_opacity_groups();
         }
-        let base = match visual_parent_of(&self.nodes, vn) {
-            Some(parent_vn) => {
-                let mut cache = self
-                    .opacity_group_cache
-                    .lock()
-                    .expect("scene opacity groups");
-                let groups = self.ancestor_visual_opacity_groups(&mut cache, parent_vn, 0);
-                self.inherited_visual_opacity_groups(parent_vn, vn, groups)
-            }
-            None => empty_opacity_groups(),
-        };
-        if let Some(own) = self.visual_node_own_opacity_group(vn) {
-            let mut groups = base.to_vec();
-            groups.push(self.within_filter_depth(&base, own));
-            return Arc::from(groups);
-        }
-        base
+        self.derived_projection().opacity_groups(vn)
     }
 
     /// `own` as it composites below `base`: a non-identity filter past
     /// [`ColorFilter::MAX_CHAIN_DEPTH`] filtering groups stays the identity
     /// (Issue #324). The group itself stays, so its opacity, blend and the
     /// subtree it holds are untouched.
-    fn within_filter_depth(&self, base: &[OpacityGroup], mut own: OpacityGroup) -> OpacityGroup {
+    pub(super) fn within_filter_depth(
+        &self,
+        base: &[OpacityGroup],
+        mut own: OpacityGroup,
+    ) -> OpacityGroup {
         if own.filter.is_identity() {
             return own;
         }
@@ -166,163 +154,66 @@ impl UiScene {
         }
     }
 
-    fn ancestor_visual_opacity_groups(
-        &self,
-        cache: &mut OpacityGroupCache,
-        vn: VisualNode,
-        depth: usize,
-    ) -> Arc<[OpacityGroup]> {
-        if depth >= MAX_ANCESTOR_DEPTH {
-            return empty_opacity_groups();
-        }
-        if let Some((stamp, groups)) = cache.get(&vn)
-            && *stamp == self.draw_stamp()
-        {
-            return Arc::clone(groups);
-        }
-        if !self.nodes.contains_key(&vn.node_id()) {
-            return empty_opacity_groups();
-        }
-        let base = match visual_parent_of(&self.nodes, vn) {
-            Some(parent_vn) => {
-                let groups = self.ancestor_visual_opacity_groups(cache, parent_vn, depth + 1);
-                self.inherited_visual_opacity_groups(parent_vn, vn, groups)
-            }
-            None => empty_opacity_groups(),
-        };
-        let groups = if let Some(own) = self.visual_node_own_opacity_group(vn) {
-            let mut groups = base.to_vec();
-            groups.push(self.within_filter_depth(&base, own));
-            Arc::from(groups)
-        } else {
-            base
-        };
-        cache.insert(vn, (self.draw_stamp(), Arc::clone(&groups)));
-        groups
-    }
-
     /// Destination groups for this draw. A modal scrim inherits outer groups,
     /// but never the card's own opacity: it has an independent presence track.
     /// Triggered overlay surfaces (`VisualNode::Overlay`) strip bypassed
     /// scroll edge fades; scrollbars strip their own scroll container's edge fade.
     pub fn primitive_opacity_groups(&self, primitive: &ScenePrimitive) -> Arc<[OpacityGroup]> {
+        if self.dest_group_candidates == 0
+            && self.nodes.opacity_motion.is_empty()
+            && self.nodes.filter_motion.is_empty()
+        {
+            return empty_opacity_groups();
+        }
         if self.is_modal_scrim(primitive) {
-            let vn = VisualNode::Node(primitive.node);
-            let Some(parent_vn) = visual_parent_of(&self.nodes, vn) else {
-                return empty_opacity_groups();
-            };
-            let mut cache = self
-                .opacity_group_cache
-                .lock()
-                .expect("scene opacity groups");
-            let parent_groups = self.ancestor_visual_opacity_groups(&mut cache, parent_vn, 0);
-            return self.inherited_visual_opacity_groups(parent_vn, vn, parent_groups);
+            return self
+                .derived_projection()
+                .inherited_node_opacity_groups(primitive.node);
         }
         let vn = primitive_visual_node(&self.nodes, primitive);
-        let groups = self.visual_opacity_groups(vn);
+        let groups = self.derived_projection().opacity_groups(vn);
         if is_scrollbar_chrome_slot(primitive.id.slot) {
             return without_edge_fade(primitive.node, groups);
         }
         groups
     }
 
-    fn visual_node_own_opacity_group(&self, vn: VisualNode) -> Option<OpacityGroup> {
-        match vn {
-            VisualNode::Node(id) => {
-                let candidate = self.nodes.get(&id)?;
-                is_dest_group(&self.nodes, candidate)
-                    .then(|| self.presented_dest_group(id, candidate))
-            }
-            VisualNode::Overlay(id) => {
-                if !visual_is_opacity_group(&self.nodes, vn) {
-                    return None;
-                }
-                let menu = self.nodes.get(&id)?;
-                let fade = match self.compositor.opacity(id) {
-                    Some(presented) => {
-                        let logical = local_opacity(menu);
-                        if logical > 1e-6 {
-                            (presented / logical).clamp(0.0, 1.0)
-                        } else {
-                            presented.clamp(0.0, 1.0)
-                        }
-                    }
-                    None => 1.0,
-                };
-                // A triggered menu's presented filter, like its fade, is
-                // its hanging surface's: the trigger keeps its own paint.
-                let filter = self.compositor.effect(id).unwrap_or_default();
-                if (fade - 1.0).abs() < 1e-6 && filter.is_identity() {
-                    return None;
-                }
-                Some(OpacityGroup {
-                    node: id,
-                    opacity: fade,
-                    filter: filter.with_blur_cap(ColorFilter::blur_cap(
-                        menu.source_style.layout.paint.wide_filter_blur,
-                    )),
-                    mix_blend: MixBlendMode::Normal,
-                    inset_shadow: None,
-                    edge_fade: None,
-                    motion_streak: [0.0, 0.0],
-                })
-            }
-        }
-    }
-
-    /// `groups`, inherited by `child_vn` from `parent_vn`: floating overlay
-    /// surfaces (`VisualNode::Overlay`) and `position: fixed` nodes strip
-    /// bypassed scroll edge fades, and escaping absolute boxes strip scroll
-    /// edge fades of containers they are not clipped by.
-    fn inherited_visual_opacity_groups(
+    pub(super) fn visual_node_overlay_opacity_group(
         &self,
-        parent_vn: VisualNode,
-        child_vn: VisualNode,
-        groups: Arc<[OpacityGroup]>,
-    ) -> Arc<[OpacityGroup]> {
-        if matches!(child_vn, VisualNode::Overlay(_)) {
-            return without_edge_fades(groups, |_| false);
+        id: StableNodeId,
+    ) -> Option<OpacityGroup> {
+        if !visual_is_opacity_group(&self.nodes, VisualNode::Overlay(id)) {
+            return None;
         }
-        let VisualNode::Node(child_id) = child_vn else {
-            return groups;
+        let menu = self.nodes.get(&id)?;
+        let fade = match self.compositor.opacity(id) {
+            Some(presented) => {
+                let logical = local_opacity(menu);
+                if logical > 1e-6 {
+                    (presented / logical).clamp(0.0, 1.0)
+                } else {
+                    presented.clamp(0.0, 1.0)
+                }
+            }
+            None => 1.0,
         };
-        let Some(child) = self.nodes.get(&child_id) else {
-            return empty_opacity_groups();
-        };
-        if child.source_style.layout.position == nana_ui_core::PositionSpec::Fixed {
-            return without_edge_fades(groups, |_| false);
+        // A triggered menu's presented filter, like its fade, is
+        // its hanging surface's: the trigger keeps its own paint.
+        let filter = self.compositor.effect(id).unwrap_or_default();
+        if (fade - 1.0).abs() < 1e-6 && filter.is_identity() {
+            return None;
         }
-        if let VisualNode::Node(parent_id) = parent_vn
-            && clip_link(child) == Some(parent_id)
-        {
-            return groups;
-        }
-        if !groups.iter().any(|group| group.edge_fade.is_some()) {
-            return groups;
-        }
-        let hung = clip_chain_parents(&self.nodes, child);
-        without_edge_fades(groups, |node| hung.contains(&node))
-    }
-
-    fn presented_dest_group(&self, id: StableNodeId, node: &ExtractedNode) -> OpacityGroup {
-        let mut group = dest_group(&self.nodes, id, node, self.placed_layout(node));
-        group.opacity = self.resolved_local_opacity(node);
-        // The filter track's sample at `now` stands for the whole filter:
-        // it started from the logical one, so it already holds what the
-        // style says where the track leaves a channel alone.
-        let presents = !is_triggered_menu(node);
-        if let Some(filter) = self.compositor.effect(id).filter(|_| presents) {
-            group.filter = filter;
-        }
-        // Each group holds its blur to its own cap: one that opted into the
-        // wide cap widens nobody else's (Issue #314).
-        group.filter = group.filter.with_blur_cap(ColorFilter::blur_cap(
-            node.source_style.layout.paint.wide_filter_blur,
-        ));
-        if let Some(streak) = self.compositor.motion_streak(id).filter(|_| presents) {
-            group.motion_streak = streak;
-        }
-        group
+        Some(OpacityGroup {
+            node: id,
+            opacity: fade,
+            filter: filter.with_blur_cap(ColorFilter::blur_cap(
+                menu.source_style.layout.paint.wide_filter_blur,
+            )),
+            mix_blend: MixBlendMode::Normal,
+            inset_shadow: None,
+            edge_fade: None,
+            motion_streak: [0.0, 0.0],
+        })
     }
 
     /// Isolating filter groups from outermost to innermost that contain `node`.
@@ -530,8 +421,44 @@ pub(super) fn presents_filter(nodes: &SceneNodes, node: &ExtractedNode) -> bool 
     nodes.filter_motion.contains(&node.id) && !is_triggered_menu(node)
 }
 
-fn is_dest_group(nodes: &SceneNodes, node: &ExtractedNode) -> bool {
-    is_opacity_group(nodes, node)
+/// `groups`, inherited by `child_vn` from `parent_vn`: floating overlay
+/// surfaces (`VisualNode::Overlay`) and `position: fixed` nodes strip
+/// bypassed scroll edge fades, and escaping absolute boxes strip scroll
+/// edge fades of containers they are not clipped by.
+pub(super) fn inherited_visual_opacity_groups(
+    nodes: &SceneNodes,
+    parent_vn: VisualNode,
+    child_vn: VisualNode,
+    groups: Arc<[OpacityGroup]>,
+) -> Arc<[OpacityGroup]> {
+    if matches!(child_vn, VisualNode::Overlay(_)) {
+        return without_edge_fades(groups, |_| false);
+    }
+    let VisualNode::Node(child_id) = child_vn else {
+        return groups;
+    };
+    let Some(child) = nodes.get(&child_id) else {
+        return empty_opacity_groups();
+    };
+    if child.source_style.layout.position == nana_ui_core::PositionSpec::Fixed {
+        return without_edge_fades(groups, |_| false);
+    }
+    if let VisualNode::Node(parent_id) = parent_vn
+        && clip_link(child) == Some(parent_id)
+    {
+        return groups;
+    }
+    if !groups.iter().any(|group| group.edge_fade.is_some()) {
+        return groups;
+    }
+    let hung = clip_chain_parents(nodes, child);
+    without_edge_fades(groups, |node| hung.contains(&node))
+}
+
+/// The list every node that is not itself a group shares with its parent.
+pub(super) fn empty_opacity_groups() -> Arc<[OpacityGroup]> {
+    static EMPTY: std::sync::OnceLock<Arc<[OpacityGroup]>> = std::sync::OnceLock::new();
+    Arc::clone(EMPTY.get_or_init(|| Arc::from(Vec::new())))
 }
 
 fn inset_shadow_overlay(node: &ExtractedNode, placed: LayoutBox) -> Option<InsetShadowOverlay> {
@@ -554,14 +481,8 @@ fn inset_shadow_overlay(node: &ExtractedNode, placed: LayoutBox) -> Option<Inset
     })
 }
 
-/// The list every node that is not itself a group shares with its parent.
-fn empty_opacity_groups() -> Arc<[OpacityGroup]> {
-    static EMPTY: std::sync::OnceLock<Arc<[OpacityGroup]>> = std::sync::OnceLock::new();
-    Arc::clone(EMPTY.get_or_init(|| Arc::from(Vec::new())))
-}
-
 /// `candidate`'s group, its box where it stands now at `placed`.
-fn dest_group(
+pub(super) fn dest_group(
     nodes: &SceneNodes,
     id: StableNodeId,
     candidate: &ExtractedNode,

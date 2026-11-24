@@ -57,81 +57,56 @@ pub(super) fn node_scene_transform(
 }
 
 impl UiScene {
-    pub(super) fn ancestor_state(&self, node: &ExtractedNode) -> AncestorState {
-        self.project_ancestor_state(node, false)
-    }
-
-    pub(super) fn draw_ancestor_state(&self, node: &ExtractedNode) -> AncestorState {
-        self.project_ancestor_state(node, true)
-    }
-
-    pub(super) fn project_ancestor_state(
-        &self,
-        node: &ExtractedNode,
-        visual: bool,
-    ) -> AncestorState {
-        // What the answer depends on, beyond the chain itself: whether this
-        // node breaks out of it, its visual mount target, its clip link, and
-        // whether the caller wants the presented values or the logical ones.
-        let fixed = node.source_style.layout.position == nana_ui_core::PositionSpec::Fixed;
-        let visual_parent = effective_visual_parent(&self.nodes, node);
-        // A plain child takes exactly what its parent hands down, and the
-        // rebuild pass remembers that per parent: a deep chain of only
-        // children would miss the one-entry cache below on every node.
-        if let Some(parent) = node.parent
-            && !fixed
-            && visual_parent.is_none()
-            && self
-                .nodes
-                .get(&parent)
-                .is_some_and(|parent_node| !is_triggered_menu(parent_node))
-            && clip_link(node) == Some(parent)
-            && !is_workspace_resize_handle(node)
-            && self.rebuild_scratch.lock().is_ok_and(|cache| cache.active)
-            && let Some(state) = self.handed_down(parent, visual)
-        {
-            return state;
-        }
-        let key = node
-            .parent
-            .map(|parent| (parent, fixed, visual_parent, clip_link(node), visual));
-        if let Some(key) = key
-            && let Ok(cache) = self.rebuild_scratch.lock()
-        {
-            if cache.active {
-                if let Some((held, state)) = cache.ancestor_state.as_ref()
-                    && *held == key
-                {
-                    return state.clone();
-                }
-            } else if let Some((held, stamp, state)) = cache.drawn_ancestor_state.as_ref()
+    pub(super) fn ancestor_state_mut(&mut self, node: &ExtractedNode) -> AncestorState {
+        if self.rebuild_scratch.active {
+            let fixed = node.source_style.layout.position == nana_ui_core::PositionSpec::Fixed;
+            let visual_parent = effective_visual_parent(&self.nodes, node);
+            if let Some(parent) = node.parent
+                && !fixed
+                && visual_parent.is_none()
+                && self
+                    .nodes
+                    .get(&parent)
+                    .is_some_and(|parent_node| !is_triggered_menu(parent_node))
+                && clip_link(node) == Some(parent)
+                && !is_workspace_resize_handle(node)
+                && let Some(state) = self.handed_down_mut(parent, false)
+            {
+                return state;
+            }
+            let key = node
+                .parent
+                .map(|parent| (parent, fixed, visual_parent, clip_link(node), false));
+            if let Some(key) = key
+                && let Some((held, state)) = self.rebuild_scratch.ancestor_state.as_ref()
                 && *held == key
-                && *stamp == self.draw_stamp()
             {
                 return state.clone();
             }
-        }
-        let (state, node_dependent) = self.compute_ancestor_state(node, visual, fixed);
-        if let Some(key) = key
-            && !node_dependent
-            && let Ok(mut cache) = self.rebuild_scratch.lock()
-        {
-            if cache.active {
-                cache.ancestor_state = Some((key, state.clone()));
-            } else {
-                cache.drawn_ancestor_state = Some((key, self.draw_stamp(), state.clone()));
+            let (state, node_dependent) = self.compute_ancestor_state(node, false, fixed);
+            if let Some(key) = key
+                && !node_dependent
+            {
+                self.rebuild_scratch.ancestor_state = Some((key, state.clone()));
             }
+            return state;
         }
-        state
+        self.compute_ancestor_state(
+            node,
+            false,
+            node.source_style.layout.position == nana_ui_core::PositionSpec::Fixed,
+        )
+        .0
     }
 
-    /// What a remembered draw-time answer stays valid for.
-    ///
-    /// `attribute_epoch` moves whenever what a node inherits changes, and
-    /// `instance` whenever the scene's nodes do — a leaf leaving does not touch
-    /// the epoch but can stop its parent being an opacity group.
-    pub(super) fn draw_stamp(&self) -> DrawStamp {
-        self.projection_revision()
+    pub(super) fn draw_ancestor_state(&self, node: &ExtractedNode) -> AncestorState {
+        self.derived_projection()
+            .draw_parent_state(node.id)
+            .cloned()
+            .unwrap_or_else(|| {
+                let fixed = node.source_style.layout.position == nana_ui_core::PositionSpec::Fixed;
+                self.compute_ancestor_state(node, true, fixed).0
+            })
     }
 
     /// The second half of the answer is whether it read anything about `node`
@@ -154,6 +129,34 @@ impl UiScene {
             .unwrap_or_default();
         let hung = clip_chain_parents(&self.nodes, node);
         self.fold_ancestor_chain(ancestors, &hung, Some(node), fixed, visual)
+    }
+
+    pub(super) fn compute_ancestor_state_with_origins(
+        &self,
+        node: &ExtractedNode,
+        visual: bool,
+        fixed: bool,
+        node_index: &NodeMap<usize>,
+        placed_origins: &[[f32; 2]],
+    ) -> (AncestorState, bool) {
+        let ancestors = node
+            .parent
+            .map(|parent| {
+                ancestor_nodes(&self.nodes, parent)
+                    .map(|(_, node)| node)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let hung = clip_chain_parents(&self.nodes, node);
+        self.fold_ancestor_chain_with_origins(
+            ancestors,
+            &hung,
+            Some(node),
+            fixed,
+            visual,
+            node_index,
+            placed_origins,
+        )
     }
 
     pub(super) fn visual_ancestor_opacity(&self, start: VisualNode, visual: bool) -> f32 {
@@ -179,11 +182,44 @@ impl UiScene {
     /// gets — in flow, hanging from it, neither fixed nor a resize handle.
     fn fold_ancestor_chain(
         &self,
+        ancestors: Vec<&ExtractedNode>,
+        hung: &[StableNodeId],
+        node: Option<&ExtractedNode>,
+        fixed: bool,
+        visual: bool,
+    ) -> (AncestorState, bool) {
+        self.fold_ancestor_chain_inner(ancestors, hung, node, fixed, visual, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn fold_ancestor_chain_with_origins(
+        &self,
+        ancestors: Vec<&ExtractedNode>,
+        hung: &[StableNodeId],
+        node: Option<&ExtractedNode>,
+        fixed: bool,
+        visual: bool,
+        node_index: &NodeMap<usize>,
+        placed_origins: &[[f32; 2]],
+    ) -> (AncestorState, bool) {
+        self.fold_ancestor_chain_inner(
+            ancestors,
+            hung,
+            node,
+            fixed,
+            visual,
+            Some((node_index, placed_origins)),
+        )
+    }
+
+    fn fold_ancestor_chain_inner(
+        &self,
         mut ancestors: Vec<&ExtractedNode>,
         hung: &[StableNodeId],
         node: Option<&ExtractedNode>,
         fixed: bool,
         visual: bool,
+        precomputed: Option<(&NodeMap<usize>, &[[f32; 2]])>,
     ) -> (AncestorState, bool) {
         let mut node_dependent = node.is_some_and(is_workspace_resize_handle);
         ancestors.reverse();
@@ -220,7 +256,7 @@ impl UiScene {
                         .and_then(|node| node.parent)
                         .and_then(|parent| self.nodes.get(&parent))
                         .is_some_and(|parent| is_triggered_menu(parent));
-                self.hanging_branch_transform(root)
+                self.hanging_branch_transform_with(root, precomputed)
             }
             _ => AffineTransform::IDENTITY,
         };
@@ -257,23 +293,62 @@ impl UiScene {
         let mut hung = hung.iter().rev().peekable();
         for (index, ancestor) in ancestors.into_iter().enumerate() {
             let reaches = hung.next_if(|id| **id == ancestor.id).is_some();
-            node_dependent |= self.fold_ancestor(
-                &mut fold,
-                ancestor,
-                node,
-                visual,
-                index >= geometry_start,
-                reaches,
-            );
+            if index >= geometry_start {
+                let (layout, geometry_origin) = match precomputed {
+                    Some((node_index, placed_origins)) => {
+                        let [x, y] = node_index
+                            .get(&ancestor.id)
+                            .map_or([ancestor.layout.x, ancestor.layout.y], |&i| {
+                                placed_origins[i]
+                            });
+                        let origin = if record_on_page(ancestor) {
+                            [0.0, 0.0]
+                        } else {
+                            [x, y]
+                        };
+                        (
+                            LayoutBox {
+                                x,
+                                y,
+                                ..ancestor.layout
+                            },
+                            origin,
+                        )
+                    }
+                    None => {
+                        let origin = super::placement::placed_origin_live(
+                            &self.nodes,
+                            self.placement_live,
+                            ancestor,
+                        );
+                        (
+                            origin.into_layout(ancestor),
+                            if record_on_page(ancestor) {
+                                [0.0, 0.0]
+                            } else {
+                                origin
+                            },
+                        )
+                    }
+                };
+                node_dependent |= self.fold_ancestor_at(
+                    &mut fold,
+                    ancestor,
+                    node,
+                    visual,
+                    true,
+                    reaches,
+                    layout,
+                    geometry_origin,
+                    precomputed,
+                );
+            }
         }
         (fold.finish(), node_dependent)
     }
 
-    /// Folds one ancestor, outermost first, into what the chain hands down.
-    /// `geometry` is false above the nearest fixed boundary and `reaches`
-    /// whether the clip chain hangs from this ancestor. Returns whether the
-    /// answer read anything about `node` its siblings do not share.
-    fn fold_ancestor(
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn fold_ancestor_at(
         &self,
         fold: &mut AncestorFold,
         ancestor: &ExtractedNode,
@@ -281,13 +356,13 @@ impl UiScene {
         visual: bool,
         geometry: bool,
         reaches: bool,
+        layout: LayoutBox,
+        geometry_origin: [f32; 2],
+        precomputed: Option<(&NodeMap<usize>, &[[f32; 2]])>,
     ) -> bool {
         if !geometry {
             return false;
         }
-        // Where the ancestor stands now: its clips are cut on the page.
-        let layout = self.placed_layout(ancestor);
-        let geometry_origin = self.paint_origin(ancestor);
         // `blocks_3d` is what the ancestors *above* this one closed, the
         // same question asked of the queried node below — an ancestor's
         // own `perspective` opens a context for its children, not against
@@ -295,16 +370,20 @@ impl UiScene {
         // whole: a node whose `matrix3d` this rule takes away must not go
         // on handing it down, or it paints flat with a rotated inside.
         let local = if visual {
-            self.resolved_page_transform(
+            self.resolved_page_transform_at(
                 ancestor,
+                layout,
                 fold.ctx_3d.blocks_3d,
                 fold.ctx_3d.parent_perspective,
+                precomputed,
             )
         } else {
-            self.logical_page_transform(
+            self.logical_page_transform_at(
                 ancestor,
+                layout,
                 fold.ctx_3d.blocks_3d,
                 fold.ctx_3d.parent_perspective,
+                precomputed,
             )
         };
         // What it hands down is on the page, and so are its clips.
@@ -439,17 +518,33 @@ impl UiScene {
     /// whose clip chain does not simply follow its parent is folded from
     /// scratch. The walk up to the nearest remembered answer is a loop, not
     /// recursion, so it does not grow with the tree's depth.
-    pub(super) fn handed_down(&self, parent: StableNodeId, visual: bool) -> Option<AncestorState> {
-        let mut memo = {
-            let mut scratch = self.rebuild_scratch.lock().ok()?;
-            std::mem::take(&mut scratch.handed_down[usize::from(visual)])
-        };
-        let answer = self.resolve_handed_down(&mut memo, parent, visual);
-        if let Ok(mut scratch) = self.rebuild_scratch.lock()
-            && scratch.active
-        {
-            scratch.handed_down[usize::from(visual)] = memo;
+    pub(super) fn handed_down_mut(
+        &mut self,
+        parent: StableNodeId,
+        visual: bool,
+    ) -> Option<AncestorState> {
+        if !self.rebuild_scratch.active {
+            return None;
         }
+        let mut memo = std::mem::take(&mut self.rebuild_scratch.handed_down[usize::from(visual)]);
+        let answer = self.resolve_handed_down(&mut memo, parent, visual);
+        self.rebuild_scratch.handed_down[usize::from(visual)] = memo;
+        answer
+    }
+
+    #[cfg(test)]
+    pub(super) fn handed_down_with(
+        &self,
+        scratch: &mut RebuildScratch,
+        parent: StableNodeId,
+        visual: bool,
+    ) -> Option<AncestorState> {
+        if !scratch.active {
+            return None;
+        }
+        let mut memo = std::mem::take(&mut scratch.handed_down[usize::from(visual)]);
+        let answer = self.resolve_handed_down(&mut memo, parent, visual);
+        scratch.handed_down[usize::from(visual)] = memo;
         answer
     }
 
@@ -539,7 +634,29 @@ impl UiScene {
                 local_opacity(ancestor)
             };
         }
-        if self.fold_ancestor(&mut fold, ancestor, None, visual, true, true) {
+        let placed_origin =
+            super::placement::placed_origin_live(&self.nodes, self.placement_live, ancestor);
+        let layout = LayoutBox {
+            x: placed_origin[0],
+            y: placed_origin[1],
+            ..ancestor.layout
+        };
+        let geometry_origin = if record_on_page(ancestor) {
+            [0.0, 0.0]
+        } else {
+            placed_origin
+        };
+        if self.fold_ancestor_at(
+            &mut fold,
+            ancestor,
+            None,
+            visual,
+            true,
+            true,
+            layout,
+            geometry_origin,
+            None,
+        ) {
             return None;
         }
         let clips = match inherited {
@@ -553,14 +670,12 @@ impl UiScene {
     /// Whether a rasterized SVG or an icon glyph above `node` already paints
     /// it. While the rebuild pass runs, the walks behind both answers are
     /// remembered per ancestor.
-    pub(super) fn inside_ancestor_glyph(&self, node: &ExtractedNode) -> bool {
+    pub(super) fn inside_ancestor_glyph_mut(&mut self, node: &ExtractedNode) -> bool {
         let Some(parent) = node.parent else {
             return false;
         };
-        if let Ok(mut scratch) = self.rebuild_scratch.lock()
-            && scratch.active
-        {
-            let scratch = &mut *scratch;
+        if self.rebuild_scratch.active {
+            let scratch = &mut self.rebuild_scratch;
             return ancestor_answer(
                 &self.nodes,
                 &mut scratch.in_rasterized_svg,
@@ -592,7 +707,7 @@ impl UiScene {
     }
 }
 
-fn is_workspace_resize_handle(node: &ExtractedNode) -> bool {
+pub(super) fn is_workspace_resize_handle(node: &ExtractedNode) -> bool {
     matches!(
         node.kind.as_ref(),
         NodeKind::Element { tag } if tag == "workspace-resize-handle"
@@ -784,8 +899,21 @@ pub(super) type AncestorStateKey = (
     bool,
 );
 
-/// What a remembered draw-time answer is stamped with. See
-/// [`UiScene::draw_stamp`].
+pub(super) trait IntoLayoutOrigin {
+    fn into_layout(self, base: &ExtractedNode) -> LayoutBox;
+}
+
+impl IntoLayoutOrigin for [f32; 2] {
+    fn into_layout(self, base: &ExtractedNode) -> LayoutBox {
+        LayoutBox {
+            x: self[0],
+            y: self[1],
+            ..base.layout
+        }
+    }
+}
+
+#[allow(dead_code)]
 pub(super) type DrawStamp = (u64, u64);
 
 /// What a node inherits from the chain above it.

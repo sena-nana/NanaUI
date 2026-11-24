@@ -300,7 +300,7 @@ cargo build --profile dist
 | `gpu` | `SceneWgpuPainter`, `HostTexture`, `FrameExchange`, windowless output (primary backend only, precompiled shader archives) |
 | `bundled-fonts` | Embeds Noto Sans SC as the default UI font (~4.2 MiB); without it, text uses system fonts |
 | `view-macro` | The `view!`, `css!` and `stylesheet!` compile-time macros |
-| `components` | Enables `calendar`, `charts`, `controls`, `diff-view`, `dock`, `graph-canvas`, `image-viewer`, `qr-code`, `rich-text`, `terminal` and `vector-boolean` |
+| `components` | Enables `calendar`, `charts`, `controls`, `diff-view`, `dock`, `graph-canvas`, `image-viewer`, `qr-code`, `rich-text` and `terminal` |
 | `wgpu-backends` | Enables all standard cross-platform WGPU backends (`dx12`, `vulkan`, `gles`, `metal`) when `gpu` is active |
 | `runtime-wgsl` | Runtime WGSL shader compilation (`naga` / `wgpu` WGSL) for custom user `MaterialProgram` shaders |
 | `wgpu-interop` | Escape hatch exposing underlying WGPU objects on `GpuContext` and `FrameContext` |
@@ -309,7 +309,6 @@ cargo build --profile dist
 | `http-fetch` | Built-in `ureq` `http(s)://` image/resource fetching (off by default unless enabled or custom `FetchHost`) |
 | `image-codecs-extra` | Extra JPEG, GIF and WebP decoding in `image` (PNG stays available) |
 | `svg` | CPU-side SVG image rasterization (`usvg` / `resvg`; built-in icons render from vector geometry without it) |
-| `vector-boolean` | `i_overlay` path boolean simplification in `custom_paint` (falls back to built-in integer planar sweep-line solver) |
 | `packaged-resources` | `.nrpack` resource pack mounting and `NANA_PACKAGE_VALIDATE` self-check |
 | `full` | Convenience desktop bundle: `bundled-fonts`, `components`, `hosted`, `http-fetch`, `icu`, `image-codecs-extra`, `runtime-wgsl`, `snippet-transforms`, `svg`, `syntax-highlighting`, `wgpu-backends` |
 

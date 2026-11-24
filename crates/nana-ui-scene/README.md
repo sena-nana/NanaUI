@@ -33,8 +33,7 @@ let scene = runtime.scene();
 
 No features are enabled by default (`default = []`).
 
-- `icu`, `calendar`, `charts`, `controls`, `graph-canvas`, `image-viewer`, `rich-text`, and `components`: opt-in features forwarded to `nana-ui-runtime` (`components` and `rich-text` also enable `vector-boolean`).
-- `vector-boolean` (opt-in): enables `i_overlay` polygon boolean simplification in `custom_paint`; without it, stroke/fill/clip/outline operations use the built-in integer planar sweep-line boolean solver (supporting self-intersections, `EvenOdd`/`NonZero` fills, nested holes/islands, clip intersection/difference, strokes, and mitered outlines without linking `i_overlay`).
+- `icu`, `calendar`, `charts`, `controls`, `graph-canvas`, `image-viewer`, `rich-text`, and `components`: opt-in features forwarded to `nana-ui-runtime`.
 - `benchmark`: builds scene benchmarks only.
 
 ## Tests

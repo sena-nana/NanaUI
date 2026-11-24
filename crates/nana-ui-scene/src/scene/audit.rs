@@ -77,21 +77,23 @@ impl UiScene {
                 .all(|held| self.ordered.contains(&held.key)),
             "a retained primitive is filed under a key the order does not hold"
         );
-        let Some(plan) = self.frame_plan.get() else {
+        let Some(plan) = self.derived_frame_plan() else {
             return;
         };
         match self.build_frame_plan() {
             Ok(fresh) => assert!(
                 plan.operations == fresh.operations
                     && plan.preparations == fresh.preparations
-                    && plan.custom_nodes == fresh.custom_nodes,
+                    && plan.custom_nodes == fresh.custom_nodes
+                    && plan.image_urls == fresh.image_urls
+                    && plan.host_texture_slots == fresh.host_texture_slots,
                 "retained frame plan disagrees with a fresh build"
             ),
             // A plan that no longer compiles is reported by `frame_plan`, not here.
             Err(_) => return,
         }
-        if let Some(visibility) = self.visibility.get() {
-            let fresh = VisibilityIndex::new(self, Arc::clone(plan));
+        if let Some(visibility) = self.derived_visibility() {
+            let fresh = VisibilityIndex::new(self, Arc::clone(&plan));
             // A translated index keeps its shifts pending above the leaves:
             // compare what a query reads there.
             let mismatch = if visibility.translated() {

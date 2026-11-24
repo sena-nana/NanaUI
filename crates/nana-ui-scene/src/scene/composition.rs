@@ -10,16 +10,35 @@ pub struct FramePlan {
     pub operations: Arc<[RenderOperation]>,
     pub preparations: Arc<[PrimitiveId]>,
     pub custom_nodes: Arc<[PrimitiveId]>,
+    pub image_urls: Arc<[Arc<str>]>,
+    pub host_texture_slots: Arc<[nana_ui_runtime::TextureSlotName]>,
+}
+
+impl FramePlan {
+    /// Deduplicated, sorted image URLs referenced by surfaces, masks, or borders.
+    pub fn image_urls(&self) -> &[Arc<str>] {
+        &self.image_urls
+    }
+
+    /// Deduplicated, sorted `nana.host-texture` slot names referenced by custom nodes.
+    pub fn host_texture_slots(&self) -> &[nana_ui_runtime::TextureSlotName] {
+        &self.host_texture_slots
+    }
+
+    pub(super) fn summaries_match(&self, scene: &UiScene) -> bool {
+        let (urls, slots) = collect_plan_resources(scene.primitives());
+        self.image_urls == urls && self.host_texture_slots == slots
+    }
 }
 
 impl UiScene {
     pub fn frame_plan(&self) -> Result<Arc<FramePlan>, GraphError> {
-        if let Some(plan) = self.frame_plan.get() {
-            self.validate_plan_resources(plan)?;
-            return Ok(Arc::clone(plan));
+        if let Some(plan) = self.derived_frame_plan() {
+            self.validate_plan_resources(&plan)?;
+            return Ok(plan);
         }
         let plan = self.build_frame_plan()?;
-        let _ = self.frame_plan.set(Arc::clone(&plan));
+        self.set_derived_frame_plan(Arc::clone(&plan));
         Ok(plan)
     }
 
@@ -41,10 +60,13 @@ impl UiScene {
             }
             operations.push(operation);
         }
+        let (image_urls, host_texture_slots) = collect_plan_resources(self.primitives());
         Ok(Arc::new(FramePlan {
             operations: operations.into(),
             preparations: preparations.into(),
             custom_nodes: custom_nodes.into(),
+            image_urls,
+            host_texture_slots,
         }))
     }
 
@@ -274,5 +296,84 @@ impl UiScene {
         flush_custom(&mut graph, &mut pass_id, &mut custom_run)?;
         flush_standard(&mut graph, &mut pass_id, &mut standard)?;
         graph.compile()
+    }
+}
+
+pub(super) fn collect_plan_resources<'a>(
+    primitives: impl Iterator<Item = &'a ScenePrimitive>,
+) -> (Arc<[Arc<str>]>, Arc<[nana_ui_runtime::TextureSlotName]>) {
+    let mut urls: BTreeSet<Arc<str>> = BTreeSet::new();
+    let mut slots: BTreeSet<nana_ui_runtime::TextureSlotName> = BTreeSet::new();
+    for primitive in primitives {
+        match &primitive.kind {
+            ScenePrimitiveKind::Quad { surface, .. }
+            | ScenePrimitiveKind::QuadBatch { surface, .. } => {
+                collect_surface_urls(surface, &mut urls);
+            }
+            ScenePrimitiveKind::Custom { node, mask, .. } => {
+                if let Some(nana_ui_core::MaskImage::Url(url)) = mask {
+                    urls.insert(Arc::from(url.as_str()));
+                }
+                if node.payload.is_none()
+                    && node.renderer.as_ref() == nana_ui_runtime::HOST_TEXTURE_RENDERER
+                {
+                    slots.insert(nana_ui_runtime::TextureSlotName::new(Arc::clone(
+                        &node.resource,
+                    )));
+                }
+            }
+            _ => {}
+        }
+    }
+    (
+        urls.into_iter().collect::<Vec<_>>().into(),
+        slots.into_iter().collect::<Vec<_>>().into(),
+    )
+}
+
+fn collect_surface_urls(surface: &QuadSurfacePaint, urls: &mut BTreeSet<Arc<str>>) {
+    if let Some(image) = surface.background_image.as_ref() {
+        push_background_url(image, urls);
+    }
+    for image in &surface.background_layers {
+        push_background_url(image, urls);
+    }
+    if let Some(image) = surface.content_image.as_ref() {
+        push_background_url(image, urls);
+    }
+    if let Some(nana_ui_core::MaskImage::Url(url)) = surface.mask.as_ref() {
+        urls.insert(Arc::from(url.as_str()));
+    }
+    if let Some(border) = surface.border_image.as_ref() {
+        push_background_url(&border.source, urls);
+    }
+}
+
+fn push_background_url(image: &BackgroundImage, urls: &mut BTreeSet<Arc<str>>) {
+    if let BackgroundImage::Url { url, .. } = image {
+        urls.insert(Arc::from(url.as_str()));
+    }
+}
+
+pub(super) fn primitive_has_summary_resource(kind: &ScenePrimitiveKind) -> bool {
+    match kind {
+        ScenePrimitiveKind::Quad { surface, .. }
+        | ScenePrimitiveKind::QuadBatch { surface, .. } => {
+            let has_url = |img: &BackgroundImage| matches!(img, BackgroundImage::Url { .. });
+            surface.background_image.as_ref().is_some_and(has_url)
+                || surface.background_layers.iter().any(has_url)
+                || surface.content_image.as_ref().is_some_and(has_url)
+                || matches!(surface.mask.as_ref(), Some(nana_ui_core::MaskImage::Url(_)))
+                || surface
+                    .border_image
+                    .as_ref()
+                    .is_some_and(|b| has_url(&b.source))
+        }
+        ScenePrimitiveKind::Custom { node, mask, .. } => {
+            matches!(mask, Some(nana_ui_core::MaskImage::Url(_)))
+                || (node.payload.is_none()
+                    && node.renderer.as_ref() == nana_ui_runtime::HOST_TEXTURE_RENDERER)
+        }
+        _ => false,
     }
 }

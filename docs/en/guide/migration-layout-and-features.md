@@ -46,7 +46,6 @@ To minimize baseline binary size and avoid pulling optional cross-crate dependen
 | `http-fetch` | `nana-ui` (forwards `platform/fetch`) | Off (in `full`) | Built-in `ureq`-based `http(s)://` asset and image fetching | Without a custom `FetchHost`, remote requests are skipped and emit `resource.fetch_unavailable` |
 | `image-codecs-extra` | `nana-ui` | Off (in `full`) | Enables JPEG / GIF / WebP decoding in `image` | Retains core formats such as PNG; unsupported formats emit `resource.image_codec_unavailable` |
 | `svg` | `nana-ui` | Off (in `full`) | CPU-side SVG image rasterization (`nana-svg-raster`) | SVG images are treated as undecodable and emit `resource.image_codec_unavailable`; built-in vector icons do not depend on it |
-| `vector-boolean` | `nana-ui` / `scene` | Off (enabled by `components` / `rich-text` / `full`) | `i_overlay`-backed polygon boolean simplification in `custom_paint` | Uses the built-in integer planar sweep-line boolean solver (handles self-intersecting polygons, `EvenOdd`/`NonZero` fills, nested holes and islands, clip intersection/difference, strokes, and mitered outlines without `i_overlay`) |
 | `fetch` | `nana-ui-platform` | Off (`default = ["clipboard"]`) | `NativeFetchHost` | Compiles only the `FetchHost` trait contract |
 | `full` | `nana-ui` | Off | Convenience desktop bundle (includes the features above plus `bundled-fonts`, `components`, `syntax-highlighting`, `wgpu-backends`, etc.) | Suitable for out-of-the-box desktop apps |
 

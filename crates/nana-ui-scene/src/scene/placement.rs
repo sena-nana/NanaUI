@@ -23,8 +23,9 @@ impl UiScene {
         if !self.placement_live {
             return [node.layout.x, node.layout.y];
         }
-        let mut memo = self.placed_origins.lock().expect("scene placements");
-        placed_origin_in(&self.nodes, &mut memo, self.placement_epoch, node)
+        self.derived_projection()
+            .placed_origin(node.id)
+            .unwrap_or_else(|| placed_origin_uncached(&self.nodes, node))
     }
 
     /// [`Self::placed_origin`] of `id`, for a caller that holds the scene:
@@ -34,13 +35,19 @@ impl UiScene {
         if !self.placement_live {
             return Some([node.layout.x, node.layout.y]);
         }
-        let memo = self.placed_origins.get_mut().expect("scene placements");
-        Some(placed_origin_in(
-            &self.nodes,
-            memo,
-            self.placement_epoch,
-            node,
-        ))
+        let key = self.epochs.derived_key();
+        if let Some(origin) = self
+            .derived
+            .get_mut()
+            .expect("scene derived")
+            .as_ref()
+            .and_then(|d| d.projection.as_ref())
+            .filter(|t| t.key == key)
+            .and_then(|t| t.placed_origin(id))
+        {
+            return Some(origin);
+        }
+        Some(placed_origin_uncached(&self.nodes, node))
     }
 
     /// `node`'s box where it stands now, at its record's size.
@@ -135,47 +142,50 @@ pub(super) fn record_on_page(node: &ExtractedNode) -> bool {
         .is_some_and(|w| w.geometry_on_page)
 }
 
-/// [`UiScene::placed_origin`] against `memo`, stamped with `epoch`.
-fn placed_origin_in(
+/// Uncached `placed_origin` respecting `placement_live`: returns the
+/// extracted `node.layout` origin until the first `ExtractedMove`.
+pub(super) fn placed_origin_live(
     nodes: &SceneNodes,
-    memo: &mut NodeMap<(u64, [f32; 2])>,
-    epoch: u64,
+    placement_live: bool,
     node: &ExtractedNode,
 ) -> [f32; 2] {
+    if !placement_live {
+        [node.layout.x, node.layout.y]
+    } else {
+        placed_origin_uncached(nodes, node)
+    }
+}
+
+/// Iterative [`UiScene::placed_origin`] fallback without shared cache.
+pub(super) fn placed_origin_uncached(nodes: &SceneNodes, node: &ExtractedNode) -> [f32; 2] {
     if is_document(node) {
         return [0.0, 0.0];
     }
-    // The nodes still to place, innermost first.
     let mut chain: Vec<&ExtractedNode> = Vec::new();
     let mut cursor = node;
+    let mut depth = 0usize;
     let mut origin = loop {
-        if let Some(&(stamp, origin)) = memo.get(&cursor.id)
-            && stamp == epoch
-        {
-            break origin;
+        if depth >= MAX_ANCESTOR_DEPTH {
+            break [cursor.local_layout.x, cursor.local_layout.y];
         }
+        depth += 1;
         let frame = match cursor.layout_frame {
             nana_ui_runtime::LayoutFrame::Parent => cursor.parent,
             nana_ui_runtime::LayoutFrame::Block(block) => Some(block),
             nana_ui_runtime::LayoutFrame::Page => None,
         };
-        let top = match frame {
-            None => Some([cursor.local_layout.x, cursor.local_layout.y]),
+        match frame {
+            None => break [cursor.local_layout.x, cursor.local_layout.y],
             Some(frame) => match nodes.get(&frame) {
                 Some(frame) if is_document(frame) => {
-                    Some([cursor.local_layout.x, cursor.local_layout.y])
+                    break [cursor.local_layout.x, cursor.local_layout.y];
                 }
                 Some(frame) => {
                     chain.push(cursor);
                     cursor = frame;
-                    None
                 }
-                None => Some([cursor.layout.x, cursor.layout.y]),
+                None => break [cursor.layout.x, cursor.layout.y],
             },
-        };
-        if let Some(top) = top {
-            memo.insert(cursor.id, (epoch, top));
-            break top;
         }
     };
     for node in chain.into_iter().rev() {
@@ -183,11 +193,10 @@ fn placed_origin_in(
             origin[0] + node.local_layout.x,
             origin[1] + node.local_layout.y,
         ];
-        memo.insert(node.id, (epoch, origin));
     }
     origin
 }
 
-fn is_document(node: &ExtractedNode) -> bool {
+pub(super) fn is_document(node: &ExtractedNode) -> bool {
     matches!(node.kind.as_ref(), nana_ui_runtime::NodeKind::Document)
 }

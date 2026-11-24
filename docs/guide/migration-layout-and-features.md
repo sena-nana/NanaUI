@@ -46,7 +46,6 @@
 | `http-fetch` | `nana-ui`（转发 `platform/fetch`） | 关（含于 `full`） | 内置基于 `ureq` 的 `http(s)://` 资源与图片拉取 | 未提供自定义 `FetchHost` 时跳过远程请求并发出 `resource.fetch_unavailable` |
 | `image-codecs-extra` | `nana-ui` | 关（含于 `full`） | 开启 `image` 的 JPEG / GIF / WebP 解码 | 仅保留 PNG 等基础格式，遇其余格式时发出 `resource.image_codec_unavailable` |
 | `svg` | `nana-ui` | 关（含于 `full`） | CPU 端 SVG 图片光栅化（`nana-svg-raster`） | SVG 图片按不可解码处理并发出 `resource.image_codec_unavailable`；内置矢量图标不依赖它 |
-| `vector-boolean` | `nana-ui` / `scene` | 关（`components`/`rich-text`/`full` 开启） | `custom_paint` 中基于 `i_overlay` 的路径布尔化简 | 使用内置整数平面扫描线布尔回退求解器（支持自交多边形、`EvenOdd`/`NonZero` 填充、嵌套孔洞与孤岛、裁剪交/差集、描边与 miter 轮廓化简），不链接 `i_overlay` |
 | `fetch` | `nana-ui-platform` | 关（`default = ["clipboard"]`） | `NativeFetchHost` | 只编译 `FetchHost` 合同类型 |
 | `full` | `nana-ui` | 关 | 桌面全量集合（含上述特性与 `bundled-fonts`、`components`、`syntax-highlighting`、`wgpu-backends` 等） | 适合开箱即用的桌面应用 |
 

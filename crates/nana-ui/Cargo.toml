@@ -22,7 +22,6 @@ default = []
 wgpu-backends = ["wgpu?/dx12", "wgpu?/gles", "wgpu?/metal", "wgpu?/vulkan"]
 http-fetch = ["nana-ui-platform/fetch"]
 qr-code = ["nana-ui-runtime/qr-code"]
-vector-boolean = ["nana-ui-scene/vector-boolean"]
 image-codecs-extra = ["image?/jpeg", "image?/gif", "image?/webp"]
 full = [
     "bundled-fonts",
@@ -65,7 +64,6 @@ components = [
     "qr-code",
     "rich-text",
     "terminal",
-    "vector-boolean",
 ]
 calendar = ["nana-ui-runtime/calendar", "nana-ui-scene/calendar"]
 charts = ["dep:nana-ui-charts", "nana-ui-runtime/charts", "nana-ui-scene/charts"]

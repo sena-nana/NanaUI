@@ -48,9 +48,6 @@ FAMILIES = {
     ),
     "rich-text": missing_type("NativeMarkdown", ("pulldown-cmark", "nana-ui-diagram")),
     "terminal": missing_type("TerminalView"),
-    # Path boolean ops in the scene; without it the scene falls back to its own
-    # contour code, so there is no API to miss, only the dependency.
-    "vector-boolean": Family(None, None, None, ("i_overlay",)),
 }
 # Optional dependencies of features outside `components` that a bare
 # `nana-ui` must not link either.
@@ -101,7 +98,7 @@ def main():
         raise SystemExit("\n".join(problems))
     for family in [None, *FAMILIES, "components"]:
         for package, test in PACKAGES:
-            # A family only some layers define (vector-boolean has no Runtime feature).
+            # A family only some layers define.
             if family and family not in features[package]:
                 continue
             family_features = ["--features", family] if family else []

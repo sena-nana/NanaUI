@@ -3,17 +3,14 @@ use super::*;
 
 #[derive(Debug, Clone)]
 pub(super) struct DrawAttributes {
-    epoch: u64,
-    /// The placement epoch [`Self::origin`] was read at.
-    placement: u64,
-    delta: AffineTransform,
+    pub(super) delta: AffineTransform,
     /// The node's projection its primitives were built against, and the
     /// current one, where they differ: a transform built as the former is
     /// drawn as the latter itself, not rebased through an inverse.
-    rebased: Option<(AffineTransform, AffineTransform)>,
-    parent_clips: Arc<[ClipRegion]>,
+    pub(super) rebased: Option<(AffineTransform, AffineTransform)>,
+    pub(super) parent_clips: Arc<[ClipRegion]>,
     /// Where the node's geometry is drawn from ([`UiScene::paint_origin`]).
-    origin: [f32; 2],
+    pub(super) origin: [f32; 2],
 }
 
 impl DrawAttributes {
@@ -24,7 +21,7 @@ impl DrawAttributes {
     /// snaps to the grid -- into a near-identity scale once an ancestor
     /// stops turning. Anything else (a painter's local transform on top) is
     /// rebased by the delta.
-    fn rebase(&self, transform: AffineTransform) -> AffineTransform {
+    pub(super) fn rebase(&self, transform: AffineTransform) -> AffineTransform {
         match self.rebased {
             Some((base, current)) if transform == base => current,
             _ => self.delta.then(transform),
@@ -33,6 +30,7 @@ impl DrawAttributes {
 }
 
 /// What a placed clip chain was put together from.
+#[allow(dead_code)]
 pub(super) type PlacedClipStamp = (u64, u64, u64);
 
 /// A retained primitive with the current inherited transform and clip chain.
@@ -99,7 +97,7 @@ impl SceneDraw<'_> {
 /// as a real move feeds it through [`inverse`] and the visibility audit then
 /// aborts on the amplified bound. A few hundredths of a pixel is not a move a
 /// cull can act on. A degree of rotation, or a pixel of translation, still is.
-fn same_drawn_transform(current: AffineTransform, base: AffineTransform) -> bool {
+pub(super) fn same_drawn_transform(current: AffineTransform, base: AffineTransform) -> bool {
     if current == base {
         return true;
     }
@@ -139,7 +137,11 @@ impl UiScene {
     /// projective bounds return `None`, requiring conservative composition.
     pub fn draw_node_bounds(&self, id: StableNodeId) -> Option<SceneRect> {
         let node = self.nodes.get(&id)?;
-        let (parent, _, _, ctx_3d) = self.draw_ancestor_state(node);
+        let tables = self.derived_projection();
+        let (parent, _, _, ctx_3d) = tables
+            .draw_parent_state(id)
+            .cloned()
+            .unwrap_or_else(|| self.draw_ancestor_state(node));
         let transform = parent.then(self.resolved_local_transform(
             node,
             ctx_3d.blocks_3d,
@@ -152,7 +154,11 @@ impl UiScene {
     /// ([`Self::node_bounds`]): any rectangle of its record or primitives.
     pub fn draw_node_rect(&self, id: StableNodeId, rect: SceneRect) -> Option<SceneRect> {
         let node = self.nodes.get(&id)?;
-        let (parent, _, _, ctx_3d) = self.draw_ancestor_state(node);
+        let tables = self.derived_projection();
+        let (parent, _, _, ctx_3d) = tables
+            .draw_parent_state(id)
+            .cloned()
+            .unwrap_or_else(|| self.draw_ancestor_state(node));
         let transform = parent.then(self.resolved_local_transform(
             node,
             ctx_3d.blocks_3d,
@@ -182,60 +188,13 @@ impl UiScene {
     /// frame. `None` when the node behind them is gone, which is the one case
     /// [`Self::draw_primitive`] reports as a missing draw.
     fn node_projection(&self, node: StableNodeId) -> Option<NodeProjection> {
-        let Some(&(epoch, base_transform, parent_clip_count)) = self.projections.get(&node) else {
+        let Some(&(epoch, _, parent_clip_count)) = self.projections.get(&node) else {
             return Some(NodeProjection::Retained);
         };
-        if epoch == self.attribute_epoch {
+        if epoch == self.epochs.attribute {
             return Some(NodeProjection::Retained);
         }
-        let cached = self
-            .draw_attributes
-            .lock()
-            .expect("scene attributes")
-            .get(&node)
-            .filter(|entry| {
-                entry.epoch == self.attribute_epoch && entry.placement == self.placement_epoch
-            })
-            .cloned();
-        let attributes = if let Some(attributes) = cached {
-            attributes
-        } else {
-            let extracted = self.nodes.get(&node)?;
-            let (parent, _, parent_clips, ctx_3d) = self.draw_ancestor_state(extracted);
-            let current = parent.then(self.resolved_local_transform(
-                extracted,
-                ctx_3d.blocks_3d,
-                ctx_3d.parent_perspective,
-            ));
-            // A node that did not move owes no rebasing. `inverse` divides by
-            // the determinant, so anything but a translation round-trips an
-            // ulp off the identity, and a base that was merely recomputed can
-            // already miss bitwise equality by a few hundredths of a pixel.
-            // At window scale that is more than the visibility audit's ULP
-            // budget (`960.0` against `959.9986`), and it moves every retained
-            // bound. An epoch bump on its own — a colour change on a parent
-            // is enough — must not.
-            let (delta, rebased) = if same_drawn_transform(current, base_transform) {
-                (AffineTransform::IDENTITY, None)
-            } else {
-                inverse(base_transform).map_or((AffineTransform::IDENTITY, None), |inverse| {
-                    (current.then(inverse), Some((base_transform, current)))
-                })
-            };
-            let attributes = DrawAttributes {
-                epoch: self.attribute_epoch,
-                placement: self.placement_epoch,
-                delta,
-                rebased,
-                parent_clips,
-                origin: self.paint_origin(extracted),
-            };
-            self.draw_attributes
-                .lock()
-                .expect("scene attributes")
-                .insert(node, attributes.clone());
-            attributes
-        };
+        let attributes = self.derived_projection().draw_attributes(node)?.clone();
         Some(NodeProjection::Rebased {
             attributes,
             parent_clip_count,
@@ -313,7 +272,7 @@ impl UiScene {
     fn placed_own_clips(
         &self,
         primitive: &ScenePrimitive,
-        revision: u64,
+        _revision: u64,
         inherited: &Arc<[ClipRegion]>,
         kept: usize,
         own_from: usize,
@@ -331,14 +290,7 @@ impl UiScene {
         if origin == [0.0, 0.0] && identity && Arc::ptr_eq(inherited, &primitive.clips) {
             return Arc::clone(&primitive.clips);
         }
-        let stamp = (revision, self.attribute_epoch, self.placement_epoch);
-        if let Some((held, clips)) = self
-            .placed_clips
-            .lock()
-            .expect("scene placed clips")
-            .get(&primitive.id)
-            && *held == stamp
-        {
+        if let Some(clips) = self.derived_projection().placed_clips.get(&primitive.id) {
             return Arc::clone(clips);
         }
         let mut clips = inherited[..kept].to_vec();
@@ -349,12 +301,7 @@ impl UiScene {
             clip.bounds = super::offset_rect(clip.bounds, origin);
             clip
         }));
-        let clips: Arc<[ClipRegion]> = clips.into();
-        self.placed_clips
-            .lock()
-            .expect("scene placed clips")
-            .insert(primitive.id, (stamp, Arc::clone(&clips)));
-        clips
+        clips.into()
     }
 
     /// [`Self::draw_primitive`]'s transform alone, for a primitive already in

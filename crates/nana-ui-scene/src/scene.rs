@@ -2,7 +2,6 @@ mod attributes;
 mod composition;
 mod compositor;
 pub use attributes::SceneDraw;
-use attributes::{DrawAttributes, PlacedClipStamp};
 use compositor::CompositorRegistry;
 pub use compositor::{
     CompositorLayer, CompositorLayerId, CompositorLayerKind, CompositorMotionBinding,
@@ -19,7 +18,7 @@ mod placement;
 use placement::{offset_rect, record_on_page};
 mod primitives;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 #[cfg(test)]
 use nana_ui_core::DrawerSide;
@@ -43,6 +42,7 @@ mod ancestors;
 mod audit;
 mod component_text;
 mod delta;
+mod derived;
 mod geometry;
 mod groups;
 mod kinds;
@@ -58,6 +58,7 @@ use ancestors::*;
 use audit::*;
 use component_text::*;
 use delta::*;
+use derived::*;
 use geometry::*;
 use groups::*;
 use paint_order::*;
@@ -103,10 +104,8 @@ struct RetainedPrimitive {
 
 #[derive(Debug)]
 pub struct UiScene {
-    frame_plan: OnceLock<Arc<FramePlan>>,
-    visibility: OnceLock<VisibilityIndex>,
-    extended_color: OnceLock<bool>,
-    attribute_epoch: u64,
+    derived: std::sync::Mutex<Option<Arc<SceneDerived>>>,
+    epochs: SceneEpochs,
     projections: NodeMap<(u64, AffineTransform, usize)>,
     /// Projections that cannot be adjusted by an inverse delta. Usually empty;
     /// ordinary scrolling must not scan every retained descendant.
@@ -135,28 +134,8 @@ pub struct UiScene {
     /// Nodes measured from a frame other than their parent, or sticking to
     /// a scroller: what a move of a box above them does not carry along.
     unfollowing: NodeSet,
-    /// Bumped whenever a record's local box or frame may have changed;
-    /// stamps [`Self::placed_origins`].
-    placement_epoch: u64,
-    /// Where each queried node's box stands on the page now, summed down its
-    /// frame chain ([`UiScene::placed_origin`]), at a placement epoch.
-    placed_origins: std::sync::Mutex<NodeMap<(u64, [f32; 2])>>,
-    draw_attributes: std::sync::Mutex<NodeMap<DrawAttributes>>,
-    /// The clip chains drawn primitives are cut by, their own clips put at
-    /// their node's origin ([`UiScene::draw_primitive`]), each stamped with
-    /// what it was put together from. Emptied by every delta that changes
-    /// the scene.
-    placed_clips: std::sync::Mutex<PlacedClipCache>,
-    /// Dest groups per node, stamped with the scene instance they were read
-    /// at. See [`UiScene::opacity_groups`].
-    opacity_group_cache: std::sync::Mutex<OpacityGroupCache>,
-    /// Ancestor compositor-layer opacity factors, stamped with the scene
-    /// instance and the attribute epoch. See
-    /// [`UiScene::compositor_paint_opacity`].
-    layer_factor_cache: std::sync::Mutex<LayerFactorCache>,
-    /// What the primitive-rebuild pass would otherwise recompute for every
-    /// node it touches. See [`RebuildScratch`].
-    rebuild_scratch: std::sync::Mutex<RebuildScratch>,
+    /// Scratch reused strictly during `&mut self` primitive rebuild passes.
+    rebuild_scratch: RebuildScratch,
     nodes: SceneNodes,
     node_order: NodeMap<usize>,
     primitives: BTreeMap<PrimitiveId, RetainedPrimitive>,
@@ -170,6 +149,9 @@ pub struct UiScene {
     /// Asking afterwards meant snapshotting every touched node's primitive
     /// list and diffing it, which is a range scan and an allocation per node.
     structure_changed: bool,
+    /// Whether an image URL or host-texture slot summary on `FramePlan` may
+    /// have changed in place across rebuilt primitives.
+    frame_plan_resources_changed: bool,
     /// An extraction changed retained geometry while compositor layers may
     /// still be presenting the previous projection. The compositor pass
     /// clears this after rebasing the visibility index for the current layer.
@@ -224,10 +206,8 @@ pub struct UiScene {
 impl Default for UiScene {
     fn default() -> Self {
         Self {
-            frame_plan: OnceLock::new(),
-            visibility: OnceLock::new(),
-            extended_color: OnceLock::new(),
-            attribute_epoch: 0,
+            derived: std::sync::Mutex::new(None),
+            epochs: SceneEpochs::default(),
             projections: NodeMap::default(),
             unadjustable_projections: NodeSet::default(),
             sticky_nodes: nana_ui_runtime::StickyDependencies::default(),
@@ -236,19 +216,14 @@ impl Default for UiScene {
             origin_bound: NodeSet::default(),
             offset_bound: NodeSet::default(),
             unfollowing: NodeSet::default(),
-            placement_epoch: 0,
-            placed_origins: std::sync::Mutex::new(NodeMap::default()),
-            draw_attributes: std::sync::Mutex::new(NodeMap::default()),
-            placed_clips: std::sync::Mutex::new(HashMap::new()),
-            opacity_group_cache: std::sync::Mutex::new(OpacityGroupCache::default()),
-            layer_factor_cache: std::sync::Mutex::new(LayerFactorCache::default()),
-            rebuild_scratch: std::sync::Mutex::new(RebuildScratch::default()),
+            rebuild_scratch: RebuildScratch::default(),
             nodes: SceneNodes::default(),
             node_order: NodeMap::default(),
             primitives: BTreeMap::new(),
             ordered: BTreeSet::new(),
             build: next_primitive_revision(),
             structure_changed: false,
+            frame_plan_resources_changed: false,
             compositor_projection_dirty: false,
             compositor: CompositorRegistry::default(),
             custom_paint: NodeMap::default(),
@@ -269,10 +244,8 @@ impl Default for UiScene {
 impl Clone for UiScene {
     fn clone(&self) -> Self {
         Self {
-            frame_plan: self.frame_plan.clone(),
-            visibility: self.visibility.clone(),
-            extended_color: self.extended_color.clone(),
-            attribute_epoch: self.attribute_epoch,
+            derived: std::sync::Mutex::new(self.derived.lock().expect("scene derived").clone()),
+            epochs: self.epochs,
             projections: self.projections.clone(),
             unadjustable_projections: self.unadjustable_projections.clone(),
             sticky_nodes: self.sticky_nodes.clone(),
@@ -281,31 +254,14 @@ impl Clone for UiScene {
             origin_bound: self.origin_bound.clone(),
             offset_bound: self.offset_bound.clone(),
             unfollowing: self.unfollowing.clone(),
-            placement_epoch: self.placement_epoch,
-            placed_origins: std::sync::Mutex::new(
-                self.placed_origins
-                    .lock()
-                    .expect("scene placements")
-                    .clone(),
-            ),
-            draw_attributes: std::sync::Mutex::new(
-                self.draw_attributes
-                    .lock()
-                    .expect("scene attributes")
-                    .clone(),
-            ),
-            placed_clips: std::sync::Mutex::new(HashMap::new()),
-            // Stamped with the instance they were read at, and a clone is a
-            // new instance, so carrying them over would only be work.
-            opacity_group_cache: std::sync::Mutex::new(OpacityGroupCache::default()),
-            layer_factor_cache: std::sync::Mutex::new(LayerFactorCache::default()),
-            rebuild_scratch: std::sync::Mutex::new(RebuildScratch::default()),
+            rebuild_scratch: RebuildScratch::default(),
             nodes: self.nodes.clone(),
             node_order: self.node_order.clone(),
             primitives: self.primitives.clone(),
             ordered: self.ordered.clone(),
             build: self.build,
             structure_changed: self.structure_changed,
+            frame_plan_resources_changed: self.frame_plan_resources_changed,
             compositor_projection_dirty: self.compositor_projection_dirty,
             compositor: self.compositor.clone(),
             custom_paint: self.custom_paint.clone(),
@@ -357,7 +313,7 @@ impl UiScene {
     /// geometry into a platform compositor skip the scan entirely rather than
     /// rebuilding the same answer every frame.
     pub const fn projection_revision(&self) -> (u64, u64) {
-        (self.instance, self.attribute_epoch)
+        (self.instance, self.epochs.attribute)
     }
 
     /// How every rounded corner in this scene is shaped. Primitives carry
@@ -482,9 +438,7 @@ impl UiScene {
         // Anyone keeping a resolved copy of this primitive keys it on the
         // rebuild that wrote it, and this is a write.
         held.build = build;
-        self.frame_plan.take();
-        self.visibility.take();
-        self.extended_color.take();
+        self.invalidate_derived_all();
         self.instance = next_scene_instance();
         true
     }
@@ -495,41 +449,34 @@ impl UiScene {
     /// hardware `[0, 1]` clamping. Cached across frames until a scene delta
     /// modifies or removes primitives.
     pub fn has_extended_color(&self) -> bool {
-        *self.extended_color.get_or_init(|| {
-            self.primitives
-                .values()
-                .any(|held| held.primitive.kind.has_extended_color())
-                || self.nodes.values().any(|node| {
-                    let paint = &node.source_style.layout.paint;
-                    node.style.paint_colors.has_extended_srgb()
-                        || paint
-                            .filter
-                            .as_ref()
-                            .is_some_and(kinds::color_filter_has_extended_color)
-                        || paint
-                            .backdrop_filter
-                            .as_ref()
-                            .is_some_and(|bf| bf.saturate > 1.0 + 1.0e-3)
-                        || paint.box_shadows.iter().any(|s| {
-                            s.paint_color
-                                .is_some_and(nana_ui_core::PaintColor::is_extended_srgb)
-                        })
-                })
-                || self.compositor.presents_extended_filter()
-        })
+        if let Some(extended) = self.derived_extended_color() {
+            return extended;
+        }
+        let extended = self
+            .primitives
+            .values()
+            .any(|held| held.primitive.kind.has_extended_color())
+            || self.nodes.values().any(|node| {
+                let paint = &node.source_style.layout.paint;
+                node.style.paint_colors.has_extended_srgb()
+                    || paint
+                        .filter
+                        .as_ref()
+                        .is_some_and(kinds::color_filter_has_extended_color)
+                    || paint
+                        .backdrop_filter
+                        .as_ref()
+                        .is_some_and(|bf| bf.saturate > 1.0 + 1.0e-3)
+                    || paint.box_shadows.iter().any(|s| {
+                        s.paint_color
+                            .is_some_and(nana_ui_core::PaintColor::is_extended_srgb)
+                    })
+            })
+            || self.compositor.presents_extended_filter();
+        self.set_derived_extended_color(extended);
+        extended
     }
 }
-
-/// Each drawn primitive's clip chain, stamped with what it was put together
-/// from.
-type PlacedClipCache = HashMap<PrimitiveId, (PlacedClipStamp, Arc<[ClipRegion]>)>;
-
-/// Dest groups per visual node, stamped with scene and presentation projection.
-type OpacityGroupCache = HashMap<VisualNode, (DrawStamp, Arc<[OpacityGroup]>)>;
-
-/// Ancestor layer factors, stamped with the scene instance and the attribute
-/// epoch.
-type LayerFactorCache = HashMap<VisualNode, ((u64, u64), f32)>;
 
 /// The scene's nodes.
 ///

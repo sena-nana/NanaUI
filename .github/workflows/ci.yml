@@ -334,7 +334,7 @@ jobs:
             ulimit -c unlimited || true
           fi
           cargo test -p nana-ui --test ui_gpu --features hosted,components,wgpu-interop --locked precompiled_without_runtime_wgsl -- --test-threads=1
-      - name: Check and test nana-ui-scene without vector-boolean
+      - name: Check and test nana-ui-scene without default features
         run: |
           cargo clippy -p nana-ui-scene --all-targets --no-default-features --locked --no-deps -- -D warnings
           cargo test -p nana-ui-scene --lib --no-default-features --locked

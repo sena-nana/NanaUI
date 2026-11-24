@@ -830,10 +830,14 @@ impl UiScene {
         viewport: SceneRect,
     ) -> Result<Vec<RenderOperation>, GraphError> {
         let plan = self.frame_plan()?;
-        Ok(self
-            .visibility
-            .get_or_init(|| VisibilityIndex::new(self, plan))
-            .visible(viewport))
+        if let Some(visibility) = self.derived_visibility() {
+            return Ok(visibility.visible(viewport));
+        }
+        let _ = self.derived_projection();
+        let visibility = VisibilityIndex::new(self, plan);
+        let visible = visibility.visible(viewport);
+        self.set_derived_visibility(visibility);
+        Ok(visible)
     }
 }
 

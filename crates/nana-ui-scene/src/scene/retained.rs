@@ -45,6 +45,8 @@ impl UiScene {
             if let Some(held) = self.primitives.remove(&slot) {
                 self.ordered.remove(&held.key);
                 self.structure_changed = true;
+                self.frame_plan_resources_changed |=
+                    super::composition::primitive_has_summary_resource(&held.primitive.kind);
             }
         }
     }
@@ -74,7 +76,11 @@ impl UiScene {
     }
 
     pub(super) fn insert_primitive(&mut self, primitive: ScenePrimitive) {
-        let key = self.scene_order_key(
+        let key = paint_order::scene_order_key(
+            &self.nodes,
+            &self.node_order,
+            &self.custom_paint,
+            &mut self.rebuild_scratch,
             &primitive,
             self.primitives
                 .get(&primitive.id)
@@ -97,6 +103,9 @@ impl UiScene {
             // the slot itself stays.
             self.structure_changed |=
                 Self::custom_binding(&held.primitive.kind) != Self::custom_binding(&primitive.kind);
+            self.frame_plan_resources_changed |=
+                super::composition::primitive_has_summary_resource(&held.primitive.kind)
+                    || super::composition::primitive_has_summary_resource(&primitive.kind);
             // A painter moving `draw_default()` to the other side of the
             // children re-keys the same slots with nothing else changing: the
             // plan has to hear it (Issue #217).
@@ -115,6 +124,8 @@ impl UiScene {
             return;
         }
         self.structure_changed = true;
+        self.frame_plan_resources_changed |=
+            super::composition::primitive_has_summary_resource(&primitive.kind);
         self.primitives.insert(
             primitive.id,
             RetainedPrimitive {

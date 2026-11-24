@@ -3,6 +3,7 @@
 //! [`OpacityGroup`] / [`FilterGroup`] stay dest-isolation groups. They are not
 //! renamed into this type. Layout-class properties (width/height) never promote.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use nana_ui_core::motion::{
@@ -144,7 +145,6 @@ pub(super) struct CompositorRegistry {
     /// has finished and holds its last value, or is paused, samples the same
     /// at every later clock, so its layer needs no further frames.
     motion_live: bool,
-    presentation_epoch: u64,
     surface_generation: u64,
     last_promoted: usize,
     last_demoted: usize,
@@ -331,7 +331,7 @@ impl UiScene {
     /// Cache key fragment for painters: presentation may change without
     /// [`Self::instance_id`].
     pub fn presentation_epoch(&self) -> u64 {
-        self.compositor.presentation_epoch
+        self.epochs.presentation
     }
 
     pub fn surface_generation(&self) -> u64 {
@@ -386,7 +386,7 @@ impl UiScene {
         for layer in self.compositor.layers.values_mut() {
             layer.surface_generation = generation;
         }
-        self.compositor.presentation_epoch = self.compositor.presentation_epoch.wrapping_add(1);
+        self.epochs.presentation = self.epochs.presentation.wrapping_add(1);
     }
 
     /// Bind compositor overlays from B's presentation store. Does not rebuild
@@ -420,7 +420,7 @@ impl UiScene {
             .any(|until| until.is_some_and(ended))
             || self.gpu_payload_live.values().any(|until| ended(*until))
         {
-            self.compositor.presentation_epoch = self.compositor.presentation_epoch.wrapping_add(1);
+            self.epochs.presentation = self.epochs.presentation.wrapping_add(1);
         }
         self.present_inline_objects(now);
         self.compositor.last_promoted = 0;
@@ -648,10 +648,11 @@ impl UiScene {
             )
             .copied()
             .collect();
+        let mut carried = self.take_derived().unwrap_or_default();
         if !changed_groups.is_empty() {
             self.nodes.opacity_motion = opacity_groups;
             self.nodes.filter_motion = filter_groups;
-            self.attribute_epoch = self.attribute_epoch.wrapping_add(1);
+            self.epochs.attribute = self.epochs.attribute.wrapping_add(1);
             let mut rebuild = NodeSet::default();
             let mut pending = changed_groups;
             while let Some(id) = pending.pop() {
@@ -661,20 +662,30 @@ impl UiScene {
                     pending.extend(node.children.iter().copied());
                 }
             }
-            self.rebuild_scratch
-                .lock()
-                .expect("scene projection")
-                .begin();
+            self.rebuild_scratch.begin();
             for id in rebuild {
                 self.rebuild_node_primitives(id);
             }
-            self.rebuild_scratch.lock().expect("scene projection").end();
+            self.rebuild_scratch.end();
             self.sort_primitives();
-            self.frame_plan.take();
-            if self.visibility.take().is_some()
-                && let Ok(plan) = self.frame_plan()
-            {
-                let _ = self.visibility.set(super::VisibilityIndex::new(self, plan));
+            carried.frame_plan = None;
+            if let Some(old_vis) = carried.visibility.take() {
+                let _ = old_vis;
+                if let Ok(plan) = self.build_frame_plan() {
+                    carried.frame_plan = Some(Arc::clone(&plan));
+                    carried.projection = None;
+                    let ext = carried.extended_color;
+                    self.store_derived(super::derived::SceneDerived {
+                        projection: None,
+                        frame_plan: Some(Arc::clone(&plan)),
+                        visibility: None,
+                        extended_color: ext,
+                    });
+                    let _ = self.derived_projection();
+                    let vis = super::VisibilityIndex::new(self, plan);
+                    self.set_derived_visibility(vis);
+                    carried = self.take_derived().unwrap_or_default();
+                }
             }
             changed = true;
         }
@@ -695,20 +706,28 @@ impl UiScene {
         }
 
         if changed {
-            self.attribute_epoch = self.attribute_epoch.wrapping_add(1);
-            self.compositor.presentation_epoch = self.compositor.presentation_epoch.wrapping_add(1);
+            self.epochs.attribute = self.epochs.attribute.wrapping_add(1);
+            self.epochs.presentation = self.epochs.presentation.wrapping_add(1);
+            carried.projection = None;
         }
         if extended_before != self.compositor.presents_extended_filter() {
-            self.extended_color.take();
+            carried.extended_color = None;
         }
         // Opacity-only compositor frames keep the visibility index hot;
         // projection or topology changes re-derive its retained bounds.
-        if (needs_bounds_refresh
-            || (self.compositor_projection_dirty && self.compositor.has_presentation()))
-            && let Some(mut visibility) = self.visibility.take()
+        if needs_bounds_refresh
+            || (self.compositor_projection_dirty && self.compositor.has_presentation())
         {
-            visibility.refresh_bounds(self);
-            let _ = self.visibility.set(visibility);
+            if let Some(mut visibility) = carried.visibility.take() {
+                carried.projection = None;
+                self.store_derived(carried);
+                visibility.refresh_bounds(self);
+                self.set_derived_visibility(visibility);
+            } else {
+                self.store_derived(carried);
+            }
+        } else {
+            self.store_derived(carried);
         }
         self.compositor_projection_dirty = false;
         #[cfg(debug_assertions)]
@@ -727,18 +746,6 @@ impl UiScene {
         self.compositor.pending.remove(&id);
         self.compositor.phases.remove(&id);
         self.compositor.requested.remove(&id);
-        let factor_cache = self
-            .layer_factor_cache
-            .get_mut()
-            .expect("scene compositor factors");
-        if !factor_cache.is_empty() {
-            if self.compositor.layers.is_empty() {
-                factor_cache.clear();
-            } else {
-                factor_cache.remove(&super::VisualNode::Node(id));
-                factor_cache.remove(&super::VisualNode::Overlay(id));
-            }
-        }
     }
 
     pub(super) fn invalidate_compositor_cache(&mut self, id: StableNodeId) {
@@ -771,6 +778,22 @@ impl UiScene {
         self.resolved_page_transform(node, block_3d, parent_perspective)
     }
 
+    pub(super) fn resolved_local_transform_at(
+        &self,
+        node: &ExtractedNode,
+        placed_origin: [f32; 2],
+        block_3d: bool,
+        parent_perspective: Option<nana_ui_core::ParentPerspective>,
+        precomputed: Option<(&NodeMap<usize>, &[[f32; 2]])>,
+    ) -> AffineTransform {
+        let placed = nana_ui_runtime::LayoutBox {
+            x: placed_origin[0],
+            y: placed_origin[1],
+            ..node.layout
+        };
+        self.resolved_page_transform_at(node, placed, block_3d, parent_perspective, precomputed)
+    }
+
     /// `node`'s own presented transform on the page, as its children are
     /// handed it: about where its box stands now.
     pub(super) fn resolved_page_transform(
@@ -779,13 +802,35 @@ impl UiScene {
         block_3d: bool,
         parent_perspective: Option<nana_ui_core::ParentPerspective>,
     ) -> AffineTransform {
+        self.resolved_page_transform_at(
+            node,
+            self.placed_layout(node),
+            block_3d,
+            parent_perspective,
+            None,
+        )
+    }
+
+    pub(super) fn resolved_page_transform_at(
+        &self,
+        node: &ExtractedNode,
+        placed: nana_ui_runtime::LayoutBox,
+        block_3d: bool,
+        parent_perspective: Option<nana_ui_core::ParentPerspective>,
+        precomputed: Option<(&NodeMap<usize>, &[[f32; 2]])>,
+    ) -> AffineTransform {
         // A closed 3D context refuses this node's transform, and a layer does
         // not reopen it. `layer_snapshot` cannot see the rule — it is handed
         // one node, and the answer is about the ancestors above it — so the
         // refusal is made here too, or promoting a layer (an opacity fade is
         // enough) hands back the projection the ancestor walk denied.
         if block_3d && node.source_style.layout.transforms.transform_3d.is_some() {
-            return self.with_sticky_translation(node, AffineTransform::IDENTITY);
+            return self.with_sticky_translation_at(
+                node,
+                placed,
+                AffineTransform::IDENTITY,
+                precomputed,
+            );
         }
         // A triggered menu's presentation moves its hanging surface, not its
         // trigger: see `hanging_transform`.
@@ -796,12 +841,12 @@ impl UiScene {
             .unwrap_or_else(|| {
                 node_scene_transform(
                     node.source_style.layout.as_ref(),
-                    self.placed_layout(node),
+                    placed,
                     block_3d,
                     parent_perspective,
                 )
             });
-        self.with_sticky_translation(node, transform)
+        self.with_sticky_translation_at(node, placed, transform, precomputed)
     }
 
     /// What a triggered menu's presentation does to its hanging surface and
@@ -809,32 +854,63 @@ impl UiScene {
     /// about the surface's pivot (`WidgetPaintOutput::presentation_pivot`).
     /// `None` for any other node, or while the menu has no transform overlay.
     pub(super) fn hanging_transform(&self, menu: StableNodeId) -> Option<AffineTransform> {
+        self.hanging_transform_with(menu, None)
+    }
+
+    fn hanging_transform_with(
+        &self,
+        menu: StableNodeId,
+        precomputed: Option<(&NodeMap<usize>, &[[f32; 2]])>,
+    ) -> Option<AffineTransform> {
         let node = self
             .nodes
             .get(&menu)
             .filter(|node| super::is_triggered_menu(node))?;
         let presented = self.compositor.transform(menu)?;
+        let placed = match precomputed {
+            Some((idx_map, origins)) if self.placement_live => {
+                let [x, y] = idx_map
+                    .get(&menu)
+                    .map_or([node.layout.x, node.layout.y], |&i| origins[i]);
+                nana_ui_runtime::LayoutBox {
+                    x,
+                    y,
+                    ..node.layout
+                }
+            }
+            _ if !self.placement_live => node.layout,
+            _ => {
+                let [x, y] = super::placement::placed_origin_uncached(&self.nodes, node);
+                nana_ui_runtime::LayoutBox {
+                    x,
+                    y,
+                    ..node.layout
+                }
+            }
+        };
         // An opacity-only layer holds the logical transform, which the
         // viewport-fixed overlay never inherited.
-        (presented
-            != node_scene_transform(
-                node.source_style.layout.as_ref(),
-                self.placed_layout(node),
-                false,
-                None,
-            ))
-        .then_some(presented)
+        (presented != node_scene_transform(node.source_style.layout.as_ref(), placed, false, None))
+            .then_some(presented)
     }
 
     /// The transform the viewport-fixed branch rooted at `fixed` starts from:
     /// its menu's [`Self::hanging_transform`] when it is an item a triggered
     /// menu places, the identity otherwise.
     pub(super) fn hanging_branch_transform(&self, fixed: &ExtractedNode) -> AffineTransform {
+        self.hanging_branch_transform_with(fixed, None)
+    }
+
+    pub(super) fn hanging_branch_transform_with(
+        &self,
+        fixed: &ExtractedNode,
+        precomputed: Option<(&NodeMap<usize>, &[[f32; 2]])>,
+    ) -> AffineTransform {
         fixed
             .parent
             .and_then(|parent| self.nodes.get(&parent))
             .filter(|menu| !super::is_trigger_content(menu, fixed.id))
-            .and_then(|menu| self.hanging_transform(menu.id))
+            .and_then(|menu| self.hanging_transform_with(menu.id, precomputed))
             .unwrap_or(AffineTransform::IDENTITY)
     }
 
@@ -876,31 +952,13 @@ impl UiScene {
         if !self.compositor.has_presentation() {
             return logical_opacity.clamp(0.0, 1.0);
         }
-        // `draw_primitive` asks this for every primitive, so the ancestor half
-        // is memoized the same way dest groups are: a container's factor is
-        // its visual parent's times its own. The queried visual node's own
-        // factor is not stored — every primitive names a different node/slot.
-        let own = if own {
-            self.visual_layer_opacity_factor(vn)
-        } else {
-            1.0
-        };
-        let inherited = match super::visual_parent_of(&self.nodes, vn) {
-            Some(parent_vn) => {
-                let mut cache = self
-                    .layer_factor_cache
-                    .lock()
-                    .expect("scene compositor factors");
-                self.ancestor_layer_factor(&mut cache, parent_vn, 0)
-            }
-            None => 1.0,
-        };
-        (logical_opacity * own * inherited).clamp(0.0, 1.0)
+        let factor = self.derived_projection().layer_factor(vn, own);
+        (logical_opacity * factor).clamp(0.0, 1.0)
     }
 
     /// What this visual node's own layer does to the opacity below it: the
     /// presented opacity divided by the logical one it was derived from.
-    fn visual_layer_opacity_factor(&self, vn: super::VisualNode) -> f32 {
+    pub(super) fn visual_layer_opacity_factor(&self, vn: super::VisualNode) -> f32 {
         if super::visual_is_opacity_group(&self.nodes, vn) {
             return 1.0;
         }
@@ -923,33 +981,6 @@ impl UiScene {
         } else {
             opacity / logical
         }
-    }
-
-    fn ancestor_layer_factor(
-        &self,
-        cache: &mut super::HashMap<super::VisualNode, ((u64, u64), f32)>,
-        vn: super::VisualNode,
-        depth: usize,
-    ) -> f32 {
-        if depth >= super::MAX_ANCESTOR_DEPTH {
-            return 1.0;
-        }
-        let stamp = (self.instance_id(), self.attribute_epoch);
-        if let Some((held, factor)) = cache.get(&vn)
-            && *held == stamp
-        {
-            return *factor;
-        }
-        if !self.nodes.contains_key(&vn.node_id()) {
-            return 1.0;
-        }
-        let inherited = match super::visual_parent_of(&self.nodes, vn) {
-            Some(parent_vn) => self.ancestor_layer_factor(cache, parent_vn, depth + 1),
-            None => 1.0,
-        };
-        let factor = inherited * self.visual_layer_opacity_factor(vn);
-        cache.insert(vn, (stamp, factor));
-        factor
     }
 
     /// Nested compositor opacity: product of visual-ancestor (and self) layer
@@ -1009,96 +1040,11 @@ impl UiScene {
     /// only the node's own layer so the painter can strip that overlay without
     /// double-applying ancestor presentation. Opacity walks ancestors.
     pub fn compositor_gpu_motion_ids(&self, node: StableNodeId) -> (u32, u32) {
-        self.gpu_motion_ids(super::VisualNode::Node(node), true)
-    }
-
-    /// [`Self::compositor_gpu_motion_ids`], with or without the node's own
-    /// opacity overlay.
-    fn gpu_motion_ids(&self, vn: super::VisualNode, own_opacity: bool) -> (u32, u32) {
-        // A triggered menu's transform overlay is not evaluated in its own
-        // place: its trigger keeps the logical transform, and the surface and
-        // items it moves take it on the CPU (`hanging_transform`).
-        let mut transform = match vn {
-            super::VisualNode::Overlay(_) => 0,
-            super::VisualNode::Node(node) => {
-                if self
-                    .nodes
-                    .get(&node)
-                    .is_some_and(|n| super::is_triggered_menu(n))
-                {
-                    0
-                } else {
-                    self.gpu_motion_id_for(node, 0)
-                }
-            }
-        };
-        // The shader evaluates the overlay in the node's own place, so it owes
-        // the same refusal [`Self::resolved_local_transform`] makes, or the
-        // GPU hands back what the CPU gave up. The ancestor walk sits behind
-        // two reads false for every node without both a `matrix3d` and an
-        // overlay of its own.
-        if transform != 0
-            && let super::VisualNode::Node(node) = vn
-            && let Some(extracted) = self.nodes.get(&node)
-        {
-            let layout = &extracted.source_style.layout;
-            let ctx_3d = self.draw_ancestor_state(extracted).3;
-            if (ctx_3d.blocks_3d && layout.transforms.transform_3d.is_some())
-                || ctx_3d.parent_perspective.is_some()
-                || ctx_3d.backface_hidden
-                || layout.transforms.backface_visibility == nana_ui_core::BackfaceVisibility::Hidden
-            {
-                transform = 0;
-            }
+        if !self.compositor.has_presentation() {
+            return (0, 0);
         }
-        let isolates = |v: super::VisualNode| super::visual_is_opacity_group(&self.nodes, v);
-        let own_opacity_id = |v: super::VisualNode| -> u32 {
-            match v {
-                super::VisualNode::Node(id) => {
-                    if self
-                        .nodes
-                        .get(&id)
-                        .is_some_and(|n| super::is_triggered_menu(n))
-                    {
-                        0
-                    } else {
-                        self.gpu_motion_id_for(id, 1)
-                    }
-                }
-                super::VisualNode::Overlay(id) => {
-                    if self
-                        .nodes
-                        .get(&id)
-                        .is_some_and(|n| super::is_triggered_menu(n))
-                    {
-                        self.gpu_motion_id_for(id, 1)
-                    } else {
-                        0
-                    }
-                }
-            }
-        };
-        let mut opacity = if own_opacity && !isolates(vn) {
-            own_opacity_id(vn)
-        } else {
-            0
-        };
-        if opacity == 0 && !isolates(vn) {
-            let mut cursor = super::visual_parent_of(&self.nodes, vn);
-            let mut depth = 0usize;
-            while let Some(cur) = cursor {
-                if depth >= super::MAX_ANCESTOR_DEPTH || isolates(cur) {
-                    break;
-                }
-                depth += 1;
-                opacity = own_opacity_id(cur);
-                if opacity != 0 {
-                    break;
-                }
-                cursor = super::visual_parent_of(&self.nodes, cur);
-            }
-        }
-        (transform, opacity)
+        self.derived_projection()
+            .gpu_motion_ids(super::VisualNode::Node(node), true)
     }
 
     /// World transform and pivot encoded for GPU evaluate. The transform is
@@ -1111,13 +1057,26 @@ impl UiScene {
         node: StableNodeId,
         composed: AffineTransform,
     ) -> (AffineTransform, [f32; 2]) {
-        let (transform_id, _) = self.compositor_gpu_motion_ids(node);
+        if !self.compositor.has_presentation() {
+            return (composed, [0.0, 0.0]);
+        }
+        let tables = self.derived_projection();
+        let (transform_id, _) = tables.gpu_motion_ids(super::VisualNode::Node(node), true);
         let Some(extracted) = self.nodes.get(&node).filter(|_| transform_id != 0) else {
             return (composed, [0.0, 0.0]);
         };
-        let (parent, _, _, _) = self.draw_ancestor_state(extracted);
-        // On the page, where the painter puts the primitives it turns.
-        let layout = self.placed_layout(extracted);
+        let parent = tables
+            .draw_parent_state(node)
+            .map(|state| state.0)
+            .unwrap_or_else(|| self.draw_ancestor_state(extracted).0);
+        let origin = tables
+            .placed_origin(node)
+            .unwrap_or([extracted.layout.x, extracted.layout.y]);
+        let layout = nana_ui_runtime::LayoutBox {
+            x: origin[0],
+            y: origin[1],
+            ..extracted.layout
+        };
         let [ox, oy] = presentation_pivot(extracted).unwrap_or_else(|| {
             extracted
                 .source_style
@@ -1129,29 +1088,30 @@ impl UiScene {
 
     /// Paint opacity with the GPU-evaluated overlay factored out.
     pub fn compositor_gpu_encode_opacity(&self, node: StableNodeId, paint_opacity: f32) -> f32 {
-        self.gpu_encode_opacity(super::VisualNode::Node(node), paint_opacity, true)
+        if !self.compositor.has_presentation() {
+            return paint_opacity;
+        }
+        let tables = self.derived_projection();
+        Self::apply_gpu_opacity_divisor(
+            tables.gpu_opacity_divisor(super::VisualNode::Node(node), true),
+            paint_opacity,
+        )
     }
 
-    fn gpu_encode_opacity(&self, vn: super::VisualNode, paint_opacity: f32, own: bool) -> f32 {
-        let (_, opacity_id) = self.gpu_motion_ids(vn, own);
+    fn apply_gpu_opacity_divisor(
+        (opacity_id, layer_opacity): (u32, Option<f32>),
+        paint_opacity: f32,
+    ) -> f32 {
         if opacity_id == 0 {
             return paint_opacity;
         }
-        let index = opacity_id - 1;
-        for (anc_vn, _) in super::visual_ancestor_nodes(&self.nodes, vn) {
-            if let Some(layer) = self.compositor.layer(anc_vn.node_id())
-                && layer
-                    .bindings
-                    .iter()
-                    .any(|binding| binding.index == index && binding.generation != 0)
-            {
-                if layer.opacity.abs() < 1e-8 {
-                    return 0.0;
-                }
-                return (paint_opacity / layer.opacity).clamp(0.0, 1.0);
-            }
+        let Some(layer_op) = layer_opacity else {
+            return paint_opacity;
+        };
+        if layer_op.abs() < 1e-8 {
+            return 0.0;
         }
-        paint_opacity
+        (paint_opacity / layer_op).clamp(0.0, 1.0)
     }
 
     /// Encode compositor motion for one primitive. Only kinds that run
@@ -1201,18 +1161,46 @@ impl UiScene {
         paint_opacity: f32,
         own_opacity: bool,
     ) -> CompositorPaintEncode {
-        if kind.evaluates_compositor_motion_on_gpu() {
+        if kind.evaluates_compositor_motion_on_gpu() && self.compositor.has_presentation() {
+            let tables = self.derived_projection();
+            let motion_ids = tables.gpu_motion_ids(vn, own_opacity);
             let (transform, transform_origin) = match vn {
-                super::VisualNode::Node(node) => {
-                    self.compositor_gpu_encode_transform(node, composed)
+                super::VisualNode::Node(node) if motion_ids.0 != 0 => {
+                    if let Some(extracted) = self.nodes.get(&node) {
+                        let parent = tables
+                            .draw_parent_state(node)
+                            .map(|state| state.0)
+                            .unwrap_or_else(|| self.draw_ancestor_state(extracted).0);
+                        let origin = tables
+                            .placed_origin(node)
+                            .unwrap_or([extracted.layout.x, extracted.layout.y]);
+                        let layout = nana_ui_runtime::LayoutBox {
+                            x: origin[0],
+                            y: origin[1],
+                            ..extracted.layout
+                        };
+                        let [ox, oy] = presentation_pivot(extracted).unwrap_or_else(|| {
+                            extracted
+                                .source_style
+                                .layout
+                                .resolved_transform_origin(layout.width, layout.height)
+                        });
+                        (parent, [layout.x + ox, layout.y + oy])
+                    } else {
+                        (composed, [0.0, 0.0])
+                    }
                 }
-                super::VisualNode::Overlay(_) => (composed, [0.0, 0.0]),
+                _ => (composed, [0.0, 0.0]),
             };
+            let opacity = Self::apply_gpu_opacity_divisor(
+                tables.gpu_opacity_divisor(vn, own_opacity),
+                paint_opacity,
+            );
             CompositorPaintEncode {
                 transform,
                 transform_origin,
-                opacity: self.gpu_encode_opacity(vn, paint_opacity, own_opacity),
-                motion_ids: self.gpu_motion_ids(vn, own_opacity),
+                opacity,
+                motion_ids,
             }
         } else {
             CompositorPaintEncode {
@@ -1224,7 +1212,7 @@ impl UiScene {
         }
     }
 
-    fn gpu_motion_id_for(&self, node: StableNodeId, property: u32) -> u32 {
+    pub(super) fn gpu_motion_id_for(&self, node: StableNodeId, property: u32) -> u32 {
         let Some(layer) = self.compositor.layer(node) else {
             return 0;
         };
@@ -2899,8 +2887,7 @@ mod tests {
     /// touched these bounds — false as soon as anything re-derives them.
     fn translated(scene: &UiScene) -> bool {
         scene
-            .visibility
-            .get()
+            .derived_visibility()
             .expect("the index survives a scroll")
             .translated()
     }
@@ -2957,7 +2944,7 @@ mod tests {
         });
         scene.apply_delta([repainted], []);
         assert!(
-            scene.visibility.get().is_some(),
+            scene.has_visibility_index(),
             "a repaint dropped the visibility index"
         );
 
@@ -3205,7 +3192,14 @@ mod tests {
         Arc::make_mut(&mut painted.style).background = Some([0.8, 0.2, 0.3, 1.0]);
         scene.apply_delta([painted], []);
         assert_eq!(scene.draw_primitive(primitive).unwrap().transform, before);
-        assert!(scene.draw_attributes.lock().unwrap().is_empty());
+        assert!(
+            scene
+                .derived
+                .lock()
+                .unwrap()
+                .as_ref()
+                .is_none_or(|d| d.projection.is_none())
+        );
     }
 
     /// A child repainted under its parent's scale layer, then an unrelated

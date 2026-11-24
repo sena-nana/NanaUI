@@ -53,6 +53,8 @@ impl UiScene {
     ) -> SceneDelta {
         let mut delta = SceneDelta::default();
         self.structure_changed = false;
+        self.frame_plan_resources_changed = false;
+        let mut carried = self.take_derived().unwrap_or_default();
         let mut removed_nodes = 0;
         let mut changed = Vec::new();
         let mut hierarchy_changed = false;
@@ -68,37 +70,17 @@ impl UiScene {
                 self.origin_bound.remove(&id);
                 self.offset_bound.remove(&id);
                 self.unfollowing.remove(&id);
-                self.placed_origins
-                    .get_mut()
-                    .expect("scene placements")
-                    .remove(&id);
                 rebind_sticky.extend(self.sticky_nodes.affected(id));
                 self.sticky_nodes.remove(id);
                 self.escaped_nodes.remove(&id);
                 if !old.children.is_empty() {
-                    self.attribute_epoch = self.attribute_epoch.wrapping_add(1);
+                    self.epochs.attribute = self.epochs.attribute.wrapping_add(1);
                     inherited_roots.insert(id);
                 }
-                self.draw_attributes
-                    .get_mut()
-                    .expect("scene attributes")
-                    .remove(&id);
                 removed_nodes += 1;
                 hierarchy_changed |= old.parent.is_some() || !old.children.is_empty();
                 self.remove_node_primitives(id);
                 self.forget_compositor_node(id);
-                let opacity_cache = self
-                    .opacity_group_cache
-                    .get_mut()
-                    .expect("scene opacity groups");
-                if !opacity_cache.is_empty() {
-                    if self.dest_group_candidates == 0 {
-                        opacity_cache.clear();
-                    } else {
-                        opacity_cache.remove(&VisualNode::Node(id));
-                        opacity_cache.remove(&VisualNode::Overlay(id));
-                    }
-                }
                 if !self.custom_paint.is_empty() {
                     self.custom_paint.remove(&id);
                 }
@@ -128,9 +110,11 @@ impl UiScene {
         // Where each record that may move stands before anything in this
         // delta is written, when there are culling bounds to move: a root's
         // shift is measured against it.
-        let track_shifts = self.visibility.get().is_some();
-        let stood: NodeMap<[f32; 2]> = if let Some(visibility) = self.visibility.get() {
-            let ids: Vec<StableNodeId> = moved
+        let track_shifts = carried.visibility.is_some();
+        let stood: NodeMap<[f32; 2]> = if let Some(visibility) = carried.visibility.as_ref() {
+            let key = self.epochs.derived_key();
+            let valid_proj = carried.projection.as_ref().filter(|p| p.key == key);
+            moved
                 .iter()
                 .map(|moved| moved.id)
                 .chain(extracted.iter().filter_map(|node| {
@@ -138,9 +122,17 @@ impl UiScene {
                     (old.layout != node.layout).then_some(node.id)
                 }))
                 .filter(|&id| visibility.paints_under(id))
-                .collect();
-            ids.into_iter()
-                .filter_map(|id| Some((id, self.placed_origin_mut(id)?)))
+                .filter_map(|id| {
+                    let origin = if !self.placement_live {
+                        let node = self.nodes.get(&id)?;
+                        [node.layout.x, node.layout.y]
+                    } else if let Some(origin) = valid_proj.and_then(|p| p.placed_origin(id)) {
+                        origin
+                    } else {
+                        super::placement::placed_origin_uncached(&self.nodes, self.nodes.get(&id)?)
+                    };
+                    Some((id, origin))
+                })
                 .collect()
         } else {
             NodeMap::default()
@@ -185,7 +177,7 @@ impl UiScene {
                 }
             }
             self.placement_live = true;
-            self.attribute_epoch = self.attribute_epoch.wrapping_add(1);
+            self.epochs.attribute = self.epochs.attribute.wrapping_add(1);
             delta.transforms.push(id);
             delta.clips.push(id);
             delta.paint.push(id);
@@ -247,7 +239,7 @@ impl UiScene {
                 // Retained descendants may not be extracted when an ancestor's
                 // clip or transform changes. Refresh their inherited projection
                 // without rebuilding invertible retained geometry.
-                self.attribute_epoch = self.attribute_epoch.wrapping_add(1);
+                self.epochs.attribute = self.epochs.attribute.wrapping_add(1);
                 inherited_geometry_changed |= sticky_geometry_changed
                     || previous.is_none_or(|old| inherited_transform_changed(old, &node));
                 inherited_roots.insert(node.id);
@@ -325,7 +317,8 @@ impl UiScene {
             if scroll_changed {
                 inherited_roots.insert(node.id);
                 let old = self.nodes.get(&node.id).expect("scrolling retained node");
-                let (parent, _, _, ctx_3d) = self.ancestor_state(old);
+                let fixed = old.source_style.layout.position == nana_ui_core::PositionSpec::Fixed;
+                let (parent, _, _, ctx_3d) = self.compute_ancestor_state(old, false, fixed).0;
                 let transform = parent.then(node_scene_transform(
                     &old.source_style.layout,
                     old.layout,
@@ -334,14 +327,14 @@ impl UiScene {
                 ));
                 if transform.is_projective() || old.source_style.layout.has_css_perspective() {
                     subtree_rebuild.push(node.id);
-                    self.visibility.take();
+                    carried.visibility = None;
                 } else {
                     let dx = old.scroll_offset.x - node.scroll_offset.x;
                     let dy = old.scroll_offset.y - node.scroll_offset.y;
                     let [a, b, c, d, _, _] = transform.0;
                     scroll_translations.push((node.id, [a * dx + c * dy, b * dx + d * dy]));
                 }
-                self.attribute_epoch = self.attribute_epoch.wrapping_add(1);
+                self.epochs.attribute = self.epochs.attribute.wrapping_add(1);
             }
             // The primitives stay where they are: every extracted node is
             // rebuilt below, and that rebuild overwrites the slots it still
@@ -359,11 +352,8 @@ impl UiScene {
         }
         // Every record is in place: placements read from here on see them.
         if updated_nodes != 0 || removed_nodes != 0 {
-            self.placement_epoch = self.placement_epoch.wrapping_add(1);
-            self.placed_clips
-                .get_mut()
-                .expect("scene placed clips")
-                .clear();
+            self.epochs.placement = self.epochs.placement.wrapping_add(1);
+            carried.projection = None;
         }
         // A fresh record stands where its frames place it, to the bit, or a
         // move kept above it would place it off by the difference.
@@ -471,7 +461,9 @@ impl UiScene {
                         .nodes
                         .get(&id)
                         .map_or(AffineTransform::IDENTITY, |node| {
-                            self.draw_ancestor_state(node).0
+                            let fixed = node.source_style.layout.position
+                                == nana_ui_core::PositionSpec::Fixed;
+                            self.compute_ancestor_state(node, true, fixed).0.0
                         });
                     if inherited.is_projective() {
                         return (id, None);
@@ -552,16 +544,12 @@ impl UiScene {
             rebuild.retain(|id| rebuilding.remove(id));
             // `self.nodes` is final by now and nothing below moves it, which
             // is the whole precondition for reusing what a parent projects.
-            if let Ok(mut scratch) = self.rebuild_scratch.lock() {
-                scratch.begin();
-            }
+            self.rebuild_scratch.begin();
             for &id in &rebuild {
                 rebuilt_primitives += self.rebuild_node_primitives(id);
                 self.invalidate_compositor_cache(id);
             }
-            if let Ok(mut scratch) = self.rebuild_scratch.lock() {
-                scratch.end();
-            }
+            self.rebuild_scratch.end();
             #[cfg(debug_assertions)]
             if self.nodes.len() <= RETAINED_AUDIT_LIMIT {
                 for &id in &paintless_moves {
@@ -578,16 +566,27 @@ impl UiScene {
                 self.sort_primitives();
             }
             if !rebuild.is_empty() || removed_nodes != 0 {
-                self.extended_color.take();
+                carried.extended_color = None;
             }
             if order_rebuilt || stacking_changed || removed_nodes != 0 || self.structure_changed {
-                self.frame_plan.take();
-                self.visibility.take();
+                carried.frame_plan = None;
+                carried.visibility = None;
+            } else if self.frame_plan_resources_changed
+                && carried
+                    .frame_plan
+                    .as_ref()
+                    .is_some_and(|plan| !plan.summaries_match(self))
+            {
+                carried.frame_plan = None;
             }
             if custom_paint_changed {
-                self.visibility.take();
+                carried.visibility = None;
             }
-            if let Some(mut visibility) = self.visibility.take() {
+            carried.projection = None;
+            if let Some(mut visibility) = carried.visibility.take() {
+                // Make sure retained frame_plan / extended_color are in `self.derived`
+                // while visibility refreshes bounds via `derived_projection()`.
+                self.store_derived(carried);
                 // Every translation goes in before any bound is derived again:
                 // a derived bound is already where it stands, and a shift
                 // after it would move it twice.
@@ -648,9 +647,13 @@ impl UiScene {
                     }
                 }
                 visibility.update(self, &rebuild);
-                let _ = self.visibility.set(visibility);
+                self.set_derived_visibility(visibility);
+            } else {
+                self.store_derived(carried);
             }
             self.instance = next_scene_instance();
+        } else {
+            self.store_derived(carried);
         }
         #[cfg(debug_assertions)]
         if !layout_moves.is_empty() {
@@ -930,11 +933,6 @@ fn escapes_clip_parent(node: &ExtractedNode) -> bool {
 pub(super) struct RebuildScratch {
     pub(super) active: bool,
     pub(super) ancestor_state: Option<(AncestorStateKey, AncestorState)>,
-    /// The same answer for the draw pass, which has no bracket to reset it:
-    /// siblings ask for it one after another while the painter walks paint
-    /// order, so one entry carries a whole container. Stamped, because nothing
-    /// clears it. See [`UiScene::draw_stamp`].
-    pub(super) drawn_ancestor_state: Option<(AncestorStateKey, DrawStamp, AncestorState)>,
     /// The paint-order stack of the node being rebuilt, shared by all of its
     /// primitives.
     pub(super) order_stack: Option<(StableNodeId, GroupPrefix)>,
