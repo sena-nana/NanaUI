@@ -99,8 +99,13 @@ pub fn component_animation_id(kind_tag: u64, target: StableNodeId) -> Option<Ani
 /// Whether `id` is one of the built-in component timelines of `target`
 /// ([`component_animation_kinds`]).
 pub(crate) fn is_component_animation(id: AnimationId, target: StableNodeId) -> bool {
+    component_animation_kind(id, target).is_some()
+}
+
+/// Returns the [`component_animation_kinds`] tag for `id` on `target`, if any.
+pub(crate) fn component_animation_kind(id: AnimationId, target: StableNodeId) -> Option<u64> {
     (component_animation_kinds::SKELETON..=component_animation_kinds::ATTENTION)
-        .any(|kind| component_animation_id(kind, target) == Some(id))
+        .find(|&kind| component_animation_id(kind, target) == Some(id))
 }
 
 /// A toast's one-shot dismiss timeline. It samples once, at the end, so a
@@ -343,6 +348,10 @@ impl AnimationSpec {
                 AnimatableProperty::FontAxis(_)
                     | AnimatableProperty::Background
                     | AnimatableProperty::Color
+                    | AnimatableProperty::Width
+                    | AnimatableProperty::Height
+                    | AnimatableProperty::Padding
+                    | AnimatableProperty::Margin
             )
     }
 

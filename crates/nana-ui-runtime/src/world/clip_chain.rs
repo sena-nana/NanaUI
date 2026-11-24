@@ -17,7 +17,9 @@ impl UiWorld {
     /// `id`'s position as containing blocks and the clip chain read it: an
     /// item a triggered menu places is `fixed`, as its effective style says.
     pub(super) fn clip_position(&self, id: StableNodeId) -> PositionSpec {
-        if !self.triggered_overlays.is_empty() && self.parent_triggered_overlay(id).is_some() {
+        if !self.overlays_a11y.triggered_overlays.is_empty()
+            && self.parent_triggered_overlay(id).is_some()
+        {
             return PositionSpec::Fixed;
         }
         self.nodes.get(id).map_or(PositionSpec::Static, |record| {

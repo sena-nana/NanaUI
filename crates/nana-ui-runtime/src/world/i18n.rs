@@ -139,9 +139,9 @@ impl UiWorld {
     /// missing-message policy. Every localized node resolves again.
     pub fn set_message_catalog(&mut self, catalog: Option<Arc<dyn MessageCatalog>>) {
         let shown = self.i18n_shown();
-        self.i18n.catalog = catalog;
-        self.i18n.catalog_generation += 1;
-        self.i18n.lookups.clear();
+        self.overlays_a11y.i18n.catalog = catalog;
+        self.overlays_a11y.i18n.catalog_generation += 1;
+        self.overlays_a11y.i18n.lookups.clear();
         self.resolve_every_localized();
         self.note_shown_since(shown);
     }
@@ -156,16 +156,17 @@ impl UiWorld {
         changed: &[MessageId],
     ) {
         let shown = self.i18n_shown();
-        self.i18n.catalog = Some(catalog);
-        self.i18n.catalog_generation += 1;
-        self.i18n
+        self.overlays_a11y.i18n.catalog = Some(catalog);
+        self.overlays_a11y.i18n.catalog_generation += 1;
+        self.overlays_a11y
+            .i18n
             .lookups
             .retain(|(_, message), _| !changed.contains(message));
         let mut counts = I18nCounters::default();
         counts.switch_transactions += 1;
         let mut ids: Vec<StableNodeId> = changed
             .iter()
-            .filter_map(|message| self.i18n.message_dependents.get(message))
+            .filter_map(|message| self.overlays_a11y.i18n.message_dependents.get(message))
             .flat_map(|nodes| nodes.iter().copied())
             .collect();
         ids.sort_unstable();
@@ -175,20 +176,24 @@ impl UiWorld {
             self.resolve_localized(id, self.localized_language(id), &mut counts);
         }
         counts.switch_commits += 1;
-        self.counters.pending_drain_counts.i18n.accumulate(counts);
+        self.invalidation
+            .counters
+            .pending_drain_counts
+            .i18n
+            .accumulate(counts);
         self.note_shown_since(shown);
     }
 
     /// How many catalogs were installed or updated.
     pub fn catalog_generation(&self) -> u64 {
-        self.i18n.catalog_generation
+        self.overlays_a11y.i18n.catalog_generation
     }
 
     /// Format messages through `formatter` instead of the default; every
     /// localized node resolves again.
     pub fn set_locale_formatter(&mut self, formatter: Arc<dyn LocaleFormatter>) {
         let shown = self.i18n_shown();
-        self.i18n.formatter = Some(formatter);
+        self.overlays_a11y.i18n.formatter = Some(formatter);
         self.resolve_every_localized();
         self.note_shown_since(shown);
     }
@@ -196,38 +201,39 @@ impl UiWorld {
     /// The locale every fallback chain ends in, after the scope's own; the
     /// default is none.
     pub fn set_fallback_locale(&mut self, locale: Option<LanguageTag>) {
-        if self.i18n.fallback == locale {
+        if self.overlays_a11y.i18n.fallback == locale {
             return;
         }
         let shown = self.i18n_shown();
-        self.i18n.fallback = locale;
-        self.i18n.lookups.clear();
+        self.overlays_a11y.i18n.fallback = locale;
+        self.overlays_a11y.i18n.lookups.clear();
         self.resolve_every_localized();
         self.note_shown_since(shown);
     }
 
     /// What a message no locale has shows; see [`MissingMessage`].
     pub fn set_missing_message(&mut self, policy: MissingMessage) {
-        if self.i18n.missing == policy {
+        if self.overlays_a11y.i18n.missing == policy {
             return;
         }
         let shown = self.i18n_shown();
-        self.i18n.missing = policy;
+        self.overlays_a11y.i18n.missing = policy;
         self.resolve_every_localized();
         self.note_shown_since(shown);
     }
 
     /// The application's locale, which every window without its own takes.
     pub fn set_default_locale(&mut self, locale: Option<Locale>) {
-        if self.i18n.application == locale {
+        if self.overlays_a11y.i18n.application == locale {
             return;
         }
         let shown = self.i18n_shown();
-        let before = self.i18n.application.clone();
-        self.i18n.application = locale;
+        let before = self.overlays_a11y.i18n.application.clone();
+        self.overlays_a11y.i18n.application = locale;
         // Windows with localized text, and windows whose roots take its
         // direction.
         let mut documents: Vec<DocumentId> = self
+            .overlays_a11y
             .i18n
             .dependents
             .keys()
@@ -235,13 +241,13 @@ impl UiWorld {
                 LocaleScope::Document(document) => Some(*document),
                 LocaleScope::Node(_) => None,
             })
-            .chain(self.live_document_roots.keys().copied())
+            .chain(self.tree.live_document_roots.keys().copied())
             .collect();
         documents.sort_unstable();
         documents.dedup();
         let reached = documents
             .into_iter()
-            .filter(|document| !self.i18n.documents.contains_key(document))
+            .filter(|document| !self.overlays_a11y.i18n.documents.contains_key(document))
             .map(|document| (LocaleScope::Document(document), before.clone()))
             .collect();
         self.switch_locale(reached);
@@ -250,14 +256,14 @@ impl UiWorld {
 
     /// `document`'s locale; `None` takes the application's again.
     pub fn set_document_locale(&mut self, document: DocumentId, locale: Option<Locale>) {
-        if self.i18n.documents.get(&document) == locale.as_ref() {
+        if self.overlays_a11y.i18n.documents.get(&document) == locale.as_ref() {
             return;
         }
         let shown = self.i18n_shown();
         let before = self.scope_locale(LocaleScope::Document(document)).cloned();
         match locale {
-            Some(locale) => self.i18n.documents.insert(document, locale),
-            None => self.i18n.documents.remove(&document),
+            Some(locale) => self.overlays_a11y.i18n.documents.insert(document, locale),
+            None => self.overlays_a11y.i18n.documents.remove(&document),
         };
         self.switch_locale(vec![(LocaleScope::Document(document), before)]);
         self.note_shown_since(shown);
@@ -266,7 +272,7 @@ impl UiWorld {
     /// What localization changed that a frame shows, counted since the last
     /// drain: text shown, the language it shapes in, a scope's direction.
     fn i18n_shown(&self) -> usize {
-        let counts = &self.counters.pending_drain_counts.i18n;
+        let counts = &self.invalidation.counters.pending_drain_counts.i18n;
         counts.resolved_content_changed
             + counts.language_changed_nodes
             + counts.direction_changed_scopes
@@ -277,21 +283,25 @@ impl UiWorld {
     /// draws when the generation moves draws it.
     fn note_shown_since(&mut self, before: usize) {
         if self.i18n_shown() != before {
-            self.generation = self.generation.wrapping_add(1);
+            self.invalidation.generation = self.invalidation.generation.wrapping_add(1);
         }
     }
 
     pub fn default_locale(&self) -> Option<&Locale> {
-        self.i18n.application.as_ref()
+        self.overlays_a11y.i18n.application.as_ref()
     }
 
     pub fn document_locale(&self, document: DocumentId) -> Option<&Locale> {
-        self.i18n.documents.get(&document)
+        self.overlays_a11y.i18n.documents.get(&document)
     }
 
     /// The localized text `id` shows, if it shows one.
     pub fn localized_text(&self, id: StableNodeId) -> Option<&LocalizedText> {
-        self.i18n.nodes.get(&id).map(|entry| &entry.text)
+        self.overlays_a11y
+            .i18n
+            .nodes
+            .get(&id)
+            .map(|entry| &entry.text)
     }
 
     /// The scope `id` reads its locale from.
@@ -303,17 +313,19 @@ impl UiWorld {
     /// application's.
     pub fn scope_locale(&self, scope: LocaleScope) -> Option<&Locale> {
         match scope {
-            LocaleScope::Node(id) => self.i18n.scopes.get(&id),
+            LocaleScope::Node(id) => self.overlays_a11y.i18n.scopes.get(&id),
             LocaleScope::Document(document) => self
+                .overlays_a11y
                 .i18n
                 .documents
                 .get(&document)
-                .or(self.i18n.application.as_ref()),
+                .or(self.overlays_a11y.i18n.application.as_ref()),
         }
     }
 
     pub fn locale_generations(&self, scope: LocaleScope) -> LocaleGenerations {
-        self.i18n
+        self.overlays_a11y
+            .i18n
             .generations
             .get(&scope)
             .copied()
@@ -328,6 +340,7 @@ impl UiWorld {
         let Some(text) = text else {
             // Its language followed its locale; it is its own again.
             if self
+                .overlays_a11y
                 .i18n
                 .forget(id)
                 .is_some_and(|previous| previous.resolved.is_some())
@@ -337,22 +350,26 @@ impl UiWorld {
             return;
         };
         let mut counts = I18nCounters::default();
-        match self.i18n.nodes.get_mut(&id) {
+        match self.overlays_a11y.i18n.nodes.get_mut(&id) {
             Some(entry) => {
                 let said = std::mem::replace(&mut entry.text, text).message;
                 let says = entry.text.message;
                 if said == says {
                     counts.args_revisions += 1;
                 } else {
-                    unlink(&mut self.i18n.message_dependents, said, id);
-                    link(&mut self.i18n.message_dependents, says, id);
+                    unlink(&mut self.overlays_a11y.i18n.message_dependents, said, id);
+                    link(&mut self.overlays_a11y.i18n.message_dependents, says, id);
                 }
             }
             None => {
                 let scope = self.locale_scope_of(id);
-                link(&mut self.i18n.dependents, scope, id);
-                link(&mut self.i18n.message_dependents, text.message, id);
-                self.i18n.nodes.insert(
+                link(&mut self.overlays_a11y.i18n.dependents, scope, id);
+                link(
+                    &mut self.overlays_a11y.i18n.message_dependents,
+                    text.message,
+                    id,
+                );
+                self.overlays_a11y.i18n.nodes.insert(
                     id,
                     Localized {
                         text,
@@ -363,13 +380,17 @@ impl UiWorld {
             }
         }
         self.resolve_localized(id, self.localized_language(id), &mut counts);
-        self.counters.pending_drain_counts.i18n.accumulate(counts);
+        self.invalidation
+            .counters
+            .pending_drain_counts
+            .i18n
+            .accumulate(counts);
     }
 
     /// `id` becomes a locale scope for its subtree, takes another locale, or
     /// with `None` stops being one.
     pub(super) fn set_scope_locale(&mut self, id: StableNodeId, locale: Option<Locale>) {
-        let before = self.i18n.scopes.get(&id).cloned();
+        let before = self.overlays_a11y.i18n.scopes.get(&id).cloned();
         if before == locale {
             return;
         }
@@ -380,8 +401,13 @@ impl UiWorld {
         let outer = self.locale_scope_above(id);
         match (&before, locale) {
             (None, Some(locale)) => {
-                self.i18n.scopes.insert(id, locale);
-                *self.i18n.scoped_documents.entry(document).or_default() += 1;
+                self.overlays_a11y.i18n.scopes.insert(id, locale);
+                *self
+                    .overlays_a11y
+                    .i18n
+                    .scoped_documents
+                    .entry(document)
+                    .or_default() += 1;
                 // The localized nodes in the subtree read the new scope now.
                 self.adopt_dependents(outer, scope, id);
                 // The root lays out in the scope's direction.
@@ -391,12 +417,12 @@ impl UiWorld {
                 // Its nodes read the scope above it again, while its locale
                 // is still the one they read before.
                 self.adopt_dependents(scope, outer, id);
-                self.i18n.drop_scope(id, document);
+                self.overlays_a11y.i18n.drop_scope(id, document);
                 // The root's direction was the scope's.
                 self.restyle(id, None);
             }
             (Some(_), Some(locale)) => {
-                self.i18n.scopes.insert(id, locale);
+                self.overlays_a11y.i18n.scopes.insert(id, locale);
                 self.switch_locale(vec![(scope, before)]);
             }
             (None, None) => {}
@@ -413,10 +439,16 @@ impl UiWorld {
         let Some(document) = self.document_of(child) else {
             return;
         };
-        if !self.i18n.scoped_documents.contains_key(&document) || self.i18n.nodes.is_empty() {
+        if !self
+            .overlays_a11y
+            .i18n
+            .scoped_documents
+            .contains_key(&document)
+            || self.overlays_a11y.i18n.nodes.is_empty()
+        {
             return;
         }
-        if self.i18n.scopes.contains_key(&child) {
+        if self.overlays_a11y.i18n.scopes.contains_key(&child) {
             // A scope moves with its nodes.
             return;
         }
@@ -431,18 +463,21 @@ impl UiWorld {
     /// `list` is a virtual list: localized text resolved in the rows it
     /// mounts counts as virtual rows resolved.
     pub(crate) fn note_virtual_list(&mut self, list: StableNodeId) {
-        self.i18n.virtual_lists.insert(list);
+        self.overlays_a11y.i18n.virtual_lists.insert(list);
     }
 
     /// Forget a node of `document` that is gone: as localized text, as a
     /// scope and as a virtual list.
     pub(super) fn forget_i18n(&mut self, id: StableNodeId, document: DocumentId) {
-        self.i18n.forget(id);
-        self.i18n.virtual_lists.remove(&id);
-        if self.i18n.drop_scope(id, document) {
+        self.overlays_a11y.i18n.forget(id);
+        self.overlays_a11y.i18n.virtual_lists.remove(&id);
+        if self.overlays_a11y.i18n.drop_scope(id, document) {
             // Its subtree is despawned with it, each node in it forgotten in
             // turn.
-            self.i18n.dependents.remove(&LocaleScope::Node(id));
+            self.overlays_a11y
+                .i18n
+                .dependents
+                .remove(&LocaleScope::Node(id));
         }
     }
 
@@ -452,7 +487,7 @@ impl UiWorld {
     /// language, else the locale its message came from. `None` for literal
     /// text, which keeps the language it is in.
     pub(super) fn localized_language(&self, id: StableNodeId) -> Option<LanguageTag> {
-        let entry = self.i18n.nodes.get(&id)?;
+        let entry = self.overlays_a11y.i18n.nodes.get(&id)?;
         self.scope_locale(entry.scope)
             .and_then(Locale::language)
             .cloned()
@@ -463,7 +498,7 @@ impl UiWorld {
     /// root; a right-to-left window's, or application's, at the window's
     /// roots. `None` where no locale sets one.
     pub(super) fn locale_direction(&self, id: StableNodeId) -> Option<DirSpec> {
-        if let Some(locale) = self.i18n.scopes.get(&id) {
+        if let Some(locale) = self.overlays_a11y.i18n.scopes.get(&id) {
             return Some(locale.direction());
         }
         if !self.locale_sets_direction() {
@@ -471,6 +506,7 @@ impl UiWorld {
         }
         let document = self.document_of(id)?;
         if !self
+            .tree
             .live_document_roots
             .get(&document)
             .is_some_and(|roots| roots.contains(&id))
@@ -485,21 +521,22 @@ impl UiWorld {
     /// Whether any window or the application has a locale, which a window's
     /// roots may take a direction from.
     pub(super) fn locale_sets_direction(&self) -> bool {
-        !self.i18n.documents.is_empty() || self.i18n.application.is_some()
+        !self.overlays_a11y.i18n.documents.is_empty()
+            || self.overlays_a11y.i18n.application.is_some()
     }
 
     /// The index sizes, for the drain's counters.
     pub(super) fn i18n_gauges(&self) -> I18nCounters {
-        let localized = self.i18n.nodes.len();
+        let localized = self.overlays_a11y.i18n.nodes.len();
         I18nCounters {
             localized_nodes: localized,
             message_dependencies: localized,
             // A localized node shapes in its locale's language unless it
             // names its own; either way the dependency is held.
             language_dependencies: localized,
-            direction_dependencies: self.i18n.scopes.len()
-                + self.i18n.documents.len()
-                + usize::from(self.i18n.application.is_some()),
+            direction_dependencies: self.overlays_a11y.i18n.scopes.len()
+                + self.overlays_a11y.i18n.documents.len()
+                + usize::from(self.overlays_a11y.i18n.application.is_some()),
             ..I18nCounters::default()
         }
     }
@@ -510,7 +547,12 @@ impl UiWorld {
     /// its window.
     fn locale_scope_of(&self, id: StableNodeId) -> LocaleScope {
         let document = self.document_of(id).expect("a live node has a document");
-        if !self.i18n.scoped_documents.contains_key(&document) {
+        if !self
+            .overlays_a11y
+            .i18n
+            .scoped_documents
+            .contains_key(&document)
+        {
             return LocaleScope::Document(document);
         }
         self.scope_at(document, Some(id))
@@ -527,7 +569,7 @@ impl UiWorld {
     fn scope_at(&self, document: DocumentId, from: Option<StableNodeId>) -> LocaleScope {
         let mut current = from;
         while let Some(node) = current {
-            if self.i18n.scopes.contains_key(&node) {
+            if self.overlays_a11y.i18n.scopes.contains_key(&node) {
                 return LocaleScope::Node(node);
             }
             current = self.parent_id(node);
@@ -546,6 +588,7 @@ impl UiWorld {
         };
         // A scope's own nodes all lie under it.
         let mut moved: Vec<StableNodeId> = self
+            .overlays_a11y
             .i18n
             .dependents
             .get(&from)
@@ -559,9 +602,9 @@ impl UiWorld {
             .unwrap_or_default();
         moved.sort_unstable();
         for &node in &moved {
-            unlink(&mut self.i18n.dependents, from, node);
-            link(&mut self.i18n.dependents, to, node);
-            if let Some(entry) = self.i18n.nodes.get_mut(&node) {
+            unlink(&mut self.overlays_a11y.i18n.dependents, from, node);
+            link(&mut self.overlays_a11y.i18n.dependents, to, node);
+            if let Some(entry) = self.overlays_a11y.i18n.nodes.get_mut(&node) {
                 entry.scope = to;
             }
         }
@@ -569,7 +612,11 @@ impl UiWorld {
         counts.switch_transactions += 1;
         self.switch_scope(to, before, &moved, false, &mut counts);
         counts.switch_commits += 1;
-        self.counters.pending_drain_counts.i18n.accumulate(counts);
+        self.invalidation
+            .counters
+            .pending_drain_counts
+            .i18n
+            .accumulate(counts);
     }
 
     /// Whether `node` is `root` or under it, walking up no further than
@@ -598,14 +645,18 @@ impl UiWorld {
     fn resolve_every_localized(&mut self) {
         let mut counts = I18nCounters::default();
         counts.switch_transactions += 1;
-        let mut ids: Vec<StableNodeId> = self.i18n.nodes.keys().copied().collect();
+        let mut ids: Vec<StableNodeId> = self.overlays_a11y.i18n.nodes.keys().copied().collect();
         ids.sort_unstable();
         counts.scope_dependents_notified += ids.len();
         for id in ids {
             self.resolve_localized(id, self.localized_language(id), &mut counts);
         }
         counts.switch_commits += 1;
-        self.counters.pending_drain_counts.i18n.accumulate(counts);
+        self.invalidation
+            .counters
+            .pending_drain_counts
+            .i18n
+            .accumulate(counts);
     }
 
     /// The locales of `scopes` changed from what each held before: one
@@ -616,6 +667,7 @@ impl UiWorld {
         counts.switch_transactions += 1;
         for (scope, before) in scopes {
             let mut nodes: Vec<StableNodeId> = self
+                .overlays_a11y
                 .i18n
                 .dependents
                 .get(&scope)
@@ -625,7 +677,11 @@ impl UiWorld {
             self.switch_scope(scope, before, &nodes, true, &mut counts);
         }
         counts.switch_commits += 1;
-        self.counters.pending_drain_counts.i18n.accumulate(counts);
+        self.invalidation
+            .counters
+            .pending_drain_counts
+            .i18n
+            .accumulate(counts);
     }
 
     fn switch_scope(
@@ -648,7 +704,12 @@ impl UiWorld {
             before.as_ref().map(Locale::formatting) != after.as_ref().map(Locale::formatting);
         let direction_moved =
             before.as_ref().map(Locale::direction) != after.as_ref().map(Locale::direction);
-        let generations = self.i18n.generations.entry(scope).or_default();
+        let generations = self
+            .overlays_a11y
+            .i18n
+            .generations
+            .entry(scope)
+            .or_default();
         generations.messages += u64::from(messages_moved);
         generations.language += u64::from(language_moved);
         generations.formatting += u64::from(formatting_moved);
@@ -660,7 +721,7 @@ impl UiWorld {
         for &id in nodes {
             let language = named
                 .cloned()
-                .or_else(|| self.i18n.nodes.get(&id)?.resolved.clone());
+                .or_else(|| self.overlays_a11y.i18n.nodes.get(&id)?.resolved.clone());
             // Moved messages resolve every node; a formatting locale that
             // moved alone, only the ones that format a number, a date or a
             // plural.
@@ -672,11 +733,12 @@ impl UiWorld {
         }
         if direction_moved && own_root {
             counts.direction_changed_scopes += 1;
-            let seeds_before = self.layout_seeds_created;
+            let seeds_before = self.invalidation.layout_seeds_created;
             match scope {
                 LocaleScope::Node(root) => self.restyle(root, None),
                 LocaleScope::Document(document) => {
                     let mut roots: Vec<StableNodeId> = self
+                        .tree
                         .live_document_roots
                         .get(&document)
                         .map(|roots| roots.iter().copied().collect())
@@ -687,7 +749,7 @@ impl UiWorld {
                     }
                 }
             }
-            counts.layout_seeds += (self.layout_seeds_created - seeds_before) as usize;
+            counts.layout_seeds += (self.invalidation.layout_seeds_created - seeds_before) as usize;
         }
     }
 
@@ -707,7 +769,7 @@ impl UiWorld {
         language: Option<LanguageTag>,
         counts: &mut I18nCounters,
     ) {
-        let Some(entry) = self.i18n.nodes.get(&id) else {
+        let Some(entry) = self.overlays_a11y.i18n.nodes.get(&id) else {
             counts.literal_nodes += 1;
             return;
         };
@@ -718,14 +780,14 @@ impl UiWorld {
         let asked = locale
             .as_ref()
             .map(|locale| locale.messages().clone())
-            .or_else(|| self.i18n.fallback.clone());
+            .or_else(|| self.overlays_a11y.i18n.fallback.clone());
         counts.nodes_resolved += 1;
-        let in_list = !self.i18n.virtual_lists.is_empty()
+        let in_list = !self.overlays_a11y.i18n.virtual_lists.is_empty()
             && std::iter::successors(self.parent_id(id), |node| self.parent_id(*node))
-                .any(|node| self.i18n.virtual_lists.contains(&node));
+                .any(|node| self.overlays_a11y.i18n.virtual_lists.contains(&node));
         counts.virtual_rows_resolved += usize::from(in_list);
         let found = asked.and_then(|asked| self.lookup_message(&asked, message, counts));
-        let mut shown = std::mem::take(&mut self.i18n.scratch);
+        let mut shown = std::mem::take(&mut self.overlays_a11y.i18n.scratch);
         shown.clear();
         let wrote = match &found {
             Some((resolved, compiled)) => {
@@ -735,8 +797,12 @@ impl UiWorld {
                     .as_ref()
                     .map(|locale| locale.formatting().clone())
                     .unwrap_or_else(|| resolved.clone());
-                let formatter =
-                    Arc::clone(self.i18n.formatter.get_or_insert_with(default_formatter));
+                let formatter = Arc::clone(
+                    self.overlays_a11y
+                        .i18n
+                        .formatter
+                        .get_or_insert_with(default_formatter),
+                );
                 let before = formatter.counts();
                 let mut issues = Vec::new();
                 compiled.format(
@@ -761,7 +827,7 @@ impl UiWorld {
                 }
                 true
             }
-            None => match self.i18n.missing {
+            None => match self.overlays_a11y.i18n.missing {
                 MissingMessage::Key => {
                     shown.push_str(&message.key());
                     true
@@ -769,7 +835,7 @@ impl UiWorld {
                 MissingMessage::KeepPrevious => false,
             },
         };
-        if let Some(entry) = self.i18n.nodes.get_mut(&id) {
+        if let Some(entry) = self.overlays_a11y.i18n.nodes.get_mut(&id) {
             entry.resolved = found.map(|(locale, _)| locale);
         }
         if self.localized_language(id) != language {
@@ -792,19 +858,20 @@ impl UiWorld {
             counts.resolved_content_unchanged += 1;
             counts.formatted_output_unchanged += 1;
         }
-        self.i18n.scratch = shown;
+        self.overlays_a11y.i18n.scratch = shown;
     }
 
     /// Whether `id`'s message, as last resolved, formats a number, a date or
     /// a plural: whether a formatting locale reaches it.
     fn localized_formats(&self, id: StableNodeId) -> bool {
-        let Some(entry) = self.i18n.nodes.get(&id) else {
+        let Some(entry) = self.overlays_a11y.i18n.nodes.get(&id) else {
             return false;
         };
         let Some(locale) = self.scope_locale(entry.scope) else {
             return true;
         };
-        self.i18n
+        self.overlays_a11y
+            .i18n
             .lookups
             .get(&(locale.messages().clone(), entry.text.message))
             .is_none_or(|found| {
@@ -825,17 +892,27 @@ impl UiWorld {
     ) -> Option<(LanguageTag, Arc<CompiledMessage>)> {
         counts.catalog_lookups += 1;
         let key = (asked.clone(), message);
-        if let Some(found) = self.i18n.lookups.get(&key) {
+        if let Some(found) = self.overlays_a11y.i18n.lookups.get(&key) {
             counts.catalog_cache_hits += 1;
             return found.clone();
         }
         counts.catalog_cache_misses += 1;
-        let pattern = self.i18n.catalog.as_ref().and_then(|catalog| {
-            let fallback = self.i18n.fallback.iter().flat_map(fallback_chain);
-            fallback_chain(asked)
-                .chain(fallback)
-                .find_map(|tag| catalog.pattern(&tag, message).map(|pattern| (tag, pattern)))
-        });
+        let pattern = self
+            .overlays_a11y
+            .i18n
+            .catalog
+            .as_ref()
+            .and_then(|catalog| {
+                let fallback = self
+                    .overlays_a11y
+                    .i18n
+                    .fallback
+                    .iter()
+                    .flat_map(fallback_chain);
+                fallback_chain(asked)
+                    .chain(fallback)
+                    .find_map(|tag| catalog.pattern(&tag, message).map(|pattern| (tag, pattern)))
+            });
         let found = pattern.map(|(tag, pattern)| {
             counts.message_patterns_compiled += 1;
             let compiled = CompiledMessage::parse(&pattern).unwrap_or_else(|error| {
@@ -854,7 +931,7 @@ impl UiWorld {
         if found.is_none() {
             nana_diagnostics::event!(nana_diagnostics::framework::text::I18N_MESSAGE_MISSING);
         }
-        self.i18n.lookups.insert(key, found.clone());
+        self.overlays_a11y.i18n.lookups.insert(key, found.clone());
         found
     }
 }

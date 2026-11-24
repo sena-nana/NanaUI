@@ -39,7 +39,7 @@ fn animated_world() -> UiWorld {
 }
 
 fn width(world: &UiWorld) -> Option<f32> {
-    match world.node_style(node(1))?.layout.width? {
+    match world.layout_style(node(1))?.width? {
         LengthSpec::Px(px) => Some(px),
         _ => None,
     }
@@ -425,7 +425,7 @@ mod media_time {
         queue.despawn_subtree(node(2));
         world.commit(queue).unwrap();
         assert_eq!(world.media_time(node(2)), None);
-        assert!(world.media_time_mappings.is_empty());
+        assert!(world.invalidation.media_time_mappings.is_empty());
     }
 }
 

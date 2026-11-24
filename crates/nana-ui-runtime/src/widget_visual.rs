@@ -122,6 +122,22 @@ impl WidgetPaintCtx<'_> {
         self.world.secondary_text_color(self.id)
     }
 
+    /// Reads an active or held scalar track directly from [`PresentationStore`]
+    /// for a [`crate::component_animation_kinds`] tag on this node.
+    pub fn presentation_scalar(&self, kind: u64) -> Option<f32> {
+        let animation_id = crate::component_animation_id(kind, self.id)?;
+        let overlay = self
+            .world
+            .presentation_store()
+            .get(animation_id.track_id())?;
+        let sample =
+            nana_ui_core::motion::evaluate_track(&overlay.track, self.world.animation_now());
+        match sample.applied_value()? {
+            crate::MotionValue::Scalar(value) if value.is_finite() => Some(value),
+            _ => None,
+        }
+    }
+
     pub fn is_focus_visible(&self) -> bool {
         self.world.is_focus_visible_node(self.id)
     }

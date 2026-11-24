@@ -61,7 +61,9 @@ impl UiWorld {
     pub fn project_accessibility_nodes(&self, ids: &[StableNodeId]) -> Vec<AccessibilityNode> {
         let projected = self.project_nodes(ids, true);
         #[cfg(any(test, feature = "layout-verify"))]
-        self.accessibility_shipped.record(&projected, &[]);
+        self.overlays_a11y
+            .accessibility_shipped
+            .record(&projected, &[]);
         projected
     }
 

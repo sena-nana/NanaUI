@@ -15,7 +15,7 @@ impl UiWorld {
         if self.len() > 4096 {
             return;
         }
-        let index = &self.hit_test_index[&document];
+        let index = &self.hit_index.hit_test_index[&document];
         let mut below: Vec<StableNodeId> = Vec::new();
         let mut open: Vec<StableNodeId> = moved.to_vec();
         while let Some(id) = open.pop() {
@@ -144,7 +144,7 @@ impl UiWorld {
         if self.nodes.len() > HIT_AUDIT_LIMIT {
             return;
         }
-        for (&document, index) in &self.hit_test_index {
+        for (&document, index) in &self.hit_index.hit_test_index {
             for (&id, indexed) in &index.entries {
                 let entry = &indexed.entry;
                 if !entry.hittable && entry.menu.is_none() {

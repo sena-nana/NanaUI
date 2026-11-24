@@ -35,7 +35,7 @@ pub(crate) struct PageOriginScope<'a> {
 
 impl Drop for PageOriginScope<'_> {
     fn drop(&mut self) {
-        let mut origins = self.world.page_origins.borrow_mut();
+        let mut origins = self.world.invalidation.page_origins.borrow_mut();
         origins.open -= 1;
         if origins.open == 0 {
             origins.origins.clear();
@@ -47,17 +47,22 @@ impl UiWorld {
     /// Remember page origins until the scope is dropped. Nothing can write
     /// a box meanwhile: the scope borrows the world.
     pub(crate) fn remember_page_origins(&self) -> PageOriginScope<'_> {
-        self.page_origins.borrow_mut().open += 1;
+        self.invalidation.page_origins.borrow_mut().open += 1;
         PageOriginScope { world: self }
     }
 
     /// `record`'s page origin through the remembered frames, when a scope is
     /// open, no component geometry is being derived and the box is deep.
-    pub(super) fn remembered_page_origin(&self, record: &NodeRecord) -> Option<[f32; 2]> {
-        if record.depth <= DIRECT_DEPTH || self.geometry_frame.get().is_some() {
+    pub(super) fn remembered_page_origin(
+        &self,
+        node_id: StableNodeId,
+        record: &NodeRecord,
+        geometry_frame: Option<StableNodeId>,
+    ) -> Option<[f32; 2]> {
+        if record.depth <= DIRECT_DEPTH || geometry_frame.is_some() {
             return None;
         }
-        let mut memo = self.page_origins.try_borrow_mut().ok()?;
+        let mut memo = self.invalidation.page_origins.try_borrow_mut().ok()?;
         if memo.open == 0 {
             return None;
         }
@@ -65,6 +70,7 @@ impl UiWorld {
         chain.clear();
         let mut base = None;
         let mut id = None;
+        let mut cursor_id = node_id;
         let mut cursor = Some(record);
         while let Some(node) = cursor {
             #[cfg(test)]
@@ -76,9 +82,15 @@ impl UiWorld {
             if matches!(node.kind.as_ref(), NodeKind::Document) {
                 break;
             }
-            chain.push((id, [node.local_layout.x, node.local_layout.y]));
-            id = self.frame_node(node);
-            cursor = id.and_then(|frame| self.nodes.get(frame));
+            let local_box = self.nodes.local_layout(cursor_id);
+            chain.push((id, [local_box.x, local_box.y]));
+            id = self.frame_node(cursor_id, node);
+            if let Some(next_id) = id {
+                cursor_id = next_id;
+                cursor = self.nodes.get(next_id);
+            } else {
+                cursor = None;
+            }
         }
         // The same additions in the same order as the full walk: from the
         // top local (or the remembered sum down to a frame) down to the box.

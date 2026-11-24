@@ -5,10 +5,10 @@ use super::*;
 impl UiWorld {
     pub(super) fn stacking_z_index_memo(&self, id: StableNodeId, memo: &mut AncestorMemo) -> i32 {
         #[cfg(feature = "controls")]
-        let previews = !self.reorder_previews.is_empty();
+        let previews = !self.motion.reorder_previews.is_empty();
         #[cfg(not(feature = "controls"))]
         let previews = false;
-        if self.z_index_nodes == 0 && !previews {
+        if self.invalidation.z_index_nodes == 0 && !previews {
             return 0;
         }
         memo.chain.clear();
@@ -102,7 +102,11 @@ impl UiWorld {
         let mut style = Arc::clone(&node.resolved.0);
         if node.resolved.1 == 0
             || (node.resolved.1 != self.resolved_palette_epoch()
-                && self.theme_state.pending_theme_eval.contains_key(&id))
+                && self
+                    .invalidation
+                    .theme_state
+                    .pending_theme_eval
+                    .contains_key(&id))
         {
             let inherited_color = self.inherited_palette_color(node.hierarchy.parent);
             self.repaint_style(id, &mut style, inherited_color);
@@ -156,18 +160,18 @@ impl UiWorld {
                 node.document,
                 self.nodes.layout_padding(id),
                 node.style.layout.white_space.preserve_newlines(),
-                node.local_layout,
-                node.layout_frame(),
+                self.nodes.local_layout(id),
+                self.nodes.layout_frame(id),
             )
         };
-        // Extraction also runs during retained writeback, before the next
-        // immutable result is published. Keep the compatibility fallback for
-        // this transitional projection; scene/hit geometry uses canonical
-        // accessors once the batch is committed.
         let layout = self.component_layout_box(id)?;
         if resolved_epoch == 0
             || (resolved_epoch != self.resolved_palette_epoch()
-                && self.theme_state.pending_theme_eval.contains_key(&id))
+                && self
+                    .invalidation
+                    .theme_state
+                    .pending_theme_eval
+                    .contains_key(&id))
         {
             let inherited_color = parent.and_then(|parent| {
                 memo.color
@@ -202,10 +206,11 @@ impl UiWorld {
         };
         // The style's painter is already in hand; only a tree someone set a
         // painter on apart from the style pays a lookup.
-        let painter = if self.painter_overrides.is_empty() {
+        let painter = if self.invalidation.painter_overrides.is_empty() {
             source_style.painter.as_ref()
         } else {
-            self.painter_overrides
+            self.invalidation
+                .painter_overrides
                 .get(&id)
                 .or(source_style.painter.as_ref())
         };
@@ -247,7 +252,7 @@ impl UiWorld {
         // against the painted node's own width. Authored world style stays intact.
         // With no length animation, used padding is the layout pass value or
         // the resolved style itself, so an unset pass cannot disagree.
-        let padding = if self.layout_length_tracks.is_empty() {
+        let padding = if !self.has_layout_length_overlays() {
             layout_padding
         } else {
             Some(self.used_layout_padding(id))
@@ -269,6 +274,7 @@ impl UiWorld {
             layout.padding_left = Some(nana_ui_core::LengthSpec::Px(padding.left));
         }
         let document_selection = self
+            .text
             .document_text_selections
             .get(&document)
             .filter(|selection| selection.node == id && !selection.is_empty());
@@ -378,12 +384,12 @@ impl UiWorld {
                 .has_custom_render()
                 .then(|| self.nodes.custom_render(id).cloned())
                 .flatten(),
-            drop_hover: (self.drop_hover.map(|(hover, _)| hover) == Some(id)).then(|| {
-                crate::DropHoverOverlay {
+            drop_hover: (self.overlays_a11y.drop_hover.map(|(hover, _)| hover) == Some(id)).then(
+                || crate::DropHoverOverlay {
                     fill: model.palette.accent_soft.as_rgba_array(),
                     border: model.palette.accent.as_rgba_array(),
-                }
-            }),
+                },
+            ),
             document_text_selection,
             document_text_selection_color,
             compositor: self.extracted_compositor(id),
@@ -407,10 +413,10 @@ impl UiWorld {
             .get(id)
             .map(|node| Arc::clone(&node.resolved.0))
             .unwrap_or_default();
-        if let Some(held) = self.paint_recordings.borrow().get(&id)
+        if let Some(held) = self.invalidation.paint_recordings.borrow().get(&id)
             && held.key == key
             && held.measured_text.as_ref().is_none_or(|(style, backend)| {
-                *backend == self.text_backend
+                *backend == self.text.text_backend
                     && (Arc::ptr_eq(style, &base)
                         || !crate::text_node::classify_computed_style_change(style, &base)
                             .intersects(
@@ -434,7 +440,7 @@ impl UiWorld {
             state,
             &measure,
         ));
-        let mut recordings = self.paint_recordings.borrow_mut();
+        let mut recordings = self.invalidation.paint_recordings.borrow_mut();
         // The same ops as last time keep the same `Arc`: the scene reuses
         // its triangles by identity, so a painter that ignores, say, hover is
         // not re-triangulated on it.
@@ -458,7 +464,7 @@ impl UiWorld {
                 key,
                 recording: Arc::clone(&recording),
                 latest,
-                measured_text: measured.get().then_some((base, self.text_backend)),
+                measured_text: measured.get().then_some((base, self.text.text_backend)),
             },
         );
         recording
@@ -481,10 +487,10 @@ impl UiWorld {
             .get(id)
             .map(|node| Arc::clone(&node.resolved.0))
             .unwrap_or_default();
-        if let Some(held) = self.modal_surface_recordings.borrow().get(&id)
+        if let Some(held) = self.invalidation.modal_surface_recordings.borrow().get(&id)
             && held.key == key
             && held.measured_text.as_ref().is_none_or(|(style, backend)| {
-                *backend == self.text_backend
+                *backend == self.text.text_backend
                     && (Arc::ptr_eq(style, &base)
                         || !crate::text_node::classify_computed_style_change(style, &base)
                             .intersects(
@@ -508,7 +514,7 @@ impl UiWorld {
             sections,
             &measure,
         ));
-        let mut recordings = self.modal_surface_recordings.borrow_mut();
+        let mut recordings = self.invalidation.modal_surface_recordings.borrow_mut();
         // The same ops keep the same `Arc`, so the scene reuses the card's
         // triangles by identity.
         let recording = match recordings.get(&id) {
@@ -521,7 +527,7 @@ impl UiWorld {
                 key,
                 recording: Arc::clone(&recording),
                 latest: Arc::new(std::sync::RwLock::new(Arc::clone(&recording))),
-                measured_text: measured.get().then_some((base, self.text_backend)),
+                measured_text: measured.get().then_some((base, self.text.text_backend)),
             },
         );
         recording
@@ -536,7 +542,8 @@ impl UiWorld {
         layout: LayoutBox,
     ) -> Option<super::SharedRecording> {
         self.custom_paint(id, painter, layout);
-        self.paint_recordings
+        self.invalidation
+            .paint_recordings
             .borrow()
             .get(&id)
             .map(|held| Arc::clone(&held.latest))
@@ -545,14 +552,14 @@ impl UiWorld {
     /// The painter set on `id` apart from its style
     /// ([`crate::UiMutation::SetPainter`]).
     pub fn painter_override(&self, id: StableNodeId) -> Option<&crate::NodePainter> {
-        self.painter_overrides.get(&id)
+        self.invalidation.painter_overrides.get(&id)
     }
 
     /// The painter a node paints with: one set on the node, else its
     /// style's.
     pub(crate) fn node_painter(&self, id: StableNodeId) -> Option<&crate::NodePainter> {
-        if !self.painter_overrides.is_empty()
-            && let Some(painter) = self.painter_overrides.get(&id)
+        if !self.invalidation.painter_overrides.is_empty()
+            && let Some(painter) = self.invalidation.painter_overrides.get(&id)
         {
             return Some(painter);
         }
@@ -751,7 +758,7 @@ impl UiWorld {
         ids: &[StableNodeId],
         previous: impl Fn(StableNodeId) -> Option<&'a ExtractedNode>,
     ) -> (Vec<ExtractedNode>, Vec<ExtractedMove>) {
-        let epoch = self.render_epoch.get();
+        let epoch = self.invalidation.render_epoch.get();
         // A subtree mounted deep in the page sums its depth once.
         let _origins = self.remember_page_origins();
         let mut memo = AncestorMemo::default();
@@ -788,11 +795,13 @@ impl UiWorld {
         self.check_records_kept_under_moves(ids, &previous);
         // Marks from here on say why the next call's nodes are dirty.
         let next_epoch = epoch.wrapping_add(1);
-        self.render_epoch.set(if next_epoch == u32::MAX {
-            0
-        } else {
-            next_epoch
-        });
+        self.invalidation
+            .render_epoch
+            .set(if next_epoch == u32::MAX {
+                0
+            } else {
+                next_epoch
+            });
         (extracted, moved)
     }
 
@@ -818,11 +827,11 @@ impl UiWorld {
         let batch: NodeSet = ids.iter().copied().collect();
         let mut seen = NodeSet::default();
         for &root in ids {
-            let (Some(held), Some(record)) = (previous(root), self.nodes.get(root)) else {
+            let Some(held) = previous(root) else {
                 continue;
             };
-            if held.local_layout == record.local_layout
-                && held.layout_frame == record.layout_frame()
+            if held.local_layout == self.nodes.local_layout(root)
+                && held.layout_frame == self.nodes.layout_frame(root)
             {
                 continue;
             }
@@ -913,9 +922,9 @@ impl UiWorld {
         let record = self.nodes.get(id)?;
         let moved = ExtractedMove {
             id,
-            layout: self.record_layout_box(record),
-            local_layout: record.local_layout,
-            layout_frame: record.layout_frame(),
+            layout: self.record_layout_box(id, record),
+            local_layout: self.nodes.local_layout(id),
+            layout_frame: self.nodes.layout_frame(id),
             extracted_layout: self.extracted_layout(id),
         };
         #[cfg(any(test, feature = "layout-verify"))]

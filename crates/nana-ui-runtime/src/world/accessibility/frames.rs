@@ -150,7 +150,7 @@ impl UiWorld {
                 continue;
             }
             let origin = if index == 0 {
-                if plain && self.layout_results.is_empty() {
+                if plain && !self.nodes.has_widget_visuals() {
                     self.layout_origin(parent).map(|[x, y]| (x, y))
                 } else {
                     self.accessible_viewport_bounds(parent, plain, memo)
@@ -277,14 +277,14 @@ impl UiWorld {
         memo: &mut ProjectionMemo,
     ) -> Option<(LayoutBox, Option<nana_ui_core::PaintTransform>)> {
         let record = self.nodes.get(entry.id)?;
-        if record.layout_frame() != crate::LayoutFrame::Parent
+        if self.nodes.layout_frame(entry.id) != crate::LayoutFrame::Parent
             || record.hierarchy.parent != Some(parent)
             || matches!(record.kind.as_ref(), NodeKind::Document)
-            || self.geometry_frame.get().is_some()
+            || self.invalidation.geometry_frame.get().is_some()
         {
             return None;
         }
-        let local = record.local_layout;
+        let local = self.nodes.local_layout(entry.id);
         let offset = LayoutBox {
             x: local.x,
             y: local.y,
@@ -326,7 +326,7 @@ impl UiWorld {
         {
             return None;
         }
-        let own = self.record_layout_origin(record);
+        let own = self.record_layout_origin(entry.id, record);
         let above = self.layout_origin(parent)?;
         let parent_bounds = self.accessible_viewport_bounds(parent, plain, memo)?;
         ([entry.bounds.x, entry.bounds.y] == own && [parent_bounds.x, parent_bounds.y] == above)

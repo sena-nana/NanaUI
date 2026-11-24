@@ -198,7 +198,7 @@ impl UiWorld {
         loop {
             #[cfg(test)]
             {
-                self.block_read_steps += 1;
+                self.tree.block_read_steps += 1;
             }
             let Some(record) = self.nodes.get_mut(parent) else {
                 return;
@@ -330,10 +330,10 @@ mod tests {
         let (mut world, ids) = chain(12);
         let leaf = *ids.last().unwrap();
         assert!(ids.iter().all(|id| !world.subtree_reads_block_extent(*id)));
-        let steps = world.block_read_steps;
+        let steps = world.tree.block_read_steps;
         restyle(&mut world, leaf, percent());
         assert!(ids.iter().all(|id| world.subtree_reads_block_extent(*id)));
-        assert!(world.block_read_steps - steps <= ids.len() as u64 + 1);
+        assert!(world.tree.block_read_steps - steps <= ids.len() as u64 + 1);
         world.check_block_extent_reads();
 
         restyle(&mut world, ids[5], fixed_height());
@@ -433,12 +433,12 @@ mod tests {
         assert!(world.subtree_reads_block_extent(subtree));
         world.check_block_extent_reads();
 
-        let steps = world.block_read_steps;
+        let steps = world.tree.block_read_steps;
         let mut queue = MutationQueue::new();
         queue.insert(ids[3], subtree, None);
         world.commit(queue).unwrap();
         assert!(ids.iter().all(|id| world.subtree_reads_block_extent(*id)));
-        assert!(world.block_read_steps - steps <= ids.len() as u64 + 1);
+        assert!(world.tree.block_read_steps - steps <= ids.len() as u64 + 1);
         world.check_block_extent_reads();
     }
 
@@ -462,13 +462,13 @@ mod tests {
             let mut world = UiWorld::new();
             world.commit(b.queue).unwrap();
             let leaf = *chain.last().unwrap();
-            let steps = world.block_read_steps;
+            let steps = world.tree.block_read_steps;
             restyle(&mut world, leaf, percent());
             restyle(&mut world, leaf, column());
             let mut queue = MutationQueue::new();
             queue.detach(chain[0]);
             world.commit(queue).unwrap();
-            costs.push(world.block_read_steps - steps);
+            costs.push(world.tree.block_read_steps - steps);
         }
         assert_eq!(costs[0], costs[1]);
     }

@@ -334,7 +334,7 @@ impl Placement {
             own: Extent::of(crate::LayoutBox {
                 x: 0.0,
                 y: 0.0,
-                ..record.local_layout
+                ..world.nodes.local_layout(id)
             }),
             contained: overflow_contained_axes(&record.style.layout, world.nodes.widget_visual(id)),
             omitted: record.style.layout.omits_box(),
@@ -531,9 +531,10 @@ impl ContentBoundsIndex {
             _ => {
                 // A box measured from its parent stands at its local offset
                 // ([`UiWorld::layout_box_from`] without looking it up again).
-                let offset = match (record.layout_frame(), record.hierarchy.parent) {
+                let offset = match (world.nodes.layout_frame(child), record.hierarchy.parent) {
                     (crate::LayoutFrame::Parent, Some(_)) => {
-                        [record.local_layout.x, record.local_layout.y]
+                        let local = world.nodes.local_layout(child);
+                        [local.x, local.y]
                     }
                     (_, parent) => from(parent),
                 };
@@ -652,12 +653,13 @@ impl ContentBoundsIndex {
 /// again. Only an open triggered menu places a child `fixed`, so with none
 /// open the box's own position is the answer.
 fn record_clip_position(world: &UiWorld, id: StableNodeId, record: &NodeRecord) -> PositionSpec {
-    let position =
-        if !world.triggered_overlays.is_empty() && world.parent_triggered_overlay(id).is_some() {
-            PositionSpec::Fixed
-        } else {
-            record.resolved_layout.position
-        };
+    let position = if !world.overlays_a11y.triggered_overlays.is_empty()
+        && world.parent_triggered_overlay(id).is_some()
+    {
+        PositionSpec::Fixed
+    } else {
+        record.resolved_layout.position
+    };
     debug_assert_eq!(position, world.clip_position(id), "{id:?}");
     position
 }
@@ -687,7 +689,7 @@ impl UiWorld {
         &self,
         id: StableNodeId,
     ) -> ((f32, f32), (usize, usize)) {
-        let mut index = self.scroll_content_bounds.borrow_mut();
+        let mut index = self.scroll.content_bounds.borrow_mut();
         // Measured as a difference: the count is the world's to fold.
         let refreshed = index.refreshed;
         index.range_updates = 0;
@@ -708,7 +710,7 @@ impl UiWorld {
 
     /// [`Self::scroll_content_extent`] measured from `id`'s own origin.
     pub(crate) fn scroll_content_extent_local(&self, id: StableNodeId) -> Extent {
-        let extent = self.scroll_content_bounds.borrow_mut().content(self, id);
+        let extent = self.scroll.content_bounds.borrow_mut().content(self, id);
         #[cfg(any(test, feature = "layout-verify"))]
         self.check_scroll_content_extent(id, extent);
         extent
@@ -738,27 +740,28 @@ impl UiWorld {
 
     /// Extent recomputes not yet folded into the work counters.
     pub(super) fn pending_scroll_extent_recomputes(&self) -> usize {
-        self.scroll_content_bounds
+        self.scroll
+            .content_bounds
             .try_borrow()
             .map_or(0, |index| index.refreshed)
     }
 
     /// Hand the extent recomputes over to the work counters.
     pub(super) fn take_scroll_extent_recomputes(&mut self) -> usize {
-        std::mem::take(&mut self.scroll_content_bounds.get_mut().refreshed)
+        std::mem::take(&mut self.scroll.content_bounds.get_mut().refreshed)
     }
 
     pub(super) fn invalidate_scroll_content(&self, id: StableNodeId) {
-        self.scroll_content_bounds.borrow_mut().invalidate(self, id);
+        self.scroll.content_bounds.borrow_mut().invalidate(self, id);
     }
 
     /// `id`'s box was written; the commit marks all of them when it ends.
     pub(super) fn defer_scroll_content(&self, id: StableNodeId) {
-        self.scroll_content_bounds.borrow_mut().defer(id);
+        self.scroll.content_bounds.borrow_mut().defer(id);
     }
 
     pub(super) fn flush_scroll_content(&self) {
-        self.scroll_content_bounds.borrow_mut().flush(self);
+        self.scroll.content_bounds.borrow_mut().flush(self);
     }
 
     pub(super) fn invalidate_scroll_topology(
@@ -766,7 +769,8 @@ impl UiWorld {
         child: StableNodeId,
         parent: Option<StableNodeId>,
     ) {
-        self.scroll_content_bounds
+        self.scroll
+            .content_bounds
             .borrow_mut()
             .topology(self, child, parent);
     }
@@ -807,7 +811,7 @@ mod tests {
         let mut world = fixture(10_000);
         assert_eq!(far(&world, id(1)), (10.0, 100_000.0));
         {
-            let mut index = world.scroll_content_bounds.borrow_mut();
+            let mut index = world.scroll.content_bounds.borrow_mut();
             index.refreshed = 0;
             index.range_updates = 0;
         }
@@ -816,7 +820,7 @@ mod tests {
         world.commit(mutations).unwrap();
         assert_eq!(far(&world, id(1)), (10.0, 99_990.0));
         {
-            let index = world.scroll_content_bounds.borrow();
+            let index = world.scroll.content_bounds.borrow();
             assert_eq!(index.refreshed, 2);
             assert!(index.range_updates <= 16);
         }
@@ -824,7 +828,7 @@ mod tests {
         mutations.set_scroll_offset(id(1), crate::ScrollOffset { x: 0.0, y: 5.0 });
         world.commit(mutations).unwrap();
         assert_eq!(far(&world, id(1)), (10.0, 99_990.0));
-        assert_eq!(world.scroll_content_bounds.borrow().refreshed, 2);
+        assert_eq!(world.scroll.content_bounds.borrow().refreshed, 2);
     }
 
     /// The reference walk: every box under `root` that `root`'s clip
@@ -951,7 +955,7 @@ mod tests {
                     .translated(world.layout_origin(root).unwrap_or_default());
                 assert_eq!(read, fresh, "{step}: {root:?} against a fresh index");
             }
-            assert!(world.scroll_content_bounds.borrow().settled(), "{step}");
+            assert!(world.scroll.content_bounds.borrow().settled(), "{step}");
         };
         check(&world, "initial");
         // The scrollers hold their in-flow boxes alone: the absolute boxes
@@ -1149,7 +1153,7 @@ mod tests {
         assert_eq!(far(&world, id(1)), (10.0, 10_000.0));
         for (shift, count) in [(-5.0, 1_000), (7.0, 900), (-3.0, 400)] {
             {
-                let mut index = world.scroll_content_bounds.borrow_mut();
+                let mut index = world.scroll.content_bounds.borrow_mut();
                 index.refreshed = 0;
                 index.range_updates = 0;
             }
@@ -1167,7 +1171,7 @@ mod tests {
             assert_eq!(world.scroll_content_extent(id(1)), brute(&world, id(1)));
             // A run of `count` leaves and the nodes above them once: about
             // 2 · count, not `count` root-to-leaf paths of 11 nodes.
-            let work = world.scroll_content_bounds.borrow().range_updates;
+            let work = world.scroll.content_bounds.borrow().range_updates;
             assert!(work <= 2 * count as usize + 11, "{count}: {work}");
         }
     }
@@ -1336,7 +1340,7 @@ mod tests {
                 step % 2 == 1,
             );
             {
-                let mut index = world.scroll_content_bounds.borrow_mut();
+                let mut index = world.scroll.content_bounds.borrow_mut();
                 index.range_updates = 0;
             }
             world.commit(mutations).unwrap();
@@ -1347,14 +1351,14 @@ mod tests {
             if !matches!(step % 6, 3 | 5) {
                 // The moved rows' leaves and about as many nodes above them
                 // (with the list and its parent), not a refill of the list.
-                let work = world.scroll_content_bounds.borrow().range_updates;
+                let work = world.scroll.content_bounds.borrow().range_updates;
                 assert!(
                     work <= 2 * moved + 2 * 10 + 4,
                     "step {step}: {work} for {moved} moved rows"
                 );
             }
             assert!(
-                world.scroll_content_bounds.borrow().settled(),
+                world.scroll.content_bounds.borrow().settled(),
                 "step {step}"
             );
         }
@@ -1430,7 +1434,8 @@ mod tests {
         assert_eq!(world.scroll_content_extent(id(1)), brute(&world, id(1)));
         assert!(
             !world
-                .scroll_content_bounds
+                .scroll
+                .content_bounds
                 .borrow()
                 .entries
                 .contains_key(&id(5))
@@ -1438,7 +1443,7 @@ mod tests {
         let mut mutations = MutationQueue::new();
         mutations.despawn_subtree(id(1));
         world.commit(mutations).unwrap();
-        let index = world.scroll_content_bounds.borrow();
+        let index = world.scroll.content_bounds.borrow();
         assert!(index.entries.is_empty());
         assert!(index.settled());
     }
@@ -1466,17 +1471,17 @@ mod tests {
             mutations.write_layout(id(value), rectangle(value as f32));
             world.commit(mutations).unwrap();
             assert_eq!(far(&world, id(1)), (10.0, value as f32 + 10.0));
-            let before = world.scroll_content_bounds.borrow().refreshed;
+            let before = world.scroll.content_bounds.borrow().refreshed;
             assert_eq!(
                 far(&world, id(1000)),
                 (f32::NEG_INFINITY, f32::NEG_INFINITY)
             );
-            assert_eq!(world.scroll_content_bounds.borrow().refreshed, before);
+            assert_eq!(world.scroll.content_bounds.borrow().refreshed, before);
             let mut mutations = MutationQueue::new();
             mutations.despawn_subtree(id(value));
             world.commit(mutations).unwrap();
             assert_eq!(far(&world, id(1)), (f32::NEG_INFINITY, f32::NEG_INFINITY));
-            let index = world.scroll_content_bounds.borrow();
+            let index = world.scroll.content_bounds.borrow();
             assert_eq!(index.entries.len(), 2);
             assert!(index.settled());
         }
@@ -1510,7 +1515,7 @@ mod tests {
             mutations.despawn_subtree(id(value));
             world.commit(mutations).unwrap();
             world.scroll_content_extent(id(999));
-            let index = world.scroll_content_bounds.borrow();
+            let index = world.scroll.content_bounds.borrow();
             assert_eq!(index.entries.len(), 2);
             assert!(
                 index
@@ -1521,7 +1526,7 @@ mod tests {
             );
         }
         assert_eq!(world.scroll_content_extent(id(1)), brute(&world, id(1)));
-        let index = world.scroll_content_bounds.borrow();
+        let index = world.scroll.content_bounds.borrow();
         assert!(index.settled());
     }
 
@@ -1529,7 +1534,7 @@ mod tests {
     fn unqueried_document_does_not_allocate_content_index_work() {
         let mut world = fixture(4);
         world.scroll_content_extent(id(1));
-        let before = world.scroll_content_bounds.borrow().refreshed;
+        let before = world.scroll.content_bounds.borrow().refreshed;
         let document = crate::DocumentId::new(2).unwrap();
         let mut mutations = MutationQueue::new();
         mutations.create(id(10), document, NodeKind::Document);
@@ -1540,12 +1545,12 @@ mod tests {
         }
         world.commit(mutations).unwrap();
         {
-            let index = world.scroll_content_bounds.borrow();
+            let index = world.scroll.content_bounds.borrow();
             assert_eq!(index.entries.len(), 5);
             assert!(index.settled());
         }
         world.scroll_content_extent(id(1));
-        assert_eq!(world.scroll_content_bounds.borrow().refreshed, before);
+        assert_eq!(world.scroll.content_bounds.borrow().refreshed, before);
         assert_eq!(world.scroll_content_extent(id(10)), brute(&world, id(10)));
     }
 

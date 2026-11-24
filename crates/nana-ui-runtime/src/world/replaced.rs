@@ -104,17 +104,18 @@ impl UiWorld {
     /// natural size, or whether it is replaced at all, and its box reads
     /// either, seed it.
     pub(super) fn reindex_replaced(&mut self, id: StableNodeId) {
-        let before = self.replaced.by_node.get(&id).cloned();
-        let natural_before = self.replaced.natural(id);
+        let before = self.overlays_a11y.replaced.by_node.get(&id).cloned();
+        let natural_before = self.overlays_a11y.replaced.natural(id);
         let now = self.replaced_resource_of(id);
         if before == now {
             return;
         }
         let replaced_toggled = before.is_some() != now.is_some();
-        self.replaced.set(id, now);
+        self.overlays_a11y.replaced.set(id, now);
         // Replaced or not, the box aligns by a different baseline.
         if replaced_toggled
-            || (natural_before != self.replaced.natural(id) && self.reads_natural_size(id))
+            || (natural_before != self.overlays_a11y.replaced.natural(id)
+                && self.reads_natural_size(id))
         {
             self.seed_natural_size(id);
         }
@@ -122,28 +123,31 @@ impl UiWorld {
 
     /// Forget a node that is gone.
     pub(super) fn forget_replaced(&mut self, id: StableNodeId) {
-        self.replaced.set(id, None);
+        self.overlays_a11y.replaced.set(id, None);
     }
 
     /// What `resource` reported about its size, if it did.
     pub fn replaced_metadata(&self, resource: &ReplacedResource) -> Option<ReplacedMetadata> {
-        self.replaced.metadata.get(resource).copied()
+        self.overlays_a11y.replaced.metadata.get(resource).copied()
     }
 
     /// Whether a node shows `resource`, so that what it reports reaches a box.
     pub fn shows_replaced(&self, resource: &ReplacedResource) -> bool {
-        self.replaced.dependents.contains_key(resource)
+        self.overlays_a11y
+            .replaced
+            .dependents
+            .contains_key(resource)
     }
 
     /// Whether `id` shows replaced content: an image, host texture or custom
     /// renderer, whether or not its resource has reported a size yet.
     pub(crate) fn shows_replaced_content(&self, id: StableNodeId) -> bool {
-        self.replaced.by_node.contains_key(&id)
+        self.overlays_a11y.replaced.by_node.contains_key(&id)
     }
 
     /// The natural size of what `id` shows, once its resource reported one.
     pub(crate) fn replaced_natural_size(&self, id: StableNodeId) -> Option<ReplacedMetadata> {
-        self.replaced.natural(id)
+        self.overlays_a11y.replaced.natural(id)
     }
 
     /// `resource` reported what it knows of its size. The nodes that show it
@@ -155,23 +159,30 @@ impl UiWorld {
         metadata: Option<ReplacedMetadata>,
     ) {
         let previous = match metadata {
-            Some(metadata) => self.replaced.metadata.insert(resource.clone(), metadata),
-            None => self.replaced.metadata.remove(resource),
+            Some(metadata) => self
+                .overlays_a11y
+                .replaced
+                .metadata
+                .insert(resource.clone(), metadata),
+            None => self.overlays_a11y.replaced.metadata.remove(resource),
         };
         if previous == metadata {
             return;
         }
-        self.counters
+        self.invalidation
+            .counters
             .pending_drain_counts
             .replaced_intrinsic_metadata_updates += 1;
         let mut dependents: Vec<StableNodeId> = self
+            .overlays_a11y
             .replaced
             .dependents
             .get(resource)
             .map(|nodes| nodes.iter().copied().collect())
             .unwrap_or_default();
         dependents.sort_unstable();
-        self.counters
+        self.invalidation
+            .counters
             .pending_drain_counts
             .resource_intrinsic_dependents_notified += dependents.len();
         for id in dependents {
@@ -208,7 +219,7 @@ impl UiWorld {
     /// The natural size `id` shows moved: it measures again and exports its
     /// new size and baseline, as text whose metrics moved does.
     fn seed_natural_size(&mut self, id: StableNodeId) {
-        let seeds_before = self.layout_seeds_created;
+        let seeds_before = self.invalidation.layout_seeds_created;
         self.record_layout_invalidation(
             id,
             LayoutInvalidation::new(
@@ -219,7 +230,10 @@ impl UiWorld {
                 METRIC_EXPORTS,
             ),
         );
-        self.counters.pending_drain_counts.replaced_layout_seeds +=
-            (self.layout_seeds_created - seeds_before) as usize;
+        self.invalidation
+            .counters
+            .pending_drain_counts
+            .replaced_layout_seeds +=
+            (self.invalidation.layout_seeds_created - seeds_before) as usize;
     }
 }

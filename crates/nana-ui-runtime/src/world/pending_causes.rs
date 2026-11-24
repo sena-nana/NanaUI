@@ -25,7 +25,7 @@ fn frame(cx: &mut AppContext) {
 }
 
 fn pending(cx: &AppContext) -> usize {
-    cx.world().pending_layout_invalidations.len()
+    cx.world().invalidation.pending_layout_invalidations.len()
 }
 
 /// A column of `rows` labels, laid out.

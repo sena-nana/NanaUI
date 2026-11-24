@@ -506,7 +506,7 @@ impl UiWorld {
         }
         if let Some(document) = self.document_of(target)
             && !self.has_compositor_transform_overlay_for(document)
-            && let Some(index) = self.hit_test_index.get(&document)
+            && let Some(index) = self.hit_index.hit_test_index.get(&document)
             && let Some(indexed) = index.entries.get(&target)
         {
             // The entry maps its own box's coordinates; the answer is the
@@ -540,7 +540,7 @@ impl UiWorld {
             let result = ((a * x + c * y + e) / w, (b * x + d * y + f) / w);
             return (result.0.is_finite() && result.1.is_finite()).then_some(result);
         }
-        let index = self.hit_test_index.get(&document)?;
+        let index = self.hit_index.hit_test_index.get(&document)?;
         let entry = &index.entries.get(&target)?.entry;
         let [origin_x, origin_y] = self.layout_origin(target)?;
         let (x, y) = (x - origin_x, y - origin_y);

@@ -35,7 +35,7 @@ impl UiWorld {
         above: bool,
         memo: &ProjectionMemo,
     ) -> Option<AccessibleTransform> {
-        if !above || self.geometry_frame.get().is_some() {
+        if !above || self.invalidation.geometry_frame.get().is_some() {
             return None;
         }
         memo.transforms.get(&parent).copied()
@@ -62,7 +62,7 @@ impl UiWorld {
         {
             let ([a, b, c, d, e, f], [g, h]) = transform.children;
             if g == 0.0 && h == 0.0 {
-                let local = record.local_layout;
+                let local = self.nodes.local_layout(id);
                 let bounds = LayoutBox {
                     x: transform.origin[0] + local.x,
                     y: transform.origin[1] + local.y,
@@ -77,7 +77,7 @@ impl UiWorld {
                 {
                     assert_eq!(
                         bounds,
-                        self.record_layout_box(record),
+                        self.record_layout_box(id, record),
                         "{id:?}: its page box is not its parent's origin and its offset"
                     );
                     assert_eq!(
@@ -110,7 +110,7 @@ impl UiWorld {
         id: StableNodeId,
         memo: &mut ProjectionMemo,
     ) -> Option<LayoutBox> {
-        let local = if self.modal_frames != 0
+        let local = if self.invalidation.modal_frames != 0
             && self
                 .widget_visual_as::<crate::ModalFrameVisual>(id)
                 .is_some()
@@ -123,7 +123,7 @@ impl UiWorld {
             self.component_layout_box(id)?
         };
         let mut bounds = self.accessibility_viewport_bounds(id, local, memo)?;
-        if self.clip_visuals == 0 {
+        if self.invalidation.clip_visuals == 0 {
             return Some(bounds);
         }
         // Only the clip chain clips `id` (#201): an escaped box passes over
@@ -201,26 +201,26 @@ impl UiWorld {
         // that neither transforms nor places itself is its parent's map,
         // read without its page box's frame walk or the overlay, escape,
         // sticky and transform lookups, which all answer "none" for it.
-        let plain_page = self.layout_length_tracks.is_empty()
-            && self.overlay_host_nodes.is_empty()
-            && self.z_index_nodes == 0
-            && self.detached_mounted.is_empty()
+        let plain_page = !self.has_layout_length_overlays()
+            && self.overlays_a11y.overlay_host_nodes.is_empty()
+            && self.invalidation.z_index_nodes == 0
+            && self.tree.detached_mounted.is_empty()
             && !self.nodes.has_widget_visuals()
-            && self.modal_frames == 0
-            && self.menu_surfaces == 0
-            && self.triggered_overlays.is_empty()
-            && self.select_menus.is_empty()
-            && self.presentation.is_empty()
-            && self.geometry_frame.get().is_none();
+            && self.invalidation.modal_frames == 0
+            && self.invalidation.menu_surfaces == 0
+            && self.overlays_a11y.triggered_overlays.is_empty()
+            && self.overlays_a11y.select_menus.is_empty()
+            && self.motion.presentation.is_empty()
+            && self.invalidation.geometry_frame.get().is_none();
         while let Some(node) = memo.chain.pop() {
             let record = self.nodes.get(node)?;
-            let stacks = self.geometry_frame.get().is_none()
+            let stacks = self.invalidation.geometry_frame.get().is_none()
                 && !matches!(record.kind.as_ref(), NodeKind::Document);
             if plain_page
                 && let Some([ox, oy]) = above
-                && Self::plain_transform_step(record)
+                && self.plain_transform_step(node, record)
             {
-                let local = record.local_layout;
+                let local = self.nodes.local_layout(node);
                 let origin = [ox + local.x, oy + local.y];
                 #[cfg(any(test, feature = "layout-verify"))]
                 {
@@ -332,9 +332,9 @@ impl UiWorld {
     /// flow or relative (not fixed, sticky or absolute: no hanging branch,
     /// sticky offset or clip escape), shown, with physical box edges (its
     /// resolved style is its effective one) and no transform of its own.
-    fn plain_transform_step(record: &NodeRecord) -> bool {
+    fn plain_transform_step(&self, id: StableNodeId, record: &NodeRecord) -> bool {
         let style = record.resolved_layout.as_ref();
-        record.layout_frame() == crate::LayoutFrame::Parent
+        self.nodes.layout_frame(id) == crate::LayoutFrame::Parent
             && record.mount == crate::MountState::Mounted
             && matches!(
                 style.position,

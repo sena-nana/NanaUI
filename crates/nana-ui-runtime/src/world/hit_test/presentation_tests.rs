@@ -321,7 +321,7 @@ fn layout_width_animation_keeps_logical_hit_box() {
                 AnimatableProperty::Width,
                 Duration::from_millis(50)
             )
-            .is_none()
+            .is_some()
     );
     assert_eq!(world.hit_test(document(1), 70.0, 10.0), Some(node(1)));
     assert_eq!(world.hit_test(document(1), 90.0, 10.0), None);
@@ -596,7 +596,7 @@ fn layout_width_animation_writes_px_not_scale() {
     world.commit(queue).unwrap();
     world.advance_animations(Duration::from_millis(50));
 
-    let width = match world.node_style(node(1)).unwrap().layout.width {
+    let width = match world.layout_style(node(1)).unwrap().width {
         Some(nana_ui_core::LengthSpec::Px(px)) => px,
         other => panic!("expected px width, got {other:?}"),
     };
@@ -618,7 +618,7 @@ fn layout_width_animation_writes_px_not_scale() {
                 AnimatableProperty::Width,
                 Duration::from_millis(50)
             )
-            .is_none()
+            .is_some()
     );
 }
 
@@ -786,7 +786,7 @@ fn flip_animate_size_uses_layout_class_not_scale() {
     world.advance_animations(Duration::from_millis(50));
 
     assert_eq!(world.layout_box(node(1)).unwrap().x, 80.0);
-    let width = match world.node_style(node(1)).unwrap().layout.width {
+    let width = match world.layout_style(node(1)).unwrap().width {
         Some(nana_ui_core::LengthSpec::Px(px)) => px,
         other => panic!("expected px width, got {other:?}"),
     };

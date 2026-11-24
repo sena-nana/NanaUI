@@ -16,37 +16,45 @@ impl UiWorld {
             .flat_map(|state| [state.active, state.restore_focus])
             .flatten()
         {
-            if let Some(hosts) = self.overlay_dependents.get_mut(&target) {
+            if let Some(hosts) = self.overlays_a11y.overlay_dependents.get_mut(&target) {
                 hosts.remove(&host);
                 if hosts.is_empty() {
-                    self.overlay_dependents.remove(&target);
+                    self.overlays_a11y.overlay_dependents.remove(&target);
                 }
             }
         }
         let document = self.document_of(host).expect("overlay host exists");
         if state.is_some() {
-            self.overlay_hosts_by_document
+            self.overlays_a11y
+                .overlay_hosts_by_document
                 .entry(document)
                 .or_default()
                 .insert(host);
-        } else if let Some(hosts) = self.overlay_hosts_by_document.get_mut(&document) {
+        } else if let Some(hosts) = self
+            .overlays_a11y
+            .overlay_hosts_by_document
+            .get_mut(&document)
+        {
             hosts.remove(&host);
             if hosts.is_empty() {
-                self.overlay_hosts_by_document.remove(&document);
+                self.overlays_a11y
+                    .overlay_hosts_by_document
+                    .remove(&document);
             }
         }
         self.nodes.set_overlay_host(host, state);
         if state.is_some() {
-            self.overlay_host_nodes.insert(host);
+            self.overlays_a11y.overlay_host_nodes.insert(host);
         } else {
-            self.overlay_host_nodes.remove(&host);
+            self.overlays_a11y.overlay_host_nodes.remove(&host);
         }
         for target in state
             .into_iter()
             .flat_map(|state| [state.active, state.restore_focus])
             .flatten()
         {
-            self.overlay_dependents
+            self.overlays_a11y
+                .overlay_dependents
                 .entry(target)
                 .or_default()
                 .insert(host);
@@ -219,7 +227,7 @@ mod tests {
         queue.set_overlay_host(id(1), OverlayHostState::default());
         queue.set_accessibility(id(2), AccessibilityState::default());
         world.commit(queue).unwrap();
-        assert!(world.overlay_dependents.is_empty());
+        assert!(world.overlays_a11y.overlay_dependents.is_empty());
         assert_eq!(world.overlay_host(id(1)), Some(OverlayHostState::default()));
     }
 
@@ -241,23 +249,33 @@ mod tests {
                 },
             );
             world.commit(queue).unwrap();
-            assert!(world.overlay_dependents.contains_key(&surface));
+            assert!(
+                world
+                    .overlays_a11y
+                    .overlay_dependents
+                    .contains_key(&surface)
+            );
             let mut queue = MutationQueue::new();
             queue.despawn_subtree(surface);
             world.commit(queue).unwrap();
-            assert!(!world.overlay_dependents.contains_key(&surface));
-            assert!(!world.overlay_dependents.contains_key(&id(3)));
+            assert!(
+                !world
+                    .overlays_a11y
+                    .overlay_dependents
+                    .contains_key(&surface)
+            );
+            assert!(!world.overlays_a11y.overlay_dependents.contains_key(&id(3)));
             assert_eq!(world.overlay_host(id(4)), untouched);
-            assert_eq!(world.overlay_dependents.len(), 1998);
+            assert_eq!(world.overlays_a11y.overlay_dependents.len(), 1998);
         }
         let mut queue = MutationQueue::new();
         for index in 0..1000 {
             queue.despawn_subtree(id(index * 3 + 1));
         }
         world.commit(queue).unwrap();
-        assert!(world.overlay_dependents.is_empty());
-        assert!(world.overlay_host_nodes.is_empty());
-        assert!(world.overlay_hosts_by_document.is_empty());
+        assert!(world.overlays_a11y.overlay_dependents.is_empty());
+        assert!(world.overlays_a11y.overlay_host_nodes.is_empty());
+        assert!(world.overlays_a11y.overlay_hosts_by_document.is_empty());
         // Other roots in every document survive host teardown.
         for index in 0..1000 {
             assert_eq!(

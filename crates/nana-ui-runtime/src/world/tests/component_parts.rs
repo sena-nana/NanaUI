@@ -257,7 +257,11 @@ mod part_publication {
         cx.update_component(button, |button, _| button.loading = false)
             .unwrap();
         product_frame(&mut cx, document, viewport, &mut shaper);
-        let snapshot_seq = cx.world().layout_results[&button.stable_id()].publish_seq;
+        let snapshot_seq = cx
+            .world()
+            .published_layout_meta(button.stable_id())
+            .unwrap()
+            .publish_seq;
         cx.set_pointer_hover_at(
             document,
             1,
@@ -271,7 +275,10 @@ mod part_publication {
             (0, 0)
         );
         assert_eq!(
-            cx.world().layout_results[&button.stable_id()].publish_seq,
+            cx.world()
+                .published_layout_meta(button.stable_id())
+                .unwrap()
+                .publish_seq,
             snapshot_seq
         );
         let a11y = cx.world().project_accessibility(document);
@@ -1500,7 +1507,7 @@ mod part_publication {
         }
         let id = checkbox.stable_id();
         let generation = cx.world().layout_generation();
-        let snapshot_seq = cx.world().layout_results[&id].publish_seq;
+        let snapshot_seq = cx.world().published_layout_meta(id).unwrap().publish_seq;
         cx.update_component(checkbox, |view, _| view.checked = true)
             .unwrap();
         let toggled = product_frame(&mut cx, document, viewport, &mut shaper);
@@ -1514,7 +1521,10 @@ mod part_publication {
             );
         }
         assert_eq!(cx.world().layout_generation(), generation);
-        assert_eq!(cx.world().layout_results[&id].publish_seq, snapshot_seq);
+        assert_eq!(
+            cx.world().published_layout_meta(id).unwrap().publish_seq,
+            snapshot_seq
+        );
         let a11y = cx.world().project_accessibility(document);
         let node = a11y.iter().find(|node| node.id == id).unwrap();
         assert_eq!(node.checked, Some(true));
@@ -2102,7 +2112,7 @@ mod part_publication {
         );
 
         let generation = cx.world().layout_generation();
-        let snapshot_seq = cx.world().layout_results[&id].publish_seq;
+        let snapshot_seq = cx.world().published_layout_meta(id).unwrap().publish_seq;
         cx.update_component(switch, |view, _| view.checked = true)
             .unwrap();
         let toggled = product_frame(&mut cx, document, viewport, &mut shaper);
@@ -2119,7 +2129,10 @@ mod part_publication {
             );
         }
         assert_eq!(cx.world().layout_generation(), generation);
-        assert_eq!(cx.world().layout_results[&id].publish_seq, snapshot_seq);
+        assert_eq!(
+            cx.world().published_layout_meta(id).unwrap().publish_seq,
+            snapshot_seq
+        );
         let a11y = cx.world().project_accessibility(document);
         let node = a11y.iter().find(|node| node.id == id).unwrap();
         assert_eq!(node.checked, Some(true));
@@ -2623,7 +2636,7 @@ mod part_publication {
             crate::world::reflow_oracle::assert_matches_cold(&mut cx, &mut cold, document);
 
             let generation = cx.world().layout_generation();
-            let snapshot_seq = cx.world().layout_results[&id].publish_seq;
+            let snapshot_seq = cx.world().published_layout_meta(id).unwrap().publish_seq;
             if kind == 0 {
                 let entity = crate::Entity::<crate::StatusBadge>::from_stable_id(id);
                 cx.update_component(entity, |view, _| {
@@ -2643,7 +2656,10 @@ mod part_publication {
                 (0, 0)
             );
             assert_eq!(cx.world().layout_generation(), generation);
-            assert_eq!(cx.world().layout_results[&id].publish_seq, snapshot_seq);
+            assert_eq!(
+                cx.world().published_layout_meta(id).unwrap().publish_seq,
+                snapshot_seq
+            );
         }
     }
 
@@ -3193,7 +3209,7 @@ mod part_publication {
 
             let id = option.stable_id();
             let generation = cx.world().layout_generation();
-            let snapshot_seq = cx.world().layout_results[&id].publish_seq;
+            let snapshot_seq = cx.world().published_layout_meta(id).unwrap().publish_seq;
             cx.update_component(option, |view, _| view.selected = true)
                 .unwrap();
             let selected = product_frame(&mut cx, document, viewport, &mut shaper);
@@ -3208,7 +3224,10 @@ mod part_publication {
                 );
             }
             assert_eq!(cx.world().layout_generation(), generation);
-            assert_eq!(cx.world().layout_results[&id].publish_seq, snapshot_seq);
+            assert_eq!(
+                cx.world().published_layout_meta(id).unwrap().publish_seq,
+                snapshot_seq
+            );
             let a11y = cx.world().project_accessibility(document);
             let node = a11y.iter().find(|node| node.id == id).unwrap();
             assert_eq!(node.selected, Some(true));
@@ -4105,7 +4124,7 @@ mod part_publication {
         );
         let id = toast.stable_id();
         let generation = cx.world().layout_generation();
-        let snapshot_seq = cx.world().layout_results[&id].publish_seq;
+        let snapshot_seq = cx.world().published_layout_meta(id).unwrap().publish_seq;
         cx.update_component(toast, |view, _| view.tone = crate::ToastTone::Danger)
             .unwrap();
         let toned = product_frame(&mut cx, document, viewport, &mut shaper);
@@ -4119,7 +4138,10 @@ mod part_publication {
             );
         }
         assert_eq!(cx.world().layout_generation(), generation);
-        assert_eq!(cx.world().layout_results[&id].publish_seq, snapshot_seq);
+        assert_eq!(
+            cx.world().published_layout_meta(id).unwrap().publish_seq,
+            snapshot_seq
+        );
         // An assembled toast under every recipe, reached by a theme change. It
         // hides the description and progress it has none of.
         for theme in toast_themes().into_iter().flatten() {
@@ -4567,7 +4589,7 @@ mod part_publication {
 
             let (mut cx, id) = menu_trigger_page(kind, "Menu", None, None, false, None);
             let generation = cx.world().layout_generation();
-            let snapshot_seq = cx.world().layout_results[&id].publish_seq;
+            let snapshot_seq = cx.world().published_layout_meta(id).unwrap().publish_seq;
             cx.set_pointer_hover_at(document, 1, Some(id), Duration::from_millis(800))
                 .unwrap();
             let hovered = product_frame(&mut cx, document, viewport, &mut shaper);
@@ -4579,7 +4601,10 @@ mod part_publication {
                 (0, 0)
             );
             assert_eq!(cx.world().layout_generation(), generation);
-            assert_eq!(cx.world().layout_results[&id].publish_seq, snapshot_seq);
+            assert_eq!(
+                cx.world().published_layout_meta(id).unwrap().publish_seq,
+                snapshot_seq
+            );
         }
     }
 
@@ -5083,7 +5108,7 @@ mod control_parts {
         let mut shaper = bundled_face_shaper();
         let (_, _, _, track) = range_geometry(&cx, id);
         let generation = cx.world().layout_generation();
-        let snapshot_seq = cx.world().layout_results[&id].publish_seq;
+        let snapshot_seq = cx.world().published_layout_meta(id).unwrap().publish_seq;
         let parts = cx.world().layout_result(id).unwrap().parts.clone();
         let mut painted = Vec::new();
         for (step, share) in [0.0_f32, 0.07, 0.5, 0.93, 1.0, 0.31]
@@ -5119,7 +5144,10 @@ mod control_parts {
             (0, 0)
         );
         assert_eq!(cx.world().layout_generation(), generation);
-        assert_eq!(cx.world().layout_results[&id].publish_seq, snapshot_seq);
+        assert_eq!(
+            cx.world().published_layout_meta(id).unwrap().publish_seq,
+            snapshot_seq
+        );
         assert_eq!(cx.world().layout_result(id).unwrap().parts, parts);
         assert_eq!(painted, ["0", "7", "50", "93", "100", "31"]);
         assert_eq!(cx.read(range, |range| range.value).unwrap(), 31.0);
@@ -5553,7 +5581,7 @@ mod control_parts {
 
         let id = progress.stable_id();
         let generation = cx.world().layout_generation();
-        let snapshot_seq = cx.world().layout_results[&id].publish_seq;
+        let snapshot_seq = cx.world().published_layout_meta(id).unwrap().publish_seq;
         for value in [55.0, 90.0, 100.0] {
             cx.update_component(progress, |view, _| view.value = value)
                 .unwrap();
@@ -5579,7 +5607,10 @@ mod control_parts {
             );
         }
         assert_eq!(cx.world().layout_generation(), generation);
-        assert_eq!(cx.world().layout_results[&id].publish_seq, snapshot_seq);
+        assert_eq!(
+            cx.world().published_layout_meta(id).unwrap().publish_seq,
+            snapshot_seq
+        );
     }
 
     /// A progress bar moved between Grid, Inline and Flex parents keeps its
@@ -5910,7 +5941,7 @@ mod control_parts {
             let (mut cx, id, action) = modal_page(first, DisplaySpec::Flex, None);
             // Hovering the action (or the card) lays nothing out.
             let generation = cx.world().layout_generation();
-            let snapshot_seq = cx.world().layout_results[&id].publish_seq;
+            let snapshot_seq = cx.world().published_layout_meta(id).unwrap().publish_seq;
             cx.set_pointer_hover_at(
                 document(),
                 1,
@@ -5924,7 +5955,10 @@ mod control_parts {
                 (0, 0)
             );
             assert_eq!(cx.world().layout_generation(), generation);
-            assert_eq!(cx.world().layout_results[&id].publish_seq, snapshot_seq);
+            assert_eq!(
+                cx.world().published_layout_meta(id).unwrap().publish_seq,
+                snapshot_seq
+            );
             for (step, case) in edits.into_iter().enumerate() {
                 let themed = step == 2;
                 if case.confirm {
@@ -7748,7 +7782,7 @@ mod dialog_theme_settle {
         step: &str,
     ) {
         let generation = cx.world().layout_generation();
-        let publish_seq = cx.world().layout_results[&id].publish_seq;
+        let publish_seq = cx.world().published_layout_meta(id).unwrap().publish_seq;
         for frame in 0..8 {
             let work = product_frame(cx, document(), viewport(), shaper);
             assert_eq!(
@@ -7758,7 +7792,10 @@ mod dialog_theme_settle {
             );
             assert_eq!(cx.world().layout_generation(), generation, "{step}");
         }
-        assert_eq!(cx.world().layout_results[&id].publish_seq, publish_seq);
+        assert_eq!(
+            cx.world().published_layout_meta(id).unwrap().publish_seq,
+            publish_seq
+        );
     }
 
     /// A confirm whose copy wraps, hovered, edited and then switched to a theme

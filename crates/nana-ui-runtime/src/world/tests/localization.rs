@@ -1667,7 +1667,7 @@ pub(super) mod catalog_switching {
         let mut app = App::new(&[100_000], false);
         let document = app.windows[0].document;
         let localized = app.windows[0].localized.len();
-        let (nodes, links, scopes, lookups) = app.context.world().i18n.footprint();
+        let (nodes, links, scopes, lookups) = app.context.world().overlays_a11y.i18n.footprint();
         assert_eq!((nodes, links, scopes), (localized, localized, 0));
         assert!(lookups <= MESSAGES as usize * 3);
         let holder = node(9_000_000);
@@ -1692,7 +1692,7 @@ pub(super) mod catalog_switching {
             queue.despawn_subtree(id);
             app.context.commit_mutations(queue).unwrap();
         }
-        let after = app.context.world().i18n.footprint();
+        let after = app.context.world().overlays_a11y.i18n.footprint();
         assert_eq!((after.0, after.1, after.2), (localized, localized, 0));
         assert!(after.3 <= MESSAGES as usize * 3);
     }

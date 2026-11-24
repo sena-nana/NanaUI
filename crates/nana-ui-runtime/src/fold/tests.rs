@@ -20,7 +20,7 @@ fn started(queue: &MutationQueue) -> Vec<AnimationSpec> {
         .as_slice()
         .iter()
         .filter_map(|mutation| match mutation {
-            UiMutation::StartAnimation { animation } => Some(animation.clone()),
+            UiMutation::StartAnimation { animation } => Some((**animation).clone()),
             _ => None,
         })
         .collect()

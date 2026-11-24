@@ -324,7 +324,7 @@ impl UiWorld {
     /// the spacing ladder's step for the control size.
     #[cfg(test)]
     pub(crate) fn range_gap(&self, size: nana_ui_core::ControlSize) -> f32 {
-        let spacing = self.theme.spacing();
+        let spacing = self.invalidation.theme.spacing();
         match size {
             nana_ui_core::ControlSize::Small => spacing.sm,
             nana_ui_core::ControlSize::Medium => spacing.md,

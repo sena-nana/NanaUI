@@ -13,12 +13,12 @@ impl UiWorld {
     pub fn text_input_geometry(&self, id: StableNodeId) -> Option<crate::TextInputGeometry> {
         let visual = self.widget_visual_as::<crate::TextInputVisual>(id)?;
         let style = self.painted_style(id)?;
-        let previous = self.geometry_frame.replace(None);
+        let previous = self.invalidation.geometry_frame.replace(None);
         if previous.is_some() {
-            self.geometry_read_page.set(true);
+            self.invalidation.geometry_read_page.set(true);
         }
         let geometry = visual.geometry_for(self, id, &style);
-        self.geometry_frame.set(previous);
+        self.invalidation.geometry_frame.set(previous);
         geometry
     }
 }
@@ -1815,12 +1815,9 @@ impl UiWorld {
         }
         let room = room.or_else(|| {
             let document = self.node(id)?.document;
-            crate::select::window_room(self.document_viewports.get(&document).copied())
+            crate::select::window_room(self.invalidation.document_viewports.get(&document).copied())
         })?;
-        let previous = self.geometry_frame.replace(None);
-        let origin = self.layout_origin(id);
-        self.geometry_frame.set(previous);
-        let [x, y] = origin?;
+        let [x, y] = self.layout_origin_in(id, None)?;
         Some(crate::SelectMenuRoom {
             top: room.top - y,
             bottom: room.bottom - y,
@@ -1847,11 +1844,11 @@ impl UiWorld {
         else {
             return None;
         };
-        let previous = self.geometry_frame.replace(Some(id));
+        let previous = self.invalidation.geometry_frame.replace(Some(id));
         let bounds = self.component_layout_box(id);
         let room = self.local_select_menu_room(id, true, *menu_room);
         let fitted = self.select_fitted_options_width(id, *fit_options);
-        self.geometry_frame.set(previous);
+        self.invalidation.geometry_frame.set(previous);
         let node_theme = self.node_theme(id);
         let style_model = self.node_style_model(id);
         Some(crate::select::select_menu_surface(
@@ -1944,7 +1941,7 @@ impl UiWorld {
                     shift,
                 );
             }
-            if self.clip_visuals != 0 {
+            if self.invalidation.clip_visuals != 0 {
                 if self
                     .widget_visual_ref(ancestor)
                     .is_some_and(crate::WidgetVisualHandle::clips_descendants)

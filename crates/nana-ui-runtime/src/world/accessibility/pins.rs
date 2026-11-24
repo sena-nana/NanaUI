@@ -54,7 +54,7 @@ impl UiWorld {
                 let Some(above) = self.nodes.get(id) else {
                     break None;
                 };
-                match above.layout_frame() {
+                match self.nodes.layout_frame(id) {
                     crate::LayoutFrame::Parent => {}
                     crate::LayoutFrame::Block(block) => frames.push(block),
                     crate::LayoutFrame::Page => break None,
@@ -177,8 +177,8 @@ impl UiWorld {
             // bounds of what it holds come from their offsets. Motion
             // overlays can transform any box, so they leave only the exact
             // check; a clip visual sends every box to `pending` below.
-            let parent_offsets = self.presentation.is_empty()
-                && self.layout_length_tracks.is_empty()
+            let parent_offsets = self.motion.presentation.is_empty()
+                && !self.has_layout_length_overlays()
                 && !self.is_modal_frame(root)
                 && self
                     .accessible_space(root, memo)
@@ -195,7 +195,7 @@ impl UiWorld {
             let Some(record) = self.nodes.get(id) else {
                 continue;
             };
-            let follows = match record.layout_frame() {
+            let follows = match self.nodes.layout_frame(id) {
                 crate::LayoutFrame::Parent => true,
                 crate::LayoutFrame::Block(block) => inside(block),
                 crate::LayoutFrame::Page => false,
@@ -219,7 +219,7 @@ impl UiWorld {
             if layout_moved.binary_search(&id).is_ok() {
                 continue;
             }
-            if self.clip_visuals != 0 || record.resolved_layout.clips_overflow() {
+            if self.invalidation.clip_visuals != 0 || record.resolved_layout.clips_overflow() {
                 pending.push(id);
                 continue;
             }
@@ -264,7 +264,7 @@ impl UiWorld {
         id: StableNodeId,
         memo: &mut ProjectionMemo,
     ) -> bool {
-        if self.clip_visuals != 0 {
+        if self.invalidation.clip_visuals != 0 {
             return false;
         }
         if self

@@ -50,7 +50,7 @@ fn inactive_retained_roots_prune_and_reactivate_without_losing_siblings() {
             .resolve_styles(&world.document_order(document))
             .unwrap();
         world.rebuild_hit_test(document);
-        let index = &world.hit_test_index[&document];
+        let index = &world.hit_index.hit_test_index[&document];
         let mut candidates = 0;
         index.root_bounds.visit(10.0, 10.0, &mut |_| {
             candidates += 1;
@@ -76,7 +76,7 @@ fn inactive_retained_roots_prune_and_reactivate_without_losing_siblings() {
             [node(10_000)]
         );
         assert_eq!(
-            world.hit_test_index[&document].entries.len(),
+            world.hit_index.hit_test_index[&document].entries.len(),
             9_999 + usize::from(nested)
         );
         world.rebuild_hit_test(document);
@@ -96,7 +96,7 @@ fn inactive_retained_roots_prune_and_reactivate_without_losing_siblings() {
         assert!(world.rebuild_hit_test_scoped(document, &[node(10_000)]));
         assert!(world.hit_test_candidates(document, 10.0, 10.0).is_empty());
         assert_eq!(
-            world.hit_test_index[&document].entries.len(),
+            world.hit_index.hit_test_index[&document].entries.len(),
             9_999 + usize::from(nested)
         );
     }
@@ -243,7 +243,7 @@ fn direct_hit_index_matches_forest_order_bounds_and_queries() {
     forest.sort_by_key(|entry| (entry.z_index, entry.order));
     let reference = HitIndex::from_forest(forest);
     world.rebuild_hit_test(document);
-    let direct = &world.hit_test_index[&document];
+    let direct = &world.hit_index.hit_test_index[&document];
     assert_eq!(direct.roots, reference.roots);
     assert_eq!(direct.entries.len(), reference.entries.len());
     for (id, actual) in &direct.entries {
@@ -265,7 +265,7 @@ fn direct_hit_index_matches_forest_order_bounds_and_queries() {
         .iter()
         .map(|&(x, y)| world.hit_test_candidates(document, x, y))
         .collect::<Vec<_>>();
-    world.hit_test_index.insert(document, reference);
+    world.hit_index.hit_test_index.insert(document, reference);
     let expected = points
         .iter()
         .map(|&(x, y)| world.hit_test_candidates(document, x, y))
@@ -706,7 +706,7 @@ fn viewport_fixed_overlap_preserves_select_menu_layer_and_inactive_fast_path() {
         Some(fixed.stable_id()),
         "the Select trigger must not inherit its menu's z1000"
     );
-    assert!(context.world().hit_test_index[&document].viewport_hit_at(10.0, 10.0));
+    assert!(context.world().hit_index.hit_test_index[&document].viewport_hit_at(10.0, 10.0));
     context
         .update_component(fixed, |button, _| {
             Arc::make_mut(&mut button.style.layout).pointer_events = Some(PointerEventsSpec::None)
@@ -715,7 +715,7 @@ fn viewport_fixed_overlap_preserves_select_menu_layer_and_inactive_fast_path() {
     context.resolve_styles(&[fixed.stable_id()]).unwrap();
     context.rebuild_hit_test_for(document, &[fixed.stable_id()]);
     assert!(
-        !context.world().hit_test_index[&document].viewport_hit_at(10.0, 10.0),
+        !context.world().hit_index.hit_test_index[&document].viewport_hit_at(10.0, 10.0),
         "non-interactive tooltip-like roots must retain the first-hit fast path"
     );
     context
@@ -726,7 +726,7 @@ fn viewport_fixed_overlap_preserves_select_menu_layer_and_inactive_fast_path() {
     context.resolve_styles(&[fixed.stable_id()]).unwrap();
     context.rebuild_hit_test_for(document, &[fixed.stable_id()]);
     assert!(
-        context.world().hit_test_index[&document]
+        context.world().hit_index.hit_test_index[&document]
             .viewport_roots
             .is_empty(),
         "removing the last fixed boundary clears its index membership"

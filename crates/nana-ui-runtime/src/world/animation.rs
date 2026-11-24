@@ -17,13 +17,14 @@ impl UiWorld {
     /// `animation_now` (the identity unless the document was paused, seeked
     /// or re-timed), and every sample is taken at that document time.
     pub fn advance_animations(&mut self, now: Duration) -> AnimationFrame {
-        let now = self.presentation_clock.observe(now);
-        self.animation_now = now;
+        let now = self.motion.presentation_clock.observe(now);
+        self.motion.animation_now = now;
         self.begin_motion_frame();
         let mut component_updates = Vec::new();
-        let mut events = std::mem::take(&mut self.pending_animation_events);
+        let mut events = std::mem::take(&mut self.motion.pending_animation_events);
         let mut animation_deadlines_scanned = 0usize;
         let due = self
+            .motion
             .animation_deadlines
             .range(..=(now, AnimationId::new(u64::MAX).expect("max ID is nonzero")))
             .inspect(|_| {
@@ -34,10 +35,11 @@ impl UiWorld {
         let mut samples = Vec::with_capacity(due.len());
         let mut animations_considered = 0usize;
         for (deadline, id) in due {
-            self.animation_deadlines.remove(&(deadline, id));
+            self.motion.animation_deadlines.remove(&(deadline, id));
             animations_considered = animations_considered.saturating_add(1);
             let (sample, next_deadline, fill_forwards) = {
                 let animation = self
+                    .motion
                     .animations
                     .get_mut(&id)
                     .expect("due animation must remain active");
@@ -60,7 +62,7 @@ impl UiWorld {
             );
         }
         if !component_updates.is_empty() {
-            self.generation = self.generation.wrapping_add(1);
+            self.invalidation.generation = self.invalidation.generation.wrapping_add(1);
         }
         AnimationFrame {
             samples,
@@ -87,7 +89,7 @@ impl UiWorld {
     /// is delivered once, through the same path. A finished run is not brought
     /// back by seeking before its end.
     pub fn seek_presentation(&mut self, to: Duration) -> AnimationFrame {
-        self.presentation_clock.seek(to);
+        self.motion.presentation_clock.seek(to);
         self.resample_all_at(to)
     }
 
@@ -95,8 +97,8 @@ impl UiWorld {
     /// [`Self::seek_presentation`] does; `interval` becomes the frame
     /// interval until the document plays again.
     pub fn step_presentation(&mut self, interval: Duration) -> AnimationFrame {
-        self.presentation_clock.note_step(interval);
-        let to = self.animation_now.saturating_add(interval);
+        self.motion.presentation_clock.note_step(interval);
+        let to = self.motion.animation_now.saturating_add(interval);
         self.seek_presentation(to)
     }
 
@@ -105,21 +107,21 @@ impl UiWorld {
     /// [`Self::seek_presentation`] does, and `interval` is the frame interval
     /// until the document plays again, whether `to` lies ahead or behind.
     pub fn seek_presentation_frame(&mut self, to: Duration, interval: Duration) -> AnimationFrame {
-        self.presentation_clock.note_step(interval);
+        self.motion.presentation_clock.note_step(interval);
         self.seek_presentation(to)
     }
 
     fn resample_all_at(&mut self, to: Duration) -> AnimationFrame {
-        self.animation_now = to;
+        self.motion.animation_now = to;
         self.begin_motion_frame();
-        let mut ids = self.animations.keys().copied().collect::<Vec<_>>();
+        let mut ids = self.motion.animations.keys().copied().collect::<Vec<_>>();
         ids.sort_unstable();
         let mut samples = Vec::with_capacity(ids.len());
         let mut component_updates = Vec::new();
         let mut events = Vec::new();
         let mut animations_considered = 0usize;
         for id in ids {
-            let Some(animation) = self.animations.get_mut(&id) else {
+            let Some(animation) = self.motion.animations.get_mut(&id) else {
                 continue;
             };
             let previous = animation.next_deadline;
@@ -129,7 +131,7 @@ impl UiWorld {
             };
             let next_deadline = (!sample.finished && animation.has_follow_up_deadline())
                 .then_some(animation.next_deadline);
-            self.animation_deadlines.remove(&(previous, id));
+            self.motion.animation_deadlines.remove(&(previous, id));
             animations_considered = animations_considered.saturating_add(1);
             self.settle_animation_sample(
                 id,
@@ -141,9 +143,9 @@ impl UiWorld {
                 &mut samples,
             );
         }
-        self.pending_animation_events.extend(events);
+        self.motion.pending_animation_events.extend(events);
         if !component_updates.is_empty() {
-            self.generation = self.generation.wrapping_add(1);
+            self.invalidation.generation = self.invalidation.generation.wrapping_add(1);
         }
         AnimationFrame {
             samples,
@@ -159,6 +161,7 @@ impl UiWorld {
     /// before [`crate::MutationQueue::replace_animation`] writes one back.
     pub fn animation_tracks(&self, node: StableNodeId) -> Vec<AnimationSpec> {
         let mut tracks = self
+            .motion
             .animations
             .values()
             .filter(|animation| animation.spec.target == node)
@@ -176,25 +179,27 @@ impl UiWorld {
     /// from 0.
     pub(super) fn replace_animation(&mut self, spec: AnimationSpec) -> bool {
         let id = spec.id;
-        let Some(previous) = self.animations.get(&id) else {
+        let Some(previous) = self.motion.animations.get(&id) else {
             return false;
         };
         let previous_target = previous.spec.target;
+        let previous_property = previous.spec.property;
         let previous_deadline = previous.next_deadline;
-        self.animation_deadlines.remove(&(previous_deadline, id));
-        self.untrack_layout_length(previous_target, id);
-        if is_layout_length(spec.property) {
-            let tracks = self.layout_length_tracks.entry(spec.target).or_default();
-            tracks.retain(|track| *track != id);
-            tracks.push(id);
-        }
+        self.motion
+            .animation_deadlines
+            .remove(&(previous_deadline, id));
         // Due at its (effective) start: one already reached is sampled by
         // the next advance, at the document's time then.
         let active = crate::animation::ActiveAnimation::new(spec.clone());
         let deadline = active.next_deadline;
-        self.animations.insert(id, active);
+        self.motion.animations.insert(id, active);
         self.index_animation_deadline(deadline, id);
         self.install_presentation_overlay(&spec);
+        if is_layout_length(previous_property)
+            && (previous_target != spec.target || previous_property != spec.property)
+        {
+            self.clear_settled_length_slot_if_unused(previous_target, previous_property);
+        }
         true
     }
 }
@@ -216,9 +221,8 @@ impl UiWorld {
         samples: &mut Vec<crate::AnimationSample>,
     ) {
         if sample.finished {
-            self.animations.remove(&id);
-            self.untrack_layout_length(sample.target, id);
-            if !fill_forwards {
+            self.motion.animations.remove(&id);
+            if !fill_forwards && !is_layout_length(sample.property) {
                 self.unbind_presentation(id.track_id());
             }
             events.push(AnimationEvent {
@@ -229,144 +233,8 @@ impl UiWorld {
         } else if let Some(next_deadline) = next_deadline {
             self.index_animation_deadline(next_deadline, id);
         }
-        if crate::component_animation_id(crate::component_animation_kinds::SWITCH, sample.target)
-            == Some(sample.id)
-            && let Some(mut visual) = self
-                .widget_visual_as::<crate::SwitchVisual>(sample.target)
-                .cloned()
-        {
-            visual.thumb_progress = match sample.value {
-                crate::MotionValue::Scalar(value) => value.clamp(0.0, 1.0),
-                _ => sample.progress,
-            };
-            self.nodes
-                .set_widget_visual(sample.target, Some(crate::WidgetVisualHandle::new(visual)));
-            self.mark(sample.target, DirtyMask::RENDER);
-            self.account_animation_dirty(DirtyMask::RENDER);
-            component_updates.push(sample.target);
-        }
-        for (kind, axis) in [
-            (crate::component_animation_kinds::SCROLLBAR_FADE, None),
-            (
-                crate::component_animation_kinds::SCROLLBAR_EXPAND_X,
-                Some(0),
-            ),
-            (
-                crate::component_animation_kinds::SCROLLBAR_EXPAND_Y,
-                Some(1),
-            ),
-        ] {
-            if crate::component_animation_id(kind, sample.target) == Some(sample.id)
-                && let Some(mut visual) = self
-                    .widget_visual_as::<crate::ScrollbarVisual>(sample.target)
-                    .copied()
-            {
-                let value = match sample.value {
-                    crate::MotionValue::Scalar(value) => value.clamp(0.0, 1.0),
-                    _ => sample.progress,
-                };
-                match axis {
-                    None => visual.presence = value,
-                    Some(index) => visual.expand[index] = value,
-                }
-                self.nodes
-                    .set_widget_visual(sample.target, Some(crate::WidgetVisualHandle::new(visual)));
-                self.mark(sample.target, DirtyMask::RENDER);
-                self.account_animation_dirty(DirtyMask::RENDER);
-                component_updates.push(sample.target);
-            }
-        }
-        if crate::component_animation_id(crate::component_animation_kinds::HOVER, sample.target)
-            == Some(sample.id)
-        {
-            if let Some(transition) = self.hover_transitions.get_mut(&sample.target) {
-                transition.progress = sample.progress;
-            }
-            self.mark_hover_paint(sample.target);
-            self.account_animation_dirty(DirtyMask::STYLE | DirtyMask::RENDER);
-            if sample.finished {
-                self.hover_transitions.remove(&sample.target);
-            }
-            component_updates.push(sample.target);
-        }
-        if crate::component_animation_id(crate::component_animation_kinds::SPINNER, sample.target)
-            == Some(sample.id)
-            && let Some(mut visual) = self
-                .widget_visual_as::<crate::SpinnerVisual>(sample.target)
-                .cloned()
-        {
-            visual.phase = sample.progress;
-            self.nodes
-                .set_widget_visual(sample.target, Some(crate::WidgetVisualHandle::new(visual)));
-            self.mark(sample.target, DirtyMask::RENDER);
-            self.account_animation_dirty(DirtyMask::RENDER);
-            component_updates.push(sample.target);
-        }
-        // An indeterminate bar's sweep moves its segment and nothing
-        // else: the bar's own projection carries the phase on.
-        if crate::component_animation_id(crate::component_animation_kinds::PROGRESS, sample.target)
-            == Some(sample.id)
-            && let Some(mut visual) = self
-                .widget_visual_as::<crate::ProgressVisual>(sample.target)
-                .filter(|v| matches!(v.mode, crate::ProgressMode::Sweep { .. }))
-                .cloned()
-        {
-            visual.mode = crate::ProgressMode::Sweep {
-                phase: sample.progress,
-            };
-            self.nodes
-                .set_widget_visual(sample.target, Some(crate::WidgetVisualHandle::new(visual)));
-            self.mark(sample.target, DirtyMask::RENDER);
-            self.account_animation_dirty(DirtyMask::RENDER);
-            component_updates.push(sample.target);
-        }
-        if crate::component_animation_id(
-            crate::component_animation_kinds::SURFACE_SCRIM,
-            sample.target,
-        ) == Some(sample.id)
-        {
-            let presence = match sample.value {
-                crate::MotionValue::Scalar(value) => value.clamp(0.0, 1.0),
-                _ => sample.progress,
-            };
-            self.scrim_presence.insert(sample.target, presence);
-            self.mark(sample.target, DirtyMask::RENDER);
-            self.account_animation_dirty(DirtyMask::RENDER);
-            component_updates.push(sample.target);
-        }
-        if crate::component_animation_id(crate::component_animation_kinds::SURFACE, sample.target)
-            == Some(sample.id)
-            || crate::component_animation_id(
-                crate::component_animation_kinds::SURFACE_POP,
-                sample.target,
-            ) == Some(sample.id)
-            || crate::component_animation_id(
-                crate::component_animation_kinds::SURFACE_SCRIM,
-                sample.target,
-            ) == Some(sample.id)
-        {
-            self.advance_surface_motion(&sample);
-            if sample.finished {
-                component_updates.push(sample.target);
-            }
-        }
-        if crate::component_animation_id(crate::component_animation_kinds::LOADING, sample.target)
-            == Some(sample.id)
-        {
-            self.advance_loading_phase(&sample);
-            component_updates.push(sample.target);
-        }
-        if crate::component_animation_id(crate::component_animation_kinds::SIDEBAR, sample.target)
-            == Some(sample.id)
-        {
-            self.account_animation_dirty(DirtyMask::LAYOUT);
-            component_updates.push(sample.target);
-        }
-        if crate::component_animation_id(crate::component_animation_kinds::WORKSPACE, sample.target)
-            == Some(sample.id)
-        {
-            self.account_animation_dirty(DirtyMask::LAYOUT);
-            component_updates.push(sample.target);
+        if let Some(kind) = crate::animation::component_animation_kind(sample.id, sample.target) {
+            self.settle_component_sample(kind, &sample, component_updates);
         }
         if self.apply_layout_class_sample(&sample) {
             component_updates.push(sample.target);
@@ -387,29 +255,157 @@ impl UiWorld {
         }
         samples.push(sample);
     }
+
+    fn settle_component_sample(
+        &mut self,
+        kind: u64,
+        sample: &crate::AnimationSample,
+        component_updates: &mut Vec<StableNodeId>,
+    ) {
+        let scalar_01 = || match sample.value {
+            crate::MotionValue::Scalar(value) => value.clamp(0.0, 1.0),
+            _ => sample.progress,
+        };
+        match kind {
+            crate::component_animation_kinds::SWITCH => {
+                if let Some(mut visual) = self
+                    .widget_visual_as::<crate::SwitchVisual>(sample.target)
+                    .cloned()
+                {
+                    visual.thumb_progress = scalar_01();
+                    self.nodes.set_widget_visual(
+                        sample.target,
+                        Some(crate::WidgetVisualHandle::new(visual)),
+                    );
+                    self.mark(sample.target, DirtyMask::RENDER);
+                    self.account_animation_dirty(DirtyMask::RENDER);
+                    component_updates.push(sample.target);
+                }
+            }
+            k @ (crate::component_animation_kinds::SCROLLBAR_FADE
+            | crate::component_animation_kinds::SCROLLBAR_EXPAND_X
+            | crate::component_animation_kinds::SCROLLBAR_EXPAND_Y) => {
+                if let Some(mut visual) = self
+                    .widget_visual_as::<crate::ScrollbarVisual>(sample.target)
+                    .copied()
+                {
+                    let value = scalar_01();
+                    match k {
+                        crate::component_animation_kinds::SCROLLBAR_FADE => {
+                            visual.presence = value;
+                        }
+                        crate::component_animation_kinds::SCROLLBAR_EXPAND_X => {
+                            visual.expand[0] = value;
+                        }
+                        _ => visual.expand[1] = value,
+                    }
+                    self.nodes.set_widget_visual(
+                        sample.target,
+                        Some(crate::WidgetVisualHandle::new(visual)),
+                    );
+                    self.mark(sample.target, DirtyMask::RENDER);
+                    self.account_animation_dirty(DirtyMask::RENDER);
+                    component_updates.push(sample.target);
+                }
+            }
+            crate::component_animation_kinds::HOVER => {
+                if let Some(transition) = self.motion.hover_transitions.get_mut(&sample.target) {
+                    transition.progress = sample.progress;
+                }
+                self.mark_hover_paint(sample.target);
+                self.account_animation_dirty(DirtyMask::STYLE | DirtyMask::RENDER);
+                if sample.finished {
+                    self.motion.hover_transitions.remove(&sample.target);
+                }
+                component_updates.push(sample.target);
+            }
+            crate::component_animation_kinds::SPINNER => {
+                if let Some(mut visual) = self
+                    .widget_visual_as::<crate::SpinnerVisual>(sample.target)
+                    .cloned()
+                {
+                    visual.phase = sample.progress;
+                    self.nodes.set_widget_visual(
+                        sample.target,
+                        Some(crate::WidgetVisualHandle::new(visual)),
+                    );
+                    self.mark(sample.target, DirtyMask::RENDER);
+                    self.account_animation_dirty(DirtyMask::RENDER);
+                    component_updates.push(sample.target);
+                }
+            }
+            // An indeterminate bar's sweep moves its segment and nothing
+            // else: the bar's own projection carries the phase on.
+            crate::component_animation_kinds::PROGRESS => {
+                if let Some(mut visual) = self
+                    .widget_visual_as::<crate::ProgressVisual>(sample.target)
+                    .filter(|v| matches!(v.mode, crate::ProgressMode::Sweep { .. }))
+                    .cloned()
+                {
+                    visual.mode = crate::ProgressMode::Sweep {
+                        phase: sample.progress,
+                    };
+                    self.nodes.set_widget_visual(
+                        sample.target,
+                        Some(crate::WidgetVisualHandle::new(visual)),
+                    );
+                    self.mark(sample.target, DirtyMask::RENDER);
+                    self.account_animation_dirty(DirtyMask::RENDER);
+                    component_updates.push(sample.target);
+                }
+            }
+            crate::component_animation_kinds::SURFACE_SCRIM => {
+                self.update_scrim_presence(sample.target, scalar_01());
+                self.mark(sample.target, DirtyMask::RENDER);
+                self.account_animation_dirty(DirtyMask::RENDER);
+                component_updates.push(sample.target);
+                self.advance_surface_motion(sample);
+            }
+            crate::component_animation_kinds::SURFACE
+            | crate::component_animation_kinds::SURFACE_POP => {
+                self.advance_surface_motion(sample);
+                if sample.finished {
+                    component_updates.push(sample.target);
+                }
+            }
+            crate::component_animation_kinds::LOADING => {
+                self.advance_loading_phase(sample);
+                component_updates.push(sample.target);
+            }
+            crate::component_animation_kinds::SIDEBAR
+            | crate::component_animation_kinds::WORKSPACE => {
+                self.account_animation_dirty(DirtyMask::LAYOUT);
+                component_updates.push(sample.target);
+            }
+            _ => {}
+        }
+    }
 }
 
 impl UiWorld {
     /// Whether `id` currently owns an active animation timeline. Component
     /// projections query this to avoid re-starting a running timeline.
     pub fn animation_is_active(&self, id: AnimationId) -> bool {
-        self.animations.contains_key(&id)
+        self.motion.animations.contains_key(&id)
     }
 
     /// Whether `id` finished but still holds its property, because it fills
     /// forwards. It holds until the same id runs again or its owner stops it
     /// ([`crate::MutationQueue::stop_animation`]).
     pub fn animation_is_held(&self, id: AnimationId) -> bool {
-        !self.animations.contains_key(&id) && self.presentation.get(id.track_id()).is_some()
+        !self.motion.animations.contains_key(&id)
+            && self.motion.presentation.get(id.track_id()).is_some()
     }
 
     /// Running, or finished and still holding: stopping it changes something.
     pub fn animation_is_live(&self, id: AnimationId) -> bool {
-        self.animations.contains_key(&id) || self.presentation.get(id.track_id()).is_some()
+        self.motion.animations.contains_key(&id)
+            || self.motion.presentation.get(id.track_id()).is_some()
     }
 
     pub(crate) fn animation_timing_start(&self, id: AnimationId) -> Option<Duration> {
-        self.animations
+        self.motion
+            .animations
             .get(&id)
             .map(|animation| animation.spec.timing.start)
     }
@@ -420,12 +416,12 @@ impl UiWorld {
     /// [`Self::advance_animations`], which also reports the completions its
     /// deadlines reach.
     pub fn take_animation_events(&mut self) -> Vec<AnimationEvent> {
-        std::mem::take(&mut self.pending_animation_events)
+        std::mem::take(&mut self.motion.pending_animation_events)
     }
 
     /// Whether commits left events no advance has delivered yet.
     pub fn has_pending_animation_events(&self) -> bool {
-        !self.pending_animation_events.is_empty()
+        !self.motion.pending_animation_events.is_empty()
     }
 }
 
@@ -436,6 +432,7 @@ impl UiWorld {
     /// reaches its waiter even when nothing else is due.
     pub fn next_animation_deadline(&self) -> Option<Duration> {
         let due = self
+            .motion
             .animation_deadlines
             .first()
             .map(|(deadline, _)| *deadline);
@@ -443,13 +440,16 @@ impl UiWorld {
         // no waiter outside the framework: their events ride along with the
         // next advance instead of waking the host for themselves.
         if !self
+            .motion
             .pending_animation_events
             .iter()
             .any(|event| !crate::animation::is_component_animation(event.id, event.target))
         {
             return due;
         }
-        Some(due.map_or(self.animation_now, |due| due.min(self.animation_now)))
+        Some(due.map_or(self.motion.animation_now, |due| {
+            due.min(self.motion.animation_now)
+        }))
     }
 }
 
@@ -472,7 +472,7 @@ impl UiWorld {
         let mut spec = AnimationSpec::new(
             id,
             target,
-            self.animation_now,
+            self.motion.animation_now,
             duration,
             crate::framework::COMPONENT_FRAME_INTERVAL,
             easing,
@@ -489,34 +489,29 @@ impl UiWorld {
     pub(super) fn install_animation(&mut self, spec: AnimationSpec) {
         let spec = self.apply_retarget(spec);
         let id = spec.id;
-        // The same id may come back on another node or property; its old
-        // index entry must not keep answering for that node.
-        if let Some(previous) = self.animations.get(&id).map(|active| active.spec.target) {
-            self.untrack_layout_length(previous, id);
-        }
-        if is_layout_length(spec.property) {
-            let tracks = self.layout_length_tracks.entry(spec.target).or_default();
-            tracks.retain(|track| *track != id);
-            tracks.push(id);
-        }
+        let previous_layout = self
+            .motion
+            .animations
+            .get(&id)
+            .filter(|active| is_layout_length(active.spec.property))
+            .map(|active| (active.spec.target, active.spec.property));
         let active = crate::animation::ActiveAnimation::new(spec.clone());
         let deadline = active.next_deadline;
-        if let Some(previous) = self.animations.insert(id, active) {
-            self.animation_deadlines
+        if let Some(previous) = self.motion.animations.insert(id, active) {
+            self.motion
+                .animation_deadlines
                 .remove(&(previous.next_deadline, id));
             // Every run that starts ends with exactly one event. A run
             // replaced in flight is cancelled (CSS `transitioncancel`); one
             // that already reached its end but was not reaped yet finished.
-            let kind = if previous
-                .spec
-                .to_motion_track()
-                .is_some_and(|track| crate::evaluate_track(&track, self.animation_now).finished)
-            {
+            let kind = if previous.spec.to_motion_track().is_some_and(|track| {
+                crate::evaluate_track(&track, self.motion.animation_now).finished
+            }) {
                 AnimationEventKind::Finished
             } else {
                 AnimationEventKind::Cancelled
             };
-            self.pending_animation_events.push(AnimationEvent {
+            self.motion.pending_animation_events.push(AnimationEvent {
                 id,
                 target: previous.spec.target,
                 kind,
@@ -524,6 +519,11 @@ impl UiWorld {
         }
         self.index_animation_deadline(deadline, id);
         self.install_presentation_overlay(&spec);
+        if let Some((previous_target, previous_property)) = previous_layout
+            && (previous_target != spec.target || previous_property != spec.property)
+        {
+            self.clear_settled_length_slot_if_unused(previous_target, previous_property);
+        }
     }
 
     /// `Duration::MAX` means no CPU wake (a paused hold, or a compositor
@@ -532,21 +532,21 @@ impl UiWorld {
     /// years away.
     fn index_animation_deadline(&mut self, deadline: Duration, id: AnimationId) {
         if deadline != Duration::MAX {
-            self.animation_deadlines.insert((deadline, id));
+            self.motion.animation_deadlines.insert((deadline, id));
         }
     }
 
     pub(super) fn cancel_animation(&mut self, id: AnimationId) -> bool {
-        let Some(animation) = self.animations.remove(&id) else {
+        let Some(animation) = self.motion.animations.remove(&id) else {
             // A finished run's hold, if it left one.
             self.unbind_presentation(id.track_id());
             return false;
         };
-        self.untrack_layout_length(animation.spec.target, id);
-        self.animation_deadlines
+        self.motion
+            .animation_deadlines
             .remove(&(animation.next_deadline, id));
         self.unbind_presentation(id.track_id());
-        self.pending_animation_events.push(AnimationEvent {
+        self.motion.pending_animation_events.push(AnimationEvent {
             id,
             target: animation.spec.target,
             kind: AnimationEventKind::Cancelled,
@@ -555,22 +555,22 @@ impl UiWorld {
     }
 
     pub(super) fn finish_animation(&mut self, id: AnimationId) -> bool {
-        let Some(animation) = self.animations.remove(&id) else {
+        let Some(animation) = self.motion.animations.remove(&id) else {
             return false;
         };
-        self.untrack_layout_length(animation.spec.target, id);
-        self.animation_deadlines
+        self.motion
+            .animation_deadlines
             .remove(&(animation.next_deadline, id));
-        let now = self.animation_now;
+        let now = self.motion.animation_now;
         let mut spec = animation.spec;
         let fill_forwards = spec.playback.fill_mode.applies_forwards();
         snap_spec_to_completion(&mut spec, now);
-        if fill_forwards && spec.has_overlay() {
+        if (fill_forwards || is_layout_length(spec.property)) && spec.has_overlay() {
             self.install_presentation_overlay(&spec);
         } else {
             self.unbind_presentation(id.track_id());
         }
-        self.pending_animation_events.push(AnimationEvent {
+        self.motion.pending_animation_events.push(AnimationEvent {
             id,
             target: spec.target,
             kind: AnimationEventKind::Finished,
@@ -579,13 +579,13 @@ impl UiWorld {
     }
 
     pub(super) fn reverse_animation(&mut self, id: AnimationId) -> bool {
-        let Some(animation) = self.animations.get(&id) else {
+        let Some(animation) = self.motion.animations.get(&id) else {
             return false;
         };
         let Some(track) = animation.spec.to_motion_track() else {
             return false;
         };
-        let now = self.animation_now.max(animation.spec.timing.start);
+        let now = self.motion.animation_now.max(animation.spec.timing.start);
         let destination = track.from;
         let next = retarget_track(&track, now, destination);
         let mut spec = animation.spec.clone();
@@ -596,30 +596,31 @@ impl UiWorld {
     }
 
     pub(super) fn pause_animation(&mut self, id: AnimationId) -> bool {
-        let now = self.animation_now;
+        let now = self.motion.animation_now;
         let Some(deadline) = self
+            .motion
             .animations
             .get(&id)
             .map(|animation| animation.next_deadline)
         else {
             return false;
         };
-        self.animation_deadlines.remove(&(deadline, id));
-        let Some(animation) = self.animations.get_mut(&id) else {
+        self.motion.animation_deadlines.remove(&(deadline, id));
+        let Some(animation) = self.motion.animations.get_mut(&id) else {
             return false;
         };
         animation.spec.playback.play_state = crate::AnimationPlayState::Paused;
         animation.spec.playback.paused_at = Some(now);
         animation.next_deadline = Duration::MAX;
-        if let Some(overlay) = self.presentation.get_mut(id.track_id()) {
+        if let Some(overlay) = self.motion.presentation.get_mut(id.track_id()) {
             overlay.track.pause_at(now);
-            let _ = self.motion_descriptors.bind(&overlay.track);
+            let _ = self.motion.motion_descriptors.bind(&overlay.track);
         }
         true
     }
 
     pub(super) fn resume_animation(&mut self, id: AnimationId) -> bool {
-        let Some(animation) = self.animations.get(&id) else {
+        let Some(animation) = self.motion.animations.get(&id) else {
             return false;
         };
         let previous = animation.next_deadline;
@@ -630,7 +631,7 @@ impl UiWorld {
             .spec
             .to_motion_track()
             .and_then(|track| nana_ui_core::motion::track_completion_deadline(&track));
-        let now = self.animation_now;
+        let now = self.motion.animation_now;
         let next = if compositor {
             match completion {
                 Some(deadline) if deadline > now => deadline,
@@ -646,16 +647,16 @@ impl UiWorld {
                 None => step,
             }
         };
-        self.animation_deadlines.remove(&(previous, id));
-        let Some(animation) = self.animations.get_mut(&id) else {
+        self.motion.animation_deadlines.remove(&(previous, id));
+        let Some(animation) = self.motion.animations.get_mut(&id) else {
             return false;
         };
         animation.spec.playback.play_state = crate::AnimationPlayState::Running;
         animation.spec.playback.paused_at = None;
         animation.next_deadline = next;
-        if let Some(overlay) = self.presentation.get_mut(id.track_id()) {
+        if let Some(overlay) = self.motion.presentation.get_mut(id.track_id()) {
             overlay.track.resume();
-            let _ = self.motion_descriptors.bind(&overlay.track);
+            let _ = self.motion.motion_descriptors.bind(&overlay.track);
         }
         self.index_animation_deadline(next, id);
         true
@@ -665,12 +666,12 @@ impl UiWorld {
         if spec.interrupt != MotionInterrupt::Retarget {
             return spec;
         }
-        let now = spec.timing.start.max(self.animation_now);
+        let now = spec.timing.start.max(self.motion.animation_now);
         let Some(rest) = spec.to_motion_track().map(|track| track.rest_value()) else {
             return spec;
         };
         if let Some(previous) = self
-            .animations
+            .motion.animations
             .get(&spec.id)
             .and_then(|active| active.spec.to_motion_track())
             // A run that has ended but not been reaped yet is not in flight:
@@ -688,7 +689,7 @@ impl UiWorld {
             return spec;
         }
         if let Some(target) = MotionTargetId::new(spec.target.get())
-            && let Some(sample) = self.presentation.sample(target, spec.property, now)
+            && let Some(sample) = self.motion.presentation.sample(target, spec.property, now)
             && let Some(value) = sample.applied_value()
             // An axis a keyframe leaves out is absent: no value to start from.
             && !value.is_absent()
@@ -733,16 +734,28 @@ impl UiWorld {
             self.unbind_presentation(spec.id.track_id());
             return;
         }
-        let Some(track) = spec.to_motion_track() else {
+        let Some(mut track) = spec.to_motion_track() else {
             return;
         };
+        if is_layout_length(track.property) {
+            track.playback.fill_mode = match track.playback.fill_mode {
+                AnimationFillMode::None => AnimationFillMode::Forwards,
+                AnimationFillMode::Backwards => AnimationFillMode::Both,
+                other => other,
+            };
+            self.motion
+                .settled_length_overlays
+                .entry(spec.target)
+                .or_default();
+        }
         let logical = self
             .logical_motion_value(spec.target, spec.property)
             .unwrap_or(track.rest_value());
         if spec.uses_presentation_overlay() {
-            let _ = self.motion_descriptors.bind(&track);
+            let _ = self.motion.motion_descriptors.bind(&track);
         }
-        self.presentation
+        self.motion
+            .presentation
             .insert_in_layer(track, logical, spec.layer);
         match spec.property {
             crate::AnimatableProperty::FontAxis(_) => {
@@ -759,8 +772,36 @@ impl UiWorld {
         }
     }
 
+    fn clear_settled_length_slot_if_unused(
+        &mut self,
+        target: StableNodeId,
+        property: crate::AnimatableProperty,
+    ) {
+        if let Some(motion_target) = MotionTargetId::new(target.get())
+            && self
+                .motion
+                .presentation
+                .properties_of(motion_target)
+                .any(|p| p == property)
+        {
+            return;
+        }
+        if let Some(overlay) = self.motion.settled_length_overlays.get_mut(&target) {
+            overlay.set(property, None);
+        }
+        let has_any_length = MotionTargetId::new(target.get()).is_some_and(|motion_target| {
+            self.motion
+                .presentation
+                .properties_of(motion_target)
+                .any(is_layout_length)
+        });
+        if !has_any_length {
+            self.motion.settled_length_overlays.remove(&target);
+        }
+    }
+
     fn unbind_presentation(&mut self, id: nana_ui_core::motion::MotionTrackId) {
-        if let Some(overlay) = self.presentation.remove(id)
+        if let Some(overlay) = self.motion.presentation.remove(id)
             && let Some(target) = StableNodeId::new(overlay.track.target.get())
         {
             match overlay.track.property {
@@ -774,10 +815,34 @@ impl UiWorld {
                 crate::AnimatableProperty::Color => {
                     self.mark_subtree(target, DirtyMask::STYLE | DirtyMask::RENDER);
                 }
+                prop if is_layout_length(prop) => {
+                    self.clear_settled_length_slot_if_unused(target, prop);
+                    if self.contains(target) {
+                        if prop != crate::AnimatableProperty::Margin {
+                            self.nodes
+                                .invalidate_text(target, crate::text_node::TextDirty::CONSTRAINT);
+                        }
+                        let change = match prop {
+                            crate::AnimatableProperty::Width => {
+                                nana_ui_core::LayoutStyleChange::WIDTH
+                            }
+                            crate::AnimatableProperty::Height => {
+                                nana_ui_core::LayoutStyleChange::HEIGHT
+                            }
+                            _ => nana_ui_core::LayoutStyleChange::SPACING,
+                        };
+                        let invalidation = self.classify_layout_change(target, change);
+                        self.record_layout_invalidation(target, invalidation);
+                        self.mark_subtree(
+                            target,
+                            DirtyMask::INPUT | DirtyMask::ACCESSIBILITY | DirtyMask::RENDER,
+                        );
+                    }
+                }
                 _ => {}
             }
         }
-        self.motion_descriptors.cancel(id);
+        self.motion.motion_descriptors.cancel(id);
     }
 }
 
@@ -798,6 +863,7 @@ impl UiWorld {
             return;
         };
         let rewritten: Vec<crate::AnimatableProperty> = self
+            .motion
             .presentation
             .properties_of(target)
             .filter(|property| match property {
@@ -825,6 +891,10 @@ impl UiWorld {
                     };
                     axis(previous) != axis(next)
                 }
+                crate::AnimatableProperty::Width => previous.width != next.width,
+                crate::AnimatableProperty::Height => previous.height != next.height,
+                crate::AnimatableProperty::Padding => previous.padding != next.padding,
+                crate::AnimatableProperty::Margin => previous.margin != next.margin,
                 _ => false,
             })
             .collect();
@@ -836,13 +906,15 @@ impl UiWorld {
         let flip = crate::component_animation_id(crate::component_animation_kinds::FLIP, id);
         for property in rewritten {
             let held: Vec<_> = self
+                .motion
                 .presentation
                 .track_ids(target, property)
                 .filter(|track| {
                     let animation = AnimationId::new(track.get()).expect("track ids are nonzero");
                     Some(animation) != flip
-                        && !self.animations.contains_key(&animation)
+                        && !self.motion.animations.contains_key(&animation)
                         && self
+                            .motion
                             .presentation
                             .get(*track)
                             .is_some_and(|overlay| overlay.layer == crate::MotionLayer::Runtime)
@@ -863,29 +935,6 @@ fn is_layout_length(property: crate::AnimatableProperty) -> bool {
             | crate::AnimatableProperty::Padding
             | crate::AnimatableProperty::Margin
     )
-}
-
-impl UiWorld {
-    fn untrack_layout_length(&mut self, target: StableNodeId, id: AnimationId) {
-        if let Some(tracks) = self.layout_length_tracks.get_mut(&target) {
-            tracks.retain(|track| *track != id);
-            if tracks.is_empty() {
-                self.layout_length_tracks.remove(&target);
-            }
-        }
-    }
-
-    /// `target`'s running layout-length tracks, in start order.
-    pub(super) fn layout_length_tracks(
-        &self,
-        target: StableNodeId,
-    ) -> impl Iterator<Item = &crate::animation::ActiveAnimation> {
-        self.layout_length_tracks
-            .get(&target)
-            .into_iter()
-            .flatten()
-            .filter_map(|id| self.animations.get(id))
-    }
 }
 
 /// Whether filling `spec` backwards shows its `from`: its first iteration
@@ -936,25 +985,28 @@ fn snap_spec_to_completion(spec: &mut AnimationSpec, _now: Duration) {
 impl UiWorld {
     pub(super) fn cancel_animations_for_removed(&mut self, id: StableNodeId) {
         let cancelled = self
+            .motion
             .animations
             .iter()
             .filter_map(|(&animation_id, animation)| {
                 (animation.spec.target == id).then_some((animation_id, animation.next_deadline))
             })
             .collect::<Vec<_>>();
-        self.layout_length_tracks.remove(&id);
+        self.motion.settled_length_overlays.remove(&id);
         for (animation_id, deadline) in cancelled {
-            self.animations.remove(&animation_id);
-            self.animation_deadlines.remove(&(deadline, animation_id));
-            self.pending_animation_events.push(AnimationEvent {
+            self.motion.animations.remove(&animation_id);
+            self.motion
+                .animation_deadlines
+                .remove(&(deadline, animation_id));
+            self.motion.pending_animation_events.push(AnimationEvent {
                 id: animation_id,
                 target: id,
                 kind: AnimationEventKind::Cancelled,
             });
         }
         if let Some(target) = MotionTargetId::new(id.get()) {
-            self.presentation.remove_target(target);
-            self.motion_descriptors.cancel_target(target);
+            self.motion.presentation.remove_target(target);
+            self.motion.motion_descriptors.cancel_target(target);
         }
     }
 
@@ -963,6 +1015,7 @@ impl UiWorld {
         parked: &HashSet<StableNodeId>,
     ) {
         let cancelled = self
+            .motion
             .animations
             .iter()
             .filter_map(|(&animation_id, animation)| {
@@ -990,11 +1043,12 @@ impl UiWorld {
             })
             .collect::<Vec<_>>();
         for (animation_id, deadline, target) in cancelled {
-            self.animations.remove(&animation_id);
-            self.untrack_layout_length(target, animation_id);
-            self.animation_deadlines.remove(&(deadline, animation_id));
+            self.motion.animations.remove(&animation_id);
+            self.motion
+                .animation_deadlines
+                .remove(&(deadline, animation_id));
             self.unbind_presentation(animation_id.track_id());
-            self.pending_animation_events.push(AnimationEvent {
+            self.motion.pending_animation_events.push(AnimationEvent {
                 id: animation_id,
                 target,
                 kind: AnimationEventKind::Cancelled,

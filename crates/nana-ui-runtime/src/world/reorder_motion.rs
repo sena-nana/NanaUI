@@ -68,7 +68,8 @@ pub(super) fn reorder_list_paints_same(
 impl UiWorld {
     /// The `z-index` a carried row of a previewed drag stacks at.
     pub(super) fn reorder_preview_z_index(&self, id: StableNodeId) -> Option<i32> {
-        self.reorder_previews
+        self.motion
+            .reorder_previews
             .contains_key(&id)
             .then_some(REORDER_PREVIEW_Z_INDEX)
     }
@@ -126,7 +127,7 @@ impl UiWorld {
                 .collect()
         };
         let node_theme = self.node_theme(id);
-        let duration = if self.reduced_motion {
+        let duration = if self.motion.reduced_motion {
             Duration::ZERO
         } else {
             node_theme.duration(nana_ui_core::MotionRole::OverlayFade)
@@ -192,7 +193,7 @@ impl UiWorld {
         is_carried: impl Fn(usize) -> bool,
     ) {
         let mut changed = Vec::new();
-        self.reorder_previews.retain(|row, owner| {
+        self.motion.reorder_previews.retain(|row, owner| {
             let keep = *owner != list
                 || rows
                     .iter()
@@ -204,7 +205,7 @@ impl UiWorld {
             keep
         });
         for (index, &row) in rows.iter().enumerate() {
-            if is_carried(index) && self.reorder_previews.insert(row, list).is_none() {
+            if is_carried(index) && self.motion.reorder_previews.insert(row, list).is_none() {
                 changed.push(row);
             }
         }
@@ -219,7 +220,7 @@ impl UiWorld {
     /// transform: `[0.0, 0.0]` without one.
     fn reorder_shift_target(&self, row: StableNodeId, logical: PaintTransform) -> [f32; 2] {
         crate::component_animation_id(REORDER_SHIFT, row)
-            .and_then(|id| self.presentation.get(id.track_id()))
+            .and_then(|id| self.motion.presentation.get(id.track_id()))
             .and_then(|overlay| match overlay.track.to {
                 crate::MotionTo::Value(crate::MotionValue::Transform(to)) => {
                     Some([to.e - logical.e, to.f - logical.f])
@@ -245,8 +246,9 @@ impl UiWorld {
     /// A removed node no longer stacks as a preview, and a removed list's
     /// rows no longer do either.
     pub(super) fn forget_reorder_preview(&mut self, id: StableNodeId) {
-        if !self.reorder_previews.is_empty() {
-            self.reorder_previews
+        if !self.motion.reorder_previews.is_empty() {
+            self.motion
+                .reorder_previews
                 .retain(|row, list| *row != id && *list != id);
         }
     }

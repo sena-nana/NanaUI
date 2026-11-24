@@ -38,7 +38,7 @@ impl UiWorld {
         // A node named by another one's text is projected again with it.
         let named = affected
             .iter()
-            .filter_map(|id| self.labels.get(id))
+            .filter_map(|id| self.overlays_a11y.labels.get(id))
             .flatten()
             .copied()
             .collect::<Vec<_>>();
@@ -55,7 +55,8 @@ impl UiWorld {
         let carries = |id: &StableNodeId| {
             moved(id)
                 && (tree_plain
-                    || (self.clip_visuals == 0 && (!self.clips_overflow(*id) || !reshaped(id))))
+                    || (self.invalidation.clip_visuals == 0
+                        && (!self.clips_overflow(*id) || !reshaped(id))))
         };
         // A box whose transform changed and gave what it holds the same
         // space: it projects again, and of what it holds only the boxes
@@ -316,7 +317,9 @@ impl UiWorld {
         removed.sort_unstable();
         removed.dedup();
         #[cfg(any(test, feature = "layout-verify"))]
-        self.accessibility_shipped.record(&updated, &removed);
+        self.overlays_a11y
+            .accessibility_shipped
+            .record(&updated, &removed);
         AccessibilityDelta {
             generation: work.generation,
             updated,
@@ -337,9 +340,9 @@ impl UiWorld {
         root: StableNodeId,
         memo: &mut ProjectionMemo,
     ) -> bool {
-        if self.clip_visuals != 0
-            || !self.presentation.is_empty()
-            || !self.layout_length_tracks.is_empty()
+        if self.invalidation.clip_visuals != 0
+            || !self.motion.presentation.is_empty()
+            || self.has_layout_length_overlays()
             || self.is_modal_frame(root)
         {
             return false;

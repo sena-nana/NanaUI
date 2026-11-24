@@ -53,12 +53,12 @@ fn numbered(world: &UiWorld, list: u64) -> Vec<StableNodeId> {
 fn written(world: &mut UiWorld, edit: impl FnOnce(&mut MutationQueue)) -> u64 {
     let mut queue = MutationQueue::new();
     edit(&mut queue);
-    world.children_numbered = 0;
+    world.tree.children_numbered = 0;
     world.commit(queue).unwrap();
     for list in LISTS {
         numbered(world, list);
     }
-    world.children_numbered
+    world.tree.children_numbered
 }
 
 #[test]

@@ -23,14 +23,16 @@ impl UiWorld {
                 Some(id)
             })
             .collect();
-            self.sticky_nodes.bind(id, ancestors.into_iter());
+            self.overlays_a11y
+                .sticky_nodes
+                .bind(id, ancestors.into_iter());
         } else {
-            self.sticky_nodes.remove(id);
+            self.overlays_a11y.sticky_nodes.remove(id);
         }
     }
 
     pub(super) fn rebind_sticky_subtree(&mut self, root: StableNodeId) {
-        let affected = self.sticky_nodes.affected(root);
+        let affected = self.overlays_a11y.sticky_nodes.affected(root);
         self.rebind_sticky(root);
         for id in affected {
             self.rebind_sticky(id);
@@ -80,7 +82,7 @@ impl UiWorld {
                     bounds: LayoutBox {
                         x: *x,
                         y: *y,
-                        ..record.local_layout
+                        ..self.nodes.local_layout(*ancestor_id)
                     },
                     boxes: *boxes,
                     scroll: self.nodes.scroll_offset(*ancestor_id),
@@ -93,7 +95,7 @@ impl UiWorld {
             LayoutBox {
                 x: 0.0,
                 y: 0.0,
-                ..node.local_layout
+                ..self.nodes.local_layout(id)
             },
             node.resolved.0.font_size,
             node.resolved.0.writing_context(),

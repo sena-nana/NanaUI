@@ -143,6 +143,70 @@ impl LayoutFarStart {
     }
 }
 
+/// Bitmask of sparse attachments present for a [`NodeRecord`] inside [`NodeStore`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct NodePresenceBits(u32);
+
+impl NodePresenceBits {
+    pub(crate) const EMPTY: Self = Self(0);
+    pub(crate) const GEOMETRY: Self = Self(1 << 0);
+    pub(crate) const WIDGET_VISUAL: Self = Self(1 << 1);
+    pub(crate) const CUSTOM_RENDER: Self = Self(1 << 2);
+    pub(crate) const EVENT_LISTENERS: Self = Self(1 << 3);
+    pub(crate) const COMPONENT_TYPE: Self = Self(1 << 4);
+    pub(crate) const OVERLAY_HOST: Self = Self(1 << 5);
+    pub(crate) const OVERLAY_MOUNT: Self = Self(1 << 6);
+    pub(crate) const SCROLL: Self = Self(1 << 7);
+    pub(crate) const EDITOR: Self = Self(1 << 8);
+    pub(crate) const EMPTY_STATE_TEXT: Self = Self(1 << 9);
+    pub(crate) const MODAL_TEXT: Self = Self(1 << 10);
+    pub(crate) const TEXT_DROP_INDICATOR: Self = Self(1 << 11);
+    pub(crate) const EXPLICIT_RECT: Self = Self(1 << 12);
+    pub(crate) const TEXT_NATURAL_WIDTH: Self = Self(1 << 13);
+    pub(crate) const BLOCK_STRUT: Self = Self(1 << 14);
+    pub(crate) const TEXT_WRAP_LIMIT: Self = Self(1 << 15);
+    pub(crate) const LANGUAGE: Self = Self(1 << 16);
+    pub(crate) const TEXT_SCALE: Self = Self(1 << 17);
+    pub(crate) const RICH_TEXT: Self = Self(1 << 18);
+    pub(crate) const INLINE_CONTENT: Self = Self(1 << 19);
+    pub(crate) const INLINE_PARENT: Self = Self(1 << 20);
+    pub(crate) const RICH_EDITOR_MARKS: Self = Self(1 << 21);
+    pub(crate) const GLYPH_PRESENTATION: Self = Self(1 << 22);
+    pub(crate) const TEXT_CONTENT: Self = Self(1 << 23);
+    pub(crate) const TEXT_METRICS: Self = Self(1 << 24);
+    pub(crate) const ACCESSIBILITY: Self = Self(1 << 25);
+    pub(crate) const RENDER_ROOM_EPOCH: Self = Self(1 << 26);
+    pub(crate) const TEXT_NODE: Self = Self(1 << 27);
+    pub(crate) const THEME_DEP: Self = Self(1 << 28);
+    pub(crate) const NODE_SCOPE: Self = Self(1 << 29);
+    pub(crate) const SPACE_PIN: Self = Self(1 << 30);
+    pub(crate) const PAGE_BOUND: Self = Self(1 << 31);
+
+    #[inline]
+    pub(crate) const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    #[inline]
+    pub(crate) const fn contains(self, other: Self) -> bool {
+        (self.0 & other.0) == other.0
+    }
+
+    #[inline]
+    pub(crate) fn set(&mut self, bit: Self, present: bool) {
+        if present {
+            self.0 |= bit.0;
+        } else {
+            self.0 &= !bit.0;
+        }
+    }
+
+    #[inline]
+    pub(crate) fn clear(&mut self, bit: Self) {
+        self.0 &= !bit.0;
+    }
+}
+
 pub(crate) struct NodeRecord {
     pub document: DocumentId,
     pub kind: Arc<NodeKind>,
@@ -207,13 +271,8 @@ pub(crate) struct NodeRecord {
     /// checking an insert against `MAX_TREE_DEPTH` reads its parent's depth
     /// instead of walking to the root.
     pub depth: u16,
-    /// The box layout last wrote, measured from [`Self::layout_frame`]'s
-    /// origin. Its document box is derived ([`crate::UiWorld::layout_box`]):
-    /// a subtree that moves keeps every box under its root.
-    pub local_layout: LayoutBox,
-    layout_frame: PackedLayoutFrame,
     /// How this node stands to the coordinate spaces around it, from
-    /// [`Self::resolved_layout`], [`Self::layout_frame`], its kind and its
+    /// [`Self::resolved_layout`], [`NodeStore::layout_frame`], its kind and its
     /// visual ([`crate::node_space::NodeSpace::of`]). Kept up to date by
     /// [`NodeStore::note_node_space`] wherever one of those is written.
     pub space: crate::node_space::NodeSpace,
@@ -228,6 +287,7 @@ pub(crate) struct NodeRecord {
     /// reuse its last extracted record.
     pub render_full_epoch: u32,
     pub render_moved_epoch: u32,
+    pub(crate) attachments: NodePresenceBits,
 }
 
 /// Compact 8-byte encoding of [`crate::LayoutFrame`].
@@ -235,12 +295,12 @@ pub(crate) struct NodeRecord {
 /// `0` encodes [`crate::LayoutFrame::Parent`], `u64::MAX` encodes
 /// [`crate::LayoutFrame::Page`], and any non-zero `n` encodes
 /// [`crate::LayoutFrame::Block`] for `StableNodeId(n)`.
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
-struct PackedLayoutFrame(u64);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct PackedLayoutFrame(u64);
 
 impl PackedLayoutFrame {
     #[inline]
-    const fn from_frame(frame: crate::LayoutFrame) -> Self {
+    pub(crate) const fn from_frame(frame: crate::LayoutFrame) -> Self {
         match frame {
             crate::LayoutFrame::Parent => Self(0),
             crate::LayoutFrame::Page => Self(u64::MAX),
@@ -252,7 +312,7 @@ impl PackedLayoutFrame {
     }
 
     #[inline]
-    const fn get(self) -> crate::LayoutFrame {
+    pub(crate) const fn get(self) -> crate::LayoutFrame {
         match self.0 {
             0 => crate::LayoutFrame::Parent,
             u64::MAX => crate::LayoutFrame::Page,
@@ -264,7 +324,236 @@ impl PackedLayoutFrame {
     }
 }
 
-const _: () = assert!(std::mem::size_of::<NodeRecord>() <= 152);
+pub(crate) const TEXT_SOURCE_NONE_SENTINEL: u32 = u32::MAX;
+pub(crate) const TEXT_SOURCE_MISSING: u32 = u32::MAX - 1;
+pub(crate) const TEXT_SOURCE_MAX_LEN: usize = (u32::MAX - 2) as usize;
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PublishedRareGeometry {
+    pub(crate) padding_box: LayoutBox,
+    pub(crate) clip: Option<StableNodeId>,
+    pub(crate) clip_parent: Option<StableNodeId>,
+    pub(crate) containing_block: Option<StableNodeId>,
+}
+
+/// Compact per-node published layout metadata held inside [`NodeGeometry`].
+#[derive(Debug, Clone)]
+pub(crate) struct PublishedLayoutMeta {
+    pub(crate) generation: u64,
+    pub(crate) deps_hash: u64,
+    pub(crate) width: f32,
+    pub(crate) height: f32,
+    pub(crate) content_box: LayoutBox,
+    pub(crate) overflow: LayoutBox,
+    pub(crate) first_baseline_raw: f32,
+    pub(crate) single_text_source: u32,
+    pub(crate) rare: Option<Box<PublishedRareGeometry>>,
+    pub(crate) ext: Option<Box<PublishedLayoutExt>>,
+    pub(crate) formatting_context: Option<crate::FormattingContextKind>,
+    pub(crate) participation: Option<crate::ParticipationKind>,
+    pub(crate) source: crate::LayoutResultSource,
+    pub(crate) suppressed: bool,
+    pub(crate) overflow_is_text_box: bool,
+    #[cfg(test)]
+    pub(crate) publish_seq: u64,
+}
+
+#[cfg(not(test))]
+const _: () = assert!(std::mem::size_of::<PublishedLayoutMeta>() <= 88);
+
+#[derive(Debug, Clone)]
+pub(crate) struct PublishedLayoutExt {
+    pub(crate) last_baseline: Option<f32>,
+    pub(crate) scroll_extent: LayoutBox,
+    pub(crate) fragments: Arc<[crate::LayoutFragment]>,
+    pub(crate) parts: Arc<[crate::LayoutPart]>,
+}
+
+impl PublishedLayoutMeta {
+    #[inline]
+    pub(crate) fn bounds(&self) -> LayoutBox {
+        LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: self.width,
+            height: self.height,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn first_baseline(&self) -> Option<f32> {
+        (!self.first_baseline_raw.is_nan()).then_some(self.first_baseline_raw)
+    }
+
+    #[inline]
+    pub(crate) fn padding_box(&self) -> LayoutBox {
+        match self.rare.as_deref() {
+            Some(rare) => rare.padding_box,
+            None => self.bounds(),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn clip(&self) -> Option<StableNodeId> {
+        self.rare.as_deref().and_then(|rare| rare.clip)
+    }
+
+    #[inline]
+    pub(crate) fn clip_parent(&self) -> Option<StableNodeId> {
+        self.rare.as_deref().and_then(|rare| rare.clip_parent)
+    }
+
+    #[inline]
+    pub(crate) fn containing_block(&self) -> Option<StableNodeId> {
+        self.rare.as_deref().and_then(|rare| rare.containing_block)
+    }
+
+    pub(crate) fn last_baseline(&self) -> Option<f32> {
+        match self.ext.as_ref() {
+            Some(ext) => ext.last_baseline,
+            None => self.first_baseline(),
+        }
+    }
+
+    pub(crate) fn overflow_box(&self) -> LayoutBox {
+        if self.overflow_is_text_box {
+            self.bounds()
+        } else {
+            self.overflow
+        }
+    }
+
+    pub(crate) fn inline_text_box(&self) -> LayoutBox {
+        if self.overflow_is_text_box {
+            self.overflow
+        } else {
+            self.content_box
+        }
+    }
+
+    pub(crate) fn scroll_extent(&self) -> LayoutBox {
+        match self.ext.as_ref() {
+            Some(ext) => ext.scroll_extent,
+            None => self.overflow_box(),
+        }
+    }
+
+    pub(crate) fn sticky_boxes(&self) -> crate::StickyBoxes {
+        crate::StickyBoxes {
+            padding_box: self.padding_box(),
+            content_box: self.content_box,
+            scroll_extent: self.scroll_extent(),
+        }
+    }
+
+    pub(crate) fn extracted_layout(
+        &self,
+        scroll_metrics: Option<crate::ScrollMetrics>,
+    ) -> crate::ExtractedLayout {
+        crate::ExtractedLayout {
+            generation: self.generation,
+            clip_parent: self.clip_parent(),
+            scroll_metrics,
+            atomic_inline: self.participation == Some(crate::ParticipationKind::AtomicInline),
+            sticky_boxes: self.sticky_boxes(),
+        }
+    }
+
+    pub(crate) fn single_text_range(&self) -> Option<std::ops::Range<usize>> {
+        match self.single_text_source {
+            TEXT_SOURCE_NONE_SENTINEL | TEXT_SOURCE_MISSING => None,
+            len => Some(0..len as usize),
+        }
+    }
+
+    pub(crate) fn fragments_and_parts_eq(&self, other: &Self) -> bool {
+        match (self.ext.as_ref(), other.ext.as_ref()) {
+            (None, None) => {
+                self.content_box == other.content_box
+                    && self.inline_text_box() == other.inline_text_box()
+                    && self.first_baseline() == other.first_baseline()
+                    && self.single_text_source == other.single_text_source
+            }
+            (Some(a), Some(b)) => a.fragments == b.fragments && a.parts == b.parts,
+            (Some(ext), None) => compact_matches_ext(other, ext),
+            (None, Some(ext)) => compact_matches_ext(self, ext),
+        }
+    }
+
+    pub(crate) fn geometry_eq(&self, other: &Self) -> bool {
+        self.width == other.width
+            && self.height == other.height
+            && self.padding_box() == other.padding_box()
+            && self.content_box == other.content_box
+            && self.first_baseline() == other.first_baseline()
+            && self.last_baseline() == other.last_baseline()
+            && self.overflow_box() == other.overflow_box()
+            && self.scroll_extent() == other.scroll_extent()
+            && self.fragments_and_parts_eq(other)
+            && self.clip() == other.clip()
+            && self.clip_parent() == other.clip_parent()
+            && self.containing_block() == other.containing_block()
+            && self.deps_hash == other.deps_hash
+            && self.formatting_context == other.formatting_context
+            && self.participation == other.participation
+    }
+}
+
+fn compact_matches_ext(compact: &PublishedLayoutMeta, ext: &PublishedLayoutExt) -> bool {
+    if compact.single_text_source == TEXT_SOURCE_NONE_SENTINEL {
+        return ext.fragments.is_empty()
+            && ext.parts.len() == 1
+            && ext.parts[0]
+                == crate::LayoutPart::new(
+                    crate::LayoutPartKind::ComponentContent,
+                    compact.content_box,
+                );
+    }
+    let text_box = compact.inline_text_box();
+    let source = compact.single_text_range();
+    let baseline = compact.first_baseline();
+    ext.fragments.len() == 2
+        && ext.fragments[0].kind == crate::LayoutFragmentKind::TextLine
+        && ext.fragments[0].node.is_none()
+        && ext.fragments[0].index == 0
+        && ext.fragments[0].bounds == text_box
+        && ext.fragments[0].first_baseline == baseline
+        && ext.fragments[0].last_baseline == baseline
+        && ext.fragments[0].source == source
+        && ext.fragments[1].kind == crate::LayoutFragmentKind::TextRun
+        && ext.fragments[1].node.is_none()
+        && ext.fragments[1].index == 0
+        && ext.fragments[1].bounds == text_box
+        && ext.fragments[1].first_baseline == baseline
+        && ext.fragments[1].last_baseline == baseline
+        && ext.fragments[1].source == source
+        && ext.parts.len() == 2
+        && ext.parts[0] == crate::LayoutPart::new(crate::LayoutPartKind::TextContent, text_box)
+        && ext.parts[1]
+            == crate::LayoutPart::new(crate::LayoutPartKind::ComponentContent, compact.content_box)
+}
+
+/// Single authoritative per-node layout geometry record.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct NodeGeometry {
+    pub(crate) local: LayoutBox,
+    frame: PackedLayoutFrame,
+    pub(crate) published: Option<PublishedLayoutMeta>,
+}
+
+impl NodeGeometry {
+    #[inline]
+    pub(crate) const fn frame(&self) -> crate::LayoutFrame {
+        self.frame.get()
+    }
+
+    #[inline]
+    pub(crate) fn set_frame(&mut self, frame: crate::LayoutFrame) {
+        self.frame = PackedLayoutFrame::from_frame(frame);
+    }
+}
+
+const _: () = assert!(std::mem::size_of::<NodeRecord>() <= 128);
 
 static DEFAULT_ACCESSIBILITY: std::sync::LazyLock<Arc<AccessibilityState>> =
     std::sync::LazyLock::new(|| Arc::new(AccessibilityState::default()));
@@ -386,42 +675,78 @@ impl NodeRecord {
             layout_context_gen: 0,
             auto_view_slot: u16::MAX,
             depth: 1,
-            local_layout: LayoutBox::default(),
-            layout_frame: PackedLayoutFrame::from_frame(crate::LayoutFrame::Parent),
             space,
             layout_context: None,
             interaction,
             dirty: DirtyMask::all(),
             render_full_epoch: 0,
             render_moved_epoch: u32::MAX,
+            attachments: NodePresenceBits::EMPTY,
         }
-    }
-
-    #[inline]
-    pub(crate) const fn layout_frame(&self) -> crate::LayoutFrame {
-        self.layout_frame.get()
-    }
-
-    #[inline]
-    pub(crate) fn set_layout_frame(&mut self, frame: crate::LayoutFrame) {
-        self.layout_frame = PackedLayoutFrame::from_frame(frame);
     }
 }
 
 macro_rules! sparse {
-    ($($field:ident).+, $ty:ty, $get:ident, $set:ident) => {
+    ($($field:ident).+, $ty:ty, $get:ident, $set:ident, $bit:expr) => {
         pub fn $get(&self, id: StableNodeId) -> Option<&$ty> {
             self.$($field).+.get(&id)
         }
 
         pub fn $set(&mut self, id: StableNodeId, value: Option<$ty>) {
-            if let Some(value) = value {
-                self.$($field).+.insert(id, value);
-            } else {
-                self.$($field).+.remove(&id);
+            match value {
+                Some(value) => {
+                    self.$($field).+.insert(id, value);
+                    if let Some(record) = self.nodes.get_mut(id) {
+                        record.attachments.set($bit, true);
+                    }
+                }
+                None => {
+                    self.$($field).+.remove(&id);
+                    if let Some(record) = self.nodes.get_mut(id) {
+                        record.attachments.clear($bit);
+                    }
+                }
             }
         }
     };
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct ScrollNodeState {
+    pub offset: ScrollOffset,
+    pub metrics: Option<ScrollMetrics>,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct EditorState {
+    pub editor: Option<EditorRecord>,
+    pub highlight: Option<HighlightRequest>,
+    pub text_presentation: Option<TextPresentation>,
+    pub text_input_presentation: Option<TextInputPresentation>,
+    pub fold_view: Option<TextFoldViewState>,
+    pub inlays: Option<Arc<[crate::TextInlay]>>,
+    pub snippet: Option<TextSnippetSession>,
+    pub completion: Option<TextCompletionViewState>,
+    pub hover: Option<TextHoverViewState>,
+    pub signature: Option<crate::TextSignatureHelp>,
+    pub viewport_pin: Option<ScrollOffset>,
+}
+
+impl EditorState {
+    #[inline]
+    fn is_empty(&self) -> bool {
+        self.editor.is_none()
+            && self.highlight.is_none()
+            && self.text_presentation.is_none()
+            && self.text_input_presentation.is_none()
+            && self.fold_view.is_none()
+            && self.inlays.is_none()
+            && self.snippet.is_none()
+            && self.completion.is_none()
+            && self.hover.is_none()
+            && self.signature.is_none()
+            && self.viewport_pin.is_none()
+    }
 }
 
 /// Per-node rectangles few nodes ever hold, kept behind one box so the
@@ -430,9 +755,9 @@ macro_rules! sparse {
 struct ColdRects {
     /// 拖拽移动选中文本的落点指示线（仅拖拽态编辑器持有条目；文本空间
     /// 矩形）。框架侧拖拽状态机写入，提取层翻译为节点空间图元。
-    text_drop_indicators: HashMap<StableNodeId, LayoutBox>,
+    text_drop_indicators: crate::NodeMap<LayoutBox>,
     /// Explicit rects of free items (`display: free` children).
-    explicit_rects: HashMap<StableNodeId, crate::ExplicitRect>,
+    explicit_rects: crate::NodeMap<crate::ExplicitRect>,
 }
 
 /// 代码折叠视图状态（仅喂过折叠区间的编辑器节点持有条目）。
@@ -733,11 +1058,6 @@ impl<V> DenseNodeMap<V> {
     }
 
     #[cfg(test)]
-    pub(crate) fn keys(&self) -> impl Iterator<Item = StableNodeId> + '_ {
-        self.iter().map(|(id, _)| id)
-    }
-
-    #[cfg(test)]
     pub(crate) fn values(&self) -> impl Iterator<Item = &V> + '_ {
         self.iter().map(|(_, value)| value)
     }
@@ -951,6 +1271,9 @@ impl NodeTable {
 #[derive(Default)]
 pub(crate) struct NodeStore {
     nodes: NodeTable,
+    /// Single authoritative per-node geometry (`local`, `frame`, and optional published layout).
+    pub(crate) geometry: DenseNodeMap<NodeGeometry>,
+    published_layout_count: usize,
     /// One shared kind per element tag ([`Self::intern_kind`]).
     kinds: HashMap<String, Arc<NodeKind>>,
     /// The style every new node starts with, one for all of them.
@@ -962,76 +1285,36 @@ pub(crate) struct NodeStore {
     /// ([`crate::node_space::NodeSpace::pins_accessibility`]): their
     /// accessible bounds, or those of the boxes under them, may not keep
     /// their offset from their parent's when a box above them moves.
-    space_pins: hashbrown::HashSet<StableNodeId>,
+    space_pins: crate::NodeSet,
     /// Nodes whose space is page-bound
     /// ([`crate::node_space::NodeSpace::page_bound`]): an open select,
     /// whose menu a layout pass gives a new room ([`crate::SelectMenuRoom`]),
     /// or a visual whose geometry reads the page. The few a move above them
     /// looks at again for extraction.
-    page_bound: hashbrown::HashSet<StableNodeId>,
-    custom_render: HashMap<StableNodeId, CustomRenderNode>,
-    event_listeners: HashMap<StableNodeId, EventListeners>,
-    component_types: HashMap<StableNodeId, ComponentTypeId>,
-    overlay_hosts: HashMap<StableNodeId, OverlayHostState>,
-    overlay_mounts: HashMap<StableNodeId, nana_ui_core::OverlayMount>,
-    scroll_metrics: HashMap<StableNodeId, ScrollMetrics>,
-    /// Every text editor's session: its committed text, selections and IME
-    /// composition, stored once (Issue #182).
-    editors: HashMap<StableNodeId, EditorRecord>,
-    highlights: HashMap<StableNodeId, HighlightRequest>,
-    text_presentations: HashMap<StableNodeId, TextPresentation>,
-    text_input_presentations: HashMap<StableNodeId, TextInputPresentation>,
-    empty_state_text: HashMap<StableNodeId, EmptyStateTextPresentation>,
-    modal_text: HashMap<StableNodeId, ModalTextPresentation>,
-    /// 代码折叠视图状态（仅喂过折叠区间的编辑器节点持有条目）。
-    text_fold_views: HashMap<StableNodeId, TextFoldViewState>,
-    /// 行内提示（inlay）集（仅喂过非空 inlay 的编辑器节点持有条目；
-    /// 世界校验后按 `(offset, label)` 排序去重）。
-    text_inlays: HashMap<StableNodeId, Arc<[crate::TextInlay]>>,
-    /// 活跃 snippet 会话（仅会话进行中的编辑器持有条目）。
-    text_snippets: HashMap<StableNodeId, TextSnippetSession>,
-    /// 补全弹层会话（仅候选会话活跃的编辑器持有条目）。
-    text_completions: HashMap<StableNodeId, TextCompletionViewState>,
-    /// hover 文档浮窗（仅宿主喂入 hover 的编辑器持有条目）。
-    text_hovers: HashMap<StableNodeId, TextHoverViewState>,
-    /// 签名帮助浮窗（仅宿主喂入签名的编辑器持有条目）。
-    text_signatures: HashMap<StableNodeId, crate::TextSignatureHelp>,
-    /// minimap 视口钉住（仅显式导航过的多行编辑器持有条目）。
-    text_viewport_pins: HashMap<StableNodeId, ScrollOffset>,
+    page_bound: crate::NodeSet,
+    custom_render: crate::NodeMap<CustomRenderNode>,
+    event_listeners: crate::NodeMap<EventListeners>,
+    component_types: crate::NodeMap<ComponentTypeId>,
+    overlay_hosts: crate::NodeMap<OverlayHostState>,
+    overlay_mounts: crate::NodeMap<nana_ui_core::OverlayMount>,
+    scroll: crate::NodeMap<ScrollNodeState>,
+    non_zero_scroll_offsets: usize,
+    editor_states: crate::NodeMap<Box<EditorState>>,
+    editor_count: usize,
+    empty_state_text: crate::NodeMap<EmptyStateTextPresentation>,
+    modal_text: crate::NodeMap<ModalTextPresentation>,
     /// Text drop indicators and free items' explicit rects.
     cold_rects: Box<ColdRects>,
-    /// The width a plain text that wrapped to its box would take on its
-    /// own lines, unwrapped (its max-content width). Only text that wrapped
-    /// holds an entry: its metrics are the lines it wrapped to, and layout
-    /// needs this to give it more room once its box may grow.
-    text_natural_widths: HashMap<StableNodeId, f32>,
-    /// The strut an ordinary block's line boxes start from, per px of its
-    /// font size: its own face's ascent and descent. Only a block with
-    /// inline-level children and no line box of its own holds an entry, and
-    /// only under a shaper that reports struts; see
-    /// `UiWorld::resolve_block_struts`.
-    block_struts: HashMap<StableNodeId, crate::FontStrut>,
-    /// The width a plain text that wraps was last shaped against: its box
-    /// width then, or infinity when it had no box yet. Text that does not
-    /// wrap holds no entry. Layout trusts the lines' own width only within a
-    /// box at least this narrow; see `text_inline_size`.
-    text_wrap_limits: HashMap<StableNodeId, f32>,
-    /// Languages nodes name for themselves (`lang`). Only those nodes hold an
-    /// entry; their subtrees inherit through `ComputedStyle::language`.
-    languages: HashMap<StableNodeId, nana_text::font::LanguageTag>,
-    /// Typography scales nodes set for themselves. Only those nodes hold an
-    /// entry; their subtrees inherit through `ComputedStyle::text_scale`.
-    text_scales: HashMap<StableNodeId, f32>,
-    /// Application-owned rich text (spans over the node's text), only for
-    /// nodes given one with `SetRichText`.
-    rich_texts: HashMap<StableNodeId, nana_ui_core::RichText>,
-    /// Only mixed inline paragraphs pay for atomic participation metadata.
-    inline_contents: HashMap<StableNodeId, crate::inline_content::InlineRecord>,
-    inline_parents: HashMap<StableNodeId, StableNodeId>,
-    /// Caret and selection of rich text editors.
-    rich_editor_marks: HashMap<StableNodeId, crate::RichEditorMarks>,
-    /// Per-glyph presentation of rich text nodes.
-    glyph_presentations: HashMap<StableNodeId, nana_ui_core::GlyphPresentation>,
+    text_natural_widths: crate::NodeMap<f32>,
+    block_struts: crate::NodeMap<crate::FontStrut>,
+    text_wrap_limits: crate::NodeMap<f32>,
+    languages: crate::NodeMap<nana_text::font::LanguageTag>,
+    text_scales: crate::NodeMap<f32>,
+    rich_texts: crate::NodeMap<nana_ui_core::RichText>,
+    inline_contents: crate::NodeMap<crate::inline_content::InlineRecord>,
+    inline_parents: crate::NodeMap<StableNodeId>,
+    rich_editor_marks: crate::NodeMap<crate::RichEditorMarks>,
+    glyph_presentations: crate::NodeMap<nana_ui_core::GlyphPresentation>,
     /// Cold optional text content; absent means empty unstamped text.
     texts: crate::NodeMap<TextContent>,
     /// Cold shaped text metrics; absent means `TextMetrics::default()`.
@@ -1041,27 +1324,17 @@ pub(crate) struct NodeStore {
     /// Overflow layout paddings beyond `distinct_layout_paddings` capacity.
     layout_paddings: crate::NodeMap<nana_ui_core::PaddingSpec>,
     /// Bumped each time `layout_context` changes on a container (overflow beyond `u8::MAX - 1`).
-    layout_context_generations: HashMap<StableNodeId, u64>,
+    layout_context_generations: crate::NodeMap<u64>,
     /// Distinct text backend epochs observed on empty non-`Text` nodes (indexed by `empty_text_backend`).
     empty_text_backends: Vec<crate::text_node::TextBackendEpoch>,
-    /// Non-zero scroll offsets; absent means `(0.0, 0.0)`.
-    scroll_offsets: HashMap<StableNodeId, ScrollOffset>,
     /// Non-preset accessibility states (`a11y_preset == 3`).
     accessibilities: crate::NodeMap<Arc<AccessibilityState>>,
     /// Number of live nodes using inline decorative-text preset (`a11y_preset == 2`).
     decorative_a11y_count: usize,
     /// Epoch a move above an open select field asked if its room stayed valid; absent means `u32::MAX`.
-    render_room_epochs: HashMap<StableNodeId, u32>,
+    render_room_epochs: crate::NodeMap<u32>,
     /// Revisions, resolution stamp and retained layout handle of every node's
-    /// text (Issue #95), one entry per node. Kept apart from the dense records
-    /// on purpose: a large relayout scope decides "no text work" for every
-    /// candidate, and a table of small entries keeps that scan in cache where
-    /// the full records would not.
-    ///
-    /// Indexed by id like the records, not hashed: an entry per node in a
-    /// hash table is every bucket touched (a quarter to a half of them empty)
-    /// and, each time the table grows, a whole new table beside the old one,
-    /// which the allocator then keeps.
+    /// text (Issue #95), one entry per node.
     text_nodes: DenseNodeMap<crate::text_node::TextNodeState>,
     /// Layouts retained by plain text nodes, addressed by
     /// [`crate::text_node::TextNodeState::layout`]. Released with the node.
@@ -1069,7 +1342,7 @@ pub(crate) struct NodeStore {
     /// Per-node theme category dependencies (#106), recomputed on node write/mount.
     theme_deps: DenseNodeMap<nana_ui_core::ThemeDependencyMask>,
     /// Sparse map of nodes that establish a local `ThemeScopeId` (#104).
-    node_scopes: HashMap<StableNodeId, nana_ui_core::ThemeScopeId>,
+    node_scopes: crate::NodeMap<nana_ui_core::ThemeScopeId>,
 }
 
 /// minimap 视口钉住：显式视口导航（minimap 点击/拖动）写入的滚动偏移。
@@ -1124,6 +1397,90 @@ impl NodeStore {
         self.nodes.get_mut(id)
     }
 
+    #[inline]
+    pub(crate) fn local_layout(&self, id: StableNodeId) -> LayoutBox {
+        self.geometry
+            .get(&id)
+            .map_or_else(LayoutBox::default, |g| g.local)
+    }
+
+    #[inline]
+    pub(crate) fn layout_frame(&self, id: StableNodeId) -> crate::LayoutFrame {
+        self.geometry
+            .get(&id)
+            .map_or(crate::LayoutFrame::Parent, NodeGeometry::frame)
+    }
+
+    #[inline]
+    pub(crate) fn geometry_entry(&self, id: StableNodeId) -> Option<&NodeGeometry> {
+        self.geometry.get(&id)
+    }
+
+    #[inline]
+    pub(crate) fn geometry_entry_mut(&mut self, id: StableNodeId) -> &mut NodeGeometry {
+        if self.geometry.get(&id).is_none() {
+            self.geometry.insert(id, NodeGeometry::default());
+            if let Some(record) = self.nodes.get_mut(id) {
+                record.attachments.set(NodePresenceBits::GEOMETRY, true);
+            }
+        }
+        self.geometry.get_mut(&id).expect("inserted geometry entry")
+    }
+
+    #[inline]
+    pub(crate) fn published_layout(&self, id: StableNodeId) -> Option<&PublishedLayoutMeta> {
+        self.geometry
+            .get(&id)
+            .and_then(|g| g.published.as_ref())
+            .filter(|meta| !meta.suppressed)
+    }
+
+    #[inline]
+    pub(crate) fn has_published_layouts(&self) -> bool {
+        self.published_layout_count > 0
+    }
+
+    pub(crate) fn publish_layout(&mut self, id: StableNodeId, meta: PublishedLayoutMeta) {
+        let entry = self.geometry_entry_mut(id);
+        let was_none = entry.published.is_none();
+        entry.published = Some(meta);
+        if was_none {
+            self.published_layout_count += 1;
+        }
+    }
+
+    pub(crate) fn clear_published_layout(&mut self, id: StableNodeId) {
+        if let Some(entry) = self.geometry.get_mut(&id)
+            && entry.published.take().is_some()
+        {
+            self.published_layout_count -= 1;
+        }
+    }
+
+    pub(crate) fn suppress_published_layout(&mut self, id: StableNodeId) {
+        if let Some(meta) = self
+            .geometry
+            .get_mut(&id)
+            .and_then(|g| g.published.as_mut())
+        {
+            meta.suppressed = true;
+        }
+    }
+
+    pub(crate) fn unsuppress_published_layout(&mut self, id: StableNodeId) {
+        if let Some(meta) = self
+            .geometry
+            .get_mut(&id)
+            .and_then(|g| g.published.as_mut())
+        {
+            meta.suppressed = false;
+        }
+    }
+
+    pub(crate) fn reserve_geometry_through(&mut self, highest: StableNodeId, entries: usize) {
+        self.geometry.reserve_through(highest, entries);
+    }
+
     pub fn keys(&self) -> impl Iterator<Item = StableNodeId> + '_ {
         self.nodes.keys()
     }
@@ -1134,7 +1491,9 @@ impl NodeStore {
 
     /// 持有 hover 浮窗状态的节点（稀疏表直接迭代，命中测试路由用）。
     pub fn text_hover_ids(&self) -> impl Iterator<Item = StableNodeId> + '_ {
-        self.text_hovers.keys().copied()
+        self.editor_states
+            .iter()
+            .filter_map(|(id, state)| state.hover.as_ref().map(|_| *id))
     }
 
     pub fn insert(&mut self, id: StableNodeId, record: NodeRecord) {
@@ -1148,28 +1507,29 @@ impl NodeStore {
     /// written: style resolution, the layout frame, the visual, an insert.
     pub(crate) fn note_node_space(&mut self, id: StableNodeId) {
         let visual = self.widget_visual(id);
+        let frame = self.layout_frame(id);
         let Some(record) = self.nodes.get(id) else {
             return;
         };
-        let space = crate::node_space::NodeSpace::of(
-            &record.resolved_layout,
-            record.layout_frame(),
-            &record.kind,
-            visual,
-        );
+        let space =
+            crate::node_space::NodeSpace::of(&record.resolved_layout, frame, &record.kind, visual);
         let Some(record) = self.nodes.get_mut(id) else {
             return;
         };
         record.space = space;
         if space.pins_accessibility() {
             self.space_pins.insert(id);
+            record.attachments.set(NodePresenceBits::SPACE_PIN, true);
         } else {
             self.space_pins.remove(&id);
+            record.attachments.clear(NodePresenceBits::SPACE_PIN);
         }
         if space.page_bound() {
             self.page_bound.insert(id);
+            record.attachments.set(NodePresenceBits::PAGE_BOUND, true);
         } else {
             self.page_bound.remove(&id);
+            record.attachments.clear(NodePresenceBits::PAGE_BOUND);
         }
     }
 
@@ -1217,7 +1577,7 @@ impl NodeStore {
             let record = self.nodes.get(id).expect("a key has a record");
             let space = crate::node_space::NodeSpace::of(
                 &record.resolved_layout,
-                record.layout_frame(),
+                self.layout_frame(id),
                 &record.kind,
                 self.widget_visual(id),
             );
@@ -1245,59 +1605,174 @@ impl NodeStore {
 
     /// Drop the dense record and every sparse entry. The only despawn path.
     pub fn remove(&mut self, id: StableNodeId) -> Option<NodeRecord> {
-        let record = self.nodes.remove(id)?;
+        let mut record = self.nodes.remove(id)?;
+        let mut bits = record.attachments;
         if record.a11y_preset == 2 {
             self.decorative_a11y_count -= 1;
         }
         if record.visual_preset != 0 {
             self.preset_visual_count -= 1;
         }
-        self.widget_visuals.remove(&id);
-        self.space_pins.remove(&id);
-        self.page_bound.remove(&id);
-        self.custom_render.remove(&id);
-        self.event_listeners.remove(&id);
-        self.component_types.remove(&id);
-        self.overlay_hosts.remove(&id);
-        self.overlay_mounts.remove(&id);
-        self.scroll_metrics.remove(&id);
-        self.editors.remove(&id);
-        self.highlights.remove(&id);
-        self.text_presentations.remove(&id);
-        self.text_input_presentations.remove(&id);
-        self.empty_state_text.remove(&id);
-        self.modal_text.remove(&id);
-        self.text_fold_views.remove(&id);
-        self.text_inlays.remove(&id);
-        self.text_snippets.remove(&id);
-        self.text_completions.remove(&id);
-        self.text_hovers.remove(&id);
-        self.text_signatures.remove(&id);
-        self.text_viewport_pins.remove(&id);
-        self.cold_rects.text_drop_indicators.remove(&id);
-        self.text_natural_widths.remove(&id);
-        self.block_struts.remove(&id);
-        self.text_wrap_limits.remove(&id);
-        self.cold_rects.explicit_rects.remove(&id);
-        self.languages.remove(&id);
-        self.text_scales.remove(&id);
-        self.rich_texts.remove(&id);
-        self.set_inline_atoms(id, Arc::from([]));
-        self.inline_parents.remove(&id);
-        self.rich_editor_marks.remove(&id);
-        self.glyph_presentations.remove(&id);
-        self.texts.remove(&id);
-        self.text_metrics.remove(&id);
-        self.layout_paddings.remove(&id);
-        self.layout_context_generations.remove(&id);
-        self.scroll_offsets.remove(&id);
-        self.accessibilities.remove(&id);
-        self.render_room_epochs.remove(&id);
-        self.theme_deps.remove(&id);
-        self.node_scopes.remove(&id);
-        if let Some(text) = self.text_nodes.remove(&id) {
-            self.text_layouts.remove(text.layout);
+        if bits.contains(NodePresenceBits::GEOMETRY) {
+            if let Some(geom) = self.geometry.remove(&id)
+                && geom.published.is_some()
+            {
+                self.published_layout_count -= 1;
+            }
+            bits.clear(NodePresenceBits::GEOMETRY);
         }
+        if !bits.is_empty() {
+            if bits.contains(NodePresenceBits::WIDGET_VISUAL) {
+                self.widget_visuals.remove(&id);
+                bits.clear(NodePresenceBits::WIDGET_VISUAL);
+            }
+            if bits.contains(NodePresenceBits::SPACE_PIN) {
+                self.space_pins.remove(&id);
+                bits.clear(NodePresenceBits::SPACE_PIN);
+            }
+            if bits.contains(NodePresenceBits::PAGE_BOUND) {
+                self.page_bound.remove(&id);
+                bits.clear(NodePresenceBits::PAGE_BOUND);
+            }
+            if bits.contains(NodePresenceBits::CUSTOM_RENDER) {
+                self.custom_render.remove(&id);
+                bits.clear(NodePresenceBits::CUSTOM_RENDER);
+            }
+            if bits.contains(NodePresenceBits::EVENT_LISTENERS) {
+                self.event_listeners.remove(&id);
+                bits.clear(NodePresenceBits::EVENT_LISTENERS);
+            }
+            if bits.contains(NodePresenceBits::COMPONENT_TYPE) {
+                self.component_types.remove(&id);
+                bits.clear(NodePresenceBits::COMPONENT_TYPE);
+            }
+            if bits.contains(NodePresenceBits::OVERLAY_HOST) {
+                self.overlay_hosts.remove(&id);
+                bits.clear(NodePresenceBits::OVERLAY_HOST);
+            }
+            if bits.contains(NodePresenceBits::OVERLAY_MOUNT) {
+                self.overlay_mounts.remove(&id);
+                bits.clear(NodePresenceBits::OVERLAY_MOUNT);
+            }
+            if bits.contains(NodePresenceBits::SCROLL) {
+                if let Some(prev) = self.scroll.remove(&id)
+                    && prev.offset != ScrollOffset::default()
+                {
+                    self.non_zero_scroll_offsets -= 1;
+                }
+                bits.clear(NodePresenceBits::SCROLL);
+            }
+            if bits.contains(NodePresenceBits::EDITOR) {
+                if let Some(prev) = self.editor_states.remove(&id)
+                    && prev.editor.is_some()
+                {
+                    self.editor_count -= 1;
+                }
+                bits.clear(NodePresenceBits::EDITOR);
+            }
+            if bits.contains(NodePresenceBits::EMPTY_STATE_TEXT) {
+                self.empty_state_text.remove(&id);
+                bits.clear(NodePresenceBits::EMPTY_STATE_TEXT);
+            }
+            if bits.contains(NodePresenceBits::MODAL_TEXT) {
+                self.modal_text.remove(&id);
+                bits.clear(NodePresenceBits::MODAL_TEXT);
+            }
+            if bits.contains(NodePresenceBits::TEXT_DROP_INDICATOR) {
+                self.cold_rects.text_drop_indicators.remove(&id);
+                bits.clear(NodePresenceBits::TEXT_DROP_INDICATOR);
+            }
+            if bits.contains(NodePresenceBits::TEXT_NATURAL_WIDTH) {
+                self.text_natural_widths.remove(&id);
+                bits.clear(NodePresenceBits::TEXT_NATURAL_WIDTH);
+            }
+            if bits.contains(NodePresenceBits::BLOCK_STRUT) {
+                self.block_struts.remove(&id);
+                bits.clear(NodePresenceBits::BLOCK_STRUT);
+            }
+            if bits.contains(NodePresenceBits::TEXT_WRAP_LIMIT) {
+                self.text_wrap_limits.remove(&id);
+                bits.clear(NodePresenceBits::TEXT_WRAP_LIMIT);
+            }
+            if bits.contains(NodePresenceBits::EXPLICIT_RECT) {
+                self.cold_rects.explicit_rects.remove(&id);
+                bits.clear(NodePresenceBits::EXPLICIT_RECT);
+            }
+            if bits.contains(NodePresenceBits::LANGUAGE) {
+                self.languages.remove(&id);
+                bits.clear(NodePresenceBits::LANGUAGE);
+            }
+            if bits.contains(NodePresenceBits::TEXT_SCALE) {
+                self.text_scales.remove(&id);
+                bits.clear(NodePresenceBits::TEXT_SCALE);
+            }
+            if bits.contains(NodePresenceBits::RICH_TEXT) {
+                self.rich_texts.remove(&id);
+                bits.clear(NodePresenceBits::RICH_TEXT);
+            }
+            if bits.contains(NodePresenceBits::INLINE_CONTENT) {
+                bits.clear(NodePresenceBits::INLINE_CONTENT);
+            }
+            if bits.contains(NodePresenceBits::INLINE_PARENT) {
+                self.inline_parents.remove(&id);
+                bits.clear(NodePresenceBits::INLINE_PARENT);
+            }
+            if bits.contains(NodePresenceBits::RICH_EDITOR_MARKS) {
+                self.rich_editor_marks.remove(&id);
+                bits.clear(NodePresenceBits::RICH_EDITOR_MARKS);
+            }
+            if bits.contains(NodePresenceBits::GLYPH_PRESENTATION) {
+                self.glyph_presentations.remove(&id);
+                bits.clear(NodePresenceBits::GLYPH_PRESENTATION);
+            }
+            if bits.contains(NodePresenceBits::TEXT_CONTENT) {
+                self.texts.remove(&id);
+                bits.clear(NodePresenceBits::TEXT_CONTENT);
+            }
+            if bits.contains(NodePresenceBits::TEXT_METRICS) {
+                self.text_metrics.remove(&id);
+                bits.clear(NodePresenceBits::TEXT_METRICS);
+            }
+            if bits.contains(NodePresenceBits::ACCESSIBILITY) {
+                self.accessibilities.remove(&id);
+                bits.clear(NodePresenceBits::ACCESSIBILITY);
+            }
+            if bits.contains(NodePresenceBits::RENDER_ROOM_EPOCH) {
+                self.render_room_epochs.remove(&id);
+                bits.clear(NodePresenceBits::RENDER_ROOM_EPOCH);
+            }
+            if bits.contains(NodePresenceBits::THEME_DEP) {
+                self.theme_deps.remove(&id);
+                bits.clear(NodePresenceBits::THEME_DEP);
+            }
+            if bits.contains(NodePresenceBits::NODE_SCOPE) {
+                self.node_scopes.remove(&id);
+                bits.clear(NodePresenceBits::NODE_SCOPE);
+            }
+            if bits.contains(NodePresenceBits::TEXT_NODE) {
+                if let Some(text) = self.text_nodes.remove(&id) {
+                    self.text_layouts.remove(text.layout);
+                }
+                bits.clear(NodePresenceBits::TEXT_NODE);
+            }
+            debug_assert!(
+                bits.is_empty(),
+                "NodePresenceBits leaked on {id:?}: {bits:?}"
+            );
+        }
+        if record
+            .attachments
+            .contains(NodePresenceBits::INLINE_CONTENT)
+        {
+            self.set_inline_atoms(id, Arc::from([]));
+        }
+        if record.layout_padding_slot == u8::MAX {
+            self.layout_paddings.remove(&id);
+        }
+        if record.layout_context_gen == u8::MAX {
+            self.layout_context_generations.remove(&id);
+        }
+        record.attachments = NodePresenceBits::EMPTY;
         Some(record)
     }
 
@@ -1315,8 +1790,14 @@ impl NodeStore {
     ) {
         if mask.is_empty() {
             self.theme_deps.remove(&id);
+            if let Some(record) = self.nodes.get_mut(id) {
+                record.attachments.clear(NodePresenceBits::THEME_DEP);
+            }
         } else {
             self.theme_deps.insert(id, mask);
+            if let Some(record) = self.nodes.get_mut(id) {
+                record.attachments.set(NodePresenceBits::THEME_DEP, true);
+            }
         }
     }
 
@@ -1336,13 +1817,19 @@ impl NodeStore {
     pub(crate) fn set_node_scope(&mut self, id: StableNodeId, scope: nana_ui_core::ThemeScopeId) {
         if !scope.is_root() {
             self.node_scopes.insert(id, scope);
+            if let Some(record) = self.nodes.get_mut(id) {
+                record.attachments.set(NodePresenceBits::NODE_SCOPE, true);
+            }
         } else if !self.node_scopes.is_empty() {
             self.node_scopes.remove(&id);
+            if let Some(record) = self.nodes.get_mut(id) {
+                record.attachments.clear(NodePresenceBits::NODE_SCOPE);
+            }
         }
     }
 
     pub(crate) fn has_text_inputs(&self) -> bool {
-        !self.editors.is_empty()
+        self.editor_count > 0
     }
 
     pub(crate) fn has_custom_render(&self) -> bool {
@@ -1377,16 +1864,23 @@ impl NodeStore {
             );
             if let Some(record) = self.nodes.get_mut(id) {
                 record.a11y_preset = 3;
+                record
+                    .attachments
+                    .set(NodePresenceBits::ACCESSIBILITY, true);
             }
         }
         let non_empty = !text.value.is_empty();
+        let present = non_empty || text.value.stamp().is_some();
         if let Some(record) = self.nodes.get_mut(id) {
             record.has_text = non_empty;
             if non_empty {
                 record.empty_text_backend = 0;
             }
+            record
+                .attachments
+                .set(NodePresenceBits::TEXT_CONTENT, present);
         }
-        if non_empty || text.value.stamp().is_some() {
+        if present {
             self.texts.insert(id, text);
         } else {
             self.texts.remove(&id);
@@ -1401,10 +1895,16 @@ impl NodeStore {
     }
 
     pub(crate) fn set_text_metrics(&mut self, id: StableNodeId, metrics: TextMetrics) {
-        if metrics == TextMetrics::default() {
-            self.text_metrics.remove(&id);
-        } else {
+        let present = metrics != TextMetrics::default();
+        if present {
             self.text_metrics.insert(id, metrics);
+        } else {
+            self.text_metrics.remove(&id);
+        }
+        if let Some(record) = self.nodes.get_mut(id) {
+            record
+                .attachments
+                .set(NodePresenceBits::TEXT_METRICS, present);
         }
     }
 
@@ -1521,21 +2021,77 @@ impl NodeStore {
     }
 
     pub(crate) fn has_scroll_offsets(&self) -> bool {
-        !self.scroll_offsets.is_empty()
+        self.non_zero_scroll_offsets > 0
     }
 
     pub(crate) fn scroll_offset(&self, id: StableNodeId) -> ScrollOffset {
-        if self.scroll_offsets.is_empty() {
+        if self.non_zero_scroll_offsets == 0 {
             return ScrollOffset::default();
         }
-        self.scroll_offsets.get(&id).copied().unwrap_or_default()
+        self.scroll
+            .get(&id)
+            .map_or_else(ScrollOffset::default, |state| state.offset)
     }
 
     pub(crate) fn set_scroll_offset(&mut self, id: StableNodeId, offset: ScrollOffset) {
-        if offset == ScrollOffset::default() {
-            self.scroll_offsets.remove(&id);
+        let is_zero = offset == ScrollOffset::default();
+        let had_non_zero = self
+            .scroll
+            .get(&id)
+            .is_some_and(|state| state.offset != ScrollOffset::default());
+        match (had_non_zero, is_zero) {
+            (false, false) => self.non_zero_scroll_offsets += 1,
+            (true, true) => self.non_zero_scroll_offsets -= 1,
+            _ => {}
+        }
+        let remove_entry = if let Some(state) = self.scroll.get_mut(&id) {
+            state.offset = offset;
+            is_zero && state.metrics.is_none()
+        } else if !is_zero {
+            self.scroll.insert(
+                id,
+                ScrollNodeState {
+                    offset,
+                    metrics: None,
+                },
+            );
+            false
         } else {
-            self.scroll_offsets.insert(id, offset);
+            false
+        };
+        if remove_entry {
+            self.scroll.remove(&id);
+            if let Some(record) = self.nodes.get_mut(id) {
+                record.attachments.clear(NodePresenceBits::SCROLL);
+            }
+        } else if !is_zero || self.scroll.contains_key(&id) {
+            if let Some(record) = self.nodes.get_mut(id) {
+                record.attachments.set(NodePresenceBits::SCROLL, true);
+            }
+        }
+    }
+
+    pub fn scroll_metrics(&self, id: StableNodeId) -> Option<&ScrollMetrics> {
+        self.scroll
+            .get(&id)
+            .and_then(|state| state.metrics.as_ref())
+    }
+
+    pub fn set_scroll_metrics(&mut self, id: StableNodeId, metrics: Option<ScrollMetrics>) {
+        if let Some(metrics) = metrics {
+            let entry = self.scroll.entry(id).or_default();
+            entry.metrics = Some(metrics);
+            if let Some(record) = self.nodes.get_mut(id) {
+                record.attachments.set(NodePresenceBits::SCROLL, true);
+            }
+        } else if let Some(state) = self.scroll.get_mut(&id) {
+            state.metrics = None;
+            if state.offset == ScrollOffset::default() {
+                self.scroll.remove(&id);
+                if let Some(record) = self.nodes.get_mut(id) {
+                    record.attachments.clear(NodePresenceBits::SCROLL);
+                }
+            }
         }
     }
 
@@ -1658,6 +2214,9 @@ impl NodeStore {
                 self.decorative_a11y_count += 1;
             }
             record.a11y_preset = preset;
+            record
+                .attachments
+                .set(NodePresenceBits::ACCESSIBILITY, preset == 3);
         }
         if preset == 3 {
             self.accessibilities.insert(id, shared_accessibility(state));
@@ -1679,8 +2238,18 @@ impl NodeStore {
     pub(crate) fn set_render_room_epoch(&mut self, id: StableNodeId, epoch: u32) {
         if epoch == u32::MAX {
             self.render_room_epochs.remove(&id);
+            if let Some(record) = self.nodes.get_mut(id) {
+                record
+                    .attachments
+                    .clear(NodePresenceBits::RENDER_ROOM_EPOCH);
+            }
         } else {
             self.render_room_epochs.insert(id, epoch);
+            if let Some(record) = self.nodes.get_mut(id) {
+                record
+                    .attachments
+                    .set(NodePresenceBits::RENDER_ROOM_EPOCH, true);
+            }
         }
     }
 
@@ -1715,6 +2284,7 @@ impl NodeStore {
                 self.preset_visual_count += 1;
             }
             self.widget_visuals.remove(&id);
+            record.attachments.clear(NodePresenceBits::WIDGET_VISUAL);
         } else {
             if prev_preset != 0 {
                 record.visual_preset = 0;
@@ -1723,9 +2293,13 @@ impl NodeStore {
             match value {
                 Some(value) => {
                     self.widget_visuals.insert(id, value);
+                    record
+                        .attachments
+                        .set(NodePresenceBits::WIDGET_VISUAL, true);
                 }
                 None => {
                     self.widget_visuals.remove(&id);
+                    record.attachments.clear(NodePresenceBits::WIDGET_VISUAL);
                 }
             }
         }
@@ -1738,13 +2312,15 @@ impl NodeStore {
         custom_render,
         CustomRenderNode,
         custom_render,
-        set_custom_render
+        set_custom_render,
+        NodePresenceBits::CUSTOM_RENDER
     );
     sparse!(
         event_listeners,
         EventListeners,
         event_listeners,
-        set_event_listeners
+        set_event_listeners,
+        NodePresenceBits::EVENT_LISTENERS
     );
     pub fn component_type(&self, id: StableNodeId) -> Option<&ComponentTypeId> {
         let record = self.nodes.get(id)?;
@@ -1762,17 +2338,22 @@ impl NodeStore {
                     && let Some(record) = self.nodes.get_mut(id)
                 {
                     record.builtin_component = index;
+                    record.attachments.clear(NodePresenceBits::COMPONENT_TYPE);
                     self.component_types.remove(&id);
                     return;
                 }
                 if let Some(record) = self.nodes.get_mut(id) {
                     record.builtin_component = 0;
+                    record
+                        .attachments
+                        .set(NodePresenceBits::COMPONENT_TYPE, true);
                 }
                 self.component_types.insert(id, value);
             }
             None => {
                 if let Some(record) = self.nodes.get_mut(id) {
                     record.builtin_component = 0;
+                    record.attachments.clear(NodePresenceBits::COMPONENT_TYPE);
                 }
                 self.component_types.remove(&id);
             }
@@ -1782,7 +2363,8 @@ impl NodeStore {
         overlay_hosts,
         OverlayHostState,
         overlay_host,
-        set_overlay_host
+        set_overlay_host,
+        NodePresenceBits::OVERLAY_HOST
     );
     pub(crate) fn has_overlay_mounts(&self) -> bool {
         !self.overlay_mounts.is_empty()
@@ -1792,129 +2374,288 @@ impl NodeStore {
         overlay_mounts,
         nana_ui_core::OverlayMount,
         overlay_mount,
-        set_overlay_mount
+        set_overlay_mount,
+        NodePresenceBits::OVERLAY_MOUNT
     );
-    sparse!(
-        scroll_metrics,
-        ScrollMetrics,
-        scroll_metrics,
-        set_scroll_metrics
-    );
-    pub fn text_input(&self, id: StableNodeId) -> Option<TextInputView<'_>> {
-        self.editors
+
+    fn ensure_editor_state(&mut self, id: StableNodeId) -> &mut EditorState {
+        if !self.editor_states.contains_key(&id) {
+            self.editor_states.insert(id, Box::default());
+            if let Some(record) = self.nodes.get_mut(id) {
+                record.attachments.set(NodePresenceBits::EDITOR, true);
+            }
+        }
+        self.editor_states
+            .get_mut(&id)
+            .expect("inserted editor state")
+    }
+
+    fn prune_editor_state_if_empty(&mut self, id: StableNodeId) {
+        if self
+            .editor_states
             .get(&id)
+            .is_some_and(|state| state.is_empty())
+        {
+            self.editor_states.remove(&id);
+            if let Some(record) = self.nodes.get_mut(id) {
+                record.attachments.clear(NodePresenceBits::EDITOR);
+            }
+        }
+    }
+
+    pub fn text_input(&self, id: StableNodeId) -> Option<TextInputView<'_>> {
+        self.editor(id)
             .map(|editor| TextInputView::of(&editor.session))
     }
 
     pub fn ime(&self, id: StableNodeId) -> Option<ImeView<'_>> {
-        self.editors.get(&id)?.ime()
+        self.editor(id)?.ime()
     }
 
     pub(crate) fn editor(&self, id: StableNodeId) -> Option<&EditorRecord> {
-        self.editors.get(&id)
+        self.editor_states
+            .get(&id)
+            .and_then(|state| state.editor.as_ref())
     }
 
     pub(crate) fn editor_mut(&mut self, id: StableNodeId) -> Option<&mut EditorRecord> {
-        self.editors.get_mut(&id)
+        self.editor_states
+            .get_mut(&id)
+            .and_then(|state| state.editor.as_mut())
     }
 
     pub(crate) fn set_editor(&mut self, id: StableNodeId, editor: Option<EditorRecord>) {
         match editor {
             Some(editor) => {
-                self.editors.insert(id, editor);
+                let inserted = {
+                    let state = self.ensure_editor_state(id);
+                    let was_none = state.editor.is_none();
+                    state.editor = Some(editor);
+                    was_none
+                };
+                if inserted {
+                    self.editor_count += 1;
+                }
             }
             None => {
-                self.editors.remove(&id);
+                if let Some(state) = self.editor_states.get_mut(&id)
+                    && state.editor.take().is_some()
+                {
+                    self.editor_count -= 1;
+                    self.prune_editor_state_if_empty(id);
+                }
             }
         }
     }
-    sparse!(highlights, HighlightRequest, highlight, set_highlight);
-    sparse!(
-        text_presentations,
-        TextPresentation,
-        text_presentation,
-        set_text_presentation
-    );
-    sparse!(
-        text_input_presentations,
-        TextInputPresentation,
-        text_input_presentation,
-        set_text_input_presentation
-    );
+
+    pub fn highlight(&self, id: StableNodeId) -> Option<&HighlightRequest> {
+        self.editor_states.get(&id)?.highlight.as_ref()
+    }
+    pub fn set_highlight(&mut self, id: StableNodeId, value: Option<HighlightRequest>) {
+        match value {
+            Some(value) => self.ensure_editor_state(id).highlight = Some(value),
+            None => {
+                if let Some(state) = self.editor_states.get_mut(&id) {
+                    state.highlight = None;
+                    self.prune_editor_state_if_empty(id);
+                }
+            }
+        }
+    }
+    pub fn text_presentation(&self, id: StableNodeId) -> Option<&TextPresentation> {
+        self.editor_states.get(&id)?.text_presentation.as_ref()
+    }
+    pub fn set_text_presentation(&mut self, id: StableNodeId, value: Option<TextPresentation>) {
+        match value {
+            Some(value) => self.ensure_editor_state(id).text_presentation = Some(value),
+            None => {
+                if let Some(state) = self.editor_states.get_mut(&id) {
+                    state.text_presentation = None;
+                    self.prune_editor_state_if_empty(id);
+                }
+            }
+        }
+    }
+    pub fn text_input_presentation(&self, id: StableNodeId) -> Option<&TextInputPresentation> {
+        self.editor_states
+            .get(&id)?
+            .text_input_presentation
+            .as_ref()
+    }
+    pub fn set_text_input_presentation(
+        &mut self,
+        id: StableNodeId,
+        value: Option<TextInputPresentation>,
+    ) {
+        match value {
+            Some(value) => self.ensure_editor_state(id).text_input_presentation = Some(value),
+            None => {
+                if let Some(state) = self.editor_states.get_mut(&id) {
+                    state.text_input_presentation = None;
+                    self.prune_editor_state_if_empty(id);
+                }
+            }
+        }
+    }
     sparse!(
         empty_state_text,
         EmptyStateTextPresentation,
         empty_state_text,
-        set_empty_state_text
+        set_empty_state_text,
+        NodePresenceBits::EMPTY_STATE_TEXT
     );
     sparse!(
         modal_text,
         ModalTextPresentation,
         modal_text,
-        set_modal_text
+        set_modal_text,
+        NodePresenceBits::MODAL_TEXT
     );
-    sparse!(
-        text_fold_views,
-        TextFoldViewState,
-        text_fold_view,
-        set_text_fold_view
-    );
-    sparse!(
-        text_inlays,
-        Arc<[crate::TextInlay]>,
-        text_inlays,
-        set_text_inlays
-    );
-    sparse!(
-        text_snippets,
-        TextSnippetSession,
-        text_snippet_session,
-        set_text_snippet_session
-    );
-    sparse!(
-        text_completions,
-        TextCompletionViewState,
-        text_completion_view,
-        set_text_completion_view
-    );
-    sparse!(
-        text_hovers,
-        TextHoverViewState,
-        text_hover_view,
-        set_text_hover_view
-    );
-    sparse!(
-        text_signatures,
-        crate::TextSignatureHelp,
-        text_signature,
-        set_text_signature
-    );
-    sparse!(
-        text_viewport_pins,
-        ScrollOffset,
-        text_viewport_pin,
-        set_text_viewport_pin
-    );
+    pub fn text_fold_view(&self, id: StableNodeId) -> Option<&TextFoldViewState> {
+        self.editor_states.get(&id)?.fold_view.as_ref()
+    }
+    pub fn set_text_fold_view(&mut self, id: StableNodeId, value: Option<TextFoldViewState>) {
+        match value {
+            Some(value) => self.ensure_editor_state(id).fold_view = Some(value),
+            None => {
+                if let Some(state) = self.editor_states.get_mut(&id) {
+                    state.fold_view = None;
+                    self.prune_editor_state_if_empty(id);
+                }
+            }
+        }
+    }
+    pub fn text_inlays(&self, id: StableNodeId) -> Option<&Arc<[crate::TextInlay]>> {
+        self.editor_states.get(&id)?.inlays.as_ref()
+    }
+    pub fn set_text_inlays(&mut self, id: StableNodeId, value: Option<Arc<[crate::TextInlay]>>) {
+        match value {
+            Some(value) => self.ensure_editor_state(id).inlays = Some(value),
+            None => {
+                if let Some(state) = self.editor_states.get_mut(&id) {
+                    state.inlays = None;
+                    self.prune_editor_state_if_empty(id);
+                }
+            }
+        }
+    }
+    pub fn text_snippet_session(&self, id: StableNodeId) -> Option<&TextSnippetSession> {
+        self.editor_states.get(&id)?.snippet.as_ref()
+    }
+    pub fn set_text_snippet_session(
+        &mut self,
+        id: StableNodeId,
+        value: Option<TextSnippetSession>,
+    ) {
+        match value {
+            Some(value) => self.ensure_editor_state(id).snippet = Some(value),
+            None => {
+                if let Some(state) = self.editor_states.get_mut(&id) {
+                    state.snippet = None;
+                    self.prune_editor_state_if_empty(id);
+                }
+            }
+        }
+    }
+    pub fn text_completion_view(&self, id: StableNodeId) -> Option<&TextCompletionViewState> {
+        self.editor_states.get(&id)?.completion.as_ref()
+    }
+    pub fn set_text_completion_view(
+        &mut self,
+        id: StableNodeId,
+        value: Option<TextCompletionViewState>,
+    ) {
+        match value {
+            Some(value) => self.ensure_editor_state(id).completion = Some(value),
+            None => {
+                if let Some(state) = self.editor_states.get_mut(&id) {
+                    state.completion = None;
+                    self.prune_editor_state_if_empty(id);
+                }
+            }
+        }
+    }
+    pub fn text_hover_view(&self, id: StableNodeId) -> Option<&TextHoverViewState> {
+        self.editor_states.get(&id)?.hover.as_ref()
+    }
+    pub fn set_text_hover_view(&mut self, id: StableNodeId, value: Option<TextHoverViewState>) {
+        match value {
+            Some(value) => self.ensure_editor_state(id).hover = Some(value),
+            None => {
+                if let Some(state) = self.editor_states.get_mut(&id) {
+                    state.hover = None;
+                    self.prune_editor_state_if_empty(id);
+                }
+            }
+        }
+    }
+    pub fn text_signature(&self, id: StableNodeId) -> Option<&crate::TextSignatureHelp> {
+        self.editor_states.get(&id)?.signature.as_ref()
+    }
+    pub fn set_text_signature(
+        &mut self,
+        id: StableNodeId,
+        value: Option<crate::TextSignatureHelp>,
+    ) {
+        match value {
+            Some(value) => self.ensure_editor_state(id).signature = Some(value),
+            None => {
+                if let Some(state) = self.editor_states.get_mut(&id) {
+                    state.signature = None;
+                    self.prune_editor_state_if_empty(id);
+                }
+            }
+        }
+    }
+    pub fn text_viewport_pin(&self, id: StableNodeId) -> Option<&ScrollOffset> {
+        self.editor_states.get(&id)?.viewport_pin.as_ref()
+    }
+    pub fn set_text_viewport_pin(&mut self, id: StableNodeId, value: Option<ScrollOffset>) {
+        match value {
+            Some(value) => self.ensure_editor_state(id).viewport_pin = Some(value),
+            None => {
+                if let Some(state) = self.editor_states.get_mut(&id) {
+                    state.viewport_pin = None;
+                    self.prune_editor_state_if_empty(id);
+                }
+            }
+        }
+    }
     sparse!(
         cold_rects.text_drop_indicators,
         LayoutBox,
         text_drop_indicator,
-        set_text_drop_indicator
+        set_text_drop_indicator,
+        NodePresenceBits::TEXT_DROP_INDICATOR
     );
     sparse!(
         text_natural_widths,
         f32,
         text_natural_width,
-        set_text_natural_width
+        set_text_natural_width,
+        NodePresenceBits::TEXT_NATURAL_WIDTH
     );
-    sparse!(text_wrap_limits, f32, text_wrap_limit, set_text_wrap_limit);
+    sparse!(
+        text_wrap_limits,
+        f32,
+        text_wrap_limit,
+        set_text_wrap_limit,
+        NodePresenceBits::TEXT_WRAP_LIMIT
+    );
     sparse!(
         cold_rects.explicit_rects,
         crate::ExplicitRect,
         explicit_rect,
-        set_explicit_rect
+        set_explicit_rect,
+        NodePresenceBits::EXPLICIT_RECT
     );
-    sparse!(block_struts, crate::FontStrut, block_strut, set_block_strut);
+    sparse!(
+        block_struts,
+        crate::FontStrut,
+        block_strut,
+        set_block_strut,
+        NodePresenceBits::BLOCK_STRUT
+    );
 
     /// Every block holding a strut: what a new font set can change.
     pub(crate) fn strut_holders(&self) -> impl Iterator<Item = StableNodeId> + '_ {
@@ -1924,21 +2665,36 @@ impl NodeStore {
         languages,
         nana_text::font::LanguageTag,
         language,
-        set_language
+        set_language,
+        NodePresenceBits::LANGUAGE
     );
-    sparse!(text_scales, f32, text_scale, set_text_scale);
-    sparse!(rich_texts, nana_ui_core::RichText, rich_text, set_rich_text);
+    sparse!(
+        text_scales,
+        f32,
+        text_scale,
+        set_text_scale,
+        NodePresenceBits::TEXT_SCALE
+    );
+    sparse!(
+        rich_texts,
+        nana_ui_core::RichText,
+        rich_text,
+        set_rich_text,
+        NodePresenceBits::RICH_TEXT
+    );
     sparse!(
         glyph_presentations,
         nana_ui_core::GlyphPresentation,
         glyph_presentation,
-        set_glyph_presentation
+        set_glyph_presentation,
+        NodePresenceBits::GLYPH_PRESENTATION
     );
     sparse!(
         rich_editor_marks,
         crate::RichEditorMarks,
         rich_editor_marks,
-        set_rich_editor_marks
+        set_rich_editor_marks,
+        NodePresenceBits::RICH_EDITOR_MARKS
     );
 
     pub(crate) fn text_layouts(&self) -> &nana_text::TextLayoutStore {
@@ -2021,6 +2777,7 @@ impl NodeStore {
             record.empty_text_backend = 0;
         }
         if record.has_text || matches!(record.kind.as_ref(), crate::world::NodeKind::Text) {
+            record.attachments.set(NodePresenceBits::TEXT_NODE, true);
             self.text_nodes.entry(id).or_default().invalidate(dirty);
         }
     }
@@ -2049,6 +2806,9 @@ impl NodeStore {
         let constraints =
             constraints.map(|constraints| (constraints, record.style.text_horizontal_alignment));
         let language = record.resolved.0.language.clone();
+        if let Some(record) = self.nodes.get_mut(id) {
+            record.attachments.set(NodePresenceBits::TEXT_NODE, true);
+        }
         self.text_nodes.entry(id).or_default().mark_resolved(
             backend,
             constraints,
@@ -2064,7 +2824,9 @@ impl NodeStore {
         id: StableNodeId,
         style: &crate::ComputedStyle,
     ) -> Option<(&nana_text::TextSource, bool)> {
-        if !self.nodes.contains(id) {
+        if let Some(record) = self.nodes.get_mut(id) {
+            record.attachments.set(NodePresenceBits::TEXT_NODE, true);
+        } else {
             return None;
         }
         let text = self.texts.get(&id).unwrap_or(&DEFAULT_TEXT_CONTENT);
@@ -2118,7 +2880,10 @@ impl NodeStore {
             return false;
         }
         let previous = self.inline_contents.remove(&id).unwrap_or_default();
-        let old: HashMap<_, _> = previous
+        if let Some(record) = self.nodes.get_mut(id) {
+            record.attachments.clear(NodePresenceBits::INLINE_CONTENT);
+        }
+        let old: crate::NodeMap<_> = previous
             .atoms
             .iter()
             .zip(previous.objects.iter())
@@ -2127,15 +2892,18 @@ impl NodeStore {
         for atom in previous.atoms.iter() {
             if self.inline_parents.get(&atom.node) == Some(&id) {
                 self.inline_parents.remove(&atom.node);
+                if let Some(record) = self.nodes.get_mut(atom.node) {
+                    record.attachments.clear(NodePresenceBits::INLINE_PARENT);
+                }
             }
         }
         if atoms.is_empty() {
             if self.inline_contents.is_empty() {
-                self.inline_contents = HashMap::new();
+                self.inline_contents = crate::NodeMap::default();
                 // A destination already installed earlier in this batch keeps
                 // its reverse binding when an old owner is cleared.
                 if self.inline_parents.is_empty() {
-                    self.inline_parents = HashMap::new();
+                    self.inline_parents = crate::NodeMap::default();
                 }
             }
             return true;
@@ -2144,6 +2912,11 @@ impl NodeStore {
             .iter()
             .map(|atom| {
                 self.inline_parents.insert(atom.node, id);
+                if let Some(record) = self.nodes.get_mut(atom.node) {
+                    record
+                        .attachments
+                        .set(NodePresenceBits::INLINE_PARENT, true);
+                }
                 nana_text::InlineObject {
                     offset: atom.offset,
                     id: atom.node.get(),
@@ -2161,6 +2934,11 @@ impl NodeStore {
             .into();
         self.inline_contents
             .insert(id, crate::inline_content::InlineRecord { atoms, objects });
+        if let Some(record) = self.nodes.get_mut(id) {
+            record
+                .attachments
+                .set(NodePresenceBits::INLINE_CONTENT, true);
+        }
         true
     }
     pub(crate) fn set_inline_objects(
@@ -2186,7 +2964,9 @@ impl NodeStore {
         id: StableNodeId,
         layout: Arc<nana_text::TextLayout>,
     ) -> bool {
-        if !self.nodes.contains(id) {
+        if let Some(record) = self.nodes.get_mut(id) {
+            record.attachments.set(NodePresenceBits::TEXT_NODE, true);
+        } else {
             return false;
         }
         let text = self.text_nodes.entry(id).or_default();
@@ -2244,20 +3024,24 @@ impl NodeStore {
         &mut self,
         id: StableNodeId,
     ) -> Option<&mut TextCompletionViewState> {
-        self.text_completions.get_mut(&id)
+        self.editor_states
+            .get_mut(&id)
+            .and_then(|state| state.completion.as_mut())
     }
 
     pub(crate) fn text_hover_view_mut(
         &mut self,
         id: StableNodeId,
     ) -> Option<&mut TextHoverViewState> {
-        self.text_hovers.get_mut(&id)
+        self.editor_states
+            .get_mut(&id)
+            .and_then(|state| state.hover.as_mut())
     }
 
     pub(crate) fn diagnostic_hover_ids(&self) -> Vec<StableNodeId> {
-        self.text_hovers
+        self.editor_states
             .iter()
-            .filter(|(_, state)| state.diagnostic)
+            .filter(|(_, state)| state.hover.as_ref().is_some_and(|h| h.diagnostic))
             .map(|(id, _)| *id)
             .collect()
     }

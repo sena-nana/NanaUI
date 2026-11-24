@@ -3397,10 +3397,14 @@ impl UiWorld {
             } else {
                 ((vertical && (!is_text_input || text_input_multiline))
                     || (!is_text_input
-                        && (source
-                            .layout
-                            .height
-                            .is_some_and(nana_ui_core::LengthSpec::is_definite_declared)
+                        && (self
+                            .presentation_length_overlay(id)
+                            .and_then(|overlay| overlay.get(crate::AnimatableProperty::Height))
+                            .is_some()
+                            || source
+                                .layout
+                                .height
+                                .is_some_and(nana_ui_core::LengthSpec::is_definite_declared)
                             || source
                                 .layout
                                 .max_height
@@ -3507,7 +3511,7 @@ impl UiWorld {
     /// minimap 行长的单条缓存：值未变（纯光标/选区同步）时复用上一次
     /// O(文档) 单趟扫描结果，避免每趟 shape 全文档重扫。
     pub(super) fn minimap_line_lengths_cached(&self, value: &crate::TextValue) -> Vec<u32> {
-        let mut cache = self.editor_caches.minimap_line_lengths.borrow_mut();
+        let mut cache = self.text.editor_caches.minimap_line_lengths.borrow_mut();
         // The same text is recognised by its stamp: a caret move compares
         // nothing, and the cache holds a shared copy, not a second one.
         if let Some((cached_value, cached_lengths)) = cache.as_ref()
@@ -3534,7 +3538,7 @@ impl UiWorld {
         &self,
         value: &crate::TextValue,
     ) -> Arc<[(usize, usize, usize)]> {
-        let mut cache = self.editor_caches.bracket_color_spans.borrow_mut();
+        let mut cache = self.text.editor_caches.bracket_color_spans.borrow_mut();
         if let Some((cached_value, cached_spans)) = cache.as_mut() {
             if cached_value.same_identity(value) {
                 return Arc::clone(cached_spans);
@@ -3727,8 +3731,8 @@ impl UiWorld {
         self.observe_text_backend(backend.epoch);
         let mut work = nana_text::TextWorkCounters::default();
         // Same production adapter as [`Self::shape_text`].
-        let mut cache = std::mem::take(&mut self.text_layout_cache);
-        let mut glyphs = std::mem::take(&mut self.glyph_cache);
+        let mut cache = std::mem::take(&mut self.text.text_layout_cache);
+        let mut glyphs = std::mem::take(&mut self.text.glyph_cache);
         let mut shaper = CountingShaper::new(host, &mut cache, &mut glyphs);
         let mut shaped = Vec::new();
         let mut adaptive_updates = Vec::new();
@@ -3963,11 +3967,13 @@ impl UiWorld {
             let _ = cache.take_counters();
             let _ = glyphs.take_counters();
             let _ = host.take_text_work();
-            self.text_layout_cache = cache;
-            self.glyph_cache = glyphs;
+            self.text.text_layout_cache = cache;
+            self.text.glyph_cache = glyphs;
             return outcome.map(|()| false);
         }
-        self.text_input_adaptive_updates.extend(adaptive_updates);
+        self.text
+            .text_input_adaptive_updates
+            .extend(adaptive_updates);
         let (mut scaled, mut unbreakable_moved, inline_placement_changed) =
             self.apply_plain_resolutions(resolved, backend.epoch, &mut work);
         // Text whose widest line was found not to break, or to break after
@@ -4040,8 +4046,8 @@ impl UiWorld {
             work.layout_cache_lookups += hits + misses;
         }
         let glyph_stats = glyphs.take_counters();
-        self.text_layout_cache = cache;
-        self.glyph_cache = glyphs;
+        self.text.text_layout_cache = cache;
+        self.text.glyph_cache = glyphs;
         self.refresh_document_text_highlights(host);
         // Taken last: document highlights measure through the host too.
         work.accumulate(host.take_text_work());
@@ -4649,9 +4655,9 @@ impl UiWorld {
     /// pass does not visit are scheduled so none keeps metrics from the old
     /// fonts.
     fn observe_text_backend(&mut self, epoch: TextBackendEpoch) {
-        let previous = self.text_backend.replace(epoch);
+        let previous = self.text.text_backend.replace(epoch);
         if previous != Some(epoch) {
-            self.text_backend_changed = true;
+            self.text.text_backend_changed = true;
             self.note_layout_source_change();
         }
         if previous.is_none_or(|previous| previous == epoch) {
@@ -4660,12 +4666,12 @@ impl UiWorld {
         // Glyph advances and cached metrics are keyed by character, text and
         // style, not by who measured them: another shaper at the same font
         // generation must not be answered with the last one's numbers.
-        self.glyph_cache.clear();
-        self.text_layout_cache.clear();
+        self.text.glyph_cache.clear();
+        self.text.text_layout_cache.clear();
         // So does every block's strut: a face that serves its font now, or
         // stopped serving it, moves its lines.
         let struts = self.nodes.strut_holders().collect::<Vec<_>>();
-        self.strut_candidates.extend(struts);
+        self.text.strut_candidates.extend(struts);
         // Every resolved text shapes again against the new fonts. Layout hears
         // only from the text whose exported metrics moved, as after any other
         // reshape: a font registration that changes no text's metrics lays
@@ -4679,6 +4685,7 @@ impl UiWorld {
         // A painter that measured text re-records against the new backend;
         // one that did not is untouched.
         let mut painted = self
+            .invalidation
             .paint_recordings
             .get_mut()
             .iter()
@@ -4686,7 +4693,8 @@ impl UiWorld {
             .map(|(id, _)| *id)
             .collect::<Vec<_>>();
         painted.extend(
-            self.modal_surface_recordings
+            self.invalidation
+                .modal_surface_recordings
                 .get_mut()
                 .iter()
                 .filter(|(_, held)| held.measured_text.is_some())
@@ -4702,11 +4710,11 @@ impl UiWorld {
     /// Text-bearing nodes style resolution turned visible since the last
     /// scheduled pass and not already in `ids`, for this pass to re-resolve.
     fn take_shown_text(&mut self, ids: &[StableNodeId]) -> Vec<StableNodeId> {
-        if self.text_shown.is_empty() {
+        if self.text.text_shown.is_empty() {
             return Vec::new();
         }
         let scheduled: HashSet<StableNodeId> = ids.iter().copied().collect();
-        let mut shown = std::mem::take(&mut self.text_shown);
+        let mut shown = std::mem::take(&mut self.text.text_shown);
         shown.sort_unstable();
         shown.dedup();
         shown.retain(|id| {
@@ -4933,8 +4941,8 @@ impl UiWorld {
         let mut work = nana_text::TextWorkCounters::default();
         // Production adapter: every host shaper (MeasureTextShaper, NanaTextShaper,
         // tests) is wrapped once so lookup/insert hit the same UiWorld caches.
-        let mut cache = std::mem::take(&mut self.text_layout_cache);
-        let mut glyphs = std::mem::take(&mut self.glyph_cache);
+        let mut cache = std::mem::take(&mut self.text.text_layout_cache);
+        let mut glyphs = std::mem::take(&mut self.text.glyph_cache);
         let mut shaper = CountingShaper::new(host, &mut cache, &mut glyphs);
         if !ids.is_empty() {
             self.record_hot_path_allocation(
@@ -5126,12 +5134,14 @@ impl UiWorld {
             let _ = glyphs.take_counters();
             let _ = host.take_text_work();
             // Shown text this pass did not get to resolve stays owed.
-            self.text_shown.extend(shown);
-            self.text_layout_cache = cache;
-            self.glyph_cache = glyphs;
+            self.text.text_shown.extend(shown);
+            self.text.text_layout_cache = cache;
+            self.text.glyph_cache = glyphs;
             return outcome;
         }
-        self.text_input_adaptive_updates.extend(adaptive_updates);
+        self.text
+            .text_input_adaptive_updates
+            .extend(adaptive_updates);
         let (mut scaled, unbreakable_moved, _) =
             self.apply_plain_resolutions(resolved, backend.epoch, &mut work);
         let mut stopped = 0usize;
@@ -5198,8 +5208,8 @@ impl UiWorld {
             work.layout_cache_lookups += hits + misses;
         }
         let glyph_stats = glyphs.take_counters();
-        self.text_layout_cache = cache;
-        self.glyph_cache = glyphs;
+        self.text.text_layout_cache = cache;
+        self.text.glyph_cache = glyphs;
         self.resolve_block_struts(ids, host);
         self.refresh_document_text_highlights(host);
         // Taken last: document highlights measure through the host too.
@@ -5285,10 +5295,10 @@ impl UiWorld {
     /// font set change). A strut that moved lays its block out again, the
     /// way moved text metrics do.
     fn resolve_block_struts(&mut self, scheduled: &[StableNodeId], shaper: &mut impl TextShaper) {
-        if self.strut_candidates.is_empty() && scheduled.is_empty() {
+        if self.text.strut_candidates.is_empty() && scheduled.is_empty() {
             return;
         }
-        let mut candidates = std::mem::take(&mut self.strut_candidates);
+        let mut candidates = std::mem::take(&mut self.text.strut_candidates);
         candidates.extend_from_slice(scheduled);
         candidates.sort_unstable();
         candidates.dedup();
@@ -5420,6 +5430,7 @@ impl UiWorld {
     pub(crate) fn refresh_document_text_highlights(&mut self, shaper: &mut dyn TextShaper) {
         self.drop_invalid_document_text_selections();
         let pending: Vec<(DocumentId, crate::DocumentTextSelection)> = self
+            .text
             .document_text_selections
             .iter()
             .map(|(&document, selection)| (document, selection.clone()))
@@ -6339,7 +6350,7 @@ impl UiWorld {
         let multiline = self.nodes.accessibility(id).multiline;
         let expanded_footer = multiline && editor_options.expanded_footer;
         let action_extent = if expanded_footer && editor_options.footer_action {
-            nana_ui_core::ControlSize::Small.height_in(self.style_model.metrics) + 4.0
+            nana_ui_core::ControlSize::Small.height_in(self.invalidation.style_model.metrics) + 4.0
         } else {
             0.0
         };
@@ -6352,7 +6363,7 @@ impl UiWorld {
             let footer_extent = crate::view_components::text_area_footer_extent(
                 true,
                 editor_options.footer_action,
-                self.style_model.metrics,
+                self.invalidation.style_model.metrics,
             );
             LayoutBox {
                 y: content.y + content.height + 4.0 + (footer_extent - line_height) / 2.0,
@@ -6405,7 +6416,8 @@ impl UiWorld {
         else {
             return 0.0;
         };
-        let band = (size.height_in(self.style_model.metrics) / 2.0).min(content.height / 2.0);
+        let band =
+            (size.height_in(self.invalidation.style_model.metrics) / 2.0).min(content.height / 2.0);
         let width = size.indicator_size();
         if band <= 0.0 || width <= 0.0 || content.width <= width {
             return 0.0;
@@ -6459,7 +6471,7 @@ impl UiWorld {
     }
 
     pub(crate) fn take_text_input_adaptive_updates(&mut self) -> Vec<StableNodeId> {
-        std::mem::take(&mut self.text_input_adaptive_updates)
+        std::mem::take(&mut self.text.text_input_adaptive_updates)
     }
 
     /// Compare with the hypothetical compact viewport, independent of the
@@ -6476,7 +6488,7 @@ impl UiWorld {
         let (width, hard_break) = self.nodes.text_input_presentation(id)?.compact_measure?;
         let content = self.component_content_box(id)?;
         let action_band = if editor_options.expanded_footer && editor_options.footer_action {
-            nana_ui_core::ControlSize::Small.height_in(self.style_model.metrics) + 4.0
+            nana_ui_core::ControlSize::Small.height_in(self.invalidation.style_model.metrics) + 4.0
         } else {
             0.0
         };

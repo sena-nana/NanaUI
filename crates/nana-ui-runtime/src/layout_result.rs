@@ -141,12 +141,11 @@ pub enum LayoutFrame {
     Page,
 }
 
-/// Origin of a result, useful when diagnosing a stale or compatibility path.
+/// Origin of a layout result.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum LayoutResultSource {
     #[default]
     RuntimeLayout,
-    CompatibilityWrite,
 }
 
 /// Immutable geometry snapshot for one retained node.
@@ -249,7 +248,7 @@ impl LayoutResult {
             participation: None,
             dependency_generation: 0,
             generation: 0,
-            source: LayoutResultSource::CompatibilityWrite,
+            source: LayoutResultSource::RuntimeLayout,
         }
     }
 

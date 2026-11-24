@@ -6,7 +6,7 @@
 use super::reflow_oracle::{bundled_face_shaper, column, fixed, node, product_frame, styled};
 use super::*;
 use crate::mutation::LayoutPlacement;
-use crate::{AppContext, FrameworkError, LayoutViewport, MutationQueue, TextContent, UiMutation};
+use crate::{AppContext, FrameworkError, LayoutViewport, MutationQueue, TextContent};
 use nana_ui_core::{LengthSpec, OverflowSpec};
 
 const PARENT: u64 = 2;
@@ -94,11 +94,7 @@ fn placements(world: &UiWorld) -> Vec<LayoutPlacement> {
 fn queued(placements: &[LayoutPlacement]) -> MutationQueue {
     let mut queue = MutationQueue::new();
     for placement in placements {
-        queue.push(UiMutation::PlaceLayout {
-            id: placement.id,
-            layout: placement.layout,
-            frame: placement.frame,
-        });
+        queue.place_layout(placement.id, placement.layout, placement.frame);
     }
     queue
 }
@@ -117,7 +113,7 @@ fn left(cx: &mut AppContext) -> impl PartialEq + std::fmt::Debug {
                 world.local_layout_box(id),
                 world.layout_frame(id),
                 world.has_local_layout_result(id),
-                world.scroll_content_bounds.borrow().stale(id),
+                world.scroll.content_bounds.borrow().stale(id),
                 world.scroll_metrics(id),
             )
         })

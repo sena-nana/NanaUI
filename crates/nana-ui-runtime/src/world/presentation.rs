@@ -35,11 +35,11 @@ pub(super) fn child_parent_perspective(
 
 impl UiWorld {
     pub fn presentation_store(&self) -> &nana_ui_core::motion::PresentationStore {
-        &self.presentation
+        &self.motion.presentation
     }
 
     pub fn animation_now(&self) -> Duration {
-        self.animation_now
+        self.motion.animation_now
     }
 
     /// Host compositor present clock. Does not sample CPU/Layout tracks or
@@ -55,7 +55,7 @@ impl UiWorld {
 
     /// Whether the document's time plays or holds.
     pub fn presentation_playback(&self) -> PresentationPlayback {
-        self.presentation_clock.playback()
+        self.motion.presentation_clock.playback()
     }
 
     /// Play at a rate or hold the document's time, from the time it presents
@@ -64,33 +64,36 @@ impl UiWorld {
     /// observed pairs with the held time. A rate that is not finite and
     /// positive pauses.
     pub fn set_presentation_playback(&mut self, playback: PresentationPlayback) {
-        self.presentation_clock
-            .set_playback(playback, self.animation_now);
+        self.motion
+            .presentation_clock
+            .set_playback(playback, self.motion.animation_now);
     }
 
     /// Whether host time currently moves the document's time. A paused
     /// document asks for no compositor frames of its own.
     pub fn presentation_advancing(&self) -> bool {
-        self.presentation_clock.playback().is_playing()
+        self.motion.presentation_clock.playback().is_playing()
     }
 
     /// The interval the current frame stands for: the display interval while
     /// the document plays, or the interval a caller last stepped by. Shutter
     /// and sampling tolerances read this.
     pub fn presentation_frame_interval(&self) -> Duration {
-        self.presentation_clock.frame_interval()
+        self.motion.presentation_clock.frame_interval()
     }
 
     /// The host reports its display interval; it is the frame interval while
     /// the document plays.
     pub fn set_presentation_display_interval(&mut self, interval: Duration) {
-        self.presentation_clock.set_display_interval(interval);
+        self.motion
+            .presentation_clock
+            .set_display_interval(interval);
     }
 
     /// The latest host time this document observed. Input, debounce and
     /// other wall-clock work read this rather than the presentation time.
     pub fn presentation_host_now(&self) -> Duration {
-        self.presentation_clock.host_now()
+        self.motion.presentation_clock.host_now()
     }
 
     /// The host time the next animation wake falls due at:
@@ -102,24 +105,25 @@ impl UiWorld {
             .into_iter()
             .chain(self.next_media_motion())
             .min()?;
-        self.presentation_clock
-            .host_deadline(deadline, self.animation_now)
+        self.motion
+            .presentation_clock
+            .host_deadline(deadline, self.motion.animation_now)
     }
 
     /// The presentation-time mapping of a time-sampled host-texture node
     /// (Issue #303).
     pub fn media_time_mapping(&self, id: StableNodeId) -> Option<&crate::MediaTimeMapping> {
-        if self.media_time_mappings.is_empty() {
+        if self.invalidation.media_time_mappings.is_empty() {
             return None;
         }
-        self.media_time_mappings.get(&id)
+        self.invalidation.media_time_mappings.get(&id)
     }
 
     /// The resource time, in seconds, a time-sampled node shows at the
     /// document's current presentation time.
     pub fn media_time(&self, id: StableNodeId) -> Option<f64> {
         self.media_time_mapping(id)
-            .map(|mapping| mapping.media_time(self.animation_now))
+            .map(|mapping| mapping.media_time(self.motion.animation_now))
     }
 
     /// Every visible time-sampled host-texture node with the slot it samples
@@ -130,7 +134,7 @@ impl UiWorld {
         &self,
         document: Option<DocumentId>,
     ) -> Vec<crate::MediaSampleRequest> {
-        if self.media_time_mappings.is_empty() {
+        if self.invalidation.media_time_mappings.is_empty() {
             return Vec::new();
         }
         let frame_interval = self.presentation_frame_interval();
@@ -140,6 +144,7 @@ impl UiWorld {
             crate::MediaPacing::Stepped
         };
         let mut requests = self
+            .invalidation
             .media_time_mappings
             .iter()
             .filter(|(id, _)| {
@@ -150,7 +155,7 @@ impl UiWorld {
                 Some(crate::MediaSampleRequest {
                     node,
                     slot: crate::TextureSlotName::new(slot),
-                    media_time: mapping.media_time(self.animation_now),
+                    media_time: mapping.media_time(self.motion.animation_now),
                     frame_interval,
                     pacing,
                 })
@@ -164,13 +169,14 @@ impl UiWorld {
     /// moves at; `None` while every one holds. While the document is paused
     /// nothing moves, so nothing wakes the host.
     pub(crate) fn next_media_motion(&self) -> Option<Duration> {
-        if self.media_time_mappings.is_empty() || !self.presentation_advancing() {
+        if self.invalidation.media_time_mappings.is_empty() || !self.presentation_advancing() {
             return None;
         }
-        self.media_time_mappings
+        self.invalidation
+            .media_time_mappings
             .iter()
             .filter_map(|(&node, mapping)| {
-                let next = mapping.next_motion(self.animation_now)?;
+                let next = mapping.next_motion(self.motion.animation_now)?;
                 self.media_sampled_slot(node)?;
                 Some(next)
             })
@@ -197,26 +203,26 @@ impl UiWorld {
 
     /// Bring the document to host time `now`.
     pub(crate) fn observe_host_time(&mut self, now: Duration) {
-        self.animation_now = self.presentation_clock.observe(now);
+        self.motion.animation_now = self.motion.presentation_clock.observe(now);
     }
 
     /// Bring the document to host time `now` unless it already saw a later
     /// one (an input stamped before the last frame).
     pub(crate) fn note_host_time(&mut self, now: Duration) {
-        if now > self.presentation_clock.host_now() {
+        if now > self.motion.presentation_clock.host_now() {
             self.observe_host_time(now);
         }
     }
 
     pub fn motion_descriptor_store(&self) -> &nana_ui_core::motion::MotionDescriptorStore {
-        &self.motion_descriptors
+        &self.motion.motion_descriptors
     }
 
     pub fn motion_handle(
         &self,
         id: crate::AnimationId,
     ) -> Option<nana_ui_core::motion::MotionHandle> {
-        self.motion_descriptors.handle_for(id.track_id())
+        self.motion.motion_descriptors.handle_for(id.track_id())
     }
 
     /// Logical / base value from retained style. Not the in-flight overlay.
@@ -305,7 +311,7 @@ impl UiWorld {
     /// Query-time compositor samples since this world was created. Idle
     /// [`Self::advance_animations`] frames do not increment this.
     pub fn presentation_values_cpu_sampled(&self) -> usize {
-        self.presentation_query_samples.get()
+        self.motion.presentation_query_samples.get()
     }
 
     /// Track classification plus last-frame animation attribution.
@@ -315,15 +321,22 @@ impl UiWorld {
     /// [`Self::last_motion_frame_counters`].
     pub fn motion_work_counters(&self) -> MotionWorkCounters {
         let mut counters = MotionWorkCounters::from_tracks(
-            self.presentation.overlays().map(|overlay| &overlay.track),
+            self.motion
+                .presentation
+                .overlays()
+                .map(|overlay| &overlay.track),
         );
-        counters.presentation_values_cpu_sampled = self.presentation_query_samples.get();
-        counters.uiworld_mutations_from_animation =
-            self.last_motion_frame.uiworld_mutations_from_animation;
-        counters.layout_nodes_from_animation = self.last_motion_frame.layout_nodes_from_animation;
+        counters.presentation_values_cpu_sampled = self.motion.presentation_query_samples.get();
+        counters.uiworld_mutations_from_animation = self
+            .motion
+            .last_motion_frame
+            .uiworld_mutations_from_animation;
+        counters.layout_nodes_from_animation =
+            self.motion.last_motion_frame.layout_nodes_from_animation;
         counters.style_processed_from_animation =
-            self.last_motion_frame.style_processed_from_animation;
+            self.motion.last_motion_frame.style_processed_from_animation;
         counters.render_nodes_reextracted_from_animation = self
+            .motion
             .last_motion_frame
             .render_nodes_reextracted_from_animation;
         counters
@@ -338,28 +351,30 @@ impl UiWorld {
     }
 
     pub fn last_motion_frame_cpu_samples(&self) -> usize {
-        self.presentation_query_samples
+        self.motion
+            .presentation_query_samples
             .get()
-            .saturating_sub(self.presentation_samples_at_advance.get())
+            .saturating_sub(self.motion.presentation_samples_at_advance.get())
     }
 
     /// Issue #87 §14 inspector rows. Scene layer fields stay `None` until
     /// [`nana_ui_scene::UiScene::annotate_motion_inspector`] fills them.
     pub fn inspect_motion(&self) -> Vec<MotionInspectorEntry> {
         let samples = self.last_motion_frame_cpu_samples();
-        let layout = self.last_motion_frame.layout_nodes_from_animation;
-        let style = self.last_motion_frame.style_processed_from_animation;
+        let layout = self.motion.last_motion_frame.layout_nodes_from_animation;
+        let style = self.motion.last_motion_frame.style_processed_from_animation;
         let extract = self
+            .motion
             .last_motion_frame
             .render_nodes_reextracted_from_animation;
-        let now = self.animation_now;
+        let now = self.motion.animation_now;
         let mut entries = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        for overlay in self.presentation.overlays() {
+        for overlay in self.motion.presentation.overlays() {
             let track = &overlay.track;
             seen.insert(track.id);
             let node = track.target.get();
-            let handle = self.motion_descriptors.handle_for(track.id);
+            let handle = self.motion.motion_descriptors.handle_for(track.id);
             let has_gpu = handle.is_some_and(|handle| !handle.is_null());
             let evaluator =
                 if track.property.animation_class() == AnimationClass::Compositor && has_gpu {
@@ -369,7 +384,8 @@ impl UiWorld {
                 };
             let id = crate::AnimationId::new(track.id.get());
             let next_deadline = id.and_then(|id| {
-                self.animations
+                self.motion
+                    .animations
                     .get(&id)
                     .map(|animation| animation.next_deadline)
             });
@@ -401,7 +417,7 @@ impl UiWorld {
                 render_nodes_reextracted_from_animation: extract,
             });
         }
-        for (id, animation) in &self.animations {
+        for (id, animation) in &self.motion.animations {
             if seen.contains(&id.track_id()) {
                 continue;
             }
@@ -431,31 +447,39 @@ impl UiWorld {
     }
 
     pub(super) fn begin_motion_frame(&mut self) {
-        self.presentation_samples_at_advance
-            .set(self.presentation_query_samples.get());
-        self.last_motion_frame = MotionWorkCounters::default();
+        self.motion
+            .presentation_samples_at_advance
+            .set(self.motion.presentation_query_samples.get());
+        self.motion.last_motion_frame = MotionWorkCounters::default();
     }
 
     pub(super) fn account_animation_dirty(&mut self, bits: u16) {
-        self.last_motion_frame.uiworld_mutations_from_animation = self
+        self.motion
+            .last_motion_frame
+            .uiworld_mutations_from_animation = self
+            .motion
             .last_motion_frame
             .uiworld_mutations_from_animation
             .saturating_add(1);
         if bits & crate::schedule::DirtyMask::LAYOUT != 0 {
-            self.last_motion_frame.layout_nodes_from_animation = self
+            self.motion.last_motion_frame.layout_nodes_from_animation = self
+                .motion
                 .last_motion_frame
                 .layout_nodes_from_animation
                 .saturating_add(1);
         }
         if bits & crate::schedule::DirtyMask::STYLE != 0 {
-            self.last_motion_frame.style_processed_from_animation = self
+            self.motion.last_motion_frame.style_processed_from_animation = self
+                .motion
                 .last_motion_frame
                 .style_processed_from_animation
                 .saturating_add(1);
         }
         if bits & crate::schedule::DirtyMask::RENDER != 0 {
-            self.last_motion_frame
+            self.motion
+                .last_motion_frame
                 .render_nodes_reextracted_from_animation = self
+                .motion
                 .last_motion_frame
                 .render_nodes_reextracted_from_animation
                 .saturating_add(1);
@@ -463,8 +487,12 @@ impl UiWorld {
     }
 
     pub(super) fn has_compositor_transform_overlay_for(&self, document: DocumentId) -> bool {
-        let revision = (self.presentation.revision(), self.generation);
+        let revision = (
+            self.motion.presentation.revision(),
+            self.invalidation.generation,
+        );
         if let Some((presentation_revision, world_revision, documents)) = self
+            .motion
             .presentation_transform_documents_cache
             .borrow()
             .as_ref()
@@ -473,6 +501,7 @@ impl UiWorld {
             return documents.contains(&document);
         }
         let documents: std::collections::HashSet<DocumentId> = self
+            .motion
             .presentation
             .overlays()
             .filter(|overlay| overlay.track.property == AnimatableProperty::Transform)
@@ -481,8 +510,10 @@ impl UiWorld {
             })
             .collect();
         let contains = documents.contains(&document);
-        *self.presentation_transform_documents_cache.borrow_mut() =
-            Some((revision.0, revision.1, documents));
+        *self
+            .motion
+            .presentation_transform_documents_cache
+            .borrow_mut() = Some((revision.0, revision.1, documents));
         contains
     }
 
@@ -505,13 +536,14 @@ impl UiWorld {
         id: StableNodeId,
         property: AnimatableProperty,
     ) -> Option<[f32; 4]> {
-        if self.presentation.is_empty() {
+        if self.motion.presentation.is_empty() {
             return None;
         }
         let target = MotionTargetId::new(id.get())?;
         match self
+            .motion
             .presentation
-            .applied_value(target, property, self.animation_now)?
+            .applied_value(target, property, self.motion.animation_now)?
         {
             MotionValue::Color(rgba) => Some(rgba),
             _ => None,
@@ -527,13 +559,18 @@ impl UiWorld {
             return None;
         }
         let target = MotionTargetId::new(id.get())?;
-        if !self.presentation.has_property(target, property) {
+        if !self.motion.presentation.has_property(target, property) {
             return None;
         }
-        self.presentation_query_samples
-            .set(self.presentation_query_samples.get().saturating_add(1));
-        self.presentation
-            .applied_value(target, property, self.animation_now)
+        self.motion.presentation_query_samples.set(
+            self.motion
+                .presentation_query_samples
+                .get()
+                .saturating_add(1),
+        );
+        self.motion
+            .presentation
+            .applied_value(target, property, self.motion.animation_now)
     }
 
     /// Local scene transform for hit-test / a11y / focus. Compositor
@@ -715,10 +752,14 @@ impl UiWorld {
         let target = MotionTargetId::new(id.get())?;
         let logical = self.logical_motion_value(id, property).or_else(|| {
             (property == AnimatableProperty::Background
-                && self.presentation.has_property(target, property))
+                && self.motion.presentation.has_property(target, property))
             .then_some(MotionValue::Color([0.0, 0.0, 0.0, 0.0]))
         })?;
-        Some(self.presentation.pair(target, property, logical, now))
+        Some(
+            self.motion
+                .presentation
+                .pair(target, property, logical, now),
+        )
     }
 
     pub fn presentation_applied_value(
@@ -728,33 +769,35 @@ impl UiWorld {
         now: Duration,
     ) -> Option<MotionValue> {
         let target = MotionTargetId::new(id.get())?;
-        self.presentation.applied_value(target, property, now)
+        self.motion
+            .presentation
+            .applied_value(target, property, now)
     }
 
     /// Enter/exit invariant: unfinished overlays survive park/logical unmount.
     pub fn presentation_retains_unmounted(&self, id: StableNodeId, now: Duration) -> bool {
         MotionTargetId::new(id.get())
-            .is_some_and(|target| self.presentation.retains_unmounted(target, now))
+            .is_some_and(|target| self.motion.presentation.retains_unmounted(target, now))
     }
 
     pub fn motion_descriptors(&self) -> &nana_ui_core::motion::MotionDescriptorStore {
-        &self.motion_descriptors
+        &self.motion.motion_descriptors
     }
 
     /// Advanced compositor layer request. Extract copies this onto
     /// [`crate::ExtractedCompositor::request_layer`].
     pub fn request_compositor_layer(&mut self, id: StableNodeId) {
-        self.compositor_layer_requests.insert(id);
+        self.motion.compositor_layer_requests.insert(id);
         self.mark(id, crate::schedule::DirtyMask::RENDER);
     }
 
     pub fn clear_compositor_layer_request(&mut self, id: StableNodeId) {
-        self.compositor_layer_requests.remove(&id);
+        self.motion.compositor_layer_requests.remove(&id);
         self.mark(id, crate::schedule::DirtyMask::RENDER);
     }
 
     pub(super) fn extracted_compositor(&self, id: StableNodeId) -> crate::ExtractedCompositor {
-        if self.presentation.is_empty() && self.compositor_layer_requests.is_empty() {
+        if self.motion.presentation.is_empty() && self.motion.compositor_layer_requests.is_empty() {
             return crate::ExtractedCompositor {
                 bindings: Vec::new(),
                 request_layer: false,
@@ -768,10 +811,11 @@ impl UiWorld {
                 AnimatableProperty::Clip,
                 AnimatableProperty::ShaderParameter,
             ] {
-                if let Some(track) =
-                    self.presentation
-                        .winning_track_id(target, property, self.animation_now)
-                    && !bindings.contains(&track)
+                if let Some(track) = self.motion.presentation.winning_track_id(
+                    target,
+                    property,
+                    self.motion.animation_now,
+                ) && !bindings.contains(&track)
                 {
                     bindings.push(track);
                 }
@@ -779,7 +823,7 @@ impl UiWorld {
         }
         crate::ExtractedCompositor {
             bindings,
-            request_layer: self.compositor_layer_requests.contains(&id),
+            request_layer: self.motion.compositor_layer_requests.contains(&id),
         }
     }
 }

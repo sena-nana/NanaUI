@@ -15,7 +15,7 @@ pub enum UiMutation {
     Create {
         id: StableNodeId,
         document: DocumentId,
-        kind: NodeKind,
+        kind: Arc<NodeKind>,
     },
     /// Insert or reparent `child`. `before = None` appends it.
     Insert {
@@ -45,7 +45,7 @@ pub enum UiMutation {
     },
     SetStyle {
         id: StableNodeId,
-        style: NodeStyle,
+        style: Arc<NodeStyle>,
     },
     SetPresetTheme {
         mode: ThemeAppearance,
@@ -67,23 +67,23 @@ pub enum UiMutation {
     /// spans and keeps the text. See [`MutationQueue::set_rich_text`].
     SetRichText {
         id: StableNodeId,
-        rich: Option<nana_ui_core::RichText>,
+        rich: Option<Box<nana_ui_core::RichText>>,
     },
     SetInlineContent {
         id: StableNodeId,
-        content: crate::InlineContent,
+        content: Box<crate::InlineContent>,
     },
     /// The language a node names for itself (`lang`). Its subtree inherits
     /// it; see [`MutationQueue::set_language`].
     SetLanguage {
         id: StableNodeId,
-        language: Option<nana_text::font::LanguageTag>,
+        language: Option<Box<nana_text::font::LanguageTag>>,
     },
     /// What a replaced resource reports of its size; see
     /// [`MutationQueue::set_replaced_metadata`].
     SetReplacedMetadata {
-        resource: crate::ReplacedResource,
-        metadata: Option<crate::ReplacedMetadata>,
+        resource: Box<crate::ReplacedResource>,
+        metadata: Option<Box<crate::ReplacedMetadata>>,
     },
     /// The typography scale a node sets for its subtree; see
     /// [`MutationQueue::set_text_scale`].
@@ -95,18 +95,18 @@ pub enum UiMutation {
     /// [`MutationQueue::set_explicit_rect`].
     SetExplicitRect {
         id: StableNodeId,
-        rect: Option<crate::ExplicitRect>,
+        rect: Option<Box<crate::ExplicitRect>>,
     },
     /// The locale a node's subtree reads; see [`MutationQueue::set_locale`].
     SetLocale {
         id: StableNodeId,
-        locale: Option<crate::Locale>,
+        locale: Option<Box<crate::Locale>>,
     },
     /// Localized text a node shows; see
     /// [`MutationQueue::set_localized_text`].
     SetLocalizedText {
         id: StableNodeId,
-        text: Option<crate::LocalizedText>,
+        text: Option<Box<crate::LocalizedText>>,
     },
     /// The responsive rule a node follows; see
     /// [`MutationQueue::set_responsive`].
@@ -117,12 +117,12 @@ pub enum UiMutation {
     /// A node's per-glyph presentation. Presentation only.
     SetGlyphPresentation {
         id: StableNodeId,
-        presentation: Option<nana_ui_core::GlyphPresentation>,
+        presentation: Option<Box<nana_ui_core::GlyphPresentation>>,
     },
     /// A rich text editor's caret and selection. Paint only.
     SetRichEditorMarks {
         id: StableNodeId,
-        marks: Option<crate::RichEditorMarks>,
+        marks: Option<Box<crate::RichEditorMarks>>,
     },
     /// A document box, written by a test or a tool. Product frames must not
     /// use this to fight [`crate::RuntimeLayoutEngine`]; mixed trees flush
@@ -138,7 +138,7 @@ pub enum UiMutation {
     PlaceLayout {
         id: StableNodeId,
         layout: LayoutBox,
-        frame: crate::LayoutFrame,
+        frame: Box<crate::LayoutFrame>,
     },
     /// Move an absolute placement container. Only `offset_top` and `height`
     /// change; the rest of the authored style stays. `height: None` clears
@@ -170,25 +170,25 @@ pub enum UiMutation {
     },
     SetCustomRender {
         id: StableNodeId,
-        content: Option<CustomRenderNode>,
+        content: Option<Box<CustomRenderNode>>,
     },
     /// Map the document's presentation time onto the time a host-texture
     /// node samples its resource at (Issue #303); `None` removes it. Changing
     /// it rebuilds nothing: only the time the next frame requests moves.
     SetMediaTime {
         id: StableNodeId,
-        mapping: Option<crate::MediaTimeMapping>,
+        mapping: Option<Box<crate::MediaTimeMapping>>,
     },
     /// A painter for the node whatever its style says (Issue #217). It wins
     /// over [`NodeStyle::painter`] and survives a component rewriting the
     /// node's style. `None` removes it.
     SetPainter {
         id: StableNodeId,
-        painter: Option<crate::NodePainter>,
+        painter: Option<Box<crate::NodePainter>>,
     },
     SetEventListener {
         id: StableNodeId,
-        event: String,
+        event: Box<str>,
         enabled: bool,
     },
     SetComponentType {
@@ -197,11 +197,11 @@ pub enum UiMutation {
     },
     SetWidgetVisual {
         id: StableNodeId,
-        visual: Option<crate::WidgetVisualHandle>,
+        visual: Option<Box<crate::WidgetVisualHandle>>,
     },
     SetAccessibility {
         id: StableNodeId,
-        accessibility: AccessibilityState,
+        accessibility: Box<AccessibilityState>,
     },
     /// Name `id` for assistive technology by `label`'s text when it has no
     /// label of its own (`aria-labelledby`); `None` removes the relation.
@@ -222,13 +222,13 @@ pub enum UiMutation {
     },
     SetOverlayHost {
         host: StableNodeId,
-        state: OverlayHostState,
+        state: Box<OverlayHostState>,
     },
     /// Visual mounting scope for standalone floating overlay surfaces (`Tooltip`,
     /// `ChartTooltip`, `ContextMenu`, `AnchoredActionMenu`, etc.).
     SetOverlayMount {
         id: StableNodeId,
-        mount: Option<nana_ui_core::OverlayMount>,
+        mount: Option<Box<nana_ui_core::OverlayMount>>,
     },
     CapturePointer {
         pointer_id: u64,
@@ -239,11 +239,11 @@ pub enum UiMutation {
         target: StableNodeId,
     },
     StartAnimation {
-        animation: AnimationSpec,
+        animation: Box<AnimationSpec>,
     },
     /// Replace a running track whole under its id (Issue #325).
     ReplaceAnimation {
-        animation: AnimationSpec,
+        animation: Box<AnimationSpec>,
     },
     StopAnimation {
         id: AnimationId,
@@ -269,11 +269,11 @@ pub enum UiMutation {
     },
     SetIme {
         id: StableNodeId,
-        composition: Option<ImeComposition>,
+        composition: Option<Box<ImeComposition>>,
     },
     SetTextInput {
         id: StableNodeId,
-        state: Option<TextInputState>,
+        state: Option<Box<TextInputState>>,
     },
     SetTextSelection {
         id: StableNodeId,
@@ -281,11 +281,11 @@ pub enum UiMutation {
     },
     ReplaceTextSelection {
         id: StableNodeId,
-        text: String,
+        text: Box<str>,
     },
     SetHighlightRequest {
         id: StableNodeId,
-        request: Option<HighlightRequest>,
+        request: Option<Box<HighlightRequest>>,
     },
     /// Replace the collapsed code-fold set of one editor (view state; the
     /// committed value is untouched).
@@ -304,7 +304,7 @@ pub enum UiMutation {
     /// session of one editor.
     SetTextInputSnippet {
         id: StableNodeId,
-        session: Option<TextSnippetSession>,
+        session: Option<Box<TextSnippetSession>>,
     },
     /// 宿主喂入补全候选（过滤是宿主的职责）。空列表关闭弹层；相同列表
     /// 不重置键盘选中态。
@@ -330,13 +330,13 @@ pub enum UiMutation {
     /// 宿主喂入或撤掉（`None`）hover 文档浮窗。
     SetTextInputHover {
         id: StableNodeId,
-        hover: Option<TextHover>,
+        hover: Option<Box<TextHover>>,
     },
     /// 诊断 span 指针命中写入的 hover。`None` 只撤诊断占用的浮窗，不碰
     /// 宿主符号 hover。
     SetTextInputDiagnosticHover {
         id: StableNodeId,
-        hover: Option<TextHover>,
+        hover: Option<Box<TextHover>>,
     },
     /// 滚动 hover 浮窗正文（逻辑行数）。
     SetTextInputHoverScroll {
@@ -347,9 +347,11 @@ pub enum UiMutation {
     /// 宿主按内核 `signature_at` 写入。
     SetTextInputSignature {
         id: StableNodeId,
-        help: Option<TextSignatureHelp>,
+        help: Option<Box<TextSignatureHelp>>,
     },
 }
+
+const _: () = assert!(std::mem::size_of::<UiMutation>() <= 40);
 
 /// One box [`crate::RuntimeLayoutEngine`] computed, measured from `frame`'s
 /// origin: what [`UiMutation::PlaceLayout`] carries, 40 bytes of it.
@@ -367,13 +369,116 @@ pub(crate) struct LayoutPlacement {
     pub frame: crate::LayoutFrame,
 }
 
+/// Bitmask summarizing which mutation categories a [`MutationQueue`] batch
+/// contains, allowing validation and commit passes to skip unrelated phases in O(1).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct BatchCapabilities(u16);
+
+impl BatchCapabilities {
+    pub const EMPTY: Self = Self(0);
+    pub const WRITES_TEXT: Self = Self(1 << 0);
+    pub const TOPOLOGY: Self = Self(1 << 1);
+    pub const STYLE: Self = Self(1 << 2);
+    pub const TEXT: Self = Self(1 << 3);
+    pub const LAYOUT_OR_SCROLL: Self = Self(1 << 4);
+    pub const VISUAL_OR_INTERACTION: Self = Self(1 << 5);
+    pub const ANIMATION: Self = Self(1 << 6);
+    pub const FOCUS: Self = Self(1 << 7);
+    pub const EDITOR: Self = Self(1 << 8);
+
+    #[inline]
+    pub const fn contains(self, other: Self) -> bool {
+        (self.0 & other.0) == other.0
+    }
+
+    #[inline]
+    pub const fn intersects(self, other: Self) -> bool {
+        (self.0 & other.0) != 0
+    }
+
+    #[inline]
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    pub fn for_mutation(mutation: &UiMutation) -> Self {
+        match mutation {
+            UiMutation::Create { .. }
+            | UiMutation::Insert { .. }
+            | UiMutation::ReorderChildren { .. }
+            | UiMutation::Detach { .. }
+            | UiMutation::ParkSubtree { .. }
+            | UiMutation::DespawnSubtree { .. } => Self::TOPOLOGY,
+            UiMutation::SetStyle { .. }
+            | UiMutation::SetPresetTheme { .. }
+            | UiMutation::SetThemeTokens { .. }
+            | UiMutation::SetResponsive { .. }
+            | UiMutation::SetLanguage { .. }
+            | UiMutation::SetTextScale { .. }
+            | UiMutation::SetLocale { .. } => Self::STYLE,
+            UiMutation::SetText { .. }
+            | UiMutation::SetInlineContent { .. }
+            | UiMutation::SetRichText { .. }
+            | UiMutation::SetLocalizedText { .. }
+            | UiMutation::SetGlyphPresentation { .. }
+            | UiMutation::SetRichEditorMarks { .. }
+            | UiMutation::SetReplacedMetadata { .. } => Self::TEXT,
+            UiMutation::SetExplicitRect { .. }
+            | UiMutation::WriteLayout { .. }
+            | UiMutation::PlaceLayout { .. }
+            | UiMutation::PatchPlacement { .. }
+            | UiMutation::SetScrollOffset { .. }
+            | UiMutation::SetScrollOverscroll { .. }
+            | UiMutation::SetScrollMetrics { .. } => Self::LAYOUT_OR_SCROLL,
+            UiMutation::SetInteraction { .. }
+            | UiMutation::SetCustomRender { .. }
+            | UiMutation::SetMediaTime { .. }
+            | UiMutation::SetPainter { .. }
+            | UiMutation::SetEventListener { .. }
+            | UiMutation::SetComponentType { .. }
+            | UiMutation::SetWidgetVisual { .. }
+            | UiMutation::SetAccessibility { .. }
+            | UiMutation::SetLabelledBy { .. }
+            | UiMutation::SetLive { .. }
+            | UiMutation::SetSurfaceOpen { .. }
+            | UiMutation::SetOverlayHost { .. }
+            | UiMutation::SetOverlayMount { .. }
+            | UiMutation::CapturePointer { .. }
+            | UiMutation::ReleasePointer { .. } => Self::VISUAL_OR_INTERACTION,
+            UiMutation::StartAnimation { .. }
+            | UiMutation::ReplaceAnimation { .. }
+            | UiMutation::StopAnimation { .. }
+            | UiMutation::FinishAnimation { .. }
+            | UiMutation::ReverseAnimation { .. }
+            | UiMutation::PauseAnimation { .. }
+            | UiMutation::ResumeAnimation { .. } => Self::ANIMATION,
+            UiMutation::RequestFocus { .. } | UiMutation::RestoreFocusWithin { .. } => Self::FOCUS,
+            UiMutation::SetTextInput { .. } | UiMutation::ReplaceTextSelection { .. } => {
+                Self::EDITOR.union(Self::WRITES_TEXT)
+            }
+            UiMutation::SetIme { .. }
+            | UiMutation::SetTextSelection { .. }
+            | UiMutation::SetHighlightRequest { .. }
+            | UiMutation::SetTextInputFoldCollapsed { .. }
+            | UiMutation::SetTextInputInlays { .. }
+            | UiMutation::SetTextInputSnippet { .. }
+            | UiMutation::SetTextInputCompletions { .. }
+            | UiMutation::SetTextInputCompletionView { .. }
+            | UiMutation::SetTextInputCompletionDismissed { .. }
+            | UiMutation::SetTextInputCompletionReopened { .. }
+            | UiMutation::SetTextInputHover { .. }
+            | UiMutation::SetTextInputDiagnosticHover { .. }
+            | UiMutation::SetTextInputHoverScroll { .. }
+            | UiMutation::SetTextInputSignature { .. } => Self::EDITOR,
+        }
+    }
+}
+
 /// Frame-local command boundary for reconcilers and adapters.
 #[derive(Debug, Default)]
 pub struct MutationQueue {
     mutations: Vec<UiMutation>,
-    /// Whether any mutation writes an editor's text, so a commit that must
-    /// react to those (the undo journal) skips every other batch in O(1).
-    writes_text: bool,
+    capabilities: BatchCapabilities,
 }
 
 impl MutationQueue {
@@ -386,13 +491,29 @@ impl MutationQueue {
     pub(crate) fn with_capacity(capacity: usize) -> Self {
         Self {
             mutations: Vec::with_capacity(capacity),
-            writes_text: false,
+            capabilities: BatchCapabilities::EMPTY,
         }
     }
 
+    #[inline]
+    fn record(&mut self, caps: BatchCapabilities, mutation: UiMutation) {
+        self.capabilities = self.capabilities.union(caps);
+        self.mutations.push(mutation);
+    }
+
+    pub(crate) fn capabilities(&self) -> BatchCapabilities {
+        self.capabilities
+    }
+
     pub fn create(&mut self, id: StableNodeId, document: DocumentId, kind: NodeKind) {
-        self.mutations
-            .push(UiMutation::Create { id, document, kind });
+        self.record(
+            BatchCapabilities::TOPOLOGY,
+            UiMutation::Create {
+                id,
+                document,
+                kind: Arc::new(kind),
+            },
+        );
     }
 
     pub fn insert(
@@ -401,11 +522,14 @@ impl MutationQueue {
         child: StableNodeId,
         before: Option<StableNodeId>,
     ) {
-        self.mutations.push(UiMutation::Insert {
-            parent,
-            child,
-            before,
-        });
+        self.record(
+            BatchCapabilities::TOPOLOGY,
+            UiMutation::Insert {
+                parent,
+                child,
+                before,
+            },
+        );
     }
 
     /// Put the children `parent` has into `order` in one edit, whatever the
@@ -421,38 +545,59 @@ impl MutationQueue {
         parent: StableNodeId,
         order: impl Into<Arc<[StableNodeId]>>,
     ) {
-        self.mutations.push(UiMutation::ReorderChildren {
-            parent,
-            order: order.into(),
-        });
+        self.record(
+            BatchCapabilities::TOPOLOGY,
+            UiMutation::ReorderChildren {
+                parent,
+                order: order.into(),
+            },
+        );
     }
 
     pub fn detach(&mut self, id: StableNodeId) {
-        self.mutations.push(UiMutation::Detach { id });
+        self.record(BatchCapabilities::TOPOLOGY, UiMutation::Detach { id });
     }
 
     pub fn park_subtree(&mut self, root: StableNodeId) {
-        self.mutations.push(UiMutation::ParkSubtree { root });
+        self.record(
+            BatchCapabilities::TOPOLOGY,
+            UiMutation::ParkSubtree { root },
+        );
     }
 
     pub fn despawn_subtree(&mut self, root: StableNodeId) {
-        self.mutations.push(UiMutation::DespawnSubtree { root });
+        self.record(
+            BatchCapabilities::TOPOLOGY,
+            UiMutation::DespawnSubtree { root },
+        );
     }
 
     pub fn set_style(&mut self, id: StableNodeId, style: NodeStyle) {
-        self.mutations.push(UiMutation::SetStyle { id, style });
+        self.record(
+            BatchCapabilities::STYLE,
+            UiMutation::SetStyle {
+                id,
+                style: Arc::new(style),
+            },
+        );
     }
 
     pub fn set_preset_theme(&mut self, mode: ThemeAppearance) {
-        self.mutations.push(UiMutation::SetPresetTheme { mode });
+        self.record(
+            BatchCapabilities::STYLE,
+            UiMutation::SetPresetTheme { mode },
+        );
     }
 
     pub fn set_theme_tokens(&mut self, theme: std::sync::Arc<nana_ui_core::CompiledTheme>) {
-        self.mutations.push(UiMutation::SetThemeTokens { theme });
+        self.record(
+            BatchCapabilities::STYLE,
+            UiMutation::SetThemeTokens { theme },
+        );
     }
 
     pub fn set_text(&mut self, id: StableNodeId, text: TextContent) {
-        self.mutations.push(UiMutation::SetText { id, text });
+        self.record(BatchCapabilities::TEXT, UiMutation::SetText { id, text });
     }
 
     /// Sets canonical inline content. Atomic ids must be direct retained
@@ -463,10 +608,13 @@ impl MutationQueue {
         id: StableNodeId,
         content: impl Into<crate::InlineContent>,
     ) {
-        self.mutations.push(UiMutation::SetInlineContent {
-            id,
-            content: content.into().normalized(),
-        });
+        self.record(
+            BatchCapabilities::TEXT,
+            UiMutation::SetInlineContent {
+                id,
+                content: Box::new(content.into().normalized()),
+            },
+        );
     }
 
     /// Give `id` rich text: the node's text becomes `rich`'s, and its spans
@@ -479,10 +627,13 @@ impl MutationQueue {
     /// changes. A later [`Self::set_text`] with different text drops the
     /// spans.
     pub fn set_rich_text(&mut self, id: StableNodeId, rich: nana_ui_core::RichText) {
-        self.mutations.push(UiMutation::SetRichText {
-            id,
-            rich: Some(rich),
-        });
+        self.record(
+            BatchCapabilities::TEXT,
+            UiMutation::SetRichText {
+                id,
+                rich: Some(Box::new(rich)),
+            },
+        );
     }
 
     /// Name the language `id` and the subtree under it are written in, as
@@ -496,8 +647,13 @@ impl MutationQueue {
         id: StableNodeId,
         language: Option<nana_text::font::LanguageTag>,
     ) {
-        self.mutations
-            .push(UiMutation::SetLanguage { id, language });
+        self.record(
+            BatchCapabilities::STYLE,
+            UiMutation::SetLanguage {
+                id,
+                language: language.map(Box::new),
+            },
+        );
     }
 
     /// Set the typography scale text under `id` is set at, as an
@@ -512,7 +668,10 @@ impl MutationQueue {
     /// only from metrics that moved. The scale must be a positive finite
     /// number.
     pub fn set_text_scale(&mut self, id: StableNodeId, scale: Option<f32>) {
-        self.mutations.push(UiMutation::SetTextScale { id, scale });
+        self.record(
+            BatchCapabilities::STYLE,
+            UiMutation::SetTextScale { id, scale },
+        );
     }
 
     /// Place `id` by `rect` in its `display: free` parent: logical pixels of
@@ -527,8 +686,13 @@ impl MutationQueue {
     /// is kept and takes effect once it is. Every value must be finite and
     /// the size not negative.
     pub fn set_explicit_rect(&mut self, id: StableNodeId, rect: Option<crate::ExplicitRect>) {
-        self.mutations
-            .push(UiMutation::SetExplicitRect { id, rect });
+        self.record(
+            BatchCapabilities::LAYOUT_OR_SCROLL,
+            UiMutation::SetExplicitRect {
+                id,
+                rect: rect.map(Box::new),
+            },
+        );
     }
 
     /// Make `id` a locale scope: the localized text under it, itself included,
@@ -536,15 +700,26 @@ impl MutationQueue {
     /// in its direction. `None` returns the subtree to the scope above. Only
     /// the localized text the scope holds is visited; literal text is not.
     pub fn set_locale(&mut self, id: StableNodeId, locale: Option<crate::Locale>) {
-        self.mutations.push(UiMutation::SetLocale { id, locale });
+        self.record(
+            BatchCapabilities::STYLE,
+            UiMutation::SetLocale {
+                id,
+                locale: locale.map(Box::new),
+            },
+        );
     }
 
     /// Show `text` on `id`, resolved in the locale of the scope it is in and
     /// again whenever that locale changes. `None` keeps what it shows and
     /// makes it literal again.
     pub fn set_localized_text(&mut self, id: StableNodeId, text: Option<crate::LocalizedText>) {
-        self.mutations
-            .push(UiMutation::SetLocalizedText { id, text });
+        self.record(
+            BatchCapabilities::TEXT,
+            UiMutation::SetLocalizedText {
+                id,
+                text: text.map(Box::new),
+            },
+        );
     }
 
     /// Make `id` follow `rule`: it takes the layout variant of the bucket its
@@ -558,7 +733,10 @@ impl MutationQueue {
         id: StableNodeId,
         rule: Option<std::sync::Arc<crate::ResponsiveRule>>,
     ) {
-        self.mutations.push(UiMutation::SetResponsive { id, rule });
+        self.record(
+            BatchCapabilities::STYLE,
+            UiMutation::SetResponsive { id, rule },
+        );
     }
 
     /// Report what `resource` knows of its size: an image's natural size
@@ -573,8 +751,13 @@ impl MutationQueue {
         resource: crate::ReplacedResource,
         metadata: Option<crate::ReplacedMetadata>,
     ) {
-        self.mutations
-            .push(UiMutation::SetReplacedMetadata { resource, metadata });
+        self.record(
+            BatchCapabilities::TEXT,
+            UiMutation::SetReplacedMetadata {
+                resource: Box::new(resource),
+                metadata: metadata.map(Box::new),
+            },
+        );
     }
 
     /// Present `id`'s glyphs with `presentation`: the effects its rich spans'
@@ -586,8 +769,13 @@ impl MutationQueue {
         id: StableNodeId,
         presentation: Option<nana_ui_core::GlyphPresentation>,
     ) {
-        self.mutations
-            .push(UiMutation::SetGlyphPresentation { id, presentation });
+        self.record(
+            BatchCapabilities::TEXT,
+            UiMutation::SetGlyphPresentation {
+                id,
+                presentation: presentation.map(Box::new),
+            },
+        );
     }
 
     /// A rich text editor's caret and selection marks. Paint only.
@@ -596,19 +784,29 @@ impl MutationQueue {
         id: StableNodeId,
         marks: Option<crate::RichEditorMarks>,
     ) {
-        self.mutations
-            .push(UiMutation::SetRichEditorMarks { id, marks });
+        self.record(
+            BatchCapabilities::TEXT,
+            UiMutation::SetRichEditorMarks {
+                id,
+                marks: marks.map(Box::new),
+            },
+        );
     }
 
     /// Drop `id`'s spans, keeping its text.
     pub fn clear_rich_text(&mut self, id: StableNodeId) {
-        self.mutations
-            .push(UiMutation::SetRichText { id, rich: None });
+        self.record(
+            BatchCapabilities::TEXT,
+            UiMutation::SetRichText { id, rich: None },
+        );
     }
 
     /// Publish a document box for `id`, as a test or a tool lays it out.
     pub fn write_layout(&mut self, id: StableNodeId, layout: LayoutBox) {
-        self.mutations.push(UiMutation::WriteLayout { id, layout });
+        self.record(
+            BatchCapabilities::LAYOUT_OR_SCROLL,
+            UiMutation::WriteLayout { id, layout },
+        );
     }
 
     /// Queue a box [`crate::RuntimeLayoutEngine`] computed, measured from
@@ -622,46 +820,72 @@ impl MutationQueue {
         layout: LayoutBox,
         frame: crate::LayoutFrame,
     ) {
-        self.mutations
-            .push(UiMutation::PlaceLayout { id, layout, frame });
+        self.record(
+            BatchCapabilities::LAYOUT_OR_SCROLL,
+            UiMutation::PlaceLayout {
+                id,
+                layout,
+                frame: Box::new(frame),
+            },
+        );
     }
 
     /// Queue [`UiMutation::PatchPlacement`].
     pub fn patch_placement(&mut self, id: StableNodeId, top: f32, height: Option<f32>) {
-        self.mutations
-            .push(UiMutation::PatchPlacement { id, top, height });
+        self.record(
+            BatchCapabilities::LAYOUT_OR_SCROLL,
+            UiMutation::PatchPlacement { id, top, height },
+        );
     }
 
     pub fn set_scroll_offset(&mut self, id: StableNodeId, offset: ScrollOffset) {
-        self.mutations
-            .push(UiMutation::SetScrollOffset { id, offset });
+        self.record(
+            BatchCapabilities::LAYOUT_OR_SCROLL,
+            UiMutation::SetScrollOffset { id, offset },
+        );
     }
 
     /// Queue [`UiMutation::SetScrollOverscroll`]; the touch scroll path's.
     pub(crate) fn set_scroll_overscroll(&mut self, id: StableNodeId, offset: ScrollOffset) {
-        self.mutations
-            .push(UiMutation::SetScrollOverscroll { id, offset });
+        self.record(
+            BatchCapabilities::LAYOUT_OR_SCROLL,
+            UiMutation::SetScrollOverscroll { id, offset },
+        );
     }
 
     pub fn set_scroll_metrics(&mut self, id: StableNodeId, metrics: Option<ScrollMetrics>) {
-        self.mutations
-            .push(UiMutation::SetScrollMetrics { id, metrics });
+        self.record(
+            BatchCapabilities::LAYOUT_OR_SCROLL,
+            UiMutation::SetScrollMetrics { id, metrics },
+        );
     }
 
     pub fn set_interaction(&mut self, id: StableNodeId, interaction: InteractionState) {
-        self.mutations
-            .push(UiMutation::SetInteraction { id, interaction });
+        self.record(
+            BatchCapabilities::VISUAL_OR_INTERACTION,
+            UiMutation::SetInteraction { id, interaction },
+        );
     }
 
     pub fn set_custom_render(&mut self, id: StableNodeId, content: Option<CustomRenderNode>) {
-        self.mutations
-            .push(UiMutation::SetCustomRender { id, content });
+        self.record(
+            BatchCapabilities::VISUAL_OR_INTERACTION,
+            UiMutation::SetCustomRender {
+                id,
+                content: content.map(Box::new),
+            },
+        );
     }
 
     /// See [`UiMutation::SetMediaTime`].
     pub fn set_media_time(&mut self, id: StableNodeId, mapping: Option<crate::MediaTimeMapping>) {
-        self.mutations
-            .push(UiMutation::SetMediaTime { id, mapping });
+        self.record(
+            BatchCapabilities::VISUAL_OR_INTERACTION,
+            UiMutation::SetMediaTime {
+                id,
+                mapping: mapping.map(Box::new),
+            },
+        );
     }
 
     pub fn set_widget_visual<V: crate::WidgetVisual>(
@@ -677,14 +901,25 @@ impl MutationQueue {
         id: StableNodeId,
         visual: Option<crate::WidgetVisualHandle>,
     ) {
-        self.mutations
-            .push(UiMutation::SetWidgetVisual { id, visual });
+        self.record(
+            BatchCapabilities::VISUAL_OR_INTERACTION,
+            UiMutation::SetWidgetVisual {
+                id,
+                visual: visual.map(Box::new),
+            },
+        );
     }
 
     /// Paint `id` with `painter`, whatever its style says. See
     /// [`UiMutation::SetPainter`].
     pub fn set_painter(&mut self, id: StableNodeId, painter: Option<crate::NodePainter>) {
-        self.mutations.push(UiMutation::SetPainter { id, painter });
+        self.record(
+            BatchCapabilities::VISUAL_OR_INTERACTION,
+            UiMutation::SetPainter {
+                id,
+                painter: painter.map(Box::new),
+            },
+        );
     }
 
     pub fn set_event_listener(
@@ -693,20 +928,25 @@ impl MutationQueue {
         event: impl Into<String>,
         enabled: bool,
     ) {
-        self.mutations.push(UiMutation::SetEventListener {
-            id,
-            event: event.into(),
-            enabled,
-        });
+        self.record(
+            BatchCapabilities::VISUAL_OR_INTERACTION,
+            UiMutation::SetEventListener {
+                id,
+                event: event.into().into_boxed_str(),
+                enabled,
+            },
+        );
     }
 
     pub fn set_component_type(&mut self, id: StableNodeId, type_id: Option<ComponentTypeId>) {
-        self.mutations
-            .push(UiMutation::SetComponentType { id, type_id });
+        self.record(
+            BatchCapabilities::VISUAL_OR_INTERACTION,
+            UiMutation::SetComponentType { id, type_id },
+        );
     }
 
     pub fn append(&mut self, mut other: Self) {
-        self.writes_text |= other.writes_text;
+        self.capabilities = self.capabilities.union(other.capabilities);
         self.mutations.append(&mut other.mutations);
     }
 
@@ -715,8 +955,13 @@ impl MutationQueue {
     }
 
     pub fn set_accessibility(&mut self, id: StableNodeId, accessibility: AccessibilityState) {
-        self.mutations
-            .push(UiMutation::SetAccessibility { id, accessibility });
+        self.record(
+            BatchCapabilities::VISUAL_OR_INTERACTION,
+            UiMutation::SetAccessibility {
+                id,
+                accessibility: Box::new(accessibility),
+            },
+        );
     }
 
     /// Let `label`'s text name `id` when `id` has no label of its own: a
@@ -725,7 +970,10 @@ impl MutationQueue {
     /// control's own [`AccessibilityState`], so the control re-projecting
     /// its state keeps it.
     pub fn set_labelled_by(&mut self, id: StableNodeId, label: Option<StableNodeId>) {
-        self.mutations.push(UiMutation::SetLabelledBy { id, label });
+        self.record(
+            BatchCapabilities::VISUAL_OR_INTERACTION,
+            UiMutation::SetLabelledBy { id, label },
+        );
     }
 
     /// Make `id` a live region: assistive technology announces what changes
@@ -735,12 +983,20 @@ impl MutationQueue {
     /// composite, not to the node's own [`AccessibilityState`], so the node
     /// re-projecting its state keeps it.
     pub fn set_live(&mut self, id: StableNodeId, live: Option<AccessibilityLive>) {
-        self.mutations.push(UiMutation::SetLive { id, live });
+        self.record(
+            BatchCapabilities::VISUAL_OR_INTERACTION,
+            UiMutation::SetLive { id, live },
+        );
     }
 
     pub fn set_overlay_host(&mut self, host: StableNodeId, state: OverlayHostState) {
-        self.mutations
-            .push(UiMutation::SetOverlayHost { host, state });
+        self.record(
+            BatchCapabilities::VISUAL_OR_INTERACTION,
+            UiMutation::SetOverlayHost {
+                host,
+                state: Box::new(state),
+            },
+        );
     }
 
     pub fn set_overlay_mount(
@@ -748,29 +1004,44 @@ impl MutationQueue {
         id: StableNodeId,
         mount: Option<nana_ui_core::OverlayMount>,
     ) {
-        self.mutations
-            .push(UiMutation::SetOverlayMount { id, mount });
+        self.record(
+            BatchCapabilities::VISUAL_OR_INTERACTION,
+            UiMutation::SetOverlayMount {
+                id,
+                mount: mount.map(Box::new),
+            },
+        );
     }
 
     pub fn capture_pointer(&mut self, pointer_id: u64, target: StableNodeId) {
-        self.mutations
-            .push(UiMutation::CapturePointer { pointer_id, target });
+        self.record(
+            BatchCapabilities::VISUAL_OR_INTERACTION,
+            UiMutation::CapturePointer { pointer_id, target },
+        );
     }
 
     /// Release capture only when `target` still owns `pointer_id`.
     pub fn release_pointer(&mut self, pointer_id: u64, target: StableNodeId) {
-        self.mutations
-            .push(UiMutation::ReleasePointer { pointer_id, target });
+        self.record(
+            BatchCapabilities::VISUAL_OR_INTERACTION,
+            UiMutation::ReleasePointer { pointer_id, target },
+        );
     }
 
     pub(crate) fn set_surface_open(&mut self, id: StableNodeId, open: bool, menu: bool) {
-        self.mutations
-            .push(UiMutation::SetSurfaceOpen { id, open, menu });
+        self.record(
+            BatchCapabilities::VISUAL_OR_INTERACTION,
+            UiMutation::SetSurfaceOpen { id, open, menu },
+        );
     }
 
     pub fn start_animation(&mut self, animation: AnimationSpec) {
-        self.mutations
-            .push(UiMutation::StartAnimation { animation });
+        self.record(
+            BatchCapabilities::ANIMATION,
+            UiMutation::StartAnimation {
+                animation: Box::new(animation),
+            },
+        );
     }
 
     pub fn start_animation_with_playback(
@@ -827,77 +1098,125 @@ impl MutationQueue {
     /// from 0. Read the current tracks with `UiWorld::animation_tracks`.
     /// Fails with `MissingAnimation` when no run has that id.
     pub fn replace_animation(&mut self, animation: AnimationSpec) {
-        self.mutations
-            .push(UiMutation::ReplaceAnimation { animation });
+        self.record(
+            BatchCapabilities::ANIMATION,
+            UiMutation::ReplaceAnimation {
+                animation: Box::new(animation),
+            },
+        );
     }
 
     pub fn stop_animation(&mut self, id: AnimationId) {
-        self.mutations.push(UiMutation::StopAnimation { id });
+        self.record(
+            BatchCapabilities::ANIMATION,
+            UiMutation::StopAnimation { id },
+        );
     }
 
     pub fn finish_animation(&mut self, id: AnimationId) {
-        self.mutations.push(UiMutation::FinishAnimation { id });
+        self.record(
+            BatchCapabilities::ANIMATION,
+            UiMutation::FinishAnimation { id },
+        );
     }
 
     pub fn reverse_animation(&mut self, id: AnimationId) {
-        self.mutations.push(UiMutation::ReverseAnimation { id });
+        self.record(
+            BatchCapabilities::ANIMATION,
+            UiMutation::ReverseAnimation { id },
+        );
     }
 
     pub fn pause_animation(&mut self, id: AnimationId) {
-        self.mutations.push(UiMutation::PauseAnimation { id });
+        self.record(
+            BatchCapabilities::ANIMATION,
+            UiMutation::PauseAnimation { id },
+        );
     }
 
     pub fn resume_animation(&mut self, id: AnimationId) {
-        self.mutations.push(UiMutation::ResumeAnimation { id });
+        self.record(
+            BatchCapabilities::ANIMATION,
+            UiMutation::ResumeAnimation { id },
+        );
     }
 
     pub fn request_focus(&mut self, document: DocumentId, target: Option<StableNodeId>) {
-        self.mutations
-            .push(UiMutation::RequestFocus { document, target });
+        self.record(
+            BatchCapabilities::FOCUS,
+            UiMutation::RequestFocus { document, target },
+        );
     }
 
     /// Restore the last valid focus in a registered scope after it is mounted.
     /// Missing, hidden, disabled or reparented targets leave focus unchanged.
     pub fn restore_focus_within(&mut self, root: StableNodeId) {
-        self.mutations.push(UiMutation::RestoreFocusWithin { root });
+        self.record(
+            BatchCapabilities::FOCUS,
+            UiMutation::RestoreFocusWithin { root },
+        );
     }
 
     pub fn set_ime(&mut self, id: StableNodeId, composition: Option<ImeComposition>) {
-        self.mutations.push(UiMutation::SetIme { id, composition });
+        self.record(
+            BatchCapabilities::EDITOR,
+            UiMutation::SetIme {
+                id,
+                composition: composition.map(Box::new),
+            },
+        );
     }
 
     pub fn set_text_input(&mut self, id: StableNodeId, state: Option<TextInputState>) {
-        self.writes_text = true;
-        self.mutations.push(UiMutation::SetTextInput { id, state });
+        self.record(
+            BatchCapabilities::EDITOR.union(BatchCapabilities::WRITES_TEXT),
+            UiMutation::SetTextInput {
+                id,
+                state: state.map(Box::new),
+            },
+        );
     }
 
     pub fn set_text_selection(&mut self, id: StableNodeId, selection: TextSelection) {
-        self.mutations
-            .push(UiMutation::SetTextSelection { id, selection });
+        self.record(
+            BatchCapabilities::EDITOR,
+            UiMutation::SetTextSelection { id, selection },
+        );
     }
 
     pub fn replace_text_selection(&mut self, id: StableNodeId, text: impl Into<String>) {
-        self.writes_text = true;
-        self.mutations.push(UiMutation::ReplaceTextSelection {
-            id,
-            text: text.into(),
-        });
+        self.record(
+            BatchCapabilities::EDITOR.union(BatchCapabilities::WRITES_TEXT),
+            UiMutation::ReplaceTextSelection {
+                id,
+                text: text.into().into_boxed_str(),
+            },
+        );
     }
 
     pub fn set_highlight_request(&mut self, id: StableNodeId, request: Option<HighlightRequest>) {
-        self.mutations
-            .push(UiMutation::SetHighlightRequest { id, request });
+        self.record(
+            BatchCapabilities::EDITOR,
+            UiMutation::SetHighlightRequest {
+                id,
+                request: request.map(Box::new),
+            },
+        );
     }
 
     pub fn set_text_input_fold_collapsed(&mut self, id: StableNodeId, folds: Arc<[TextCodeFold]>) {
-        self.mutations
-            .push(UiMutation::SetTextInputFoldCollapsed { id, folds });
+        self.record(
+            BatchCapabilities::EDITOR,
+            UiMutation::SetTextInputFoldCollapsed { id, folds },
+        );
     }
 
     /// 喂入或撤掉（空表）行内提示（见 [`TextInlay`]）。
     pub fn set_text_input_inlays(&mut self, id: StableNodeId, inlays: Arc<[TextInlay]>) {
-        self.mutations
-            .push(UiMutation::SetTextInputInlays { id, inlays });
+        self.record(
+            BatchCapabilities::EDITOR,
+            UiMutation::SetTextInputInlays { id, inlays },
+        );
     }
 
     pub fn set_text_input_snippet(
@@ -905,13 +1224,20 @@ impl MutationQueue {
         id: StableNodeId,
         session: Option<TextSnippetSession>,
     ) {
-        self.mutations
-            .push(UiMutation::SetTextInputSnippet { id, session });
+        self.record(
+            BatchCapabilities::EDITOR,
+            UiMutation::SetTextInputSnippet {
+                id,
+                session: session.map(Box::new),
+            },
+        );
     }
 
     pub fn set_text_input_completions(&mut self, id: StableNodeId, items: Arc<[TextCompletion]>) {
-        self.mutations
-            .push(UiMutation::SetTextInputCompletions { id, items });
+        self.record(
+            BatchCapabilities::EDITOR,
+            UiMutation::SetTextInputCompletions { id, items },
+        );
     }
 
     pub fn set_text_input_completion_view(
@@ -920,42 +1246,66 @@ impl MutationQueue {
         selected: usize,
         scroll: usize,
     ) {
-        self.mutations.push(UiMutation::SetTextInputCompletionView {
-            id,
-            selected,
-            scroll,
-        });
+        self.record(
+            BatchCapabilities::EDITOR,
+            UiMutation::SetTextInputCompletionView {
+                id,
+                selected,
+                scroll,
+            },
+        );
     }
 
     pub fn set_text_input_completion_dismissed(&mut self, id: StableNodeId) {
-        self.mutations
-            .push(UiMutation::SetTextInputCompletionDismissed { id });
+        self.record(
+            BatchCapabilities::EDITOR,
+            UiMutation::SetTextInputCompletionDismissed { id },
+        );
     }
 
     pub fn set_text_input_completion_reopened(&mut self, id: StableNodeId) {
-        self.mutations
-            .push(UiMutation::SetTextInputCompletionReopened { id });
+        self.record(
+            BatchCapabilities::EDITOR,
+            UiMutation::SetTextInputCompletionReopened { id },
+        );
     }
 
     pub fn set_text_input_hover(&mut self, id: StableNodeId, hover: Option<TextHover>) {
-        self.mutations
-            .push(UiMutation::SetTextInputHover { id, hover });
+        self.record(
+            BatchCapabilities::EDITOR,
+            UiMutation::SetTextInputHover {
+                id,
+                hover: hover.map(Box::new),
+            },
+        );
     }
 
     pub fn set_text_input_diagnostic_hover(&mut self, id: StableNodeId, hover: Option<TextHover>) {
-        self.mutations
-            .push(UiMutation::SetTextInputDiagnosticHover { id, hover });
+        self.record(
+            BatchCapabilities::EDITOR,
+            UiMutation::SetTextInputDiagnosticHover {
+                id,
+                hover: hover.map(Box::new),
+            },
+        );
     }
 
     pub fn set_text_input_hover_scroll(&mut self, id: StableNodeId, scroll: usize) {
-        self.mutations
-            .push(UiMutation::SetTextInputHoverScroll { id, scroll });
+        self.record(
+            BatchCapabilities::EDITOR,
+            UiMutation::SetTextInputHoverScroll { id, scroll },
+        );
     }
 
     /// 喂入或撤掉（`None`）签名帮助浮窗。
     pub fn set_text_input_signature(&mut self, id: StableNodeId, help: Option<TextSignatureHelp>) {
-        self.mutations
-            .push(UiMutation::SetTextInputSignature { id, help });
+        self.record(
+            BatchCapabilities::EDITOR,
+            UiMutation::SetTextInputSignature {
+                id,
+                help: help.map(Box::new),
+            },
+        );
     }
 
     pub fn len(&self) -> usize {
@@ -973,16 +1323,12 @@ impl MutationQueue {
     /// Append one pre-built mutation. Used by adapters that replay a queue
     /// one mutation at a time after a batch was rejected.
     pub fn push(&mut self, mutation: UiMutation) {
-        self.writes_text |= matches!(
-            mutation,
-            UiMutation::SetTextInput { .. } | UiMutation::ReplaceTextSelection { .. }
-        );
-        self.mutations.push(mutation);
+        self.record(BatchCapabilities::for_mutation(&mutation), mutation);
     }
 
     /// Whether any mutation in the queue writes an editor's text
     /// (`SetTextInput` or `ReplaceTextSelection`).
     pub fn writes_text(&self) -> bool {
-        self.writes_text
+        self.capabilities.contains(BatchCapabilities::WRITES_TEXT)
     }
 }

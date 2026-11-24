@@ -5,7 +5,7 @@ use nana_ui_core::PaintTransform;
 use crate::MotionTargetId;
 
 #[derive(Clone, Copy)]
-pub(super) struct SurfaceMotion {
+pub(super) struct SurfacePresence {
     pub open: bool,
     /// The surface plays a transform with its fade: a menu's pop, a dialog
     /// card's move.
@@ -13,14 +13,114 @@ pub(super) struct SurfaceMotion {
     /// A modal frame's scrim fades on its own track.
     scrim: bool,
     pub running: bool,
+    pub scrim_presence: f32,
 }
 
-#[derive(Clone, Copy, Default)]
-struct LayoutClassOverlay {
-    width: Option<f32>,
-    height: Option<f32>,
-    padding: Option<f32>,
-    margin: Option<f32>,
+impl SurfacePresence {
+    #[inline]
+    pub(super) fn is_closing(&self) -> bool {
+        !self.open && self.running
+    }
+}
+
+/// Compact 16-byte cache of animated layout lengths (`Width`, `Height`,
+/// `Padding`, `Margin`), using `f32::NAN` for absent axes.
+#[derive(Clone, Copy)]
+pub(super) struct PresentationLengthOverlay([f32; 4]);
+
+const _: () = assert!(std::mem::size_of::<PresentationLengthOverlay>() == 16);
+
+impl Default for PresentationLengthOverlay {
+    fn default() -> Self {
+        Self([f32::NAN; 4])
+    }
+}
+
+impl PresentationLengthOverlay {
+    const WIDTH: usize = 0;
+    const HEIGHT: usize = 1;
+    const PADDING: usize = 2;
+    const MARGIN: usize = 3;
+
+    #[inline]
+    pub(super) fn slot_of(property: crate::AnimatableProperty) -> Option<usize> {
+        match property {
+            crate::AnimatableProperty::Width => Some(Self::WIDTH),
+            crate::AnimatableProperty::Height => Some(Self::HEIGHT),
+            crate::AnimatableProperty::Padding => Some(Self::PADDING),
+            crate::AnimatableProperty::Margin => Some(Self::MARGIN),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    fn property_of(slot: usize) -> crate::AnimatableProperty {
+        match slot {
+            Self::WIDTH => crate::AnimatableProperty::Width,
+            Self::HEIGHT => crate::AnimatableProperty::Height,
+            Self::PADDING => crate::AnimatableProperty::Padding,
+            _ => crate::AnimatableProperty::Margin,
+        }
+    }
+
+    #[inline]
+    pub(super) fn get(&self, property: crate::AnimatableProperty) -> Option<f32> {
+        let idx = Self::slot_of(property)?;
+        let v = self.0[idx];
+        (!v.is_nan()).then_some(v)
+    }
+
+    #[inline]
+    pub(super) fn set(&mut self, property: crate::AnimatableProperty, value: Option<f32>) {
+        if let Some(idx) = Self::slot_of(property) {
+            self.0[idx] = value.unwrap_or(f32::NAN);
+        }
+    }
+
+    #[inline]
+    pub(super) fn padding(&self) -> Option<f32> {
+        let v = self.0[Self::PADDING];
+        (!v.is_nan()).then_some(v)
+    }
+
+    /// Reads any active or forwards-held layout-length overlays for `id` from `store`.
+    pub(super) fn read(
+        store: &nana_ui_core::motion::PresentationStore,
+        id: StableNodeId,
+        now: Duration,
+    ) -> Option<Self> {
+        if store.is_empty() {
+            return None;
+        }
+        let target = MotionTargetId::new(id.get())?;
+        let mut out = Self::default();
+        let mut any = false;
+        for slot in 0..4 {
+            let prop = Self::property_of(slot);
+            if let Some(crate::MotionValue::Scalar(px)) = store.applied_value(target, prop, now)
+                && px.is_finite()
+            {
+                out.0[slot] = shown_length(prop, px);
+                any = true;
+            }
+        }
+        any.then_some(out)
+    }
+
+    pub(super) fn apply_to(&self, layout: &mut LayoutStyle) {
+        if let Some(width) = self.get(crate::AnimatableProperty::Width) {
+            layout.width = Some(LengthSpec::Px(width));
+        }
+        if let Some(height) = self.get(crate::AnimatableProperty::Height) {
+            layout.height = Some(LengthSpec::Px(height));
+        }
+        if let Some(padding) = self.get(crate::AnimatableProperty::Padding) {
+            layout.padding = Some(LengthSpec::Px(padding));
+        }
+        if let Some(margin) = self.get(crate::AnimatableProperty::Margin) {
+            layout.margin = Some(LengthSpec::Px(margin));
+        }
+    }
 }
 
 /// A layout length as a box can take it. An overshooting curve can carry a
@@ -62,13 +162,13 @@ impl UiWorld {
     /// Follow the application's reduce-motion preference: while it holds,
     /// surfaces open and close at once.
     pub fn set_reduced_motion(&mut self, reduced: bool) {
-        self.reduced_motion = reduced;
+        self.motion.reduced_motion = reduced;
     }
 
     /// Whether the application's reduce-motion preference holds: a
     /// component that runs a timeline of its own leaves it still.
     pub fn reduced_motion(&self) -> bool {
-        self.reduced_motion
+        self.motion.reduced_motion
     }
 
     /// Start, retarget or cancel a scroll view's fade and thumb tracks as a
@@ -94,8 +194,10 @@ impl UiWorld {
         } = next;
         let targets = next.targets();
         let motion = self.node_theme(id).recipes().scrollbar().motion;
-        let fades = matches!(visibility, ScrollbarVisibility::AutoHide) && !self.reduced_motion;
-        let grows = !matches!(visibility, ScrollbarVisibility::Hidden) && !self.reduced_motion;
+        let fades =
+            matches!(visibility, ScrollbarVisibility::AutoHide) && !self.motion.reduced_motion;
+        let grows =
+            !matches!(visibility, ScrollbarVisibility::Hidden) && !self.motion.reduced_motion;
         let tracks = [
             (
                 SCROLLBAR_FADE,
@@ -156,7 +258,55 @@ impl UiWorld {
     /// How much of a modal frame's scrim shows: 1 at rest, less while it
     /// fades in or out.
     pub fn scrim_presence(&self, id: StableNodeId) -> f32 {
-        self.scrim_presence.get(&id).copied().unwrap_or(1.0)
+        self.motion
+            .surface_presence
+            .get(&id)
+            .map(|surface| surface.scrim_presence)
+            .unwrap_or(1.0)
+    }
+
+    pub(super) fn set_surface_presence(&mut self, id: StableNodeId, next: SurfacePresence) {
+        let was_closing = self
+            .motion
+            .surface_presence
+            .get(&id)
+            .is_some_and(SurfacePresence::is_closing);
+        let now_closing = next.is_closing();
+        self.motion.surface_presence.insert(id, next);
+        match (was_closing, now_closing) {
+            (false, true) => self.motion.closing_surfaces_count += 1,
+            (true, false) => {
+                self.motion.closing_surfaces_count =
+                    self.motion.closing_surfaces_count.saturating_sub(1);
+            }
+            _ => {}
+        }
+    }
+
+    pub(super) fn remove_surface_presence(&mut self, id: StableNodeId) {
+        if let Some(prev) = self.motion.surface_presence.remove(&id)
+            && prev.is_closing()
+        {
+            self.motion.closing_surfaces_count =
+                self.motion.closing_surfaces_count.saturating_sub(1);
+        }
+    }
+
+    pub(super) fn update_scrim_presence(&mut self, id: StableNodeId, presence: f32) {
+        if let Some(surface) = self.motion.surface_presence.get_mut(&id) {
+            surface.scrim_presence = presence;
+        } else {
+            self.motion.surface_presence.insert(
+                id,
+                SurfacePresence {
+                    open: true,
+                    moves: false,
+                    scrim: true,
+                    running: true,
+                    scrim_presence: presence,
+                },
+            );
+        }
     }
 
     /// The motion a modal frame comes and goes with: a dialog's from its
@@ -174,7 +324,7 @@ impl UiWorld {
 
     /// `duration`, or none while motion is reduced.
     fn surface_duration(&self, duration: Duration) -> Duration {
-        if self.reduced_motion {
+        if self.motion.reduced_motion {
             Duration::ZERO
         } else {
             duration
@@ -186,18 +336,19 @@ impl UiWorld {
             return;
         }
         if self
-            .surface_motion
+            .motion
+            .surface_presence
             .get(&id)
-            .is_some_and(|motion| motion.open == open)
+            .is_some_and(|surface| surface.open == open)
         {
             return;
         }
         let from_opacity = MotionTargetId::new(id.get())
             .and_then(|target| {
-                self.presentation.applied_value(
+                self.motion.presentation.applied_value(
                     target,
                     crate::AnimatableProperty::Opacity,
-                    self.animation_now,
+                    self.motion.animation_now,
                 )
             })
             .and_then(|value| match value {
@@ -207,10 +358,10 @@ impl UiWorld {
             .unwrap_or(f32::from(!open));
         let from_pop = MotionTargetId::new(id.get())
             .and_then(|target| {
-                self.presentation.applied_value(
+                self.motion.presentation.applied_value(
                     target,
                     crate::AnimatableProperty::Transform,
-                    self.animation_now,
+                    self.motion.animation_now,
                 )
             })
             .and_then(|value| match value {
@@ -218,10 +369,7 @@ impl UiWorld {
                 _ => None,
             })
             .unwrap_or(if open { 0.9 } else { 1.0 });
-        if open {
-            self.closing_surfaces.remove(&id);
-        } else {
-            self.closing_surfaces.insert(id);
+        if !open {
             self.clear_surface_pointer_interactions(id);
         }
         // Independent exit tracks can end before the surface is released.
@@ -237,13 +385,24 @@ impl UiWorld {
         let to_opacity = f32::from(open);
         let modal = (!menu).then(|| self.modal_motion(id)).flatten();
         let moves = menu || modal.is_some_and(|(motion, card)| card && motion.moves());
-        self.surface_motion.insert(
+        let existing_scrim = self
+            .motion
+            .surface_presence
+            .get(&id)
+            .map(|surface| surface.scrim_presence);
+        let from_scrim = if modal.is_some() {
+            existing_scrim.unwrap_or(f32::from(!open))
+        } else {
+            existing_scrim.unwrap_or(1.0)
+        };
+        self.set_surface_presence(
             id,
-            SurfaceMotion {
+            SurfacePresence {
                 open,
                 moves,
                 scrim: modal.is_some(),
                 running: true,
+                scrim_presence: from_scrim,
             },
         );
         if let Some((motion, card)) = modal {
@@ -264,10 +423,10 @@ impl UiWorld {
                 let entrance = card_entrance(motion.enter_scale, motion.enter_offset_y);
                 let from = MotionTargetId::new(id.get())
                     .and_then(|target| {
-                        self.presentation.applied_value(
+                        self.motion.presentation.applied_value(
                             target,
                             crate::AnimatableProperty::Transform,
-                            self.animation_now,
+                            self.motion.animation_now,
                         )
                     })
                     .and_then(|value| match value {
@@ -296,12 +455,6 @@ impl UiWorld {
                     exit_playback,
                 );
             }
-            let from_scrim = self
-                .scrim_presence
-                .get(&id)
-                .copied()
-                .unwrap_or(f32::from(!open));
-            self.scrim_presence.insert(id, from_scrim);
             self.start_component_track(
                 id,
                 crate::component_animation_kinds::SURFACE_SCRIM,
@@ -379,7 +532,7 @@ impl UiWorld {
         {
             return requested || self.surface_closing(id);
         }
-        let motion = self.surface_motion.get(&id);
+        let motion = self.motion.surface_presence.get(&id);
         // `set_surface_open` ignores a parked node, so asking would repeat on
         // every projection; the remount projects the surface again. A node
         // still being created is not in the world yet and does ask.
@@ -391,19 +544,21 @@ impl UiWorld {
     }
 
     pub(crate) fn surface_closed(&self, id: StableNodeId) -> bool {
-        self.surface_motion
+        self.motion
+            .surface_presence
             .get(&id)
             .is_some_and(|motion| !motion.open)
     }
 
     pub(crate) fn surface_closing(&self, id: StableNodeId) -> bool {
-        self.surface_motion
+        self.motion
+            .surface_presence
             .get(&id)
-            .is_some_and(|motion| !motion.open && motion.running)
+            .is_some_and(SurfacePresence::is_closing)
     }
 
     pub(crate) fn motion_blocks_input(&self, id: StableNodeId) -> bool {
-        if self.closing_surfaces.is_empty() && !self.nodes.has_inline_content() {
+        if self.motion.closing_surfaces_count == 0 && !self.nodes.has_inline_content() {
             return false;
         }
         let mut current = Some(id);
@@ -417,7 +572,7 @@ impl UiWorld {
     }
 
     pub(super) fn advance_surface_motion(&mut self, sample: &crate::AnimationSample) {
-        let Some(motion) = self.surface_motion.get(&sample.target) else {
+        let Some(motion) = self.motion.surface_presence.get(&sample.target) else {
             return;
         };
         if !sample.finished {
@@ -433,18 +588,16 @@ impl UiWorld {
         if !(opacity_done && pop_done && scrim_done) {
             return;
         }
-        let Some(motion) = self.surface_motion.get_mut(&sample.target) else {
+        let Some(mut next) = self.motion.surface_presence.get(&sample.target).copied() else {
             return;
         };
-        motion.running = false;
-        if !motion.open {
-            self.closing_surfaces.remove(&sample.target);
-        }
+        next.running = false;
+        self.set_surface_presence(sample.target, next);
         // Closing drops the items out of the menu branch without writing
         // `hidden` on them. Their last boxes would keep the hanging surface
         // painted. Layout has to run again so those boxes go to zero.
         let mut dirty = DirtyMask::STYLE | DirtyMask::RENDER | DirtyMask::INPUT;
-        if !motion.open {
+        if !next.open {
             // A closing menu keeps its retained surface alive during the
             // fade, but its virtual MenuItem nodes must be removed when the
             // motion completes so native accessibility caches do not retain
@@ -455,62 +608,31 @@ impl UiWorld {
         self.account_animation_dirty(dirty);
     }
 
+    pub(super) fn has_layout_length_overlays(&self) -> bool {
+        !self.motion.settled_length_overlays.is_empty()
+    }
+
+    pub(super) fn presentation_length_overlay(
+        &self,
+        id: StableNodeId,
+    ) -> Option<PresentationLengthOverlay> {
+        if self.motion.settled_length_overlays.is_empty() {
+            return None;
+        }
+        PresentationLengthOverlay::read(&self.motion.presentation, id, self.motion.animation_now)
+    }
+
     pub(super) fn motion_layout(
         &self,
         id: StableNodeId,
         source: &Arc<LayoutStyle>,
     ) -> Arc<LayoutStyle> {
-        if self.layout_length_tracks.is_empty() {
-            return Arc::clone(source);
-        }
-        let Some(overlay) = self.layout_class_overlay(id) else {
+        let Some(overlay) = self.presentation_length_overlay(id) else {
             return Arc::clone(source);
         };
         let mut layout = (**source).clone();
-        if let Some(width) = overlay.width {
-            layout.width = Some(LengthSpec::Px(width));
-        }
-        if let Some(height) = overlay.height {
-            layout.height = Some(LengthSpec::Px(height));
-        }
-        if let Some(padding) = overlay.padding {
-            layout.padding = Some(LengthSpec::Px(padding));
-        }
-        if let Some(margin) = overlay.margin {
-            layout.margin = Some(LengthSpec::Px(margin));
-        }
+        overlay.apply_to(&mut layout);
         Arc::new(layout)
-    }
-
-    fn layout_class_overlay(&self, id: StableNodeId) -> Option<LayoutClassOverlay> {
-        let now = self.animation_now;
-        let mut overlay = LayoutClassOverlay::default();
-        let mut any = false;
-        for animation in self.layout_length_tracks(id) {
-            let Some(track) = animation.spec.to_motion_track() else {
-                continue;
-            };
-            let sample = nana_ui_core::motion::evaluate_track(&track, now);
-            let Some(crate::MotionValue::Scalar(px)) = sample
-                .applied_value()
-                .or(sample.finished.then_some(sample.value))
-            else {
-                continue;
-            };
-            if !px.is_finite() {
-                continue;
-            }
-            let px = shown_length(animation.spec.property, px);
-            match animation.spec.property {
-                crate::AnimatableProperty::Width => overlay.width = Some(px),
-                crate::AnimatableProperty::Height => overlay.height = Some(px),
-                crate::AnimatableProperty::Padding => overlay.padding = Some(px),
-                crate::AnimatableProperty::Margin => overlay.margin = Some(px),
-                _ => continue,
-            }
-            any = true;
-        }
-        any.then_some(overlay)
     }
 
     /// The axes `id` declares, or inherits when it declares none, without its
@@ -551,20 +673,25 @@ impl UiWorld {
     /// not name it samples as NaN): it is dropped from the computed axes, so
     /// the face's default applies.
     pub(super) fn font_axis_overlay(&self, id: StableNodeId) -> Vec<([u8; 4], Option<f32>)> {
-        if self.presentation.is_empty() {
+        if self.motion.presentation.is_empty() {
             return Vec::new();
         }
         let Some(target) = MotionTargetId::new(id.get()) else {
             return Vec::new();
         };
-        let now = self.animation_now;
-        self.presentation
+        let now = self.motion.animation_now;
+        self.motion
+            .presentation
             .properties_of(target)
             .filter_map(|property| {
                 let crate::AnimatableProperty::FontAxis(tag) = property else {
                     return None;
                 };
-                match self.presentation.applied_value(target, property, now)? {
+                match self
+                    .motion
+                    .presentation
+                    .applied_value(target, property, now)?
+                {
                     value if value.is_absent() => Some((tag, None)),
                     crate::MotionValue::Scalar(value) if value.is_finite() => {
                         Some((tag, Some(value)))
@@ -695,6 +822,9 @@ impl UiWorld {
         if let crate::AnimatableProperty::FontAxis(tag) = sample.property {
             return self.apply_font_axis_sample(sample, tag);
         }
+        if PresentationLengthOverlay::slot_of(sample.property).is_none() {
+            return false;
+        }
         let Some(crate::MotionValue::Scalar(px)) = sample
             .applied_value()
             .or(sample.finished.then_some(sample.value))
@@ -704,54 +834,40 @@ impl UiWorld {
         if !px.is_finite() || !self.contains(sample.target) {
             return false;
         }
-        let length = LengthSpec::Px(shown_length(sample.property, px));
-        let layout =
-            Arc::make_mut(&mut Arc::make_mut(&mut self.record_mut(sample.target).style).layout);
-        let changed = match sample.property {
-            crate::AnimatableProperty::Width => {
-                let changed = layout.width != Some(length);
-                layout.width = Some(length);
-                changed
-            }
-            crate::AnimatableProperty::Height => {
-                let changed = layout.height != Some(length);
-                layout.height = Some(length);
-                changed
-            }
-            crate::AnimatableProperty::Padding => {
-                let changed = layout.padding != Some(length);
-                layout.padding = Some(length);
-                changed
-            }
-            crate::AnimatableProperty::Margin => {
-                let changed = layout.margin != Some(length);
-                layout.margin = Some(length);
-                changed
-            }
-            _ => return false,
+        let next_px = shown_length(sample.property, px);
+        let logical_length = |layout: &LayoutStyle, prop: crate::AnimatableProperty| match prop {
+            crate::AnimatableProperty::Width => layout.width,
+            crate::AnimatableProperty::Height => layout.height,
+            crate::AnimatableProperty::Padding => layout.padding,
+            crate::AnimatableProperty::Margin => layout.margin,
+            _ => None,
         };
+        let prev_px = self
+            .motion
+            .settled_length_overlays
+            .get(&sample.target)
+            .and_then(|overlay| overlay.get(sample.property))
+            .map(LengthSpec::Px)
+            .or_else(|| {
+                logical_length(&self.record(sample.target).resolved_layout, sample.property)
+            });
+        let changed = prev_px != Some(LengthSpec::Px(next_px));
         if !changed {
             return false;
         }
-        // The authored layout just moved in place; the resolved copy layout
-        // reads has to follow. A node with no design intent keeps sharing the
-        // same `Arc`, so an animation that touches no tier costs nothing.
-        self.refresh_resolved_layout(sample.target);
-        // A pixel length can only take a viewport dependency away.
-        let record = self.record_mut(sample.target);
-        if record.layout_depends_on_viewport {
-            record.layout_depends_on_viewport = record.resolved_layout.depends_on_viewport();
-        }
+        self.motion
+            .settled_length_overlays
+            .entry(sample.target)
+            .or_default()
+            .set(sample.property, Some(next_px));
         if sample.property != crate::AnimatableProperty::Margin {
-            // Written straight onto the authored style, not through
-            // `SetStyle`: the content box, and whether its height is definite,
-            // are the text's constraints. A margin only moves the box.
+            // The content box, and whether its height is definite, are the
+            // text's constraints. A margin only moves the box.
             self.nodes
                 .invalidate_text(sample.target, crate::text_node::TextDirty::CONSTRAINT);
         }
-        // The sample changed one field group of this node's own style: seed
-        // that, as a style write would, rather than an unknown cause that
-        // lays the whole subtree out again every frame.
+        // The sample changed one field group of the node's layout overlay:
+        // seed that rather than forcing the whole subtree to re-layout.
         let changed = match sample.property {
             crate::AnimatableProperty::Width => nana_ui_core::LayoutStyleChange::WIDTH,
             crate::AnimatableProperty::Height => nana_ui_core::LayoutStyleChange::HEIGHT,
@@ -815,7 +931,8 @@ mod tests {
 
         assert!(
             cx.world()
-                .surface_motion
+                .motion
+                .surface_presence
                 .get(&popover.stable_id())
                 .is_some_and(|motion| motion.open)
         );
@@ -1647,6 +1764,7 @@ mod tests {
         tick_world(&mut world, 50);
         assert!((computed_axis(&world, text, BEVL).unwrap() - 50.0).abs() < 1e-3);
         let id = *world
+            .motion
             .animations
             .keys()
             .next()
@@ -1790,7 +1908,7 @@ mod tests {
             .start();
         world.commit(queue).unwrap();
         tick_world(&mut world, 50);
-        let id = *world.animations.keys().next().expect("running");
+        let id = *world.motion.animations.keys().next().expect("running");
         let mut finish = MutationQueue::new();
         finish.finish_animation(id);
         world.commit(finish).unwrap();
@@ -1900,7 +2018,7 @@ mod tests {
         let mut lowest = f32::MAX;
         for ms in (0..=100).step_by(10) {
             tick_world(&mut world, ms);
-            if let Some(LengthSpec::Px(px)) = world.node_style(paragraph).unwrap().layout.width {
+            if let Some(LengthSpec::Px(px)) = world.layout_style(paragraph).unwrap().width {
                 lowest = lowest.min(px);
             }
         }

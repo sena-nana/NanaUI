@@ -1017,7 +1017,7 @@ pub(super) mod responsive_queries {
         }
 
         fn footprint(&self) -> (usize, usize, usize, usize) {
-            self.context.world().responsive.footprint()
+            self.context.world().overlays_a11y.responsive.footprint()
         }
     }
 

@@ -146,7 +146,7 @@ impl UiWorld {
         for &child in &moved {
             self.invalidate_scroll_topology(child, Some(parent));
         }
-        self.scroll_layout_touched = true;
+        self.scroll.layout_touched = true;
         self.record_child_list_invalidation(parent);
         for &child in &moved {
             self.clear_layout_results_subtree(child);
@@ -156,7 +156,7 @@ impl UiWorld {
             .copy_from_slice(&order[between.clone()]);
         #[cfg(test)]
         {
-            self.child_list_steps += between.len() as u64;
+            self.tree.child_list_steps += between.len() as u64;
         }
         self.renumber_children_between(parent, between.start, order.len() - between.end);
         for &child in &moved {
@@ -335,7 +335,7 @@ mod tests {
                 (
                     id,
                     world.has_local_layout_result(id),
-                    world.scroll_content_bounds.borrow().stale(id),
+                    world.scroll.content_bounds.borrow().stale(id),
                 )
             })
             .collect();
@@ -531,12 +531,12 @@ mod tests {
             let mut world = wide();
             let mut queue = MutationQueue::new();
             queue.reorder_children(node(PARENT), ids(&order));
-            world.child_list_steps = 0;
+            world.tree.child_list_steps = 0;
             world.commit(queue).unwrap();
             assert!(
-                world.child_list_steps <= 2 * CHILDREN,
+                world.tree.child_list_steps <= 2 * CHILDREN,
                 "{shape}: {} child-list steps reordering {CHILDREN}",
-                world.child_list_steps
+                world.tree.child_list_steps
             );
             assert_eq!(children(&world), ids(&order), "{shape}");
         }
@@ -565,10 +565,10 @@ mod tests {
             cx
         };
         let steps = |cx: &mut AppContext, order: &[u64]| {
-            cx.compat_world_mut().child_list_steps = 0;
+            cx.compat_world_mut().tree.child_list_steps = 0;
             assert!(cx.reconcile_children(node(PARENT), &ids(order)).unwrap());
             assert_eq!(children(cx.world()), ids(order));
-            cx.world().child_list_steps
+            cx.world().tree.child_list_steps
         };
         for (shape, order) in orders(&all) {
             // Two rows exchanged far apart are two inserts, each a few

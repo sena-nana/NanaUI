@@ -19,6 +19,7 @@ impl UiWorld {
         // index's build sentinel adds while this runs.
         let built = |world: &Self| {
             world
+                .invalidation
                 .counters
                 .last_counters
                 .hit_test_nodes_rebuilt
@@ -38,7 +39,7 @@ impl UiWorld {
         scroller: StableNodeId,
         delta: [f32; 2],
     ) {
-        let Some(index) = self.hit_test_index.get_mut(&document) else {
+        let Some(index) = self.hit_index.hit_test_index.get_mut(&document) else {
             return;
         };
         let Some(node) = index.entries.get_mut(&scroller) else {
@@ -69,7 +70,7 @@ impl UiWorld {
         // of them in one pass whose bounds refresh once; a branch holding a
         // pinned entry, or one that cannot be (under a perspective the
         // offset is in its transform), is patched whole, outermost first.
-        let mut sticky = self.sticky_nodes.affected(scroller);
+        let mut sticky = self.overlays_a11y.sticky_nodes.affected(scroller);
         sticky.compact_sort_by_key(|id| {
             std::iter::successors(self.parent_id(*id), |id| self.parent_id(*id)).count()
         });
@@ -119,7 +120,7 @@ impl UiWorld {
         !updates.is_empty()
             && input.iter().all(|node| {
                 updates.iter().any(|(scroller, _)| *scroller == *node)
-                    && !self.non_scroll_hit_dirty.contains(node)
+                    && !self.hit_index.non_scroll_hit_dirty.contains(node)
             })
     }
 
@@ -130,12 +131,12 @@ impl UiWorld {
         &mut self,
         ids: impl IntoIterator<Item = StableNodeId>,
     ) {
-        if self.non_scroll_hit_dirty.is_empty() {
+        if self.hit_index.non_scroll_hit_dirty.is_empty() {
             return;
         }
         for id in ids {
             if !self.input_pending(id) {
-                self.non_scroll_hit_dirty.remove(&id);
+                self.hit_index.non_scroll_hit_dirty.remove(&id);
             }
         }
     }
@@ -151,6 +152,6 @@ impl UiWorld {
 impl UiWorld {
     /// Drain the scroll deltas recorded since the last drain.
     pub fn take_scroll_hit_updates(&mut self) -> Vec<(StableNodeId, [f32; 2])> {
-        std::mem::take(&mut self.scroll_hit_updates)
+        std::mem::take(&mut self.scroll.hit_updates)
     }
 }

@@ -151,7 +151,8 @@ struct Evaluation {
 impl UiWorld {
     /// The rule `id` follows, if it follows one.
     pub fn responsive_rule(&self, id: StableNodeId) -> Option<&Arc<ResponsiveRule>> {
-        self.responsive
+        self.overlays_a11y
+            .responsive
             .dependents
             .get(&id)
             .map(|dependent| &dependent.rule)
@@ -159,7 +160,8 @@ impl UiWorld {
 
     /// The bucket `id`'s rule is in, once its container was measured.
     pub fn responsive_bucket(&self, id: StableNodeId) -> Option<usize> {
-        self.responsive
+        self.overlays_a11y
+            .responsive
             .dependents
             .get(&id)
             .and_then(|dependent| dependent.bucket)
@@ -167,7 +169,7 @@ impl UiWorld {
 
     /// The variant `id`'s style takes, if its bucket has one.
     pub(super) fn responsive_variant(&self, id: StableNodeId) -> Option<&StyleVariant> {
-        let dependent = self.responsive.dependents.get(&id)?;
+        let dependent = self.overlays_a11y.responsive.dependents.get(&id)?;
         dependent.rule.variant(dependent.bucket?)
     }
 
@@ -219,18 +221,18 @@ impl UiWorld {
         rule: Option<Arc<ResponsiveRule>>,
     ) {
         let before = self.responsive_variant(id).cloned();
-        if let Some(previous) = self.responsive.dependents.remove(&id) {
-            self.responsive.unlink(id, previous.container);
+        if let Some(previous) = self.overlays_a11y.responsive.dependents.remove(&id) {
+            self.overlays_a11y.responsive.unlink(id, previous.container);
         }
         if let Some(rule) = rule {
             let container = self.responsive_container_of(id, &rule);
-            self.responsive.link(id, container);
+            self.overlays_a11y.responsive.link(id, container);
             let extents = container.and_then(|container| self.responsive_extents(container));
             if let (Some(container), None) = (container, extents) {
-                self.responsive.queue(container);
+                self.overlays_a11y.responsive.queue(container);
             }
             let bucket = extents.map(|extents| rule.bucket_for(extents.on(rule.axis())));
-            self.responsive.dependents.insert(
+            self.overlays_a11y.responsive.dependents.insert(
                 id,
                 Dependent {
                     rule,
@@ -248,7 +250,7 @@ impl UiWorld {
     /// its parent reads the new one, and rules at or below it that read
     /// the nearest query container find theirs again.
     pub(super) fn responsive_reparented(&mut self, id: StableNodeId) {
-        if let Some(dependent) = self.responsive.dependents.get(&id)
+        if let Some(dependent) = self.overlays_a11y.responsive.dependents.get(&id)
             && *dependent.rule.container() == ResponsiveContainer::Parent
         {
             let rule = Arc::clone(&dependent.rule);
@@ -270,7 +272,7 @@ impl UiWorld {
                 ResponsiveContainer::Nearest { .. }
             )
         };
-        let rules = self.responsive.dependents.len();
+        let rules = self.overlays_a11y.responsive.dependents.len();
         if rules == 0 {
             return;
         }
@@ -284,6 +286,7 @@ impl UiWorld {
                 break;
             }
             if self
+                .overlays_a11y
                 .responsive
                 .dependents
                 .get(&node)
@@ -297,14 +300,15 @@ impl UiWorld {
         }
         #[cfg(test)]
         {
-            self.responsive.visited += walked;
+            self.overlays_a11y.responsive.visited += walked;
         }
         if walked > rules {
             #[cfg(test)]
             {
-                self.responsive.visited += rules;
+                self.overlays_a11y.responsive.visited += rules;
             }
             nearest = self
+                .overlays_a11y
                 .responsive
                 .dependents
                 .iter()
@@ -315,7 +319,7 @@ impl UiWorld {
         }
         nearest.sort_unstable();
         for node in nearest {
-            let Some(dependent) = self.responsive.dependents.get(&node) else {
+            let Some(dependent) = self.overlays_a11y.responsive.dependents.get(&node) else {
                 continue;
             };
             let rule = Arc::clone(&dependent.rule);
@@ -328,40 +332,46 @@ impl UiWorld {
     /// Forget a node that is gone: as a follower and as a container. The
     /// nodes that read it keep the bucket they were in.
     pub(super) fn forget_responsive(&mut self, id: StableNodeId) {
-        if let Some(dependent) = self.responsive.dependents.remove(&id) {
-            self.responsive.unlink(id, dependent.container);
-            self.responsive.left.remove(&id);
+        if let Some(dependent) = self.overlays_a11y.responsive.dependents.remove(&id) {
+            self.overlays_a11y
+                .responsive
+                .unlink(id, dependent.container);
+            self.overlays_a11y.responsive.left.remove(&id);
         }
-        self.responsive.authored.remove(&id);
-        if let Some(followers) = self.responsive.containers.remove(&id) {
+        self.overlays_a11y.responsive.authored.remove(&id);
+        if let Some(followers) = self.overlays_a11y.responsive.containers.remove(&id) {
             for follower in followers {
-                if let Some(dependent) = self.responsive.dependents.get_mut(&follower) {
+                if let Some(dependent) = self.overlays_a11y.responsive.dependents.get_mut(&follower)
+                {
                     dependent.container = None;
                 }
             }
         }
-        self.responsive.read.remove(&id);
-        self.responsive.pending.retain(|container| *container != id);
+        self.overlays_a11y.responsive.read.remove(&id);
+        self.overlays_a11y
+            .responsive
+            .pending
+            .retain(|container| *container != id);
     }
 
     /// A container's box or padding moved: read it at the end of the commit.
     pub(super) fn note_responsive_resize(&mut self, id: StableNodeId) {
-        if self.responsive.containers.contains_key(&id) {
-            self.responsive.queue(id);
+        if self.overlays_a11y.responsive.containers.contains_key(&id) {
+            self.overlays_a11y.responsive.queue(id);
         }
     }
 
     /// The frame starts over: what last frame's rules left is not this one's.
     pub(super) fn begin_responsive_frame(&mut self) {
-        self.responsive.rounds = 0;
-        self.responsive.left.clear();
+        self.overlays_a11y.responsive.rounds = 0;
+        self.overlays_a11y.responsive.left.clear();
     }
 
     /// The content box of `container` as its rules read it: its border box
     /// less padding and border, and which way it writes.
     fn responsive_extents(&self, container: StableNodeId) -> Option<Extents> {
         let record = self.nodes.get(container)?;
-        let bounds = record.local_layout;
+        let bounds = self.nodes.local_layout(container);
         if bounds.width <= 0.0 && bounds.height <= 0.0 {
             return None;
         }
@@ -381,17 +391,21 @@ impl UiWorld {
     /// Evaluate the rules of the containers this commit resized. Each rule
     /// reads its own axis; a rule whose axis held is not evaluated.
     pub(super) fn evaluate_responsive(&mut self) {
-        if self.responsive.pending.is_empty() {
+        if self.overlays_a11y.responsive.pending.is_empty() {
             return;
         }
-        let mut containers = std::mem::take(&mut self.responsive.pending);
+        let mut containers = std::mem::take(&mut self.overlays_a11y.responsive.pending);
         containers.sort_unstable();
         let mut cost = Evaluation::default();
         for container in containers {
             let Some(extents) = self.responsive_extents(container) else {
                 continue;
             };
-            let read = self.responsive.read.insert(container, extents);
+            let read = self
+                .overlays_a11y
+                .responsive
+                .read
+                .insert(container, extents);
             let width_moved = read.is_none_or(|read| read.width != extents.width);
             let height_moved = read.is_none_or(|read| read.height != extents.height);
             cost.size_changes += usize::from(width_moved) + usize::from(height_moved);
@@ -399,6 +413,7 @@ impl UiWorld {
                 continue;
             }
             let mut followers = self
+                .overlays_a11y
                 .responsive
                 .containers
                 .get(&container)
@@ -406,7 +421,7 @@ impl UiWorld {
                 .unwrap_or_default();
             followers.sort_unstable();
             for id in followers {
-                let Some(dependent) = self.responsive.dependents.get(&id) else {
+                let Some(dependent) = self.overlays_a11y.responsive.dependents.get(&id) else {
                     continue;
                 };
                 let axis = dependent.rule.axis();
@@ -423,20 +438,26 @@ impl UiWorld {
                 // A bucket the node already left this frame, or a frame
                 // that has run out of rounds: hold, and let it settle.
                 let returning = self
+                    .overlays_a11y
                     .responsive
                     .left
                     .get(&id)
                     .is_some_and(|left| left.contains(&bucket));
-                if returning || self.responsive.rounds >= MAX_ROUNDS {
+                if returning || self.overlays_a11y.responsive.rounds >= MAX_ROUNDS {
                     cost.unchanged += 1;
                     cost.fallbacks += 1;
                     continue;
                 }
                 if let Some(current) = current {
-                    self.responsive.left.entry(id).or_default().push(current);
+                    self.overlays_a11y
+                        .responsive
+                        .left
+                        .entry(id)
+                        .or_default()
+                        .push(current);
                 }
                 let before = self.responsive_variant(id).cloned();
-                if let Some(dependent) = self.responsive.dependents.get_mut(&id) {
+                if let Some(dependent) = self.overlays_a11y.responsive.dependents.get_mut(&id) {
                     dependent.bucket = Some(bucket);
                 }
                 cost.changed += 1;
@@ -446,7 +467,7 @@ impl UiWorld {
             }
         }
         let round = usize::from(cost.changed > 0);
-        self.responsive.rounds += round;
+        self.overlays_a11y.responsive.rounds += round;
         self.bump_last_counters(|counters| {
             counters.record_container_query_evaluation(
                 cost.size_changes,
@@ -461,9 +482,9 @@ impl UiWorld {
     /// `id`'s variant changed: restyle it as a style write that moved its
     /// layout the same way would. Returns the layout seeds queued.
     fn apply_responsive_variant(&mut self, id: StableNodeId) -> usize {
-        let seeds_before = self.layout_seeds_created;
+        let seeds_before = self.invalidation.layout_seeds_created;
         self.restyle(id, None);
-        (self.layout_seeds_created - seeds_before) as usize
+        (self.invalidation.layout_seeds_created - seeds_before) as usize
     }
 }
 
@@ -506,7 +527,7 @@ mod tests {
             follow_nearest(&mut queue, id);
         }
         world.commit(queue).unwrap();
-        world.responsive.visited = 0;
+        world.overlays_a11y.responsive.visited = 0;
 
         let mut queue = MutationQueue::new();
         let first = 10 + PAGE;
@@ -517,15 +538,15 @@ mod tests {
         world.commit(queue).unwrap();
         for id in first..first + INSERTED {
             assert_eq!(
-                world.responsive.dependents[&node(id)].container,
+                world.overlays_a11y.responsive.dependents[&node(id)].container,
                 Some(node(2)),
                 "row {id} follows the container"
             );
         }
         assert!(
-            world.responsive.visited <= 4 * INSERTED as usize,
+            world.overlays_a11y.responsive.visited <= 4 * INSERTED as usize,
             "{} visits for {INSERTED} rows under {PAGE} rules",
-            world.responsive.visited
+            world.overlays_a11y.responsive.visited
         );
     }
 }

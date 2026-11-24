@@ -18,7 +18,7 @@ impl UiWorld {
             .pointer_press
             .retain(|(owner, _), _| *owner != document);
         if !affected.is_empty() {
-            self.generation = self.generation.wrapping_add(1);
+            self.invalidation.generation = self.invalidation.generation.wrapping_add(1);
             for target in affected {
                 self.mark_interaction_style(target);
             }
@@ -32,10 +32,10 @@ impl UiWorld {
         document: DocumentId,
         pointer_id: u64,
     ) -> Option<StableNodeId> {
-        let seeds_before = self.layout_seeds_created;
+        let seeds_before = self.invalidation.layout_seeds_created;
         let previous = self.input.pointer_press.remove(&(document, pointer_id));
         if let Some(previous) = previous {
-            self.generation = self.generation.wrapping_add(1);
+            self.invalidation.generation = self.invalidation.generation.wrapping_add(1);
             self.mark_interaction_style(previous);
         }
         self.note_state_seeds(seeds_before);
@@ -51,17 +51,17 @@ impl UiWorld {
         target: StableNodeId,
     ) -> Result<Option<StableNodeId>, UiWorldError> {
         self.validate_pointer_target(document, target)?;
-        let seeds_before = self.layout_seeds_created;
+        let seeds_before = self.invalidation.layout_seeds_created;
         let previous = self
             .input
             .pointer_press
             .insert((document, pointer_id), target);
         if previous != Some(target) {
-            if self.hover_transitions.contains_key(&target) {
+            if self.motion.hover_transitions.contains_key(&target) {
                 self.mark_hover_paint(target);
             }
             self.cancel_hover_transition(target);
-            self.generation = self.generation.wrapping_add(1);
+            self.invalidation.generation = self.invalidation.generation.wrapping_add(1);
             if let Some(previous) = previous {
                 self.mark_interaction_style(previous);
             }
@@ -85,7 +85,7 @@ impl UiWorld {
         if let Some(target) = target {
             self.validate_pointer_target(document, target)?;
         }
-        let seeds_before = self.layout_seeds_created;
+        let seeds_before = self.invalidation.layout_seeds_created;
         let key = (document, pointer_id);
         let old = self.input.pointer_hover.get(&key).copied();
         let paints = [old, target].map(|id| id.map(|id| (id, self.hover_paint(id))));
@@ -97,7 +97,7 @@ impl UiWorld {
             for (id, paint) in paints.into_iter().flatten() {
                 self.transition_hover(id, paint);
             }
-            self.generation = self.generation.wrapping_add(1);
+            self.invalidation.generation = self.invalidation.generation.wrapping_add(1);
             if let Some(previous) = previous {
                 self.mark_interaction_style(previous);
             }
@@ -220,7 +220,7 @@ impl UiWorld {
                 target,
                 captured: false,
             });
-        self.generation = self.generation.wrapping_add(1);
+        self.invalidation.generation = self.invalidation.generation.wrapping_add(1);
         Some(target)
     }
 }

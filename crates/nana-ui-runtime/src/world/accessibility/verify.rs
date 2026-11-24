@@ -225,6 +225,7 @@ impl UiWorld {
             return;
         }
         let shipped = self
+            .overlays_a11y
             .accessibility_shipped
             .0
             .lock()

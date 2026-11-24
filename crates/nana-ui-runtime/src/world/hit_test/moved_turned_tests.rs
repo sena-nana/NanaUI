@@ -349,7 +349,7 @@ fn same(retained: &Page, cold: &Page, at: impl std::fmt::Display) {
 #[track_caller]
 fn agrees_with_the_layout(page: &Page, at: &impl std::fmt::Display) {
     let world = page.context.world();
-    let index = &world.hit_test_index[&document()];
+    let index = &world.hit_index.hit_test_index[&document()];
     let near = |a: f32, b: f32| (a - b).abs() <= 2e-3 * a.abs().max(b.abs()).max(1.0);
     for row in 0..60 {
         let y = row as f32 * 9.7 + 0.71;
@@ -704,7 +704,7 @@ fn boxes_moved_under_a_planar_3d_turn_answer_as_a_fresh_index() {
     frame(&mut retained, false);
     frame(&mut cold, true);
     same(&retained, &cold, "turned in 3D");
-    let index = &retained.context.world().hit_test_index[&document()];
+    let index = &retained.context.world().hit_index.hit_test_index[&document()];
     assert!(
         index.entries[&retained.wrappers[0].0].entry.local_children,
         "a planar 3D turn hands its children its own coordinates"

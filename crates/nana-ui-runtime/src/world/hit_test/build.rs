@@ -68,15 +68,15 @@ impl UiWorld {
         &self,
         id: StableNodeId,
     ) -> Arc<nana_ui_core::LayoutStyle> {
-        if self.layout_length_tracks.is_empty()
-            && self.overlay_host_nodes.is_empty()
-            && self.z_index_nodes == 0
-            && self.detached_mounted.is_empty()
+        if !self.has_layout_length_overlays()
+            && self.overlays_a11y.overlay_host_nodes.is_empty()
+            && self.invalidation.z_index_nodes == 0
+            && self.tree.detached_mounted.is_empty()
             && !self.nodes.has_widget_visuals()
-            && self.triggered_overlays.is_empty()
-            && self.menu_surfaces == 0
-            && self.modal_frames == 0
-            && self.list_leading_visuals == 0
+            && self.overlays_a11y.triggered_overlays.is_empty()
+            && self.invalidation.menu_surfaces == 0
+            && self.invalidation.modal_frames == 0
+            && self.invalidation.list_leading_visuals == 0
         {
             let record = self.record(id);
             if record.mount == crate::MountState::Mounted
@@ -193,15 +193,14 @@ impl UiWorld {
         let mut deferred = Vec::new();
         let mut memo = AncestorMemo::default();
         let visuals = self.nodes.has_widget_visuals();
-        let plain_layout = self.layout_length_tracks.is_empty()
-            && self.overlay_host_nodes.is_empty()
-            && self.z_index_nodes == 0
-            && self.detached_mounted.is_empty()
-            && self.clip_visuals == 0
-            && self.select_menus.is_empty()
-            && self.triggered_overlays.is_empty()
+        let plain_layout = !self.has_layout_length_overlays()
+            && self.overlays_a11y.overlay_host_nodes.is_empty()
+            && self.invalidation.z_index_nodes == 0
+            && self.tree.detached_mounted.is_empty()
+            && self.invalidation.clip_visuals == 0
+            && self.overlays_a11y.select_menus.is_empty()
+            && self.overlays_a11y.triggered_overlays.is_empty()
             && !visuals;
-        let retained_boxes = self.layout_results.is_empty();
         while let Some((
             id,
             parent_hit,
@@ -250,14 +249,15 @@ impl UiWorld {
                     computed.visible,
                     record.style.layout.pointer_events,
                     computed.pointer_events,
-                    record.local_layout,
-                    (record.layout_frame(), record.hierarchy.parent),
+                    self.nodes.local_layout(id),
+                    (self.nodes.layout_frame(id), record.hierarchy.parent),
                     plain_style.then(|| Arc::clone(&record.resolved_layout)),
                     default_box,
                     self.nodes.scroll_offset(id),
                     Arc::clone(&record.hierarchy.children),
                     record.interaction,
-                    record.style.painter.is_some() || !self.painter_overrides.is_empty(),
+                    record.style.painter.is_some()
+                        || !self.invalidation.painter_overrides.is_empty(),
                     (record.space, Arc::as_ptr(&record.resolved_layout)),
                 )
             };
@@ -289,7 +289,6 @@ impl UiWorld {
             // clip, scroll, or overlay. Skip the style arc and the geometry
             // helpers; descendant seeds stay on the same identity transform.
             if default_box
-                && retained_boxes
                 && scroll == crate::ScrollOffset::default()
                 && parent_hit.0 == IDENTITY_AFFINE
                 && parent_hit.1 == [0.0, 0.0]
@@ -297,7 +296,7 @@ impl UiWorld {
                 && parent_persp.is_none()
                 && !parent_backface_hidden
                 && !painted
-                && self.confirm_modals == 0
+                && self.invalidation.confirm_modals == 0
             {
                 let used_pe = PointerEventsSpec::inherit_from(specified_pointer, parent_used_pe);
                 let hittable = visible
@@ -547,7 +546,7 @@ impl UiWorld {
             if let Some((x, y, w, h)) =
                 node_style.overflow_clip_box(layout.x, layout.y, layout.width, layout.height)
             {
-                let overlay_menu = !self.triggered_overlays.is_empty()
+                let overlay_menu = !self.overlays_a11y.triggered_overlays.is_empty()
                     && self
                         .widget_visual_as::<crate::MenuSurfaceVisual>(id)
                         .is_some_and(|v| v.open && v.overlay.is_some());
@@ -563,14 +562,14 @@ impl UiWorld {
                     ));
                 }
             }
-            if self.clip_visuals != 0 {
+            if self.invalidation.clip_visuals != 0 {
                 if self
                     .widget_visual_ref(id)
                     .is_some_and(crate::WidgetVisualHandle::clips_descendants)
                 {
                     child_clips.push((layout, transform));
                 }
-                let modal_frames = self.modal_frames != 0;
+                let modal_frames = self.invalidation.modal_frames != 0;
                 if modal_frames
                     && let Some(crate::ModalFrameGeometry { surface, .. }) =
                         self.modal_frame_geometry(id)
@@ -608,13 +607,13 @@ impl UiWorld {
                 && !self_backface_hidden;
             let menu = (hittable
                 && (visuals
-                    || !self.select_menus.is_empty()
-                    || !self.triggered_overlays.is_empty()))
+                    || !self.overlays_a11y.select_menus.is_empty()
+                    || !self.overlays_a11y.triggered_overlays.is_empty()))
             .then(|| {
-                if self.select_menus.contains(&id) {
+                if self.overlays_a11y.select_menus.contains(&id) {
                     self.select_geometry(id)
                         .and_then(|geometry| geometry.menu.map(|menu| menu.surface))
-                } else if visuals || !self.triggered_overlays.is_empty() {
+                } else if visuals || !self.overlays_a11y.triggered_overlays.is_empty() {
                     self.overlay_connector_hit(id)
                 } else {
                     None
@@ -772,17 +771,17 @@ impl UiWorld {
         self.record_hit_test_nodes_built(entries.len());
         let mut index = HitIndex::from_entries(entries);
         index.viewport_roots = viewport_roots;
-        self.hit_test_index.insert(document, index);
+        self.hit_index.hit_test_index.insert(document, index);
         // Every entry of the document is built from current geometry.
-        if !self.non_scroll_hit_dirty.is_empty() {
-            let mut held = std::mem::take(&mut self.non_scroll_hit_dirty);
+        if !self.hit_index.non_scroll_hit_dirty.is_empty() {
+            let mut held = std::mem::take(&mut self.hit_index.non_scroll_hit_dirty);
             held.retain(|&id| {
                 self.nodes
                     .get(id)
                     .is_some_and(|record| record.document != document)
                     || self.input_pending(id)
             });
-            self.non_scroll_hit_dirty = held;
+            self.hit_index.non_scroll_hit_dirty = held;
         }
         #[cfg(debug_assertions)]
         self.audit_hit_eligibility("rebuild");

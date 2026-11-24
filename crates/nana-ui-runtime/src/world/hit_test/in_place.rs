@@ -34,7 +34,7 @@ impl UiWorld {
         scrolled: bool,
         skips: &mut ShiftSkips,
     ) -> Option<HitEntry> {
-        let index = self.hit_test_index.get(&document)?;
+        let index = self.hit_index.hit_test_index.get(&document)?;
         let hit = index.entries.get(&id)?;
         let held = &hit.entry;
         // A build seeded at a box does not look for the clip parent it
@@ -141,7 +141,7 @@ impl UiWorld {
         if rebuilt.is_empty() {
             return Vec::new();
         }
-        let Some(index) = self.hit_test_index.get_mut(&document) else {
+        let Some(index) = self.hit_index.hit_test_index.get_mut(&document) else {
             return Vec::new();
         };
         let mut touched: Vec<StableNodeId> = Vec::with_capacity(rebuilt.len());
@@ -174,7 +174,7 @@ impl UiWorld {
         document: DocumentId,
         dirty: &[StableNodeId],
     ) -> Vec<StableNodeId> {
-        let Some(index) = self.hit_test_index.get_mut(&document) else {
+        let Some(index) = self.hit_index.hit_test_index.get_mut(&document) else {
             return Vec::new();
         };
         let HitIndex {
@@ -185,7 +185,7 @@ impl UiWorld {
             return Vec::new();
         }
         let dirty: crate::NodeSet = dirty.iter().copied().collect();
-        let index = &self.hit_test_index[&document];
+        let index = &self.hit_index.hit_test_index[&document];
         index
             .pinned
             .iter()
@@ -213,9 +213,12 @@ impl UiWorld {
     ) -> bool {
         // Styles stay as they are while the index is patched: the pointer
         // events each deep node uses are remembered for the whole rebuild.
-        let previous = self.pointer_events_memo.replace(Some(NodeMap::default()));
+        let previous = self
+            .hit_index
+            .pointer_events_memo
+            .replace(Some(NodeMap::default()));
         let rebuilt = self.rebuild_hit_test_scoped_remembering(document, dirty);
-        self.pointer_events_memo.replace(previous);
+        self.hit_index.pointer_events_memo.replace(previous);
         rebuilt
     }
 
@@ -227,7 +230,7 @@ impl UiWorld {
         if dirty.is_empty() {
             return true;
         }
-        if !self.hit_test_index.contains_key(&document) {
+        if !self.hit_index.hit_test_index.contains_key(&document) {
             return false;
         }
         // An entry that hands its children what it handed them is built

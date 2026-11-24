@@ -75,7 +75,12 @@ impl HandedMap {
     /// finite through the map. `None` for any other child, which takes the
     /// full test.
     #[inline]
-    pub(super) fn finite_under(&self, record: &NodeRecord, parent: StableNodeId) -> Option<bool> {
+    pub(super) fn finite_under(
+        &self,
+        record: &NodeRecord,
+        local: LayoutBox,
+        parent: StableNodeId,
+    ) -> Option<bool> {
         if record.hierarchy.parent != Some(parent)
             || record.space.transformed()
             || !record.space.places_by_offset()
@@ -84,7 +89,6 @@ impl HandedMap {
             return None;
         }
         let [a, b, c, d, e, f] = self.map;
-        let local = record.local_layout;
         let (x, y) = (self.origin[0] + local.x, self.origin[1] + local.y);
         let corner =
             |x: f32, y: f32| (a * x + c * y + e).is_finite() && (b * x + d * y + f).is_finite();
@@ -200,9 +204,9 @@ impl UiWorld {
     /// No motion overlay and no clip visual anywhere: what decides whether
     /// a box is axis-aligned is on its chain.
     pub(super) fn motion_free_unclipped(&self) -> bool {
-        self.layout_length_tracks.is_empty()
-            && self.presentation.is_empty()
-            && self.clip_visuals == 0
+        !self.has_layout_length_overlays()
+            && self.motion.presentation.is_empty()
+            && self.invalidation.clip_visuals == 0
     }
 
     /// Whether `record`, `id`'s, neither scrolls, transforms nor places
@@ -210,7 +214,8 @@ impl UiWorld {
     fn box_axis_aligned(&self, id: StableNodeId, record: &NodeRecord) -> bool {
         !(self.nodes.scroll_offset(id) != ScrollOffset::default()
             || !record.space.aligned_by_style()
-            || (!self.triggered_overlays.is_empty() && self.parent_triggered_overlay(id).is_some()))
+            || (!self.overlays_a11y.triggered_overlays.is_empty()
+                && self.parent_triggered_overlay(id).is_some()))
     }
 
     /// [`Self::axis_aligned`] for `id` and every box above it, memoized.
@@ -310,7 +315,7 @@ impl UiWorld {
         // itself is asked once and need not be kept.
         let placed = record.hierarchy.parent.is_some_and(|parent| {
             self.motion_free_unclipped()
-                && self.geometry_frame.get().is_none()
+                && self.invalidation.geometry_frame.get().is_none()
                 && self
                     .accessible_space(parent, memo)
                     .is_some_and(|space| space.unit.is_some())
@@ -375,7 +380,7 @@ impl UiWorld {
         let above = parent.filter(|parent| parent.unit.is_some());
         if let Some(above) = above
             && free
-            && self.geometry_frame.get().is_none()
+            && self.invalidation.geometry_frame.get().is_none()
             && self.offset_placed_under(id, record, true)
         {
             return if record.space.frames_itself() {
@@ -445,11 +450,12 @@ impl UiWorld {
             return false;
         };
         if !(self.motion_free_unclipped()
-            && self.geometry_frame.get().is_none()
+            && self.invalidation.geometry_frame.get().is_none()
             && record.space.hands_offsets()
             && !record.space.contains(NodeSpace::DOCUMENT)
             && !record.space.contains(NodeSpace::MODAL)
-            && (self.triggered_overlays.is_empty() || self.parent_triggered_overlay(id).is_none()))
+            && (self.overlays_a11y.triggered_overlays.is_empty()
+                || self.parent_triggered_overlay(id).is_none()))
         {
             return false;
         }
@@ -477,10 +483,10 @@ impl UiWorld {
 
     /// `record`'s own 2D transform, `id`'s, in its own layout px (its box at
     /// the origin, about its transform origin): `None` without one.
-    fn own_accessible_transform(&self, _id: StableNodeId, record: &NodeRecord) -> Option<[f32; 6]> {
+    fn own_accessible_transform(&self, id: StableNodeId, record: &NodeRecord) -> Option<[f32; 6]> {
         let style = record.resolved_layout.as_ref();
         style.transforms.transform?;
-        let local = record.local_layout;
+        let local = self.nodes.local_layout(id);
         style
             .world_scene_transform(0.0, 0.0, local.width, local.height)
             .map(|(matrix, _)| matrix)
@@ -525,7 +531,7 @@ impl UiWorld {
         record: &NodeRecord,
         [ua, ud]: [f32; 2],
     ) -> (LayoutBox, Option<nana_ui_core::PaintTransform>) {
-        let local = record.local_layout;
+        let local = self.nodes.local_layout(id);
         let (x, y) = (local.x, local.y);
         match self.own_accessible_transform(id, record) {
             None => (
@@ -629,6 +635,7 @@ impl UiWorld {
         above
             && record.space.places_by_offset()
             && !record.space.contains(NodeSpace::DOCUMENT)
-            && (self.triggered_overlays.is_empty() || self.parent_triggered_overlay(id).is_none())
+            && (self.overlays_a11y.triggered_overlays.is_empty()
+                || self.parent_triggered_overlay(id).is_none())
     }
 }

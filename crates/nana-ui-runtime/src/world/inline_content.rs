@@ -731,7 +731,7 @@ impl super::mutation::ValidationPlan<'_> {
         for mutation in mutations {
             let id = match mutation {
                 UiMutation::SetInlineContent { id, content } => {
-                    pending.insert(*id, Some(content.clone()));
+                    pending.insert(*id, Some((**content).clone()));
                     Some(*id)
                 }
                 UiMutation::SetText { id, .. } | UiMutation::SetRichText { id, .. } => {

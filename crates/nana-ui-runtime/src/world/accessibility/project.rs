@@ -59,18 +59,18 @@ impl UiWorld {
     /// accessibility tree. One scan, then the per-node walk does not re-check
     /// ancestors. A single scrolled or transformed node keeps the normal path.
     pub(super) fn accessibility_tree_is_plain(&self) -> bool {
-        if !self.layout_length_tracks.is_empty()
-            || !self.presentation.is_empty()
-            || self.z_index_nodes != 0
+        if self.has_layout_length_overlays()
+            || !self.motion.presentation.is_empty()
+            || self.invalidation.z_index_nodes != 0
             || self.nodes.has_widget_visuals()
-            || self.modal_frames != 0
-            || self.menu_surfaces != 0
-            || !self.select_menus.is_empty()
-            || !self.triggered_overlays.is_empty()
-            || !self.overlay_host_nodes.is_empty()
-            || self.clip_visuals != 0
+            || self.invalidation.modal_frames != 0
+            || self.invalidation.menu_surfaces != 0
+            || !self.overlays_a11y.select_menus.is_empty()
+            || !self.overlays_a11y.triggered_overlays.is_empty()
+            || !self.overlays_a11y.overlay_host_nodes.is_empty()
+            || self.invalidation.clip_visuals != 0
             || self.nodes.has_inline_content()
-            || !self.detached_mounted.is_empty()
+            || !self.tree.detached_mounted.is_empty()
             || self.nodes.has_scroll_offsets()
             || self.nodes.any_hidden_accessibility()
         {
@@ -129,7 +129,7 @@ impl UiWorld {
                 node.resolved.0.inert,
                 node.resolved.0.writing_context(),
                 node.style.layout.overflow_x.scrolls() || node.style.layout.overflow_y.scrolls(),
-                self.record_layout_box(node),
+                self.record_layout_box(id, node),
             )
         };
         // Keep a neutral structural container so visible descendants never
@@ -156,7 +156,7 @@ impl UiWorld {
         // geometry says it can actually move; this keeps ordinary containers
         // from advertising meaningless scroll actions.
         let scroll_metrics = (visible
-            && (scrolls || self.nodes.has_widget_visuals() || self.modal_frames != 0))
+            && (scrolls || self.nodes.has_widget_visuals() || self.invalidation.modal_frames != 0))
             .then(|| {
                 self.is_scroll_container(id)
                     .then(|| self.scroll_metrics(id))
@@ -168,7 +168,7 @@ impl UiWorld {
         // switch) keeps a label of its own first, as `aria-label` wins over
         // `aria-labelledby`; an empty one names nothing. Its own text (a
         // select's shown option) is its value then, not its name.
-        let label = match (!self.labelled_by.is_empty())
+        let label = match (!self.overlays_a11y.labelled_by.is_empty())
             .then(|| self.labelled_by(id))
             .flatten()
         {
@@ -188,7 +188,7 @@ impl UiWorld {
                 })
             }),
         };
-        let bounds = if plain && self.layout_results.is_empty() {
+        let bounds = if plain && !self.nodes.has_widget_visuals() {
             layout_box
         } else {
             self.accessible_viewport_bounds(id, plain, memo)?
@@ -204,7 +204,8 @@ impl UiWorld {
                 // under, read once for every child: the per-child test is
                 // then its record and two corners
                 // ([`HandedMap::finite_under`]).
-                let offsets_free = chain.hands_offsets && self.triggered_overlays.is_empty();
+                let offsets_free =
+                    chain.hands_offsets && self.overlays_a11y.triggered_overlays.is_empty();
                 let mut map = handed.filter(|_| offsets_free).and_then(HandedMap::of);
                 kept.extend(children.iter().copied().filter(|&child| {
                     let Some(node) = self.nodes.get(child) else {
@@ -217,7 +218,9 @@ impl UiWorld {
                             || self.nodes.accessibility(child).hidden
                             || self.inline_box_omitted(child))
                         && (self.axis_aligned_under(child, node, chain.aligned, memo) || {
-                            match map.as_ref().and_then(|map| map.finite_under(node, id)) {
+                            match map.as_ref().and_then(|map| {
+                                map.finite_under(node, self.nodes.local_layout(child), id)
+                            }) {
                                 Some(finite) => {
                                     #[cfg(any(test, feature = "layout-verify"))]
                                     assert_eq!(
@@ -271,7 +274,7 @@ impl UiWorld {
             }
             kept
         };
-        if self.menu_surfaces != 0
+        if self.invalidation.menu_surfaces != 0
             && let Some(menu) = self.widget_visual_as::<crate::MenuSurfaceVisual>(id)
             && menu.kind == crate::MenuSurfaceKind::ContextMenu
             && menu.open
@@ -339,7 +342,7 @@ impl UiWorld {
             invalid: state.invalid,
             // A hidden container stays neutral: it is no live region either,
             // as a `visibility: hidden` element is none on the web.
-            live: (visible && !self.live_regions.is_empty())
+            live: (visible && !self.overlays_a11y.live_regions.is_empty())
                 .then(|| self.live(id))
                 .flatten(),
             numeric_minimum: state.numeric_minimum,
@@ -428,7 +431,7 @@ impl UiWorld {
             entries.extend(rows);
             return entries;
         }
-        let open_context_menu = self.menu_surfaces != 0
+        let open_context_menu = self.invalidation.menu_surfaces != 0
             && self
                 .widget_visual_as::<crate::MenuSurfaceVisual>(id)
                 .is_some_and(|menu| menu.kind == crate::MenuSurfaceKind::ContextMenu && menu.open);

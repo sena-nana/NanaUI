@@ -16,13 +16,18 @@ impl UiWorld {
         // A structural branch containing another viewport root spans multiple
         // projection trees. Rebuild only for that case; ordinary fixed-surface
         // edits and ancestor scrolling retain their normal incremental paths.
-        if self.hit_test_index.get(&document).is_some_and(|index| {
-            index.roots.iter().flatten().any(|id| {
-                *id != root
-                    && self.parent_id(*id).is_some()
-                    && self.is_descendant_or_self(*id, root)
+        if self
+            .hit_index
+            .hit_test_index
+            .get(&document)
+            .is_some_and(|index| {
+                index.roots.iter().flatten().any(|id| {
+                    *id != root
+                        && self.parent_id(*id).is_some()
+                        && self.is_descendant_or_self(*id, root)
+                })
             })
-        }) {
+        {
             return false;
         }
         // The escaped entries of this branch hang outside it; take them out,
@@ -40,7 +45,7 @@ impl UiWorld {
 
     /// Remove the entries of `root`'s branch that hang from a clip parent.
     fn withdraw_escaped_entries_under(&mut self, document: DocumentId, root: StableNodeId) {
-        let Some(index) = self.hit_test_index.get(&document) else {
+        let Some(index) = self.hit_index.hit_test_index.get(&document) else {
             return;
         };
         if index.escaped.is_empty() {
@@ -57,6 +62,7 @@ impl UiWorld {
             })
             .collect();
         let index = self
+            .hit_index
             .hit_test_index
             .get_mut(&document)
             .expect("checked above");
@@ -99,6 +105,7 @@ impl UiWorld {
             }
             let viewport_root = entry.is_some() && self.parent_id(root).is_some();
             let index = self
+                .hit_index
                 .hit_test_index
                 .get_mut(&document)
                 .expect("existing index");
@@ -118,12 +125,16 @@ impl UiWorld {
             // Document roots: membership is owned by `live_document_roots`, so a
             // root entering or leaving the set is a structural change.
             let roots = self.document_roots(document);
-            let present = self.hit_test_index.get(&document).is_some_and(|forest| {
-                forest
-                    .entries
-                    .get(&root)
-                    .is_some_and(|entry| entry.parent.is_none())
-            });
+            let present = self
+                .hit_index
+                .hit_test_index
+                .get(&document)
+                .is_some_and(|forest| {
+                    forest
+                        .entries
+                        .get(&root)
+                        .is_some_and(|entry| entry.parent.is_none())
+                });
             let expected = roots.contains(&root) && self.node_has_hit_box(root);
             if present != expected {
                 return None;
@@ -141,7 +152,7 @@ impl UiWorld {
             entry.order = position;
             sort_hit_children(&mut entry);
             self.note_hit_nodes_built(std::slice::from_ref(&entry));
-            let forest = self.hit_test_index.get_mut(&document)?;
+            let forest = self.hit_index.hit_test_index.get_mut(&document)?;
             forest.replace(root, None, Some(entry));
             return Some(deferred);
         };
@@ -150,12 +161,16 @@ impl UiWorld {
         // direct-child 3D perspective or backface state through `live_child_seed`;
         // fall back to full document rebuild.
         if self.record(parent).space.depth()
-            || self.hit_test_index.get(&document).is_some_and(|forest| {
-                forest
-                    .entries
-                    .get(&parent)
-                    .is_some_and(|e| e.entry.persp != [0.0, 0.0])
-            })
+            || self
+                .hit_index
+                .hit_test_index
+                .get(&document)
+                .is_some_and(|forest| {
+                    forest
+                        .entries
+                        .get(&parent)
+                        .is_some_and(|e| e.entry.persp != [0.0, 0.0])
+                })
         {
             return None;
         }
@@ -164,6 +179,7 @@ impl UiWorld {
         // read live because scroll never invalidates the parent entry itself.
         let scroll = self.nodes.scroll_offset(parent);
         let Some((child_transform, _)) = self
+            .hit_index
             .hit_test_index
             .get(&document)
             .and_then(|forest| forest.live_child_seed(parent, scroll, None))
@@ -174,6 +190,7 @@ impl UiWorld {
         };
         let siblings = &self.record(parent).hierarchy.children;
         let position = self
+            .hit_index
             .hit_test_index
             .get(&document)
             .and_then(|index| {
@@ -198,7 +215,7 @@ impl UiWorld {
         if let Some(entry) = entry.as_ref() {
             self.note_hit_nodes_built(std::slice::from_ref(entry));
         }
-        let forest = self.hit_test_index.get_mut(&document)?;
+        let forest = self.hit_index.hit_test_index.get_mut(&document)?;
         forest.replace(root, Some(parent), entry);
         Some(deferred)
     }
@@ -214,6 +231,7 @@ impl UiWorld {
     ) -> Option<Vec<StableNodeId>> {
         let scroll = self.nodes.scroll_offset(anchor);
         let Some((base, _)) = self
+            .hit_index
             .hit_test_index
             .get(&document)
             .and_then(|forest| forest.live_child_seed(anchor, scroll, None))
@@ -245,7 +263,7 @@ impl UiWorld {
         if let Some(entry) = entry.as_ref() {
             self.note_hit_nodes_built(std::slice::from_ref(entry));
         }
-        let forest = self.hit_test_index.get_mut(&document)?;
+        let forest = self.hit_index.hit_test_index.get_mut(&document)?;
         forest.replace(root, Some(anchor), entry);
         Some(deferred)
     }
@@ -298,6 +316,7 @@ impl UiWorld {
     /// that then emits nothing.
     fn withdraw_hit_entry(&mut self, document: DocumentId, id: StableNodeId) {
         if let Some(indexed) = self
+            .hit_index
             .hit_test_index
             .get_mut(&document)
             .and_then(|index| index.entries.get_mut(&id))
@@ -321,6 +340,7 @@ impl UiWorld {
     pub(in crate::world) fn withdraw_pointer_events_none(&mut self, root: StableNodeId) {
         let document = self.record(root).document;
         if self
+            .hit_index
             .hit_test_index
             .get(&document)
             .is_none_or(|index| !index.entries.contains_key(&root))
@@ -350,6 +370,7 @@ impl UiWorld {
     pub(in crate::world) fn withdraw_inert_hits(&mut self, root: StableNodeId) {
         let document = self.record(root).document;
         if self
+            .hit_index
             .hit_test_index
             .get(&document)
             .is_none_or(|index| !index.entries.contains_key(&root))
@@ -368,6 +389,7 @@ impl UiWorld {
     pub(in crate::world) fn withdraw_parked_hits(&mut self, root: StableNodeId) {
         let document = self.record(root).document;
         if self
+            .hit_index
             .hit_test_index
             .get(&document)
             .is_none_or(|index| !index.entries.contains_key(&root))
@@ -376,6 +398,7 @@ impl UiWorld {
         }
         let subtree = self.subtree_ids(root);
         let index = self
+            .hit_index
             .hit_test_index
             .get_mut(&document)
             .expect("checked above");

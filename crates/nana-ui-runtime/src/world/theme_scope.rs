@@ -299,21 +299,25 @@ impl ThemeScopeRegistry {
 impl UiWorld {
     /// Number of currently active non-root [`ThemeScope`](nana_ui_core::ThemeScopeId)s.
     pub fn active_theme_scopes(&self) -> usize {
-        self.theme_state.theme_scopes.len()
+        self.invalidation.theme_state.theme_scopes.len()
     }
 
     /// Whether `document` overrides the workspace root theme via [`Self::set_document_theme`].
     pub fn has_document_theme(&self, document: DocumentId) -> bool {
-        self.theme_state.document_themes.contains_key(&document)
+        self.invalidation
+            .theme_state
+            .document_themes
+            .contains_key(&document)
     }
 
     /// Root theme active for `document` (either a per-document override or the
     /// application root theme).
     pub fn document_theme(&self, document: DocumentId) -> &Arc<CompiledTheme> {
-        self.theme_state
+        self.invalidation
+            .theme_state
             .document_themes
             .get(&document)
-            .unwrap_or(&self.theme)
+            .unwrap_or(&self.invalidation.theme)
     }
 
     /// Compute high-contrast rendition of an arbitrary installed theme.
@@ -321,7 +325,7 @@ impl UiWorld {
         &self,
         installed: &Arc<CompiledTheme>,
     ) -> Arc<CompiledTheme> {
-        if !self.high_contrast {
+        if !self.invalidation.high_contrast {
             return Arc::clone(installed);
         }
         let mut model = installed.style_model();
@@ -336,7 +340,7 @@ impl UiWorld {
         scope: ThemeScopeId,
     ) -> Arc<CompiledTheme> {
         if !scope.is_root()
-            && let Some(themed) = self.theme_state.theme_scopes.theme(scope)
+            && let Some(themed) = self.invalidation.theme_state.theme_scopes.theme(scope)
         {
             return Arc::clone(themed);
         }
@@ -349,7 +353,7 @@ impl UiWorld {
         scope: ThemeScopeId,
     ) -> &CompiledTheme {
         if !scope.is_root()
-            && let Some(themed) = self.theme_state.theme_scopes.theme(scope)
+            && let Some(themed) = self.invalidation.theme_state.theme_scopes.theme(scope)
         {
             return themed;
         }
@@ -361,7 +365,7 @@ impl UiWorld {
     /// committed yet.
     pub fn node_theme(&self, id: StableNodeId) -> &CompiledTheme {
         let Some(record) = self.nodes.get(id) else {
-            return &self.theme;
+            return &self.invalidation.theme;
         };
         let scope = self.nodes.node_scope(id);
         self.theme_for_scope(record.document, scope)
@@ -370,7 +374,7 @@ impl UiWorld {
     /// Arc clone of `node_theme(id)`.
     pub fn node_theme_arc(&self, id: StableNodeId) -> Arc<CompiledTheme> {
         let Some(record) = self.nodes.get(id) else {
-            return Arc::clone(&self.theme);
+            return Arc::clone(&self.invalidation.theme);
         };
         let scope = self.nodes.node_scope(id);
         self.theme_arc_for_scope(record.document, scope)
@@ -388,8 +392,14 @@ impl UiWorld {
         scope: ThemeScopeId,
         color_overrides: Option<&ColorOverrides>,
     ) -> StyleModelRef {
-        let base = if scope.is_root() && !self.theme_state.document_themes.contains_key(&document) {
-            self.style_model
+        let base = if scope.is_root()
+            && !self
+                .invalidation
+                .theme_state
+                .document_themes
+                .contains_key(&document)
+        {
+            self.invalidation.style_model
         } else {
             self.theme_for_scope(document, scope).style_model()
         };
@@ -402,7 +412,7 @@ impl UiWorld {
     /// Effective style model for `id` (scoped `ThemePatch` + inherited `color_overrides`).
     pub fn node_style_model(&self, id: StableNodeId) -> StyleModelRef {
         let Some(record) = self.nodes.get(id) else {
-            return self.style_model;
+            return self.invalidation.style_model;
         };
         let scope = self.nodes.node_scope(id);
         self.style_model_for_scope(
@@ -426,12 +436,17 @@ impl UiWorld {
 
     /// Structural nearest `ThemeScopeId` at or above `id`.
     pub(crate) fn structural_scope_for(&self, id: StableNodeId) -> ThemeScopeId {
-        if self.theme_state.theme_scopes.is_empty() {
+        if self.invalidation.theme_state.theme_scopes.is_empty() {
             return ThemeScopeId::ROOT;
         }
         let mut cursor = Some(id);
         while let Some(node) = cursor {
-            if let Some(scope) = self.theme_state.theme_scopes.scope_for_owner(node) {
+            if let Some(scope) = self
+                .invalidation
+                .theme_state
+                .theme_scopes
+                .scope_for_owner(node)
+            {
                 return scope;
             }
             cursor = self.nodes.get(node).and_then(|r| r.hierarchy.parent);
@@ -457,13 +472,15 @@ impl UiWorld {
         match patch {
             Some(patch) if !patch.is_empty() => {
                 let prev_entry_theme = self
+                    .invalidation
                     .theme_state
                     .theme_scopes
                     .scope_for_owner(id)
-                    .and_then(|scope| self.theme_state.theme_scopes.theme(scope))
+                    .and_then(|scope| self.invalidation.theme_state.theme_scopes.theme(scope))
                     .map(Arc::clone)
                     .unwrap_or_else(|| self.theme_arc_for_scope(document, prev_scope));
                 let (scope_id, next_theme, scope_generation, _) = self
+                    .invalidation
                     .theme_state
                     .theme_scopes
                     .upsert_scope(id, document, parent_scope, &parent_theme, patch, &mut work);
@@ -474,14 +491,14 @@ impl UiWorld {
                         self.palette_epoch = self.palette_epoch.wrapping_add(1).max(1);
                     }
                     self.rebind_descendant_scopes(id, scope_id, &next_theme, false, &mut work);
-                    work.theme_scopes_active = self.theme_state.theme_scopes.len();
+                    work.theme_scopes_active = self.invalidation.theme_state.theme_scopes.len();
                     self.record_scope_pending_work(work);
                     return;
                 }
                 if changed == ThemeDependencyMask::MOTION_POLICY {
                     self.rebind_descendant_scopes(id, scope_id, &next_theme, false, &mut work);
                     work.style_motion_policy_invalidations = 1;
-                    work.theme_scopes_active = self.theme_state.theme_scopes.len();
+                    work.theme_scopes_active = self.invalidation.theme_state.theme_scopes.len();
                     self.record_theme_invalidation(
                         crate::world::theme_inspect::ThemeInvalidationTrigger::ScopePatch {
                             owner: id,
@@ -508,7 +525,7 @@ impl UiWorld {
                     true,
                     &mut work,
                 );
-                work.theme_scopes_active = self.theme_state.theme_scopes.len();
+                work.theme_scopes_active = self.invalidation.theme_state.theme_scopes.len();
                 self.record_theme_invalidation(
                     crate::world::theme_inspect::ThemeInvalidationTrigger::ScopePatch {
                         owner: id,
@@ -523,7 +540,8 @@ impl UiWorld {
                 self.record_scope_pending_work(work);
             }
             _ => {
-                let Some(removed) = self.theme_state.theme_scopes.remove_owner(id) else {
+                let Some(removed) = self.invalidation.theme_state.theme_scopes.remove_owner(id)
+                else {
                     return;
                 };
                 let prev_theme = removed.resolved;
@@ -537,7 +555,7 @@ impl UiWorld {
                         false,
                         &mut work,
                     );
-                    work.theme_scopes_active = self.theme_state.theme_scopes.len();
+                    work.theme_scopes_active = self.invalidation.theme_state.theme_scopes.len();
                     self.record_scope_pending_work(work);
                     return;
                 }
@@ -550,7 +568,7 @@ impl UiWorld {
                         &mut work,
                     );
                     work.style_motion_policy_invalidations = 1;
-                    work.theme_scopes_active = self.theme_state.theme_scopes.len();
+                    work.theme_scopes_active = self.invalidation.theme_state.theme_scopes.len();
                     self.record_theme_invalidation(
                         crate::world::theme_inspect::ThemeInvalidationTrigger::ScopeRemoved {
                             owner: id,
@@ -576,7 +594,7 @@ impl UiWorld {
                     true,
                     &mut work,
                 );
-                work.theme_scopes_active = self.theme_state.theme_scopes.len();
+                work.theme_scopes_active = self.invalidation.theme_state.theme_scopes.len();
                 self.record_theme_invalidation(
                     crate::world::theme_inspect::ThemeInvalidationTrigger::ScopeRemoved {
                         owner: id,
@@ -599,7 +617,9 @@ impl UiWorld {
         child: StableNodeId,
         old_parent: Option<StableNodeId>,
     ) {
-        if self.theme_state.theme_scopes.is_empty() && self.theme_state.document_themes.is_empty() {
+        if self.invalidation.theme_state.theme_scopes.is_empty()
+            && self.invalidation.theme_state.document_themes.is_empty()
+        {
             return;
         }
         let Some(document) = self.document_of(child) else {
@@ -611,8 +631,17 @@ impl UiWorld {
             .unwrap_or(ThemeScopeId::ROOT);
         let prev_parent_scope = match old_parent {
             Some(old) => self.structural_scope_for(old),
-            None => match self.theme_state.theme_scopes.scope_for_owner(child) {
-                Some(own) => self.theme_state.theme_scopes.parent_scope_of(own),
+            None => match self
+                .invalidation
+                .theme_state
+                .theme_scopes
+                .scope_for_owner(child)
+            {
+                Some(own) => self
+                    .invalidation
+                    .theme_state
+                    .theme_scopes
+                    .parent_scope_of(own),
                 None => self.nodes.node_scope(child),
             },
         };
@@ -637,7 +666,7 @@ impl UiWorld {
             true,
             &mut work,
         );
-        work.theme_scopes_active = self.theme_state.theme_scopes.len();
+        work.theme_scopes_active = self.invalidation.theme_state.theme_scopes.len();
         if !changed.is_empty() {
             self.record_theme_invalidation(
                 crate::world::theme_inspect::ThemeInvalidationTrigger::ScopeReparented {
@@ -664,18 +693,26 @@ impl UiWorld {
         let next_effective = match theme {
             Some(installed) => {
                 let effective = self.contrast_rendition_for(&installed);
-                self.theme_state
+                self.invalidation
+                    .theme_state
                     .installed_document_themes
                     .insert(document, installed);
-                self.theme_state
+                self.invalidation
+                    .theme_state
                     .document_themes
                     .insert(document, Arc::clone(&effective));
                 effective
             }
             None => {
-                self.theme_state.installed_document_themes.remove(&document);
-                self.theme_state.document_themes.remove(&document);
-                Arc::clone(&self.theme)
+                self.invalidation
+                    .theme_state
+                    .installed_document_themes
+                    .remove(&document);
+                self.invalidation
+                    .theme_state
+                    .document_themes
+                    .remove(&document);
+                Arc::clone(&self.invalidation.theme)
             }
         };
         if *old_effective == *next_effective {
@@ -685,12 +722,15 @@ impl UiWorld {
         if changed.is_empty() {
             return ThemeDependencyMask::NONE;
         }
-        self.theme_state.theme_generations.advance(changed);
+        self.invalidation
+            .theme_state
+            .theme_generations
+            .advance(changed);
         if changed == ThemeDependencyMask::MOTION_POLICY {
             let mut work = ThemeWorkCounters::default();
             self.refresh_document_scopes(document, &next_effective, &mut work);
             work.style_motion_policy_invalidations = 1;
-            work.theme_scopes_active = self.theme_state.theme_scopes.len();
+            work.theme_scopes_active = self.invalidation.theme_state.theme_scopes.len();
             let doc_identity = next_effective.identity();
             self.record_theme_invalidation(
                 crate::world::theme_inspect::ThemeInvalidationTrigger::DocumentTheme {
@@ -708,6 +748,7 @@ impl UiWorld {
         }
         self.palette_epoch = self.palette_epoch.wrapping_add(1).max(1);
         let hover_ids: Vec<StableNodeId> = self
+            .motion
             .hover_transitions
             .keys()
             .copied()
@@ -717,6 +758,7 @@ impl UiWorld {
             self.cancel_hover_transition(id);
         }
         let roots: Vec<StableNodeId> = self
+            .tree
             .live_document_roots
             .get(&document)
             .map(|r| r.iter().copied().collect())
@@ -739,15 +781,19 @@ impl UiWorld {
         };
         // Keep any parked/detached scopes belonging to `document` aligned with
         // the new document root theme.
-        let unvisited_doc_scopes = self.theme_state.theme_scopes.scopes_in_document(document);
+        let unvisited_doc_scopes = self
+            .invalidation
+            .theme_state
+            .theme_scopes
+            .scopes_in_document(document);
         for scope_id in unvisited_doc_scopes {
-            if let Some(entry) = self.theme_state.theme_scopes.entry(scope_id)
+            if let Some(entry) = self.invalidation.theme_state.theme_scopes.entry(scope_id)
                 && entry.parent_scope.is_root()
                 && *entry.resolved != *next_effective
             {
                 let owner = entry.owner;
                 if !roots.iter().any(|&r| self.is_descendant_or_self(owner, r)) {
-                    let _ = self.theme_state.theme_scopes.refresh_scope(
+                    let _ = self.invalidation.theme_state.theme_scopes.refresh_scope(
                         scope_id,
                         ThemeScopeId::ROOT,
                         &next_effective,
@@ -756,7 +802,7 @@ impl UiWorld {
                 }
             }
         }
-        work.theme_scopes_active = self.theme_state.theme_scopes.len();
+        work.theme_scopes_active = self.invalidation.theme_state.theme_scopes.len();
         let doc_identity = next_effective.identity();
         self.record_theme_invalidation(
             crate::world::theme_inspect::ThemeInvalidationTrigger::DocumentTheme {
@@ -784,23 +830,36 @@ impl UiWorld {
         if changed == ThemeDependencyMask::MOTION_POLICY {
             let mut work = ThemeWorkCounters::default();
             let mut docs: Vec<DocumentId> = self
+                .tree
                 .live_document_roots
                 .keys()
                 .copied()
-                .filter(|doc| !self.theme_state.document_themes.contains_key(doc))
+                .filter(|doc| {
+                    !self
+                        .invalidation
+                        .theme_state
+                        .document_themes
+                        .contains_key(doc)
+                })
                 .collect();
-            for doc in self.theme_state.theme_scopes.documents() {
-                if !self.theme_state.document_themes.contains_key(&doc) && !docs.contains(&doc) {
+            for doc in self.invalidation.theme_state.theme_scopes.documents() {
+                if !self
+                    .invalidation
+                    .theme_state
+                    .document_themes
+                    .contains_key(&doc)
+                    && !docs.contains(&doc)
+                {
                     docs.push(doc);
                 }
             }
             for &doc in &docs {
                 self.refresh_document_scopes(doc, next_root, &mut work);
             }
-            if !docs.is_empty() || self.live_document_roots.is_empty() {
+            if !docs.is_empty() || self.tree.live_document_roots.is_empty() {
                 work.style_motion_policy_invalidations = 1;
             }
-            work.theme_scopes_active = self.theme_state.theme_scopes.len();
+            work.theme_scopes_active = self.invalidation.theme_state.theme_scopes.len();
             let root_identity = next_root.identity();
             self.record_theme_invalidation(
                 crate::world::theme_inspect::ThemeInvalidationTrigger::RootTheme {
@@ -816,9 +875,16 @@ impl UiWorld {
             return;
         }
         let roots: Vec<StableNodeId> = self
+            .tree
             .live_document_roots
             .iter()
-            .filter(|(doc, _)| !self.theme_state.document_themes.contains_key(doc))
+            .filter(|(doc, _)| {
+                !self
+                    .invalidation
+                    .theme_state
+                    .document_themes
+                    .contains_key(doc)
+            })
             .flat_map(|(_, r)| r.iter().copied())
             .collect();
         let mut work = ThemeWorkCounters::default();
@@ -837,7 +903,7 @@ impl UiWorld {
         } else {
             0
         };
-        work.theme_scopes_active = self.theme_state.theme_scopes.len();
+        work.theme_scopes_active = self.invalidation.theme_state.theme_scopes.len();
         let root_identity = next_root.identity();
         self.record_theme_invalidation(
             crate::world::theme_inspect::ThemeInvalidationTrigger::RootTheme {
@@ -858,10 +924,14 @@ impl UiWorld {
         doc_theme: &Arc<CompiledTheme>,
         work: &mut ThemeWorkCounters,
     ) {
-        if self.theme_state.theme_scopes.is_empty() {
+        if self.invalidation.theme_state.theme_scopes.is_empty() {
             return;
         }
-        let doc_scopes = self.theme_state.theme_scopes.scopes_in_document(document);
+        let doc_scopes = self
+            .invalidation
+            .theme_state
+            .theme_scopes
+            .scopes_in_document(document);
         if doc_scopes.is_empty() {
             return;
         }
@@ -874,6 +944,7 @@ impl UiWorld {
             let mut next_remaining = Vec::new();
             for scope_id in remaining {
                 let Some(parent_scope) = self
+                    .invalidation
                     .theme_state
                     .theme_scopes
                     .entry(scope_id)
@@ -883,6 +954,7 @@ impl UiWorld {
                 };
                 if let Some(parent_theme) = resolved_parents.get(&parent_scope).cloned() {
                     if let Some((_, next_resolved, _)) = self
+                        .invalidation
                         .theme_state
                         .theme_scopes
                         .refresh_scope(scope_id, parent_scope, &parent_theme, work)
@@ -896,12 +968,13 @@ impl UiWorld {
             if next_remaining.len() == before {
                 for scope_id in next_remaining {
                     if let Some(parent_scope) = self
+                        .invalidation
                         .theme_state
                         .theme_scopes
                         .entry(scope_id)
                         .map(|entry| entry.parent_scope)
                     {
-                        let _ = self.theme_state.theme_scopes.refresh_scope(
+                        let _ = self.invalidation.theme_state.theme_scopes.refresh_scope(
                             scope_id,
                             parent_scope,
                             doc_theme,
@@ -928,13 +1001,18 @@ impl UiWorld {
         }
         let (eff_scope, eff_theme) = if !include_self {
             (incoming_scope, Arc::clone(incoming_theme))
-        } else if let Some(own_scope) = self.theme_state.theme_scopes.scope_for_owner(id) {
-            if let Some((_, next_resolved, _)) = self.theme_state.theme_scopes.refresh_scope(
-                own_scope,
-                incoming_scope,
-                incoming_theme,
-                work,
-            ) {
+        } else if let Some(own_scope) = self
+            .invalidation
+            .theme_state
+            .theme_scopes
+            .scope_for_owner(id)
+        {
+            if let Some((_, next_resolved, _)) = self
+                .invalidation
+                .theme_state
+                .theme_scopes
+                .refresh_scope(own_scope, incoming_scope, incoming_theme, work)
+            {
                 self.nodes.set_node_scope(id, own_scope);
                 (own_scope, next_resolved)
             } else {
@@ -952,7 +1030,10 @@ impl UiWorld {
     }
 
     fn record_scope_pending_work(&mut self, work: ThemeWorkCounters) {
-        self.theme_state.pending_scope_theme_work.accumulate(work);
+        self.invalidation
+            .theme_state
+            .pending_scope_theme_work
+            .accumulate(work);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -968,7 +1049,7 @@ impl UiWorld {
         queue_reprojects: bool,
         work: &mut ThemeWorkCounters,
     ) -> usize {
-        let seeds_before = self.layout_seeds_created;
+        let seeds_before = self.invalidation.layout_seeds_created;
         let mut modal_frames = Vec::new();
         let mut part_readers = Vec::new();
         let mut intent_candidates = Vec::new();
@@ -1057,8 +1138,8 @@ impl UiWorld {
                 ),
             );
         }
-        let seeds = (self.layout_seeds_created - seeds_before) as usize;
-        let counts = &mut self.counters.pending_drain_counts;
+        let seeds = (self.invalidation.layout_seeds_created - seeds_before) as usize;
+        let counts = &mut self.invalidation.counters.pending_drain_counts;
         if any_intent_relevant {
             counts.theme_to_layout_seeds += seeds;
             counts.theme_metric_dependents_invalidated += dependents;
@@ -1098,8 +1179,14 @@ impl UiWorld {
                 Arc::clone(new_incoming_theme),
                 incoming_changed,
             )
-        } else if let Some(own_scope) = self.theme_state.theme_scopes.scope_for_owner(id) {
+        } else if let Some(own_scope) = self
+            .invalidation
+            .theme_state
+            .theme_scopes
+            .scope_for_owner(id)
+        {
             if let Some((old_resolved, new_resolved, _)) = self
+                .invalidation
                 .theme_state
                 .theme_scopes
                 .refresh_scope(own_scope, incoming_scope, new_incoming_theme, work)
@@ -1142,7 +1229,8 @@ impl UiWorld {
                 if hit.intersects(ThemeDependencyMask::RECIPE_ANY) {
                     work.component_recipe_nodes_invalidated += 1;
                 }
-                self.theme_state
+                self.invalidation
+                    .theme_state
                     .pending_theme_eval
                     .entry(id)
                     .and_modify(|prev| *prev = prev.union(hit))
@@ -1152,10 +1240,20 @@ impl UiWorld {
                 work.theme_dependency_skipped += 1;
             }
 
-            if self.paint_recordings.get_mut().contains_key(&id) && dep.intersects(changed) {
+            if self
+                .invalidation
+                .paint_recordings
+                .get_mut()
+                .contains_key(&id)
+                && dep.intersects(changed)
+            {
                 self.mark_repaint(id);
             }
-            if self.modal_surface_recordings.get_mut().contains_key(&id)
+            if self
+                .invalidation
+                .modal_surface_recordings
+                .get_mut()
+                .contains_key(&id)
                 && changed.intersects(
                     ThemeDependencyMask::PALETTE
                         .union(ThemeDependencyMask::ACCENT)
@@ -1207,7 +1305,7 @@ impl UiWorld {
             }
             if intent_relevant {
                 *any_intent_relevant = true;
-                if self.intent_nodes.contains(&id) {
+                if self.invalidation.intent_nodes.contains(&id) {
                     intent_candidates.push(id);
                 }
                 let body_changed = old_theme.typography().body != new_theme.typography().body;
@@ -1243,7 +1341,8 @@ impl UiWorld {
                         .union(ThemeDependencyMask::RECIPE_ANY),
                 ) && !matches!(self.record(id).kind.as_ref(), NodeKind::Text)
                 {
-                    self.theme_state
+                    self.invalidation
+                        .theme_state
                         .pending_scope_reprojects
                         .push((id, reproject_mask));
                 }

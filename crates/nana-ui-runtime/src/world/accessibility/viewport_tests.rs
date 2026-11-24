@@ -365,7 +365,7 @@ fn non_hittable_text_without_a_hit_entry_keeps_scrolled_accessibility_bounds() {
     let indexed = button_bounds(&world);
     // Accessible text can be projected before a hit entry is built, and must
     // still carry all ancestor scroll offsets.
-    world.hit_test_index.clear();
+    world.hit_index.hit_test_index.clear();
     let fallback = button_bounds(&world);
     assert_eq!(fallback.x, 20.0);
     assert_eq!(fallback.y, 80.0);
@@ -381,7 +381,7 @@ fn batched_accessibility_bounds_are_order_independent_and_refresh_after_scroll()
         world.commit(queue).unwrap();
         world.rebuild_hit_test(document());
         let indexed = world.project_accessibility_nodes(&[node(1), node(2), node(3)]);
-        world.hit_test_index.clear();
+        world.hit_index.hit_test_index.clear();
         // A descendant queried first must populate its ancestor transforms
         // without applying an ancestor's own scroll to its own geometry.
         let mut reverse = world.project_accessibility_nodes(&[node(3), node(2), node(1)]);

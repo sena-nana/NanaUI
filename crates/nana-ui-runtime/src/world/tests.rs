@@ -34,7 +34,7 @@ fn document(value: u64) -> DocumentId {
 }
 
 fn hit_entry_transform(world: &UiWorld, document: DocumentId, id: StableNodeId) -> [f32; 6] {
-    find_hit_transform(&world.hit_test_index[&document], id).expect("hit entry")
+    find_hit_transform(&world.hit_index.hit_test_index[&document], id).expect("hit entry")
 }
 
 /// Compile a theme from loose palette / metric overrides, the way
@@ -362,7 +362,7 @@ fn unchanged_child_keeps_its_layout_generation_when_the_parent_box_changes() {
     let child = world.layout_result(node(2)).expect("child");
     assert_eq!(child.generation, child_generation);
     assert_eq!(child.bounds, child_bounds);
-    assert_eq!(child.source, crate::LayoutResultSource::CompatibilityWrite);
+    assert_eq!(child.source, crate::LayoutResultSource::RuntimeLayout);
     let parent = world.layout_result(node(1)).expect("parent");
     assert_eq!(parent.generation, world.layout_generation());
     assert_eq!(parent.bounds, box_at(0.0, 0.0, 180.0, 40.0));
@@ -452,7 +452,7 @@ fn hit_shape(world: &UiWorld, document: DocumentId) -> Vec<(Vec<u64>, [u32; 6], 
         path.pop();
     }
     let mut out = Vec::new();
-    let index = &world.hit_test_index[&document];
+    let index = &world.hit_index.hit_test_index[&document];
     for root in index.roots.iter().flatten() {
         walk(index, *root, &mut Vec::new(), &mut out);
     }
@@ -909,7 +909,7 @@ fn scoped_hit_reparent_keeps_new_owner_in_both_patch_orders() {
         let patched = hit_probe_grid(&world, document(1));
         let shape = hit_shape(&world, document(1));
         assert!(
-            world.hit_test_index[&document(1)]
+            world.hit_index.hit_test_index[&document(1)]
                 .entries
                 .contains_key(&target)
         );
@@ -1919,7 +1919,7 @@ fn inert_subtree_releases_pointer_focus_and_actions_without_layout() {
     let mut set = MutationQueue::new();
     set.set_style(node(2), inert);
     world.commit(set).unwrap();
-    assert_eq!(world.inert_nodes, 1);
+    assert_eq!(world.invalidation.inert_nodes, 1);
     assert!(world.is_inert(node(3)));
     assert!(!world.is_inert(node(4)));
 
@@ -1981,7 +1981,7 @@ fn inert_subtree_releases_pointer_focus_and_actions_without_layout() {
     let mut lift = MutationQueue::new();
     lift.set_style(node(2), NodeStyle::default());
     world.commit(lift).unwrap();
-    assert_eq!(world.inert_nodes, 0);
+    assert_eq!(world.invalidation.inert_nodes, 0);
     let work = world.take_system_work();
     assert!(work.layout_frontier_seeds.is_empty());
     world.resolve_styles(&work.style).unwrap();
@@ -2004,11 +2004,11 @@ fn removing_an_inert_node_forgets_it() {
     Arc::make_mut(&mut inert.layout).inert = true;
     create.set_style(node(2), inert);
     world.commit(create).unwrap();
-    assert_eq!(world.inert_nodes, 1);
+    assert_eq!(world.invalidation.inert_nodes, 1);
     let mut remove = MutationQueue::new();
     remove.despawn_subtree(node(2));
     world.commit(remove).unwrap();
-    assert_eq!(world.inert_nodes, 0);
+    assert_eq!(world.invalidation.inert_nodes, 0);
 }
 
 #[test]
@@ -3550,7 +3550,7 @@ fn git_gutter_marks_render_three_kinds_at_their_line_tops() {
     assert_eq!(git.added.len(), 1);
     assert_eq!(git.modified.len(), 1);
     assert_eq!(git.deleted.len(), 1);
-    let palette = &world.style_model.palette;
+    let palette = &world.invalidation.style_model.palette;
     assert_eq!(git.added_color, palette.success.as_rgba_array());
     assert_eq!(git.modified_color, palette.warning.as_rgba_array());
     assert_eq!(git.deleted_color, palette.danger.as_rgba_array());
@@ -4151,6 +4151,7 @@ fn inlay_display_regions_get_muted_spans_in_extraction() {
     world.resolve_presentations(&[node(1)]).unwrap();
     let extracted = &world.extract_nodes(&[node(1)])[0];
     let muted = world
+        .invalidation
         .style_model
         .color(SemanticColorRole::Muted)
         .as_rgba_array();
@@ -5001,7 +5002,10 @@ fn editor_chrome_derives_bracket_marks_caret_line_and_indent_guides() {
             height: 14.0,
         }
     );
-    assert_eq!(line_color, world.style_model.palette.hover.as_rgba_array());
+    assert_eq!(
+        line_color,
+        world.invalidation.style_model.palette.hover.as_rgba_array()
+    );
     // 括号两端出现描边框标记，共用同一颜色。
     assert_eq!(bracket_markers.len(), 2);
     assert_eq!(bracket_markers[0].0.y, 0.0);
@@ -5048,11 +5052,26 @@ fn bracket_pair_colors_cycle_by_nesting_depth_and_dim_unmatched() {
     let extracted = world.extract_nodes(&[node(1)]);
     let spans = &extracted[0].text_spans;
     let depth_color = |depth: usize| match depth {
-        0 => world.style_model.palette.accent.as_rgba_array(),
-        1 => world.style_model.palette.success.as_rgba_array(),
-        2 => world.style_model.palette.warning.as_rgba_array(),
+        0 => world
+            .invalidation
+            .style_model
+            .palette
+            .accent
+            .as_rgba_array(),
+        1 => world
+            .invalidation
+            .style_model
+            .palette
+            .success
+            .as_rgba_array(),
+        2 => world
+            .invalidation
+            .style_model
+            .palette
+            .warning
+            .as_rgba_array(),
         crate::components::TEXT_BRACKET_UNMATCHED_DEPTH => {
-            world.style_model.palette.faint.as_rgba_array()
+            world.invalidation.style_model.palette.faint.as_rgba_array()
         }
         _ => panic!("unexpected depth {depth}"),
     };
@@ -5297,7 +5316,12 @@ fn bracket_colors_override_syntax_spans_on_bracket_characters() {
     let bracket = spans.iter().find(|span| span.start == 3).unwrap();
     assert_eq!(
         bracket.color,
-        world.style_model.palette.accent.as_rgba_array()
+        world
+            .invalidation
+            .style_model
+            .palette
+            .accent
+            .as_rgba_array()
     );
 }
 
@@ -5361,7 +5385,12 @@ fn occurrence_highlight_marks_other_word_occurrences_when_focused() {
     assert_eq!(occurrence_markers.len(), 2);
     assert_eq!(
         occurrence_markers[0].1,
-        world.style_model.palette.accent_soft.as_rgba_array()
+        world
+            .invalidation
+            .style_model
+            .palette
+            .accent_soft
+            .as_rgba_array()
     );
 }
 
@@ -5460,13 +5489,23 @@ fn minimap_collects_line_lengths_and_scales_bars_with_non_whitespace_length() {
     // 颜色：面板 subtle、行条 faint；指示器 accent 半透明。
     assert_eq!(
         minimap.panel_color,
-        world.style_model.palette.subtle.as_rgba_array()
+        world
+            .invalidation
+            .style_model
+            .palette
+            .subtle
+            .as_rgba_array()
     );
     assert_eq!(
         minimap.bar_color,
-        world.style_model.palette.faint.as_rgba_array()
+        world.invalidation.style_model.palette.faint.as_rgba_array()
     );
-    let accent = world.style_model.palette.accent.as_rgba_array();
+    let accent = world
+        .invalidation
+        .style_model
+        .palette
+        .accent
+        .as_rgba_array();
     assert_eq!(
         minimap.indicator_color,
         [accent[0], accent[1], accent[2], accent[3] * 0.2]
@@ -5951,7 +5990,7 @@ fn wrap_guides_map_columns_to_x_and_skip_missing_columns() {
                     width: 1.0,
                     height: 80.0,
                 },
-                world.style_model.palette.faint.as_rgba_array(),
+                world.invalidation.style_model.palette.faint.as_rgba_array(),
             ),
             (
                 LayoutBox {
@@ -5960,7 +5999,7 @@ fn wrap_guides_map_columns_to_x_and_skip_missing_columns() {
                     width: 1.0,
                     height: 80.0,
                 },
-                world.style_model.palette.faint.as_rgba_array(),
+                world.invalidation.style_model.palette.faint.as_rgba_array(),
             ),
         ]
     );
@@ -7213,7 +7252,7 @@ fn paint_and_layout_tracks_do_not_allocate_descriptors() {
                 AnimatableProperty::Width,
                 Duration::from_millis(50)
             )
-            .is_none()
+            .is_some()
     );
 }
 
@@ -8252,6 +8291,7 @@ fn text_layout_cache_miss_then_hit_and_shaper_without_glyph_backend_omits_glyph_
     world.resolve_styles(&work.style).unwrap();
     assert_eq!(
         world
+            .text
             .glyph_cache
             .peek('c', world.computed_style(node(1)).unwrap()),
         None
@@ -8266,6 +8306,7 @@ fn text_layout_cache_miss_then_hit_and_shaper_without_glyph_backend_omits_glyph_
     assert!(missed.text_nodes_shaped >= 1);
     assert_eq!(
         world
+            .text
             .glyph_cache
             .peek('c', world.computed_style(node(1)).unwrap()),
         None
@@ -8297,6 +8338,7 @@ fn text_layout_cache_miss_then_hit_and_shaper_without_glyph_backend_omits_glyph_
     assert_eq!(hit.text_nodes_shaped, 0);
     assert_eq!(
         world
+            .text
             .glyph_cache
             .peek('c', world.computed_style(node(2)).unwrap()),
         None
@@ -8338,6 +8380,7 @@ fn text_layout_cache_miss_then_hit_and_shaper_without_glyph_backend_omits_glyph_
     assert_eq!(skipped.cache_lookups, 0);
     assert_eq!(
         world
+            .text
             .glyph_cache
             .peek('c', world.computed_style(node(1)).unwrap()),
         None
@@ -8616,6 +8659,7 @@ fn glyph_cache_miss_then_hit_on_measure_text_shaper() {
     world.resolve_styles(&work.style).unwrap();
     assert_eq!(
         world
+            .text
             .glyph_cache
             .peek('a', world.computed_style(node(1)).unwrap()),
         None
@@ -8629,6 +8673,7 @@ fn glyph_cache_miss_then_hit_on_measure_text_shaper() {
     assert!(missed.layout_cache_misses >= Some(1));
     assert!(
         world
+            .text
             .glyph_cache
             .peek('a', world.computed_style(node(1)).unwrap())
             .is_some()
@@ -8753,9 +8798,9 @@ fn parking_or_removing_the_last_presence_node_returns_the_skip_path() {
     queue.set_widget_visual(node(5), Some(open_menu_overlay_visual()));
     world.commit(queue).unwrap();
     world.take_system_work();
-    assert_eq!(world.confirm_modals, 1);
-    assert_eq!(world.clip_visuals, 2);
-    assert_eq!(world.z_index_nodes, 2);
+    assert_eq!(world.invalidation.confirm_modals, 1);
+    assert_eq!(world.invalidation.clip_visuals, 2);
+    assert_eq!(world.invalidation.z_index_nodes, 2);
     assert!(world.confirm_action_effect(node(3)).is_none());
 
     let mut park = MutationQueue::new();
@@ -8764,9 +8809,9 @@ fn parking_or_removing_the_last_presence_node_returns_the_skip_path() {
     park.park_subtree(node(4));
     park.park_subtree(node(5));
     world.commit(park).unwrap();
-    assert_eq!(world.confirm_modals, 0);
-    assert_eq!(world.clip_visuals, 0);
-    assert_eq!(world.z_index_nodes, 0);
+    assert_eq!(world.invalidation.confirm_modals, 0);
+    assert_eq!(world.invalidation.clip_visuals, 0);
+    assert_eq!(world.invalidation.z_index_nodes, 0);
     assert!(world.confirm_action_effect(node(1)).is_none());
     let remaining = world.extract_nodes(&[node(1)]);
     assert_eq!(remaining.len(), 1);
@@ -8778,9 +8823,9 @@ fn parking_or_removing_the_last_presence_node_returns_the_skip_path() {
     remount.insert(node(1), node(4), None);
     remount.insert(node(1), node(5), None);
     world.commit(remount).unwrap();
-    assert_eq!(world.confirm_modals, 1);
-    assert_eq!(world.clip_visuals, 2);
-    assert_eq!(world.z_index_nodes, 2);
+    assert_eq!(world.invalidation.confirm_modals, 1);
+    assert_eq!(world.invalidation.clip_visuals, 2);
+    assert_eq!(world.invalidation.z_index_nodes, 2);
 
     let mut remove = MutationQueue::new();
     remove.detach(node(2));
@@ -8788,9 +8833,9 @@ fn parking_or_removing_the_last_presence_node_returns_the_skip_path() {
     remove.detach(node(4));
     remove.detach(node(5));
     world.commit(remove).unwrap();
-    assert_eq!(world.confirm_modals, 0);
-    assert_eq!(world.clip_visuals, 0);
-    assert_eq!(world.z_index_nodes, 0);
+    assert_eq!(world.invalidation.confirm_modals, 0);
+    assert_eq!(world.invalidation.clip_visuals, 0);
+    assert_eq!(world.invalidation.z_index_nodes, 0);
     assert!(world.confirm_action_effect(node(1)).is_none());
 }
 
@@ -10837,7 +10882,7 @@ fn a_live_region_belongs_to_its_composite_and_goes_with_its_node() {
     world.commit(gone).unwrap();
     assert_eq!(world.live(node(2)), None);
     assert!(
-        world.live_regions.is_empty(),
+        world.overlays_a11y.live_regions.is_empty(),
         "the setting went with the node"
     );
 
@@ -12511,7 +12556,7 @@ fn viewport_dependency_index_is_document_local_and_releases_removed_entries() {
     assert_eq!(world.viewport_basis_ids_for(first).count(), 0);
     assert_eq!(world.viewport_basis_ids_for(second).count(), 0);
     assert!(!world.uses_viewport_basis());
-    assert!(world.viewport_basis.is_empty());
+    assert!(world.invalidation.viewport_basis.is_empty());
 }
 
 #[test]

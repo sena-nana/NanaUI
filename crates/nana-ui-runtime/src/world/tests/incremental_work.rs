@@ -487,7 +487,7 @@ mod invalidation_classification {
     /// Bytes the pending-cause table holds: its buckets, each one id and one
     /// [`LayoutInvalidation`] plus the control byte, whether full or not.
     fn pending_table_bytes(world: &UiWorld) -> usize {
-        world.pending_layout_invalidations.capacity()
+        world.invalidation.pending_layout_invalidations.capacity()
             * (std::mem::size_of::<(StableNodeId, LayoutInvalidation)>() + 1)
     }
 
@@ -507,7 +507,11 @@ mod invalidation_classification {
         install_column(context.compat_world_mut(), 100_000);
         let column = node(2);
         let nodes = context.world().len();
-        let slots = context.world().pending_layout_invalidations.len();
+        let slots = context
+            .world()
+            .invalidation
+            .pending_layout_invalidations
+            .len();
         assert!(slots <= nodes);
         let bytes = pending_table_bytes(context.world());
         assert!(
@@ -522,7 +526,11 @@ mod invalidation_classification {
             rewrite_style(&mut context, column);
         }
         assert_eq!(
-            context.world().pending_layout_invalidations.len(),
+            context
+                .world()
+                .invalidation
+                .pending_layout_invalidations
+                .len(),
             slots,
             "repeat writes merge into the node's one slot"
         );
@@ -1793,13 +1801,11 @@ mod axis_constraints {
         world.publish_layout_results(&ids, crate::LayoutResultSource::RuntimeLayout);
         let generation = world.layout_generation();
         let section_seq = world
-            .layout_results
-            .get(&node(2))
+            .published_layout_meta(node(2))
             .map(|result| result.publish_seq)
             .expect("section result");
         let fixed_seq = world
-            .layout_results
-            .get(&node(3))
+            .published_layout_meta(node(3))
             .map(|result| result.publish_seq)
             .expect("fixed result");
 
@@ -1835,16 +1841,14 @@ mod axis_constraints {
         );
         assert_eq!(
             world
-                .layout_results
-                .get(&node(2))
+                .published_layout_meta(node(2))
                 .map(|result| result.publish_seq),
             Some(section_seq),
             "the section result object must stay the one already published"
         );
         assert_eq!(
             world
-                .layout_results
-                .get(&node(3))
+                .published_layout_meta(node(3))
                 .map(|result| result.publish_seq),
             Some(fixed_seq),
             "an untouched fixed-position result must not be republished"
@@ -1858,8 +1862,7 @@ mod axis_constraints {
         assert_eq!(world.layout_generation(), generation);
         assert_eq!(
             world
-                .layout_results
-                .get(&node(3))
+                .published_layout_meta(node(3))
                 .map(|result| result.publish_seq),
             Some(fixed_seq)
         );
@@ -6375,13 +6378,13 @@ mod batch_child_removal {
                 for &offset in offsets {
                     remove(&mut queue, removal, child(offset));
                 }
-                world.child_list_steps = 0;
+                world.tree.child_list_steps = 0;
                 world.commit(queue).unwrap();
                 let k = offsets.len() as u64;
                 assert!(
-                    world.child_list_steps <= 2 * (n + k),
+                    world.tree.child_list_steps <= 2 * (n + k),
                     "{removal:?}, {shape}: {} child-list steps removing {k} of {n}",
-                    world.child_list_steps
+                    world.tree.child_list_steps
                 );
                 assert_eq!(children(&world), expected, "{removal:?}, {shape}");
                 for id in &removed {
@@ -6399,19 +6402,22 @@ mod batch_child_removal {
             let mut world = wide_parent();
             let mut queue = MutationQueue::new();
             remove(&mut queue, removal, child(CHILDREN - 1));
-            world.child_list_steps = 0;
+            world.tree.child_list_steps = 0;
             world.commit(queue).unwrap();
-            assert_eq!(world.child_list_steps, 0, "{removal:?}, the last child");
+            assert_eq!(
+                world.tree.child_list_steps, 0,
+                "{removal:?}, the last child"
+            );
 
             // Ten children after it, each shifted once and renumbered once.
             let mut queue = MutationQueue::new();
             remove(&mut queue, removal, child(CHILDREN - 12));
-            world.child_list_steps = 0;
+            world.tree.child_list_steps = 0;
             world.commit(queue).unwrap();
             assert!(
-                world.child_list_steps <= 20,
+                world.tree.child_list_steps <= 20,
                 "{removal:?}: {} steps",
-                world.child_list_steps
+                world.tree.child_list_steps
             );
             assert_eq!(children(&world).len(), CHILDREN as usize - 2);
         }

@@ -565,7 +565,7 @@ struct HitGeometry {
 }
 
 fn hit_geometry(world: &UiWorld, document: DocumentId, id: StableNodeId) -> Option<HitGeometry> {
-    let index = world.hit_test_index.get(&document)?;
+    let index = world.hit_index.hit_test_index.get(&document)?;
     let hit = index.entries.get(&id)?;
     Some(HitGeometry {
         layout: hit.entry.layout,

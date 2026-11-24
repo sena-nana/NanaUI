@@ -22,16 +22,20 @@ impl UiWorld {
         let Some(parent) = parent else {
             return Ok(false);
         };
-        if !self.theme_state.theme_scopes.is_empty()
-            && self.theme_state.theme_scopes.scope_for_owner(id).is_some()
+        if !self.invalidation.theme_state.theme_scopes.is_empty()
+            && self
+                .invalidation
+                .theme_state
+                .theme_scopes
+                .scope_for_owner(id)
+                .is_some()
         {
             return Ok(false);
         }
         let parent_scope = self.nodes.node_scope(parent);
-        if self.layout_length_tracks.contains_key(&id)
-            || !self.overlay_branch_active(id)
+        if !self.overlay_branch_active(id)
             || !self.menu_branch_open(id)
-            || (!self.presentation.is_empty()
+            || (!self.motion.presentation.is_empty()
                 && (!self.font_axis_overlay(id).is_empty()
                     || self
                         .presentation_color_overlay(id, crate::AnimatableProperty::Background)
@@ -39,7 +43,7 @@ impl UiWorld {
                     || self
                         .presentation_color_overlay(id, crate::AnimatableProperty::Color)
                         .is_some()))
-            || self.hover_transitions.contains_key(&id)
+            || self.motion.hover_transitions.contains_key(&id)
         {
             return Ok(false);
         }
@@ -91,7 +95,7 @@ impl UiWorld {
         if !inherited
             || self.nodes.language(id).is_some()
             || self.nodes.text_scale(id).is_some()
-            || self.responsive.follows(id)
+            || self.overlays_a11y.responsive.follows(id)
             || self.localized_text(id).is_some()
             || self.locale_direction(id).is_some()
         {
@@ -99,6 +103,7 @@ impl UiWorld {
         }
         self.nodes.set_node_scope(id, parent_scope);
         let theme_change = self
+            .invalidation
             .theme_state
             .pending_theme_eval
             .remove(&id)
@@ -160,10 +165,10 @@ impl UiWorld {
             );
         }
         if show_text {
-            self.text_shown.push(id);
+            self.text.text_shown.push(id);
         }
         if hit_relevant_style_changed(was_uninitialized, &prev_computed, &parent_style) {
-            self.style_hit_changed = true;
+            self.invalidation.style_hit_changed = true;
         }
         if (!was_uninitialized && theme_triggered)
             || self.theme_change_requires_visual_repaint(id, theme_change)
@@ -253,7 +258,7 @@ impl UiWorld {
         }
         // The layout the pipeline reads: design intent and a responsive
         // variant applied. Text, paint and visibility follow the variant.
-        let layout = self.motion_layout(id, &self.record(id).resolved_layout);
+        let layout = Arc::clone(&self.record(id).resolved_layout);
         // Only a handful of fields are read out of the parent, so share its Arc
         // instead of cloning the whole `ComputedStyle` (and its three heap
         // fields) once per node. A borrow would pin `&mut self` to the end.
@@ -266,15 +271,21 @@ impl UiWorld {
         let parent_scope = parent
             .map(|p| self.nodes.node_scope(p))
             .unwrap_or(nana_ui_core::ThemeScopeId::ROOT);
-        let effective_scope = if self.theme_state.theme_scopes.is_empty() {
+        let effective_scope = if self.invalidation.theme_state.theme_scopes.is_empty() {
             nana_ui_core::ThemeScopeId::ROOT
         } else {
-            self.theme_state
+            self.invalidation
+                .theme_state
                 .theme_scopes
                 .scope_for_owner(id)
                 .unwrap_or(parent_scope)
         };
-        let scope_gen = self.theme_state.theme_scopes.generation(effective_scope).0;
+        let scope_gen = self
+            .invalidation
+            .theme_state
+            .theme_scopes
+            .generation(effective_scope)
+            .0;
         self.nodes.set_node_scope(id, effective_scope);
         // The colour scope: this node's own overrides written over its
         // parent's. Nested scopes are flattened here, once per resolve, so
@@ -438,7 +449,7 @@ impl UiWorld {
         let ext_same_base = inherited.ext.language == language
             && inherited.ext.color_scope == color_scope
             && inherited.ext.theme_scope == effective_scope
-            && (self.presentation.is_empty() || self.font_axis_overlay(id).is_empty())
+            && (self.motion.presentation.is_empty() || self.font_axis_overlay(id).is_empty())
             && (!has_text_ext
                 || (inherited.ext.selection_background == selection_background
                     && inherited.ext.selection_color == selection_color
@@ -534,6 +545,7 @@ impl UiWorld {
             Default::default()
         };
         let theme_change = self
+            .invalidation
             .theme_state
             .pending_theme_eval
             .remove(&id)
@@ -581,7 +593,9 @@ impl UiWorld {
         let inherited_arc = if SHARE && *inherited_style.inherited == next_inherited {
             Arc::clone(&inherited_style.inherited)
         } else if SHARE {
-            self.inherited_styles.intern(next_inherited, work)
+            self.invalidation
+                .inherited_styles
+                .intern(next_inherited, work)
         } else {
             work.record_allocation(1, size_of::<InheritedStyle>());
             Arc::new(next_inherited)
@@ -607,7 +621,7 @@ impl UiWorld {
             };
             let arc = shared.unwrap_or_else(|| {
                 if SHARE {
-                    self.computed_styles.intern(next, work)
+                    self.invalidation.computed_styles.intern(next, work)
                 } else {
                     work.record_allocation(1, size_of::<ComputedStyle>());
                     Arc::new(next)
@@ -616,7 +630,7 @@ impl UiWorld {
             (Arc::clone(&arc), arc)
         } else {
             let arc = if SHARE {
-                self.computed_styles.intern(next, work)
+                self.invalidation.computed_styles.intern(next, work)
             } else {
                 work.record_allocation(1, size_of::<ComputedStyle>());
                 Arc::new(next)
@@ -627,7 +641,7 @@ impl UiWorld {
                     .map(|parent| &self.record(parent).resolved.3)
                     .filter(|parent_unpainted| parent_unpainted.as_ref() == &clean)
                     .map(Arc::clone)
-                    .unwrap_or_else(|| self.computed_styles.intern(clean, work))
+                    .unwrap_or_else(|| self.invalidation.computed_styles.intern(clean, work))
             } else {
                 Arc::clone(&arc)
             };
@@ -639,10 +653,10 @@ impl UiWorld {
             // whose box changed while hidden comes back stale. The scheduled
             // text pass of this same frame picks it up; marking it dirty here,
             // after the drain, would cost the frame another pass.
-            self.text_shown.push(id);
+            self.text.text_shown.push(id);
         }
         if hit_relevant_style_changed(was_uninitialized, &prev_computed, &next_arc) {
-            self.style_hit_changed = true;
+            self.invalidation.style_hit_changed = true;
         }
         if (!was_uninitialized && theme_triggered)
             || self.theme_change_requires_visual_repaint(id, theme_change)
@@ -874,14 +888,14 @@ impl UiWorld {
 
     /// Replace `layout` with an equal one written recently, if any.
     pub(crate) fn share_layout(&mut self, layout: &mut Arc<nana_ui_core::LayoutStyle>) {
-        self.layouts.intern(layout);
+        self.invalidation.layouts.intern(layout);
     }
 
     /// Replace `style` with an equal one recently written, or remember it:
     /// a component that holds its style as an `Arc` and the record written
     /// from it then hold one between them.
     pub(crate) fn share_node_style(&mut self, style: &mut Arc<NodeStyle>) {
-        self.node_styles.intern(style);
+        self.invalidation.node_styles.intern(style);
     }
 
     /// Write a node's authored style and keep its effective style and
@@ -894,33 +908,37 @@ impl UiWorld {
     /// `record.style` goes through here so they cannot drift.
     pub(crate) fn write_node_style(&mut self, id: StableNodeId, mut style: NodeStyle) {
         let current = Arc::clone(&self.authored_style(id).layout);
-        if !Arc::ptr_eq(&current, &style.layout) && self.layout_pairs.equal(&current, &style.layout)
+        if !Arc::ptr_eq(&current, &style.layout)
+            && self
+                .invalidation
+                .layout_pairs
+                .equal(&current, &style.layout)
         {
             style.layout = current;
         } else {
-            self.layouts.intern(&mut style.layout);
+            self.invalidation.layouts.intern(&mut style.layout);
         }
         let style = match self.responsive_variant(id) {
             Some(variant) => {
                 let mut effective = style.clone();
                 variant.apply(Arc::make_mut(&mut effective.layout));
-                self.layouts.intern(&mut effective.layout);
-                self.responsive.keep_authored(id, style);
+                self.invalidation.layouts.intern(&mut effective.layout);
+                self.overlays_a11y.responsive.keep_authored(id, style);
                 effective
             }
             None => {
-                self.responsive.drop_authored(id);
+                self.overlays_a11y.responsive.drop_authored(id);
                 style
             }
         };
         let resolved = self.resolve_node_layout(id, &style);
         let depends_on_viewport = resolved.depends_on_viewport();
         if style_declares_intent(&style) {
-            self.intent_nodes.insert(id);
+            self.invalidation.intent_nodes.insert(id);
         } else {
-            self.intent_nodes.remove(&id);
+            self.invalidation.intent_nodes.remove(&id);
         }
-        let style = self.node_styles.share(style);
+        let style = self.invalidation.node_styles.share(style);
         let record = self.record_mut(id);
         record.style = style;
         let previous = std::mem::replace(&mut record.resolved_layout, resolved);
@@ -930,18 +948,6 @@ impl UiWorld {
         self.refresh_block_extent_reads(id);
         self.recompute_node_theme_deps(id);
         self.note_layout_source_change();
-    }
-
-    /// Re-resolve one node's layout after its authored layout was mutated in
-    /// place. A node without design intent keeps sharing the same `Arc`. The
-    /// caller records the layout cause, which moves the input epoch.
-    pub(crate) fn refresh_resolved_layout(&mut self, id: StableNodeId) {
-        let style = self.record(id).style.clone();
-        let resolved = self.resolve_node_layout(id, &style);
-        let previous = std::mem::replace(&mut self.record_mut(id).resolved_layout, resolved);
-        let next = Arc::clone(&self.record(id).resolved_layout);
-        self.note_layout_anchor_change(id, &previous, &next);
-        self.refresh_block_extent_reads(id);
     }
 
     /// The layout the pipeline reads for `id` with effective style `style`,
@@ -986,7 +992,7 @@ impl UiWorld {
         let (mut resolved, copied) = self.node_layout(id, style);
         if copied {
             self.record_resolved_layout_copy();
-            self.layouts.intern(&mut resolved);
+            self.invalidation.layouts.intern(&mut resolved);
         }
         resolved
     }
@@ -996,19 +1002,19 @@ impl UiWorld {
     /// by what moved: a padding step moves the boxes that use it and no
     /// other. Returns how many moved.
     pub(super) fn reresolve_layout_intent(&mut self) -> usize {
-        let mut ids: Vec<StableNodeId> = self.intent_nodes.iter().copied().collect();
+        let mut ids: Vec<StableNodeId> = self.invalidation.intent_nodes.iter().copied().collect();
         ids.sort_unstable();
         self.reresolve_layout_intent_ids(ids)
     }
 
     pub(super) fn reresolve_layout_intent_for(&mut self, candidates: &[StableNodeId]) -> usize {
-        if self.intent_nodes.is_empty() || candidates.is_empty() {
+        if self.invalidation.intent_nodes.is_empty() || candidates.is_empty() {
             return 0;
         }
         let mut ids: Vec<StableNodeId> = candidates
             .iter()
             .copied()
-            .filter(|id| self.intent_nodes.contains(id))
+            .filter(|id| self.invalidation.intent_nodes.contains(id))
             .collect();
         ids.sort_unstable();
         ids.dedup();
@@ -1030,7 +1036,7 @@ impl UiWorld {
             }
             if copied {
                 self.record_resolved_layout_copy();
-                self.layouts.intern(&mut resolved);
+                self.invalidation.layouts.intern(&mut resolved);
             }
             self.record_mut(id).resolved_layout = resolved;
             self.note_layout_anchor_change(id, &previous, &self.record(id).resolved_layout.clone());
@@ -1081,8 +1087,8 @@ impl UiWorld {
         scope: Option<&nana_ui_core::ColorOverrides>,
     ) -> StyleModelRef {
         match scope {
-            Some(scope) => self.style_model.with_color_overrides(scope),
-            None => self.style_model,
+            Some(scope) => self.invalidation.style_model.with_color_overrides(scope),
+            None => self.invalidation.style_model,
         }
     }
 
@@ -1137,7 +1143,7 @@ impl UiWorld {
             .or_else(|| paint.border_mix.map(|mix| self.theme_mix(model, mix)))
             .or_else(|| paint.border.map(|role| self.theme_color(model, role)));
         let (mut color, mut background, border_color) =
-            if let Some(transition) = self.hover_transitions.get(&id) {
+            if let Some(transition) = self.motion.hover_transitions.get(&id) {
                 let [c, bg, bc] = std::array::from_fn(|i| {
                     interpolate_color(
                         transition.from[i],
@@ -1401,7 +1407,8 @@ impl UiWorld {
         let record = self.record(id);
         // A painter reads the state it is in, so it re-records on it.
         let painted = record.style.painter.is_some()
-            || (!self.painter_overrides.is_empty() && self.painter_overrides.contains_key(&id));
+            || (!self.invalidation.painter_overrides.is_empty()
+                && self.invalidation.painter_overrides.contains_key(&id));
         let styled =
             !record.style.interaction.is_shared_default() && !record.style.interaction.is_empty();
         if painted {
@@ -1428,7 +1435,7 @@ impl UiWorld {
         let mut queue: std::collections::VecDeque<StableNodeId> = ids.iter().copied().collect();
         let mut propagated_theme = HashSet::new();
         let mut work = ThemeWorkCounters::default();
-        let pending_theme_before = self.theme_state.pending_theme_eval.len();
+        let pending_theme_before = self.invalidation.theme_state.pending_theme_eval.len();
         while let Some(id) = queue.pop_front() {
             if !self.contains(id) {
                 return Err(UiWorldError::MissingNode(id));
@@ -1446,7 +1453,7 @@ impl UiWorld {
                 &mut work,
             )?;
         }
-        if self.theme_state.pending_theme_eval.len() < pending_theme_before {
+        if self.invalidation.theme_state.pending_theme_eval.len() < pending_theme_before {
             self.fold_theme_invalidation_resolution(&work);
         }
         self.record_theme_work(work);
@@ -1485,7 +1492,7 @@ impl UiWorld {
     /// Install `theme` as the design system; what paints is it, or its
     /// high-contrast rendition while the system asks for one.
     pub(super) fn install_theme(&mut self, theme: Arc<nana_ui_core::CompiledTheme>) {
-        self.installed_theme = theme;
+        self.invalidation.installed_theme = theme;
         self.apply_compiled_theme(self.contrast_rendition());
     }
 
@@ -1493,13 +1500,19 @@ impl UiWorld {
     /// installed theme stays as it was and comes back when the setting turns
     /// off. Whether anything changed.
     pub fn set_high_contrast(&mut self, high_contrast: bool) -> bool {
-        if self.high_contrast == high_contrast {
+        if self.invalidation.high_contrast == high_contrast {
             return false;
         }
-        self.high_contrast = high_contrast;
+        self.invalidation.high_contrast = high_contrast;
         self.apply_compiled_theme(self.contrast_rendition());
-        if !self.theme_state.installed_document_themes.is_empty() {
+        if !self
+            .invalidation
+            .theme_state
+            .installed_document_themes
+            .is_empty()
+        {
             let doc_themes: Vec<_> = self
+                .invalidation
                 .theme_state
                 .installed_document_themes
                 .iter()
@@ -1516,30 +1529,34 @@ impl UiWorld {
     /// palette of the same lightness, opaque, and a title bar that matches
     /// its background.
     fn contrast_rendition(&self) -> Arc<nana_ui_core::CompiledTheme> {
-        self.contrast_rendition_for(&self.installed_theme)
+        self.contrast_rendition_for(&self.invalidation.installed_theme)
     }
 
     pub(super) fn apply_compiled_theme(&mut self, next: Arc<nana_ui_core::CompiledTheme>) {
         // Values, not identity. `CompiledTheme::is_same_revision` is the cheap
         // question and it trusts the author's generation bump; an install has
         // to be right even for a theme that forgot to bump.
-        if *self.theme == *next {
+        if *self.invalidation.theme == *next {
             return;
         }
-        let changed = nana_ui_core::ThemeCategoryGenerations::diff_themes(&self.theme, &next);
+        let changed =
+            nana_ui_core::ThemeCategoryGenerations::diff_themes(&self.invalidation.theme, &next);
         if changed.is_empty() {
-            self.theme = next;
+            self.invalidation.theme = next;
             return;
         }
-        self.theme_state.theme_generations.advance(changed);
+        self.invalidation
+            .theme_state
+            .theme_generations
+            .advance(changed);
         if changed == nana_ui_core::ThemeDependencyMask::MOTION_POLICY
-            && self.theme_state.theme_scopes.is_empty()
-            && self.theme_state.document_themes.is_empty()
+            && self.invalidation.theme_state.theme_scopes.is_empty()
+            && self.invalidation.theme_state.document_themes.is_empty()
         {
-            self.theme = next;
+            self.invalidation.theme = next;
             let mut work = ThemeWorkCounters::default();
             work.style_motion_policy_invalidations = 1;
-            let identity = self.theme.identity();
+            let identity = self.invalidation.theme.identity();
             self.record_theme_invalidation(
                 crate::world::theme_inspect::ThemeInvalidationTrigger::RootTheme {
                     theme_id: identity.id,
@@ -1554,8 +1571,9 @@ impl UiWorld {
             return;
         }
         if changed != nana_ui_core::ThemeDependencyMask::MOTION_POLICY {
-            let has_doc_overrides = !self.theme_state.document_themes.is_empty();
+            let has_doc_overrides = !self.invalidation.theme_state.document_themes.is_empty();
             let hover_ids = self
+                .motion
                 .hover_transitions
                 .keys()
                 .copied()
@@ -1563,6 +1581,7 @@ impl UiWorld {
                     !has_doc_overrides
                         || !self.contains(id)
                         || !self
+                            .invalidation
                             .theme_state
                             .document_themes
                             .contains_key(&self.record(id).document)
@@ -1572,37 +1591,44 @@ impl UiWorld {
                 self.cancel_hover_transition(id);
             }
         }
-        if !self.theme_state.theme_scopes.is_empty() || !self.theme_state.document_themes.is_empty()
+        if !self.invalidation.theme_state.theme_scopes.is_empty()
+            || !self.invalidation.theme_state.document_themes.is_empty()
         {
-            let old_root = Arc::clone(&self.theme);
-            self.style_model = next.style_model();
-            self.theme = Arc::clone(&next);
+            let old_root = Arc::clone(&self.invalidation.theme);
+            self.invalidation.style_model = next.style_model();
+            self.invalidation.theme = Arc::clone(&next);
             if changed != nana_ui_core::ThemeDependencyMask::MOTION_POLICY {
                 self.palette_epoch = self.palette_epoch.wrapping_add(1).max(1);
             }
             self.apply_root_theme_with_scopes(&old_root, &next, changed);
             return;
         }
-        let previous_metrics = self.style_model.metrics;
-        let body_changed = self.theme.typography().body != next.typography().body;
-        let regular_changed = self.theme.typography().regular != next.typography().regular;
-        let line_ratio_changed = self.theme.typography().line / self.theme.typography().body
+        let previous_metrics = self.invalidation.style_model.metrics;
+        let body_changed = self.invalidation.theme.typography().body != next.typography().body;
+        let regular_changed =
+            self.invalidation.theme.typography().regular != next.typography().regular;
+        let line_ratio_changed = self.invalidation.theme.typography().line
+            / self.invalidation.theme.typography().body
             != next.typography().line / next.typography().body;
-        let token_layout_changed = self.theme.spacing() != next.spacing()
-            || self.theme.typography() != next.typography()
-            || self.theme.border() != next.border()
-            || self.theme.metrics() != next.metrics();
-        let previous_scales = (self.theme.typography(), self.theme.spacing());
+        let token_layout_changed = self.invalidation.theme.spacing() != next.spacing()
+            || self.invalidation.theme.typography() != next.typography()
+            || self.invalidation.theme.border() != next.border()
+            || self.invalidation.theme.metrics() != next.metrics();
+        let previous_scales = (
+            self.invalidation.theme.typography(),
+            self.invalidation.theme.spacing(),
+        );
         let dialog_changed = changed.intersects(nana_ui_core::ThemeDependencyMask::RECIPE_DIALOG)
             || token_layout_changed;
         let toast_changed = changed.intersects(nana_ui_core::ThemeDependencyMask::RECIPE_TOAST);
         let shape_changed = changed.intersects(nana_ui_core::ThemeDependencyMask::RECIPE_SHAPE);
         let menu_changed = changed.intersects(nana_ui_core::ThemeDependencyMask::RECIPE_MENU);
-        self.style_model = next.style_model();
-        self.theme = next;
+        self.invalidation.style_model = next.style_model();
+        self.invalidation.theme = next;
         self.palette_epoch = self.palette_epoch.wrapping_add(1).max(1);
 
         let painted = self
+            .invalidation
             .paint_recordings
             .get_mut()
             .keys()
@@ -1622,6 +1648,7 @@ impl UiWorld {
                 .union(nana_ui_core::ThemeDependencyMask::RECIPE_SHAPE),
         ) {
             let modal_painted = self
+                .invalidation
                 .modal_surface_recordings
                 .get_mut()
                 .keys()
@@ -1631,11 +1658,19 @@ impl UiWorld {
                 self.mark_repaint(id);
             }
         }
-        let metrics_changed = !self.style_model.metrics.same_layout(&previous_metrics)
-            || previous_scales != (self.theme.typography(), self.theme.spacing());
-        let seeds_before = self.layout_seeds_created;
+        let metrics_changed = !self
+            .invalidation
+            .style_model
+            .metrics
+            .same_layout(&previous_metrics)
+            || previous_scales
+                != (
+                    self.invalidation.theme.typography(),
+                    self.invalidation.theme.spacing(),
+                );
+        let seeds_before = self.invalidation.layout_seeds_created;
         let mut ids = Vec::new();
-        for roots in self.live_document_roots.values() {
+        for roots in self.tree.live_document_roots.values() {
             for &root in roots {
                 ids.extend(self.subtree_ids(root));
             }
@@ -1651,7 +1686,8 @@ impl UiWorld {
                 if hit.intersects(nana_ui_core::ThemeDependencyMask::RECIPE_ANY) {
                     work.component_recipe_nodes_invalidated += 1;
                 }
-                self.theme_state
+                self.invalidation
+                    .theme_state
                     .pending_theme_eval
                     .entry(id)
                     .and_modify(|prev| *prev = prev.union(hit))
@@ -1693,6 +1729,7 @@ impl UiWorld {
             dependents = self.reresolve_layout_intent();
             if body_changed || regular_changed || line_ratio_changed {
                 let default_roots = self
+                    .tree
                     .live_document_roots
                     .values()
                     .flat_map(|roots| roots.iter().copied())
@@ -1757,8 +1794,8 @@ impl UiWorld {
                 ),
             );
         }
-        let seeds = (self.layout_seeds_created - seeds_before) as usize;
-        let identity = self.theme.identity();
+        let seeds = (self.invalidation.layout_seeds_created - seeds_before) as usize;
+        let identity = self.invalidation.theme.identity();
         self.record_theme_invalidation(
             crate::world::theme_inspect::ThemeInvalidationTrigger::RootTheme {
                 theme_id: identity.id,
@@ -1769,7 +1806,7 @@ impl UiWorld {
             seeds,
             false,
         );
-        let counts = &mut self.counters.pending_drain_counts;
+        let counts = &mut self.invalidation.counters.pending_drain_counts;
         if intent_relevant {
             counts.theme_to_layout_seeds += seeds;
             counts.theme_metric_dependents_invalidated += dependents;
@@ -1883,6 +1920,7 @@ impl UiWorld {
             mask = mask.union(ThemeDependencyMask::INHERITED_TYPOGRAPHY);
         }
         if self
+            .text
             .document_text_selections
             .get(&record.document)
             .is_some_and(|sel| sel.node == id)
@@ -1906,7 +1944,8 @@ impl UiWorld {
             );
         }
         if record.style.painter.is_some()
-            || (!self.painter_overrides.is_empty() && self.painter_overrides.contains_key(&id))
+            || (!self.invalidation.painter_overrides.is_empty()
+                && self.invalidation.painter_overrides.contains_key(&id))
         {
             mask = mask.union(
                 ThemeDependencyMask::CUSTOM_PAINT
@@ -1962,7 +2001,7 @@ impl UiWorld {
             }
         }
         if theme_change.intersects(nana_ui_core::ThemeDependencyMask::ACCENT)
-            && self.drop_hover.map(|(h, _)| h) == Some(id)
+            && self.overlays_a11y.drop_hover.map(|(h, _)| h) == Some(id)
         {
             return true;
         }
@@ -2018,13 +2057,13 @@ impl UiWorld {
     }
 
     pub(super) fn transition_hover(&mut self, id: StableNodeId, from: [Option<[f32; 4]>; 3]) {
-        if self.hover_transitions.contains_key(&id) {
+        if self.motion.hover_transitions.contains_key(&id) {
             self.mark_hover_paint(id);
         }
         self.cancel_hover_transition(id);
         let to = self.hover_paint(id);
         if from != to {
-            self.hover_transitions.insert(
+            self.motion.hover_transitions.insert(
                 id,
                 HoverTransition {
                     from,
@@ -2057,6 +2096,7 @@ impl UiWorld {
     pub(super) fn mark_hover_paint(&mut self, target: StableNodeId) {
         let bits = DirtyMask::STYLE | DirtyMask::RENDER;
         if self
+            .motion
             .hover_transitions
             .get(&target)
             .is_some_and(|transition| transition.inherits_color)
@@ -2068,12 +2108,13 @@ impl UiWorld {
     }
 
     pub(super) fn cancel_hover_transition(&mut self, target: StableNodeId) {
-        self.hover_transitions.remove(&target);
+        self.motion.hover_transitions.remove(&target);
         if let Some(id) =
             crate::component_animation_id(crate::component_animation_kinds::HOVER, target)
-            && let Some(animation) = self.animations.remove(&id)
+            && let Some(animation) = self.motion.animations.remove(&id)
         {
-            self.animation_deadlines
+            self.motion
+                .animation_deadlines
                 .remove(&(animation.next_deadline, id));
         }
     }
@@ -2287,9 +2328,10 @@ impl UiWorld {
     /// The language a root inherits: the application's, else the text
     /// engine's fallback.
     fn root_language(&self) -> Option<nana_text::font::LanguageTag> {
-        self.default_language
+        self.text
+            .default_language
             .clone()
-            .or_else(|| self.engine_fallback_language.clone())
+            .or_else(|| self.text.engine_fallback_language.clone())
     }
 
     /// Set the application's language, which every node without a language
@@ -2297,7 +2339,7 @@ impl UiWorld {
     /// again; the rest only resolves its style again.
     pub fn set_default_language(&mut self, language: Option<nana_text::font::LanguageTag>) {
         let before = self.root_language();
-        self.default_language = language;
+        self.text.default_language = language;
         if self.root_language() != before {
             self.mark_root_language_dependents();
         }
@@ -2315,11 +2357,11 @@ impl UiWorld {
         &mut self,
         language: Option<nana_text::font::LanguageTag>,
     ) {
-        if self.engine_fallback_language == language {
+        if self.text.engine_fallback_language == language {
             return;
         }
         let before = self.root_language();
-        self.engine_fallback_language = language;
+        self.text.engine_fallback_language = language;
         if self.root_language() != before {
             self.mark_root_language_dependents();
         }
@@ -2375,10 +2417,11 @@ impl UiWorld {
     /// The typography scale a node with no parent starts from: its window's,
     /// else the application's.
     fn root_text_scale(&self, document: DocumentId) -> f32 {
-        self.document_text_scales
+        self.text
+            .document_text_scales
             .get(&document)
             .copied()
-            .unwrap_or(self.default_text_scale)
+            .unwrap_or(self.text.default_text_scale)
     }
 
     /// Set the application's typography scale, which text inherits unless a
@@ -2391,16 +2434,17 @@ impl UiWorld {
         if !valid_text_scale(scale) {
             return;
         }
-        if self.default_text_scale == scale {
+        if self.text.default_text_scale == scale {
             self.note_equivalent_text_scale();
             return;
         }
-        self.default_text_scale = scale;
+        self.text.default_text_scale = scale;
         let mut documents: Vec<DocumentId> = self
+            .tree
             .live_document_roots
             .keys()
             .copied()
-            .filter(|document| !self.document_text_scales.contains_key(document))
+            .filter(|document| !self.text.document_text_scales.contains_key(document))
             .collect();
         documents.sort_unstable();
         for document in documents {
@@ -2418,10 +2462,10 @@ impl UiWorld {
         let before = self.root_text_scale(document);
         match scale {
             Some(scale) => {
-                self.document_text_scales.insert(document, scale);
+                self.text.document_text_scales.insert(document, scale);
             }
             None => {
-                self.document_text_scales.remove(&document);
+                self.text.document_text_scales.remove(&document);
             }
         }
         if self.root_text_scale(document) == before {
@@ -2468,14 +2512,16 @@ impl UiWorld {
             );
             let _ = self.mark(id, DirtyMask::STYLE | DirtyMask::TEXT);
         }
-        self.counters
+        self.invalidation
+            .counters
             .pending_drain_counts
             .typography_scale_scope_nodes_scanned += scanned;
     }
 
     /// A typography scale was set to the one it already was: nothing visited.
     pub(super) fn note_equivalent_text_scale(&mut self) {
-        self.counters
+        self.invalidation
+            .counters
             .pending_drain_counts
             .typography_scale_equivalent_skips += 1;
     }
@@ -2501,6 +2547,7 @@ impl UiWorld {
     /// keeps its computed style, and so its shape.
     fn mark_root_language_dependents(&mut self) {
         let roots: Vec<StableNodeId> = self
+            .tree
             .live_document_roots
             .values()
             .flat_map(|roots| roots.iter().copied())

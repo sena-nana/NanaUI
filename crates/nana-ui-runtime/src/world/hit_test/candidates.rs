@@ -109,10 +109,10 @@ impl UiWorld {
                 .position(|&dom_id| dom_id == id)
                 .map_or(0, |pos| key.chain.len() - pos)
         };
-        let triggered_surface = self.triggered_overlays.contains(&target)
+        let triggered_surface = self.overlays_a11y.triggered_overlays.contains(&target)
             && self.hanging_surface_contains(target, x, y);
         let menu_hit = !triggered_surface && self.menu_region_contains(index, target, x, y);
-        let select_menu = menu_hit && self.select_menus.contains(&target);
+        let select_menu = menu_hit && self.overlays_a11y.select_menus.contains(&target);
         let mut steps: Vec<(StableNodeId, bool, Option<i32>)> = Vec::new();
         let mut cursor = Some((target, triggered_surface || select_menu));
         let mut remaining = self.nodes.len().saturating_add(1);
@@ -307,8 +307,8 @@ impl UiWorld {
     /// the hit there is ranked by paint order rather than taken as the tree
     /// walk first meets one.
     fn select_menu_at(&self, index: &HitIndex, document: DocumentId, x: f32, y: f32) -> bool {
-        !self.select_menus.is_empty()
-            && self.select_menus.iter().any(|id| {
+        !self.overlays_a11y.select_menus.is_empty()
+            && self.overlays_a11y.select_menus.iter().any(|id| {
                 self.document_of(*id) == Some(document)
                     && self.menu_region_contains(index, *id, x, y)
             })
@@ -487,7 +487,9 @@ impl UiWorld {
 
     /// Every hit at `(x, y)`, topmost first.
     pub fn hit_test_candidates(&self, document: DocumentId, x: f32, y: f32) -> Vec<StableNodeId> {
-        self.hit_test_queries.set(self.hit_test_queries.get() + 1);
+        self.hit_index
+            .hit_test_queries
+            .set(self.hit_index.hit_test_queries.get() + 1);
         let mut candidates = Vec::new();
         let Some(forest) = self.collect_hit_candidates(document, x, y, &mut candidates) else {
             return candidates;
@@ -516,7 +518,7 @@ impl UiWorld {
         candidates: &mut Vec<StableNodeId>,
     ) -> Option<&HitIndex> {
         candidates.clear();
-        let forest = self.hit_test_index.get(&document)?;
+        let forest = self.hit_index.hit_test_index.get(&document)?;
         if self.has_compositor_transform_overlay_for(document) {
             self.visit_presentation_roots(forest, x, y, &mut |id| {
                 candidates.push(id);
@@ -549,11 +551,15 @@ impl UiWorld {
         x: f32,
         y: f32,
     ) -> impl Iterator<Item = StableNodeId> + '_ {
-        self.triggered_overlays.iter().copied().filter(move |id| {
-            self.document_of(*id) == Some(document)
-                && self.record(*id).interaction.pointer_events
-                && self.hanging_surface_contains(*id, x, y)
-        })
+        self.overlays_a11y
+            .triggered_overlays
+            .iter()
+            .copied()
+            .filter(move |id| {
+                self.document_of(*id) == Some(document)
+                    && self.record(*id).interaction.pointer_events
+                    && self.hanging_surface_contains(*id, x, y)
+            })
     }
 
     pub(crate) fn hanging_surface_contains(&self, id: StableNodeId, x: f32, y: f32) -> bool {
@@ -569,7 +575,7 @@ impl UiWorld {
     /// [`Self::hit_test`] or [`Self::hit_test_candidates`] call. Input routing
     /// is budgeted against it (at most one per uncaptured pointer event).
     pub fn hit_test_queries(&self) -> u64 {
-        self.hit_test_queries.get()
+        self.hit_index.hit_test_queries.get()
     }
 }
 
@@ -580,16 +586,22 @@ impl UiWorld {
     /// first hit, so pointer dispatch on every move does not collect and then
     /// discard the full candidate list.
     pub fn hit_test(&self, document: DocumentId, x: f32, y: f32) -> Option<StableNodeId> {
-        self.hit_test_queries.set(self.hit_test_queries.get() + 1);
-        if !self.closing_surfaces.is_empty()
-            || self.hit_test_index.get(&document).is_some_and(|index| {
-                index.viewport_hit_at(x, y) || self.select_menu_at(index, document, x, y)
-            })
+        self.hit_index
+            .hit_test_queries
+            .set(self.hit_index.hit_test_queries.get() + 1);
+        if self.motion.closing_surfaces_count != 0
+            || self
+                .hit_index
+                .hit_test_index
+                .get(&document)
+                .is_some_and(|index| {
+                    index.viewport_hit_at(x, y) || self.select_menu_at(index, document, x, y)
+                })
             || self.hanging_surfaces_at(document, x, y).next().is_some()
         {
             return self.topmost_candidate(document, x, y);
         }
-        let forest = self.hit_test_index.get(&document)?;
+        let forest = self.hit_index.hit_test_index.get(&document)?;
         let mut found = None;
         if self.has_compositor_transform_overlay_for(document) {
             self.visit_presentation_roots(forest, x, y, &mut |id| {
@@ -610,7 +622,7 @@ impl UiWorld {
     /// tie (the stable sort's first). Reuses the world's scratch, so a pointer
     /// moving inside a scroll viewport allocates nothing once warm.
     fn topmost_candidate(&self, document: DocumentId, x: f32, y: f32) -> Option<StableNodeId> {
-        let Ok(mut scratch) = self.hit_scratch.try_borrow_mut() else {
+        let Ok(mut scratch) = self.hit_index.hit_scratch.try_borrow_mut() else {
             // Only a hit query made from inside another one lands here.
             return self.hit_test_candidates(document, x, y).into_iter().next();
         };

@@ -273,7 +273,7 @@ impl UiWorld {
         let mut record = LastThemeInvalidation {
             trigger,
             changed_mask,
-            category_generations: self.theme_state.theme_generations,
+            category_generations: self.invalidation.theme_state.theme_generations,
             target_document,
             scope_root,
             candidates_invalidated: work.theme_revision_candidates,
@@ -294,11 +294,16 @@ impl UiWorld {
             stage_reasons: Vec::new(),
         };
         (record.triggered_stages, record.stage_reasons) = build_triggered_stages(&record);
-        self.theme_state.last_theme_invalidation = Some(record);
+        self.invalidation.theme_state.last_theme_invalidation = Some(record);
     }
 
     pub(super) fn fold_theme_invalidation_resolution(&mut self, work: &ThemeWorkCounters) {
-        let Some(inv) = self.theme_state.last_theme_invalidation.as_mut() else {
+        let Some(inv) = self
+            .invalidation
+            .theme_state
+            .last_theme_invalidation
+            .as_mut()
+        else {
             return;
         };
         inv.resolved_style_changed = inv
@@ -353,20 +358,26 @@ impl UiWorld {
         let active_scope = self.nodes.node_scope(id);
         let effective = self.theme_for_scope(document, active_scope);
         let identity = effective.identity();
-        let scope_generation = self.theme_state.theme_scopes.generation(active_scope);
+        let scope_generation = self
+            .invalidation
+            .theme_state
+            .theme_scopes
+            .generation(active_scope);
         let document_theme_override = self
+            .invalidation
             .theme_state
             .document_themes
             .get(&document)
             .map(|theme| theme.id());
 
         let scope_chain: Vec<ThemeScopeChainEntry> = self
+            .invalidation
             .theme_state
             .theme_scopes
             .scope_chain(active_scope)
             .into_iter()
             .filter_map(|scope_id| {
-                let entry = self.theme_state.theme_scopes.entry(scope_id)?;
+                let entry = self.invalidation.theme_state.theme_scopes.entry(scope_id)?;
                 Some(ThemeScopeChainEntry {
                     scope_id,
                     owner: entry.owner,
@@ -521,7 +532,7 @@ impl UiWorld {
         }
 
         let mut resolution_trace = Vec::new();
-        let root_id = self.theme.id();
+        let root_id = self.invalidation.theme.id();
         resolution_trace.push(ThemeTraceLayer {
             layer_kind: "root_theme",
             source: "application root".to_owned(),
@@ -581,7 +592,11 @@ impl UiWorld {
             });
         }
 
-        let last_invalidation = self.theme_state.last_theme_invalidation.clone();
+        let last_invalidation = self
+            .invalidation
+            .theme_state
+            .last_theme_invalidation
+            .clone();
         let last_invalidation_status = last_invalidation.as_ref().map(|inv| {
             let mut reasons = Vec::new();
             let affected = if inv.target_document.is_some_and(|d| d != document) {
@@ -636,7 +651,7 @@ impl UiWorld {
             effective_theme_id: identity.id,
             effective_theme_generation: identity.generation,
             appearance: effective.appearance(),
-            high_contrast: self.high_contrast,
+            high_contrast: self.invalidation.high_contrast,
             active_scope,
             scope_generation,
             document_theme_override,
@@ -656,7 +671,10 @@ impl UiWorld {
 
     /// Summary of the most recent theme or scope invalidation pass across `UiWorld`.
     pub fn last_theme_invalidation(&self) -> Option<&LastThemeInvalidation> {
-        self.theme_state.last_theme_invalidation.as_ref()
+        self.invalidation
+            .theme_state
+            .last_theme_invalidation
+            .as_ref()
     }
 
     /// Aggregate count of live tracked nodes and per-category dependency usage.
