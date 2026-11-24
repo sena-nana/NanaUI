@@ -31,16 +31,16 @@ fn scene_renderers_share_static_pipelines_across_painters() {
     let first = SceneWgpuPainter::new(&gpu, nana_gpu::GpuTextureFormat::RGBA8_UNORM);
     let second = SceneWgpuPainter::new(&gpu, nana_gpu::GpuTextureFormat::RGBA8_UNORM);
     assert_eq!(
-        first.quads.cached_pipeline(),
-        second.quads.cached_pipeline()
+        first.core.quads.cached_pipeline(),
+        second.core.quads.cached_pipeline()
     );
     assert_eq!(
-        first.icons.cached_pipeline(),
-        second.icons.cached_pipeline()
+        first.core.icons.cached_pipeline(),
+        second.core.icons.cached_pipeline()
     );
     assert_eq!(
-        first.meshes.cached_pipeline(),
-        second.meshes.cached_pipeline()
+        first.core.meshes.cached_pipeline(),
+        second.core.meshes.cached_pipeline()
     );
     let after = gpu.policy().stats();
     assert!(after.pipeline_registry_hits > before.pipeline_registry_hits);
@@ -451,6 +451,7 @@ fn repaint_of_an_unchanged_scene_reblits_dest_without_rebatching() {
 
     let first = paint_once(&mut painter);
     let encoded = painter
+        .core
         .last_dest_pass_counts
         .expect("first frame encodes the scene");
     assert!(
@@ -464,6 +465,7 @@ fn repaint_of_an_unchanged_scene_reblits_dest_without_rebatching() {
 
     let second = paint_once(&mut painter);
     let reused = painter
+        .core
         .last_dest_pass_counts
         .expect("repaint still encodes the blit");
     assert_eq!(
@@ -502,6 +504,7 @@ fn repaint_of_an_unchanged_scene_reblits_dest_without_rebatching() {
         .unwrap();
     queue.submit([encoder.finish()]);
     let repainted = painter
+        .core
         .last_dest_pass_counts
         .expect("changed scene encodes again");
     assert!(
@@ -806,6 +809,7 @@ fn graph_canvas_stroke_antialiases_silhouette_on_msaa_dest() {
         .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
         .unwrap();
     let counts = painter
+        .core
         .last_dest_pass_counts
         .expect("encoded frame records dest passes");
     assert_eq!(
@@ -1945,6 +1949,7 @@ fn nested_rotated_clips_reject_quad_inside_inner_outside_outer() {
         .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
         .unwrap();
     let counts = painter
+        .core
         .last_dest_pass_counts
         .expect("encoded frame records dest passes");
     assert!(
@@ -2009,6 +2014,7 @@ fn rotated_clip_does_not_paint_custom_in_aabb_outside_rect() {
         )
         .unwrap();
     let counts = painter
+        .core
         .last_dest_pass_counts
         .expect("encoded frame records dest passes");
     assert!(
@@ -2119,6 +2125,7 @@ fn axis_aligned_clips_do_not_dest_wrap() {
         .paint_encoder(&scene, &mut encoder, &target, viewport, None, None)
         .unwrap();
     let counts = painter
+        .core
         .last_dest_pass_counts
         .expect("encoded frame records dest passes");
     assert_eq!(
@@ -2247,6 +2254,7 @@ fn translucent_parent_composites_overlapping_children_as_a_group() {
         .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
         .unwrap();
     let counts = painter
+        .core
         .last_dest_pass_counts
         .expect("encoded frame records dest passes");
     assert!(
@@ -2338,6 +2346,7 @@ fn drop_shadow_samples_dest_group_alpha_not_box_shadow_quads() {
         .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
         .unwrap();
     let counts = painter
+        .core
         .last_dest_pass_counts
         .expect("encoded frame records dest passes");
     assert!(
@@ -2685,6 +2694,7 @@ fn geometry_and_text_keep_msaa_then_text_after_resolve() {
         .paint_encoder(&scene, &mut encoder, &target, viewport, None, None)
         .unwrap();
     let counts = painter
+        .core
         .last_dest_pass_counts
         .expect("encoded frame records dest passes");
     assert_eq!(
@@ -4886,7 +4896,7 @@ fn a_reused_batch_gives_back_the_gaps_of_text_that_stopped_growing() {
         (false, 0),
         "an unchanged frame reuses its batch"
     );
-    painter.text.assume_gapped_order();
+    painter.default_target_mut().text.assume_gapped_order();
     let mut reused = 0;
     let settled = loop {
         let frame = paint(&mut painter);
@@ -4905,7 +4915,7 @@ fn a_reused_batch_gives_back_the_gaps_of_text_that_stopped_growing() {
         "the frame that gives them back rebuilds its batch"
     );
     assert!(settled.1 > 0, "and rewrites the index table");
-    assert!(!painter.text.order_gapped());
+    assert!(!painter.default_target().unwrap().text.order_gapped());
     assert_eq!(
         paint(&mut painter),
         (false, 0),
@@ -4919,7 +4929,7 @@ fn a_reused_batch_without_text_is_not_rebuilt_for_gaps() {
     // there is nothing to give back, and the batch must keep being reused
     // rather than rebuilt every frame for a flush with no text to repack.
     let (mut painter, mut paint) = beside_a_gpu_view(false);
-    painter.text.assume_gapped_order();
+    painter.default_target_mut().text.assume_gapped_order();
     let rebuilds = (0..300).filter(|_| paint(&mut painter).0).count();
     assert_eq!(rebuilds, 1, "only the first frame builds a batch");
 }
@@ -5053,13 +5063,7 @@ fn a_glyph_evicted_under_one_profile_rebuilds_the_batch_another_retained() {
     let mut painter = SceneWgpuPainter::new_with_presentation(&gpu, srgb);
     // One page barely wider than a line of text: the other profile's labels
     // cannot all coexist with this one's glyphs.
-    painter.text = TextPipeline::with_atlas_budget(
-        &device,
-        wgpu::TextureFormat::Rgba8UnormSrgb,
-        64,
-        64 * 64 + 8,
-        gpu.policy(),
-    );
+    painter.use_small_text_atlas(64, 64 * 64 + 8);
     let first = label_beside_a_gpu_view("abcdefghij");
     let (built, expected) = paint(&mut painter, 1, &first);
     assert!(built);
@@ -5078,7 +5082,7 @@ fn a_glyph_evicted_under_one_profile_rebuilds_the_batch_another_retained() {
         "a profile that places nothing new leaves the other's batch valid"
     );
 
-    let epoch = painter.text.placement_epoch();
+    let epoch = painter.core.text.placement_epoch();
     let before = painter.text_glyph_counters();
     painter.select_presentation(float);
     for label in ["KLMNOPQRST", "UVWXYZ0123", "456789!?@#"] {
@@ -5090,7 +5094,7 @@ fn a_glyph_evicted_under_one_profile_rebuilds_the_batch_another_retained() {
         "the fixture evicts glyphs the first target's batch named"
     );
     assert_ne!(
-        painter.text.placement_epoch(),
+        painter.core.text.placement_epoch(),
         epoch,
         "the other profile's labels moved what the shared atlas holds"
     );
@@ -5935,6 +5939,7 @@ fn register_into(
 
 fn assert_mixed_gpu_pass_counts(painter: &SceneWgpuPainter) {
     let counts = painter
+        .core
         .last_dest_pass_counts
         .expect("encoded frame records dest passes");
     assert_eq!(
@@ -6692,6 +6697,7 @@ fn backdrop_filter_forces_sample_count_one_dest_path() {
         .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
         .unwrap();
     let counts = painter
+        .core
         .last_dest_pass_counts
         .expect("frost frame records dest passes");
     assert_eq!(counts.msaa, 0, "backdrop frames must stay sample_count=1");
@@ -7165,6 +7171,7 @@ fn rotated_backdrop_filter_mixes_dest_on_gpu() {
         .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
         .unwrap();
     let counts = painter
+        .core
         .last_dest_pass_counts
         .expect("rotated frost records dest passes");
     assert!(
@@ -9756,14 +9763,18 @@ fn quad_color_batch_uploads_only_changed_instances() {
 
     let (device, queue) = test_device();
     let mut pipeline = super::quad::QuadPipeline::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+    let mut target = pipeline.new_target(&device);
     let mut url_cache = super::url_texture_cache::UrlTextureCache::default();
     let clip = super::clip::FragmentClip::PASS;
     let bounds =
         |index: usize| super::clip::LogicalRect::from_xywh(index as f32 * 8.0, 0.0, 6.0, 6.0);
-    let mut push_batch = |pipeline: &mut super::quad::QuadPipeline, colors: &[[f32; 4]]| {
-        pipeline.begin_frame(1.0);
+    let mut push_batch = |pipeline: &mut super::quad::QuadPipeline,
+                          target: &mut super::quad::QuadPipelineTarget,
+                          colors: &[[f32; 4]]| {
+        target.begin_frame(1.0);
         for (index, color) in colors.iter().enumerate() {
             pipeline.push(
+                target,
                 &device,
                 &queue,
                 &mut url_cache,
@@ -9782,13 +9793,21 @@ fn quad_color_batch_uploads_only_changed_instances() {
             );
         }
         let sink = GpuWorkSink::new();
-        pipeline.upload(&device, &queue, &url_cache, [128, 64], 1.0, Some(&sink));
+        pipeline.upload(
+            target,
+            &device,
+            &queue,
+            &url_cache,
+            [128, 64],
+            1.0,
+            Some(&sink),
+        );
         sink.snapshot()
     };
 
     let colors = vec![[0.1, 0.2, 0.3, 1.0]; 32];
-    let initial = push_batch(&mut pipeline, &colors);
-    let unchanged = push_batch(&mut pipeline, &colors);
+    let initial = push_batch(&mut pipeline, &mut target, &colors);
+    let unchanged = push_batch(&mut pipeline, &mut target, &colors);
     assert!(
         unchanged.gpu_upload_bytes < initial.gpu_upload_bytes,
         "a stable QuadColorBatch must only upload its fixed frame uniform"
@@ -9796,7 +9815,7 @@ fn quad_color_batch_uploads_only_changed_instances() {
 
     let mut changed_colors = colors;
     changed_colors[5] = [0.9, 0.1, 0.2, 1.0];
-    let changed = push_batch(&mut pipeline, &changed_colors);
+    let changed = push_batch(&mut pipeline, &mut target, &changed_colors);
     assert!(
         changed.gpu_upload_bytes > unchanged.gpu_upload_bytes,
         "initial={}, unchanged={}, changed={}",
@@ -9818,11 +9837,14 @@ fn icon_batch_reuses_atlas_and_vertex_uploads() {
     use nana_ui_core::Icon;
 
     let (device, queue) = test_device();
-    let mut pipeline = super::icon::IconPipeline::new(&device, wgpu::TextureFormat::Rgba8Unorm);
-    let push_batch = |pipeline: &mut super::icon::IconPipeline| {
-        pipeline.begin_frame([128, 64]);
+    let pipeline = super::icon::IconPipeline::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+    let mut target = pipeline.new_target(&device);
+    let push_batch = |pipeline: &super::icon::IconPipeline,
+                      target: &mut super::icon::IconPipelineTarget| {
+        super::icon::IconPipeline::begin_frame(target, [128, 64]);
         for index in 0..24 {
             pipeline.prepare(
+                target,
                 &device,
                 &queue,
                 super::clip::LogicalRect::from_xywh(index as f32 * 5.0, 4.0, 4.0, 4.0),
@@ -9836,12 +9858,12 @@ fn icon_batch_reuses_atlas_and_vertex_uploads() {
             );
         }
         let sink = GpuWorkSink::new();
-        pipeline.upload(&device, &queue, Some(&sink));
+        pipeline.upload(target, &device, &queue, 2.0, Some(&sink));
         sink.snapshot()
     };
 
-    let first = push_batch(&mut pipeline);
-    let second = push_batch(&mut pipeline);
+    let first = push_batch(&pipeline, &mut target);
+    let second = push_batch(&pipeline, &mut target);
     assert!(first.gpu_upload_bytes > 0);
     assert_eq!(
         second.gpu_upload_bytes, 0,
@@ -10645,7 +10667,7 @@ fn batch_merging_does_not_flip_the_dest_sample_count() {
         .unwrap();
     queue.submit([encoder.finish()]);
     let work = painter.last_gpu_work().expect("encoded frame");
-    let counts = painter.last_dest_pass_counts.expect("encoded frame");
+    let counts = painter.core.last_dest_pass_counts.expect("encoded frame");
     assert_eq!(
         work.draw_calls, 3,
         "the two quads must share one draw: quads, glyphs, blit"
@@ -11389,7 +11411,10 @@ fn alternating_live_targets_keep_prepared_geometry_text_and_bindings() {
     }
     assert!(painter.targets.is_empty());
     assert!(
-        painter.prepared_batch.is_none(),
+        painter
+            .default_target()
+            .and_then(|t| t.prepared_batch.as_ref())
+            .is_none(),
         "target commands must not leak into the default painter state"
     );
 }
@@ -11814,6 +11839,27 @@ fn paint_one_painter_onto(
     )
 }
 
+fn paint_one_painter_with_options(
+    painter: impl nana_ui_runtime::Painter,
+    w: u32,
+    h: u32,
+    format: wgpu::TextureFormat,
+    clear_color: [f32; 4],
+    options: super::ScenePaintOptions,
+) -> Vec<u8> {
+    paint_painter_node_with_options(
+        painter,
+        [w as f32, h as f32],
+        w,
+        h,
+        format,
+        clear_color,
+        |_| {},
+        options,
+        |_| {},
+    )
+}
+
 /// Paint one `node_size` node carrying `painter`, styled by `style`, at the
 /// origin of a `w × h` viewport cleared to black, and read the frame back.
 fn paint_styled_painter(
@@ -11847,6 +11893,34 @@ fn paint_painter_node(
     format: wgpu::TextureFormat,
     clear_color: [f32; 4],
     configure: impl FnOnce(&mut SceneWgpuPainter),
+    style: impl FnOnce(&mut nana_ui_core::LayoutStyle),
+) -> Vec<u8> {
+    paint_painter_node_with_options(
+        painter,
+        node_size,
+        w,
+        h,
+        format,
+        clear_color,
+        configure,
+        super::ScenePaintOptions::default(),
+        style,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Every knob the painter tests turn"
+)]
+fn paint_painter_node_with_options(
+    painter: impl nana_ui_runtime::Painter,
+    node_size: [f32; 2],
+    w: u32,
+    h: u32,
+    format: wgpu::TextureFormat,
+    clear_color: [f32; 4],
+    configure: impl FnOnce(&mut SceneWgpuPainter),
+    options: super::ScenePaintOptions,
     style: impl FnOnce(&mut nana_ui_core::LayoutStyle),
 ) -> Vec<u8> {
     use nana_ui_runtime::Stack;
@@ -11891,7 +11965,7 @@ fn paint_painter_node(
         label: Some("nana-ui one painter"),
     });
     painter
-        .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
+        .paint_encoder_with_options(&scene, &mut encoder, &view, viewport, options, None, None)
         .unwrap();
     readback_rgba(&device, &queue, encoder, &texture, w, h)
 }
@@ -12161,7 +12235,7 @@ fn a_multiply_blend_darkens_what_is_under_it() {
 /// The first pixel of a 2×1 transparent sRGB target holding `color`,
 /// stored with `encoding`.
 fn stored_pixel(color: [f32; 4], encoding: super::AlphaEncoding) -> [u8; 4] {
-    let pixels = paint_one_painter_onto(
+    let pixels = paint_one_painter_with_options(
         PaintFn(move |cx: &mut nana_ui_runtime::PaintContext<'_>| {
             cx.fill_path(&full_rect(2.0, 1.0), color);
         }),
@@ -12169,7 +12243,10 @@ fn stored_pixel(color: [f32; 4], encoding: super::AlphaEncoding) -> [u8; 4] {
         1,
         wgpu::TextureFormat::Rgba8UnormSrgb,
         [0.0; 4],
-        |painter| painter.set_alpha_encoding(encoding),
+        super::ScenePaintOptions {
+            alpha: encoding,
+            ..Default::default()
+        },
     );
     [pixels[0], pixels[1], pixels[2], pixels[3]]
 }
@@ -12216,7 +12293,7 @@ fn presentation_profiles_keep_sdr_direct_and_wide_working_targets_distinct() {
 /// with subpixel text set to `order`.
 fn paint_subpixel_text(order: Option<super::SubpixelOrder>, layered: bool) -> Vec<u8> {
     use nana_ui_runtime::PaintText;
-    paint_one_painter_with(
+    paint_one_painter_with_options(
         PaintFn(move |cx: &mut nana_ui_runtime::PaintContext<'_>| {
             cx.fill_path(&full_rect(160.0, 40.0), [1.0, 1.0, 1.0, 1.0]);
             if layered {
@@ -12239,7 +12316,12 @@ fn paint_subpixel_text(order: Option<super::SubpixelOrder>, layered: bool) -> Ve
         }),
         160,
         40,
-        |painter| painter.set_subpixel_text(order),
+        wgpu::TextureFormat::Rgba8Unorm,
+        [0.0, 0.0, 0.0, 1.0],
+        super::ScenePaintOptions {
+            text_aa: order,
+            ..Default::default()
+        },
     )
 }
 
@@ -12657,7 +12739,12 @@ fn retained_paths_paint_what_cpu_transformed_vertices_did_under_any_scale() {
                 96,
                 wgpu::TextureFormat::Rgba8Unorm,
                 [0.0, 0.0, 0.0, 1.0],
-                |painter| painter.meshes.transform_paths_on_cpu(cpu),
+                |painter| {
+                    painter
+                        .default_target_mut()
+                        .meshes
+                        .transform_paths_on_cpu(cpu)
+                },
                 |layout| layout.transforms.transform = transform,
             )
         };
@@ -12847,7 +12934,7 @@ fn a_rerecorded_path_with_unchanged_geometry_uploads_no_vertex() {
             work.gpu_upload_bytes
         );
         assert_eq!(painter.resource_counters().path_meshes, 4);
-        assert_eq!(painter.meshes.path_slots(), 4);
+        assert_eq!(painter.default_target().unwrap().meshes.path_slots(), 4);
     }
     // Let go for good, a range lingers one frame, then goes with the mesh
     // it kept.
@@ -12855,9 +12942,9 @@ fn a_rerecorded_path_with_unchanged_geometry_uploads_no_vertex() {
     drop(scene);
     frame(&mut painter, &UiScene::new());
     assert_eq!(painter.resource_counters().path_meshes, 0);
-    assert_eq!(painter.meshes.path_slots(), 4);
+    assert_eq!(painter.default_target().unwrap().meshes.path_slots(), 4);
     frame(&mut painter, &UiScene::new());
-    assert_eq!(painter.meshes.path_slots(), 0);
+    assert_eq!(painter.default_target().unwrap().meshes.path_slots(), 0);
     assert!(kept.iter().all(|mesh| mesh.strong_count() == 0));
 }
 
@@ -13619,13 +13706,7 @@ fn a_later_target_in_one_frame_cannot_overwrite_glyphs_an_earlier_one_samples() 
     let small_atlas = |painter: &mut SceneWgpuPainter| {
         // One page barely wider than a line of text: the second target's
         // label cannot be placed without taking the first one's glyphs.
-        painter.text = TextPipeline::with_atlas_budget(
-            device,
-            wgpu::TextureFormat::Rgba8Unorm,
-            64,
-            64 * 64 + 8,
-            probe.gpu.policy(),
-        );
+        painter.use_small_text_atlas(64, 64 * 64 + 8);
     };
     let first = label_only_scene("abcdef");
     let other = label_only_scene("KLMNOP");
@@ -13829,7 +13910,7 @@ fn a_rolled_back_target_keeps_the_fetch_host() {
     drop(paint(&mut painter, "dropped"));
     paint(&mut painter, "rebuilt").submit();
     assert!(
-        egress_of(painter.fetch_host.as_ref()) == egress_of(Some(&host)),
+        egress_of(painter.core.fetch_host.as_ref()) == egress_of(Some(&host)),
         "the rollback must not release the window's fetch host"
     );
 }
@@ -14527,15 +14608,16 @@ fn a_new_painter_holds_the_pipelines_its_first_frame_draws_with() {
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let mut painter = SceneWgpuPainter::for_test(format);
     let built = painter
+        .core
         .dest_pipelines
         .clone()
         .expect("the dest pipelines are built with the painter");
-    assert!(painter.dest.is_none(), "before any frame");
+    assert!(painter.default_target().is_none(), "before any frame");
     let subpixel = device
         .features()
         .contains(wgpu::Features::DUAL_SOURCE_BLENDING);
     assert_eq!(
-        painter.text.subpixel_prewarmed(),
+        painter.core.text.subpixel_prewarmed(),
         subpixel,
         "the subpixel program is compiled ahead wherever it can run"
     );
@@ -14556,19 +14638,45 @@ fn a_new_painter_holds_the_pipelines_its_first_frame_draws_with() {
         )],
         [],
     );
-    painter.set_subpixel_text(Some(SubpixelOrder::Rgb));
-    let centre = square_centre(&device, &queue, &mut painter, &scene);
+    let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("nana-ui subpixel prewarm"),
+    });
+    let (tex, view) = test_copy_target(&device, format, 64, 64);
+    painter
+        .paint_encoder_with_options(
+            &scene,
+            &mut enc,
+            &view,
+            ScenePaintViewport {
+                logical_size: [64.0, 64.0],
+                physical_size: [64, 64],
+                scale_factor: 1.0,
+                scene_origin: [0.0, 0.0],
+                target_origin: [0.0, 0.0],
+                clear_color: [0.0, 0.0, 0.0, 1.0],
+                clear: true,
+            },
+            super::ScenePaintOptions {
+                text_aa: Some(SubpixelOrder::Rgb),
+                ..Default::default()
+            },
+            None,
+            None,
+        )
+        .unwrap();
+    let pixels = readback_rgba(&device, &queue, enc, &tex, 64, 64);
+    let centre = pixel(&pixels, 64, 32, 32);
     assert!(is_blue(centre), "the frame paints: {centre:?}");
     assert!(
         painter
-            .dest
-            .as_ref()
+            .default_target()
+            .and_then(|t| t.dest.as_ref())
             .expect("the first frame made its dest")
             .draws_with(&built),
         "with the painter's own dest pipelines"
     );
     assert!(
-        !subpixel || painter.text.subpixel_prewarmed(),
+        !subpixel || painter.core.text.subpixel_prewarmed(),
         "and its own subpixel program"
     );
 }
@@ -15193,6 +15301,8 @@ fn backdrop_scratch_and_dest_groups_right_size_and_reclaim_when_idle() {
 
     paint_once(&mut painter, &active);
     let scratch = painter
+        .default_target()
+        .unwrap()
         .backdrop
         .scratch_size()
         .expect("backdrop scratch allocated");
@@ -15200,7 +15310,12 @@ fn backdrop_scratch_and_dest_groups_right_size_and_reclaim_when_idle() {
         scratch[0] <= 128 && scratch[1] <= 128,
         "32x32 frosted card on 512x512 target must right-size ping/pong to <= 128x128, got {scratch:?}"
     );
-    let dest = painter.dest.as_ref().expect("dest target");
+    let dest = painter
+        .default_target()
+        .unwrap()
+        .dest
+        .as_ref()
+        .expect("dest target");
     assert!(dest.group_layer_count() >= 1);
     assert!(dest.has_reading_blend());
 
@@ -15220,11 +15335,16 @@ fn backdrop_scratch_and_dest_groups_right_size_and_reclaim_when_idle() {
         paint_once(&mut painter, &plain);
     }
     assert_eq!(
-        painter.backdrop.scratch_size(),
+        painter.default_target().unwrap().backdrop.scratch_size(),
         None,
         "idle backdrop scratch textures must drop to None after 120 frames"
     );
-    let dest = painter.dest.as_ref().expect("dest target");
+    let dest = painter
+        .default_target()
+        .unwrap()
+        .dest
+        .as_ref()
+        .expect("dest target");
     assert_eq!(
         dest.group_layer_count(),
         0,
@@ -15278,7 +15398,7 @@ fn host_texture_direct_to_target_matches_dest_blit_pixels() {
             None,
         )
         .unwrap();
-    let direct_counts = direct_painter.last_dest_pass_counts.unwrap();
+    let direct_counts = direct_painter.core.last_dest_pass_counts.unwrap();
     assert_eq!(direct_counts.blit, 0);
     assert_eq!(direct_counts.color, 2);
     assert_eq!(direct_counts.group, 1);
@@ -15308,7 +15428,7 @@ fn host_texture_direct_to_target_matches_dest_blit_pixels() {
             None,
         )
         .unwrap();
-    let blit_counts = blit_painter.last_dest_pass_counts.unwrap();
+    let blit_counts = blit_painter.core.last_dest_pass_counts.unwrap();
     assert_eq!(blit_counts.blit, 1);
     let blit_pixels = readback_rgba(&device, &queue, blit_enc, &blit_tex, 65, 64);
 
@@ -15341,22 +15461,49 @@ fn host_texture_falls_back_to_dest_blit_when_required() {
         clear: true,
     };
 
-    let paint_counts = |painter: &mut SceneWgpuPainter, scene: &UiScene, viewport| {
+    let paint_counts_with = |painter: &mut SceneWgpuPainter,
+                             scene: &UiScene,
+                             viewport,
+                             options: super::ScenePaintOptions| {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("fallback-check"),
         });
         painter
-            .paint_encoder(scene, &mut encoder, &view, viewport, Some(&registry), None)
+            .paint_encoder_with_options(
+                scene,
+                &mut encoder,
+                &view,
+                viewport,
+                options,
+                Some(&registry),
+                None,
+            )
             .unwrap();
         queue.submit([encoder.finish()]);
-        painter.last_dest_pass_counts.unwrap()
+        painter.core.last_dest_pass_counts.unwrap()
+    };
+    let paint_counts = |painter: &mut SceneWgpuPainter, scene: &UiScene, viewport| {
+        paint_counts_with(
+            painter,
+            scene,
+            viewport,
+            super::ScenePaintOptions::default(),
+        )
     };
 
     // 1. AlphaEncoding::Gamma requires dest blit for gamma-alpha conversion.
     let mut gamma_painter = SceneWgpuPainter::for_test(format);
-    gamma_painter.set_alpha_encoding(AlphaEncoding::Gamma);
     assert_eq!(
-        paint_counts(&mut gamma_painter, &scene, base_viewport).blit,
+        paint_counts_with(
+            &mut gamma_painter,
+            &scene,
+            base_viewport,
+            super::ScenePaintOptions {
+                alpha: AlphaEncoding::Gamma,
+                ..Default::default()
+            },
+        )
+        .blit,
         1
     );
 
@@ -15484,7 +15631,7 @@ fn streaming_ui_switches_to_direct_msaa_resolve_and_re_retains_when_idle() {
         target_painter
             .paint_encoder(&scene, &mut enc, target_view, vp, None, None)
             .unwrap();
-        let counts = target_painter.last_dest_pass_counts.unwrap();
+        let counts = target_painter.core.last_dest_pass_counts.unwrap();
         let work = target_painter.last_gpu_work().unwrap();
         let pixels = readback_rgba(&device, &queue, enc, tex, w, 64);
         (counts, work, pixels)
@@ -15493,7 +15640,15 @@ fn streaming_ui_switches_to_direct_msaa_resolve_and_re_retains_when_idle() {
     // Frames 1 & 2 (scroll 0 -> 2): Retained while building streak.
     let (c1, _, _) = paint_at(&mut painter, &texture, &view, make_viewport(0.0), 64);
     assert_eq!((c1.msaa, c1.blit), (1, 1));
-    assert!(painter.dest.as_ref().unwrap().has_color());
+    assert!(
+        painter
+            .default_target()
+            .unwrap()
+            .dest
+            .as_ref()
+            .unwrap()
+            .has_color()
+    );
 
     let (c2, _, _) = paint_at(&mut painter, &texture, &view, make_viewport(2.0), 64);
     assert_eq!((c2.msaa, c2.blit), (1, 1));
@@ -15606,10 +15761,18 @@ fn gpu_motion_live_renders_direct_without_dest_color_or_blit() {
     direct_painter
         .paint_encoder(&scene, &mut direct_enc, &direct_view, viewport, None, None)
         .unwrap();
-    let direct_counts = direct_painter.last_dest_pass_counts.unwrap();
+    let direct_counts = direct_painter.core.last_dest_pass_counts.unwrap();
     assert_eq!(direct_counts.msaa, 1);
     assert_eq!(direct_counts.blit, 0);
-    assert!(!direct_painter.dest.as_ref().unwrap().has_color());
+    assert!(
+        !direct_painter
+            .default_target()
+            .unwrap()
+            .dest
+            .as_ref()
+            .unwrap()
+            .has_color()
+    );
     let direct_pixels = readback_rgba(&device, &queue, direct_enc, &direct_tex, 64, 64);
 
     let mut blit_painter = SceneWgpuPainter::for_test(format);
@@ -15620,7 +15783,7 @@ fn gpu_motion_live_renders_direct_without_dest_color_or_blit() {
     blit_painter
         .paint_encoder(&scene, &mut blit_enc, &blit_view, viewport, None, None)
         .unwrap();
-    let blit_counts = blit_painter.last_dest_pass_counts.unwrap();
+    let blit_counts = blit_painter.core.last_dest_pass_counts.unwrap();
     assert_eq!(blit_counts.blit, 1);
     let blit_pixels = readback_rgba(&device, &queue, blit_enc, &blit_tex, 65, 64);
 
@@ -15697,7 +15860,7 @@ fn host_texture_simple_replace_matches_clear_and_blend_pixels() {
                     None,
                 )
                 .unwrap();
-            let direct_counts = direct_painter.last_dest_pass_counts.unwrap();
+            let direct_counts = direct_painter.core.last_dest_pass_counts.unwrap();
             assert_eq!(direct_counts.color, 1);
             assert_eq!(direct_counts.blit, 0);
             let direct_pixels = readback_rgba(&device, &queue, direct_enc, &direct_tex, 64, 64);
@@ -15715,7 +15878,7 @@ fn host_texture_simple_replace_matches_clear_and_blend_pixels() {
                     None,
                 )
                 .unwrap();
-            assert_eq!(ref_painter.last_dest_pass_counts.unwrap().blit, 1);
+            assert_eq!(ref_painter.core.last_dest_pass_counts.unwrap().blit, 1);
             let ref_pixels = readback_rgba(&device, &queue, ref_enc, &ref_tex, 65, 64);
 
             for y in 0..64u32 {
@@ -15954,14 +16117,17 @@ fn partial_damage_incremental_paint_matches_full_frame_with_ui_overlays() {
             &mut slot_revs,
         )
         .expect("cached scene damage");
-    painter.set_next_frame_damage(Some(dmg2));
     let mut enc = device.create_command_encoder(&Default::default());
     painter
-        .paint_encoder(
+        .paint_encoder_with_options(
             &scene,
             &mut enc,
             &target_view,
             viewport,
+            super::ScenePaintOptions {
+                damage: Some(dmg2),
+                ..Default::default()
+            },
             Some(&registry),
             None,
         )
@@ -15991,14 +16157,17 @@ fn partial_damage_incremental_paint_matches_full_frame_with_ui_overlays() {
             &mut slot_revs,
         )
         .expect("cached scene damage");
-    painter.set_next_frame_damage(Some(dmg3));
     let mut enc = device.create_command_encoder(&Default::default());
     painter
-        .paint_encoder(
+        .paint_encoder_with_options(
             &scene,
             &mut enc,
             &target_view,
             viewport,
+            super::ScenePaintOptions {
+                damage: Some(dmg3),
+                ..Default::default()
+            },
             Some(&registry),
             None,
         )

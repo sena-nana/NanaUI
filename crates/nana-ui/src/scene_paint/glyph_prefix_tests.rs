@@ -117,15 +117,18 @@ fn paint(
     painter
         .paint_encoder(scene, &mut encoder, &view, viewport, None, None)
         .unwrap();
-    let counts = painter.last_dest_pass_counts.expect("an encoded frame");
+    let counts = painter
+        .core
+        .last_dest_pass_counts
+        .expect("an encoded frame");
     let pixels = readback_rgba(device, queue, encoder, &texture, SIZE[0], SIZE[1]);
     (pixels, counts)
 }
 
 fn prefix_allocated(painter: &SceneWgpuPainter) -> bool {
     painter
-        .dest
-        .as_ref()
+        .default_target()
+        .and_then(|t| t.dest.as_ref())
         .is_some_and(DestTarget::prefix_allocated)
 }
 
@@ -211,7 +214,10 @@ fn a_change_under_the_text_paints_the_prefix_again() {
         let scene = waving.at(Duration::from_millis(millis));
         paint(&device, &queue, &mut painter, scene);
     }
-    assert_eq!(painter.last_dest_pass_counts.unwrap().prefix_restore, 1);
+    assert_eq!(
+        painter.core.last_dest_pass_counts.unwrap().prefix_restore,
+        1
+    );
     waving.restyle_panel([0.1, 0.6, 0.2, 1.0]);
     let scene = waving.at(Duration::from_millis(100_300));
     let (pixels, counts) = paint(&device, &queue, &mut painter, scene);

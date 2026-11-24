@@ -99,6 +99,7 @@ pub(crate) struct PreparedPresentation {
 
 impl PreparedPresentation {
     #[cfg(any(feature = "hosted", test))]
+    #[cfg_attr(not(feature = "hosted"), allow(dead_code))]
     pub fn retained(plan: ExternalFramePlan, request: RetainedPresentation) -> Self {
         Self {
             route: PresentationRoute::Retained,
@@ -129,6 +130,7 @@ impl PreparedPresentation {
     }
 
     #[cfg(any(feature = "hosted", test))]
+    #[cfg_attr(not(feature = "hosted"), allow(dead_code))]
     pub fn into_retained(self) -> Option<(ExternalFramePlan, RetainedPresentation)> {
         self.retained
     }
@@ -316,14 +318,14 @@ impl PresentationFrameDriver {
                 .expect("shared route recorded canonical content")
                 .texture;
             let target = direct_target.expect("shared presenter supplied its target");
-            if !transfer.as_ref().is_some_and(|transfer| {
-                transfer.matches(gpu, target.format(), source.format().is_srgb())
-            }) {
-                *transfer = Some(OutputTransfer::try_new(
-                    gpu,
-                    target.format(),
-                    source.format().is_srgb(),
-                )?);
+            let op = super::super::transfer::TransferOp::Blit {
+                source_srgb: source.format().is_srgb(),
+            };
+            if !transfer
+                .as_ref()
+                .is_some_and(|transfer| transfer.matches(gpu, target.format(), op))
+            {
+                *transfer = Some(OutputTransfer::try_new(gpu, target.format(), op)?);
             }
             transfer
                 .as_mut()
@@ -357,16 +359,18 @@ impl PresentationFrameDriver {
     ) -> Result<Option<GpuWorkObservation>, ExternalSurfaceError> {
         let painter = painters.try_painter(gpu, direct.profile)?;
         painter.set_resource_fetch_host(fetch_host);
-        painter.set_alpha_encoding(direct.alpha);
-        painter.set_subpixel_text(direct.text_aa);
-        painter.set_presentation_parameters(direct.parameters);
-        painter.set_next_frame_damage(direct.damage);
-        painter.paint_target(
+        painter.paint_target_with_options(
             direct.id,
             scene,
             frame,
             target,
             direct.viewport,
+            crate::scene_paint::ScenePaintOptions {
+                alpha: direct.alpha,
+                text_aa: direct.text_aa,
+                damage: direct.damage,
+                presentation: direct.parameters,
+            },
             textures,
             renderers,
         )?;
@@ -401,10 +405,7 @@ impl PresentationFrameDriver {
         textures: Option<&HostTextureRegistry>,
         renderers: Option<&SceneGpuRendererRegistry>,
     ) -> Result<RecordedRetained, ExternalSurfaceError> {
-        painter.set_subpixel_text(None);
-        painter.set_alpha_encoding(request.alpha);
-        painter.set_presentation_parameters(request.parameters);
-        if let Err(error) = surface.record(
+        if let Err(error) = surface.record_with_presentation(
             &plan,
             frame,
             Some(painter),
@@ -412,6 +413,8 @@ impl PresentationFrameDriver {
             request.viewport,
             textures,
             renderers,
+            request.alpha,
+            request.parameters,
         ) {
             // A failed paint may have encoded partial target work. Keep its
             // reservation until this frame completes (or is discarded), but

@@ -241,12 +241,6 @@ struct PingPong {
 }
 
 pub(super) struct BackdropPipeline {
-    ping: Option<PingPong>,
-    pong: Option<PingPong>,
-    width: u32,
-    height: u32,
-    idle_frames: u32,
-    shrink_frames: u32,
     format: wgpu::TextureFormat,
     sampler: wgpu::Sampler,
     copy_pipeline: wgpu::RenderPipeline,
@@ -255,11 +249,6 @@ pub(super) struct BackdropPipeline {
     blur_bind_layout: wgpu::BindGroupLayout,
     composite_pipeline: wgpu::RenderPipeline,
     composite_bind_layout: wgpu::BindGroupLayout,
-    uniform_slab: ManagedBuffer,
-    uniform_slab_passes: u64,
-    pending: Vec<BackdropRequest>,
-    /// The scene's corner curve exponent, set each frame before upload.
-    corner_exponent: f32,
 }
 
 impl BackdropPipeline {
@@ -423,15 +412,7 @@ impl BackdropPipeline {
             wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
             "nana-ui.scene.backdrop.composite.pipeline",
         )?;
-        let uniform_usage = wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST;
-        let initial_passes = INITIAL_FROST_SLOTS * PASSES_PER_FROST;
         Ok(Self {
-            ping: None,
-            pong: None,
-            width: 0,
-            height: 0,
-            idle_frames: 0,
-            shrink_frames: 0,
             format,
             sampler,
             copy_pipeline,
@@ -440,16 +421,55 @@ impl BackdropPipeline {
             blur_bind_layout,
             composite_pipeline,
             composite_bind_layout,
+        })
+    }
+
+    fn make_texture(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        width: u32,
+        height: u32,
+        label: &str,
+    ) -> PingPong {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(&format!("nana-ui.scene.backdrop.{label}")),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        PingPong {
+            _texture: texture,
+            view,
+        }
+    }
+
+    pub(super) fn new_target(&self, device: &wgpu::Device) -> BackdropPipelineTarget {
+        let initial_passes = INITIAL_FROST_SLOTS * PASSES_PER_FROST;
+        BackdropPipelineTarget {
+            ping: None,
+            pong: None,
+            width: 0,
+            height: 0,
+            idle_frames: 0,
+            shrink_frames: 0,
             uniform_slab: ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("nana-ui.scene.backdrop.uniforms"),
                 size: initial_passes * UNIFORM_STRIDE,
-                usage: uniform_usage,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             })),
             uniform_slab_passes: initial_passes,
             pending: Vec::new(),
-            corner_exponent: 2.0,
-        })
+        }
     }
 
     fn uniform_offset(slot: u32, pass: u64) -> u64 {
@@ -470,35 +490,36 @@ impl BackdropPipeline {
     }
 
     fn ensure_uniform_slab(
-        &mut self,
+        target: &mut BackdropPipelineTarget,
         device: &wgpu::Device,
         frost_count: u64,
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
         let needed_passes = frost_count * PASSES_PER_FROST;
-        if needed_passes <= self.uniform_slab_passes {
+        if needed_passes <= target.uniform_slab_passes {
             return;
         }
-        let new_passes = needed_passes.max(self.uniform_slab_passes * 2);
+        let new_passes = needed_passes.max(target.uniform_slab_passes * 2);
         let size = new_passes * UNIFORM_STRIDE;
         let usage = wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST;
         if let Some(work) = gpu_work {
             work.replace_buffer(
                 device,
-                &mut self.uniform_slab,
+                &mut target.uniform_slab,
                 size,
                 usage,
                 "nana-ui.scene.backdrop.uniforms",
             );
         } else {
-            self.uniform_slab = ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("nana-ui.scene.backdrop.uniforms"),
-                size,
-                usage,
-                mapped_at_creation: false,
-            }));
+            target.uniform_slab =
+                ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("nana-ui.scene.backdrop.uniforms"),
+                    size,
+                    usage,
+                    mapped_at_creation: false,
+                }));
         }
-        self.uniform_slab_passes = new_passes;
+        target.uniform_slab_passes = new_passes;
     }
 
     fn texture_uniform_layout(
@@ -566,10 +587,10 @@ impl BackdropPipeline {
         })
     }
 
-    fn scratch_extent(&self, device: &wgpu::Device) -> Option<[u32; 2]> {
+    fn scratch_extent(target: &BackdropPipelineTarget, device: &wgpu::Device) -> Option<[u32; 2]> {
         let mut max_w = 0u32;
         let mut max_h = 0u32;
-        for request in &self.pending {
+        for request in &target.pending {
             let (_, [w, h]) = request.blur_region();
             max_w = max_w.max(w);
             max_h = max_h.max(h);
@@ -587,7 +608,13 @@ impl BackdropPipeline {
         Some([edge(max_w), edge(max_h)])
     }
 
-    fn ensure_textures(&mut self, device: &wgpu::Device, width: u32, height: u32) {
+    fn ensure_textures(
+        &self,
+        target: &mut BackdropPipelineTarget,
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+    ) {
         let max_edge = device.limits().max_texture_dimension_2d.max(1);
         let need_w = width
             .max(MIN_SCRATCH_EDGE)
@@ -599,88 +626,89 @@ impl BackdropPipeline {
             .checked_next_power_of_two()
             .unwrap_or(max_edge)
             .min(max_edge);
-        if self.ping.is_some() && self.width >= need_w && self.height >= need_h {
+        if target.ping.is_some() && target.width >= need_w && target.height >= need_h {
             return;
         }
-        self.width = self.width.max(need_w);
-        self.height = self.height.max(need_h);
-        self.ping = Some(Self::make_texture(
+        target.width = target.width.max(need_w);
+        target.height = target.height.max(need_h);
+        target.ping = Some(Self::make_texture(
             device,
             self.format,
-            self.width,
-            self.height,
+            target.width,
+            target.height,
             "ping",
         ));
-        self.pong = Some(Self::make_texture(
+        target.pong = Some(Self::make_texture(
             device,
             self.format,
-            self.width,
-            self.height,
+            target.width,
+            target.height,
             "pong",
         ));
     }
 
     pub(super) fn finish_frame(
-        &mut self,
+        &self,
+        target: &mut BackdropPipelineTarget,
         device: &wgpu::Device,
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
-        let Some([need_w, need_h]) = self.scratch_extent(device) else {
-            self.shrink_frames = 0;
-            if self.ping.is_some()
-                || self.uniform_slab_passes > INITIAL_FROST_SLOTS * PASSES_PER_FROST
+        let Some([need_w, need_h]) = Self::scratch_extent(target, device) else {
+            target.shrink_frames = 0;
+            if target.ping.is_some()
+                || target.uniform_slab_passes > INITIAL_FROST_SLOTS * PASSES_PER_FROST
             {
-                self.idle_frames = self.idle_frames.saturating_add(1);
-                if self.idle_frames >= SHRINK_IDLE_FRAMES {
-                    self.ping = None;
-                    self.pong = None;
-                    self.width = 0;
-                    self.height = 0;
-                    self.shrink_uniform_slab(device, INITIAL_FROST_SLOTS, gpu_work);
-                    self.idle_frames = 0;
+                target.idle_frames = target.idle_frames.saturating_add(1);
+                if target.idle_frames >= SHRINK_IDLE_FRAMES {
+                    target.ping = None;
+                    target.pong = None;
+                    target.width = 0;
+                    target.height = 0;
+                    Self::shrink_uniform_slab(target, device, INITIAL_FROST_SLOTS, gpu_work);
+                    target.idle_frames = 0;
                 }
             } else {
-                self.idle_frames = 0;
+                target.idle_frames = 0;
             }
             return;
         };
-        self.idle_frames = 0;
-        let current_area = u64::from(self.width) * u64::from(self.height);
+        target.idle_frames = 0;
+        let current_area = u64::from(target.width) * u64::from(target.height);
         let needed_area = u64::from(need_w) * u64::from(need_h);
-        if self.ping.is_some() && needed_area.saturating_mul(4) <= current_area {
-            self.shrink_frames = self.shrink_frames.saturating_add(1);
-            if self.shrink_frames >= SHRINK_IDLE_FRAMES {
-                self.width = need_w;
-                self.height = need_h;
-                self.ping = Some(Self::make_texture(
+        if target.ping.is_some() && needed_area.saturating_mul(4) <= current_area {
+            target.shrink_frames = target.shrink_frames.saturating_add(1);
+            if target.shrink_frames >= SHRINK_IDLE_FRAMES {
+                target.width = need_w;
+                target.height = need_h;
+                target.ping = Some(Self::make_texture(
                     device,
                     self.format,
-                    self.width,
-                    self.height,
+                    target.width,
+                    target.height,
                     "ping",
                 ));
-                self.pong = Some(Self::make_texture(
+                target.pong = Some(Self::make_texture(
                     device,
                     self.format,
-                    self.width,
-                    self.height,
+                    target.width,
+                    target.height,
                     "pong",
                 ));
-                self.shrink_frames = 0;
+                target.shrink_frames = 0;
             }
         } else {
-            self.shrink_frames = 0;
+            target.shrink_frames = 0;
         }
     }
 
     fn shrink_uniform_slab(
-        &mut self,
+        target: &mut BackdropPipelineTarget,
         device: &wgpu::Device,
         frost_slots: u64,
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
         let new_passes = frost_slots.max(INITIAL_FROST_SLOTS) * PASSES_PER_FROST;
-        if new_passes >= self.uniform_slab_passes {
+        if new_passes >= target.uniform_slab_passes {
             return;
         }
         let size = new_passes * UNIFORM_STRIDE;
@@ -688,72 +716,34 @@ impl BackdropPipeline {
         if let Some(work) = gpu_work {
             work.replace_buffer(
                 device,
-                &mut self.uniform_slab,
+                &mut target.uniform_slab,
                 size,
                 usage,
                 "nana-ui.scene.backdrop.uniforms",
             );
         } else {
-            self.uniform_slab = ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("nana-ui.scene.backdrop.uniforms"),
-                size,
-                usage,
-                mapped_at_creation: false,
-            }));
+            target.uniform_slab =
+                ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("nana-ui.scene.backdrop.uniforms"),
+                    size,
+                    usage,
+                    mapped_at_creation: false,
+                }));
         }
-        self.uniform_slab_passes = new_passes;
+        target.uniform_slab_passes = new_passes;
     }
 
-    #[cfg(test)]
-    pub(super) fn scratch_size(&self) -> Option<[u32; 2]> {
-        self.ping.as_ref().map(|_| [self.width, self.height])
+    pub(super) fn begin_frame(target: &mut BackdropPipelineTarget) {
+        target.pending.clear();
     }
 
-    fn make_texture(
-        device: &wgpu::Device,
-        format: wgpu::TextureFormat,
-        width: u32,
-        height: u32,
-        label: &str,
-    ) -> PingPong {
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some(&format!("nana-ui.scene.backdrop.{label}")),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let view = texture.create_view(&Default::default());
-        PingPong {
-            _texture: texture,
-            view,
-        }
-    }
-
-    pub(super) fn begin_frame(&mut self) {
-        self.pending.clear();
-    }
-
-    /// The scene's corner curve exponent, for the frosted shapes and clips
-    /// pushed this frame.
-    pub(super) fn set_corner_exponent(&mut self, exponent: f32) {
-        self.corner_exponent = exponent;
-    }
-
-    pub(super) fn needs_backdrop(&self) -> bool {
-        !self.pending.is_empty()
+    pub(super) fn needs_backdrop(target: &BackdropPipelineTarget) -> bool {
+        !target.pending.is_empty()
     }
 
     #[allow(clippy::too_many_arguments)]
     pub(super) fn push(
-        &mut self,
+        target: &mut BackdropPipelineTarget,
         paint_index: u32,
         physical_bounds: [f32; 4],
         corner_radius: [f32; 4],
@@ -783,8 +773,8 @@ impl BackdropPipeline {
         let padded_h = (y + h + pad - padded_y)
             .min(dest_physical[1].saturating_sub(padded_y))
             .max(1);
-        let index = self.pending.len() as u32;
-        self.pending.push(BackdropRequest {
+        let index = target.pending.len() as u32;
+        target.pending.push(BackdropRequest {
             uniform_slot: index,
             paint_index,
             physical_bounds,
@@ -805,23 +795,24 @@ impl BackdropPipeline {
     }
 
     pub(super) fn upload(
-        &mut self,
+        target: &mut BackdropPipelineTarget,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         dest_physical: [u32; 2],
+        corner_exponent: f32,
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
-        let count = self.pending.len();
+        let count = target.pending.len();
         if count == 0 {
             return;
         }
-        self.ensure_uniform_slab(device, count as u64, gpu_work);
+        Self::ensure_uniform_slab(target, device, count as u64, gpu_work);
         let texel = [
             1.0 / dest_physical[0].max(1) as f32,
             1.0 / dest_physical[1].max(1) as f32,
         ];
         let dest_size = [dest_physical[0] as f32, dest_physical[1] as f32];
-        for request in &self.pending {
+        for request in &target.pending {
             let slot = request.uniform_slot;
             let downsample = request.downsample as f32;
             let copy_uniforms = CopyUniforms {
@@ -834,9 +825,9 @@ impl BackdropPipeline {
             let copy_offset = Self::uniform_offset(slot, PASS_COPY);
             let copy_bytes = bytemuck::bytes_of(&copy_uniforms);
             if let Some(work) = gpu_work {
-                work.write_buffer(queue, &self.uniform_slab, copy_offset, copy_bytes);
+                work.write_buffer(queue, &target.uniform_slab, copy_offset, copy_bytes);
             } else {
-                queue.write_buffer(&self.uniform_slab, copy_offset, copy_bytes);
+                queue.write_buffer(&target.uniform_slab, copy_offset, copy_bytes);
             }
 
             let ([region_x, region_y], [region_w, region_h]) = request.blur_region();
@@ -855,9 +846,9 @@ impl BackdropPipeline {
                 let blur_offset = Self::uniform_offset(slot, pass);
                 let blur_bytes = bytemuck::bytes_of(&blur_uniforms);
                 if let Some(work) = gpu_work {
-                    work.write_buffer(queue, &self.uniform_slab, blur_offset, blur_bytes);
+                    work.write_buffer(queue, &target.uniform_slab, blur_offset, blur_bytes);
                 } else {
-                    queue.write_buffer(&self.uniform_slab, blur_offset, blur_bytes);
+                    queue.write_buffer(&target.uniform_slab, blur_offset, blur_bytes);
                 }
             }
 
@@ -885,7 +876,7 @@ impl BackdropPipeline {
                 quad_abcd: request.quad_abcd,
                 quad_ef: request.quad_ef,
                 paint_index: request.paint_index,
-                corner_exponent: self.corner_exponent,
+                corner_exponent,
                 blur_scale: 1.0 / downsample,
                 opacity: request.opacity,
                 _pad_blur: [0.0; 2],
@@ -893,16 +884,22 @@ impl BackdropPipeline {
             let composite_offset = Self::uniform_offset(slot, PASS_COMPOSITE);
             let composite_bytes = bytemuck::bytes_of(&composite_uniforms);
             if let Some(work) = gpu_work {
-                work.write_buffer(queue, &self.uniform_slab, composite_offset, composite_bytes);
+                work.write_buffer(
+                    queue,
+                    &target.uniform_slab,
+                    composite_offset,
+                    composite_bytes,
+                );
             } else {
-                queue.write_buffer(&self.uniform_slab, composite_offset, composite_bytes);
+                queue.write_buffer(&target.uniform_slab, composite_offset, composite_bytes);
             }
         }
     }
 
     #[allow(clippy::too_many_arguments)]
     pub(super) fn encode(
-        &mut self,
+        &self,
+        target: &mut BackdropPipelineTarget,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         dest_view: &wgpu::TextureView,
@@ -914,13 +911,14 @@ impl BackdropPipeline {
         backdrop_passes: &mut u32,
     ) {
         let (_, [region_w, region_h]) = request.blur_region();
-        let [scratch_w, scratch_h] = self.scratch_extent(device).unwrap_or([region_w, region_h]);
-        self.ensure_textures(device, scratch_w, scratch_h);
-        let ping = self.ping.as_ref().expect("backdrop ping");
-        let pong = self.pong.as_ref().expect("backdrop pong");
+        let [scratch_w, scratch_h] =
+            Self::scratch_extent(target, device).unwrap_or([region_w, region_h]);
+        self.ensure_textures(target, device, scratch_w, scratch_h);
+        let ping = target.ping.as_ref().expect("backdrop ping");
+        let pong = target.pong.as_ref().expect("backdrop pong");
         let slot = request.uniform_slot;
         let copy_binding = Self::uniform_binding(
-            &self.uniform_slab,
+            &target.uniform_slab,
             slot,
             PASS_COPY,
             std::mem::size_of::<CopyUniforms>() as u64,
@@ -972,7 +970,7 @@ impl BackdropPipeline {
             (PASS_BLUR_V, &pong.view, &ping.view),
         ] {
             let blur_binding =
-                Self::uniform_binding(&self.uniform_slab, slot, pass, BLUR_UNIFORM_SLOT_SIZE);
+                Self::uniform_binding(&target.uniform_slab, slot, pass, BLUR_UNIFORM_SLOT_SIZE);
             let blur_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("nana-ui.scene.backdrop.blur.bind"),
                 layout: &self.blur_bind_layout,
@@ -1015,7 +1013,7 @@ impl BackdropPipeline {
         }
 
         let composite_binding = Self::uniform_binding(
-            &self.uniform_slab,
+            &target.uniform_slab,
             slot,
             PASS_COMPOSITE,
             COMPOSITE_UNIFORM_SIZE as u64,
@@ -1092,8 +1090,8 @@ impl BackdropPipeline {
         }
     }
 
-    pub(super) fn request(&self, index: u32) -> Option<&BackdropRequest> {
-        self.pending.get(index as usize)
+    pub(super) fn request(target: &BackdropPipelineTarget, index: u32) -> Option<&BackdropRequest> {
+        target.pending.get(index as usize)
     }
 }
 
@@ -1109,39 +1107,9 @@ pub(super) struct BackdropPipelineTarget {
     pending: Vec<BackdropRequest>,
 }
 
-impl BackdropPipeline {
-    pub(super) fn swap_target(
-        &mut self,
-        target: &mut Option<BackdropPipelineTarget>,
-        device: &wgpu::Device,
-    ) {
-        let target = target.get_or_insert_with(|| BackdropPipelineTarget {
-            ping: None,
-            pong: None,
-            width: 0,
-            height: 0,
-            idle_frames: 0,
-            shrink_frames: 0,
-            uniform_slab: ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("nana.target.backdrop.uniforms"),
-                size: INITIAL_FROST_SLOTS * PASSES_PER_FROST * UNIFORM_STRIDE,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            })),
-            uniform_slab_passes: INITIAL_FROST_SLOTS * PASSES_PER_FROST,
-            pending: Vec::new(),
-        });
-        std::mem::swap(&mut self.ping, &mut target.ping);
-        std::mem::swap(&mut self.pong, &mut target.pong);
-        std::mem::swap(&mut self.width, &mut target.width);
-        std::mem::swap(&mut self.height, &mut target.height);
-        std::mem::swap(&mut self.idle_frames, &mut target.idle_frames);
-        std::mem::swap(&mut self.shrink_frames, &mut target.shrink_frames);
-        std::mem::swap(&mut self.uniform_slab, &mut target.uniform_slab);
-        std::mem::swap(
-            &mut self.uniform_slab_passes,
-            &mut target.uniform_slab_passes,
-        );
-        std::mem::swap(&mut self.pending, &mut target.pending);
+impl BackdropPipelineTarget {
+    #[cfg(test)]
+    pub(super) fn scratch_size(&self) -> Option<[u32; 2]> {
+        self.ping.as_ref().map(|_| [self.width, self.height])
     }
 }

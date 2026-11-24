@@ -27,8 +27,8 @@ use std::num::NonZeroU32;
 use std::time::{Duration, Instant};
 
 use nana_gpu::{
-    FrameContext, GpuContext, GpuError, GpuSubmission, GpuTexture, GpuTextureDescriptor,
-    GpuTextureFormat, GpuTextureUsages,
+    FrameContext, GpuContext, GpuSubmission, GpuTexture, GpuTextureDescriptor, GpuTextureFormat,
+    GpuTextureUsages,
 };
 use nana_ui_platform::{WindowGeometry, WindowId};
 use nana_ui_scene::UiScene;
@@ -454,7 +454,8 @@ pub(crate) struct WindowOutputState {
     suspend_pending: bool,
     suspend_at: Instant,
     surface: Option<ExternalSurface>,
-    straight: Vec<StraightAlpha>,
+    straight_targets: Vec<GpuTexture>,
+    straight_transfer: Option<super::transfer::OutputTransfer>,
     planner: super::RenderTargetPlanner,
     transfer: Option<super::transfer::OutputTransfer>,
     work: super::OutputWorkObservation,
@@ -644,7 +645,8 @@ impl WindowOutputState {
             suspend_pending: false,
             suspend_at: Instant::now(),
             surface: None,
-            straight: Vec::new(),
+            straight_targets: Vec::new(),
+            straight_transfer: None,
             planner: super::RenderTargetPlanner::new(),
             transfer: None,
             work: Default::default(),
@@ -726,7 +728,7 @@ impl WindowOutputState {
         {
             // Canonical storage is unchanged. Keep its generation and leases;
             // only conversion/transport resources change at this boundary.
-            self.straight.clear();
+            self.straight_targets.clear();
             self.retire_native();
             self.volatile = self.volatile.wrapping_add(1);
         }
@@ -760,7 +762,8 @@ impl WindowOutputState {
         if let Some(surface) = self.surface.take() {
             self.retired_targets.extend(surface.target_ids());
         }
-        self.straight.clear();
+        self.straight_targets.clear();
+        self.straight_transfer = None;
         self.transfer = None;
         self.retire_native();
         self.throttled_until = None;
@@ -1036,7 +1039,7 @@ impl WindowOutputState {
         }
         // New extent, new device or first frame: conversion target and
         // native textures follow the surface.
-        self.straight.clear();
+        self.straight_targets.clear();
         self.retire_native();
         self.refresh_trace_source(self.work.target_recreates - before, reason);
         Ok(())
@@ -1109,14 +1112,36 @@ impl WindowOutputState {
         if config.alpha == WindowOutputAlpha::Straight {
             let gpu = frame.gpu().clone();
             let extent = surface.config().extent;
+            let op = super::transfer::TransferOp::StraightenAlpha;
+            if !self
+                .straight_transfer
+                .as_ref()
+                .is_some_and(|transfer| transfer.matches(&gpu, WINDOW_OUTPUT_FORMAT, op))
+            {
+                match super::transfer::OutputTransfer::try_new(&gpu, WINDOW_OUTPUT_FORMAT, op) {
+                    Ok(transfer) => self.straight_transfer = Some(transfer),
+                    Err(error) => {
+                        self.fail(error.to_string());
+                        return None;
+                    }
+                }
+            }
             // One conversion target per canonical slot. The output lease
             // reserves both through asynchronous consumers, never one shared
             // conversion texture that a later frame could overwrite.
             let slot = plan.slot_index();
-            while self.straight.len() <= slot {
-                match StraightAlpha::new(&gpu, extent) {
+            while self.straight_targets.len() <= slot {
+                match gpu.create_texture(&GpuTextureDescriptor {
+                    label: Some("nana-ui.window-output.straight"),
+                    width: extent[0],
+                    height: extent[1],
+                    format: WINDOW_OUTPUT_FORMAT,
+                    usage: GpuTextureUsages::RENDER_TARGET
+                        | GpuTextureUsages::SAMPLED
+                        | GpuTextureUsages::COPY_SRC,
+                }) {
                     Ok(target) => {
-                        self.straight.push(target);
+                        self.straight_targets.push(target);
                         self.work.target_recreates += 1;
                         if let Some(trace) = &mut self.trace {
                             trace.observe(
@@ -1141,9 +1166,24 @@ impl WindowOutputState {
                     }
                 }
             }
-            let straight = &self.straight[slot];
-            straight.record(frame, &texture);
-            texture = straight.target.clone();
+            let target_texture = &self.straight_targets[slot];
+            let render_target = match target_texture.render_target() {
+                Ok(target) => target,
+                Err(error) => {
+                    self.fail(error.to_string());
+                    return None;
+                }
+            };
+            if let Err(error) = self
+                .straight_transfer
+                .as_mut()
+                .expect("straight transfer initialized")
+                .record(frame, &texture, &render_target)
+            {
+                self.fail(error.to_string());
+                return None;
+            }
+            texture = target_texture.clone();
             self.work.extra_passes += 1;
             self.work.gpu_convert_passes += 1;
             if let Some(trace) = &mut self.trace {
@@ -1526,151 +1566,13 @@ impl WindowOutputState {
     }
 }
 
-/// The premultiplied → straight conversion: one fullscreen pass into a
-/// target of its own.
-struct StraightAlpha {
-    pipeline: wgpu::RenderPipeline,
-    layout: wgpu::BindGroupLayout,
-    target: GpuTexture,
-}
-
-pub(crate) const STRAIGHT_ALPHA_WGSL: &str = r"
-@group(0) @binding(0) var source: texture_2d<f32>;
-
-@vertex
-fn vs(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
-    let corner = vec2<f32>(f32((index << 1u) & 2u), f32(index & 2u));
-    return vec4<f32>(corner * 2.0 - 1.0, 0.0, 1.0);
-}
-
-@fragment
-fn fs(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
-    let color = textureLoad(source, vec2<i32>(position.xy), 0);
-    if (color.a <= 0.0) {
-        return vec4<f32>(0.0);
-    }
-    return vec4<f32>(min(color.rgb / color.a, vec3<f32>(1.0)), color.a);
-}
-";
-
-impl StraightAlpha {
-    fn new(gpu: &GpuContext, extent: [u32; 2]) -> Result<Self, GpuError> {
-        let target = gpu.create_texture(&GpuTextureDescriptor {
-            label: Some("nana-ui.window-output.straight"),
-            width: extent[0],
-            height: extent[1],
-            format: WINDOW_OUTPUT_FORMAT,
-            usage: GpuTextureUsages::RENDER_TARGET
-                | GpuTextureUsages::SAMPLED
-                | GpuTextureUsages::COPY_SRC,
-        })?;
-        let device = nana_gpu::__framework::device(gpu);
-        let shader = crate::scene_paint::wgsl::program!(
-            "nana-ui.window-output.straight",
-            STRAIGHT_ALPHA_WGSL
-        );
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("nana-ui.window-output.straight"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            }],
-        });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("nana-ui.window-output.straight"),
-            bind_group_layouts: &[Some(&layout)],
-            immediate_size: 0,
-        });
-        let pipeline = shader
-            .try_pipeline(
-                device,
-                "vs",
-                "fs",
-                &[],
-                |vs_module, vs_ep, fs_module, fs_ep, _| {
-                    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                        label: Some("nana-ui.window-output.straight"),
-                        layout: Some(&pipeline_layout),
-                        vertex: wgpu::VertexState {
-                            module: vs_module,
-                            entry_point: Some(vs_ep),
-                            compilation_options: Default::default(),
-                            buffers: &[],
-                        },
-                        primitive: wgpu::PrimitiveState::default(),
-                        depth_stencil: None,
-                        multisample: wgpu::MultisampleState::default(),
-                        fragment: Some(wgpu::FragmentState {
-                            module: fs_module,
-                            entry_point: Some(fs_ep),
-                            compilation_options: Default::default(),
-                            targets: &[Some(wgpu::ColorTargetState {
-                                format: wgpu::TextureFormat::Bgra8Unorm,
-                                blend: None,
-                                write_mask: wgpu::ColorWrites::ALL,
-                            })],
-                        }),
-                        multiview_mask: None,
-                        cache: None,
-                    })
-                },
-            )
-            .map_err(|_| {
-                GpuError::UnsupportedCapability("straight-alpha shader unavailable on device")
-            })?;
-        Ok(Self {
-            pipeline,
-            layout,
-            target,
-        })
-    }
-}
-
 #[cfg(all(test, target_vendor = "apple"))]
 pub(crate) fn prewarm_for_msl_regen(gpu: &GpuContext) {
-    let _ = StraightAlpha::new(gpu, [4, 4]);
-}
-
-impl StraightAlpha {
-    fn record(&self, frame: &mut FrameContext, source: &GpuTexture) {
-        let device = nana_gpu::__framework::device(frame.gpu()).clone();
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("nana-ui.window-output.straight"),
-            layout: &self.layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(nana_gpu::__framework::texture_view(
-                    source,
-                )),
-            }],
-        });
-        let encoder = nana_gpu::__framework::encoder(frame);
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("nana-ui.window-output.straight"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: nana_gpu::__framework::texture_view(&self.target),
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &bind_group, &[]);
-        pass.draw(0..3, 0..1);
-    }
+    let _ = super::transfer::OutputTransfer::try_new(
+        gpu,
+        WINDOW_OUTPUT_FORMAT,
+        super::transfer::TransferOp::StraightenAlpha,
+    );
 }
 
 #[cfg(test)]
@@ -1937,7 +1839,7 @@ mod tests {
         }
         state.volatile += 1;
         assert!(record_one(&mut state, &mut painter, &window, &scene).is_none());
-        assert_eq!(state.straight.len(), slots);
+        assert_eq!(state.straight_targets.len(), slots);
         assert_eq!(state.last_work().ui_renders, 0);
         assert_eq!(state.last_work().submissions, 0);
         assert_eq!(state.last_work().gpu_convert_passes, 0);

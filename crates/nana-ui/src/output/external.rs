@@ -859,7 +859,33 @@ impl ExternalSurface {
         host_textures: Option<&HostTextureRegistry>,
         gpu_renderers: Option<&SceneGpuRendererRegistry>,
     ) -> Result<(), ExternalSurfaceError> {
-        if plan.alpha_encoding != self.alpha_encoding {
+        self.record_with_presentation(
+            plan,
+            frame,
+            painter,
+            scene,
+            viewport,
+            host_textures,
+            gpu_renderers,
+            self.alpha_encoding,
+            crate::ScenePresentationParameters::default(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn record_with_presentation(
+        &mut self,
+        plan: &ExternalFramePlan,
+        frame: &mut FrameContext,
+        painter: Option<&mut SceneWgpuPainter>,
+        scene: &UiScene,
+        viewport: ScenePaintViewport,
+        host_textures: Option<&HostTextureRegistry>,
+        gpu_renderers: Option<&SceneGpuRendererRegistry>,
+        alpha_encoding: AlphaEncoding,
+        presentation_parameters: crate::ScenePresentationParameters,
+    ) -> Result<(), ExternalSurfaceError> {
+        if plan.alpha_encoding != self.alpha_encoding || plan.alpha_encoding != alpha_encoding {
             return Err(ExternalSurfaceError::StalePlan);
         }
         if frame.generation() != self.gpu.generation() {
@@ -920,7 +946,6 @@ impl ExternalSurface {
         }
         let target = self.plan_texture(plan)?.render_target()?;
         let id = self.target_id(plan.resource_generation, plan.slot);
-        let encoding = self.alpha_encoding;
         let painter = match painter {
             Some(painter) => painter,
             None => self
@@ -929,13 +954,18 @@ impl ExternalSurface {
                 .ok_or(ExternalSurfaceError::NoPainter)?,
         };
         painter.try_select_presentation(self.config.presentation)?;
-        painter.set_alpha_encoding(encoding);
-        painter.paint_target(
+        painter.paint_target_with_options(
             id,
             scene,
             frame,
             &target,
             viewport,
+            crate::scene_paint::ScenePaintOptions {
+                alpha: alpha_encoding,
+                text_aa: None,
+                damage: None,
+                presentation: presentation_parameters,
+            },
             frozen_textures.as_ref(),
             gpu_renderers,
         )?;
@@ -952,7 +982,7 @@ impl ExternalSurface {
         let reservation = Arc::clone(&plan.reservation);
         frame.on_discard(move || reservation.discarded.store(true, Ordering::Release));
         frame.keep_alive_until_complete(Arc::clone(&plan.reservation));
-        self.slots[plan.slot].alpha_encoding = encoding;
+        self.slots[plan.slot].alpha_encoding = alpha_encoding;
         self.last_work.ui_renders += 1;
         nana_diagnostics::metric!(nana_diagnostics::framework::gpu::OUTPUT_UI_RENDERS);
         Ok(())

@@ -661,10 +661,8 @@ pub(super) struct TextGpu {
     /// See [`super::super::SceneWgpuPainter::set_material_waker`].
     material_waker: Option<super::super::material::MaterialWaker>,
     pipeline: wgpu::RenderPipeline,
-    /// The dual-source program, while subpixel text is on.
+    /// The dual-source program, compiled on demand or via [`Self::try_prewarm_subpixel`].
     dual_source: Option<wgpu::RenderPipeline>,
-    /// The dual-source program compiled ahead; see [`Self::prewarm_subpixel`].
-    prewarmed_dual_source: Option<wgpu::RenderPipeline>,
     layout: wgpu::PipelineLayout,
     format: wgpu::TextureFormat,
     globals_layout: wgpu::BindGroupLayout,
@@ -812,7 +810,6 @@ impl TextGpu {
             material_waker: None,
             pipeline,
             dual_source: None,
-            prewarmed_dual_source: None,
             layout,
             format,
             globals_layout,
@@ -844,6 +841,7 @@ impl TextGpu {
         #[cfg_attr(not(feature = "runtime-wgsl"), allow(unused_variables))]
         atlas: &GlyphAtlasManager,
         work: Option<&GpuWorkSink>,
+        dual: bool,
     ) {
         let before = self.materials.len();
         self.materials.retain(|_, v| v.strong_count() > 0);
@@ -865,7 +863,7 @@ impl TextGpu {
                     .expect("identity material")
             })
             .clone();
-        let mut active = std::collections::HashSet::new();
+        let mut active_programs = std::collections::HashSet::new();
         for (key, keys) in &self.combinations {
             let materials: [nana_ui_core::MaterialRef; 3] = std::array::from_fn(|i| {
                 self.materials
@@ -873,7 +871,6 @@ impl TextGpu {
                     .and_then(nana_ui_core::MaterialRef::upgrade)
                     .unwrap_or_else(|| self.identity.clone())
             });
-            let dual = self.dual_source.is_some();
 
             // A program the host refuses paints as the identity material.
             let mut valid = materials
@@ -903,7 +900,7 @@ impl TextGpu {
                 }
             });
             let programs = materials.each_ref().map(|m| m.program().key());
-            active.insert((programs, dual));
+            active_programs.insert(programs);
             // A slot refused or admitted since: its bindings changed too.
             if self.combination_programs.insert(*key, programs) != Some(programs) {
                 self.bundles.remove(key);
@@ -987,7 +984,8 @@ fn shade(input:VsOut)->TextShade {
         }
         self.material_bindings
             .retain(|k, _| self.materials.contains_key(k));
-        self.material_pipelines.retain(|k, _| active.contains(k));
+        self.material_pipelines
+            .retain(|(programs, _), _| active_programs.contains(programs));
         if pruned_materials {
             self.material_device.trim();
         }
@@ -1014,22 +1012,11 @@ fn shade(input:VsOut)->TextShade {
             .contains(wgpu::Features::DUAL_SOURCE_BLENDING)
     }
 
-    /// Switch to the program that can draw subpixel glyphs, or back. Every
-    /// glyph draws through the one that is current, so the switch is a whole
-    /// frame's worth of text at once. Only for a device that
-    /// [`supports_subpixel`](Self::supports_subpixel).
-    pub(super) fn subpixel(&self) -> bool {
-        self.dual_source.is_some()
-    }
-
-    pub(super) fn set_subpixel(&mut self, device: &wgpu::Device, enabled: bool) {
-        self.dual_source = enabled
-            .then(|| {
-                self.prewarmed_dual_source
-                    .clone()
-                    .or_else(|| self.try_dual_source_pipeline(device).ok())
-            })
-            .flatten();
+    /// Ensure the dual-source pipeline is compiled if this device supports it.
+    pub(super) fn ensure_subpixel(&mut self, device: &wgpu::Device) {
+        if self.dual_source.is_none() && Self::supports_subpixel(device) {
+            self.dual_source = self.try_dual_source_pipeline(device).ok();
+        }
     }
 
     /// Compile the subpixel program before the frame that turns it on. It is
@@ -1039,21 +1026,16 @@ fn shade(input:VsOut)->TextShade {
         &mut self,
         device: &wgpu::Device,
     ) -> Result<(), super::super::validate::ScenePaintError> {
-        if Self::supports_subpixel(device) {
-            self.prewarmed_dual_source = Some(self.try_dual_source_pipeline(device)?);
+        if self.dual_source.is_none() && Self::supports_subpixel(device) {
+            self.dual_source = Some(self.try_dual_source_pipeline(device)?);
         }
         Ok(())
     }
 
-    /// Whether the subpixel program was compiled ahead, and is the one in
-    /// use if subpixel text is on.
+    /// Whether the subpixel program was compiled ahead.
     #[cfg(test)]
     pub(super) fn subpixel_prewarmed(&self) -> bool {
-        self.prewarmed_dual_source.is_some()
-            && self
-                .dual_source
-                .as_ref()
-                .is_none_or(|in_use| Some(in_use) == self.prewarmed_dual_source.as_ref())
+        self.dual_source.is_some()
     }
 
     fn try_dual_source_pipeline(
@@ -1403,6 +1385,7 @@ fn shade(input:VsOut)->TextShade {
         target: &TextTargetGpu,
         segment: &DrawSegment,
         bind_group: &wgpu::BindGroup,
+        dual_source: bool,
     ) {
         if segment.count == 0 {
             return;
@@ -1411,7 +1394,7 @@ fn shade(input:VsOut)->TextShade {
             let programs = *self.combination_programs.get(&segment.material)?;
             Some((
                 self.material_pipelines
-                    .get(&(programs, self.dual_source.is_some()))?
+                    .get(&(programs, dual_source))?
                     .as_ref()?,
                 self.bundles.get(&segment.material)?,
             ))
@@ -1420,7 +1403,12 @@ fn shade(input:VsOut)->TextShade {
             pass.set_pipeline(pipeline);
             pass.set_bind_group(2, binding, &[]);
         } else {
-            pass.set_pipeline(self.dual_source.as_ref().unwrap_or(&self.pipeline));
+            let pipeline = if dual_source {
+                self.dual_source.as_ref().unwrap_or(&self.pipeline)
+            } else {
+                &self.pipeline
+            };
+            pass.set_pipeline(pipeline);
         }
         let Some(globals) = target.globals_bind_group.as_ref() else {
             return;

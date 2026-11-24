@@ -7,8 +7,8 @@ use wgpu::{
 
 use nana_ui::{
     AlphaEncoding, GpuContext, GpuRenderTarget, HostTextureRegistry, ResolvedSurfaceProfile,
-    ScenePaintViewport, ScenePresentationParameters, SceneWgpuPainter, SurfacePresentationPolicy,
-    resolve_surface_profile,
+    ScenePaintOptions, ScenePaintViewport, ScenePresentationParameters, SceneWgpuPainter,
+    SurfacePresentationPolicy, resolve_surface_profile,
 };
 
 use crate::runtime::MobileRuntime;
@@ -38,6 +38,7 @@ pub struct MobileRenderer {
     adapter: Adapter,
     gpu: GpuContext,
     painter: SceneWgpuPainter,
+    paint_options: ScenePaintOptions,
     profile: ResolvedSurfaceProfile,
     format: TextureFormat,
     options: SurfaceOptions,
@@ -91,12 +92,12 @@ impl MobileRenderer {
             surface_config(&surface, &adapter, physical_size, options)?;
         surface.configure(gpu.wgpu().device(), &config);
         let format = config.format;
-        let mut painter =
-            SceneWgpuPainter::try_new_with_presentation(&gpu, profile.scene_profile())
-                .map_err(|error| format!("painter: {error}"))?;
-        configure_painter_for_surface(&mut painter, &config, profile, &hdr_info);
+        let painter = SceneWgpuPainter::try_new_with_presentation(&gpu, profile.scene_profile())
+            .map_err(|error| format!("painter: {error}"))?;
+        let paint_options = paint_options_for_surface(&config, profile, &hdr_info);
         Ok(Self {
             painter,
+            paint_options,
             profile,
             instance,
             adapter,
@@ -133,7 +134,7 @@ impl MobileRenderer {
         }
         self.profile = profile;
         self.format = config.format;
-        configure_painter_for_surface(&mut self.painter, &config, profile, &hdr_info);
+        self.paint_options = paint_options_for_surface(&config, profile, &hdr_info);
         self.surface = Some(AttachedSurface { surface, config });
         Ok(())
     }
@@ -215,11 +216,12 @@ impl MobileRenderer {
         let revision = self.host_textures.revision();
         let mut recording = self.gpu.begin_frame("nana-mobile frame");
         self.painter
-            .paint(
+            .paint_with_options(
                 runtime.document().scene(),
                 &mut recording,
                 &target,
                 paint_viewport,
+                self.paint_options,
                 Some(&self.host_textures),
                 None,
             )
@@ -231,22 +233,21 @@ impl MobileRenderer {
     }
 }
 
-fn configure_painter_for_surface(
-    painter: &mut SceneWgpuPainter,
+fn paint_options_for_surface(
     config: &SurfaceConfiguration,
     profile: ResolvedSurfaceProfile,
     hdr_info: &wgpu::DisplayHdrInfo,
-) {
+) -> ScenePaintOptions {
     let opaque = config.alpha_mode == CompositeAlphaMode::Opaque
         && matches!(
             profile.scene_profile().color_space,
             nana_ui::ScenePresentationColorSpace::Srgb
         );
-    painter.set_alpha_encoding(if opaque {
+    let alpha = if opaque {
         AlphaEncoding::Linear
     } else {
         AlphaEncoding::Gamma
-    });
+    };
     let default_headroom = if profile.is_hdr() {
         ScenePresentationParameters::default().headroom()
     } else {
@@ -261,9 +262,12 @@ fn configure_painter_for_surface(
         .and_then(|luminance| luminance.sdr_white_nits)
         .filter(|value| value.is_finite() && *value > 0.0)
         .unwrap_or(80.0);
-    painter.set_presentation_parameters(
-        ScenePresentationParameters::new(headroom, white_nits).normalized(),
-    );
+    ScenePaintOptions {
+        alpha,
+        text_aa: None,
+        damage: None,
+        presentation: ScenePresentationParameters::new(headroom, white_nits).normalized(),
+    }
 }
 
 fn surface_config(

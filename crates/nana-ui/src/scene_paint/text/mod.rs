@@ -30,9 +30,12 @@
 //!   compaction cannot be observed as the wrong glyph.
 
 mod atlas;
+mod builder;
+mod counters;
 mod entry;
 mod gamma;
 mod glyph;
+mod ordinals;
 mod pipeline;
 #[cfg(test)]
 pub(super) use self::pipeline::precompiled_inputs;
@@ -42,33 +45,42 @@ mod raster;
 mod raster_cache;
 #[cfg(windows)]
 mod raster_dwrite;
+mod shape_cache;
 mod upload;
 
 use nana_text::{TextEngine as _, TextLayout};
 use nana_ui_core::sort::CompactSort as _;
 use nana_ui_core::{LineHeightSpec, TextAlignSpec};
 use nana_ui_runtime::{TextHorizontalAlignment, TextShaping, TextVerticalAlignment};
-use nana_ui_scene::{
-    SceneGlyphPresentation, SceneRichPaint, SceneTextEffects, SceneTextOpenType, SceneTextSpan,
-};
+use nana_ui_scene::{SceneGlyphPresentation, SceneRichPaint, SceneTextOpenType, SceneTextSpan};
 use std::cell::Cell;
-use std::collections::{HashMap, VecDeque};
-use std::hash::{Hash, Hasher};
+use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
 
 use self::atlas::{AtlasPageKind, GlyphAtlasLimits, GlyphAtlasManager};
+use self::builder::{
+    EffectSource, ResolvedSpanColor, SolidQuad, SpanColors, combine_fingerprints, decoration_quads,
+    layer_effects, legacy_effects, legacy_shadow_fingerprint, measure, pack_glyph_fx,
+    place_solid_quads, push_entry_segment, run_color, text_box_origin, transformed_ink,
+};
+use self::counters::TargetCounters;
+pub use self::counters::TextGlyphCounters;
 pub(in crate::scene_paint) use self::entry::EntryKey;
 use self::entry::{
     EntrySegment, EntryStore, RunSlots, SegmentBuilder, SlotArena, VACANT_INDEX, range_keeps,
 };
 use self::glyph::{
-    GlyphRenderMode, GlyphRole, GlyphSynthesis, NanaGlyphBuffer, NanaGlyphRun, PlacedGlyph,
-    size_bits,
+    GlyphRenderMode, GlyphRole, GlyphSynthesis, NanaGlyphBuffer, PlacedGlyph, size_bits,
 };
+use self::ordinals::GraphemeOrdinals;
 use self::pipeline::{
     ArenaWrite, CONTENT_COLOR, CONTENT_MASK, DrawSegment, FrameUpload, GlyphInstance, MotionClock,
     TextGpu, TextPresentationGpu, TextRunGpu, TextTargetGpu,
+};
+use self::shape_cache::{
+    PARAGRAPH_IS_RETAINED, ShapeCache, ShapeKeyRef, opentype_disc, opentype_kern_disc,
+    opentype_line_disc, retained_paragraph_id,
 };
 /// The glyph rasterizer this platform draws with: DirectWrite on Windows,
 /// so text there matches every native app; swash elsewhere.
@@ -80,19 +92,8 @@ use self::raster_cache::GlyphRasterCache;
 use self::upload::GlyphUploadQueue;
 
 use super::clip::{self, LogicalRect};
-use super::color::{linear_from_srgb8, to_rgba8};
 use crate::PhysicalRect;
 
-const SHAPE_CACHE_CAP: usize = 512;
-/// Hard ceiling on shaped paragraphs, whatever the view asks for.
-const SHAPE_CACHE_MAX: usize = 32_768;
-/// Frames a paragraph stays un-evictable after it was last drawn. Two, so a
-/// painter alternating between two windows holds both of their text.
-const PIN_FRAMES: u64 = 2;
-/// How far along the LRU order one insert looks for a paragraph nothing wants.
-/// The front is the oldest; if the oldest this many are all still on screen,
-/// so is everything behind them.
-const EVICT_PROBES: usize = 64;
 /// What a caller passes when it cannot say whether the primitive changed.
 ///
 /// Such a frame assembles the shape key and hashes the paragraph, which is
@@ -150,416 +151,6 @@ fn raster_step(affine: [f32; 6], held: Option<i8>, em_px: f32) -> i8 {
         _ => wanted.round().clamp(-4.0, 4.0) as i8,
     };
     step.min(ceiling)
-}
-
-/// The counters Issue #97 asks the text path to answer with.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct TextGlyphCounters {
-    pub glyph_resolve_requests: u64,
-    pub glyph_rasterized: u64,
-    pub glyph_raster_cache_hit: u64,
-    pub glyph_raster_cache_miss: u64,
-    pub glyph_raster_cache_evict: u64,
-    pub glyph_raster_cache_bytes: u64,
-    pub glyph_atlas_hit: u64,
-    pub glyph_atlas_miss: u64,
-    pub glyph_atlas_evict: u64,
-    pub glyph_atlas_pages: u32,
-    pub glyph_atlas_bytes: u64,
-    /// Live glyph area per mille of page area; the complement is gutters plus
-    /// fragmentation.
-    pub glyph_atlas_occupancy_permille: u32,
-    pub glyph_upload_regions: u64,
-    pub glyph_upload_bytes: u64,
-    pub atlas_relocations: u64,
-    pub atlas_stale_handle_rejects: u64,
-    pub text_pipeline_draws: u64,
-    /// Index slots those draws span: the quads the vertex stage runs, gap and
-    /// slack slots included, which cull without reading an instance but are
-    /// still run.
-    pub text_index_slots_drawn: u64,
-    /// Retained `TextGpuEntry` count and its lifecycle.
-    pub text_gpu_entries_active: u64,
-    pub text_gpu_entries_created: u64,
-    pub text_gpu_entries_destroyed: u64,
-    /// Entries answered from the store rather than resolved again.
-    pub text_gpu_entries_reused: u64,
-    /// Live instances the entries hold.
-    pub text_gpu_entry_glyphs: u64,
-    /// Entries whose glyphs had to be resolved from a shaped paragraph.
-    pub text_instance_rebuilds: u64,
-    /// Entries repaired in place: an atlas relocation or a new run index,
-    /// never a reshape or a rasterize.
-    pub text_instance_patches: u64,
-    pub text_instance_upload_bytes: u64,
-    /// The draw-order index table: four bytes per slot of an entry whose
-    /// range was placed or whose block moved. A frame whose draw order and
-    /// blocks stood still writes none.
-    pub text_index_upload_bytes: u64,
-    /// The run and presentation tables, which is where a move, a fade or a
-    /// recolor lands instead of in the instances.
-    pub text_presentation_upload_bytes: u64,
-    pub text_prepare_nodes_considered: u64,
-    /// Nodes that reached a draw without resolving a glyph.
-    pub text_prepare_nodes_skipped: u64,
-    /// Nodes that could not reach a pixel, so they cost no entry and no draw.
-    pub text_prepare_nodes_culled: u64,
-    /// Paragraphs resolved straight from the Runtime's retained layout.
-    pub text_retained_layouts_drawn: u64,
-}
-
-struct ShapeEntry {
-    key: ShapeKey,
-    layout: Arc<TextLayout>,
-    /// Frame this paragraph was last asked for.
-    last_used: u64,
-}
-
-/// Laid-out paragraphs keyed by [`ShapeKeyRef::hash64`].
-///
-/// A handle table, not a second layout authority: the values are `Arc`s to
-/// layouts the engine's own cache produced, so what this bounds is how many
-/// the painter keeps *reachable*, not how many exist.
-///
-/// The map is keyed by the hash rather than by an owned key so a repaint of
-/// unchanged text looks up without copying the string, the family name, or the
-/// rich-span list. The stored key still decides the hit, so a hash collision
-/// between two different texts reshapes instead of painting the wrong glyphs.
-#[derive(Default)]
-struct ShapeCache {
-    /// Keyed by the shape hash, hashed by [`nana_ui_runtime::IdHasher`]:
-    /// running SipHash over a word that is already a hash is work for nothing.
-    entries: HashMap<u64, ShapeEntry, nana_ui_runtime::BuildIdHasher>,
-    order: VecDeque<u64>,
-    frame: u64,
-    hits: usize,
-    misses: usize,
-    evictions: usize,
-}
-
-impl ShapeCache {
-    fn begin_frame(&mut self) {
-        self.frame = self.frame.wrapping_add(1);
-    }
-
-    fn get(&mut self, hash: u64, key: &ShapeKeyRef<'_>) -> Option<&Arc<TextLayout>> {
-        let frame = self.frame;
-        match self.entries.get_mut(&hash) {
-            Some(entry) if entry.key.matches(key) => {
-                entry.last_used = frame;
-                self.hits += 1;
-                Some(&entry.layout)
-            }
-            _ => {
-                self.misses += 1;
-                None
-            }
-        }
-    }
-
-    /// Whether the cache still holds `hash`, counted and aged as a hit.
-    ///
-    /// The caller that uses this already knows the paragraph is the one it
-    /// resolved from — the primitive has not been rewritten since — so the key
-    /// comparison would only re-derive an answer it has.
-    fn holds(&mut self, hash: u64) -> bool {
-        let frame = self.frame;
-        match self.entries.get_mut(&hash) {
-            Some(entry) => {
-                entry.last_used = frame;
-                self.hits += 1;
-                true
-            }
-            None => {
-                self.misses += 1;
-                false
-            }
-        }
-    }
-
-    fn layout(&self, hash: u64) -> Option<&Arc<TextLayout>> {
-        self.entries.get(&hash).map(|entry| &entry.layout)
-    }
-
-    /// Drop every shaped paragraph. For the case where they are not merely
-    /// cold but no longer meaningful, i.e. the face set changed under them.
-    fn clear(&mut self) {
-        self.entries.clear();
-        self.order.clear();
-    }
-
-    /// Store a shaped paragraph, evicting the coldest paragraph nothing on
-    /// screen still wants.
-    ///
-    /// A paragraph a recent frame asked for is never the victim. A view with
-    /// more distinct strings on it than [`SHAPE_CACHE_CAP`] would otherwise
-    /// evict the row it is about to draw to make room for the next one, and
-    /// reshape every one of them on every frame — the cache would turn a
-    /// steady frame into the most expensive kind there is. So the nominal
-    /// capacity is a floor the cache shrinks back to once the view does, not a
-    /// ceiling it enforces against the view in front of it.
-    ///
-    /// "Recent" rather than "this frame" because two windows on one painter
-    /// take turns: what window A drew last frame is still on screen while
-    /// window B is drawing, and the cache has to hold both.
-    fn insert(&mut self, hash: u64, key: ShapeKey, layout: Arc<TextLayout>) {
-        let frame = self.frame;
-        let pinned = frame.saturating_sub(PIN_FRAMES);
-        let mut probes = 0;
-        while self.entries.len() >= SHAPE_CACHE_CAP && probes < EVICT_PROBES {
-            let Some(oldest) = self.order.pop_front() else {
-                break;
-            };
-            probes += 1;
-            match self.entries.get(&oldest) {
-                Some(entry) if entry.last_used >= pinned => {
-                    // Still on a screen. Put it back and look further along.
-                    self.order.push_back(oldest);
-                }
-                Some(_) => {
-                    self.entries.remove(&oldest);
-                    self.evictions += 1;
-                    probes = 0;
-                }
-                None => probes = 0,
-            }
-        }
-        // A hard ceiling, in case a single view really does hold this much
-        // text: the alternative is a cache that remembers every paragraph a
-        // session ever drew.
-        while self.entries.len() >= SHAPE_CACHE_MAX {
-            let Some(oldest) = self.order.pop_front() else {
-                break;
-            };
-            if self.entries.remove(&oldest).is_some() {
-                self.evictions += 1;
-            }
-        }
-        if self
-            .entries
-            .insert(
-                hash,
-                ShapeEntry {
-                    key,
-                    layout,
-                    last_used: frame,
-                },
-            )
-            .is_none()
-        {
-            self.order.push_back(hash);
-        }
-    }
-}
-
-/// Marks a paragraph identity as a Runtime layout handle rather than a hash of
-/// this painter's own shape key.
-///
-/// The two share one `u64` — [`TextGpuEntry::layout`] — and a value from one
-/// must never read as a value from the other, because what it gates is whether
-/// a set of resolved glyphs may be drawn again. The hash space is halved
-/// instead: handles set this bit, [`ShapeKeyRef::hash64`] clears it.
-const PARAGRAPH_IS_RETAINED: u64 = 1 << 63;
-
-/// One Runtime layout handle as a paragraph identity.
-///
-/// Exact, not hashed: the handle is two `u32`s and a generational slot is
-/// never reissued at the same generation, so packing them *is* the identity.
-/// The index is masked to 31 bits, which a store of two billion live layouts
-/// would be needed to reach.
-fn retained_paragraph_id(id: nana_text::TextLayoutId) -> u64 {
-    PARAGRAPH_IS_RETAINED | (u64::from(id.index() & 0x7fff_ffff) << 32) | u64::from(id.generation())
-}
-
-/// FNV-1a over the shape key.
-///
-/// Not a general-purpose hasher and deliberately not the default one: this
-/// runs once per text node per frame over the whole string, and it is the
-/// single largest item left in the text path. What guards against a collision
-/// is [`ShapeKey::matches`], which decides the hit — a collision costs a
-/// reshape, never the wrong glyphs.
-#[derive(Default)]
-struct ShapeHasher(u64);
-
-impl Hasher for ShapeHasher {
-    fn finish(&self) -> u64 {
-        self.0
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        let mut state = if self.0 == 0 {
-            0xcbf2_9ce4_8422_2325
-        } else {
-            self.0
-        };
-        for byte in bytes {
-            state ^= u64::from(*byte);
-            state = state.wrapping_mul(0x1000_0000_01b3);
-        }
-        self.0 = state;
-    }
-}
-
-/// Everything that determines the laid-out paragraph.
-///
-/// Position and color are not here. Since #99 that includes *rich span*
-/// colors: `nana-text` lays text out without knowing what paints it, so two
-/// spellings of the same string in different colors are one layout and the
-/// colors are resolved onto glyphs afterwards.
-struct ShapeKey {
-    content: String,
-    family: Option<String>,
-    weight: Option<u16>,
-    font_size_bits: u32,
-    line_height_bits: u32,
-    wrap: bool,
-    wrap_break: nana_ui_core::TextWrapBreak,
-    italic: bool,
-    ellipsis: bool,
-    max_lines: Option<u16>,
-    letter_spacing_bits: u32,
-    word_break: u8,
-    line_break: u8,
-    kerning: u8,
-    features: Vec<nana_ui_core::FontFeatureSetting>,
-    variations: Vec<nana_ui_core::FontVariationSetting>,
-    width_bits: u32,
-    height_bits: u32,
-    align: u8,
-    direction: u8,
-    writing_mode: u8,
-    text_orientation: u8,
-    preserve_lines: bool,
-    font_features: Vec<nana_ui_core::FontFeatureSetting>,
-    typography: nana_ui_core::UsedTextTypography,
-}
-
-/// Borrowed form of [`ShapeKey`] built straight from the scene primitive.
-///
-/// Hashing and comparison live here so a frame can answer "already shaped?"
-/// without owning any of it.
-struct ShapeKeyRef<'a> {
-    content: &'a str,
-    family: Option<&'a str>,
-    weight: Option<u16>,
-    font_size_bits: u32,
-    line_height_bits: u32,
-    wrap: bool,
-    wrap_break: nana_ui_core::TextWrapBreak,
-    italic: bool,
-    ellipsis: bool,
-    max_lines: Option<u16>,
-    letter_spacing_bits: u32,
-    word_break: u8,
-    line_break: u8,
-    kerning: u8,
-    features: &'a [nana_ui_core::FontFeatureSetting],
-    variations: &'a [nana_ui_core::FontVariationSetting],
-    width_bits: u32,
-    height_bits: u32,
-    align: u8,
-    direction: u8,
-    writing_mode: u8,
-    text_orientation: u8,
-    preserve_lines: bool,
-    font_features: &'a [nana_ui_core::FontFeatureSetting],
-    typography: nana_ui_core::UsedTextTypography,
-}
-
-impl ShapeKeyRef<'_> {
-    fn hash64(&self) -> u64 {
-        let mut hasher = ShapeHasher::default();
-        self.content.hash(&mut hasher);
-        self.family.hash(&mut hasher);
-        self.weight.hash(&mut hasher);
-        self.font_size_bits.hash(&mut hasher);
-        self.line_height_bits.hash(&mut hasher);
-        self.wrap.hash(&mut hasher);
-        self.wrap_break.hash(&mut hasher);
-        self.italic.hash(&mut hasher);
-        self.ellipsis.hash(&mut hasher);
-        self.max_lines.hash(&mut hasher);
-        self.letter_spacing_bits.hash(&mut hasher);
-        self.word_break.hash(&mut hasher);
-        self.line_break.hash(&mut hasher);
-        self.kerning.hash(&mut hasher);
-        self.features.hash(&mut hasher);
-        self.variations.hash(&mut hasher);
-        self.width_bits.hash(&mut hasher);
-        self.height_bits.hash(&mut hasher);
-        self.align.hash(&mut hasher);
-        self.font_features.hash(&mut hasher);
-        self.direction.hash(&mut hasher);
-        self.writing_mode.hash(&mut hasher);
-        self.text_orientation.hash(&mut hasher);
-        self.preserve_lines.hash(&mut hasher);
-        self.typography.hash(&mut hasher);
-        // The top bit belongs to [`PARAGRAPH_IS_RETAINED`], so a hash can
-        // never be mistaken for a Runtime handle. What this costs is one bit
-        // of a hash whose collisions are already caught by
-        // [`ShapeKey::matches`] and cost a relayout, never wrong glyphs.
-        hasher.finish() & !PARAGRAPH_IS_RETAINED
-    }
-
-    fn to_owned_key(&self) -> ShapeKey {
-        ShapeKey {
-            content: self.content.to_owned(),
-            family: self.family.map(str::to_owned),
-            weight: self.weight,
-            font_size_bits: self.font_size_bits,
-            line_height_bits: self.line_height_bits,
-            wrap: self.wrap,
-            wrap_break: self.wrap_break,
-            italic: self.italic,
-            ellipsis: self.ellipsis,
-            max_lines: self.max_lines,
-            letter_spacing_bits: self.letter_spacing_bits,
-            word_break: self.word_break,
-            line_break: self.line_break,
-            kerning: self.kerning,
-            features: self.features.to_vec(),
-            variations: self.variations.to_vec(),
-            width_bits: self.width_bits,
-            height_bits: self.height_bits,
-            align: self.align,
-            font_features: self.font_features.to_vec(),
-            direction: self.direction,
-            writing_mode: self.writing_mode,
-            text_orientation: self.text_orientation,
-            preserve_lines: self.preserve_lines,
-            typography: self.typography,
-        }
-    }
-}
-
-impl ShapeKey {
-    fn matches(&self, other: &ShapeKeyRef<'_>) -> bool {
-        self.content == other.content
-            && self.family.as_deref() == other.family
-            && self.weight == other.weight
-            && self.font_size_bits == other.font_size_bits
-            && self.line_height_bits == other.line_height_bits
-            && self.wrap == other.wrap
-            && self.wrap_break == other.wrap_break
-            && self.italic == other.italic
-            && self.ellipsis == other.ellipsis
-            && self.max_lines == other.max_lines
-            && self.letter_spacing_bits == other.letter_spacing_bits
-            && self.word_break == other.word_break
-            && self.line_break == other.line_break
-            && self.kerning == other.kerning
-            && self.features == other.features
-            && self.variations == other.variations
-            && self.width_bits == other.width_bits
-            && self.height_bits == other.height_bits
-            && self.align == other.align
-            && self.font_features == other.font_features
-            && self.direction == other.direction
-            && self.writing_mode == other.writing_mode
-            && self.text_orientation == other.text_orientation
-            && self.preserve_lines == other.preserve_lines
-            && self.typography == other.typography
-    }
 }
 
 /// How a paragraph reaches the screen.
@@ -680,6 +271,9 @@ pub(super) struct TextPipelineTarget {
     quiet_frames: u32,
     physical_size: [u32; 2],
     frame: u64,
+    font_generation: u64,
+    subpixel: GlyphRenderMode,
+    corner_exponent: f32,
     frame_gpu_allocations: usize,
     /// Everything but the entry lifecycle, which the store counts itself.
     counters: TargetCounters,
@@ -695,43 +289,6 @@ pub(super) struct TextPipelineTarget {
 struct GpuShadow {
     instances: Vec<GlyphInstance>,
     indices: Vec<u32>,
-}
-
-/// The monotonic counters one render target accumulates.
-///
-/// Kept per target because that is where the work happens, and summed across
-/// every live target — plus the ones already closed — when read, so a window
-/// that is not the one painted last still shows up in the totals and closing
-/// it does not make them run backwards.
-#[derive(Clone, Copy, Default)]
-struct TargetCounters {
-    instance_rebuilds: u64,
-    instance_patches: u64,
-    instance_upload_bytes: u64,
-    index_upload_bytes: u64,
-    presentation_upload_bytes: u64,
-    nodes_considered: u64,
-    nodes_skipped: u64,
-    nodes_culled: u64,
-    entries_created: u64,
-    entries_destroyed: u64,
-    entries_reused: u64,
-}
-
-impl TargetCounters {
-    fn add(&mut self, other: Self) {
-        self.instance_rebuilds += other.instance_rebuilds;
-        self.instance_patches += other.instance_patches;
-        self.instance_upload_bytes += other.instance_upload_bytes;
-        self.index_upload_bytes += other.index_upload_bytes;
-        self.presentation_upload_bytes += other.presentation_upload_bytes;
-        self.nodes_considered += other.nodes_considered;
-        self.nodes_skipped += other.nodes_skipped;
-        self.nodes_culled += other.nodes_culled;
-        self.entries_created += other.entries_created;
-        self.entries_destroyed += other.entries_destroyed;
-        self.entries_reused += other.entries_reused;
-    }
 }
 
 impl TextPipelineTarget {
@@ -757,7 +314,7 @@ impl TextPipelineTarget {
         self.growth_moves = 0;
     }
 
-    fn new(gpu: TextTargetGpu) -> Self {
+    fn new(gpu: TextTargetGpu, font_generation: u64) -> Self {
         Self {
             gpu,
             entries: EntryStore::default(),
@@ -791,10 +348,98 @@ impl TextPipelineTarget {
             quiet_frames: 0,
             physical_size: [0; 2],
             frame: 0,
+            font_generation,
+            subpixel: GlyphRenderMode::Mask,
+            corner_exponent: 2.0,
             frame_gpu_allocations: 0,
             counters: TargetCounters::default(),
             #[cfg(test)]
             shadow: GpuShadow::default(),
+        }
+    }
+
+    /// Resolve upright text on an opaque backdrop with per-subpixel coverage
+    /// for a panel of this order, or fall back to grayscale on `None` or on
+    /// devices without dual-source blending.
+    pub(super) fn set_subpixel(
+        &mut self,
+        device: &wgpu::Device,
+        order: Option<SubpixelOrder>,
+    ) -> bool {
+        let mode = match order {
+            Some(_) if !TextGpu::supports_subpixel(device) => GlyphRenderMode::Mask,
+            Some(SubpixelOrder::Rgb) => GlyphRenderMode::SubpixelRgb,
+            Some(SubpixelOrder::Bgr) => GlyphRenderMode::SubpixelBgr,
+            None => GlyphRenderMode::Mask,
+        };
+        if mode == self.subpixel {
+            return false;
+        }
+        self.subpixel = mode;
+        true
+    }
+
+    /// The scene's corner curve exponent, for the clips of the text drawn
+    /// this frame.
+    pub(super) fn set_corner_exponent(&mut self, exponent: f32) {
+        self.corner_exponent = exponent;
+    }
+
+    /// This target is drawn from last frame's batch: nothing was prepared,
+    /// so nothing grew. Counted only when that batch draws text, as a flush
+    /// is: a frame without any draws no gap.
+    pub(super) fn note_reused_frame(&mut self) {
+        if self.live_runs > 0 {
+            self.quiet_frames = self.quiet_frames.saturating_add(1);
+        }
+    }
+
+    /// Whether a flush this frame would give back the order's gaps.
+    pub(super) fn order_settle_due(&self) -> bool {
+        self.order_gapped
+            && self.live_runs > 0
+            && self.quiet_frames.saturating_add(1) >= SETTLE_FRAMES
+    }
+
+    #[cfg(test)]
+    pub(super) fn assume_gapped_order(&mut self) {
+        self.order_gapped = true;
+        self.quiet_frames = 0;
+    }
+
+    #[cfg(test)]
+    pub(super) fn order_gapped(&self) -> bool {
+        self.order_gapped
+    }
+
+    /// GPU allocations this frame's text could not reuse.
+    pub(super) fn take_frame_gpu_allocations(&mut self) -> usize {
+        std::mem::take(&mut self.frame_gpu_allocations)
+    }
+
+    /// Fold the run just opened by `next` into `previous`, so both draw as one
+    /// command.
+    pub(super) fn can_merge_runs(&self, previous: &PreparedText, next: &PreparedText) -> bool {
+        // `next` must be the run just opened, so folding it away is an append.
+        next.index + 1 == self.live_runs
+            && previous.index < next.index
+            && previous.index >= self.flushed
+            && self.runs.get(previous.index).is_some_and(|run| !run.folded)
+    }
+
+    pub(super) fn merge_runs(&mut self, previous: &PreparedText, next: &PreparedText) {
+        debug_assert!(self.can_merge_runs(previous, next));
+        let tail = self.runs[previous.index].last;
+        self.runs[tail as usize].next = next.index as u32;
+        self.runs[previous.index].last = next.index as u32;
+        self.runs[next.index].folded = true;
+        self.runs[previous.index].pixels += self.runs[next.index].pixels;
+    }
+
+    /// Record the device pixels `prepared` paints, for the material policy.
+    pub(super) fn set_painted(&mut self, prepared: &PreparedText, pixels: u64) {
+        if let Some(run) = self.runs.get_mut(prepared.index) {
+            run.pixels = pixels;
         }
     }
 }
@@ -802,8 +447,7 @@ impl TextPipelineTarget {
 /// The order of a panel's color subpixels, left to right.
 ///
 /// [`SubpixelOrder::system`] reports it on Windows. A host that paints onto
-/// a surface of its own passes it to
-/// [`SceneWgpuPainter::set_subpixel_text`](crate::SceneWgpuPainter::set_subpixel_text).
+/// a surface of its own passes it in [`ScenePaintOptions`](crate::scene_paint::ScenePaintOptions).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SubpixelOrder {
     Rgb,
@@ -883,7 +527,6 @@ pub(super) struct TextPipeline {
     legacy_shadow: Option<nana_ui_core::TextShadowSpec>,
     /// What the next [`Self::prepare`] presents per glyph. One-shot.
     glyph_presentation: Option<Arc<SceneGlyphPresentation>>,
-    target: TextPipelineTarget,
     /// The font-set generation this painter's caches were filled at. A
     /// `@font-face` registration reissues faces, so both the shaped paragraphs
     /// and the glyph bitmaps stop meaning what they meant.
@@ -898,17 +541,11 @@ pub(super) struct TextPipeline {
     slots_drawn: Cell<u64>,
     /// What closed render targets did before they closed.
     closed: TargetCounters,
-    /// What upright text on an opaque backdrop is resolved as: `Mask`
-    /// unless the host turned subpixel text on and the device can draw it.
-    subpixel: GlyphRenderMode,
     /// One-shot linear presentation color used by a paint-only pass such as
     /// an explicit CSS text shadow. Text's retained glyph entries continue
     /// to use their compatibility sRGB colors; only the run row changes.
     linear_color_override: Option<[f32; 4]>,
     paint_color_override: Option<nana_ui_core::PaintColor>,
-    /// The scene's corner curve exponent, for rounded clips: set each frame
-    /// before upload.
-    corner_exponent: f32,
 }
 
 impl TextPipeline {
@@ -997,7 +634,6 @@ impl TextPipeline {
         let atlas = GlyphAtlasManager::new(device, raster.generation(), limits, policy);
         let gpu =
             TextGpu::try_new_with_policy(device, format, atlas.layout(), policy, precompiled)?;
-        let target = TextPipelineTarget::new(gpu.new_target(device));
         Ok(Self {
             engine: crate::text_engine::nana_text_engine(),
             rasterizer: PlatformRasterizer::new(crate::text_engine::nana_text_engine()),
@@ -1014,18 +650,19 @@ impl TextPipeline {
             effects: None,
             legacy_shadow: None,
             glyph_presentation: None,
-            target,
             font_generation: crate::text_engine::engine_font_generation(),
             resolve_requests: 0,
             retained_layouts_drawn: 0,
             draws: Cell::new(0),
             slots_drawn: Cell::new(0),
             closed: TargetCounters::default(),
-            subpixel: GlyphRenderMode::Mask,
             linear_color_override: None,
             paint_color_override: None,
-            corner_exponent: 2.0,
         })
+    }
+
+    pub(super) fn new_target(&self, device: &wgpu::Device) -> TextPipelineTarget {
+        TextPipelineTarget::new(self.gpu.new_target(device), self.font_generation)
     }
 
     /// Set the linear color for the next [`Self::prepare`] call. This keeps
@@ -1061,13 +698,14 @@ impl TextPipeline {
 
     /// The motion clock glyph presentation samples, written when it moved.
     pub(super) fn write_motion(
-        &mut self,
+        &self,
+        target: &mut TextPipelineTarget,
         queue: &wgpu::Queue,
         now: std::time::Duration,
         work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
         self.gpu
-            .write_motion(queue, &mut self.target.gpu, MotionClock::at(now), work);
+            .write_motion(queue, &mut target.gpu, MotionClock::at(now), work);
     }
 
     /// What the next [`Self::prepare`] draws besides its fill: the scene's
@@ -1094,13 +732,7 @@ impl TextPipeline {
         self.paint_color_override = color;
     }
 
-    /// Resolve upright text on an opaque backdrop with per-subpixel coverage
-    /// for a panel of this order, or stop. A device that cannot blend two
-    /// sources keeps grayscale whatever is asked. Returns whether the mode
-    /// changed.
-    ///
-    /// Entries resolved under the other mode fail their validity check and
-    /// are resolved again on their next frame, so the switch needs no sweep.
+    /// Whether the dual-source subpixel program was compiled ahead.
     #[cfg(test)]
     pub(super) fn subpixel_prewarmed(&self) -> bool {
         self.gpu.subpixel_prewarmed()
@@ -1121,25 +753,6 @@ impl TextPipeline {
         self.gpu.try_prewarm_subpixel(device)
     }
 
-    pub(super) fn set_subpixel(
-        &mut self,
-        device: &wgpu::Device,
-        order: Option<SubpixelOrder>,
-    ) -> bool {
-        let mode = match order {
-            Some(_) if !TextGpu::supports_subpixel(device) => GlyphRenderMode::Mask,
-            Some(SubpixelOrder::Rgb) => GlyphRenderMode::SubpixelRgb,
-            Some(SubpixelOrder::Bgr) => GlyphRenderMode::SubpixelBgr,
-            None => GlyphRenderMode::Mask,
-        };
-        if mode == self.subpixel {
-            return false;
-        }
-        self.gpu.set_subpixel(device, mode != GlyphRenderMode::Mask);
-        self.subpixel = mode;
-        true
-    }
-
     /// Where a text program for another working format binds this
     /// pipeline's atlas pages; see [`TextGpu::new_with_policy`].
     pub(super) fn atlas_layout(&self) -> &wgpu::BindGroupLayout {
@@ -1149,12 +762,7 @@ impl TextPipeline {
     /// Draw through `program`, built for another working format, handing
     /// back the one in use. The engine, shape and raster caches, the atlas and
     /// every target's entries stay: they are the same whatever the format.
-    /// `program` takes this pipeline's subpixel mode first.
-    pub(super) fn swap_program(&mut self, device: &wgpu::Device, program: &mut TextProgram) {
-        let subpixel = self.subpixel != GlyphRenderMode::Mask;
-        if program.0.subpixel() != subpixel {
-            program.0.set_subpixel(device, subpixel);
-        }
+    pub(super) fn swap_program(&mut self, program: &mut TextProgram) {
         std::mem::swap(&mut self.gpu, &mut program.0);
     }
 
@@ -1175,13 +783,7 @@ impl TextPipeline {
         self.atlas.forget_every_placement();
     }
 
-    /// The scene's corner curve exponent, for the clips of the text drawn
-    /// this frame.
-    pub(super) fn set_corner_exponent(&mut self, exponent: f32) {
-        self.corner_exponent = exponent;
-    }
-
-    pub(super) fn begin_frame(&mut self, physical_size: [u32; 2]) {
+    pub(super) fn begin_frame(&mut self, target: &mut TextPipelineTarget, physical_size: [u32; 2]) {
         let generation = crate::text_engine::engine_font_generation();
         if generation != self.font_generation {
             // Faces were added, replaced or removed. Shaped paragraphs named
@@ -1191,14 +793,16 @@ impl TextPipeline {
             self.font_generation = generation;
             self.shape_cache.clear();
             self.raster.invalidate();
-            self.drop_every_entry();
+        }
+        if target.font_generation != generation {
+            target.font_generation = generation;
+            Self::drop_every_entry(&mut self.atlas, target);
         }
         // Evicted variation ids are never reissued, so what is keyed by one
         // goes cold instead of wrong, and ages out of the raster cache.
         let _ = self.rasterizer.begin_frame();
         self.atlas.begin_frame(self.raster.generation());
         self.shape_cache.begin_frame();
-        let target = &mut self.target;
         target.frame = target.frame.wrapping_add(1);
         target.live_runs = 0;
         target.flushed = 0;
@@ -1257,14 +861,13 @@ impl TextPipeline {
     /// run table would grow past every `@font-face` registration a session
     /// sees, because the entries that owned them are gone and can no longer
     /// give them back.
-    fn drop_every_entry(&mut self) {
-        let atlas = &mut self.atlas;
-        self.target.entries.clear(|handle| atlas.release(handle));
-        self.target.arena.reset();
-        self.target.forget_order();
-        self.target.run_slots.reset();
-        self.target.run_table.clear();
-        self.target.run_dirty = None;
+    fn drop_every_entry(atlas: &mut GlyphAtlasManager, target: &mut TextPipelineTarget) {
+        target.entries.clear(|handle| atlas.release(handle));
+        target.arena.reset();
+        target.forget_order();
+        target.run_slots.reset();
+        target.run_table.clear();
+        target.run_dirty = None;
     }
 
     /// Bumped whenever a placement moved or died. A render target that kept
@@ -1284,28 +887,17 @@ impl TextPipeline {
         )
     }
 
-    /// Counters for the target being painted alone. The painter asks
-    /// [`Self::glyph_counters_across`] instead; this is what a test that owns
-    /// one target reads.
-    #[cfg(test)]
-    pub(super) fn glyph_counters(&self) -> TextGlyphCounters {
-        self.glyph_counters_across(std::iter::empty())
-    }
-
-    /// Counters over every render target: the one being painted, `others`,
-    /// and the ones already closed. The device-wide half — raster cache,
-    /// atlas, uploads — is shared anyway; the retained half lives per target
-    /// and is summed, so a second window's frames are not invisible.
+    /// Counters over every render target and the ones already closed.
     pub(super) fn glyph_counters_across<'a>(
         &'a self,
-        others: impl Iterator<Item = &'a TextPipelineTarget>,
+        all_targets: impl Iterator<Item = &'a TextPipelineTarget>,
     ) -> TextGlyphCounters {
         let raster = self.raster.counters();
         let atlas = self.atlas.counters();
         let uploads = self.uploads.counters();
         let mut targets = self.closed;
         let (mut active, mut glyphs) = (0, 0);
-        for target in others.chain(std::iter::once(&self.target)) {
+        for target in all_targets {
             targets.add(target.counters());
             let entries = target.entries.counters();
             active += entries.active;
@@ -1347,49 +939,10 @@ impl TextPipeline {
         }
     }
 
-    /// This target is drawn from last frame's batch: nothing was prepared,
-    /// so nothing grew. Counted only when that batch draws text, as a flush
-    /// is: a frame without any draws no gap.
-    pub(super) fn note_reused_frame(&mut self) {
-        if self.target.live_runs > 0 {
-            self.target.quiet_frames = self.target.quiet_frames.saturating_add(1);
-        }
-    }
-
-    /// Whether a flush this frame would give back the order's gaps. A frame
-    /// that would reuse last frame's batch rebuilds it instead: an animation
-    /// beside a table that stopped changing repaints every frame without
-    /// flushing, and would otherwise draw the gaps for as long as it runs.
-    ///
-    /// Never while the batch draws no text: its flush would return before
-    /// repacking anything, and every frame after would rebuild for nothing.
-    pub(super) fn order_settle_due(&self) -> bool {
-        let target = &self.target;
-        target.order_gapped
-            && target.live_runs > 0
-            && target.quiet_frames.saturating_add(1) >= SETTLE_FRAMES
-    }
-
-    /// Mark the order as holding gaps, the way a repack around growing text
-    /// leaves it, so a painter test can watch them be given back.
-    #[cfg(test)]
-    pub(super) fn assume_gapped_order(&mut self) {
-        self.target.order_gapped = true;
-        self.target.quiet_frames = 0;
-    }
-
-    #[cfg(test)]
-    pub(super) fn order_gapped(&self) -> bool {
-        self.target.order_gapped
-    }
-
-    /// GPU allocations this frame's text could not reuse.
-    pub(super) fn take_frame_gpu_allocations(&mut self) -> usize {
-        std::mem::take(&mut self.target.frame_gpu_allocations)
-    }
     #[allow(clippy::too_many_arguments)]
     pub(super) fn prepare(
         &mut self,
+        target: &mut TextPipelineTarget,
         device: &wgpu::Device,
         bounds: LogicalRect,
         clip: LogicalRect,
@@ -1535,20 +1088,18 @@ impl TextPipeline {
         let step = if translation {
             0
         } else {
-            let held = self
-                .target
+            let held = target
                 .entries
                 .lookup(entry_key)
-                .and_then(|id| self.target.entries.get(id))
+                .and_then(|id| target.entries.get(id))
                 .map(|entry| entry.raster_step);
             raster_step(affine, held, size * scale)
         };
         let raster = scale * raster_factor(step);
-        let retained = self
-            .target
+        let retained = target
             .entries
             .lookup(entry_key)
-            .and_then(|id| Some((id, self.target.entries.get(id)?)))
+            .and_then(|id| Some((id, target.entries.get(id)?)))
             .filter(|(_, entry)| {
                 !entry.damaged
                     && revision != UNTRACKED_REVISION
@@ -1766,21 +1317,21 @@ impl TextPipeline {
         let reachable = transformed_ink(ink, affine, persp)
             .intersection(clip)
             .is_some();
-        self.target.counters.nodes_considered += 1;
+        target.counters.nodes_considered += 1;
         if !reachable {
-            self.target.counters.nodes_culled += 1;
+            target.counters.nodes_culled += 1;
             return None;
         }
         // Subpixel coverage only where the blend lands on the surface it was
         // rasterized for: an upright run, straight onto the window.
         let mode = if translation && opaque_backdrop {
-            self.subpixel
+            target.subpixel
         } else {
             GlyphRenderMode::Mask
         };
-        let index = self.target.live_runs;
-        if index == self.target.runs.len() {
-            self.target.runs.push(TextRun {
+        let index = target.live_runs;
+        if index == target.runs.len() {
+            target.runs.push(TextRun {
                 entry: 0,
                 presentation: RunPresentation {
                     origin: [0.0; 2],
@@ -1802,9 +1353,9 @@ impl TextPipeline {
         let epoch = self.placement_epoch();
         let reusable = retained
             .map(|(id, _, _)| id)
-            .or_else(|| self.target.entries.lookup(entry_key))
+            .or_else(|| target.entries.lookup(entry_key))
             .filter(|id| {
-                self.target.entries.get(*id).is_some_and(|entry| {
+                target.entries.get(*id).is_some_and(|entry| {
                     entry.valid(
                         hash,
                         fingerprint,
@@ -1822,7 +1373,6 @@ impl TextPipeline {
                 // flush is what lets a handle the atlas has reissued be
                 // *resolved* again in the same frame instead of drawing a
                 // paragraph with holes in it for one frame.
-                let Self { atlas, target, .. } = self;
                 let stale = target
                     .entries
                     .get(*id)
@@ -1833,18 +1383,19 @@ impl TextPipeline {
                 target.counters.instance_patches += 1;
                 target
                     .entries
-                    .repair(*id, epoch, |handle| atlas.entry(handle).copied())
+                    .repair(*id, epoch, |handle| self.atlas.entry(handle).copied())
             });
         let entry = match reusable {
             Some(id) => {
                 // The paragraph, its sub-pixel phase and the face set are all
                 // the ones these instances were resolved from. Nothing below
                 // this line reads a glyph.
-                self.target.entries.note_reuse();
-                self.target.counters.nodes_skipped += 1;
+                target.entries.note_reuse();
+                target.counters.nodes_skipped += 1;
                 id
             }
             None => self.build_entry(
+                target,
                 device,
                 entry_key,
                 hash,
@@ -1863,15 +1414,15 @@ impl TextPipeline {
                 retained_paragraph.as_deref(),
             )?,
         };
-        let frame = self.target.frame;
-        if let Some(entry) = self.target.entries.get_mut(entry) {
+        let frame = target.frame;
+        if let Some(entry) = target.entries.get_mut(entry) {
             entry.last_used = frame;
             entry.measured = [measured_width, laid_out_height];
         }
         // After the entry, so a paragraph that resolves to nothing does not
         // leave a row in the table nobody names.
-        let presentation = self.presentation_index(affine, persp, fragment_clip, scale);
-        let run = &mut self.target.runs[index];
+        let presentation = Self::presentation_index(target, affine, persp, fragment_clip, scale);
+        let run = &mut target.runs[index];
         run.entry = entry;
         let fx = glyph_presentation.as_deref().map_or(0, |presentation| {
             let mut presentation = presentation.clone();
@@ -1883,7 +1434,7 @@ impl TextPipeline {
                     bounds.height.min(clip.height),
                 ));
             }
-            pack_glyph_fx(&mut self.target.fx, &presentation)
+            pack_glyph_fx(&mut target.fx, &presentation)
         });
         run.presentation = RunPresentation {
             origin: whole,
@@ -1907,14 +1458,14 @@ impl TextPipeline {
         run.last = index as u32;
         run.folded = false;
         run.segments = 0..0;
-        self.target.live_runs += 1;
+        target.live_runs += 1;
         Some(PreparedText { index, ink })
     }
 
     /// The row `affine`/`persp`/`clip` present through, adding it if this
     /// frame has not seen that combination yet.
     fn presentation_index(
-        &mut self,
+        target: &mut TextPipelineTarget,
         affine: [f32; 6],
         persp: [f32; 2],
         fragment_clip: clip::FragmentClip,
@@ -1926,7 +1477,7 @@ impl TextPipeline {
         // and hashing it is forty words, to find out they are the ones the
         // label before this one already had.
         let inputs = (affine, persp, fragment_clip, scale.to_bits());
-        if let Some((held, index)) = self.target.last_presentation
+        if let Some((held, index)) = target.last_presentation
             && held == inputs
         {
             return index;
@@ -1938,22 +1489,22 @@ impl TextPipeline {
             scale,
         );
         let bits = row.to_bits();
-        if let Some(last) = self.target.presentations.last()
+        if let Some(last) = target.presentations.last()
             && *last == row
         {
-            let index = (self.target.presentations.len() - 1) as u32;
-            self.target.last_presentation = Some((inputs, index));
+            let index = (target.presentations.len() - 1) as u32;
+            target.last_presentation = Some((inputs, index));
             return index;
         }
-        if let Some(index) = self.target.presentation_index.get(&bits) {
+        if let Some(index) = target.presentation_index.get(&bits) {
             let index = *index;
-            self.target.last_presentation = Some((inputs, index));
+            target.last_presentation = Some((inputs, index));
             return index;
         }
-        let index = self.target.presentations.len() as u32;
-        self.target.presentations.push(row);
-        self.target.presentation_index.insert(bits, index);
-        self.target.last_presentation = Some((inputs, index));
+        let index = target.presentations.len() as u32;
+        target.presentations.push(row);
+        target.presentation_index.insert(bits, index);
+        target.last_presentation = Some((inputs, index));
         index
     }
 
@@ -2060,6 +1611,7 @@ impl TextPipeline {
     #[allow(clippy::too_many_arguments)]
     fn build_entry(
         &mut self,
+        target: &mut TextPipelineTarget,
         device: &wgpu::Device,
         key: EntryKey,
         hash: u64,
@@ -2192,7 +1744,6 @@ impl TextPipeline {
             raster,
             atlas,
             uploads,
-            target,
             resolve_requests,
             ..
         } = self;
@@ -2224,7 +1775,7 @@ impl TextPipeline {
         let mut segments: Vec<EntrySegment> = Vec::new();
         // Paint order: shadows and under-strokes, underlines, fills and
         // over-strokes, strikeouts.
-        let solid_ordinals = GraphemeOrdinals::new(content);
+        let ordinals = GraphemeOrdinals::new(content);
         let place_solids = |line_through: bool,
                             entries: &mut EntryStore,
                             placed: &mut u32,
@@ -2238,7 +1789,7 @@ impl TextPipeline {
                 placeholders,
                 placed,
                 segments,
-                &solid_ordinals,
+                &ordinals,
             );
         };
         let underlines_at = if solids.is_empty() {
@@ -2246,7 +1797,6 @@ impl TextPipeline {
         } else {
             fill_start
         };
-        let ordinals = GraphemeOrdinals::new(content);
         for (index, run) in resolved.runs.iter().enumerate() {
             if index == underlines_at {
                 place_solids(false, &mut target.entries, &mut placed, &mut segments);
@@ -2349,7 +1899,7 @@ impl TextPipeline {
         target.frame_gpu_allocations += atlas.pages_opened() - pages_before;
         target.entries.finish_build(id, placed);
         let fonts = self.font_generation;
-        let entry = self.target.entries.get_mut(id).expect("just built");
+        let entry = target.entries.get_mut(id).expect("just built");
         entry.layout = hash;
         entry.colors = fingerprint;
         entry.phase = phase;
@@ -2368,47 +1918,6 @@ impl TextPipeline {
         Some(id)
     }
 
-    /// Fold the run just opened by `next` into `previous`, so both draw as one
-    /// command. Returns `false` when the two cannot share a run and the caller
-    /// must keep `next` as its own command.
-    ///
-    /// Mirrors [`super::push_icon`] / [`super::push_quad`]: only runs that are
-    /// already neighbours in document order merge, and glyph order inside the
-    /// merged command is placement order, so a text shadow still paints under
-    /// the text it belongs to.
-    ///
-    /// Color, position, opacity and transform are **not** part of this
-    /// decision. Each instance names its own run row, so two paragraphs that
-    /// present completely differently still draw as one command as long as
-    /// their glyphs come from compatible atlas pages.
-    pub(super) fn can_merge_runs(&self, previous: &PreparedText, next: &PreparedText) -> bool {
-        // `next` must be the run just opened, so folding it away is an append.
-        next.index + 1 == self.target.live_runs
-            && previous.index < next.index
-            && previous.index >= self.target.flushed
-            && self
-                .target
-                .runs
-                .get(previous.index)
-                .is_some_and(|run| !run.folded)
-    }
-
-    pub(super) fn merge_runs(&mut self, previous: &PreparedText, next: &PreparedText) {
-        debug_assert!(self.can_merge_runs(previous, next));
-        let tail = self.target.runs[previous.index].last;
-        self.target.runs[tail as usize].next = next.index as u32;
-        self.target.runs[previous.index].last = next.index as u32;
-        self.target.runs[next.index].folded = true;
-        self.target.runs[previous.index].pixels += self.target.runs[next.index].pixels;
-    }
-
-    /// Record the device pixels `prepared` paints, for the material policy.
-    pub(super) fn set_painted(&mut self, prepared: &PreparedText, pixels: u64) {
-        if let Some(run) = self.target.runs.get_mut(prepared.index) {
-            run.pixels = pixels;
-        }
-    }
-
     /// Give every still-open run an arena block, an index range and a run
     /// row, and turn the entries under it into draw segments. Must run before
     /// `upload` and before `draw`.
@@ -2419,13 +1928,11 @@ impl TextPipeline {
     /// that outgrew its block moves in the arena and writes its own bytes
     /// there; what its neighbours pay for it is at most a rewrite of the index
     /// table, never of their instances.
-    pub(super) fn flush_runs(&mut self) {
-        if self.target.flushed >= self.target.live_runs {
+    pub(super) fn flush_runs(&mut self, target: &mut TextPipelineTarget) {
+        if target.flushed >= target.live_runs {
             return;
         }
-        let Self {
-            atlas, target, gpu, ..
-        } = self;
+        let Self { atlas, gpu, .. } = self;
         // The table persists, and a row is only written when it actually
         // changed, so an unchanged frame neither copies it nor compares it.
         target.run_dirty = None;
@@ -2699,7 +2206,7 @@ impl TextPipeline {
         target.order.note_breaks(breaks);
         target.flushed = target.live_runs;
         #[cfg(test)]
-        self.audit_placements();
+        self.audit_placements(target);
     }
 
     /// What the frame's drawn entries need: their slots in total, the blocks
@@ -2834,8 +2341,7 @@ impl TextPipeline {
     /// holding a rectangle the atlas has since moved would sample some other
     /// glyph, and no counter would say so.
     #[cfg(test)]
-    fn audit_placements(&self) {
-        let target = &self.target;
+    fn audit_placements(&self, target: &TextPipelineTarget) {
         for run in &target.runs[..target.live_runs] {
             let Some(entry) = target.entries.get(run.entry) else {
                 continue;
@@ -2891,6 +2397,7 @@ impl TextPipeline {
     #[cfg(test)]
     pub(super) fn upload(
         &mut self,
+        target: &mut TextPipelineTarget,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         work: Option<&crate::gpu_work::GpuWorkSink>,
@@ -2898,7 +2405,7 @@ impl TextPipeline {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("nana-ui.scene.text.upload"),
         });
-        self.upload_with(device, queue, &mut encoder, work);
+        self.upload_with(target, device, queue, &mut encoder, work);
         queue.submit([encoder.finish()]);
     }
 
@@ -2908,12 +2415,18 @@ impl TextPipeline {
     /// submitted before it.
     pub(super) fn upload_with(
         &mut self,
+        target: &mut TextPipelineTarget,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
-        self.gpu.prepare_materials(device, queue, &self.atlas, work);
+        let dual_source = target.subpixel != GlyphRenderMode::Mask;
+        if dual_source {
+            self.gpu.ensure_subpixel(device);
+        }
+        self.gpu
+            .prepare_materials(device, queue, &self.atlas, work, dual_source);
         let ordered = self.follows_in_frame.then_some(&mut *encoder);
         self.ordered_flushed |= self
             .uploads
@@ -2921,13 +2434,12 @@ impl TextPipeline {
         // Bind groups are created here, where the atlas is still `&mut`, so
         // `draw` only has to look one up. Nearly every frame's segments name
         // the same pair, so the pair is only looked up when it changes.
-        let Self { atlas, target, .. } = self;
         let mut last = None;
         for segment in target.segments.iter() {
             let pair = (segment.mask_page, segment.color_page);
             if last != Some(pair) {
                 last = Some(pair);
-                atlas.bind_group(device, pair.0, pair.1);
+                self.atlas.bind_group(device, pair.0, pair.1);
             }
         }
         let bytes = self.gpu.upload(
@@ -2949,7 +2461,7 @@ impl TextPipeline {
                 uploaded_presentations: &target.uploaded_presentations,
                 fx: &target.fx,
                 uploaded_fx: &target.uploaded_fx,
-                corner_exponent: self.corner_exponent,
+                corner_exponent: target.corner_exponent,
             },
             work,
         );
@@ -2966,22 +2478,14 @@ impl TextPipeline {
         target.counters.presentation_upload_bytes += bytes.presentation as u64;
         target.frame_gpu_allocations += target.gpu.take_allocations();
         #[cfg(test)]
-        self.audit_draw_order();
+        Self::audit_draw_order(target);
     }
 
     /// Every index a draw spans resolves, through what the GPU buffers hold,
     /// to the instance its entry holds, and every glyph an entry holds is under
     /// a draw.
-    ///
-    /// Checked against a copy of the two buffers rebuilt from the writes this
-    /// target actually sent, so every test that draws text also tests the
-    /// rules that decide when a block or a range is written: an entry that
-    /// moved without its indices following, or a range reused while a draw
-    /// still spans it, would draw another paragraph's glyphs, and no counter
-    /// would say so.
     #[cfg(test)]
-    fn audit_draw_order(&mut self) {
-        let target = &mut self.target;
+    fn audit_draw_order(target: &mut TextPipelineTarget) {
         let shadow = &mut target.shadow;
         // A replaced buffer starts zeroed, which is what a vacant glyph is.
         let capacity = target.arena.capacity() as usize;
@@ -3085,25 +2589,26 @@ impl TextPipeline {
 
     pub(super) fn draw(
         &self,
+        target: &TextPipelineTarget,
         pass: &mut wgpu::RenderPass<'_>,
         prepared: &PreparedText,
         scissor: PhysicalRect,
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
-        let Some(run) = self
-            .target
+        let Some(run) = target
             .runs
             .get(prepared.index)
-            .filter(|_| prepared.index < self.target.live_runs)
+            .filter(|_| prepared.index < target.live_runs)
         else {
             return;
         };
         pass.set_scissor_rect(scissor.x, scissor.y, scissor.width, scissor.height);
         let start = run.segments.start as usize;
-        let end = (run.segments.end as usize).min(self.target.segments.len());
+        let end = (run.segments.end as usize).min(target.segments.len());
+        let dual_source = target.subpixel != GlyphRenderMode::Mask;
         let mut drawn = 0u64;
         let mut slots = 0u64;
-        for segment in &self.target.segments[start.min(end)..end] {
+        for segment in &target.segments[start.min(end)..end] {
             let Some(bind_group) = self
                 .atlas
                 .cached_bind_group(segment.mask_page, segment.color_page)
@@ -3111,12 +2616,12 @@ impl TextPipeline {
                 continue;
             };
             self.gpu
-                .draw_segment(pass, &self.target.gpu, segment, bind_group);
+                .draw_segment(pass, &target.gpu, segment, bind_group, dual_source);
             drawn += 1;
             slots += u64::from(segment.count);
         }
         self.gpu.charge_materials(
-            &self.target.segments[start.min(end)..end],
+            &target.segments[start.min(end)..end],
             run.pixels
                 .min(u64::from(scissor.width) * u64::from(scissor.height)),
         );
@@ -3138,16 +2643,6 @@ impl TextPipeline {
         let atlas = &mut self.atlas;
         target.entries.clear(|handle| atlas.release(handle));
         self.closed.add(target.counters());
-    }
-
-    pub(super) fn swap_target(
-        &mut self,
-        target: &mut Option<TextPipelineTarget>,
-        device: &wgpu::Device,
-    ) {
-        let target =
-            target.get_or_insert_with(|| TextPipelineTarget::new(self.gpu.new_target(device)));
-        std::mem::swap(&mut self.target, target);
     }
 }
 
@@ -3247,787 +2742,6 @@ impl RunPresentation {
     }
 }
 
-/// Open or extend the segment an entry's glyph at `offset` belongs to.
-///
-/// A segment has to name a page of each kind because one bind group does, but
-/// only the kinds it actually samples are constrained. A segment still holding
-/// a placeholder has not sampled that kind yet, so the first glyph of it adopts
-/// a page instead of splitting — which is what keeps one emoji in a line of
-/// text free.
-fn push_entry_segment(
-    segments: &mut Vec<EntrySegment>,
-    placeholders: [u32; 2],
-    mask_page: u32,
-    color_page: u32,
-    offset: u32,
-    material: u64,
-) {
-    if let Some(open) = segments.last_mut() {
-        let mask_ok = open.mask_page == mask_page
-            || open.mask_page == placeholders[0]
-            || mask_page == placeholders[0];
-        let color_ok = open.color_page == color_page
-            || open.color_page == placeholders[1]
-            || color_page == placeholders[1];
-        if mask_ok && color_ok && open.material == material {
-            if mask_page != placeholders[0] {
-                open.mask_page = mask_page;
-            }
-            if color_page != placeholders[1] {
-                open.color_page = color_page;
-            }
-            open.count += 1;
-            return;
-        }
-    }
-    segments.push(EntrySegment {
-        material,
-        mask_page,
-        color_page,
-        first: offset,
-        count: 1,
-    });
-}
-
-/// What each byte of the content paints in.
-///
-/// Rich text is a color per byte range over one layout. Since #99 the layout
-/// does not know about color at all, so this is what puts the two back
-/// together — at resolve time, per glyph cluster, which is why a recolor is no
-/// longer a reason to lay anything out again.
-///
-/// Node opacity is deliberately not folded in: it rides on the run row, so a
-/// fade neither relayouts rich text nor rewrites a glyph.
-#[derive(Clone, Copy)]
-struct ResolvedSpanColor {
-    srgb: [f32; 4],
-    paint_color: Option<nana_ui_core::PaintColor>,
-}
-
-struct SpanColors {
-    /// Well-formed spans, in start order. Empty means solid `default`.
-    spans: Vec<(Range<usize>, ResolvedSpanColor)>,
-    default: [f32; 4],
-    default_paint_color: Option<nana_ui_core::PaintColor>,
-    /// Identity of the whole mapping, for [`TextGpuEntry::colors`]. Zero for
-    /// solid text, which is the case that may be recoloured without rebuilding
-    /// anything.
-    fingerprint: u64,
-}
-
-#[cfg(test)]
-mod span_color_tests {
-    use super::*;
-
-    #[test]
-    fn authoring_span_keeps_extended_linear_sc_rgb_channels() {
-        let paint = nana_ui_core::PaintColor::LinearScRgb {
-            channels: [1.25, -0.125, 0.25],
-            alpha: 0.7,
-        };
-        let spans = [SceneTextSpan {
-            start: 0,
-            end: 1,
-            color: paint,
-        }];
-        let colors = SpanColors::new("x", &spans, [0.0; 4], None);
-        let resolved = colors.color_at(0);
-        assert_eq!(resolved.paint_color, Some(paint));
-        let (channels, alpha) = resolved.paint_color.unwrap().to_linear_sc_rgb();
-        assert_eq!(channels, [1.25, -0.125, 0.25]);
-        assert_eq!(alpha, 0.7);
-    }
-}
-
-impl SpanColors {
-    fn new(
-        content: &str,
-        spans: &[SceneTextSpan],
-        default: [f32; 4],
-        default_paint_color: Option<nana_ui_core::PaintColor>,
-    ) -> Self {
-        let mut ordered: Vec<&SceneTextSpan> = spans.iter().collect();
-        // Overlap is resolved by start order below, so the order has to be the
-        // one the rule assumes rather than the one the scene happened to write.
-        ordered.sort_by_key(|span| (span.start, span.end));
-        let mut kept: Vec<(Range<usize>, ResolvedSpanColor)> = Vec::new();
-        for span in ordered {
-            // A span the scene built against different bytes would recolor
-            // whatever now sits at those offsets, so a range that is not a
-            // char boundary of *this* content is dropped rather than snapped.
-            if span.start >= span.end
-                || span.end > content.len()
-                || !content.is_char_boundary(span.start)
-                || !content.is_char_boundary(span.end)
-            {
-                continue;
-            }
-            // Overlaps would make "which span wins" depend on search order.
-            // Later spans lose, which is the order `Scene` writes them in.
-            if kept.last().is_some_and(|(last, _)| last.end > span.start) {
-                continue;
-            }
-            kept.push((
-                span.start..span.end,
-                ResolvedSpanColor {
-                    srgb: span.color.to_srgb(),
-                    paint_color: (!matches!(span.color, nana_ui_core::PaintColor::Srgb { .. }))
-                        .then_some(span.color),
-                },
-            ));
-        }
-        // The default is in the fingerprint because it decides which glyphs
-        // carry their own colour: a span that happens to paint the default
-        // inherits the run row, and would keep inheriting a *different* one
-        // after a recolour if this did not notice.
-        let fingerprint = if kept.is_empty() {
-            0
-        } else {
-            let mut hasher = ShapeHasher::default();
-            default.map(f32::to_bits).hash(&mut hasher);
-            kept.len().hash(&mut hasher);
-            for (range, color) in &kept {
-                range.start.hash(&mut hasher);
-                range.end.hash(&mut hasher);
-                color.srgb.map(f32::to_bits).hash(&mut hasher);
-                hash_paint_color(color.paint_color, &mut hasher);
-            }
-            hash_paint_color(default_paint_color, &mut hasher);
-            // Zero means "solid"; a fingerprint that lands there would claim it.
-            hasher.finish() | 1
-        };
-        Self {
-            spans: kept,
-            default,
-            default_paint_color,
-            fingerprint,
-        }
-    }
-
-    /// The color at a byte offset. Binary search rather than a cursor: an RTL
-    /// run walks its clusters backwards, so offsets do not arrive in order.
-    fn color_at(&self, byte: usize) -> ResolvedSpanColor {
-        if self.spans.is_empty() {
-            return ResolvedSpanColor {
-                srgb: self.default,
-                paint_color: self.default_paint_color,
-            };
-        }
-        let index = self.spans.partition_point(|(range, _)| range.start <= byte);
-        match index.checked_sub(1).and_then(|i| self.spans.get(i)) {
-            Some((range, color)) if range.end > byte => *color,
-            _ => ResolvedSpanColor {
-                srgb: self.default,
-                paint_color: self.default_paint_color,
-            },
-        }
-    }
-}
-
-fn hash_paint_color(paint: Option<nana_ui_core::PaintColor>, hasher: &mut impl std::hash::Hasher) {
-    use std::hash::Hash;
-    match paint {
-        None => 0u8.hash(hasher),
-        Some(paint) => {
-            1u8.hash(hasher);
-            std::mem::discriminant(&paint).hash(hasher);
-            let (channels, alpha) = paint.to_linear_sc_rgb();
-            channels.map(f32::to_bits).hash(hasher);
-            alpha.to_bits().hash(hasher);
-        }
-    }
-}
-
-/// The effects `prepare` hands `build_entry`: the scene's, or the legacy
-/// single shadow of a primitive that carries none.
-#[derive(Clone, Copy)]
-struct EffectSource<'a> {
-    rich: Option<&'a SceneRichPaint>,
-    legacy_shadow: Option<nana_ui_core::TextShadowSpec>,
-}
-
-/// Widest logical CSS blur radius a shadow is drawn with. Past it the kernel
-/// costs more than the softness is worth.
-const MAX_SHADOW_BLUR: f32 = 24.0;
-
-/// An underline or a strikeout, in the entry's raster px.
-#[derive(Clone, Copy, Debug)]
-struct SolidQuad {
-    origin: [i32; 2],
-    size: [u32; 2],
-    color: [f32; 4],
-    paint_color: Option<nana_ui_core::PaintColor>,
-    line_through: bool,
-    /// The byte of the first glyph it runs under.
-    cluster: u32,
-}
-
-/// Writes the underlines (or, with `line_through`, the strikeouts) of
-/// `solids` into entry `id` from slot `placed` on.
-#[allow(clippy::too_many_arguments)]
-fn place_solid_quads(
-    entries: &mut EntryStore,
-    id: u32,
-    solids: &[SolidQuad],
-    line_through: bool,
-    inherited: u32,
-    placeholders: [u32; 2],
-    placed: &mut u32,
-    segments: &mut Vec<EntrySegment>,
-    ordinals: &GraphemeOrdinals,
-) {
-    for quad in solids
-        .iter()
-        .filter(|quad| quad.line_through == line_through)
-    {
-        let color = pipeline::pack_srgb(quad.color);
-        // A line in the paragraph's own colour inherits the run row, so a
-        // recolour moves it with the glyphs and rebuilds nothing.
-        let own = if quad.paint_color.is_some() {
-            pipeline::INSTANCE_OWN_COLOR | pipeline::INSTANCE_LINEAR_COLOR
-        } else if color == inherited {
-            0
-        } else {
-            pipeline::INSTANCE_OWN_COLOR
-        };
-        let linear_color = quad
-            .paint_color
-            .map(super::color::pack_paint_color)
-            .unwrap_or([0.0; 4]);
-        push_entry_segment(
-            segments,
-            placeholders,
-            placeholders[0],
-            placeholders[1],
-            *placed,
-            0,
-        );
-        entries.push_glyph(
-            id,
-            *placed,
-            atlas::GlyphAtlasEntryId::STALE,
-            GlyphInstance::new(
-                quad.origin,
-                quad.size,
-                [0, 0],
-                color,
-                CONTENT_MASK | own,
-                linear_color,
-            )
-            .with_role(pipeline::ROLE_SOLID)
-            // A line reveals with the first glyph it runs under.
-            .with_ordinal(ordinals.of(quad.cluster as usize)),
-        );
-        *placed += 1;
-    }
-}
-
-/// Grapheme ordinals of a paragraph's bytes: what per-glyph presentation
-/// counts in, so the reveal schedule an application compiled per grapheme
-/// lines up with the glyphs whatever the shaper merged or split.
-struct GraphemeOrdinals {
-    starts: Vec<usize>,
-}
-
-impl GraphemeOrdinals {
-    fn new(content: &str) -> Self {
-        use unicode_segmentation::UnicodeSegmentation;
-        Self {
-            starts: content.grapheme_indices(true).map(|(at, _)| at).collect(),
-        }
-    }
-
-    /// The grapheme `byte` falls in.
-    fn of(&self, byte: usize) -> u32 {
-        self.starts
-            .partition_point(|start| *start <= byte)
-            .saturating_sub(1) as u32
-    }
-}
-
-/// Appends `presentation`'s header, effect table and per-grapheme pairs to
-/// `fx`, returning the header's word offset. The layout `glyph_look` in
-/// `text_atlas.wgsl` reads.
-fn pack_glyph_fx(fx: &mut Vec<u32>, presentation: &SceneGlyphPresentation) -> u32 {
-    const HEADER: usize = 32;
-    let at = fx.len();
-    let reveal = presentation.reveal.as_ref();
-    let clusters = presentation
-        .cluster_effects
-        .len()
-        .max(reveal.map_or(0, |reveal| reveal.at_s.len()));
-    let mut flags = 0u32;
-    if reveal.is_some() {
-        flags |= 1;
-    }
-    if !presentation.cluster_effects.is_empty() {
-        flags |= 2;
-    }
-    let (start_secs, start_fraction) = reveal.map_or((0, 0.0), |reveal| {
-        nana_ui_core::motion::glyph::split_seconds(reveal.start)
-    });
-    let intro = reveal.map(|reveal| reveal.intro).unwrap_or_default();
-    let transitions = &presentation.transitions;
-    let easing = match intro.easing {
-        nana_ui_core::GlyphEasing::Linear => 0u32,
-        nana_ui_core::GlyphEasing::EaseOut => 1,
-        nana_ui_core::GlyphEasing::BackOut => 2,
-    };
-    let effects_at = at + HEADER;
-    let chain_count = presentation.chain_count();
-    let effect_words: usize = (0..chain_count)
-        .map(|i| {
-            presentation
-                .chain(i)
-                .iter()
-                .filter(|effect| effect.is_effective())
-                .count()
-                * 4
-        })
-        .sum();
-    let clusters_at = effects_at + chain_count * 2 + effect_words;
-    fx.extend_from_slice(&[
-        flags,
-        clusters as u32,
-        start_secs,
-        start_fraction.to_bits(),
-        reveal.and_then(|reveal| reveal.limit).unwrap_or(u32::MAX),
-        u32::from(intro.fade) | u32::from(intro.pop) << 1 | easing << 8,
-        intro.rise_px.to_bits(),
-        intro.duration_s.max(0.0).to_bits(),
-        effects_at as u32,
-        clusters_at as u32,
-        chain_count as u32,
-        // Which way "up" is: 1 when the line is vertical and its line-over
-        // side is the page's right (`glyph_over`).
-        u32::from(presentation.writing_mode.is_vertical()),
-    ]);
-    fx.resize(at + HEADER, 0);
-    let enter = transitions.entrance.as_ref();
-    let exit = transitions.exit.as_ref();
-    let (exit_secs, exit_fraction) = nana_ui_core::motion::glyph::split_seconds(
-        exit.map_or(std::time::Duration::ZERO, |e| e.start),
-    );
-    let enter_start = enter
-        .map_or(std::time::Duration::ZERO, |m| m.start)
-        .max(reveal.map_or(std::time::Duration::ZERO, |r| r.start));
-    let (enter_secs, enter_fraction) = nana_ui_core::motion::glyph::split_seconds(enter_start);
-    let freeze = transitions
-        .freeze_reveal
-        .map(nana_ui_core::motion::glyph::split_seconds);
-    let viewport = transitions
-        .viewport
-        .unwrap_or(nana_ui_core::LogicalRect::new(0., 0., 1., 1.));
-    fx[at + 12..at + 32].copy_from_slice(&[
-        u32::from(enter.is_some()),
-        u32::from(exit.is_some()),
-        enter.map_or(0, |t| {
-            u32::from(t.space == nana_ui_core::PresentationMaskSpace::Target)
-        }),
-        exit.map_or(0, |t| {
-            u32::from(t.space == nana_ui_core::PresentationMaskSpace::Target)
-        }),
-        enter.map_or(0., |t| t.duration.as_secs_f32()).to_bits(),
-        exit_secs,
-        exit_fraction.to_bits(),
-        exit.map_or(0., |t| t.duration.as_secs_f32()).to_bits(),
-        u32::from(freeze.is_some()),
-        freeze.map_or(0, |f| f.0),
-        freeze.map_or(0., |f| f.1).to_bits(),
-        viewport.x.to_bits(),
-        viewport.y.to_bits(),
-        viewport.width.to_bits(),
-        viewport.height.to_bits(),
-        enter_secs,
-        enter_fraction.to_bits(),
-        0,
-        0,
-        0,
-    ]);
-    let mut next = effects_at + chain_count * 2;
-    for i in 0..chain_count {
-        let count = presentation
-            .chain(i)
-            .iter()
-            .filter(|effect| effect.is_effective())
-            .count();
-        fx.extend_from_slice(&[next as u32, count as u32]);
-        next += count * 4;
-    }
-    for effect in (0..chain_count)
-        .flat_map(|i| presentation.chain(i))
-        .filter(|effect| effect.is_effective())
-    {
-        let kind = match effect.kind {
-            nana_ui_core::GlyphEffectKind::Shake => 0u32,
-            nana_ui_core::GlyphEffectKind::Wave => 1,
-            nana_ui_core::GlyphEffectKind::Jump => 2,
-            nana_ui_core::GlyphEffectKind::Rainbow => 3,
-            nana_ui_core::GlyphEffectKind::Pulse => 4,
-            nana_ui_core::GlyphEffectKind::Flicker => 5,
-        };
-        fx.extend_from_slice(&[
-            kind,
-            effect.amplitude.to_bits(),
-            effect.frequency_hz.to_bits(),
-            effect.stagger.to_bits(),
-        ]);
-    }
-    for ordinal in 0..clusters {
-        let effect = presentation
-            .cluster_effects
-            .get(ordinal)
-            .map_or(u32::MAX, |index| {
-                if *index == u16::MAX {
-                    u32::MAX
-                } else {
-                    u32::from(*index)
-                }
-            });
-        let at = reveal.map_or(0.0, |reveal| {
-            reveal.at_s.get(ordinal).copied().unwrap_or(f32::INFINITY)
-        });
-        fx.extend_from_slice(&[effect, at.to_bits()]);
-    }
-    at as u32
-}
-
-/// A legacy `text_shadow` as the effects every other shadow is drawn from.
-fn legacy_effects(shadow: nana_ui_core::TextShadowSpec) -> Option<Arc<SceneRichPaint>> {
-    SceneRichPaint::new(
-        SceneTextEffects {
-            shadows: Arc::from([nana_ui_core::RichTextShadow {
-                offset: [shadow.offset_x, shadow.offset_y],
-                blur_px: shadow.blur_radius.max(0.0),
-                spread_px: 0.0,
-                color: shadow
-                    .paint_color
-                    .unwrap_or(nana_ui_core::PaintColor::srgb(shadow.color)),
-            }]),
-            ..SceneTextEffects::default()
-        },
-        Vec::new(),
-    )
-}
-
-fn legacy_shadow_fingerprint(shadow: nana_ui_core::TextShadowSpec) -> u64 {
-    let mut hasher = ShapeHasher::default();
-    for value in [shadow.offset_x, shadow.offset_y, shadow.blur_radius] {
-        value.to_bits().hash(&mut hasher);
-    }
-    shadow.color.map(f32::to_bits).hash(&mut hasher);
-    hash_paint_color(shadow.paint_color, &mut hasher);
-    hasher.finish() | 1
-}
-
-/// One entry stamp for its colours and its effects. Zero only when both are:
-/// the solid case a recolour does not rebuild.
-fn combine_fingerprints(colors: u64, effects: u64) -> u64 {
-    if effects == 0 {
-        return colors;
-    }
-    let mut hasher = ShapeHasher::default();
-    colors.hash(&mut hasher);
-    effects.hash(&mut hasher);
-    hasher.finish() | 1
-}
-
-/// `fills` in paint order with their effects, into `out`: every shadow layer
-/// (the last CSS layer lowest), outlines that sit under the fill, the fills,
-/// outlines over them. Returns the index of the first fill run, which is
-/// where underlines go.
-///
-/// A glyph that is stroked or shadowed is filled from the outline scaler its
-/// stroke and shadow come from, so the three line up to the pixel.
-fn layer_effects(
-    fills: &NanaGlyphBuffer,
-    effects: &SceneRichPaint,
-    scale: f32,
-    out: &mut NanaGlyphBuffer,
-) -> usize {
-    out.clear();
-    let push = |out: &mut NanaGlyphBuffer,
-                run: &NanaGlyphRun,
-                synthesis: GlyphSynthesis,
-                mode: GlyphRenderMode,
-                color: nana_ui_core::PaintColor,
-                role: GlyphRole,
-                glyph: PlacedGlyph| {
-        out.push(
-            run.font,
-            run.font_generation,
-            run.variation,
-            run.size_bits,
-            synthesis,
-            mode,
-            color.to_srgb(),
-            Some(color),
-            role,
-            glyph,
-        );
-    };
-    // Only an outline has to line up with its fill to the pixel; a shadow is
-    // offset and soft anyway, and keeps the platform rasterizer's fill.
-    let outlined = |fx: &SceneTextEffects| fx.stroke.is_some();
-    for layer in (0..effects.max_shadows()).rev() {
-        for run in &fills.runs {
-            for glyph in fills.glyphs_of(run) {
-                let fx = effects.effects_at(glyph.cluster as usize);
-                let Some(shadow) = fx.shadows.get(layer) else {
-                    continue;
-                };
-                let blur = shadow.blur_px.clamp(0.0, MAX_SHADOW_BLUR) * scale;
-                let spread = shadow.spread_px.max(0.0) * scale;
-                let mode = if blur < 0.5 && spread <= 0.0 {
-                    GlyphRenderMode::Mask
-                } else {
-                    GlyphRenderMode::Blur {
-                        radius_q: GlyphRenderMode::quarters(blur),
-                        spread_q: GlyphRenderMode::quarters(spread),
-                    }
-                };
-                // A sharp shadow is the fill's own bitmap, shifted.
-                let synthesis = if mode.is_derived() || outlined(fx) {
-                    run.synthesis.with(GlyphSynthesis::OUTLINE_RASTER)
-                } else {
-                    run.synthesis
-                };
-                push(
-                    out,
-                    run,
-                    synthesis,
-                    mode,
-                    shadow.color,
-                    GlyphRole::Shadow,
-                    PlacedGlyph {
-                        x: glyph.x + shadow.offset[0] * scale,
-                        y: glyph.y + shadow.offset[1] * scale,
-                        ..*glyph
-                    },
-                );
-            }
-        }
-    }
-    let strokes = |out: &mut NanaGlyphBuffer, placement: nana_ui_core::TextStrokePlacement| {
-        for run in &fills.runs {
-            for glyph in fills.glyphs_of(run) {
-                let fx = effects.effects_at(glyph.cluster as usize);
-                let Some(stroke) = fx.stroke.filter(|stroke| stroke.placement == placement) else {
-                    continue;
-                };
-                let width = stroke.width_px.max(0.0) * scale;
-                if width < 0.25 {
-                    continue;
-                }
-                push(
-                    out,
-                    run,
-                    run.synthesis.with(GlyphSynthesis::OUTLINE_RASTER),
-                    GlyphRenderMode::Stroke {
-                        width_q: GlyphRenderMode::quarters(width),
-                        join: raster::stroke_join(stroke.join),
-                    },
-                    stroke.color,
-                    GlyphRole::Stroke,
-                    *glyph,
-                );
-            }
-        }
-    };
-    strokes(out, nana_ui_core::TextStrokePlacement::Under);
-    let fill_start = out.runs.len();
-    for run in &fills.runs {
-        for glyph in fills.glyphs_of(run) {
-            let fx = effects.effects_at(glyph.cluster as usize);
-            let synthesis = if outlined(fx) {
-                run.synthesis.with(GlyphSynthesis::OUTLINE_RASTER)
-            } else {
-                run.synthesis
-            };
-            out.push(
-                run.font,
-                run.font_generation,
-                run.variation,
-                run.size_bits,
-                synthesis,
-                run.render_mode,
-                run.color,
-                run.paint_color,
-                GlyphRole::Fill,
-                *glyph,
-            );
-        }
-    }
-    strokes(out, nana_ui_core::TextStrokePlacement::Over);
-    fill_start
-}
-
-/// Underlines and strikeouts along each line's runs, from the faces' own
-/// `post` / `OS/2` metrics, merged across neighbouring glyphs that decorate
-/// alike. Positions are in the entry's raster px, on whole pixels.
-fn decoration_quads(
-    layout: &TextLayout,
-    effects: &SceneRichPaint,
-    colors: &SpanColors,
-    scale: f32,
-    origin: [f32; 2],
-    out: &mut Vec<SolidQuad>,
-) {
-    #[derive(Clone, Copy, PartialEq)]
-    struct Key {
-        decoration: nana_ui_core::TextDecorationLine,
-        color: [u32; 4],
-        paint_color: Option<nana_ui_core::PaintColor>,
-    }
-    struct Open {
-        key: Key,
-        color: [f32; 4],
-        left: f32,
-        right: f32,
-        cluster: u32,
-    }
-    for line in &layout.lines {
-        let baseline = (line.metrics.baseline_y_px * scale).round() + origin[1].floor();
-        for run in layout.line_runs(line) {
-            // An inline object's placeholder is not text a line runs under.
-            if run.is_object() {
-                continue;
-            }
-            let metrics = run.metrics;
-            let size = run.font_size_px;
-            let (underline_offset, underline_thickness, strike_offset, strike_thickness) =
-                if metrics.has_decorations() {
-                    (
-                        metrics.underline_offset_px,
-                        metrics.underline_thickness_px,
-                        metrics.strikeout_offset_px,
-                        metrics.strikeout_thickness_px,
-                    )
-                } else {
-                    (size * 0.1, size / 14.0, size * 0.3, size / 14.0)
-                };
-            let flush = |open: Option<Open>, out: &mut Vec<SolidQuad>| {
-                let Some(open) = open else {
-                    return;
-                };
-                let left = (open.left * scale + origin[0]).round();
-                let right = (open.right * scale + origin[0]).round();
-                let width = (right - left).max(1.0) as u32;
-                let mut emit = |top: f32, thickness: f32, line_through: bool| {
-                    out.push(SolidQuad {
-                        origin: [left as i32, top as i32],
-                        size: [width, (thickness * scale).round().max(1.0) as u32],
-                        color: open.color,
-                        paint_color: open.key.paint_color,
-                        line_through,
-                        cluster: open.cluster,
-                    });
-                };
-                if open.key.decoration.underline {
-                    emit(
-                        baseline + (underline_offset * scale).round(),
-                        underline_thickness,
-                        false,
-                    );
-                }
-                if open.key.decoration.line_through {
-                    emit(
-                        baseline - (strike_offset * scale).round(),
-                        strike_thickness,
-                        true,
-                    );
-                }
-            };
-            let mut open: Option<Open> = None;
-            for (left, glyph) in run.glyph_cells() {
-                let fx = effects.effects_at(glyph.cluster as usize);
-                if !fx.decoration.is_active() {
-                    flush(open.take(), out);
-                    continue;
-                }
-                let (color, paint_color) = match fx.decoration_color {
-                    Some(color) => (color.to_srgb(), Some(color)),
-                    None => {
-                        let fill = colors.color_at(glyph.cluster as usize);
-                        (fill.srgb, fill.paint_color)
-                    }
-                };
-                let key = Key {
-                    decoration: fx.decoration,
-                    color: color.map(f32::to_bits),
-                    paint_color,
-                };
-                let right = left + glyph.advance_px;
-                match open.as_mut() {
-                    Some(current) if current.key == key && (current.right - left).abs() < 0.01 => {
-                        current.right = right;
-                    }
-                    _ => {
-                        flush(open.take(), out);
-                        open = Some(Open {
-                            key,
-                            color,
-                            left,
-                            right,
-                            cluster: glyph.cluster,
-                        });
-                    }
-                }
-            }
-            flush(open.take(), out);
-        }
-    }
-}
-
-/// The page size of a paragraph: the widest line and the summed line boxes,
-/// crossed over for vertical text.
-fn measure(layout: &TextLayout) -> (f32, f32) {
-    layout.physical_size()
-}
-
-fn text_box_origin(
-    bounds: LogicalRect,
-    vertical: TextVerticalAlignment,
-    laid_out_height: f32,
-) -> [f32; 2] {
-    nana_ui_runtime::text_layout_origin(
-        nana_ui_runtime::LayoutBox {
-            x: bounds.x,
-            y: bounds.y,
-            width: bounds.width,
-            height: bounds.height,
-        },
-        vertical,
-        laid_out_height,
-    )
-}
-
-fn opentype_disc(word_break: nana_ui_core::WordBreakSpec) -> u8 {
-    match word_break {
-        nana_ui_core::WordBreakSpec::Normal => 0,
-        nana_ui_core::WordBreakSpec::BreakAll => 1,
-        nana_ui_core::WordBreakSpec::BreakWord => 2,
-    }
-}
-
-fn opentype_line_disc(line_break: nana_ui_core::LineBreakSpec) -> u8 {
-    match line_break {
-        nana_ui_core::LineBreakSpec::Auto => 0,
-        nana_ui_core::LineBreakSpec::Normal => 1,
-        nana_ui_core::LineBreakSpec::Anywhere => 2,
-        nana_ui_core::LineBreakSpec::Strict => 3,
-        nana_ui_core::LineBreakSpec::Loose => 4,
-    }
-}
-
-fn opentype_kern_disc(kerning: nana_ui_core::FontKerningSpec) -> u8 {
-    match kerning {
-        nana_ui_core::FontKerningSpec::Auto => 0,
-        nana_ui_core::FontKerningSpec::Normal => 1,
-        nana_ui_core::FontKerningSpec::None => 2,
-    }
-}
-
 /// Whether `id`'s rectangles predate the atlas's current placement epoch.
 fn entry_needs_repair(entries: &EntryStore, id: u32, epoch: u64) -> bool {
     entries
@@ -4035,4846 +2749,5 @@ fn entry_needs_repair(entries: &EntryStore, id: u32, epoch: u64) -> bool {
         .is_some_and(|entry| entry.atlas_epoch != epoch)
 }
 
-/// The run row's color, quantized exactly as an instance's four bytes would
-/// be.
-///
-/// A glyph inherits the row whenever its own packed color matches the
-/// paragraph's, so the two must agree to the bit — otherwise a rich span that
-/// happens to paint the default color would shift by a least significant bit
-/// when it stopped carrying its own.
-fn run_color(color: [f32; 4]) -> [f32; 4] {
-    let [r, g, b, a] = to_rgba8(color);
-    [
-        linear_from_srgb8(r),
-        linear_from_srgb8(g),
-        linear_from_srgb8(b),
-        f32::from(a) / 255.0,
-    ]
-}
-
-/// The axis-aligned box `ink` covers once its node's homography is applied.
-fn transformed_ink(ink: LogicalRect, affine: [f32; 6], persp: [f32; 2]) -> LogicalRect {
-    clip::transformed_aabb_projective(ink, affine, persp)
-}
-
 #[cfg(test)]
-#[allow(clippy::items_after_test_module)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn ellipsis_paint_keeps_exact_fit_and_truncates_only_narrow_boxes() {
-        use nana_ui_runtime::{
-            ComputedStyle, StableNodeId, TextContent, TextShapeConstraints, TextShaper,
-        };
-
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        pipeline.begin_frame([512, 64]);
-        let mut shaper = crate::NanaTextShaper::default();
-        let style = ComputedStyle::with(|s| {
-            s.font_size = 12.0;
-            s.font_weight = Some(600);
-        });
-        for (content, shaping) in [
-            ("未命名 1", TextShaping::Advanced),
-            ("shade", TextShaping::Advanced),
-            ("Cost $0.30", TextShaping::Auto),
-            ("Save memory", TextShaping::Auto),
-        ] {
-            let natural = shaper
-                .shape(
-                    StableNodeId::new(1).unwrap(),
-                    &TextContent {
-                        value: content.into(),
-                    },
-                    &style,
-                    TextShapeConstraints {
-                        wrap: false,
-                        shaping,
-                        ..TextShapeConstraints::default()
-                    },
-                )
-                .width;
-            // Revisit the exact-fit entry after inserting a truncated one.
-            let mut full_glyphs = Vec::new();
-            for (width, ellipsis) in [
-                (natural, false),
-                (natural, true),
-                (natural * 0.5, true),
-                (natural, true),
-            ] {
-                pipeline
-                    .prepare(
-                        &device,
-                        LogicalRect::from_xywh(0.0, 0.0, width, 24.0),
-                        LogicalRect::from_xywh(0.0, 0.0, 512.0, 64.0),
-                        1.0,
-                        content,
-                        Some([1.0; 4]),
-                        12.0,
-                        Some(600),
-                        None,
-                        None,
-                        false,
-                        nana_ui_core::TextWrapBreak::Word,
-                        false,
-                        ellipsis,
-                        None,
-                        shaping,
-                        TextHorizontalAlignment::Start,
-                        TextVerticalAlignment::Top,
-                        &[],
-                        0.0,
-                        &[],
-                        &SceneTextOpenType::default(),
-                        clip::IDENTITY_AFFINE,
-                        [0.0; 2],
-                        clip::FragmentClip::PASS,
-                        1.0,
-                        [0.0; 2],
-                        EntryKey {
-                            node: 1,
-                            slot: 0,
-                            pass: 0,
-                        },
-                        UNTRACKED_REVISION,
-                        None,
-                        true,
-                    )
-                    .expect("label must prepare");
-                let entry = pipeline
-                    .shape_cache
-                    .entries
-                    .values()
-                    .find(|entry| {
-                        entry.key.content == content
-                            && entry.key.width_bits == width.to_bits()
-                            && entry.key.ellipsis == ellipsis
-                    })
-                    .expect("prepared label must be cached at its own width");
-                let painted_width = measure(&entry.layout).0;
-                let painted_glyphs: Vec<_> = entry
-                    .layout
-                    .runs
-                    .iter()
-                    .flat_map(|run| {
-                        run.glyphs
-                            .iter()
-                            .map(|glyph| (run.font, glyph.glyph_id, glyph.cluster))
-                    })
-                    .collect();
-                if !ellipsis {
-                    assert!(!painted_glyphs.is_empty());
-                    full_glyphs = painted_glyphs;
-                    continue;
-                }
-                if width == natural {
-                    assert_eq!(
-                        painted_glyphs, full_glyphs,
-                        "exact-fit paint must retain every original glyph"
-                    );
-                    assert!(
-                        (painted_width - natural).abs() < 0.01,
-                        "exact-fit paint changed {content:?}: {painted_width} vs {natural}"
-                    );
-                } else {
-                    assert_ne!(
-                        painted_glyphs, full_glyphs,
-                        "narrow paint must replace the text tail"
-                    );
-                    assert!(
-                        painted_width <= width + 0.5 && painted_width < natural,
-                        "narrow paint must truncate {content:?}"
-                    );
-                }
-            }
-        }
-    }
-
-    /// An animated font axis interns a new coordinate set every frame. Past
-    /// the ceiling the coldest sets go, one by one: the glyph caches of every
-    /// other text stay, a set in use keeps its id, and no id is reissued.
-    #[test]
-    fn variation_ids_are_bounded_by_evicting_the_coldest_sets() {
-        use raster::VARIATION_CAP;
-
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        pipeline.begin_frame([64, 64]);
-        let Some(face) = ({
-            let engine = crate::text_engine::lock_engine(&pipeline.engine);
-            engine.fonts().faces().into_iter().next()
-        }) else {
-            return;
-        };
-        let intern = |pipeline: &mut TextPipeline, value: usize| {
-            pipeline
-                .rasterizer
-                .intern_instance(&nana_text::font::FontInstanceKey {
-                    font: face,
-                    coords: vec![nana_text::font::AxisCoord {
-                        tag: *b"wdth",
-                        value: value as f32,
-                    }]
-                    .into(),
-                    synthesis: nana_text::font::Synthesis::default(),
-                })
-                .1
-        };
-        let first = intern(&mut pipeline, 0);
-        for value in 1..VARIATION_CAP {
-            intern(&mut pipeline, value);
-        }
-        let epoch = pipeline.raster.generation();
-        for _ in 0..4 {
-            pipeline.begin_frame([64, 64]);
-        }
-        // The first set stays warm; everything else from that frame is cold.
-        assert_eq!(intern(&mut pipeline, 0), first);
-        let newest = intern(&mut pipeline, VARIATION_CAP);
-        pipeline.begin_frame([64, 64]);
-        assert!(pipeline.rasterizer.variation_count() <= VARIATION_CAP);
-        assert_eq!(
-            pipeline.raster.generation(),
-            epoch,
-            "no glyph cache starts over"
-        );
-        assert_eq!(intern(&mut pipeline, 0), first, "a set in use keeps its id");
-        assert_eq!(intern(&mut pipeline, VARIATION_CAP), newest);
-        let again = intern(&mut pipeline, 1);
-        assert!(
-            again.0 > newest.0,
-            "an evicted set comes back under a new id"
-        );
-    }
-
-    #[test]
-    fn rtl_latin_in_wide_box_places_first_glyph_on_the_right() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        pipeline.begin_frame([256, 64]);
-        let bounds = LogicalRect::from_xywh(0.0, 0.0, 200.0, 24.0);
-        let clip = LogicalRect::from_xywh(0.0, 0.0, 200.0, 24.0);
-        let opentype = SceneTextOpenType {
-            direction: nana_ui_core::DirSpec::Rtl,
-            ..SceneTextOpenType::default()
-        };
-        pipeline
-            .prepare(
-                &device,
-                bounds,
-                clip,
-                1.0,
-                "Hello",
-                Some([1.0, 1.0, 1.0, 1.0]),
-                16.0,
-                None,
-                None,
-                None,
-                false,
-                nana_ui_core::TextWrapBreak::Word,
-                false,
-                false,
-                None,
-                TextShaping::Advanced,
-                TextHorizontalAlignment::Start,
-                TextVerticalAlignment::Top,
-                &[],
-                0.0,
-                &[],
-                &opentype,
-                clip::IDENTITY_AFFINE,
-                [0.0, 0.0],
-                clip::FragmentClip::PASS,
-                1.0,
-                [0.0, 0.0],
-                EntryKey {
-                    node: 1,
-                    slot: 0,
-                    pass: 0,
-                },
-                UNTRACKED_REVISION,
-                None,
-                true,
-            )
-            .expect("rtl latin must prepare");
-        let layout = pipeline
-            .shape_cache
-            .entries
-            .values()
-            .next()
-            .map(|entry| Arc::clone(&entry.layout))
-            .expect("paint must cache the laid-out paragraph");
-        let glyph_x = layout
-            .runs
-            .iter()
-            .flat_map(|run| run.glyph_cells())
-            .map(|(left, _)| left)
-            .fold(f32::INFINITY, f32::min);
-        assert!(
-            glyph_x.is_finite(),
-            "rtl latin must lay out a content glyph"
-        );
-        assert!(
-            glyph_x > 100.0,
-            "first Latin glyph must sit on the right of a 200px RTL box, got {glyph_x}"
-        );
-    }
-
-    #[test]
-    fn text_box_origin_keeps_left_edge_and_centers_vertically() {
-        let bounds = LogicalRect::from_xywh(10.0, 20.0, 100.0, 40.0);
-        assert_eq!(
-            text_box_origin(bounds, TextVerticalAlignment::Top, 12.0),
-            [10.0, 20.0]
-        );
-        assert_eq!(
-            text_box_origin(bounds, TextVerticalAlignment::Center, 12.0),
-            [10.0, 34.0]
-        );
-        assert_eq!(
-            text_box_origin(bounds, TextVerticalAlignment::Bottom, 12.0),
-            [10.0, 48.0]
-        );
-    }
-
-    #[test]
-    fn perspective_text_foreshortens_the_far_edge() {
-        let (device, queue) = test_device();
-        let format = wgpu::TextureFormat::Rgba8Unorm;
-        let mut pipeline = TextPipeline::new(&device, &queue, format);
-        let mat = nana_ui_core::PaintMat4::perspective(120.0)
-            .expect("finite depth")
-            .then(nana_ui_core::PaintMat4::rotate_y(45_f32.to_radians()))
-            .around_origin(0.0, 0.0, 64.0, 64.0);
-        let (affine, persp) = mat.planar_homography().expect("homography");
-        let pixels = paint_block(
-            &device,
-            &queue,
-            &mut pipeline,
-            LogicalRect::from_xywh(0.0, 0.0, 64.0, 64.0),
-            LogicalRect::from_xywh(0.0, 0.0, 64.0, 64.0),
-            affine,
-            persp,
-            clip::FragmentClip::PASS,
-        );
-        let ink = ink_aabb(&pixels, 64, 64).expect("perspective text must paint");
-        let column_height = |x: u32| {
-            let mut top = None;
-            let mut bottom = 0;
-            for y in 0..64u32 {
-                if inked(pixel(&pixels, 64, x, y)) {
-                    top.get_or_insert(y);
-                    bottom = y;
-                }
-            }
-            top.map(|top| bottom - top + 1)
-        };
-        // The tallest column in each outer quarter of the ink: the outermost
-        // columns alone are the edge's one-pixel ramp.
-        let quarter = (ink.2 - ink.0) / 4;
-        let near = (ink.0..=ink.0 + quarter)
-            .filter_map(column_height)
-            .max()
-            .expect("a near column");
-        let far = (ink.2 - quarter..=ink.2)
-            .filter_map(column_height)
-            .max()
-            .expect("a far column");
-        assert_ne!(
-            near, far,
-            "a perspective homography must foreshorten one edge of the text, \
-             near={near} far={far}"
-        );
-    }
-
-    #[test]
-    fn rotated_text_prepare_vertices_are_not_the_unrotated_aabb() {
-        let (device, queue) = test_device();
-        let format = wgpu::TextureFormat::Rgba8Unorm;
-        let mut pipeline = TextPipeline::new(&device, &queue, format);
-        let bounds = LogicalRect::from_xywh(8.0, 16.0, 48.0, 20.0);
-        let clip = LogicalRect::from_xywh(0.0, 0.0, 64.0, 64.0);
-        let identity = clip::IDENTITY_AFFINE;
-        // x' = -y + 40, y' = x keeps a 90° rotation on-screen.
-        let rot90 = [0.0, 1.0, -1.0, 0.0, 40.0, 0.0];
-        let identity_pixels = paint_text(
-            &device,
-            &queue,
-            &mut pipeline,
-            bounds,
-            clip,
-            identity,
-            [0.0, 0.0],
-            clip::FragmentClip::PASS,
-        );
-        let rotated_pixels = paint_text(
-            &device,
-            &queue,
-            &mut pipeline,
-            bounds,
-            clip,
-            rot90,
-            [0.0, 0.0],
-            clip::FragmentClip::PASS,
-        );
-        let identity_ink = ink_aabb(&identity_pixels, 64, 64).expect("unrotated text must paint");
-        let rotated_ink = ink_aabb(&rotated_pixels, 64, 64).expect("rotated text must paint");
-        assert_ne!(
-            identity_ink, rotated_ink,
-            "rotated glyphs must not occupy the unrotated AABB"
-        );
-        let identity_w = identity_ink.2 - identity_ink.0 + 1;
-        let identity_h = identity_ink.3 - identity_ink.1 + 1;
-        let rotated_w = rotated_ink.2 - rotated_ink.0 + 1;
-        let rotated_h = rotated_ink.3 - rotated_ink.1 + 1;
-        assert!(
-            identity_w > identity_h,
-            "unrotated 'Hi' ink must be wide, got {identity_ink:?}"
-        );
-        assert!(
-            rotated_h > rotated_w,
-            "90° glyph quads must paint a tall AABB, not a translated wide run, got {rotated_ink:?}"
-        );
-    }
-
-    #[test]
-    fn rotated_clip_discards_affine_glyph_in_aabb_outside_rect() {
-        let (device, queue) = test_device();
-        let format = wgpu::TextureFormat::Rgba8Unorm;
-        let mut pipeline = TextPipeline::new(&device, &queue, format);
-        let bounds = LogicalRect::from_xywh(0.0, 0.0, 64.0, 64.0);
-        let k = std::f32::consts::FRAC_1_SQRT_2;
-        let clips = [nana_ui_scene::ClipRegion {
-            bounds: nana_ui_scene::SceneRect {
-                x: 16.0,
-                y: 16.0,
-                width: 32.0,
-                height: 32.0,
-            },
-            transform: nana_ui_scene::AffineTransform::from_matrix(
-                nana_ui_core::PaintTransform {
-                    a: k,
-                    b: k,
-                    c: -k,
-                    d: k,
-                    ..nana_ui_core::PaintTransform::default()
-                }
-                .around_center(16.0, 16.0, 32.0, 32.0),
-            ),
-            corner_radius: 0.0,
-            polygon_clip: None,
-        }];
-        let origin = clip::PaintOrigin::from(clip::paint_origin([0.0, 0.0], [0.0, 0.0]));
-        let aabb = clip::intersect_clips(
-            LogicalRect::viewport([0.0, 0.0], [64.0, 64.0]),
-            &clips,
-            origin,
-        )
-        .unwrap();
-        let frag = clip::fragment_clip(&clips, origin);
-        let unclipped = paint_block(
-            &device,
-            &queue,
-            &mut pipeline,
-            bounds,
-            LogicalRect::from_xywh(0.0, 0.0, 64.0, 64.0),
-            clip::IDENTITY_AFFINE,
-            [0.0, 0.0],
-            clip::FragmentClip::PASS,
-        );
-        let clipped = paint_block(
-            &device,
-            &queue,
-            &mut pipeline,
-            bounds,
-            aabb,
-            clip::IDENTITY_AFFINE,
-            [0.0, 0.0],
-            frag,
-        );
-        let mut probe = None;
-        for y in 0..64u32 {
-            for x in 0..64u32 {
-                let px = x as f32 + 0.5;
-                let py = y as f32 + 0.5;
-                if px >= aabb.x
-                    && py >= aabb.y
-                    && px < aabb.x + aabb.width
-                    && py < aabb.y + aabb.height
-                    && !clip::point_in_fragment_clip(px, py, frag)
-                    && inked(pixel(&unclipped, 64, x, y))
-                {
-                    probe = Some((x, y));
-                    break;
-                }
-            }
-            if probe.is_some() {
-                break;
-            }
-        }
-        let (probe_x, probe_y) =
-            probe.expect("unclipped glyphs must ink a pixel in AABB-outside-rotated-rect");
-        let probe_clipped = pixel(&clipped, 64, probe_x, probe_y);
-        let mut inside = false;
-        for y in 0..64u32 {
-            for x in 0..64u32 {
-                let px = x as f32 + 0.5;
-                let py = y as f32 + 0.5;
-                if clip::point_in_fragment_clip(px, py, frag) && inked(pixel(&clipped, 64, x, y)) {
-                    inside = true;
-                    break;
-                }
-            }
-            if inside {
-                break;
-            }
-        }
-        assert!(
-            !inked(probe_clipped),
-            "affine glyphs must discard AABB-outside-rotated-rect, pixel ({probe_x},{probe_y})={probe_clipped:?}"
-        );
-        assert!(inside, "rotated clip interior must still paint the glyph");
-    }
-
-    /// `white-space: normal` folds an authored newline into a space. Runtime
-    /// measures that way, so the painter has to lay it out that way: a
-    /// paragraph measured as one line and painted as two overflows its box.
-    #[test]
-    fn an_authored_newline_only_breaks_the_line_when_the_scene_says_it_does() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let laid_out = |pipeline: &mut TextPipeline, preserve_lines: bool| {
-            let layout = pipeline.lay_out(
-                "first\nsecond",
-                None,
-                None,
-                16.0,
-                20.0,
-                0.0,
-                false,
-                false,
-                nana_ui_core::TextWrapBreak::Word,
-                false,
-                None,
-                400.0,
-                64.0,
-                TextAlignSpec::Start,
-                &SceneTextOpenType {
-                    preserve_lines,
-                    ..SceneTextOpenType::default()
-                },
-            );
-            layout.lines.len()
-        };
-        assert_eq!(
-            laid_out(&mut pipeline, false),
-            1,
-            "`white-space: normal` folds the newline into a space"
-        );
-        assert_eq!(
-            laid_out(&mut pipeline, true),
-            2,
-            "a preserved newline is a line break"
-        );
-    }
-
-    /// Lay a paragraph out through the engine the way Runtime would, and hand
-    /// it back as the scene's retained handle.
-    fn runtime_layout(
-        content: &str,
-        box_width: f32,
-        align: TextAlignSpec,
-    ) -> nana_ui_runtime::RetainedTextLayout {
-        let source = nana_text::TextSource::new(content);
-        let style = nana_text::TextStyle {
-            font_size_px: 16.0,
-            line_height: Some(LineHeightSpec::Absolute(20.0)),
-            ..nana_text::TextStyle::default()
-        };
-        let constraints = nana_text::TextConstraints {
-            max_width_px: Some(box_width),
-            align,
-            preserve_lines: true,
-            ..nana_text::TextConstraints::default()
-        };
-        let engine = crate::text_engine::nana_text_engine();
-        let mut engine = crate::text_engine::lock_engine(&engine);
-        let mut counters = nana_text::TextWorkCounters::default();
-        let layout = nana_text::TextEngine::layout(
-            &mut *engine,
-            nana_text::TextKind::Label,
-            &source,
-            &style,
-            &constraints,
-            &mut counters,
-        );
-        nana_ui_runtime::RetainedTextLayout {
-            id: layout.id,
-            layout,
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn prepare_with_layout(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        pipeline: &mut TextPipeline,
-        content: &str,
-        box_width: f32,
-        handle: Option<&nana_ui_runtime::RetainedTextLayout>,
-    ) {
-        pipeline.begin_frame([512, 64]);
-        pipeline.prepare(
-            device,
-            LogicalRect::from_xywh(0.0, 0.0, box_width, 32.0),
-            LogicalRect::from_xywh(0.0, 0.0, 512.0, 64.0),
-            1.0,
-            content,
-            Some([1.0, 1.0, 1.0, 1.0]),
-            16.0,
-            None,
-            None,
-            Some(LineHeightSpec::Absolute(20.0)),
-            false,
-            nana_ui_core::TextWrapBreak::Word,
-            false,
-            false,
-            None,
-            TextShaping::Auto,
-            TextHorizontalAlignment::Start,
-            TextVerticalAlignment::Top,
-            &[],
-            0.0,
-            &[],
-            &SceneTextOpenType {
-                preserve_lines: true,
-                ..SceneTextOpenType::default()
-            },
-            clip::IDENTITY_AFFINE,
-            [0.0; 2],
-            clip::FragmentClip::PASS,
-            1.0,
-            [0.0; 2],
-            EntryKey {
-                node: 1,
-                slot: 0,
-                pass: 0,
-            },
-            UNTRACKED_REVISION,
-            handle,
-            true,
-        );
-        pipeline.flush_runs();
-        pipeline.upload(device, queue, None);
-    }
-
-    /// The point of the handle: the paragraph Runtime measured is the one that
-    /// is drawn. Nothing is laid out here, and no string is hashed to find
-    /// that out.
-    #[test]
-    fn a_paragraph_the_runtime_retains_is_drawn_without_laying_it_out_again() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let handle = runtime_layout("Retained paragraph", 240.0, TextAlignSpec::Start);
-        prepare_with_layout(
-            &device,
-            &queue,
-            &mut pipeline,
-            "Retained paragraph",
-            240.0,
-            Some(&handle),
-        );
-        let drawn = pipeline.glyph_counters();
-        assert!(
-            drawn.text_retained_layouts_drawn >= 1,
-            "the handle is what identified the paragraph: {drawn:?}"
-        );
-        assert!(
-            drawn.glyph_resolve_requests > 0,
-            "and its glyphs were resolved from it"
-        );
-        let (hits, misses, _) = pipeline.shape_cache_stats();
-        assert_eq!(
-            (hits, misses),
-            (0, 0),
-            "the painter's own paragraph cache is never consulted"
-        );
-    }
-
-    /// The handle is only usable when the box it was measured into is the box
-    /// being painted: a centred line inside a wider box would otherwise be
-    /// drawn off-centre. A mismatch falls back rather than misplacing text.
-    #[test]
-    fn a_layout_measured_into_a_different_box_is_not_drawn_from_its_handle() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let handle = runtime_layout("Centred", 240.0, TextAlignSpec::Center);
-        prepare_with_layout(
-            &device,
-            &queue,
-            &mut pipeline,
-            "Centred",
-            180.0,
-            Some(&handle),
-        );
-        let drawn = pipeline.glyph_counters();
-        assert_eq!(
-            drawn.text_retained_layouts_drawn, 0,
-            "the alignment box is not the paint box, so the handle is refused"
-        );
-        let (_, misses, _) = pipeline.shape_cache_stats();
-        assert_eq!(misses, 1, "and the painter laid the paragraph out itself");
-    }
-
-    /// Paint one rich-text label with the given spans, under a fixed revision.
-    fn paint_rich(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        pipeline: &mut TextPipeline,
-        spans: &[SceneTextSpan],
-    ) {
-        pipeline.begin_frame([256, 64]);
-        pipeline.prepare(
-            device,
-            LogicalRect::from_xywh(0.0, 0.0, 240.0, 32.0),
-            LogicalRect::from_xywh(0.0, 0.0, 256.0, 64.0),
-            1.0,
-            "warm and cold",
-            Some([1.0, 1.0, 1.0, 1.0]),
-            16.0,
-            None,
-            None,
-            None,
-            false,
-            nana_ui_core::TextWrapBreak::Word,
-            false,
-            false,
-            None,
-            TextShaping::Auto,
-            TextHorizontalAlignment::Start,
-            TextVerticalAlignment::Top,
-            spans,
-            0.0,
-            &[],
-            &SceneTextOpenType::default(),
-            clip::IDENTITY_AFFINE,
-            [0.0; 2],
-            clip::FragmentClip::PASS,
-            1.0,
-            [0.0; 2],
-            EntryKey {
-                node: 1,
-                slot: 0,
-                pass: 0,
-            },
-            UNTRACKED_REVISION,
-            None,
-            true,
-        );
-        pipeline.flush_runs();
-        pipeline.upload(device, queue, None);
-    }
-
-    /// A rich span's colour is not part of the layout any more, so the layout
-    /// hash cannot tell two paints of one string apart. The entry has to.
-    #[test]
-    fn repainting_a_span_in_a_new_color_rebuilds_that_entry_without_relayout() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let span = |color: [f32; 4]| {
-            vec![SceneTextSpan {
-                start: 0,
-                end: "warm".len(),
-                color: nana_ui_core::PaintColor::srgb(color),
-            }]
-        };
-        paint_rich(&device, &queue, &mut pipeline, &span([1.0, 0.0, 0.0, 1.0]));
-        let warm = pipeline.glyph_counters();
-        let (_, misses_before, _) = pipeline.shape_cache_stats();
-        paint_rich(&device, &queue, &mut pipeline, &span([0.0, 0.0, 1.0, 1.0]));
-        let recolored = pipeline.glyph_counters();
-        let (_, misses_after, _) = pipeline.shape_cache_stats();
-        assert_eq!(
-            recolored.text_instance_rebuilds - warm.text_instance_rebuilds,
-            1,
-            "the span paints a different colour, so its instances are resolved again"
-        );
-        assert_eq!(
-            misses_after, misses_before,
-            "but colour is not part of the layout, so nothing is laid out again"
-        );
-        assert_eq!(
-            recolored.glyph_rasterized, warm.glyph_rasterized,
-            "nor rasterized: the bitmaps never depended on the colour"
-        );
-
-        // And repainting the same spans is still a steady frame.
-        paint_rich(&device, &queue, &mut pipeline, &span([0.0, 0.0, 1.0, 1.0]));
-        let steady = pipeline.glyph_counters();
-        assert_eq!(
-            steady.text_instance_rebuilds, recolored.text_instance_rebuilds,
-            "an unchanged rich repaint resolves nothing"
-        );
-    }
-
-    /// Paint "warm and cold" under `effects`, as the scene painter does.
-    fn paint_effects(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        pipeline: &mut TextPipeline,
-        effects: Option<&Arc<SceneRichPaint>>,
-        shadow: Option<nana_ui_core::TextShadowSpec>,
-    ) {
-        pipeline.set_effects(effects, shadow);
-        paint_rich(device, queue, pipeline, &[]);
-    }
-
-    #[test]
-    fn material_parameter_changes_reuse_layout_and_atlas() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let material = nana_ui_core::MaterialRef::new(nana_ui_core::MaterialProgram::new(
-            "fn material(i:MaterialInput)->vec4<f32>{return i.color * material_param(0u);}",
-        ));
-        let first = effects(SceneTextEffects {
-            material: Some(material.clone().with_parameters(Arc::from([[1.; 4]]))),
-            ..Default::default()
-        });
-        paint_effects(&device, &queue, &mut pipeline, first.as_ref(), None);
-        let warm = pipeline.glyph_counters();
-        let layouts = pipeline.shape_cache_stats();
-        let next = effects(SceneTextEffects {
-            material: Some(material.with_parameters(Arc::from([[0.5; 4]]))),
-            ..Default::default()
-        });
-        paint_effects(&device, &queue, &mut pipeline, next.as_ref(), None);
-        let changed = pipeline.glyph_counters();
-        assert_eq!(
-            pipeline.shape_cache_stats().1,
-            layouts.1,
-            "parameters changed shaping"
-        );
-        assert_eq!(changed.glyph_rasterized, warm.glyph_rasterized);
-        assert_eq!(changed.glyph_upload_bytes, warm.glyph_upload_bytes);
-        paint_effects(&device, &queue, &mut pipeline, next.as_ref(), None);
-        let steady = pipeline.glyph_counters();
-        assert_eq!(
-            steady.text_instance_upload_bytes, changed.text_instance_upload_bytes,
-            "static material uploads glyphs"
-        );
-        assert_eq!(steady.glyph_upload_bytes, changed.glyph_upload_bytes);
-    }
-
-    #[test]
-    fn transition_updates_reuse_instances_layout_and_atlas() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        paint_rich(&device, &queue, &mut pipeline, &[]);
-        let warm = pipeline.glyph_counters();
-        let layouts = pipeline.shape_cache_stats();
-        let mask = nana_ui_core::MaterialRef::new(nana_ui_core::MaterialProgram::new(
-            "fn material(i:MaterialInput)->vec4<f32>{return vec4<f32>(i.color.rgb,1.-i.progress);}",
-        ));
-        let mut p = presentation(vec![], vec![], None);
-        Arc::make_mut(&mut p).transitions.exit = Some(nana_ui_core::PresentationMask {
-            material: mask,
-            space: nana_ui_core::PresentationMaskSpace::Target,
-            start: std::time::Duration::ZERO,
-            duration: std::time::Duration::from_secs(1),
-        });
-        for now in [0, 100, 300, 700, 1000] {
-            pipeline.set_glyph_presentation(Some(&p));
-            pipeline.write_motion(&queue, std::time::Duration::from_millis(now), None);
-            paint_rich(&device, &queue, &mut pipeline, &[]);
-        }
-        let after = pipeline.glyph_counters();
-        assert_eq!(pipeline.shape_cache_stats().1, layouts.1);
-        assert_eq!(after.glyph_rasterized, warm.glyph_rasterized);
-        assert_eq!(after.glyph_upload_bytes, warm.glyph_upload_bytes);
-        assert_eq!(after.text_instance_rebuilds, warm.text_instance_rebuilds);
-    }
-
-    fn effects(base: SceneTextEffects) -> Option<Arc<SceneRichPaint>> {
-        SceneRichPaint::new(base, Vec::new())
-    }
-
-    fn outline(width: f32, color: [f32; 4]) -> SceneTextEffects {
-        SceneTextEffects {
-            stroke: Some(nana_ui_core::RichTextStroke::new(
-                width,
-                nana_ui_core::PaintColor::srgb(color),
-            )),
-            decoration: nana_ui_core::TextDecorationLine {
-                underline: true,
-                line_through: false,
-            },
-            ..SceneTextEffects::default()
-        }
-    }
-
-    /// The paint tier of rich text (outline, decoration, shadow) is instances
-    /// of the same paragraph: changing it rebuilds them and lays nothing out;
-    /// changing only a colour rasterizes nothing new either.
-    #[test]
-    fn repainting_an_outline_rebuilds_instances_without_relayout() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let black = effects(outline(2.0, [0.0, 0.0, 0.0, 1.0]));
-        paint_effects(&device, &queue, &mut pipeline, black.as_ref(), None);
-        let first = pipeline.glyph_counters();
-        let (_, misses, _) = pipeline.shape_cache_stats();
-
-        let white = effects(outline(2.0, [1.0, 1.0, 1.0, 1.0]));
-        paint_effects(&device, &queue, &mut pipeline, white.as_ref(), None);
-        let recolored = pipeline.glyph_counters();
-        assert_eq!(
-            recolored.text_instance_rebuilds - first.text_instance_rebuilds,
-            1,
-            "a new outline colour resolves the entry again"
-        );
-        assert_eq!(
-            recolored.glyph_rasterized, first.glyph_rasterized,
-            "the outline bitmaps never depended on its colour"
-        );
-        assert_eq!(
-            pipeline.shape_cache_stats().1,
-            misses,
-            "nothing is laid out again"
-        );
-
-        let wide = effects(outline(4.0, [1.0, 1.0, 1.0, 1.0]));
-        paint_effects(&device, &queue, &mut pipeline, wide.as_ref(), None);
-        let widened = pipeline.glyph_counters();
-        assert!(
-            widened.glyph_rasterized > recolored.glyph_rasterized,
-            "a wider outline is new bitmaps"
-        );
-        assert_eq!(
-            pipeline.shape_cache_stats().1,
-            misses,
-            "and still no relayout"
-        );
-
-        paint_effects(&device, &queue, &mut pipeline, wide.as_ref(), None);
-        let steady = pipeline.glyph_counters();
-        assert_eq!(
-            steady.text_instance_rebuilds,
-            widened.text_instance_rebuilds
-        );
-        assert_eq!(steady.glyph_rasterized, widened.glyph_rasterized);
-    }
-
-    /// A blurred shadow is rasterized and uploaded once. Every frame after
-    /// that is the same entry: no raster, no atlas upload, no rebuild.
-    #[test]
-    fn a_steady_frame_with_a_blurred_shadow_rasterizes_and_uploads_nothing() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let shadow = nana_ui_core::TextShadowSpec {
-            offset_x: 2.0,
-            offset_y: 2.0,
-            blur_radius: 6.0,
-            color: [0.0, 0.0, 0.0, 0.6],
-            paint_color: None,
-        };
-        paint_effects(&device, &queue, &mut pipeline, None, Some(shadow));
-        let first = pipeline.glyph_counters();
-        assert!(first.glyph_rasterized > 0);
-        for _ in 0..3 {
-            paint_effects(&device, &queue, &mut pipeline, None, Some(shadow));
-        }
-        let steady = pipeline.glyph_counters();
-        assert_eq!(steady.glyph_rasterized, first.glyph_rasterized, "no raster");
-        assert_eq!(
-            steady.glyph_upload_bytes, first.glyph_upload_bytes,
-            "no atlas upload"
-        );
-        assert_eq!(
-            steady.text_instance_rebuilds, first.text_instance_rebuilds,
-            "no rebuild"
-        );
-        assert_eq!(
-            steady.text_instance_upload_bytes,
-            first.text_instance_upload_bytes
-        );
-    }
-
-    /// One entry, in CSS paint order: shadow layers under outlines under the
-    /// underline under the fills, the strikeout on top.
-    #[test]
-    fn effects_are_instances_of_one_entry_in_paint_order() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let paint = nana_ui_core::PaintColor::srgb;
-        let rich = effects(SceneTextEffects {
-            material: None,
-            decoration: nana_ui_core::TextDecorationLine {
-                underline: true,
-                line_through: true,
-            },
-            decoration_color: None,
-            emphasis_color: None,
-            stroke: Some(nana_ui_core::RichTextStroke::new(
-                2.0,
-                paint([0.0, 0.0, 0.0, 1.0]),
-            )),
-            shadows: Arc::from([
-                nana_ui_core::RichTextShadow::new([1.0, 1.0], 0.0, paint([1.0, 0.0, 0.0, 1.0])),
-                nana_ui_core::RichTextShadow::new([3.0, 3.0], 4.0, paint([0.0, 0.0, 1.0, 0.5])),
-            ]),
-        });
-        paint_effects(&device, &queue, &mut pipeline, rich.as_ref(), None);
-        let id = pipeline
-            .target
-            .entries
-            .lookup(EntryKey {
-                node: 1,
-                slot: 0,
-                pass: 0,
-            })
-            .expect("one entry");
-        let entry = pipeline.target.entries.get(id).unwrap();
-        let roles: Vec<u32> = pipeline
-            .target
-            .entries
-            .instances(entry)
-            .iter()
-            .take(entry.glyphs as usize)
-            .map(|instance| instance.role())
-            .collect();
-        let first = |role: u32| roles.iter().position(|r| *r == role).unwrap();
-        let last = |role: u32| roles.iter().rposition(|r| *r == role).unwrap();
-        assert!(last(pipeline::ROLE_SHADOW) < first(pipeline::ROLE_STROKE));
-        assert!(last(pipeline::ROLE_STROKE) < first(pipeline::ROLE_SOLID));
-        let solids: Vec<usize> = roles
-            .iter()
-            .enumerate()
-            .filter(|(_, role)| **role == pipeline::ROLE_SOLID)
-            .map(|(index, _)| index)
-            .collect();
-        assert!(solids.len() >= 2, "an underline and a strikeout: {roles:?}");
-        assert!(
-            solids[0] < first(pipeline::ROLE_FILL),
-            "the underline under the fill"
-        );
-        assert!(
-            *solids.last().unwrap() > last(pipeline::ROLE_FILL),
-            "the strikeout over it: {roles:?}"
-        );
-        let shadows = roles
-            .iter()
-            .filter(|role| **role == pipeline::ROLE_SHADOW)
-            .count();
-        let fills = roles
-            .iter()
-            .filter(|role| **role == pipeline::ROLE_FILL)
-            .count();
-        assert_eq!(shadows, fills * 2, "a copy of every glyph per shadow layer");
-    }
-
-    /// Measurement is paint: a rich paragraph the Runtime laid out, spans at
-    /// their own sizes, is drawn from its handle, glyph for glyph.
-    #[test]
-    fn a_rich_paragraph_is_drawn_from_the_layout_it_was_measured_with() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let content = "small BIG";
-        let mut source = nana_text::TextSource::new(content);
-        let base = nana_text::TextStyle {
-            font_size_px: 16.0,
-            line_height: Some(LineHeightSpec::Absolute(20.0)),
-            ..nana_text::TextStyle::default()
-        };
-        source.set_spans(vec![nana_text::TextSpan {
-            range: 6..9,
-            style: nana_text::TextStyle {
-                font_size_px: 28.0,
-                ..base.clone()
-            },
-            composition: None,
-        }]);
-        let constraints = nana_text::TextConstraints {
-            max_width_px: Some(240.0),
-            preserve_lines: true,
-            ..nana_text::TextConstraints::default()
-        };
-        let layout = {
-            let engine = crate::text_engine::nana_text_engine();
-            let mut engine = crate::text_engine::lock_engine(&engine);
-            let mut counters = nana_text::TextWorkCounters::default();
-            nana_text::TextEngine::layout(
-                &mut *engine,
-                nana_text::TextKind::Label,
-                &source,
-                &base,
-                &constraints,
-                &mut counters,
-            )
-        };
-        assert!(layout.runs.iter().any(|run| run.font_size_px == 28.0));
-        let handle = nana_ui_runtime::RetainedTextLayout {
-            id: layout.id,
-            layout,
-        };
-        prepare_with_layout(
-            &device,
-            &queue,
-            &mut pipeline,
-            content,
-            240.0,
-            Some(&handle),
-        );
-        let drawn = pipeline.glyph_counters();
-        assert!(
-            drawn.text_retained_layouts_drawn >= 1,
-            "drawn from the handle"
-        );
-        assert_eq!(pipeline.shape_cache_stats().1, 0, "never laid out again");
-        let id = pipeline
-            .target
-            .entries
-            .lookup(EntryKey {
-                node: 1,
-                slot: 0,
-                pass: 0,
-            })
-            .expect("one entry");
-        let entry = pipeline.target.entries.get(id).unwrap();
-        let heights: Vec<u32> = pipeline
-            .target
-            .entries
-            .instances(entry)
-            .iter()
-            .filter(|instance| !instance.is_solid())
-            .filter_map(|instance| instance.placement().map(|(_, size)| size[1]))
-            .collect();
-        let tallest = heights.iter().copied().max().unwrap_or(0);
-        let shortest = heights
-            .iter()
-            .copied()
-            .filter(|h| *h > 0)
-            .min()
-            .unwrap_or(0);
-        assert!(
-            tallest as f32 > shortest as f32 * 1.4,
-            "the span's glyphs are rasterized at its own size: {heights:?}"
-        );
-    }
-
-    /// A ruby annotation is drawn from the layout, glyph for glyph, above its
-    /// base and smaller than it.
-    #[test]
-    fn a_ruby_annotation_is_drawn_above_its_base() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let content = "漢字";
-        let mut source = nana_text::TextSource::new(content);
-        source.set_rubies(vec![nana_text::RubySpan {
-            range: 0..6,
-            text: Arc::from("kanji"),
-        }]);
-        let base = nana_text::TextStyle {
-            font_size_px: 16.0,
-            line_height: Some(LineHeightSpec::Absolute(20.0)),
-            ..nana_text::TextStyle::default()
-        };
-        let constraints = nana_text::TextConstraints {
-            max_width_px: Some(240.0),
-            preserve_lines: true,
-            ..nana_text::TextConstraints::default()
-        };
-        let layout = {
-            let engine = crate::text_engine::nana_text_engine();
-            let mut engine = crate::text_engine::lock_engine(&engine);
-            let mut counters = nana_text::TextWorkCounters::default();
-            nana_text::TextEngine::layout(
-                &mut *engine,
-                nana_text::TextKind::Label,
-                &source,
-                &base,
-                &constraints,
-                &mut counters,
-            )
-        };
-        assert_eq!(layout.rubies.len(), 1);
-        let annotation_glyphs: usize = layout.rubies[0]
-            .runs
-            .iter()
-            .map(|run| run.glyphs.len())
-            .sum();
-        let base_glyphs: usize = layout.runs.iter().map(|run| run.glyphs.len()).sum();
-        let handle = nana_ui_runtime::RetainedTextLayout {
-            id: layout.id,
-            layout,
-        };
-        prepare_with_layout(
-            &device,
-            &queue,
-            &mut pipeline,
-            content,
-            240.0,
-            Some(&handle),
-        );
-        let id = pipeline
-            .target
-            .entries
-            .lookup(EntryKey {
-                node: 1,
-                slot: 0,
-                pass: 0,
-            })
-            .expect("one entry");
-        let entry = pipeline.target.entries.get(id).unwrap();
-        let mut placed: Vec<([i32; 2], [u32; 2])> = pipeline
-            .target
-            .entries
-            .instances(entry)
-            .iter()
-            .take(entry.glyphs as usize)
-            .filter(|instance| !instance.is_solid())
-            .filter_map(|instance| {
-                instance
-                    .placement()
-                    .map(|(_, size)| (instance.screen_origin(), size))
-            })
-            .filter(|(_, size)| size[1] > 0)
-            .collect();
-        assert_eq!(
-            placed.len(),
-            base_glyphs + annotation_glyphs,
-            "the base and every annotation glyph"
-        );
-        placed.sort_by_key(|(origin, size)| origin[1] + size[1] as i32);
-        let (top, small) = placed[0];
-        let (bottom, large) = placed[placed.len() - 1];
-        assert!(
-            top[1] + (small[1] as i32) <= bottom[1] + 2,
-            "the annotation stands above the base"
-        );
-        assert!(small[1] < large[1], "and is smaller");
-    }
-
-    /// A placed glyph's origin and size.
-    type GlyphBox = ([i32; 2], [u32; 2]);
-
-    /// Placed glyph boxes, base and marks, of "漢字" with emphasis marks at
-    /// `position`, painted from the layout Runtime retained.
-    fn emphasis_glyphs(
-        position: nana_ui_core::TextEmphasisPosition,
-    ) -> (usize, usize, Vec<GlyphBox>) {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let content = "漢字";
-        let mut source = nana_text::TextSource::new(content);
-        source.set_emphasis(vec![nana_text::EmphasisSpan {
-            range: 0..6,
-            mark: Arc::from("\u{2022}"),
-            position,
-        }]);
-        let base = nana_text::TextStyle {
-            font_size_px: 16.0,
-            line_height: Some(LineHeightSpec::Absolute(20.0)),
-            ..nana_text::TextStyle::default()
-        };
-        let constraints = nana_text::TextConstraints {
-            max_width_px: Some(240.0),
-            preserve_lines: true,
-            ..nana_text::TextConstraints::default()
-        };
-        let layout = {
-            let engine = crate::text_engine::nana_text_engine();
-            let mut engine = crate::text_engine::lock_engine(&engine);
-            let mut counters = nana_text::TextWorkCounters::default();
-            nana_text::TextEngine::layout(
-                &mut *engine,
-                nana_text::TextKind::Label,
-                &source,
-                &base,
-                &constraints,
-                &mut counters,
-            )
-        };
-        assert_eq!(layout.emphasis.len(), 2, "one mark per character");
-        let base_glyphs: usize = layout.runs.iter().map(|run| run.glyphs.len()).sum();
-        let mark_glyphs: usize = layout
-            .emphasis
-            .iter()
-            .map(|mark| {
-                layout.emphasis_marks[mark.mark as usize]
-                    .iter()
-                    .map(|run| run.glyphs.len())
-                    .sum::<usize>()
-            })
-            .sum();
-        let handle = nana_ui_runtime::RetainedTextLayout {
-            id: layout.id,
-            layout,
-        };
-        prepare_with_layout(
-            &device,
-            &queue,
-            &mut pipeline,
-            content,
-            240.0,
-            Some(&handle),
-        );
-        let id = pipeline
-            .target
-            .entries
-            .lookup(EntryKey {
-                node: 1,
-                slot: 0,
-                pass: 0,
-            })
-            .expect("one entry");
-        let entry = pipeline.target.entries.get(id).unwrap();
-        let mut placed: Vec<([i32; 2], [u32; 2])> = pipeline
-            .target
-            .entries
-            .instances(entry)
-            .iter()
-            .take(entry.glyphs as usize)
-            .filter(|instance| !instance.is_solid())
-            .filter_map(|instance| {
-                instance
-                    .placement()
-                    .map(|(_, size)| (instance.screen_origin(), size))
-            })
-            .filter(|(_, size)| size[1] > 0)
-            .collect();
-        placed.sort_by_key(|(_, size)| size[1]);
-        (base_glyphs, mark_glyphs, placed)
-    }
-
-    #[test]
-    fn emphasis_marks_are_drawn_over_or_under_their_base() {
-        for (position, over) in [
-            (nana_ui_core::TextEmphasisPosition::OVER, true),
-            (nana_ui_core::TextEmphasisPosition::UNDER, false),
-        ] {
-            let (base_glyphs, mark_glyphs, placed) = emphasis_glyphs(position);
-            assert_eq!(
-                placed.len(),
-                base_glyphs + mark_glyphs,
-                "the base and every mark glyph"
-            );
-            // The marks are the smaller glyphs.
-            let (marks, bases) = placed.split_at(mark_glyphs);
-            assert!(marks.iter().all(|(_, size)| size[1] < bases[0].1[1]));
-            for (origin, size) in marks {
-                for (base, base_size) in bases {
-                    if over {
-                        assert!(
-                            origin[1] + size[1] as i32 <= base[1] + 1,
-                            "a mark over the text stands above it"
-                        );
-                    } else {
-                        assert!(
-                            origin[1] >= base[1] + base_size[1] as i32 - 1,
-                            "a mark under the text hangs below it"
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    fn presentation(
-        effects: Vec<nana_ui_core::GlyphEffect>,
-        cluster_effects: Vec<u16>,
-        reveal: Option<nana_ui_core::RevealSchedule>,
-    ) -> Arc<SceneGlyphPresentation> {
-        Arc::new(SceneGlyphPresentation {
-            transitions: Default::default(),
-            effects: effects.into(),
-            effect_chains: Arc::from([]),
-            cluster_effects: cluster_effects.into(),
-            reveal,
-            writing_mode: nana_ui_core::WritingModeSpec::HorizontalTb,
-        })
-    }
-
-    /// "H" painted at `now` under `presented`.
-    fn paint_presented(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        pipeline: &mut TextPipeline,
-        presented: Option<&Arc<SceneGlyphPresentation>>,
-        now: std::time::Duration,
-    ) -> Option<(u32, u32, u32, u32)> {
-        pipeline.write_motion(queue, now, None);
-        pipeline.set_glyph_presentation(presented);
-        let pixels = paint_text_with(
-            device,
-            queue,
-            pipeline,
-            ("H", 32.0),
-            LogicalRect::from_xywh(16.0, 32.0, 96.0, 64.0),
-            LogicalRect::from_xywh(0.0, 0.0, 128.0, 128.0),
-            clip::IDENTITY_AFFINE,
-            [0.0; 2],
-            clip::FragmentClip::PASS,
-            [128, 128],
-        );
-        ink_aabb(&pixels, 128, 128)
-    }
-
-    /// The text shader moves a glyph where the CPU evaluator says it is.
-    #[test]
-    fn the_shader_presents_a_glyph_where_the_cpu_evaluator_puts_it() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let still = paint_presented(
-            &device,
-            &queue,
-            &mut pipeline,
-            None,
-            std::time::Duration::ZERO,
-        )
-        .expect("the glyph draws");
-        let wave = nana_ui_core::GlyphEffect::wave(6.0);
-        let crest = std::time::Duration::from_secs_f32(0.25 / wave.frequency_hz);
-        let expected = nana_ui_core::evaluate_glyph(Some(&wave), None, 0, crest);
-        let waved = presentation(vec![wave], vec![0], None);
-        let moved = paint_presented(&device, &queue, &mut pipeline, Some(&waved), crest)
-            .expect("still drawn");
-        let shift = moved.1 as f32 - still.1 as f32;
-        assert!(
-            (shift - expected.offset[1]).abs() <= 1.0,
-            "the shader moved it {shift}px, the evaluator says {}",
-            expected.offset[1]
-        );
-        assert_eq!(moved.0, still.0, "a wave only moves it up and down");
-
-        // Ink bounds use an RGB threshold, and coverage correction also
-        // depends on the foreground. Compare equal colours so a change in
-        // brightness cannot masquerade as a change in geometry.
-        let rainbow = nana_ui_core::GlyphEffect::rainbow();
-        let [r, g, b] = nana_ui_core::evaluate_glyph(Some(&rainbow), None, 0, crest)
-            .color
-            .expect("rainbow supplies a fill");
-        let ([r, g, b], alpha) = nana_ui_core::PaintColor::srgb([r, g, b, 1.0]).to_linear_sc_rgb();
-        pipeline.set_linear_color_override(Some([r, g, b, alpha]));
-        let coloured_wave = paint_presented(&device, &queue, &mut pipeline, Some(&waved), crest)
-            .expect("the reference wave draws in the evaluated rainbow colour");
-        let chain = Arc::new(SceneGlyphPresentation {
-            transitions: Default::default(),
-            effects: Arc::from([]),
-            effect_chains: vec![nana_ui_core::GlyphEffectChain::new(vec![wave, rainbow])].into(),
-            cluster_effects: vec![0].into(),
-            reveal: None,
-            writing_mode: nana_ui_core::WritingModeSpec::HorizontalTb,
-        });
-        let composed = paint_presented(&device, &queue, &mut pipeline, Some(&chain), crest)
-            .expect("combined effects draw");
-        assert_eq!(
-            composed, coloured_wave,
-            "rainbow preserves the wave geometry on the GPU"
-        );
-
-        let reveal =
-            nana_ui_core::RevealSchedule::new(std::time::Duration::from_secs(10), vec![0.5]);
-        let hidden = presentation(Vec::new(), Vec::new(), Some(reveal));
-        assert!(
-            paint_presented(
-                &device,
-                &queue,
-                &mut pipeline,
-                Some(&hidden),
-                std::time::Duration::from_millis(10_400)
-            )
-            .is_none(),
-            "not revealed yet: nothing drawn"
-        );
-        let shown = paint_presented(
-            &device,
-            &queue,
-            &mut pipeline,
-            Some(&hidden),
-            std::time::Duration::from_millis(10_600),
-        )
-        .expect("revealed");
-        assert_eq!(shown, still);
-
-        let popped = nana_ui_core::RevealSchedule::new(std::time::Duration::ZERO, vec![0.0])
-            .intro(nana_ui_core::GlyphIntro::pop(1.0));
-        let half = std::time::Duration::from_millis(100);
-        let expected = nana_ui_core::evaluate_glyph(None, Some(&popped), 0, half);
-        let small = paint_presented(
-            &device,
-            &queue,
-            &mut pipeline,
-            Some(&presentation(Vec::new(), Vec::new(), Some(popped))),
-            half,
-        )
-        .expect("entering");
-        let (still_w, small_w) = ((still.2 - still.0) as f32, (small.2 - small.0) as f32);
-        assert!(
-            (small_w - still_w * expected.scale).abs() <= 2.0,
-            "scaled to {small_w} of {still_w}, the evaluator says x{}",
-            expected.scale
-        );
-    }
-
-    /// Header word 11 tells `glyph_look` which way "up" is.
-    #[test]
-    fn the_glyph_fx_header_carries_the_line_over_side() {
-        for (mode, word) in [
-            (nana_ui_core::WritingModeSpec::HorizontalTb, 0),
-            (nana_ui_core::WritingModeSpec::VerticalRl, 1),
-            (nana_ui_core::WritingModeSpec::VerticalLr, 1),
-        ] {
-            let mut presented =
-                presentation(vec![nana_ui_core::GlyphEffect::wave(2.0)], vec![0], None);
-            Arc::make_mut(&mut presented).writing_mode = mode;
-            let mut fx = vec![0; 3];
-            let at = pack_glyph_fx(&mut fx, &presented) as usize;
-            assert_eq!(fx[at + 11], word, "{mode:?}");
-        }
-    }
-
-    /// Text in a vertical writing mode waves, jumps and rises across its
-    /// line, on the GPU where the CPU evaluator says: `(0, dy)` becomes
-    /// `(-dy, 0)`, toward the line-over side on the right.
-    #[test]
-    fn the_shader_turns_a_vertical_line_s_motion_where_the_cpu_evaluator_does() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let still = paint_presented(
-            &device,
-            &queue,
-            &mut pipeline,
-            None,
-            std::time::Duration::ZERO,
-        )
-        .expect("the glyph draws");
-        let wave = nana_ui_core::GlyphEffect::wave(6.0);
-        let jump = nana_ui_core::GlyphEffect::jump(5.0);
-        let crest = std::time::Duration::from_secs_f32(0.25 / wave.frequency_hz);
-        let rising = nana_ui_core::RevealSchedule::new(std::time::Duration::ZERO, vec![0.0])
-            .intro(nana_ui_core::GlyphIntro::rise(12.0, 1.0));
-        let early = std::time::Duration::from_millis(100);
-        for mode in [
-            nana_ui_core::WritingModeSpec::VerticalRl,
-            nana_ui_core::WritingModeSpec::VerticalLr,
-        ] {
-            for (effects, reveal, now) in [
-                (vec![wave], None, crest),
-                (vec![jump], None, crest),
-                (Vec::new(), Some(rising.clone()), early),
-            ] {
-                let mut presented = presentation(
-                    effects.clone(),
-                    if effects.is_empty() {
-                        Vec::new()
-                    } else {
-                        vec![0]
-                    },
-                    reveal.clone(),
-                );
-                Arc::make_mut(&mut presented).writing_mode = mode;
-                let expected =
-                    nana_ui_core::evaluate_glyph_chain_in(&effects, reveal.as_ref(), 0, now, mode);
-                assert_eq!(expected.offset[1], 0.0);
-                assert!(expected.offset[0].abs() >= 3.0, "{expected:?}");
-                let moved = paint_presented(&device, &queue, &mut pipeline, Some(&presented), now)
-                    .expect("still drawn");
-                let shift = moved.0 as f32 - still.0 as f32;
-                assert!(
-                    (shift - expected.offset[0]).abs() <= 1.0,
-                    "{mode:?}: the shader moved it {shift}px, the evaluator says {}",
-                    expected.offset[0]
-                );
-                assert_eq!(
-                    (moved.1, moved.3),
-                    (still.1, still.3),
-                    "{mode:?}: across a vertical line is left and right only"
-                );
-            }
-        }
-    }
-
-    /// Presentation is not part of what an entry was built from: changing it,
-    /// and sixty frames of it moving, rebuild and upload no glyph.
-    #[test]
-    fn a_live_presentation_rebuilds_and_uploads_no_glyph() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        paint_effects(&device, &queue, &mut pipeline, None, None);
-        let first = pipeline.glyph_counters();
-        let waved = presentation(
-            vec![nana_ui_core::GlyphEffect::wave(4.0)],
-            vec![0; 13],
-            None,
-        );
-        for frame in 0..60u64 {
-            pipeline.write_motion(&queue, std::time::Duration::from_millis(frame * 16), None);
-            pipeline.set_glyph_presentation(Some(&waved));
-            paint_rich(&device, &queue, &mut pipeline, &[]);
-        }
-        let steady = pipeline.glyph_counters();
-        assert_eq!(steady.text_instance_rebuilds, first.text_instance_rebuilds);
-        assert_eq!(steady.glyph_rasterized, first.glyph_rasterized);
-        assert_eq!(steady.glyph_upload_bytes, first.glyph_upload_bytes);
-        assert_eq!(
-            steady.text_instance_upload_bytes, first.text_instance_upload_bytes,
-            "no instance moves: the shader reads the clock"
-        );
-    }
-
-    /// Prepare one label, flush it and upload, reporting the GPU work.
-    #[allow(clippy::too_many_arguments)]
-    fn prepare_label(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        pipeline: &mut TextPipeline,
-        content: &str,
-        scale: f32,
-    ) -> crate::GpuWorkObservation {
-        pipeline.begin_frame([256, 64]);
-        pipeline
-            .prepare(
-                device,
-                LogicalRect::from_xywh(0.0, 0.0, 240.0, 32.0),
-                LogicalRect::from_xywh(0.0, 0.0, 256.0, 64.0),
-                scale,
-                content,
-                Some([1.0, 1.0, 1.0, 1.0]),
-                16.0,
-                None,
-                None,
-                None,
-                false,
-                nana_ui_core::TextWrapBreak::Word,
-                false,
-                false,
-                None,
-                TextShaping::Auto,
-                TextHorizontalAlignment::Start,
-                TextVerticalAlignment::Top,
-                &[],
-                0.0,
-                &[],
-                &SceneTextOpenType::default(),
-                clip::IDENTITY_AFFINE,
-                [0.0; 2],
-                clip::FragmentClip::PASS,
-                1.0,
-                [0.0; 2],
-                EntryKey {
-                    node: 1,
-                    slot: 0,
-                    pass: 0,
-                },
-                UNTRACKED_REVISION,
-                None,
-                true,
-            )
-            .expect("label must prepare");
-        pipeline.flush_runs();
-        let work = crate::gpu_work::GpuWorkSink::new();
-        pipeline.upload(device, queue, Some(&work));
-        work.snapshot()
-    }
-
-    /// Place one hand-made glyph and return its handle, so a batching test can
-    /// mix mask and color glyphs without depending on which faces this machine
-    /// happens to have.
-    fn place(
-        pipeline: &mut TextPipeline,
-        device: &wgpu::Device,
-        glyph: u32,
-        format: raster::GlyphImageFormat,
-    ) -> atlas::GlyphAtlasEntryId {
-        let key = glyph::GlyphRasterKey {
-            font: glyph::GlyphFontId(0),
-            font_generation: 0,
-            variation: glyph::GlyphVariationId(0),
-            glyph,
-            size_bits: 16f32.to_bits(),
-            subpixel_x: glyph::SubpixelBin::default(),
-            subpixel_y: glyph::SubpixelBin::default(),
-            synthesis: glyph::GlyphSynthesis::NONE,
-            mode: GlyphRenderMode::Mask,
-        };
-        let image = std::sync::Arc::new(raster::GlyphImage {
-            format,
-            width: 4,
-            height: 6,
-            left: 0,
-            top: 6,
-            data: vec![255; 4 * 6 * format.bytes_per_pixel()],
-        });
-        let TextPipeline {
-            atlas,
-            raster,
-            uploads,
-            ..
-        } = pipeline;
-        atlas
-            .insert(device, key, &image, raster, uploads)
-            .expect("an empty atlas must place one glyph")
-            .0
-    }
-
-    /// Open a run over already-placed glyphs, the way `build_entry` would.
-    fn hand_built_run(pipeline: &mut TextPipeline, handles: &[atlas::GlyphAtlasEntryId]) -> usize {
-        let index = pipeline.target.live_runs;
-        let node = index as u64 + 1;
-        let placeholders = [
-            pipeline.atlas.placeholder_page(AtlasPageKind::Mask),
-            pipeline.atlas.placeholder_page(AtlasPageKind::Color),
-        ];
-        let key = EntryKey {
-            node,
-            slot: 0,
-            pass: 0,
-        };
-        let atlas = &mut pipeline.atlas;
-        let id = pipeline
-            .target
-            .entries
-            .begin_build(key, handles.len() as u32, |handle| atlas.release(handle));
-        let mut segments: Vec<EntrySegment> = Vec::new();
-        for (offset, handle) in handles.iter().enumerate() {
-            let placement = *pipeline.atlas.entry(*handle).expect("just placed");
-            let content = match placement.kind {
-                AtlasPageKind::Mask => CONTENT_MASK,
-                AtlasPageKind::Color => CONTENT_COLOR,
-            };
-            let (mask_page, color_page) = match placement.kind {
-                AtlasPageKind::Mask => (placement.page, placeholders[1]),
-                AtlasPageKind::Color => (placeholders[0], placement.page),
-            };
-            push_entry_segment(
-                &mut segments,
-                placeholders,
-                mask_page,
-                color_page,
-                offset as u32,
-                0,
-            );
-            pipeline.atlas.retain(*handle);
-            pipeline.target.entries.push_glyph(
-                id,
-                offset as u32,
-                *handle,
-                GlyphInstance::new(
-                    [offset as i32 * 6, 0],
-                    placement.size,
-                    placement.origin,
-                    pipeline::pack_srgb([1.0; 4]),
-                    content,
-                    [0.0; 4],
-                ),
-            );
-        }
-        let epoch = pipeline.atlas.placement_epoch();
-        let entry = pipeline.target.entries.get_mut(id).expect("just built");
-        entry.atlas_epoch = epoch;
-        entry.segments = segments;
-        if index == pipeline.target.runs.len() {
-            pipeline.target.runs.push(TextRun {
-                entry: id,
-                presentation: RunPresentation {
-                    origin: [0.0; 2],
-                    color: [1.0; 4],
-                    opacity: 1.0,
-                    flags: 0,
-                    presentation: 0,
-                    raster: 1.0,
-                    fx: 0,
-                    transitions: [0; 2],
-                },
-                next: NO_RUN,
-                last: index as u32,
-                folded: false,
-                segments: 0..0,
-                pixels: 0,
-            });
-        }
-        pipeline.target.runs[index].entry = id;
-        pipeline.target.runs[index].next = NO_RUN;
-        pipeline.target.runs[index].last = index as u32;
-        pipeline.target.runs[index].folded = false;
-        pipeline.target.live_runs += 1;
-        index
-    }
-
-    #[test]
-    fn a_color_glyph_between_mask_glyphs_still_draws_as_one_batch() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        pipeline.begin_frame([64, 64]);
-        let handles = [
-            place(&mut pipeline, &device, 1, raster::GlyphImageFormat::Mask),
-            place(
-                &mut pipeline,
-                &device,
-                2,
-                raster::GlyphImageFormat::ColorRgba,
-            ),
-            place(&mut pipeline, &device, 3, raster::GlyphImageFormat::Mask),
-        ];
-        let run = hand_built_run(&mut pipeline, &handles);
-        pipeline.flush_runs();
-        assert_eq!(
-            pipeline.target.runs[run].segments.len(),
-            1,
-            "a mask page and a color page fit one bind group, so an emoji in a \
-             line of text must not split the batch"
-        );
-        let segment = pipeline.target.segments[0];
-        assert_eq!(segment.count, 3);
-        assert_ne!(
-            segment.color_page,
-            pipeline.atlas.placeholder_page(AtlasPageKind::Color),
-            "the one segment must name the real color page, not the placeholder"
-        );
-        assert_ne!(
-            segment.mask_page,
-            pipeline.atlas.placeholder_page(AtlasPageKind::Mask),
-            "and the real mask page"
-        );
-    }
-
-    #[test]
-    fn two_paragraphs_folded_into_one_command_draw_as_one_segment() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        pipeline.begin_frame([64, 64]);
-        let first = [place(
-            &mut pipeline,
-            &device,
-            1,
-            raster::GlyphImageFormat::Mask,
-        )];
-        let second = [place(
-            &mut pipeline,
-            &device,
-            2,
-            raster::GlyphImageFormat::Mask,
-        )];
-        let a = hand_built_run(&mut pipeline, &first);
-        let b = hand_built_run(&mut pipeline, &second);
-        // Different origin, different color, different opacity: none of that
-        // is a batch key any more, because each instance names its own run.
-        pipeline.target.runs[b].presentation.origin = [40.0, 12.0];
-        pipeline.target.runs[b].presentation.color = [1.0, 0.0, 0.0, 1.0];
-        pipeline.target.runs[b].presentation.opacity = 0.5;
-        let previous = PreparedText {
-            index: a,
-            ink: LogicalRect::from_xywh(0.0, 0.0, 1.0, 1.0),
-        };
-        let next = PreparedText {
-            index: b,
-            ink: LogicalRect::from_xywh(0.0, 0.0, 1.0, 1.0),
-        };
-        assert!(pipeline.can_merge_runs(&previous, &next));
-        pipeline.merge_runs(&previous, &next);
-        pipeline.flush_runs();
-        assert_eq!(
-            pipeline.target.runs[a].segments.len(),
-            1,
-            "two paragraphs that only present differently must stay one draw"
-        );
-        let a_capacity = pipeline
-            .target
-            .entries
-            .get(pipeline.target.runs[a].entry)
-            .expect("entry")
-            .capacity;
-        assert_eq!(
-            pipeline.target.segments[0],
-            pipeline::DrawSegment {
-                material: 0,
-                mask_page: pipeline.target.segments[0].mask_page,
-                color_page: pipeline.target.segments[0].color_page,
-                first: 0,
-                count: a_capacity + 1,
-            },
-            "the one draw spans both blocks, slack included"
-        );
-        assert_eq!(
-            pipeline.target.run_table.len(),
-            2,
-            "but each keeps its own presentation row"
-        );
-    }
-
-    /// One label's presentation, so a gate can change exactly one thing.
-    #[derive(Clone, Copy)]
-    struct Label<'a> {
-        content: &'a str,
-        key: EntryKey,
-        color: [f32; 4],
-        opacity: f32,
-        affine: [f32; 6],
-        top: f32,
-        left: f32,
-    }
-
-    impl<'a> Label<'a> {
-        fn new(content: &'a str, node: u64) -> Self {
-            Self {
-                content,
-                key: EntryKey {
-                    node,
-                    slot: 0,
-                    pass: 0,
-                },
-                color: [1.0, 1.0, 1.0, 1.0],
-                opacity: 1.0,
-                affine: clip::IDENTITY_AFFINE,
-                top: 0.0,
-                left: 0.0,
-            }
-        }
-    }
-
-    /// Prepare, flush and upload one frame of `labels`.
-    fn text_frame(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        pipeline: &mut TextPipeline,
-        labels: &[Label<'_>],
-    ) {
-        text_frame_at(device, queue, pipeline, labels, 1.0);
-    }
-
-    /// [`text_frame`] on a display of `scale` physical px per logical px.
-    fn text_frame_at(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        pipeline: &mut TextPipeline,
-        labels: &[Label<'_>],
-        scale: f32,
-    ) {
-        pipeline.begin_frame([512, 256]);
-        for label in labels {
-            pipeline.prepare(
-                device,
-                LogicalRect::from_xywh(label.left, label.top, 480.0, 32.0),
-                LogicalRect::from_xywh(0.0, 0.0, 512.0, 256.0),
-                scale,
-                label.content,
-                Some(label.color),
-                16.0,
-                None,
-                None,
-                None,
-                false,
-                nana_ui_core::TextWrapBreak::Word,
-                false,
-                false,
-                None,
-                TextShaping::Auto,
-                TextHorizontalAlignment::Start,
-                TextVerticalAlignment::Top,
-                &[],
-                0.0,
-                &[],
-                &SceneTextOpenType::default(),
-                label.affine,
-                [0.0; 2],
-                clip::FragmentClip::PASS,
-                label.opacity,
-                [0.0; 2],
-                label.key,
-                UNTRACKED_REVISION,
-                None,
-                true,
-            );
-        }
-        pipeline.flush_runs();
-        pipeline.upload(device, queue, None);
-    }
-
-    #[test]
-    fn more_distinct_paragraphs_than_the_cache_holds_still_shape_once_each() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        // One more label than the cache's nominal capacity, all on screen at
-        // once, behind a label that changes every frame. That first insert is
-        // what a fixed capacity answers by evicting the rows it is about to
-        // draw — and then it reshapes every one of them, every frame.
-        let contents = (0..SHAPE_CACHE_CAP + 1)
-            .map(|index| format!("Distinct row {index}"))
-            .collect::<Vec<_>>();
-        let frame = |pipeline: &mut TextPipeline, tick: usize| {
-            let ticking = format!("tick {tick}");
-            let mut labels = vec![Label::new(ticking.as_str(), 1)];
-            labels.extend(contents.iter().enumerate().map(|(index, content)| Label {
-                top: index as f32 * 2.0,
-                ..Label::new(content.as_str(), index as u64 + 2)
-            }));
-            text_frame(&device, &queue, pipeline, &labels);
-        };
-        frame(&mut pipeline, 0);
-        let (_, warm_misses, _) = pipeline.shape_cache_stats();
-        assert_eq!(
-            warm_misses,
-            contents.len() + 1,
-            "the first frame shapes each paragraph once"
-        );
-        for tick in 1..4 {
-            frame(&mut pipeline, tick);
-        }
-        let (_, misses, _) = pipeline.shape_cache_stats();
-        assert_eq!(
-            misses - warm_misses,
-            3,
-            "only the label that really changed is reshaped; the cache has to \
-             hold one frame's worth of text, which is a property of the view"
-        );
-    }
-
-    #[test]
-    fn a_face_set_change_gives_back_the_blocks_and_rows_its_entries_held() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let labels = (0..12)
-            .map(|index| Label {
-                top: index as f32 * 18.0,
-                ..Label::new("Face set row", index + 1)
-            })
-            .collect::<Vec<_>>();
-        text_frame(&device, &queue, &mut pipeline, &labels);
-        let rows = pipeline.target.run_table.len();
-        let slots = pipeline.target.arena.len();
-        assert_eq!(rows, labels.len());
-        assert!(slots > 0);
-        // What `@font-face` does: every entry stops meaning what it meant.
-        pipeline.drop_every_entry();
-        text_frame(&device, &queue, &mut pipeline, &labels);
-        assert_eq!(
-            pipeline.target.run_table.len(),
-            rows,
-            "the rows the dropped entries held are handed out again, not added to"
-        );
-        assert_eq!(
-            pipeline.target.arena.len(),
-            slots,
-            "and so are their arena blocks"
-        );
-        assert_eq!(pipeline.glyph_counters().text_gpu_entries_active, 12);
-    }
-
-    #[test]
-    fn a_paragraph_that_stopped_being_drawn_is_eventually_given_back() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let keep = Label::new("Still here", 1);
-        let gone = Label {
-            top: 40.0,
-            ..Label::new("Closed panel", 2)
-        };
-        text_frame(&device, &queue, &mut pipeline, &[keep, gone]);
-        let warm = pipeline.glyph_counters();
-        assert_eq!(warm.text_gpu_entries_active, 2);
-        assert_eq!(warm.text_gpu_entries_destroyed, 0);
-        // The panel closes. Long enough that a tab flipped back and forth
-        // would have paid for neither direction, and then long enough that
-        // this one is really gone.
-        for _ in 0..RETIRE_AFTER_FRAMES + RETIRE_INTERVAL {
-            text_frame(&device, &queue, &mut pipeline, &[keep]);
-        }
-        let after = pipeline.glyph_counters();
-        assert_eq!(
-            after.text_gpu_entries_active, 1,
-            "the entry of a paragraph nothing draws any more is given back"
-        );
-        assert_eq!(after.text_gpu_entries_destroyed, 1);
-        assert!(
-            after.text_gpu_entry_glyphs < warm.text_gpu_entry_glyphs,
-            "and so are its instances"
-        );
-        assert_eq!(
-            after.text_instance_rebuilds, warm.text_instance_rebuilds,
-            "the paragraph that stayed was never resolved again"
-        );
-    }
-
-    /// Issue #211: the fallback lays text out with the typography the
-    /// Runtime measured it with, and a typography change misses the shape
-    /// cache rather than paint the old lines.
-    #[test]
-    fn fallback_layout_follows_the_scene_typography() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let content = "中文排版测试中文排版测试中文排版测试中文";
-        let justified = SceneTextOpenType {
-            typography: nana_ui_core::UsedTextTypography {
-                justify_lines: true,
-                justify: nana_ui_core::TextJustifySpec::InterCharacter,
-                ..Default::default()
-            },
-            ..SceneTextOpenType::default()
-        };
-        let mut lay_out = |opentype: &SceneTextOpenType| {
-            pipeline.lay_out(
-                content,
-                None,
-                None,
-                16.0,
-                20.0,
-                0.0,
-                false,
-                true,
-                nana_ui_core::TextWrapBreak::Word,
-                false,
-                None,
-                101.0,
-                1000.0,
-                TextAlignSpec::Start,
-                opentype,
-            )
-        };
-        let ragged = lay_out(&SceneTextOpenType::default());
-        let filled = lay_out(&justified);
-        assert!(filled.lines.len() > 1);
-        let (_, lines) = filled.lines.split_last().unwrap();
-        for line in lines {
-            assert!(
-                (line.metrics.width_px - 101.0).abs() < 0.05,
-                "{}",
-                line.metrics.width_px
-            );
-        }
-        assert!(ragged.lines[0].metrics.width_px < 101.0 - 0.05);
-
-        let plain = shape_key_ref(content);
-        let other = ShapeKeyRef {
-            typography: justified.typography,
-            ..shape_key_ref(content)
-        };
-        assert!(!plain.to_owned_key().matches(&other));
-        assert_ne!(plain.hash64(), other.hash64());
-    }
-
-    /// A shape key for `content` with everything else at its default.
-    fn shape_key_ref(content: &str) -> ShapeKeyRef<'_> {
-        ShapeKeyRef {
-            content,
-            family: None,
-            weight: None,
-            font_size_bits: 16f32.to_bits(),
-            line_height_bits: 20f32.to_bits(),
-            wrap: false,
-            wrap_break: nana_ui_core::TextWrapBreak::Word,
-            italic: false,
-            ellipsis: false,
-            max_lines: None,
-            letter_spacing_bits: 0f32.to_bits(),
-            word_break: 0,
-            line_break: 0,
-            kerning: 0,
-            features: &[],
-            variations: &[],
-            width_bits: 100f32.to_bits(),
-            height_bits: 20f32.to_bits(),
-            align: 0,
-            direction: 0,
-            writing_mode: 0,
-            text_orientation: 0,
-            preserve_lines: false,
-            font_features: &[],
-            typography: nana_ui_core::UsedTextTypography::default(),
-        }
-    }
-
-    #[test]
-    fn a_shape_hash_collision_reshapes_instead_of_painting_the_other_text() {
-        // The hash finds the entry; the stored key decides the hit. A weak
-        // hash may therefore cost a reshape, and may never paint the wrong
-        // letters — which is the whole reason the key is kept at all.
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let layout = pipeline.lay_out(
-            "first paragraph",
-            None,
-            None,
-            16.0,
-            20.0,
-            0.0,
-            false,
-            false,
-            nana_ui_core::TextWrapBreak::Word,
-            false,
-            None,
-            100.0,
-            20.0,
-            TextAlignSpec::Start,
-            &SceneTextOpenType::default(),
-        );
-        let collision = 0x5ca1_ab1e_u64;
-        pipeline.shape_cache.insert(
-            collision,
-            shape_key_ref("first paragraph").to_owned_key(),
-            layout,
-        );
-        let (hits, misses, _) = pipeline.shape_cache_stats();
-        assert!(
-            pipeline
-                .shape_cache
-                .get(collision, &shape_key_ref("first paragraph"))
-                .is_some(),
-            "its own key still hits"
-        );
-        assert!(
-            pipeline
-                .shape_cache
-                .get(collision, &shape_key_ref("a different paragraph"))
-                .is_none(),
-            "another paragraph at the same hash must miss, not read that buffer"
-        );
-        let (after_hits, after_misses, _) = pipeline.shape_cache_stats();
-        assert_eq!(after_hits, hits + 1);
-        assert_eq!(after_misses, misses + 1);
-    }
-
-    #[test]
-    fn two_windows_taking_turns_keep_each_others_paragraphs_shaped() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let mut second: Option<TextPipelineTarget> = None;
-        // Each window alone fits the cache; together they do not. What window
-        // A drew last frame is still on A's screen while B is drawing.
-        let half = SHAPE_CACHE_CAP * 2 / 3;
-        let window = |offset: usize| {
-            (0..half)
-                .map(|index| format!("Window {offset} row {index}"))
-                .collect::<Vec<_>>()
-        };
-        let (left, right) = (window(0), window(1));
-        let paint = |pipeline: &mut TextPipeline, contents: &[String]| {
-            let labels = contents
-                .iter()
-                .enumerate()
-                .map(|(index, content)| Label {
-                    top: index as f32 * 2.0,
-                    ..Label::new(content.as_str(), index as u64 + 1)
-                })
-                .collect::<Vec<_>>();
-            text_frame(&device, &queue, pipeline, &labels);
-        };
-        paint(&mut pipeline, &left);
-        pipeline.swap_target(&mut second, &device);
-        paint(&mut pipeline, &right);
-        let (_, warm_misses, _) = pipeline.shape_cache_stats();
-        for _ in 0..3 {
-            pipeline.swap_target(&mut second, &device);
-            paint(&mut pipeline, &left);
-            pipeline.swap_target(&mut second, &device);
-            paint(&mut pipeline, &right);
-        }
-        let (_, misses, _) = pipeline.shape_cache_stats();
-        assert_eq!(
-            misses, warm_misses,
-            "neither window may evict the other's text: both are on screen"
-        );
-    }
-
-    #[test]
-    fn a_scrolled_viewport_paints_the_text_its_offset_brought_into_view() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        // The node sits below the viewport in its own space; the scroll offset
-        // lives in the transform, exactly as `paint_transform` folds a scene
-        // origin into it. Comparing the two spaces directly would drop it.
-        let scrolled = [1.0, 0.0, 0.0, 1.0, 0.0, -120.0];
-        let pixels = paint_text(
-            &device,
-            &queue,
-            &mut pipeline,
-            LogicalRect::from_xywh(4.0, 130.0, 48.0, 20.0),
-            LogicalRect::from_xywh(0.0, 0.0, 64.0, 64.0),
-            scrolled,
-            [0.0, 0.0],
-            clip::FragmentClip::PASS,
-        );
-        assert!(
-            ink_aabb(&pixels, 64, 64).is_some(),
-            "text the scroll offset brought into view must still paint"
-        );
-    }
-
-    #[test]
-    fn a_static_steady_frame_resolves_no_glyph_and_moves_no_instance() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let labels = (0..8)
-            .map(|index| Label {
-                top: index as f32 * 24.0,
-                ..Label::new("Steady label", index + 1)
-            })
-            .collect::<Vec<_>>();
-        text_frame(&device, &queue, &mut pipeline, &labels);
-        let warm = pipeline.glyph_counters();
-        for _ in 0..3 {
-            text_frame(&device, &queue, &mut pipeline, &labels);
-        }
-        let steady = pipeline.glyph_counters();
-        let (_, misses, _) = pipeline.shape_cache_stats();
-        assert_eq!(
-            misses, 1,
-            "one paragraph is shaped once, however many nodes draw it"
-        );
-        assert_eq!(
-            steady.glyph_resolve_requests, warm.glyph_resolve_requests,
-            "a static frame must not resolve a glyph"
-        );
-        assert_eq!(
-            steady.glyph_rasterized, warm.glyph_rasterized,
-            "nor rasterize one"
-        );
-        assert_eq!(
-            steady.glyph_upload_bytes, warm.glyph_upload_bytes,
-            "nor upload an atlas region"
-        );
-        assert_eq!(
-            steady.text_instance_rebuilds, warm.text_instance_rebuilds,
-            "nor rebuild an entry"
-        );
-        assert_eq!(
-            steady.text_instance_patches, warm.text_instance_patches,
-            "nor patch one"
-        );
-        assert_eq!(
-            steady.text_instance_upload_bytes, warm.text_instance_upload_bytes,
-            "nor move an instance byte"
-        );
-        assert_eq!(
-            steady.text_presentation_upload_bytes, warm.text_presentation_upload_bytes,
-            "nor a presentation byte"
-        );
-        assert_eq!(steady.text_gpu_entries_active, 8);
-        assert_eq!(
-            steady.text_prepare_nodes_skipped - warm.text_prepare_nodes_skipped,
-            24,
-            "every node of every steady frame is answered by its entry"
-        );
-    }
-
-    #[test]
-    fn recoloring_and_fading_are_presentation_only() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let label = Label::new("Recolor me", 1);
-        text_frame(&device, &queue, &mut pipeline, &[label]);
-        let warm = pipeline.glyph_counters();
-        let (_, warm_misses, _) = pipeline.shape_cache_stats();
-        for (index, color) in [[1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]]
-            .into_iter()
-            .enumerate()
-        {
-            text_frame(
-                &device,
-                &queue,
-                &mut pipeline,
-                &[Label {
-                    color,
-                    opacity: 1.0 - index as f32 * 0.25,
-                    ..label
-                }],
-            );
-        }
-        let after = pipeline.glyph_counters();
-        let (_, misses, _) = pipeline.shape_cache_stats();
-        assert_eq!(misses, warm_misses, "a color or a fade must not reshape");
-        assert_eq!(
-            after.glyph_resolve_requests, warm.glyph_resolve_requests,
-            "nor resolve a glyph"
-        );
-        assert_eq!(
-            after.glyph_rasterized, warm.glyph_rasterized,
-            "nor rasterize one"
-        );
-        assert_eq!(
-            after.text_instance_rebuilds, warm.text_instance_rebuilds,
-            "nor rebuild the entry"
-        );
-        assert_eq!(
-            after.text_instance_upload_bytes, warm.text_instance_upload_bytes,
-            "nor move an instance byte"
-        );
-        assert!(
-            after.text_presentation_upload_bytes > warm.text_presentation_upload_bytes,
-            "the new color and opacity reach the GPU as run rows"
-        );
-    }
-
-    #[test]
-    fn a_transform_animation_does_not_rebuild_text_instances() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let label = Label::new("Spinning", 1);
-        let rotated = |angle: f32| {
-            let (sin, cos) = angle.sin_cos();
-            [cos, sin, -sin, cos, 24.0, 24.0]
-        };
-        text_frame(
-            &device,
-            &queue,
-            &mut pipeline,
-            &[Label {
-                affine: rotated(0.1),
-                ..label
-            }],
-        );
-        let warm = pipeline.glyph_counters();
-        for step in 1..8 {
-            text_frame(
-                &device,
-                &queue,
-                &mut pipeline,
-                &[Label {
-                    affine: rotated(0.1 + step as f32 * 0.02),
-                    ..label
-                }],
-            );
-        }
-        let after = pipeline.glyph_counters();
-        assert_eq!(
-            after.text_instance_rebuilds, warm.text_instance_rebuilds,
-            "a rotation is presentation: the glyphs it turns are the same ones"
-        );
-        assert_eq!(
-            after.glyph_rasterized, warm.glyph_rasterized,
-            "and no angle is a new bitmap"
-        );
-        assert_eq!(
-            after.text_instance_upload_bytes, warm.text_instance_upload_bytes,
-            "nor an instance byte"
-        );
-        assert!(
-            after.text_presentation_upload_bytes > warm.text_presentation_upload_bytes,
-            "each angle is a presentation row"
-        );
-    }
-
-    #[test]
-    fn labels_coming_and_going_do_not_renumber_the_ones_that_stayed() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let all = (0..12)
-            .map(|index| Label {
-                top: index as f32 * 18.0,
-                ..Label::new("Row content", index + 1)
-            })
-            .collect::<Vec<_>>();
-        text_frame(&device, &queue, &mut pipeline, &all);
-        text_frame(&device, &queue, &mut pipeline, &all);
-        let warm = pipeline.glyph_counters();
-        // The first label leaves. If a run row were the draw-order index, every
-        // remaining label would be renumbered and every instance of every one
-        // of them would have to be rewritten.
-        text_frame(&device, &queue, &mut pipeline, &all[1..]);
-        let after = pipeline.glyph_counters();
-        assert_eq!(
-            after.text_instance_rebuilds, warm.text_instance_rebuilds,
-            "nothing was reshaped or re-resolved"
-        );
-        assert_eq!(
-            after.text_instance_patches, warm.text_instance_patches,
-            "and no surviving label had its run rebound"
-        );
-    }
-
-    #[test]
-    fn a_scene_scale_animation_rasterizes_each_step_it_passes_once_not_each_frame() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let label = Label::new("Zooming", 1);
-        let scaled = |factor: f32| [factor, 0.0, 0.0, factor, 8.0, 8.0];
-        text_frame(
-            &device,
-            &queue,
-            &mut pipeline,
-            &[Label {
-                affine: scaled(1.0),
-                ..label
-            }],
-        );
-        let warm = pipeline.glyph_counters();
-        let (_, warm_misses, _) = pipeline.shape_cache_stats();
-        let glyphs = warm.glyph_rasterized;
-        // Twenty-three frames from 1.0 to 2.1: a zoom animation that passes
-        // two raster steps (√2 and 2) on its way.
-        for step in 1..24 {
-            text_frame(
-                &device,
-                &queue,
-                &mut pipeline,
-                &[Label {
-                    affine: scaled(1.0 + step as f32 * 0.05),
-                    ..label
-                }],
-            );
-        }
-        let after = pipeline.glyph_counters();
-        let (_, misses, _) = pipeline.shape_cache_stats();
-        assert_eq!(
-            misses, warm_misses,
-            "a scene scale must not lay the paragraph out again"
-        );
-        // The DPI scale decides the raster size frame by frame; a scene
-        // transform only moves it in half-octave steps. Letting the two share
-        // a policy is what turns a zoom into a bitmap per frame and a cache
-        // that never stops growing.
-        // Per step, at most what the first frame rasterized: sub-pixel bins
-        // can merge two of a paragraph's glyphs at a larger size.
-        let rasterized = after.glyph_rasterized - warm.glyph_rasterized;
-        assert!(
-            rasterized > glyphs && rasterized <= 2 * glyphs,
-            "one raster size per step passed, not one per frame: {rasterized} \
-             glyphs for two steps of a {glyphs}-glyph label"
-        );
-        assert_eq!(
-            after.text_instance_rebuilds - warm.text_instance_rebuilds,
-            2,
-            "and one rebuild per step"
-        );
-    }
-
-    #[test]
-    fn a_whole_pixel_scroll_rewrites_one_shared_row_and_no_run() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let labels = |offset: f32| {
-            (0..12)
-                .map(|index| Label {
-                    top: 3.3 + index as f32 * 17.6,
-                    affine: [1.0, 0.0, 0.0, 1.0, 0.0, -offset],
-                    ..Label::new("Row content", index + 1)
-                })
-                .collect::<Vec<_>>()
-        };
-        text_frame(&device, &queue, &mut pipeline, &labels(0.0));
-        for offset in 1..6 {
-            let warm = pipeline.glyph_counters();
-            text_frame(&device, &queue, &mut pipeline, &labels(offset as f32 * 3.0));
-            let after = pipeline.glyph_counters();
-            assert_eq!(
-                after.text_instance_rebuilds, warm.text_instance_rebuilds,
-                "a whole-pixel scroll keeps every glyph"
-            );
-            let moved = after.text_presentation_upload_bytes - warm.text_presentation_upload_bytes;
-            assert!(
-                moved <= std::mem::size_of::<pipeline::TextPresentationGpu>() as u64,
-                "and moves one presentation row, not twelve run rows: {moved} bytes"
-            );
-        }
-    }
-
-    #[test]
-    fn a_whole_pixel_horizontal_scroll_keeps_every_glyph() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        // Labels at fractional x, as flex layout leaves them. Scrolled by
-        // whole pixels their glyphs are the same glyphs at the same phase, so
-        // not one of them may be resolved again — however the float that
-        // carries the scroll happens to round.
-        let labels = |offset: f32| {
-            (0..12)
-                .map(|index| Label {
-                    left: 0.709 + index as f32 * 38.766,
-                    affine: [1.0, 0.0, 0.0, 1.0, -offset, 0.0],
-                    ..Label::new("Row", index + 1)
-                })
-                .collect::<Vec<_>>()
-        };
-        text_frame(&device, &queue, &mut pipeline, &labels(0.0));
-        let warm = pipeline.glyph_counters();
-        for step in 1..40 {
-            text_frame(&device, &queue, &mut pipeline, &labels(step as f32 * 7.0));
-        }
-        assert_eq!(
-            pipeline.glyph_counters().text_instance_rebuilds,
-            warm.text_instance_rebuilds,
-            "a whole-pixel horizontal scroll must not re-resolve a label"
-        );
-    }
-
-    #[test]
-    fn a_snapped_translation_reads_as_its_whole_pixels() {
-        // The CPU and the vertex stage place a translated run by these whole
-        // pixels. At 110%, 120% and 175% a snapped translation comes back
-        // through the scale an ulp low for some offsets; read as `floor`, the
-        // label would sit a pixel left of its background on those frames.
-        for scale in [1.1f32, 1.2, 1.75] {
-            for step in 0..20_000 {
-                let offset = step as f32 * -2.37;
-                let affine =
-                    clip::snap_translation([1.0, 0.0, 0.0, 1.0, offset, offset], [0.0; 2], scale);
-                let pixels = (offset * scale).round();
-                assert_eq!(
-                    pipeline::whole_translation(affine, scale),
-                    [pixels; 2],
-                    "{offset} at {scale}x"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn a_fractional_vertical_scroll_keeps_every_glyph() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        // A trackpad scrolls by fractions of a pixel. Vertically that is free:
-        // a translated line box is snapped to whole pixels, so its glyphs are
-        // at the same vertical phase wherever the scroll left it.
-        let labels = |offset: f32| {
-            (0..12)
-                .map(|index| Label {
-                    top: 3.3 + index as f32 * 17.6,
-                    affine: [1.0, 0.0, 0.0, 1.0, 0.0, -offset],
-                    ..Label::new("Row content", index + 1)
-                })
-                .collect::<Vec<_>>()
-        };
-        text_frame(&device, &queue, &mut pipeline, &labels(0.0));
-        let warm = pipeline.glyph_counters();
-        for step in 1..24 {
-            text_frame(&device, &queue, &mut pipeline, &labels(step as f32 * 0.37));
-        }
-        assert_eq!(
-            pipeline.glyph_counters().text_instance_rebuilds,
-            warm.text_instance_rebuilds,
-            "a fractional vertical scroll must not re-resolve a label"
-        );
-    }
-
-    #[test]
-    fn a_fractional_horizontal_scroll_keeps_every_glyph() {
-        // What the painter hands text under a trackpad's horizontal scroll:
-        // the translation snapped to whole device pixels (#223). At 110%, 120%
-        // and 175% — not 125% or 150%, where it is exact — some of those come
-        // back through the scale an ulp off the pixel, near the start of the
-        // list and more often thousands of pixels into it.
-        for scale in [1.0, 1.1, 1.2, 1.25, 1.5, 1.75] {
-            for start in [0.0, 4096.0] {
-                let (device, queue) = test_device();
-                let mut pipeline =
-                    TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-                let labels = |offset: f32| {
-                    let affine = clip::snap_translation(
-                        [1.0, 0.0, 0.0, 1.0, -(start + offset), 0.0],
-                        [0.0; 2],
-                        scale,
-                    );
-                    (0..12)
-                        .map(|index| Label {
-                            left: start + 0.709 + index as f32 * 38.766,
-                            top: 3.3 + index as f32 * 17.6,
-                            affine,
-                            ..Label::new("Row", index + 1)
-                        })
-                        .collect::<Vec<_>>()
-                };
-                text_frame_at(&device, &queue, &mut pipeline, &labels(0.0), scale);
-                let warm = pipeline.glyph_counters();
-                for step in 1..40 {
-                    text_frame_at(
-                        &device,
-                        &queue,
-                        &mut pipeline,
-                        &labels(step as f32 * 0.37),
-                        scale,
-                    );
-                }
-                let after = pipeline.glyph_counters();
-                assert_eq!(
-                    after.text_instance_rebuilds, warm.text_instance_rebuilds,
-                    "a fractional horizontal scroll at {scale}x, {start} px in, \
-                     must not re-resolve a label"
-                );
-                assert!(
-                    after.text_presentation_upload_bytes > warm.text_presentation_upload_bytes,
-                    "while the labels do move: the shared row is rewritten"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn a_container_that_starts_or_stops_turning_keeps_its_labels_glyphs() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let labels = |affine: [f32; 6]| {
-            (0..12)
-                .map(|index| Label {
-                    top: 3.3 + index as f32 * 17.6,
-                    affine,
-                    ..Label::new("Row content", index + 1)
-                })
-                .collect::<Vec<_>>()
-        };
-        let turned = |degrees: f32| {
-            let (sin, cos) = degrees.to_radians().sin_cos();
-            [cos, sin, -sin, cos, 0.0, 0.0]
-        };
-        let pressed = |factor: f32| [factor, 0.0, 0.0, factor, 0.0, 0.0];
-        text_frame(
-            &device,
-            &queue,
-            &mut pipeline,
-            &labels(clip::IDENTITY_AFFINE),
-        );
-        let warm = pipeline.glyph_counters();
-        // A wobble through upright, and a press that springs back: the
-        // container leaves the identity and returns to it on every pass.
-        for affine in [
-            turned(2.0),
-            turned(-2.0),
-            clip::IDENTITY_AFFINE,
-            turned(3.0),
-            pressed(0.97),
-            pressed(0.985),
-            clip::IDENTITY_AFFINE,
-        ] {
-            text_frame(&device, &queue, &mut pipeline, &labels(affine));
-        }
-        let after = pipeline.glyph_counters();
-        assert_eq!(
-            after.text_instance_rebuilds, warm.text_instance_rebuilds,
-            "entering or leaving a transform is presentation: the glyphs are \
-             resolved at the same phase either side of it"
-        );
-        assert_eq!(after.glyph_rasterized, warm.glyph_rasterized);
-    }
-
-    #[test]
-    fn a_container_with_a_fractional_offset_keeps_its_glyphs_as_it_turns() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        // A container scrolled to a fraction of a pixel, starting and stopping
-        // a turn. Upright, the painter draws its translation on whole pixels
-        // (#223) and the labels' phase is their own position's; turned, the
-        // projected path's phase is the same. The turn is presentation.
-        let labels = |affine: [f32; 6]| {
-            (0..12)
-                .map(|index| Label {
-                    top: 3.3 + index as f32 * 17.6,
-                    left: 0.709,
-                    affine,
-                    ..Label::new("Row content", index + 1)
-                })
-                .collect::<Vec<_>>()
-        };
-        let upright = clip::snap_translation([1.0, 0.0, 0.0, 1.0, 10.3, 0.0], [0.0; 2], 1.0);
-        let turned = |degrees: f32| {
-            let (sin, cos) = degrees.to_radians().sin_cos();
-            [cos, sin, -sin, cos, 10.3, 0.0]
-        };
-        text_frame(&device, &queue, &mut pipeline, &labels(upright));
-        let warm = pipeline.glyph_counters();
-        for affine in [turned(2.0), upright, turned(-2.0), upright] {
-            text_frame(&device, &queue, &mut pipeline, &labels(affine));
-        }
-        let after = pipeline.glyph_counters();
-        assert_eq!(
-            after.text_instance_rebuilds, warm.text_instance_rebuilds,
-            "a fractionally scrolled container entering or leaving a turn keeps its labels"
-        );
-    }
-
-    #[test]
-    fn a_magnification_hovering_at_a_step_boundary_does_not_flip_bitmaps() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let label = Label::new("Hover", 1);
-        // √(√2) is exactly half-way between the first two steps.
-        let boundary = 2f32.powf(0.25);
-        let scaled = |factor: f32| [factor, 0.0, 0.0, factor, 8.0, 8.0];
-        text_frame(
-            &device,
-            &queue,
-            &mut pipeline,
-            &[Label {
-                affine: scaled(boundary * 1.02),
-                ..label
-            }],
-        );
-        let warm = pipeline.glyph_counters();
-        for frame in 0..20 {
-            let jitter = if frame % 2 == 0 { 0.97 } else { 1.03 };
-            text_frame(
-                &device,
-                &queue,
-                &mut pipeline,
-                &[Label {
-                    affine: scaled(boundary * jitter),
-                    ..label
-                }],
-            );
-        }
-        assert_eq!(
-            pipeline.glyph_counters().text_instance_rebuilds,
-            warm.text_instance_rebuilds,
-            "a scale jittering across a step boundary keeps the step it holds"
-        );
-    }
-
-    #[test]
-    fn text_a_transform_scales_is_rasterized_at_the_size_it_is_seen() {
-        let (device, queue) = test_device();
-        // The same text scaled and upright at the size it is seen: 16 px under
-        // `scale(2)` against 32 px, and 32 px under `scale(0.5)` against 16 px.
-        // Drawn from bitmaps of its own size, a magnified glyph would be
-        // blurred and a shrunk one's edge half a pixel with aliased stems.
-        let canvas = LogicalRect::from_xywh(0.0, 0.0, 256.0, 96.0);
-        let paint = |size: f32, factor: f32| {
-            let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-            paint_text_with(
-                &device,
-                &queue,
-                &mut pipeline,
-                ("Sharp", size),
-                LogicalRect::from_xywh(0.0, 0.0, size * 7.5, size * 2.5),
-                canvas,
-                [factor, 0.0, 0.0, factor, 0.0, 0.0],
-                [0.0; 2],
-                clip::FragmentClip::PASS,
-                [256, 96],
-            )
-        };
-        for (size, factor) in [(16.0, 2.0), (32.0, 0.5)] {
-            let (scaled, upright) = (paint(size, factor), paint(size * factor, 1.0));
-            let (scaled, upright) = (scaled.as_chunks::<4>().0, upright.as_chunks::<4>().0);
-            let differing = scaled
-                .iter()
-                .zip(upright)
-                .filter(|(a, b)| a.iter().zip(b.iter()).any(|(x, y)| x.abs_diff(*y) > 24))
-                .count();
-            let inked = upright.iter().filter(|pixel| inked(**pixel)).count();
-            assert!(inked > 100, "the reference must paint something");
-            assert!(
-                differing * 20 < inked,
-                "{size} px text under scale({factor}) must be the {} px glyphs: \
-                 {differing} of {inked} inked pixels differ",
-                size * factor
-            );
-        }
-    }
-
-    #[test]
-    fn text_squeezed_along_one_axis_keeps_its_ink_at_any_sub_pixel_phase() {
-        // `scale(1, 0.3)` rasterizes for the larger scale and shrinks the
-        // other axis 3.3 times: one bilinear tap per pixel skips rows, and
-        // which ones depends on the sub-pixel phase. Filtered over the
-        // pixel's footprint, the ink a paragraph lays down does not.
-        let (device, queue) = test_device();
-        let canvas = LogicalRect::from_xywh(0.0, 0.0, 256.0, 96.0);
-        let ink = |phase: f32| {
-            let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-            let pixels = paint_text_with(
-                &device,
-                &queue,
-                &mut pipeline,
-                ("Sharp lines", 24.0),
-                LogicalRect::from_xywh(0.0, 0.0, 200.0, 40.0),
-                canvas,
-                [1.0, 0.0, 0.0, 0.3, 8.0, 16.0 + phase],
-                [0.0; 2],
-                clip::FragmentClip::PASS,
-                [256, 96],
-            );
-            pixels
-                .chunks(4)
-                .map(|pixel| u64::from(pixel[1]))
-                .sum::<u64>() as f32
-        };
-        let inks = [0.0, 0.25, 0.5, 0.75].map(ink);
-        let mean = inks.iter().sum::<f32>() / 4.0;
-        let spread = inks
-            .iter()
-            .fold(0.0f32, |spread, ink| spread.max((ink - mean).abs()))
-            / mean;
-        // Not zero: the gamma correction a glyph's coverage takes is not linear.
-        assert!(
-            spread < 0.05,
-            "ink varies {:.1}% with the sub-pixel phase: {inks:?}",
-            spread * 100.0
-        );
-    }
-
-    #[test]
-    fn raster_steps_are_half_octaves_held_with_hysteresis_and_capped_by_size() {
-        let scaled = |factor: f32| [factor, 0.0, 0.0, factor, 0.0, 0.0];
-        assert_eq!(raster_step(scaled(1.0), None, 16.0), 0);
-        assert_eq!(raster_step(scaled(0.9), None, 16.0), 0, "a press stays");
-        assert_eq!(raster_step(scaled(0.5), None, 16.0), -2, "shrinking steps");
-        assert_eq!(raster_step(scaled(0.01), None, 16.0), -4, "down to 1/4");
-        assert_eq!(raster_step(scaled(2.0), None, 16.0), 2);
-        assert_eq!(raster_step(scaled(1.4), None, 16.0), 1);
-        let turned = [0.0, 2.0, -2.0, 0.0, 0.0, 0.0];
-        assert_eq!(
-            raster_step(turned, None, 16.0),
-            2,
-            "a rotation keeps its scale"
-        );
-        assert_eq!(
-            raster_step(scaled(1.25), Some(0), 16.0),
-            0,
-            "held below the step"
-        );
-        assert_eq!(raster_step(scaled(1.25), Some(1), 16.0), 1, "and above it");
-        assert_eq!(
-            raster_step(scaled(1.3), Some(0), 16.0),
-            1,
-            "until it is clearly past"
-        );
-        assert_eq!(
-            raster_step(scaled(64.0), None, 16.0),
-            4,
-            "four times at most"
-        );
-        assert_eq!(
-            raster_step(scaled(4.0), None, 128.0),
-            2,
-            "and never an em past what a tile is worth"
-        );
-        assert_eq!(raster_step(scaled(f32::NAN), Some(2), 16.0), 2);
-    }
-
-    #[test]
-    fn a_dpi_change_reresolves_glyphs_without_laying_the_paragraph_out_again() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let paint = |pipeline: &mut TextPipeline, scale: f32| {
-            pipeline.begin_frame([1024, 512]);
-            pipeline.prepare(
-                &device,
-                LogicalRect::from_xywh(0.0, 0.0, 480.0, 32.0),
-                LogicalRect::from_xywh(0.0, 0.0, 512.0, 256.0),
-                scale,
-                "DPI policy",
-                Some([1.0; 4]),
-                16.0,
-                None,
-                None,
-                None,
-                false,
-                nana_ui_core::TextWrapBreak::Word,
-                false,
-                false,
-                None,
-                TextShaping::Auto,
-                TextHorizontalAlignment::Start,
-                TextVerticalAlignment::Top,
-                &[],
-                0.0,
-                &[],
-                &SceneTextOpenType::default(),
-                clip::IDENTITY_AFFINE,
-                [0.0; 2],
-                clip::FragmentClip::PASS,
-                1.0,
-                [0.0; 2],
-                EntryKey {
-                    node: 1,
-                    slot: 0,
-                    pass: 0,
-                },
-                UNTRACKED_REVISION,
-                None,
-                true,
-            );
-            pipeline.flush_runs();
-            pipeline.upload(&device, &queue, None);
-        };
-        paint(&mut pipeline, 1.0);
-        paint(&mut pipeline, 2.0);
-        let warm = pipeline.glyph_counters();
-        paint(&mut pipeline, 1.0);
-        paint(&mut pipeline, 2.0);
-        let after = pipeline.glyph_counters();
-        assert_eq!(
-            after.glyph_rasterized, warm.glyph_rasterized,
-            "a DPI round trip must answer from the caches both scales filled"
-        );
-        assert_eq!(
-            after.text_instance_rebuilds - warm.text_instance_rebuilds,
-            2,
-            "but each scale places its glyphs at its own pixels, so its own \
-             entry content: the entry is keyed by the node and the two take turns"
-        );
-        let (_, misses, _) = pipeline.shape_cache_stats();
-        assert_eq!(
-            misses, 1,
-            "the layout itself is scale-free: a DPI change re-resolves glyphs \
-             and lays nothing out"
-        );
-    }
-
-    #[test]
-    fn moving_a_label_by_whole_pixels_keeps_its_glyphs() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let label = Label::new("Scrolling row", 1);
-        text_frame(&device, &queue, &mut pipeline, &[label]);
-        let warm = pipeline.glyph_counters();
-        for step in 1..6 {
-            text_frame(
-                &device,
-                &queue,
-                &mut pipeline,
-                &[Label {
-                    top: step as f32 * 3.0,
-                    ..label
-                }],
-            );
-        }
-        let after = pipeline.glyph_counters();
-        assert_eq!(
-            after.text_instance_rebuilds, warm.text_instance_rebuilds,
-            "a whole-pixel move leaves the sub-pixel phase alone, so the \
-             bitmaps and the instances that name them still hold"
-        );
-        assert_eq!(
-            after.text_instance_upload_bytes, warm.text_instance_upload_bytes,
-            "and the origin the instances are relative to is a run row"
-        );
-    }
-
-    #[test]
-    fn editing_one_label_does_not_retransmit_the_others() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let mut labels = (0..16)
-            .map(|index| Label {
-                top: index as f32 * 14.0,
-                ..Label::new("Row content", index + 1)
-            })
-            .collect::<Vec<_>>();
-        text_frame(&device, &queue, &mut pipeline, &labels);
-        text_frame(&device, &queue, &mut pipeline, &labels);
-        let block = u64::from(entry::capacity_for(11))
-            * std::mem::size_of::<pipeline::GlyphInstance>() as u64;
-        // A row in the middle, so every later block would move if the arena
-        // could not absorb the edit where it happened.
-        for (content, blocks, note) in [
-            ("New content", 1, "the same glyph count"),
-            (
-                "New contents",
-                1,
-                "one more glyph, which the block's slack absorbs",
-            ),
-        ] {
-            let warm = pipeline.glyph_counters();
-            labels[7].content = content;
-            text_frame(&device, &queue, &mut pipeline, &labels);
-            let after = pipeline.glyph_counters();
-            assert_eq!(
-                after.text_instance_rebuilds - warm.text_instance_rebuilds,
-                1,
-                "one label changed, so one entry is resolved again ({note})"
-            );
-            let moved = after.text_instance_upload_bytes - warm.text_instance_upload_bytes;
-            assert!(
-                moved > 0 && moved <= block * blocks,
-                "only the changed paragraph's block may move ({note}): \
-                 {moved} bytes against a block of {block} and a list of \
-                 {} blocks",
-                labels.len()
-            );
-        }
-    }
-
-    #[test]
-    fn a_block_rebuilt_shorter_does_not_keep_drawing_the_glyphs_it_dropped() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let head = EntryKey {
-            node: 7,
-            slot: 0,
-            pass: 0,
-        };
-        let tail = EntryKey {
-            node: 8,
-            slot: 0,
-            pass: 0,
-        };
-        // Two paragraphs folded into one draw, so the command spans the slack
-        // the first one's size class left. Whatever sits there is painted.
-        let long = paint_labels(
-            &device,
-            &queue,
-            &mut pipeline,
-            &[("Force majeure", head, 0.0), ("tail", tail, 24.0)],
-        );
-        let short = paint_labels(
-            &device,
-            &queue,
-            &mut pipeline,
-            &[("F", head, 0.0), ("tail", tail, 24.0)],
-        );
-        let long_top = ink_aabb(&long[..], 256, 64).expect("the long label must paint");
-        let short_top = ink_aabb(&short[..], 256, 64).expect("the short label must paint");
-        assert!(
-            short_top.2 < long_top.2,
-            "a block rebuilt shorter must not keep painting the letters it \
-             dropped: long={long_top:?} short={short_top:?}"
-        );
-    }
-
-    fn row_key(node: u64) -> EntryKey {
-        EntryKey {
-            node,
-            slot: 0,
-            pass: 0,
-        }
-    }
-
-    /// One frame of `rows` folded into one command, flushed and uploaded.
-    /// Returns what it wrote: instance bytes, index bytes and draws.
-    fn merged_rows(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        pipeline: &mut TextPipeline,
-        rows: &[&str],
-    ) -> (u64, u64, usize) {
-        let labels = rows
-            .iter()
-            .enumerate()
-            .map(|(index, content)| (*content, row_key(index as u64 + 1), index as f32 * 14.0))
-            .collect::<Vec<_>>();
-        let warm = pipeline.glyph_counters();
-        let height = (rows.len() as u32 * 14 + 32).max(512);
-        prepare_merged(device, pipeline, &labels, [512, height]).expect("the rows draw");
-        pipeline.flush_runs();
-        pipeline.upload(device, queue, None);
-        let after = pipeline.glyph_counters();
-        (
-            after.text_instance_upload_bytes - warm.text_instance_upload_bytes,
-            after.text_index_upload_bytes - warm.text_index_upload_bytes,
-            pipeline.target.segments.len(),
-        )
-    }
-
-    fn row_entry(pipeline: &TextPipeline, node: u64) -> &entry::TextGpuEntry {
-        let id = pipeline
-            .target
-            .entries
-            .lookup(row_key(node))
-            .expect("drawn");
-        pipeline.target.entries.get(id).expect("live")
-    }
-
-    const INSTANCE: u64 = std::mem::size_of::<pipeline::GlyphInstance>() as u64;
-
-    #[test]
-    fn a_paragraph_that_outgrows_its_block_moves_alone() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let mut rows = vec!["Row content"; 16];
-        merged_rows(&device, &queue, &mut pipeline, &rows);
-        assert_eq!(
-            merged_rows(&device, &queue, &mut pipeline, &rows),
-            (0, 0, 1),
-            "a steady frame writes nothing and is one draw"
-        );
-        let before = row_entry(&pipeline, 8).capacity;
-        rows[7] = "Row content that grew well past its block";
-        let (instances, indices, draws) = merged_rows(&device, &queue, &mut pipeline, &rows);
-        let entry = row_entry(&pipeline, 8);
-        assert!(entry.capacity > before, "the row must have changed class");
-        assert_eq!(
-            instances,
-            u64::from(entry.capacity) * INSTANCE,
-            "the row that grew writes its own block and nobody else's"
-        );
-        assert_eq!(
-            indices,
-            u64::from(entry.capacity) * 4,
-            "and its own index range"
-        );
-        assert_eq!(
-            draws, 3,
-            "its range sits away from its neighbours: the rows before it, it, \
-             the rows after it"
-        );
-        assert_eq!(
-            merged_rows(&device, &queue, &mut pipeline, &rows),
-            (0, 0, 3),
-            "which is kept, not rewritten every frame, while it is within budget"
-        );
-    }
-
-    #[test]
-    fn an_arena_repack_rewrites_the_indices_of_the_blocks_it_moved_and_no_others() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let mut rows = vec!["Row content"; 16];
-        merged_rows(&device, &queue, &mut pipeline, &rows);
-        // Row 8 outgrows its block and is placed after every other one.
-        rows[7] = "Row content, longer";
-        let (_, _, draws) = merged_rows(&device, &queue, &mut pipeline, &rows);
-        let before = (1..=16u64)
-            .map(|node| {
-                let entry = row_entry(&pipeline, node);
-                (entry.arena_offset, entry.order_offset)
-            })
-            .collect::<Vec<_>>();
-        // Whatever makes the arena repack — room, holes — it does so apart
-        // from the draw order. Forcing it here is the one way to see that.
-        pipeline.target.arena.note_breaks(u32::MAX);
-        let (instances, indices, again) = merged_rows(&device, &queue, &mut pipeline, &rows);
-        let mut moved = 0;
-        let mut total = 0;
-        for (node, (arena, order)) in (1..=16u64).zip(before) {
-            let entry = row_entry(&pipeline, node);
-            total += entry.capacity;
-            assert_eq!(
-                entry.order_offset, order,
-                "row {node}: an arena repack leaves the draw order alone"
-            );
-            if entry.arena_offset != arena {
-                moved += entry.capacity;
-            }
-        }
-        assert!(
-            moved > 0,
-            "the repack laid the blocks out in draw order again"
-        );
-        assert_eq!(
-            instances,
-            u64::from(total) * INSTANCE,
-            "every block is written"
-        );
-        assert_eq!(
-            indices,
-            u64::from(moved) * 4,
-            "and only the indices of the blocks that landed somewhere new"
-        );
-        assert_eq!(
-            again, draws,
-            "the draws follow the order, which did not change"
-        );
-    }
-
-    #[test]
-    fn repacking_the_draw_order_moves_no_instance() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let mut rows = vec!["Row content"; 16];
-        merged_rows(&device, &queue, &mut pipeline, &rows);
-        // Three rows apart from each other: two breaks each, past the budget
-        // a list this short gets. Grown by a little, so the order still has
-        // room for them and it is the breaks that repack it.
-        for row in [3, 7, 11] {
-            rows[row] = "Row content, longer";
-        }
-        let (instances, _, draws) = merged_rows(&device, &queue, &mut pipeline, &rows);
-        assert_eq!(draws, 7);
-        let grown: u32 = [4, 8, 12]
-            .into_iter()
-            .map(|node| row_entry(&pipeline, node).capacity)
-            .sum();
-        assert_eq!(instances, u64::from(grown) * INSTANCE);
-        let (instances, indices, draws) = merged_rows(&device, &queue, &mut pipeline, &rows);
-        let total: u32 = (1..=16u64)
-            .map(|node| row_entry(&pipeline, node).order_capacity)
-            .sum();
-        assert_eq!(draws, 1, "the frame after is one draw again");
-        assert_eq!(
-            indices,
-            u64::from(total) * 4,
-            "by rewriting the index table in draw order"
-        );
-        assert_eq!(
-            instances, 0,
-            "and not one instance: where a block sits no longer decides what it \
-             batches with"
-        );
-    }
-
-    #[test]
-    fn text_that_keeps_growing_grows_in_place_once_the_order_has_left_it_room() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let mut rows = vec!["Row content"; 64];
-        merged_rows(&device, &queue, &mut pipeline, &rows);
-        assert!(
-            !pipeline.target.order_gapped,
-            "a first layout leaves no gaps"
-        );
-        // Four rows apart grow: eight breaks, past what a thousand slots may
-        // cost, and every move a growth.
-        for row in [5, 20, 35, 50] {
-            rows[row] = "Row content, longer";
-        }
-        merged_rows(&device, &queue, &mut pipeline, &rows);
-        let (_, _, draws) = merged_rows(&device, &queue, &mut pipeline, &rows);
-        assert!(
-            pipeline.target.order_gapped,
-            "what split the draws was text growing, so the repack left room"
-        );
-        assert_eq!(draws, 1, "and a draw runs straight across the gaps");
-        // A row that has not grown before.
-        let before = row_entry(&pipeline, 11).order_offset;
-        rows[10] = "Row content, longer";
-        let (instances, indices, draws) = merged_rows(&device, &queue, &mut pipeline, &rows);
-        let entry = row_entry(&pipeline, 11);
-        assert_eq!(entry.order_offset, before, "it grew where it was");
-        assert_eq!(draws, 1, "so the draw did not split");
-        assert_eq!(instances, u64::from(entry.capacity) * INSTANCE);
-        assert!(
-            indices <= u64::from(GAP_EVERY + entry.capacity) * 4,
-            "and only it and the rows up to the next gap moved: {indices} bytes"
-        );
-    }
-
-    #[test]
-    fn text_that_comes_and_goes_is_not_left_gaps_it_would_not_use() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let frame = |pipeline: &mut TextPipeline, nodes: &[u64]| {
-            let labels = nodes
-                .iter()
-                .enumerate()
-                .map(|(index, node)| ("Row content", row_key(*node), index as f32 * 14.0))
-                .collect::<Vec<_>>();
-            prepare_merged(&device, pipeline, &labels, [512, 1024]).expect("the rows draw");
-            pipeline.flush_runs();
-            pipeline.upload(&device, &queue, None);
-            pipeline.target.segments.len()
-        };
-        let mut nodes = (1..=64u64).collect::<Vec<_>>();
-        frame(&mut pipeline, &nodes);
-        for (at, node) in [(48, 204), (32, 203), (16, 202), (8, 201)] {
-            nodes.insert(at, node);
-        }
-        frame(&mut pipeline, &nodes);
-        assert_eq!(frame(&mut pipeline, &nodes), 1, "repacked");
-        assert!(
-            !pipeline.target.order_gapped,
-            "rows arriving split the draws; room to grow would not have helped"
-        );
-    }
-
-    /// Sixty-four rows folded into one command, four of them grown far enough
-    /// apart that the order repacked with gaps. Returns the rows as drawn.
-    fn rows_in_a_gapped_order(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        pipeline: &mut TextPipeline,
-    ) -> Vec<&'static str> {
-        let mut rows = vec!["Row content"; 64];
-        merged_rows(device, queue, pipeline, &rows);
-        for row in [5, 20, 35, 50] {
-            rows[row] = "Row content, longer";
-        }
-        merged_rows(device, queue, pipeline, &rows);
-        merged_rows(device, queue, pipeline, &rows);
-        assert!(pipeline.target.order_gapped, "the order repacked with gaps");
-        rows
-    }
-
-    /// Index slots this frame's draws span: the quads the vertex stage runs.
-    fn spanned_slots(pipeline: &TextPipeline) -> u32 {
-        pipeline
-            .target
-            .segments
-            .iter()
-            .map(|segment| segment.count)
-            .sum()
-    }
-
-    #[test]
-    fn text_that_stopped_growing_gives_its_gaps_back() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let rows = rows_in_a_gapped_order(&device, &queue, &mut pipeline);
-        let gapped = spanned_slots(&pipeline);
-        let generation = pipeline.target.order.generation();
-        while pipeline.target.quiet_frames + 1 < SETTLE_FRAMES {
-            assert_eq!(
-                merged_rows(&device, &queue, &mut pipeline, &rows),
-                (0, 0, 1),
-                "a still frame before the text has stood still long enough \
-                 writes nothing"
-            );
-        }
-        assert_eq!(pipeline.target.order.generation(), generation);
-        assert!(pipeline.target.order_gapped, "and keeps the gaps");
-        let (instances, indices, draws) = merged_rows(&device, &queue, &mut pipeline, &rows);
-        let held: u32 = (1..=64u64)
-            .map(|node| row_entry(&pipeline, node).order_capacity)
-            .sum();
-        let blocks: u32 = (1..=64u64)
-            .map(|node| row_entry(&pipeline, node).capacity)
-            .sum();
-        assert_eq!(
-            pipeline.target.order.generation(),
-            generation + 1,
-            "the frame the text has stood still for long enough repacks once"
-        );
-        assert!(!pipeline.target.order_gapped, "without gaps");
-        assert_eq!(instances, 0, "moving no instance");
-        assert_eq!(
-            indices,
-            u64::from(held) * 4,
-            "and rewriting the index table, ranges only"
-        );
-        assert_eq!(held, blocks, "every range is its block again");
-        assert_eq!(draws, 1, "still one draw");
-        let packed = spanned_slots(&pipeline);
-        assert!(packed <= held, "which spans no slot outside a range");
-        assert!(
-            packed < gapped,
-            "and fewer quads than across the gaps: {packed} of {gapped}"
-        );
-        assert_eq!(
-            merged_rows(&device, &queue, &mut pipeline, &rows),
-            (0, 0, 1),
-            "after which a still frame writes nothing again"
-        );
-    }
-
-    #[test]
-    fn text_that_grows_again_after_giving_its_gaps_back_gets_them_again() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let mut rows = rows_in_a_gapped_order(&device, &queue, &mut pipeline);
-        while pipeline.target.order_gapped {
-            merged_rows(&device, &queue, &mut pipeline, &rows);
-        }
-        // Grows again, somewhere else: the rows split the draws and the next
-        // repack is, as before, down to text growing.
-        for row in [10, 25, 40, 55] {
-            rows[row] = "Row content, longer";
-        }
-        merged_rows(&device, &queue, &mut pipeline, &rows);
-        let (_, _, draws) = merged_rows(&device, &queue, &mut pipeline, &rows);
-        assert!(
-            pipeline.target.order_gapped,
-            "growing text gets its room back"
-        );
-        assert_eq!(draws, 1);
-        // And keeps it for as long as it keeps growing: one row a frame,
-        // each a little longer than the last time it grew.
-        let texts = (0..24)
-            .map(|len| format!("Row content {}", "x".repeat(4 + len * 3)))
-            .collect::<Vec<_>>();
-        let mut grown = vec![0usize; 64];
-        let generation = pipeline.target.order.generation();
-        let mut repacks = 0;
-        for frame in 0..SETTLE_FRAMES as usize * 2 {
-            let row = frame * 13 % 64;
-            grown[row] += 1;
-            rows[row] = texts[grown[row].min(texts.len() - 1)].as_str();
-            let before = pipeline.target.order.generation();
-            merged_rows(&device, &queue, &mut pipeline, &rows);
-            if pipeline.target.order.generation() != before {
-                repacks += 1;
-            }
-            assert!(
-                pipeline.target.order_gapped,
-                "frame {frame}: text that keeps growing keeps its gaps"
-            );
-        }
-        assert!(
-            repacks <= 4,
-            "and repacks when its breaks are over budget, not every frame: \
-             {repacks} repacks, generation {generation} -> {}",
-            pipeline.target.order.generation()
-        );
-    }
-
-    #[test]
-    fn gaps_given_back_in_a_frame_already_repacking_repack_once() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let rows = rows_in_a_gapped_order(&device, &queue, &mut pipeline);
-        pipeline.target.quiet_frames = SETTLE_FRAMES - 1;
-        pipeline.target.order.note_breaks(u32::MAX);
-        let generation = pipeline.target.order.generation();
-        merged_rows(&device, &queue, &mut pipeline, &rows);
-        assert_eq!(pipeline.target.order.generation(), generation + 1);
-        assert!(
-            !pipeline.target.order_gapped,
-            "a repack over budget in text that has stopped growing leaves no gaps"
-        );
-    }
-
-    #[test]
-    fn dropping_every_entry_forgets_the_gaps() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        rows_in_a_gapped_order(&device, &queue, &mut pipeline);
-        pipeline.drop_every_entry();
-        assert!(
-            !pipeline.target.order_gapped,
-            "an order reset holds no gaps, so there are none to give back"
-        );
-        assert!(!pipeline.order_settle_due());
-    }
-
-    #[test]
-    fn a_draw_does_not_run_across_the_space_a_paragraph_left() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let frame = |pipeline: &mut TextPipeline, rows: &[(u64, &'static str)]| {
-            let labels = rows
-                .iter()
-                .enumerate()
-                .map(|(index, (node, content))| (*content, row_key(*node), index as f32 * 14.0))
-                .collect::<Vec<_>>();
-            prepare_merged(&device, pipeline, &labels, [512, 512]).expect("the rows draw");
-            pipeline.flush_runs();
-            pipeline.upload(&device, &queue, None);
-            pipeline.target.segments.len()
-        };
-        let rows = (1..=16u64)
-            .map(|node| (node, "Row content"))
-            .collect::<Vec<_>>();
-        frame(&mut pipeline, &rows);
-        // Row 8 outgrows its range, which is given back, and is now drawn
-        // last: rows 7 and 9 are next to each other in the draw with the
-        // space row 8 left between them in the table. That space still holds
-        // row 8's old indices, so a draw spanning it would paint them.
-        let mut reordered = rows
-            .iter()
-            .copied()
-            .filter(|(node, _)| *node != 8)
-            .collect::<Vec<_>>();
-        reordered.push((8, "Row content, longer"));
-        frame(&mut pipeline, &reordered);
-        // The frame after: the space is free now, and rows 7 and 9 are still
-        // drawn one after the other.
-        assert_eq!(
-            frame(&mut pipeline, &reordered),
-            2,
-            "rows 7 and 9 are two draws, not one across what row 8 left"
-        );
-    }
-
-    #[test]
-    fn two_paints_of_one_target_before_one_submit_each_draw_their_own_text() {
-        let (device, queue) = test_device();
-        let target = |label| {
-            device.create_texture(&wgpu::TextureDescriptor {
-                label: Some(label),
-                size: wgpu::Extent3d {
-                    width: 256,
-                    height: 64,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-                view_formats: &[],
-            })
-        };
-        let paint = |pipeline: &mut TextPipeline,
-                     encoder: &mut wgpu::CommandEncoder,
-                     texture: &wgpu::Texture,
-                     text: &str| {
-            let command = prepare_merged(&device, pipeline, &[(text, row_key(1), 0.0)], [256, 64]);
-            pipeline.flush_runs();
-            pipeline.upload_with(&device, &queue, encoder, None);
-            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("nana-ui text two paints"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            let scissor = PhysicalRect {
-                x: 0,
-                y: 0,
-                width: 256,
-                height: 64,
-            };
-            pipeline.draw(&mut pass, &command.expect("drawn"), scissor, None);
-        };
-        let reference = |text: &str| {
-            let mut fresh = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-            paint_labels(&device, &queue, &mut fresh, &[(text, row_key(1), 0.0)])
-        };
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        // The same paragraph, rebuilt in between: the second paint rewrites
-        // the block the first one's pass reads.
-        let (first, second) = (target("first"), target("second"));
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("nana-ui text two paints"),
-        });
-        paint(&mut pipeline, &mut encoder, &first, "First");
-        paint(&mut pipeline, &mut encoder, &second, "Second");
-        let first_pixels = readback_rgba(&device, &queue, encoder, &first, 256, 64);
-        let encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("nana-ui text two paints readback"),
-        });
-        let second_pixels = readback_rgba(&device, &queue, encoder, &second, 256, 64);
-        assert!(
-            first_pixels == reference("First"),
-            "the first paint draws its own glyphs, not the ones the second \
-             paint wrote before the encoder was submitted"
-        );
-        assert!(second_pixels == reference("Second"));
-    }
-
-    #[test]
-    fn a_paragraph_that_moved_in_the_arena_paints_where_it_did() {
-        let (device, queue) = test_device();
-        let head = row_key(1);
-        let middle = row_key(2);
-        let tail = row_key(3);
-        let frame = |middle_text| {
-            [
-                ("Head", head, 0.0),
-                (middle_text, middle, 20.0),
-                ("Tail", tail, 40.0),
-            ]
-        };
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        paint_labels(&device, &queue, &mut pipeline, &frame("ab"));
-        // Out of its block, then out of the next one: moved in the arena and
-        // in the draw order both times.
-        for text in ["abcdefghijk", "abcdefghijklmnopqrst"] {
-            let moved = paint_labels(&device, &queue, &mut pipeline, &frame(text));
-            let mut fresh = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-            let expected = paint_labels(&device, &queue, &mut fresh, &frame(text));
-            assert!(
-                moved == expected,
-                "a block that moved in the arena must paint exactly what a \
-                 fresh one does ({text})"
-            );
-        }
-    }
-
-    #[test]
-    fn an_eviction_recovers_the_entry_it_hit_without_reshaping_anything() {
-        let (device, queue) = test_device();
-        // One page that either paragraph fits in and the two together do not,
-        // so each one's entry keeps losing its placements to the other. Fits,
-        // not with room to spare: a paragraph fills most of the page, so the
-        // holes the other one's evicted glyphs leave are the wrong shape and
-        // only a repack places the last few.
-        let mut pipeline = TextPipeline::with_atlas_limits(
-            &device,
-            wgpu::TextureFormat::Rgba8Unorm,
-            GlyphAtlasLimits {
-                page_edge: 80,
-                byte_budget: 80 * 80 + 8,
-            },
-        );
-        const LOWER: &str = "abcdefghijklmnopqrstuvwxy";
-        const UPPER: &str = "ABCDEFGHIJKLMNOPQRSTUVWXY";
-        let first = EntryKey {
-            node: 1,
-            slot: 0,
-            pass: 0,
-        };
-        let second = EntryKey {
-            node: 2,
-            slot: 0,
-            pass: 0,
-        };
-        let fresh = paint_labels(&device, &queue, &mut pipeline, &[(LOWER, first, 0.0)]);
-        let fresh_ink = ink_aabb(&fresh, 256, 64).expect("the first paragraph paints");
-        paint_labels(&device, &queue, &mut pipeline, &[(UPPER, second, 0.0)]);
-        let warm = pipeline.glyph_counters();
-        let (_, warm_misses, _) = pipeline.shape_cache_stats();
-        let mut recovered = Vec::new();
-        for _ in 0..4 {
-            recovered = paint_labels(&device, &queue, &mut pipeline, &[(LOWER, first, 0.0)]);
-            paint_labels(&device, &queue, &mut pipeline, &[(UPPER, second, 0.0)]);
-        }
-        let after = pipeline.glyph_counters();
-        let (_, misses, _) = pipeline.shape_cache_stats();
-        assert!(
-            after.glyph_atlas_evict > warm.glyph_atlas_evict,
-            "the two paragraphs must really be evicting each other"
-        );
-        assert!(
-            after.atlas_stale_handle_rejects > warm.atlas_stale_handle_rejects,
-            "and the entry must really be meeting handles the eviction reissued"
-        );
-        assert_eq!(
-            ink_aabb(&recovered, 256, 64),
-            Some(fresh_ink),
-            "the paragraph comes back whole: a rejected handle costs its glyphs, \
-             never the wrong ones"
-        );
-        // The box only proves the ends are inked. A glyph written before a
-        // repack that moved it would still ink the same box while sampling
-        // whatever the repack put at its old rectangle.
-        assert!(
-            recovered == fresh,
-            "every glyph samples its own rectangle, including the ones a repack \
-             moved while the paragraph was still faulting glyphs in"
-        );
-        assert_eq!(
-            misses, warm_misses,
-            "an eviction costs an entry its glyphs, never its shaped paragraph"
-        );
-        assert!(
-            after.text_instance_rebuilds > warm.text_instance_rebuilds,
-            "the entry the eviction hit is resolved again, and only that one"
-        );
-    }
-
-    #[test]
-    fn a_glyph_the_atlas_had_no_room_for_is_placed_once_there_is() {
-        let (device, queue) = test_device();
-        // Either paragraph alone fills a bit over half the page, so after the
-        // other one is evicted there is room to spare even for a packer that
-        // strands some of it.
-        let limits = GlyphAtlasLimits {
-            page_edge: 96,
-            byte_budget: 96 * 96 + 8,
-        };
-        const LOWER: &str = "abcdefghijklmnopqrstuvwxy";
-        const UPPER: &str = "ABCDEFGHIJKLMNOPQRSTUVWXY";
-        let lower = EntryKey {
-            node: 1,
-            slot: 0,
-            pass: 0,
-        };
-        let upper = EntryKey {
-            node: 2,
-            slot: 0,
-            pass: 0,
-        };
-        let mut alone =
-            TextPipeline::with_atlas_limits(&device, wgpu::TextureFormat::Rgba8Unorm, limits);
-        let whole = ink_aabb(
-            &paint_labels(&device, &queue, &mut alone, &[(UPPER, upper, 0.0)]),
-            256,
-            64,
-        )
-        .expect("the paragraph paints on its own");
-        let mut pipeline =
-            TextPipeline::with_atlas_limits(&device, wgpu::TextureFormat::Rgba8Unorm, limits);
-        // Both at once: the page holds either paragraph and not the two, and
-        // every glyph in it is this frame's, so nothing can be evicted to make
-        // room. The second paragraph comes up short.
-        let crowded = paint_labels(
-            &device,
-            &queue,
-            &mut pipeline,
-            &[(LOWER, lower, 0.0), (UPPER, upper, 32.0)],
-        );
-        let short = ink_aabb(&crowded[256 * 4 * 32..], 256, 32);
-        assert_ne!(
-            short.map(|(x, _, right, _)| (x, right)),
-            Some((whole.0, whole.2)),
-            "the page must really be too small for both for this to test anything"
-        );
-        let (_, warm_misses, _) = pipeline.shape_cache_stats();
-        // The crowd is gone. Nothing about the paragraph changed, so only the
-        // entry remembering that it is incomplete can bring the rest back.
-        let recovered = paint_labels(&device, &queue, &mut pipeline, &[(UPPER, upper, 0.0)]);
-        assert_eq!(
-            ink_aabb(&recovered, 256, 64),
-            Some(whole),
-            "a paragraph the atlas could not finish must be finished once it can"
-        );
-        let (_, misses, _) = pipeline.shape_cache_stats();
-        assert_eq!(misses, warm_misses, "without laying anything out again");
-        let steady = pipeline.glyph_counters();
-        paint_labels(&device, &queue, &mut pipeline, &[(UPPER, upper, 0.0)]);
-        assert_eq!(
-            pipeline.glyph_counters().text_instance_rebuilds,
-            steady.text_instance_rebuilds,
-            "and once whole it is retained like any other"
-        );
-    }
-
-    #[test]
-    fn a_glyph_too_big_for_any_page_does_not_rebuild_its_paragraph_every_frame() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::with_atlas_limits(
-            &device,
-            wgpu::TextureFormat::Rgba8Unorm,
-            GlyphAtlasLimits {
-                page_edge: 64,
-                byte_budget: 64 * 64 * 4 + 8,
-            },
-        );
-        // 16 px at 6x is a glyph no 64 px page can hold, next frame or ever.
-        // Waiting for room would rebuild the paragraph on every frame for a
-        // glyph that is never coming.
-        prepare_label(&device, &queue, &mut pipeline, "Wide", 6.0);
-        let warm = pipeline.glyph_counters();
-        for _ in 0..4 {
-            prepare_label(&device, &queue, &mut pipeline, "Wide", 6.0);
-        }
-        assert_eq!(
-            pipeline.glyph_counters().text_instance_rebuilds,
-            warm.text_instance_rebuilds,
-            "a glyph that can never be placed is not a reason to try again"
-        );
-    }
-
-    #[test]
-    fn evicting_a_glyph_moves_the_placement_epoch_that_gates_retained_commands() {
-        let (device, queue) = test_device();
-        // One page barely wider than a line of text, so a second paragraph of
-        // different glyphs cannot coexist with the first.
-        let mut pipeline = TextPipeline::with_atlas_limits(
-            &device,
-            wgpu::TextureFormat::Rgba8Unorm,
-            GlyphAtlasLimits {
-                page_edge: 64,
-                byte_budget: 64 * 64 + 8,
-            },
-        );
-        prepare_label(&device, &queue, &mut pipeline, "abcdefghij", 1.0);
-        let steady = pipeline.placement_epoch();
-        prepare_label(&device, &queue, &mut pipeline, "abcdefghij", 1.0);
-        assert_eq!(
-            pipeline.placement_epoch(),
-            steady,
-            "a repaint that places nothing new must leave retained commands valid"
-        );
-
-        for label in [
-            "KLMNOPQRST",
-            "UVWXYZ0123",
-            "456789!?@#",
-            "\u{4e2d}\u{6587}\u{6e2c}\u{8a66}\u{6587}\u{5b57}",
-        ] {
-            prepare_label(&device, &queue, &mut pipeline, label, 1.0);
-        }
-        assert!(
-            pipeline.glyph_counters().glyph_atlas_evict > 0,
-            "the corpus must outgrow this page for the test to mean anything"
-        );
-        assert_ne!(
-            pipeline.placement_epoch(),
-            steady,
-            "an eviction must invalidate commands built against the old placements"
-        );
-    }
-
-    #[test]
-    fn a_corpus_larger_than_the_atlas_keeps_placing_glyphs_and_never_samples_a_stale_one() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::with_atlas_limits(
-            &device,
-            wgpu::TextureFormat::Rgba8Unorm,
-            GlyphAtlasLimits {
-                page_edge: 128,
-                byte_budget: 128 * 128 + 8,
-            },
-        );
-        // Far more distinct CJK glyphs than one small page holds, three times
-        // over, so the atlas fills, evicts, repacks and refills.
-        let corpus: Vec<String> = (0..48)
-            .map(|line: u32| {
-                (0..8)
-                    .filter_map(|index| char::from_u32(0x4e00 + line * 8 + index))
-                    .collect()
-            })
-            .collect();
-        for _ in 0..3 {
-            for label in &corpus {
-                prepare_label(&device, &queue, &mut pipeline, label, 1.0);
-            }
-        }
-        let counters = pipeline.glyph_counters();
-        assert!(
-            counters.glyph_atlas_evict > 0,
-            "the corpus has to outgrow the page for this to test anything"
-        );
-        assert!(
-            counters.glyph_atlas_bytes <= (128 * 128 + 8) as u64,
-            "the atlas must stay inside its byte budget, got {} bytes",
-            counters.glyph_atlas_bytes
-        );
-        assert!(
-            counters.glyph_raster_cache_hit > 0,
-            "a second pass over the corpus must be answered from the raster cache"
-        );
-        // Every glyph a frame placed is protected from that frame's own
-        // eviction, so the flush that turns placements into instances must
-        // never meet a handle that has gone stale.
-        assert_eq!(
-            counters.atlas_stale_handle_rejects, 0,
-            "a frame must never build an instance from a placement it lost"
-        );
-        // One region per glyph faulted in, and not one more: a full page must
-        // not repack — and therefore re-upload its whole live set — for every
-        // glyph it cannot place.
-        assert_eq!(
-            counters.glyph_upload_regions, counters.glyph_atlas_miss,
-            "a churning atlas must upload each placement once"
-        );
-    }
-
-    #[test]
-    fn a_second_window_on_one_device_reuses_the_first_windows_glyphs() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        prepare_label(&device, &queue, &mut pipeline, "Shared chrome", 1.0);
-        let first = pipeline.glyph_counters();
-        assert!(first.glyph_rasterized > 0);
-        assert!(first.glyph_upload_regions > 0);
-
-        // A second render target on the same device. Its own instance buffers
-        // are separate; the atlas and the rasterized glyphs are not.
-        let mut second = None;
-        pipeline.swap_target(&mut second, &device);
-        prepare_label(&device, &queue, &mut pipeline, "Shared chrome", 1.0);
-        let shared = pipeline.glyph_counters();
-        assert_eq!(
-            shared.glyph_rasterized, first.glyph_rasterized,
-            "a second window must not rasterize the first window's glyphs again"
-        );
-        assert_eq!(
-            shared.glyph_upload_regions, first.glyph_upload_regions,
-            "nor upload them to a second atlas"
-        );
-        assert_eq!(
-            shared.glyph_atlas_hit,
-            first.glyph_atlas_hit + first.glyph_atlas_hit + first.glyph_atlas_miss,
-            "every atlas lookup of the second window must hit the shared atlas"
-        );
-        assert_eq!(
-            shared.glyph_atlas_miss, first.glyph_atlas_miss,
-            "a second window must not fault a glyph into the shared atlas"
-        );
-        assert_eq!(shared.glyph_atlas_pages, first.glyph_atlas_pages);
-    }
-
-    #[test]
-    fn closing_one_window_leaves_the_others_glyphs_placed() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let mut first = None;
-        let mut second = None;
-
-        pipeline.swap_target(&mut first, &device);
-        prepare_label(&device, &queue, &mut pipeline, "Shell chrome", 1.0);
-        pipeline.swap_target(&mut first, &device);
-
-        pipeline.swap_target(&mut second, &device);
-        prepare_label(&device, &queue, &mut pipeline, "Shell chrome", 1.0);
-        let shared = pipeline.glyph_counters();
-        pipeline.swap_target(&mut second, &device);
-
-        // The first window closes. Its instance buffers go with it; the glyphs
-        // it faulted into the shared atlas must not.
-        drop(first);
-
-        pipeline.swap_target(&mut second, &device);
-        prepare_label(&device, &queue, &mut pipeline, "Shell chrome", 1.0);
-        let after = pipeline.glyph_counters();
-        assert_eq!(
-            after.glyph_rasterized, shared.glyph_rasterized,
-            "closing a window must not cost the surviving one a re-rasterization"
-        );
-        assert_eq!(
-            after.glyph_upload_regions, shared.glyph_upload_regions,
-            "nor a re-upload"
-        );
-        assert_eq!(
-            after.glyph_atlas_evict, 0,
-            "nor drop anything from the shared atlas"
-        );
-    }
-
-    #[test]
-    fn a_closed_window_gives_back_its_claims_on_shared_glyphs() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let mut first = None;
-        let mut second = None;
-        for window in [&mut first, &mut second] {
-            pipeline.swap_target(window, &device);
-            prepare_label(&device, &queue, &mut pipeline, "Shell chrome", 1.0);
-            pipeline.swap_target(window, &device);
-        }
-        let handles = |pipeline: &TextPipeline, target: &TextPipelineTarget| {
-            let id = target
-                .entries
-                .lookup(EntryKey {
-                    node: 1,
-                    slot: 0,
-                    pass: 0,
-                })
-                .expect("the label's entry");
-            let entry = target.entries.get(id).expect("live");
-            target
-                .entries
-                .live_glyphs(entry)
-                .map(|(_, handle)| pipeline.atlas.claims(handle))
-                .collect::<Vec<_>>()
-        };
-        let second_target = second.take().expect("second window");
-        let shared = handles(&pipeline, &second_target);
-        assert!(
-            shared.iter().all(|claims| claims.is_some_and(|n| n >= 2)),
-            "both windows claim the chrome's glyphs: {shared:?}"
-        );
-        // The first window closes. Its claims go with it — otherwise the
-        // atlas would treat those glyphs as in use for the rest of the
-        // session and evict everything else first.
-        pipeline.close_target(first.take().expect("first window"));
-        let after = handles(&pipeline, &second_target);
-        // Both windows drew the same paragraph, so each held the same claims —
-        // one per occurrence, and a letter that appears twice at the same
-        // sub-pixel bin is one handle claimed twice. Closing one gives back
-        // exactly half.
-        for (before, now) in shared.iter().zip(&after) {
-            assert_eq!(
-                now.map(|n| n * 2),
-                *before,
-                "the closed window's claims, and only those, are released"
-            );
-        }
-    }
-
-    #[test]
-    fn repainting_unchanged_text_uploads_neither_a_region_nor_an_instance() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        prepare_label(&device, &queue, &mut pipeline, "Steady label", 1.0);
-        let warm = pipeline.glyph_counters();
-        let work = prepare_label(&device, &queue, &mut pipeline, "Steady label", 1.0);
-        let steady = pipeline.glyph_counters();
-        assert_eq!(
-            steady.glyph_upload_regions, warm.glyph_upload_regions,
-            "an unchanged repaint must upload no atlas region"
-        );
-        assert_eq!(
-            steady.glyph_rasterized, warm.glyph_rasterized,
-            "and rasterize nothing"
-        );
-        assert_eq!(
-            work.gpu_upload_bytes, 0,
-            "the instances are byte-identical, so nothing reaches the queue"
-        );
-        assert_eq!(work.gpu_buffer_reallocations, 0);
-    }
-
-    #[test]
-    fn a_scale_round_trip_rerasterizes_once_and_then_answers_from_cache() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        prepare_label(&device, &queue, &mut pipeline, "DPI probe", 1.0);
-        let one = pipeline.glyph_counters();
-        prepare_label(&device, &queue, &mut pipeline, "DPI probe", 2.0);
-        let two = pipeline.glyph_counters();
-        assert!(
-            two.glyph_rasterized > one.glyph_rasterized,
-            "a raster scale change must rasterize at the new size"
-        );
-        // Back again. The raster cache is keyed by size, not by "current
-        // scale", so the first scale's bitmaps are still there and the atlas
-        // still holds them.
-        prepare_label(&device, &queue, &mut pipeline, "DPI probe", 1.0);
-        let back = pipeline.glyph_counters();
-        assert_eq!(
-            back.glyph_rasterized, two.glyph_rasterized,
-            "returning to a scale already drawn must not rasterize again"
-        );
-        assert_eq!(
-            back.glyph_upload_regions, two.glyph_upload_regions,
-            "nor re-upload"
-        );
-        let (_, misses, _) = pipeline.shape_cache_stats();
-        assert_eq!(
-            misses, 1,
-            "the paragraph is laid out in logical px, so neither scale nor the \
-             return to the first one is a second layout"
-        );
-    }
-
-    /// Paint labels folded into one draw command and read the frame back.
-    /// Prepare `labels` as one draw command, the way the painter folds
-    /// consecutive text, on a `size` canvas. Neither flushed nor uploaded.
-    fn prepare_merged(
-        device: &wgpu::Device,
-        pipeline: &mut TextPipeline,
-        labels: &[(&str, EntryKey, f32)],
-        size: [u32; 2],
-    ) -> Option<PreparedText> {
-        pipeline.begin_frame(size);
-        let mut command: Option<PreparedText> = None;
-        for (content, key, top) in labels {
-            let Some(prepared) = prepare_row(device, pipeline, content, *key, *top, size) else {
-                continue;
-            };
-            match command.as_ref() {
-                Some(previous) if pipeline.can_merge_runs(previous, &prepared) => {
-                    pipeline.merge_runs(previous, &prepared);
-                }
-                _ => command = Some(prepared),
-            }
-        }
-        command
-    }
-
-    /// One label 240 px wide at `top`, prepared into the frame `size` opened.
-    fn prepare_row(
-        device: &wgpu::Device,
-        pipeline: &mut TextPipeline,
-        content: &str,
-        key: EntryKey,
-        top: f32,
-        size: [u32; 2],
-    ) -> Option<PreparedText> {
-        pipeline.prepare(
-            device,
-            LogicalRect::from_xywh(0.0, top, 240.0, 32.0),
-            LogicalRect::from_xywh(0.0, 0.0, size[0] as f32, size[1] as f32),
-            1.0,
-            content,
-            Some([1.0, 1.0, 1.0, 1.0]),
-            16.0,
-            None,
-            None,
-            None,
-            false,
-            nana_ui_core::TextWrapBreak::Word,
-            false,
-            false,
-            None,
-            TextShaping::Auto,
-            TextHorizontalAlignment::Start,
-            TextVerticalAlignment::Top,
-            &[],
-            0.0,
-            &[],
-            &SceneTextOpenType::default(),
-            clip::IDENTITY_AFFINE,
-            [0.0; 2],
-            clip::FragmentClip::PASS,
-            1.0,
-            [0.0; 2],
-            key,
-            UNTRACKED_REVISION,
-            None,
-            true,
-        )
-    }
-
-    fn paint_labels(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        pipeline: &mut TextPipeline,
-        labels: &[(&str, EntryKey, f32)],
-    ) -> Vec<u8> {
-        let command = prepare_merged(device, pipeline, labels, [256, 64]);
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("nana-ui text label prepare"),
-        });
-        pipeline.flush_runs();
-        pipeline.upload(device, queue, None);
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("nana-ui text label target"),
-            size: wgpu::Extent3d {
-                width: 256,
-                height: 64,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("nana-ui text label pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            if let Some(prepared) = command.as_ref() {
-                pipeline.draw(
-                    &mut pass,
-                    prepared,
-                    PhysicalRect {
-                        x: 0,
-                        y: 0,
-                        width: 256,
-                        height: 64,
-                    },
-                    None,
-                );
-            }
-        }
-        readback_rgba(device, queue, encoder, &texture, 256, 64)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn paint_text(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        pipeline: &mut TextPipeline,
-        bounds: LogicalRect,
-        clip: LogicalRect,
-        affine: [f32; 6],
-        persp: [f32; 2],
-        fragment_clip: clip::FragmentClip,
-    ) -> Vec<u8> {
-        paint_text_with(
-            device,
-            queue,
-            pipeline,
-            ("Hi", 16.0),
-            bounds,
-            clip,
-            affine,
-            persp,
-            fragment_clip,
-            [64, 64],
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn paint_text_with(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        pipeline: &mut TextPipeline,
-        (content, size): (&str, f32),
-        bounds: LogicalRect,
-        clip: LogicalRect,
-        affine: [f32; 6],
-        persp: [f32; 2],
-        fragment_clip: clip::FragmentClip,
-        canvas: [u32; 2],
-    ) -> Vec<u8> {
-        pipeline.begin_frame(canvas);
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("nana-ui text affine prepare"),
-        });
-        let opentype = SceneTextOpenType::default();
-        let prepared = pipeline
-            .prepare(
-                device,
-                bounds,
-                clip,
-                1.0,
-                content,
-                Some([1.0, 1.0, 1.0, 1.0]),
-                size,
-                None,
-                None,
-                None,
-                false,
-                nana_ui_core::TextWrapBreak::Word,
-                false,
-                false,
-                None,
-                TextShaping::Auto,
-                TextHorizontalAlignment::Start,
-                TextVerticalAlignment::Top,
-                &[],
-                0.0,
-                &[],
-                &opentype,
-                affine,
-                persp,
-                fragment_clip,
-                1.0,
-                [0.0, 0.0],
-                EntryKey {
-                    node: 1,
-                    slot: 0,
-                    pass: 0,
-                },
-                UNTRACKED_REVISION,
-                None,
-                true,
-            )
-            .expect("text must prepare");
-        // Placements are handles until the run is flushed; nothing is on the
-        // GPU until the instances and the atlas regions are uploaded.
-        pipeline.flush_runs();
-        pipeline.upload(device, queue, None);
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("nana-ui text affine target"),
-            size: wgpu::Extent3d {
-                width: canvas[0],
-                height: canvas[1],
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("nana-ui text affine pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            pipeline.draw(
-                &mut pass,
-                &prepared,
-                PhysicalRect {
-                    x: 0,
-                    y: 0,
-                    width: canvas[0],
-                    height: canvas[1],
-                },
-                None,
-            );
-        }
-        readback_rgba(device, queue, encoder, &texture, canvas[0], canvas[1])
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn paint_block(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        pipeline: &mut TextPipeline,
-        bounds: LogicalRect,
-        clip: LogicalRect,
-        affine: [f32; 6],
-        persp: [f32; 2],
-        fragment_clip: clip::FragmentClip,
-    ) -> Vec<u8> {
-        pipeline.begin_frame([64, 64]);
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("nana-ui text clip prepare"),
-        });
-        let opentype = SceneTextOpenType::default();
-        let prepared = pipeline
-            .prepare(
-                device,
-                bounds,
-                clip,
-                1.0,
-                "HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH",
-                Some([1.0, 1.0, 1.0, 1.0]),
-                16.0,
-                None,
-                None,
-                None,
-                true,
-                nana_ui_core::TextWrapBreak::Word,
-                false,
-                false,
-                None,
-                TextShaping::Auto,
-                TextHorizontalAlignment::Start,
-                TextVerticalAlignment::Top,
-                &[],
-                0.0,
-                &[],
-                &opentype,
-                affine,
-                persp,
-                fragment_clip,
-                1.0,
-                [0.0, 0.0],
-                EntryKey {
-                    node: 1,
-                    slot: 0,
-                    pass: 0,
-                },
-                UNTRACKED_REVISION,
-                None,
-                true,
-            )
-            .expect("block text must prepare");
-        pipeline.flush_runs();
-        pipeline.upload(device, queue, None);
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("nana-ui text clip target"),
-            size: wgpu::Extent3d {
-                width: 64,
-                height: 64,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("nana-ui text clip pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            pipeline.draw(
-                &mut pass,
-                &prepared,
-                PhysicalRect {
-                    x: 0,
-                    y: 0,
-                    width: 64,
-                    height: 64,
-                },
-                None,
-            );
-        }
-        readback_rgba(device, queue, encoder, &texture, 64, 64)
-    }
-
-    fn pixel(pixels: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
-        let index = ((y * width + x) * 4) as usize;
-        [
-            pixels[index],
-            pixels[index + 1],
-            pixels[index + 2],
-            pixels[index + 3],
-        ]
-    }
-
-    fn inked(color: [u8; 4]) -> bool {
-        u16::from(color[0]) + u16::from(color[1]) + u16::from(color[2]) > 24
-    }
-
-    fn ink_aabb(pixels: &[u8], width: u32, height: u32) -> Option<(u32, u32, u32, u32)> {
-        let mut min_x = width;
-        let mut min_y = height;
-        let mut max_x = 0u32;
-        let mut max_y = 0u32;
-        let mut found = false;
-        for y in 0..height {
-            for x in 0..width {
-                let index = ((y * width + x) * 4) as usize;
-                if u16::from(pixels[index])
-                    + u16::from(pixels[index + 1])
-                    + u16::from(pixels[index + 2])
-                    > 24
-                {
-                    found = true;
-                    min_x = min_x.min(x);
-                    min_y = min_y.min(y);
-                    max_x = max_x.max(x);
-                    max_y = max_y.max(y);
-                }
-            }
-        }
-        found.then_some((min_x, min_y, max_x, max_y))
-    }
-
-    fn readback_rgba(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        mut encoder: wgpu::CommandEncoder,
-        texture: &wgpu::Texture,
-        width: u32,
-        height: u32,
-    ) -> Vec<u8> {
-        let unpadded = width as usize * 4;
-        let padded = unpadded.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize);
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("nana-ui text affine readback"),
-            size: (padded * height as usize) as u64,
-            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        encoder.copy_texture_to_buffer(
-            texture.as_image_copy(),
-            wgpu::TexelCopyBufferInfo {
-                buffer: &buffer,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(padded as u32),
-                    rows_per_image: Some(height),
-                },
-            },
-            wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-        );
-        let submission = queue.submit([encoder.finish()]);
-        let slice = buffer.slice(..);
-        slice.map_async(wgpu::MapMode::Read, |_| {});
-        device
-            .poll(wgpu::PollType::Wait {
-                submission_index: Some(submission),
-                timeout: Some(std::time::Duration::from_secs(10)),
-            })
-            .expect("text affine readback poll");
-        let mapped = slice
-            .get_mapped_range()
-            .expect("text affine readback must be mapped");
-        let mut pixels = Vec::with_capacity(unpadded * height as usize);
-        for row in mapped.chunks_exact(padded) {
-            pixels.extend_from_slice(&row[..unpadded]);
-        }
-        pixels
-    }
-
-    #[test]
-    fn glyphs_past_the_devices_storage_binding_leave_out_the_largest_paragraph() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        // A device whose storage binding holds 400 glyphs.
-        pipeline.gpu.set_instance_slots(400);
-        let log = "overflowing labels ".repeat(60);
-        let mut labels = (0..12)
-            .map(|row| ("Row content", row_key(row + 1), row as f32 * 14.0))
-            .collect::<Vec<_>>();
-        labels.insert(5, (log.as_str(), row_key(100), 70.0));
-        let frame = |pipeline: &mut TextPipeline, labels: &[(&str, EntryKey, f32)]| {
-            prepare_merged(&device, pipeline, labels, [512, 512]).expect("the rows draw");
-            pipeline.flush_runs();
-            // Binds the instance buffer whole: past the limit, validation
-            // would fail here.
-            pipeline.upload(&device, &queue, None);
-        };
-        frame(&mut pipeline, &labels);
-        let log_entry = pipeline
-            .target
-            .entries
-            .lookup(row_key(100))
-            .expect("resolved");
-        assert!(
-            pipeline
-                .target
-                .entries
-                .get(log_entry)
-                .expect("live")
-                .capacity
-                > 400,
-            "the case that matters: one paragraph larger than the device binds"
-        );
-        assert_eq!(pipeline.target.skipped, vec![log_entry]);
-        assert!(
-            pipeline.target.arena.capacity() <= 400,
-            "the instance buffer stays inside the binding: {}",
-            pipeline.target.arena.capacity()
-        );
-        // The audit has already checked that every other row is drawn from
-        // its own glyphs. The one left out never took a range, so the rows
-        // around it are still adjacent and still one draw.
-        assert_eq!(pipeline.target.segments.len(), 1);
-        labels.remove(5);
-        frame(&mut pipeline, &labels);
-        assert!(pipeline.target.skipped.is_empty());
-        assert_eq!(pipeline.target.segments.len(), 1);
-    }
-
-    /// The instance and index buffers on the GPU hold, slot for slot, what
-    /// the writes this target sent say they do — the shadow
-    /// `audit_draw_order` checks every draw against. What that audit cannot
-    /// see is whether the copies out of the staging ring, or out of a frame's
-    /// one-off buffers, landed where they were meant to; this reads them back.
-    fn assert_gpu_holds_the_shadow(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        pipeline: &TextPipeline,
-        when: &str,
-    ) {
-        let (instances, indices) = pipeline.target.gpu.read_back(device, queue);
-        let shadow = &pipeline.target.shadow;
-        assert_eq!(
-            instances.len(),
-            shadow.instances.len(),
-            "{when}: instance slots"
-        );
-        assert_eq!(indices.len(), shadow.indices.len(), "{when}: index slots");
-        if let Some(slot) =
-            (0..instances.len()).find(|&slot| instances[slot] != shadow.instances[slot])
-        {
-            panic!(
-                "{when}: instance slot {slot} holds {:?}, the writes put {:?} there",
-                instances[slot], shadow.instances[slot]
-            );
-        }
-        if let Some(slot) = (0..indices.len()).find(|&slot| indices[slot] != shadow.indices[slot]) {
-            panic!(
-                "{when}: index slot {slot} holds {}, the writes put {} there",
-                indices[slot], shadow.indices[slot]
-            );
-        }
-    }
-
-    #[test]
-    fn a_frame_too_large_for_the_staging_ring_lands_whole() {
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let long = "a paragraph of several hundred glyphs ".repeat(16);
-        let mut rows = (0..24).map(|_| long.clone()).collect::<Vec<_>>();
-        let frame = |pipeline: &mut TextPipeline, rows: &[String]| {
-            let labels = rows
-                .iter()
-                .enumerate()
-                .map(|(row, content)| {
-                    (content.as_str(), row_key(row as u64 + 1), row as f32 * 14.0)
-                })
-                .collect::<Vec<_>>();
-            let before = pipeline.glyph_counters().text_instance_upload_bytes;
-            prepare_merged(&device, pipeline, &labels, [512, 512]).expect("the rows draw");
-            pipeline.flush_runs();
-            pipeline.upload(&device, &queue, None);
-            pipeline.glyph_counters().text_instance_upload_bytes - before
-        };
-        let written = frame(&mut pipeline, &rows);
-        assert!(
-            written > 256 * 1024,
-            "the case that matters: more than a quarter of the largest ring ({written} B), \
-             so the frame is staged in buffers of its own"
-        );
-        assert_gpu_holds_the_shadow(&device, &queue, &pipeline, "one-off staging");
-        // And the frames after it, through the ring, on top of those bytes.
-        for row in [3, 11, 17] {
-            rows[row] = format!("{row} changed");
-            frame(&mut pipeline, &rows);
-            assert_gpu_holds_the_shadow(&device, &queue, &pipeline, "the ring");
-        }
-    }
-
-    /// xorshift32, so a churn test replays the same frames on every run.
-    struct Churn(u32);
-
-    impl Churn {
-        fn below(&mut self, bound: usize) -> usize {
-            self.0 ^= self.0 << 13;
-            self.0 ^= self.0 >> 17;
-            self.0 ^= self.0 << 5;
-            self.0 as usize % bound.max(1)
-        }
-
-        /// A label of anywhere from nothing to a few lines.
-        fn text(&mut self) -> String {
-            const WORDS: [&str; 10] = [
-                "a",
-                "Row",
-                "cell",
-                "12",
-                "content",
-                "ticked",
-                "0.25",
-                "overflowing",
-                "x y",
-                "labels",
-            ];
-            (0..self.below(12))
-                .map(|_| WORDS[self.below(WORDS.len())])
-                .collect::<Vec<_>>()
-                .join(" ")
-        }
-    }
-
-    /// Hundreds of frames of labels changing length, coming and going,
-    /// swapping places, splitting across commands, drawn twice and dropped
-    /// all at once, with both order layouts
-    /// (packed, and gapped for text that keeps growing) in play.
-    ///
-    /// Every frame goes through `audit_placements` and `audit_draw_order`, so
-    /// a range left naming a block that moved, a gap a draw ran across that
-    /// was not vacant, or a buffer replaced under blocks the frame had already
-    /// placed fails here. And #224's promise is checked on every frame the
-    /// arena did not repack: the instance bytes written are the blocks of the
-    /// paragraphs that were rebuilt, never their neighbours'.
-    #[test]
-    fn seeded_churn_keeps_every_draw_naming_its_own_glyphs() {
-        const INITIAL: usize = 240;
-        let (device, queue) = test_device();
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let mut churn = Churn(0x2545_f491);
-        let mut next_node = 1u64;
-        let mut new_row = |churn: &mut Churn| {
-            next_node += 1;
-            (next_node, churn.text())
-        };
-        let mut rows = (0..INITIAL)
-            .map(|_| new_row(&mut churn))
-            .collect::<Vec<_>>();
-        let mut drawn_as: HashMap<u64, String> = HashMap::new();
-        let mut layouts = [0u32; 2];
-        let mut checked = 0;
-        let mut settles = 0;
-        for frame in 0..600u32 {
-            // Text changing length, then standing still for long enough to
-            // give its gaps back (#230), then scrolling.
-            let phase = frame % 300;
-            let still = (75..75 + SETTLE_FRAMES + 30).contains(&phase);
-            let scrolling = phase >= 75 + SETTLE_FRAMES + 30;
-            // A font registration: every entry dropped at once.
-            if !still && churn.below(97) == 0 {
-                pipeline.drop_every_entry();
-                drawn_as.clear();
-            }
-            if scrolling {
-                for _ in 0..churn.below(6) {
-                    if rows.len() > INITIAL / 2 {
-                        rows.remove(churn.below(rows.len()));
-                    }
-                }
-                for _ in 0..churn.below(6) {
-                    let at = churn.below(rows.len() + 1);
-                    rows.insert(at, new_row(&mut churn));
-                }
-                if churn.below(4) == 0 {
-                    let (a, b) = (churn.below(rows.len()), churn.below(rows.len()));
-                    rows.swap(a, b);
-                }
-            } else if !still {
-                for _ in 0..1 + churn.below(8) {
-                    let at = churn.below(rows.len());
-                    rows[at].1 = churn.text();
-                }
-            }
-            let (start, len) = if scrolling {
-                let len = rows.len() * 3 / 4;
-                (churn.below(rows.len() - len + 1), len)
-            } else {
-                (0, rows.len())
-            };
-            let size = [512, len as u32 * 14 + 32];
-            pipeline.begin_frame(size);
-            let epoch = pipeline.placement_epoch();
-            let arena_generation = pipeline.target.arena.generation();
-            let mut rebuilt = Vec::new();
-            let mut command: Option<PreparedText> = None;
-            for (index, (node, content)) in rows[start..start + len].iter().enumerate() {
-                let key = row_key(*node);
-                // What may be written: a paragraph that changed, and one an
-                // arena repack placed nowhere because it was off screen then.
-                let placed = pipeline
-                    .target
-                    .entries
-                    .lookup(key)
-                    .and_then(|id| pipeline.target.entries.get(id))
-                    .is_some_and(|entry| entry.arena_generation == Some(arena_generation));
-                if !placed || drawn_as.get(node) != Some(content) {
-                    rebuilt.push(key);
-                }
-                let top = index as f32 * 14.0;
-                let Some(prepared) = prepare_row(&device, &mut pipeline, content, key, top, size)
-                else {
-                    continue;
-                };
-                drawn_as.insert(*node, content.clone());
-                match command.as_ref() {
-                    Some(previous)
-                        if churn.below(24) != 0 && pipeline.can_merge_runs(previous, &prepared) =>
-                    {
-                        pipeline.merge_runs(previous, &prepared);
-                    }
-                    _ => command = Some(prepared),
-                }
-            }
-            if churn.below(6) == 0 && len > 0 {
-                // One row drawn a second time, by a command of its own.
-                let at = start + churn.below(len);
-                let (node, content) = &rows[at];
-                let _ = prepare_row(&device, &mut pipeline, content, row_key(*node), 0.0, size);
-            }
-            let before = pipeline.glyph_counters().text_instance_upload_bytes;
-            let gapped = pipeline.target.order_gapped;
-            pipeline.flush_runs();
-            pipeline.upload(&device, &queue, None);
-            let written = pipeline.glyph_counters().text_instance_upload_bytes - before;
-            if frame % 20 == 0 {
-                assert_gpu_holds_the_shadow(&device, &queue, &pipeline, &format!("frame {frame}"));
-            }
-            layouts[usize::from(pipeline.target.order_gapped)] += 1;
-            if still && gapped && !pipeline.target.order_gapped {
-                settles += 1;
-            }
-            if pipeline.target.arena.generation() == arena_generation
-                && pipeline.placement_epoch() == epoch
-            {
-                let own: u64 = rebuilt
-                    .iter()
-                    .filter_map(|key| pipeline.target.entries.lookup(*key))
-                    .map(|id| u64::from(pipeline.target.entries.get(id).expect("live").capacity))
-                    .sum::<u64>()
-                    * INSTANCE;
-                assert!(
-                    written <= own,
-                    "frame {frame}: {written} B of instances written, but the {} paragraphs \
-                     rebuilt or placed hold {own}",
-                    rebuilt.len()
-                );
-                checked += 1;
-            }
-        }
-        assert!(
-            layouts.iter().all(|frames| *frames > 0),
-            "both order layouts must have been exercised: packed / gapped {layouts:?}"
-        );
-        assert!(checked > 300, "only {checked} frames kept their arena");
-        assert!(
-            settles > 0,
-            "text that stood still never gave its gaps back"
-        );
-    }
-
-    fn test_device() -> (wgpu::Device, wgpu::Queue) {
-        crate::test_gpu::device()
-    }
-}
-
-#[cfg(test)]
-mod placement_size {
-    #[test]
-    fn a_retained_glyph_carries_linear_authoring_color() {
-        // One per glyph, held between frames and never rewritten while the
-        // paragraph, its sub-pixel phase and its atlas placements stand still.
-        assert_eq!(
-            std::mem::size_of::<super::pipeline::GlyphInstance>(),
-            48,
-            "the retained glyph carries an optional linear authoring color"
-        );
-        assert_eq!(std::mem::size_of::<super::pipeline::TextRunGpu>(), 48);
-        assert_eq!(
-            std::mem::size_of::<super::pipeline::TextPresentationGpu>(),
-            160
-        );
-    }
-}
+mod tests;

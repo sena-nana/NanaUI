@@ -1440,7 +1440,8 @@ impl GpuTexturePrimitive {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn prepare(
         &self,
-        pipeline: &mut GpuTexturePipeline,
+        pipeline: &GpuTexturePipeline,
+        target: &mut GpuTextureTarget,
         url_cache: &mut UrlTextureCache,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -1474,14 +1475,11 @@ impl GpuTexturePrimitive {
             }
             _ => None,
         };
-        let mask_changed = pipeline.textures.get(&key).is_none_or(|prepared| {
+        let mask_changed = target.textures.get(&key).is_none_or(|prepared| {
             prepared.mask_url != mask_url || prepared.sampling != self.layer.sampling
         });
         let needs_rebind = texture_needs_rebind(
-            pipeline
-                .textures
-                .get(&key)
-                .map(PreparedTexture::fingerprint),
+            target.textures.get(&key).map(PreparedTexture::fingerprint),
             &texture,
         ) || mask_changed;
 
@@ -1509,7 +1507,7 @@ impl GpuTexturePrimitive {
                 nana_ui_core::ImageSampling::Mipmap => &pipeline.mip_sampler,
             };
             let layout = &pipeline.bind_group_layout;
-            if let Some(prepared) = pipeline.textures.get_mut(&key) {
+            if let Some(prepared) = target.textures.get_mut(&key) {
                 if let Some(work) = gpu_work {
                     work.write_buffer(queue, &prepared.layer_uniform, 0, uniform_bytes);
                 } else {
@@ -1583,7 +1581,7 @@ impl GpuTexturePrimitive {
                         },
                     ],
                 });
-                pipeline.textures.insert(
+                target.textures.insert(
                     key,
                     PreparedTexture {
                         instance_identity: texture.instance_identity,
@@ -1600,7 +1598,7 @@ impl GpuTexturePrimitive {
                     },
                 );
             }
-        } else if let Some(prepared) = pipeline.textures.get_mut(&key) {
+        } else if let Some(prepared) = target.textures.get_mut(&key) {
             if let Some(work) = gpu_work {
                 work.write_buffer(queue, &prepared.layer_uniform, 0, uniform_bytes);
             } else {
@@ -1616,6 +1614,7 @@ impl GpuTexturePrimitive {
     pub(crate) fn draw_in_pass_with_mode(
         &self,
         pipeline: &GpuTexturePipeline,
+        target: &GpuTextureTarget,
         pass: &mut wgpu::RenderPass<'_>,
         clip_bounds: PhysicalRect,
         dest_size: [u32; 2],
@@ -1623,7 +1622,7 @@ impl GpuTexturePrimitive {
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
         let key = TextureKey::new(self.presentation, self.layer.texture.id());
-        let Some(texture) = pipeline.textures.get(&key) else {
+        let Some(texture) = target.textures.get(&key) else {
             return;
         };
         let layer_bounds = texture
@@ -1701,22 +1700,20 @@ pub struct GpuTexturePipeline {
     /// Trilinear, for nodes that ask for `ImageSampling::Mipmap`.
     mip_sampler: wgpu::Sampler,
     mask_fallback: wgpu::TextureView,
-    textures: HashMap<TextureKey, PreparedTexture>,
 }
 
 impl GpuTexturePipeline {
     /// Pin the exact revisions cached in the bind groups until this frame
     /// completes. This also covers cached paints with no new preparation.
-    pub(crate) fn keep_alive_until_complete(&self, frame: &mut nana_gpu::FrameContext) {
-        for prepared in self.textures.values() {
+    pub(crate) fn keep_alive_until_complete(
+        target: &GpuTextureTarget,
+        frame: &mut nana_gpu::FrameContext,
+    ) {
+        for prepared in target.textures.values() {
             if let Some(lifetime) = &prepared.lifetime {
                 frame.keep_alive_until_complete(Arc::clone(lifetime));
             }
         }
-    }
-
-    pub(crate) fn invalidate_image_bindings(&mut self) {
-        self.textures.clear();
     }
 
     /// Drop target-local host texture bindings after a URL mask becomes ready.
@@ -1929,12 +1926,11 @@ impl GpuTexturePipeline {
             sampler,
             mip_sampler,
             mask_fallback,
-            textures: HashMap::new(),
         })
     }
 
-    pub(crate) fn trim(&mut self) {
-        trim_unused(&mut self.textures, |texture| &mut texture.used);
+    pub(crate) fn trim(target: &mut GpuTextureTarget) {
+        trim_unused(&mut target.textures, |texture| &mut texture.used);
     }
 
     fn sampler_for(&self, sampling: nana_ui_core::ImageSampling) -> &wgpu::Sampler {
@@ -2866,10 +2862,4 @@ mod tests {
 #[derive(Default)]
 pub(crate) struct GpuTextureTarget {
     textures: HashMap<TextureKey, PreparedTexture>,
-}
-
-impl GpuTexturePipeline {
-    pub(crate) fn swap_target(&mut self, target: &mut GpuTextureTarget) {
-        std::mem::swap(&mut self.textures, &mut target.textures);
-    }
 }

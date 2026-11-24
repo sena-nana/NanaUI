@@ -112,7 +112,10 @@ fn a_url_image_is_resampled_to_its_painted_size_by_default() {
     // The first paint decodes on the frame path and shows the decoded size;
     // bilinear 6.4:1 minification of 1px stripes is the aliasing this fixes.
     let first = paint_once(&mut painter, &scene, 64, None);
-    assert_eq!(painter.url_cache.texture_shape(&url), Some((256, 256, 1)));
+    assert_eq!(
+        painter.core.url_cache.texture_shape(&url),
+        Some((256, 256, 1))
+    );
     let (low, high) = red_range(&first, 64, 4..36);
     assert!(
         high - low > 100,
@@ -121,7 +124,7 @@ fn a_url_image_is_resampled_to_its_painted_size_by_default() {
 
     let settled = paint_settled(&mut painter, &scene, 64);
     assert_eq!(
-        painter.url_cache.texture_shape(&url),
+        painter.core.url_cache.texture_shape(&url),
         Some((40, 40, 1)),
         "one level at the painted device-pixel size"
     );
@@ -134,7 +137,10 @@ fn a_url_image_is_resampled_to_its_painted_size_by_default() {
     // Drawn larger: the texture grows at once, up to the painted size.
     let larger = stretched_image_scene(&url, ImageSampling::Resample, 120.0);
     paint_settled(&mut painter, &larger, 128);
-    assert_eq!(painter.url_cache.texture_shape(&url), Some((120, 120, 1)));
+    assert_eq!(
+        painter.core.url_cache.texture_shape(&url),
+        Some((120, 120, 1))
+    );
 }
 
 #[test]
@@ -146,19 +152,19 @@ fn a_mipmapped_url_image_keeps_its_size_and_samples_trilinearly() {
 
     paint_once(&mut painter, &scene, 64, None);
     assert_eq!(
-        painter.url_cache.texture_shape(&key),
+        painter.core.url_cache.texture_shape(&key),
         Some((256, 256, 1)),
         "shown at its decoded size until the worker's chain arrives"
     );
     assert_eq!(
-        painter.url_cache.texture_shape(&url),
+        painter.core.url_cache.texture_shape(&url),
         None,
         "the mip entry is not the default entry"
     );
 
     let settled = paint_settled(&mut painter, &scene, 64);
     assert_eq!(
-        painter.url_cache.texture_shape(&key),
+        painter.core.url_cache.texture_shape(&key),
         Some((256, 256, 9)),
         "decoded size plus every level down to 1x1"
     );

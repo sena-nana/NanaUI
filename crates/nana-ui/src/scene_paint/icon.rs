@@ -255,28 +255,6 @@ pub(super) struct IconPipeline {
     uniform_layout: wgpu::BindGroupLayout,
     atlas_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
-    uniform_bind_group: wgpu::BindGroup,
-    uniforms: wgpu::Buffer,
-    vertices: ManagedBuffer,
-    vertex_capacity: usize,
-    pending_vertices: Vec<IconVertex>,
-    uploaded_vertices: Vec<IconVertex>,
-    physical_size: [u32; 2],
-    /// The scene's corner curve exponent, set each frame before upload.
-    corner_exponent: f32,
-    /// The target size and corner exponent the uniforms were written with.
-    uploaded_globals: Option<([u32; 2], f32)>,
-    frame_slots: Vec<FrameSlot>,
-    /// Created by the first glyph this target places, so a target without
-    /// icons holds no sheet. Every entry lives in it.
-    atlas: Option<Atlas>,
-    entries: HashMap<AtlasKey, AtlasEntry>,
-    frame_keys: HashSet<AtlasKey>,
-    /// Set when even a maximal atlas could not hold this frame's glyphs, so
-    /// the remaining misses fail straight away instead of repacking per icon.
-    exhausted: bool,
-    shrink_frames: u32,
-    vertex_shrink_frames: u32,
 }
 
 #[cfg(test)]
@@ -466,20 +444,6 @@ impl IconPipeline {
                 ],
             })
         };
-        let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("nana-ui.scene.icon.uniforms"),
-            size: std::mem::size_of::<Uniforms>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("nana-ui.scene.icon.uniforms.bind"),
-            layout: &uniform_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: uniforms.as_entire_binding(),
-            }],
-        });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("nana-ui.scene.icon.sampler"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -493,7 +457,25 @@ impl IconPipeline {
             uniform_layout,
             atlas_layout,
             sampler,
-            uniform_bind_group,
+        })
+    }
+
+    pub(super) fn new_target(&self, device: &wgpu::Device) -> IconPipelineTarget {
+        let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("nana-ui.scene.icon.uniforms"),
+            size: std::mem::size_of::<Uniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        IconPipelineTarget {
+            uniform_bind_group: device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("nana-ui.scene.icon.uniforms.bind"),
+                layout: &self.uniform_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniforms.as_entire_binding(),
+                }],
+            }),
             uniforms,
             vertices: ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("nana-ui.scene.icon.vertices"),
@@ -505,7 +487,6 @@ impl IconPipeline {
             pending_vertices: Vec::new(),
             uploaded_vertices: Vec::new(),
             physical_size: [0; 2],
-            corner_exponent: 2.0,
             uploaded_globals: None,
             frame_slots: Vec::new(),
             atlas: None,
@@ -514,27 +495,22 @@ impl IconPipeline {
             exhausted: false,
             shrink_frames: 0,
             vertex_shrink_frames: 0,
-        })
+        }
     }
 
-    pub(super) fn begin_frame(&mut self, physical_size: [u32; 2]) {
-        self.pending_vertices.clear();
-        self.frame_slots.clear();
-        self.frame_keys.clear();
-        self.exhausted = false;
-        self.physical_size = physical_size;
-    }
-
-    /// The scene's corner curve exponent, for the clips of the icons pushed
-    /// this frame.
-    pub(super) fn set_corner_exponent(&mut self, exponent: f32) {
-        self.corner_exponent = exponent;
+    pub(super) fn begin_frame(target: &mut IconPipelineTarget, physical_size: [u32; 2]) {
+        target.pending_vertices.clear();
+        target.frame_slots.clear();
+        target.frame_keys.clear();
+        target.exhausted = false;
+        target.physical_size = physical_size;
     }
 
     #[allow(clippy::too_many_arguments)]
     #[cfg_attr(not(test), allow(dead_code))]
     pub(super) fn prepare(
-        &mut self,
+        &self,
+        target: &mut IconPipelineTarget,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         bounds: LogicalRect,
@@ -547,6 +523,7 @@ impl IconPipeline {
         fragment_clip: FragmentClip,
     ) -> Option<PreparedIcon> {
         self.prepare_with_work(
+            target,
             device,
             queue,
             bounds,
@@ -563,7 +540,8 @@ impl IconPipeline {
 
     #[allow(clippy::too_many_arguments)]
     pub(super) fn prepare_with_work(
-        &mut self,
+        &self,
+        target: &mut IconPipelineTarget,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         bounds: LogicalRect,
@@ -586,22 +564,22 @@ impl IconPipeline {
             icon: icon.as_ptr() as usize,
             px,
         };
-        if !self.entries.contains_key(&key) {
+        if !target.entries.contains_key(&key) {
             let rgba = rasterize_icon(icon, px)?;
-            if !self.insert_with_work(device, queue, key, px, icon, &rgba, work) {
+            if !self.insert_with_work(target, device, queue, key, px, icon, &rgba, work) {
                 return None;
             }
         }
-        self.frame_keys.insert(key);
-        let uv_rect = UvRect::of(self.entries.get(&key)?, self.atlas.as_ref()?.edge);
+        target.frame_keys.insert(key);
+        let uv_rect = UvRect::of(target.entries.get(&key)?, target.atlas.as_ref()?.edge);
         let mut color = pack_paint_color(color);
         color[3] *= opacity;
         let clip = fragment_clip.for_physical_pixels(scale);
-        let first_vertex = self.pending_vertices.len() as u32;
+        let first_vertex = target.pending_vertices.len() as u32;
         let [tl, tr, bl, br] = icon_quad(bounds, affine, persp, scale);
         let positions = [tl, tr, bl, tr, br, bl];
         for (position, corner) in positions.into_iter().zip(CORNER_UV) {
-            self.pending_vertices.push(IconVertex {
+            target.pending_vertices.push(IconVertex {
                 position,
                 uv: uv_rect.at(corner),
                 cell: uv_rect.bounds(),
@@ -611,8 +589,8 @@ impl IconPipeline {
                 clip_inv_ef: [clip.inv_ef[0], clip.inv_ef[1], clip.corner_radius],
             });
         }
-        let index = self.frame_slots.len();
-        self.frame_slots.push(FrameSlot {
+        let index = target.frame_slots.len();
+        target.frame_slots.push(FrameSlot {
             key,
             first_vertex,
             vertex_count: 6,
@@ -621,92 +599,96 @@ impl IconPipeline {
     }
 
     pub(super) fn upload(
-        &mut self,
+        &self,
+        target: &mut IconPipelineTarget,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        corner_exponent: f32,
         work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
-        self.maybe_shrink_atlas(device, queue, work);
-        if self.pending_vertices.is_empty() {
-            if self.vertex_capacity > INITIAL_VERTICES {
-                self.vertex_shrink_frames = self.vertex_shrink_frames.saturating_add(1);
-                if self.vertex_shrink_frames >= SHRINK_IDLE_FRAMES {
-                    self.replace_vertex_buffer(device, INITIAL_VERTICES, work);
-                    self.uploaded_vertices.shrink_to(INITIAL_VERTICES);
-                    self.pending_vertices.shrink_to(INITIAL_VERTICES);
-                    self.frame_slots.shrink_to(INITIAL_VERTICES / 6);
-                    self.vertex_shrink_frames = 0;
+        self.maybe_shrink_atlas(target, device, queue, work);
+        if target.pending_vertices.is_empty() {
+            if target.vertex_capacity > INITIAL_VERTICES {
+                target.vertex_shrink_frames = target.vertex_shrink_frames.saturating_add(1);
+                if target.vertex_shrink_frames >= SHRINK_IDLE_FRAMES {
+                    Self::replace_vertex_buffer(target, device, INITIAL_VERTICES, work);
+                    target.uploaded_vertices.shrink_to(INITIAL_VERTICES);
+                    target.pending_vertices.shrink_to(INITIAL_VERTICES);
+                    target.frame_slots.shrink_to(INITIAL_VERTICES / 6);
+                    target.vertex_shrink_frames = 0;
                 }
             } else {
-                self.vertex_shrink_frames = 0;
+                target.vertex_shrink_frames = 0;
             }
             return;
         }
-        let globals = (self.physical_size, self.corner_exponent);
-        if self.uploaded_globals != Some(globals) {
+        let globals = (target.physical_size, corner_exponent);
+        if target.uploaded_globals != Some(globals) {
             let uniforms = Uniforms {
-                transform: orthographic(self.physical_size[0], self.physical_size[1]),
-                corner_exponent: self.corner_exponent,
+                transform: orthographic(target.physical_size[0], target.physical_size[1]),
+                corner_exponent,
                 _pad: [0.0; 3],
             };
             let uniform_bytes = bytemuck::bytes_of(&uniforms);
             if let Some(work) = work {
-                work.write_buffer(queue, &self.uniforms, 0, uniform_bytes);
+                work.write_buffer(queue, &target.uniforms, 0, uniform_bytes);
             } else {
-                queue.write_buffer(&self.uniforms, 0, uniform_bytes);
+                queue.write_buffer(&target.uniforms, 0, uniform_bytes);
             }
-            self.uploaded_globals = Some(globals);
+            target.uploaded_globals = Some(globals);
         }
-        let fit_vertices = self
+        let fit_vertices = target
             .pending_vertices
             .len()
             .max(INITIAL_VERTICES)
             .next_power_of_two();
-        if fit_vertices * 4 <= self.vertex_capacity {
-            self.vertex_shrink_frames = self.vertex_shrink_frames.saturating_add(1);
-            if self.vertex_shrink_frames >= SHRINK_IDLE_FRAMES {
-                self.replace_vertex_buffer(device, fit_vertices, work);
-                self.uploaded_vertices.shrink_to(fit_vertices);
-                self.pending_vertices.shrink_to(fit_vertices);
-                self.vertex_shrink_frames = 0;
+        if fit_vertices * 4 <= target.vertex_capacity {
+            target.vertex_shrink_frames = target.vertex_shrink_frames.saturating_add(1);
+            if target.vertex_shrink_frames >= SHRINK_IDLE_FRAMES {
+                Self::replace_vertex_buffer(target, device, fit_vertices, work);
+                target.uploaded_vertices.shrink_to(fit_vertices);
+                target.pending_vertices.shrink_to(fit_vertices);
+                target.vertex_shrink_frames = 0;
             }
         } else {
-            self.vertex_shrink_frames = 0;
-            if self.pending_vertices.len() > self.vertex_capacity {
-                self.replace_vertex_buffer(device, fit_vertices, work);
+            target.vertex_shrink_frames = 0;
+            if target.pending_vertices.len() > target.vertex_capacity {
+                Self::replace_vertex_buffer(target, device, fit_vertices, work);
             }
         }
         super::buffer_upload::upload_changed_with_work(
             queue,
-            &self.vertices,
-            bytemuck::cast_slice(&self.uploaded_vertices),
-            bytemuck::cast_slice(&self.pending_vertices),
+            &target.vertices,
+            bytemuck::cast_slice(&target.uploaded_vertices),
+            bytemuck::cast_slice(&target.pending_vertices),
             work,
         );
-        self.uploaded_vertices.clone_from(&self.pending_vertices);
+        target
+            .uploaded_vertices
+            .clone_from(&target.pending_vertices);
     }
 
     fn replace_vertex_buffer(
-        &mut self,
+        target: &mut IconPipelineTarget,
         device: &wgpu::Device,
         capacity: usize,
         work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
-        self.uploaded_vertices.clear();
-        self.vertex_capacity = capacity;
-        let size = (self.vertex_capacity * std::mem::size_of::<IconVertex>()) as u64;
+        target.uploaded_vertices.clear();
+        target.vertex_capacity = capacity;
+        let size = (target.vertex_capacity * std::mem::size_of::<IconVertex>()) as u64;
         let usage = wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST;
         if let Some(work) = work {
             work.record_realloc();
             work.replace_buffer(
                 device,
-                &mut self.vertices,
+                &mut target.vertices,
                 size,
                 usage,
                 "nana-ui.scene.icon.vertices",
             );
         } else {
-            self.vertices = ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
+            target.vertices = ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("nana-ui.scene.icon.vertices"),
                 size,
                 usage,
@@ -716,34 +698,35 @@ impl IconPipeline {
     }
 
     fn maybe_shrink_atlas(
-        &mut self,
+        &self,
+        target: &mut IconPipelineTarget,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
-        if self.frame_keys.is_empty() {
-            if self.atlas.is_some() {
-                self.shrink_frames = self.shrink_frames.saturating_add(1);
-                if self.shrink_frames >= SHRINK_IDLE_FRAMES {
-                    self.atlas = None;
-                    self.entries.clear();
-                    self.entries.shrink_to_fit();
-                    self.shrink_frames = 0;
+        if target.frame_keys.is_empty() {
+            if target.atlas.is_some() {
+                target.shrink_frames = target.shrink_frames.saturating_add(1);
+                if target.shrink_frames >= SHRINK_IDLE_FRAMES {
+                    target.atlas = None;
+                    target.entries.clear();
+                    target.entries.shrink_to_fit();
+                    target.shrink_frames = 0;
                 }
             } else {
-                self.shrink_frames = 0;
+                target.shrink_frames = 0;
             }
             return;
         }
-        let Some(atlas) = &self.atlas else {
-            self.shrink_frames = 0;
+        let Some(atlas) = &target.atlas else {
+            target.shrink_frames = 0;
             return;
         };
         if atlas.edge <= ATLAS_START_PX {
-            self.shrink_frames = 0;
+            target.shrink_frames = 0;
             return;
         }
-        let needed: u64 = self
+        let needed: u64 = target
             .frame_keys
             .iter()
             .map(|key| {
@@ -753,13 +736,13 @@ impl IconPipeline {
             .sum();
         let cap = u64::from(atlas.edge) * u64::from(atlas.edge);
         if needed.saturating_mul(8) <= cap {
-            self.shrink_frames = self.shrink_frames.saturating_add(1);
-            if self.shrink_frames >= SHRINK_IDLE_FRAMES {
-                self.shrink_frames = 0;
-                let _ = self.repack_with_extra(device, queue, None, work);
+            target.shrink_frames = target.shrink_frames.saturating_add(1);
+            if target.shrink_frames >= SHRINK_IDLE_FRAMES {
+                target.shrink_frames = 0;
+                let _ = self.repack_with_extra(target, device, queue, None, work);
             }
         } else {
-            self.shrink_frames = 0;
+            target.shrink_frames = 0;
         }
     }
 
@@ -767,10 +750,15 @@ impl IconPipeline {
     /// `count` slots. Every glyph lives in the one shared atlas, so the only
     /// requirement left is that the vertices are already adjacent in the
     /// shared buffer — a toolbar of distinct glyphs is one run.
-    pub(super) fn can_extend_run(&self, first: usize, count: usize, next: usize) -> bool {
+    pub(super) fn can_extend_run(
+        target: &IconPipelineTarget,
+        first: usize,
+        count: usize,
+        next: usize,
+    ) -> bool {
         let (Some(last), Some(candidate)) = (
-            self.frame_slots.get(first + count - 1),
-            self.frame_slots.get(next),
+            target.frame_slots.get(first + count - 1),
+            target.frame_slots.get(next),
         ) else {
             return false;
         };
@@ -781,6 +769,7 @@ impl IconPipeline {
     /// holds: they all sample the same atlas and the same bind group.
     pub(super) fn draw(
         &self,
+        target: &IconPipelineTarget,
         pass: &mut wgpu::RenderPass<'_>,
         first: usize,
         count: usize,
@@ -788,13 +777,13 @@ impl IconPipeline {
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
         let (Some(head), Some(last)) = (
-            self.frame_slots.get(first),
-            self.frame_slots.get(first + count.max(1) - 1),
+            target.frame_slots.get(first),
+            target.frame_slots.get(first + count.max(1) - 1),
         ) else {
             return;
         };
         let end = last.first_vertex + last.vertex_count;
-        let Some(atlas) = &self.atlas else {
+        let Some(atlas) = &target.atlas else {
             return;
         };
         if end <= head.first_vertex {
@@ -802,9 +791,9 @@ impl IconPipeline {
         }
         pass.set_scissor_rect(scissor.x, scissor.y, scissor.width, scissor.height);
         pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+        pass.set_bind_group(0, &target.uniform_bind_group, &[]);
         pass.set_bind_group(1, &atlas.bind_group, &[]);
-        pass.set_vertex_buffer(0, self.vertices.slice(..));
+        pass.set_vertex_buffer(0, target.vertices.slice(..));
         pass.draw(head.first_vertex..end, 0..1);
         if let Some(work) = gpu_work {
             work.record_draw_batch();
@@ -817,7 +806,8 @@ impl IconPipeline {
     /// case where the icon does not paint.
     #[cfg_attr(not(test), allow(dead_code))]
     fn insert(
-        &mut self,
+        &self,
+        target: &mut IconPipelineTarget,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         key: AtlasKey,
@@ -825,12 +815,13 @@ impl IconPipeline {
         icon: Icon,
         rgba: &[u8],
     ) -> bool {
-        self.insert_with_work(device, queue, key, px, icon, rgba, None)
+        self.insert_with_work(target, device, queue, key, px, icon, rgba, None)
     }
 
     #[allow(clippy::too_many_arguments)]
     fn insert_with_work(
-        &mut self,
+        &self,
+        target: &mut IconPipelineTarget,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         key: AtlasKey,
@@ -839,20 +830,20 @@ impl IconPipeline {
         rgba: &[u8],
         work: Option<&crate::gpu_work::GpuWorkSink>,
     ) -> bool {
-        if self.exhausted {
+        if target.exhausted {
             return false;
         }
-        if self.atlas.is_none() {
-            self.atlas = Some(new_atlas(
+        if target.atlas.is_none() {
+            target.atlas = Some(new_atlas(
                 device,
                 &self.atlas_layout,
                 &self.sampler,
                 ATLAS_START_PX,
             ));
         }
-        if let Some(cell) = self.allocate(px + CELL_GUTTER * 2) {
-            self.write_cell(queue, cell, px, rgba, work);
-            self.entries.insert(
+        if let Some(cell) = Self::allocate(target, px + CELL_GUTTER * 2) {
+            Self::write_cell(target, queue, cell, px, rgba, work);
+            target.entries.insert(
                 key,
                 AtlasEntry {
                     origin: [cell[0] + CELL_GUTTER, cell[1] + CELL_GUTTER],
@@ -865,13 +856,13 @@ impl IconPipeline {
         // Full for this cell size. Rebuilding the atlas around exactly this
         // frame's glyphs both reclaims every idle entry and compacts the
         // shelves, so it is the eviction policy as well as the growth path.
-        self.repack(device, queue, (key, icon, rgba), work)
+        self.repack(target, device, queue, (key, icon, rgba), work)
     }
 
     /// Reserve a `cell`-sized square. Shelves are homogeneous, so a glyph
     /// either extends a shelf of its own cell size or opens a new one.
-    fn allocate(&mut self, cell: u32) -> Option<[u32; 2]> {
-        let atlas = self.atlas.as_mut()?;
+    fn allocate(target: &mut IconPipelineTarget, cell: u32) -> Option<[u32; 2]> {
+        let atlas = target.atlas.as_mut()?;
         let edge = atlas.edge;
         if cell > edge {
             return None;
@@ -906,29 +897,31 @@ impl IconPipeline {
     /// is the only copy of the pixels, and re-rasterizing is bounded by the
     /// frame's glyph count.
     fn repack(
-        &mut self,
+        &self,
+        target: &mut IconPipelineTarget,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         extra: (AtlasKey, Icon, &[u8]),
         work: Option<&crate::gpu_work::GpuWorkSink>,
     ) -> bool {
-        self.repack_with_extra(device, queue, Some(extra), work)
+        self.repack_with_extra(target, device, queue, Some(extra), work)
     }
 
     fn repack_with_extra(
-        &mut self,
+        &self,
+        target: &mut IconPipelineTarget,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         extra: Option<(AtlasKey, Icon, &[u8])>,
         work: Option<&crate::gpu_work::GpuWorkSink>,
     ) -> bool {
-        self.shrink_frames = 0;
+        target.shrink_frames = 0;
         // `frame_keys` gains the caller's key only after `prepare` has placed
         // it, so the glyph that triggered this repack arrives as `extra`.
-        let mut keep: Vec<(AtlasKey, Icon)> = self
+        let mut keep: Vec<(AtlasKey, Icon)> = target
             .frame_keys
             .iter()
-            .filter_map(|key| Some((*key, self.entries.get(key)?.icon)))
+            .filter_map(|key| Some((*key, target.entries.get(key)?.icon)))
             .collect();
         if let Some((extra_key, extra_icon, _)) = extra {
             keep.push((extra_key, extra_icon));
@@ -957,13 +950,13 @@ impl IconPipeline {
             edge = (edge * 2).min(max_edge);
         }
         loop {
-            self.atlas = Some(new_atlas(device, &self.atlas_layout, &self.sampler, edge));
-            self.entries.clear();
+            target.atlas = Some(new_atlas(device, &self.atlas_layout, &self.sampler, edge));
+            target.entries.clear();
             let placed = keep.iter().all(|(key, icon)| {
-                let Some(cell) = self.allocate(key.px + CELL_GUTTER * 2) else {
+                let Some(cell) = Self::allocate(target, key.px + CELL_GUTTER * 2) else {
                     return false;
                 };
-                self.entries.insert(
+                target.entries.insert(
                     *key,
                     AtlasEntry {
                         origin: [cell[0] + CELL_GUTTER, cell[1] + CELL_GUTTER],
@@ -977,42 +970,42 @@ impl IconPipeline {
                 break;
             }
             if edge >= max_edge {
-                self.entries.clear();
-                self.exhausted = true;
+                target.entries.clear();
+                target.exhausted = true;
                 return false;
             }
             edge = (edge * 2).min(max_edge);
         }
         for (key, icon) in &keep {
-            let Some(entry) = self.entries.get(key) else {
+            let Some(entry) = target.entries.get(key) else {
                 continue;
             };
             let cell = [entry.origin[0] - CELL_GUTTER, entry.origin[1] - CELL_GUTTER];
             if let Some((extra_key, _, extra_rgba)) = extra
                 && *key == extra_key
             {
-                self.write_cell(queue, cell, key.px, extra_rgba, work);
+                Self::write_cell(target, queue, cell, key.px, extra_rgba, work);
                 continue;
             }
             let Some(rgba) = rasterize_icon(*icon, key.px) else {
                 continue;
             };
-            self.write_cell(queue, cell, key.px, &rgba, work);
+            Self::write_cell(target, queue, cell, key.px, &rgba, work);
         }
-        self.patch_frame_uvs();
+        Self::patch_frame_uvs(target);
         true
     }
 
     /// Rewrite the UVs of vertices already emitted this frame. A repack moves
     /// every cell, and those vertices still name the old ones.
-    fn patch_frame_uvs(&mut self) {
-        let Self {
+    fn patch_frame_uvs(target: &mut IconPipelineTarget) {
+        let IconPipelineTarget {
             frame_slots,
             entries,
             pending_vertices,
             atlas,
             ..
-        } = self;
+        } = target;
         let Some(atlas) = atlas else {
             return;
         };
@@ -1035,14 +1028,14 @@ impl IconPipeline {
     /// initial zero, which is all it has to be: no other glyph writes there,
     /// so a tap that leaves a cell reads transparent instead of a neighbour.
     fn write_cell(
-        &mut self,
+        target: &IconPipelineTarget,
         queue: &wgpu::Queue,
         cell: [u32; 2],
         px: u32,
         rgba: &[u8],
         work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
-        let Some(atlas) = &self.atlas else {
+        let Some(atlas) = &target.atlas else {
             return;
         };
         if let Some(work) = work {
@@ -1245,14 +1238,16 @@ mod tests {
     #[test]
     fn explicit_authoring_icon_upload_keeps_linear_sc_rgb_channels() {
         let (device, queue) = crate::scene_paint::tests::test_device();
-        let mut pipeline = IconPipeline::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+        let pipeline = IconPipeline::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+        let mut target = pipeline.new_target(&device);
         let color = nana_ui_core::PaintColor::LinearScRgb {
             channels: [1.25, -0.125, 0.25],
             alpha: 0.6,
         };
-        pipeline.begin_frame([64; 2]);
+        IconPipeline::begin_frame(&mut target, [64; 2]);
         pipeline
             .prepare(
+                &mut target,
                 &device,
                 &queue,
                 LogicalRect::from_xywh(0.0, 0.0, 16.0, 16.0),
@@ -1267,7 +1262,7 @@ mod tests {
             .expect("icon should be prepared");
         let mut expected = pack_paint_color(color);
         expected[3] *= 0.5;
-        assert_eq!(pipeline.pending_vertices[0].color, expected);
+        assert_eq!(target.pending_vertices[0].color, expected);
     }
 
     fn ink_bbox(rgba: &[u8], px: u32) -> (u32, u32, u32, u32) {
@@ -1296,45 +1291,46 @@ mod tests {
     #[test]
     fn a_full_sheet_keeps_this_frames_glyphs_and_drops_the_idle_ones() {
         let (device, queue) = crate::scene_paint::tests::test_device();
-        let mut pipeline = IconPipeline::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+        let pipeline = IconPipeline::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+        let mut target = pipeline.new_target(&device);
         const PX: u32 = 64;
         let rgba = vec![255u8; (PX * PX * 4) as usize];
         let glyph = Icon::Close;
         let key = |icon: usize| AtlasKey { icon, px: PX };
 
-        pipeline.begin_frame([64; 2]);
+        IconPipeline::begin_frame(&mut target, [64; 2]);
         for icon in 0..3 {
-            assert!(pipeline.insert(&device, &queue, key(icon), PX, glyph, &rgba));
-            pipeline.frame_keys.insert(key(icon));
+            assert!(pipeline.insert(&mut target, &device, &queue, key(icon), PX, glyph, &rgba));
+            target.frame_keys.insert(key(icon));
         }
         // Then fill the sheet with glyphs nothing is using this frame.
         let mut idle = 100usize;
-        let mut before = pipeline.entries.len();
+        let mut before = target.entries.len();
         loop {
-            assert!(pipeline.insert(&device, &queue, key(idle), PX, glyph, &rgba));
+            assert!(pipeline.insert(&mut target, &device, &queue, key(idle), PX, glyph, &rgba));
             idle += 1;
-            if pipeline.entries.len() < before {
+            if target.entries.len() < before {
                 break;
             }
-            before = pipeline.entries.len();
+            before = target.entries.len();
             assert!(
                 idle < 400,
                 "a {ATLAS_START_PX}² sheet of 66px cells must fill first"
             );
         }
         assert_eq!(
-            pipeline.atlas.as_ref().unwrap().edge,
+            target.atlas.as_ref().unwrap().edge,
             ATLAS_START_PX,
             "a working set this small must be repacked into the same sheet, not a bigger one"
         );
         for icon in 0..3 {
             assert!(
-                pipeline.entries.contains_key(&key(icon)),
+                target.entries.contains_key(&key(icon)),
                 "glyph {icon} is in use this frame and must survive the repack"
             );
         }
         assert_eq!(
-            pipeline.entries.len(),
+            target.entries.len(),
             4,
             "a repack keeps this frame's glyphs plus the one that triggered it"
         );
@@ -1345,27 +1341,28 @@ mod tests {
     #[test]
     fn a_frame_larger_than_the_sheet_grows_it_instead_of_dropping_glyphs() {
         let (device, queue) = crate::scene_paint::tests::test_device();
-        let mut pipeline = IconPipeline::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+        let pipeline = IconPipeline::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+        let mut target = pipeline.new_target(&device);
         const PX: u32 = 128;
         let rgba = vec![255u8; (PX * PX * 4) as usize];
         let glyph = Icon::Close;
         let key = |icon: usize| AtlasKey { icon, px: PX };
 
-        pipeline.begin_frame([64; 2]);
+        IconPipeline::begin_frame(&mut target, [64; 2]);
         for icon in 0..16 {
             assert!(
-                pipeline.insert(&device, &queue, key(icon), PX, glyph, &rgba),
+                pipeline.insert(&mut target, &device, &queue, key(icon), PX, glyph, &rgba),
                 "glyph {icon} must find room"
             );
-            pipeline.frame_keys.insert(key(icon));
+            target.frame_keys.insert(key(icon));
         }
         assert!(
-            pipeline.atlas.as_ref().unwrap().edge > ATLAS_START_PX,
+            target.atlas.as_ref().unwrap().edge > ATLAS_START_PX,
             "16 cells of {PX}px cannot fit {ATLAS_START_PX}², so the sheet must grow"
         );
         for icon in 0..16 {
             assert!(
-                pipeline.entries.contains_key(&key(icon)),
+                target.entries.contains_key(&key(icon)),
                 "glyph {icon} must still be placed after the growth"
             );
         }
@@ -1394,18 +1391,19 @@ mod tests {
     #[test]
     fn oversized_and_idle_icon_sheets_shrink_back_down() {
         let (device, queue) = crate::scene_paint::tests::test_device();
-        let mut pipeline = IconPipeline::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+        let pipeline = IconPipeline::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+        let mut target = pipeline.new_target(&device);
         const PX: u32 = 128;
         let rgba = vec![255u8; (PX * PX * 4) as usize];
         let glyph = Icon::Close;
         let key = |icon: usize| AtlasKey { icon, px: PX };
 
-        pipeline.begin_frame([64; 2]);
+        IconPipeline::begin_frame(&mut target, [64; 2]);
         for icon in 0..16 {
-            assert!(pipeline.insert(&device, &queue, key(icon), PX, glyph, &rgba));
-            pipeline.frame_keys.insert(key(icon));
+            assert!(pipeline.insert(&mut target, &device, &queue, key(icon), PX, glyph, &rgba));
+            target.frame_keys.insert(key(icon));
         }
-        let peak_edge = pipeline.atlas.as_ref().unwrap().edge;
+        let peak_edge = target.atlas.as_ref().unwrap().edge;
         assert!(
             peak_edge >= 1024,
             "peak edge should grow to >= 1024, got {peak_edge}"
@@ -1413,9 +1411,10 @@ mod tests {
 
         // Sustained small working set (1 small icon) shrinks back to ATLAS_START_PX.
         for _ in 0..SHRINK_IDLE_FRAMES {
-            pipeline.begin_frame([64; 2]);
+            IconPipeline::begin_frame(&mut target, [64; 2]);
             pipeline
                 .prepare(
+                    &mut target,
                     &device,
                     &queue,
                     LogicalRect::from_xywh(0.0, 0.0, 16.0, 16.0),
@@ -1428,21 +1427,21 @@ mod tests {
                     FragmentClip::PASS,
                 )
                 .expect("prepare single icon");
-            pipeline.upload(&device, &queue, None);
+            pipeline.upload(&mut target, &device, &queue, 2.0, None);
         }
         assert_eq!(
-            pipeline.atlas.as_ref().unwrap().edge,
+            target.atlas.as_ref().unwrap().edge,
             ATLAS_START_PX,
             "icon atlas must shrink from {peak_edge} back to {ATLAS_START_PX}"
         );
 
         // Sustained zero-icon frames release the atlas completely.
         for _ in 0..SHRINK_IDLE_FRAMES {
-            pipeline.begin_frame([64; 2]);
-            pipeline.upload(&device, &queue, None);
+            IconPipeline::begin_frame(&mut target, [64; 2]);
+            pipeline.upload(&mut target, &device, &queue, 2.0, None);
         }
         assert!(
-            pipeline.atlas.is_none(),
+            target.atlas.is_none(),
             "idle icon pipeline must drop its GPU sheet after SHRINK_IDLE_FRAMES"
         );
     }
@@ -1468,82 +1467,17 @@ pub(super) struct IconPipelineTarget {
 }
 
 impl IconPipeline {
-    /// Atlas count and bytes: the painter's own target and each render
-    /// target in `others`, counting only those that have drawn an icon.
+    /// Atlas count and bytes across every render target that has drawn an icon.
     pub(super) fn atlas_counters_across<'a>(
-        &'a self,
-        others: impl Iterator<Item = &'a IconPipelineTarget>,
+        targets: impl Iterator<Item = &'a IconPipelineTarget>,
     ) -> (u64, u64) {
-        std::iter::once(&self.atlas)
-            .chain(others.map(|target| &target.atlas))
-            .flatten()
+        targets
+            .filter_map(|target| target.atlas.as_ref())
             .fold((0, 0), |(count, bytes), atlas| {
                 (
                     count + 1,
                     bytes + u64::from(atlas.edge) * u64::from(atlas.edge) * 4,
                 )
             })
-    }
-
-    pub(super) fn swap_target(
-        &mut self,
-        target: &mut Option<IconPipelineTarget>,
-        device: &wgpu::Device,
-    ) {
-        let target = target.get_or_insert_with(|| {
-            let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("nana.target.icon.uniforms"),
-                size: std::mem::size_of::<Uniforms>() as u64,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            IconPipelineTarget {
-                uniform_bind_group: device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("nana.target.icon.bind"),
-                    layout: &self.pipeline.get_bind_group_layout(0),
-                    entries: &[wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: uniforms.as_entire_binding(),
-                    }],
-                }),
-                uniforms,
-                vertices: ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("nana.target.icon.vertices"),
-                    size: (INITIAL_VERTICES * std::mem::size_of::<IconVertex>()) as u64,
-                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                })),
-                vertex_capacity: INITIAL_VERTICES,
-                pending_vertices: Vec::new(),
-                uploaded_vertices: Vec::new(),
-                physical_size: [0; 2],
-                uploaded_globals: None,
-                frame_slots: Vec::new(),
-                atlas: None,
-                entries: HashMap::new(),
-                frame_keys: HashSet::new(),
-                exhausted: false,
-                shrink_frames: 0,
-                vertex_shrink_frames: 0,
-            }
-        });
-        std::mem::swap(&mut self.uniform_bind_group, &mut target.uniform_bind_group);
-        std::mem::swap(&mut self.uniforms, &mut target.uniforms);
-        std::mem::swap(&mut self.vertices, &mut target.vertices);
-        std::mem::swap(&mut self.vertex_capacity, &mut target.vertex_capacity);
-        std::mem::swap(&mut self.pending_vertices, &mut target.pending_vertices);
-        std::mem::swap(&mut self.uploaded_vertices, &mut target.uploaded_vertices);
-        std::mem::swap(&mut self.physical_size, &mut target.physical_size);
-        std::mem::swap(&mut self.uploaded_globals, &mut target.uploaded_globals);
-        std::mem::swap(&mut self.frame_slots, &mut target.frame_slots);
-        std::mem::swap(&mut self.atlas, &mut target.atlas);
-        std::mem::swap(&mut self.entries, &mut target.entries);
-        std::mem::swap(&mut self.frame_keys, &mut target.frame_keys);
-        std::mem::swap(&mut self.exhausted, &mut target.exhausted);
-        std::mem::swap(&mut self.shrink_frames, &mut target.shrink_frames);
-        std::mem::swap(
-            &mut self.vertex_shrink_frames,
-            &mut target.vertex_shrink_frames,
-        );
     }
 }

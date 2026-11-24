@@ -987,15 +987,17 @@ impl PresentationDriver {
         let target = &mut self.targets[index];
         let lease = target.surface.sample()?;
         let source = lease.texture()?;
-        let srgb = source.format().is_srgb();
+        let op = super::transfer::TransferOp::Blit {
+            source_srgb: source.format().is_srgb(),
+        };
         let transfer = match target
             .transfers
             .iter()
-            .position(|transfer| transfer.matches(&self.gpu, destination.format(), srgb))
+            .position(|transfer| transfer.matches(&self.gpu, destination.format(), op))
         {
             Some(index) => &mut target.transfers[index],
             None => {
-                let built = OutputTransfer::try_new(&self.gpu, destination.format(), srgb)
+                let built = OutputTransfer::try_new(&self.gpu, destination.format(), op)
                     .map_err(|e| PresentationError::Surface(e.into()))?;
                 target.transfers.push(built);
                 target.transfers.last_mut().expect("inserted transfer")

@@ -181,7 +181,7 @@ pub(in crate::scene_paint) mod tests {
         programs.push(BuiltinProgram {
             slug: "window_output_straight",
             label: "nana-ui.window-output.straight",
-            source: crate::output::window_output::STRAIGHT_ALPHA_WGSL.to_owned(),
+            source: crate::output::transfer::STRAIGHT_ALPHA_WGSL.to_owned(),
             cfg_gate: Some(r#"feature = "hosted""#),
         });
         programs

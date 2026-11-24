@@ -295,8 +295,8 @@ fn a_box_with_no_area_starts_its_image_only_inside_its_clip() {
         .paint_encoder(&scene, &mut encoder, &view, viewport(), None, None)
         .unwrap();
     readback_rgba(&device, &queue, encoder, &texture, SIDE, SIDE);
-    assert!(painter.url_cache.contains_retained(&shown));
-    assert!(!painter.url_cache.contains_retained(&clipped));
+    assert!(painter.core.url_cache.contains_retained(&shown));
+    assert!(!painter.core.url_cache.contains_retained(&clipped));
     assert_eq!(
         painter.take_image_natural_sizes(None),
         [ImageNaturalSize {

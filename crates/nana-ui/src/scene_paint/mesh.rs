@@ -1170,23 +1170,7 @@ pub(super) struct MeshPipeline {
     erase_pipeline: wgpu::RenderPipeline,
     tint_pipeline: wgpu::RenderPipeline,
     keep_pipeline: wgpu::RenderPipeline,
-    paths: PathBuffers,
     bind_layout: wgpu::BindGroupLayout,
-    bind_group: wgpu::BindGroup,
-    uniforms: wgpu::Buffer,
-    /// What `uniforms` holds, so a frame of the same size writes nothing.
-    uploaded_uniforms: Option<Uniforms>,
-    clips: ManagedBuffer,
-    clip_capacity: usize,
-    instances: ManagedBuffer,
-    instance_capacity: usize,
-    pending_instances: Vec<MeshInstance>,
-    uploaded_instances: Vec<MeshInstance>,
-    pending_clips: Vec<GpuClip>,
-    clip_intern: HashMap<ClipInternKey, u32>,
-    uploaded_clips: Vec<GpuClip>,
-    /// The scene's corner curve exponent, set each frame before upload.
-    corner_exponent: f32,
 }
 
 impl MeshPipeline {
@@ -1283,20 +1267,6 @@ impl MeshPipeline {
                 ],
             })
         };
-        let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("nana-ui.scene.triangle.uniforms"),
-            size: std::mem::size_of::<Uniforms>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let clips = ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("nana-ui.scene.triangle.clips"),
-            size: (INITIAL_CLIPS * std::mem::size_of::<GpuClip>()) as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        }));
-        let paths = PathBuffers::new(device);
-        let bind_group = mesh_bind_group(device, &bind_layout, &uniforms, &clips, &paths.gradients);
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("nana-ui.scene.triangle.solid.pipeline"),
             bind_group_layouts: &[Some(&bind_layout)],
@@ -1395,15 +1365,39 @@ impl MeshPipeline {
             erase_pipeline,
             tint_pipeline,
             keep_pipeline,
-            paths,
             bind_layout,
-            bind_group,
+        })
+    }
+
+    pub(super) fn new_target(&self, device: &wgpu::Device) -> MeshPipelineTarget {
+        let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("nana.target.mesh.uniforms"),
+            size: std::mem::size_of::<Uniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let clips = ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("nana.target.mesh.clips"),
+            size: (INITIAL_CLIPS * std::mem::size_of::<GpuClip>()) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }));
+        let paths = PathBuffers::new(device);
+        MeshPipelineTarget {
+            bind_group: mesh_bind_group(
+                device,
+                &self.bind_layout,
+                &uniforms,
+                &clips,
+                &paths.gradients,
+            ),
+            paths,
             uniforms,
             uploaded_uniforms: None,
             clips,
             clip_capacity: INITIAL_CLIPS,
             instances: ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("nana-ui.scene.triangle.instances"),
+                label: Some("nana.target.mesh.instances"),
                 size: (INITIAL_INSTANCES * std::mem::size_of::<MeshInstance>()) as u64,
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
@@ -1412,142 +1406,23 @@ impl MeshPipeline {
             pending_instances: Vec::new(),
             uploaded_instances: Vec::new(),
             pending_clips: Vec::new(),
-            clip_intern: HashMap::new(),
             uploaded_clips: Vec::new(),
+            clip_intern: HashMap::new(),
             corner_exponent: 2.0,
-        })
-    }
-
-    /// The scene's corner curve exponent, for the clips of the meshes and
-    /// paths pushed this frame.
-    pub(super) fn set_corner_exponent(&mut self, exponent: f32) {
-        self.corner_exponent = exponent;
-    }
-
-    pub(super) fn begin_frame(&mut self) {
-        self.pending_instances.clear();
-        self.pending_clips.clear();
-        self.clip_intern.clear();
-        self.paths.begin_frame();
-    }
-
-    /// Queue a custom-paint path mesh (Issue #217). `origin` places the
-    /// node-local vertices in layout space, then `affine` maps them to the
-    /// scene. Both go to the GPU with the draw, not into the vertices: the
-    /// mesh is written once, when a frame first draws it, and kept while the
-    /// scene holds it. The vertex shader carries the fringe extrusion through
-    /// the same linear map, normalised to stay one physical pixel under scale.
-    ///
-    /// `node_mask` is the painted node's `mask-image`, evaluated at each
-    /// fragment's node-local position.
-    pub(super) fn push_path(
-        &mut self,
-        mesh: &Arc<nana_ui_scene::PathMesh>,
-        origin: [f32; 2],
-        affine: [f32; 6],
-        opacity: f32,
-        fragment_clip: FragmentClip,
-        node_mask: Option<&Arc<nana_ui_scene::NodeMask>>,
-    ) -> Option<PathRange> {
-        if mesh.indices.is_empty() || opacity <= 0.0 {
-            return None;
         }
-        let clip_index = intern_clip(
-            &mut self.pending_clips,
-            &mut self.clip_intern,
-            fragment_clip,
-        );
-        let [a, b, c, d, e, f] = affine;
-        let gradient = match mesh.gradient.as_ref() {
-            None => NO_GRADIENT,
-            Some(resolved) => {
-                let paths = &mut self.paths;
-                *paths
-                    .gradient_intern
-                    .entry(Arc::as_ptr(resolved) as usize)
-                    .or_insert_with(|| {
-                        paths
-                            .pending_gradients
-                            .push(GpuGradient::from_resolved(resolved));
-                        paths.pending_gradients.len() as u32 - 1
-                    })
-            }
-        };
-        // The mask is evaluated where each fragment lands, AA fringe
-        // included. Its own entry each time: its map depends on where the
-        // mesh is.
-        let mask = node_mask
-            .zip(super::clip::invert_affine(affine))
-            .and_then(|(mask, to_layout)| GpuGradient::from_node_mask(mask, to_layout, origin))
-            .map_or(NO_GRADIENT, |gradient| {
-                self.paths.pending_gradients.push(gradient);
-                self.paths.pending_gradients.len() as u32 - 1
-            });
-        #[cfg(test)]
-        if let Some(kept) = self.paths.cpu_transformed.as_mut() {
-            // How every frame drew paths before they were retained: each
-            // vertex moved to the scene on the CPU, drawn untransformed.
-            let moved = Arc::new(cpu_transformed(mesh, origin, affine));
-            kept.push(Arc::clone(&moved));
-            let instance = self.paths.instance(GpuPathInstance {
-                abcd: [1.0, 0.0, 0.0, 1.0],
-                ef_origin: [0.0; 4],
-                opacity,
-                clip_index,
-                gradient,
-                mask,
-            });
-            let (first_index, index_count) = self.paths.resident(&moved);
-            return Some(PathRange {
-                first_index,
-                index_count,
-                instance,
-            });
-        }
-        let instance = self.paths.instance(GpuPathInstance {
-            abcd: [a, b, c, d],
-            ef_origin: [e, f, origin[0], origin[1]],
-            opacity,
-            clip_index,
-            gradient,
-            mask,
-        });
-        let (first_index, index_count) = self.paths.resident(mesh);
-        Some(PathRange {
-            first_index,
-            index_count,
-            instance,
-        })
     }
 
-    /// Meshes retained on the GPU and the bytes their arena allocates.
-    pub(super) fn path_counters(&self) -> (u64, u64) {
-        self.paths.counters()
-    }
-
-    /// Draw paths as every frame did before meshes were retained: their
-    /// vertices transformed on the CPU. The reference for pixel tests.
-    #[cfg(test)]
-    pub(super) fn transform_paths_on_cpu(&mut self, on: bool) {
-        self.paths.cpu_transformed = on.then(Vec::new);
-    }
-
-    /// Arena ranges held, including those kept a frame for a re-record.
-    #[cfg(test)]
-    pub(super) fn path_slots(&self) -> usize {
-        self.paths.slots.len()
-    }
-
-    fn bind_path_buffers(&self, pass: &mut wgpu::RenderPass<'_>) {
-        pass.set_bind_group(0, &self.bind_group, &[]);
-        pass.set_vertex_buffer(0, self.paths.vertices.slice(..));
-        pass.set_vertex_buffer(1, self.paths.instances.slice(..));
-        pass.set_index_buffer(self.paths.indices.slice(..), wgpu::IndexFormat::Uint32);
+    fn bind_path_buffers(&self, target: &MeshPipelineTarget, pass: &mut wgpu::RenderPass<'_>) {
+        pass.set_bind_group(0, &target.bind_group, &[]);
+        pass.set_vertex_buffer(0, target.paths.vertices.slice(..));
+        pass.set_vertex_buffer(1, target.paths.instances.slice(..));
+        pass.set_index_buffer(target.paths.indices.slice(..), wgpu::IndexFormat::Uint32);
     }
 
     /// Apply a painter layer's mask to the open group.
     pub(super) fn draw_mask(
         &self,
+        target: &MeshPipelineTarget,
         pass: &mut wgpu::RenderPass<'_>,
         range: &PathRange,
         scissor: PhysicalRect,
@@ -1562,7 +1437,7 @@ impl MeshPipeline {
             nana_ui_scene::LayerMaskMode::Tint => &self.tint_pipeline,
             nana_ui_scene::LayerMaskMode::Keep => &self.keep_pipeline,
         });
-        self.bind_path_buffers(pass);
+        self.bind_path_buffers(target, pass);
         pass.set_scissor_rect(scissor.x, scissor.y, scissor.width, scissor.height);
         pass.draw_indexed(
             range.first_index..range.first_index + range.index_count,
@@ -1577,6 +1452,7 @@ impl MeshPipeline {
 
     pub(super) fn draw_path(
         &self,
+        target: &MeshPipelineTarget,
         pass: &mut wgpu::RenderPass<'_>,
         range: &PathRange,
         scissor: PhysicalRect,
@@ -1591,7 +1467,7 @@ impl MeshPipeline {
         } else {
             &self.path_pipeline
         });
-        self.bind_path_buffers(pass);
+        self.bind_path_buffers(target, pass);
         pass.set_scissor_rect(scissor.x, scissor.y, scissor.width, scissor.height);
         pass.draw_indexed(
             range.first_index..range.first_index + range.index_count,
@@ -1604,123 +1480,9 @@ impl MeshPipeline {
         }
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "Explicit fields of the host or GPU projection contract"
-    )]
-    pub(super) fn push_stroke_with_path_length(
-        &mut self,
-        points: &[[f32; 2]],
-        style: StrokeStyle<'_>,
-        affine: [f32; 6],
-        color: [f32; 4],
-        opacity: f32,
-        fragment_clip: FragmentClip,
-        path_length: f32,
-    ) -> Option<MeshRange> {
-        if points.len() < 2 || style.width <= 0.0 {
-            return None;
-        }
-        let start = self.pending_instances.len() as u32;
-        let packed_color = pack_linear(with_opacity(color, opacity));
-        let packed_colors: Vec<[f32; 4]> = if style.colors.len() == points.len() {
-            style
-                .colors
-                .iter()
-                .map(|item| pack_linear(with_opacity(*item, opacity)))
-                .collect()
-        } else {
-            Vec::new()
-        };
-        emit_stroke_instances(
-            &mut self.pending_instances,
-            points,
-            StrokeStyle {
-                colors: &packed_colors,
-                ..style
-            },
-            packed_color,
-            path_length,
-        );
-        apply_affine_to_instances(&mut self.pending_instances, start as usize, affine);
-        stamp_fragment_clip(
-            &mut self.pending_instances,
-            &mut self.pending_clips,
-            &mut self.clip_intern,
-            start as usize,
-            fragment_clip,
-        );
-        let instance_count = self.pending_instances.len() as u32 - start;
-        (instance_count > 0).then_some(MeshRange {
-            first_instance: start,
-            instance_count,
-        })
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn push_spinner(
-        &mut self,
-        bounds: LogicalRect,
-        affine: [f32; 6],
-        phase: u8,
-        color: nana_ui_core::PaintColor,
-        opacity: f32,
-        fragment_clip: FragmentClip,
-    ) -> Option<MeshRange> {
-        let scale = bounds.width.min(bounds.height) / 24.0;
-        if scale <= 0.0 {
-            return None;
-        }
-        let [r, g, b, a] = pack_paint_color(color);
-        let color = [r, g, b, a * opacity];
-        let center = [
-            bounds.x + bounds.width / 2.0,
-            bounds.y + bounds.height / 2.0,
-        ];
-        let start = self.pending_instances.len() as u32;
-        let radius = 2.2 * scale * 0.5;
-        for index in 0..8_u8 {
-            let angle = f32::from(index) * std::f32::consts::FRAC_PI_4;
-            let from = [
-                center[0] + angle.cos() * 6.0 * scale,
-                center[1] + angle.sin() * 6.0 * scale,
-            ];
-            let to = [
-                center[0] + angle.cos() * 10.0 * scale,
-                center[1] + angle.sin() * 10.0 * scale,
-            ];
-            let distance = (index + 8 - phase % 8) % 8;
-            let alpha = 1.0 - f32::from(distance) * 0.105;
-            let mut packed = color;
-            packed[3] *= alpha;
-            push_segment(
-                &mut self.pending_instances,
-                from,
-                to,
-                radius,
-                radius,
-                StrokeCap::Round,
-                StrokeCap::Round,
-                packed,
-            );
-        }
-        apply_affine_to_instances(&mut self.pending_instances, start as usize, affine);
-        stamp_fragment_clip(
-            &mut self.pending_instances,
-            &mut self.pending_clips,
-            &mut self.clip_intern,
-            start as usize,
-            fragment_clip,
-        );
-        let instance_count = self.pending_instances.len() as u32 - start;
-        (instance_count > 0).then_some(MeshRange {
-            first_instance: start,
-            instance_count,
-        })
-    }
-
     pub(super) fn upload(
-        &mut self,
+        &self,
+        target: &mut MeshPipelineTarget,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         physical_size: [u32; 2],
@@ -1735,53 +1497,53 @@ impl MeshPipeline {
         let uniforms = Uniforms {
             transform: orthographic_scaled(physical_size[0], physical_size[1], viewport_scale),
             viewport_scale,
-            corner_exponent: self.corner_exponent,
+            corner_exponent: target.corner_exponent,
             _pad: [0.0; 2],
         };
         // A write has a fixed cost far above these bytes; the size rarely changes.
-        if self.uploaded_uniforms != Some(uniforms) {
+        if target.uploaded_uniforms != Some(uniforms) {
             let uniform_bytes = bytemuck::bytes_of(&uniforms);
             if let Some(work) = gpu_work {
-                work.write_buffer(queue, &self.uniforms, 0, uniform_bytes);
+                work.write_buffer(queue, &target.uniforms, 0, uniform_bytes);
             } else {
-                queue.write_buffer(&self.uniforms, 0, uniform_bytes);
+                queue.write_buffer(&target.uniforms, 0, uniform_bytes);
             }
-            self.uploaded_uniforms = Some(uniforms);
+            target.uploaded_uniforms = Some(uniforms);
         }
-        if self.paths.upload(device, queue, gpu_work) {
-            self.bind_group = mesh_bind_group(
+        if target.paths.upload(device, queue, gpu_work) {
+            target.bind_group = mesh_bind_group(
                 device,
                 &self.bind_layout,
-                &self.uniforms,
-                &self.clips,
-                &self.paths.gradients,
+                &target.uniforms,
+                &target.clips,
+                &target.paths.gradients,
             );
         }
-        if self.pending_instances.is_empty() && self.paths.pending_instances.is_empty() {
-            self.uploaded_instances.clear();
-            self.uploaded_clips.clear();
+        if target.pending_instances.is_empty() && target.paths.pending_instances.is_empty() {
+            target.uploaded_instances.clear();
+            target.uploaded_clips.clear();
             return;
         }
-        if self.pending_instances == self.uploaded_instances
-            && clips_bit_eq(&self.pending_clips, &self.uploaded_clips)
+        if target.pending_instances == target.uploaded_instances
+            && clips_bit_eq(&target.pending_clips, &target.uploaded_clips)
         {
             return;
         }
-        if self.pending_instances.len() > self.instance_capacity {
-            self.uploaded_instances.clear();
-            self.instance_capacity = self.pending_instances.len().next_power_of_two();
-            let size = (self.instance_capacity * std::mem::size_of::<MeshInstance>()) as u64;
+        if target.pending_instances.len() > target.instance_capacity {
+            target.uploaded_instances.clear();
+            target.instance_capacity = target.pending_instances.len().next_power_of_two();
+            let size = (target.instance_capacity * std::mem::size_of::<MeshInstance>()) as u64;
             let usage = wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST;
             if let Some(work) = gpu_work {
                 work.replace_buffer(
                     device,
-                    &mut self.instances,
+                    &mut target.instances,
                     size,
                     usage,
                     "nana-ui.scene.triangle.instances",
                 );
             } else {
-                self.instances =
+                target.instances =
                     ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
                         label: Some("nana-ui.scene.triangle.instances"),
                         size,
@@ -1793,56 +1555,58 @@ impl MeshPipeline {
                 work.record_realloc();
             }
         }
-        if self.pending_clips.len() > self.clip_capacity {
-            self.uploaded_clips.clear();
-            self.clip_capacity = self.pending_clips.len().next_power_of_two();
-            let size = (self.clip_capacity * std::mem::size_of::<GpuClip>()) as u64;
+        if target.pending_clips.len() > target.clip_capacity {
+            target.uploaded_clips.clear();
+            target.clip_capacity = target.pending_clips.len().next_power_of_two();
+            let size = (target.clip_capacity * std::mem::size_of::<GpuClip>()) as u64;
             let usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
             if let Some(work) = gpu_work {
                 work.replace_buffer(
                     device,
-                    &mut self.clips,
+                    &mut target.clips,
                     size,
                     usage,
                     "nana-ui.scene.triangle.clips",
                 );
             } else {
-                self.clips = ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
+                target.clips = ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("nana-ui.scene.triangle.clips"),
                     size,
                     usage,
                     mapped_at_creation: false,
                 }));
             }
-            self.bind_group = mesh_bind_group(
+            target.bind_group = mesh_bind_group(
                 device,
                 &self.bind_layout,
-                &self.uniforms,
-                &self.clips,
-                &self.paths.gradients,
+                &target.uniforms,
+                &target.clips,
+                &target.paths.gradients,
             );
             if let Some(work) = gpu_work {
                 work.record_realloc();
             }
         }
-        let instance_bytes = bytemuck::cast_slice(&self.pending_instances);
+        let instance_bytes = bytemuck::cast_slice(&target.pending_instances);
         super::buffer_upload::upload_changed_with_work(
             queue,
-            &self.instances,
-            bytemuck::cast_slice(&self.uploaded_instances),
+            &target.instances,
+            bytemuck::cast_slice(&target.uploaded_instances),
             instance_bytes,
             gpu_work,
         );
-        let clip_bytes = bytemuck::cast_slice(&self.pending_clips);
+        let clip_bytes = bytemuck::cast_slice(&target.pending_clips);
         super::buffer_upload::upload_changed_with_work(
             queue,
-            &self.clips,
-            bytemuck::cast_slice(&self.uploaded_clips),
+            &target.clips,
+            bytemuck::cast_slice(&target.uploaded_clips),
             clip_bytes,
             gpu_work,
         );
-        self.uploaded_instances.clone_from(&self.pending_instances);
-        self.uploaded_clips.clone_from(&self.pending_clips);
+        target
+            .uploaded_instances
+            .clone_from(&target.pending_instances);
+        target.uploaded_clips.clone_from(&target.pending_clips);
         if let Some(work) = gpu_work {
             work.record_batch_rebuild();
         }
@@ -1850,6 +1614,7 @@ impl MeshPipeline {
 
     pub(super) fn draw(
         &self,
+        target: &MeshPipelineTarget,
         pass: &mut wgpu::RenderPass<'_>,
         range: &MeshRange,
         scissor: PhysicalRect,
@@ -1864,8 +1629,8 @@ impl MeshPipeline {
         } else {
             &self.pipeline
         });
-        pass.set_bind_group(0, &self.bind_group, &[]);
-        pass.set_vertex_buffer(0, self.instances.slice(..));
+        pass.set_bind_group(0, &target.bind_group, &[]);
+        pass.set_vertex_buffer(0, target.instances.slice(..));
         pass.set_scissor_rect(scissor.x, scissor.y, scissor.width, scissor.height);
         pass.draw(
             0..6,
@@ -4216,75 +3981,244 @@ pub(super) struct MeshPipelineTarget {
     pending_clips: Vec<GpuClip>,
     clip_intern: HashMap<ClipInternKey, u32>,
     uploaded_clips: Vec<GpuClip>,
+    /// The scene's corner curve exponent, set each frame before upload.
+    corner_exponent: f32,
 }
 
 impl MeshPipelineTarget {
-    /// [`MeshPipeline::path_counters`] of this target's arena.
+    /// The scene's corner curve exponent, for the clips of the meshes and
+    /// paths pushed this frame.
+    pub(super) fn set_corner_exponent(&mut self, exponent: f32) {
+        self.corner_exponent = exponent;
+    }
+
+    pub(super) fn begin_frame(&mut self) {
+        self.pending_instances.clear();
+        self.pending_clips.clear();
+        self.clip_intern.clear();
+        self.paths.begin_frame();
+    }
+
+    /// Queue a custom-paint path mesh (Issue #217). `origin` places the
+    /// node-local vertices in layout space, then `affine` maps them to the
+    /// scene. Both go to the GPU with the draw, not into the vertices: the
+    /// mesh is written once, when a frame first draws it, and kept while the
+    /// scene holds it. The vertex shader carries the fringe extrusion through
+    /// the same linear map, normalised to stay one physical pixel under scale.
+    ///
+    /// `node_mask` is the painted node's `mask-image`, evaluated at each
+    /// fragment's node-local position.
+    pub(super) fn push_path(
+        &mut self,
+        mesh: &Arc<nana_ui_scene::PathMesh>,
+        origin: [f32; 2],
+        affine: [f32; 6],
+        opacity: f32,
+        fragment_clip: FragmentClip,
+        node_mask: Option<&Arc<nana_ui_scene::NodeMask>>,
+    ) -> Option<PathRange> {
+        if mesh.indices.is_empty() || opacity <= 0.0 {
+            return None;
+        }
+        let clip_index = intern_clip(
+            &mut self.pending_clips,
+            &mut self.clip_intern,
+            fragment_clip,
+        );
+        let [a, b, c, d, e, f] = affine;
+        let gradient = match mesh.gradient.as_ref() {
+            None => NO_GRADIENT,
+            Some(resolved) => {
+                let paths = &mut self.paths;
+                *paths
+                    .gradient_intern
+                    .entry(Arc::as_ptr(resolved) as usize)
+                    .or_insert_with(|| {
+                        paths
+                            .pending_gradients
+                            .push(GpuGradient::from_resolved(resolved));
+                        paths.pending_gradients.len() as u32 - 1
+                    })
+            }
+        };
+        // The mask is evaluated where each fragment lands, AA fringe
+        // included. Its own entry each time: its map depends on where the
+        // mesh is.
+        let mask = node_mask
+            .zip(super::clip::invert_affine(affine))
+            .and_then(|(mask, to_layout)| GpuGradient::from_node_mask(mask, to_layout, origin))
+            .map_or(NO_GRADIENT, |gradient| {
+                self.paths.pending_gradients.push(gradient);
+                self.paths.pending_gradients.len() as u32 - 1
+            });
+        #[cfg(test)]
+        if let Some(kept) = self.paths.cpu_transformed.as_mut() {
+            // How every frame drew paths before they were retained: each
+            // vertex moved to the scene on the CPU, drawn untransformed.
+            let moved = Arc::new(cpu_transformed(mesh, origin, affine));
+            kept.push(Arc::clone(&moved));
+            let instance = self.paths.instance(GpuPathInstance {
+                abcd: [1.0, 0.0, 0.0, 1.0],
+                ef_origin: [0.0; 4],
+                opacity,
+                clip_index,
+                gradient,
+                mask,
+            });
+            let (first_index, index_count) = self.paths.resident(&moved);
+            return Some(PathRange {
+                first_index,
+                index_count,
+                instance,
+            });
+        }
+        let instance = self.paths.instance(GpuPathInstance {
+            abcd: [a, b, c, d],
+            ef_origin: [e, f, origin[0], origin[1]],
+            opacity,
+            clip_index,
+            gradient,
+            mask,
+        });
+        let (first_index, index_count) = self.paths.resident(mesh);
+        Some(PathRange {
+            first_index,
+            index_count,
+            instance,
+        })
+    }
+
+    /// Meshes retained on the GPU and the bytes their arena allocates.
     pub(super) fn path_counters(&self) -> (u64, u64) {
         self.paths.counters()
     }
-}
 
-impl MeshPipeline {
-    pub(super) fn swap_target(
+    /// Draw paths as every frame did before meshes were retained: their
+    /// vertices transformed on the CPU. The reference for pixel tests.
+    #[cfg(test)]
+    pub(super) fn transform_paths_on_cpu(&mut self, on: bool) {
+        self.paths.cpu_transformed = on.then(Vec::new);
+    }
+
+    /// Arena ranges held, including those kept a frame for a re-record.
+    #[cfg(test)]
+    pub(super) fn path_slots(&self) -> usize {
+        self.paths.slots.len()
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Explicit fields of the host or GPU projection contract"
+    )]
+    pub(super) fn push_stroke_with_path_length(
         &mut self,
-        target: &mut Option<MeshPipelineTarget>,
-        device: &wgpu::Device,
-    ) {
-        let target = target.get_or_insert_with(|| {
-            let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("nana.target.mesh.uniforms"),
-                size: std::mem::size_of::<Uniforms>() as u64,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            let clips = ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("nana.target.mesh.clips"),
-                size: (INITIAL_CLIPS * std::mem::size_of::<GpuClip>()) as u64,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }));
-            let paths = PathBuffers::new(device);
-            MeshPipelineTarget {
-                bind_group: mesh_bind_group(
-                    device,
-                    &self.bind_layout,
-                    &uniforms,
-                    &clips,
-                    &paths.gradients,
-                ),
-                paths,
-                uniforms,
-                uploaded_uniforms: None,
-                clips,
-                clip_capacity: INITIAL_CLIPS,
-                instances: ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("nana.target.mesh.instances"),
-                    size: (INITIAL_INSTANCES * std::mem::size_of::<MeshInstance>()) as u64,
-                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                })),
-                instance_capacity: INITIAL_INSTANCES,
-                pending_instances: Vec::new(),
-                uploaded_instances: Vec::new(),
-                pending_clips: Vec::new(),
-                uploaded_clips: Vec::new(),
-                clip_intern: HashMap::new(),
-            }
-        });
-        std::mem::swap(&mut self.paths, &mut target.paths);
-        std::mem::swap(&mut self.bind_group, &mut target.bind_group);
-        std::mem::swap(&mut self.uniforms, &mut target.uniforms);
-        std::mem::swap(&mut self.uploaded_uniforms, &mut target.uploaded_uniforms);
-        std::mem::swap(&mut self.clips, &mut target.clips);
-        std::mem::swap(&mut self.clip_capacity, &mut target.clip_capacity);
-        std::mem::swap(&mut self.instances, &mut target.instances);
-        std::mem::swap(&mut self.instance_capacity, &mut target.instance_capacity);
-        std::mem::swap(&mut self.pending_instances, &mut target.pending_instances);
-        std::mem::swap(&mut self.uploaded_instances, &mut target.uploaded_instances);
-        std::mem::swap(&mut self.pending_clips, &mut target.pending_clips);
-        std::mem::swap(&mut self.clip_intern, &mut target.clip_intern);
-        std::mem::swap(&mut self.uploaded_clips, &mut target.uploaded_clips);
+        points: &[[f32; 2]],
+        style: StrokeStyle<'_>,
+        affine: [f32; 6],
+        color: [f32; 4],
+        opacity: f32,
+        fragment_clip: FragmentClip,
+        path_length: f32,
+    ) -> Option<MeshRange> {
+        if points.len() < 2 || style.width <= 0.0 {
+            return None;
+        }
+        let start = self.pending_instances.len() as u32;
+        let packed_color = pack_linear(with_opacity(color, opacity));
+        let packed_colors: Vec<[f32; 4]> = if style.colors.len() == points.len() {
+            style
+                .colors
+                .iter()
+                .map(|item| pack_linear(with_opacity(*item, opacity)))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        emit_stroke_instances(
+            &mut self.pending_instances,
+            points,
+            StrokeStyle {
+                colors: &packed_colors,
+                ..style
+            },
+            packed_color,
+            path_length,
+        );
+        apply_affine_to_instances(&mut self.pending_instances, start as usize, affine);
+        stamp_fragment_clip(
+            &mut self.pending_instances,
+            &mut self.pending_clips,
+            &mut self.clip_intern,
+            start as usize,
+            fragment_clip,
+        );
+        let instance_count = self.pending_instances.len() as u32 - start;
+        (instance_count > 0).then_some(MeshRange {
+            first_instance: start,
+            instance_count,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn push_spinner(
+        &mut self,
+        bounds: LogicalRect,
+        affine: [f32; 6],
+        phase: u8,
+        color: nana_ui_core::PaintColor,
+        opacity: f32,
+        fragment_clip: FragmentClip,
+    ) -> Option<MeshRange> {
+        let scale = bounds.width.min(bounds.height) / 24.0;
+        if scale <= 0.0 {
+            return None;
+        }
+        let [r, g, b, a] = pack_paint_color(color);
+        let color = [r, g, b, a * opacity];
+        let center = [
+            bounds.x + bounds.width / 2.0,
+            bounds.y + bounds.height / 2.0,
+        ];
+        let start = self.pending_instances.len() as u32;
+        let radius = 2.2 * scale * 0.5;
+        for index in 0..8_u8 {
+            let angle = f32::from(index) * std::f32::consts::FRAC_PI_4;
+            let from = [
+                center[0] + angle.cos() * 6.0 * scale,
+                center[1] + angle.sin() * 6.0 * scale,
+            ];
+            let to = [
+                center[0] + angle.cos() * 10.0 * scale,
+                center[1] + angle.sin() * 10.0 * scale,
+            ];
+            let distance = (index + 8 - phase % 8) % 8;
+            let alpha = 1.0 - f32::from(distance) * 0.105;
+            let mut packed = color;
+            packed[3] *= alpha;
+            push_segment(
+                &mut self.pending_instances,
+                from,
+                to,
+                radius,
+                radius,
+                StrokeCap::Round,
+                StrokeCap::Round,
+                packed,
+            );
+        }
+        apply_affine_to_instances(&mut self.pending_instances, start as usize, affine);
+        stamp_fragment_clip(
+            &mut self.pending_instances,
+            &mut self.pending_clips,
+            &mut self.clip_intern,
+            start as usize,
+            fragment_clip,
+        );
+        let instance_count = self.pending_instances.len() as u32 - start;
+        (instance_count > 0).then_some(MeshRange {
+            first_instance: start,
+            instance_count,
+        })
     }
 }
 

@@ -1826,11 +1826,12 @@ mod tests {
         let (device, queue) = test_device();
         let format = wgpu::TextureFormat::Rgba8Unorm;
         let mut painter = SceneWgpuPainter::for_test(format);
-        assert!(painter.motion.eval.is_none());
+        assert!(painter.core.motion.eval.is_none());
         let (_world, scene, handle) = animated_opacity_scene(Duration::from_millis(16));
         paint_once(&device, &queue, &mut painter, &scene);
-        assert!(painter.motion.eval.is_none());
+        assert!(painter.core.motion.eval.is_none());
         painter
+            .core
             .motion
             .evaluate_readback(
                 &device,
@@ -1840,7 +1841,7 @@ mod tests {
                 Duration::from_millis(16),
             )
             .expect("readback builds the evaluator");
-        assert!(painter.motion.eval.is_some());
+        assert!(painter.core.motion.eval.is_some());
     }
 
     #[test]
@@ -2171,6 +2172,7 @@ mod tests {
                 .evaluate(handle, now)
                 .expect("cpu evaluate");
             let readback = painter
+                .core
                 .motion
                 .evaluate_readback(&device, &queue, scene, handle.index() + 1, now)
                 .expect("gpu evaluate");

@@ -114,12 +114,11 @@ impl PreparedHostTexture {
 }
 
 impl HostTexturePipeline {
-    pub(super) fn keep_alive_until_complete(&self, frame: &mut nana_gpu::FrameContext) {
-        self.pipeline.keep_alive_until_complete(frame);
-    }
-
-    pub(super) fn invalidate_image_bindings(&mut self) {
-        self.pipeline.invalidate_image_bindings();
+    pub(super) fn keep_alive_until_complete(
+        target: &crate::gpu_texture::GpuTextureTarget,
+        frame: &mut nana_gpu::FrameContext,
+    ) {
+        GpuTexturePipeline::keep_alive_until_complete(target, frame);
     }
 
     pub(super) fn invalidate_target_image_bindings(
@@ -154,7 +153,8 @@ impl HostTexturePipeline {
 
     #[allow(clippy::too_many_arguments)]
     pub(super) fn prepare(
-        &mut self,
+        &self,
+        target: &mut crate::gpu_texture::GpuTextureTarget,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         url_cache: &mut super::url_texture_cache::UrlTextureCache,
@@ -207,7 +207,8 @@ impl HostTexturePipeline {
                 .with_corner_exponent(self.corner_exponent),
         );
         primitive.prepare(
-            &mut self.pipeline,
+            &self.pipeline,
+            target,
             url_cache,
             device,
             queue,
@@ -283,16 +284,18 @@ impl HostTexturePipeline {
 
     pub(super) fn draw(
         &self,
+        target: &crate::gpu_texture::GpuTextureTarget,
         prepared: &PreparedHostTexture,
         pass: &mut wgpu::RenderPass<'_>,
         dest_size: [u32; 2],
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
-        self.draw_clipped(prepared, pass, dest_size, prepared.clip, gpu_work);
+        self.draw_clipped(target, prepared, pass, dest_size, prepared.clip, gpu_work);
     }
 
     pub(super) fn draw_clipped(
         &self,
+        target: &crate::gpu_texture::GpuTextureTarget,
         prepared: &PreparedHostTexture,
         pass: &mut wgpu::RenderPass<'_>,
         dest_size: [u32; 2],
@@ -306,6 +309,7 @@ impl HostTexturePipeline {
         };
         prepared.primitive.draw_in_pass_with_mode(
             &self.pipeline,
+            target,
             pass,
             intersect_physical(prepared.clip, scissor),
             dest_size,
@@ -316,16 +320,18 @@ impl HostTexturePipeline {
 
     pub(super) fn draw_replace(
         &self,
+        target: &crate::gpu_texture::GpuTextureTarget,
         prepared: &PreparedHostTexture,
         pass: &mut wgpu::RenderPass<'_>,
         dest_size: [u32; 2],
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
-        self.draw_replace_clipped(prepared, pass, dest_size, prepared.clip, gpu_work);
+        self.draw_replace_clipped(target, prepared, pass, dest_size, prepared.clip, gpu_work);
     }
 
     pub(super) fn draw_replace_clipped(
         &self,
+        target: &crate::gpu_texture::GpuTextureTarget,
         prepared: &PreparedHostTexture,
         pass: &mut wgpu::RenderPass<'_>,
         dest_size: [u32; 2],
@@ -334,6 +340,7 @@ impl HostTexturePipeline {
     ) {
         prepared.primitive.draw_in_pass_with_mode(
             &self.pipeline,
+            target,
             pass,
             intersect_physical(prepared.clip, scissor),
             dest_size,
@@ -342,8 +349,8 @@ impl HostTexturePipeline {
         );
     }
 
-    pub(super) fn trim(&mut self) {
-        self.pipeline.trim();
+    pub(super) fn trim(target: &mut crate::gpu_texture::GpuTextureTarget) {
+        GpuTexturePipeline::trim(target);
     }
 }
 
@@ -427,10 +434,4 @@ fn physical_extent(logical: f32, scale_factor: f32) -> u32 {
         return 0;
     }
     pixels.round() as u32
-}
-
-impl HostTexturePipeline {
-    pub(super) fn swap_target(&mut self, target: &mut crate::gpu_texture::GpuTextureTarget) {
-        self.pipeline.swap_target(target);
-    }
 }

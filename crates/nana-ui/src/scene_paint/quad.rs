@@ -181,39 +181,14 @@ pub(super) struct QuadPipeline {
     pipeline: wgpu::RenderPipeline,
     pipeline_msaa: wgpu::RenderPipeline,
     bind_layout: wgpu::BindGroupLayout,
-    uniforms: wgpu::Buffer,
-    /// What `uniforms` holds, so a frame of the same size writes nothing.
-    uploaded_uniforms: Option<Uniforms>,
-    paint_buffer: ManagedBuffer,
-    paint_capacity: usize,
     url_view: wgpu::TextureView,
     url_sampler: wgpu::Sampler,
-    url_bind_groups: HashMap<Option<String>, wgpu::BindGroup>,
-    instances: ManagedBuffer,
-    instance_capacity: usize,
-    pending: Vec<SolidInstance>,
-    uploaded: Vec<SolidInstance>,
-    pending_paint: Vec<QuadPaintData>,
-    uploaded_paint: Vec<QuadPaintData>,
-    pending_urls: Vec<Option<String>>,
-    pending_materials: Vec<(u64, u64, bool)>,
     motion_layout: wgpu::BindGroupLayout,
     #[allow(
         dead_code,
         reason = "keeps dummy motion buffers alive for the shared layout"
     )]
     motion_dummy: wgpu::BindGroup,
-    motion_ids: (u32, u32),
-    motion_origin: [f32; 2],
-    /// Whether the groups open around the next quad leave room for its own
-    /// filter on the ancestor chain (Issue #324); set per primitive.
-    filter_room: bool,
-    /// Physical px per logical px this frame: the grid a translated quad's
-    /// position is put on (`clip::on_grid`).
-    grid_scale: f32,
-    /// The scene's corner curve exponent, set each frame before upload.
-    corner_exponent: f32,
-    shrink_frames: u32,
 }
 
 impl QuadPipeline {
@@ -350,43 +325,6 @@ impl QuadPipeline {
                 ],
             })
         };
-        let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("nana-ui.scene.quad.uniforms"),
-            size: std::mem::size_of::<Uniforms>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let paint_capacity = INITIAL_INSTANCES;
-        let paint_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("nana-ui.scene.quad.paint"),
-            size: (paint_capacity * std::mem::size_of::<QuadPaintData>()) as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("nana-ui.scene.quad.bind_group"),
-            layout: &bind_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: uniforms.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: paint_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&url_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::Sampler(&url_sampler),
-                },
-            ],
-        });
-        let mut url_bind_groups = HashMap::new();
-        url_bind_groups.insert(None, bind_group);
         let motion_layout = super::motion::motion_bind_layout_with_policy(device, policy);
         let dummy_desc = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("nana-ui.scene.quad.motion.descriptors"),
@@ -432,13 +370,6 @@ impl QuadPipeline {
         let pipeline = try_cached_solid_pipeline(policy, device, &program, &layout, format, 1, 1)?;
         let pipeline_msaa =
             try_cached_solid_pipeline(policy, device, &program, &layout, format, 4, 2)?;
-        let instance_capacity = INITIAL_INSTANCES;
-        let instances = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("nana-ui.scene.quad.instances"),
-            size: (instance_capacity * std::mem::size_of::<SolidInstance>()) as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
         Ok(Self {
             material_device: super::material::MaterialDevice::shared(device, policy),
             material_waker: None,
@@ -449,29 +380,10 @@ impl QuadPipeline {
             pipeline,
             pipeline_msaa,
             bind_layout,
-            uniforms,
-            uploaded_uniforms: None,
-            paint_buffer: ManagedBuffer::new(paint_buffer),
-            paint_capacity,
             url_view,
             url_sampler,
-            url_bind_groups,
-            instances: ManagedBuffer::new(instances),
-            instance_capacity,
-            pending: Vec::new(),
-            uploaded: Vec::new(),
-            pending_paint: Vec::new(),
-            uploaded_paint: Vec::new(),
-            pending_urls: Vec::new(),
-            pending_materials: Vec::new(),
             motion_layout,
             motion_dummy,
-            motion_ids: (0, 0),
-            motion_origin: [0.0, 0.0],
-            filter_room: true,
-            grid_scale: 1.0,
-            corner_exponent: 2.0,
-            shrink_frames: 0,
         })
     }
 
@@ -569,21 +481,50 @@ impl QuadPipeline {
             .all(|program| program == 0 || self.material_device.admit(program))
     }
 
-    /// The scene's corner curve exponent, for the corners and clips of the
-    /// quads pushed this frame.
-    pub(super) fn set_corner_exponent(&mut self, exponent: f32) {
-        self.corner_exponent = exponent;
-    }
-
-    pub(super) fn begin_frame(&mut self, scale: f32) {
-        self.grid_scale = scale;
-        self.pending.clear();
-        self.pending_paint.clear();
-        self.pending_urls.clear();
-        self.pending_materials.clear();
-        self.motion_ids = (0, 0);
-        self.motion_origin = [0.0, 0.0];
-        self.filter_room = true;
+    pub(super) fn new_target(&self, device: &wgpu::Device) -> QuadPipelineTarget {
+        let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("nana.target.quad.uniforms"),
+            size: std::mem::size_of::<Uniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let paint_buffer = ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("nana.target.quad.paint"),
+            size: (INITIAL_INSTANCES * std::mem::size_of::<QuadPaintData>()) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }));
+        let instances = ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("nana.target.quad.instances"),
+            size: (INITIAL_INSTANCES * std::mem::size_of::<SolidInstance>()) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }));
+        let fallback_group =
+            self.create_url_bind_group_with(device, &uniforms, &paint_buffer, &self.url_view);
+        let mut url_bind_groups = HashMap::new();
+        url_bind_groups.insert(None, fallback_group);
+        QuadPipelineTarget {
+            uniforms,
+            uploaded_uniforms: None,
+            paint_buffer,
+            paint_capacity: INITIAL_INSTANCES,
+            url_bind_groups,
+            instances,
+            instance_capacity: INITIAL_INSTANCES,
+            pending: Vec::new(),
+            uploaded: Vec::new(),
+            pending_paint: Vec::new(),
+            uploaded_paint: Vec::new(),
+            pending_urls: Vec::new(),
+            pending_materials: Vec::new(),
+            motion_ids: (0, 0),
+            motion_origin: [0.0, 0.0],
+            filter_room: true,
+            grid_scale: 1.0,
+            corner_exponent: 2.0,
+            shrink_frames: 0,
+        }
     }
 
     fn prune_materials(&mut self) {
@@ -616,55 +557,26 @@ impl QuadPipeline {
         &self.motion_layout
     }
 
-    /// GPU motion ids `(transform, opacity)` and the transform overlay pivot
-    /// for the primitives pushed next.
-    pub(super) fn set_motion(&mut self, ids: (u32, u32), origin: [f32; 2]) {
-        self.motion_ids = ids;
-        self.motion_origin = origin;
-    }
-
-    /// `filtering` groups composite a filter around the next quad. At
-    /// [`nana_ui_core::ColorFilter::MAX_CHAIN_DEPTH`] its own filter is one
-    /// layer too many and it draws unfiltered (Issue #324).
-    pub(super) fn set_filtering_groups(&mut self, filtering: usize) {
-        self.filter_room = filtering < nana_ui_core::ColorFilter::MAX_CHAIN_DEPTH;
-    }
-
-    pub(super) fn invalidate_image_bindings(&mut self) {
-        self.url_bind_groups.clear();
-    }
-
-    /// Drop target-local URL bindings after the shared cache publishes a new
-    /// image. Bind groups capture a texture view, so retaining them would keep
-    /// a target sampling the fallback or a previous resource generation.
-    pub(super) fn invalidate_target_image_bindings(target: &mut Option<QuadPipelineTarget>) {
-        if let Some(target) = target {
-            target.url_bind_groups.clear();
-        }
-    }
     /// Drop bindings to URL textures `url_cache` no longer retains, and prune
     /// dead material bindings after this frame's quads have bound any shared
     /// textures; run after the painter trims `url_cache`.
-    pub(super) fn finish_frame(&mut self, url_cache: &UrlTextureCache) {
-        self.url_bind_groups.retain(|key, _| {
+    pub(super) fn finish_frame(
+        &mut self,
+        target: &mut QuadPipelineTarget,
+        url_cache: &UrlTextureCache,
+    ) {
+        target.url_bind_groups.retain(|key, _| {
             key.as_deref()
                 .is_none_or(|key| url_cache.contains_retained(key))
         });
         self.prune_materials();
     }
 
-    pub(super) fn pending_len(&self) -> u32 {
-        self.pending.len() as u32
-    }
-
-    pub(super) fn paint_buffer(&self) -> &wgpu::Buffer {
-        &self.paint_buffer
-    }
-
     #[allow(clippy::too_many_arguments)]
     #[cfg_attr(not(test), allow(dead_code))]
     pub(super) fn push(
         &mut self,
+        target: &mut QuadPipelineTarget,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         url_cache: &mut UrlTextureCache,
@@ -682,6 +594,7 @@ impl QuadPipeline {
         surface: &QuadSurfacePaint,
     ) -> Option<u32> {
         self.push_with_work(
+            target,
             device,
             queue,
             url_cache,
@@ -704,6 +617,7 @@ impl QuadPipeline {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn push_with_work(
         &mut self,
+        target: &mut QuadPipelineTarget,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         url_cache: &mut UrlTextureCache,
@@ -722,7 +636,7 @@ impl QuadPipeline {
         work: Option<&crate::gpu_work::GpuWorkSink>,
     ) -> Option<u32> {
         let unfiltered;
-        let surface = if !self.filter_room && surface.filter.is_some_and(|f| !f.is_identity()) {
+        let surface = if !target.filter_room && surface.filter.is_some_and(|f| !f.is_identity()) {
             unfiltered = QuadSurfacePaint {
                 filter: None,
                 ..surface.clone()
@@ -736,7 +650,7 @@ impl QuadPipeline {
             // natural size to get one (Issue #263): start the image where
             // the box sits, though nothing is drawn.
             if let Some(BackgroundImage::Url { url, sampling, .. }) = surface.content_image.as_ref()
-                && (self.motion_ids.0 != 0
+                && (target.motion_ids.0 != 0
                     || super::clip::transformed_aabb_projective(bounds, affine, persp)
                         .touches(clip))
             {
@@ -744,19 +658,19 @@ impl QuadPipeline {
             }
             return None;
         }
-        if self.motion_ids.0 == 0 {
+        if target.motion_ids.0 == 0 {
             let world = super::clip::transformed_aabb_projective(bounds, affine, persp);
             let _ = world.intersection(clip)?;
         } else {
             let _ = clip;
         }
         let translation =
-            super::clip::is_translation_projective(affine, persp) && self.motion_ids.0 == 0;
+            super::clip::is_translation_projective(affine, persp) && target.motion_ids.0 == 0;
         let (position, instance_affine, instance_persp, pixel_snap) = if translation {
             (
                 [
-                    super::clip::on_grid(bounds.x, affine[4], self.grid_scale),
-                    super::clip::on_grid(bounds.y, affine[5], self.grid_scale),
+                    super::clip::on_grid(bounds.x, affine[4], target.grid_scale),
+                    super::clip::on_grid(bounds.y, affine[5], target.grid_scale),
                 ],
                 super::clip::IDENTITY_AFFINE,
                 [0.0, 0.0],
@@ -766,8 +680,8 @@ impl QuadPipeline {
             ([bounds.x, bounds.y], affine, persp, 0u32)
         };
         let snap =
-            super::motion::pack_motion_snap(pixel_snap, self.motion_ids.0, self.motion_ids.1);
-        let index = self.pending.len() as u32;
+            super::motion::pack_motion_snap(pixel_snap, target.motion_ids.0, target.motion_ids.1);
+        let index = target.pending.len() as u32;
         let shadows = collect_shadows(shadow, surface);
         let split_shadows = shadows.len() > 1 || shadows.iter().any(|layer| layer.inset);
         let outsets = shadows
@@ -789,7 +703,7 @@ impl QuadPipeline {
             resolved_instance_border(border_color, border_width, surface);
         let zero_widths = [0.0f32; 4];
         let zero_colors = [None; 4];
-        let image_scale = image_device_scale(affine, self.grid_scale);
+        let image_scale = image_device_scale(affine, target.grid_scale);
         let mut layers = surface_paint_layers(surface);
         let content_layer = if surface.content_image.is_some() {
             layers.pop()
@@ -814,16 +728,16 @@ impl QuadPipeline {
                     [bounds.width, bounds.height],
                     affine,
                     persp,
-                    self.grid_scale,
+                    target.grid_scale,
                 );
             }
         }
         if split_shadows {
             for layer in outsets.iter().rev() {
                 push_solid_instance(
-                    &mut self.pending,
-                    &mut self.pending_paint,
-                    &mut self.pending_urls,
+                    &mut target.pending,
+                    &mut target.pending_paint,
+                    &mut target.pending_urls,
                     shadow_only_paint(false),
                     None,
                     position,
@@ -835,14 +749,14 @@ impl QuadPipeline {
                     Some(*layer),
                     opacity,
                     snap,
-                    self.motion_origin,
+                    target.motion_origin,
                     instance_affine,
                     instance_persp,
                     fragment_clip,
                 );
             }
         }
-        let material_index = self.pending.len();
+        let material_index = target.pending.len();
         if layers.is_empty() {
             let paint = pack_shared(
                 device,
@@ -857,9 +771,9 @@ impl QuadPipeline {
             );
             let mask_url = packed_mask_url(&paint, surface);
             push_solid_instance(
-                &mut self.pending,
-                &mut self.pending_paint,
-                &mut self.pending_urls,
+                &mut target.pending,
+                &mut target.pending_paint,
+                &mut target.pending_urls,
                 paint,
                 mask_url,
                 position,
@@ -871,7 +785,7 @@ impl QuadPipeline {
                 fill_shadow,
                 opacity,
                 snap,
-                self.motion_origin,
+                target.motion_origin,
                 instance_affine,
                 instance_persp,
                 fragment_clip,
@@ -891,9 +805,9 @@ impl QuadPipeline {
                 );
                 let first = layer_index == 0;
                 push_solid_instance(
-                    &mut self.pending,
-                    &mut self.pending_paint,
-                    &mut self.pending_urls,
+                    &mut target.pending,
+                    &mut target.pending_paint,
+                    &mut target.pending_urls,
                     paint,
                     paint_url,
                     position,
@@ -905,7 +819,7 @@ impl QuadPipeline {
                     if first { fill_shadow } else { None },
                     opacity,
                     snap,
-                    self.motion_origin,
+                    target.motion_origin,
                     instance_affine,
                     instance_persp,
                     fragment_clip,
@@ -939,9 +853,10 @@ impl QuadPipeline {
             }
             self.prepare_material_pipeline(device, first, second, masked);
         }
-        self.pending_materials
-            .resize(self.pending.len(), (0, 0, false));
-        if let Some(slot) = self.pending_materials.get_mut(material_index) {
+        target
+            .pending_materials
+            .resize(target.pending.len(), (0, 0, false));
+        if let Some(slot) = target.pending_materials.get_mut(material_index) {
             *slot = pair;
         }
         if let Some((paint_url, tiles, premultiplied)) = border_tiles.as_ref() {
@@ -952,9 +867,9 @@ impl QuadPipeline {
                     ..Default::default()
                 };
                 push_solid_instance(
-                    &mut self.pending,
-                    &mut self.pending_paint,
-                    &mut self.pending_urls,
+                    &mut target.pending,
+                    &mut target.pending_paint,
+                    &mut target.pending_urls,
                     paint,
                     Some(paint_url.clone()),
                     [position[0] + tile.dest_x, position[1] + tile.dest_y],
@@ -966,7 +881,7 @@ impl QuadPipeline {
                     None,
                     opacity,
                     snap,
-                    self.motion_origin,
+                    target.motion_origin,
                     instance_affine,
                     instance_persp,
                     fragment_clip,
@@ -986,9 +901,9 @@ impl QuadPipeline {
                 work,
             );
             push_solid_instance(
-                &mut self.pending,
-                &mut self.pending_paint,
-                &mut self.pending_urls,
+                &mut target.pending,
+                &mut target.pending_paint,
+                &mut target.pending_urls,
                 paint,
                 paint_url,
                 position,
@@ -1000,7 +915,7 @@ impl QuadPipeline {
                 None,
                 opacity,
                 snap,
-                self.motion_origin,
+                target.motion_origin,
                 instance_affine,
                 instance_persp,
                 fragment_clip,
@@ -1009,9 +924,9 @@ impl QuadPipeline {
         if split_shadows {
             for layer in insets.iter().rev() {
                 push_solid_instance(
-                    &mut self.pending,
-                    &mut self.pending_paint,
-                    &mut self.pending_urls,
+                    &mut target.pending,
+                    &mut target.pending_paint,
+                    &mut target.pending_urls,
                     shadow_only_paint(true),
                     None,
                     position,
@@ -1023,7 +938,7 @@ impl QuadPipeline {
                     Some(*layer),
                     opacity,
                     snap,
-                    self.motion_origin,
+                    target.motion_origin,
                     instance_affine,
                     instance_persp,
                     fragment_clip,
@@ -1032,14 +947,14 @@ impl QuadPipeline {
         }
         if masked {
             for (i, sample) in surface.presentation_masks.iter().take(2).enumerate() {
-                for data in &mut self.pending_paint[material_index..] {
+                for data in &mut target.pending_paint[material_index..] {
                     let params = [
                         sample.progress,
                         f32::from(sample.mask.space == nana_ui_core::PresentationMaskSpace::Target),
                         0.,
                         0.,
                     ];
-                    let target = [
+                    let target_rect = [
                         sample.target.x,
                         sample.target.y,
                         sample.target.width,
@@ -1047,26 +962,29 @@ impl QuadPipeline {
                     ];
                     if i == 0 {
                         data.presentation0 = params;
-                        data.target0 = target;
+                        data.target0 = target_rect;
                     } else {
                         data.presentation1 = params;
-                        data.target1 = target;
+                        data.target1 = target_rect;
                     }
                 }
             }
         }
         if masked {
-            self.pending_materials
-                .resize(self.pending.len(), (0, 0, false));
-            self.pending_materials[material_index..].fill(pair);
+            target
+                .pending_materials
+                .resize(target.pending.len(), (0, 0, false));
+            target.pending_materials[material_index..].fill(pair);
         }
-        self.pending_materials
-            .resize(self.pending.len(), (0, 0, false));
+        target
+            .pending_materials
+            .resize(target.pending.len(), (0, 0, false));
         Some(index)
     }
 
     pub(super) fn upload(
-        &mut self,
+        &self,
+        target: &mut QuadPipelineTarget,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         url_cache: &UrlTextureCache,
@@ -1077,179 +995,106 @@ impl QuadPipeline {
         let uniforms = Uniforms {
             transform: orthographic(physical_size[0], physical_size[1]),
             scale: scale_factor,
-            corner_exponent: self.corner_exponent,
+            corner_exponent: target.corner_exponent,
             _padding: [0.0; 2],
         };
         // A write has a fixed cost far above these bytes; the size rarely changes.
-        if self.uploaded_uniforms != Some(uniforms) {
+        if target.uploaded_uniforms != Some(uniforms) {
             let uniform_bytes = bytemuck::bytes_of(&uniforms);
             if let Some(work) = gpu_work {
-                work.write_buffer(queue, &self.uniforms, 0, uniform_bytes);
+                work.write_buffer(queue, &target.uniforms, 0, uniform_bytes);
             } else {
-                queue.write_buffer(&self.uniforms, 0, uniform_bytes);
+                queue.write_buffer(&target.uniforms, 0, uniform_bytes);
             }
-            self.uploaded_uniforms = Some(uniforms);
+            target.uploaded_uniforms = Some(uniforms);
         }
-        if self.pending.is_empty() {
-            if self.instance_capacity > INITIAL_INSTANCES || self.paint_capacity > INITIAL_INSTANCES
+        if target.pending.is_empty() {
+            if target.instance_capacity > INITIAL_INSTANCES
+                || target.paint_capacity > INITIAL_INSTANCES
             {
-                self.shrink_frames = self.shrink_frames.saturating_add(1);
-                if self.shrink_frames >= SHRINK_IDLE_FRAMES {
-                    self.resize_buffers(device, INITIAL_INSTANCES, INITIAL_INSTANCES, gpu_work);
-                    self.rebuild_url_bind_groups(device, url_cache);
-                    self.shrink_frames = 0;
+                target.shrink_frames = target.shrink_frames.saturating_add(1);
+                if target.shrink_frames >= SHRINK_IDLE_FRAMES {
+                    target.resize_buffers(device, INITIAL_INSTANCES, INITIAL_INSTANCES, gpu_work);
+                    self.rebuild_url_bind_groups(target, device, url_cache);
+                    target.shrink_frames = 0;
                 }
             } else {
-                self.shrink_frames = 0;
+                target.shrink_frames = 0;
             }
             return;
         }
-        let fit_instances = self
+        let fit_instances = target
             .pending
             .len()
             .max(INITIAL_INSTANCES)
             .next_power_of_two();
-        let fit_paint = self
+        let fit_paint = target
             .pending_paint
             .len()
             .max(INITIAL_INSTANCES)
             .next_power_of_two();
         let mut shrink_now = false;
-        if fit_instances * 4 <= self.instance_capacity || fit_paint * 4 <= self.paint_capacity {
-            self.shrink_frames = self.shrink_frames.saturating_add(1);
-            if self.shrink_frames >= SHRINK_IDLE_FRAMES {
+        if fit_instances * 4 <= target.instance_capacity || fit_paint * 4 <= target.paint_capacity {
+            target.shrink_frames = target.shrink_frames.saturating_add(1);
+            if target.shrink_frames >= SHRINK_IDLE_FRAMES {
                 shrink_now = true;
-                self.shrink_frames = 0;
+                target.shrink_frames = 0;
             }
         } else {
-            self.shrink_frames = 0;
+            target.shrink_frames = 0;
         }
         if shrink_now {
-            self.resize_buffers(device, fit_instances, fit_paint, gpu_work);
+            target.resize_buffers(device, fit_instances, fit_paint, gpu_work);
         } else {
-            if self.pending.len() > self.instance_capacity {
-                self.replace_instance_buffer(device, fit_instances, gpu_work);
+            if target.pending.len() > target.instance_capacity {
+                target.replace_instance_buffer(device, fit_instances, gpu_work);
             }
-            if self.pending_paint.len() > self.paint_capacity {
-                self.replace_paint_buffer(device, fit_paint, gpu_work);
+            if target.pending_paint.len() > target.paint_capacity {
+                target.replace_paint_buffer(device, fit_paint, gpu_work);
             }
         }
         super::buffer_upload::upload_changed_with_work(
             queue,
-            &self.instances,
-            bytemuck::cast_slice(&self.uploaded),
-            bytemuck::cast_slice(&self.pending),
+            &target.instances,
+            bytemuck::cast_slice(&target.uploaded),
+            bytemuck::cast_slice(&target.pending),
             gpu_work,
         );
         super::buffer_upload::upload_changed_with_work(
             queue,
-            &self.paint_buffer,
-            bytemuck::cast_slice(&self.uploaded_paint),
-            bytemuck::cast_slice(&self.pending_paint),
+            &target.paint_buffer,
+            bytemuck::cast_slice(&target.uploaded_paint),
+            bytemuck::cast_slice(&target.pending_paint),
             gpu_work,
         );
-        self.uploaded.clone_from(&self.pending);
-        self.uploaded_paint.clone_from(&self.pending_paint);
-        self.rebuild_url_bind_groups(device, url_cache);
+        target.uploaded.clone_from(&target.pending);
+        target.uploaded_paint.clone_from(&target.pending_paint);
+        self.rebuild_url_bind_groups(target, device, url_cache);
         if let Some(work) = gpu_work {
             work.record_batch_rebuild();
         }
     }
 
-    fn replace_instance_buffer(
-        &mut self,
+    fn rebuild_url_bind_groups(
+        &self,
+        target: &mut QuadPipelineTarget,
         device: &wgpu::Device,
-        capacity: usize,
-        gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
+        url_cache: &UrlTextureCache,
     ) {
-        self.uploaded.clear();
-        self.instance_capacity = capacity;
-        let size = (self.instance_capacity * std::mem::size_of::<SolidInstance>()) as u64;
-        let usage = wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST;
-        if let Some(work) = gpu_work {
-            work.replace_buffer(
-                device,
-                &mut self.instances,
-                size,
-                usage,
-                "nana-ui.scene.quad.instances",
-            );
-            work.record_realloc();
-        } else {
-            self.instances = ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("nana-ui.scene.quad.instances"),
-                size,
-                usage,
-                mapped_at_creation: false,
-            }));
-        }
-    }
-
-    fn replace_paint_buffer(
-        &mut self,
-        device: &wgpu::Device,
-        capacity: usize,
-        gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
-    ) {
-        self.uploaded_paint.clear();
-        self.url_bind_groups.clear();
-        self.paint_capacity = capacity;
-        let size = (self.paint_capacity * std::mem::size_of::<QuadPaintData>()) as u64;
-        let usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
-        if let Some(work) = gpu_work {
-            work.replace_buffer(
-                device,
-                &mut self.paint_buffer,
-                size,
-                usage,
-                "nana-ui.scene.quad.paint",
-            );
-            work.record_realloc();
-        } else {
-            self.paint_buffer = ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("nana-ui.scene.quad.paint"),
-                size,
-                usage,
-                mapped_at_creation: false,
-            }));
-        }
-    }
-
-    fn resize_buffers(
-        &mut self,
-        device: &wgpu::Device,
-        instance_capacity: usize,
-        paint_capacity: usize,
-        gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
-    ) {
-        if self.instance_capacity != instance_capacity {
-            self.replace_instance_buffer(device, instance_capacity, gpu_work);
-            self.uploaded.shrink_to(instance_capacity);
-            self.pending.shrink_to(instance_capacity);
-            self.pending_urls.shrink_to(instance_capacity);
-            self.pending_materials.shrink_to(instance_capacity);
-        }
-        if self.paint_capacity != paint_capacity {
-            self.replace_paint_buffer(device, paint_capacity, gpu_work);
-            self.uploaded_paint.shrink_to(paint_capacity);
-            self.pending_paint.shrink_to(paint_capacity);
-        }
-    }
-
-    fn rebuild_url_bind_groups(&mut self, device: &wgpu::Device, url_cache: &UrlTextureCache) {
-        let mut unique: HashSet<_> = self.pending_urls.iter().cloned().collect();
+        let mut unique: HashSet<_> = target.pending_urls.iter().cloned().collect();
         unique.insert(None);
         for url in unique {
-            if self.url_bind_groups.contains_key(&url) {
+            if target.url_bind_groups.contains_key(&url) {
                 continue;
             }
-            let bind_group = self.create_url_bind_group(device, url_cache, url.as_deref());
-            self.url_bind_groups.insert(url, bind_group);
+            let bind_group = self.create_url_bind_group(target, device, url_cache, url.as_deref());
+            target.url_bind_groups.insert(url, bind_group);
         }
     }
 
     fn create_url_bind_group(
         &self,
+        target: &QuadPipelineTarget,
         device: &wgpu::Device,
         url_cache: &UrlTextureCache,
         url: Option<&str>,
@@ -1259,17 +1104,27 @@ impl QuadPipeline {
             .and_then(|cached| cached.as_ref())
             .map(|cached| &cached.view)
             .unwrap_or(&self.url_view);
+        self.create_url_bind_group_with(device, &target.uniforms, &target.paint_buffer, url_view)
+    }
+
+    fn create_url_bind_group_with(
+        &self,
+        device: &wgpu::Device,
+        uniforms: &wgpu::Buffer,
+        paint_buffer: &wgpu::Buffer,
+        url_view: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("nana-ui.scene.quad.bind_group"),
             layout: &self.bind_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: self.uniforms.as_entire_binding(),
+                    resource: uniforms.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: self.paint_buffer.as_entire_binding(),
+                    resource: paint_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
@@ -1285,6 +1140,7 @@ impl QuadPipeline {
 
     pub(super) fn draw(
         &self,
+        target: &QuadPipelineTarget,
         pass: &mut wgpu::RenderPass<'_>,
         range: std::ops::Range<u32>,
         scissor: PhysicalRect,
@@ -1300,15 +1156,15 @@ impl QuadPipeline {
         } else {
             &self.pipeline
         });
-        pass.set_vertex_buffer(0, self.instances.slice(..));
+        pass.set_vertex_buffer(0, target.instances.slice(..));
         pass.set_bind_group(1, motion, &[]);
         pass.set_scissor_rect(scissor.x, scissor.y, scissor.width, scissor.height);
         let start = range.start as usize;
         let end = range.end as usize;
         let mut index = start;
         while index < end {
-            let url = self.pending_urls.get(index).cloned().unwrap_or(None);
-            let material = self
+            let url = target.pending_urls.get(index).cloned().unwrap_or(None);
+            let material = target
                 .pending_materials
                 .get(index)
                 .copied()
@@ -1316,8 +1172,8 @@ impl QuadPipeline {
             let batch_start = index;
             index += 1;
             while index < end
-                && self.pending_urls.get(index).cloned().unwrap_or(None) == url
-                && self
+                && target.pending_urls.get(index).cloned().unwrap_or(None) == url
+                && target
                     .pending_materials
                     .get(index)
                     .copied()
@@ -1326,10 +1182,10 @@ impl QuadPipeline {
             {
                 index += 1;
             }
-            let bind_group = self
+            let bind_group = target
                 .url_bind_groups
                 .get(&url)
-                .or_else(|| self.url_bind_groups.get(&None))
+                .or_else(|| target.url_bind_groups.get(&None))
                 .expect("quad url bind groups must be rebuilt in upload");
             let bg = self
                 .material_refs
@@ -1356,8 +1212,8 @@ impl QuadPipeline {
                 self.admitted(key.0, key.1),
             ) {
                 // The batch's area in device pixels, at most its scissor.
-                let scale = f64::from(self.grid_scale);
-                let area: f64 = self.pending[batch_start..index]
+                let scale = f64::from(target.grid_scale);
+                let area: f64 = target.pending[batch_start..index]
                     .iter()
                     .map(|q| f64::from(q.size[0]) * f64::from(q.size[1]) * scale * scale)
                     .sum();
@@ -2376,26 +2232,41 @@ fn quad_paint_test_device() -> (wgpu::Device, wgpu::Queue) {
 #[test]
 fn stable_frames_reuse_bind_groups_and_storage_growth_rebinds() {
     let (device, queue) = quad_paint_test_device();
-    let mut pipeline = QuadPipeline::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+    let pipeline = QuadPipeline::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+    let mut target = pipeline.new_target(&device);
     let url_cache = UrlTextureCache::default();
-    let initial = pipeline.url_bind_groups.get(&None).unwrap().clone();
+    let initial = target.url_bind_groups.get(&None).unwrap().clone();
     for _ in 0..3 {
-        pipeline.begin_frame(1.0);
-        pipeline.pending.push(SolidInstance::zeroed());
-        pipeline.pending_paint.push(QuadPaintData::zeroed());
-        pipeline.pending_urls.push(None);
-        pipeline.upload(&device, &queue, &url_cache, [64, 64], 1.0, None);
-        assert_eq!(pipeline.url_bind_groups.get(&None), Some(&initial));
+        target.begin_frame(1.0);
+        target.pending.push(SolidInstance::zeroed());
+        target.pending_paint.push(QuadPaintData::zeroed());
+        target.pending_urls.push(None);
+        pipeline.upload(
+            &mut target,
+            &device,
+            &queue,
+            &url_cache,
+            [64, 64],
+            1.0,
+            None,
+        );
+        assert_eq!(target.url_bind_groups.get(&None), Some(&initial));
     }
-    pipeline.begin_frame(1.0);
-    let count = pipeline.paint_capacity + 1;
-    pipeline.pending.resize(count, SolidInstance::zeroed());
-    pipeline
-        .pending_paint
-        .resize(count, QuadPaintData::zeroed());
-    pipeline.pending_urls.resize(count, None);
-    pipeline.upload(&device, &queue, &url_cache, [64, 64], 1.0, None);
-    assert_ne!(pipeline.url_bind_groups.get(&None), Some(&initial));
+    target.begin_frame(1.0);
+    let count = target.paint_capacity + 1;
+    target.pending.resize(count, SolidInstance::zeroed());
+    target.pending_paint.resize(count, QuadPaintData::zeroed());
+    target.pending_urls.resize(count, None);
+    pipeline.upload(
+        &mut target,
+        &device,
+        &queue,
+        &url_cache,
+        [64, 64],
+        1.0,
+        None,
+    );
+    assert_ne!(target.url_bind_groups.get(&None), Some(&initial));
 }
 
 #[cfg(test)]
@@ -2803,59 +2674,143 @@ pub(super) struct QuadPipelineTarget {
     uploaded_paint: Vec<QuadPaintData>,
     pending_urls: Vec<Option<String>>,
     pending_materials: Vec<(u64, u64, bool)>,
+    motion_ids: (u32, u32),
+    motion_origin: [f32; 2],
+    /// Whether the groups open around the next quad leave room for its own
+    /// filter on the ancestor chain (Issue #324); set per primitive.
+    filter_room: bool,
+    /// Physical px per logical px this frame: the grid a translated quad's
+    /// position is put on (`clip::on_grid`).
+    grid_scale: f32,
+    /// The scene's corner curve exponent, set each frame before upload.
+    corner_exponent: f32,
     shrink_frames: u32,
 }
 
-impl QuadPipeline {
-    pub(super) fn swap_target(
+impl QuadPipelineTarget {
+    /// The scene's corner curve exponent, for the corners and clips of the
+    /// quads pushed this frame.
+    pub(super) fn set_corner_exponent(&mut self, exponent: f32) {
+        self.corner_exponent = exponent;
+    }
+
+    pub(super) fn begin_frame(&mut self, scale: f32) {
+        self.grid_scale = scale;
+        self.pending.clear();
+        self.pending_paint.clear();
+        self.pending_urls.clear();
+        self.pending_materials.clear();
+        self.motion_ids = (0, 0);
+        self.motion_origin = [0.0, 0.0];
+        self.filter_room = true;
+    }
+
+    /// GPU motion ids `(transform, opacity)` and the transform overlay pivot
+    /// for the primitives pushed next.
+    pub(super) fn set_motion(&mut self, ids: (u32, u32), origin: [f32; 2]) {
+        self.motion_ids = ids;
+        self.motion_origin = origin;
+    }
+
+    /// `filtering` groups composite a filter around the next quad. At
+    /// [`nana_ui_core::ColorFilter::MAX_CHAIN_DEPTH`] its own filter is one
+    /// layer too many and it draws unfiltered (Issue #324).
+    pub(super) fn set_filtering_groups(&mut self, filtering: usize) {
+        self.filter_room = filtering < nana_ui_core::ColorFilter::MAX_CHAIN_DEPTH;
+    }
+
+    /// Drop target-local URL bindings after the shared cache publishes a new
+    /// image. Bind groups capture a texture view, so retaining them would keep
+    /// a target sampling the fallback or a previous resource generation.
+    pub(super) fn invalidate_image_bindings(&mut self) {
+        self.url_bind_groups.clear();
+    }
+
+    pub(super) fn pending_len(&self) -> u32 {
+        self.pending.len() as u32
+    }
+
+    pub(super) fn paint_buffer(&self) -> &wgpu::Buffer {
+        &self.paint_buffer
+    }
+
+    fn replace_instance_buffer(
         &mut self,
-        target: &mut Option<QuadPipelineTarget>,
         device: &wgpu::Device,
+        capacity: usize,
+        gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
-        let target = target.get_or_insert_with(|| QuadPipelineTarget {
-            uniforms: device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("nana.target.quad.uniforms"),
-                size: std::mem::size_of::<Uniforms>() as u64,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        self.uploaded.clear();
+        self.instance_capacity = capacity;
+        let size = (self.instance_capacity * std::mem::size_of::<SolidInstance>()) as u64;
+        let usage = wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST;
+        if let Some(work) = gpu_work {
+            work.replace_buffer(
+                device,
+                &mut self.instances,
+                size,
+                usage,
+                "nana-ui.scene.quad.instances",
+            );
+            work.record_realloc();
+        } else {
+            self.instances = ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("nana-ui.scene.quad.instances"),
+                size,
+                usage,
                 mapped_at_creation: false,
-            }),
-            uploaded_uniforms: None,
-            paint_buffer: ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("nana.target.quad.paint"),
-                size: (INITIAL_INSTANCES * std::mem::size_of::<QuadPaintData>()) as u64,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            }));
+        }
+    }
+
+    fn replace_paint_buffer(
+        &mut self,
+        device: &wgpu::Device,
+        capacity: usize,
+        gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
+    ) {
+        self.uploaded_paint.clear();
+        self.url_bind_groups.clear();
+        self.paint_capacity = capacity;
+        let size = (self.paint_capacity * std::mem::size_of::<QuadPaintData>()) as u64;
+        let usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
+        if let Some(work) = gpu_work {
+            work.replace_buffer(
+                device,
+                &mut self.paint_buffer,
+                size,
+                usage,
+                "nana-ui.scene.quad.paint",
+            );
+            work.record_realloc();
+        } else {
+            self.paint_buffer = ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("nana-ui.scene.quad.paint"),
+                size,
+                usage,
                 mapped_at_creation: false,
-            })),
-            paint_capacity: INITIAL_INSTANCES,
-            instances: ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("nana.target.quad.instances"),
-                size: (INITIAL_INSTANCES * std::mem::size_of::<SolidInstance>()) as u64,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            })),
-            instance_capacity: INITIAL_INSTANCES,
-            url_bind_groups: HashMap::new(),
-            pending: Vec::new(),
-            uploaded: Vec::new(),
-            pending_paint: Vec::new(),
-            uploaded_paint: Vec::new(),
-            pending_urls: Vec::new(),
-            pending_materials: Vec::new(),
-            shrink_frames: 0,
-        });
-        std::mem::swap(&mut self.uniforms, &mut target.uniforms);
-        std::mem::swap(&mut self.uploaded_uniforms, &mut target.uploaded_uniforms);
-        std::mem::swap(&mut self.paint_buffer, &mut target.paint_buffer);
-        std::mem::swap(&mut self.paint_capacity, &mut target.paint_capacity);
-        std::mem::swap(&mut self.url_bind_groups, &mut target.url_bind_groups);
-        std::mem::swap(&mut self.instances, &mut target.instances);
-        std::mem::swap(&mut self.instance_capacity, &mut target.instance_capacity);
-        std::mem::swap(&mut self.pending, &mut target.pending);
-        std::mem::swap(&mut self.uploaded, &mut target.uploaded);
-        std::mem::swap(&mut self.pending_paint, &mut target.pending_paint);
-        std::mem::swap(&mut self.uploaded_paint, &mut target.uploaded_paint);
-        std::mem::swap(&mut self.pending_urls, &mut target.pending_urls);
-        std::mem::swap(&mut self.pending_materials, &mut target.pending_materials);
-        std::mem::swap(&mut self.shrink_frames, &mut target.shrink_frames);
+            }));
+        }
+    }
+
+    fn resize_buffers(
+        &mut self,
+        device: &wgpu::Device,
+        instance_capacity: usize,
+        paint_capacity: usize,
+        gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
+    ) {
+        if self.instance_capacity != instance_capacity {
+            self.replace_instance_buffer(device, instance_capacity, gpu_work);
+            self.uploaded.shrink_to(instance_capacity);
+            self.pending.shrink_to(instance_capacity);
+            self.pending_urls.shrink_to(instance_capacity);
+            self.pending_materials.shrink_to(instance_capacity);
+        }
+        if self.paint_capacity != paint_capacity {
+            self.replace_paint_buffer(device, paint_capacity, gpu_work);
+            self.uploaded_paint.shrink_to(paint_capacity);
+            self.pending_paint.shrink_to(paint_capacity);
+        }
     }
 }

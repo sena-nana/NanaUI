@@ -170,12 +170,11 @@ fn paint_with_parameters(
     let queue = nana_gpu::__framework::queue(&gpu);
     let (texture, view) = target(device, profile);
     let mut painter = SceneWgpuPainter::new_with_presentation(&gpu, profile);
-    painter.set_presentation_parameters(parameters);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("nana-ui presentation test encode"),
     });
     painter
-        .paint_encoder(
+        .paint_encoder_with_options(
             &scene,
             &mut encoder,
             &view,
@@ -188,11 +187,16 @@ fn paint_with_parameters(
                 clear_color,
                 clear: true,
             },
+            super::ScenePaintOptions {
+                presentation: parameters,
+                ..Default::default()
+            },
             None,
             None,
         )
         .expect("profile painter encode");
     let counts = painter
+        .core
         .last_dest_pass_counts
         .expect("profile paint records pass counts");
     let bytes_per_pixel = match target_format(profile) {
@@ -213,12 +217,11 @@ fn encode_paint(
 ) -> (wgpu::CommandEncoder, super::DestPassCounts) {
     let gpu = crate::test_gpu::context();
     let device = nana_gpu::__framework::device(&gpu);
-    painter.set_presentation_parameters(parameters);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("nana-ui presentation parameter update"),
     });
     painter
-        .paint_encoder(
+        .paint_encoder_with_options(
             scene,
             &mut encoder,
             view,
@@ -231,6 +234,10 @@ fn encode_paint(
                 clear_color: [0.0; 4],
                 clear: true,
             },
+            super::ScenePaintOptions {
+                presentation: parameters,
+                ..Default::default()
+            },
             None,
             None,
         )
@@ -238,6 +245,7 @@ fn encode_paint(
     (
         encoder,
         painter
+            .core
             .last_dest_pass_counts
             .expect("parameter update records pass counts"),
     )
@@ -769,7 +777,7 @@ fn headroom_update_reuses_scene_and_changes_only_presentation_blit() {
     assert_eq!(first_counts.blit, 1);
     assert_eq!(second_counts.color + second_counts.msaa, 0);
     assert_eq!(second_counts.blit, 1);
-    assert_eq!(painter.presentation_parameters().headroom(), 16.0);
+    assert_eq!(ScenePresentationParameters::default().headroom(), 16.0);
 }
 
 #[test]
@@ -943,7 +951,7 @@ fn plain_sdr_profile_keeps_srgb_fast_path_and_auto_promotes_extended_scene_and_h
             None,
         )
         .expect("paint hdr host texture");
-    let tex_counts = painter.last_dest_pass_counts.expect("pass counts");
+    let tex_counts = painter.core.last_dest_pass_counts.expect("pass counts");
     let tex_bytes = readback(device, queue, init_encoder, &texture, 4);
     let tex_pixel = rgba8(&tex_bytes);
     assert_eq!(

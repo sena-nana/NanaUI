@@ -27,7 +27,7 @@ fn small_nested_opacity_groups_limit_composite_fill_and_keep_pixels() {
         [200, 100],
         1.0,
     );
-    let counts = painter.last_dest_pass_counts.expect("a painted frame");
+    let counts = painter.core.last_dest_pass_counts.expect("a painted frame");
     assert!(counts.group >= 2, "nested groups: {counts:?}");
     assert!(
         counts.composite_pixels > 0 && counts.composite_pixels < 4_000,
@@ -127,7 +127,7 @@ fn spreading_filter_keeps_pixels_outside_source_bounds() {
         [64, 64],
         1.0,
     );
-    let counts = painter.last_dest_pass_counts.expect("a painted frame");
+    let counts = painter.core.last_dest_pass_counts.expect("a painted frame");
     assert_eq!(
         counts.composite_pixels,
         64 * 64,
@@ -277,7 +277,7 @@ fn paint_under_nested_rounded_clips(
         [96, 96],
         1.0,
     );
-    let counts = painter.last_dest_pass_counts.expect("a painted frame");
+    let counts = painter.core.last_dest_pass_counts.expect("a painted frame");
     (pixels, counts)
 }
 

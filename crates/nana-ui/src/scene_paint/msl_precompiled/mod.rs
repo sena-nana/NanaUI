@@ -936,17 +936,17 @@ pub(in crate::scene_paint) mod tests {
         let _t1 = crate::output::transfer::OutputTransfer::new(
             &gpu,
             nana_gpu::GpuTextureFormat::BGRA8_UNORM_SRGB,
-            false,
+            crate::output::transfer::TransferOp::Blit { source_srgb: false },
         );
         let _t2 = crate::output::transfer::OutputTransfer::new(
             &gpu,
             nana_gpu::GpuTextureFormat::BGRA8_UNORM,
-            true,
+            crate::output::transfer::TransferOp::Blit { source_srgb: true },
         );
         let _t3 = crate::output::transfer::OutputTransfer::new(
             &gpu,
             nana_gpu::GpuTextureFormat::BGRA8_UNORM,
-            false,
+            crate::output::transfer::TransferOp::Blit { source_srgb: false },
         );
         #[cfg(feature = "hosted")]
         crate::output::window_output::prewarm_for_msl_regen(&gpu);

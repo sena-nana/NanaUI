@@ -215,7 +215,7 @@ fn suspension_clears_only_consumer_then_resumes_same_resources_and_releases() {
     state.set_config(None);
     assert!(state.surface.is_none());
     assert!(state.transfer.is_none());
-    assert!(state.straight.is_empty());
+    assert!(state.straight_targets.is_empty());
     assert_eq!(state.frame_demand(false), crate::FrameDemand::OnDemand);
 }
 

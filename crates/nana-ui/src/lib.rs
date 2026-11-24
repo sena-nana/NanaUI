@@ -374,12 +374,12 @@ pub use scene_host::run_runtime_scene;
 #[cfg(feature = "gpu")]
 pub use scene_paint::{
     AlphaEncoding, BT709_TO_BT2020, ImageNaturalSize, MaterialPolicy, RenderTargetId,
-    ScenePaintError, ScenePaintViewport, ScenePainterResourceCounters, ScenePresentationColorSpace,
-    ScenePresentationParameters, ScenePresentationProfile, SceneWgpuPainter, SubpixelOrder,
-    TextGlyphCounters, commit_image_natural_sizes, hlg_decode, hlg_encode, hlg_eotf, hlg_oetf,
-    linear_sc_rgb_to_bt2020, pq_decode, pq_decode_nits, pq_encode, pq_encode_nits, pq_eotf,
-    pq_oetf, resolve_background_image_url, set_background_image_url_base, set_material_policy,
-    tone_map_headroom_rgb,
+    ScenePaintError, ScenePaintOptions, ScenePaintViewport, ScenePainterResourceCounters,
+    ScenePresentationColorSpace, ScenePresentationParameters, ScenePresentationProfile,
+    SceneWgpuPainter, SubpixelOrder, TextGlyphCounters, commit_image_natural_sizes, hlg_decode,
+    hlg_encode, hlg_eotf, hlg_oetf, linear_sc_rgb_to_bt2020, pq_decode, pq_decode_nits, pq_encode,
+    pq_encode_nits, pq_eotf, pq_oetf, resolve_background_image_url, set_background_image_url_base,
+    set_material_policy, tone_map_headroom_rgb,
 };
 pub use selection::{
     KeyedOrder, SelectionGesture, SelectionMode, SelectionModifiers, SelectionMove, SelectionOrder,
