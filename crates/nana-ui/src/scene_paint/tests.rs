@@ -354,7 +354,9 @@ fn text_shape_cache_hits_on_repaint_with_identical_pixels() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let mut painter = SceneWgpuPainter::for_test(format);
-    let scene = labeled_selected_button_scene();
+    // Use a label unique to this test so earlier tests in the binary cannot
+    // pre-warm the shared NativeTextEngine layout cache for the same key.
+    let scene = labeled_selected_button_scene_with_label("ShapeCacheProbe");
     let viewport = ScenePaintViewport {
         logical_size: [64.0, 64.0],
         physical_size: [64, 64],
@@ -5377,12 +5379,16 @@ fn affine_text_allocates_no_gpu_resources_across_repaints_with_identical_pixels(
 }
 
 fn labeled_selected_button_scene() -> UiScene {
+    labeled_selected_button_scene_with_label("Hi")
+}
+
+fn labeled_selected_button_scene_with_label(label: &str) -> UiScene {
     let mut context = AppContext::new();
     let document = DocumentId::new(1).unwrap();
     let button = context
         .create_component(
             document,
-            RuntimeButton::new("Hi")
+            RuntimeButton::new(label)
                 .kind(ButtonKind::Selected)
                 .layout(square_button_layout()),
         )
