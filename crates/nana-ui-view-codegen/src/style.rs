@@ -443,16 +443,11 @@ fn extract_keyframe_props(written: &WrittenLayout) -> Vec<(&'static str, Compile
                 let pc = layout
                     .paint_colors
                     .background
-                    .or_else(|| layout.background.map(PaintColor::srgb))
                     .unwrap_or(PaintColor::srgb([0.0, 0.0, 0.0, 0.0]));
                 out.push(("Background", CompiledKfValue::Color(pc)));
             }
             "paint_colors.color" | "color" if !saw_color => {
-                if let Some(pc) = layout
-                    .paint_colors
-                    .color
-                    .or_else(|| layout.color.map(PaintColor::srgb))
-                {
+                if let Some(pc) = layout.paint_colors.color {
                     saw_color = true;
                     out.push(("Color", CompiledKfValue::Color(pc)));
                 }

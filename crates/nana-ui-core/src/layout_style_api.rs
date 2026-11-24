@@ -63,31 +63,13 @@ macro_rules! set_val {
     };
 }
 
-/// Set a legacy RGBA paint field and keep its authoring-space companion in
-/// sync.  L3 builders traditionally wrote only the compatibility RGBA value;
-/// once CSS began retaining OKLCH/HSV/scRGB values, leaving the companion
-/// slot untouched would let an older authoring value win at paint time.
+/// Write a `PaintColor` directly into its canonical `paint_colors` slot.
 macro_rules! set_color {
     ($($name:ident => $slot:ident),+ $(,)?) => {
         $(
             #[inline]
-            pub fn $name(mut self, value: [f32; 4]) -> Self {
-                self.$name = Some(value);
-                self.paint_colors.$slot =
-                    Some(crate::style_model::PaintColor::Srgb { rgba: value });
-                self
-            }
-        )+
-    };
-    (@in $group:ident { $($name:ident => $field:ident => $slot:ident),+ $(,)? }) => {
-        $(
-            #[inline]
-            pub fn $name(mut self, value: [f32; 4]) -> Self {
-                let rgba = Some(value);
-                if self.$group.$field != rgba {
-                    self.$group.$field = rgba;
-                }
-                let pc = Some(crate::style_model::PaintColor::Srgb { rgba: value });
+            pub fn $name(mut self, value: impl Into<crate::style_model::PaintColor>) -> Self {
+                let pc = Some(value.into());
                 if self.paint_colors.$slot != pc {
                     self.paint_colors.$slot = pc;
                 }
@@ -230,19 +212,14 @@ impl LayoutStyle {
         color => color,
         background => background,
         border_color => border,
+        border_top_color => border_top,
+        border_right_color => border_right,
+        border_bottom_color => border_bottom,
+        border_left_color => border_left,
+        outline_color => outline,
+        selection_background => selection_background,
+        selection_color => selection_color,
     }
-
-    set_color!(@in text_ext {
-        selection_background => selection_background => selection_background,
-        selection_color => selection_color => selection_color,
-    });
-
-    set_color!(@in border_sides {
-        border_top_color => top_color => border_top,
-        border_right_color => right_color => border_right,
-        border_bottom_color => bottom_color => border_bottom,
-        border_left_color => left_color => border_left,
-    });
 
     set_val! {
         flex_reverse: bool,
@@ -557,9 +534,12 @@ mod tests {
         // The uniform setter intentionally leaves another side's explicit
         // authoring value intact; side precedence remains compatible.
         assert_eq!(style.paint_colors.border_right, Some(stale));
-        assert_eq!(style.color, Some(color));
-        assert_eq!(style.border_color, Some(border));
-        assert_eq!(style.border_sides.top_color, Some(border_top));
+        assert_eq!(style.color_srgb(), Some(color));
+        assert_eq!(style.resolved_border_color(), Some(border));
+        assert_eq!(
+            style.resolved_border_side_colors()[0],
+            Some(PaintColor::srgb(border_top))
+        );
     }
 
     #[test]

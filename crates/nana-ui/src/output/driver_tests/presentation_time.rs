@@ -61,10 +61,7 @@ fn layer_document(animation: impl FnOnce(StableNodeId) -> AnimationSpec) -> Runt
 }
 
 fn red_layer() -> LayoutStyle {
-    LayoutStyle {
-        background: Some([1.0, 0.0, 0.0, 1.0]),
-        ..LayoutStyle::default()
-    }
+    LayoutStyle::default().background([1.0, 0.0, 0.0, 1.0])
 }
 
 /// A free board filling the viewport with one layer styled `layer_style` at

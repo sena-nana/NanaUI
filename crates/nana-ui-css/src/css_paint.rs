@@ -30,10 +30,8 @@ pub fn apply_css_paint_property(style: &mut nana_ui_core::LayoutStyle, name: &st
         "background-color" | "fill" => {
             let v = val.trim();
             if v.eq_ignore_ascii_case("none") || v.eq_ignore_ascii_case("transparent") {
-                style.background = None;
                 style.paint_colors.background = None;
-            } else if let Some((legacy, pc)) = crate::css_map::resolve_css_color_pair(val) {
-                style.background = legacy;
+            } else if let Some(pc) = crate::css_map::resolve_css_paint_color_core(val) {
                 style.paint_colors.background = Some(pc);
             }
         }
@@ -100,8 +98,7 @@ pub fn apply_css_paint_property(style: &mut nana_ui_core::LayoutStyle, name: &st
             }
         }
         "outline-color" => {
-            if let Some((legacy, pc)) = crate::css_map::resolve_css_color_pair(val) {
-                style.paint.outline.color = legacy;
+            if let Some(pc) = crate::css_map::resolve_css_paint_color_core(val) {
                 style.paint_colors.outline = Some(pc);
             }
         }
@@ -395,7 +392,6 @@ fn apply_background_shorthand(style: &mut nana_ui_core::LayoutStyle, val: &str) 
     reset_background_placement_lists(style);
     let trimmed = val.trim();
     if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
-        style.background = None;
         style.paint_colors.background = None;
         clear_background_images(style);
         return;
@@ -404,15 +400,11 @@ fn apply_background_shorthand(style: &mut nana_ui_core::LayoutStyle, val: &str) 
     if parts.is_empty() {
         return;
     }
-    let mut color = None;
     let mut paint_color = None;
     let mut layers = Vec::new();
     for (index, part) in parts.iter().enumerate() {
         let last = index + 1 == parts.len();
         let parsed = parse_background_layer(part, last);
-        if let Some(c) = parsed.color {
-            color = Some(c);
-        }
         if let Some(c) = parsed.paint_color {
             paint_color = Some(c);
         }
@@ -421,18 +413,12 @@ fn apply_background_shorthand(style: &mut nana_ui_core::LayoutStyle, val: &str) 
         }
     }
     if let Some(pc) = paint_color {
-        let core = pc.to_core();
-        style.background = (!core.is_theme_dynamic()).then(|| core.to_srgb());
-        style.paint_colors.background = Some(core);
-    } else if let Some(c) = color {
-        style.background = Some(c);
-        style.paint_colors.background = Some(nana_ui_core::PaintColor::srgb(c));
+        style.paint_colors.background = Some(pc.to_core());
     }
     if layers.is_empty() {
-        if paint_color.is_some() || color.is_some() {
+        if paint_color.is_some() {
             clear_background_images(style);
-        } else if let Some((legacy, pc)) = crate::css_map::resolve_css_color_pair(trimmed) {
-            style.background = legacy;
+        } else if let Some(pc) = crate::css_map::resolve_css_paint_color_core(trimmed) {
             style.paint_colors.background = Some(pc);
             clear_background_images(style);
         }
@@ -652,7 +638,6 @@ fn parse_background_image_value(input: &str) -> Option<BackgroundImage> {
 
 struct ParsedBackgroundLayer {
     image: Option<BackgroundImage>,
-    color: Option<[f32; 4]>,
     paint_color: Option<crate::style::CssPaintColor>,
 }
 
@@ -670,24 +655,18 @@ fn parse_background_layer(input: &str, allow_color: bool) -> ParsedBackgroundLay
         image = Some(BackgroundImage::Gradient(CssGradient::Radial(grad)));
         rest = strip_first_function(&rest, "radial-gradient");
     }
-    let mut color = None;
     let mut paint_color = None;
     if allow_color {
         for token in rest.split_whitespace() {
             if let Some(pc) = crate::style::resolve_css_paint_color(token) {
-                let core = pc.to_core();
-                color = (!core.is_theme_dynamic()).then(|| core.to_srgb());
                 paint_color = Some(pc);
                 break;
             }
         }
         if paint_color.is_none()
-            && color.is_none()
             && !rest.trim().is_empty()
             && let Some(pc) = crate::style::resolve_css_paint_color(&rest)
         {
-            let core = pc.to_core();
-            color = (!core.is_theme_dynamic()).then(|| core.to_srgb());
             paint_color = Some(pc);
         }
     }
@@ -712,11 +691,7 @@ fn parse_background_layer(input: &str, allow_color: bool) -> ParsedBackgroundLay
             *position = parsed_pos;
         }
     }
-    ParsedBackgroundLayer {
-        image,
-        color,
-        paint_color,
-    }
+    ParsedBackgroundLayer { image, paint_color }
 }
 
 pub fn parse_linear_gradient(input: &str) -> Option<LinearGradient> {
@@ -1021,8 +996,7 @@ fn apply_outline_shorthand(style: &mut nana_ui_core::LayoutStyle, val: &str) {
             saw_style = true;
         } else if let Some(px) = parse_css_length_px(&part, None) {
             style.paint.outline.width = px.max(0.0);
-        } else if let Some((legacy, pc)) = crate::css_map::resolve_css_color_pair(&part) {
-            style.paint.outline.color = legacy;
+        } else if let Some(pc) = crate::css_map::resolve_css_paint_color_core(&part) {
             style.paint_colors.outline = Some(pc);
         }
     }
@@ -2453,7 +2427,7 @@ mod tests {
             None,
         );
         assert!(layout.paint.primary_background_image().is_some());
-        assert!(layout.background.is_none());
+        assert!(layout.paint_colors.background.is_none());
     }
 
     #[test]
@@ -2932,7 +2906,7 @@ mod tests {
             None,
             None,
         );
-        assert!(layout.background.is_some());
+        assert!(layout.paint_colors.background.is_some());
         assert_eq!(layout.paint.background_layers.len(), 2);
         match layout.paint.primary_background_image() {
             Some(BackgroundImage::Url {

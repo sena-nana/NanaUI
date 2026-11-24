@@ -124,7 +124,8 @@ fn headless_turn_and_present_report_structural_work_counters() {
         .document
         .context_mut()
         .update_component(label, |text, _| {
-            Arc::make_mut(&mut text.style.layout).color = Some([0.9, 0.2, 0.1, 1.0]);
+            Arc::make_mut(&mut text.style.layout).paint_colors.color =
+                Some(nana_ui_core::PaintColor::srgb([0.9, 0.2, 0.1, 1.0]));
         })
         .unwrap();
     let paint_work = host

@@ -19,7 +19,7 @@ mod invalidation_classification {
 
     use nana_ui_core::{
         BoxShadowSpec, InvalidationKind, InvalidationReason, LayoutDependencyFootprint,
-        LayoutInvalidation, LayoutStyle, LayoutStyleChange, LengthSpec, PaintTransform,
+        LayoutInvalidation, LayoutStyle, LayoutStyleChange, LengthSpec, PaintColor, PaintTransform,
         SemanticColorRole, VisibilitySpec, WorkCounters,
     };
 
@@ -318,8 +318,8 @@ mod invalidation_classification {
                 "paint",
                 Box::new(|style: &mut NodeStyle| {
                     let layout = Arc::make_mut(&mut style.layout);
-                    layout.background = Some([0.1, 0.2, 0.3, 1.0]);
-                    layout.border_color = Some([0.2, 0.2, 0.2, 1.0]);
+                    layout.paint_colors.background = Some(PaintColor::srgb([0.1, 0.2, 0.3, 1.0]));
+                    layout.paint_colors.border = Some(PaintColor::srgb([0.2, 0.2, 0.2, 1.0]));
                     layout.border_radius = Some(4.0);
                     layout.paint.visibility = Some(VisibilitySpec::Hidden);
                     layout.paint.box_shadows.push(BoxShadowSpec {
@@ -338,7 +338,8 @@ mod invalidation_classification {
             (
                 "colour",
                 Box::new(|style: &mut NodeStyle| {
-                    Arc::make_mut(&mut style.layout).color = Some([0.2, 0.4, 0.8, 1.0]);
+                    Arc::make_mut(&mut style.layout).paint_colors.color =
+                        Some(PaintColor::srgb([0.2, 0.4, 0.8, 1.0]));
                 }),
             ),
             (
@@ -429,7 +430,7 @@ mod invalidation_classification {
         commit_style(&mut context, row, |style| {
             let layout = Arc::make_mut(&mut style.layout);
             layout.width = Some(LengthSpec::Px(180.0));
-            layout.color = Some([0.9, 0.1, 0.1, 1.0]);
+            layout.paint_colors.color = Some(PaintColor::srgb([0.9, 0.1, 0.1, 1.0]));
         });
         let after = context.last_work_counters();
         assert_eq!(

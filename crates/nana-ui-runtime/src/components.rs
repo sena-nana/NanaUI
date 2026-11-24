@@ -1906,7 +1906,6 @@ impl NodeStyle {
         self.ring = (width > 0.0).then_some(role);
         Arc::make_mut(&mut self.layout).paint.outline = nana_ui_core::OutlineSpec {
             width,
-            color: None,
             style: if width > 0.0 {
                 nana_ui_core::OutlineStyle::Solid
             } else {

@@ -538,7 +538,8 @@ impl RuntimeProgram for Probe {
             .mount_view_root(id, || {
                 let label = entity_ref::<Text>();
                 let root = widget(Stack::fill_column(8.0).with_layout(|layout| {
-                    layout.background = Some([0.12, 0.3, 0.7, 0.6]);
+                    layout.paint_colors.background =
+                        Some(nana_ui_core::PaintColor::srgb([0.12, 0.3, 0.7, 0.6]));
                     layout.padding_left = Some(LengthSpec::Px(20.0));
                     layout.padding_top = Some(LengthSpec::Px(20.0));
                 }))

@@ -186,7 +186,11 @@ fn stacking_group_backplates_paint_before_nested_lower_z_controls() {
         node.source_style.layout = Arc::new(nana_ui_core::LayoutStyle {
             position: nana_ui_core::PositionSpec::Relative,
             z_index: Some(z),
-            background: Some([0.2, 0.3, 0.4, 1.0]),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb([0.2, 0.3, 0.4, 1.0])),
+                ..Default::default()
+            }
+            .into(),
             ..Default::default()
         });
         node
@@ -715,7 +719,11 @@ fn extraction_preserves_custom_interleaving_and_removals() {
     let mut root = node(1, None, &[2]);
     root.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            background: Some([0.1, 0.2, 0.3, 1.0]),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb([0.1, 0.2, 0.3, 1.0])),
+                ..Default::default()
+            }
+            .into(),
             ..Default::default()
         }),
         ..Default::default()
@@ -800,7 +808,11 @@ fn selection_option_emits_surface_text_icon_and_focus_slots() {
     };
     option.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            background: Some([0.2, 0.2, 0.2, 1.0]),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb([0.2, 0.2, 0.2, 1.0])),
+                ..Default::default()
+            }
+            .into(),
             border_radius: Some(7.0),
             ..Default::default()
         }),
@@ -1760,7 +1772,11 @@ fn leaf_opacity_stays_on_the_primitive() {
     let mut leaf = node(1, None, &[]);
     leaf.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            background: Some([1.0, 0.0, 0.0, 1.0]),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0])),
+                ..Default::default()
+            }
+            .into(),
             opacity: Some(0.5),
             ..Default::default()
         }),
@@ -1783,7 +1799,11 @@ fn opacity_group_keeps_high_z_child_contiguous() {
     let mut parent = node(1, None, &[2]);
     parent.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            background: Some([0.0, 0.0, 1.0, 1.0]),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb([0.0, 0.0, 1.0, 1.0])),
+                ..Default::default()
+            }
+            .into(),
             opacity: Some(0.5),
             ..Default::default()
         }),
@@ -1793,7 +1813,11 @@ fn opacity_group_keeps_high_z_child_contiguous() {
     child.z_index = 10;
     child.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            background: Some([1.0, 0.0, 0.0, 1.0]),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0])),
+                ..Default::default()
+            }
+            .into(),
             ..Default::default()
         }),
         ..Default::default()
@@ -1801,7 +1825,11 @@ fn opacity_group_keeps_high_z_child_contiguous() {
     let mut sibling = node(3, None, &[]);
     sibling.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            background: Some([0.0, 1.0, 0.0, 1.0]),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb([0.0, 1.0, 0.0, 1.0])),
+                ..Default::default()
+            }
+            .into(),
             ..Default::default()
         }),
         ..Default::default()
@@ -1823,7 +1851,11 @@ fn opacity_group_keeps_high_z_child_contiguous() {
 fn losing_group_isolation_reorders_descendants_that_were_not_reextracted() {
     let solid = |color: [f32; 4], opacity: Option<f32>| NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            background: Some(color),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb(color)),
+                ..Default::default()
+            }
+            .into(),
             opacity,
             ..Default::default()
         }),
@@ -1870,7 +1902,11 @@ fn losing_group_isolation_reorders_descendants_that_were_not_reextracted() {
 fn fading_a_group_that_stays_a_group_leaves_paint_order_alone() {
     let solid = |color: [f32; 4], opacity: Option<f32>| NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            background: Some(color),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb(color)),
+                ..Default::default()
+            }
+            .into(),
             opacity,
             ..Default::default()
         }),
@@ -1926,7 +1962,11 @@ fn two_scenes_never_hand_out_the_same_revision() {
         node.text = Some(TextContent { value: text.into() });
         node.source_style = NodeStyle {
             layout: Arc::new(nana_ui_core::LayoutStyle {
-                background: Some([1.0, 0.0, 0.0, 1.0]),
+                paint_colors: nana_ui_core::PaintColorSlots {
+                    background: Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0])),
+                    ..Default::default()
+                }
+                .into(),
                 ..Default::default()
             }),
             ..Default::default()
@@ -1968,7 +2008,11 @@ fn a_rewritten_primitive_gets_a_new_revision_and_an_untouched_one_keeps_its() {
         node.text = Some(TextContent { value: text.into() });
         node.source_style = NodeStyle {
             layout: Arc::new(nana_ui_core::LayoutStyle {
-                background: Some([1.0, 0.0, 0.0, 1.0]),
+                paint_colors: nana_ui_core::PaintColorSlots {
+                    background: Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0])),
+                    ..Default::default()
+                }
+                .into(),
                 ..Default::default()
             }),
             ..Default::default()
@@ -2042,7 +2086,11 @@ fn moving_one_subtree_leaves_the_culling_index_right_for_both() {
         panel.scroll_offset.y = scroll;
         panel.source_style = NodeStyle {
             layout: Arc::new(nana_ui_core::LayoutStyle {
-                background: Some([0.0, 0.0, 1.0, 1.0]),
+                paint_colors: nana_ui_core::PaintColorSlots {
+                    background: Some(nana_ui_core::PaintColor::srgb([0.0, 0.0, 1.0, 1.0])),
+                    ..Default::default()
+                }
+                .into(),
                 overflow_y: nana_ui_core::OverflowSpec::Scroll,
                 transforms: nana_ui_core::TransformStyle {
                     transform: transform.map(|dx| nana_ui_core::PaintTransform {
@@ -2065,7 +2113,11 @@ fn moving_one_subtree_leaves_the_culling_index_right_for_both() {
             row.layout.height = 18.0;
             row.source_style = NodeStyle {
                 layout: Arc::new(nana_ui_core::LayoutStyle {
-                    background: Some([1.0, 0.0, 0.0, 1.0]),
+                    paint_colors: nana_ui_core::PaintColorSlots {
+                        background: Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0])),
+                        ..Default::default()
+                    }
+                    .into(),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -2160,7 +2212,11 @@ fn a_subtree_that_was_not_re_extracted_draws_where_rebuilding_it_would() {
         let mut root = node(1, None, &[2]);
         root.source_style = NodeStyle {
             layout: Arc::new(nana_ui_core::LayoutStyle {
-                background: Some([0.0, 0.0, 1.0, 1.0]),
+                paint_colors: nana_ui_core::PaintColorSlots {
+                    background: Some(nana_ui_core::PaintColor::srgb([0.0, 0.0, 1.0, 1.0])),
+                    ..Default::default()
+                }
+                .into(),
                 overflow_x: nana_ui_core::OverflowSpec::Hidden,
                 overflow_y: nana_ui_core::OverflowSpec::Hidden,
                 transforms: nana_ui_core::TransformStyle {
@@ -2175,7 +2231,11 @@ fn a_subtree_that_was_not_re_extracted_draws_where_rebuilding_it_would() {
         let mut scroller = node(2, Some(1), &[3]);
         scroller.source_style = NodeStyle {
             layout: Arc::new(nana_ui_core::LayoutStyle {
-                background: Some([0.0, 1.0, 0.0, 1.0]),
+                paint_colors: nana_ui_core::PaintColorSlots {
+                    background: Some(nana_ui_core::PaintColor::srgb([0.0, 1.0, 0.0, 1.0])),
+                    ..Default::default()
+                }
+                .into(),
                 overflow_y: nana_ui_core::OverflowSpec::Scroll,
                 opacity: Some(0.4),
                 ..Default::default()
@@ -2186,7 +2246,11 @@ fn a_subtree_that_was_not_re_extracted_draws_where_rebuilding_it_would() {
         let mut inner = node(3, Some(2), &[4]);
         inner.source_style = NodeStyle {
             layout: Arc::new(nana_ui_core::LayoutStyle {
-                background: Some([1.0, 1.0, 0.0, 1.0]),
+                paint_colors: nana_ui_core::PaintColorSlots {
+                    background: Some(nana_ui_core::PaintColor::srgb([1.0, 1.0, 0.0, 1.0])),
+                    ..Default::default()
+                }
+                .into(),
                 transforms: nana_ui_core::TransformStyle {
                     transform: Some(turned(0.2)),
                     ..Default::default()
@@ -2199,7 +2263,11 @@ fn a_subtree_that_was_not_re_extracted_draws_where_rebuilding_it_would() {
         let mut leaf = node(4, Some(3), &[]);
         leaf.source_style = NodeStyle {
             layout: Arc::new(nana_ui_core::LayoutStyle {
-                background: Some([1.0, 0.0, 0.0, 1.0]),
+                paint_colors: nana_ui_core::PaintColorSlots {
+                    background: Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0])),
+                    ..Default::default()
+                }
+                .into(),
                 ..Default::default()
             }),
             ..Default::default()
@@ -2298,7 +2366,11 @@ fn a_subtree_that_was_not_re_extracted_draws_where_rebuilding_it_would() {
 fn a_fade_that_keeps_the_group_leaves_the_descendants_primitives_alone() {
     let solid = |color: [f32; 4], opacity: Option<f32>| NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            background: Some(color),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb(color)),
+                ..Default::default()
+            }
+            .into(),
             opacity,
             ..Default::default()
         }),
@@ -2340,7 +2412,11 @@ fn a_fade_that_keeps_the_group_leaves_the_descendants_primitives_alone() {
 fn a_faded_out_ancestor_that_comes_back_repaints_the_descendants_it_hid() {
     let solid = |color: [f32; 4], opacity: Option<f32>| NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            background: Some(color),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb(color)),
+                ..Default::default()
+            }
+            .into(),
             opacity,
             ..Default::default()
         }),
@@ -2385,7 +2461,11 @@ fn positioned_z_index_keeps_high_z_child_contiguous() {
     parent.z_index = 0;
     parent.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            background: Some([0.0, 0.0, 1.0, 1.0]),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb([0.0, 0.0, 1.0, 1.0])),
+                ..Default::default()
+            }
+            .into(),
             position: nana_ui_core::PositionSpec::Relative,
             z_index: Some(0),
             ..Default::default()
@@ -2396,7 +2476,11 @@ fn positioned_z_index_keeps_high_z_child_contiguous() {
     child.z_index = 10;
     child.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            background: Some([1.0, 0.0, 0.0, 1.0]),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0])),
+                ..Default::default()
+            }
+            .into(),
             z_index: Some(10),
             ..Default::default()
         }),
@@ -2405,7 +2489,11 @@ fn positioned_z_index_keeps_high_z_child_contiguous() {
     let mut sibling = node(3, None, &[]);
     sibling.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            background: Some([0.0, 1.0, 0.0, 1.0]),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb([0.0, 1.0, 0.0, 1.0])),
+                ..Default::default()
+            }
+            .into(),
             ..Default::default()
         }),
         ..Default::default()
@@ -2428,7 +2516,11 @@ fn isolation_keeps_high_z_child_contiguous() {
     let mut parent = node(1, None, &[2]);
     parent.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            background: Some([0.0, 0.0, 1.0, 1.0]),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb([0.0, 0.0, 1.0, 1.0])),
+                ..Default::default()
+            }
+            .into(),
             isolation: true,
             ..Default::default()
         }),
@@ -2438,7 +2530,11 @@ fn isolation_keeps_high_z_child_contiguous() {
     child.z_index = 10;
     child.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            background: Some([1.0, 0.0, 0.0, 1.0]),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0])),
+                ..Default::default()
+            }
+            .into(),
             ..Default::default()
         }),
         ..Default::default()
@@ -2446,7 +2542,11 @@ fn isolation_keeps_high_z_child_contiguous() {
     let mut sibling = node(3, None, &[]);
     sibling.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            background: Some([0.0, 1.0, 0.0, 1.0]),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb([0.0, 1.0, 0.0, 1.0])),
+                ..Default::default()
+            }
+            .into(),
             ..Default::default()
         }),
         ..Default::default()
@@ -2463,7 +2563,11 @@ fn isolation_keeps_high_z_child_contiguous() {
 
     parent.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            background: Some([0.0, 0.0, 1.0, 1.0]),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb([0.0, 0.0, 1.0, 1.0])),
+                ..Default::default()
+            }
+            .into(),
             isolation: false,
             ..Default::default()
         }),
@@ -2483,7 +2587,11 @@ fn fixed_overlay_paints_above_later_siblings_of_an_isolating_parent() {
     parent.z_index = 0;
     parent.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            background: Some([0.0, 0.0, 1.0, 1.0]),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb([0.0, 0.0, 1.0, 1.0])),
+                ..Default::default()
+            }
+            .into(),
             position: nana_ui_core::PositionSpec::Relative,
             z_index: Some(0),
             isolation: true,
@@ -2495,7 +2603,11 @@ fn fixed_overlay_paints_above_later_siblings_of_an_isolating_parent() {
     overlay.z_index = 1_000;
     overlay.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            background: Some([1.0, 0.0, 0.0, 1.0]),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0])),
+                ..Default::default()
+            }
+            .into(),
             position: nana_ui_core::PositionSpec::Fixed,
             z_index: Some(1_000),
             ..Default::default()
@@ -2505,7 +2617,11 @@ fn fixed_overlay_paints_above_later_siblings_of_an_isolating_parent() {
     let mut sibling = node(3, None, &[]);
     sibling.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            background: Some([0.0, 1.0, 0.0, 1.0]),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb([0.0, 1.0, 0.0, 1.0])),
+                ..Default::default()
+            }
+            .into(),
             ..Default::default()
         }),
         ..Default::default()
@@ -4538,9 +4654,13 @@ fn text_input_geometry_paints_selection_text_caret_preedit_and_focus_in_order() 
     let mut input = node(1, None, &[]);
     input.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            background: Some([0.1, 0.1, 0.1, 1.0]),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb([0.1, 0.1, 0.1, 1.0])),
+                border: Some(nana_ui_core::PaintColor::srgb([0.3, 0.3, 0.3, 1.0])),
+                ..Default::default()
+            }
+            .into(),
             border_width: Some(1.0),
-            border_color: Some([0.3, 0.3, 0.3, 1.0]),
             border_radius: Some(6.0),
             overflow_x: nana_ui_core::OverflowSpec::Hidden,
             opacity: Some(0.5),
@@ -4782,7 +4902,11 @@ fn feedback_geometry_emits_semantic_quad_text_and_icon_primitives() {
     };
     let mut badge = node(1, None, &[]);
     badge.source_style.layout = Arc::new(nana_ui_core::LayoutStyle {
-        background: Some([0.1, 0.2, 0.3, 1.0]),
+        paint_colors: nana_ui_core::PaintColorSlots {
+            background: Some(nana_ui_core::PaintColor::srgb([0.1, 0.2, 0.3, 1.0])),
+            ..Default::default()
+        }
+        .into(),
         ..Default::default()
     });
     let mut badge_paint = nana_ui_runtime::scene_contract::WidgetPaintOutput {
@@ -6791,7 +6915,7 @@ fn a_picture_xy_pad_strokes_its_frame_over_the_paint_and_rings_the_value() {
     pad.layout = pad_box;
     {
         let layout = Arc::make_mut(&mut pad.source_style.layout);
-        layout.background = Some([1.0, 0.0, 0.0, 1.0]);
+        layout.paint_colors.background = Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0]));
         layout.border_width = Some(1.0);
         layout.paint.background_layers = vec![
             gradient(180.0, [0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
@@ -6935,7 +7059,11 @@ fn filled(value: u64, parent: Option<u64>, color: [f32; 4]) -> ExtractedNode {
     };
     node.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            background: Some(color),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb(color)),
+                ..Default::default()
+            }
+            .into(),
             ..Default::default()
         }),
         ..Default::default()
@@ -8708,7 +8836,11 @@ fn css_gradient_and_clip_path_surface_paint_travels_on_quad() {
     let mut painted = node(1, None, &[]);
     painted.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            background: Some([1.0, 1.0, 1.0, 0.5]),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb([1.0, 1.0, 1.0, 0.5])),
+                ..Default::default()
+            }
+            .into(),
             paint: nana_ui_core::PaintStyle {
                 background_layers: vec![nana_ui_core::BackgroundImage::Gradient(
                     nana_ui_core::CssGradient::Linear(nana_ui_core::LinearGradient {
@@ -8881,7 +9013,11 @@ fn css_filter_group_omits_leaf_shader_on_parent_quad() {
     };
     parent.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            background: Some([1.0, 0.0, 0.0, 1.0]),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0])),
+                ..Default::default()
+            }
+            .into(),
             paint: nana_ui_core::PaintStyle {
                 filter: Some(nana_ui_core::ColorFilter {
                     brightness: 0.5,
@@ -8944,7 +9080,11 @@ fn css_mix_blend_and_element_blur_isolate_dest_groups() {
     let mut blended = node(1, None, &[]);
     blended.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            background: Some([1.0, 0.0, 0.0, 1.0]),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0])),
+                ..Default::default()
+            }
+            .into(),
             paint: nana_ui_core::PaintStyle {
                 mix_blend: MixBlendMode::Multiply,
                 ..Default::default()
@@ -8973,7 +9113,11 @@ fn css_mix_blend_and_element_blur_isolate_dest_groups() {
     let mut blurred = node(2, None, &[]);
     blurred.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            background: Some([0.0, 1.0, 0.0, 1.0]),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb([0.0, 1.0, 0.0, 1.0])),
+                ..Default::default()
+            }
+            .into(),
             paint: nana_ui_core::PaintStyle {
                 filter: Some(nana_ui_core::ColorFilter {
                     blur_radius: 8.0,
@@ -9010,7 +9154,11 @@ fn css_drop_shadow_isolates_dest_group_not_box_shadow() {
     let mut painted = node(1, None, &[]);
     painted.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            background: Some([1.0, 0.0, 0.0, 1.0]),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0])),
+                ..Default::default()
+            }
+            .into(),
             paint: nana_ui_core::PaintStyle {
                 filter: Some(nana_ui_core::ColorFilter {
                     drop_shadow: Some(nana_ui_core::FilterDropShadow {
@@ -9068,7 +9216,12 @@ fn css_box_shadow_layers_outline_and_line_clamp_travel() {
     });
     painted.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            background: Some([1.0, 1.0, 1.0, 1.0]),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb([1.0, 1.0, 1.0, 1.0])),
+                outline: Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0])),
+                ..Default::default()
+            }
+            .into(),
             text_ext: nana_ui_core::TextStyleExt {
                 line_clamp: Some(2),
                 ..Default::default()
@@ -9096,7 +9249,6 @@ fn css_box_shadow_layers_outline_and_line_clamp_travel() {
                 ],
                 outline: nana_ui_core::OutlineSpec {
                     width: 2.0,
-                    color: Some([1.0, 0.0, 0.0, 1.0]),
                     style: nana_ui_core::OutlineStyle::Solid,
                 },
                 ..Default::default()
@@ -9152,7 +9304,11 @@ fn inset_box_shadow_on_a_leaf_is_not_an_outset_elevation() {
     let mut painted = node(1, None, &[]);
     painted.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            background: Some([1.0, 1.0, 1.0, 1.0]),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb([1.0, 1.0, 1.0, 1.0])),
+                ..Default::default()
+            }
+            .into(),
             paint: nana_ui_core::PaintStyle {
                 box_shadows: vec![nana_ui_core::BoxShadowSpec {
                     offset_x: 2.0,
@@ -9209,7 +9365,11 @@ fn inset_box_shadow_with_children_is_a_dest_group_not_parent_quad() {
     };
     parent.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            background: Some([1.0, 0.0, 0.0, 1.0]),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0])),
+                ..Default::default()
+            }
+            .into(),
             paint: nana_ui_core::PaintStyle {
                 box_shadows: vec![nana_ui_core::BoxShadowSpec {
                     offset_x: 0.0,
@@ -9268,7 +9428,11 @@ fn css_mask_and_gradient_both_travel_on_quad() {
     let mut painted = node(1, None, &[]);
     painted.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            background: Some([0.2, 0.2, 0.2, 1.0]),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb([0.2, 0.2, 0.2, 1.0])),
+                ..Default::default()
+            }
+            .into(),
             paint: nana_ui_core::PaintStyle {
                 background_layers: vec![nana_ui_core::BackgroundImage::Gradient(
                     nana_ui_core::CssGradient::Linear(nana_ui_core::LinearGradient {
@@ -9319,7 +9483,11 @@ fn css_backdrop_filter_travels_on_quad_surface() {
     let mut painted = node(1, None, &[]);
     painted.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            background: Some([1.0, 1.0, 1.0, 0.4]),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb([1.0, 1.0, 1.0, 0.4])),
+                ..Default::default()
+            }
+            .into(),
             paint: nana_ui_core::PaintStyle {
                 backdrop_filter: Some(nana_ui_core::BackdropFilter {
                     blur_radius: 16.0,
@@ -9572,7 +9740,11 @@ fn css_mask_url_travels_on_quad_and_host_texture() {
     painted.custom_render = Some(CustomRenderNode::new("nana.host-texture", "preview", 1));
     painted.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            background: Some([1.0, 0.0, 0.0, 1.0]),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0])),
+                ..Default::default()
+            }
+            .into(),
             paint: nana_ui_core::PaintStyle {
                 mask: Some(nana_ui_core::MaskImage::Url("fade.png".into())),
                 ..Default::default()
@@ -9620,7 +9792,11 @@ fn rasterized_svg_host_texture_skips_vector_children() {
     path.kind = Arc::new(NodeKind::Element { tag: "path".into() });
     path.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            background: Some([1.0, 0.0, 0.0, 1.0]),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0])),
+                ..Default::default()
+            }
+            .into(),
             ..Default::default()
         }),
         ..Default::default()
@@ -9672,7 +9848,11 @@ fn icon_visual_skips_vector_children() {
     path.kind = Arc::new(NodeKind::Element { tag: "path".into() });
     path.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            background: Some([1.0, 0.0, 0.0, 1.0]),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0])),
+                ..Default::default()
+            }
+            .into(),
             ..Default::default()
         }),
         ..Default::default()
@@ -9737,7 +9917,11 @@ fn an_icon_visual_still_paints_the_surface_it_only_hosts() {
     tooltip.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
             position: nana_ui_core::PositionSpec::Fixed,
-            background: Some([1.0, 0.0, 0.0, 1.0]),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0])),
+                ..Default::default()
+            }
+            .into(),
             z_index: Some(1_000),
             ..Default::default()
         }),
@@ -10573,7 +10757,11 @@ fn a_rebuilt_subtree_lands_in_the_order_a_full_sort_would_give_it() {
         Arc::new(nana_ui_core::LayoutStyle {
             position: nana_ui_core::PositionSpec::Relative,
             z_index: Some(z),
-            background: Some([1.0, 0.0, 0.0, 1.0]),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0])),
+                ..Default::default()
+            }
+            .into(),
             ..nana_ui_core::LayoutStyle::default()
         })
     };
@@ -10633,7 +10821,11 @@ fn the_rebuild_scratch_does_not_hand_one_parents_prefix_to_another() {
         Arc::new(nana_ui_core::LayoutStyle {
             position: nana_ui_core::PositionSpec::Relative,
             z_index: Some(z),
-            background: Some([1.0, 0.0, 0.0, 1.0]),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0])),
+                ..Default::default()
+            }
+            .into(),
             ..nana_ui_core::LayoutStyle::default()
         })
     };
@@ -10675,7 +10867,11 @@ fn what_a_parent_hands_down_is_what_walking_the_chain_gives() {
         node.layout.x = value as f32;
         node.layout.y = 2.0 * value as f32;
         let mut layout = nana_ui_core::LayoutStyle {
-            background: Some([1.0, 0.0, 0.0, 1.0]),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0])),
+                ..Default::default()
+            }
+            .into(),
             ..Default::default()
         };
         if value % 3 == 0 {
@@ -10729,7 +10925,11 @@ fn a_rebuild_that_drops_a_primitive_takes_it_out_of_the_scene() {
     let mut plain = node(1, None, &[]);
     plain.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            background: Some([1.0, 0.0, 0.0, 1.0]),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0])),
+                ..Default::default()
+            }
+            .into(),
             ..Default::default()
         }),
         ..Default::default()
@@ -10896,7 +11096,11 @@ fn fading_within_translucency_retains_the_projection_and_crossing_out_rebuilds_i
         node.source_style = NodeStyle {
             layout: Arc::new(nana_ui_core::LayoutStyle {
                 opacity,
-                background: Some([0.0, 0.0, 1.0, 1.0]),
+                paint_colors: nana_ui_core::PaintColorSlots {
+                    background: Some(nana_ui_core::PaintColor::srgb([0.0, 0.0, 1.0, 1.0])),
+                    ..Default::default()
+                }
+                .into(),
                 ..Default::default()
             }),
             ..Default::default()
@@ -10907,7 +11111,11 @@ fn fading_within_translucency_retains_the_projection_and_crossing_out_rebuilds_i
         let mut node = node(value, Some(2), &[]);
         node.source_style = NodeStyle {
             layout: Arc::new(nana_ui_core::LayoutStyle {
-                background: Some([1.0, 0.0, 0.0, 1.0]),
+                paint_colors: nana_ui_core::PaintColorSlots {
+                    background: Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0])),
+                    ..Default::default()
+                }
+                .into(),
                 ..Default::default()
             }),
             ..Default::default()
@@ -11018,7 +11226,11 @@ fn rotating_a_container_refreshes_bounds_without_rebuilding_the_index() {
     let mut leaf = node(3, Some(2), &[]);
     leaf.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            background: Some([1.0, 0.0, 0.0, 1.0]),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0])),
+                ..Default::default()
+            }
+            .into(),
             ..Default::default()
         }),
         ..Default::default()
@@ -11214,7 +11426,11 @@ fn a_colour_change_on_a_rotated_parent_does_not_move_its_descendants() {
                     ..Default::default()
                 }
                 .into(),
-                background: Some(background),
+                paint_colors: nana_ui_core::PaintColorSlots {
+                    background: Some(nana_ui_core::PaintColor::srgb(background)),
+                    ..Default::default()
+                }
+                .into(),
                 ..Default::default()
             }),
             ..Default::default()
@@ -11230,7 +11446,11 @@ fn a_colour_change_on_a_rotated_parent_does_not_move_its_descendants() {
     };
     leaf.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            background: Some([1.0, 0.0, 0.0, 1.0]),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0])),
+                ..Default::default()
+            }
+            .into(),
             ..Default::default()
         }),
         ..Default::default()
@@ -11303,7 +11523,11 @@ fn a_colour_change_tolerates_a_few_ulps_of_base_transform_drift() {
                 ..Default::default()
             }
             .into(),
-            background: Some([0.0, 0.0, 1.0, 1.0]),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb([0.0, 0.0, 1.0, 1.0])),
+                ..Default::default()
+            }
+            .into(),
             ..Default::default()
         }),
         ..Default::default()
@@ -11318,7 +11542,11 @@ fn a_colour_change_tolerates_a_few_ulps_of_base_transform_drift() {
     };
     leaf.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
-            background: Some([1.0, 0.0, 0.0, 1.0]),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0])),
+                ..Default::default()
+            }
+            .into(),
             ..Default::default()
         }),
         ..Default::default()
@@ -11354,7 +11582,11 @@ fn a_colour_change_tolerates_a_few_ulps_of_base_transform_drift() {
                 ..Default::default()
             }
             .into(),
-            background: Some([0.0, 1.0, 0.0, 1.0]),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb([0.0, 1.0, 0.0, 1.0])),
+                ..Default::default()
+            }
+            .into(),
             ..Default::default()
         }),
         ..Default::default()
@@ -12075,25 +12307,27 @@ fn an_outline_is_not_painted_in_the_border_colour() {
     let mut painted = node(1, None, &[]);
     let red = nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0]);
     painted.source_style = NodeStyle {
-        layout: Arc::new(nana_ui_core::LayoutStyle {
-            background: Some([1.0, 1.0, 1.0, 1.0]),
-            border_width: Some(1.0),
-            paint_colors: nana_ui_core::PaintColorSlots {
-                border: Some(red),
+        layout: Arc::new(
+            nana_ui_core::LayoutStyle {
+                border_width: Some(1.0),
+                paint_colors: nana_ui_core::PaintColorSlots {
+                    border: Some(red),
+                    ..Default::default()
+                }
+                .into(),
+                paint: nana_ui_core::PaintStyle {
+                    outline: nana_ui_core::OutlineSpec {
+                        width: 2.0,
+                        style: nana_ui_core::OutlineStyle::Solid,
+                    },
+                    ..Default::default()
+                }
+                .into(),
                 ..Default::default()
             }
-            .into(),
-            paint: nana_ui_core::PaintStyle {
-                outline: nana_ui_core::OutlineSpec {
-                    width: 2.0,
-                    color: Some([0.0, 0.0, 1.0, 1.0]),
-                    style: nana_ui_core::OutlineStyle::Solid,
-                },
-                ..Default::default()
-            }
-            .into(),
-            ..Default::default()
-        }),
+            .background([1.0, 1.0, 1.0, 1.0])
+            .outline_color([0.0, 0.0, 1.0, 1.0]),
+        ),
         ..Default::default()
     };
     style_mut(&mut painted).background = Some([1.0, 1.0, 1.0, 1.0]);

@@ -46,13 +46,14 @@ fn session(materials: bool) -> RuntimeAgentSession {
                 .width(LengthSpec::Px(160.))
                 .height(LengthSpec::Px(60.))
                 .with_layout(|l| {
-                    l.background = Some([0.2, 0.2, 0.2, 1.]);
+                    l.paint_colors.background =
+                        Some(nana_ui_core::PaintColor::srgb([0.2, 0.2, 0.2, 1.]));
                     l.paint.background_material = material(RED);
                 });
             let mut text = nana_ui::runtime::NodeStyle::default();
             let layout = Arc::make_mut(&mut text.layout);
             layout.font_size = Some(28.);
-            layout.color = Some([0.1, 0.1, 0.1, 1.]);
+            layout.paint_colors.color = Some(nana_ui_core::PaintColor::srgb([0.1, 0.1, 0.1, 1.]));
             layout.paint.text_material = material(GREEN);
             widget(Stack::column(8.).padding(10.))
                 .children((widget(shape), widget(Text::new("ABC").style(text))))

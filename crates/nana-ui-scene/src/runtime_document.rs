@@ -1844,7 +1844,9 @@ mod tests {
         // The metrics-only shaper does not emit glyph runs; give the title a
         // background so its scene contribution is still independently tested.
         cx.update_component(title, |text, _| {
-            Arc::make_mut(&mut text.style.layout).background = Some([0.2, 0.3, 0.4, 1.0]);
+            Arc::make_mut(&mut text.style.layout)
+                .paint_colors
+                .background = Some(nana_ui_core::PaintColor::srgb([0.2, 0.3, 0.4, 1.0]));
         })
         .unwrap();
         // Explicit CSS visibility must not resurrect a retained inactive branch.
@@ -2721,7 +2723,8 @@ mod tests {
             .node_style(section)
             .unwrap()
             .clone();
-        Arc::make_mut(&mut paint.layout).background = Some([0.2, 0.4, 0.8, 1.0]);
+        Arc::make_mut(&mut paint.layout).paint_colors.background =
+            Some(nana_ui_core::PaintColor::srgb([0.2, 0.4, 0.8, 1.0]));
         let mut queue = MutationQueue::new();
         queue.set_style(section, paint);
         runtime.context_mut().commit_mutations(queue).unwrap();

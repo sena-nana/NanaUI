@@ -97,7 +97,11 @@ fn spreading_filter_keeps_pixels_outside_source_bounds() {
             16.0,
             16.0,
             nana_ui_core::LayoutStyle {
-                background: Some([1.0, 0.0, 0.0, 1.0]),
+                paint_colors: nana_ui_core::PaintColorSlots {
+                    background: Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0])),
+                    ..Default::default()
+                }
+                .into(),
                 paint: nana_ui_core::PaintStyle {
                     filter: Some(nana_ui_core::ColorFilter {
                         drop_shadow: Some(nana_ui_core::FilterDropShadow {
@@ -354,7 +358,11 @@ fn blurred_square(value: u64, x: f32, blur: f32, wide: bool, shutter: f32) -> Ex
         16.0,
         16.0,
         nana_ui_core::LayoutStyle {
-            background: Some([1.0, 0.0, 0.0, 1.0]),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0])),
+                ..Default::default()
+            }
+            .into(),
             paint: nana_ui_core::PaintStyle {
                 filter: (blur > 0.0).then_some(nana_ui_core::ColorFilter {
                     blur_radius: blur,

@@ -21,7 +21,7 @@ fn row() -> Stack {
     Stack::column(0.0).with_layout(|layout| {
         layout.width = Some(LengthSpec::Fill);
         layout.height = Some(LengthSpec::Px(40.0));
-        layout.background = Some([0.2, 0.4, 0.8, 1.0]);
+        layout.paint_colors.background = Some(nana_ui_core::PaintColor::srgb([0.2, 0.4, 0.8, 1.0]));
     })
 }
 

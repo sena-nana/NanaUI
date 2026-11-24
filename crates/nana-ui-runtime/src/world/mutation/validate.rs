@@ -1586,6 +1586,21 @@ impl UiWorld {
 /// `SetStyle` is validated against.
 pub(in crate::world) fn style_is_valid(layout: &nana_ui_core::LayoutStyle) -> bool {
     let channel_ok = |channel: f32| channel.is_finite() && (0.0..=1.0).contains(&channel);
+    let paint_color_ok = |color: nana_ui_core::PaintColor| match color {
+        nana_ui_core::PaintColor::Srgb { rgba } => rgba.into_iter().all(channel_ok),
+        nana_ui_core::PaintColor::Oklch { l, c, h, alpha } => {
+            l.is_finite() && c.is_finite() && h.is_none_or(f32::is_finite) && channel_ok(alpha)
+        }
+        nana_ui_core::PaintColor::Hsv { h, s, v, alpha } => {
+            h.is_finite() && s.is_finite() && v.is_finite() && channel_ok(alpha)
+        }
+        nana_ui_core::PaintColor::LinearScRgb { channels, alpha } => {
+            channels.into_iter().all(f32::is_finite) && channel_ok(alpha)
+        }
+        nana_ui_core::PaintColor::ThemeRole { .. }
+        | nana_ui_core::PaintColor::ThemeMix(_)
+        | nana_ui_core::PaintColor::ThemePair(_) => true,
+    };
     !(layout
         .opacity
         .is_some_and(|opacity| !opacity.is_finite() || !(0.0..=1.0).contains(&opacity))
@@ -1599,15 +1614,24 @@ pub(in crate::world) fn style_is_valid(layout: &nana_ui_core::LayoutStyle) -> bo
         || layout
             .font_weight
             .is_some_and(|weight| !(1..=1000).contains(&weight))
-        || layout
-            .color
-            .is_some_and(|color| !color.into_iter().all(channel_ok))
-        || layout
-            .background
-            .is_some_and(|color| !color.into_iter().all(channel_ok))
-        || layout
-            .border_color
-            .is_some_and(|color| !color.into_iter().all(channel_ok)))
+        || (!layout.paint_colors.is_shared_default() && {
+            let slots = &*layout.paint_colors;
+            [
+                slots.color,
+                slots.background,
+                slots.border,
+                slots.border_top,
+                slots.border_right,
+                slots.border_bottom,
+                slots.border_left,
+                slots.outline,
+                slots.selection_background,
+                slots.selection_color,
+            ]
+            .into_iter()
+            .flatten()
+            .any(|color| !paint_color_ok(color))
+        }))
 }
 
 /// Whether a written box is finite and of non-negative size.

@@ -128,9 +128,9 @@ impl ApplicationState for Probe {
         let pad_layout = LayoutStyle {
             width: Some(LengthSpec::Px(480.0)),
             height: Some(LengthSpec::Px(260.0)),
-            background: Some([0.16, 0.17, 0.2, 1.0]),
             ..Default::default()
-        };
+        }
+        .background([0.16, 0.17, 0.2, 1.0]);
         let pad = cx.create_component(
             document,
             Stack::column(0.0).style(NodeStyle {

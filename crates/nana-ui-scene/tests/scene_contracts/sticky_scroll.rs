@@ -49,13 +49,15 @@ fn page() -> (UiWorld, UiScene) {
     );
     q.set_style(
         id(4),
-        style(LayoutStyle {
-            position: PositionSpec::Sticky,
-            offset_top: Some(LengthSpec::Px(0.0)),
-            background: Some([1.0, 0.0, 0.0, 1.0]),
-            z_index: Some(1),
-            ..Default::default()
-        }),
+        style(
+            LayoutStyle {
+                position: PositionSpec::Sticky,
+                offset_top: Some(LengthSpec::Px(0.0)),
+                z_index: Some(1),
+                ..Default::default()
+            }
+            .background([1.0, 0.0, 0.0, 1.0]),
+        ),
     );
     q.set_accessibility(
         id(4),

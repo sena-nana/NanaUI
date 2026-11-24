@@ -272,7 +272,7 @@ impl AppTitleBar {
         style.text_horizontal_alignment = TextHorizontalAlignment::Center;
         style.text_vertical_alignment = TextVerticalAlignment::Center;
         let layout = Arc::make_mut(&mut style.layout);
-        layout.background = None;
+        layout.paint_colors.background = None;
         layout.direction = Some(FlexDirection::Row);
         layout.align_items = AlignSpec::Center;
         layout.justify_content = JustifySpec::Start;
@@ -1506,7 +1506,7 @@ mod tests {
                 style.background,
                 (!transparent).then_some(SemanticColorRole::Titlebar)
             );
-            assert!(style.layout.background.is_none());
+            assert!(style.layout.paint_colors.background.is_none());
             assert_eq!(style.foreground, Some(SemanticColorRole::Text));
             assert_eq!(
                 context
@@ -1664,7 +1664,7 @@ mod tests {
         );
         assert_eq!(style.foreground, Some(SemanticColorRole::Text));
         assert_eq!(style.background, Some(SemanticColorRole::Titlebar));
-        assert!(style.layout.background.is_none());
+        assert!(style.layout.paint_colors.background.is_none());
         assert_eq!(style.layout.direction, Some(FlexDirection::Row));
         let chrome = WindowChrome::platform_default();
         // Unassembled, a native bar has no placeholder and pads the band clear.

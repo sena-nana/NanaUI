@@ -225,7 +225,7 @@ impl Workspace {
         style.background = Some(style.background.unwrap_or(SemanticColorRole::Surface));
         style.foreground = Some(style.foreground.unwrap_or(SemanticColorRole::Text));
         let layout = Arc::make_mut(&mut style.layout);
-        layout.background = None;
+        layout.paint_colors.background = None;
         layout.direction = Some(FlexDirection::Column);
         layout.align_items = AlignSpec::Stretch;
         layout.width = Some(layout.width.unwrap_or(LengthSpec::Fill));

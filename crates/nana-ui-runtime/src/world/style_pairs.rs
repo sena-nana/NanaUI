@@ -78,13 +78,8 @@ impl LayoutPairFacts {
                         || pt.text_emphasis_position != nt.text_emphasis_position
                         || pt.text_orientation != nt.text_orientation
                 }),
-            inherited_paint: p.color != n.color
-                || (text_ext_diff && {
-                    let (pt, nt) = (&*p.text_ext, &*n.text_ext);
-                    pt.text_emphasis_color != nt.text_emphasis_color
-                        || pt.selection_background != nt.selection_background
-                        || pt.selection_color != nt.selection_color
-                })
+            inherited_paint: (text_ext_diff
+                && p.text_ext.text_emphasis_color != n.text_ext.text_emphasis_color)
                 || p.paint_colors.color != n.paint_colors.color
                 || p.paint_colors.selection_background != n.paint_colors.selection_background
                 || p.paint_colors.selection_color != n.paint_colors.selection_color,

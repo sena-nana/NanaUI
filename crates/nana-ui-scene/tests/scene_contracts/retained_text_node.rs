@@ -271,10 +271,7 @@ fn colour_opacity_and_transform_changes_never_reach_shaping_or_layout() {
     type Edit = (&'static str, fn() -> NodeStyle);
     let edits: [Edit; 4] = [
         ("colour", || {
-            label_style(LayoutStyle {
-                color: Some([0.9, 0.1, 0.1, 1.0]),
-                ..LayoutStyle::default()
-            })
+            label_style(LayoutStyle::default().color([0.9, 0.1, 0.1, 1.0]))
         }),
         ("semantic foreground", || NodeStyle {
             foreground: Some(SemanticColorRole::Accent),

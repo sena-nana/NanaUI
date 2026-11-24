@@ -83,36 +83,19 @@ impl WrittenLayout {
                 written.push(path.to_owned());
             }
         };
-        let remove_written = |written: &mut Vec<String>, path: &str| {
-            written.retain(|p| p != path);
-        };
-
         let merge_slot = |l_pc: &mut Option<PaintColor>,
                           d_pc: Option<PaintColor>,
-                          l_leg: Option<&mut Option<[f32; 4]>>,
-                          d_leg: Option<[f32; 4]>,
                           paint_path: &str,
-                          legacy_path: Option<&str>,
                           written: &mut Vec<String>| {
-            let l_eff = (*l_pc).or_else(|| l_leg.as_ref().and_then(|v| **v).map(PaintColor::srgb));
-            let d_eff = d_pc.or_else(|| d_leg.map(PaintColor::srgb));
-            if l_eff == d_eff {
+            if *l_pc == d_pc {
                 return;
             }
             let merged = PaintColor::light_dark(
-                l_eff.unwrap_or(PaintColor::srgb([0.0; 4])),
-                d_eff.unwrap_or(PaintColor::srgb([0.0; 4])),
+                (*l_pc).unwrap_or(PaintColor::srgb([0.0; 4])),
+                d_pc.unwrap_or(PaintColor::srgb([0.0; 4])),
             );
             *l_pc = Some(merged);
             add_written(written, paint_path);
-            if merged.is_theme_dynamic()
-                && let Some(leg) = l_leg
-            {
-                *leg = None;
-                if let Some(lp) = legacy_path {
-                    remove_written(written, lp);
-                }
-            }
         };
 
         let d_slots = &*dark.layout.paint_colors;
@@ -120,133 +103,61 @@ impl WrittenLayout {
         merge_slot(
             &mut l_slots.color,
             d_slots.color,
-            Some(&mut self.layout.color),
-            dark.layout.color,
             "paint_colors.color",
-            Some("color"),
             &mut self.written,
         );
         merge_slot(
             &mut l_slots.background,
             d_slots.background,
-            Some(&mut self.layout.background),
-            dark.layout.background,
             "paint_colors.background",
-            Some("background"),
             &mut self.written,
         );
         merge_slot(
             &mut l_slots.border,
             d_slots.border,
-            Some(&mut self.layout.border_color),
-            dark.layout.border_color,
             "paint_colors.border",
-            Some("border_color"),
             &mut self.written,
         );
-        if !l_slots.border_top.is_none()
-            || !d_slots.border_top.is_none()
-            || self.layout.border_sides.top_color != dark.layout.border_sides.top_color
-        {
-            merge_slot(
-                &mut l_slots.border_top,
-                d_slots.border_top,
-                Some(&mut self.layout.border_sides.top_color),
-                dark.layout.border_sides.top_color,
-                "paint_colors.border_top",
-                Some("border_sides.top_color"),
-                &mut self.written,
-            );
-        }
-        if !l_slots.border_right.is_none()
-            || !d_slots.border_right.is_none()
-            || self.layout.border_sides.right_color != dark.layout.border_sides.right_color
-        {
-            merge_slot(
-                &mut l_slots.border_right,
-                d_slots.border_right,
-                Some(&mut self.layout.border_sides.right_color),
-                dark.layout.border_sides.right_color,
-                "paint_colors.border_right",
-                Some("border_sides.right_color"),
-                &mut self.written,
-            );
-        }
-        if !l_slots.border_bottom.is_none()
-            || !d_slots.border_bottom.is_none()
-            || self.layout.border_sides.bottom_color != dark.layout.border_sides.bottom_color
-        {
-            merge_slot(
-                &mut l_slots.border_bottom,
-                d_slots.border_bottom,
-                Some(&mut self.layout.border_sides.bottom_color),
-                dark.layout.border_sides.bottom_color,
-                "paint_colors.border_bottom",
-                Some("border_sides.bottom_color"),
-                &mut self.written,
-            );
-        }
-        if !l_slots.border_left.is_none()
-            || !d_slots.border_left.is_none()
-            || self.layout.border_sides.left_color != dark.layout.border_sides.left_color
-        {
-            merge_slot(
-                &mut l_slots.border_left,
-                d_slots.border_left,
-                Some(&mut self.layout.border_sides.left_color),
-                dark.layout.border_sides.left_color,
-                "paint_colors.border_left",
-                Some("border_sides.left_color"),
-                &mut self.written,
-            );
-        }
-        if !l_slots.outline.is_none()
-            || !d_slots.outline.is_none()
-            || self.layout.paint.outline.color != dark.layout.paint.outline.color
-        {
-            let d_outline = if dark.layout.paint.is_shared_default() {
-                None
-            } else {
-                dark.layout.paint.outline.color
-            };
-            if self.layout.paint.is_shared_default() && d_outline.is_none() {
-                merge_slot(
-                    &mut l_slots.outline,
-                    d_slots.outline,
-                    None,
-                    None,
-                    "paint_colors.outline",
-                    None,
-                    &mut self.written,
-                );
-            } else {
-                merge_slot(
-                    &mut l_slots.outline,
-                    d_slots.outline,
-                    Some(&mut self.layout.paint.outline.color),
-                    d_outline,
-                    "paint_colors.outline",
-                    Some("paint.outline.color"),
-                    &mut self.written,
-                );
-            }
-        }
+        merge_slot(
+            &mut l_slots.border_top,
+            d_slots.border_top,
+            "paint_colors.border_top",
+            &mut self.written,
+        );
+        merge_slot(
+            &mut l_slots.border_right,
+            d_slots.border_right,
+            "paint_colors.border_right",
+            &mut self.written,
+        );
+        merge_slot(
+            &mut l_slots.border_bottom,
+            d_slots.border_bottom,
+            "paint_colors.border_bottom",
+            &mut self.written,
+        );
+        merge_slot(
+            &mut l_slots.border_left,
+            d_slots.border_left,
+            "paint_colors.border_left",
+            &mut self.written,
+        );
+        merge_slot(
+            &mut l_slots.outline,
+            d_slots.outline,
+            "paint_colors.outline",
+            &mut self.written,
+        );
         merge_slot(
             &mut l_slots.selection_background,
             d_slots.selection_background,
-            None,
-            None,
             "paint_colors.selection_background",
-            None,
             &mut self.written,
         );
         merge_slot(
             &mut l_slots.selection_color,
             d_slots.selection_color,
-            None,
-            None,
             "paint_colors.selection_color",
-            None,
             &mut self.written,
         );
 
@@ -567,8 +478,6 @@ fn reference() -> &'static (LayoutStyle, LayoutStyle) {
         layout.paint.text_material = Some(material);
         layout.text_ext.placeholder_color = Some([0.5; 4]);
         layout.text_ext.placeholder_opacity = Some(0.5);
-        layout.text_ext.selection_background = Some([0.5; 4]);
-        layout.text_ext.selection_color = Some([0.5; 4]);
         layout.paint_colors.selection_background =
             Some(nana_ui_core::PaintColor::Srgb { rgba: [0.5; 4] });
         layout.paint_colors.selection_color =
@@ -714,12 +623,10 @@ mod tests {
             res.layout.paint_colors.background,
             Some(PaintColor::theme_role(SemanticColorRole::Surface))
         );
-        assert_eq!(res.layout.background, None);
         assert_eq!(
             res.layout.paint_colors.color,
             Some(PaintColor::theme_role(SemanticColorRole::Accent))
         );
-        assert_eq!(res.layout.color, None);
 
         let light_vars = CssVarScope::from_map(BTreeMap::from([(
             "--tint".to_owned(),
@@ -741,7 +648,6 @@ mod tests {
             merged.layout.paint_colors.background,
             Some(PaintColor::ThemePair(_))
         ));
-        assert_eq!(merged.layout.background, None);
         let rust = merged.patch_rust_stmts("__patch");
         assert!(rust.contains("PaintColor::light_dark"), "{rust}");
     }

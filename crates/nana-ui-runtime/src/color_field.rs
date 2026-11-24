@@ -661,14 +661,16 @@ fn saturation_value_pad(field: &ColorField) -> XYPad {
 /// ordinary background image layers, so the box painter draws them.
 fn paint_saturation_value(style: &mut NodeStyle, hue: f32) {
     let layout = Arc::make_mut(&mut style.layout);
-    let hue_color = hsv_to_rgb(hue, 1.0, 1.0, 1.0);
-    if layout.background == Some(hue_color) && !layout.paint.background_layers.is_empty() {
+    let hue_color = nana_ui_core::PaintColor::srgb(hsv_to_rgb(hue, 1.0, 1.0, 1.0));
+    if layout.paint_colors.background == Some(hue_color)
+        && !layout.paint.background_layers.is_empty()
+    {
         return;
     }
     let white = hsv_to_rgb(0.0, 0.0, 1.0, 1.0);
     let black = hsv_to_rgb(0.0, 0.0, 0.0, 1.0);
     let clear = |color: [f32; 4]| [color[0], color[1], color[2], 0.0];
-    layout.background = Some(hue_color);
+    layout.paint_colors.background = Some(hue_color);
     // CSS order: the first image is on top. Value over saturation.
     layout.paint.background_layers = vec![
         linear_gradient(180.0, clear(black), black),
@@ -757,7 +759,7 @@ fn swatch_well(value: [f32; 4], side: f32, scale: f32) -> Stack {
         layout.flex_grow = Some(0.0);
         layout.flex_shrink = Some(0.0);
         layout.border_width = Some(nana_ui_core::HAIRLINE);
-        layout.background = Some(sanitize_rgba(value));
+        layout.paint_colors.background = Some(nana_ui_core::PaintColor::srgb(sanitize_rgba(value)));
         // The frame's corner scaled down to the well, so the well is the
         // field's own shape in small: the same tier, the same proportion,
         // and it follows the installed theme's radius.
@@ -1059,7 +1061,7 @@ mod tests {
         let pad_paint = |context: &AppContext| {
             let style = context.world().node_style(pad.stable_id()).unwrap();
             (
-                style.layout.background,
+                style.layout.background_srgb(),
                 style.layout.paint.background_layers.first().cloned(),
                 style
                     .layout

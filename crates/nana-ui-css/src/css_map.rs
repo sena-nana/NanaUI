@@ -2418,8 +2418,7 @@ impl LayoutStyleCss for LayoutStyle {
                 // SVG `stroke` paints CSS border on boxes. Generic `<svg>`
                 // charts rasterize via resvg (attrs including pathLength).
                 // There is no CSS extract into Scene StrokePattern.
-                if let Some((legacy, pc)) = resolve_css_color_pair(val) {
-                    self.border_color = legacy;
+                if let Some(pc) = resolve_css_paint_color_core(val) {
                     self.paint_colors.border = Some(pc);
                     if self.border_width.is_none() {
                         self.border_width = Some(8.0);
@@ -2466,26 +2465,22 @@ impl LayoutStyleCss for LayoutStyle {
             }
             "border-color" => apply_border_color_shorthand(self, val),
             "border-top-color" => {
-                if let Some((legacy, pc)) = resolve_css_color_pair(val) {
-                    self.border_sides.top_color = legacy;
+                if let Some(pc) = resolve_css_paint_color_core(val) {
                     self.paint_colors.border_top = Some(pc);
                 }
             }
             "border-right-color" => {
-                if let Some((legacy, pc)) = resolve_css_color_pair(val) {
-                    self.border_sides.right_color = legacy;
+                if let Some(pc) = resolve_css_paint_color_core(val) {
                     self.paint_colors.border_right = Some(pc);
                 }
             }
             "border-bottom-color" => {
-                if let Some((legacy, pc)) = resolve_css_color_pair(val) {
-                    self.border_sides.bottom_color = legacy;
+                if let Some(pc) = resolve_css_paint_color_core(val) {
                     self.paint_colors.border_bottom = Some(pc);
                 }
             }
             "border-left-color" => {
-                if let Some((legacy, pc)) = resolve_css_color_pair(val) {
-                    self.border_sides.left_color = legacy;
+                if let Some(pc) = resolve_css_paint_color_core(val) {
                     self.paint_colors.border_left = Some(pc);
                 }
             }
@@ -2846,8 +2841,7 @@ impl LayoutStyleCss for LayoutStyle {
                 }
             }
             "color" => {
-                if let Some((legacy, pc)) = resolve_css_color_pair(val) {
-                    self.color = legacy;
+                if let Some(pc) = resolve_css_paint_color_core(val) {
                     self.paint_colors.color = Some(pc);
                 }
             }
@@ -4849,14 +4843,9 @@ fn expand_css_vars_at_depth(
     (simplify_simple_calc(&out), had_unresolved)
 }
 
-/// Resolve a CSS color declaration into `(legacy_srgb_for_static, authoring_or_dynamic_paint)`.
-/// Dynamic theme colors keep `legacy == None` so static RGBA fields never shadow theme switching.
-pub(crate) fn resolve_css_color_pair(
-    val: &str,
-) -> Option<(Option<[f32; 4]>, nana_ui_core::PaintColor)> {
-    let pc = crate::style::resolve_css_paint_color(val)?.to_core();
-    let legacy = (!pc.is_theme_dynamic()).then(|| pc.to_srgb());
-    Some((legacy, pc))
+/// Resolve a CSS color declaration directly into [`PaintColor`](nana_ui_core::PaintColor).
+pub(crate) fn resolve_css_paint_color_core(val: &str) -> Option<nana_ui_core::PaintColor> {
+    crate::style::resolve_css_paint_color(val).map(crate::style::CssPaintColor::to_core)
 }
 
 /// Resolve CSS paint colors, including OKLCH/color-mix, and `var(--x, fallback)`
@@ -5476,7 +5465,7 @@ fn apply_border_color_shorthand(style: &mut LayoutStyle, val: &str) {
     let parts = split_css_space_tokens(val);
     let Some(parsed) = parts
         .iter()
-        .map(|part| resolve_css_color_pair(part))
+        .map(|part| resolve_css_paint_color_core(part))
         .collect::<Option<Vec<_>>>()
     else {
         return;
@@ -5484,16 +5473,11 @@ fn apply_border_color_shorthand(style: &mut LayoutStyle, val: &str) {
     let Some([top, right, bottom, left]) = css_four_sides(&parsed) else {
         return;
     };
-    style.border_color = top.0;
-    style.border_sides.top_color = top.0;
-    style.border_sides.right_color = right.0;
-    style.border_sides.bottom_color = bottom.0;
-    style.border_sides.left_color = left.0;
-    style.paint_colors.border = Some(top.1);
-    style.paint_colors.border_top = Some(top.1);
-    style.paint_colors.border_right = Some(right.1);
-    style.paint_colors.border_bottom = Some(bottom.1);
-    style.paint_colors.border_left = Some(left.1);
+    style.paint_colors.border = Some(top);
+    style.paint_colors.border_top = Some(top);
+    style.paint_colors.border_right = Some(right);
+    style.paint_colors.border_bottom = Some(bottom);
+    style.paint_colors.border_left = Some(left);
 }
 
 fn parse_cursor_spec(input: &str) -> Option<CursorSpec> {
@@ -5585,14 +5569,14 @@ fn apply_border_shorthand(style: &mut LayoutStyle, val: &str, side: Option<usize
     }
     let mut width = None;
     let mut parsed_style = None;
-    let mut color_pair = None;
+    let mut paint_color = None;
     for part in split_css_space_tokens(trimmed) {
         if let Some(s) = parse_border_style(&part) {
             parsed_style = Some(s);
         } else if let Some(v) = parse_css_length_px(&part, None) {
             width = Some(v.max(0.0));
-        } else if let Some(pair) = resolve_css_color_pair(&part) {
-            color_pair = Some(pair);
+        } else if let Some(pc) = resolve_css_paint_color_core(&part) {
+            paint_color = Some(pc);
         }
     }
     if let Some(w) = width {
@@ -5601,8 +5585,7 @@ fn apply_border_shorthand(style: &mut LayoutStyle, val: &str, side: Option<usize
     if let Some(s) = parsed_style {
         assign_border_side_style(style, side, s);
     }
-    if let Some((legacy, pc)) = color_pair {
-        assign_border_side_color_opt(style, side, legacy);
+    if let Some(pc) = paint_color {
         assign_border_side_paint(style, side, pc);
     }
 }
@@ -5620,26 +5603,6 @@ fn assign_border_side_width(style: &mut LayoutStyle, side: Option<usize>, width:
         Some(1) => style.border_sides.right_width = Some(width),
         Some(2) => style.border_sides.bottom_width = Some(width),
         _ => style.border_sides.left_width = Some(width),
-    }
-}
-
-fn assign_border_side_color_opt(
-    style: &mut LayoutStyle,
-    side: Option<usize>,
-    color: Option<[f32; 4]>,
-) {
-    match side {
-        None => {
-            style.border_color = color;
-            style.border_sides.top_color = color;
-            style.border_sides.right_color = color;
-            style.border_sides.bottom_color = color;
-            style.border_sides.left_color = color;
-        }
-        Some(0) => style.border_sides.top_color = color,
-        Some(1) => style.border_sides.right_color = color,
-        Some(2) => style.border_sides.bottom_color = color,
-        _ => style.border_sides.left_color = color,
     }
 }
 
@@ -6801,7 +6764,7 @@ mod tests {
         assert_eq!(layout.text_ext.font_family.as_deref(), Some("Noto Sans SC"));
         assert_eq!(layout.line_height, Some(LineHeightSpec::Relative(1.55)));
         assert_eq!(layout.text_ext.letter_spacing, Some(0.5));
-        let c = layout.color.expect("color");
+        let c = layout.color_srgb().expect("color");
         assert!((c[0] - 90.0 / 255.0).abs() < 0.02);
         assert!((c[1] - 97.0 / 255.0).abs() < 0.02);
         assert!((c[2] - 110.0 / 255.0).abs() < 0.02);
@@ -6832,17 +6795,17 @@ mod tests {
         assert_eq!(themed.text_ext.font_family.as_deref(), Some("Noto Sans SC"));
         assert_eq!(themed.font_size, Some(18.0));
         assert_eq!(themed.font_weight, Some(700));
-        assert!(themed.color.is_some());
+        assert!(themed.paint_colors.color.is_some());
 
         let mut parent = LayoutStyle::default();
         parent.font_size = Some(13.0);
         parent.font_weight = Some(600);
-        parent.color = Some([0.1, 0.1, 0.1, 1.0]);
+        parent.paint_colors.color = Some(nana_ui_core::PaintColor::srgb([0.1, 0.1, 0.1, 1.0]));
         let mut child = LayoutStyle::default();
         child.inherit_typography_from(&parent);
         assert_eq!(child.font_size, Some(13.0));
         assert_eq!(child.font_weight, Some(600));
-        assert_eq!(child.color, parent.color);
+        assert_eq!(child.paint_colors.color, parent.paint_colors.color);
         child.font_size = Some(18.0);
         child.inherit_typography_from(&parent);
         assert_eq!(
@@ -8268,7 +8231,10 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
             None,
             None,
         );
-        assert_eq!(layout.border_sides.top_color, Some([0.0, 0.0, 0.0, 1.0]));
+        assert_eq!(
+            layout.resolved_border_edge_colors()[0],
+            Some([0.0, 0.0, 0.0, 1.0])
+        );
         let edges = layout.resolved_border_edges();
         assert!((edges.right).abs() < 0.01, "none style zeros used width");
         assert!((edges.top - 1.0).abs() < 0.01);
@@ -8282,8 +8248,14 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         let side_edges = sides.resolved_border_edges();
         assert!((side_edges.top - 2.0).abs() < 0.01);
         assert!((side_edges.right - 4.0).abs() < 0.01);
-        assert_eq!(sides.border_sides.top_color, Some([1.0, 0.0, 0.0, 1.0]));
-        assert_eq!(sides.border_sides.right_color, Some([0.0, 0.0, 1.0, 1.0]));
+        assert_eq!(
+            sides.resolved_border_edge_colors()[0],
+            Some([1.0, 0.0, 0.0, 1.0])
+        );
+        assert_eq!(
+            sides.resolved_border_edge_colors()[1],
+            Some([0.0, 0.0, 1.0, 1.0])
+        );
     }
 
     #[test]
@@ -8320,11 +8292,11 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         colors.apply_css_text("border-color: red blue bogus yellow", None, None);
         assert_eq!(
             (
-                colors.border_color,
-                colors.border_sides.top_color,
-                colors.border_sides.right_color,
-                colors.border_sides.bottom_color,
-                colors.border_sides.left_color,
+                colors.paint_colors.border,
+                colors.paint_colors.border_top,
+                colors.paint_colors.border_right,
+                colors.paint_colors.border_bottom,
+                colors.paint_colors.border_left,
             ),
             (None, None, None, None, None),
             "unknown color token must not collapse 4-value to 3-value (red/blue/yellow/blue)"
@@ -9180,7 +9152,7 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         assert_eq!(actions.width, Some(LengthSpec::Auto));
         assert_eq!(actions.padding, Some(LengthSpec::Px(4.0)));
         assert_eq!(actions.border_width, Some(1.0));
-        assert!(actions.background.is_some());
+        assert!(actions.paint_colors.background.is_some());
         let actions_radii = actions.paint.border_radii.expect("actions corners");
         assert_eq!(actions_radii[0], LengthSpec::Px(10.0));
 
@@ -9233,8 +9205,8 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         assert!(card.border_radius.is_none());
         assert!(card.padding.is_none());
         assert!(card.border_width.is_none());
-        assert!(card.border_color.is_none());
-        assert!(card.background.is_none());
+        assert!(card.paint_colors.border.is_none());
+        assert!(card.paint_colors.background.is_none());
 
         let mut primary_region = LayoutStyle::default();
         primary_region.apply_class_layout_hints(&["nana-workspace-shell__primary".into()]);
@@ -9260,10 +9232,18 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
 
         // Navy host-marker must clear under the public nana-gpu contract.
         let mut slot = LayoutStyle::default();
-        slot.background = Some([30.0 / 255.0, 41.0 / 255.0, 59.0 / 255.0, 1.0]);
+        slot.paint_colors.background = Some(nana_ui_core::PaintColor::srgb([
+            30.0 / 255.0,
+            41.0 / 255.0,
+            59.0 / 255.0,
+            1.0,
+        ]));
         slot.height = Some(LengthSpec::Px(120.0));
         slot.apply_class_layout_hints(&["nana-gpu".into()]);
-        assert!(slot.background.is_none(), "navy marker must not paint");
+        assert!(
+            slot.paint_colors.background.is_none(),
+            "navy marker must not paint"
+        );
         assert_eq!(slot.border_radius, Some(10.0));
 
         // grid-template-rows is the generic path (not inventing rows from a page class).
@@ -9315,7 +9295,7 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
             "panel-horizontal".into(),
         ]);
         assert!(orphan.grid.rows.is_none());
-        assert!(orphan.background.is_none());
+        assert!(orphan.paint_colors.background.is_none());
         assert!(orphan.height.is_none());
         assert!(orphan.direction.is_none());
     }
@@ -9341,9 +9321,12 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
     fn svg_stroke_width_and_fill_none_map_to_layout() {
         let mut ring = LayoutStyle::default();
         ring.apply_css_text("fill:none;stroke:#4c8bf5;stroke-width:28px", None, None);
-        assert!(ring.background.is_none(), "fill:none must clear background");
+        assert!(
+            ring.paint_colors.background.is_none(),
+            "fill:none must clear background"
+        );
         assert_eq!(ring.border_width, Some(28.0));
-        assert!(ring.border_color.is_some());
+        assert!(ring.paint_colors.border.is_some());
     }
 
     #[test]

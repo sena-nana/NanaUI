@@ -443,14 +443,11 @@ layout_style_fields! {
         font_weight: FONT,
         font_italic: TEXT_LAYOUT,
         line_height: FONT,
-        color: PAINT,
         hidden: VISIBILITY,
         paint: PAINT,
         opacity: PAINT,
-        background: PAINT,
         border_radius: PAINT,
         border_width: BORDER_GEOMETRY,
-        border_color: PAINT,
         border_style: BORDER_STYLE,
     }
     shared transforms: TransformStyle {
@@ -489,8 +486,6 @@ layout_style_fields! {
         text_orientation => text_ext_text_orientation: WRITING,
         placeholder_color => text_ext_placeholder_color: PAINT,
         placeholder_opacity => text_ext_placeholder_opacity: PAINT,
-        selection_background => text_ext_selection_background: PAINT,
-        selection_color => text_ext_selection_color: PAINT,
     }
     shared grid: GridStyle {
         columns => grid_columns: GRID,
@@ -514,10 +509,6 @@ layout_style_fields! {
         right_width => border_right_width: BORDER_GEOMETRY,
         bottom_width => border_bottom_width: BORDER_GEOMETRY,
         left_width => border_left_width: BORDER_GEOMETRY,
-        top_color => border_top_color: PAINT,
-        right_color => border_right_color: PAINT,
-        bottom_color => border_bottom_color: PAINT,
-        left_color => border_left_color: PAINT,
         top_style => border_top_style: BORDER_STYLE,
         right_style => border_right_style: BORDER_STYLE,
         bottom_style => border_bottom_style: BORDER_STYLE,
@@ -558,7 +549,7 @@ mod tests {
         let base = LayoutStyle::default();
         let styled = LayoutStyle::with(|s| {
             s.width = Some(LengthSpec::Px(10.0));
-            s.background = Some([1.0, 0.0, 0.0, 1.0]);
+            s.paint_colors.background = Some(crate::PaintColor::srgb([1.0, 0.0, 0.0, 1.0]));
             s.container.container_name = vec!["card".into()];
         });
         let fields = base.differing_fields(&styled);

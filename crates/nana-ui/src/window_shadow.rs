@@ -321,12 +321,13 @@ mod tests {
             .mount_view_root(document_id, || {
                 let root = Stack::column(0.0).with_layout(|layout| {
                     layout.padding = Some(LengthSpec::Px(inset));
-                    layout.background = layer;
+                    layout.paint_colors.background = layer.map(nana_ui_core::PaintColor::srgb);
                 });
                 let card = Stack::column(0.0).with_layout(|layout| {
                     layout.width = Some(LengthSpec::Px(card[0]));
                     layout.height = Some(LengthSpec::Px(card[1]));
-                    layout.background = Some([1.0, 1.0, 1.0, 1.0]);
+                    layout.paint_colors.background =
+                        Some(nana_ui_core::PaintColor::srgb([1.0, 1.0, 1.0, 1.0]));
                     layout.border_radius = Some(12.0);
                 });
                 widget(root).children(widget(card))

@@ -1313,13 +1313,15 @@ fn effect_panel_style(frost: bool) -> NodeStyle {
         ..LayoutStyle::default()
     };
     if frost {
-        layout.background = Some([0.95, 0.96, 0.98, 0.55]);
+        layout.paint_colors.background =
+            Some(nana_ui_core::PaintColor::srgb([0.95, 0.96, 0.98, 0.55]));
         layout.paint.backdrop_filter = Some(nana_ui_core::BackdropFilter {
             blur_radius: 12.0,
             saturate: 1.0,
         });
     } else {
-        layout.background = Some([0.18, 0.2, 0.26, 1.0]);
+        layout.paint_colors.background =
+            Some(nana_ui_core::PaintColor::srgb([0.18, 0.2, 0.26, 1.0]));
         layout.opacity = Some(0.85);
     }
     style

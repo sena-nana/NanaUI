@@ -1215,9 +1215,13 @@ fn sdf_dashed_border_skips_gaps_on_gpu() {
             80.0,
             80.0,
             nana_ui_core::LayoutStyle {
-                background: Some([1.0, 1.0, 1.0, 1.0]),
+                paint_colors: nana_ui_core::PaintColorSlots {
+                    background: Some(nana_ui_core::PaintColor::srgb([1.0, 1.0, 1.0, 1.0])),
+                    border: Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0])),
+                    ..Default::default()
+                }
+                .into(),
                 border_width: Some(4.0),
-                border_color: Some([1.0, 0.0, 0.0, 1.0]),
                 border_style: Some(nana_ui_core::BorderStyle::Dashed),
                 ..nana_ui_core::LayoutStyle::default()
             },
@@ -1262,9 +1266,13 @@ fn sdf_dotted_border_skips_gaps_on_gpu() {
             80.0,
             80.0,
             nana_ui_core::LayoutStyle {
-                background: Some([1.0, 1.0, 1.0, 1.0]),
+                paint_colors: nana_ui_core::PaintColorSlots {
+                    background: Some(nana_ui_core::PaintColor::srgb([1.0, 1.0, 1.0, 1.0])),
+                    border: Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0])),
+                    ..Default::default()
+                }
+                .into(),
                 border_width: Some(4.0),
-                border_color: Some([1.0, 0.0, 0.0, 1.0]),
                 border_style: Some(nana_ui_core::BorderStyle::Dotted),
                 ..nana_ui_core::LayoutStyle::default()
             },
@@ -1305,9 +1313,13 @@ fn dash_ends_and_dot_rims_stay_one_device_pixel_under_transform_scale() {
     ] {
         let white = [1.0, 1.0, 1.0, 1.0];
         let layout = nana_ui_core::LayoutStyle {
-            background: Some(white),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb(white)),
+                border: Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0])),
+                ..Default::default()
+            }
+            .into(),
             border_width: Some(4.0),
-            border_color: Some([1.0, 0.0, 0.0, 1.0]),
             border_style: Some(style),
             transforms: nana_ui_core::TransformStyle {
                 transform: scale_transform(scale),
@@ -2306,7 +2318,11 @@ fn drop_shadow_samples_dest_group_alpha_not_box_shadow_quads() {
             16.0,
             16.0,
             nana_ui_core::LayoutStyle {
-                background: Some([1.0, 0.0, 0.0, 1.0]),
+                paint_colors: nana_ui_core::PaintColorSlots {
+                    background: Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0])),
+                    ..Default::default()
+                }
+                .into(),
                 paint: nana_ui_core::PaintStyle {
                     filter: Some(nana_ui_core::ColorFilter {
                         drop_shadow: Some(nana_ui_core::FilterDropShadow {
@@ -2399,7 +2415,11 @@ fn drop_shadow_dest_group_follows_scene_origin() {
             16.0,
             16.0,
             nana_ui_core::LayoutStyle {
-                background: Some([1.0, 0.0, 0.0, 1.0]),
+                paint_colors: nana_ui_core::PaintColorSlots {
+                    background: Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0])),
+                    ..Default::default()
+                }
+                .into(),
                 paint: nana_ui_core::PaintStyle {
                     filter: Some(nana_ui_core::ColorFilter {
                         drop_shadow: Some(nana_ui_core::FilterDropShadow {
@@ -2466,11 +2486,15 @@ fn outline_and_shadow_spread_stay_css_px_at_hidpi() {
             16.0,
             16.0,
             nana_ui_core::LayoutStyle {
-                background: Some([1.0, 0.0, 0.0, 1.0]),
+                paint_colors: nana_ui_core::PaintColorSlots {
+                    background: Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0])),
+                    outline: Some(nana_ui_core::PaintColor::srgb([0.0, 1.0, 0.0, 1.0])),
+                    ..Default::default()
+                }
+                .into(),
                 paint: nana_ui_core::PaintStyle {
                     outline: nana_ui_core::OutlineSpec {
                         width: 2.0,
-                        color: Some([0.0, 1.0, 0.0, 1.0]),
                         style: nana_ui_core::OutlineStyle::Solid,
                     },
                     box_shadows: vec![nana_ui_core::BoxShadowSpec {
@@ -3412,7 +3436,7 @@ fn rectangle_and_polygon_clip_edges_stay_one_device_pixel_under_a_transform() {
         ..ComputedStyle::default()
     });
     let layout = Arc::make_mut(&mut own.source_style.layout);
-    layout.background = Some(green);
+    layout.paint_colors.background = Some(nana_ui_core::PaintColor::srgb(green));
     layout.transforms.transform = transform;
     let quad_child = colored_quad_child(2, 1, 8.0, 8.0, 48.0, 48.0, green);
     let texture_child = host_texture_child(2, 1, 8.0, 8.0, 48.0, 48.0, "fill");
@@ -4208,7 +4232,11 @@ fn rounded_quad_edge_stays_one_device_pixel_under_transform_scale() {
     for circle @ (_, [x, y, w, h], scale, factor) in SCALED_CIRCLES {
         let mut scene = UiScene::new();
         let style = nana_ui_core::LayoutStyle {
-            background: Some(green),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb(green)),
+                ..Default::default()
+            }
+            .into(),
             border_radius: Some(w.min(h) * 0.5),
             transforms: nana_ui_core::TransformStyle {
                 transform: scale_transform(scale),
@@ -4475,7 +4503,11 @@ fn square_edges_stay_one_device_pixel_under_any_affine_transform() {
         let corners = [[-h, -h], [h, -h], [h, h], [-h, h]]
             .map(|[u, v]| [(cx + a * u + c * v) * factor, (cy + b * u + d * v) * factor]);
         let style = nana_ui_core::LayoutStyle {
-            background: Some(green),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb(green)),
+                ..Default::default()
+            }
+            .into(),
             transforms: nana_ui_core::TransformStyle {
                 transform: Some(transform),
                 ..Default::default()
@@ -4559,7 +4591,6 @@ fn unblurred_shadow_and_outline_edges_stay_one_device_pixel_under_transform_scal
             let (fill, paint) = if outline {
                 let outline = nana_ui_core::OutlineSpec {
                     width: band,
-                    color: Some(green),
                     style: nana_ui_core::OutlineStyle::Solid,
                 };
                 let paint = nana_ui_core::PaintStyle {
@@ -4582,8 +4613,7 @@ fn unblurred_shadow_and_outline_edges_stay_one_device_pixel_under_transform_scal
                 };
                 ([0.0, 0.0, 0.0, 1.0], paint)
             };
-            let layout = nana_ui_core::LayoutStyle {
-                background: Some(fill),
+            let mut layout = nana_ui_core::LayoutStyle {
                 border_radius: Some(w.min(h) * 0.5 - band),
                 transforms: nana_ui_core::TransformStyle {
                     transform: scale_transform(scale),
@@ -4592,7 +4622,11 @@ fn unblurred_shadow_and_outline_edges_stay_one_device_pixel_under_transform_scal
                 .into(),
                 paint: paint.into(),
                 ..Default::default()
-            };
+            }
+            .background(fill);
+            if outline {
+                layout = layout.outline_color(green);
+            }
             let [x, y, w, h] = [x + band, y + band, w - band * 2.0, h - band * 2.0];
             let node = extracted_div(1, &[], x, y, w, h, layout, Some(fill));
             let mut scene = UiScene::new();
@@ -4630,7 +4664,11 @@ fn inset_shadow_spread_shrinks_its_shape_inside_the_box() {
             inset: true,
         };
         let layout = nana_ui_core::LayoutStyle {
-            background: Some(black),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb(black)),
+                ..Default::default()
+            }
+            .into(),
             border_radius: Some(w.min(h) * 0.5),
             transforms: nana_ui_core::TransformStyle {
                 transform: scale_transform(scale),
@@ -4681,7 +4719,11 @@ fn paint_box_shadow(
         inset,
     };
     let layout = nana_ui_core::LayoutStyle {
-        background: Some(black),
+        paint_colors: nana_ui_core::PaintColorSlots {
+            background: Some(nana_ui_core::PaintColor::srgb(black)),
+            ..Default::default()
+        }
+        .into(),
         paint: nana_ui_core::PaintStyle {
             box_shadows: vec![shadow],
             ..Default::default()
@@ -5838,7 +5880,11 @@ fn colored_quad_node(
         width,
         height,
         nana_ui_core::LayoutStyle {
-            background: Some(color),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb(color)),
+                ..Default::default()
+            }
+            .into(),
             ..nana_ui_core::LayoutStyle::default()
         },
         Some(color),
@@ -6155,7 +6201,11 @@ fn paint_surface_quad_node(
         width,
         height,
         nana_ui_core::LayoutStyle {
-            background: Some(background),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb(background)),
+                ..Default::default()
+            }
+            .into(),
             paint: nana_ui_core::PaintStyle {
                 background_layers: surface
                     .background_image
@@ -6191,7 +6241,11 @@ fn frost_quad_node_with_fill(
         width,
         height,
         nana_ui_core::LayoutStyle {
-            background: Some(fill),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb(fill)),
+                ..Default::default()
+            }
+            .into(),
             paint: nana_ui_core::PaintStyle {
                 backdrop_filter: Some(filter),
                 ..Default::default()
@@ -6954,7 +7008,8 @@ fn parent_perspective_and_backface_visibility_render_on_gpu() {
         let mut card_style = NodeStyle::default();
         {
             let layout = Arc::make_mut(&mut card_style.layout);
-            layout.background = Some([1.0, 0.0, 0.0, 1.0]);
+            layout.paint_colors.background =
+                Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0]));
             layout.transforms.transform_3d =
                 Some(nana_ui_core::PaintMat4::rotate_y(deg.to_radians()));
             if backface_hidden {
@@ -9194,7 +9249,7 @@ fn paint_layout_sample(
     sample_x: u32,
     sample_y: u32,
 ) -> [u8; 4] {
-    let fill = layout.background.unwrap_or([0.0, 0.0, 0.0, 1.0]);
+    let fill = layout.background_srgb().unwrap_or([0.0, 0.0, 0.0, 1.0]);
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let mut painter = SceneWgpuPainter::for_test(format);
@@ -9238,21 +9293,21 @@ fn paint_layout_sample(
 #[test]
 fn four_side_solid_borders_still_paint() {
     let layout = nana_ui_core::LayoutStyle {
-        background: Some([0.1, 0.1, 0.1, 1.0]),
         border_sides: nana_ui_core::BorderSides {
             top_width: Some(6.0),
             right_width: Some(6.0),
             bottom_width: Some(6.0),
             left_width: Some(6.0),
-            top_color: Some([1.0, 0.0, 0.0, 1.0]),
-            right_color: Some([0.0, 1.0, 0.0, 1.0]),
-            bottom_color: Some([0.0, 0.0, 1.0, 1.0]),
-            left_color: Some([1.0, 1.0, 0.0, 1.0]),
             ..Default::default()
         }
         .into(),
         ..Default::default()
-    };
+    }
+    .background([0.1, 0.1, 0.1, 1.0])
+    .border_top_color([1.0, 0.0, 0.0, 1.0])
+    .border_right_color([0.0, 1.0, 0.0, 1.0])
+    .border_bottom_color([0.0, 0.0, 1.0, 1.0])
+    .border_left_color([1.0, 1.0, 0.0, 1.0]);
     let top = paint_layout_sample(layout.clone(), [40.0, 40.0], 20, 2);
     let right = paint_layout_sample(layout.clone(), [40.0, 40.0], 38, 20);
     let bottom = paint_layout_sample(layout.clone(), [40.0, 40.0], 20, 38);
@@ -9469,7 +9524,11 @@ fn unsupported_border_image_does_not_paint_nine_slice() {
         .unwrap_or("nine-slice.png")
         .to_string();
     let layout = nana_ui_core::LayoutStyle {
-        background: Some([0.1, 0.1, 0.1, 1.0]),
+        paint_colors: nana_ui_core::PaintColorSlots {
+            background: Some(nana_ui_core::PaintColor::srgb([0.1, 0.1, 0.1, 1.0])),
+            ..Default::default()
+        }
+        .into(),
         paint: nana_ui_core::PaintStyle {
             unsupported_border_image: true,
             border_image: Some(nana_ui_core::BorderImageSpec {
@@ -14032,7 +14091,8 @@ fn a_masked_node_fades_its_painted_fill_exactly_as_its_own_background() {
         120,
         20,
         |layout| {
-            layout.background = Some([1.0, 1.0, 1.0, 1.0]);
+            layout.paint_colors.background =
+                Some(nana_ui_core::PaintColor::srgb([1.0, 1.0, 1.0, 1.0]));
             layout.paint.mask = Some(mask.clone());
         },
     );
@@ -14216,7 +14276,8 @@ fn a_painted_fill_matches_the_background_under_angled_and_radial_masks() {
             100,
             40,
             |layout| {
-                layout.background = Some([1.0, 1.0, 1.0, 1.0]);
+                layout.paint_colors.background =
+                    Some(nana_ui_core::PaintColor::srgb([1.0, 1.0, 1.0, 1.0]));
                 layout.paint.mask = Some(mask.clone());
             },
         );
@@ -14270,7 +14331,8 @@ fn a_gradient_mask_takes_the_stops_alpha_not_their_luminance() {
         120,
         20,
         |layout| {
-            layout.background = Some([1.0, 1.0, 1.0, 1.0]);
+            layout.paint_colors.background =
+                Some(nana_ui_core::PaintColor::srgb([1.0, 1.0, 1.0, 1.0]));
             layout.paint.mask = Some(black_fade_in_mask());
         },
     );
@@ -14452,7 +14514,11 @@ fn green_material_square(tag: &str) -> UiScene {
             64.0,
             64.0,
             nana_ui_core::LayoutStyle {
-                background: Some([0.0, 0.0, 1.0, 1.0]),
+                paint_colors: nana_ui_core::PaintColorSlots {
+                    background: Some(nana_ui_core::PaintColor::srgb([0.0, 0.0, 1.0, 1.0])),
+                    ..Default::default()
+                }
+                .into(),
                 paint: nana_ui_core::PaintStyle {
                     background_material: Some(material),
                     ..Default::default()
@@ -14619,7 +14685,11 @@ fn a_new_painter_holds_the_pipelines_its_first_frame_draws_with() {
             64.0,
             64.0,
             nana_ui_core::LayoutStyle {
-                background: Some([0.0, 0.0, 1.0, 1.0]),
+                paint_colors: nana_ui_core::PaintColorSlots {
+                    background: Some(nana_ui_core::PaintColor::srgb([0.0, 0.0, 1.0, 1.0])),
+                    ..Default::default()
+                }
+                .into(),
                 ..Default::default()
             },
             Some([0.0, 0.0, 1.0, 1.0]),
@@ -14721,7 +14791,11 @@ mod precompiled_quads {
     /// Rounded, bordered, dashed, translucent and shadowed quads.
     fn quads_scene() -> UiScene {
         let style = |background: [f32; 4]| nana_ui_core::LayoutStyle {
-            background: Some(background),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb(background)),
+                ..Default::default()
+            }
+            .into(),
             ..Default::default()
         };
         let shadowed = |shadow: nana_ui_core::BoxShadowSpec| nana_ui_core::PaintStyle {
@@ -15183,7 +15257,11 @@ fn material_textures_share_across_parameter_updates_and_drop_when_removed() {
                 64.0,
                 64.0,
                 nana_ui_core::LayoutStyle {
-                    background: Some([1.0, 1.0, 1.0, 1.0]),
+                    paint_colors: nana_ui_core::PaintColorSlots {
+                        background: Some(nana_ui_core::PaintColor::srgb([1.0, 1.0, 1.0, 1.0])),
+                        ..Default::default()
+                    }
+                    .into(),
                     paint: nana_ui_core::PaintStyle {
                         background_material: material,
                         ..Default::default()

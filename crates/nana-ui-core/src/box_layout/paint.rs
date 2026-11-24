@@ -194,7 +194,7 @@ pub(super) fn used_border_width(width: f32, style: Option<BorderStyle>) -> f32 {
 pub(super) fn paint_border_width(
     width: f32,
     style: Option<BorderStyle>,
-    color: Option<[f32; 4]>,
+    color: Option<crate::style_model::PaintColor>,
 ) -> f32 {
     if width > 0.0 && color.is_some() && edge_paints_stroke(style) {
         width
@@ -219,7 +219,6 @@ pub enum OutlineStyle {
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct OutlineSpec {
     pub width: f32,
-    pub color: Option<[f32; 4]>,
     pub style: OutlineStyle,
 }
 

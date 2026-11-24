@@ -359,20 +359,12 @@ pub struct TextStyleExt {
     /// `::placeholder` opacity multiplier. Combined with
     /// [`Self::placeholder_color`] (or theme faint) at TextInput paint.
     pub placeholder_opacity: Option<f32>,
-    /// Author `::selection` / `::-moz-selection` background (RGBA 0..=1).
-    /// Unset uses the theme accent at document-text highlight paint.
-    pub selection_background: Option<[f32; 4]>,
-    /// Author `::selection` / `::-moz-selection` foreground (RGBA 0..=1).
-    /// Unset keeps the node's ordinary text color.
-    pub selection_color: Option<[f32; 4]>,
 }
 
 impl TextStyleExt {
     /// Whether any cold text field in this group overrides the node's resolved `ComputedStyle`.
     pub fn overrides_computed_style(&self) -> bool {
-        self.selection_background.is_some()
-            || self.selection_color.is_some()
-            || self.font_family.is_some()
+        self.font_family.is_some()
             || self.letter_spacing.is_some()
             || self.font_features.is_some()
             || self.font_variation_settings.is_some()
@@ -394,10 +386,6 @@ pub struct BorderSides {
     pub right_width: Option<f32>,
     pub bottom_width: Option<f32>,
     pub left_width: Option<f32>,
-    pub top_color: Option<[f32; 4]>,
-    pub right_color: Option<[f32; 4]>,
-    pub bottom_color: Option<[f32; 4]>,
-    pub left_color: Option<[f32; 4]>,
     pub top_style: Option<BorderStyle>,
     pub right_style: Option<BorderStyle>,
     pub bottom_style: Option<BorderStyle>,
@@ -555,9 +543,7 @@ pub struct LayoutStyle {
     pub font_italic: Option<bool>,
     /// CSS `line-height` subset. `None` = inherit / engine default.
     pub line_height: Option<LineHeightSpec>,
-    /// Foreground `color` (RGBA 0..=1). `None` = inherit / theme text.
-    pub color: Option<[f32; 4]>,
-    /// Cold text styling, typography, emphasis, and pseudo-element colors.
+    /// Cold text styling, typography, emphasis, and pseudo-element properties.
     pub text_ext: crate::shared::Shared<TextStyleExt>,
     /// Cold CSS Grid template and placement properties.
     pub grid: crate::shared::Shared<GridStyle>,
@@ -568,15 +554,11 @@ pub struct LayoutStyle {
     /// Parsed with other declarations so CSS adapters need not re-scan the style
     /// string.
     pub opacity: Option<f32>,
-    /// Instance surface paint from CSS style/class (not ThemeTokens).
-    /// RGBA 0..=1; applied by Scene paint.
-    pub background: Option<[f32; 4]>,
     pub border_radius: Option<f32>,
     pub border_width: Option<f32>,
-    pub border_color: Option<[f32; 4]>,
     /// Uniform `border-style` shorthand residue. Longhands override.
     pub border_style: Option<BorderStyle>,
-    /// Cold per-side border widths, colors, and styles.
+    /// Cold per-side border widths and styles.
     pub border_sides: crate::shared::Shared<BorderSides>,
     /// Cold `@container` query properties.
     pub container: crate::shared::Shared<ContainerStyle>,
@@ -651,16 +633,13 @@ impl Default for LayoutStyle {
             font_weight: None,
             font_italic: None,
             line_height: None,
-            color: None,
             text_ext: Default::default(),
             grid: Default::default(),
             hidden: false,
             paint: Default::default(),
             opacity: None,
-            background: None,
             border_radius: None,
             border_width: None,
-            border_color: None,
             border_style: None,
             border_sides: Default::default(),
             container: Default::default(),
@@ -794,8 +773,7 @@ impl LayoutStyle {
     }
 
     pub fn has_surface_paint(&self) -> bool {
-        self.background.is_some()
-            || self.paint_colors.background.is_some()
+        self.paint_colors.background.is_some()
             || self
                 .resolved_border_radii(0.0, 0.0)
                 .iter()
@@ -825,115 +803,20 @@ impl LayoutStyle {
         }
     }
 
-    /// Apply pre-resolved [`PaintColorSlots`] onto dynamic slots and mirror legacy `[f32; 4]` fields.
+    /// Apply pre-resolved [`PaintColorSlots`] when this style holds dynamic theme colors.
     pub fn apply_pre_resolved_paint_colors(
         &mut self,
         resolved: &crate::shared::Shared<crate::style_model::PaintColorSlots>,
     ) {
-        if self.paint_colors.is_shared_default() || !self.paint_colors.has_dynamic_theme() {
-            return;
-        }
-        let dyn_color = self
-            .paint_colors
-            .color
-            .is_some_and(PaintColor::is_theme_dynamic);
-        let dyn_bg = self
-            .paint_colors
-            .background
-            .is_some_and(PaintColor::is_theme_dynamic);
-        let dyn_border = self
-            .paint_colors
-            .border
-            .is_some_and(PaintColor::is_theme_dynamic);
-        let dyn_top = self
-            .paint_colors
-            .border_top
-            .is_some_and(PaintColor::is_theme_dynamic);
-        let dyn_right = self
-            .paint_colors
-            .border_right
-            .is_some_and(PaintColor::is_theme_dynamic);
-        let dyn_bottom = self
-            .paint_colors
-            .border_bottom
-            .is_some_and(PaintColor::is_theme_dynamic);
-        let dyn_left = self
-            .paint_colors
-            .border_left
-            .is_some_and(PaintColor::is_theme_dynamic);
-        let dyn_outline = self
-            .paint_colors
-            .outline
-            .is_some_and(PaintColor::is_theme_dynamic);
-        self.paint_colors = resolved.clone();
-        let slots = &*self.paint_colors;
-        if dyn_color && let Some(c) = slots.color {
-            self.color = Some(c.to_srgb());
-        }
-        if dyn_bg && let Some(c) = slots.background {
-            self.background = Some(c.to_srgb());
-        }
-        if dyn_border && let Some(c) = slots.border {
-            self.border_color = Some(c.to_srgb());
-        }
-        if dyn_top && let Some(c) = slots.border_top {
-            self.border_sides.top_color = Some(c.to_srgb());
-        }
-        if dyn_right && let Some(c) = slots.border_right {
-            self.border_sides.right_color = Some(c.to_srgb());
-        }
-        if dyn_bottom && let Some(c) = slots.border_bottom {
-            self.border_sides.bottom_color = Some(c.to_srgb());
-        }
-        if dyn_left && let Some(c) = slots.border_left {
-            self.border_sides.left_color = Some(c.to_srgb());
-        }
-        if dyn_outline && let Some(c) = slots.outline {
-            self.paint.outline.color = Some(c.to_srgb());
+        if !self.paint_colors.is_shared_default() && self.paint_colors.has_dynamic_theme() {
+            self.paint_colors = resolved.clone();
         }
     }
 
-    /// Resolve every theme-dynamic [`PaintColor`] into static colors against
-    /// `model` and mirror resolved `[f32; 4]` values onto legacy fields.
+    /// Resolve every theme-dynamic [`PaintColor`] against `model`.
     pub fn resolve_theme_colors(&mut self, model: StyleModelRef) {
         if !self.paint_colors.is_shared_default() && self.paint_colors.has_dynamic_theme() {
-            let resolve_slot = |slot: &mut Option<PaintColor>| -> Option<PaintColor> {
-                let pc = (*slot)?;
-                if pc.is_theme_dynamic() {
-                    let resolved = pc.resolve(model);
-                    *slot = Some(resolved);
-                    Some(resolved)
-                } else {
-                    None
-                }
-            };
-            let slots = &mut *self.paint_colors;
-            if let Some(resolved) = resolve_slot(&mut slots.color) {
-                self.color = Some(resolved.to_srgb());
-            }
-            if let Some(resolved) = resolve_slot(&mut slots.background) {
-                self.background = Some(resolved.to_srgb());
-            }
-            if let Some(resolved) = resolve_slot(&mut slots.border) {
-                self.border_color = Some(resolved.to_srgb());
-            }
-            if let Some(resolved) = resolve_slot(&mut slots.border_top) {
-                self.border_sides.top_color = Some(resolved.to_srgb());
-            }
-            if let Some(resolved) = resolve_slot(&mut slots.border_right) {
-                self.border_sides.right_color = Some(resolved.to_srgb());
-            }
-            if let Some(resolved) = resolve_slot(&mut slots.border_bottom) {
-                self.border_sides.bottom_color = Some(resolved.to_srgb());
-            }
-            if let Some(resolved) = resolve_slot(&mut slots.border_left) {
-                self.border_sides.left_color = Some(resolved.to_srgb());
-            }
-            if let Some(resolved) = resolve_slot(&mut slots.outline) {
-                self.paint.outline.color = Some(resolved.to_srgb());
-            }
-            let _ = resolve_slot(&mut slots.selection_background);
-            let _ = resolve_slot(&mut slots.selection_color);
+            self.paint_colors.resolve_theme(model);
         }
 
         if !self.paint.is_shared_default() && self.paint.has_dynamic_theme() {
@@ -1133,28 +1016,70 @@ impl LayoutStyle {
         ]
     }
 
-    /// Per-side colors. Longhands override [`Self::border_color`].
-    pub fn resolved_border_edge_colors(&self) -> [Option<[f32; 4]>; 4] {
-        let uniform = self.border_color;
-        if self.border_sides.is_shared_default() {
-            return [uniform; 4];
-        }
-        let sides = &*self.border_sides;
+    /// Foreground `color` from [`Self::paint_colors`].
+    #[inline]
+    pub fn resolved_color(&self) -> Option<PaintColor> {
+        self.paint_colors.color
+    }
+
+    /// Foreground `color` resolved to sRGB `[f32; 4]`.
+    #[inline]
+    pub fn color_srgb(&self) -> Option<[f32; 4]> {
+        self.paint_colors.color.map(PaintColor::to_srgb)
+    }
+
+    /// Surface `background` from [`Self::paint_colors`].
+    #[inline]
+    pub fn resolved_background(&self) -> Option<PaintColor> {
+        self.paint_colors.background
+    }
+
+    /// Surface `background` resolved to sRGB `[f32; 4]`.
+    #[inline]
+    pub fn background_srgb(&self) -> Option<[f32; 4]> {
+        self.paint_colors.background.map(PaintColor::to_srgb)
+    }
+
+    /// CSS `outline` color from [`Self::paint_colors`].
+    #[inline]
+    pub fn resolved_outline_color(&self) -> Option<PaintColor> {
+        self.paint_colors.outline
+    }
+
+    /// Author `::selection` background from [`Self::paint_colors`].
+    #[inline]
+    pub fn resolved_selection_background(&self) -> Option<PaintColor> {
+        self.paint_colors.selection_background
+    }
+
+    /// Author `::selection` foreground from [`Self::paint_colors`].
+    #[inline]
+    pub fn resolved_selection_color(&self) -> Option<PaintColor> {
+        self.paint_colors.selection_color
+    }
+
+    /// Per-side border colors as [`PaintColor`]. Longhands override `paint_colors.border`.
+    pub fn resolved_border_side_colors(&self) -> [Option<PaintColor>; 4] {
+        let slots = &*self.paint_colors;
+        let uniform = slots.border;
         [
-            sides.top_color.or(uniform),
-            sides.right_color.or(uniform),
-            sides.bottom_color.or(uniform),
-            sides.left_color.or(uniform),
+            slots.border_top.or(uniform),
+            slots.border_right.or(uniform),
+            slots.border_bottom.or(uniform),
+            slots.border_left.or(uniform),
         ]
     }
 
-    /// First available border color (uniform or any side).
+    /// Per-side sRGB border colors. Longhands override `paint_colors.border`.
+    pub fn resolved_border_edge_colors(&self) -> [Option<[f32; 4]>; 4] {
+        self.resolved_border_side_colors()
+            .map(|color| color.map(PaintColor::to_srgb))
+    }
+
+    /// First available border color (uniform or any side) resolved to sRGB.
     pub fn resolved_border_color(&self) -> Option<[f32; 4]> {
-        if self.border_color.is_some() {
-            return self.border_color;
-        }
-        if self.border_sides.is_shared_default() {
-            return None;
+        if let Some(border) = self.paint_colors.border {
+            return Some(border.to_srgb());
         }
         self.resolved_border_edge_colors()
             .into_iter()
@@ -1181,17 +1106,18 @@ impl LayoutStyle {
     /// CSS-only view while taking the colour from the resolved semantic style
     /// is how an `Outlined` card asked for a 1px border, supplied a colour, and
     /// painted neither — `border_width: Some(1.0)` on the layout,
-    /// `border_color: None` on the layout, and the role's colour sitting on the
+    /// `paint_colors.border: None` on the layout, and the role's colour sitting on the
     /// computed style where this function could not see it.
     pub fn paint_border_edges_with(&self, fallback: Option<[f32; 4]>) -> PaddingSpec {
         let layout = self.resolved_border_edges();
         let styles = self.resolved_border_styles();
-        let colors = self.resolved_border_edge_colors();
+        let colors = self.resolved_border_side_colors();
+        let fb = fallback.map(PaintColor::srgb);
         PaddingSpec {
-            top: paint_border_width(layout.top, styles[0], colors[0].or(fallback)),
-            right: paint_border_width(layout.right, styles[1], colors[1].or(fallback)),
-            bottom: paint_border_width(layout.bottom, styles[2], colors[2].or(fallback)),
-            left: paint_border_width(layout.left, styles[3], colors[3].or(fallback)),
+            top: paint_border_width(layout.top, styles[0], colors[0].or(fb)),
+            right: paint_border_width(layout.right, styles[1], colors[1].or(fb)),
+            bottom: paint_border_width(layout.bottom, styles[2], colors[2].or(fb)),
+            left: paint_border_width(layout.left, styles[3], colors[3].or(fb)),
         }
     }
 
@@ -1704,15 +1630,7 @@ impl LayoutStyle {
         if self.line_height.is_none() {
             self.line_height = parent.line_height;
         }
-        let inherit_paint_color = self.color.is_none() && self.paint_colors.color.is_none();
-        if self.color.is_none() {
-            self.color = parent.color;
-        }
-        // Preserve the authoring-space value alongside the legacy RGBA
-        // foreground. A child with an explicit legacy `color` must suppress
-        // the parent's metadata as well, otherwise scene extraction would
-        // prefer the inherited OKLCH/HSV value over the child's declaration.
-        if inherit_paint_color && parent.paint_colors.color.is_some() {
+        if self.paint_colors.color.is_none() && parent.paint_colors.color.is_some() {
             self.paint_colors.color = parent.paint_colors.color;
         }
         if parent.text_ext.is_shared_default() {
@@ -1881,10 +1799,7 @@ impl LayoutStyle {
     /// `padding`, sizing, radii, borders width, shadows, etc.) leave this
     /// `false` so children can share their parent's resolved computed style.
     pub fn overrides_computed_style(&self) -> bool {
-        self.color.is_some()
-            || self.background.is_some()
-            || self.resolved_border_color().is_some()
-            || self.opacity.is_some()
+        self.opacity.is_some()
             || self.paint.visibility.is_some()
             || self.omits_box()
             || self.pointer_events.is_some()

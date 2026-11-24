@@ -236,11 +236,9 @@ impl UiWorld {
                 layout_mut.resolve_theme_colors(model);
             }
             if let Some(bg) = overlay_bg {
-                layout_mut.background = Some(bg);
                 layout_mut.paint_colors.background = Some(nana_ui_core::PaintColor::srgb(bg));
             }
             if let Some(fg) = overlay_fg {
-                layout_mut.color = Some(fg);
                 layout_mut.paint_colors.color = Some(nana_ui_core::PaintColor::srgb(fg));
             }
         }

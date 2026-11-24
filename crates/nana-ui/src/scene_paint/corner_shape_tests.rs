@@ -11,10 +11,10 @@ const GREEN: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
 fn rounded_square(shape: Option<CornerShape>) -> UiScene {
     let mut scene = UiScene::new();
     let style = nana_ui_core::LayoutStyle {
-        background: Some(GREEN),
         border_radius: Some(24.0),
         ..Default::default()
-    };
+    }
+    .background(GREEN);
     scene.apply_delta(
         [extracted_div(
             1,

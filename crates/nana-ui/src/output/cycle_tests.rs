@@ -62,7 +62,9 @@ fn colored_scene(color: [f32; 4]) -> Arc<UiScene> {
         .context_mut()
         .create_component(
             id,
-            Stack::fill_column(0.0).with_layout(|layout| layout.background = Some(color)),
+            Stack::fill_column(0.0).with_layout(|layout| {
+                layout.paint_colors.background = Some(nana_ui_core::PaintColor::srgb(color));
+            }),
         )
         .unwrap();
     document

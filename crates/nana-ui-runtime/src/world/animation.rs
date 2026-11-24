@@ -869,12 +869,10 @@ impl UiWorld {
             .filter(|property| match property {
                 crate::AnimatableProperty::Opacity => previous.opacity != next.opacity,
                 crate::AnimatableProperty::Background => {
-                    previous.background != next.background
-                        || previous.paint_colors.background != next.paint_colors.background
+                    previous.paint_colors.background != next.paint_colors.background
                 }
                 crate::AnimatableProperty::Color => {
-                    previous.color != next.color
-                        || previous.paint_colors.color != next.paint_colors.color
+                    previous.paint_colors.color != next.paint_colors.color
                 }
                 crate::AnimatableProperty::Transform => {
                     !previous.transforms.ptr_eq(&next.transforms)

@@ -894,18 +894,20 @@ mod tests {
         queue.set_style(
             node,
             NodeStyle {
-                layout: std::sync::Arc::new(LayoutStyle {
-                    background: Some([1.0, 0.0, 0.0, 1.0]),
-                    transforms: nana_ui_core::TransformStyle {
-                        origin: Some(nana_ui_core::TransformOrigin {
-                            x: nana_ui_core::LengthSpec::Percent(25.0),
-                            y: nana_ui_core::LengthSpec::Percent(75.0),
-                        }),
-                        ..Default::default()
+                layout: std::sync::Arc::new(
+                    LayoutStyle {
+                        transforms: nana_ui_core::TransformStyle {
+                            origin: Some(nana_ui_core::TransformOrigin {
+                                x: nana_ui_core::LengthSpec::Percent(25.0),
+                                y: nana_ui_core::LengthSpec::Percent(75.0),
+                            }),
+                            ..Default::default()
+                        }
+                        .into(),
+                        ..LayoutStyle::default()
                     }
-                    .into(),
-                    ..LayoutStyle::default()
-                }),
+                    .background([1.0, 0.0, 0.0, 1.0]),
+                ),
                 ..NodeStyle::default()
             },
         );
@@ -1008,10 +1010,7 @@ mod tests {
             height: 64.0,
         };
         extracted[0].source_style = NodeStyle {
-            layout: std::sync::Arc::new(LayoutStyle {
-                background: Some([1.0, 0.0, 0.0, 1.0]),
-                ..LayoutStyle::default()
-            }),
+            layout: std::sync::Arc::new(LayoutStyle::default().background([1.0, 0.0, 0.0, 1.0])),
             ..extracted[0].source_style.clone()
         };
         extracted[0].style = std::sync::Arc::new(ComputedStyle {
@@ -1594,18 +1593,20 @@ mod tests {
             height: 64.0,
         };
         extracted[0].source_style = NodeStyle {
-            layout: std::sync::Arc::new(LayoutStyle {
-                background: Some([1.0, 0.0, 0.0, 1.0]),
-                transforms: nana_ui_core::TransformStyle {
-                    origin: Some(nana_ui_core::TransformOrigin {
-                        x: nana_ui_core::LengthSpec::Percent(100.0),
-                        y: nana_ui_core::LengthSpec::Percent(50.0),
-                    }),
-                    ..Default::default()
+            layout: std::sync::Arc::new(
+                LayoutStyle {
+                    transforms: nana_ui_core::TransformStyle {
+                        origin: Some(nana_ui_core::TransformOrigin {
+                            x: nana_ui_core::LengthSpec::Percent(100.0),
+                            y: nana_ui_core::LengthSpec::Percent(50.0),
+                        }),
+                        ..Default::default()
+                    }
+                    .into(),
+                    ..LayoutStyle::default()
                 }
-                .into(),
-                ..LayoutStyle::default()
-            }),
+                .background([1.0, 0.0, 0.0, 1.0]),
+            ),
             ..extracted[0].source_style.clone()
         };
         extracted[0].style = std::sync::Arc::new(ComputedStyle {

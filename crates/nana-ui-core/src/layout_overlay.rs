@@ -203,9 +203,8 @@ overlay! {
         flex_shrink, flex_basis, adaptation, overflow_x, overflow_y,
         text_overflow_ellipsis, pointer_events, inert, cursor, user_select,
         white_space, aspect_ratio, text_align,
-        font_size, font_weight, font_italic, line_height, color, hidden,
-        opacity, background, border_radius, border_width, border_color,
-        border_style,
+        font_size, font_weight, font_italic, line_height, hidden,
+        opacity, border_radius, border_width, border_style,
     }
     nested {
         theme: shared ThemeLayout,
@@ -246,7 +245,7 @@ overlay! {
         text_emphasis_color, font_features, font_variation_settings,
         font_kerning, line_break, unsupported_font_variation,
         unsupported_writing_mode, text_orientation, placeholder_color,
-        placeholder_opacity, selection_background, selection_color,
+        placeholder_opacity,
     }
     nested {
         text_typography: plain TextTypography,
@@ -266,9 +265,8 @@ overlay! {
 
 overlay! {
     BorderSides {
-        top_width, right_width, bottom_width, left_width, top_color,
-        right_color, bottom_color, left_color, top_style, right_style,
-        bottom_style, left_style,
+        top_width, right_width, bottom_width, left_width, top_style,
+        right_style, bottom_style, left_style,
     }
     nested {
     }
@@ -347,7 +345,7 @@ overlay! {
 
 overlay! {
     OutlineSpec {
-        width, color, style,
+        width, style,
     }
     nested {
     }

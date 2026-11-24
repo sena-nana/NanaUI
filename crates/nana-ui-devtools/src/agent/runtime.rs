@@ -1421,7 +1421,8 @@ mod tests {
                         widget(Stack::row(0.0).with_layout(|layout| {
                             layout.width = Some(LengthSpec::Fill);
                             layout.height = Some(LengthSpec::Px(40.0));
-                            layout.background = Some([1.0, 0.0, 0.0, 1.0]);
+                            layout.paint_colors.background =
+                                Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0]));
                         }))
                         .key(format!("row-{index}"))
                     })

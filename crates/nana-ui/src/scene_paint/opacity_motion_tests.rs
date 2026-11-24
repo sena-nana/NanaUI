@@ -212,9 +212,9 @@ fn nested_opacity_motion_matches_static_group_composition() {
                 64.0,
                 LayoutStyle {
                     opacity: Some(alpha),
-                    background: Some([1.0, 0.0, 0.0, 1.0]),
                     ..Default::default()
-                },
+                }
+                .background([1.0, 0.0, 0.0, 1.0]),
                 Some([1.0, 0.0, 0.0, 1.0]),
             ),
             extracted_div(
@@ -226,9 +226,9 @@ fn nested_opacity_motion_matches_static_group_composition() {
                 40.0,
                 LayoutStyle {
                     opacity: Some(alpha),
-                    background: Some([0.0, 0.0, 1.0, 1.0]),
                     ..Default::default()
-                },
+                }
+                .background([0.0, 0.0, 1.0, 1.0]),
                 Some([0.0, 0.0, 1.0, 1.0]),
             ),
             extracted_div(
@@ -240,9 +240,9 @@ fn nested_opacity_motion_matches_static_group_composition() {
                 16.0,
                 LayoutStyle {
                     opacity: Some(0.35),
-                    background: Some([0.0, 1.0, 0.0, 1.0]),
                     ..Default::default()
-                },
+                }
+                .background([0.0, 1.0, 0.0, 1.0]),
                 Some([0.0, 1.0, 0.0, 1.0]),
             ),
         ];

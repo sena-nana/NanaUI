@@ -181,10 +181,10 @@ impl ApplicationState for Probe {
         let mut layout = LayoutStyle {
             width: Some(LengthSpec::Px(300.0)),
             height: Some(LengthSpec::Px(36.0)),
-            color: Some([1.0, 1.0, 1.0, 1.0]),
-            background: Some([0.1, 0.1, 0.1, 1.0]),
             ..Default::default()
-        };
+        }
+        .color([1.0, 1.0, 1.0, 1.0])
+        .background([0.1, 0.1, 0.1, 1.0]);
         layout.paint.visibility = Some(VisibilitySpec::Visible);
         let editor = cx.create_component(
             document,

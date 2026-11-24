@@ -1353,10 +1353,7 @@ pub(super) mod responsive_queries {
         let painted = row(RULES - 1);
         let red = [1.0, 0.0, 0.0, 1.0];
         let authored = panel.context.world().node_style(painted).unwrap().clone();
-        let redder = LayoutStyle {
-            background: Some(red),
-            ..(*authored.layout).clone()
-        };
+        let redder = (*authored.layout).clone().background(red);
         let rule = || {
             Arc::new(
                 ResponsiveRule::from_buckets(
@@ -1517,11 +1514,11 @@ pub(super) mod responsive_queries {
         let narrow = LayoutStyle {
             height: Some(LengthSpec::Px(40.0)),
             padding: Some(LengthSpec::Px(6.0)),
-            background: Some([0.2, 0.4, 0.6, 1.0]),
             opacity: Some(0.5),
             font_size: Some(18.0),
             ..base.clone()
-        };
+        }
+        .background([0.2, 0.4, 0.6, 1.0]);
         let following = row(RULES - 1);
         let authored = row(RULES - 2);
         let mut queue = MutationQueue::new();

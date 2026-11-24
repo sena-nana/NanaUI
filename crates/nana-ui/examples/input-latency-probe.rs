@@ -194,9 +194,9 @@ mod probe {
                 .context_mut()
                 .mount_view_root(id, || {
                     let root = entity_ref::<Stack>();
-                    let view = widget(
-                        Stack::fill_column(0.0).with_layout(|layout| layout.background = Some(RED)),
-                    )
+                    let view = widget(Stack::fill_column(0.0).with_layout(|layout| {
+                        layout.paint_colors.background = Some(nana_ui_core::PaintColor::srgb(RED));
+                    }))
                     .entity_ref(root);
                     with_refs(view, root)
                 })

@@ -7657,10 +7657,7 @@ fn scheduled_ui_frames_are_zero_after_static_settle_and_nonzero_when_paint_stays
     paint.set_style(
         node(4),
         NodeStyle {
-            layout: Arc::new(LayoutStyle {
-                background: Some([0.2, 0.4, 0.8, 1.0]),
-                ..LayoutStyle::default()
-            }),
+            layout: Arc::new(LayoutStyle::default().background([0.2, 0.4, 0.8, 1.0])),
             ..NodeStyle::default()
         },
     );
@@ -7834,11 +7831,13 @@ fn paint_only_style_change_does_not_schedule_subtree_layout() {
     paint.set_style(
         node(1),
         NodeStyle {
-            layout: Arc::new(LayoutStyle {
-                color: Some([0.2, 0.4, 0.8, 1.0]),
-                opacity: Some(0.8),
-                ..LayoutStyle::default()
-            }),
+            layout: Arc::new(
+                LayoutStyle {
+                    opacity: Some(0.8),
+                    ..LayoutStyle::default()
+                }
+                .color([0.2, 0.4, 0.8, 1.0]),
+            ),
             foreground: Some(SemanticColorRole::Accent),
             background: None,
             border: None,
@@ -9747,10 +9746,7 @@ fn grandchild_extract_inherits_ancestor_layout_color_without_restyling() {
     queue.set_style(
         node(1),
         NodeStyle {
-            layout: Arc::new(LayoutStyle {
-                color: Some([0.2, 0.4, 0.8, 1.0]),
-                ..LayoutStyle::default()
-            }),
+            layout: Arc::new(LayoutStyle::default().color([0.2, 0.4, 0.8, 1.0])),
             ..NodeStyle::default()
         },
     );
@@ -11843,10 +11839,7 @@ fn dirty_extract_updates_changed_slots_and_keeps_idle_arcs() {
     paint.set_style(
         node(2),
         NodeStyle {
-            layout: Arc::new(LayoutStyle {
-                background: Some([1.0, 0.0, 0.0, 1.0]),
-                ..LayoutStyle::default()
-            }),
+            layout: Arc::new(LayoutStyle::default().background([1.0, 0.0, 0.0, 1.0])),
             ..NodeStyle::default()
         },
     );
@@ -13050,11 +13043,11 @@ fn a_child_does_not_inherit_its_parents_background() {
     create.set_style(
         node(1),
         NodeStyle {
-            layout: Arc::new(nana_ui_core::LayoutStyle {
-                background: Some([1.0, 0.0, 0.0, 0.5]),
-                border_color: Some([0.0, 1.0, 0.0, 1.0]),
-                ..Default::default()
-            }),
+            layout: Arc::new(
+                nana_ui_core::LayoutStyle::default()
+                    .background([1.0, 0.0, 0.0, 0.5])
+                    .border_color([0.0, 1.0, 0.0, 1.0]),
+            ),
             ..Default::default()
         },
     );

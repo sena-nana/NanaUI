@@ -410,14 +410,15 @@ impl AppContext {
                         } else {
                             (cell.foreground, cell.background)
                         };
-                        layout.color = foreground.map(|mut color| {
+                        layout.paint_colors.color = foreground.map(|mut color| {
                             if cell.dim {
                                 color[3] *= 0.5;
                             }
-                            color
+                            nana_ui_core::PaintColor::srgb(color)
                         });
                         if !selected {
-                            layout.background = background;
+                            layout.paint_colors.background =
+                                background.map(nana_ui_core::PaintColor::srgb);
                         }
                         layout.white_space = nana_ui_core::WhiteSpaceSpec::Nowrap;
                         layout.overflow_x = OverflowSpec::Hidden;

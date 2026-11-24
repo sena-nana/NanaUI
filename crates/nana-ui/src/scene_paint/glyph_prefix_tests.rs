@@ -16,12 +16,14 @@ const SIZE: [u32; 2] = [240, 96];
 
 fn block(width: f32, height: f32, background: [f32; 4]) -> NodeStyle {
     NodeStyle {
-        layout: Arc::new(LayoutStyle {
-            width: Some(LengthSpec::Px(width)),
-            height: Some(LengthSpec::Px(height)),
-            background: Some(background),
-            ..LayoutStyle::default()
-        }),
+        layout: Arc::new(
+            LayoutStyle {
+                width: Some(LengthSpec::Px(width)),
+                height: Some(LengthSpec::Px(height)),
+                ..LayoutStyle::default()
+            }
+            .background(background),
+        ),
         ..NodeStyle::default()
     }
 }

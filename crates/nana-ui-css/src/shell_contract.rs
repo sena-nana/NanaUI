@@ -469,12 +469,17 @@ pub fn apply_class_layout_hints(layout: &mut LayoutStyle, class_names: &[String]
                 if layout.border_width.is_none() {
                     layout.border_width = Some(1.0);
                 }
-                if layout.border_color.is_none() {
-                    layout.border_color = Some([0.89, 0.90, 0.91, 1.0]);
+                if layout.paint_colors.border.is_none() {
+                    layout.paint_colors.border =
+                        Some(nana_ui_core::PaintColor::srgb([0.89, 0.90, 0.91, 1.0]));
                 }
                 // Drop navy WebView host-marker so the light placeholder paints.
-                if layout.background.is_some_and(is_gpu_host_marker_bg) {
-                    layout.background = None;
+                if layout
+                    .paint_colors
+                    .background
+                    .is_some_and(|bg| is_gpu_host_marker_bg(bg.to_srgb()))
+                {
+                    layout.paint_colors.background = None;
                 }
                 layout.flex_grow = Some(0.0);
                 layout.flex_shrink = Some(0.0);

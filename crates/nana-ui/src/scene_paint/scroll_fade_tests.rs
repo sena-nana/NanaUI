@@ -67,7 +67,7 @@ fn scroll_view(
                 document,
                 Stack::column(0.0).with_layout(|layout| {
                     layout.height = Some(LengthSpec::Px(100.0));
-                    layout.background = row;
+                    layout.paint_colors.background = row.map(nana_ui_core::PaintColor::srgb);
                 }),
             )
             .unwrap();
@@ -225,7 +225,8 @@ fn render_popover_in_scrollport(
                     Stack::column(0.0)
                         .height(LengthSpec::Px(500.0))
                         .with_layout(|layout| {
-                            layout.background = Some([1.0, 1.0, 1.0, 1.0]);
+                            layout.paint_colors.background =
+                                Some(nana_ui_core::PaintColor::srgb([1.0, 1.0, 1.0, 1.0]));
                         }),
                 )
                 .children((
@@ -247,7 +248,8 @@ fn render_popover_in_scrollport(
                         widget(Stack::column(0.0).with_layout(|layout| {
                             layout.width = Some(LengthSpec::Px(140.0));
                             layout.height = Some(LengthSpec::Px(80.0));
-                            layout.background = Some([0.2, 0.5, 0.9, 1.0]);
+                            layout.paint_colors.background =
+                                Some(nana_ui_core::PaintColor::srgb([0.2, 0.5, 0.9, 1.0]));
                         }))
                         .entity_ref(panel),
                     ),

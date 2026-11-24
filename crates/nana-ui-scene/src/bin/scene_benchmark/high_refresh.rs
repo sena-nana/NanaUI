@@ -59,7 +59,9 @@ fn sample(count: usize) -> Sample {
     let mut nodes = build_nodes(count);
     // All scales have exactly the same visible geometry.
     for node in nodes.iter_mut().skip(1) {
-        Arc::make_mut(&mut node.source_style.layout).background = Some([0.3, 0.2, 0.4, 1.0]);
+        Arc::make_mut(&mut node.source_style.layout)
+            .paint_colors
+            .background = Some(nana_ui_core::PaintColor::srgb([0.3, 0.2, 0.4, 1.0]));
     }
     let mut root = nodes[0].clone();
     let mut scene = UiScene::new();

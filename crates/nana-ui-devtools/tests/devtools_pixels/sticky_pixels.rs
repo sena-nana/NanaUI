@@ -46,7 +46,8 @@ fn issue200_sticky_real_document_pixels_follow_scroll_without_reflow() {
                         if sticky {
                             s.position = PositionSpec::Sticky;
                             s.offset_top = Some(LengthSpec::Px(0.0));
-                            s.background = Some([1.0, 0.0, 0.0, 1.0]);
+                            s.paint_colors.background =
+                                Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0]));
                             s.z_index = Some(1);
                         }
                     }),

@@ -33,10 +33,7 @@ fn shared_inherited_styles_keep_local_overrides_and_old_snapshots_immutable() {
     queue.set_style(
         id(2),
         NodeStyle {
-            layout: Arc::new(LayoutStyle {
-                color: Some([1.0, 0.0, 0.0, 1.0]),
-                ..Default::default()
-            }),
+            layout: Arc::new(LayoutStyle::default().color([1.0, 0.0, 0.0, 1.0])),
             ..Default::default()
         },
     );
@@ -114,10 +111,7 @@ fn authoring_paint_metadata_follows_inheritance_priority() {
     queue.set_style(
         child,
         NodeStyle {
-            layout: Arc::new(LayoutStyle {
-                color: Some([1.0, 0.0, 0.0, 1.0]),
-                ..Default::default()
-            }),
+            layout: Arc::new(LayoutStyle::default().color([1.0, 0.0, 0.0, 1.0])),
             ..Default::default()
         },
     );
@@ -126,7 +120,7 @@ fn authoring_paint_metadata_follows_inheritance_priority() {
     world.resolve_styles(&work.style).unwrap();
     assert_eq!(
         world.computed_style(child).unwrap().paint_colors.color,
-        None
+        Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0]))
     );
 }
 

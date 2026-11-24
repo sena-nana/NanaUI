@@ -2655,12 +2655,12 @@ mod tests {
         };
         // A new resolved style that measures the same: no re-record.
         restyle(&mut world, &|layout| {
-            layout.color = Some([1.0, 0.0, 0.0, 1.0])
+            layout.paint_colors.color = Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0]))
         });
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         // Another family measures differently.
         restyle(&mut world, &|layout| {
-            layout.color = Some([1.0, 0.0, 0.0, 1.0]);
+            layout.paint_colors.color = Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0]));
             layout.text_ext.font_family = Some("Serif".into());
         });
         assert_eq!(calls.load(Ordering::SeqCst), 2);

@@ -302,8 +302,7 @@ impl UiWorld {
         let (foreground, color, background, border_color) =
             self.palette_paint_colors(id, inherited_color, model);
         let local_paint = self.semantic_paint(id, &self.record(id).style);
-        let color_override = layout.color.is_some()
-            || layout.paint_colors.color.is_some()
+        let color_override = layout.paint_colors.color.is_some()
             || local_paint.foreground.is_some()
             || local_paint.foreground_mix.is_some();
         let visibility = layout.paint.visibility.unwrap_or(inherited.visibility);
@@ -389,20 +388,14 @@ impl UiWorld {
                 border_bottom: layout.paint_colors.border_bottom,
                 border_left: layout.paint_colors.border_left,
                 outline: layout.paint_colors.outline,
-                selection_background: layout.paint_colors.selection_background.or_else(|| {
-                    text_ext
-                        .selection_background
-                        .is_none()
-                        .then_some(inherited.paint_colors.selection_background)
-                        .flatten()
-                }),
-                selection_color: layout.paint_colors.selection_color.or_else(|| {
-                    text_ext
-                        .selection_color
-                        .is_none()
-                        .then_some(inherited.paint_colors.selection_color)
-                        .flatten()
-                }),
+                selection_background: layout
+                    .paint_colors
+                    .selection_background
+                    .or(inherited.paint_colors.selection_background),
+                selection_color: layout
+                    .paint_colors
+                    .selection_color
+                    .or(inherited.paint_colors.selection_color),
             };
             if slots.has_dynamic_theme() {
                 slots.resolve_theme(model);
@@ -423,10 +416,14 @@ impl UiWorld {
                 None => self.root_language(),
             },
         };
-        let selection_background = text_ext
+        let selection_background = paint_colors
             .selection_background
+            .map(nana_ui_core::PaintColor::to_srgb)
             .or(inherited.ext.selection_background);
-        let selection_color = text_ext.selection_color.or(inherited.ext.selection_color);
+        let selection_color = paint_colors
+            .selection_color
+            .map(nana_ui_core::PaintColor::to_srgb)
+            .or(inherited.ext.selection_color);
         let text_typography = text_ext
             .text_typography
             .inherit_from(inherited.ext.text_typography);
@@ -449,11 +446,11 @@ impl UiWorld {
         let ext_same_base = inherited.ext.language == language
             && inherited.ext.color_scope == color_scope
             && inherited.ext.theme_scope == effective_scope
+            && inherited.ext.selection_background == selection_background
+            && inherited.ext.selection_color == selection_color
             && (self.motion.presentation.is_empty() || self.font_axis_overlay(id).is_empty())
             && (!has_text_ext
-                || (inherited.ext.selection_background == selection_background
-                    && inherited.ext.selection_color == selection_color
-                    && inherited.ext.text_typography == text_typography
+                || (inherited.ext.text_typography == text_typography
                     && inherited.ext.text_emphasis == text_emphasis
                     && (text_ext.font_features.is_none()
                         || text_ext.font_features.as_deref()
@@ -1115,9 +1112,7 @@ impl UiWorld {
         let color = layout
             .paint_colors
             .color
-            .filter(|c| c.is_theme_dynamic())
             .map(|c| c.resolve_srgb(model))
-            .or(layout.color)
             .or_else(|| paint.foreground_mix.map(|mix| self.theme_mix(model, mix)))
             .or_else(|| {
                 paint
@@ -1129,15 +1124,12 @@ impl UiWorld {
         let background = layout
             .paint_colors
             .background
-            .filter(|c| c.is_theme_dynamic())
             .map(|c| c.resolve_srgb(model))
-            .or(layout.background)
             .or_else(|| paint.background_mix.map(|mix| self.theme_mix(model, mix)))
             .or_else(|| paint.background.map(|role| self.theme_color(model, role)));
         let border_color = layout
             .paint_colors
             .border
-            .filter(|c| c.is_theme_dynamic())
             .map(|c| c.resolve_srgb(model))
             .or_else(|| layout.resolved_border_color())
             .or_else(|| paint.border_mix.map(|mix| self.theme_mix(model, mix)))
@@ -1196,13 +1188,12 @@ impl UiWorld {
             let local = &record.style;
             let resolved_layout = record.resolved_layout.as_ref();
             let model = self.node_style_model(id);
-            if let Some(pc) = resolved_layout.paint_colors.color
-                && pc.is_theme_dynamic()
+            if let Some(pc) = resolved_layout
+                .paint_colors
+                .color
+                .or(local.layout.paint_colors.color)
             {
                 return Some(pc.resolve_srgb(model));
-            }
-            if let Some(color) = resolved_layout.color.or(local.layout.color) {
-                return Some(color);
             }
             let paint = self.semantic_paint(id, local);
             if let Some(mix) = paint.foreground_mix {
@@ -1239,7 +1230,6 @@ impl UiWorld {
                 .theme_patch
                 .as_ref()
                 .is_some_and(|p| p.colors.is_some() || p.accent.is_some() || p.appearance.is_some())
-            || own.layout.background.is_some()
             || own.layout.paint_colors.background.is_some()
             || own_paint.background.is_some()
             || own_paint.background_mix.is_some()
@@ -1257,7 +1247,6 @@ impl UiWorld {
                 || local.theme_patch.as_ref().is_some_and(|p| {
                     p.colors.is_some() || p.accent.is_some() || p.appearance.is_some()
                 })
-                || local.layout.background.is_some()
                 || local.layout.paint_colors.background.is_some()
                 || paint.background.is_some()
                 || paint.background_mix.is_some()
@@ -1825,7 +1814,6 @@ impl UiWorld {
             if record.style.foreground.is_none()
                 && record.style.interaction.base.foreground.is_none()
                 && record.style.interaction.base.foreground_mix.is_none()
-                && record.resolved_layout.color.is_none()
                 && record.resolved_layout.paint_colors.color.is_none()
             {
                 mask = mask.union(ThemeDependencyMask::PALETTE);

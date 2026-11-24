@@ -57,7 +57,7 @@ impl AppShell {
         let mut style = self.style.clone();
         style.foreground = Some(SemanticColorRole::Text);
         let layout = Arc::make_mut(&mut style.layout);
-        layout.background = None;
+        layout.paint_colors.background = None;
         layout.direction = Some(FlexDirection::Column);
         layout.align_items = AlignSpec::Stretch;
         layout.justify_content = JustifySpec::Start;
@@ -498,9 +498,9 @@ mod tests {
 
     #[test]
     fn title_bar_drops_css_layout_background() {
-        let mut context = AppContext::new();
         let mut layout = nana_ui_core::LayoutStyle::default();
-        layout.background = Some([1.0, 0.0, 0.0, 1.0]);
+        layout.paint_colors.background = Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0]));
+        let mut context = AppContext::new();
         let bar = context
             .create_component(
                 document(),
@@ -513,7 +513,7 @@ mod tests {
         let style = context.world().node_style(bar.stable_id()).unwrap();
         assert_eq!(style.background, Some(SemanticColorRole::Titlebar));
         assert!(
-            style.layout.background.is_none(),
+            style.layout.paint_colors.background.is_none(),
             "CSS fill must not cover Titlebar token alpha"
         );
     }

@@ -993,7 +993,8 @@ fn nearest_modal_overlay_escapes_inner_scroll_fade_stays_under_higher_modal_and_
                     widget(Stack::column(0.0).with_layout(|layout| {
                         layout.width = Some(LengthSpec::Px(320.0));
                         layout.height = Some(LengthSpec::Px(160.0));
-                        layout.background = Some([0.8, 0.2, 0.2, 1.0]);
+                        layout.paint_colors.background =
+                            Some(nana_ui_core::PaintColor::srgb([0.8, 0.2, 0.2, 1.0]));
                     }))
                     .entity_ref(dialog2_body),
                 ),

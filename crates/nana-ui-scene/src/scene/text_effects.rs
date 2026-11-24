@@ -401,10 +401,7 @@ pub fn css_text_effects(style: &nana_ui_core::LayoutStyle) -> SceneTextEffects {
             color: shadow.color,
         })
         .collect();
-    let fill = style
-        .paint_colors
-        .color
-        .or(style.color.map(nana_ui_core::PaintColor::srgb));
+    let fill = style.paint_colors.color;
     let stroke = style
         .paint
         .text_stroke

@@ -302,7 +302,8 @@ impl RuntimeProgram for Probe {
                                 .with_layout(|layout| {
                                     layout.margin_left = Some(LengthSpec::Px(30.0));
                                     layout.margin_top = Some(LengthSpec::Px(30.0));
-                                    layout.background = Some([0.9, 0.3, 0.2, 1.0]);
+                                    layout.paint_colors.background =
+                                        Some(nana_ui_core::PaintColor::srgb([0.9, 0.3, 0.2, 1.0]));
                                 }),
                         )
                         .children(widget(Text::new("frame 0")).entity_ref(label)),

@@ -300,9 +300,9 @@ mod tests {
         let base = LayoutStyle::default();
         let narrow = LayoutStyle {
             width: Some(LengthSpec::Px(120.0)),
-            background: Some([0.0, 0.0, 1.0, 1.0]),
             ..LayoutStyle::default()
-        };
+        }
+        .background([0.0, 0.0, 1.0, 1.0]);
         assert!(StyleVariant::between(&base, &base).is_none());
         let variant = StyleVariant::between(&base, &narrow).unwrap();
         let mut authored = LayoutStyle {
@@ -311,7 +311,7 @@ mod tests {
         };
         variant.apply(&mut authored);
         assert_eq!(authored.width, Some(LengthSpec::Px(120.0)));
-        assert_eq!(authored.background, Some([0.0, 0.0, 1.0, 1.0]));
+        assert_eq!(authored.background_srgb(), Some([0.0, 0.0, 1.0, 1.0]));
         assert_eq!(authored.height, Some(LengthSpec::Px(40.0)));
         assert_eq!(variant, StyleVariant::between(&base, &narrow).unwrap());
         let build = || {

@@ -148,7 +148,8 @@ impl Probe {
                     layout.width = Some(LengthSpec::Percent(100.0));
                     layout.height = Some(LengthSpec::Percent(100.0));
                     layout.padding = Some(LengthSpec::Px(20.0));
-                    layout.background = Some([0.96, 0.96, 0.97, 1.0]);
+                    layout.paint_colors.background =
+                        Some(nana_ui_core::PaintColor::srgb([0.96, 0.96, 0.97, 1.0]));
                     layout.border_radius = Some(16.0);
                 });
                 let tree = widget(root).children(widget(card).children((

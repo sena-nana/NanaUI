@@ -1518,8 +1518,6 @@ pub(crate) fn emit_patch_stmt(layout: &LayoutStyle, path: &str, m: &str, out: &m
             "text_orientation" => emit_set(&setter, &te.text_orientation, m, out),
             "placeholder_color" => emit_set(&setter, &te.placeholder_color, m, out),
             "placeholder_opacity" => emit_set(&setter, &te.placeholder_opacity, m, out),
-            "selection_background" => emit_set(&setter, &te.selection_background, m, out),
-            "selection_color" => emit_set(&setter, &te.selection_color, m, out),
             _ => panic!("unknown LayoutStyle leaf path: {path}"),
         }
         return;
@@ -1570,10 +1568,6 @@ pub(crate) fn emit_patch_stmt(layout: &LayoutStyle, path: &str, m: &str, out: &m
             "right_width" => emit_set(&setter, &bs.right_width, m, out),
             "bottom_width" => emit_set(&setter, &bs.bottom_width, m, out),
             "left_width" => emit_set(&setter, &bs.left_width, m, out),
-            "top_color" => emit_set(&setter, &bs.top_color, m, out),
-            "right_color" => emit_set(&setter, &bs.right_color, m, out),
-            "bottom_color" => emit_set(&setter, &bs.bottom_color, m, out),
-            "left_color" => emit_set(&setter, &bs.left_color, m, out),
             "top_style" => emit_set(&setter, &bs.top_style, m, out),
             "right_style" => emit_set(&setter, &bs.right_style, m, out),
             "bottom_style" => emit_set(&setter, &bs.bottom_style, m, out),
@@ -1637,7 +1631,6 @@ pub(crate) fn emit_patch_stmt(layout: &LayoutStyle, path: &str, m: &str, out: &m
             "filter" => emit_set(&setter, &layout.paint.filter, m, out),
             "backdrop_filter" => emit_set(&setter, &layout.paint.backdrop_filter, m, out),
             "outline.width" => emit_set(&setter, &layout.paint.outline.width, m, out),
-            "outline.color" => emit_set(&setter, &layout.paint.outline.color, m, out),
             "outline.style" => emit_set(&setter, &layout.paint.outline.style, m, out),
             _ => panic!("unknown LayoutStyle leaf path: {path}"),
         }
@@ -1707,13 +1700,10 @@ pub(crate) fn emit_patch_stmt(layout: &LayoutStyle, path: &str, m: &str, out: &m
         "font_weight" => emit_set(path, &layout.font_weight, m, out),
         "font_italic" => emit_set(path, &layout.font_italic, m, out),
         "line_height" => emit_set(path, &layout.line_height, m, out),
-        "color" => emit_set(path, &layout.color, m, out),
         "hidden" => emit_set(path, &layout.hidden, m, out),
         "opacity" => emit_set(path, &layout.opacity, m, out),
-        "background" => emit_set(path, &layout.background, m, out),
         "border_radius" => emit_set(path, &layout.border_radius, m, out),
         "border_width" => emit_set(path, &layout.border_width, m, out),
-        "border_color" => emit_set(path, &layout.border_color, m, out),
         "border_style" => emit_set(path, &layout.border_style, m, out),
         _ => panic!("unknown LayoutStyle leaf path: {path}"),
     }

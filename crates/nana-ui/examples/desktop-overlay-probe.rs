@@ -68,7 +68,8 @@ fn marker_document(raw: u64, label: &'static str) -> RuntimeDocument {
                         .with_layout(|layout| {
                             layout.margin_left = Some(LengthSpec::Px(OPAQUE_HIT.0));
                             layout.margin_top = Some(LengthSpec::Px(OPAQUE_HIT.1));
-                            layout.background = Some([0.2, 0.3, 0.9, 1.0]);
+                            layout.paint_colors.background =
+                                Some(nana_ui_core::PaintColor::srgb([0.2, 0.3, 0.9, 1.0]));
                         }),
                 )
                 .children(widget(Text::new(label))),
@@ -113,7 +114,8 @@ impl RuntimeProgram for Probe {
             .mount_view_root(primary_id, || {
                 // The native-composition reference: a plain green fill.
                 widget(Stack::fill_column(0.0).with_layout(|layout| {
-                    layout.background = Some([0.0, 1.0, 0.0, 1.0]);
+                    layout.paint_colors.background =
+                        Some(nana_ui_core::PaintColor::srgb([0.0, 1.0, 0.0, 1.0]));
                 }))
             })
             .unwrap();
@@ -132,7 +134,8 @@ impl RuntimeProgram for Probe {
                             .with_layout(|layout| {
                                 layout.margin_left = Some(LengthSpec::Px(OPAQUE_HIT.0));
                                 layout.margin_top = Some(LengthSpec::Px(OPAQUE_HIT.1));
-                                layout.background = Some([0.85, 0.15, 0.2, 1.0]);
+                                layout.paint_colors.background =
+                                    Some(nana_ui_core::PaintColor::srgb([0.85, 0.15, 0.2, 1.0]));
                             }),
                     )
                     .children(widget(Text::new("Native overlay pointer target"))),

@@ -1796,11 +1796,13 @@ mod tests {
     fn opacity_overlay_promotes_after_hold_and_keeps_logical_style() {
         let mut scene = UiScene::new();
         let mut overlay = node(1, None, &[]);
-        overlay.source_style.layout = Arc::new(LayoutStyle {
-            opacity: Some(1.0),
-            background: Some([0.1, 0.2, 0.3, 1.0]),
-            ..LayoutStyle::default()
-        });
+        overlay.source_style.layout = Arc::new(
+            LayoutStyle {
+                opacity: Some(1.0),
+                ..LayoutStyle::default()
+            }
+            .background([0.1, 0.2, 0.3, 1.0]),
+        );
         scene.apply_delta([overlay.clone()], []);
         let mut store = PresentationStore::new();
         store.insert(
@@ -2470,10 +2472,8 @@ mod tests {
         let mut extracted = world.extract_nodes(&[parent, child]);
         for node in &mut extracted {
             if node.id == parent {
-                node.source_style.layout = Arc::new(LayoutStyle {
-                    background: Some([1.0, 0.0, 0.0, 1.0]),
-                    ..LayoutStyle::default()
-                });
+                node.source_style.layout =
+                    Arc::new(LayoutStyle::default().background([1.0, 0.0, 0.0, 1.0]));
                 node.style = Arc::new(ComputedStyle {
                     background: Some([1.0, 0.0, 0.0, 1.0]),
                     ..ComputedStyle::default()
@@ -2649,11 +2649,13 @@ mod tests {
     fn opacity_groups_are_not_compositor_layers() {
         let mut scene = UiScene::new();
         let mut parent = node(1, None, &[2]);
-        parent.source_style.layout = Arc::new(LayoutStyle {
-            opacity: Some(0.5),
-            background: Some([1.0, 0.0, 0.0, 1.0]),
-            ..LayoutStyle::default()
-        });
+        parent.source_style.layout = Arc::new(
+            LayoutStyle {
+                opacity: Some(0.5),
+                ..LayoutStyle::default()
+            }
+            .background([1.0, 0.0, 0.0, 1.0]),
+        );
         scene.apply_delta([parent, node(2, Some(1), &[])], []);
         assert!(!scene.opacity_groups(id(2)).is_empty());
         assert!(scene.compositor_layers().next().is_none());
@@ -2670,11 +2672,13 @@ mod tests {
             let children: Vec<u64> = if level == 12 { vec![] } else { vec![level + 1] };
             let mut entry = node(level, (level > 1).then(|| level - 1), &children);
             if level == 1 {
-                entry.source_style.layout = Arc::new(LayoutStyle {
-                    opacity: Some(0.5),
-                    background: Some([1.0, 0.0, 0.0, 1.0]),
-                    ..LayoutStyle::default()
-                });
+                entry.source_style.layout = Arc::new(
+                    LayoutStyle {
+                        opacity: Some(0.5),
+                        ..LayoutStyle::default()
+                    }
+                    .background([1.0, 0.0, 0.0, 1.0]),
+                );
             }
             chain.push(entry);
         }
@@ -2686,10 +2690,8 @@ mod tests {
         assert_eq!(scene.opacity_groups(id(12)).to_vec(), deep.to_vec());
         // The ancestor stops being a group; the memo must not outlive that.
         let mut opaque = node(1, None, &[2]);
-        opaque.source_style.layout = Arc::new(LayoutStyle {
-            background: Some([1.0, 0.0, 0.0, 1.0]),
-            ..LayoutStyle::default()
-        });
+        opaque.source_style.layout =
+            Arc::new(LayoutStyle::default().background([1.0, 0.0, 0.0, 1.0]));
         scene.apply_delta([opaque], []);
         assert!(
             scene.opacity_groups(id(12)).is_empty(),

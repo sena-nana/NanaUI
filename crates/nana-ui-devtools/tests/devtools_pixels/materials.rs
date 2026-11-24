@@ -20,9 +20,10 @@ fn render(material: Option<MaterialRef>, border: Option<MaterialRef>, rich: bool
                 .width(LengthSpec::Px(160.))
                 .height(LengthSpec::Px(60.))
                 .with_layout(|l| {
-                    l.background = Some([0.2, 0.2, 0.2, 1.]);
+                    l.paint_colors.background =
+                        Some(nana_ui_core::PaintColor::srgb([0.2, 0.2, 0.2, 1.]));
                     l.border_radius = Some(16.);
-                    l.border_color = Some([1., 1., 1., 1.]);
+                    l.paint_colors.border = Some(nana_ui_core::PaintColor::srgb([1., 1., 1., 1.]));
                     l.border_sides.top_width = Some(6.);
                     l.border_sides.right_width = Some(6.);
                     l.border_sides.bottom_width = Some(6.);
@@ -33,7 +34,7 @@ fn render(material: Option<MaterialRef>, border: Option<MaterialRef>, rich: bool
                 });
             let style = |l: &mut nana_ui_core::LayoutStyle| {
                 l.font_size = Some(28.);
-                l.color = Some([0.1, 0.1, 0.1, 1.]);
+                l.paint_colors.color = Some(nana_ui_core::PaintColor::srgb([0.1, 0.1, 0.1, 1.]));
                 l.paint.text_material = material.clone();
             };
             let mut text_style = nana_ui::runtime::NodeStyle::default();
@@ -213,7 +214,7 @@ fn presentation_masks_preserve_color_and_erase_the_whole_text_target() {
     let mut style = NodeStyle::default();
     let layout = Arc::make_mut(&mut style.layout);
     layout.font_size = Some(28.);
-    layout.color = Some([0., 0.1, 0.8, 1.]);
+    layout.paint_colors.color = Some(nana_ui_core::PaintColor::srgb([0., 0.1, 0.8, 1.]));
     layout.paint.text_stroke = Some(nana_ui_core::TextStrokeSpec {
         width: 1.,
         color: Some([0., 0., 0., 1.].into()),

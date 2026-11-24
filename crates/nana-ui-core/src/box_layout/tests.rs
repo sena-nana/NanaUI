@@ -76,10 +76,10 @@ fn four_side_border_widths_and_none_style() {
 fn dashed_dotted_paint_stroke_double_stays_closed() {
     let dashed = LayoutStyle {
         border_width: Some(4.0),
-        border_color: Some([1.0, 0.0, 0.0, 1.0]),
         border_style: Some(BorderStyle::Dashed),
         ..LayoutStyle::default()
-    };
+    }
+    .border_color([1.0, 0.0, 0.0, 1.0]);
     assert!((dashed.resolved_border_edges().top - 4.0).abs() < f32::EPSILON);
     assert!((dashed.paint_border_edges().top - 4.0).abs() < f32::EPSILON);
     assert_eq!(
@@ -90,10 +90,10 @@ fn dashed_dotted_paint_stroke_double_stays_closed() {
 
     let dotted = LayoutStyle {
         border_width: Some(4.0),
-        border_color: Some([1.0, 0.0, 0.0, 1.0]),
         border_style: Some(BorderStyle::Dotted),
         ..LayoutStyle::default()
-    };
+    }
+    .border_color([1.0, 0.0, 0.0, 1.0]);
     assert!((dotted.paint_border_edges().top - 4.0).abs() < f32::EPSILON);
     assert_eq!(
         dotted.paint_border_style_codes(),
@@ -102,10 +102,10 @@ fn dashed_dotted_paint_stroke_double_stays_closed() {
 
     let double = LayoutStyle {
         border_width: Some(4.0),
-        border_color: Some([1.0, 0.0, 0.0, 1.0]),
         border_style: Some(BorderStyle::Unsupported),
         ..LayoutStyle::default()
-    };
+    }
+    .border_color([1.0, 0.0, 0.0, 1.0]);
     assert!((double.resolved_border_edges().top - 4.0).abs() < f32::EPSILON);
     assert!(double.paint_border_edges().is_zero());
     assert!(!double.paints_any_border());
@@ -841,12 +841,12 @@ fn inherit_typography_preserves_authoring_color_metadata() {
     child.inherit_typography_from(&parent);
     assert_eq!(child.paint_colors.color, parent.paint_colors.color);
 
-    let mut overridden = LayoutStyle {
-        color: Some([1.0, 0.0, 0.0, 1.0]),
-        ..LayoutStyle::default()
-    };
+    let mut overridden = LayoutStyle::default().color([1.0, 0.0, 0.0, 1.0]);
     overridden.inherit_typography_from(&parent);
-    assert!(overridden.paint_colors.color.is_none());
+    assert_eq!(
+        overridden.paint_colors.color,
+        Some(crate::style_model::PaintColor::srgb([1.0, 0.0, 0.0, 1.0]))
+    );
 }
 
 #[test]
@@ -1051,7 +1051,7 @@ fn a_border_coloured_outside_the_layout_still_strokes_when_the_caller_names_it()
         border_width: Some(1.0),
         ..LayoutStyle::default()
     };
-    assert_eq!(style.border_color, None);
+    assert_eq!(style.resolved_border_color(), None);
     assert!(
         style.paint_border_edges().is_zero(),
         "with no colour anywhere there is nothing to stroke"

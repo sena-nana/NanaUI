@@ -26,7 +26,7 @@ fn quad(layout: LayoutStyle) -> ExtractedNode {
         layout_frame: nana_ui_runtime::LayoutFrame::Page,
         scroll_offset: Default::default(),
         style: Arc::new(ComputedStyle {
-            background: layout.background,
+            background: layout.background_srgb(),
             ..Default::default()
         }),
         source_style: NodeStyle {
@@ -117,12 +117,7 @@ fn gpu_compositor_clock_changes_pixels_without_invalidating_the_projection() {
     );
     world.commit(mutations).unwrap();
     world.advance_animations(Duration::ZERO);
-    let colored = || {
-        quad(LayoutStyle {
-            background: Some([1.0, 0.0, 0.0, 1.0]),
-            ..Default::default()
-        })
-    };
+    let colored = || quad(LayoutStyle::default().background([1.0, 0.0, 0.0, 1.0]));
     let mut drawable = colored();
     drawable.compositor = world.extract_nodes(&[node])[0].compositor.clone();
     assert!(!drawable.compositor.bindings.is_empty());

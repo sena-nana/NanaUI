@@ -719,7 +719,9 @@ mod tests {
         Arc::make_mut(&mut recoloured.source_style.layout)
             .transforms
             .preserve_3d = true;
-        Arc::make_mut(&mut recoloured.source_style.layout).background = Some([1.0, 0.0, 0.0, 1.0]);
+        Arc::make_mut(&mut recoloured.source_style.layout)
+            .paint_colors
+            .background = Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0]));
         scene.apply_delta([recoloured], []);
         assert_eq!(
             projected(&scene, id(3)),

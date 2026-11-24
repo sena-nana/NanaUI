@@ -70,9 +70,9 @@ fn placed(position: PositionSpec, [left, top, width, height]: [f32; 4]) -> Layou
         position,
         offset_left: Some(LengthSpec::Px(left)),
         offset_top: Some(LengthSpec::Px(top)),
-        background: Some([0.2, 0.4, 0.8, 1.0]),
         ..sized(width, height)
     }
+    .background([0.2, 0.4, 0.8, 1.0])
 }
 
 struct Fixture {
@@ -134,9 +134,9 @@ fn fixture() -> Fixture {
         &mut queue,
         Some(inner),
         LayoutStyle {
-            background: Some([0.8, 0.2, 0.2, 1.0]),
             ..sized(100.0, 30.0)
-        },
+        }
+        .background([0.8, 0.2, 0.2, 1.0]),
     );
     element(&mut queue, Some(inner), sized(200.0, 400.0));
     let escaping = element(

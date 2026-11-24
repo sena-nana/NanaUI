@@ -359,10 +359,10 @@ fn selectable_rich_text_selection_uses_selection_background_paint_color() {
     };
     let mut node_style = nana_ui_runtime::NodeStyle::default();
     let layout = std::sync::Arc::make_mut(&mut node_style.layout);
-    layout.text_ext.selection_background = Some(wide_selection.to_srgb());
     layout.paint_colors.selection_background = Some(wide_selection);
     // Distinct `selection_color` (foreground) must NOT bleed into selection background quads.
-    layout.text_ext.selection_color = Some([1.0, 0.0, 0.0, 1.0]);
+    layout.paint_colors.selection_color =
+        Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0]));
 
     let view = SelectableRichText::new([RichSpan::plain("hello world")]).style(node_style);
     let bounds = nana_ui_runtime::LayoutBox {

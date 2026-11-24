@@ -538,7 +538,8 @@ fn run(
     }
     if workload == Workload::Reveal {
         let mut style = column_style(None, None);
-        Arc::make_mut(&mut style.layout).background = Some(REVEAL_PANEL);
+        Arc::make_mut(&mut style.layout).paint_colors.background =
+            Some(nana_ui_core::PaintColor::srgb(REVEAL_PANEL));
         build.set_style(column, style);
     }
     document

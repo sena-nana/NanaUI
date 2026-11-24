@@ -174,12 +174,6 @@ pub(super) fn quad_surface_from_style(
     height: f32,
 ) -> QuadSurfacePaint {
     let border_fallback = style.paint_colors.border;
-    let outline_color = style
-        .paint
-        .outline
-        .is_active()
-        .then_some(style.paint.outline.color)
-        .flatten();
     QuadSurfacePaint {
         presentation_masks: Vec::new(),
         background_material: style.paint.background_material.clone(),
@@ -219,20 +213,12 @@ pub(super) fn quad_surface_from_style(
         },
         // An outline never takes the border's colour: its own, then the
         // ring's theme role, then the current colour as CSS gives an outline
-        // without one. A colour set through `PaintStyle::outline` wins over a
-        // slot that disagrees.
-        outline_color: match outline_color {
-            Some(legacy) => slot_color(
-                matching_paint_color(style.paint_colors.outline, Some(legacy)),
-                Some(legacy),
-            ),
-            None => style
-                .paint_colors
-                .outline
-                .or(ring_color.map(nana_ui_core::PaintColor::srgb))
-                .or(style.paint_colors.color)
-                .or(style.color.map(nana_ui_core::PaintColor::srgb)),
-        },
+        // without one.
+        outline_color: style
+            .paint_colors
+            .outline
+            .or(ring_color.map(nana_ui_core::PaintColor::srgb))
+            .or(style.paint_colors.color),
         mix_blend: style.paint.mix_blend,
         border_widths: [0.0; 4],
         border_colors: [

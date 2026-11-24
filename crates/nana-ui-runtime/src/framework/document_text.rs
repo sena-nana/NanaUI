@@ -818,8 +818,8 @@ mod tests {
         {
             let layout = Arc::make_mut(&mut style.layout);
             layout.user_select = Some(UserSelectSpec::Text);
-            layout.text_ext.selection_background = Some([1.0, 0.0, 0.0, 1.0]);
-            layout.text_ext.selection_color = Some([0.0, 1.0, 0.0, 1.0]);
+            layout.paint_colors.selection_background =
+                Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0]));
             layout.paint_colors.selection_color = Some(nana_ui_core::PaintColor::Oklch {
                 l: 0.7,
                 c: 0.15,

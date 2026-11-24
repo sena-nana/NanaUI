@@ -276,7 +276,7 @@ impl SidebarFrame {
     fn effective_style(&self) -> NodeStyle {
         let mut style = self.style.clone();
         let layout = Arc::make_mut(&mut style.layout);
-        layout.background = None;
+        layout.paint_colors.background = None;
         layout.direction = Some(layout.direction.unwrap_or(FlexDirection::Column));
         layout.align_items = AlignSpec::Stretch;
         layout.width = Some(layout.width.unwrap_or(LengthSpec::Fill));
@@ -2006,7 +2006,7 @@ mod tests {
     fn frame_drops_css_layout_background() {
         let mut context = AppContext::new();
         let mut layout = nana_ui_core::LayoutStyle::default();
-        layout.background = Some([1.0, 0.0, 0.0, 1.0]);
+        layout.paint_colors.background = Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0]));
         let frame = context
             .create_component(
                 document(),
@@ -2022,6 +2022,7 @@ mod tests {
                 .node_style(frame.stable_id())
                 .unwrap()
                 .layout
+                .paint_colors
                 .background
                 .is_none(),
             "CSS --bg-elev must not cover the parent Surface region"
@@ -2502,9 +2503,9 @@ mod tests {
         assert_eq!(active_style.foreground, Some(SemanticColorRole::Text));
         assert_eq!(ancestor_style.foreground, Some(SemanticColorRole::Text));
         assert_eq!(disabled_style.foreground, Some(SemanticColorRole::Faint));
-        assert_eq!(idle_style.layout.color, None);
-        assert_eq!(active_style.layout.color, None);
-        assert_eq!(ancestor_style.layout.color, None);
+        assert_eq!(idle_style.layout.paint_colors.color, None);
+        assert_eq!(active_style.layout.paint_colors.color, None);
+        assert_eq!(ancestor_style.layout.paint_colors.color, None);
         assert_eq!(
             active_style.interaction.selected.background,
             Some(SemanticColorRole::Selected)

@@ -1963,13 +1963,19 @@ mod styles {
         // Pressing activates `:active` on `.btn`.
         cx.press_pointer(document, 1, btn).unwrap();
         cx.flush_reactive().unwrap();
-        assert_eq!(layout_of(&cx, btn).background, Some([1.0, 0.0, 0.0, 1.0]));
+        assert_eq!(
+            layout_of(&cx, btn).background_srgb(),
+            Some([1.0, 0.0, 0.0, 1.0])
+        );
         cx.release_pointer(document, 1);
         cx.set_pointer_hover_at(document, 1, None, Duration::from_millis(20))
             .unwrap();
         cx.flush_reactive().unwrap();
         assert_eq!(layout_of(&cx, card).opacity, Some(1.0));
-        assert_eq!(layout_of(&cx, btn).background, Some([0.0, 0.0, 1.0, 1.0]));
+        assert_eq!(
+            layout_of(&cx, btn).background_srgb(),
+            Some([0.0, 0.0, 1.0, 1.0])
+        );
 
         // Pointer click focuses `.btn` without `focus-visible`: `:focus` applies, `:focus-visible` does not.
         let btn_box = cx.world().layout_box(btn).unwrap();

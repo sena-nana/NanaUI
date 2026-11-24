@@ -244,10 +244,8 @@ impl UiWorld {
                 resolved_layout
                     .paint_colors
                     .background
-                    .filter(|c| c.is_theme_dynamic())
+                    .or(layout.paint_colors.background)
                     .map(|c| c.resolve_srgb(model))
-                    .or(resolved_layout.background)
-                    .or(layout.background)
                     .or_else(|| self.computed_style(id).and_then(|s| s.background))
                     .map(MotionValue::Color)
             }
@@ -269,10 +267,8 @@ impl UiWorld {
                 resolved_layout
                     .paint_colors
                     .color
-                    .filter(|c| c.is_theme_dynamic())
+                    .or(layout.paint_colors.color)
                     .map(|c| c.resolve_srgb(model))
-                    .or(resolved_layout.color)
-                    .or(layout.color)
                     .or_else(|| self.computed_style(id).and_then(|s| s.color))
                     .map(MotionValue::Color)
             }

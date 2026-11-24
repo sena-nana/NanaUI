@@ -128,7 +128,9 @@ fn semantic_mix_theme_hover_disabled_and_raw_priority_share_the_normal_resolver(
         cx.world().style_model().color(R::Subtle).as_rgba_array(),
     );
     cx.update_component(button, |v, _| {
-        std::sync::Arc::make_mut(&mut v.style.layout).background = Some([0.2, 0.3, 0.4, 0.5])
+        std::sync::Arc::make_mut(&mut v.style.layout)
+            .paint_colors
+            .background = Some(nana_ui_core::PaintColor::srgb([0.2, 0.3, 0.4, 0.5]))
     })
     .unwrap();
     cx.resolve_styles(&[id]).unwrap();
