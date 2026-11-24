@@ -21,12 +21,11 @@ pub const MAX_BOX_SHADOWS: usize = 4;
 /// One `box-shadow` layer (physical px after parse).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BoxShadowSpec {
-    pub paint_color: Option<PaintColor>,
     pub offset_x: f32,
     pub offset_y: f32,
     pub blur_radius: f32,
     pub spread_radius: f32,
-    pub color: [f32; 4],
+    pub color: PaintColor,
     /// CSS `inset`. Outset (false) paints outside the border box.
     pub inset: bool,
 }
@@ -236,11 +235,7 @@ pub struct TextShadowSpec {
     pub offset_x: f32,
     pub offset_y: f32,
     pub blur_radius: f32,
-    pub color: [f32; 4],
-    /// Authoring-space color, when the declaration used an explicit color
-    /// function such as `oklch()`, `hsv()` or `color-mix()`. The legacy sRGB
-    /// field remains populated for theme/API compatibility.
-    pub paint_color: Option<PaintColor>,
+    pub color: PaintColor,
 }
 
 /// `-webkit-text-stroke`: an outline centred on each glyph's outline.
@@ -249,10 +244,7 @@ pub struct TextStrokeSpec {
     /// Full stroke width in px. Zero draws nothing.
     pub width: f32,
     /// `None` is `currentColor`: the text's own fill.
-    pub color: Option<[f32; 4]>,
-    /// Authoring-space colour, when the declaration used an explicit colour
-    /// function.
-    pub paint_color: Option<PaintColor>,
+    pub color: Option<PaintColor>,
 }
 
 /// CSS `text-decoration-line` subset Scene can stroke (underline / line-through).
@@ -284,9 +276,8 @@ impl FontFeatureSetting {
 /// One stop in a CSS `linear-gradient` (position 0..=1 along the gradient line).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GradientStop {
-    pub paint_color: Option<PaintColor>,
     pub position: f32,
-    pub color: [f32; 4],
+    pub color: PaintColor,
 }
 
 /// CSS `linear-gradient` background / mask (2..=8 stops, angle in degrees).
@@ -931,11 +922,10 @@ fn resolve_clip_axis(spec: LengthSpec, axis: f32) -> f32 {
 /// CSS `filter: drop-shadow()` — alpha silhouette, not border-box geometry.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FilterDropShadow {
-    pub paint_color: Option<PaintColor>,
     pub offset_x: f32,
     pub offset_y: f32,
     pub blur_radius: f32,
-    pub color: [f32; 4],
+    pub color: PaintColor,
 }
 
 /// CSS `filter` brightness / saturate / contrast / grayscale / hue-rotate / invert /
@@ -1205,77 +1195,49 @@ impl PaintStyle {
     }
 
     pub fn has_dynamic_theme(&self) -> bool {
-        let gradient_has_dynamic = |g: &CssGradient| {
-            g.stops()
-                .iter()
-                .any(|s| s.paint_color.is_some_and(PaintColor::is_theme_dynamic))
-        };
+        let gradient_has_dynamic =
+            |g: &CssGradient| g.stops().iter().any(|s| s.color.is_theme_dynamic());
         let bg_has_dynamic = |img: &BackgroundImage| matches!(img, BackgroundImage::Gradient(g) if gradient_has_dynamic(g));
 
-        self.box_shadows
-            .iter()
-            .any(|s| s.paint_color.is_some_and(PaintColor::is_theme_dynamic))
-            || self
-                .text_shadows
-                .iter()
-                .any(|s| s.paint_color.is_some_and(PaintColor::is_theme_dynamic))
+        self.box_shadows.iter().any(|s| s.color.is_theme_dynamic())
+            || self.text_shadows.iter().any(|s| s.color.is_theme_dynamic())
             || self
                 .text_stroke
-                .is_some_and(|s| s.paint_color.is_some_and(PaintColor::is_theme_dynamic))
+                .is_some_and(|s| s.color.is_some_and(PaintColor::is_theme_dynamic))
             || self
                 .filter
                 .and_then(|f| f.drop_shadow)
-                .is_some_and(|s| s.paint_color.is_some_and(PaintColor::is_theme_dynamic))
+                .is_some_and(|s| s.color.is_theme_dynamic())
             || self.background_layers.iter().any(bg_has_dynamic)
             || matches!(&self.mask, Some(MaskImage::Gradient(g)) if gradient_has_dynamic(g))
     }
 
     pub fn resolve_theme(&mut self, model: StyleModelRef) {
+        let resolve_color = |color: &mut PaintColor| {
+            if color.is_theme_dynamic() {
+                *color = color.resolve(model);
+            }
+        };
         let resolve_stops = |g: &mut CssGradient| {
             for stop in g.stops_mut() {
-                if let Some(pc) = stop.paint_color
-                    && pc.is_theme_dynamic()
-                {
-                    let resolved = pc.resolve(model);
-                    stop.paint_color = Some(resolved);
-                    stop.color = resolved.to_srgb();
-                }
+                resolve_color(&mut stop.color);
             }
         };
         for shadow in &mut self.box_shadows {
-            if let Some(pc) = shadow.paint_color
-                && pc.is_theme_dynamic()
-            {
-                let resolved = pc.resolve(model);
-                shadow.paint_color = Some(resolved);
-                shadow.color = resolved.to_srgb();
-            }
+            resolve_color(&mut shadow.color);
         }
         for shadow in &mut self.text_shadows {
-            if let Some(pc) = shadow.paint_color
-                && pc.is_theme_dynamic()
-            {
-                let resolved = pc.resolve(model);
-                shadow.paint_color = Some(resolved);
-                shadow.color = resolved.to_srgb();
-            }
+            resolve_color(&mut shadow.color);
         }
         if let Some(stroke) = &mut self.text_stroke
-            && let Some(pc) = stroke.paint_color
-            && pc.is_theme_dynamic()
+            && let Some(color) = &mut stroke.color
         {
-            let resolved = pc.resolve(model);
-            stroke.paint_color = Some(resolved);
-            stroke.color = Some(resolved.to_srgb());
+            resolve_color(color);
         }
         if let Some(filter) = &mut self.filter
             && let Some(drop_shadow) = &mut filter.drop_shadow
-            && let Some(pc) = drop_shadow.paint_color
-            && pc.is_theme_dynamic()
         {
-            let resolved = pc.resolve(model);
-            drop_shadow.paint_color = Some(resolved);
-            drop_shadow.color = resolved.to_srgb();
+            resolve_color(&mut drop_shadow.color);
         }
         for layer in &mut self.background_layers {
             if let BackgroundImage::Gradient(g) = layer {

@@ -101,11 +101,10 @@ fn spreading_filter_keeps_pixels_outside_source_bounds() {
                 paint: nana_ui_core::PaintStyle {
                     filter: Some(nana_ui_core::ColorFilter {
                         drop_shadow: Some(nana_ui_core::FilterDropShadow {
-                            paint_color: None,
                             offset_x: 16.0,
                             offset_y: 0.0,
                             blur_radius: 0.0,
-                            color: [0.0, 0.0, 1.0, 1.0],
+                            color: [0.0, 0.0, 1.0, 1.0].into(),
                         }),
                         ..Default::default()
                     }),

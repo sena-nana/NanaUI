@@ -6650,9 +6650,8 @@ fn a_gradient_range_paints_its_stops_and_rings_the_value() {
         .iter()
         .enumerate()
         .map(|(index, color)| nana_ui_core::GradientStop {
-            paint_color: None,
             position: index as f32 / 2.0,
-            color: *color,
+            color: (*color).into(),
         })
         .collect::<Vec<_>>(),
     );
@@ -6777,14 +6776,12 @@ fn a_picture_xy_pad_strokes_its_frame_over_the_paint_and_rings_the_value() {
                 angle_deg,
                 stops: vec![
                     nana_ui_core::GradientStop {
-                        paint_color: None,
                         position: 0.0,
-                        color: from,
+                        color: from.into(),
                     },
                     nana_ui_core::GradientStop {
-                        paint_color: None,
                         position: 1.0,
-                        color: to,
+                        color: to.into(),
                     },
                 ],
             },
@@ -8718,14 +8715,12 @@ fn css_gradient_and_clip_path_surface_paint_travels_on_quad() {
                         angle_deg: 180.0,
                         stops: vec![
                             nana_ui_core::GradientStop {
-                                paint_color: None,
                                 position: 0.0,
-                                color: [1.0, 1.0, 1.0, 1.0],
+                                color: [1.0, 1.0, 1.0, 1.0].into(),
                             },
                             nana_ui_core::GradientStop {
-                                paint_color: None,
                                 position: 1.0,
-                                color: [1.0, 1.0, 1.0, 0.0],
+                                color: [1.0, 1.0, 1.0, 0.0].into(),
                             },
                         ],
                     }),
@@ -9019,11 +9014,10 @@ fn css_drop_shadow_isolates_dest_group_not_box_shadow() {
             paint: nana_ui_core::PaintStyle {
                 filter: Some(nana_ui_core::ColorFilter {
                     drop_shadow: Some(nana_ui_core::FilterDropShadow {
-                        paint_color: None,
                         offset_x: 4.0,
                         offset_y: 6.0,
                         blur_radius: 8.0,
-                        color: [0.0, 0.0, 0.0, 0.5],
+                        color: [0.0, 0.0, 0.0, 0.5].into(),
                     }),
                     ..Default::default()
                 }),
@@ -9084,21 +9078,19 @@ fn css_box_shadow_layers_outline_and_line_clamp_travel() {
             paint: nana_ui_core::PaintStyle {
                 box_shadows: vec![
                     nana_ui_core::BoxShadowSpec {
-                        paint_color: None,
                         offset_x: 2.0,
                         offset_y: 2.0,
                         blur_radius: 4.0,
                         spread_radius: 0.0,
-                        color: [0.0, 0.0, 0.0, 1.0],
+                        color: [0.0, 0.0, 0.0, 1.0].into(),
                         inset: true,
                     },
                     nana_ui_core::BoxShadowSpec {
-                        paint_color: None,
                         offset_x: 0.0,
                         offset_y: 4.0,
                         blur_radius: 8.0,
                         spread_radius: 0.0,
-                        color: [0.0, 0.0, 0.0, 0.5],
+                        color: [0.0, 0.0, 0.0, 0.5].into(),
                         inset: false,
                     },
                 ],
@@ -9163,12 +9155,11 @@ fn inset_box_shadow_on_a_leaf_is_not_an_outset_elevation() {
             background: Some([1.0, 1.0, 1.0, 1.0]),
             paint: nana_ui_core::PaintStyle {
                 box_shadows: vec![nana_ui_core::BoxShadowSpec {
-                    paint_color: None,
                     offset_x: 2.0,
                     offset_y: 4.0,
                     blur_radius: 6.0,
                     spread_radius: 1.0,
-                    color: [0.0, 0.0, 0.0, 0.5],
+                    color: [0.0, 0.0, 0.0, 0.5].into(),
                     inset: true,
                 }],
                 ..Default::default()
@@ -9221,12 +9212,11 @@ fn inset_box_shadow_with_children_is_a_dest_group_not_parent_quad() {
             background: Some([1.0, 0.0, 0.0, 1.0]),
             paint: nana_ui_core::PaintStyle {
                 box_shadows: vec![nana_ui_core::BoxShadowSpec {
-                    paint_color: None,
                     offset_x: 0.0,
                     offset_y: 2.0,
                     blur_radius: 4.0,
                     spread_radius: 0.0,
-                    color: [0.0, 0.0, 0.0, 0.4],
+                    color: [0.0, 0.0, 0.0, 0.4].into(),
                     inset: true,
                 }],
                 ..Default::default()
@@ -9284,9 +9274,8 @@ fn css_mask_and_gradient_both_travel_on_quad() {
                     nana_ui_core::CssGradient::Linear(nana_ui_core::LinearGradient {
                         angle_deg: 90.0,
                         stops: vec![nana_ui_core::GradientStop {
-                            paint_color: None,
                             position: 0.0,
-                            color: [1.0, 0.0, 0.0, 1.0],
+                            color: [1.0, 0.0, 0.0, 1.0].into(),
                         }],
                     }),
                 )],
@@ -9294,9 +9283,8 @@ fn css_mask_and_gradient_both_travel_on_quad() {
                     nana_ui_core::CssGradient::Linear(nana_ui_core::LinearGradient {
                         angle_deg: 180.0,
                         stops: vec![nana_ui_core::GradientStop {
-                            paint_color: None,
                             position: 0.0,
-                            color: [0.0, 0.0, 0.0, 1.0],
+                            color: [0.0, 0.0, 0.0, 1.0].into(),
                         }],
                     }),
                 )),
@@ -9546,14 +9534,12 @@ fn host_texture_custom_carries_css_mask() {
                         angle_deg: 180.0,
                         stops: vec![
                             nana_ui_core::GradientStop {
-                                paint_color: None,
                                 position: 0.0,
-                                color: [1.0, 1.0, 1.0, 1.0],
+                                color: [1.0, 1.0, 1.0, 1.0].into(),
                             },
                             nana_ui_core::GradientStop {
-                                paint_color: None,
                                 position: 1.0,
-                                color: [1.0, 1.0, 1.0, 0.0],
+                                color: [1.0, 1.0, 1.0, 0.0].into(),
                             },
                         ],
                     }),
@@ -11513,14 +11499,12 @@ mod custom_paint {
                 angle_deg: 90.0,
                 stops: vec![
                     nana_ui_core::GradientStop {
-                        paint_color: None,
                         position: 0.0,
-                        color: [1.0, 1.0, 1.0, 0.0],
+                        color: [1.0, 1.0, 1.0, 0.0].into(),
                     },
                     nana_ui_core::GradientStop {
-                        paint_color: None,
                         position: 1.0,
-                        color: [1.0, 1.0, 1.0, 1.0],
+                        color: [1.0, 1.0, 1.0, 1.0].into(),
                     },
                 ],
             },
@@ -12873,11 +12857,10 @@ fn scene_extended_color_cache_tracks_wide_gamut_and_hdr_deltas() {
             offset_y: 4.0,
             blur_radius: 8.0,
             spread_radius: 0.0,
-            color: [1.0, 1.0, 1.0, 0.5],
-            paint_color: Some(nana_ui_core::PaintColor::LinearScRgb {
+            color: nana_ui_core::PaintColor::LinearScRgb {
                 channels: [2.5, 1.2, 0.2],
                 alpha: 0.5,
-            }),
+            },
             inset: false,
         });
     scene.apply_delta([card], []);

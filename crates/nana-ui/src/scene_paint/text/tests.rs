@@ -1117,8 +1117,7 @@ fn a_steady_frame_with_a_blurred_shadow_rasterizes_and_uploads_nothing() {
         offset_x: 2.0,
         offset_y: 2.0,
         blur_radius: 6.0,
-        color: [0.0, 0.0, 0.0, 0.6],
-        paint_color: None,
+        color: [0.0, 0.0, 0.0, 0.6].into(),
     };
     paint_effects(&device, &queue, &mut pipeline, None, Some(shadow));
     let first = pipeline.glyph_counters();

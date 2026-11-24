@@ -252,10 +252,9 @@ impl ScenePrimitiveKind {
             } => {
                 color.is_some_and(nana_ui_core::PaintColor::is_extended_srgb)
                     || spans.iter().any(|s| s.color.is_extended_srgb())
-                    || text_shadow.as_ref().is_some_and(|s| {
-                        s.paint_color
-                            .is_some_and(nana_ui_core::PaintColor::is_extended_srgb)
-                    })
+                    || text_shadow
+                        .as_ref()
+                        .is_some_and(|s| s.color.is_extended_srgb())
                     || rich
                         .as_ref()
                         .is_some_and(|r| rich_paint_has_extended_color(r))
@@ -280,25 +279,19 @@ pub(super) fn color_filter_has_extended_color(filter: &ColorFilter) -> bool {
     const EPS: f32 = 1.0e-3;
     filter.brightness > 1.0 + EPS
         || filter.saturate > 1.0 + EPS
-        || filter.drop_shadow.as_ref().is_some_and(|s| {
-            s.paint_color
-                .is_some_and(nana_ui_core::PaintColor::is_extended_srgb)
-        })
+        || filter
+            .drop_shadow
+            .as_ref()
+            .is_some_and(|s| s.color.is_extended_srgb())
 }
 
 fn background_image_has_extended_color(image: &BackgroundImage) -> bool {
     match image {
         BackgroundImage::Gradient(nana_ui_core::CssGradient::Linear(g)) => {
-            g.stops.iter().any(|s| {
-                s.paint_color
-                    .is_some_and(nana_ui_core::PaintColor::is_extended_srgb)
-            })
+            g.stops.iter().any(|s| s.color.is_extended_srgb())
         }
         BackgroundImage::Gradient(nana_ui_core::CssGradient::Radial(g)) => {
-            g.stops.iter().any(|s| {
-                s.paint_color
-                    .is_some_and(nana_ui_core::PaintColor::is_extended_srgb)
-            })
+            g.stops.iter().any(|s| s.color.is_extended_srgb())
         }
         BackgroundImage::Url { .. } => false,
     }

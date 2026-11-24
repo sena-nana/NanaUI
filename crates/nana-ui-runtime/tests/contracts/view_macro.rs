@@ -2234,7 +2234,7 @@ mod styles {
         let shadow = pulse.drop_shadow.expect("half-faded shadow");
         assert!((shadow.offset_y - 1.0).abs() < 1e-2, "{shadow:?}");
         assert!((shadow.blur_radius - 3.0).abs() < 1e-2, "{shadow:?}");
-        assert!((shadow.color[3] - 0.5).abs() < 1e-2, "{shadow:?}");
+        assert!((shadow.color.to_srgb()[3] - 0.5).abs() < 1e-2, "{shadow:?}");
 
         // `transition: filter` follows a class change from `none`.
         let dim = flag.get().unwrap();

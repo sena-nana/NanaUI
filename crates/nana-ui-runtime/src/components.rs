@@ -1162,9 +1162,7 @@ impl ComponentElevation {
 
     pub fn from_box_shadow(shadow: nana_ui_core::BoxShadowSpec) -> Self {
         Self {
-            color: shadow
-                .paint_color
-                .unwrap_or(nana_ui_core::PaintColor::srgb(shadow.color)),
+            color: shadow.color,
             offset_x: shadow.offset_x,
             offset_y: shadow.offset_y,
             blur_radius: shadow.blur_radius,

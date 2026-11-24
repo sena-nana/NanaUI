@@ -389,9 +389,6 @@ fn hash_effects(effects: &SceneTextEffects, hasher: &mut impl std::hash::Hasher)
 /// A node's text effects as its CSS states them: `text-decoration`, every
 /// `text-shadow` layer, `-webkit-text-stroke` under `paint-order`.
 pub fn css_text_effects(style: &nana_ui_core::LayoutStyle) -> SceneTextEffects {
-    let paint_of = |paint: Option<nana_ui_core::PaintColor>, srgb: [f32; 4]| {
-        paint.unwrap_or(nana_ui_core::PaintColor::srgb(srgb))
-    };
     let shadows: Arc<[nana_ui_core::RichTextShadow]> = style
         .paint
         .text_shadows
@@ -401,7 +398,7 @@ pub fn css_text_effects(style: &nana_ui_core::LayoutStyle) -> SceneTextEffects {
             offset: [shadow.offset_x, shadow.offset_y],
             blur_px: shadow.blur_radius.max(0.0),
             spread_px: 0.0,
-            color: paint_of(shadow.paint_color, shadow.color),
+            color: shadow.color,
         })
         .collect();
     let fill = style
@@ -413,10 +410,7 @@ pub fn css_text_effects(style: &nana_ui_core::LayoutStyle) -> SceneTextEffects {
         .text_stroke
         .filter(|stroke| stroke.width > 0.0 && stroke.width.is_finite())
         .and_then(|stroke| {
-            let color = stroke
-                .paint_color
-                .or(stroke.color.map(nana_ui_core::PaintColor::srgb))
-                .or(fill)?;
+            let color = stroke.color.or(fill)?;
             Some(nana_ui_core::RichTextStroke {
                 width_px: stroke.width,
                 color,

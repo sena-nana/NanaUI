@@ -473,9 +473,7 @@ pub(super) fn legacy_effects(shadow: nana_ui_core::TextShadowSpec) -> Option<Arc
                 offset: [shadow.offset_x, shadow.offset_y],
                 blur_px: shadow.blur_radius.max(0.0),
                 spread_px: 0.0,
-                color: shadow
-                    .paint_color
-                    .unwrap_or(nana_ui_core::PaintColor::srgb(shadow.color)),
+                color: shadow.color,
             }]),
             ..SceneTextEffects::default()
         },
@@ -488,8 +486,7 @@ pub(super) fn legacy_shadow_fingerprint(shadow: nana_ui_core::TextShadowSpec) ->
     for value in [shadow.offset_x, shadow.offset_y, shadow.blur_radius] {
         value.to_bits().hash(&mut hasher);
     }
-    shadow.color.map(f32::to_bits).hash(&mut hasher);
-    hash_paint_color(shadow.paint_color, &mut hasher);
+    hash_paint_color(Some(shadow.color), &mut hasher);
     hasher.finish() | 1
 }
 

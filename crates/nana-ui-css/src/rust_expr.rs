@@ -997,9 +997,7 @@ impl EmitRust for MaterialRef {
 
 impl EmitRust for BoxShadowSpec {
     fn emit_rust(&self, m: &str, out: &mut String) {
-        let _ = write!(out, "{m}::BoxShadowSpec{{paint_color:");
-        self.paint_color.emit_rust(m, out);
-        out.push_str(",offset_x:");
+        let _ = write!(out, "{m}::BoxShadowSpec{{offset_x:");
         self.offset_x.emit_rust(m, out);
         out.push_str(",offset_y:");
         self.offset_y.emit_rust(m, out);
@@ -1063,8 +1061,6 @@ impl EmitRust for TextShadowSpec {
         self.blur_radius.emit_rust(m, out);
         out.push_str(",color:");
         self.color.emit_rust(m, out);
-        out.push_str(",paint_color:");
-        self.paint_color.emit_rust(m, out);
         out.push('}');
     }
 }
@@ -1075,17 +1071,13 @@ impl EmitRust for TextStrokeSpec {
         self.width.emit_rust(m, out);
         out.push_str(",color:");
         self.color.emit_rust(m, out);
-        out.push_str(",paint_color:");
-        self.paint_color.emit_rust(m, out);
         out.push('}');
     }
 }
 
 impl EmitRust for GradientStop {
     fn emit_rust(&self, m: &str, out: &mut String) {
-        let _ = write!(out, "{m}::GradientStop{{paint_color:");
-        self.paint_color.emit_rust(m, out);
-        out.push_str(",position:");
+        let _ = write!(out, "{m}::GradientStop{{position:");
         self.position.emit_rust(m, out);
         out.push_str(",color:");
         self.color.emit_rust(m, out);
@@ -1324,9 +1316,7 @@ impl EmitRust for ClipPath {
 
 impl EmitRust for FilterDropShadow {
     fn emit_rust(&self, m: &str, out: &mut String) {
-        let _ = write!(out, "{m}::FilterDropShadow{{paint_color:");
-        self.paint_color.emit_rust(m, out);
-        out.push_str(",offset_x:");
+        let _ = write!(out, "{m}::FilterDropShadow{{offset_x:");
         self.offset_x.emit_rust(m, out);
         out.push_str(",offset_y:");
         self.offset_y.emit_rust(m, out);

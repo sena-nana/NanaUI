@@ -15,8 +15,8 @@ use wgpu;
 use crate::geometry::{LogicalRect, PhysicalRect};
 use crate::gpu_view::{RenderSlot, intersect_physical, slot_for_bounds};
 use crate::painted_demand::SharedPaintedDemand;
+use crate::scene_paint::pack_paint_color;
 use crate::scene_paint::url_texture_cache::UrlTextureCache;
-use crate::scene_paint::{pack_linear, pack_paint_color};
 use nana_ui_runtime::TextureSlotName;
 
 pub(crate) const SOURCE: &str = r#"
@@ -2134,10 +2134,7 @@ fn pack_layer_mask(
     packed.meta = [kind, count as f32, angle, circle];
     packed.center = [center[0], center[1], 0.0, 0.0];
     for (index, stop) in stops.iter().take(8).enumerate() {
-        let alpha = stop
-            .paint_color
-            .map(pack_paint_color)
-            .unwrap_or_else(|| pack_linear(stop.color))[3];
+        let alpha = pack_paint_color(stop.color)[3];
         if index < 4 {
             packed.alpha[index] = alpha;
             packed.pos[index] = stop.position;
@@ -2590,14 +2587,12 @@ mod tests {
                 angle_deg: 90.0,
                 stops: vec![
                     nana_ui_core::GradientStop {
-                        paint_color: None,
                         position: 0.0,
-                        color: [1.0, 1.0, 1.0, 1.0],
+                        color: [1.0, 1.0, 1.0, 1.0].into(),
                     },
                     nana_ui_core::GradientStop {
-                        paint_color: None,
                         position: 1.0,
-                        color: [1.0, 1.0, 1.0, 0.0],
+                        color: [1.0, 1.0, 1.0, 0.0].into(),
                     },
                 ],
             },
@@ -2642,9 +2637,8 @@ mod tests {
             nana_ui_core::LinearGradient {
                 angle_deg: 90.0,
                 stops: vec![nana_ui_core::GradientStop {
-                    paint_color: Some(stop),
                     position: 0.0,
-                    color: [0.01, 0.02, 0.03, 0.04],
+                    color: stop,
                 }],
             },
         ));

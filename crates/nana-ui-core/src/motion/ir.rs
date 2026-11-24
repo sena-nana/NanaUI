@@ -77,7 +77,7 @@ impl FilterValue {
     /// sRGB value, which the caller resolves first when it can.
     pub fn from_color_filter(filter: crate::ColorFilter) -> Self {
         let shadow = filter.drop_shadow;
-        let [r, g, b, a] = shadow.map_or([0.0; 4], |shadow| shadow.color);
+        let [r, g, b, a] = shadow.map_or([0.0; 4], |shadow| shadow.color.to_srgb());
         Self([
             filter.brightness,
             filter.saturate,
@@ -111,16 +111,15 @@ impl FilterValue {
             opacity: c[5].clamp(0.0, 1.0),
             blur_radius: c[6].max(0.0),
             drop_shadow: (alpha > 1e-5).then(|| crate::FilterDropShadow {
-                paint_color: None,
                 offset_x: c[7],
                 offset_y: c[8],
                 blur_radius: c[9].max(0.0),
-                color: [
+                color: crate::PaintColor::srgb([
                     c[10].clamp(0.0, 1.0),
                     c[11].clamp(0.0, 1.0),
                     c[12].clamp(0.0, 1.0),
                     alpha,
-                ],
+                ]),
             }),
         }
     }

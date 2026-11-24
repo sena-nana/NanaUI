@@ -1653,20 +1653,14 @@ fn pack_shared(
 /// sRGB; a stop in a colour space of its own keeps the whole gradient in
 /// linear scRGB, which also preserves extended values.
 fn stops_interpolate_in_srgb(stops: &[GradientStop]) -> bool {
-    stops.iter().all(|stop| {
-        matches!(
-            stop.paint_color,
-            None | Some(nana_ui_core::PaintColor::Srgb { .. })
-        )
-    })
+    stops
+        .iter()
+        .all(|stop| matches!(stop.color, nana_ui_core::PaintColor::Srgb { .. }))
 }
 
 /// A plain stop's straight sRGB colour.
 fn gradient_stop_srgb(stop: &GradientStop) -> [f32; 4] {
-    match stop.paint_color {
-        Some(nana_ui_core::PaintColor::Srgb { rgba }) => rgba,
-        _ => stop.color,
-    }
+    stop.color.to_srgb()
 }
 
 fn pack_stop_arrays(
@@ -1973,12 +1967,9 @@ fn cpu_interpolate_stops(
 }
 
 /// Resolve a gradient stop into the same linear scRGB upload space used by
-/// analytic quad gradients. Legacy `color` values are sRGB for compatibility;
-/// explicit authoring values retain their OKLCH/HSV/scRGB conversion metadata.
+/// analytic quad gradients.
 fn gradient_stop_linear_color(stop: &GradientStop) -> [f32; 4] {
-    stop.paint_color
-        .map(super::color::pack_paint_color)
-        .unwrap_or_else(|| pack_linear(stop.color))
+    super::color::pack_paint_color(stop.color)
 }
 
 fn url_dest_for_uv(u0: f32, v0: f32, u1: f32, v1: f32) -> [f32; 4] {
@@ -2281,14 +2272,12 @@ fn pack_paint_sets_mask_flag() {
             angle_deg: 90.0,
             stops: vec![
                 GradientStop {
-                    paint_color: None,
                     position: 0.0,
-                    color: [1.0, 1.0, 1.0, 1.0],
+                    color: [1.0, 1.0, 1.0, 1.0].into(),
                 },
                 GradientStop {
-                    paint_color: None,
                     position: 1.0,
-                    color: [1.0, 1.0, 1.0, 0.0],
+                    color: [1.0, 1.0, 1.0, 0.0].into(),
                 },
             ],
         }))),
@@ -2312,23 +2301,21 @@ fn analytic_gradient_stops_are_premultiplied_linear_sc_rgb() {
 
     let stops = [
         GradientStop {
-            paint_color: Some(PaintColor::Srgb {
-                rgba: [0.5, 0.25, 0.0, 0.5],
-            }),
             position: 0.0,
-            color: [0.0; 4],
+            color: PaintColor::Srgb {
+                rgba: [0.5, 0.25, 0.0, 0.5],
+            },
         },
         GradientStop {
-            paint_color: Some(PaintColor::LinearScRgb {
+            position: 1.0,
+            color: PaintColor::LinearScRgb {
                 channels: [2.0, -1.0, 0.5],
                 alpha: 0.25,
-            }),
-            position: 1.0,
-            color: [0.0; 4],
+            },
         },
     ];
     let (_, colors, _) = pack_stop_arrays(&stops, stops_interpolate_in_srgb(&stops));
-    let first = super::color::pack_paint_color(stops[0].paint_color.unwrap());
+    let first = super::color::pack_paint_color(stops[0].color);
     assert_eq!(
         colors[0],
         [
@@ -2346,29 +2333,26 @@ fn border_image_gradient_uses_explicit_stop_color_space() {
     use nana_ui_core::{GradientStop, PaintColor};
 
     let explicit = GradientStop {
-        paint_color: Some(PaintColor::Oklch {
+        position: 0.0,
+        color: PaintColor::Oklch {
             l: 0.72,
             c: 0.19,
             h: Some(42.0),
             alpha: 0.65,
-        }),
-        position: 0.0,
-        // Kept as a compatibility fallback; the explicit value must win.
-        color: [0.01, 0.02, 0.03, 0.04],
+        },
     };
-    let expected = super::color::pack_paint_color(explicit.paint_color.unwrap());
+    let expected = super::color::pack_paint_color(explicit.color);
     let resolved = gradient_stop_linear_color(&explicit);
     for (actual, expected) in resolved.into_iter().zip(expected) {
         assert!((actual - expected).abs() <= 1.0e-6);
     }
 
-    let legacy = GradientStop {
-        paint_color: None,
+    let srgb = GradientStop {
         position: 0.0,
-        color: [0.5, 0.5, 0.5, 1.0],
+        color: [0.5, 0.5, 0.5, 1.0].into(),
     };
-    let legacy_expected = pack_linear(legacy.color);
-    assert_eq!(gradient_stop_linear_color(&legacy), legacy_expected);
+    let srgb_expected = pack_linear(srgb.color.to_srgb());
+    assert_eq!(gradient_stop_linear_color(&srgb), srgb_expected);
 }
 
 #[test]
@@ -2379,20 +2363,18 @@ fn border_image_linear_gradient_keeps_extended_channels_until_upload() {
         angle_deg: 90.0,
         stops: vec![
             GradientStop {
-                paint_color: Some(PaintColor::LinearScRgb {
+                position: 0.0,
+                color: PaintColor::LinearScRgb {
                     channels: [-1.5, 8.0, 0.25],
                     alpha: 0.25,
-                }),
-                position: 0.0,
-                color: [0.0; 4],
+                },
             },
             GradientStop {
-                paint_color: Some(PaintColor::LinearScRgb {
+                position: 1.0,
+                color: PaintColor::LinearScRgb {
                     channels: [-0.5, 4.0, 1.5],
                     alpha: 1.5,
-                }),
-                position: 1.0,
-                color: [0.0; 4],
+                },
             },
         ],
     };
@@ -2411,23 +2393,22 @@ fn border_image_gradient_cache_key_tracks_explicit_stop_values() {
     let mut first = LinearGradient {
         angle_deg: 90.0,
         stops: vec![GradientStop {
-            paint_color: Some(PaintColor::Oklch {
+            position: 0.0,
+            color: PaintColor::Oklch {
                 l: 0.7,
                 c: 0.18,
                 h: Some(35.0),
                 alpha: 1.0,
-            }),
-            position: 0.0,
-            color: [0.0; 4],
+            },
         }],
     };
     let first_key = linear_gradient_cache_key(&first);
-    first.stops[0].paint_color = Some(PaintColor::Oklch {
+    first.stops[0].color = PaintColor::Oklch {
         l: 0.7,
         c: 0.18,
         h: Some(36.0),
         alpha: 1.0,
-    });
+    };
     assert_ne!(first_key, linear_gradient_cache_key(&first));
 }
 
@@ -2439,14 +2420,13 @@ fn border_image_gradient_cache_key_includes_all_rasterized_stops() {
         angle_deg: 90.0,
         stops: (0..9)
             .map(|index| GradientStop {
-                paint_color: None,
                 position: index as f32 / 8.0,
-                color: [index as f32 / 8.0, 0.25, 0.5, 1.0],
+                color: [index as f32 / 8.0, 0.25, 0.5, 1.0].into(),
             })
             .collect(),
     };
     let first_key = linear_gradient_cache_key(&first);
-    first.stops[8].color[0] = 0.75;
+    first.stops[8].color = [0.75, 0.25, 0.5, 1.0].into();
     assert_ne!(first_key, linear_gradient_cache_key(&first));
 }
 
@@ -2463,14 +2443,12 @@ fn pack_paint_resolves_radial_mask_px_center_against_used_box() {
             center: [LengthSpec::Px(10.0), LengthSpec::Px(20.0)],
             stops: vec![
                 GradientStop {
-                    paint_color: None,
                     position: 0.0,
-                    color: [1.0, 1.0, 1.0, 1.0],
+                    color: [1.0, 1.0, 1.0, 1.0].into(),
                 },
                 GradientStop {
-                    paint_color: None,
                     position: 1.0,
-                    color: [1.0, 1.0, 1.0, 0.0],
+                    color: [1.0, 1.0, 1.0, 0.0].into(),
                 },
             ],
         }))),

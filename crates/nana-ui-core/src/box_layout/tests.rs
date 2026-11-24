@@ -1021,16 +1021,14 @@ fn inherit_typography_fills_writing_direction() {
 #[test]
 fn inset_box_shadow_is_distinct_from_outset() {
     let outset = BoxShadowSpec {
-        paint_color: None,
         offset_x: 2.0,
         offset_y: 2.0,
         blur_radius: 4.0,
         spread_radius: 0.0,
-        color: [0.0, 0.0, 0.0, 1.0],
+        color: [0.0, 0.0, 0.0, 1.0].into(),
         inset: false,
     };
     let inset = BoxShadowSpec {
-        paint_color: None,
         inset: true,
         ..outset
     };

@@ -469,10 +469,7 @@ impl UiScene {
                         .backdrop_filter
                         .as_ref()
                         .is_some_and(|bf| bf.saturate > 1.0 + 1.0e-3)
-                    || paint.box_shadows.iter().any(|s| {
-                        s.paint_color
-                            .is_some_and(nana_ui_core::PaintColor::is_extended_srgb)
-                    })
+                    || paint.box_shadows.iter().any(|s| s.color.is_extended_srgb())
             })
             || self.compositor.presents_extended_filter();
         self.set_derived_extended_color(extended);

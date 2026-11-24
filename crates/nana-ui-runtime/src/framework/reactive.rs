@@ -2108,10 +2108,8 @@ impl AppContext {
                             CompiledMotionValue::Transform(t) => MotionValue::Transform(t),
                             CompiledMotionValue::Filter(filter_fn) => {
                                 let mut filter = filter_fn();
-                                if let Some(shadow) = filter.drop_shadow.as_mut()
-                                    && let Some(paint) = shadow.paint_color
-                                {
-                                    shadow.color = paint.resolve_srgb(model);
+                                if let Some(shadow) = filter.drop_shadow.as_mut() {
+                                    shadow.color = shadow.color.resolve(model);
                                 }
                                 MotionValue::Filter(filter.into())
                             }

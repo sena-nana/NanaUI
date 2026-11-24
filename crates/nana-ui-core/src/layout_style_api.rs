@@ -471,12 +471,11 @@ mod tests {
                 PaintStyle::default()
                     .visibility(VisibilitySpec::Hidden)
                     .box_shadows(vec![BoxShadowSpec {
-                        paint_color: None,
                         offset_x: 1.0,
                         offset_y: 2.0,
                         blur_radius: 3.0,
                         spread_radius: 0.0,
-                        color: [0.0, 0.0, 0.0, 0.4],
+                        color: [0.0, 0.0, 0.0, 0.4].into(),
                         inset: false,
                     }])
                     .mix_blend(MixBlendMode::Multiply)
@@ -569,12 +568,11 @@ mod tests {
             .visibility(VisibilitySpec::Hidden)
             .border_radii([LengthSpec::Px(1.0); 4])
             .box_shadows(vec![BoxShadowSpec {
-                paint_color: None,
                 offset_x: 0.0,
                 offset_y: 1.0,
                 blur_radius: 2.0,
                 spread_radius: 0.0,
-                color: [0.0, 0.0, 0.0, 0.3],
+                color: [0.0, 0.0, 0.0, 0.3].into(),
                 inset: false,
             }])
             .mix_blend(MixBlendMode::Screen)

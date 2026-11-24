@@ -58,20 +58,17 @@ pub fn apply_css_paint_property(style: &mut nana_ui_core::LayoutStyle, name: &st
                 let stroke = style.paint.text_stroke.get_or_insert(TextStrokeSpec {
                     width: 0.0,
                     color: None,
-                    paint_color: None,
                 });
                 stroke.width = width;
             }
         }
         "-webkit-text-stroke-color" => {
-            let (color, paint_color) = text_stroke_color(val);
+            let color = text_stroke_color(val);
             let stroke = style.paint.text_stroke.get_or_insert(TextStrokeSpec {
                 width: 0.0,
                 color: None,
-                paint_color: None,
             });
             stroke.color = color;
-            stroke.paint_color = paint_color;
         }
         "paint-order" => {
             // `normal` is fill, stroke, markers; anything that names stroke
@@ -1037,24 +1034,19 @@ fn apply_outline_shorthand(style: &mut nana_ui_core::LayoutStyle, val: &str) {
 /// `-webkit-text-stroke: <width> || <color>`.
 fn apply_text_stroke_shorthand(style: &mut nana_ui_core::LayoutStyle, val: &str) {
     let mut width = None;
-    let mut color = (None, None);
+    let mut color = None;
     for token in split_css_space_tokens(val.trim()) {
         if let Some(px) = parse_text_stroke_width(&token) {
             width = Some(px);
-        } else {
-            let resolved = text_stroke_color(&token);
-            if resolved.0.is_some() || token.eq_ignore_ascii_case("currentcolor") {
-                color = resolved;
-            }
+        } else if token.eq_ignore_ascii_case("currentcolor") {
+            color = None;
+        } else if let Some(resolved) = text_stroke_color(&token) {
+            color = Some(resolved);
         }
     }
     style.paint.text_stroke = width
         .filter(|width| *width > 0.0)
-        .map(|width| TextStrokeSpec {
-            width,
-            color: color.0,
-            paint_color: color.1,
-        });
+        .map(|width| TextStrokeSpec { width, color });
 }
 
 fn parse_text_stroke_width(val: &str) -> Option<f32> {
@@ -1067,14 +1059,11 @@ fn parse_text_stroke_width(val: &str) -> Option<f32> {
 }
 
 /// `currentColor` is `None`: the stroke takes the text's own colour.
-fn text_stroke_color(val: &str) -> (Option<[f32; 4]>, Option<nana_ui_core::PaintColor>) {
+fn text_stroke_color(val: &str) -> Option<nana_ui_core::PaintColor> {
     if val.trim().eq_ignore_ascii_case("currentcolor") {
-        return (None, None);
+        return None;
     }
-    (
-        resolve_paint_color(val),
-        crate::style::resolve_css_paint_color(val).map(|color| color.to_core()),
-    )
+    crate::style::resolve_css_paint_color(val).map(|color| color.to_core())
 }
 
 /// `inherit` / `unset` (`Some(false)`: the inherited properties take their
@@ -1536,17 +1525,13 @@ fn extract_gradient_interpolation(
 }
 
 fn stop_to_css_paint_color(stop: &GradientStop) -> crate::style::CssPaintColor {
-    match stop.paint_color {
-        Some(paint) => crate::style::CssPaintColor::from_core(paint),
-        None => crate::style::CssPaintColor::Srgb(stop.color),
-    }
+    crate::style::CssPaintColor::from_core(stop.color)
 }
 
 fn gradient_stop_from_css(position: f32, paint: crate::style::CssPaintColor) -> GradientStop {
     GradientStop {
-        paint_color: Some(paint.to_core()),
         position,
-        color: paint.to_srgb(),
+        color: paint.to_core(),
     }
 }
 
@@ -1563,9 +1548,8 @@ fn apply_gradient_interpolation_method(
             .map(|stop| {
                 let srgb = stop_to_css_paint_color(&stop).to_srgb();
                 GradientStop {
-                    paint_color: Some(nana_ui_core::PaintColor::srgb(srgb)),
                     position: stop.position,
-                    color: srgb,
+                    color: nana_ui_core::PaintColor::srgb(srgb),
                 }
             })
             .collect(),
@@ -1745,14 +1729,12 @@ fn parse_gradient_stops(input: &str, repeating: bool) -> Option<Vec<GradientStop
                 index as f32 / (raw.len().saturating_sub(1) as f32)
             };
             stops.push(GradientStop {
-                paint_color: item.paint_color,
                 position,
                 color: item.color,
             });
         } else {
             for &position in &item.positions {
                 stops.push(GradientStop {
-                    paint_color: item.paint_color,
                     position,
                     color: item.color,
                 });
@@ -1772,8 +1754,7 @@ fn parse_gradient_stops(input: &str, repeating: bool) -> Option<Vec<GradientStop
 }
 
 struct ColorStopItem {
-    color: [f32; 4],
-    paint_color: Option<nana_ui_core::PaintColor>,
+    color: nana_ui_core::PaintColor,
     positions: Vec<f32>,
 }
 
@@ -1789,40 +1770,10 @@ fn parse_color_stop_item(input: &str) -> Option<ColorStopItem> {
             return None;
         }
     }
-    Some(ColorStopItem {
-        color,
-        paint_color: parse_author_color_prefix(input),
-        positions,
-    })
+    Some(ColorStopItem { color, positions })
 }
 
-fn parse_author_color_prefix(input: &str) -> Option<nana_ui_core::PaintColor> {
-    let trimmed = input.trim();
-    let lower = trimmed.to_ascii_lowercase();
-    for name in [
-        "rgba",
-        "hsla",
-        "rgb",
-        "hsl",
-        "oklch",
-        "hsv",
-        "color",
-        "color-mix",
-        "light-dark",
-        "var",
-        "theme",
-    ] {
-        if let Some(end) = leading_function_end(&lower, name) {
-            return crate::style::resolve_css_paint_color(&trimmed[..end]).map(|c| c.to_core());
-        }
-    }
-    if let Some((head, _)) = split_first_token(trimmed) {
-        return crate::style::resolve_css_paint_color(head).map(|c| c.to_core());
-    }
-    crate::style::resolve_css_paint_color(trimmed).map(|c| c.to_core())
-}
-
-fn split_color_and_rest(input: &str) -> Option<([f32; 4], &str)> {
+fn split_color_and_rest(input: &str) -> Option<(nana_ui_core::PaintColor, &str)> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return None;
@@ -1846,16 +1797,16 @@ fn split_color_and_rest(input: &str) -> Option<([f32; 4], &str)> {
         "theme",
     ] {
         if let Some(end) = leading_function_end(&lower, name) {
-            let color = resolve_paint_color(&trimmed[..end])?;
+            let color = crate::style::resolve_css_paint_color(&trimmed[..end])?.to_core();
             return Some((color, trimmed[end..].trim()));
         }
     }
     if let Some((head, rest)) = split_first_token(trimmed)
-        && let Some(color) = resolve_paint_color(head)
+        && let Some(color) = crate::style::resolve_css_paint_color(head).map(|c| c.to_core())
     {
         return Some((color, rest));
     }
-    resolve_paint_color(trimmed).map(|color| (color, ""))
+    crate::style::resolve_css_paint_color(trimmed).map(|color| (color.to_core(), ""))
 }
 
 fn leading_function_end(lower: &str, name: &str) -> Option<usize> {
@@ -1919,15 +1870,11 @@ fn expand_repeating_linear_stops(stops: Vec<GradientStop>) -> Option<Vec<Gradien
             let pos = pos.clamp(0.0, 1.0);
             if let Some(last) = out.last()
                 && (last.position - pos).abs() < 1e-5
-                && last.color[0] == stop.color[0]
-                && last.color[1] == stop.color[1]
-                && last.color[2] == stop.color[2]
-                && last.color[3] == stop.color[3]
+                && last.color == stop.color
             {
                 continue;
             }
             out.push(GradientStop {
-                paint_color: stop.paint_color,
                 position: pos,
                 color: stop.color,
             });
@@ -2402,8 +2349,8 @@ mod tests {
         let grad = parse_linear_gradient("linear-gradient(white, transparent)").unwrap();
         assert!((grad.angle_deg - 180.0).abs() < 0.01);
         assert_eq!(grad.stops.len(), 2);
-        assert!((grad.stops[0].color[3] - 1.0).abs() < 0.01);
-        assert!(grad.stops[1].color[3] < 0.01);
+        assert!((grad.stops[0].color.to_srgb()[3] - 1.0).abs() < 0.01);
+        assert!(grad.stops[1].color.to_srgb()[3] < 0.01);
     }
 
     #[test]
@@ -2411,8 +2358,8 @@ mod tests {
         let grad = parse_linear_gradient("linear-gradient(180deg, white, transparent)").unwrap();
         assert!((grad.angle_deg - 180.0).abs() < 0.01);
         assert_eq!(grad.stops.len(), 2);
-        assert!((grad.stops[0].color[3] - 1.0).abs() < 0.01);
-        assert!(grad.stops[1].color[3] < 0.01);
+        assert!((grad.stops[0].color.to_srgb()[3] - 1.0).abs() < 0.01);
+        assert!(grad.stops[1].color.to_srgb()[3] < 0.01);
     }
 
     #[test]
@@ -2421,12 +2368,12 @@ mod tests {
             parse_linear_gradient("linear-gradient(oklch(65% .15 30) 10%, hsv(120 60% 70%) 90%)")
                 .unwrap();
         assert!(matches!(
-            grad.stops[0].paint_color,
-            Some(nana_ui_core::PaintColor::Oklch { .. })
+            grad.stops[0].color,
+            nana_ui_core::PaintColor::Oklch { .. }
         ));
         assert!(matches!(
-            grad.stops[1].paint_color,
-            Some(nana_ui_core::PaintColor::Hsv { .. })
+            grad.stops[1].color,
+            nana_ui_core::PaintColor::Hsv { .. }
         ));
     }
 
@@ -2437,8 +2384,8 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            grad.stops[0].paint_color,
-            Some(nana_ui_core::PaintColor::LinearScRgb { channels, .. })
+            grad.stops[0].color,
+            nana_ui_core::PaintColor::LinearScRgb { channels, .. }
                 if (channels[0] - 1.25).abs() < 1.0e-6
                     && (channels[1] + 0.1).abs() < 1.0e-6
         ));
@@ -2451,8 +2398,8 @@ mod tests {
         assert!((grad.stops[0].position - 0.0).abs() < 0.01);
         assert!((grad.stops[1].position - 0.97).abs() < 0.01);
         assert!((grad.stops[2].position - 1.0).abs() < 0.01);
-        assert!(grad.stops[0].color[0] > 0.9 && grad.stops[1].color[0] > 0.9);
-        assert!(grad.stops[2].color[3] < 0.01);
+        assert!(grad.stops[0].color.to_srgb()[0] > 0.9 && grad.stops[1].color.to_srgb()[0] > 0.9);
+        assert!(grad.stops[2].color.to_srgb()[3] < 0.01);
         let mut layout = LayoutStyle::default();
         layout.apply_css_text(
             "background: linear-gradient(#fff 0 97%, transparent)",
@@ -3032,11 +2979,11 @@ mod tests {
         assert!((shadow.offset_x - 4.0).abs() < 0.01);
         assert!((shadow.offset_y - 6.0).abs() < 0.01);
         assert!((shadow.blur_radius - 8.0).abs() < 0.01);
-        assert!((shadow.color[3] - 0.5).abs() < 0.01);
+        assert!((shadow.color.to_srgb()[3] - 0.5).abs() < 0.01);
         let colored = parse_color_filter("drop-shadow(red 2px 3px)").unwrap();
         let red = colored.drop_shadow.expect("color-first");
         assert!((red.offset_x - 2.0).abs() < 0.01);
-        assert!((red.color[0] - 1.0).abs() < 0.01);
+        assert!((red.color.to_srgb()[0] - 1.0).abs() < 0.01);
         let combined = parse_color_filter("brightness(0.5) drop-shadow(0 4px 4px black)").unwrap();
         assert!((combined.brightness - 0.5).abs() < 0.01);
         assert!(combined.drop_shadow.is_some());
@@ -3583,11 +3530,10 @@ mod tests {
                     .total_cmp(&(b.position - 0.5).abs())
             })
             .unwrap()
-            .paint_color
-            .unwrap()
+            .color
             .to_linear_sc_rgb();
-        let (start_sc, _) = linear_grad.stops[0].paint_color.unwrap().to_linear_sc_rgb();
-        let (end_sc, _) = linear_grad.stops[1].paint_color.unwrap().to_linear_sc_rgb();
+        let (start_sc, _) = linear_grad.stops[0].color.to_linear_sc_rgb();
+        let (end_sc, _) = linear_grad.stops[1].color.to_linear_sc_rgb();
         let mid_chord = [
             0.5 * (start_sc[0] + end_sc[0]),
             0.5 * (start_sc[1] + end_sc[1]),

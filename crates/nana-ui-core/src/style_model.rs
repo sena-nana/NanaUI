@@ -448,6 +448,13 @@ impl PaintColor {
     }
 }
 
+impl From<[f32; 4]> for PaintColor {
+    #[inline]
+    fn from(rgba: [f32; 4]) -> Self {
+        Self::Srgb { rgba }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PaintColorSlots {
     pub color: Option<PaintColor>,

@@ -585,9 +585,8 @@ fn scroll_foot_fade_view(fade: ScrollFootFade) -> AnyView {
     } = fade;
     use nana_ui_core::{CssGradient, GradientStop, LinearGradient, MaskImage};
     let stop = |position: f32, alpha: f32| GradientStop {
-        paint_color: None,
         position,
-        color: [1.0, 1.0, 1.0, alpha],
+        color: [1.0, 1.0, 1.0, alpha].into(),
     };
     widget(Stack::row(0.0).surface(surface).with_layout(|l| {
         l.position = nana_ui_core::PositionSpec::Absolute;

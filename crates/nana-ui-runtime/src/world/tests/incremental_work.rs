@@ -323,12 +323,11 @@ mod invalidation_classification {
                     layout.border_radius = Some(4.0);
                     layout.paint.visibility = Some(VisibilitySpec::Hidden);
                     layout.paint.box_shadows.push(BoxShadowSpec {
-                        paint_color: None,
                         offset_x: 1.0,
                         offset_y: 1.0,
                         blur_radius: 2.0,
                         spread_radius: 0.0,
-                        color: [0.0, 0.0, 0.0, 0.4],
+                        color: [0.0, 0.0, 0.0, 0.4].into(),
                         inset: false,
                     });
                     style.foreground = Some(SemanticColorRole::Accent);

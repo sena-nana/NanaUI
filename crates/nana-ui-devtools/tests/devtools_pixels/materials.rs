@@ -216,8 +216,7 @@ fn presentation_masks_preserve_color_and_erase_the_whole_text_target() {
     layout.color = Some([0., 0.1, 0.8, 1.]);
     layout.paint.text_stroke = Some(nana_ui_core::TextStrokeSpec {
         width: 1.,
-        color: Some([0., 0., 0., 1.]),
-        paint_color: None,
+        color: Some([0., 0., 0., 1.].into()),
     });
     let mut doc = RuntimeDocument::new(id);
     let mounted = doc

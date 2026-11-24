@@ -5797,14 +5797,10 @@ fn parse_one_box_shadow_layer(input: &str) -> Option<BoxShadowSpec> {
         .unwrap_or(0.0);
     let color = color_token
         .as_deref()
-        .and_then(resolve_paint_color)
-        .unwrap_or([0.0, 0.0, 0.0, 1.0]);
-    let paint_color = color_token
-        .as_deref()
         .and_then(crate::style::resolve_css_paint_color)
-        .map(|c| c.to_core());
+        .map(|c| c.to_core())
+        .unwrap_or(nana_ui_core::PaintColor::srgb([0.0, 0.0, 0.0, 1.0]));
     Some(BoxShadowSpec {
-        paint_color,
         offset_x,
         offset_y,
         blur_radius,
@@ -5831,14 +5827,10 @@ pub fn parse_drop_shadow(input: &str) -> Option<nana_ui_core::FilterDropShadow> 
         None => 0.0,
     };
     let color = match color_token.as_deref() {
-        Some(token) => resolve_paint_color(token)?,
-        None => [0.0, 0.0, 0.0, 1.0],
+        Some(token) => crate::style::resolve_css_paint_color(token)?.to_core(),
+        None => nana_ui_core::PaintColor::srgb([0.0, 0.0, 0.0, 1.0]),
     };
     Some(nana_ui_core::FilterDropShadow {
-        paint_color: color_token
-            .as_deref()
-            .and_then(crate::style::resolve_css_paint_color)
-            .map(|c| c.to_core()),
         offset_x,
         offset_y,
         blur_radius,
@@ -5892,18 +5884,14 @@ pub fn parse_text_shadow(input: &str) -> Option<TextShadowSpec> {
         .unwrap_or(0.0);
     let color = color_token
         .as_deref()
-        .and_then(resolve_paint_color)
-        .unwrap_or([0.0, 0.0, 0.0, 0.5]);
-    let paint_color = color_token
-        .as_deref()
         .and_then(crate::style::resolve_css_paint_color)
-        .map(|color| color.to_core());
+        .map(|color| color.to_core())
+        .unwrap_or(nana_ui_core::PaintColor::srgb([0.0, 0.0, 0.0, 0.5]));
     Some(TextShadowSpec {
         offset_x,
         offset_y,
         blur_radius,
         color,
-        paint_color,
     })
 }
 
@@ -8088,7 +8076,7 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         assert!((shadow.offset_y - 6.0).abs() < 0.01);
         assert!((shadow.blur_radius - 8.0).abs() < 0.01);
         assert!((shadow.spread_radius - 2.0).abs() < 0.01);
-        assert!((shadow.color[3] - 0.25).abs() < 0.01);
+        assert!((shadow.color.to_srgb()[3] - 0.25).abs() < 0.01);
         assert!(!shadow.inset);
     }
 
@@ -8397,7 +8385,7 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         let shadow = layout.paint.primary_box_shadow().expect("shadow");
         assert!((shadow.offset_x - 4.0).abs() < 0.01);
         assert!((shadow.offset_y - 6.0).abs() < 0.01);
-        assert!((shadow.color[0] - 1.0).abs() < 0.01);
+        assert!((shadow.color.to_srgb()[0] - 1.0).abs() < 0.01);
     }
 
     #[test]
@@ -8407,7 +8395,7 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         let shadow = layout.paint.primary_box_shadow().expect("shadow");
         assert!((shadow.offset_x - 4.0).abs() < 0.01);
         assert!((shadow.offset_y - 6.0).abs() < 0.01);
-        assert!((shadow.color[0] - 1.0).abs() < 0.01);
+        assert!((shadow.color.to_srgb()[0] - 1.0).abs() < 0.01);
     }
 
     #[test]
@@ -8441,7 +8429,7 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         layout.apply_css_text("-webkit-text-stroke: 2px #ff0000", None, None);
         let stroke = layout.paint.text_stroke.expect("stroke");
         assert_eq!(stroke.width, 2.0);
-        assert_eq!(stroke.color, Some([1.0, 0.0, 0.0, 1.0]));
+        assert_eq!(stroke.color, Some([1.0, 0.0, 0.0, 1.0].into()));
         assert!(
             !layout.paint.paint_order_stroke_first,
             "CSS paints the stroke over the fill"
@@ -8466,7 +8454,7 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         let shadow = layout.paint.primary_text_shadow().expect("text-shadow");
         assert_eq!(shadow.offset_x, 2.0);
         assert_eq!(shadow.offset_y, 3.0);
-        assert!((shadow.color[3] - 0.5).abs() < 0.01);
+        assert!((shadow.color.to_srgb()[3] - 0.5).abs() < 0.01);
     }
 
     #[test]
@@ -8478,8 +8466,8 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
             None,
         );
         let shadow = layout.paint.primary_text_shadow().expect("text-shadow");
-        match shadow.paint_color {
-            Some(nana_ui_core::PaintColor::Oklch { l, c, h, alpha }) => {
+        match shadow.color {
+            nana_ui_core::PaintColor::Oklch { l, c, h, alpha } => {
                 assert!((l - 0.62).abs() < 1e-6);
                 assert!((c - 0.18).abs() < 1e-6);
                 assert!((h.expect("hue") - 280.0).abs() < 1e-5);

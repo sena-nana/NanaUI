@@ -367,10 +367,7 @@ impl GpuGradient {
         packed.header = [kind, 0, stops.len().max(1) as u32, 1];
         packed.geometry = geometry;
         for (index, stop) in stops.iter().enumerate() {
-            let [r, g, b, a] = stop
-                .paint_color
-                .map(pack_paint_color)
-                .unwrap_or_else(|| pack_linear(stop.color));
+            let [r, g, b, a] = pack_paint_color(stop.color);
             let a = a.clamp(0.0, 1.0);
             packed.offsets[index / 4][index % 4] = stop.position;
             packed.colors[index] = [r * a, g * a, b * a, a];

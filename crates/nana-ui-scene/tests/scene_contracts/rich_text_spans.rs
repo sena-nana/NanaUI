@@ -316,15 +316,13 @@ fn css_text_effects_are_the_base_a_span_overrides() {
             offset_x: 1.0,
             offset_y: 1.0,
             blur_radius: 2.0,
-            color: [0.0, 0.0, 0.0, 0.5],
-            paint_color: None,
+            color: [0.0, 0.0, 0.0, 0.5].into(),
         };
         2
     ];
     layout.paint.text_stroke = Some(nana_ui_core::TextStrokeSpec {
         width: 2.0,
-        color: Some([1.0, 1.0, 1.0, 1.0]),
-        paint_color: None,
+        color: Some([1.0, 1.0, 1.0, 1.0].into()),
     });
     layout.paint.paint_order_stroke_first = true;
     let rich = RichText::new("base over").with_span(

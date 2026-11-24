@@ -849,12 +849,11 @@ fn panel_style(rect: LayoutBox, compiled: &nana_ui_core::CompiledTheme) -> NodeS
     layout.offset_top = Some(LengthSpec::Px(rect.y));
     layout.height = Some(LengthSpec::Px(rect.height));
     layout.paint.box_shadows = vec![BoxShadowSpec {
-        paint_color: None,
         offset_x: shadow.offset_x,
         offset_y: shadow.offset_y,
         blur_radius: shadow.blur_radius,
         spread_radius: shadow.spread_radius,
-        color: shadow.color.as_rgba_array(),
+        color: shadow.color.as_rgba_array().into(),
         inset: shadow.inset,
     }];
     style

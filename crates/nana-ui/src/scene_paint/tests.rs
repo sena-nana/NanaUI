@@ -2310,11 +2310,10 @@ fn drop_shadow_samples_dest_group_alpha_not_box_shadow_quads() {
                 paint: nana_ui_core::PaintStyle {
                     filter: Some(nana_ui_core::ColorFilter {
                         drop_shadow: Some(nana_ui_core::FilterDropShadow {
-                            paint_color: None,
                             offset_x: 16.0,
                             offset_y: 0.0,
                             blur_radius: 0.0,
-                            color: shadow_srgb,
+                            color: shadow_srgb.into(),
                         }),
                         ..Default::default()
                     }),
@@ -2404,11 +2403,10 @@ fn drop_shadow_dest_group_follows_scene_origin() {
                 paint: nana_ui_core::PaintStyle {
                     filter: Some(nana_ui_core::ColorFilter {
                         drop_shadow: Some(nana_ui_core::FilterDropShadow {
-                            paint_color: None,
                             offset_x: 16.0,
                             offset_y: 0.0,
                             blur_radius: 0.0,
-                            color: [0.5, 0.5, 0.5, 1.0],
+                            color: [0.5, 0.5, 0.5, 1.0].into(),
                         }),
                         ..Default::default()
                     }),
@@ -2476,12 +2474,11 @@ fn outline_and_shadow_spread_stay_css_px_at_hidpi() {
                         style: nana_ui_core::OutlineStyle::Solid,
                     },
                     box_shadows: vec![nana_ui_core::BoxShadowSpec {
-                        paint_color: None,
                         offset_x: 0.0,
                         offset_y: 0.0,
                         blur_radius: 0.0,
                         spread_radius: 4.0,
-                        color: [0.0, 0.0, 1.0, 1.0],
+                        color: [0.0, 0.0, 1.0, 1.0].into(),
                         inset: false,
                     }],
                     ..Default::default()
@@ -4572,12 +4569,11 @@ fn unblurred_shadow_and_outline_edges_stay_one_device_pixel_under_transform_scal
                 (green, paint)
             } else {
                 let shadow = nana_ui_core::BoxShadowSpec {
-                    paint_color: None,
                     offset_x: 0.0,
                     offset_y: 0.0,
                     blur_radius: 0.0,
                     spread_radius: band,
-                    color: green,
+                    color: green.into(),
                     inset: false,
                 };
                 let paint = nana_ui_core::PaintStyle {
@@ -4626,12 +4622,11 @@ fn inset_shadow_spread_shrinks_its_shape_inside_the_box() {
     for (label, [x, y, w, h], scale, factor) in SCALED_CIRCLES {
         let spread = w / 8.0;
         let shadow = nana_ui_core::BoxShadowSpec {
-            paint_color: None,
             offset_x: 0.0,
             offset_y: 0.0,
             blur_radius: 0.0,
             spread_radius: spread,
-            color: [0.0, 1.0, 0.0, 1.0],
+            color: [0.0, 1.0, 0.0, 1.0].into(),
             inset: true,
         };
         let layout = nana_ui_core::LayoutStyle {
@@ -4678,12 +4673,11 @@ fn paint_box_shadow(
 ) -> Vec<u8> {
     let black = [0.0, 0.0, 0.0, 1.0];
     let shadow = nana_ui_core::BoxShadowSpec {
-        paint_color: None,
         offset_x: 0.0,
         offset_y: 0.0,
         blur_radius,
         spread_radius,
-        color: [0.0, 1.0, 0.0, 1.0],
+        color: [0.0, 1.0, 0.0, 1.0].into(),
         inset,
     };
     let layout = nana_ui_core::LayoutStyle {
@@ -7320,14 +7314,12 @@ fn gradient_white_to_transparent_source_over_red() {
                 angle_deg: 180.0,
                 stops: vec![
                     nana_ui_core::GradientStop {
-                        paint_color: None,
                         position: 0.0,
-                        color: [1.0, 1.0, 1.0, 1.0],
+                        color: [1.0, 1.0, 1.0, 1.0].into(),
                     },
                     nana_ui_core::GradientStop {
-                        paint_color: None,
                         position: 1.0,
-                        color: [1.0, 1.0, 1.0, 0.0],
+                        color: [1.0, 1.0, 1.0, 0.0].into(),
                     },
                 ],
             }),
@@ -7385,9 +7377,8 @@ fn mask_linear_fade_scales_rgb_with_alpha() {
             nana_ui_core::CssGradient::Linear(nana_ui_core::LinearGradient {
                 angle_deg: 0.0,
                 stops: vec![nana_ui_core::GradientStop {
-                    paint_color: None,
                     position: 0.0,
-                    color: [1.0, 0.0, 0.0, 1.0],
+                    color: [1.0, 0.0, 0.0, 1.0].into(),
                 }],
             }),
         )),
@@ -7396,14 +7387,12 @@ fn mask_linear_fade_scales_rgb_with_alpha() {
                 angle_deg: 90.0,
                 stops: vec![
                     nana_ui_core::GradientStop {
-                        paint_color: None,
                         position: 0.0,
-                        color: [1.0, 1.0, 1.0, 1.0],
+                        color: [1.0, 1.0, 1.0, 1.0].into(),
                     },
                     nana_ui_core::GradientStop {
-                        paint_color: None,
                         position: 1.0,
-                        color: [1.0, 1.0, 1.0, 0.0],
+                        color: [1.0, 1.0, 1.0, 0.0].into(),
                     },
                 ],
             }),
@@ -7474,14 +7463,12 @@ fn host_texture_mask_linear_fade_samples_in_document_order() {
             angle_deg: 90.0,
             stops: vec![
                 nana_ui_core::GradientStop {
-                    paint_color: None,
                     position: 0.0,
-                    color: [1.0, 1.0, 1.0, 1.0],
+                    color: [1.0, 1.0, 1.0, 1.0].into(),
                 },
                 nana_ui_core::GradientStop {
-                    paint_color: None,
                     position: 1.0,
-                    color: [1.0, 1.0, 1.0, 0.0],
+                    color: [1.0, 1.0, 1.0, 0.0].into(),
                 },
             ],
         }),
@@ -7593,9 +7580,8 @@ fn mask_url_alpha_scales_quad_in_document_order() {
             nana_ui_core::CssGradient::Linear(nana_ui_core::LinearGradient {
                 angle_deg: 0.0,
                 stops: vec![nana_ui_core::GradientStop {
-                    paint_color: None,
                     position: 0.0,
-                    color: [1.0, 0.0, 0.0, 1.0],
+                    color: [1.0, 0.0, 0.0, 1.0].into(),
                 }],
             }),
         )),
@@ -7778,9 +7764,8 @@ fn mask_url_unloadable_is_ignored_not_gradient() {
             nana_ui_core::CssGradient::Linear(nana_ui_core::LinearGradient {
                 angle_deg: 0.0,
                 stops: vec![nana_ui_core::GradientStop {
-                    paint_color: None,
                     position: 0.0,
-                    color: [1.0, 0.0, 0.0, 1.0],
+                    color: [1.0, 0.0, 0.0, 1.0].into(),
                 }],
             }),
         )),
@@ -7842,9 +7827,8 @@ fn mask_linear_six_stops_uses_stop_five_on_gpu() {
             nana_ui_core::CssGradient::Linear(nana_ui_core::LinearGradient {
                 angle_deg: 0.0,
                 stops: vec![nana_ui_core::GradientStop {
-                    paint_color: None,
                     position: 0.0,
-                    color: [1.0, 0.0, 0.0, 1.0],
+                    color: [1.0, 0.0, 0.0, 1.0].into(),
                 }],
             }),
         )),
@@ -7853,34 +7837,28 @@ fn mask_linear_six_stops_uses_stop_five_on_gpu() {
                 angle_deg: 180.0,
                 stops: vec![
                     nana_ui_core::GradientStop {
-                        paint_color: None,
                         position: 0.0,
-                        color: [1.0, 1.0, 1.0, 1.0],
+                        color: [1.0, 1.0, 1.0, 1.0].into(),
                     },
                     nana_ui_core::GradientStop {
-                        paint_color: None,
                         position: 0.2,
-                        color: [1.0, 1.0, 1.0, 1.0],
+                        color: [1.0, 1.0, 1.0, 1.0].into(),
                     },
                     nana_ui_core::GradientStop {
-                        paint_color: None,
                         position: 0.4,
-                        color: [1.0, 1.0, 1.0, 1.0],
+                        color: [1.0, 1.0, 1.0, 1.0].into(),
                     },
                     nana_ui_core::GradientStop {
-                        paint_color: None,
                         position: 0.6,
-                        color: [1.0, 1.0, 1.0, 1.0],
+                        color: [1.0, 1.0, 1.0, 1.0].into(),
                     },
                     nana_ui_core::GradientStop {
-                        paint_color: None,
                         position: 0.8,
-                        color: [1.0, 1.0, 1.0, 0.0],
+                        color: [1.0, 1.0, 1.0, 0.0].into(),
                     },
                     nana_ui_core::GradientStop {
-                        paint_color: None,
                         position: 1.0,
-                        color: [1.0, 1.0, 1.0, 0.0],
+                        color: [1.0, 1.0, 1.0, 0.0].into(),
                     },
                 ],
             }),
@@ -7942,14 +7920,12 @@ fn radial_gradient_center_differs_from_linear_edge() {
                 center: [nana_ui_core::LengthSpec::Percent(50.0); 2],
                 stops: vec![
                     nana_ui_core::GradientStop {
-                        paint_color: None,
                         position: 0.0,
-                        color: [1.0, 0.0, 0.0, 1.0],
+                        color: [1.0, 0.0, 0.0, 1.0].into(),
                     },
                     nana_ui_core::GradientStop {
-                        paint_color: None,
                         position: 1.0,
-                        color: [0.0, 0.0, 1.0, 1.0],
+                        color: [0.0, 0.0, 1.0, 1.0].into(),
                     },
                 ],
             }),
@@ -7962,14 +7938,12 @@ fn radial_gradient_center_differs_from_linear_edge() {
                 angle_deg: 90.0,
                 stops: vec![
                     nana_ui_core::GradientStop {
-                        paint_color: None,
                         position: 0.0,
-                        color: [1.0, 0.0, 0.0, 1.0],
+                        color: [1.0, 0.0, 0.0, 1.0].into(),
                     },
                     nana_ui_core::GradientStop {
-                        paint_color: None,
                         position: 1.0,
-                        color: [0.0, 0.0, 1.0, 1.0],
+                        color: [0.0, 0.0, 1.0, 1.0].into(),
                     },
                 ],
             }),
@@ -8067,34 +8041,28 @@ fn linear_gradient_five_stops_uses_stop_five_on_gpu() {
                 angle_deg: 180.0,
                 stops: vec![
                     nana_ui_core::GradientStop {
-                        paint_color: None,
                         position: 0.0,
-                        color: [1.0, 0.0, 0.0, 1.0],
+                        color: [1.0, 0.0, 0.0, 1.0].into(),
                     },
                     nana_ui_core::GradientStop {
-                        paint_color: None,
                         position: 0.2,
-                        color: [1.0, 0.0, 0.0, 1.0],
+                        color: [1.0, 0.0, 0.0, 1.0].into(),
                     },
                     nana_ui_core::GradientStop {
-                        paint_color: None,
                         position: 0.4,
-                        color: [1.0, 0.0, 0.0, 1.0],
+                        color: [1.0, 0.0, 0.0, 1.0].into(),
                     },
                     nana_ui_core::GradientStop {
-                        paint_color: None,
                         position: 0.6,
-                        color: [1.0, 0.0, 0.0, 1.0],
+                        color: [1.0, 0.0, 0.0, 1.0].into(),
                     },
                     nana_ui_core::GradientStop {
-                        paint_color: None,
                         position: 0.8,
-                        color: [0.0, 0.0, 1.0, 1.0],
+                        color: [0.0, 0.0, 1.0, 1.0].into(),
                     },
                     nana_ui_core::GradientStop {
-                        paint_color: None,
                         position: 1.0,
-                        color: [0.0, 0.0, 1.0, 1.0],
+                        color: [0.0, 0.0, 1.0, 1.0].into(),
                     },
                 ],
             }),
@@ -9531,14 +9499,12 @@ fn border_image_linear_gradient_nine_slice_paints() {
                     angle_deg: 180.0,
                     stops: vec![
                         nana_ui_core::GradientStop {
-                            paint_color: None,
                             position: 0.0,
-                            color: [1.0, 0.0, 0.0, 1.0],
+                            color: [1.0, 0.0, 0.0, 1.0].into(),
                         },
                         nana_ui_core::GradientStop {
-                            paint_color: None,
                             position: 1.0,
-                            color: [0.0, 0.0, 1.0, 1.0],
+                            color: [0.0, 0.0, 1.0, 1.0].into(),
                         },
                     ],
                 },
@@ -13950,9 +13916,8 @@ fn a_css_gradient_of_plain_srgb_stops_is_grey_halfway() {
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let mut painter = SceneWgpuPainter::for_test(format);
     let stop = |position: f32, value: f32| nana_ui_core::GradientStop {
-        paint_color: None,
         position,
-        color: [value, value, value, 1.0],
+        color: [value, value, value, 1.0].into(),
     };
     let surface = nana_ui_scene::QuadSurfacePaint {
         background_image: Some(nana_ui_core::BackgroundImage::Gradient(
@@ -14051,9 +14016,8 @@ fn left_to_right_mask(stops: &[(f32, f32)]) -> nana_ui_core::MaskImage {
         stops: stops
             .iter()
             .map(|&(position, alpha)| GradientStop {
-                paint_color: None,
                 position,
-                color: [1.0, 1.0, 1.0, alpha],
+                color: [1.0, 1.0, 1.0, alpha].into(),
             })
             .collect(),
     }))
@@ -14224,9 +14188,8 @@ fn a_painted_fill_matches_the_background_under_angled_and_radial_masks() {
         [(0.0, 1.0), (0.4, 0.7), (1.0, 0.0)]
             .iter()
             .map(|&(position, alpha)| GradientStop {
-                paint_color: None,
                 position,
-                color: [1.0, 1.0, 1.0, alpha],
+                color: [1.0, 1.0, 1.0, alpha].into(),
             })
             .collect::<Vec<_>>()
     };
@@ -14290,9 +14253,8 @@ fn black_fade_in_mask() -> nana_ui_core::MaskImage {
         stops: [(0.0, 0.0), (0.5, 1.0), (1.0, 1.0)]
             .iter()
             .map(|&(position, alpha)| GradientStop {
-                paint_color: None,
                 position,
-                color: [0.0, 0.0, 0.0, alpha],
+                color: [0.0, 0.0, 0.0, alpha].into(),
             })
             .collect(),
     }))
@@ -14747,12 +14709,11 @@ mod precompiled_quads {
 
     fn shadow(blur: f32, inset: bool, color: [f32; 4]) -> nana_ui_core::BoxShadowSpec {
         nana_ui_core::BoxShadowSpec {
-            paint_color: None,
             offset_x: if inset { 0.0 } else { 4.0 },
             offset_y: if inset { 0.0 } else { 6.0 },
             blur_radius: blur,
             spread_radius: if inset { 0.0 } else { 1.0 },
-            color,
+            color: color.into(),
             inset,
         }
     }

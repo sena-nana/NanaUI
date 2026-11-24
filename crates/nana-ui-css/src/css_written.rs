@@ -250,22 +250,15 @@ impl WrittenLayout {
             &mut self.written,
         );
 
-        let merge_pair_opt = |l_pc: &mut Option<PaintColor>,
-                              d_pc: Option<PaintColor>,
-                              l_rgba: [f32; 4],
-                              d_rgba: [f32; 4]| {
-            let lc = (*l_pc).unwrap_or(PaintColor::srgb(l_rgba));
-            let dc = d_pc.unwrap_or(PaintColor::srgb(d_rgba));
-            if lc != dc {
-                *l_pc = Some(PaintColor::light_dark(lc, dc));
+        let merge_pair = |l_pc: &mut PaintColor, d_pc: PaintColor| {
+            if *l_pc != d_pc {
+                *l_pc = PaintColor::light_dark(*l_pc, d_pc);
             }
         };
         let merge_gradient = |lg: &mut CssGradient, dg: &CssGradient| {
             for (ls, ds) in lg.stops_mut().iter_mut().zip(dg.stops().iter()) {
-                let lc = ls.paint_color.unwrap_or(PaintColor::srgb(ls.color));
-                let dc = ds.paint_color.unwrap_or(PaintColor::srgb(ds.color));
-                if lc != dc {
-                    ls.paint_color = Some(PaintColor::light_dark(lc, dc));
+                if ls.color != ds.color {
+                    ls.color = PaintColor::light_dark(ls.color, ds.color);
                 }
             }
         };
@@ -274,23 +267,33 @@ impl WrittenLayout {
             let dp = &*dark.layout.paint;
             let lp = &mut *self.layout.paint;
             for (l_s, d_s) in lp.box_shadows.iter_mut().zip(dp.box_shadows.iter()) {
-                merge_pair_opt(&mut l_s.paint_color, d_s.paint_color, l_s.color, d_s.color);
+                merge_pair(&mut l_s.color, d_s.color);
             }
             for (l_s, d_s) in lp.text_shadows.iter_mut().zip(dp.text_shadows.iter()) {
-                merge_pair_opt(&mut l_s.paint_color, d_s.paint_color, l_s.color, d_s.color);
+                merge_pair(&mut l_s.color, d_s.color);
             }
             if let (Some(ls), Some(ds)) = (&mut lp.text_stroke, &dp.text_stroke) {
-                merge_pair_opt(
-                    &mut ls.paint_color,
-                    ds.paint_color,
-                    ls.color.unwrap_or([0.0; 4]),
-                    ds.color.unwrap_or([0.0; 4]),
-                );
+                match (&mut ls.color, ds.color) {
+                    (Some(lc), Some(dc)) => merge_pair(lc, dc),
+                    (None, Some(dc)) => {
+                        let lc = PaintColor::srgb([0.0; 4]);
+                        if lc != dc {
+                            ls.color = Some(PaintColor::light_dark(lc, dc));
+                        }
+                    }
+                    (Some(lc), None) => {
+                        let dc = PaintColor::srgb([0.0; 4]);
+                        if *lc != dc {
+                            *lc = PaintColor::light_dark(*lc, dc);
+                        }
+                    }
+                    (None, None) => {}
+                }
             }
             if let (Some(lf), Some(df)) = (&mut lp.filter, &dp.filter)
                 && let (Some(ls), Some(ds)) = (&mut lf.drop_shadow, &df.drop_shadow)
             {
-                merge_pair_opt(&mut ls.paint_color, ds.paint_color, ls.color, ds.color);
+                merge_pair(&mut ls.color, ds.color);
             }
             for (ll, dl) in lp
                 .background_layers

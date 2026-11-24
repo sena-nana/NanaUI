@@ -3725,10 +3725,7 @@ fn dest_group_slot(
         };
         slot.drop_shadow_offset = [ox, oy];
         slot.drop_shadow_blur = blur;
-        slot.drop_shadow_color = shadow
-            .paint_color
-            .map(pack_paint_color)
-            .unwrap_or_else(|| pack_linear(shadow.color));
+        slot.drop_shadow_color = pack_paint_color(shadow.color);
     }
     if let Some(fade) = group
         .edge_fade

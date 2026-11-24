@@ -685,9 +685,8 @@ fn linear_gradient(angle_deg: f32, from: [f32; 4], to: [f32; 4]) -> BackgroundIm
 
 fn gradient_stop(position: f32, color: [f32; 4]) -> GradientStop {
     GradientStop {
-        paint_color: None,
         position,
-        color,
+        color: color.into(),
     }
 }
 
@@ -1029,11 +1028,17 @@ mod tests {
         let stops = hue_spectrum();
         assert_eq!(stops.len(), 7);
         let near = |a: [f32; 4], b: [f32; 4]| a.iter().zip(b).all(|(a, b)| (a - b).abs() < 1e-5);
-        assert!(near(stops[0].color, [1.0, 0.0, 0.0, 1.0]), "red");
-        assert!(near(stops[2].color, [0.0, 1.0, 0.0, 1.0]), "green");
-        assert!(near(stops[3].color, [0.0, 1.0, 1.0, 1.0]), "cyan");
-        assert!(near(stops[4].color, [0.0, 0.0, 1.0, 1.0]), "blue");
-        assert!(near(stops[6].color, [1.0, 0.0, 0.0, 1.0]), "back to red");
+        assert!(near(stops[0].color.to_srgb(), [1.0, 0.0, 0.0, 1.0]), "red");
+        assert!(
+            near(stops[2].color.to_srgb(), [0.0, 1.0, 0.0, 1.0]),
+            "green"
+        );
+        assert!(near(stops[3].color.to_srgb(), [0.0, 1.0, 1.0, 1.0]), "cyan");
+        assert!(near(stops[4].color.to_srgb(), [0.0, 0.0, 1.0, 1.0]), "blue");
+        assert!(
+            near(stops[6].color.to_srgb(), [1.0, 0.0, 0.0, 1.0]),
+            "back to red"
+        );
         assert_eq!((stops[0].position, stops[6].position), (0.0, 1.0));
     }
 

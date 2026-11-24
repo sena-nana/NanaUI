@@ -154,8 +154,7 @@ impl CompiledMotionValue {
             Self::Color(color) => color().is_theme_dynamic(),
             Self::Filter(filter) => filter()
                 .drop_shadow
-                .and_then(|shadow| shadow.paint_color)
-                .is_some_and(|paint| paint.is_theme_dynamic()),
+                .is_some_and(|shadow| shadow.color.is_theme_dynamic()),
             Self::Scalar(_) | Self::Transform(_) => false,
         }
     }
