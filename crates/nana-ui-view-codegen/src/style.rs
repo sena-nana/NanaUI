@@ -9,7 +9,7 @@
 //! matched against each element's `class="…"` and `class:name="condition"`
 //! here, in cascade order (`!important`, specificity, source order). Each
 //! rule becomes a patch: the Style Model fields its declarations write and
-//! their values, as `nana-ui-css` reports them ([`written_layout`]),
+//! their values, as `nana-ui-css` reports them ([`WrittenLayout`]),
 //! including a field written with the value the default layout has.
 //! Theme tokens (`var(--nana-*)`, semantic color names, `theme(…)`,
 //! `light-dark(…)`, `:root[data-theme="dark"]`, `color-mix(…)`) lower into
@@ -47,13 +47,12 @@ use nana_ui_css::css_motion::{
 };
 use nana_ui_css::{
     Combinator, CompoundSelector, ContainerAxis, ContainerPlanUnsupported, ContainerQuery,
-    ContainerQueryUnsupported, DeclarationEntry, GridTrackListParse, GridTrackListUnsupported,
-    InteractivePseudo, InteractiveSelector, InteractiveStyleRule, KeyframeSelector, KeyframesRule,
-    LayoutStyleCss, MAX_CONTAINER_BREAKPOINTS, MotionDeclarations, ParsedStylesheet, Selector,
-    Specificity, StyleRule, WrittenLayout, collect_document_custom_properties_from_rules,
-    emit_color_filter_rust, emit_paint_color_rust, parse_container_prelude,
-    parse_grid_track_list_result, parse_stylesheet_full, plan_container_queries,
-    with_dynamic_light_dark, written_layout,
+    ContainerQueryUnsupported, CssVarScope, DeclarationEntry, GridTrackListParse,
+    GridTrackListUnsupported, InteractivePseudo, InteractiveSelector, InteractiveStyleRule,
+    KeyframeSelector, KeyframesRule, MAX_CONTAINER_BREAKPOINTS, MotionDeclarations,
+    ParsedStylesheet, Selector, Specificity, StyleRule, WrittenLayout, emit_color_filter_rust,
+    emit_paint_color_rust, parse_container_prelude, parse_grid_track_list_result,
+    parse_stylesheet_full, plan_container_queries,
 };
 use proc_macro2::{Span, TokenStream};
 use quote::{ToTokens, format_ident, quote};
@@ -396,43 +395,25 @@ fn transition_items(
     items
 }
 
-fn sheet_vars_dual(
-    sheet: &ParsedStylesheet,
-) -> (BTreeMap<String, String>, BTreeMap<String, String>) {
+fn sheet_vars_dual(sheet: &ParsedStylesheet) -> (CssVarScope, CssVarScope) {
     (
-        collect_document_custom_properties_from_rules(&sheet.static_rules, "light"),
-        collect_document_custom_properties_from_rules(&sheet.static_rules, "dark"),
+        sheet.custom_properties_for("light"),
+        sheet.custom_properties_for("dark"),
     )
 }
 
 fn compile_dual_written(
     entries: &[&DeclarationEntry],
-    vars_light: &BTreeMap<String, String>,
-    vars_dark: &BTreeMap<String, String>,
+    vars_light: &CssVarScope,
+    vars_dark: &CssVarScope,
 ) -> WrittenLayout {
-    let run = |vars: &BTreeMap<String, String>| {
-        with_dynamic_light_dark(true, || {
-            nana_ui_css::css_map::with_active_css_vars(vars, || {
-                written_layout(|layout| {
-                    for entry in entries {
-                        layout.apply_css_property(&entry.property, &entry.value, None, None);
-                    }
-                })
-            })
-        })
-    };
-    let light = run(vars_light);
-    if vars_light == vars_dark {
-        return light;
-    }
-    let dark = run(vars_dark);
-    light.merge_light_dark(dark)
+    WrittenLayout::compile_dual(entries, vars_light, vars_dark)
 }
 
 fn patch_dual(
     entries: &[&DeclarationEntry],
-    vars_light: &BTreeMap<String, String>,
-    vars_dark: &BTreeMap<String, String>,
+    vars_light: &CssVarScope,
+    vars_dark: &CssVarScope,
 ) -> String {
     compile_dual_written(entries, vars_light, vars_dark).patch_rust_stmts("__nana_patch")
 }
@@ -511,8 +492,8 @@ type CompiledKeyframesMap = BTreeMap<String, BTreeMap<&'static str, Vec<Compiled
 
 fn compile_keyframes_map(
     keyframes: &BTreeMap<String, KeyframesRule>,
-    vars_light: &BTreeMap<String, String>,
-    vars_dark: &BTreeMap<String, String>,
+    vars_light: &CssVarScope,
+    vars_dark: &CssVarScope,
 ) -> CompiledKeyframesMap {
     let mut compiled = CompiledKeyframesMap::new();
     for (name, rule) in keyframes {
@@ -665,8 +646,8 @@ fn animation_items(
 /// an `@container` block's.
 fn compile_rules(
     rules: &[StyleRule],
-    vars_light: &BTreeMap<String, String>,
-    vars_dark: &BTreeMap<String, String>,
+    vars_light: &CssVarScope,
+    vars_dark: &CssVarScope,
     query: Option<usize>,
     allow_combinators: bool,
     combinators: &mut Vec<CombinatorTarget>,
@@ -716,8 +697,8 @@ fn compile_rules(
 
 fn compile_interactive_rules(
     rules: &[InteractiveStyleRule],
-    vars_light: &BTreeMap<String, String>,
-    vars_dark: &BTreeMap<String, String>,
+    vars_light: &CssVarScope,
+    vars_dark: &CssVarScope,
     query: Option<usize>,
     allow_combinators: bool,
     combinators: &mut Vec<CombinatorTarget>,
@@ -1081,8 +1062,8 @@ fn property_of(text: &str) -> String {
 /// prelude or the declaration they are about.
 fn check(
     css: &str,
-    vars_light: &BTreeMap<String, String>,
-    vars_dark: &BTreeMap<String, String>,
+    vars_light: &CssVarScope,
+    vars_dark: &CssVarScope,
     compiled_kf: &CompiledKeyframesMap,
     allow_combinators: bool,
 ) -> Vec<StyleWarning> {
@@ -1236,8 +1217,8 @@ fn check_skipped(css: &str, block: &Block, warnings: &mut Vec<StyleWarning>) {
 fn check_keyframes_block(
     css: &str,
     block: &Block,
-    vars_light: &BTreeMap<String, String>,
-    vars_dark: &BTreeMap<String, String>,
+    vars_light: &CssVarScope,
+    vars_dark: &CssVarScope,
     warnings: &mut Vec<StyleWarning>,
 ) {
     let body = body_of(css, block);
@@ -1388,8 +1369,8 @@ fn check_motion_declarations(
 fn check_block(
     css: &str,
     block: &Block,
-    vars_light: &BTreeMap<String, String>,
-    vars_dark: &BTreeMap<String, String>,
+    vars_light: &CssVarScope,
+    vars_dark: &CssVarScope,
     compiled_kf: &CompiledKeyframesMap,
     in_container: bool,
     allow_combinators: bool,

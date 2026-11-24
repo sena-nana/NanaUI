@@ -214,11 +214,19 @@ pub fn parse_css_paint_color(input: &str) -> Option<CssPaintColor> {
 /// Resolve an authoring color after expanding active CSS custom properties.
 /// The returned value still carries its source color space.
 pub fn resolve_css_paint_color(input: &str) -> Option<CssPaintColor> {
+    resolve_css_paint_color_in(input, crate::css_map::CssVarScope::EMPTY)
+}
+
+/// [`resolve_css_paint_color`] with an explicit [`crate::css_map::CssVarScope`].
+pub fn resolve_css_paint_color_in(
+    input: &str,
+    vars: &crate::css_map::CssVarScope,
+) -> Option<CssPaintColor> {
     let s = input.trim();
     if s.is_empty() {
         return None;
     }
-    let expanded = crate::css_map::expand_css_vars_for_paint(s);
+    let expanded = crate::css_map::expand_css_vars_for_paint_in(s, vars);
     if expanded.trim().is_empty() {
         return None;
     }
@@ -1176,16 +1184,16 @@ mod tests {
 
     #[test]
     fn css_var_and_light_dark_keep_oklch_paint_resolvable() {
+        let rules =
+            crate::css_cascade::parse_stylesheet(":root { --accent: oklch(65% .2 30); }", 0);
         let vars =
-            crate::css_map::collect_css_custom_properties(":root { --accent: oklch(65% .2 30); }");
-        crate::css_map::with_active_css_vars(&vars, || {
-            let resolved = crate::css_map::resolve_paint_color("var(--accent)").unwrap();
-            assert!(resolved[0] > resolved[1]);
-            assert!(matches!(
-                resolve_css_paint_color("var(--accent)"),
-                Some(CssPaintColor::Oklch { .. })
-            ));
-        });
+            crate::css_cascade::collect_document_custom_properties_from_rules(&rules, "light");
+        let resolved = crate::css_map::resolve_paint_color_in("var(--accent)", &vars).unwrap();
+        assert!(resolved[0] > resolved[1]);
+        assert!(matches!(
+            resolve_css_paint_color_in("var(--accent)", &vars),
+            Some(CssPaintColor::Oklch { .. })
+        ));
         let dark = crate::css_map::with_active_color_scheme_dark(true, || {
             parse_css_color("light-dark(oklch(70% .2 30), oklch(35% .2 250))").unwrap()
         });

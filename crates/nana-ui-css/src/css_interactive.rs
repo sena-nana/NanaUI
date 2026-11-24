@@ -1,21 +1,17 @@
 //! Parsed-but-not-yet-applied CSS: interactive pseudos, generated boxes, keyframes, motion.
 //!
-//! Rules land in [`ParsedStylesheet`] buckets at parse time. Static cascade in
-//! [`crate::css_cascade`] ignores them; the matchers here pick a bucket's
-//! rules for state the caller supplies. Nothing in the product path applies
-//! them: hover restyle, `::before`/`::after` boxes, `::placeholder` and
-//! `::selection` paint, and keyframe timelines are build warnings in views.
+//! Rules land in [`ParsedStylesheet`] buckets at parse time. Build-time view
+//! codegen consumes these buckets directly to compile style patches, motions,
+//! and build warnings.
 
 use std::collections::BTreeMap;
 
 use crate::css_at_rule::{
     FontFaceRule, MediaEnvironment, MediaQueryList, evaluate_media_query_list,
 };
-#[cfg(test)]
-use crate::css_cascade::MatchNode;
 use crate::css_cascade::{
-    Combinator, CompoundSelector, DeclarationEntry, MatchContext, Selector, Specificity, StyleRule,
-    compound_matches, parse_declaration_entries,
+    Combinator, CompoundSelector, DeclarationEntry, Selector, Specificity, StyleRule,
+    parse_declaration_entries,
 };
 use crate::css_container::ContainerRule;
 
@@ -324,6 +320,12 @@ impl ParsedStylesheet {
             media.sheet.collect_font_faces(out);
         }
     }
+
+    /// Document-level custom properties (`:root`, `html`, `body`, `*`, `[data-theme=…]`)
+    /// for `theme` (`"light"` / `"dark"`).
+    pub fn custom_properties_for(&self, theme: &str) -> crate::css_map::CssVarScope {
+        crate::css_cascade::collect_document_custom_properties_from_rules(&self.static_rules, theme)
+    }
 }
 
 /// Append `src` buckets onto `dest` (same cascade, not a second sheet store).
@@ -376,15 +378,6 @@ pub fn offset_source_order(sheet: &mut ParsedStylesheet, delta: u32) {
     for container in &mut sheet.container_rules {
         offset_source_order(&mut container.sheet, delta);
     }
-}
-
-/// Declaration blocks for generated pseudos matching an originating element.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct GeneratedPseudoMatch {
-    pub before: Vec<Vec<DeclarationEntry>>,
-    pub after: Vec<Vec<DeclarationEntry>>,
-    pub placeholder: Vec<Vec<DeclarationEntry>>,
-    pub selection: Vec<Vec<DeclarationEntry>>,
 }
 
 const MOTION_PROPERTIES: &[&str] = &[
@@ -483,218 +476,6 @@ impl InteractivePseudoFlags {
             InteractivePseudo::Active => next.active = true,
         }
         next
-    }
-}
-
-/// Per-node interactive activation aligned with [`MatchContext::ancestors`].
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct InteractiveMatchState<'a> {
-    /// Pseudos active on the subject element.
-    pub subject: InteractivePseudoFlags,
-    /// Parallel to [`MatchContext::ancestors`] (immediate parent at index 0).
-    pub ancestors: &'a [InteractivePseudoFlags],
-}
-
-/// Interactive rules matching `ctx` while `pseudo` is active on the selector's
-/// interactive compound (specificity + source order).
-pub fn matched_interactive_rules<'a>(
-    rules: &'a [InteractiveStyleRule],
-    ctx: &MatchContext<'_>,
-    state: &InteractiveMatchState<'_>,
-    pseudo: InteractivePseudo,
-) -> Vec<(Specificity, u32, &'a InteractiveStyleRule)> {
-    let mut matched = Vec::new();
-    for rule in rules {
-        if !crate::css_cascade::media_list_matches(&rule.media, &ctx.media) {
-            continue;
-        }
-        if rule.selector.pseudo == pseudo
-            && interactive_selector_matches(&rule.selector, ctx, state)
-        {
-            matched.push((
-                crate::css_cascade::cascade_layer_key(false, rule.layer),
-                rule.selector.specificity,
-                rule.source_order,
-                rule,
-            ));
-        }
-    }
-    matched.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
-    matched
-        .into_iter()
-        .map(|(_, spec, order, rule)| (spec, order, rule))
-        .collect()
-}
-
-/// Generated `::before` / `::after` / `::placeholder` blocks for an originating element.
-pub fn matched_generated_pseudo(
-    rules: &[GeneratedPseudoRule],
-    ctx: &MatchContext<'_>,
-) -> GeneratedPseudoMatch {
-    let mut out = GeneratedPseudoMatch::default();
-    let mut matched: Vec<(
-        u32,
-        Specificity,
-        u32,
-        GeneratedPseudo,
-        Vec<DeclarationEntry>,
-    )> = Vec::new();
-    for rule in rules {
-        if !crate::css_cascade::media_list_matches(&rule.media, &ctx.media) {
-            continue;
-        }
-        if crate::css_cascade::selector_matches(&rule.originating_selector, ctx) {
-            matched.push((
-                crate::css_cascade::cascade_layer_key(false, rule.layer),
-                rule.originating_selector.specificity,
-                rule.source_order,
-                rule.pseudo,
-                rule.declaration_entries.clone(),
-            ));
-        }
-    }
-    matched.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
-    for (_, _, _, pseudo, entries) in matched {
-        match pseudo {
-            GeneratedPseudo::Before => out.before.push(entries),
-            GeneratedPseudo::After => out.after.push(entries),
-            GeneratedPseudo::Placeholder => out.placeholder.push(entries),
-            GeneratedPseudo::Selection => out.selection.push(entries),
-        }
-    }
-    out
-}
-
-/// `::-webkit-scrollbar` / thumb declaration blocks for an originating scroll container.
-pub fn matched_scrollbar_pseudo(
-    rules: &[ScrollbarPseudoRule],
-    ctx: &MatchContext<'_>,
-) -> Vec<(ScrollbarPseudo, Vec<DeclarationEntry>)> {
-    let mut matched: Vec<(
-        u32,
-        Specificity,
-        u32,
-        ScrollbarPseudo,
-        Vec<DeclarationEntry>,
-    )> = Vec::new();
-    for rule in rules {
-        if !crate::css_cascade::media_list_matches(&rule.media, &ctx.media) {
-            continue;
-        }
-        if crate::css_cascade::selector_matches(&rule.originating_selector, ctx) {
-            matched.push((
-                crate::css_cascade::cascade_layer_key(false, rule.layer),
-                rule.originating_selector.specificity,
-                rule.source_order,
-                rule.pseudo,
-                rule.declaration_entries.clone(),
-            ));
-        }
-    }
-    matched.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
-    matched
-        .into_iter()
-        .map(|(_, _, _, pseudo, entries)| (pseudo, entries))
-        .collect()
-}
-
-/// Motion rules whose selector list matches `ctx` (specificity + source order).
-pub fn matched_motion_rules<'a>(
-    rules: &'a [MotionStyleRule],
-    ctx: &MatchContext<'_>,
-) -> Vec<(Specificity, u32, &'a MotionStyleRule)> {
-    let mut matched = Vec::new();
-    for rule in rules {
-        if !crate::css_cascade::media_list_matches(&rule.media, &ctx.media) {
-            continue;
-        }
-        for sel in &rule.selectors {
-            if crate::css_cascade::selector_matches(sel, ctx) {
-                matched.push((
-                    crate::css_cascade::cascade_layer_key(false, rule.layer),
-                    sel.specificity,
-                    rule.source_order,
-                    rule,
-                ));
-                break;
-            }
-        }
-    }
-    matched.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
-    matched
-        .into_iter()
-        .map(|(_, spec, order, rule)| (spec, order, rule))
-        .collect()
-}
-
-/// True when selector structure matches and the interactive pseudo is active on
-/// the compound named by [`InteractiveSelector::interactive_at`].
-pub fn interactive_selector_matches(
-    sel: &InteractiveSelector,
-    ctx: &MatchContext<'_>,
-    state: &InteractiveMatchState<'_>,
-) -> bool {
-    if !interactive_selector_structural_matches(sel, ctx) {
-        return false;
-    }
-    interactive_pseudo_active(sel, ctx, state)
-}
-
-fn interactive_selector_structural_matches(
-    sel: &InteractiveSelector,
-    ctx: &MatchContext<'_>,
-) -> bool {
-    let static_sel = interactive_selector_as_static(sel);
-    crate::css_cascade::selector_matches(&static_sel, ctx)
-}
-
-fn interactive_pseudo_active(
-    sel: &InteractiveSelector,
-    ctx: &MatchContext<'_>,
-    state: &InteractiveMatchState<'_>,
-) -> bool {
-    let required = sel.pseudo;
-    if sel.interactive_at == sel.ancestors.len() {
-        return state.subject.has(required);
-    }
-    let (_, compound) = &sel.ancestors[sel.interactive_at];
-    let stripped = compound_without_interactive(compound);
-    for (idx, node) in ctx.ancestors.iter().enumerate() {
-        if compound_matches(&stripped, node)
-            && state
-                .ancestors
-                .get(idx)
-                .map(|flags| flags.has(required))
-                .unwrap_or(false)
-        {
-            return true;
-        }
-    }
-    false
-}
-
-fn compound_without_interactive(compound: &CompoundSelector) -> CompoundSelector {
-    let mut out = compound.clone();
-    out.interactive = None;
-    out
-}
-
-fn interactive_selector_as_static(sel: &InteractiveSelector) -> Selector {
-    let mut subject = sel.subject.clone();
-    subject.interactive = None;
-    let ancestors = sel
-        .ancestors
-        .iter()
-        .map(|(comb, compound)| {
-            let mut c = compound.clone();
-            c.interactive = None;
-            (*comb, c)
-        })
-        .collect();
-    Selector {
-        subject,
-        ancestors,
-        specificity: sel.specificity,
     }
 }
 
@@ -822,13 +603,6 @@ mod tests {
     use super::*;
     use crate::css_cascade::parse_stylesheet_full;
 
-    fn hover_state<'a>(ancestors: &'a [InteractivePseudoFlags]) -> InteractiveMatchState<'a> {
-        InteractiveMatchState {
-            subject: InteractivePseudoFlags::default(),
-            ancestors,
-        }
-    }
-
     #[test]
     fn partition_motion_pulls_animation_and_transition() {
         let entries = parse_declaration_entries(
@@ -862,145 +636,14 @@ mod tests {
     }
 
     #[test]
-    fn matched_interactive_requires_ancestor_hover_state() {
+    fn ancestor_hover_selector_records_interactive_at_ancestor() {
         let (sheet, _) = parse_stylesheet_full(".card:hover .icon { color: red; }", 0);
         assert_eq!(sheet.interactive_rules.len(), 1);
-
-        let card = vec!["card".into()];
-        let icon = vec!["icon".into()];
-        let empty = std::collections::BTreeMap::new();
-        let ancestors = [MatchNode {
-            tag: "div",
-            id: "",
-            classes: &card,
-            attrs: &empty,
-            is_empty: true,
-            checked: false,
-        }];
-        let icon_ctx = MatchContext {
-            tag: "span",
-            id: "",
-            classes: &icon,
-            attrs: &empty,
-            ancestors: &ancestors,
-            preceding_siblings: &[],
-            sibling_index: 0,
-            sibling_count: 1,
-            of_type_index: 0,
-            of_type_count: 1,
-            has_bits: 0,
-            has_args: &[],
-            focus_within: false,
-            is_empty: true,
-            checked: false,
-            media: crate::css_cascade::MediaEnv::default(),
-            children: &[],
-            following_siblings: &[],
-            all_siblings: &[],
-            ancestor_subtrees: &[],
-            owned_children: &[],
-            owned_following: &[],
-            owned_ancestor_trees: &[],
-            relative: None,
-            relative_id: 0,
-        };
-
-        let card_hovered = [InteractivePseudoFlags {
-            hover: true,
-            ..Default::default()
-        }];
-        let matched = matched_interactive_rules(
-            &sheet.interactive_rules,
-            &icon_ctx,
-            &hover_state(&card_hovered),
-            InteractivePseudo::Hover,
-        );
-        assert_eq!(matched.len(), 1);
-
-        let icon_only = matched_interactive_rules(
-            &sheet.interactive_rules,
-            &icon_ctx,
-            &InteractiveMatchState {
-                subject: InteractivePseudoFlags {
-                    hover: true,
-                    ..Default::default()
-                },
-                ancestors: &[Default::default()],
-            },
-            InteractivePseudo::Hover,
-        );
-        assert!(icon_only.is_empty());
-    }
-
-    #[test]
-    fn nested_card_outer_hover_matches_descendant_icon() {
-        let (sheet, _) = parse_stylesheet_full(".card:hover .icon { color: red; }", 0);
-        assert_eq!(sheet.interactive_rules.len(), 1);
-
-        let card = vec!["card".into()];
-        let icon = vec!["icon".into()];
-        let empty = std::collections::BTreeMap::new();
-        let ancestors = [
-            MatchNode {
-                tag: "div",
-                id: "",
-                classes: &card,
-                attrs: &empty,
-                is_empty: true,
-                checked: false,
-            },
-            MatchNode {
-                tag: "div",
-                id: "",
-                classes: &card,
-                attrs: &empty,
-                is_empty: true,
-                checked: false,
-            },
-        ];
-        let icon_ctx = MatchContext {
-            tag: "span",
-            id: "",
-            classes: &icon,
-            attrs: &empty,
-            ancestors: &ancestors,
-            preceding_siblings: &[],
-            sibling_index: 0,
-            sibling_count: 1,
-            of_type_index: 0,
-            of_type_count: 1,
-            has_bits: 0,
-            has_args: &[],
-            focus_within: false,
-            is_empty: true,
-            checked: false,
-            media: crate::css_cascade::MediaEnv::default(),
-            children: &[],
-            following_siblings: &[],
-            all_siblings: &[],
-            ancestor_subtrees: &[],
-            owned_children: &[],
-            owned_following: &[],
-            owned_ancestor_trees: &[],
-            relative: None,
-            relative_id: 0,
-        };
-
-        // Inner card not hovered; outer card hovered — must still match.
-        let ancestor_flags = [
-            InteractivePseudoFlags::default(),
-            InteractivePseudoFlags {
-                hover: true,
-                ..Default::default()
-            },
-        ];
-        let matched = matched_interactive_rules(
-            &sheet.interactive_rules,
-            &icon_ctx,
-            &hover_state(&ancestor_flags),
-            InteractivePseudo::Hover,
-        );
-        assert_eq!(matched.len(), 1);
+        let sel = &sheet.interactive_rules[0].selector;
+        assert_eq!(sel.pseudo, InteractivePseudo::Hover);
+        assert_eq!(sel.interactive_at, 0);
+        assert_eq!(sel.ancestors.len(), 1);
+        assert_eq!(sel.subject.classes, vec!["icon".to_string()]);
     }
 
     #[test]
@@ -1031,147 +674,36 @@ mod tests {
         assert_eq!(sheet.keyframes.get("spin").map(|k| k.blocks.len()), Some(1));
         assert_eq!(sheet.motion_rules.len(), 1);
         assert_eq!(report.skipped_at_rules, 0);
-
-        let classes = vec!["ok".into()];
-        let attrs = std::collections::BTreeMap::new();
-        let ctx = MatchContext {
-            tag: "div",
-            id: "",
-            classes: &classes,
-            attrs: &attrs,
-            ancestors: &[],
-            preceding_siblings: &[],
-            sibling_index: 0,
-            sibling_count: 1,
-            of_type_index: 0,
-            of_type_count: 1,
-            has_bits: 0,
-            has_args: &[],
-            focus_within: false,
-            is_empty: true,
-            checked: false,
-            media: crate::css_cascade::MediaEnv::default(),
-            children: &[],
-            following_siblings: &[],
-            all_siblings: &[],
-            ancestor_subtrees: &[],
-            owned_children: &[],
-            owned_following: &[],
-            owned_ancestor_trees: &[],
-            relative: None,
-            relative_id: 0,
-        };
-        let hover = matched_interactive_rules(
-            &sheet.interactive_rules,
-            &ctx,
-            &InteractiveMatchState {
-                subject: InteractivePseudoFlags {
-                    hover: true,
-                    ..Default::default()
-                },
-                ancestors: &[],
-            },
-            InteractivePseudo::Hover,
+        assert_eq!(
+            sheet.interactive_rules[0].selector.interactive_at,
+            sheet.interactive_rules[0].selector.ancestors.len()
         );
-        assert_eq!(hover.len(), 1);
-        let pseudo = matched_generated_pseudo(&sheet.generated_pseudo_rules, &ctx);
-        assert_eq!(pseudo.before.len(), 1);
-        assert!(pseudo.before[0].iter().any(|e| e.property == "content"));
+        assert!(
+            sheet.generated_pseudo_rules[0]
+                .declaration_entries
+                .iter()
+                .any(|e| e.property == "content")
+        );
     }
 
     #[test]
-    fn hover_not_disabled_skips_disabled_button() {
+    fn hover_not_disabled_parses_negated_disabled_attr() {
         let (sheet, report) =
             parse_stylesheet_full("button:hover:not(:disabled) { background: red; }", 0);
         assert_eq!(report.skipped_selectors, 0);
         assert_eq!(sheet.interactive_rules.len(), 1);
-        let empty = BTreeMap::new();
-        let mut disabled = BTreeMap::new();
-        disabled.insert("disabled".into(), String::new());
-        let enabled_ctx = MatchContext {
-            tag: "button",
-            id: "",
-            classes: &[],
-            attrs: &empty,
-            ancestors: &[],
-            preceding_siblings: &[],
-            sibling_index: 0,
-            sibling_count: 1,
-            of_type_index: 0,
-            of_type_count: 1,
-            has_bits: 0,
-            has_args: &[],
-            focus_within: false,
-            is_empty: true,
-            checked: false,
-            media: crate::css_cascade::MediaEnv::default(),
-            children: &[],
-            following_siblings: &[],
-            all_siblings: &[],
-            ancestor_subtrees: &[],
-            owned_children: &[],
-            owned_following: &[],
-            owned_ancestor_trees: &[],
-            relative: None,
-            relative_id: 0,
-        };
-        let hovered = InteractiveMatchState {
-            subject: InteractivePseudoFlags {
-                hover: true,
-                ..Default::default()
-            },
-            ancestors: &[],
-        };
         assert_eq!(
-            matched_interactive_rules(
-                &sheet.interactive_rules,
-                &enabled_ctx,
-                &hovered,
-                InteractivePseudo::Hover,
-            )
-            .len(),
-            1
+            sheet.interactive_rules[0].selector.pseudo,
+            InteractivePseudo::Hover
         );
-        let disabled_ctx = MatchContext {
-            tag: "button",
-            id: "",
-            classes: &[],
-            attrs: &disabled,
-            ancestors: &[],
-            preceding_siblings: &[],
-            sibling_index: 0,
-            sibling_count: 1,
-            of_type_index: 0,
-            of_type_count: 1,
-            has_bits: 0,
-            has_args: &[],
-            focus_within: false,
-            is_empty: true,
-            checked: false,
-            media: crate::css_cascade::MediaEnv::default(),
-            children: &[],
-            following_siblings: &[],
-            all_siblings: &[],
-            ancestor_subtrees: &[],
-            owned_children: &[],
-            owned_following: &[],
-            owned_ancestor_trees: &[],
-            relative: None,
-            relative_id: 0,
-        };
-        assert!(
-            matched_interactive_rules(
-                &sheet.interactive_rules,
-                &disabled_ctx,
-                &hovered,
-                InteractivePseudo::Hover,
-            )
-            .is_empty()
+        assert_eq!(
+            sheet.interactive_rules[0].selector.subject.not_alts.len(),
+            1
         );
     }
 
     #[test]
-    fn focus_visible_maps_to_distinct_pseudo_and_requires_focus_visible() {
+    fn focus_visible_maps_to_distinct_pseudo() {
         let (sheet, report) = parse_stylesheet_full(".field:focus-visible { color: red; }", 0);
         assert_eq!(report.skipped_selectors, 0);
         assert_eq!(sheet.interactive_rules.len(), 1);
@@ -1179,74 +711,5 @@ mod tests {
             sheet.interactive_rules[0].selector.pseudo,
             InteractivePseudo::FocusVisible
         );
-        let classes = vec!["field".into()];
-        let empty = BTreeMap::new();
-        let ctx = MatchContext {
-            tag: "input",
-            id: "",
-            classes: &classes,
-            attrs: &empty,
-            ancestors: &[],
-            preceding_siblings: &[],
-            sibling_index: 0,
-            sibling_count: 1,
-            of_type_index: 0,
-            of_type_count: 1,
-            has_bits: 0,
-            has_args: &[],
-            focus_within: false,
-            is_empty: true,
-            checked: false,
-            media: crate::css_cascade::MediaEnv::default(),
-            children: &[],
-            following_siblings: &[],
-            all_siblings: &[],
-            ancestor_subtrees: &[],
-            owned_children: &[],
-            owned_following: &[],
-            owned_ancestor_trees: &[],
-            relative: None,
-            relative_id: 0,
-        };
-        assert!(
-            matched_interactive_rules(
-                &sheet.interactive_rules,
-                &ctx,
-                &InteractiveMatchState::default(),
-                InteractivePseudo::FocusVisible,
-            )
-            .is_empty(),
-            "focus-visible must not match without focus_visible"
-        );
-        assert!(
-            matched_interactive_rules(
-                &sheet.interactive_rules,
-                &ctx,
-                &InteractiveMatchState {
-                    subject: InteractivePseudoFlags {
-                        focus: true,
-                        ..Default::default()
-                    },
-                    ancestors: &[],
-                },
-                InteractivePseudo::FocusVisible,
-            )
-            .is_empty(),
-            "pointer focus alone must not activate :focus-visible"
-        );
-        let focused = matched_interactive_rules(
-            &sheet.interactive_rules,
-            &ctx,
-            &InteractiveMatchState {
-                subject: InteractivePseudoFlags {
-                    focus: true,
-                    focus_visible: true,
-                    ..Default::default()
-                },
-                ancestors: &[],
-            },
-            InteractivePseudo::FocusVisible,
-        );
-        assert_eq!(focused.len(), 1);
     }
 }

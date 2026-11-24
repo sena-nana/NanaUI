@@ -4,10 +4,9 @@
 
 use std::collections::BTreeMap;
 
-use nana_ui_css::css_map::with_active_css_vars;
 use nana_ui_css::{
-    ContainerQueryUnsupported, evaluate_supports_condition, parse_container_prelude,
-    parse_css_color, parse_css_font_size, parse_css_length_px, parse_media_query_list,
+    ContainerQueryUnsupported, CssVarScope, evaluate_supports_condition, parse_container_prelude,
+    parse_css_color, parse_css_font_size_in, parse_css_length_px, parse_media_query_list,
     parse_stylesheet, parse_stylesheet_full, parse_theme_expr,
 };
 
@@ -113,121 +112,16 @@ fn custom_property_cycles_and_long_chains_end() {
             .collect();
         vars.insert(format!("--v{length}"), "4px".into());
         vars.insert("--self".into(), "var(--self)".into());
-        vars
+        CssVarScope::from_map(vars)
     };
     let (short, long, cycle) = on_small_stack(move || {
-        let short = with_active_css_vars(&chain(3), || parse_css_font_size("var(--v0)"));
-        let long = with_active_css_vars(&chain(DEEP), || parse_css_font_size("var(--v0)"));
-        let cycle = with_active_css_vars(&chain(0), || parse_css_font_size("var(--self, 2px)"));
+        let short = parse_css_font_size_in("var(--v0)", &chain(3));
+        let long = parse_css_font_size_in("var(--v0)", &chain(DEEP));
+        let cycle = parse_css_font_size_in("var(--self, 2px)", &chain(0));
         (short, long, cycle)
     });
     assert_eq!(short, Some(4.0));
     assert_eq!(long, None);
     assert_eq!(cycle, Some(2.0));
     let (_sheet, _report) = parse_stylesheet_full(":root{--a: var(--a)} a{width: var(--a)}", 0);
-}
-
-#[test]
-fn deep_cascade_and_owned_match_tree_survive_small_stack() {
-    use nana_ui_css::{
-        MatchContext, MatchNode, MediaEnv, OwnedMatchTree, apply_stylesheet_to_layout,
-        parse_stylesheet,
-    };
-
-    const CHAIN_DEPTH: usize = 600;
-    std::thread::Builder::new()
-        .stack_size(384 * 1024)
-        .spawn(|| {
-            let rules = parse_stylesheet(".root .branch > .leaf { gap: 12px; width: 100%; }", 0);
-            let mut tree = OwnedMatchTree {
-                tag: "div".into(),
-                id: String::new(),
-                classes: vec!["leaf".into()],
-                attrs: BTreeMap::new(),
-                children: Vec::new(),
-            };
-            for level in (0..CHAIN_DEPTH).rev() {
-                let class = if level == 0 {
-                    "root"
-                } else if level == CHAIN_DEPTH - 1 {
-                    "branch"
-                } else {
-                    "mid"
-                };
-                tree = OwnedMatchTree {
-                    tag: "div".into(),
-                    id: String::new(),
-                    classes: vec![class.into()],
-                    attrs: BTreeMap::new(),
-                    children: vec![tree],
-                };
-            }
-            let empty = BTreeMap::new();
-            let branch_cls = [String::from("branch")];
-            let mid_cls = [String::from("mid")];
-            let root_cls = [String::from("root")];
-            let mut ancestors = Vec::with_capacity(CHAIN_DEPTH);
-            ancestors.push(MatchNode {
-                tag: "div",
-                id: "",
-                classes: &branch_cls,
-                attrs: &empty,
-                is_empty: false,
-                checked: false,
-            });
-            for _ in 1..CHAIN_DEPTH - 1 {
-                ancestors.push(MatchNode {
-                    tag: "div",
-                    id: "",
-                    classes: &mid_cls,
-                    attrs: &empty,
-                    is_empty: false,
-                    checked: false,
-                });
-            }
-            ancestors.push(MatchNode {
-                tag: "div",
-                id: "",
-                classes: &root_cls,
-                attrs: &empty,
-                is_empty: false,
-                checked: false,
-            });
-            let leaf_cls = [String::from("leaf")];
-            let ctx = MatchContext {
-                tag: "div",
-                id: "",
-                classes: &leaf_cls,
-                attrs: &empty,
-                ancestors: &ancestors,
-                preceding_siblings: &[],
-                sibling_index: 0,
-                sibling_count: 1,
-                of_type_index: 0,
-                of_type_count: 1,
-                has_bits: 0,
-                has_args: &[],
-                focus_within: false,
-                is_empty: true,
-                checked: false,
-                media: MediaEnv::default(),
-                children: &[],
-                following_siblings: &[],
-                all_siblings: &[],
-                ancestor_subtrees: &[],
-                owned_children: std::slice::from_ref(&tree),
-                owned_following: &[],
-                owned_ancestor_trees: &[],
-                relative: None,
-                relative_id: 0,
-            };
-            let mut layout = nana_ui_core::LayoutStyle::default();
-            apply_stylesheet_to_layout(&mut layout, &rules, &ctx, None, None);
-            assert_eq!(layout.gap, Some(nana_ui_core::LengthSpec::Px(12.0)));
-            assert_eq!(layout.width, Some(nana_ui_core::LengthSpec::Fill));
-            drop(tree);
-        })
-        .unwrap()
-        .join()
-        .unwrap();
 }

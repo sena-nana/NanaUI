@@ -13,7 +13,8 @@ use std::sync::OnceLock;
 use nana_ui_core::LayoutFieldMask;
 
 use crate::LayoutStyle;
-use crate::css_map::LayoutStyleCss;
+use crate::css_cascade::DeclarationEntry;
+use crate::css_map::{CssVarScope, LayoutStyleCss, with_dynamic_light_dark};
 use crate::rust_expr::emit_patch_stmt;
 
 /// The layout built by a declaration block and the leaves it wrote.
@@ -36,6 +37,36 @@ impl WrittenLayout {
             emit_patch_stmt(&self.layout, path, patch_mod, &mut out);
         }
         out
+    }
+
+    /// Compile declaration entries against light and dark [`CssVarScope`]s,
+    /// merging differing theme colors into [`nana_ui_core::PaintColor::light_dark`].
+    pub fn compile_dual(
+        entries: &[&DeclarationEntry],
+        vars_light: &CssVarScope,
+        vars_dark: &CssVarScope,
+    ) -> Self {
+        let run = |vars: &CssVarScope| {
+            with_dynamic_light_dark(true, || {
+                written_layout_in(vars, |layout, vars| {
+                    for entry in entries {
+                        layout.apply_css_property_in(
+                            &entry.property,
+                            &entry.value,
+                            None,
+                            None,
+                            vars,
+                        );
+                    }
+                })
+            })
+        };
+        let light = run(vars_light);
+        if vars_light == vars_dark {
+            return light;
+        }
+        let dark = run(vars_dark);
+        light.merge_light_dark(dark)
     }
 
     /// Combine a light-mode and dark-mode [`WrittenLayout`] compiled from the
@@ -290,14 +321,20 @@ impl WrittenLayout {
 
 /// Apply `declarations` (e.g. a loop of
 /// [`LayoutStyleCss::apply_css_property`]) and report what they wrote.
-/// Custom properties, the viewport and anything else the declarations read
-/// are the caller's to install around this call.
 pub fn written_layout(declarations: impl Fn(&mut LayoutStyle)) -> WrittenLayout {
+    written_layout_in(CssVarScope::EMPTY, |layout, _| declarations(layout))
+}
+
+/// Apply `declarations` with an explicit [`CssVarScope`] and report what they wrote.
+pub fn written_layout_in(
+    vars: &CssVarScope,
+    declarations: impl Fn(&mut LayoutStyle, &CssVarScope),
+) -> WrittenLayout {
     let (default, witness_layout) = reference();
     let mut layout = LayoutStyle::default();
-    declarations(&mut layout);
+    declarations(&mut layout, vars);
     let mut over_witness = witness_layout.clone();
-    declarations(&mut over_witness);
+    declarations(&mut over_witness, vars);
     let written = layout.collect_written_leaves(default, &over_witness, witness_layout);
     let field_mask = written.iter().fold(LayoutFieldMask::NONE, |mask, path| {
         mask.union(LayoutFieldMask::from_property(path))
@@ -689,14 +726,18 @@ mod tests {
         );
         assert_eq!(res.layout.color, None);
 
-        let light_vars = BTreeMap::from([("--tint".to_owned(), "#112233".to_owned())]);
-        let dark_vars = BTreeMap::from([("--tint".to_owned(), "#ddeeff".to_owned())]);
-        let run = |vars: &BTreeMap<String, String>| {
+        let light_vars = CssVarScope::from_map(BTreeMap::from([(
+            "--tint".to_owned(),
+            "#112233".to_owned(),
+        )]));
+        let dark_vars = CssVarScope::from_map(BTreeMap::from([(
+            "--tint".to_owned(),
+            "#ddeeff".to_owned(),
+        )]));
+        let run = |vars: &CssVarScope| {
             crate::with_dynamic_light_dark(true, || {
-                crate::css_map::with_active_css_vars(vars, || {
-                    written_layout(|layout| {
-                        layout.apply_css_property("background", "var(--tint)", None, None);
-                    })
+                written_layout_in(vars, |layout, vars| {
+                    layout.apply_css_property_in("background", "var(--tint)", None, None, vars);
                 })
             })
         };

@@ -45,48 +45,44 @@ pub use css_at_rule::{
 };
 pub use css_cascade::{
     AnPlusB, AttrCase, AttrOperator, AttrSelector, Combinator, CompoundSelector, DeclarationEntry,
-    MatchContext, MatchNode, MatchSubtree, MediaEnv, OwnedMatchTree, Selector, SimpleCompound,
-    Specificity, StyleRule, StylesheetParseReport, apply_stylesheet_to_layout,
-    collect_document_custom_properties_from_rules, matched_declaration_entries,
-    matched_declarations, parse_stylesheet, parse_stylesheet_full,
+    Selector, SimpleCompound, Specificity, StyleRule, StylesheetParseReport,
+    collect_document_custom_properties_from_rules, parse_stylesheet, parse_stylesheet_full,
     parse_stylesheet_full_with_layers, parse_stylesheet_full_with_options,
-    parse_stylesheet_with_report, rebuild_layout_style, selector_matches,
-    stylesheet_needs_relative,
+    parse_stylesheet_with_report,
 };
 pub use css_container::{
     ContainerAxis, ContainerInterval, ContainerPlan, ContainerPlanUnsupported, ContainerQuery,
-    ContainerQueryUnsupported, ContainerRule, ContainerRuleSet, MAX_CONTAINER_BREAKPOINTS,
-    parse_container_prelude, plan_container_queries,
+    ContainerQueryUnsupported, ContainerRule, MAX_CONTAINER_BREAKPOINTS, parse_container_prelude,
+    plan_container_queries,
 };
 pub use css_font_face::{
     FontFaceSrcKind, FontFaceStyle, parse_font_face_at_rule, parse_font_face_rules,
 };
 pub use css_interactive::{
-    GeneratedPseudo, GeneratedPseudoMatch, GeneratedPseudoRule, InteractiveMatchState,
-    InteractivePseudo, InteractivePseudoFlags, InteractiveSelector, InteractiveStyleRule,
-    KeyframeBlock, KeyframeSelector, KeyframesRule, MediaRule, MotionDeclarations, MotionStyleRule,
-    ParsedStylesheet, ScrollbarPseudo, ScrollbarPseudoRule, keyframes_by_name,
-    matched_generated_pseudo, matched_interactive_rules, matched_motion_rules,
-    matched_scrollbar_pseudo, merge_parsed_stylesheet, partition_motion_entries,
+    GeneratedPseudo, GeneratedPseudoRule, InteractivePseudo, InteractivePseudoFlags,
+    InteractiveSelector, InteractiveStyleRule, KeyframeBlock, KeyframeSelector, KeyframesRule,
+    MediaRule, MotionDeclarations, MotionStyleRule, ParsedStylesheet, ScrollbarPseudo,
+    ScrollbarPseudoRule, keyframes_by_name, merge_parsed_stylesheet, partition_motion_entries,
 };
 pub use css_map::{
-    AlignSpec, BoxSizing, CssLayoutParse, DirSpec, DisplaySpec, FlexDirection, FlexWrap,
-    FontSizeContext, GridAutoFlow, GridTrack, GridTrackListParse, GridTrackListUnsupported,
-    JustifySpec, LayoutStyle, LayoutStyleCss, LengthSpec, LineHeightSpec, OverflowSpec,
-    PaddingSpec, ParentBox, PositionSpec, collect_document_css_custom_properties,
+    AlignSpec, BoxSizing, CssLayoutParse, CssVarScope, DirSpec, DisplaySpec, FlexDirection,
+    FlexWrap, FontSizeContext, GridAutoFlow, GridTrack, GridTrackListParse,
+    GridTrackListUnsupported, JustifySpec, LayoutStyle, LayoutStyleCss, LengthSpec, LineHeightSpec,
+    OverflowSpec, PaddingSpec, ParentBox, PositionSpec, collect_document_css_custom_properties,
     parse_box_edge_length, parse_css_font_family, parse_css_font_feature_settings,
-    parse_css_font_kerning, parse_css_font_size, parse_css_font_variation_settings,
-    parse_css_font_weight, parse_css_length_px, parse_css_letter_spacing, parse_css_line_break,
-    parse_css_line_height, parse_css_word_break, parse_grid_template_columns,
-    parse_grid_track_list_result, parse_inset_length, resolve_grid_column_widths,
-    resolve_grid_track_sizes, resolve_paint_color, with_dynamic_light_dark,
+    parse_css_font_kerning, parse_css_font_size, parse_css_font_size_in,
+    parse_css_font_variation_settings, parse_css_font_weight, parse_css_length_px,
+    parse_css_letter_spacing, parse_css_line_break, parse_css_line_height, parse_css_word_break,
+    parse_grid_template_columns, parse_grid_track_list_result, parse_grid_track_list_result_in,
+    parse_inset_length, resolve_grid_column_widths, resolve_grid_track_sizes, resolve_paint_color,
+    resolve_paint_color_in, with_dynamic_light_dark,
 };
 pub use css_motion::{ParsedAnimation, motion_curve_from_css_token, parse_animation_declarations};
-pub use css_written::{WrittenLayout, written_layout};
+pub use css_written::{WrittenLayout, written_layout, written_layout_in};
 pub use rust_expr::{emit_color_filter_rust, emit_paint_color_rust};
 mod css_theme;
 pub use css_theme::parse_theme_expr;
 pub use style::{
     CssPaintColor, is_non_token_css_color, map_css_color_for_tokens, parse_css_color,
-    parse_css_paint_color, resolve_css_paint_color,
+    parse_css_paint_color, resolve_css_paint_color, resolve_css_paint_color_in,
 };

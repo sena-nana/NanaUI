@@ -7,16 +7,9 @@
 //! it holds, a union of half-open intervals `[lo, hi)`. Its rules stay out of
 //! the unconditional cascade.
 //!
-//! For one element:
-//! 1. [`ContainerRuleSet::matching`] finds the container rules its selectors
-//!    match;
-//! 2. [`ContainerRuleSet::plan`] (over [`plan_container_queries`]) cuts the
-//!    container's extent at every bound those queries use, into at most
-//!    [`MAX_CONTAINER_BREAKPOINTS`] + 1 buckets, and lists the rules that hold
-//!    in each;
-//! 3. [`crate::css_cascade::rebuild_layout_style_indexed`] cascades
-//!    each bucket's rules ([`ContainerRuleSet::active_rules`]) with the
-//!    sheet's own, in cascade order.
+//! For one element, build-time view codegen runs [`plan_container_queries`]
+//! over the matching container queries to cut the container's extent at every
+//! bound into at most [`MAX_CONTAINER_BREAKPOINTS`] + 1 buckets.
 //!
 //! The buckets become one responsive rule of the runtime (the nearest
 //! container of that name eligible for that axis), which picks the bucket
@@ -41,7 +34,6 @@ use std::fmt;
 
 use nana_ui_core::ContainerType;
 
-use crate::css_cascade::{MatchContext, RuleIndex, StyleRule, selector_matches};
 use crate::css_interactive::ParsedStylesheet;
 
 /// Most breakpoints one element's container rules may use: the runtime's
@@ -218,106 +210,6 @@ pub fn plan_container_queries<'q>(
         breakpoints,
         active,
     }))
-}
-
-/// The style rules of a flattened sheet's `@container` blocks, indexed for
-/// matching like ordinary rules ([`RuleIndex`]).
-#[derive(Debug, Clone, Default)]
-pub struct ContainerRuleSet {
-    /// One per block that holds a rule.
-    queries: Vec<Result<ContainerQuery, ContainerQueryUnsupported>>,
-    rules: Vec<StyleRule>,
-    /// Parallel to `rules`: the rule's block, in `queries`.
-    block_of: Vec<usize>,
-    index: RuleIndex,
-}
-
-impl ContainerRuleSet {
-    /// The style rules of `blocks`: the container rules of a flattened
-    /// sheet ([`ParsedStylesheet::flatten`]). Rules still under an `@media`
-    /// or `@container` inside a block are not taken: flattening resolves the
-    /// first, and the parser lifts the second out as
-    /// [`ContainerQueryUnsupported::Nested`].
-    pub fn build(blocks: &[ContainerRule]) -> Self {
-        let mut set = Self::default();
-        for block in blocks {
-            if block.sheet.static_rules.is_empty() {
-                continue;
-            }
-            let at = set.queries.len();
-            set.queries.push(block.query.clone());
-            for rule in &block.sheet.static_rules {
-                set.rules.push(rule.clone());
-                set.block_of.push(at);
-            }
-        }
-        set.index = RuleIndex::build(&set.rules);
-        set
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.rules.is_empty()
-    }
-
-    /// Every container style rule, each with its own source order.
-    pub fn rules(&self) -> &[StyleRule] {
-        &self.rules
-    }
-
-    /// The query guarding rule `rule` of [`Self::rules`].
-    fn query(&self, rule: usize) -> &Result<ContainerQuery, ContainerQueryUnsupported> {
-        &self.queries[self.block_of[rule]]
-    }
-
-    /// The rules whose selector matches `ctx`, ascending: indices into
-    /// [`Self::rules`].
-    pub fn matching(&self, ctx: &MatchContext<'_>) -> Vec<usize> {
-        self.index
-            .candidate_ids(ctx)
-            .into_iter()
-            .map(|id| id as usize)
-            .filter(|&rule| {
-                self.rules[rule]
-                    .selectors
-                    .iter()
-                    .any(|selector| selector_matches(selector, ctx))
-            })
-            .collect()
-    }
-
-    /// Whether one of `matched` has an unsupported query, so it never
-    /// applies: the element is counted by
-    /// [`crate::css_cascade::UnsupportedCssTally::observe_container_queries`].
-    pub fn any_unsupported(&self, matched: &[usize]) -> bool {
-        matched.iter().any(|&rule| self.query(rule).is_err())
-    }
-
-    /// [`plan_container_queries`] for `matched` ([`Self::matching`]);
-    /// [`ContainerPlan::active`] holds indices into [`Self::rules`].
-    pub fn plan(
-        &self,
-        matched: &[usize],
-    ) -> Result<Option<ContainerPlan>, ContainerPlanUnsupported> {
-        let mut plan = plan_container_queries(matched.iter().map(|&rule| self.query(rule)))?;
-        for rule in plan
-            .iter_mut()
-            .flat_map(|plan| plan.active.iter_mut().flatten())
-        {
-            *rule = matched[*rule];
-        }
-        Ok(plan)
-    }
-
-    /// The rules of `plan` (from [`Self::plan`]) that hold in `bucket`, for
-    /// [`crate::css_cascade::rebuild_layout_style_indexed`].
-    pub fn active_rules(&self, plan: &ContainerPlan, bucket: usize) -> Vec<&StyleRule> {
-        plan.active
-            .get(bucket)
-            .into_iter()
-            .flatten()
-            .map(|&rule| &self.rules[rule])
-            .collect()
-    }
 }
 
 /// Lifts every `@container` block out of `sheet`, its own and those under
@@ -924,17 +816,15 @@ fn complement(a: &[ContainerInterval]) -> Vec<ContainerInterval> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, HashMap};
+    use std::collections::HashMap;
 
     use super::*;
     use crate::css_at_rule::{MediaEnvironment, MemoryStylesheetLoader, ParseStylesheetOptions};
-    use crate::css_cascade::tests::ctx;
     use crate::css_cascade::{
-        UnsupportedCssTally, matched_custom_properties_indexed, parse_stylesheet,
-        parse_stylesheet_full, parse_stylesheet_full_with_options, rebuild_layout_style_indexed,
+        StyleRule, parse_stylesheet, parse_stylesheet_full, parse_stylesheet_full_with_options,
     };
     use crate::css_interactive::{merge_parsed_stylesheet, offset_source_order};
-    use crate::css_map::{LayoutStyle, LayoutStyleCss, LengthSpec};
+    use crate::css_map::{LayoutStyle, LayoutStyleCss};
     use ContainerQueryUnsupported as Why;
 
     const INF: f32 = f32::INFINITY;
@@ -1366,17 +1256,15 @@ mod tests {
         assert!(outer.sheet.media_rules[0].sheet.container_rules.is_empty());
 
         let flat = sheet.flatten(&MediaEnvironment::default());
-        let set = ContainerRuleSet::build(&flat.container_rules);
-        let classes = class_names(&["a"]);
-        let attrs = BTreeMap::new();
-        let ctx = ctx("div", "", &classes, &attrs, &[]);
-        let matched = set.matching(&ctx);
-        assert_eq!(matched.len(), 5);
-        assert!(set.any_unsupported(&matched));
-        let plan = set.plan(&matched).expect("one container").expect("a plan");
+        let plan = plan_container_queries(flat.container_rules.iter().map(|rule| &rule.query))
+            .expect("one container")
+            .expect("a plan");
         assert_eq!(plan.breakpoints, [100f32.next_up()]);
-        let opacity_only: Vec<&str> = (0..plan.active.len())
-            .flat_map(|bucket| set.active_rules(&plan, bucket))
+        let opacity_only: Vec<&str> = plan
+            .active
+            .iter()
+            .flatten()
+            .flat_map(|&idx| flat.container_rules[idx].sheet.static_rules.iter())
             .flat_map(|rule| rule.declaration_entries.iter())
             .map(|entry| entry.property.as_str())
             .collect();
@@ -1385,130 +1273,6 @@ mod tests {
             ["opacity"],
             "only the supported block applies"
         );
-
-        // Counted per node, replaced on every pass, given back when it goes.
-        let mut tally = UnsupportedCssTally::default();
-        tally.observe_container_queries(1, set.any_unsupported(&matched));
-        tally.observe_container_queries(1, true);
-        assert_eq!(tally.report().container_queries, 1);
-        tally.observe_container_queries(2, true);
-        assert_eq!(tally.report().container_queries, 2);
-        tally.observe_container_queries(1, false);
-        assert_eq!(tally.report().container_queries, 1);
-        tally.forget(2);
-        tally.forget(2);
-        assert_eq!(tally.report().container_queries, 0);
-        assert!(tally.report().is_empty());
-        // A node's style and its container rules are counted apart.
-        let sideways = LayoutStyle::with(|s| s.text_ext.unsupported_writing_mode = true);
-        tally.observe(3, &sideways);
-        tally.observe_container_queries(3, true);
-        tally.observe(3, &LayoutStyle::default());
-        assert_eq!(tally.report().writing_modes, 0);
-        assert_eq!(tally.report().container_queries, 1);
-        tally.forget(3);
-        assert!(tally.report().is_empty());
-    }
-
-    #[test]
-    fn active_container_rules_take_their_place_in_the_cascade() {
-        let (sheet, report) = parse_stylesheet_full(
-            r#"
-            .a { width: 1px; height: 1px; }
-            @container (width > 400px) {
-                .a { width: 2px; height: 2px; padding: 2px; gap: 2px !important; }
-            }
-            .a { height: 3px; }
-            .a.b { padding: 4px; }
-            #x { gap: 9px; }
-            "#,
-            0,
-        );
-        assert_eq!(report.skipped_at_rules, 0);
-        let flat = sheet.flatten(&MediaEnvironment::default());
-        let index = RuleIndex::build(&flat.static_rules);
-        let set = ContainerRuleSet::build(&flat.container_rules);
-        let classes = class_names(&["a", "b"]);
-        let attrs = BTreeMap::new();
-        let ctx = ctx("div", "x", &classes, &attrs, &[]);
-        let matched = set.matching(&ctx);
-        assert_eq!(matched, [0]);
-        assert!(!set.any_unsupported(&matched));
-        let plan = set.plan(&matched).expect("one container").expect("a plan");
-        assert_eq!(plan.breakpoints, [400f32.next_up()]);
-        assert_eq!(plan.active, [vec![], vec![0]]);
-
-        let cascade = |bucket: usize, inline: &str| {
-            rebuild_layout_style_indexed(
-                LayoutStyle::default(),
-                &flat.static_rules,
-                &index,
-                &set.active_rules(&plan, bucket),
-                &ctx,
-                "",
-                inline,
-                None,
-                None,
-            )
-        };
-        assert_eq!(cascade(0, "").width, Some(LengthSpec::Px(1.0)));
-
-        let wide = cascade(1, "");
-        assert_eq!(
-            wide.width,
-            Some(LengthSpec::Px(2.0)),
-            "a later container rule beats an earlier rule of the same specificity"
-        );
-        assert_eq!(
-            wide.height,
-            Some(LengthSpec::Px(3.0)),
-            "a later rule beats the container rule: it is not appended last"
-        );
-        assert_eq!(
-            wide.padding,
-            Some(LengthSpec::Px(4.0)),
-            "a more specific rule beats the container rule"
-        );
-        assert_eq!(
-            wide.gap,
-            Some(LengthSpec::Px(2.0)),
-            "container !important beats a normal id rule"
-        );
-
-        let inline = cascade(1, "gap: 7px; height: 5px");
-        assert_eq!(inline.gap, Some(LengthSpec::Px(2.0)), "and inline normal");
-        assert_eq!(inline.height, Some(LengthSpec::Px(5.0)));
-        let inline_important = cascade(1, "gap: 8px !important");
-        assert_eq!(inline_important.gap, Some(LengthSpec::Px(8.0)));
-    }
-
-    #[test]
-    fn container_custom_properties_only_join_their_bucket() {
-        let (sheet, _) = parse_stylesheet_full(
-            r#"
-            .a { --own: 1px; }
-            @container (width > 400px) {
-                .a { --own: 2px; --wide: 3px; }
-            }
-            "#,
-            0,
-        );
-        let flat = sheet.flatten(&MediaEnvironment::default());
-        let index = RuleIndex::build(&flat.static_rules);
-        let set = ContainerRuleSet::build(&flat.container_rules);
-        let classes = class_names(&["a"]);
-        let attrs = BTreeMap::new();
-        let ctx = ctx("div", "", &classes, &attrs, &[]);
-        let matched = set.matching(&ctx);
-        let plan = set.plan(&matched).expect("one container").expect("a plan");
-        let wide = matched_custom_properties_indexed(
-            &flat.static_rules,
-            &index,
-            &set.active_rules(&plan, 1),
-            &ctx,
-        );
-        assert_eq!(wide.get("--own").map(String::as_str), Some("2px"));
-        assert_eq!(wide.get("--wide").map(String::as_str), Some("3px"));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! Stylesheet → matched nodes → [`LayoutStyle`] cascade (CSS subset).
+//! Stylesheet parser and selector / declaration AST (CSS subset).
 //!
 //! **Adapter internals.** Application hosts should use [`crate::prelude`], not this
 //! parser surface.
@@ -9,61 +9,24 @@
 //! `:root` / `:first-child` / `:last-child` / `:only-child` /
 //! `:nth-child()` / `:nth-of-type()` / `:nth-last-child()` /
 //! `:first-of-type` / `:last-of-type` (An+B, `odd`/`even`);
-//! simple `:not()` / `:is()` / `:where()`;
-//! author-layer `!important` (normal then important; specificity + source order
-//! within each); then prop style and inline style; then stylesheet `!important`
-//! (beats prop/inline normals); then prop / inline `!important` so author-important
-//! inline beats stylesheet important (see [`rebuild_layout_style`]).
+//! simple `:not()` / `:is()` / `:where()`; author-layer `!important` tracking.
 //!
-//! After cascade, documented shell / utility classes are applied via
-//! [`crate::shell_contract`]（非中立；不在此模块扩展 class 特判）.
-//!
-//! Parsed into separate buckets (not static cascade): `:hover`/`:focus`/`:active`,
+//! Parsed into separate buckets: `:hover`/`:focus`/`:active`,
 //! `::before`/`::after`, `@keyframes`, `@font-face`, and transition/animation
 //! longhands — see [`crate::css_interactive::ParsedStylesheet`].
-//! `writing-mode` vertical-rl/lr is a stored subset (not fully fail-closed).
 //!
-//! Cheap `:disabled` (subject or `:not(:disabled)`) is the same present-check
-//! as `[disabled]` (HTML `disabled` attr / form-control disabled). Cheap
-//! `:checked` matches only checkable hosts (checkbox / radio / switch)
-//! when `WidgetProps.toggled` is true — leftover `checked` attrs on
-//! dialogs / other nodes do not match. Sibling combinators `+` / `~`
-//! already walk preceding siblings. `:empty` / `:not(:empty)`: no element
-//! children, no host `label`/`value` with a non-whitespace Unicode scalar
-//! (`char::is_whitespace`), and no child text of that kind. Text nodes are
-//! `#text` / `nana-text` only — `p` / `span` / `label` /
-//! headings are elements even when their kind is `WidgetKind::Text`.
-//! Generated `::before`/`::after` boxes and whitespace-only text do not count.
-//! `:first-child` / `:last-child` / `:only-child` / `:nth-*` sibling
-//! counts exclude generated boxes and those text nodes. Other `:not()` args stay simple
-//! compounds. Cheap subject `:focus-within` matches when the subject or a
-//! descendant is focused; ancestor `:focus-within` is skipped.
-//! `:focus-visible` is stored as `:focus` (no keyboard-vs-pointer signal);
-//! it never matches without focus.
-//! Still deferred (skipped at parse): combinators inside `:has()`,
-//! `:nth-child(… of …)`, nested / complex `:not()` args, unknown at-rules,
-//! unknown `@supports` predicates, `@import … layer()` / `supports()`,
-//! and cascade-layer *priority* (unlayered vs layered).
-//! `::placeholder` is parsed with the generated pseudos; nothing paints it
-//! (the Style Model's `placeholder_color` / `placeholder_opacity` are set
-//! directly).
-//! Cheap subject `:has(.class|#id|type)` descendant-present reads the
-//! caller's precomputed bitset ([`MatchContext::has_bits`], k = unique simple
-//! `:has` args, cap 64); this crate does not walk the tree to build it.
 //! `@import` / `@media` (width/height/orientation/prefers-color-scheme) /
 //! `@font-face` / matching `@supports` / `@layer { }` (author source order,
-//! names recorded) merge into the same [`ParsedStylesheet`] (not a second cascade).
-//! `@container` blocks stay in [`ParsedStylesheet::container_rules`]: they join
-//! this cascade per bucket of the element's container, through
-//! [`rebuild_layout_style_indexed`], never unconditionally (see
-//! [`crate::css_container`]).
+//! names recorded) merge into the same [`ParsedStylesheet`].
+//! `@container` blocks stay in [`ParsedStylesheet::container_rules`]
+//! (see [`crate::css_container`]).
 
 use std::collections::{BTreeMap, HashMap};
 
 use crate::css_at_rule::{
-    ImportPrelude, MAX_IMPORT_DEPTH, ParseStylesheetOptions, evaluate_media_query,
-    evaluate_supports_condition, font_face_from_pairs, is_blocked_href, parse_import_prelude,
-    parse_layer_prelude, parse_media_query_list,
+    ImportPrelude, MAX_IMPORT_DEPTH, ParseStylesheetOptions, evaluate_supports_condition,
+    font_face_from_pairs, is_blocked_href, parse_import_prelude, parse_layer_prelude,
+    parse_media_query_list,
 };
 
 pub use crate::css_at_rule::MediaQuery;
@@ -76,9 +39,7 @@ use crate::css_interactive::{
     ScrollbarPseudo, ScrollbarPseudoRule, merge_parsed_stylesheet, offset_source_order,
     parse_keyframes_at_rule, partition_motion_entries,
 };
-use crate::css_map::{
-    LayoutStyle, LayoutStyleCss, css_key_is_direction_or_writing_mode, split_important_flag,
-};
+use crate::css_map::split_important_flag;
 
 /// One parsed declaration from a rule block (`property: value`, `!important` stripped).
 ///
@@ -275,219 +236,6 @@ impl Specificity {
     }
 }
 
-/// One ancestor/subject/sibling node's identity facts (flat; no nested refs).
-#[derive(Debug, Clone, Copy)]
-pub struct MatchNode<'a> {
-    pub tag: &'a str,
-    pub id: &'a str,
-    pub classes: &'a [String],
-    pub attrs: &'a BTreeMap<String, String>,
-    /// True when the node has no element children and no non-whitespace text.
-    pub is_empty: bool,
-    /// Checkable host with `toggled` (`:checked`).
-    pub checked: bool,
-}
-
-/// Element facts used for selector matching (bridge / tree).
-#[derive(Debug, Clone, Copy)]
-pub struct MatchContext<'a> {
-    pub tag: &'a str,
-    pub id: &'a str,
-    pub classes: &'a [String],
-    pub attrs: &'a BTreeMap<String, String>,
-    /// Full parent chain toward root (immediate parent first). Arbitrary depth.
-    pub ancestors: &'a [MatchNode<'a>],
-    /// Preceding siblings among the parent's children, **immediate previous first**.
-    /// Required for `+` / `~`; empty ⇒ sibling combinators fail closed.
-    pub preceding_siblings: &'a [MatchNode<'a>],
-    /// Among parent's children: index 0 = first child.
-    pub sibling_index: usize,
-    /// Parent's child count (1 ⇒ both first and last).
-    pub sibling_count: usize,
-    /// Among parent's children with the **same tag** (ASCII case-insensitive):
-    /// index 0 = first of that type. Used by `:nth-of-type`.
-    pub of_type_index: usize,
-    /// Count of siblings (including self) sharing this element's tag.
-    pub of_type_count: usize,
-    /// Bit i is set when a descendant matches [`Self::has_args`]`[i]`.
-    /// Precomputed once per cascade pass (O(n·k), not per-subject subtree walk).
-    pub has_bits: u64,
-    /// Unique simple compounds used by subject `:has()` in the current sheet.
-    /// Empty ⇒ every `:has()` fails closed.
-    pub has_args: &'a [SimpleCompound],
-    /// Subject or a descendant is the focused element (`:focus-within`).
-    pub focus_within: bool,
-    /// Subject has no element children and no non-whitespace text (`:empty`).
-    pub is_empty: bool,
-    /// Checkable host with `toggled` (`:checked`).
-    pub checked: bool,
-    /// Viewport + color-scheme used to evaluate stylesheet `@media`.
-    pub media: MediaEnv,
-    /// Direct children as a forest (for relative `:has()`).
-    pub children: &'a [MatchSubtree<'a>],
-    /// Following siblings, **immediate next first** (`:has(+ …)` / `:has(~ …)`).
-    pub following_siblings: &'a [MatchSubtree<'a>],
-    /// All siblings including self, document order (`:nth-child(… of …)`).
-    pub all_siblings: &'a [MatchNode<'a>],
-    /// Parallel to [`Self::ancestors`]: each ancestor as a subtree root.
-    pub ancestor_subtrees: &'a [MatchSubtree<'a>],
-    /// Owned children of the subject (bridge). Ignored when `children` is non-empty.
-    pub owned_children: &'a [OwnedMatchTree],
-    /// Owned following siblings (bridge).
-    pub owned_following: &'a [OwnedMatchTree],
-    /// Owned ancestor forests, parallel to [`Self::ancestors`] (bridge).
-    pub owned_ancestor_trees: &'a [OwnedMatchTree],
-    /// Shared document forest for relative matching (bridge).
-    pub relative: Option<&'a RelativeMatchForest>,
-    /// Widget id of the subject inside [`Self::relative`].
-    pub relative_id: u64,
-}
-
-/// One node plus its descendant forest (relative matching / `:has()`).
-#[derive(Debug, Clone, Copy)]
-pub struct MatchSubtree<'a> {
-    pub node: MatchNode<'a>,
-    pub children: &'a [MatchSubtree<'a>],
-}
-
-/// Owned descendant forest used by the bridge so `:has()` can walk live widgets.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct OwnedMatchTree {
-    pub tag: String,
-    pub id: String,
-    pub classes: Vec<String>,
-    pub attrs: BTreeMap<String, String>,
-    pub children: Vec<OwnedMatchTree>,
-}
-
-impl Drop for OwnedMatchTree {
-    fn drop(&mut self) {
-        if self.children.is_empty() {
-            return;
-        }
-        let mut stack = std::mem::take(&mut self.children);
-        while let Some(mut node) = stack.pop() {
-            stack.append(&mut node.children);
-        }
-    }
-}
-
-impl OwnedMatchTree {
-    pub fn as_node(&self) -> MatchNode<'_> {
-        MatchNode {
-            tag: self.tag.as_str(),
-            id: self.id.as_str(),
-            classes: self.classes.as_slice(),
-            attrs: &self.attrs,
-            is_empty: self.children.is_empty(),
-            checked: false,
-        }
-    }
-}
-
-/// Flat identity forest for relative selectors. One entry per widget; children
-/// are ids. Bridge builds this once per recascade pass.
-#[derive(Debug, Clone, Default)]
-pub struct RelativeMatchForest {
-    nodes: BTreeMap<u64, RelativeMatchNode>,
-}
-
-/// One node in [`RelativeMatchForest`].
-#[derive(Debug, Clone)]
-pub struct RelativeMatchNode {
-    pub tag: String,
-    pub css_id: String,
-    pub classes: Vec<String>,
-    pub attrs: BTreeMap<String, String>,
-    pub children: Vec<u64>,
-    pub parent: Option<u64>,
-}
-
-impl RelativeMatchForest {
-    pub fn insert(&mut self, id: u64, node: RelativeMatchNode) {
-        self.nodes.insert(id, node);
-    }
-
-    pub fn get(&self, id: u64) -> Option<&RelativeMatchNode> {
-        self.nodes.get(&id)
-    }
-
-    pub fn len(&self) -> usize {
-        self.nodes.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.nodes.is_empty()
-    }
-
-    pub fn as_node(&self, id: u64) -> Option<MatchNode<'_>> {
-        let n = self.nodes.get(&id)?;
-        Some(MatchNode {
-            tag: n.tag.as_str(),
-            id: n.css_id.as_str(),
-            classes: n.classes.as_slice(),
-            attrs: &n.attrs,
-            is_empty: n.children.is_empty(),
-            checked: false,
-        })
-    }
-}
-
-/// Inputs for the `@media` subset (viewport + color-scheme).
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct MediaEnv {
-    pub viewport: Option<(f32, f32)>,
-    pub color_scheme_dark: bool,
-}
-
-impl MediaEnv {
-    fn to_media_environment(self) -> crate::css_at_rule::MediaEnvironment {
-        let (width, height) = self.viewport.unwrap_or((960.0, 640.0));
-        crate::css_at_rule::MediaEnvironment {
-            width,
-            height,
-            color_scheme_dark: self.color_scheme_dark,
-        }
-    }
-}
-
-/// Cascade sort key for `@layer`: later wins.
-///
-/// Normal: first-declared layer weakest, unlayered strongest.
-/// `!important`: reverse (first-declared layer strongest, unlayered weakest).
-pub fn cascade_layer_key(important: bool, layer: Option<u32>) -> u32 {
-    match (important, layer) {
-        (false, Some(i)) => i.saturating_add(1),
-        (false, None) => u32::MAX,
-        (true, None) => 0,
-        (true, Some(i)) => u32::MAX.saturating_sub(i),
-    }
-}
-
-/// True when every stacked `@media` query matches `env` (empty = always).
-pub fn media_list_matches(queries: &[MediaQuery], env: &MediaEnv) -> bool {
-    queries
-        .iter()
-        .all(|query| evaluate_media_query(query, &env.to_media_environment()))
-}
-
-impl<'a> MatchContext<'a> {
-    fn as_node(&self) -> MatchNode<'a> {
-        MatchNode {
-            tag: self.tag,
-            id: self.id,
-            classes: self.classes,
-            attrs: self.attrs,
-            is_empty: self.is_empty,
-            checked: self.checked,
-        }
-    }
-
-    fn is_root(&self) -> bool {
-        self.ancestors.is_empty()
-    }
-}
-
 /// Skipped-content counters for one stylesheet parse. Lets callers surface
 /// how much of a sheet was dropped (malformed blocks, unsupported selectors,
 /// at-rules) instead of styles silently going missing.
@@ -507,151 +255,6 @@ pub struct StylesheetParseReport {
     pub skipped_at_rules: usize,
     /// Successfully loaded `@import` stylesheets (cycle / depth / missing are skipped).
     pub imported_sheets: usize,
-}
-
-/// Used-value declarations the layout engine refused, counted per node whose
-/// resolved [`LayoutStyle`] still carries the flag.
-///
-/// [`StylesheetParseReport`] covers what the *parser* dropped (bad blocks,
-/// unknown selectors, skipped at-rules). This covers declarations that parsed
-/// fine but name something the layout engine does not implement, which is
-/// otherwise only observable as a box that silently did not move.
-/// Counted **per node**, not per observation: see [`UnsupportedCssTally`].
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct UnsupportedCssReport {
-    /// Nodes whose `grid-template-columns` / `rows` hit [`GridTrackListUnsupported`].
-    pub grid_track_lists: usize,
-    /// Nodes carrying `writing-mode: sideways-*`.
-    pub writing_modes: usize,
-    /// Nodes with a malformed `font-variation-settings` declaration.
-    pub font_variations: usize,
-    /// Nodes whose `font-variation-settings` transition or animation moves an
-    /// axis no face of their text has: it runs, and changes nothing.
-    pub font_axis_animations: usize,
-    /// Nodes matched by an `@container` rule that cannot apply to them: its
-    /// query uses something this engine does not evaluate
-    /// ([`crate::css_container::ContainerQueryUnsupported`]), or their
-    /// container rules cannot share one plan
-    /// ([`crate::css_container::ContainerPlanUnsupported`]). Such rules never
-    /// apply to them.
-    pub container_queries: usize,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct UnsupportedCssFlags {
-    grid_track_list: bool,
-    writing_mode: bool,
-    font_variation: bool,
-    /// Matched by an `@container` rule that cannot apply to it.
-    container_query: bool,
-}
-
-impl UnsupportedCssFlags {
-    fn of(layout: &LayoutStyle) -> Self {
-        Self {
-            grid_track_list: layout.grid.columns_unsupported.is_some()
-                || layout.grid.rows_unsupported.is_some(),
-            writing_mode: layout.text_ext.unsupported_writing_mode,
-            font_variation: layout.text_ext.unsupported_font_variation,
-            container_query: false,
-        }
-    }
-
-    fn is_empty(self) -> bool {
-        self == Self::default()
-    }
-}
-
-impl UnsupportedCssReport {
-    pub fn is_empty(&self) -> bool {
-        *self == Self::default()
-    }
-}
-
-/// Accumulates an [`UnsupportedCssReport`] across the tree.
-///
-/// A node is recascaded on every hover, focus or class change, so what it
-/// contributed last time is remembered and replaced rather than added: a
-/// counter that only grew would run away and re-warn on every such frame.
-#[derive(Debug, Clone, Default)]
-pub struct UnsupportedCssTally {
-    report: UnsupportedCssReport,
-    seen: HashMap<u64, UnsupportedCssFlags>,
-}
-
-impl UnsupportedCssTally {
-    pub fn report(&self) -> UnsupportedCssReport {
-        self.report
-    }
-
-    /// Records one node's resolved style, replacing whatever it contributed
-    /// last time. Called once per node per cascade pass.
-    pub fn observe(&mut self, node: u64, layout: &LayoutStyle) {
-        let flags = UnsupportedCssFlags {
-            container_query: self.flags(node).container_query,
-            ..UnsupportedCssFlags::of(layout)
-        };
-        self.record(node, flags);
-    }
-
-    /// Records whether one node is matched by an `@container` rule that
-    /// cannot apply to it (see [`UnsupportedCssReport::container_queries`]),
-    /// replacing what it recorded last time. Called once per node per
-    /// cascade pass, beside [`Self::observe`].
-    pub fn observe_container_queries(&mut self, node: u64, unsupported: bool) {
-        let flags = UnsupportedCssFlags {
-            container_query: unsupported,
-            ..self.flags(node)
-        };
-        self.record(node, flags);
-    }
-
-    /// Drops a removed node's contribution.
-    pub fn forget(&mut self, node: u64) {
-        self.record(node, UnsupportedCssFlags::default());
-    }
-
-    fn flags(&self, node: u64) -> UnsupportedCssFlags {
-        self.seen.get(&node).copied().unwrap_or_default()
-    }
-
-    /// Replace what `node` contributes with `flags`.
-    fn record(&mut self, node: u64, flags: UnsupportedCssFlags) {
-        let previous = if flags.is_empty() {
-            self.seen.remove(&node).unwrap_or_default()
-        } else {
-            self.seen.insert(node, flags).unwrap_or_default()
-        };
-        let report = &mut self.report;
-        adjust(
-            &mut report.grid_track_lists,
-            previous.grid_track_list,
-            flags.grid_track_list,
-        );
-        adjust(
-            &mut report.writing_modes,
-            previous.writing_mode,
-            flags.writing_mode,
-        );
-        adjust(
-            &mut report.font_variations,
-            previous.font_variation,
-            flags.font_variation,
-        );
-        adjust(
-            &mut report.container_queries,
-            previous.container_query,
-            flags.container_query,
-        );
-    }
-}
-
-fn adjust(counter: &mut usize, was: bool, is: bool) {
-    match (was, is) {
-        (false, true) => *counter += 1,
-        (true, false) => *counter = counter.saturating_sub(1),
-        _ => {}
-    }
 }
 
 impl StylesheetParseReport {
@@ -1264,214 +867,6 @@ pub fn parse_stylesheet_with_report(
     )
 }
 
-/// Apply matched stylesheet declarations onto a fresh layout (author layer).
-///
-/// Uses cached [`StyleRule::declaration_entries`] and
-/// [`LayoutStyleCss::apply_css_property`] — no per-match string re-split.
-pub fn apply_stylesheet_to_layout(
-    layout: &mut LayoutStyle,
-    rules: &[StyleRule],
-    ctx: &MatchContext<'_>,
-    percent_w: Option<f32>,
-    percent_h: Option<f32>,
-) {
-    apply_matched_stylesheet(layout, rules, ctx, percent_w, percent_h, false);
-}
-
-/// Matched declarations in cascade application order (later wins).
-///
-/// Author stylesheet layer (MDN Importance / Cascade): all **normal**
-/// declarations first (specificity, then source order, then decl index), then
-/// all **`!important`** declarations with the same tie-breakers. Important
-/// therefore beats any normal declaration regardless of specificity.
-/// Each entry is a single `property: value` with the `!important` flag stripped.
-pub fn matched_declarations(
-    rules: &[StyleRule],
-    ctx: &MatchContext<'_>,
-) -> Vec<(Specificity, u32, String)> {
-    matched_declaration_entries(rules, ctx)
-        .into_iter()
-        .map(|(spec, order, entry)| (spec, order, entry.text()))
-        .collect()
-}
-
-/// Like [`matched_declarations`], but returns cached structured entries.
-pub fn matched_declaration_entries(
-    rules: &[StyleRule],
-    ctx: &MatchContext<'_>,
-) -> Vec<(Specificity, u32, DeclarationEntry)> {
-    let refs: Vec<&StyleRule> = rules.iter().collect();
-    matched_declaration_entries_from(&refs, ctx)
-}
-
-fn matched_declaration_entries_from(
-    rules: &[&StyleRule],
-    ctx: &MatchContext<'_>,
-) -> Vec<(Specificity, u32, DeclarationEntry)> {
-    // (important, specificity, source_order, decl_index, entry)
-    let mut matched: Vec<(bool, Specificity, u32, u32, DeclarationEntry)> = Vec::new();
-    for rule in rules {
-        for sel in &rule.selectors {
-            if selector_matches(sel, ctx) {
-                for entry in &rule.declaration_entries {
-                    matched.push((
-                        entry.important,
-                        sel.specificity,
-                        rule.source_order,
-                        entry.index,
-                        entry.clone(),
-                    ));
-                }
-                break;
-            }
-        }
-    }
-    matched.sort_by(|a, b| {
-        a.0.cmp(&b.0)
-            .then(a.1.cmp(&b.1))
-            .then(a.2.cmp(&b.2))
-            .then(a.3.cmp(&b.3))
-    });
-    matched
-        .into_iter()
-        .map(|(_, spec, order, _, entry)| (spec, order, entry))
-        .collect()
-}
-
-/// Bucket index over rules by the subject compound's key facts (type / id /
-/// class). Candidates are a strict superset of real matches —
-/// [`selector_matches`] still validates every candidate — so cascade results
-/// equal a linear scan at O(candidates) instead of O(all rules).
-///
-/// Keys follow [`compound_matches`] comparison semantics: types fold to ASCII
-/// lowercase (`*` is no key), ids and classes compare exactly. A rule falls
-/// into the always-check bucket when any of its selectors could match without
-/// sharing a key (attr / structural-pseudo / universal subjects, or key-less
-/// `:is()` / `:where()` arms).
-#[derive(Debug, Default, Clone)]
-pub struct RuleIndex {
-    by_type: HashMap<String, Vec<u32>>,
-    by_id: HashMap<String, Vec<u32>>,
-    by_class: HashMap<String, Vec<u32>>,
-    keyless: Vec<u32>,
-}
-
-impl RuleIndex {
-    pub fn build(rules: &[StyleRule]) -> Self {
-        let mut index = Self::default();
-        for (order, rule) in rules.iter().enumerate() {
-            let order = order as u32;
-            let mut types: Vec<&str> = Vec::new();
-            let mut ids: Vec<&str> = Vec::new();
-            let mut classes: Vec<&str> = Vec::new();
-            let mut keyless = false;
-            for sel in &rule.selectors {
-                if !subject_keys(&sel.subject, &mut types, &mut ids, &mut classes) {
-                    keyless = true;
-                    break;
-                }
-            }
-            if keyless || (types.is_empty() && ids.is_empty() && classes.is_empty()) {
-                index.keyless.push(order);
-                continue;
-            }
-            for type_name in types {
-                index
-                    .by_type
-                    .entry(type_name.to_ascii_lowercase())
-                    .or_default()
-                    .push(order);
-            }
-            for id in ids {
-                index.by_id.entry(id.to_string()).or_default().push(order);
-            }
-            for class in classes {
-                index
-                    .by_class
-                    .entry(class.to_string())
-                    .or_default()
-                    .push(order);
-            }
-        }
-        index
-    }
-
-    /// Candidate rule indices for `ctx`, deduplicated in rule order.
-    pub fn candidate_ids(&self, ctx: &MatchContext<'_>) -> Vec<u32> {
-        let mut ids = self.keyless.clone();
-        if !ctx.tag.is_empty()
-            && let Some(bucket) = self.by_type.get(&ctx.tag.to_ascii_lowercase())
-        {
-            ids.extend_from_slice(bucket);
-        }
-        if !ctx.id.is_empty()
-            && let Some(bucket) = self.by_id.get(ctx.id)
-        {
-            ids.extend_from_slice(bucket);
-        }
-        for class in ctx.classes {
-            if let Some(bucket) = self.by_class.get(class) {
-                ids.extend_from_slice(bucket);
-            }
-        }
-        ids.sort_unstable();
-        ids.dedup();
-        ids
-    }
-
-    /// Candidate rules for `ctx`, in rule order.
-    pub fn candidates<'a>(
-        &self,
-        rules: &'a [StyleRule],
-        ctx: &MatchContext<'_>,
-    ) -> Vec<&'a StyleRule> {
-        self.candidate_ids(ctx)
-            .into_iter()
-            .map(|order| &rules[order as usize])
-            .collect()
-    }
-}
-
-/// Collect one subject compound's type / id / class keys. Returns `false` when
-/// the compound can match without sharing any key (`:is()` / `:where()` arm
-/// with only attr / structural pseudos), which forces the rule always-check.
-/// `:not()` arms only restrict matches, so they contribute no keys.
-fn subject_keys<'a>(
-    compound: &'a CompoundSelector,
-    types: &mut Vec<&'a str>,
-    ids: &mut Vec<&'a str>,
-    classes: &mut Vec<&'a str>,
-) -> bool {
-    if let Some(type_name) = &compound.type_name
-        && type_name != "*"
-    {
-        types.push(type_name);
-    }
-    if let Some(id) = &compound.id {
-        ids.push(id);
-    }
-    classes.extend(compound.classes.iter().map(String::as_str));
-    for alt in compound.is_alts.iter().chain(compound.where_alts.iter()) {
-        let mut alt_keys = 0usize;
-        if let Some(type_name) = &alt.type_name
-            && type_name != "*"
-        {
-            types.push(type_name);
-            alt_keys += 1;
-        }
-        if let Some(id) = &alt.id {
-            ids.push(id);
-            alt_keys += 1;
-        }
-        alt_keys += alt.classes.len();
-        classes.extend(alt.classes.iter().map(String::as_str));
-        if alt_keys == 0 {
-            return false;
-        }
-    }
-    true
-}
-
 /// Split a declaration block into structured entries (once per rule at parse).
 pub fn parse_declaration_entries(block: &str) -> Vec<DeclarationEntry> {
     let mut out = Vec::new();
@@ -1512,7 +907,7 @@ pub fn parse_declaration_entries(block: &str) -> Vec<DeclarationEntry> {
 pub fn collect_document_custom_properties_from_rules(
     rules: &[StyleRule],
     theme: &str,
-) -> BTreeMap<String, String> {
+) -> crate::css_map::CssVarScope {
     let mut map = BTreeMap::new();
     for rule in rules {
         if !rule_contributes_document_vars(rule, theme) {
@@ -1526,7 +921,10 @@ pub fn collect_document_custom_properties_from_rules(
             }
         }
     }
-    crate::css_map::merge_css_custom_properties(&map, &BTreeMap::new())
+    crate::css_map::CssVarScope::from_map(crate::css_map::merge_css_custom_properties(
+        &map,
+        &BTreeMap::new(),
+    ))
 }
 
 fn rule_contributes_document_vars(rule: &StyleRule, theme: &str) -> bool {
@@ -1558,66 +956,8 @@ fn data_theme_constraint_from_compound(c: &CompoundSelector) -> Option<String> {
     None
 }
 
-/// Custom properties from **element-scoped** rules matching `ctx` (cascade
-/// order; later wins), restricted to [`RuleIndex`] candidates.
-///
-/// Document-level selectors (`:root`, `html`, `body`, `*`, `[data-theme=…]`, …)
-/// are skipped here. Those `--*` are collected theme-aware into the bridge
-/// `stylesheet_vars` base via
-/// [`collect_document_custom_properties_from_rules`]. Rematching bare
-/// `:root { --bg }` on parentless nodes would clobber
-/// `:root[data-theme=light]` overlays (orphans report empty ancestors and
-/// thus match `:root`).
-///
-/// `extra` rules are sorted in among the candidates: the `@container` rules
-/// that hold in one bucket, as for [`rebuild_layout_style_indexed`].
-pub fn matched_custom_properties_indexed(
-    rules: &[StyleRule],
-    index: &RuleIndex,
-    extra: &[&StyleRule],
-    ctx: &MatchContext<'_>,
-) -> BTreeMap<String, String> {
-    let mut candidates = index.candidates(rules, ctx);
-    candidates.extend_from_slice(extra);
-    matched_custom_properties_from(&candidates, ctx)
-}
-
-fn matched_custom_properties_from(
-    rules: &[&StyleRule],
-    ctx: &MatchContext<'_>,
-) -> BTreeMap<String, String> {
-    let mut matched: Vec<(Specificity, u32, u32, DeclarationEntry)> = Vec::new();
-    for rule in rules {
-        let mut best_spec: Option<Specificity> = None;
-        for sel in &rule.selectors {
-            if !selector_matches(sel, ctx) || selector_is_document_var_scope(sel) {
-                continue;
-            }
-            best_spec = Some(match best_spec {
-                Some(prev) if prev >= sel.specificity => prev,
-                _ => sel.specificity,
-            });
-        }
-        let Some(spec) = best_spec else {
-            continue;
-        };
-        for entry in &rule.declaration_entries {
-            if !entry.property.starts_with("--") {
-                continue;
-            }
-            matched.push((spec, rule.source_order, entry.index, entry.clone()));
-        }
-    }
-    matched.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
-    let mut map = BTreeMap::new();
-    for (_, _, _, entry) in matched {
-        map.insert(entry.property, entry.value);
-    }
-    map
-}
-
 /// Subject is a bare document selector that receives theme-aware `--*` via
-/// [`collect_document_custom_properties_from_rules`], not per-element rematch.
+/// [`collect_document_custom_properties_from_rules`].
 fn selector_is_document_var_scope(sel: &Selector) -> bool {
     if !sel.ancestors.is_empty() {
         return false;
@@ -1642,437 +982,6 @@ fn compound_is_document_var_scope(c: &CompoundSelector) -> bool {
             .any(|a| a.name.eq_ignore_ascii_case("data-theme")),
         _ => false,
     }
-}
-
-/// Rebuild layout from `base` (typically kind defaults).
-///
-/// Author layer order:
-/// stylesheet (normal+important) → class hints → prop style → class hints →
-/// inline style → class hints → stylesheet **important** only → prop
-/// **important** → inline **important**.
-/// Re-applying class hints after prop/inline keeps documented `nana-*` shell
-/// contracts from being wiped by prop style or SFC `style` declarations.
-/// Inline (style attribute) wins over stylesheet **normal**. Stylesheet
-/// `!important` beats prop/inline normals. Prop / inline `!important` is
-/// author-important on this same path: the flag is stripped so the value
-/// parses, then those declarations are written again after stylesheet
-/// important (inline important beats stylesheet important).
-pub fn rebuild_layout_style(
-    mut layout: LayoutStyle,
-    rules: &[StyleRule],
-    ctx: &MatchContext<'_>,
-    prop_style: &str,
-    inline_style: &str,
-    percent_w: Option<f32>,
-    percent_h: Option<f32>,
-) -> LayoutStyle {
-    apply_stylesheet_to_layout(&mut layout, rules, ctx, percent_w, percent_h);
-    layout.apply_class_layout_hints(ctx.classes);
-    if !prop_style.trim().is_empty() {
-        layout.apply_css_text(prop_style, percent_w, percent_h);
-        layout.apply_class_layout_hints(ctx.classes);
-    }
-    if !inline_style.trim().is_empty() {
-        layout.apply_css_text(inline_style, percent_w, percent_h);
-        layout.apply_class_layout_hints(ctx.classes);
-    }
-    apply_matched_stylesheet(&mut layout, rules, ctx, percent_w, percent_h, true);
-    if !prop_style.trim().is_empty() {
-        apply_css_text_important_only(&mut layout, prop_style, percent_w, percent_h);
-    }
-    if !inline_style.trim().is_empty() {
-        apply_css_text_important_only(&mut layout, inline_style, percent_w, percent_h);
-    }
-    layout.resolve_logical_box_edges();
-    layout
-}
-
-/// [`rebuild_layout_style`] restricted to [`RuleIndex`] candidates. Cascade
-/// order inside the candidate set is unchanged, so results are identical.
-///
-/// `extra` rules join the stylesheet layers: the `@container` rules that
-/// hold in one bucket
-/// ([`crate::css_container::ContainerRuleSet::active_rules`]). They are
-/// matched and sorted together with the sheet's candidates (normal before
-/// `!important`, then specificity, then source order), exactly where they
-/// would sit as ordinary rules of the sheet; they are never appended after
-/// it. Their `!important` declarations join the stylesheet-important layer,
-/// so prop / inline `!important` still beats them.
-pub fn rebuild_layout_style_indexed(
-    mut layout: LayoutStyle,
-    rules: &[StyleRule],
-    index: &RuleIndex,
-    extra: &[&StyleRule],
-    ctx: &MatchContext<'_>,
-    prop_style: &str,
-    inline_style: &str,
-    percent_w: Option<f32>,
-    percent_h: Option<f32>,
-) -> LayoutStyle {
-    let mut candidates = index.candidates(rules, ctx);
-    candidates.extend_from_slice(extra);
-    apply_matched_stylesheet_from(&mut layout, &candidates, ctx, percent_w, percent_h, false);
-    layout.apply_class_layout_hints(ctx.classes);
-    if !prop_style.trim().is_empty() {
-        layout.apply_css_text(prop_style, percent_w, percent_h);
-        layout.apply_class_layout_hints(ctx.classes);
-    }
-    if !inline_style.trim().is_empty() {
-        layout.apply_css_text(inline_style, percent_w, percent_h);
-        layout.apply_class_layout_hints(ctx.classes);
-    }
-    apply_matched_stylesheet_from(&mut layout, &candidates, ctx, percent_w, percent_h, true);
-    if !prop_style.trim().is_empty() {
-        apply_css_text_important_only(&mut layout, prop_style, percent_w, percent_h);
-    }
-    if !inline_style.trim().is_empty() {
-        apply_css_text_important_only(&mut layout, inline_style, percent_w, percent_h);
-    }
-    layout.resolve_logical_box_edges();
-    layout
-}
-
-fn apply_matched_stylesheet(
-    layout: &mut LayoutStyle,
-    rules: &[StyleRule],
-    ctx: &MatchContext<'_>,
-    percent_w: Option<f32>,
-    percent_h: Option<f32>,
-    important_only: bool,
-) {
-    let refs: Vec<&StyleRule> = rules.iter().collect();
-    apply_matched_stylesheet_from(layout, &refs, ctx, percent_w, percent_h, important_only);
-}
-
-fn apply_matched_stylesheet_from(
-    layout: &mut LayoutStyle,
-    rules: &[&StyleRule],
-    ctx: &MatchContext<'_>,
-    percent_w: Option<f32>,
-    percent_h: Option<f32>,
-    important_only: bool,
-) {
-    let mut dir_entries = Vec::new();
-    let mut rest = Vec::new();
-    for (_, _, entry) in matched_declaration_entries_from(rules, ctx) {
-        if !important_only || entry.important {
-            if css_key_is_direction_or_writing_mode(&entry.property) {
-                dir_entries.push(entry);
-            } else {
-                rest.push(entry);
-            }
-        }
-    }
-    for entry in dir_entries.into_iter().chain(rest) {
-        layout.apply_css_property(&entry.property, &entry.value, percent_w, percent_h);
-    }
-}
-
-/// Apply only declarations whose value carries `!important` (flag already stripped
-/// before [`LayoutStyleCss::apply_css_property`]).
-fn apply_css_text_important_only(
-    layout: &mut LayoutStyle,
-    style: &str,
-    percent_w: Option<f32>,
-    percent_h: Option<f32>,
-) {
-    let entries: Vec<_> = parse_declaration_entries(style)
-        .into_iter()
-        .filter(|entry| entry.important)
-        .collect();
-    for entry in entries
-        .iter()
-        .filter(|e| css_key_is_direction_or_writing_mode(&e.property))
-        .chain(
-            entries
-                .iter()
-                .filter(|e| !css_key_is_direction_or_writing_mode(&e.property)),
-        )
-    {
-        layout.apply_css_property(&entry.property, &entry.value, percent_w, percent_h);
-    }
-}
-
-pub fn simple_matches(simple: &SimpleCompound, node: &MatchNode<'_>) -> bool {
-    if let Some(tag) = &simple.type_name
-        && !node.tag.eq_ignore_ascii_case(tag)
-        && tag != "*"
-    {
-        return false;
-    }
-    if let Some(id) = &simple.id
-        && node.id != id
-    {
-        return false;
-    }
-    for class in &simple.classes {
-        if !node.classes.iter().any(|c| c == class) {
-            return false;
-        }
-    }
-    for attr in &simple.attrs {
-        if !attr_matches(attr, node.attrs) {
-            return false;
-        }
-    }
-    if simple.empty && !node.is_empty {
-        return false;
-    }
-    if simple.checked && !node.checked {
-        return false;
-    }
-    // Empty simple (shouldn't parse) matches nothing useful — treat as true only
-    // when at least one condition exists; callers always push non-empty alts.
-    true
-}
-
-pub fn compound_matches(compound: &CompoundSelector, node: &MatchNode<'_>) -> bool {
-    if let Some(tag) = &compound.type_name
-        && !node.tag.eq_ignore_ascii_case(tag)
-        && tag != "*"
-    {
-        return false;
-    }
-    if let Some(id) = &compound.id
-        && node.id != id
-    {
-        return false;
-    }
-    for class in &compound.classes {
-        if !node.classes.iter().any(|c| c == class) {
-            return false;
-        }
-    }
-    for attr in &compound.attrs {
-        if !attr_matches(attr, node.attrs) {
-            return false;
-        }
-    }
-    if compound.empty && !node.is_empty {
-        return false;
-    }
-    if compound.checked && !node.checked {
-        return false;
-    }
-    for alt in &compound.not_alts {
-        if simple_matches(alt, node) {
-            return false;
-        }
-    }
-    if !compound.is_alts.is_empty() && !compound.is_alts.iter().any(|a| simple_matches(a, node)) {
-        return false;
-    }
-    if !compound.where_alts.is_empty()
-        && !compound.where_alts.iter().any(|a| simple_matches(a, node))
-    {
-        return false;
-    }
-    true
-}
-
-fn compound_matches_ctx(compound: &CompoundSelector, ctx: &MatchContext<'_>) -> bool {
-    if compound.root && !ctx.is_root() {
-        return false;
-    }
-    if !compound_matches(compound, &ctx.as_node()) {
-        return false;
-    }
-    if compound.first_child && ctx.sibling_index != 0 {
-        return false;
-    }
-    if compound.last_child && (ctx.sibling_count == 0 || ctx.sibling_index + 1 != ctx.sibling_count)
-    {
-        return false;
-    }
-    if compound.only_child && ctx.sibling_count != 1 {
-        return false;
-    }
-    if compound.first_of_type && ctx.of_type_index != 0 {
-        return false;
-    }
-    if compound.last_of_type
-        && (ctx.of_type_count == 0 || ctx.of_type_index + 1 != ctx.of_type_count)
-    {
-        return false;
-    }
-    if let Some(anb) = compound.nth_child {
-        // CSS indices are 1-based among all siblings.
-        if !anb.matches_index(ctx.sibling_index.saturating_add(1)) {
-            return false;
-        }
-    }
-    if let Some(anb) = compound.nth_of_type
-        && !anb.matches_index(ctx.of_type_index.saturating_add(1))
-    {
-        return false;
-    }
-    if let Some(anb) = compound.nth_last_child {
-        let from_end = ctx.sibling_count.saturating_sub(ctx.sibling_index);
-        if !anb.matches_index(from_end) {
-            return false;
-        }
-    }
-    if !compound.has_queries.is_empty() {
-        if ctx.has_args.is_empty() {
-            return false;
-        }
-        for query in &compound.has_queries {
-            let any = query.iter().any(|alt| {
-                ctx.has_args
-                    .iter()
-                    .position(|have| have == alt)
-                    .is_some_and(|i| i < 64 && (ctx.has_bits & (1u64 << i)) != 0)
-            });
-            if !any {
-                return false;
-            }
-        }
-    }
-    !compound.focus_within || ctx.focus_within
-}
-
-/// True if any rule's selector matches `ctx` (subject + combinators).
-pub fn stylesheet_matches(rules: &[StyleRule], ctx: &MatchContext<'_>) -> bool {
-    rules
-        .iter()
-        .any(|rule| rule.selectors.iter().any(|sel| selector_matches(sel, ctx)))
-}
-
-/// True when matching needs descendant / sibling forests (`:has()`, `nth-*`, combinators).
-pub fn stylesheet_needs_relative(rules: &[StyleRule]) -> bool {
-    rules
-        .iter()
-        .any(|rule| rule.selectors.iter().any(selector_needs_relative))
-}
-
-pub fn selector_needs_relative(sel: &Selector) -> bool {
-    !sel.ancestors.is_empty()
-        || compound_needs_relative(&sel.subject)
-        || sel
-            .ancestors
-            .iter()
-            .any(|(_, compound)| compound_needs_relative(compound))
-}
-
-fn compound_needs_relative(c: &CompoundSelector) -> bool {
-    !c.has_queries.is_empty()
-        || c.nth_child.is_some()
-        || c.nth_of_type.is_some()
-        || c.nth_last_child.is_some()
-        || c.first_child
-        || c.last_child
-        || c.only_child
-        || c.first_of_type
-        || c.last_of_type
-}
-
-/// Cheap reject: if no rule subject *could* match this element's tag/id/classes,
-/// skip building a full [`MatchContext`]. Combinators / attrs / pseudos still
-/// require [`stylesheet_matches`].
-pub fn stylesheet_may_match_subject(
-    rules: &[StyleRule],
-    tag: &str,
-    id: &str,
-    classes: &[String],
-) -> bool {
-    rules.iter().any(|rule| {
-        rule.selectors
-            .iter()
-            .any(|sel| compound_subject_may_match(&sel.subject, tag, id, classes))
-    })
-}
-
-fn compound_subject_may_match(
-    compound: &CompoundSelector,
-    tag: &str,
-    id: &str,
-    classes: &[String],
-) -> bool {
-    if let Some(want) = compound.type_name.as_deref()
-        && want != "*"
-        && !want.eq_ignore_ascii_case(tag)
-    {
-        return false;
-    }
-    if let Some(want) = compound.id.as_deref()
-        && !want.is_empty()
-        && want != id
-    {
-        return false;
-    }
-    for class in &compound.classes {
-        if !classes.iter().any(|have| have == class) {
-            return false;
-        }
-    }
-    true
-}
-
-pub fn selector_matches(sel: &Selector, ctx: &MatchContext<'_>) -> bool {
-    if !compound_matches_ctx(&sel.subject, ctx) {
-        return false;
-    }
-    // Walk leftward from the subject. Child/descendant climb `ancestors`;
-    // sibling combinators walk `preceding_siblings` (immediate previous first).
-    let mut ancestors = ctx.ancestors;
-    let mut preceding = ctx.preceding_siblings;
-    for (comb, compound) in sel.ancestors.iter().rev() {
-        match comb {
-            Combinator::Child => {
-                let Some((parent, rest)) = ancestors.split_first() else {
-                    return false;
-                };
-                if !compound_matches(compound, parent) {
-                    return false;
-                }
-                ancestors = rest;
-                // Parent's preceding siblings are not in context — fail closed
-                // if a further sibling combinator appears after ascent.
-                preceding = &[];
-            }
-            Combinator::Descendant => {
-                let mut found = false;
-                let mut walk = ancestors;
-                while let Some((parent, rest)) = walk.split_first() {
-                    if compound_matches(compound, parent) {
-                        ancestors = rest;
-                        found = true;
-                        break;
-                    }
-                    walk = rest;
-                }
-                if !found {
-                    return false;
-                }
-                preceding = &[];
-            }
-            Combinator::AdjacentSibling => {
-                let Some((sib, rest)) = preceding.split_first() else {
-                    return false;
-                };
-                if !compound_matches(compound, sib) {
-                    return false;
-                }
-                preceding = rest;
-            }
-            Combinator::SubsequentSibling => {
-                let mut found = false;
-                let mut walk = preceding;
-                while let Some((sib, rest)) = walk.split_first() {
-                    if compound_matches(compound, sib) {
-                        preceding = rest;
-                        found = true;
-                        break;
-                    }
-                    walk = rest;
-                }
-                if !found {
-                    return false;
-                }
-            }
-        }
-    }
-    true
 }
 
 fn parse_selector(raw: &str) -> Option<Selector> {
@@ -2763,32 +1672,6 @@ fn parse_attr_inner(inner: &str) -> Option<AttrSelector> {
     })
 }
 
-fn attr_matches(attr: &AttrSelector, attrs: &std::collections::BTreeMap<String, String>) -> bool {
-    let Some(raw) = attrs
-        .iter()
-        .find(|(k, _)| k.eq_ignore_ascii_case(&attr.name))
-        .map(|(_, v)| v.as_str())
-    else {
-        return false;
-    };
-    let Some(expected) = attr.value.as_deref() else {
-        return matches!(attr.op, AttrOperator::Present);
-    };
-    let (hay, needle) = match attr.case {
-        AttrCase::Insensitive => (raw.to_ascii_lowercase(), expected.to_ascii_lowercase()),
-        AttrCase::Default | AttrCase::Sensitive => (raw.to_string(), expected.to_string()),
-    };
-    match attr.op {
-        AttrOperator::Present => true,
-        AttrOperator::Equal => hay == needle,
-        AttrOperator::Includes => hay.split_whitespace().any(|w| w == needle),
-        AttrOperator::DashMatch => hay == needle || hay.starts_with(&(needle.clone() + "-")),
-        AttrOperator::Prefix => hay.starts_with(&needle),
-        AttrOperator::Suffix => hay.ends_with(&needle),
-        AttrOperator::Substring => hay.contains(&needle),
-    }
-}
-
 /// Parse a forgiving-ish list of **simple** compounds for `:is`/`:where`/`:not`.
 /// Combinators / nested functional pseudos inside an alt ⇒ whole list rejected
 /// (honest defer — do not partially match). Cheap `:disabled` is allowed and
@@ -3088,7 +1971,7 @@ fn parse_signed_int_full(s: &str) -> Option<i32> {
     s.parse::<i32>().ok()
 }
 
-fn strip_css_comments(css: &str) -> String {
+pub(crate) fn strip_css_comments(css: &str) -> String {
     // Copy non-comment byte ranges as slices so multi-byte UTF-8 payloads
     // (Chinese comments, `content` strings, family names) survive verbatim.
     let bytes = css.as_bytes();
@@ -3215,149 +2098,6 @@ fn split_selector_list(s: &str) -> Vec<&str> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::css_map::{DirSpec, FlexDirection, FlexWrap, LengthSpec};
-
-    pub(crate) fn ctx<'a>(
-        tag: &'a str,
-        id: &'a str,
-        classes: &'a [String],
-        attrs: &'a BTreeMap<String, String>,
-        ancestors: &'a [MatchNode<'a>],
-    ) -> MatchContext<'a> {
-        MatchContext {
-            tag,
-            id,
-            classes,
-            attrs,
-            ancestors,
-            preceding_siblings: &[],
-            sibling_index: 0,
-            sibling_count: 1,
-            of_type_index: 0,
-            of_type_count: 1,
-            has_bits: 0,
-            has_args: &[],
-            focus_within: false,
-            is_empty: true,
-            checked: false,
-            media: MediaEnv::default(),
-            children: &[],
-            following_siblings: &[],
-            all_siblings: &[],
-            ancestor_subtrees: &[],
-            owned_children: &[],
-            owned_following: &[],
-            owned_ancestor_trees: &[],
-            relative: None,
-            relative_id: 0,
-        }
-    }
-
-    fn ctx_full<'a>(
-        tag: &'a str,
-        id: &'a str,
-        classes: &'a [String],
-        attrs: &'a BTreeMap<String, String>,
-        ancestors: &'a [MatchNode<'a>],
-        preceding: &'a [MatchNode<'a>],
-        sibling_index: usize,
-        sibling_count: usize,
-    ) -> MatchContext<'a> {
-        MatchContext {
-            tag,
-            id,
-            classes,
-            attrs,
-            ancestors,
-            preceding_siblings: preceding,
-            sibling_index,
-            sibling_count,
-            of_type_index: sibling_index,
-            of_type_count: sibling_count,
-            has_bits: 0,
-            has_args: &[],
-            focus_within: false,
-            is_empty: true,
-            checked: false,
-            media: MediaEnv::default(),
-            children: &[],
-            following_siblings: &[],
-            all_siblings: &[],
-            ancestor_subtrees: &[],
-            owned_children: &[],
-            owned_following: &[],
-            owned_ancestor_trees: &[],
-            relative: None,
-            relative_id: 0,
-        }
-    }
-
-    fn ctx_nth<'a>(
-        tag: &'a str,
-        id: &'a str,
-        classes: &'a [String],
-        attrs: &'a BTreeMap<String, String>,
-        ancestors: &'a [MatchNode<'a>],
-        sibling_index: usize,
-        sibling_count: usize,
-        of_type_index: usize,
-        of_type_count: usize,
-    ) -> MatchContext<'a> {
-        MatchContext {
-            tag,
-            id,
-            classes,
-            attrs,
-            ancestors,
-            preceding_siblings: &[],
-            sibling_index,
-            sibling_count,
-            of_type_index,
-            of_type_count,
-            has_bits: 0,
-            has_args: &[],
-            focus_within: false,
-            is_empty: true,
-            checked: false,
-            media: MediaEnv::default(),
-            children: &[],
-            following_siblings: &[],
-            all_siblings: &[],
-            ancestor_subtrees: &[],
-            owned_children: &[],
-            owned_following: &[],
-            owned_ancestor_trees: &[],
-            relative: None,
-            relative_id: 0,
-        }
-    }
-
-    fn node<'a>(
-        tag: &'a str,
-        id: &'a str,
-        classes: &'a [String],
-        attrs: &'a BTreeMap<String, String>,
-    ) -> MatchNode<'a> {
-        MatchNode {
-            tag,
-            id,
-            classes,
-            attrs,
-            is_empty: true,
-            checked: false,
-        }
-    }
-
-    fn node_checked<'a>(
-        tag: &'a str,
-        id: &'a str,
-        classes: &'a [String],
-        attrs: &'a BTreeMap<String, String>,
-    ) -> MatchNode<'a> {
-        let mut node = node(tag, id, classes, attrs);
-        node.checked = true;
-        node
-    }
 
     #[test]
     fn malformed_rule_does_not_truncate_following_rules() {
@@ -3394,30 +2134,10 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn cheap_has_descendant_present_matches_subject() {
+    fn cheap_has_descendant_parses_subject() {
         let rules = parse_stylesheet(".card:has(.badge) { width: 80px }", 0);
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].selectors[0].subject.has_queries.len(), 1);
-        let empty = BTreeMap::new();
-        let card = vec!["card".into()];
-        let badge = SimpleCompound {
-            classes: vec!["badge".into()],
-            ..Default::default()
-        };
-        let args = [badge];
-        let mut layout = LayoutStyle::default();
-        let hit = ctx("div", "", &card, &empty, &[]);
-        let mut hit = hit;
-        hit.has_bits = 1;
-        hit.has_args = &args;
-        apply_stylesheet_to_layout(&mut layout, &rules, &hit, None, None);
-        assert_eq!(layout.width, Some(LengthSpec::Px(80.0)));
-
-        let mut miss = LayoutStyle::default();
-        let mut nohit = ctx("div", "", &card, &empty, &[]);
-        nohit.has_args = &args;
-        apply_stylesheet_to_layout(&mut miss, &rules, &nohit, None, None);
-        assert!(miss.width.is_none());
     }
 
     #[test]
@@ -3506,440 +2226,10 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn anonymous_class_stylesheet_drives_layout() {
-        let rules = parse_stylesheet(
-            r#"
-            .anon-page {
-              display: grid;
-              grid-template-rows: auto auto minmax(0, 1fr);
-              gap: 12px;
-              height: 100%;
-              overflow: hidden;
-              width: 100%;
-            }
-            .anon-tray {
-              display: inline-flex;
-              flex-direction: row;
-              align-items: center;
-              gap: 2px;
-              height: 40px;
-              padding: 4px;
-              border-radius: 10px;
-            }
-            "#,
-            0,
-        );
-        assert_eq!(rules.len(), 2);
-
-        let classes = vec!["anon-page".into()];
-        let attrs = BTreeMap::new();
-        let page_ctx = ctx("section", "", &classes, &attrs, &[]);
-        let mut page = LayoutStyle::default();
-        apply_stylesheet_to_layout(&mut page, &rules, &page_ctx, None, None);
-        assert_eq!(page.direction, Some(FlexDirection::Column));
-        assert_eq!(page.height, Some(LengthSpec::Fill));
-        assert_eq!(page.gap, Some(LengthSpec::Px(12.0)));
-        assert!(page.grid.rows.as_ref().is_some_and(|r| r.len() == 3));
-
-        let tray_classes = vec!["anon-tray".into()];
-        let tray_ctx = ctx("div", "", &tray_classes, &attrs, &[]);
-        let layout = rebuild_layout_style(
-            LayoutStyle::default(),
-            &rules,
-            &tray_ctx,
-            "",
-            "",
-            None,
-            None,
-        );
-        assert_eq!(layout.direction, Some(FlexDirection::Row));
-        assert_eq!(layout.height, Some(LengthSpec::Px(40.0)));
-        assert_eq!(layout.padding, Some(LengthSpec::Px(4.0)));
-        let radii = layout.paint.border_radii.expect("corners");
-        assert_eq!(radii[0], LengthSpec::Px(10.0));
-        assert!(layout.border_radius.is_none());
-    }
-
-    #[test]
-    fn unsupported_css_report_counts_declarations_layout_ignores() {
-        let mut tally = UnsupportedCssTally::default();
-        assert!(tally.report().is_empty());
-
-        // `sideways-*` parses but layout has no sideways glyph orientation.
-        let mut sideways = LayoutStyle::default();
-        sideways.apply_css_text("writing-mode: sideways-rl", None, None);
-        assert!(sideways.text_ext.unsupported_writing_mode);
-        tally.observe(1, &sideways);
-
-        // Nested auto-fit parses but the track list cannot be expanded.
-        let mut nested = LayoutStyle::default();
-        nested.apply_css_text(
-            "display:grid;grid-template-columns:repeat(2, repeat(auto-fit, 1fr))",
-            None,
-            None,
-        );
-        assert!(nested.grid.columns_unsupported.is_some());
-        tally.observe(2, &nested);
-
-        // A malformed variation declaration fails closed on that declaration only.
-        let mut variation = LayoutStyle::default();
-        variation.apply_css_text("font-variation-settings: nope", None, None);
-        assert!(variation.text_ext.unsupported_font_variation);
-        tally.observe(3, &variation);
-
-        assert_eq!(tally.report().grid_track_lists, 1);
-        assert_eq!(tally.report().writing_modes, 1);
-        assert_eq!(tally.report().font_variations, 1);
-        assert!(!tally.report().is_empty());
-
-        // A fully supported style must not be counted, or the diagnostic fires
-        // on every page.
-        let mut ok = LayoutStyle::default();
-        ok.apply_css_text(
-            "display:grid;grid-template-columns:repeat(auto-fit, 1fr);writing-mode: vertical-rl",
-            None,
-            None,
-        );
-        let before = tally.report();
-        tally.observe(4, &ok);
-        assert_eq!(
-            tally.report(),
-            before,
-            "supported declarations must not be counted"
-        );
-
-        // The same node observed again replaces its own contribution: a node is
-        // recascaded on every hover or class change, and a counter that added
-        // each time would grow without bound and re-warn every frame.
-        tally.observe(1, &sideways);
-        tally.observe(2, &nested);
-        assert_eq!(
-            tally.report(),
-            before,
-            "re-observing a node must not count it twice"
-        );
-
-        // A node whose style stops being unsupported gives its count back, and
-        // so does one that goes away.
-        tally.observe(1, &LayoutStyle::default());
-        assert_eq!(tally.report().writing_modes, 0);
-        tally.forget(2);
-        assert_eq!(tally.report().grid_track_lists, 0);
-        tally.forget(2);
-        assert_eq!(
-            tally.report().grid_track_lists,
-            0,
-            "forgetting twice is harmless"
-        );
-    }
-
-    #[test]
-    fn attribute_and_child_combinator_match() {
-        let rules = parse_stylesheet(
-            r#"
-            .shell[data-host="true"] { height: 100%; display: grid; grid-template-rows: minmax(0,1fr); }
-            .parent > .child { width: 100%; padding: 12px; }
-            "#,
-            0,
-        );
-        let mut attrs = BTreeMap::new();
-        attrs.insert("data-host".into(), "true".into());
-        let shell_classes = vec!["shell".into()];
-        let shell_ctx = ctx("div", "", &shell_classes, &attrs, &[]);
-        let mut shell = LayoutStyle::default();
-        apply_stylesheet_to_layout(&mut shell, &rules, &shell_ctx, None, None);
-        assert_eq!(shell.height, Some(LengthSpec::Fill));
-
-        let parent_classes = vec!["parent".into()];
-        let parent_attrs = BTreeMap::new();
-        let child_classes = vec!["child".into()];
-        let ancestors = [node("div", "", &parent_classes, &parent_attrs)];
-        let child_ctx = ctx("div", "", &child_classes, &parent_attrs, &ancestors);
-        let mut child = LayoutStyle::default();
-        apply_stylesheet_to_layout(&mut child, &rules, &child_ctx, None, None);
-        assert_eq!(child.width, Some(LengthSpec::Fill));
-        assert_eq!(child.padding, Some(LengthSpec::Px(12.0)));
-    }
-
-    #[test]
-    fn deep_descendant_and_child_combinators_match_full_chain() {
-        let rules = parse_stylesheet(
-            r#"
-            .a > .b > .c .leaf { gap: 24px; width: 100%; }
-            .a .leaf { padding: 8px; }
-            "#,
-            0,
-        );
-        let empty = BTreeMap::new();
-        let a = vec!["a".into()];
-        let b = vec!["b".into()];
-        let c = vec!["c".into()];
-        let leaf = vec!["leaf".into()];
-        let ancestors = [
-            node("div", "", &c, &empty),
-            node("div", "", &b, &empty),
-            node("div", "", &a, &empty),
-        ];
-        let leaf_ctx = ctx("div", "", &leaf, &empty, &ancestors);
-        let mut layout = LayoutStyle::default();
-        apply_stylesheet_to_layout(&mut layout, &rules, &leaf_ctx, None, None);
-        assert_eq!(layout.gap, Some(LengthSpec::Px(24.0)));
-        assert_eq!(layout.width, Some(LengthSpec::Fill));
-        assert_eq!(layout.padding, Some(LengthSpec::Px(8.0)));
-
-        let shallow = [node("div", "", &c, &empty), node("div", "", &b, &empty)];
-        let shallow_ctx = ctx("div", "", &leaf, &empty, &shallow);
-        let mut miss = LayoutStyle::default();
-        apply_stylesheet_to_layout(&mut miss, &rules, &shallow_ctx, None, None);
-        assert!(miss.gap.is_none());
-        assert!(miss.padding.is_none());
-    }
-
-    #[test]
-    fn prop_style_does_not_wipe_public_class_contract() {
-        let classes = vec!["nana-settings-row".into()];
-        let attrs = BTreeMap::new();
-        let m = ctx("div", "", &classes, &attrs, &[]);
-        let layout = rebuild_layout_style(
-            LayoutStyle::default(),
-            &[],
-            &m,
-            "flex-direction:column; gap:4px",
-            "",
-            None,
-            None,
-        );
-        assert_eq!(layout.direction, Some(FlexDirection::Row));
-        assert_eq!(layout.gap, Some(LengthSpec::Px(14.0)));
-        assert_eq!(
-            layout.justify_content,
-            crate::css_map::JustifySpec::SpaceBetween
-        );
-    }
-
-    #[test]
-    fn inline_style_wins_over_stylesheet() {
-        let rules = parse_stylesheet(".box { display:flex; flex-direction:column; gap:4px; }", 0);
-        let classes = vec!["box".into()];
-        let attrs = BTreeMap::new();
-        let m = ctx("div", "", &classes, &attrs, &[]);
-        let layout = rebuild_layout_style(
-            LayoutStyle::default(),
-            &rules,
-            &m,
-            "",
-            "flex-direction:row; gap:20px",
-            None,
-            None,
-        );
-        assert_eq!(layout.direction, Some(FlexDirection::Row));
-        assert_eq!(layout.gap, Some(LengthSpec::Px(20.0)));
-    }
-
-    #[test]
-    fn direction_rtl_cross_layer_stylesheet_logical_then_inline_dir() {
-        let rules = parse_stylesheet(".box { padding-inline-start: 12px; }", 0);
-        let classes = vec!["box".into()];
-        let attrs = BTreeMap::new();
-        let m = ctx("div", "", &classes, &attrs, &[]);
-        let layout = rebuild_layout_style(
-            LayoutStyle::default(),
-            &rules,
-            &m,
-            "",
-            "direction: rtl",
-            None,
-            None,
-        );
-        assert_eq!(layout.dir, Some(DirSpec::Rtl));
-        assert_eq!(layout.padding_right, Some(LengthSpec::Px(12.0)));
-        assert!(layout.padding_left.is_none());
-    }
-
-    #[test]
-    fn direction_rtl_inherited_dir_seed_remaps_stylesheet_logical() {
-        let rules = parse_stylesheet(".box { padding-inline-start: 12px; }", 0);
-        let classes = vec!["box".into()];
-        let attrs = BTreeMap::new();
-        let m = ctx("div", "", &classes, &attrs, &[]);
-        let mut base = LayoutStyle::default();
-        base.dir = Some(DirSpec::Rtl);
-        let layout = rebuild_layout_style(base, &rules, &m, "", "", None, None);
-        assert_eq!(layout.dir, Some(DirSpec::Rtl));
-        assert_eq!(layout.padding_right, Some(LengthSpec::Px(12.0)));
-        assert!(layout.padding_left.is_none());
-    }
-
-    #[test]
-    fn stylesheet_important_beats_inline_and_prop() {
-        let rules = parse_stylesheet(".box { width: 80px !important; height: 20px; }", 0);
-        let classes = vec!["box".into()];
-        let attrs = BTreeMap::new();
-        let m = ctx("div", "", &classes, &attrs, &[]);
-        let layout = rebuild_layout_style(
-            LayoutStyle::default(),
-            &rules,
-            &m,
-            "width:160px",
-            "width:200px;height:40px",
-            None,
-            None,
-        );
-        assert_eq!(
-            layout.width,
-            Some(LengthSpec::Px(80.0)),
-            "stylesheet !important must beat prop/inline normals"
-        );
-        assert_eq!(
-            layout.height,
-            Some(LengthSpec::Px(40.0)),
-            "inline still wins over stylesheet normal"
-        );
-    }
-
-    #[test]
-    fn inline_important_beats_stylesheet_important() {
-        let rules = parse_stylesheet(".box { width: 80px !important; height: 20px; }", 0);
-        let classes = vec!["box".into()];
-        let attrs = BTreeMap::new();
-        let m = ctx("div", "", &classes, &attrs, &[]);
-        let layout = rebuild_layout_style(
-            LayoutStyle::default(),
-            &rules,
-            &m,
-            "width:160px !important",
-            "width:200px !important;height:40px",
-            None,
-            None,
-        );
-        assert_eq!(
-            layout.width,
-            Some(LengthSpec::Px(200.0)),
-            "inline !important must beat stylesheet !important and prop !important"
-        );
-        assert_eq!(
-            layout.height,
-            Some(LengthSpec::Px(40.0)),
-            "inline still wins over stylesheet normal"
-        );
-    }
-
-    #[test]
-    fn inline_only_important_applies_as_width() {
-        let empty = BTreeMap::new();
-        let classes: Vec<String> = Vec::new();
-        let m = ctx("div", "", &classes, &empty, &[]);
-        let layout = rebuild_layout_style(
-            LayoutStyle::default(),
-            &[],
-            &m,
-            "",
-            "width:100px !important",
-            None,
-            None,
-        );
-        assert_eq!(
-            layout.width,
-            Some(LengthSpec::Px(100.0)),
-            "inline-only width:100px !important must write 100, not drop the declaration"
-        );
-    }
-
-    #[test]
-    fn simple_not_class_and_attr_match() {
-        let rules = parse_stylesheet(
-            r#"
-            .tab:not(.is-active) { width: 40px; }
-            .tab.is-active { width: 80px; }
-            button:not([disabled]) { height: 24px; }
-            "#,
-            0,
-        );
-        assert_eq!(rules.len(), 3);
-        let attrs = BTreeMap::new();
-        let inactive = vec!["tab".into()];
-        let active = vec!["tab".into(), "is-active".into()];
-        let mut a = LayoutStyle::default();
-        apply_stylesheet_to_layout(
-            &mut a,
-            &rules,
-            &ctx("div", "", &inactive, &attrs, &[]),
-            None,
-            None,
-        );
-        assert_eq!(a.width, Some(LengthSpec::Px(40.0)));
-        let mut b = LayoutStyle::default();
-        apply_stylesheet_to_layout(
-            &mut b,
-            &rules,
-            &ctx("div", "", &active, &attrs, &[]),
-            None,
-            None,
-        );
-        assert_eq!(b.width, Some(LengthSpec::Px(80.0)));
-        let mut enabled = LayoutStyle::default();
-        apply_stylesheet_to_layout(
-            &mut enabled,
-            &rules,
-            &ctx("button", "", &[], &attrs, &[]),
-            None,
-            None,
-        );
-        assert_eq!(enabled.height, Some(LengthSpec::Px(24.0)));
-        let mut disabled_attrs = BTreeMap::new();
-        disabled_attrs.insert("disabled".into(), String::new());
-        let mut disabled = LayoutStyle::default();
-        apply_stylesheet_to_layout(
-            &mut disabled,
-            &rules,
-            &ctx("button", "", &[], &disabled_attrs, &[]),
-            None,
-            None,
-        );
-        assert!(disabled.height.is_none());
-        let complex = parse_stylesheet("button:not(:disabled) { width: 10px; }", 0);
-        assert_eq!(complex.len(), 1);
-        let mut enabled_not = LayoutStyle::default();
-        apply_stylesheet_to_layout(
-            &mut enabled_not,
-            &complex,
-            &ctx("button", "", &[], &attrs, &[]),
-            None,
-            None,
-        );
-        assert_eq!(enabled_not.width, Some(LengthSpec::Px(10.0)));
-        let mut disabled_not = LayoutStyle::default();
-        apply_stylesheet_to_layout(
-            &mut disabled_not,
-            &complex,
-            &ctx("button", "", &[], &disabled_attrs, &[]),
-            None,
-            None,
-        );
-        assert!(disabled_not.width.is_none());
-    }
-
-    #[test]
-    fn focus_within_subject_matches_when_flag_set() {
+    fn focus_within_subject_parses() {
         let rules = parse_stylesheet(".field:focus-within { width: 12px; }", 0);
         assert_eq!(rules.len(), 1);
         assert!(rules[0].selectors[0].subject.focus_within);
-        let classes = vec!["field".into()];
-        let attrs = BTreeMap::new();
-        let mut hit = ctx("div", "", &classes, &attrs, &[]);
-        hit.focus_within = true;
-        let mut layout = LayoutStyle::default();
-        apply_stylesheet_to_layout(&mut layout, &rules, &hit, None, None);
-        assert_eq!(layout.width, Some(LengthSpec::Px(12.0)));
-        let mut miss = LayoutStyle::default();
-        apply_stylesheet_to_layout(
-            &mut miss,
-            &rules,
-            &ctx("div", "", &classes, &attrs, &[]),
-            None,
-            None,
-        );
-        assert!(miss.width.is_none());
     }
 
     #[test]
@@ -3966,38 +2256,16 @@ pub(crate) mod tests {
         assert_eq!(sheet.generated_pseudo_rules.len(), 1);
         assert!(sheet.keyframes.contains_key("spin"));
         assert_eq!(report.skipped_at_rules, 0);
-
-        let classes = vec!["ok".into()];
-        let attrs = BTreeMap::new();
-        let m = ctx("div", "", &classes, &attrs, &[]);
-        let mut layout = LayoutStyle::default();
-        apply_stylesheet_to_layout(&mut layout, &sheet.static_rules, &m, None, None);
-        assert_eq!(layout.height, Some(LengthSpec::Fill));
-
-        let hover = crate::css_interactive::matched_interactive_rules(
-            &sheet.interactive_rules,
-            &m,
-            &crate::css_interactive::InteractiveMatchState {
-                subject: crate::css_interactive::InteractivePseudoFlags {
-                    hover: true,
-                    ..Default::default()
-                },
-                ancestors: &[],
-            },
-            crate::css_interactive::InteractivePseudo::Hover,
-        );
-        assert_eq!(hover.len(), 1);
         assert!(
-            hover[0]
-                .2
+            sheet.interactive_rules[0]
                 .declaration_entries
                 .iter()
                 .any(|e| e.property == "height" && e.value == "50%")
         );
-
-        let pseudo =
-            crate::css_interactive::matched_generated_pseudo(&sheet.generated_pseudo_rules, &m);
-        assert_eq!(pseudo.before.len(), 1);
+        assert_eq!(
+            sheet.generated_pseudo_rules[0].pseudo,
+            crate::css_interactive::GeneratedPseudo::Before
+        );
     }
 
     #[test]
@@ -4022,53 +2290,6 @@ pub(crate) mod tests {
             sheet.motion_rules[0].motion.animation_name.as_deref(),
             Some("fade")
         );
-
-        let card = vec!["card".into()];
-        let icon = vec!["icon".into()];
-        let empty = BTreeMap::new();
-        let ancestors = [node("div", "", &card, &empty)];
-        let icon_ctx = ctx("span", "", &icon, &empty, &ancestors);
-
-        let card_hover = [crate::css_interactive::InteractivePseudoFlags {
-            hover: true,
-            ..Default::default()
-        }];
-        let hover = crate::css_interactive::matched_interactive_rules(
-            &sheet.interactive_rules,
-            &icon_ctx,
-            &crate::css_interactive::InteractiveMatchState {
-                subject: Default::default(),
-                ancestors: &card_hover,
-            },
-            crate::css_interactive::InteractivePseudo::Hover,
-        );
-        assert_eq!(hover.len(), 1);
-        assert!(
-            hover[0]
-                .2
-                .declaration_entries
-                .iter()
-                .any(|e| e.property == "width" && e.value == "24px")
-        );
-
-        // Icon hovered without card hovered must not match `.card:hover .icon`.
-        let icon_only_hover = crate::css_interactive::matched_interactive_rules(
-            &sheet.interactive_rules,
-            &icon_ctx,
-            &crate::css_interactive::InteractiveMatchState {
-                subject: crate::css_interactive::InteractivePseudoFlags {
-                    hover: true,
-                    ..Default::default()
-                },
-                ancestors: &[Default::default()],
-            },
-            crate::css_interactive::InteractivePseudo::Hover,
-        );
-        assert!(icon_only_hover.is_empty());
-
-        let card_ctx = ctx("div", "", &card, &empty, &[]);
-        let motion = crate::css_interactive::matched_motion_rules(&sheet.motion_rules, &card_ctx);
-        assert_eq!(motion.len(), 1);
     }
 
     #[test]
@@ -4201,79 +2422,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn wrap_from_stylesheet() {
-        let rules = parse_stylesheet(
-            ".g { display:flex; flex-direction:row; flex-wrap:wrap; gap:12px; height:100%; }",
-            0,
-        );
-        let classes = vec!["g".into()];
-        let attrs = BTreeMap::new();
-        let m = ctx("div", "", &classes, &attrs, &[]);
-        let mut layout = LayoutStyle::default();
-        apply_stylesheet_to_layout(&mut layout, &rules, &m, None, None);
-        assert_eq!(layout.flex_wrap, FlexWrap::Wrap);
-        assert_eq!(layout.height, Some(LengthSpec::Fill));
-    }
-
-    #[test]
-    fn first_child_structural_pseudo_matches() {
-        let rules = parse_stylesheet(
-            ".stack > :first-child { height: 100%; } .stack > :last-child { width: 50%; }",
-            0,
-        );
-        let parent_classes = vec!["stack".into()];
-        let empty = BTreeMap::new();
-        let parent = [node("div", "", &parent_classes, &empty)];
-        let leaf = Vec::<String>::new();
-
-        let mut first = MatchContext {
-            tag: "div",
-            id: "",
-            classes: &leaf,
-            attrs: &empty,
-            ancestors: &parent,
-            preceding_siblings: &[],
-            sibling_index: 0,
-            sibling_count: 3,
-            of_type_index: 0,
-            of_type_count: 3,
-            has_bits: 0,
-            has_args: &[],
-            focus_within: false,
-            is_empty: true,
-            checked: false,
-            media: MediaEnv::default(),
-            children: &[],
-            following_siblings: &[],
-            all_siblings: &[],
-            ancestor_subtrees: &[],
-            owned_children: &[],
-            owned_following: &[],
-            owned_ancestor_trees: &[],
-            relative: None,
-            relative_id: 0,
-        };
-        let mut layout = LayoutStyle::default();
-        apply_stylesheet_to_layout(&mut layout, &rules, &first, None, None);
-        assert_eq!(layout.height, Some(LengthSpec::Fill));
-        assert!(layout.width.is_none());
-
-        first.sibling_index = 2;
-        let mut last = LayoutStyle::default();
-        apply_stylesheet_to_layout(&mut last, &rules, &first, None, None);
-        assert_eq!(last.width, Some(LengthSpec::Percent(50.0)));
-        assert!(last.height.is_none());
-
-        first.sibling_index = 1;
-        let mut mid = LayoutStyle::default();
-        apply_stylesheet_to_layout(&mut mid, &rules, &first, None, None);
-        assert!(mid.height.is_none());
-        assert!(mid.width.is_none());
-    }
-
-    #[test]
-    fn root_and_data_theme_attribute_match() {
-        // Anonymous DOM: document root with data-theme; child must not match :root.
+    fn root_and_data_theme_specificity() {
         let rules = parse_stylesheet(
             r#"
             :root { gap: 4px; }
@@ -4283,155 +2432,10 @@ pub(crate) mod tests {
             0,
         );
         assert_eq!(rules.len(), 3);
-        let mut dark_attrs = BTreeMap::new();
-        dark_attrs.insert("data-theme".into(), "dark".into());
-        let root_classes = Vec::<String>::new();
-        let root_ctx = ctx("html", "", &root_classes, &dark_attrs, &[]);
-        let mut root = LayoutStyle::default();
-        apply_stylesheet_to_layout(&mut root, &rules, &root_ctx, None, None);
-        assert_eq!(root.gap, Some(LengthSpec::Px(4.0)));
-        assert_eq!(root.padding, Some(LengthSpec::Px(16.0)));
-
-        let empty = BTreeMap::new();
-        let ancestors = [node("html", "", &root_classes, &dark_attrs)];
-        let child = vec!["panel".into()];
-        let child_ctx = ctx("div", "", &child, &empty, &ancestors);
-        let mut miss = LayoutStyle::default();
-        apply_stylesheet_to_layout(&mut miss, &rules, &child_ctx, None, None);
-        assert!(miss.gap.is_none());
-        assert!(miss.padding.is_none());
-
-        // Specificity: :root[data-theme] (0,2,0) > :root (0,1,0); source order
-        // between equal theme rules is covered by light-vs-dark exclusivity.
+        // Specificity: :root[data-theme] (0,2,0) > :root (0,1,0).
         let sel_root = &rules[0].selectors[0];
         let sel_dark = &rules[1].selectors[0];
         assert!(sel_dark.specificity > sel_root.specificity);
-    }
-
-    #[test]
-    fn rule_index_candidates_superset_of_linear_scan() {
-        // Exercises every bucket: tag (case-insensitive), id, class, attr-only,
-        // structural pseudos, universal, `:is()` arms, `:not()`, descendant and
-        // sibling combinators.
-        let (sheet, _) = parse_stylesheet_full(
-            "div { width: 1px; } \
-             DIV { height: 2px; } \
-             * { order: 0; } \
-             #main { padding: 1px; } \
-             .card { background: red; } \
-             .card:hover { background: blue; } \
-             .card > .icon { color: red; } \
-             nav a { color: green; } \
-             h1 + p { margin: 2px; } \
-             [hidden] { display: none; } \
-             li:first-child { padding: 3px; } \
-             :is(.a, [data-x]) { opacity: 0.5; } \
-             .btn:not(.ghost) { border: 1px; } \
-             p:is(.lead, .hero) { font-weight: bold; }",
-            0,
-        );
-        let rules = &sheet.static_rules;
-        let index = RuleIndex::build(rules);
-        let attrs: BTreeMap<String, String> = BTreeMap::new();
-        let card_classes = vec!["card".to_string()];
-        let card_node = MatchNode {
-            tag: "div",
-            id: "",
-            classes: &card_classes,
-            attrs: &attrs,
-            is_empty: true,
-            checked: false,
-        };
-        let ancestors = [card_node];
-        let cases: Vec<(&str, &str, Vec<&str>)> = vec![
-            ("div", "", vec![]),
-            ("div", "main", vec!["card"]),
-            ("span", "", vec!["icon", "a"]),
-            ("p", "", vec!["lead"]),
-            ("button", "", vec!["btn", "ghost"]),
-            ("li", "", vec![]),
-            ("h1", "", vec![]),
-            ("article", "", vec!["data-x"]),
-        ];
-        for (tag, id, class_names) in &cases {
-            let classes: Vec<String> = class_names.iter().map(|c| c.to_string()).collect();
-            let ctx = MatchContext {
-                tag,
-                id,
-                classes: &classes,
-                attrs: &attrs,
-                ancestors: &ancestors,
-                preceding_siblings: &[],
-                sibling_index: 0,
-                sibling_count: 1,
-                of_type_index: 0,
-                of_type_count: 1,
-                has_bits: 0,
-                has_args: &[],
-                focus_within: false,
-                is_empty: true,
-                checked: false,
-                media: MediaEnv::default(),
-                children: &[],
-                following_siblings: &[],
-                all_siblings: &[],
-                ancestor_subtrees: &[],
-                owned_children: &[],
-                owned_following: &[],
-                owned_ancestor_trees: &[],
-                relative: None,
-                relative_id: 0,
-            };
-            let matched: Vec<usize> = rules
-                .iter()
-                .enumerate()
-                .filter(|(_, rule)| rule.selectors.iter().any(|sel| selector_matches(sel, &ctx)))
-                .map(|(i, _)| i)
-                .collect();
-            let candidates = index.candidate_ids(&ctx);
-            for order in &matched {
-                assert!(
-                    candidates.contains(&(*order as u32)),
-                    "linear match {order} missing from index candidates {candidates:?}"
-                );
-            }
-            // Candidate validation still yields identical matched declarations.
-            let indexed = index.candidates(rules, &ctx);
-            let indexed_entries = matched_declaration_entries_from(&indexed, &ctx);
-            let linear_entries = matched_declaration_entries(rules, &ctx);
-            assert_eq!(indexed_entries, linear_entries);
-        }
-    }
-
-    #[test]
-    fn matched_custom_properties_skip_document_root_scope() {
-        // Orphan / parentless nodes satisfy :root matching, but document `--*`
-        // must not rematch here — bridge stylesheet_vars owns theme overlays.
-        let rules = parse_stylesheet(
-            r#"
-            :root { --bg: #181818; }
-            :root[data-theme="light"] { --bg: #ffffff; }
-            .surface { --row-h: 28px; }
-            :root, .surface { --shared: 1px; }
-            "#,
-            0,
-        );
-        let empty = BTreeMap::new();
-        let classes = vec!["surface".into()];
-        // Parentless → would match :root for layout, but custom props skip it.
-        let orphan = ctx("div", "", &classes, &empty, &[]);
-        let props =
-            matched_custom_properties_indexed(&rules, &RuleIndex::build(&rules), &[], &orphan);
-        assert!(
-            !props.contains_key("--bg"),
-            "document :root --bg must not overlay theme-aware stylesheet_vars"
-        );
-        assert_eq!(props.get("--row-h").map(String::as_str), Some("28px"));
-        assert_eq!(
-            props.get("--shared").map(String::as_str),
-            Some("1px"),
-            "mixed :root, .surface list still applies via element-scoped alt"
-        );
     }
 
     #[test]
@@ -4467,95 +2471,6 @@ pub(crate) mod tests {
                 types: 0
             }
         );
-
-        let empty = BTreeMap::new();
-        let classes = vec!["anon-a".into()];
-        // Element matches class but not #anon-id — :is still matches via .anon-a.
-        let m = ctx("div", "", &classes, &empty, &[]);
-        let mut layout = LayoutStyle::default();
-        apply_stylesheet_to_layout(&mut layout, &rules, &m, None, None);
-        // Cascade: where (0) < class (0,1,0) < is (1,0,0) ⇒ gap 2px from :is.
-        assert_eq!(layout.gap, Some(LengthSpec::Px(2.0)));
-
-        // Low-spec type can override :where but not :is.
-        let override_rules = parse_stylesheet(
-            r#"
-            :where(.anon-x) { gap: 10px; }
-            div { gap: 20px; }
-            :is(.anon-x) { gap: 30px; }
-            "#,
-            0,
-        );
-        let x = vec!["anon-x".into()];
-        let mx = ctx("div", "", &x, &empty, &[]);
-        let mut lx = LayoutStyle::default();
-        apply_stylesheet_to_layout(&mut lx, &override_rules, &mx, None, None);
-        assert_eq!(lx.gap, Some(LengthSpec::Px(30.0)));
-    }
-
-    #[test]
-    fn adjacent_and_subsequent_sibling_combinators() {
-        // Anonymous sibling list: [first, mid, last] — matching from last.
-        let rules = parse_stylesheet(
-            r#"
-            .anon-first + .anon-last { width: 100%; }
-            .anon-first ~ .anon-last { padding: 8px; }
-            .anon-mid + .anon-last { height: 40px; }
-            "#,
-            0,
-        );
-        let empty = BTreeMap::new();
-        let first_c = vec!["anon-first".into()];
-        let mid_c = vec!["anon-mid".into()];
-        let last_c = vec!["anon-last".into()];
-        let parent_c = vec!["anon-row".into()];
-        let ancestors = [node("div", "", &parent_c, &empty)];
-        // preceding: immediate previous first → mid, then first
-        let preceding = [
-            node("div", "", &mid_c, &empty),
-            node("div", "", &first_c, &empty),
-        ];
-        let last_ctx = ctx_full("div", "", &last_c, &empty, &ancestors, &preceding, 2, 3);
-        let mut layout = LayoutStyle::default();
-        apply_stylesheet_to_layout(&mut layout, &rules, &last_ctx, None, None);
-        // `.anon-first + .anon-last` must NOT match (mid is adjacent).
-        assert!(layout.width.is_none());
-        // `.anon-first ~ .anon-last` matches (first precedes last).
-        assert_eq!(layout.padding, Some(LengthSpec::Px(8.0)));
-        // `.anon-mid + .anon-last` matches.
-        assert_eq!(layout.height, Some(LengthSpec::Px(40.0)));
-
-        // Child + adjacent: `.anon-row > .anon-mid + .anon-last`
-        let chain = parse_stylesheet(".anon-row > .anon-mid + .anon-last { gap: 12px; }", 0);
-        let mut chained = LayoutStyle::default();
-        apply_stylesheet_to_layout(&mut chained, &chain, &last_ctx, None, None);
-        assert_eq!(chained.gap, Some(LengthSpec::Px(12.0)));
-    }
-
-    #[test]
-    fn specificity_and_source_order_cascade() {
-        let rules = parse_stylesheet(
-            r#"
-            .anon { gap: 1px; }
-            .anon.anon-x { gap: 2px; }
-            #anon-box { gap: 3px; }
-            .anon { gap: 4px; }
-            "#,
-            0,
-        );
-        let empty = BTreeMap::new();
-        let classes = vec!["anon".into(), "anon-x".into()];
-        let m = ctx("div", "anon-box", &classes, &empty, &[]);
-        let mut layout = LayoutStyle::default();
-        apply_stylesheet_to_layout(&mut layout, &rules, &m, None, None);
-        // #id (1,0,0) wins over class rules regardless of source order.
-        assert_eq!(layout.gap, Some(LengthSpec::Px(3.0)));
-
-        let no_id = ctx("div", "", &classes, &empty, &[]);
-        let mut layout2 = LayoutStyle::default();
-        apply_stylesheet_to_layout(&mut layout2, &rules, &no_id, None, None);
-        // .anon.anon-x (0,2,0) > .anon (0,1,0); later .anon does not beat it.
-        assert_eq!(layout2.gap, Some(LengthSpec::Px(2.0)));
     }
 
     #[test]
@@ -4571,99 +2486,6 @@ pub(crate) mod tests {
                 types: 0
             }
         );
-        let empty = BTreeMap::new();
-        let a = vec!["a".into()];
-        let ab = vec!["a".into(), "b".into()];
-        let mut hit = LayoutStyle::default();
-        apply_stylesheet_to_layout(
-            &mut hit,
-            &rules,
-            &ctx("div", "", &a, &empty, &[]),
-            None,
-            None,
-        );
-        assert_eq!(hit.width, Some(LengthSpec::Px(10.0)));
-        let mut miss = LayoutStyle::default();
-        apply_stylesheet_to_layout(
-            &mut miss,
-            &rules,
-            &ctx("div", "", &ab, &empty, &[]),
-            None,
-            None,
-        );
-        assert!(miss.width.is_none());
-        let mut miss_id = LayoutStyle::default();
-        apply_stylesheet_to_layout(
-            &mut miss_id,
-            &rules,
-            &ctx("div", "c", &a, &empty, &[]),
-            None,
-            None,
-        );
-        assert!(miss_id.width.is_none());
-    }
-
-    #[test]
-    fn author_important_beats_higher_specificity_normal() {
-        // MDN: author !important outranks author normal before specificity.
-        let rules = parse_stylesheet(
-            r#"
-            #anon-box { gap: 99px; }
-            .anon { gap: 4px !important; }
-            "#,
-            0,
-        );
-        let empty = BTreeMap::new();
-        let classes = vec!["anon".into()];
-        let m = ctx("div", "anon-box", &classes, &empty, &[]);
-        let mut layout = LayoutStyle::default();
-        apply_stylesheet_to_layout(&mut layout, &rules, &m, None, None);
-        assert_eq!(layout.gap, Some(LengthSpec::Px(4.0)));
-    }
-
-    #[test]
-    fn important_keeps_specificity_and_source_order() {
-        let rules = parse_stylesheet(
-            r#"
-            .anon { gap: 1px !important; }
-            .anon.anon-x { gap: 2px !important; }
-            .anon { gap: 3px !important; }
-            "#,
-            0,
-        );
-        let empty = BTreeMap::new();
-        let classes = vec!["anon".into(), "anon-x".into()];
-        let m = ctx("div", "", &classes, &empty, &[]);
-        let mut layout = LayoutStyle::default();
-        apply_stylesheet_to_layout(&mut layout, &rules, &m, None, None);
-        // Among important: .anon.anon-x (0,2,0) beats both .anon rules.
-        assert_eq!(layout.gap, Some(LengthSpec::Px(2.0)));
-
-        let only_anon = vec!["anon".into()];
-        let m2 = ctx("div", "", &only_anon, &empty, &[]);
-        let mut layout2 = LayoutStyle::default();
-        apply_stylesheet_to_layout(&mut layout2, &rules, &m2, None, None);
-        // Same specificity important: later source order wins (3px).
-        assert_eq!(layout2.gap, Some(LengthSpec::Px(3.0)));
-    }
-
-    #[test]
-    fn mixed_block_important_and_normal_independent() {
-        let rules = parse_stylesheet(
-            r#"
-            .anon { width: 10px; height: 20px !important; }
-            #anon-box { width: 30px; height: 40px; }
-            "#,
-            0,
-        );
-        let empty = BTreeMap::new();
-        let classes = vec!["anon".into()];
-        let m = ctx("div", "anon-box", &classes, &empty, &[]);
-        let mut layout = LayoutStyle::default();
-        apply_stylesheet_to_layout(&mut layout, &rules, &m, None, None);
-        // Normal: #id width wins; important height from .anon beats #id height.
-        assert_eq!(layout.width, Some(LengthSpec::Px(30.0)));
-        assert_eq!(layout.height, Some(LengthSpec::Px(20.0)));
     }
 
     #[test]
@@ -4690,38 +2512,9 @@ pub(crate) mod tests {
         );
 
         let rules = parse_stylesheet(".anon { gap: 8px ! IMPORTANT; }", 0);
-        let empty = BTreeMap::new();
-        let classes = vec!["anon".into()];
-        let mut layout = LayoutStyle::default();
-        apply_stylesheet_to_layout(
-            &mut layout,
-            &rules,
-            &ctx("div", "", &classes, &empty, &[]),
-            None,
-            None,
-        );
-        assert_eq!(layout.gap, Some(LengthSpec::Px(8.0)));
-    }
-
-    #[test]
-    fn matched_declarations_two_pass_order() {
-        let rules = parse_stylesheet(
-            r#"
-            #anon-box { gap: 1px; width: 2px; }
-            .anon { gap: 3px !important; padding: 4px; }
-            "#,
-            0,
-        );
-        let empty = BTreeMap::new();
-        let classes = vec!["anon".into()];
-        let m = ctx("div", "anon-box", &classes, &empty, &[]);
-        let decls = matched_declarations(&rules, &m);
-        let texts: Vec<&str> = decls.iter().map(|(_, _, t)| t.as_str()).collect();
-        // Normal first (specificity / source order), then important.
-        assert_eq!(
-            texts,
-            vec!["padding: 4px", "gap: 1px", "width: 2px", "gap: 3px",]
-        );
+        assert_eq!(rules.len(), 1);
+        assert!(rules[0].declaration_entries[0].important);
+        assert_eq!(rules[0].declaration_entries[0].value, "8px");
     }
 
     #[test]
@@ -4748,9 +2541,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn nth_child_and_nth_of_type_match() {
-        // Anonymous siblings: [div, p, div, p] — 0-based child indices 0..3.
-        // Same-tag among `p`: indices 0 (child1), 1 (child3).
+    fn nth_child_and_nth_of_type_parse_specificity() {
         let rules = parse_stylesheet(
             r#"
             .row > :nth-child(odd) { width: 10px; }
@@ -4761,38 +2552,6 @@ pub(crate) mod tests {
             0,
         );
         assert_eq!(rules.len(), 4);
-        let parent_c = vec!["row".into()];
-        let empty = BTreeMap::new();
-        let ancestors = [node("div", "", &parent_c, &empty)];
-        let none = Vec::<String>::new();
-
-        // child 0 = first div: odd nth-child, of-type 0 among div
-        let c0 = ctx_nth("div", "", &none, &empty, &ancestors, 0, 4, 0, 2);
-        let mut l0 = LayoutStyle::default();
-        apply_stylesheet_to_layout(&mut l0, &rules, &c0, None, None);
-        assert_eq!(l0.width, Some(LengthSpec::Px(10.0)));
-        assert!(l0.height.is_none());
-        assert_eq!(l0.gap, Some(LengthSpec::Px(4.0)));
-        assert!(l0.padding.is_none());
-
-        // child 1 = first p: even nth-child, of-type 0 among p — not :nth-of-type(2)
-        let c1 = ctx_nth("p", "", &none, &empty, &ancestors, 1, 4, 0, 2);
-        let mut l1 = LayoutStyle::default();
-        apply_stylesheet_to_layout(&mut l1, &rules, &c1, None, None);
-        assert!(l1.width.is_none());
-        assert_eq!(l1.height, Some(LengthSpec::Px(20.0)));
-        assert_eq!(l1.gap, Some(LengthSpec::Px(4.0)));
-        assert!(l1.padding.is_none());
-
-        // child 3 = second p (1-based 4, even); of-type index 1 → :nth-of-type(2)
-        let c3 = ctx_nth("p", "", &none, &empty, &ancestors, 3, 4, 1, 2);
-        let mut l3 = LayoutStyle::default();
-        apply_stylesheet_to_layout(&mut l3, &rules, &c3, None, None);
-        assert!(l3.width.is_none()); // not odd
-        assert_eq!(l3.height, Some(LengthSpec::Px(20.0))); // 2n
-        assert_eq!(l3.padding, Some(LengthSpec::Px(8.0)));
-        assert!(l3.gap.is_none()); // not in first two
-
         // Specificity: :nth-child counts as one class-level pseudo.
         let sel = &rules[0].selectors[0];
         assert_eq!(
@@ -4824,9 +2583,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn attribute_operators_and_case_flags_match() {
-        // MDN Attribute selectors: ~= |= ^= $= *= + optional i/s.
-        // Avoid `:` inside attr values — deferred-pseudo scan is bracket-naive.
+    fn attribute_operators_and_case_flags_parse() {
         let rules = parse_stylesheet(
             r##"
             [title] { gap: 1px; }
@@ -4854,54 +2611,6 @@ pub(crate) mod tests {
             rules[8].selectors[0].subject.attrs[0].case,
             AttrCase::Sensitive
         );
-
-        let mut hit = BTreeMap::new();
-        hit.insert("title".into(), "x".into());
-        hit.insert("data-role".into(), "admin".into());
-        hit.insert("class".into(), "btn logo primary".into());
-        hit.insert("lang".into(), "zh-Hans".into());
-        hit.insert("href".into(), "#example.ORG".into());
-        hit.insert("data-id".into(), "AbC".into());
-        let classes = Vec::<String>::new();
-        let m = ctx("a", "", &classes, &hit, &[]);
-        let mut layout = LayoutStyle::default();
-        apply_stylesheet_to_layout(&mut layout, &rules, &m, None, None);
-        assert_eq!(layout.gap, Some(LengthSpec::Px(1.0)));
-        assert_eq!(layout.width, Some(LengthSpec::Px(10.0)));
-        assert_eq!(layout.height, Some(LengthSpec::Px(20.0)));
-        assert_eq!(layout.padding, Some(LengthSpec::Px(8.0)));
-        assert_eq!(layout.margin, Some(LengthSpec::Px(4.0)));
-        // `$=".org"` default is case-sensitive — `.ORG` must not match.
-        assert!(layout.paint.border_radii.is_none());
-        assert!(layout.border_radius.is_none());
-        assert_eq!(layout.min_width, Some(LengthSpec::Px(40.0)));
-        // `i` makes lowercase `org` match `.ORG`.
-        assert_eq!(layout.max_width, Some(LengthSpec::Px(50.0)));
-        assert_eq!(layout.min_height, Some(LengthSpec::Px(12.0)));
-
-        let mut miss_s = hit.clone();
-        miss_s.insert("data-id".into(), "abc".into());
-        let mut layout_s = LayoutStyle::default();
-        apply_stylesheet_to_layout(
-            &mut layout_s,
-            &rules,
-            &ctx("a", "", &classes, &miss_s, &[]),
-            None,
-            None,
-        );
-        assert!(layout_s.min_height.is_none());
-
-        let mut miss_lang = BTreeMap::new();
-        miss_lang.insert("lang".into(), "en-zh".into());
-        let mut layout_lang = LayoutStyle::default();
-        apply_stylesheet_to_layout(
-            &mut layout_lang,
-            &rules,
-            &ctx("div", "", &classes, &miss_lang, &[]),
-            None,
-            None,
-        );
-        assert!(layout_lang.padding.is_none());
     }
 
     #[test]
@@ -4938,91 +2647,25 @@ pub(crate) mod tests {
         let rules = parse_stylesheet(css, 0);
         let from_rules = collect_document_custom_properties_from_rules(&rules, "light");
         let from_text = crate::css_map::collect_document_css_custom_properties(css, "light");
-        assert_eq!(from_rules.get("--bg"), from_text.get("--bg"));
-        assert_eq!(from_rules.get("--fg"), from_text.get("--fg"));
-        assert_eq!(from_rules.get("--shared"), from_text.get("--shared"));
+        assert_eq!(
+            from_rules.get("--bg"),
+            from_text.get("--bg").map(String::as_str)
+        );
+        assert_eq!(
+            from_rules.get("--fg"),
+            from_text.get("--fg").map(String::as_str)
+        );
+        assert_eq!(
+            from_rules.get("--shared"),
+            from_text.get("--shared").map(String::as_str)
+        );
         assert!(
-            !from_rules.contains_key("--row-h"),
+            from_rules.get("--row-h").is_none(),
             "element-scoped .surface --* must stay out of document base"
         );
 
         let dark = collect_document_custom_properties_from_rules(&rules, "dark");
-        assert_eq!(dark.get("--bg").map(String::as_str), Some("#000"));
-    }
-
-    #[test]
-    fn matched_entries_drive_layout_without_text_resplit() {
-        let rules = parse_stylesheet(
-            r#"
-            #anon-box { gap: 1px; width: 2px; }
-            .anon { gap: 3px !important; padding: 4px; }
-            "#,
-            0,
-        );
-        let empty = BTreeMap::new();
-        let classes = vec!["anon".into()];
-        let m = ctx("div", "anon-box", &classes, &empty, &[]);
-        let entries = matched_declaration_entries(&rules, &m);
-        let owned: Vec<String> = entries.iter().map(|(_, _, e)| e.text()).collect();
-        let texts: Vec<&str> = owned.iter().map(String::as_str).collect();
-        assert_eq!(
-            texts,
-            vec!["padding: 4px", "gap: 1px", "width: 2px", "gap: 3px",]
-        );
-        let mut layout = LayoutStyle::default();
-        apply_stylesheet_to_layout(&mut layout, &rules, &m, None, None);
-        assert_eq!(layout.gap, Some(LengthSpec::Px(3.0)));
-        assert_eq!(layout.width, Some(LengthSpec::Px(2.0)));
-        assert_eq!(layout.padding, Some(LengthSpec::Px(4.0)));
-    }
-
-    #[test]
-    fn stylesheet_matches_and_subject_index_reject_unrelated() {
-        let rules = parse_stylesheet(".foo { gap: 1px; } span.bar { width: 2px; }", 0);
-        let empty = BTreeMap::new();
-        let foo = vec!["foo".into()];
-        let bar = vec!["bar".into()];
-        let none = Vec::<String>::new();
-        assert!(stylesheet_matches(
-            &rules,
-            &ctx("div", "", &foo, &empty, &[])
-        ));
-        assert!(!stylesheet_matches(
-            &rules,
-            &ctx("div", "", &none, &empty, &[])
-        ));
-        assert!(stylesheet_matches(
-            &rules,
-            &ctx("span", "", &bar, &empty, &[])
-        ));
-        assert!(!stylesheet_matches(
-            &rules,
-            &ctx("div", "", &bar, &empty, &[])
-        ));
-
-        assert!(stylesheet_may_match_subject(&rules, "div", "", &foo));
-        assert!(!stylesheet_may_match_subject(&rules, "div", "", &none));
-        assert!(!stylesheet_may_match_subject(&rules, "div", "", &bar));
-        assert!(stylesheet_may_match_subject(&rules, "span", "", &bar));
-
-        let star = parse_stylesheet("* { gap: 1px; }", 0);
-        assert!(stylesheet_may_match_subject(&star, "section", "", &none));
-        assert!(stylesheet_matches(
-            &star,
-            &ctx("section", "", &none, &empty, &[])
-        ));
-
-        let root = parse_stylesheet(":root { gap: 2px; }", 0);
-        assert!(stylesheet_may_match_subject(&root, "html", "", &none));
-        assert!(stylesheet_matches(
-            &root,
-            &ctx("html", "", &none, &empty, &[])
-        ));
-        let parent = [node("html", "", &none, &empty)];
-        assert!(!stylesheet_matches(
-            &root,
-            &ctx("div", "", &none, &empty, &parent)
-        ));
+        assert_eq!(dark.get("--bg"), Some("#000"));
     }
 
     #[test]
@@ -5123,16 +2766,6 @@ pub(crate) mod tests {
             skipped.static_rules[0].selectors[0].subject.classes[0],
             "always"
         );
-
-        let classes = vec!["wide".into()];
-        let attrs = BTreeMap::new();
-        let m = ctx("div", "", &classes, &attrs, &[]);
-        let mut layout = LayoutStyle::default();
-        apply_stylesheet_to_layout(&mut layout, &applied.static_rules, &m, None, None);
-        assert_eq!(layout.width, Some(LengthSpec::Px(100.0)));
-        let mut skipped_layout = LayoutStyle::default();
-        apply_stylesheet_to_layout(&mut skipped_layout, &skipped.static_rules, &m, None, None);
-        assert!(skipped_layout.width.is_none());
     }
 
     #[test]
@@ -5172,20 +2805,6 @@ pub(crate) mod tests {
         assert_eq!(report.rules, 1);
         assert_eq!(sheet.static_rules.len(), 1);
         assert_eq!(sheet.static_rules[0].selectors[0].subject.classes[0], "ok");
-
-        let classes = vec!["ok".into()];
-        let attrs = BTreeMap::new();
-        let m = ctx("div", "", &classes, &attrs, &[]);
-        let mut layout = LayoutStyle::default();
-        apply_stylesheet_to_layout(&mut layout, &sheet.static_rules, &m, None, None);
-        assert_eq!(layout.display, Some(crate::css_map::DisplaySpec::Flex));
-        assert_eq!(layout.width, Some(LengthSpec::Px(40.0)));
-
-        let lab_classes = vec!["lab".into()];
-        let lab_ctx = ctx("div", "", &lab_classes, &attrs, &[]);
-        let mut lab_layout = LayoutStyle::default();
-        apply_stylesheet_to_layout(&mut lab_layout, &sheet.static_rules, &lab_ctx, None, None);
-        assert!(lab_layout.width.is_none());
     }
 
     #[test]
@@ -5219,13 +2838,6 @@ pub(crate) mod tests {
         );
         assert!(sheet.static_rules[0].source_order < sheet.static_rules[1].source_order);
         assert!(sheet.static_rules[1].source_order < sheet.static_rules[2].source_order);
-
-        let classes = vec!["x".into()];
-        let attrs = BTreeMap::new();
-        let m = ctx("div", "", &classes, &attrs, &[]);
-        let mut layout = LayoutStyle::default();
-        apply_stylesheet_to_layout(&mut layout, &sheet.static_rules, &m, None, None);
-        assert_eq!(layout.width, Some(LengthSpec::Px(10.0)));
     }
 
     #[test]
@@ -5595,79 +3207,27 @@ pub(crate) mod tests {
         let flat = sheet.flatten(&env);
         assert_eq!(flat.static_rules.len(), 1);
         assert_eq!(flat.static_rules[0].selectors[0].subject.classes[0], "a");
-        let classes = vec!["a".into()];
-        let attrs = BTreeMap::new();
-        let m = ctx("div", "", &classes, &attrs, &[]);
-        let mut layout = LayoutStyle::default();
-        apply_stylesheet_to_layout(&mut layout, &flat.static_rules, &m, None, None);
-        assert_eq!(layout.color, Some([1.0, 0.0, 0.0, 1.0]));
     }
 
     #[test]
-    fn subject_disabled_matches_disabled_presence() {
+    fn subject_disabled_compiles_to_attr_presence() {
         let rules = parse_stylesheet("button:disabled { width: 10px; }", 0);
         assert_eq!(rules.len(), 1);
         assert_eq!(
             rules[0].selectors[0].subject.attrs[0].name, "disabled",
             "subject :disabled compiles to [disabled] presence"
         );
-        let empty = BTreeMap::new();
-        let mut disabled = BTreeMap::new();
-        disabled.insert("disabled".into(), String::new());
-        let mut hit = LayoutStyle::default();
-        apply_stylesheet_to_layout(
-            &mut hit,
-            &rules,
-            &ctx("button", "", &[], &disabled, &[]),
-            None,
-            None,
-        );
-        assert_eq!(hit.width, Some(LengthSpec::Px(10.0)));
-        let mut miss = LayoutStyle::default();
-        apply_stylesheet_to_layout(
-            &mut miss,
-            &rules,
-            &ctx("button", "", &[], &empty, &[]),
-            None,
-            None,
-        );
-        assert!(miss.width.is_none());
     }
 
     #[test]
-    fn checked_adjacent_sibling_label_matches() {
+    fn checked_adjacent_sibling_label_parses() {
         let rules = parse_stylesheet("input:checked + label { width: 16px; }", 0);
         assert_eq!(rules.len(), 1);
         assert!(rules[0].selectors[0].ancestors[0].1.checked);
-        let empty = BTreeMap::new();
-        let none = Vec::<String>::new();
-        let input = node_checked("input", "", &none, &empty);
-        let parent = [node("div", "", &none, &empty)];
-        let mut hit = LayoutStyle::default();
-        apply_stylesheet_to_layout(
-            &mut hit,
-            &rules,
-            &ctx_full("label", "", &none, &empty, &parent, &[input], 1, 2),
-            None,
-            None,
-        );
-        assert_eq!(hit.width, Some(LengthSpec::Px(16.0)));
-        let unchecked = node("input", "", &none, &empty);
-        let mut miss = LayoutStyle::default();
-        apply_stylesheet_to_layout(
-            &mut miss,
-            &rules,
-            &ctx_full("label", "", &none, &empty, &parent, &[unchecked], 1, 2),
-            None,
-            None,
-        );
-        assert!(miss.width.is_none());
     }
 
     #[test]
-    fn empty_and_not_empty_use_whitespace_definition() {
-        // :empty = no element children and no non-whitespace UTF-8 text.
-        // Whitespace-only (space / tab / LF / NBSP) still matches :empty.
+    fn empty_and_not_empty_parse() {
         let rules = parse_stylesheet(
             r#"
             .box:empty { width: 8px; }
@@ -5677,24 +3237,11 @@ pub(crate) mod tests {
         );
         assert_eq!(rules.len(), 2);
         assert!(rules[0].selectors[0].subject.empty);
-        let classes = vec!["box".into()];
-        let attrs = BTreeMap::new();
-        let mut empty_ctx = ctx("div", "", &classes, &attrs, &[]);
-        empty_ctx.is_empty = true;
-        let mut empty_layout = LayoutStyle::default();
-        apply_stylesheet_to_layout(&mut empty_layout, &rules, &empty_ctx, None, None);
-        assert_eq!(empty_layout.width, Some(LengthSpec::Px(8.0)));
-        assert!(empty_layout.height.is_none());
-
-        empty_ctx.is_empty = false;
-        let mut filled = LayoutStyle::default();
-        apply_stylesheet_to_layout(&mut filled, &rules, &empty_ctx, None, None);
-        assert!(filled.width.is_none());
-        assert_eq!(filled.height, Some(LengthSpec::Px(12.0)));
+        assert!(rules[1].selectors[0].subject.not_alts[0].empty);
     }
 
     #[test]
-    fn only_child_and_of_type_and_nth_last_child() {
+    fn only_child_and_of_type_and_nth_last_child_parse() {
         let rules = parse_stylesheet(
             r#"
             .row > :only-child { width: 10px; }
@@ -5706,38 +3253,16 @@ pub(crate) mod tests {
             0,
         );
         assert_eq!(rules.len(), 5);
-        let parent_c = vec!["row".into()];
-        let empty = BTreeMap::new();
-        let ancestors = [node("div", "", &parent_c, &empty)];
-        let none = Vec::<String>::new();
-
-        let only = ctx_nth("p", "", &none, &empty, &ancestors, 0, 1, 0, 1);
-        let mut lo = LayoutStyle::default();
-        apply_stylesheet_to_layout(&mut lo, &rules, &only, None, None);
-        assert_eq!(lo.width, Some(LengthSpec::Px(10.0)));
-        assert_eq!(lo.height, Some(LengthSpec::Px(20.0)));
-        assert_eq!(lo.padding, Some(LengthSpec::Px(8.0)));
-        assert_eq!(lo.gap, Some(LengthSpec::Px(4.0)));
-        assert_eq!(lo.margin, Some(LengthSpec::Px(2.0)));
-
-        // [div, p, p]: last p is last-of-type, nth-last-child(1), even from end (1-based 1).
-        // first p: of-type 0, nth-last-child 2 (even) — not odd from end.
-        let first_p = ctx_nth("p", "", &none, &empty, &ancestors, 1, 3, 0, 2);
-        let mut l1 = LayoutStyle::default();
-        apply_stylesheet_to_layout(&mut l1, &rules, &first_p, None, None);
-        assert!(l1.width.is_none());
-        assert_eq!(l1.height, Some(LengthSpec::Px(20.0)));
-        assert!(l1.padding.is_none());
-        assert!(l1.gap.is_none());
-        assert!(l1.margin.is_none());
-
-        let last_p = ctx_nth("p", "", &none, &empty, &ancestors, 2, 3, 1, 2);
-        let mut l2 = LayoutStyle::default();
-        apply_stylesheet_to_layout(&mut l2, &rules, &last_p, None, None);
-        assert!(l2.width.is_none());
-        assert!(l2.height.is_none());
-        assert_eq!(l2.padding, Some(LengthSpec::Px(8.0)));
-        assert_eq!(l2.gap, Some(LengthSpec::Px(4.0)));
-        assert_eq!(l2.margin, Some(LengthSpec::Px(2.0)));
+        assert!(rules[0].selectors[0].subject.only_child);
+        assert!(rules[1].selectors[0].subject.first_of_type);
+        assert!(rules[2].selectors[0].subject.last_of_type);
+        assert_eq!(
+            rules[3].selectors[0].subject.nth_last_child,
+            Some(AnPlusB { a: 0, b: 1 })
+        );
+        assert_eq!(
+            rules[4].selectors[0].subject.nth_last_child,
+            Some(AnPlusB::odd())
+        );
     }
 }

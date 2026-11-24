@@ -1849,13 +1849,32 @@ fn length_spec_to_atom(spec: LengthSpec) -> Option<LengthAtom> {
 /// CSS / class → [`LayoutStyle`] mutation (parse stays in this crate).
 pub trait LayoutStyleCss {
     fn apply_class_layout_hints(&mut self, class_names: &[String]);
-    fn apply_css_text(&mut self, style: &str, percent_w: Option<f32>, percent_h: Option<f32>);
+    fn apply_css_text(&mut self, style: &str, percent_w: Option<f32>, percent_h: Option<f32>) {
+        self.apply_css_text_in(style, percent_w, percent_h, CssVarScope::EMPTY);
+    }
+    fn apply_css_text_in(
+        &mut self,
+        style: &str,
+        percent_w: Option<f32>,
+        percent_h: Option<f32>,
+        vars: &CssVarScope,
+    );
     fn apply_css_property(
         &mut self,
         key: &str,
         val: &str,
         percent_w: Option<f32>,
         percent_h: Option<f32>,
+    ) {
+        self.apply_css_property_in(key, val, percent_w, percent_h, CssVarScope::EMPTY);
+    }
+    fn apply_css_property_in(
+        &mut self,
+        key: &str,
+        val: &str,
+        percent_w: Option<f32>,
+        percent_h: Option<f32>,
+        vars: &CssVarScope,
     );
     fn apply_flex_shorthand(&mut self, val: &str);
 }
@@ -1872,32 +1891,38 @@ impl LayoutStyleCss for LayoutStyle {
     /// 解析 CSS 声明串（`a: b; c: d`）写入自身。
     ///
     /// Trailing `!important` is stripped so the length/keyword still parses.
-    /// Cascade promotion of the flag is [`crate::css_cascade::rebuild_layout_style`].
-    /// Stylesheet cascade hot path prefers cached
-    /// [`crate::css_cascade::DeclarationEntry`] → [`Self::apply_css_property`]
-    /// instead of re-splitting rule text on every match.
-    fn apply_css_text(&mut self, style: &str, percent_w: Option<f32>, percent_h: Option<f32>) {
+    /// Build-time codegen prefers cached
+    /// [`crate::css_cascade::DeclarationEntry`] → [`Self::apply_css_property_in`]
+    /// instead of re-splitting rule text.
+    fn apply_css_text_in(
+        &mut self,
+        style: &str,
+        percent_w: Option<f32>,
+        percent_h: Option<f32>,
+        vars: &CssVarScope,
+    ) {
         // `direction` / `writing-mode` first so later logical props in the same
         // declaration block map against the used dir (not source order).
         for_each_css_decl(style, |key, val| {
             if css_key_is_direction_or_writing_mode(key) {
-                self.apply_css_property(key, val, percent_w, percent_h);
+                self.apply_css_property_in(key, val, percent_w, percent_h, vars);
             }
         });
         for_each_css_decl(style, |key, val| {
             if !css_key_is_direction_or_writing_mode(key) {
-                self.apply_css_property(key, val, percent_w, percent_h);
+                self.apply_css_property_in(key, val, percent_w, percent_h, vars);
             }
         });
     }
 
     /// 解析单个 CSS 属性。
-    fn apply_css_property(
+    fn apply_css_property_in(
         &mut self,
         key: &str,
         val: &str,
         percent_w: Option<f32>,
         percent_h: Option<f32>,
+        vars: &CssVarScope,
     ) {
         let key = key.trim().replace('_', "-");
         let key = if key.chars().any(|c| c.is_ascii_uppercase()) {
@@ -1912,9 +1937,11 @@ impl LayoutStyleCss for LayoutStyle {
         // so overflow/length keywords still parse (tokens themselves stay unresolved),
         // while preserving dynamic `--nana-*` color tokens on color/paint properties.
         let val_owned = if is_color_or_paint_property(&key) {
-            expand_css_vars_for_paint(&stripped)
+            expand_css_vars_for_paint_in(&stripped, vars)
+        } else if is_grid_track_property(&key) {
+            expand_css_vars_for_grid_tracks_in(&stripped, vars)
         } else {
-            expand_css_var_fallback(&stripped)
+            expand_css_var_fallback_in(&stripped, vars)
         };
         let val = val_owned.as_str();
         if crate::css_theme::apply(self, &key, val) {
@@ -3888,11 +3915,20 @@ fn apply_grid_area(placement: &mut GridPlacement, raw: &str) {
 /// 未解析的 `var(--token)`（无 lookup / 无 fallback）在该轨位置降级为
 /// [`GridTrack::Auto`]，**不得**从列表删除（否则列数错位）。
 pub fn parse_grid_track_list_result(raw: &str, percent_base: Option<f32>) -> GridTrackListParse {
+    parse_grid_track_list_result_in(raw, percent_base, CssVarScope::EMPTY)
+}
+
+/// [`parse_grid_track_list_result`] with an explicit [`CssVarScope`].
+pub fn parse_grid_track_list_result_in(
+    raw: &str,
+    percent_base: Option<f32>,
+    vars: &CssVarScope,
+) -> GridTrackListParse {
     let s = raw.trim();
     if s.is_empty() {
         return GridTrackListParse::Invalid;
     }
-    let normalized = expand_css_vars_for_grid_tracks(s);
+    let normalized = expand_css_vars_for_grid_tracks_in(s, vars);
     parse_grid_track_list(normalized.trim(), percent_base)
 }
 
@@ -4218,12 +4254,54 @@ fn parse_fr(raw: &str) -> Option<f32> {
     Some(n.max(0.0))
 }
 
-// Stylesheet-authored custom properties (`--name: value`) for `var(--name)` lookup.
-// Set by [`with_active_css_vars`] around cascade rebuilds. Document-level base
-// plus per-element inheritance is assembled by the bridge before install.
+/// Explicit custom-property scope (`--name: value`) for `var(--name)` lookup
+/// during build-time stylesheet compilation.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CssVarScope {
+    vars: std::collections::BTreeMap<String, String>,
+}
+
+impl CssVarScope {
+    pub const EMPTY: &'static Self = &Self::new();
+
+    pub const fn new() -> Self {
+        Self {
+            vars: std::collections::BTreeMap::new(),
+        }
+    }
+
+    pub fn from_map(vars: std::collections::BTreeMap<String, String>) -> Self {
+        Self { vars }
+    }
+
+    pub fn get(&self, name: &str) -> Option<&str> {
+        self.vars.get(name).map(String::as_str)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.vars.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.vars.len()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.vars.iter().map(|(k, v)| (k.as_str(), v.as_str()))
+    }
+
+    pub fn as_map(&self) -> &std::collections::BTreeMap<String, String> {
+        &self.vars
+    }
+}
+
+impl From<std::collections::BTreeMap<String, String>> for CssVarScope {
+    fn from(vars: std::collections::BTreeMap<String, String>) -> Self {
+        Self { vars }
+    }
+}
+
 thread_local! {
-    static ACTIVE_CSS_VARS: std::cell::RefCell<std::collections::BTreeMap<String, String>> =
-        const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
     static ACTIVE_VIEWPORT: std::cell::RefCell<Option<(f32, f32)>> =
         const { std::cell::RefCell::new(None) };
     static ACTIVE_FONT_SIZES: std::cell::RefCell<FontSizeContext> =
@@ -4260,19 +4338,6 @@ pub fn with_dynamic_light_dark<R>(enabled: bool, f: impl FnOnce() -> R) -> R {
         let previous = cell.replace(enabled);
         let out = f();
         cell.set(previous);
-        out
-    })
-}
-
-/// Install stylesheet custom properties for the duration of `f`.
-pub fn with_active_css_vars<R>(
-    vars: &std::collections::BTreeMap<String, String>,
-    f: impl FnOnce() -> R,
-) -> R {
-    ACTIVE_CSS_VARS.with(|cell| {
-        let previous = cell.replace(vars.clone());
-        let out = f();
-        *cell.borrow_mut() = previous;
         out
     })
 }
@@ -4355,7 +4420,7 @@ pub fn collect_document_css_custom_properties(
     css: &str,
     theme: &str,
 ) -> std::collections::BTreeMap<String, String> {
-    let stripped = strip_css_comments_local(css);
+    let stripped = crate::css_cascade::strip_css_comments(css);
     let mut map = std::collections::BTreeMap::new();
     let mut rest = stripped.as_str();
     while !rest.is_empty() {
@@ -4503,47 +4568,10 @@ fn data_theme_constraint(sel: &str) -> Option<String> {
     Some(value[..end].to_string())
 }
 
-/// Collect `--name: value` declarations from stylesheet text (source order; last wins).
-///
-/// Prefer [`collect_document_css_custom_properties`] for inheritance bases; this
-/// flat scrape remains for tests / legacy callers.
-#[cfg(test)]
-pub fn collect_css_custom_properties(css: &str) -> std::collections::BTreeMap<String, String> {
-    let stripped = strip_css_comments_local(css);
-    let mut map = std::collections::BTreeMap::new();
-    for block in stripped.split('}') {
-        let Some((_, body)) = block.split_once('{') else {
-            continue;
-        };
-        for (k, v) in extract_css_custom_properties_from_decls(body) {
-            map.insert(k, v);
-        }
-    }
-    resolve_css_custom_property_map(&mut map);
-    map
-}
-
-fn strip_css_comments_local(css: &str) -> String {
-    let mut out = String::with_capacity(css.len());
-    let bytes = css.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
-            i += 2;
-            while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
-                i += 1;
-            }
-            i = (i + 2).min(bytes.len());
-            continue;
-        }
-        out.push(bytes[i] as char);
-        i += 1;
-    }
-    out
-}
-
 /// Iteratively expand `var(--x)` / foldable `calc()` inside the custom-prop map.
-fn resolve_css_custom_property_map(map: &mut std::collections::BTreeMap<String, String>) {
+pub(crate) fn resolve_css_custom_property_map(
+    map: &mut std::collections::BTreeMap<String, String>,
+) {
     for _ in 0..8 {
         let snapshot = map.clone();
         let mut changed = false;
@@ -4633,14 +4661,25 @@ fn is_dynamic_nana_color_var(name_part: &str) -> bool {
 }
 
 pub(crate) fn expand_css_var_fallback(input: &str) -> String {
-    // 1) stylesheet custom-prop lookup  2) var(--name, fallback) → fallback
-    // Unresolved var() without fallback is removed (single-value props fail closed).
-    // Grid track lists must use [`expand_css_vars_for_grid_tracks`] instead.
-    expand_css_vars_with_unresolved(input, None)
+    expand_css_var_fallback_in(input, CssVarScope::EMPTY)
 }
 
-pub(crate) fn expand_css_vars_for_paint(input: &str) -> String {
-    expand_css_vars_at_depth(input, None, true, 0).0
+pub(crate) fn expand_css_var_fallback_in(input: &str, vars: &CssVarScope) -> String {
+    // 1) stylesheet custom-prop lookup  2) var(--name, fallback) → fallback
+    // Unresolved var() without fallback is removed (single-value props fail closed).
+    // Grid track lists must use [`expand_css_vars_for_grid_tracks_in`] instead.
+    expand_css_vars_with_unresolved_in(input, None, vars)
+}
+
+pub(crate) fn expand_css_vars_for_paint_in(input: &str, vars: &CssVarScope) -> String {
+    expand_css_vars_at_depth(input, None, true, 0, vars).0
+}
+
+fn is_grid_track_property(key: &str) -> bool {
+    matches!(
+        key,
+        "grid-template-columns" | "grid-template-rows" | "grid-auto-columns" | "grid-auto-rows"
+    )
 }
 
 fn is_color_or_paint_property(key: &str) -> bool {
@@ -4709,18 +4748,22 @@ pub fn split_important_flag(value: &str) -> (String, bool) {
 
 /// Expand `var()` for grid track lists: unresolved tokens become `auto` so the
 /// track slot remains (never delete a column/row from the list).
-fn expand_css_vars_for_grid_tracks(input: &str) -> String {
-    expand_css_vars_with_unresolved(input, Some("auto"))
+fn expand_css_vars_for_grid_tracks_in(input: &str, vars: &CssVarScope) -> String {
+    expand_css_vars_with_unresolved_in(input, Some("auto"), vars)
 }
 
 /// How many custom properties one `var()` may pass through. A longer chain
 /// is a cycle (`--a: var(--a)`) or hostile, and reads as unresolved.
 const MAX_VAR_DEPTH: usize = 32;
 
-/// Single-pass `var()` expand against [`ACTIVE_CSS_VARS`].
+/// Single-pass `var()` expand against `vars`.
 /// When a reference has no lookup and no fallback, emit `unresolved` (or omit).
-fn expand_css_vars_with_unresolved(input: &str, unresolved: Option<&str>) -> String {
-    expand_css_vars_at_depth(input, unresolved, false, 0).0
+fn expand_css_vars_with_unresolved_in(
+    input: &str,
+    unresolved: Option<&str>,
+    vars: &CssVarScope,
+) -> String {
+    expand_css_vars_at_depth(input, unresolved, false, 0, vars).0
 }
 
 fn expand_css_vars_at_depth(
@@ -4728,6 +4771,7 @@ fn expand_css_vars_at_depth(
     unresolved: Option<&str>,
     preserve_nana_tokens: bool,
     depth: usize,
+    vars: &CssVarScope,
 ) -> (String, bool) {
     let mut out = String::with_capacity(input.len());
     let mut rest = input;
@@ -4736,8 +4780,13 @@ fn expand_css_vars_at_depth(
         |out: &mut String, had_unresolved: &mut bool, fallback: Option<&str>| {
             if let Some(fb) = fallback.filter(|f| !f.is_empty()) {
                 if preserve_nana_tokens && fb.contains("var(") && depth < MAX_VAR_DEPTH {
-                    let (fb_expanded, fb_unresolved) =
-                        expand_css_vars_at_depth(fb, unresolved, preserve_nana_tokens, depth + 1);
+                    let (fb_expanded, fb_unresolved) = expand_css_vars_at_depth(
+                        fb,
+                        unresolved,
+                        preserve_nana_tokens,
+                        depth + 1,
+                        vars,
+                    );
                     out.push_str(&fb_expanded);
                     if fb_unresolved {
                         *had_unresolved = true;
@@ -4763,15 +4812,20 @@ fn expand_css_vars_at_depth(
             Some((n, fb)) => (n.trim(), Some(fb.trim())),
             None => (inner.trim(), None),
         };
-        let resolved = ACTIVE_CSS_VARS.with(|cell| cell.borrow().get(name_part).cloned());
-        if let Some(value) = resolved {
-            if is_guaranteed_invalid_custom_prop_value(&value) {
+        if let Some(value) = vars.get(name_part) {
+            if is_guaranteed_invalid_custom_prop_value(value) {
                 // `initial` on a custom prop → guaranteed-invalid → fallback.
                 push_fallback_or_unresolved(&mut out, &mut had_unresolved, fallback);
             } else if value.contains("var(") {
                 // A value that refers on is expanded in turn, up to the depth.
                 let (nested, nested_unresolved) = if depth < MAX_VAR_DEPTH {
-                    expand_css_vars_at_depth(&value, unresolved, preserve_nana_tokens, depth + 1)
+                    expand_css_vars_at_depth(
+                        value,
+                        unresolved,
+                        preserve_nana_tokens,
+                        depth + 1,
+                        vars,
+                    )
                 } else {
                     (String::new(), true)
                 };
@@ -4784,7 +4838,7 @@ fn expand_css_vars_at_depth(
                     out.push_str(&nested);
                 }
             } else {
-                out.push_str(&value);
+                out.push_str(value);
             }
         } else if preserve_nana_tokens && is_dynamic_nana_color_var(name_part) {
             out.push_str("var(");
@@ -4813,11 +4867,16 @@ pub(crate) fn resolve_css_color_pair(
 /// Resolve CSS paint colors, including OKLCH/color-mix, and `var(--x, fallback)`
 /// expansion (no app token maps).
 pub fn resolve_paint_color(input: &str) -> Option<[f32; 4]> {
+    resolve_paint_color_in(input, CssVarScope::EMPTY)
+}
+
+/// [`resolve_paint_color`] with an explicit [`CssVarScope`].
+pub fn resolve_paint_color_in(input: &str, vars: &CssVarScope) -> Option<[f32; 4]> {
     let s = input.trim();
     if s.is_empty() {
         return None;
     }
-    crate::style::resolve_css_paint_color(s).map(crate::style::CssPaintColor::to_srgb)
+    crate::style::resolve_css_paint_color_in(s, vars).map(crate::style::CssPaintColor::to_srgb)
 }
 
 /// CSS `font-size` → computed px using [`active_font_sizes`] (parent = `element_px`).
@@ -4825,7 +4884,12 @@ pub fn resolve_paint_color(input: &str) -> Option<[f32; 4]> {
 /// Supports lengths (`px`/`em`/`rem`/calc), `%` of parent, and absolute-size keywords
 /// (`medium`≈16, `small`≈13, `large`≈18). `inherit`/`unset` → `None`.
 pub fn parse_css_font_size(input: &str) -> Option<f32> {
-    let expanded = expand_css_var_fallback(input.trim());
+    parse_css_font_size_in(input, CssVarScope::EMPTY)
+}
+
+/// [`parse_css_font_size`] with an explicit [`CssVarScope`].
+pub fn parse_css_font_size_in(input: &str, vars: &CssVarScope) -> Option<f32> {
+    let expanded = expand_css_var_fallback_in(input.trim(), vars);
     let s = expanded.trim();
     if s.is_empty()
         || s.eq_ignore_ascii_case("inherit")
@@ -6514,46 +6578,45 @@ mod tests {
 
         let mut vars = std::collections::BTreeMap::new();
         vars.insert("--x".into(), "10px".into());
-        with_active_css_vars(&vars, || {
-            let mut layout = LayoutStyle::default();
-            layout.apply_css_text(
-                "width: calc(2 * var(--x)); height: calc(12 * 2px)",
-                None,
-                None,
-            );
-            assert_eq!(layout.width, Some(LengthSpec::Px(20.0)));
-            assert_eq!(layout.height, Some(LengthSpec::Px(24.0)));
-        });
+        let vars = CssVarScope::from_map(vars);
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text_in(
+            "width: calc(2 * var(--x)); height: calc(12 * 2px)",
+            None,
+            None,
+            &vars,
+        );
+        assert_eq!(layout.width, Some(LengthSpec::Px(20.0)));
+        assert_eq!(layout.height, Some(LengthSpec::Px(24.0)));
 
         let mut ds = std::collections::BTreeMap::new();
         ds.insert("--ds-px".into(), "min(10px, 50vw)".into());
-        with_active_css_vars(&ds, || {
-            let mut layout = LayoutStyle::default();
-            layout.apply_css_text("width: calc(2 * var(--ds-px))", None, None);
+        let ds = CssVarScope::from_map(ds);
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text_in("width: calc(2 * var(--ds-px))", None, None, &ds);
+        assert_eq!(
+            layout.width,
+            Some(LengthSpec::min2(
+                LengthAtom::Px(20.0),
+                LengthAtom::Viewport {
+                    axis: ViewportAxis::Width,
+                    value: 100.0
+                }
+            ))
+        );
+        with_active_viewport(400.0, 800.0, || {
             assert_eq!(
-                layout.width,
-                Some(LengthSpec::min2(
-                    LengthAtom::Px(20.0),
-                    LengthAtom::Viewport {
-                        axis: ViewportAxis::Width,
-                        value: 100.0
-                    }
-                ))
+                layout.width.unwrap().resolve_with(None, active_viewport()),
+                Some(20.0),
+                "min(10px, 50vw)*2 used value at 400vw"
             );
-            with_active_viewport(400.0, 800.0, || {
-                assert_eq!(
-                    layout.width.unwrap().resolve_with(None, active_viewport()),
-                    Some(20.0),
-                    "min(10px, 50vw)*2 used value at 400vw"
-                );
-            });
-            with_active_viewport(10.0, 800.0, || {
-                assert_eq!(
-                    layout.width.unwrap().resolve_with(None, active_viewport()),
-                    Some(10.0),
-                    "min(10px, 50vw)*2 used value at 10vw"
-                );
-            });
+        });
+        with_active_viewport(10.0, 800.0, || {
+            assert_eq!(
+                layout.width.unwrap().resolve_with(None, active_viewport()),
+                Some(10.0),
+                "min(10px, 50vw)*2 used value at 10vw"
+            );
         });
     }
 
@@ -6607,19 +6670,20 @@ mod tests {
         assert_eq!(margin.margin_left, Some(LengthSpec::Px(-8.0)));
         assert_eq!(margin.resolved_margin_against(None).left, -8.0);
 
-        let props = collect_css_custom_properties(":root { --n: calc(2 * 3); --x: 10px; }");
+        let rules =
+            crate::css_cascade::parse_stylesheet(":root { --n: calc(2 * 3); --x: 10px; }", 0);
+        let props =
+            crate::css_cascade::collect_document_custom_properties_from_rules(&rules, "light");
         assert_ne!(
-            props.get("--n").map(String::as_str),
+            props.get("--n"),
             Some("6px"),
             "unitless custom-prop calc must not fold to px"
         );
         assert_eq!(LengthSpec::parse(props.get("--n").expect("--n")), None);
-        assert_eq!(props.get("--x").map(String::as_str), Some("10px"));
-        with_active_css_vars(&props, || {
-            let mut layout = LayoutStyle::default();
-            layout.apply_css_text("width: calc(2 * var(--x))", None, None);
-            assert_eq!(layout.width, Some(LengthSpec::Px(20.0)));
-        });
+        assert_eq!(props.get("--x"), Some("10px"));
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text_in("width: calc(2 * var(--x))", None, None, &props);
+        assert_eq!(layout.width, Some(LengthSpec::Px(20.0)));
     }
 
     #[test]
@@ -6690,11 +6754,10 @@ mod tests {
         );
         let mut vars = std::collections::BTreeMap::new();
         vars.insert("--w".into(), "40px".into());
-        with_active_css_vars(&vars, || {
-            let mut layout = LayoutStyle::default();
-            layout.apply_css_text("width: calc(2 * var(--w) + 10px)", None, None);
-            assert_eq!(layout.width, Some(LengthSpec::Px(90.0)));
-        });
+        let vars = CssVarScope::from_map(vars);
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text_in("width: calc(2 * var(--w) + 10px)", None, None, &vars);
+        assert_eq!(layout.width, Some(LengthSpec::Px(90.0)));
     }
 
     #[test]
@@ -6731,18 +6794,18 @@ mod tests {
             "system-ui, \"Noto Sans SC\", sans-serif".into(),
         );
         vars.insert("--text-muted".into(), "#5a616e".into());
-        with_active_css_vars(&vars, || {
-            let mut themed = LayoutStyle::default();
-            themed.apply_css_text(
-                "font-family: var(--font-sans); color: var(--text-muted); font-size: 18px; font-weight: bold",
-                None,
-                None,
-            );
-            assert_eq!(themed.text_ext.font_family.as_deref(), Some("Noto Sans SC"));
-            assert_eq!(themed.font_size, Some(18.0));
-            assert_eq!(themed.font_weight, Some(700));
-            assert!(themed.color.is_some());
-        });
+        let vars = CssVarScope::from_map(vars);
+        let mut themed = LayoutStyle::default();
+        themed.apply_css_text_in(
+            "font-family: var(--font-sans); color: var(--text-muted); font-size: 18px; font-weight: bold",
+            None,
+            None,
+            &vars,
+        );
+        assert_eq!(themed.text_ext.font_family.as_deref(), Some("Noto Sans SC"));
+        assert_eq!(themed.font_size, Some(18.0));
+        assert_eq!(themed.font_weight, Some(700));
+        assert!(themed.color.is_some());
 
         let mut parent = LayoutStyle::default();
         parent.font_size = Some(13.0);
@@ -7445,15 +7508,15 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
             "dark: initial side must fall back to #151b23"
         );
 
-        with_active_css_vars(&light, || {
-            let c = resolve_paint_color(
-                "var(--calendar-heatmap-level-0, var(--calendar-heatmap-level-default))",
-            )
-            .expect("light heatmap fill");
-            assert!((c[0] - 0xef as f32 / 255.0).abs() < 0.02);
-            assert!((c[1] - 0xf2 as f32 / 255.0).abs() < 0.02);
-            assert!((c[2] - 0xf5 as f32 / 255.0).abs() < 0.02);
-        });
+        let light = CssVarScope::from_map(light);
+        let c = resolve_paint_color_in(
+            "var(--calendar-heatmap-level-0, var(--calendar-heatmap-level-default))",
+            &light,
+        )
+        .expect("light heatmap fill");
+        assert!((c[0] - 0xef as f32 / 255.0).abs() < 0.02);
+        assert!((c[1] - 0xf2 as f32 / 255.0).abs() < 0.02);
+        assert!((c[2] - 0xf5 as f32 / 255.0).abs() < 0.02);
     }
 
     #[test]
@@ -7900,16 +7963,20 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         assert_eq!(map.get("--plain").map(String::as_str), Some("4px"));
 
         // calc(var(--w) + 10px) fails to parse if the flag stays attached.
-        with_active_css_vars(&map, || {
-            let mut layout = LayoutStyle::default();
-            layout.apply_css_text("width: calc(var(--w) + 10px); gap: var(--gap)", None, None);
-            assert_eq!(
-                layout.width,
-                Some(LengthSpec::Px(90.0)),
-                "width via var() + calc must resolve after stripping !important"
-            );
-            assert_eq!(layout.gap, Some(LengthSpec::Px(8.0)));
-        });
+        let scope = CssVarScope::from_map(map);
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text_in(
+            "width: calc(var(--w) + 10px); gap: var(--gap)",
+            None,
+            None,
+            &scope,
+        );
+        assert_eq!(
+            layout.width,
+            Some(LengthSpec::Px(90.0)),
+            "width via var() + calc must resolve after stripping !important"
+        );
+        assert_eq!(layout.gap, Some(LengthSpec::Px(8.0)));
 
         let doc =
             collect_document_css_custom_properties(":root { --gap: 8px !important; }", "light");
@@ -7922,22 +7989,24 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
 
     #[test]
     fn stylesheet_custom_props_resolve_var_without_fallback() {
-        let vars = collect_css_custom_properties(
+        let rules = crate::css_cascade::parse_stylesheet(
             ":root { --app-corner-radius: 16px; --radius-md: var(--app-corner-radius); --radius-sm: calc(var(--app-corner-radius) * .75); }",
+            0,
         );
-        assert_eq!(vars.get("--radius-md").map(String::as_str), Some("16px"));
-        assert_eq!(vars.get("--radius-sm").map(String::as_str), Some("12px"));
-        with_active_css_vars(&vars, || {
-            let mut layout = LayoutStyle::default();
-            layout.apply_css_text(
-                "border-radius: var(--radius-sm); gap: var(--missing, 8px)",
-                None,
-                None,
-            );
-            let radii = layout.paint.border_radii.expect("corners");
-            assert_eq!(radii[0], LengthSpec::Px(12.0));
-            assert_eq!(layout.gap, Some(LengthSpec::Px(8.0)));
-        });
+        let vars =
+            crate::css_cascade::collect_document_custom_properties_from_rules(&rules, "light");
+        assert_eq!(vars.get("--radius-md"), Some("16px"));
+        assert_eq!(vars.get("--radius-sm"), Some("12px"));
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text_in(
+            "border-radius: var(--radius-sm); gap: var(--missing, 8px)",
+            None,
+            None,
+            &vars,
+        );
+        let radii = layout.paint.border_radii.expect("corners");
+        assert_eq!(radii[0], LengthSpec::Px(12.0));
+        assert_eq!(layout.gap, Some(LengthSpec::Px(8.0)));
     }
 
     #[test]
