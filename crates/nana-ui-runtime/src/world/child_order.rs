@@ -245,7 +245,7 @@ mod tests {
         let mut cx = AppContext::new();
         cx.commit_mutations(queue).unwrap();
         product_frame(&mut cx, document(), viewport(), &mut bundled_face_shaper());
-        cx.compat_world_mut().take_system_work();
+        cx.world_mut().take_system_work();
         cx
     }
 
@@ -363,15 +363,15 @@ mod tests {
 
                 let (mut moved, mut reordered) = (rows(&all, scrolls), rows(&all, scrolls));
                 let moves_queued = moves.len();
-                let by_moves = moved.compat_world_mut().commit_ref(&moves).unwrap();
-                let by_reorder = reordered.compat_world_mut().commit_ref(&reorder).unwrap();
+                let by_moves = moved.world_mut().commit_ref(&moves).unwrap();
+                let by_reorder = reordered.world_mut().commit_ref(&reorder).unwrap();
                 assert_eq!(children(reordered.world()), ids(&order), "{shape}");
                 assert_eq!(children(moved.world()), ids(&order), "{shape}");
                 assert_eq!(by_reorder.reparented, moves_queued, "{shape}");
                 assert_eq!(by_reorder.reparented, by_moves.reparented, "{shape}");
                 assert_eq!(
-                    left(reordered.compat_world_mut()),
-                    left(moved.compat_world_mut()),
+                    left(reordered.world_mut()),
+                    left(moved.world_mut()),
                     "{shape}"
                 );
 
@@ -426,7 +426,7 @@ mod tests {
             let mut queue = MutationQueue::new();
             queue.reorder_children(node(PARENT), order);
             assert_eq!(
-                cx.compat_world_mut().commit(queue),
+                cx.world_mut().commit(queue),
                 Err(UiWorldError::InvalidChildOrder {
                     parent: node(PARENT)
                 }),
@@ -438,7 +438,7 @@ mod tests {
         let mut queue = MutationQueue::new();
         queue.reorder_children(node(901), before.clone());
         assert_eq!(
-            cx.compat_world_mut().commit(queue),
+            cx.world_mut().commit(queue),
             Err(UiWorldError::MissingNode(node(901)))
         );
     }
@@ -453,7 +453,7 @@ mod tests {
         let report = cx.commit_mutations(queue).unwrap();
         assert_eq!(report.reparented, 0);
         assert_eq!(cx.world().generation(), generation);
-        assert!(cx.compat_world_mut().take_system_work().is_empty());
+        assert!(cx.world_mut().take_system_work().is_empty());
     }
 
     /// The order is checked against the children the batch has left when it
@@ -565,7 +565,7 @@ mod tests {
             cx
         };
         let steps = |cx: &mut AppContext, order: &[u64]| {
-            cx.compat_world_mut().tree.child_list_steps = 0;
+            cx.world_mut().tree.child_list_steps = 0;
             assert!(cx.reconcile_children(node(PARENT), &ids(order)).unwrap());
             assert_eq!(children(cx.world()), ids(order));
             cx.world().tree.child_list_steps

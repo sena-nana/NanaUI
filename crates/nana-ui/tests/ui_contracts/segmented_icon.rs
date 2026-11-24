@@ -3,6 +3,7 @@
 //! The settings 「主题」 row is what caught the disagreement: `暗色` measured one
 //! inset short of its own label and rendered as `暗…`.
 
+use nana_ui::runtime::scene_contract::WidgetPaintOp;
 use nana_ui::{NanaTextShaper, runtime::*};
 use nana_ui_core::{AlignSpec, ControlSize, Icon, UI_METRICS, space};
 

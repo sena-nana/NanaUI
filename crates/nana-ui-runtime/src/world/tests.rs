@@ -10062,11 +10062,8 @@ fn button_recipe_only_theme_change_skips_non_button_nodes() {
             crate::StatusBadge::new("OK", nana_ui_core::StatusTone::Success),
         )
         .unwrap();
-    let work = context.compat_world_mut().take_system_work();
-    context
-        .compat_world_mut()
-        .resolve_styles(&work.style)
-        .unwrap();
+    let work = context.world_mut().take_system_work();
+    context.world_mut().resolve_styles(&work.style).unwrap();
 
     let base = context.world().theme().clone();
     let mut next_variant = base
@@ -10081,15 +10078,12 @@ fn button_recipe_only_theme_change_skips_non_button_nodes() {
             .unwrap(),
     );
 
-    context.compat_world_mut().begin_frame_counters();
-    let _ = context.compat_world_mut().take_system_work();
+    context.world_mut().begin_frame_counters();
+    let _ = context.world_mut().take_system_work();
     context.set_theme_tokens(patched).unwrap();
-    let work = context.compat_world_mut().take_system_work();
-    context
-        .compat_world_mut()
-        .resolve_styles(&work.style)
-        .unwrap();
-    context.compat_world_mut().end_frame_counters();
+    let work = context.world_mut().take_system_work();
+    context.world_mut().resolve_styles(&work.style).unwrap();
+    context.world_mut().end_frame_counters();
 
     let counters = context.last_theme_work_counters();
     assert!(counters.component_recipe_nodes_invalidated >= 1);
@@ -13387,7 +13381,7 @@ fn frame_emits_work_counter_diagnostics_metrics_and_dirty_roots() {
         crate::LayoutViewport::new(400.0, 200.0),
         &mut shaper,
     );
-    cx.compat_world_mut().rebuild_hit_test(doc);
+    cx.world_mut().rebuild_hit_test(doc);
     let extracted = cx.world().extract_nodes(&[node(1), node(2)]);
     cx.record_extract(&extracted);
 

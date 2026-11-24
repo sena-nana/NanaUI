@@ -240,7 +240,7 @@ pub(super) const PAINT_BEHIND_PRE: u32 = 0xFFFF_FFF0;
 pub(super) const PAINT_BEHIND_POST: u32 = 0xFFFF_FFF1;
 pub(super) const PAINT_OVER_PRE: u32 = 0xFFFF_FFF2;
 pub(super) const PAINT_OVER_POST: u32 = 0xFFFF_FFF3;
-/// Namespace for vector recordings emitted through [`nana_ui_runtime::WidgetPaintOp::Vector`].
+/// Namespace for vector recordings emitted through [`nana_ui_runtime::scene_contract::WidgetPaintOp::Vector`].
 pub(super) const WIDGET_VECTOR_PAINT: u32 = 19;
 pub(super) const WIDGET_VECTOR_BLOCK: usize = 1 << 18;
 
@@ -357,7 +357,7 @@ impl UiScene {
         );
     }
 
-    /// Emit vector recordings emitted through [`nana_ui_runtime::WidgetPaintOp::Vector`],
+    /// Emit vector recordings emitted through [`nana_ui_runtime::scene_contract::WidgetPaintOp::Vector`],
     /// reusing built meshes across frames while the recording `Arc` is unchanged.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn emit_widget_vector_paint(
@@ -394,7 +394,7 @@ impl UiScene {
         self.widget_vector_paint.insert(node.id, Arc::clone(&built));
         for (index, (paint, (slot, origin, size))) in built.iter().zip(places).enumerate() {
             let namespace = if (1..=255).contains(&slot) {
-                nana_ui_runtime::WIDGET_VECTOR_LAYER_BASE | (slot as u32)
+                nana_ui_runtime::scene_contract::WIDGET_VECTOR_LAYER_BASE | (slot as u32)
             } else {
                 WIDGET_VECTOR_PAINT
             };

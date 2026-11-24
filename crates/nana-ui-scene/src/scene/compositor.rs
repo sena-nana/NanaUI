@@ -12,7 +12,8 @@ use nana_ui_core::motion::{
     MotionTrack, MotionTrackId, MotionValue, MotionWorkCounters, PresentationStore, evaluate_track,
 };
 use nana_ui_core::{ColorFilter, PaintTransform};
-use nana_ui_runtime::{ExtractedNode, NodeMap, NodeSet, StableNodeId};
+use nana_ui_runtime::scene_contract::ExtractedNode;
+use nana_ui_runtime::{NodeMap, NodeSet, StableNodeId};
 
 use super::{AffineTransform, ClipRegion, UiScene, local_opacity, node_scene_transform};
 

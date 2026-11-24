@@ -7,9 +7,7 @@ impl AppContext {
     ///
     /// This is the canonical application/frame drain. It polls local tasks
     /// and flushes the reactive host before delegating to
-    /// [`crate::UiWorld::take_system_work`]. Callers with an [`AppContext`]
-    /// should use this method instead of draining `compat_world_mut()`
-    /// directly, because the latter bypasses those runtime steps.
+    /// [`crate::UiWorld::take_system_work`].
     pub fn take_system_work(&mut self) -> crate::SystemWork {
         // Signal writes outside input (timers, program updates, other
         // contexts) land here, before the frame reads the world.
@@ -942,6 +940,48 @@ impl AppContext {
     /// Host hook: the display interval, the frame interval while playing.
     pub fn set_presentation_display_interval(&mut self, interval: Duration) {
         self.world.set_presentation_display_interval(interval);
+    }
+
+    /// Synchronize the world presentation clock to `now`.
+    pub fn sync_presentation_clock(&mut self, now: Duration) {
+        self.world.sync_presentation_clock(now);
+    }
+
+    /// Notify the runtime of the active text shaper before scene layout.
+    pub fn observe_text_shaper(&mut self, host: &(impl crate::TextShaper + ?Sized)) {
+        self.world.observe_text_shaper(host);
+    }
+
+    /// Reconcile focus and IME targets after nodes changed.
+    pub fn reconcile_focus(&mut self, ids: &[StableNodeId]) {
+        self.world.reconcile_focus(ids);
+    }
+
+    /// Update the active document-wide text selection projection.
+    pub fn set_document_text_selection(
+        &mut self,
+        document: DocumentId,
+        selection: Option<crate::DocumentTextSelection>,
+    ) {
+        self.world.set_document_text_selection(document, selection);
+    }
+
+    #[doc(hidden)]
+    #[cfg(any(test, feature = "benchmark"))]
+    pub fn begin_frame_counters(&mut self) {
+        self.world.begin_frame_counters();
+    }
+
+    #[doc(hidden)]
+    #[cfg(any(test, feature = "benchmark"))]
+    pub fn end_frame_counters(&mut self) {
+        self.world.end_frame_counters();
+    }
+
+    #[doc(hidden)]
+    #[cfg(any(test, feature = "benchmark"))]
+    pub fn scheduled_ui_frames(&mut self, ticks: usize) -> usize {
+        self.world.scheduled_ui_frames(ticks)
     }
 
     /// React to a frame's samples and events on the framework's side. `now`

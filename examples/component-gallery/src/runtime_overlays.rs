@@ -5,13 +5,13 @@ use std::sync::{Arc, Mutex};
 use nana_ui::runtime::StableNodeId;
 use nana_ui::runtime::view::{IntoView, detached, entity_ref, widget, with_refs};
 use nana_ui::runtime::{
-    AlignSpec, CommandPalette, ConfirmDialog, ConfirmIntent, ConfirmSlots, ContextMenu,
-    ContextMenuEvent as RuntimeContextMenuEvent, ContextMenuItem as RuntimeContextMenuItem,
-    DesktopShell, DocumentId, Entity, FrameworkError, IconButton, ImageViewer, ImageViewerContent,
-    ImageViewerEvent, LayoutBox, MountedView, OverlayChanged, OverlayHost, RuntimeDocument,
-    SemanticColorRole, Text,
+    AlignSpec, CommandPalette, CommandPaletteEvent, ConfirmDialog, ConfirmIntent, ConfirmSlots,
+    ContextMenu, ContextMenuEvent as RuntimeContextMenuEvent,
+    ContextMenuItem as RuntimeContextMenuItem, ControlSize, DesktopShell, DocumentId, Entity,
+    FrameworkError, IconButton, ImageViewer, ImageViewerContent, ImageViewerEvent, LayoutBox,
+    MountedView, OverlayChanged, OverlayHost, RuntimeDocument, SemanticColorRole, Text,
 };
-use nana_ui::{ButtonKind, CommandPaletteEvent, ControlSize, Icon, LogicalPoint};
+use nana_ui::{ButtonKind, Icon, LogicalPoint};
 use nana_ui_platform::{InputPayload, PointerInput, PointerPhase};
 
 use super::runtime_host::{

@@ -4,26 +4,24 @@ use std::sync::{Arc, Mutex};
 use nana_ui::runtime::view::{EntityRef, IntoView, detached, entity_ref, widget, with_refs};
 use nana_ui::runtime::{
     Activate, AppShell, AppTitleBar, Avatar, Button, CalendarHeatmap, CalendarHeatmapDatum,
-    CalendarHeatmapEvent, Card, Chart, ChartEvent, Checkbox, Chip, DesktopShell, DiffHunk,
-    DiffLine, DiffView, DockFloatingSurface, DocumentId, DropAccepts, Dropdown, DropdownEvent,
-    DropdownOption, EmptyState, Entity, FileDropEvent, FrameworkError, GraphCanvas,
+    CalendarHeatmapEvent, Card, Chart, ChartEvent, Checkbox, Chip, ControlSize, DesktopShell,
+    DiffHunk, DiffLine, DiffView, DockFloatingSurface, DocumentId, DropAccepts, Dropdown,
+    DropdownEvent, DropdownOption, EmptyState, Entity, FileDropEvent, FrameworkError, GraphCanvas,
     GraphCanvasEvent, GraphMinimap, GraphMinimapEvent, GraphSize, IconButton, InteractiveCard,
     LabeledValue, LayoutViewport, LengthSpec, LevelMeter, ListItem, ListItemSlots, NativeMarkdown,
     NodeStyle, OverlayHost, PaneChrome, PaneChromeAction, PaneChromeActionKind, PaneTree,
     PaneTreeNode, Popover, PopoverClosed, PopoverToggled, PositionSpec, Progress, RangeInput,
     RichTextEvent, RuntimeDocument, ScrollAxes, ScrollView, SearchDropdown, SearchDropdownEvent,
     SearchDropdownOption, SegmentedControl, SegmentedOption, SegmentedSelectionRequested,
-    SemanticColorRole, SidebarFooter, SidebarFooterButton, SidebarFrame, SidebarRow,
-    SidebarRowIcon, SidebarRowState, SidebarSection, Skeleton, Spinner, StableNodeId, StatusBadge,
-    Switch, TabOption, Tabs, TabsEvent, TerminalScreen, TerminalView, Text, TextArea, TextChanged,
-    TextInput, Thumbnail, Toast, ToggleChanged, TreeNode, TreeSelectionRequested, TreeView,
-    TreeViewEvent, ValidationMessage, XYPad, XYPadEvent,
+    SelectionState, SemanticColorRole, SidebarFooter, SidebarFooterButton, SidebarFrame,
+    SidebarRow, SidebarRowIcon, SidebarRowState, SidebarSection, Skeleton, Spinner, StableNodeId,
+    StatusBadge, StatusTone, Switch, TabOption, Tabs, TabsEvent, TerminalScreen, TerminalView,
+    Text, TextArea, TextChanged, TextInput, Thumbnail, Toast, ToastTone, ToggleChanged, TreeNode,
+    TreeSelectionRequested, TreeView, TreeViewEvent, ValidationIntent, ValidationMessage,
+    WorkspaceModel, XYPad, XYPadEvent,
 };
 use nana_ui::theme::{SpacingStep, ThemeToken, space, type_scale};
-use nana_ui::{
-    ButtonKind, CardKind, ControlSize, Icon, NanaTextShaper, RegionId, StatusTone, ToastTone,
-    ValidationIntent, WorkspaceAction, WorkspaceModel,
-};
+use nana_ui::{ButtonKind, CardKind, Icon, NanaTextShaper, RegionId, WorkspaceAction};
 use nana_ui_platform::InputPayload;
 
 use super::runtime_host::{
@@ -3659,7 +3657,7 @@ fn gallery_tree(state: &GalleryState) -> TreeView {
         TreeNode::leaf(Arc::<str>::from("README.md"), "README.md").icon(Icon::File),
     ])
     .selection({
-        let mut selection = nana_ui::SelectionState::single();
+        let mut selection = SelectionState::single();
         selection.select_only(Arc::<str>::from(state.tree_selected.as_str()));
         selection
     })

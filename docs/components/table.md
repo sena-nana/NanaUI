@@ -48,7 +48,7 @@ widget(Table::new().label("文件")).children((
 
 ## 几何
 
-几何在 `nana_ui::runtime::VirtualTableLayout`。`VirtualTableLayout::new(row_extents, columns)` 接收每一行的高度，以及一组 `nana_ui::TableColumn`。`TableColumn::new(key, extent)` 给出列键和宽度。`.sortable(true)` 把这一列的表头标成排序控件。`.limits(min, max)` 限制宽度，`.resizable` 允许改宽。
+几何在 `nana_ui::runtime::VirtualTableLayout`。`VirtualTableLayout::new(row_extents, columns)` 接收每一行的高度，以及一组 `nana_ui::runtime::TableColumn`。`TableColumn::new(key, extent)` 给出列键和宽度。`.sortable(true)` 把这一列的表头标成排序控件。`.limits(min, max)` 限制宽度，`.resizable` 允许改宽。
 
 `move_column(from, to)` 重排列，宽度和总宽度保持，`to` 是抽出之后的目标下标。`VirtualTableLayout` 只回答哪一列在指示排序，以及列的几何。
 
@@ -76,7 +76,7 @@ widget(Table::new().label("文件")).children((
 
 ## SelectionState
 
-`nana_ui::SelectionState<K>` 是不依附任何控件的纯数据选择状态，`each_virtual`、`List`、网格、虚拟表格和 `TreeView`（见 [TreeView 的选择](https://github.com/sena-nana/NanaUI/blob/main/docs/components/tree-view.md#选择)）都能共用。它只存你的业务键：选中集合、当前项（键盘所在）和锚点（Shift 连选的起点），不存位置、行或节点，所以滚出视口、没有建出来的行照样保持选中。
+`nana_ui::runtime::SelectionState<K>` 是不依附任何控件的纯数据选择状态，`each_virtual`、`List`、网格、虚拟表格和 `TreeView`（见 [TreeView 的选择](https://github.com/sena-nana/NanaUI/blob/main/docs/components/tree-view.md#选择)）都能共用。它只存你的业务键：选中集合、当前项（键盘所在）和锚点（Shift 连选的起点），不存位置、行或节点，所以滚出视口、没有建出来的行照样保持选中。
 
 需要顺序的操作（Shift 连选、方向键、全选、数据变化后的清理）从你传入的 `SelectionOrder` 读顺序：一个键的切片，或者 `keyed_order(&items, |item| item.id)`，用 `.selectable(..)` 排除禁用项。顺序不会被复制进状态。
 
@@ -99,7 +99,7 @@ widget(Table::new().label("文件")).children((
 | `.header_for(&column)` | `&TableColumn` | 表头格子：列键、可否改宽、宽度范围 |
 | `.column` / `.resizable` | — | 单独设列键、可否拖右边缘改宽 |
 | `row_extents` | — | `VirtualTableLayout::new` 接收的每一行高度 |
-| `columns` | 一组 `nana_ui::TableColumn` | 同上 |
+| `columns` | 一组 `nana_ui::runtime::TableColumn` | 同上 |
 | `key` | — | `TableColumn::new(key, extent)` 的列键 |
 | `extent` | — | `TableColumn::new(key, extent)` 的宽度 |
 | `.sortable` | — | `true` 把这一列的表头标成排序控件 |

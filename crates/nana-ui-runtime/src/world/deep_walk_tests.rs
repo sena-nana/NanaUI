@@ -68,7 +68,7 @@ fn page(scrolled: bool) -> (AppContext, Vec<StableNodeId>) {
     }
     cx.commit_mutations(builder.queue).unwrap();
     product_frame(&mut cx, document(), viewport(), &mut bundled_face_shaper());
-    cx.compat_world_mut().rebuild_hit_test(document());
+    cx.world_mut().rebuild_hit_test(document());
     if let Some(scroller) = scroller {
         let mut queue = MutationQueue::new();
         queue.set_scroll_offset(scroller, crate::ScrollOffset { x: 0.0, y: 7.3 });
@@ -118,7 +118,7 @@ fn mount_leaves(scrolled: bool) -> Walked {
     );
     let layout = steps::take_all();
     assert!(
-        cx.compat_world_mut()
+        cx.world_mut()
             .rebuild_hit_test_scoped(document(), &work.input_hit_test),
         "the hit index takes the frame in place"
     );

@@ -17,20 +17,17 @@ fn scoped_stack(overrides: Option<ColorOverrides>) -> crate::Stack {
 fn layout(context: &mut AppContext, document: DocumentId) {
     let viewport = crate::LayoutViewport::new(320.0, 200.0);
     context.layout_document(document, viewport).unwrap();
-    let work = context.compat_world_mut().take_system_work();
-    context
-        .compat_world_mut()
-        .resolve_styles(&work.style)
-        .unwrap();
+    let work = context.world_mut().take_system_work();
+    context.world_mut().resolve_styles(&work.style).unwrap();
     if !work.text.is_empty() {
         context
-            .compat_world_mut()
+            .world_mut()
             .shape_text(&work.text, &mut crate::MeasureTextShaper)
             .unwrap();
         context.layout_document(document, viewport).unwrap();
-        let follow_up = context.compat_world_mut().take_system_work();
+        let follow_up = context.world_mut().take_system_work();
         context
-            .compat_world_mut()
+            .world_mut()
             .resolve_styles(&follow_up.style)
             .unwrap();
     }
@@ -2127,11 +2124,8 @@ fn live_motion_tokens_drive_sidebar_and_menu_surface_animations() {
     context.append_child(host, menu).unwrap();
     context.append_child(menu, menu_item).unwrap();
     assert!(context.activate_overlay(host, menu).unwrap());
-    let work = context.compat_world_mut().take_system_work();
-    context
-        .compat_world_mut()
-        .resolve_styles(&work.style)
-        .unwrap();
+    let work = context.world_mut().take_system_work();
+    context.world_mut().resolve_styles(&work.style).unwrap();
 
     let surface_anim =
         crate::component_animation_id(crate::component_animation_kinds::SURFACE, menu.stable_id())

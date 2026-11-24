@@ -100,7 +100,7 @@ fn flush(cx: &mut AppContext, first: bool) {
 }
 
 fn flush_with(cx: &mut AppContext, first: bool, shaper: &mut impl TextShaper) {
-    cx.compat_world_mut().observe_text_shaper(shaper);
+    cx.world_mut().observe_text_shaper(shaper);
     let mut force = first;
     loop {
         let work = cx.take_system_work_for(document());

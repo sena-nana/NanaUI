@@ -63,7 +63,7 @@ switch("静音").loading(pending).model(muted)
 | `hint` | — | 不在 `<Switch>` 的字段表里 |
 | `size` | — | 不在 `<Switch>` 的字段表里 |
 | `invalid` | — | 不在 `<Switch>` 的字段表里 |
-| `control_position` | `nana_ui::SwitchControlPosition` | 不在 `<Switch>` 的字段表里。默认画在行尾，`SwitchControlPosition::End`；`Start` 把开关画在文字前 |
+| `control_position` | `nana_ui::runtime::SwitchControlPosition` | 不在 `<Switch>` 的字段表里。默认画在行尾，`SwitchControlPosition::End`；`Start` 把开关画在文字前 |
 
 ## 事件
 

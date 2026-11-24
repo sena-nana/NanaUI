@@ -540,11 +540,6 @@ impl AppContext {
     }
 }
 
-/// Kept only as an empty placeholder so `lib.rs` re-exports stay intact until Wave 5.
-#[doc(hidden)]
-#[derive(Clone, Copy, Default)]
-pub struct TypeHooks;
-
 /// Per-node pointer, scroll, drag-end and focus-entry dispatch behavior.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct PointerOps {

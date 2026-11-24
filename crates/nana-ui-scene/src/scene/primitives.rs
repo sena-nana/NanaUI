@@ -6,10 +6,10 @@ use nana_ui_runtime::HOST_TEXTURE_RENDERER;
 impl UiScene {
     fn resolve_overlay_mount_z(&self, node: &ExtractedNode, base_z: i32) -> i32 {
         match crate::scene::effective_overlay_visual_parent(&self.nodes, node) {
-            nana_ui_runtime::VisualParent::TopLayer => {
+            nana_ui_runtime::scene_contract::VisualParent::TopLayer => {
                 base_z.max(nana_ui_runtime::TOP_LAYER_Z_INDEX)
             }
-            nana_ui_runtime::VisualParent::Modal(modal_id) => self
+            nana_ui_runtime::scene_contract::VisualParent::Modal(modal_id) => self
                 .nodes
                 .get(&modal_id)
                 .map_or(0, |modal| modal.z_index)
@@ -639,10 +639,10 @@ impl UiScene {
                 .and_then(|w| w.floating_overlay.as_ref())
             {
                 let base_z = match overlay.kind {
-                    nana_ui_runtime::WidgetFloatingOverlayKind::AttachedPopup => {
+                    nana_ui_runtime::scene_contract::WidgetFloatingOverlayKind::AttachedPopup => {
                         node.z_index.max(nana_ui_runtime::MENU_OVERLAY_Z_INDEX)
                     }
-                    nana_ui_runtime::WidgetFloatingOverlayKind::TriggeredSurface => {
+                    nana_ui_runtime::scene_contract::WidgetFloatingOverlayKind::TriggeredSurface => {
                         nana_ui_runtime::MENU_OVERLAY_Z_INDEX
                     }
                 };
@@ -720,7 +720,7 @@ impl UiScene {
     fn emit_widget_paint(
         &mut self,
         node: &ExtractedNode,
-        paint: &nana_ui_runtime::WidgetPaintOutput,
+        paint: &nana_ui_runtime::scene_contract::WidgetPaintOutput,
         page_origin: [f32; 2],
         transform: AffineTransform,
         clips: &Arc<[ClipRegion]>,
@@ -731,7 +731,7 @@ impl UiScene {
         overlay_visual_opacity: f32,
         node_order: usize,
     ) {
-        use nana_ui_runtime::{
+        use nana_ui_runtime::scene_contract::{
             WidgetBatchColors, WidgetFloatingOverlayKind, WidgetGlyph, WidgetPaintOp,
             WidgetTaggedOp,
         };
@@ -1024,15 +1024,15 @@ impl UiScene {
                         false
                     } else {
                         match text.retained_text {
-                            nana_ui_runtime::WidgetRetainedText::None => false,
-                            nana_ui_runtime::WidgetRetainedText::NodeTextIfRich => {
+                            nana_ui_runtime::scene_contract::WidgetRetainedText::None => false,
+                            nana_ui_runtime::scene_contract::WidgetRetainedText::NodeTextIfRich => {
                                 (node.rich_text.is_some() || !node.children.is_empty())
                                     && node
                                         .text
                                         .as_ref()
                                         .is_some_and(|n| n.value.as_str() == text.content.as_str())
                             }
-                            nana_ui_runtime::WidgetRetainedText::AlwaysClipOverflow => node
+                            nana_ui_runtime::scene_contract::WidgetRetainedText::AlwaysClipOverflow => node
                                 .text
                                 .as_ref()
                                 .is_some_and(|n| n.value.as_str() == text.content.as_str()),
@@ -1053,7 +1053,8 @@ impl UiScene {
                             .max_width_px
                             .unwrap_or(text_bounds.width);
                     }
-                    if text.retained_text == nana_ui_runtime::WidgetRetainedText::AlwaysClipOverflow
+                    if text.retained_text
+                        == nana_ui_runtime::scene_contract::WidgetRetainedText::AlwaysClipOverflow
                         && retained.is_none_or(|r| r.layout.overflow != Default::default())
                     {
                         let mut clipped = op_clips.to_vec();

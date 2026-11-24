@@ -2,9 +2,8 @@ use super::*;
 use crate::{ScenePaintViewport, SceneWgpuPainter, test_gpu};
 use nana_gpu::{__framework, GpuTextureDescriptor, GpuTextureFormat, GpuTextureUsages};
 use nana_ui_core::{LayoutStyle, OverflowSpec, PaintTransform};
-use nana_ui_runtime::{
-    ComputedStyle, CustomRenderNode, ExtractedNode, LayoutBox, NodeKind, NodeStyle,
-};
+use nana_ui_runtime::scene_contract::ExtractedNode;
+use nana_ui_runtime::{ComputedStyle, CustomRenderNode, LayoutBox, NodeKind, NodeStyle};
 use nana_ui_scene::UiScene;
 use std::time::{Duration, Instant};
 

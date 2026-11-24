@@ -2211,7 +2211,7 @@ mod tests {
             })
         ));
         let x = seek.x + seek.width / 2.0;
-        stage.cx.compat_world_mut().rebuild_hit_test(document());
+        stage.cx.world_mut().rebuild_hit_test(document());
         let world = stage.cx.world();
         for y in [strip.y - 6.0, strip.y + 1.0] {
             assert_eq!(

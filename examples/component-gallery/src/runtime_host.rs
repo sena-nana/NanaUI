@@ -1,12 +1,13 @@
 use std::sync::{Arc, Mutex};
 
 use nana_ui::runtime::{
-    AlignSpec, AppContext, ComponentView, DesktopShell, Entity, FlexDirection, FrameworkError,
-    IconButton, InteractionState, JustifySpec, LengthSpec, MutationQueue, NodeKind, NodeStyle,
-    RuntimeDocument, SemanticColorRole, StableNodeId, Text, UiWorld, View, ViewContext, Workspace,
+    AlignSpec, AppContext, ComponentView, ControlSize, DesktopShell, Entity, FlexDirection,
+    FrameworkError, IconButton, InteractionState, JustifySpec, LengthSpec, MutationQueue, NodeKind,
+    NodeStyle, RuntimeDocument, SemanticColorRole, StableNodeId, Text, UiWorld, View, ViewContext,
+    Workspace,
 };
 use nana_ui::{
-    ButtonKind, ControlSize, HeadlessInput, Icon, InputRouteOutcome, LogicalPoint, ThemeAppearance,
+    ButtonKind, HeadlessInput, Icon, InputRouteOutcome, LogicalPoint, ThemeAppearance,
     TitleBarDragTracker,
 };
 use nana_ui_platform::{

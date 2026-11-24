@@ -2428,7 +2428,8 @@ impl SceneWgpuPainter {
                         // Per-item solid colors (editor color swatches); no
                         // shadow and no surface paint by construction, so the
                         // batch collapses to one quads.push per item.
-                        let no_shadow: Option<nana_ui_runtime::ComponentElevation> = None;
+                        let no_shadow: Option<nana_ui_runtime::scene_contract::ComponentElevation> =
+                            None;
                         let default_surface = nana_ui_scene::QuadSurfacePaint::default();
                         for (item, color) in batch.iter().zip(colors.iter()) {
                             let item_bounds = local_rect(primitive.place(*item));
@@ -2663,7 +2664,9 @@ impl SceneWgpuPainter {
                     } => {
                         let handled_builtin = {
                             #[cfg(feature = "charts")]
-                            if custom.renderer.as_ref() == nana_ui_runtime::CHART_RENDERER {
+                            if custom.renderer.as_ref()
+                                == nana_ui_runtime::scene_contract::CHART_RENDERER
+                            {
                                 if let Some(payload) = custom.payload.as_ref().and_then(|p| {
                                     p.downcast_ref::<nana_ui_charts::ChartGpuPayload>()
                                 }) {
@@ -3914,7 +3917,7 @@ fn polyline_bounds(points: &[[f32; 2]]) -> Option<LogicalRect> {
 #[allow(clippy::too_many_arguments)]
 fn quad_painted_bounds(
     local: LogicalRect,
-    shadow: Option<&nana_ui_runtime::ComponentElevation>,
+    shadow: Option<&nana_ui_runtime::scene_contract::ComponentElevation>,
     surface: &nana_ui_scene::QuadSurfacePaint,
     affine: [f32; 6],
     persp: [f32; 2],
@@ -4957,7 +4960,7 @@ fn quad_paints_nothing(
     background: Option<nana_ui_core::PaintColor>,
     border_color: Option<nana_ui_core::PaintColor>,
     border_width: f32,
-    shadow: Option<&nana_ui_runtime::ComponentElevation>,
+    shadow: Option<&nana_ui_runtime::scene_contract::ComponentElevation>,
     surface: &nana_ui_scene::QuadSurfacePaint,
 ) -> bool {
     let edge = (border_width > 0.0 && border_color.is_some())

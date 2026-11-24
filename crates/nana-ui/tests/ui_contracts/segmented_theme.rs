@@ -1,4 +1,5 @@
 //! Selection options measure and paint the installed control typography.
+use nana_ui::runtime::scene_contract::{WidgetPaintOp, WidgetText};
 use nana_ui::{NanaTextShaper, runtime::*};
 use nana_ui_core::{AlignSpec, ControlSize, Icon, TextWeight, ThemeDefinition, ThemeToken};
 

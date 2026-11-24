@@ -272,7 +272,7 @@ mod tests {
 
     fn layout(cx: &mut AppContext, doc: DocumentId, width: f32, height: f32) {
         let work = cx.take_system_work();
-        cx.compat_world_mut().resolve_styles(&work.style).unwrap();
+        cx.world_mut().resolve_styles(&work.style).unwrap();
         cx.layout_document(doc, LayoutViewport::new(width, height))
             .unwrap();
         let root = cx.world().document_order(doc)[0];

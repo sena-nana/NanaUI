@@ -5,16 +5,13 @@ use std::sync::{Arc, Mutex};
 use nana_ui::WindowChromeEvent;
 use nana_ui::runtime::view::{entity_ref, widget, with_refs};
 use nana_ui::runtime::{
-    AboutSection, Activate, AppearanceSection, Button, DesktopShell, DocumentId, Entity,
-    FrameworkError, IconButton, LayoutViewport, LengthSpec, OverlayHost, RuntimeDocument,
-    SemanticColorRole, SettingsBack, SettingsCollapsibleCard, SettingsPage, SettingsSidebar,
-    SettingsTabSelected, StableNodeId, ToggleChanged,
+    AboutSection, Activate, AppearanceEvent, AppearanceSection, Button, ControlSize, DesktopShell,
+    DocumentId, Entity, FrameworkError, IconButton, LayoutViewport, LengthSpec, OverlayHost,
+    RuntimeDocument, SemanticColorRole, SettingsBack, SettingsCollapsibleCard, SettingsPage,
+    SettingsSidebar, SettingsTabSelected, StableNodeId, ToggleChanged, WorkspaceModel,
 };
 use nana_ui::theme::type_scale;
-use nana_ui::{
-    AppearanceEvent, ButtonKind, ControlSize, NanaTextShaper, RegionId, ThemeAppearance,
-    WorkspaceAction, WorkspaceModel,
-};
+use nana_ui::{ButtonKind, NanaTextShaper, RegionId, ThemeAppearance, WorkspaceAction};
 use nana_ui_platform::InputPayload;
 
 use super::runtime_host::{

@@ -13,7 +13,7 @@ There is no `<Drawer>` and no `open()`.
 ```rust view
 use nana_ui::runtime::view;
 use nana_ui::runtime::Drawer;
-use nana_ui::DrawerSide;
+use nana_ui::runtime::DrawerSide;
 
 view! {
     <Widget
@@ -31,7 +31,7 @@ view! {
 ```rust rust
 use nana_ui::runtime::view::{text, widget};
 use nana_ui::runtime::Drawer;
-use nana_ui::DrawerSide;
+use nana_ui::runtime::DrawerSide;
 
 widget(
     Drawer::new("Filters")
@@ -73,7 +73,7 @@ The small tolerance around sidebar, split, and Dock handles underneath applies o
 
 ## Properties
 
-`.side` takes `nana_ui::DrawerSide`: `Left`, `Right`, `Bottom`.
+`.side` takes `nana_ui::runtime::DrawerSide`: `Left`, `Right`, `Bottom`.
 
 `.description` is written below the title.
 
@@ -84,7 +84,7 @@ The small tolerance around sidebar, split, and Dock handles underneath applies o
 | Property | Type | Description |
 | --- | --- | --- |
 | `title` | — | `Drawer::new(title)` |
-| `.side` | `nana_ui::DrawerSide` | `Left`, `Right`, `Bottom`. `Drawer::new(title)` docks to the right by default |
+| `.side` | `nana_ui::runtime::DrawerSide` | `Left`, `Right`, `Bottom`. `Drawer::new(title)` docks to the right by default |
 | `.description` | — | Written below the title |
 | `.close_policy` | `nana_ui::DialogClosePolicy` | Takes `nana_ui::DialogClosePolicy` |
 | `.initial_focus` | — | Whether focus lands on the surface, the first action, or a node you specify after opening |

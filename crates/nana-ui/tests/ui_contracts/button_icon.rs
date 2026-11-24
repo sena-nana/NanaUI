@@ -250,7 +250,7 @@ fn button_slot_changes_invalidate_layout_but_spinner_phase_only_repaints() {
         view.icon = None;
     })
     .unwrap();
-    let work = cx.compat_world_mut().take_system_work();
+    let work = cx.take_system_work();
     assert!(
         work.layout_frontier_seeds
             .iter()

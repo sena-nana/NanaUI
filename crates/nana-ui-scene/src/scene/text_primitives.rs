@@ -92,7 +92,7 @@ pub(super) fn rich_editor_mark_primitives(
     bounds: SceneRect,
     vertical: TextVerticalAlignment,
     retained: &nana_ui_runtime::RetainedTextLayout,
-    marks: &nana_ui_runtime::RichEditorMarks,
+    marks: &nana_ui_runtime::scene_contract::RichEditorMarks,
     selection_color: [f32; 4],
     selection_paint_color: Option<nana_ui_core::PaintColor>,
     caret_color: [f32; 4],
@@ -128,7 +128,8 @@ pub(super) fn rich_editor_mark_primitives(
             .collect()
     };
     let caret = marks.caret.and_then(|byte| {
-        let (x, line_top, height) = nana_ui_runtime::rich_editor_caret_box(layout, byte)?;
+        let (x, line_top, height) =
+            nana_ui_runtime::scene_contract::rich_editor_caret_box(layout, byte)?;
         let mut quad = visual_quad(
             context,
             collection_slot(TEXT_EDITOR_CARET, 0),

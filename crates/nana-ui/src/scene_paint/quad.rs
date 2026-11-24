@@ -6,7 +6,7 @@ use nana_ui_core::{
     BackgroundImage, BackgroundImageFit, BackgroundRepeat, BorderImageSpec, BorderImageTile,
     CssGradient, GradientStop, LengthSpec, LinearGradient, MAX_BACKGROUND_LAYERS, MaskImage,
 };
-use nana_ui_runtime::ComponentElevation;
+use nana_ui_runtime::scene_contract::ComponentElevation;
 use nana_ui_scene::QuadSurfacePaint;
 
 use super::{

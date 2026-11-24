@@ -18,16 +18,15 @@ use nana_ui::layout::{
 use nana_ui::menu::{MenuConfirmation, MenuSelection};
 use nana_ui::overlay::ExclusiveOverlay;
 use nana_ui::runtime::{
-    CalendarHeatmapActiveCell, CalendarHeatmapDatum, CalendarHeatmapEvent, CalendarHeatmapModel,
-    CalendarHeatmapOptions, CommandPaletteEvent, CommandPaletteItem, ContextMenuItem,
-    DropdownEvent, NativeMarkdown, SearchDropdownOption, TreeViewEvent, XYPadEvent, XYPadValue,
-    build_calendar_heatmap_model,
+    AppearanceEvent, CalendarHeatmapActiveCell, CalendarHeatmapDatum, CalendarHeatmapEvent,
+    CalendarHeatmapModel, CalendarHeatmapOptions, CommandPaletteEvent, CommandPaletteItem,
+    ContextMenuItem, DropdownEvent, NativeMarkdown, SearchDropdownOption, SelectionMove,
+    SingleSelection, TreeViewEvent, XYPadEvent, XYPadValue, build_calendar_heatmap_model,
 };
 use nana_ui::runtime::{
     DockWorkspace, DockWorkspaceEvent, FrameworkError, GraphCanvasEvent, GraphMinimapEvent,
     PaneChromeActionKind, RuntimeDocument, UiScene,
 };
-use nana_ui::selection::{SelectionMove, SingleSelection};
 use nana_ui::settings::{
     AppearanceSettings, BackdropTarget, SettingsModel, SettingsState, SettingsTab, SettingsTabId,
     WindowMaterialMode,
@@ -36,10 +35,10 @@ use nana_ui::theme::{ThemeAppearance, ThemeTokens};
 use nana_ui::window_chrome::{WindowChromeEvent, WindowChromeState};
 use nana_ui::workspace::{WorkspaceAction, WorkspaceController};
 use nana_ui::{
-    AppearanceEvent, GraphEdge, GraphEndpoint, GraphModel, GraphNode, GraphPoint, GraphPort,
-    GraphPortKind, GraphPortSide, GraphSelection, GraphSize, GraphViewport, MaterialOutcome,
-    RoutedInput, RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw,
-    SharedStore, SplitAxis, SplitPaneAction, SplitPaneController, memory_store,
+    GraphEdge, GraphEndpoint, GraphModel, GraphNode, GraphPoint, GraphPort, GraphPortKind,
+    GraphPortSide, GraphSelection, GraphSize, GraphViewport, MaterialOutcome, RoutedInput,
+    RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw, SharedStore,
+    SplitAxis, SplitPaneAction, SplitPaneController, memory_store,
 };
 use nana_ui_platform::host::WindowCommand;
 use nana_ui_platform::{InputPayload, WindowDescriptor, WindowEvent, WindowId, WindowRole};
@@ -128,7 +127,7 @@ pub enum GalleryDock {
 #[derive(Debug, Clone, PartialEq)]
 pub enum GalleryMessage {
     /// Host pointer/window/frame event. [`WorkspaceController`] converts this
-    /// to [`nana_ui::WorkspaceMutation`]; region state is [`nana_ui::WorkspaceModel`].
+    /// to [`nana_ui::runtime::WorkspaceMutation`]; region state is [`nana_ui::runtime::WorkspaceModel`].
     Workspace(WorkspaceAction),
     SplitPane(SplitPaneAction),
     Dock(GalleryDock),

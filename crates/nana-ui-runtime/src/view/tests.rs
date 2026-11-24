@@ -6919,8 +6919,8 @@ fn focused_list_item_moves_muted_descendants_to_focus_text_unless_plated() {
     let resolve = |cx: &mut AppContext| {
         cx.layout_document(document, LayoutViewport::new(320.0, 80.0))
             .unwrap();
-        let work = cx.compat_world_mut().take_system_work();
-        cx.compat_world_mut().resolve_styles(&work.style).unwrap();
+        let work = cx.world_mut().take_system_work();
+        cx.world_mut().resolve_styles(&work.style).unwrap();
     };
     resolve(&mut cx);
     let item = view.roots()[0];

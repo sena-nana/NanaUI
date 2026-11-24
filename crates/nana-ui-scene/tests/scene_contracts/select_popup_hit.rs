@@ -122,7 +122,7 @@ fn option_count_and_size_refresh_menu_hits_but_highlighting_does_not() {
             control.highlighted = Some(2);
         })
         .unwrap();
-    let work = doc.context_mut().compat_world_mut().take_system_work();
+    let work = doc.context_mut().take_system_work();
     assert!(work.input_hit_test.is_empty());
     assert!(!work.render_extraction.is_empty());
 }
@@ -240,7 +240,7 @@ fn an_overflowing_menu_paints_only_the_rows_it_shows_inside_its_border() {
             select.menu_scroll.offset = Some(150.0);
         })
         .unwrap();
-    let work = doc.context_mut().compat_world_mut().take_system_work();
+    let work = doc.context_mut().take_system_work();
     assert!(work.input_hit_test.is_empty());
     assert!(!work.render_extraction.is_empty());
     // Scrolled as one small edit, so the scene takes it as a delta.

@@ -2194,7 +2194,7 @@ mod tests {
     /// that layout gave it.
     fn frame(context: &mut AppContext, shaper: &mut crate::MeasureTextShaper) {
         let viewport = crate::LayoutViewport::new(600.0, 400.0);
-        context.compat_world_mut().observe_text_shaper(shaper);
+        context.world_mut().observe_text_shaper(shaper);
         for _ in 0..8 {
             let work = context.take_system_work();
             let mut seeds = work.layout_frontier_seeds.clone();

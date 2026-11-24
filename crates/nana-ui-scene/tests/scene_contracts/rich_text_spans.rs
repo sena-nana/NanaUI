@@ -771,18 +771,15 @@ fn a_span_background_paints_under_the_selection_and_the_glyphs() {
             height: rect.height,
         })
         .collect();
-    runtime
-        .context_mut()
-        .compat_world_mut()
-        .set_document_text_selection(
-            DocumentId::new(1).unwrap(),
-            Some(nana_ui_runtime::DocumentTextSelection {
-                node: id(LABEL),
-                start: 0,
-                end: BEFORE_MARKED.len() + 4,
-                lines,
-            }),
-        );
+    runtime.context_mut().set_document_text_selection(
+        DocumentId::new(1).unwrap(),
+        Some(nana_ui_runtime::DocumentTextSelection {
+            node: id(LABEL),
+            start: 0,
+            end: BEFORE_MARKED.len() + 4,
+            lines,
+        }),
+    );
     settle(&mut runtime, &mut shaper);
     let fills = label_fills(&runtime);
     let background = fills

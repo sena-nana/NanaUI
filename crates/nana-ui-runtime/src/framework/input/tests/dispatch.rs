@@ -596,12 +596,9 @@ fn focused_textarea_caret_uses_text_color_and_clears_on_outside_press() {
     context.commit_mutations(layout).unwrap();
     assert!(context.focus_node(document, editor.stable_id()).unwrap());
     let work = context.take_system_work();
+    context.world_mut().resolve_styles(&work.style).unwrap();
     context
-        .compat_world_mut()
-        .resolve_styles(&work.style)
-        .unwrap();
-    context
-        .compat_world_mut()
+        .world_mut()
         .shape_text(&work.text, &mut MeasureTextShaper)
         .unwrap();
     context.rebuild_hit_test(document);
@@ -5128,12 +5125,9 @@ fn editor_render_options_default_off_and_opt_in_drives_derived_presentation() {
     );
     context.commit_mutations(layout).unwrap();
     let work = context.take_system_work();
+    context.world_mut().resolve_styles(&work.style).unwrap();
     context
-        .compat_world_mut()
-        .resolve_styles(&work.style)
-        .unwrap();
-    context
-        .compat_world_mut()
+        .world_mut()
         .shape_text(&work.text, &mut MeasureTextShaper)
         .unwrap();
 
@@ -5172,12 +5166,9 @@ fn textarea_wheel_scrolls_internal_text_and_survives_projection() {
     );
     context.commit_mutations(layout).unwrap();
     let work = context.take_system_work();
+    context.world_mut().resolve_styles(&work.style).unwrap();
     context
-        .compat_world_mut()
-        .resolve_styles(&work.style)
-        .unwrap();
-    context
-        .compat_world_mut()
+        .world_mut()
         .shape_text(&work.text, &mut MeasureTextShaper)
         .unwrap();
     context.rebuild_hit_test(document);
@@ -5238,12 +5229,9 @@ fn pointer_press_on_fold_gutter_toggles_the_fold() {
     );
     context.commit_mutations(layout).unwrap();
     let work = context.take_system_work();
+    context.world_mut().resolve_styles(&work.style).unwrap();
     context
-        .compat_world_mut()
-        .resolve_styles(&work.style)
-        .unwrap();
-    context
-        .compat_world_mut()
+        .world_mut()
         .shape_text(&work.text, &mut MeasureTextShaper)
         .unwrap();
     context.rebuild_hit_test(document);
@@ -5257,12 +5245,9 @@ fn pointer_press_on_fold_gutter_toggles_the_fold() {
         })
         .unwrap();
     let work = context.take_system_work();
+    context.world_mut().resolve_styles(&work.style).unwrap();
     context
-        .compat_world_mut()
-        .resolve_styles(&work.style)
-        .unwrap();
-    context
-        .compat_world_mut()
+        .world_mut()
         .shape_text(&work.text, &mut MeasureTextShaper)
         .unwrap();
     context.rebuild_hit_test(document);
@@ -5335,12 +5320,9 @@ fn pointer_press_on_fold_gutter_toggles_the_fold() {
         .unwrap();
     assert_eq!(context.world().text_fold_collapsed(node), vec![fold]);
     let work = context.take_system_work();
+    context.world_mut().resolve_styles(&work.style).unwrap();
     context
-        .compat_world_mut()
-        .resolve_styles(&work.style)
-        .unwrap();
-    context
-        .compat_world_mut()
+        .world_mut()
         .shape_text(&work.text, &mut MeasureTextShaper)
         .unwrap();
 
@@ -6112,9 +6094,9 @@ fn completion_items(labels: &[&str]) -> std::sync::Arc<[crate::TextCompletion]> 
 
 /// 布局 + shape + 命中测试的完整几何环境（指针/滚轮路由需要）。
 fn shape_completion_editor(context: &mut AppContext, document: DocumentId, node: StableNodeId) {
-    context.compat_world_mut().resolve_styles(&[node]).unwrap();
+    context.world_mut().resolve_styles(&[node]).unwrap();
     context
-        .compat_world_mut()
+        .world_mut()
         .shape_text(&[node], &mut MeasureTextShaper)
         .unwrap();
     context.rebuild_hit_test(document);
@@ -7009,7 +6991,7 @@ fn a_press_in_a_scrolled_field_places_the_caret_where_the_text_shows() {
     context.layout_document(document, layout_viewport).unwrap();
     let work = context.take_system_work();
     context
-        .compat_world_mut()
+        .world_mut()
         .shape_text(&work.text, &mut shaper)
         .unwrap();
     context.rebuild_hit_test(document);

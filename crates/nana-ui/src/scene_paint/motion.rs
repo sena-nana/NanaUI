@@ -779,9 +779,10 @@ mod tests {
             evaluate_track,
         },
     };
+    use nana_ui_runtime::scene_contract::ExtractedNode;
     use nana_ui_runtime::{
-        AnimationId, AnimationSpec, ComputedStyle, DocumentId, ExtractedNode, LayoutBox,
-        MutationQueue, NodeKind, NodeStyle, StableNodeId, UiWorld,
+        AnimationId, AnimationSpec, ComputedStyle, DocumentId, LayoutBox, MutationQueue, NodeKind,
+        NodeStyle, StableNodeId, UiWorld,
     };
     use nana_ui_scene::{AffineTransform, UiScene};
 

@@ -1,7 +1,8 @@
 //! Dependencies which change pixels without changing the retained projection.
 use super::*;
 use nana_ui_core::{BackgroundImage, BackgroundImageFit, ImageSampling, LayoutStyle};
-use nana_ui_runtime::{ComputedStyle, ExtractedNode, LayoutBox, NodeKind, NodeStyle, StableNodeId};
+use nana_ui_runtime::scene_contract::ExtractedNode;
+use nana_ui_runtime::{ComputedStyle, LayoutBox, NodeKind, NodeStyle, StableNodeId};
 use std::sync::Arc;
 
 fn quad(layout: LayoutStyle) -> ExtractedNode {

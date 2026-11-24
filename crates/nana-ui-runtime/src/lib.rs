@@ -73,7 +73,6 @@ pub use inline_content::{
     MixedInlineContent,
 };
 pub use inline_flow::InlineFlow;
-pub use world::inline_content::text_layout_origin;
 mod layout_result;
 mod sticky;
 /// Benchmark-only coarse phase clocks for `--profile-layout`. How much work
@@ -133,8 +132,6 @@ pub use markdown_drawing::{MarkdownDrawing, MarkdownDrawingCommand};
 mod rich_text;
 mod rich_text_editor;
 mod rich_text_view;
-#[doc(hidden)]
-pub use rich_text_editor::caret_box as rich_editor_caret_box;
 pub use rich_text_editor::{
     RichAttrMask, RichClipboardCommand, RichEditCommand, RichSelectionAttrs, RichTextEditor,
     RichTextEditorEvent, RichTypingStylePolicy,
@@ -231,19 +228,14 @@ pub use command_palette::{
 pub use component_registry::{
     ComponentRegistry, ComponentTypeId, RegisterableComponent, normalize_tag,
 };
-pub use components::ExtractedMove;
 pub use components::{
     AccessibilityAction, AccessibilityActionRequest, AccessibilityDelta, AccessibilityLive,
     AccessibilityNode, AccessibilityPlacements, AccessibilityRole, AccessibilityScrollAxis,
     AccessibilityScrollDirection, AccessibilityScrollUnit, AccessibilityState, AccessibilityUpdate,
-    ComponentElevation, ComponentImage, ComponentTextRegion, ComponentTriggerSurface,
-    ComputedStyle, ContrastRing, CustomRenderNode, DocumentTextSelection, DropHoverOverlay,
-    EventListeners, EventRoute, ExtractedCompositor, ExtractedLayout, ExtractedNode,
-    ExtractedTextSpan, FontStrut, ImeComposition, ImeView, InheritedStyle, InheritedStyleExt,
-    InteractionState, InteractionStyle, LayoutBox, LayoutInput, LineLabel, MeasureTextShaper,
-    MenuItemMark, MenuSurfaceKind, ModalLayoutInput, MountState, NodeStyle, NumberSteppers,
-    OverlayHostState, PointerCaptureChange, RangeCaution, RangeValueThumb, RichEditorMarks,
-    ScrollMetrics, ScrollOffset, ScrollbarBar, ScrollbarBars, SelectMenuDrag, SelectMenuGeometry,
+    ComputedStyle, CustomRenderNode, DocumentTextSelection, EventListeners, EventRoute, FontStrut,
+    ImeComposition, ImeView, InheritedStyle, InheritedStyleExt, InteractionState, InteractionStyle,
+    LayoutBox, LayoutInput, LineLabel, MeasureTextShaper, ModalLayoutInput, MountState, NodeStyle,
+    RangeCaution, RangeValueThumb, ScrollMetrics, ScrollOffset, SelectMenuDrag, SelectMenuGeometry,
     SelectMenuRoom, SelectMenuScroll, SelectOptionData, SelectOptionGeometry, SemanticPaint,
     TextAffinity, TextAtomChip, TextAtomClosed, TextAtomSpan, TextCodeFold, TextColorSwatchSpan,
     TextCompletion, TextCompletionEdit, TextCompletionPopup, TextCompletionRow,
@@ -254,10 +246,7 @@ pub use components::{
     TextInputView, TextInputVisual, TextMatchMarker, TextMatchSpan, TextMetrics,
     TextMinimapGeometry, TextSelection, TextShapeConstraints, TextShaper, TextShaping,
     TextSignatureHelp, TextSignaturePopup, TextSnippet, TextStickyLineGeometry, TextValue,
-    TextVerticalAlignment, TextWhitespaceKind, TooltipVisual, TriggeredMenuOverlay, VisualParent,
-    decode_virtual_menu_item, decode_virtual_tree_item, decode_virtual_tree_toggle, menu_row_index,
-    menu_row_slots, virtual_listbox_id, virtual_menu_item_id, virtual_tree_item_id,
-    virtual_tree_toggle_id,
+    TextVerticalAlignment, TextWhitespaceKind, TooltipVisual,
 };
 pub use curve_field::{
     CurveChanged, CurveDragState, CurveDragging, CurveField, CurveInput, CurvePoint,
@@ -304,8 +293,6 @@ pub use framework::{
     Task, TextDeleteKind, TextEditAction, TextEditOrigin, TextFindScope, UiExtension, View,
     ViewContext, VirtualListItems, VirtualTableItems, VirtualTreeItems,
 };
-#[doc(hidden)]
-pub use framework::{EditableHooks, TypeBehavior, TypeHooks};
 pub use gpu_slots::{
     GPU_TEXTURE_VIEW_RENDERER, GPU_VIEW_RENDERER, GpuTextureView, GpuView, GpuViewMode,
     GpuViewPalette, HOST_TEXTURE_RENDERER, TextureSlotName, gpu_view_params, pack_gpu_revision,
@@ -341,8 +328,6 @@ pub use key_layers::{
     KeymapLayer, KeymapLayerLayout, KeymapLayerVisual, KeymapMatch, KeymapState, MenuActionMap,
     MenuActionMapError,
 };
-#[doc(hidden)]
-pub use layout_engine::parts::{CONTENT_PART_SLOTS, ContentParts, LeadingParts, NO_CONTENT_PARTS};
 pub use layout_engine::{
     LayoutSliceBudget, LayoutViewport, RetainedLayoutCache, RuntimeLayoutEngine, StyleLayoutNode,
 };
@@ -374,10 +359,11 @@ pub use mutation::{MutationQueue, UiMutation};
 pub use nana_ui_charts as chart;
 pub use nana_ui_core::FrameworkStrings;
 pub use nana_ui_core::{
-    ActionId, ActionPickerNavigation, AlignSpec, ClipCircle, ClipEllipse, ClipInset, ClipPath,
-    ClipPoint, ClipShapeRadius, CommandPaletteEvent, CommandPaletteItem, CompiledTheme, ContentFit,
-    ContextPredicate, CursorSpec, DirSpec, DisplaySpec, DropAccepts, DropEffect, DropKind,
-    DropdownEvent, DropdownSelection, DynamicLayoutCounters, ElevationRole, FileDragKind,
+    ActionId, ActionPickerNavigation, AlignSpec, AnchoredMenuPlacement, AppearanceEvent,
+    ClipCircle, ClipEllipse, ClipInset, ClipPath, ClipPoint, ClipShapeRadius, CommandPaletteEvent,
+    CommandPaletteItem, CompiledTheme, ContentFit, ContextPredicate, ControlSize, CursorSpec,
+    DirSpec, DisplaySpec, DrawerSide, DropAccepts, DropEffect, DropKind, DropdownEvent,
+    DropdownSelection, DynamicLayoutCounters, ElevationRole, ExpansionState, FileDragKind,
     FlexDirection, FlexWrap, FontFeatureSetting, FontKerningSpec, FontVariationSetting, FrameStage,
     GRAPH_EDGE_HIT_TOLERANCE, GRAPH_MAX_ZOOM, GRAPH_MIN_ZOOM, GRAPH_NODE_TITLE_HEIGHT,
     GRAPH_PORT_HIT_RADIUS, GRAPH_PORT_INSET, GRAPH_PORT_PITCH, GpuWorkObservation, GraphCanvasId,
@@ -388,25 +374,26 @@ pub use nana_ui_core::{
     KeyContext, LayoutStyle, LengthAtom, LengthSpec, LineBreakSpec, LineHeightSpec,
     OutputWorkObservation, OverflowSpec, OverlayMount, PaintTransform, PhysicalEdge,
     PointerEventsSpec, PopoverAlignment, PopoverPlacement, PositionSpec, RadiusTier,
-    ScopeGeneration, SemanticColorMix, SemanticColorRole, ShapeRecipe, ShapeRole, StatusTone,
-    TITLE_BAR_HEIGHT, TabDragGroup, TabDragLease, TabDragRect, TabDragSurface, TabDropIndicator,
-    TabStripPaint, TableCursor, TableNavigation, TextAlignSpec, TextShadowSpec, ThemeAppearance,
-    ThemeCategoryGenerations, ThemeDependencyMask, ThemeId, ThemeMetricsPatch, ThemePackage,
-    ThemePackageError, ThemePatch, ThemeRecipeFamily, ThemeRegistry, ThemeScopeId,
-    ThemeWorkCounters, TransformOrigin, TreeNavigation, TreeNode, TreeOrder, TreeViewEvent,
-    UserSelectSpec, ValidationIntent, ViewportAxis, VirtualAlignment, VirtualFrozenWindow,
-    VirtualListLayout, VirtualListMaterialization, VirtualListMaterializationError,
-    VirtualListMaterializer, VirtualListMount, VirtualListWindow, VirtualScrollAnchor,
-    VirtualTableFrozenWindow, VirtualTableLayout, VirtualTableMaterialization,
-    VirtualTableMaterializer, VirtualTableWindow, VirtualTreeLayout, VirtualTreeRow,
-    VirtualTreeWindow, VirtualViewport, VisibilitySpec, WINDOW_CONTROL_GAP, WINDOW_CONTROL_WIDTH,
-    WhiteSpaceSpec, WordBreakSpec, WorkCounters, WritingContext, WritingModeSpec,
-    custom_window_controls_width, graph_node_fitted_height, port_tangent, space,
+    ScopeGeneration, SemanticColorMix, SemanticColorRole, ShapeRecipe, ShapeRole, SplitPaneModel,
+    SplitPaneMutation, StatusTone, SwitchControlPosition, TITLE_BAR_HEIGHT, TabDragGroup,
+    TabDragLease, TabDragRect, TabDragSurface, TabDropIndicator, TabStripPaint, TableCursor,
+    TableNavigation, TextAlignSpec, TextShadowSpec, ThemeAppearance, ThemeCategoryGenerations,
+    ThemeDependencyMask, ThemeId, ThemeMetricsPatch, ThemePackage, ThemePackageError, ThemePatch,
+    ThemeRecipeFamily, ThemeRegistry, ThemeScopeId, ThemeWorkCounters, TransformOrigin,
+    TreeNavigation, TreeNode, TreeOrder, TreeViewEvent, UserSelectSpec, ValidationIntent,
+    ViewportAxis, VirtualAlignment, VirtualFrozenWindow, VirtualListLayout,
+    VirtualListMaterialization, VirtualListMaterializationError, VirtualListMaterializer,
+    VirtualListMount, VirtualListWindow, VirtualScrollAnchor, VirtualTableFrozenWindow,
+    VirtualTableLayout, VirtualTableMaterialization, VirtualTableMaterializer, VirtualTableWindow,
+    VirtualTreeLayout, VirtualTreeRow, VirtualTreeWindow, VirtualViewport, VisibilitySpec,
+    WINDOW_CONTROL_GAP, WINDOW_CONTROL_WIDTH, WORKSPACE_REGION_TRANSITION_DURATION, WhiteSpaceSpec,
+    WordBreakSpec, WorkCounters, WorkspaceModel, WorkspaceMutation, WritingContext,
+    WritingModeSpec, custom_window_controls_width, graph_node_fitted_height, port_tangent, space,
     tree_navigation_event, type_scale,
 };
 pub use nana_ui_core::{
-    KeyedOrder, SelectionGesture, SelectionMode, SelectionModifiers, SelectionOrder,
-    SelectionState, SelectionStep, TableColumn, keyed_order,
+    KeyedOrder, SelectionGesture, SelectionMode, SelectionModifiers, SelectionMove, SelectionOrder,
+    SelectionState, SelectionStep, SingleSelection, TableColumn, keyed_order,
 };
 pub use overlay_surfaces::{
     ConfirmDialog, ConfirmIntent, ConfirmSlots, Drawer, ModalBehavior, ModalFrameGeometry,
@@ -537,20 +524,41 @@ pub use view_components::{
     TextChanged, TextClamped, TextInput, TextSubmitted, ToggleChanged, Tooltip, TrailingAlign,
     UserScroll,
 };
-pub use widget_visual::{
-    CHART_RENDERER, CONTEXT_MENU_HINTS, CONTEXT_MENU_IMAGE_BACKDROPS, CONTEXT_MENU_IMAGES,
-    CustomGpuPayload, MODAL_SCRIM_SLOT, SCROLLBAR_CHROME_SLOT_BASE, SELECT_MENU_BACKGROUNDS,
-    SELECT_MENU_HINTS, SELECT_MENU_IMAGE_BACKDROPS, SELECT_MENU_IMAGES, SELECT_MENU_LABELS,
-    SELECT_MENU_MARKS, SELECT_MENU_SCROLLBAR, SELECT_MENU_SURFACE_SLOT, TEXT_ATOM_ICONS_NS,
-    TEXT_ATOM_LABELS_NS, TEXT_DIAGNOSTIC_LABELS_NS, TEXT_DIAGNOSTIC_MARKERS_NS,
-    TEXT_LINE_LABELS_NS, TRIGGERED_OVERLAY_SURFACE_SLOT, WIDGET_VECTOR_LAYER_BASE,
-    WidgetBatchColors, WidgetChildTextSuppression, WidgetFloatingOverlay,
-    WidgetFloatingOverlayKind, WidgetGlyph, WidgetIcon, WidgetImage, WidgetModalFrame,
-    WidgetPaintCtx, WidgetPaintOp, WidgetPaintOutput, WidgetQuad, WidgetQuadBatch,
-    WidgetRetainedText, WidgetRootSurface, WidgetStroke, WidgetTaggedOp, WidgetText, WidgetVisual,
-    WidgetVisualContent, WidgetVisualHandle, is_floating_overlay_slot, is_select_menu_slot,
-    scrollbar_chrome_slot, widget_collection_slot,
-};
+/// Scene and painter internal contract shared with `nana-ui-scene`, `nana-ui`,
+/// `nana-ui-devtools`, and host benchmarks/snapshot tools.
+#[doc(hidden)]
+pub mod scene_contract {
+    pub use crate::components::{
+        ComponentElevation, ComponentImage, ComponentTextRegion, ComponentTriggerSurface,
+        ContrastRing, DropHoverOverlay, ExtractedCompositor, ExtractedLayout, ExtractedMove,
+        ExtractedNode, ExtractedTextSpan, MenuItemMark, MenuSurfaceKind, NumberSteppers,
+        OverlayHostState, PointerCaptureChange, RichEditorMarks, ScrollbarBar, ScrollbarBars,
+        TriggeredMenuOverlay, VisualParent, decode_virtual_menu_item, decode_virtual_tree_item,
+        decode_virtual_tree_toggle, menu_row_index, menu_row_slots, virtual_listbox_id,
+        virtual_menu_item_id, virtual_tree_item_id, virtual_tree_toggle_id,
+    };
+    pub use crate::framework::{EditableHooks, TypeBehavior};
+    pub use crate::layout_engine::parts::{
+        CONTENT_PART_SLOTS, ContentParts, LeadingParts, NO_CONTENT_PARTS,
+    };
+    pub use crate::rich_text_editor::caret_box as rich_editor_caret_box;
+    pub use crate::widget_visual::{
+        CHART_RENDERER, CONTEXT_MENU_HINTS, CONTEXT_MENU_IMAGE_BACKDROPS, CONTEXT_MENU_IMAGES,
+        CustomGpuPayload, MODAL_SCRIM_SLOT, SCROLLBAR_CHROME_SLOT_BASE, SELECT_MENU_BACKGROUNDS,
+        SELECT_MENU_HINTS, SELECT_MENU_IMAGE_BACKDROPS, SELECT_MENU_IMAGES, SELECT_MENU_LABELS,
+        SELECT_MENU_MARKS, SELECT_MENU_SCROLLBAR, SELECT_MENU_SURFACE_SLOT, TEXT_ATOM_ICONS_NS,
+        TEXT_ATOM_LABELS_NS, TEXT_DIAGNOSTIC_LABELS_NS, TEXT_DIAGNOSTIC_MARKERS_NS,
+        TEXT_LINE_LABELS_NS, TRIGGERED_OVERLAY_SURFACE_SLOT, WIDGET_VECTOR_LAYER_BASE,
+        WidgetBatchColors, WidgetChildTextSuppression, WidgetFloatingOverlay,
+        WidgetFloatingOverlayKind, WidgetGlyph, WidgetIcon, WidgetImage, WidgetModalFrame,
+        WidgetPaintCtx, WidgetPaintOp, WidgetPaintOutput, WidgetQuad, WidgetQuadBatch,
+        WidgetRetainedText, WidgetRootSurface, WidgetStroke, WidgetTaggedOp, WidgetText,
+        WidgetVisual, WidgetVisualContent, WidgetVisualHandle, is_floating_overlay_slot,
+        is_select_menu_slot, scrollbar_chrome_slot, widget_collection_slot,
+    };
+    pub use crate::world::inline_content::text_layout_origin;
+}
+pub(crate) use scene_contract::*;
 pub use workspace::{Workspace, WorkspaceRegionSlot, WorkspaceResizeHandle};
 pub use world::{
     BuildIdHasher, CommitReport, DocumentId, IdHasher, InputModality, LastThemeInvalidation,

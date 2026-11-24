@@ -1,4 +1,5 @@
 //! Real control measurements and Scene chrome follow one installed theme.
+use nana_ui::runtime::scene_contract::WidgetPaintOp;
 use nana_ui::{HeadlessInput, NanaTextShaper, PointerPhase, runtime::*};
 use nana_ui_core::{ControlSize, LengthSpec, SwitchControlPosition, ThemeDefinition};
 use nana_ui_platform::{InputModifiers, InputPayload, KeyInput, KeyState};

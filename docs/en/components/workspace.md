@@ -1,6 +1,6 @@
 # Workspace
 
-`Workspace` binds your content to regions. The content is child nodes in the tree. Collapse, size, visibility, and restore go through `nana_ui::WorkspaceModel` and `WorkspaceMutation`.
+`Workspace` binds your content to regions. The content is child nodes in the tree. Collapse, size, visibility, and restore go through `nana_ui::runtime::WorkspaceModel` and `WorkspaceMutation`.
 
 ## Basic usage
 

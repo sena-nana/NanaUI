@@ -92,7 +92,7 @@ Android、XR 与 accessibility provider 的设备验收。
 | `nana_ui::Button`、`Text`、`Workspace` 等根级控件 | 已删除 | 使用 `nana_ui::runtime::{Button, Text, Workspace, ...}` |
 | `nana_ui::Textarea` | 已删除 | 使用 `nana_ui::runtime::TextArea` |
 | `nana_ui::components::*` | 兼容面（隐藏文档） | 新代码使用 `nana_ui::runtime::*`；旧路径仅用于迁移和目录检查 |
-| `AppContext::world_mut()` | 已删除 | 使用 `commit_mutations`；仅内部宿主/适配器使用 `compat_world_mut()` |
+| `AppContext::world_mut()` / `compat_world_mut()` | 已删除 | 使用 `commit_mutations` 及 `AppContext` 显式方法 |
 | `nana_ui::dock::*` | `nana_ui::runtime::{Dock, DockWorkspace, ...}` + 宿主适配器 | Dock 树只属于 Runtime |
 
 `world_mut` 与 `Textarea` 兼容入口已删除。后续新增能力只能进入 `runtime`

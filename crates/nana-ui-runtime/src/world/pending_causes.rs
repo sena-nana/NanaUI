@@ -97,7 +97,7 @@ fn a_drain_drops_causes_of_nodes_that_left_the_world() {
     let gone = gone.stable_id();
     frame(&mut cx);
 
-    let world = cx.compat_world_mut();
+    let world = cx.world_mut();
     let cause = LayoutFrontierSeed::layout(gone).invalidation;
     world.queue_layout_invalidation(gone, cause);
     assert!(

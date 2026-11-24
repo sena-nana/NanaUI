@@ -589,7 +589,7 @@ mod tests {
             cx.assemble_media_transport_bar(bar).unwrap();
             cx.layout_document(document, LayoutViewport::new(960.0, 600.0))
                 .unwrap();
-            cx.compat_world_mut().rebuild_hit_test(document);
+            cx.world_mut().rebuild_hit_test(document);
             let frame = cx.world().layout_box(stage.stable_id()).unwrap();
             assert!(frame.contains(100.0, 100.0));
             assert!(!frame.contains(800.0, 500.0));
@@ -698,7 +698,7 @@ mod tests {
             .cx
             .layout_document(stage.document, crate::LayoutViewport::new(960.0, 600.0))
             .unwrap();
-        stage.cx.compat_world_mut().rebuild_hit_test(stage.document);
+        stage.cx.world_mut().rebuild_hit_test(stage.document);
 
         let raw_frame = stage.cx.world().layout_box(picture_id).unwrap();
         assert!(raw_frame.contains(100.0, 200.0));
@@ -1097,7 +1097,7 @@ mod tests {
         cx.assemble_media_transport_bar(bar).unwrap();
         cx.layout_document(document, LayoutViewport::new(640.0, 360.0))
             .unwrap();
-        cx.compat_world_mut().rebuild_hit_test(document);
+        cx.world_mut().rebuild_hit_test(document);
         let seen = Arc::new(Mutex::new(Vec::new()));
         let out = Arc::clone(&seen);
         cx.on(bar, move |_, event: &OverlayVisibilityChanged, _| {
@@ -1209,7 +1209,7 @@ mod tests {
         cx.assemble_media_transport_bar(bar).unwrap();
         cx.layout_document(document, LayoutViewport::new(640.0, 360.0))
             .unwrap();
-        cx.compat_world_mut().rebuild_hit_test(document);
+        cx.world_mut().rebuild_hit_test(document);
         let shown = |cx: &AppContext| cx.read(bar, MediaTransportBar::shown).unwrap();
         let mut input = HeadlessInput::bind(&mut cx, document);
         cx.update_component(bar, |bar, _| bar.playing = true)

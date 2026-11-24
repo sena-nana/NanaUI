@@ -81,7 +81,7 @@ widget(DesktopShell::new().title("Nana").workspace_corners(true))
 
 ## 模型
 
-产品状态在 `nana_ui::WorkspaceModel` 和 `WorkspaceMutation`。
+产品状态在 `nana_ui::runtime::WorkspaceModel` 和 `WorkspaceMutation`。
 
 折叠、尺寸和可见性走模型。
 

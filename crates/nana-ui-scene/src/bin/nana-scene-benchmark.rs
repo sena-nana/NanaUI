@@ -4,7 +4,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use nana_ui_core::LayoutStyle;
-use nana_ui_runtime::{ComputedStyle, ExtractedNode, LayoutBox, NodeKind, NodeStyle, StableNodeId};
+use nana_ui_runtime::scene_contract::ExtractedNode;
+use nana_ui_runtime::{ComputedStyle, LayoutBox, NodeKind, NodeStyle, StableNodeId};
 use nana_ui_scene::{ResourceId, UiScene};
 use serde::Serialize;
 

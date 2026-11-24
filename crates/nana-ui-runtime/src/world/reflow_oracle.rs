@@ -401,7 +401,7 @@ fn frame(
     mut seeded: Option<&mut HashSet<StableNodeId>>,
     mut accessible: Option<&mut crate::SystemWork>,
 ) -> FrameStats {
-    context.compat_world_mut().observe_text_shaper(shaper);
+    context.world_mut().observe_text_shaper(shaper);
     context.begin_frame_profile();
     let mut drained_any = false;
     let mut stats = FrameStats::default();
@@ -593,8 +593,8 @@ pub(super) fn assert_matches_cold(
     cold: &mut AppContext,
     document: DocumentId,
 ) {
-    incremental.compat_world_mut().rebuild_hit_test(document);
-    cold.compat_world_mut().rebuild_hit_test(document);
+    incremental.world_mut().rebuild_hit_test(document);
+    cold.world_mut().rebuild_hit_test(document);
     let ours = incremental.world();
     let theirs = cold.world();
     let order = ours.document_order(document);

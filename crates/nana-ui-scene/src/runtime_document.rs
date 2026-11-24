@@ -101,7 +101,7 @@ impl RuntimeDocument {
     /// Lightweight compositor present clock. Does not run style/layout.
     /// `now` is host time; a paused document keeps the time it holds.
     pub fn sync_presentation_clock(&mut self, now: std::time::Duration) {
-        self.context.compat_world_mut().sync_presentation_clock(now);
+        self.context.sync_presentation_clock(now);
     }
 
     /// The visible time-sampled host-texture nodes of this document, with the
@@ -149,9 +149,9 @@ impl RuntimeDocument {
         // edits or not.
         let pending = self.context.layout_pending(document);
         let mut force_layout = viewport_changed || pending;
-        self.context.compat_world_mut().observe_text_shaper(shaper);
+        self.context.observe_text_shaper(shaper);
         let update = self.flush_loop(viewport_changed || pending, |context, work| {
-            context.compat_world_mut().reconcile_focus(&work.focus_ime);
+            context.reconcile_focus(&work.focus_ime);
             context.shape_text(&work.text, shaper)?;
             // Text shaping can discover an intrinsic metric change and emit a
             // typed seed after the work batch was drained. Merge those seeds
@@ -531,20 +531,12 @@ mod tests {
                 MotionTo::Value(MotionValue::Scalar(1.0)),
             ),
         );
-        runtime
-            .context_mut()
-            .compat_world_mut()
-            .commit(queue)
-            .unwrap();
-        runtime
-            .context_mut()
-            .compat_world_mut()
-            .advance_animations(Duration::ZERO);
+        runtime.context_mut().commit_mutations(queue).unwrap();
+        runtime.context_mut().advance_animations(Duration::ZERO);
         runtime.flush_with(|_, _| Ok(())).expect("extract");
 
         runtime
             .context_mut()
-            .compat_world_mut()
             .advance_animations(Duration::from_millis(16));
         runtime.flush_with(|_, _| Ok(())).expect("promote");
         let layer = runtime
@@ -567,12 +559,10 @@ mod tests {
 
         runtime
             .context_mut()
-            .compat_world_mut()
             .advance_animations(Duration::from_millis(32));
         runtime.flush_with(|_, _| Ok(())).expect("steady 32ms");
         runtime
             .context_mut()
-            .compat_world_mut()
             .advance_animations(Duration::from_millis(48));
         runtime.flush_with(|_, _| Ok(())).expect("steady 48ms");
 
@@ -610,19 +600,11 @@ mod tests {
                 MotionTo::Value(MotionValue::Scalar(1.0)),
             ),
         );
-        runtime
-            .context_mut()
-            .compat_world_mut()
-            .commit(queue)
-            .unwrap();
-        runtime
-            .context_mut()
-            .compat_world_mut()
-            .advance_animations(Duration::ZERO);
+        runtime.context_mut().commit_mutations(queue).unwrap();
+        runtime.context_mut().advance_animations(Duration::ZERO);
         runtime.flush_with(|_, _| Ok(())).expect("extract");
         runtime
             .context_mut()
-            .compat_world_mut()
             .advance_animations(Duration::from_millis(16));
         runtime.flush_with(|_, _| Ok(())).expect("promote");
         assert!(runtime.compositor_needs_tick());
@@ -646,7 +628,6 @@ mod tests {
         );
         let skipped = runtime
             .context_mut()
-            .compat_world_mut()
             .advance_animations(Duration::from_millis(48));
         assert_eq!(skipped.animation_deadlines_scanned, 0);
         assert!(skipped.samples.is_empty());
@@ -701,12 +682,10 @@ mod tests {
                     MotionTo::Value(MotionValue::Scalar(1.0)),
                 ),
             );
-            let world = runtime.context_mut().compat_world_mut();
-            world.commit(queue).unwrap();
+            runtime.context_mut().commit_mutations(queue).unwrap();
             for at in [0, 16] {
                 runtime
                     .context_mut()
-                    .compat_world_mut()
                     .advance_animations(Duration::from_millis(at));
                 runtime.flush_with(|_, _| Ok(())).expect("frame");
             }
@@ -802,11 +781,7 @@ mod tests {
                 all.push(node);
             }
         }
-        runtime
-            .context_mut()
-            .compat_world_mut()
-            .commit(queue)
-            .unwrap();
+        runtime.context_mut().commit_mutations(queue).unwrap();
         (runtime, all)
     }
 
@@ -867,11 +842,7 @@ mod tests {
         let root = StableNodeId::new(1).unwrap();
         let mut queue = MutationQueue::new();
         queue.create(root, document_id, NodeKind::Document);
-        runtime
-            .context_mut()
-            .compat_world_mut()
-            .commit(queue)
-            .unwrap();
+        runtime.context_mut().commit_mutations(queue).unwrap();
         runtime.flush_with(|_, _| Ok(())).expect("extract");
         runtime.set_surface_generation(3);
         assert_eq!(runtime.scene().surface_generation(), 3);
@@ -886,11 +857,7 @@ mod tests {
         let root = StableNodeId::new(1).unwrap();
         let mut create = MutationQueue::new();
         create.create(root, document_id, NodeKind::Document);
-        runtime
-            .context_mut()
-            .compat_world_mut()
-            .commit(create)
-            .unwrap();
+        runtime.context_mut().commit_mutations(create).unwrap();
 
         let initial = runtime
             .flush_with(|_, _| Ok(()))
@@ -903,8 +870,7 @@ mod tests {
         cursor_mutation.set_style(root, style);
         runtime
             .context_mut()
-            .compat_world_mut()
-            .commit(cursor_mutation)
+            .commit_mutations(cursor_mutation)
             .unwrap();
         let cursor_update = runtime
             .flush_with(|_, _| Ok(()))
@@ -1736,11 +1702,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        runtime
-            .context_mut()
-            .compat_world_mut()
-            .commit(queue)
-            .unwrap();
+        runtime.context_mut().commit_mutations(queue).unwrap();
         runtime.flush_with(|_, _| Ok(())).unwrap();
         let mut change = MutationQueue::new();
         change.set_scroll_offset(ids[0], ScrollOffset { x: 0.0, y: 60.0 });
@@ -1756,11 +1718,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        runtime
-            .context_mut()
-            .compat_world_mut()
-            .commit(change)
-            .unwrap();
+        runtime.context_mut().commit_mutations(change).unwrap();
         let update = runtime.flush_with(|_, _| Ok(())).unwrap();
         assert_eq!(
             runtime.context().world().hit_test(document, 10.0, 10.0),

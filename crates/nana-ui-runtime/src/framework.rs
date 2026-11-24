@@ -30,7 +30,7 @@ pub(crate) use hooks::{
     SplitPaneCapabilities, TableCapabilities, TerminalCapabilities, TreeCapabilities,
     WorkspaceCapabilities,
 };
-pub use hooks::{NodePointer, NodePointerHooks, NodeWheel, TypeBehavior, TypeHooks};
+pub use hooks::{NodePointer, NodePointerHooks, NodeWheel, TypeBehavior};
 pub(crate) use lifecycle::{TOOLTIP_ANCHOR_TAG, lifecycle_hooks};
 pub(crate) use text_edit::Editable;
 pub use text_edit::EditableHooks;
@@ -2099,14 +2099,9 @@ impl AppContext {
         Some((target, self.editable_hooks(target)?))
     }
 
-    /// Mutable Runtime access for compatibility hosts and frame systems that
-    /// have not yet been expressed by the higher-level `AppContext` API.
-    ///
-    /// This is intentionally named as a low-level compatibility boundary: it
-    /// must not be used by ordinary application code in place of
-    /// `commit_mutations` and the component/event APIs.
-    #[doc(hidden)]
-    pub fn compat_world_mut(&mut self) -> &mut UiWorld {
+    /// Internal mutable access to the underlying `UiWorld` for runtime tests.
+    #[cfg(test)]
+    pub(crate) fn world_mut(&mut self) -> &mut UiWorld {
         &mut self.world
     }
 

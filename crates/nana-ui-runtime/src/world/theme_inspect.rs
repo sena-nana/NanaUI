@@ -709,20 +709,17 @@ mod tests {
     fn settle(context: &mut AppContext, document: DocumentId) {
         let viewport = LayoutViewport::new(320.0, 200.0);
         context.layout_document(document, viewport).unwrap();
-        let work = context.compat_world_mut().take_system_work();
-        context
-            .compat_world_mut()
-            .resolve_styles(&work.style)
-            .unwrap();
+        let work = context.world_mut().take_system_work();
+        context.world_mut().resolve_styles(&work.style).unwrap();
         if !work.text.is_empty() {
             context
-                .compat_world_mut()
+                .world_mut()
                 .shape_text(&work.text, &mut MeasureTextShaper)
                 .unwrap();
             context.layout_document(document, viewport).unwrap();
-            let follow_up = context.compat_world_mut().take_system_work();
+            let follow_up = context.world_mut().take_system_work();
             context
-                .compat_world_mut()
+                .world_mut()
                 .resolve_styles(&follow_up.style)
                 .unwrap();
         }

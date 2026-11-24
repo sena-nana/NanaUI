@@ -7,18 +7,18 @@ use component_gallery::{
 use nana_ui::runtime::view::{AnyView, IntoView, entity_ref, widget, with_refs};
 use nana_ui::runtime::{
     AppShell, AppTitleBar, AppTitleBarControls, Button as RuntimeButton, Card as RuntimeCard,
-    Checkbox as RuntimeCheckbox, Dock as RuntimeDock, DockAxis, DockDropZone, DockNode, DocumentId,
-    IconButton as RuntimeIconButton, LayoutBox, LayoutViewport, List as RuntimeList,
-    ListItem as RuntimeListItem, MutationQueue, NodeStyle, RangeField as RuntimeRangeField,
-    RuntimeDocument, ScrollAxes, ScrollOffset, ScrollView as RuntimeScrollView,
-    Switch as RuntimeSwitch, TabOption as RuntimeTabOption, Table as RuntimeTable,
-    TableCell as RuntimeTableCell, TableRow as RuntimeTableRow, Tabs as RuntimeTabs,
-    Text as RuntimeText, TextArea as RuntimeTextArea, TextInput as RuntimeTextInput,
-    TextVerticalAlignment,
+    Checkbox as RuntimeCheckbox, CommandPaletteEvent, ControlSize, Dock as RuntimeDock, DockAxis,
+    DockDropZone, DockNode, DocumentId, IconButton as RuntimeIconButton, LayoutBox, LayoutViewport,
+    List as RuntimeList, ListItem as RuntimeListItem, MutationQueue, NodeStyle,
+    RangeField as RuntimeRangeField, RuntimeDocument, ScrollAxes, ScrollOffset,
+    ScrollView as RuntimeScrollView, Switch as RuntimeSwitch, TabOption as RuntimeTabOption,
+    Table as RuntimeTable, TableCell as RuntimeTableCell, TableRow as RuntimeTableRow,
+    Tabs as RuntimeTabs, Text as RuntimeText, TextArea as RuntimeTextArea,
+    TextInput as RuntimeTextInput, TextVerticalAlignment,
 };
 use nana_ui::{
-    ButtonKind, CommandPaletteEvent, ControlSize, Icon, LogicalPoint, LogicalRect, NanaTextShaper,
-    SettingsTabId, ThemeAppearance, WindowChrome, WorkspaceAction,
+    ButtonKind, Icon, LogicalPoint, LogicalRect, NanaTextShaper, SettingsTabId, ThemeAppearance,
+    WindowChrome, WorkspaceAction,
 };
 use nana_ui_core::{LayoutStyle, LengthSpec, SemanticColorRole, type_scale};
 use nana_ui_platform::{InputPayload, PointerInput, PointerPhase};

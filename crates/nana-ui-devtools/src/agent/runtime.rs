@@ -1395,9 +1395,8 @@ mod tests {
     /// the pixel at the thumb's centre must be the thumb's, not the rows'.
     #[test]
     fn opaque_rows_do_not_cover_the_scrollbar_thumb() {
-        use nana_ui::runtime::{
-            LengthSpec, NodeStyle, ScrollAxes, ScrollView, ScrollbarBars, Stack,
-        };
+        use nana_ui::runtime::scene_contract::ScrollbarBars;
+        use nana_ui::runtime::{LengthSpec, NodeStyle, ScrollAxes, ScrollView, Stack};
         use nana_ui_core::ScrollbarVisibility;
 
         const WIDTH: u32 = 160;

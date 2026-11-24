@@ -193,7 +193,7 @@ fn describe_primitive(primitive: &nana_ui_scene::ScenePrimitive) -> String {
         // A chart's marks: what they draw and the theme colours they draw
         // with; other custom nodes are the host's contents, not the theme's.
         ScenePrimitiveKind::Custom { node, .. } => {
-            if node.renderer.as_ref() == nana_ui::runtime::CHART_RENDERER
+            if node.renderer.as_ref() == nana_ui::runtime::scene_contract::CHART_RENDERER
                 && let Some(payload) = node.payload.as_ref().and_then(|payload| {
                     payload.downcast_ref::<nana_ui::runtime::chart::ChartGpuPayload>()
                 })
@@ -226,7 +226,7 @@ fn describe_primitive(primitive: &nana_ui_scene::ScenePrimitive) -> String {
 /// optional paint override that is not active.  The old `Debug` output did
 /// not have that field, and recording `paint_color: None` would make every
 /// existing shadow snapshot change without changing the resolved paint.
-fn describe_shadow(value: nana_ui::runtime::ComponentElevation) -> String {
+fn describe_shadow(value: nana_ui::runtime::scene_contract::ComponentElevation) -> String {
     let fields = format!(
         "color: {:?}, offset_x: {:?}, offset_y: {:?}, blur_radius: {:?}, spread_radius: {:?}, inset: {:?}",
         value.color.to_srgb(),

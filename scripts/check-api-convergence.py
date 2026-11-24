@@ -23,29 +23,38 @@ ROOT = Path(__file__).resolve().parents[1]
 # every CI job, so a stale root path must be caught textually.
 REMOVED_ROOT_NAMES = frozenset(
     """
-    AboutMetadata AboutSection ActionMenu ActionMenuItem AnchoredActionMenu AppShell AppTitleBar AppTitleBarControls
-    AppearanceSection Avatar BrowseRequested Button CalendarHeatmap CalendarHeatmapActiveCell CalendarHeatmapCell CalendarHeatmapCellPaint
-    CalendarHeatmapDatum CalendarHeatmapDayLabel CalendarHeatmapEvent CalendarHeatmapLabelPaint CalendarHeatmapModel CalendarHeatmapMonthLabel CalendarHeatmapOptions CalendarLevelResolver
-    CalendarLevelStrategy CalendarMonthFormatter CalendarTitleFormatter CapturedStroke Card Checkbox Chip ChipDismissed
-    ColorChanged ColorField ColorInput CommandPalette ConfirmDialog ContextMenu ContextMenuEvent ContextMenuItem
+    AboutMetadata AboutSection ActionDescriptor ActionId ActionMatch ActionMenu ActionMenuItem ActionPickerNavigation
+    ActionRegistry ActionRegistryError AnchoredActionMenu AnchoredMenuPlacement AppShell AppTitleBar AppTitleBarControls AppearanceEvent
+    AppearanceSection Avatar BrowseRequested Button CONTEXT_IME_COMPOSING CONTEXT_MODAL CONTEXT_TEXT_INPUT CalendarHeatmap
+    CalendarHeatmapActiveCell CalendarHeatmapCell CalendarHeatmapCellPaint CalendarHeatmapDatum CalendarHeatmapDayLabel CalendarHeatmapEvent CalendarHeatmapLabelPaint CalendarHeatmapModel
+    CalendarHeatmapMonthLabel CalendarHeatmapOptions CalendarLevelResolver CalendarLevelStrategy CalendarMonthFormatter CalendarTitleFormatter CapturedStroke Card
+    Checkbox Chip ChipDismissed ColorChanged ColorField ColorInput CommandPalette CommandPaletteEvent
+    CommandPaletteItem ConfirmDialog ContentFit ContextMenu ContextMenuEvent ContextMenuItem ContextPredicate ControlSize
     DesktopShell Dialog Dock DockFloatingSurface DockPanel DockSurfaceSpec DockWorkspaceEvent DonutChart
-    DonutSlice Drawer Dropdown DropdownEvent DropdownOption DropdownSelection EmptyState FormField
-    GpuTextureView GpuView GpuViewMode GpuViewPalette GraphCanvas GraphCanvasAdjustment GraphCanvasEvent GraphCanvasHit
-    GraphInteraction GraphMinimap GraphMinimapEvent GraphNodeContent GraphPointerButton GraphScrollDelta HIGHLIGHT_PRESENTER HighlightPresentation
-    HostedTextarea IconButton IconGlyph ImageViewer ImageViewerContent ImageViewerEvent ImageViewerGeometry ImageViewerHit
-    ImageViewerOffset InteractiveCard KeyCaptureEvent KeyCaptureLayer KeyInput KeymapLayer LabeledValue LevelMeter
-    ListItem MarkdownBlock MarkdownBlockKind MarkdownImage MarkdownSpan MarkdownTable MarkdownTableAlignment MediaTransportBar
-    MediaTransportDensity MediaTransportEvent MediaTransportIcons MediaTransportPlacement MediaTransportSlots NativeMarkdown OVERLAY_IDLE OverlayHost
-    OverlayLocks OverlayVisibility OverlayVisibilityConfig PaneChrome PaneChromeAction PaneChromeActionKind PaneTree PaneTreeNode
-    PathField Popover Progress ProgressCancelled QrCode QrCodeError RangeField ReorderItem
-    ReorderList ReorderListEvent ReorderListPointer ReorderRowPaint RichSpan RichTextEvent SearchDropdown SearchDropdownEvent
-    SearchDropdownOption SegmentedControl Select SelectOption SelectableRichText SettingsCard SettingsCollapsibleCard SettingsRow
-    SidebarFooter SidebarFooterButton SidebarFrame SidebarRow SidebarRowState SidebarRowTone SidebarSection SidebarSectionSlots
-    SidebarSectionState Skeleton Spinner SplitPane StatusBadge Switch SyntectHighlighter TabDragGroup
-    TabDragLease TabDragSurface TabOption Tabs TabsEvent Text TextArea TextInput
-    TextSelectionGroup TextSelectionGroupId TextSelectionSnapshot Textarea Thumbnail ThumbnailState TimeSeriesChart TimeSeriesLayer
-    Toast Tooltip TreeDropIntent TreeDropPosition TreeNavigation TreeNode TreeView TreeViewEvent
-    ValidationMessage Workspace WorkspaceRegionSlot WorkspaceResizeHandle XYPad
+    DonutSlice Drawer DrawerSide Dropdown DropdownEvent DropdownOption DropdownSelection EmptyState
+    ExpansionState FormField GpuTextureView GpuView GpuViewMode GpuViewPalette GraphCanvas GraphCanvasAdjustment
+    GraphCanvasEvent GraphCanvasHit GraphInteraction GraphMinimap GraphMinimapEvent GraphNodeContent GraphPointerButton GraphScrollDelta
+    HIGHLIGHT_PRESENTER HighlightPresentation HostedTextarea IconButton IconGlyph ImageSampling ImageViewer ImageViewerContent
+    ImageViewerEvent ImageViewerGeometry ImageViewerHit ImageViewerOffset InteractiveCard KeyBinding KeyCaptureEvent KeyCaptureLayer
+    KeyContext KeyInput KeyModifiers KeyStroke KeyedOrder Keymap KeymapLayer KeymapMatch
+    KeymapState LabeledValue LevelMeter ListItem MarkdownBlock MarkdownBlockKind MarkdownImage MarkdownSpan
+    MarkdownTable MarkdownTableAlignment MediaTransportBar MediaTransportDensity MediaTransportEvent MediaTransportIcons MediaTransportPlacement MediaTransportSlots
+    MenuActionMap MenuActionMapError NativeMarkdown OVERLAY_IDLE OverlayHost OverlayLocks OverlayVisibility OverlayVisibilityConfig
+    PaneChrome PaneChromeAction PaneChromeActionKind PaneTree PaneTreeNode PathField Popover PopoverAlignment
+    PopoverPlacement Progress ProgressCancelled QrCode QrCodeError RangeField ReorderItem ReorderList
+    ReorderListEvent ReorderListPointer ReorderRowPaint RichSpan RichTextEvent SearchDropdown SearchDropdownEvent SearchDropdownOption
+    SegmentedControl Select SelectOption SelectableRichText SelectionGesture SelectionMode SelectionModifiers SelectionMove
+    SelectionOrder SelectionState SelectionStep SettingsCard SettingsCollapsibleCard SettingsRow SidebarFooter SidebarFooterButton
+    SidebarFrame SidebarRow SidebarRowState SidebarRowTone SidebarSection SidebarSectionSlots SidebarSectionState SingleSelection
+    Skeleton Spinner SplitPane SplitPaneModel SplitPaneMutation StatusBadge StatusTone Switch
+    SwitchControlPosition SyntectHighlighter TabDragGroup TabDragLease TabDragSurface TabOption TableColumn TableCursor
+    TableNavigation Tabs TabsEvent Text TextArea TextInput TextSelectionGroup TextSelectionGroupId
+    TextSelectionSnapshot Textarea Thumbnail ThumbnailState TimeSeriesChart TimeSeriesLayer Toast ToastTone
+    Tooltip TreeDropIntent TreeDropPosition TreeNavigation TreeNode TreeView TreeViewEvent ValidationIntent
+    ValidationMessage VirtualAlignment VirtualFrozenWindow VirtualListLayout VirtualListMaterialization VirtualListMaterializationError VirtualListMaterializer VirtualListMount
+    VirtualListWindow VirtualScrollAnchor VirtualTableFrozenWindow VirtualTableLayout VirtualTableMaterialization VirtualTableMaterializer VirtualTableWindow VirtualTreeLayout
+    VirtualTreeRow VirtualTreeWindow VirtualViewport WORKSPACE_REGION_TRANSITION_DURATION Workspace WorkspaceModel WorkspaceMutation WorkspaceRegionSlot
+    WorkspaceResizeHandle XYPad XYPadEvent XYPadValue keyed_order
     """.split()
 )
 SCANNED_ROOTS = ("crates", "examples", "platform", "packages", "tools", "docs")
@@ -55,6 +64,7 @@ LEGACY_MATERIALIZE = re.compile(
     r"\bmaterialize_virtual_(?:list|table|tree)(?:_in)?(?!_retained)\b"
 )
 LEGACY_SUBSCRIPTION = re.compile(r"\bSubscription::new\b")
+LEGACY_COMPAT_WORLD_MUT = re.compile(r"\bcompat_world_mut\b")
 RUST_SCAN_ROOTS = ("crates", "examples", "platform", "packages", "tools")
 
 
@@ -99,6 +109,8 @@ def legacy_compat_calls(root: Path) -> list[str]:
                     hits.append(f"{rel}:{number}: legacy virtual materializer")
                 if LEGACY_SUBSCRIPTION.search(line):
                     hits.append(f"{rel}:{number}: Subscription::new")
+                if LEGACY_COMPAT_WORLD_MUT.search(line):
+                    hits.append(f"{rel}:{number}: compat_world_mut")
     return hits
 
 
@@ -111,6 +123,12 @@ def main() -> int:
     nana_ui = (ROOT / "crates/nana-ui/src/lib.rs").read_text(encoding="utf-8")
     framework = (
         ROOT / "crates/nana-ui-runtime/src/framework.rs"
+    ).read_text(encoding="utf-8")
+    runtime_lib = (
+        ROOT / "crates/nana-ui-runtime/src/lib.rs"
+    ).read_text(encoding="utf-8")
+    runtime_hooks = (
+        ROOT / "crates/nana-ui-runtime/src/framework/hooks.rs"
     ).read_text(encoding="utf-8")
     runtime_document = (
         ROOT / "crates/nana-ui-scene/src/runtime_document.rs"
@@ -134,8 +152,14 @@ def main() -> int:
         fail("deprecated root widget surface must be removed")
     if "pub fn world_mut" in framework:
         fail("deprecated AppContext::world_mut must be removed")
-    if "pub fn compat_world_mut" not in framework:
-        fail("AppContext::compat_world_mut is missing")
+    if "compat_world_mut" in framework:
+        fail("removed AppContext::compat_world_mut must stay removed")
+    if "TypeHooks" in framework or "TypeHooks" in runtime_lib or "TypeHooks" in runtime_hooks:
+        fail("removed TypeHooks placeholder must stay removed")
+    if (ROOT / "crates/nana-ui/src/selection.rs").exists() or (
+        ROOT / "crates/nana-ui/src/virtual_list.rs"
+    ).exists():
+        fail("deprecated nana-ui selection.rs / virtual_list.rs shims must stay removed")
     if "pub struct Subscription" in framework:
         fail("removed Subscription wrapper must stay removed")
     if "pub fn typed" in framework:

@@ -58,7 +58,8 @@ fn visual_node_z_and_stops(nodes: &SceneNodes, vn: VisualNode) -> (i32, bool) {
                 .as_deref()
                 .and_then(|w| w.floating_overlay.as_ref())
                 .is_some_and(|overlay| {
-                    overlay.kind == nana_ui_runtime::WidgetFloatingOverlayKind::AttachedPopup
+                    overlay.kind
+                        == nana_ui_runtime::scene_contract::WidgetFloatingOverlayKind::AttachedPopup
                 });
             let base_z = if attached_popup {
                 node.z_index.max(nana_ui_runtime::MENU_OVERLAY_Z_INDEX)
@@ -66,16 +67,16 @@ fn visual_node_z_and_stops(nodes: &SceneNodes, vn: VisualNode) -> (i32, bool) {
                 nana_ui_runtime::MENU_OVERLAY_Z_INDEX
             };
             match effective_overlay_visual_parent(nodes, node) {
-                nana_ui_runtime::VisualParent::Root => (base_z, true),
-                nana_ui_runtime::VisualParent::TopLayer => {
+                nana_ui_runtime::scene_contract::VisualParent::Root => (base_z, true),
+                nana_ui_runtime::scene_contract::VisualParent::TopLayer => {
                     (base_z.max(nana_ui_runtime::TOP_LAYER_Z_INDEX), true)
                 }
-                nana_ui_runtime::VisualParent::Modal(modal_id) => {
+                nana_ui_runtime::scene_contract::VisualParent::Modal(modal_id) => {
                     let modal_z = nodes.get(&modal_id).map_or(0, |modal| modal.z_index);
                     (modal_z.saturating_add(base_z), false)
                 }
-                nana_ui_runtime::VisualParent::Node(_)
-                | nana_ui_runtime::VisualParent::Overlay(_) => (base_z, false),
+                nana_ui_runtime::scene_contract::VisualParent::Node(_)
+                | nana_ui_runtime::scene_contract::VisualParent::Overlay(_) => (base_z, false),
             }
         }
         VisualNode::Node(id) => {
@@ -83,21 +84,21 @@ fn visual_node_z_and_stops(nodes: &SceneNodes, vn: VisualNode) -> (i32, bool) {
                 return (0, true);
             };
             match effective_visual_parent(nodes, node) {
-                Some(nana_ui_runtime::VisualParent::Root) => (
+                Some(nana_ui_runtime::scene_contract::VisualParent::Root) => (
                     node.z_index.max(nana_ui_runtime::MENU_OVERLAY_Z_INDEX),
                     true,
                 ),
-                Some(nana_ui_runtime::VisualParent::TopLayer) => {
+                Some(nana_ui_runtime::scene_contract::VisualParent::TopLayer) => {
                     (node.z_index.max(nana_ui_runtime::TOP_LAYER_Z_INDEX), true)
                 }
-                Some(nana_ui_runtime::VisualParent::Modal(modal_id)) => {
+                Some(nana_ui_runtime::scene_contract::VisualParent::Modal(modal_id)) => {
                     let modal_z = nodes.get(&modal_id).map_or(0, |modal| modal.z_index);
                     let base_z = node.z_index.max(nana_ui_runtime::MENU_OVERLAY_Z_INDEX);
                     (modal_z.saturating_add(base_z), false)
                 }
                 Some(
-                    nana_ui_runtime::VisualParent::Node(_)
-                    | nana_ui_runtime::VisualParent::Overlay(_),
+                    nana_ui_runtime::scene_contract::VisualParent::Node(_)
+                    | nana_ui_runtime::scene_contract::VisualParent::Overlay(_),
                 ) => (node.z_index, false),
                 None => (
                     node.z_index,
@@ -222,8 +223,8 @@ pub(super) fn primitive_paint_layer(slot: u64) -> u64 {
         namespace if namespace == u64::from(TEXT_ATOM_ICONS) => 27,
         namespace if namespace == u64::from(TEXT_ATOM_LABELS) => 32,
         namespace
-            if (u64::from(nana_ui_runtime::WIDGET_VECTOR_LAYER_BASE)
-                ..=u64::from(nana_ui_runtime::WIDGET_VECTOR_LAYER_BASE | 0xFF))
+            if (u64::from(nana_ui_runtime::scene_contract::WIDGET_VECTOR_LAYER_BASE)
+                ..=u64::from(nana_ui_runtime::scene_contract::WIDGET_VECTOR_LAYER_BASE | 0xFF))
                 .contains(&namespace) =>
         {
             namespace & 0xFF

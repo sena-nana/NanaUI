@@ -1678,7 +1678,7 @@ mod spacing_tests {
             first.scroll.unwrap(),
             crate::ScrollOffset { x: 0.0, y: 30.0 },
         );
-        context.compat_world_mut().commit(q).unwrap();
+        context.world_mut().commit(q).unwrap();
         context
             .update_component(page, |p, _| {
                 p.content_padding = Some(PaddingSpec::uniform(0.0));

@@ -1,6 +1,6 @@
 # SplitPane
 
-`SplitPane` 是两块内容加一条 8px 的拖动手柄。尺寸来自 `nana_ui::SplitPaneModel`。你的内容留在 `first` 和 `second` 槽里。
+`SplitPane` 是两块内容加一条 8px 的拖动手柄。尺寸来自 `nana_ui::runtime::SplitPaneModel`。你的内容留在 `first` 和 `second` 槽里。
 
 ## 基本用法
 
@@ -10,8 +10,8 @@
 
 ```rust view
 use nana_ui::runtime::view;
-use nana_ui::runtime::SplitPane;
-use nana_ui::{SplitAxis, SplitPaneModel};
+use nana_ui::SplitAxis;
+use nana_ui::runtime::{SplitPane, SplitPaneModel};
 
 let model = SplitPaneModel::new(SplitAxis::Horizontal, 240.0, 120.0, 800.0);
 view! {
@@ -28,8 +28,8 @@ view! {
 
 ```rust rust
 use nana_ui::runtime::view::{column, widget};
-use nana_ui::runtime::SplitPane;
-use nana_ui::{SplitAxis, SplitPaneModel};
+use nana_ui::SplitAxis;
+use nana_ui::runtime::{SplitPane, SplitPaneModel};
 
 let model = SplitPaneModel::new(SplitAxis::Horizontal, 240.0, 120.0, 800.0);
 widget(SplitPane::new(&model).surface(nana_ui::runtime::SemanticColorRole::Surface))

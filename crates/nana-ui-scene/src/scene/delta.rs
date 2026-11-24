@@ -823,8 +823,8 @@ pub(super) struct PaintOrderFacts {
     /// A scroll view whose bars can show opens a group for them.
     scrollbar_chrome: bool,
     pub(super) scroll_edge_fade: bool,
-    pub(super) visual_parent: Option<nana_ui_runtime::VisualParent>,
-    pub(super) overlay_visual_parent: Option<nana_ui_runtime::VisualParent>,
+    pub(super) visual_parent: Option<nana_ui_runtime::scene_contract::VisualParent>,
+    pub(super) overlay_visual_parent: Option<nana_ui_runtime::scene_contract::VisualParent>,
 }
 
 /// [`moved_only`], with the same result: what the node paints is in its own

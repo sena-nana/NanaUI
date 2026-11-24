@@ -1,6 +1,6 @@
 # Workspace
 
-`Workspace` 把你的内容绑到区域上。内容是树上的子节点。折叠、尺寸、可见性和恢复走 `nana_ui::WorkspaceModel` 与 `WorkspaceMutation`。
+`Workspace` 把你的内容绑到区域上。内容是树上的子节点。折叠、尺寸、可见性和恢复走 `nana_ui::runtime::WorkspaceModel` 与 `WorkspaceMutation`。
 
 ## 基本用法
 

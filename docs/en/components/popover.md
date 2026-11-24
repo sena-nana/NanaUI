@@ -61,7 +61,7 @@ Popover::new().trigger_icon(Icon::Add, "More").trigger_style(round)
 
 ## Placement
 
-`.placement` takes a `nana_ui::PopoverPlacement`: `Top`, `Bottom`, `Left`, `Right`, `Bottom` by default.
+`.placement` takes a `nana_ui::runtime::PopoverPlacement`: `Top`, `Bottom`, `Left`, `Right`, `Bottom` by default.
 
 `.alignment` takes a `PopoverAlignment`.
 
@@ -94,7 +94,7 @@ There is no "use an arbitrary node as the anchor" path; the anchor is the trigge
 | `.bare_trigger` | — | `true` removes the background and outline in the resting state. Hover, press and open still add a wash. When not passed, the light background and outline stay |
 | `.trigger_style` | `NodeStyle` | Overlays the trigger's original style, replacing only the fields written; hover, press and size tightening are kept, and a written radius is drawn as written. `None` by default |
 | `.trigger_icon_size` | `f32` | Glyph edge length (logical pixels) of an icon trigger, so it matches neighbouring tools set through `IconButton::icon_size`; the trigger's box does not change. `None` by default, which uses the standard glyph size |
-| `.placement` | `nana_ui::PopoverPlacement` | `Top`, `Bottom`, `Left`, `Right`, `Bottom` by default. `new()` opens below |
+| `.placement` | `nana_ui::runtime::PopoverPlacement` | `Top`, `Bottom`, `Left`, `Right`, `Bottom` by default. `new()` opens below |
 | `.alignment` | `PopoverAlignment` | `new()` is center-aligned |
 | `open` | — | Toggled by the control itself. Writing `false` closes it |
 | `.close_on_escape` | — | On by default |

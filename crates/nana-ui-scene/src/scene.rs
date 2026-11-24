@@ -27,10 +27,12 @@ use nana_ui_core::{
     FontKerningSpec, FontVariationSetting, Icon, LineBreakSpec, LineHeightSpec, MixBlendMode,
     WordBreakSpec, WritingModeSpec, icon_y_on_text_glyph_center,
 };
+use nana_ui_runtime::scene_contract::{
+    ComponentElevation, ComponentTextRegion, ExtractedMove, ExtractedNode,
+};
 use nana_ui_runtime::{
-    ComponentElevation, ComponentTextRegion, CustomRenderNode, ExtractedMove, ExtractedNode,
-    LayoutBox, NodeKind, NodeMap, NodeSet, StableNodeId, TextHorizontalAlignment, TextShaping,
-    TextVerticalAlignment,
+    CustomRenderNode, LayoutBox, NodeKind, NodeMap, NodeSet, StableNodeId, TextHorizontalAlignment,
+    TextShaping, TextVerticalAlignment,
 };
 
 use crate::{

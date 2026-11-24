@@ -337,9 +337,8 @@ enum NodeProjection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nana_ui_runtime::{
-        ComponentElevation, ComponentTextRegion, ComputedStyle, NodeKind, NodeStyle,
-    };
+    use nana_ui_runtime::scene_contract::{ComponentElevation, ComponentTextRegion};
+    use nana_ui_runtime::{ComputedStyle, NodeKind, NodeStyle};
 
     fn id(value: u64) -> StableNodeId {
         StableNodeId::new(value).unwrap()
@@ -451,38 +450,40 @@ mod tests {
             ));
         } else {
             parent.layout = surface;
-            let mut paint = nana_ui_runtime::WidgetPaintOutput {
+            let mut paint = nana_ui_runtime::scene_contract::WidgetPaintOutput {
                 owns_node_text: true,
                 suppress_root_surface: true,
                 clips_descendants: true,
-                ..nana_ui_runtime::WidgetPaintOutput::new()
+                ..nana_ui_runtime::scene_contract::WidgetPaintOutput::new()
             };
             let title_region = title(parent.layout);
             paint.push(
                 2,
-                nana_ui_runtime::WidgetPaintOp::Text(nana_ui_runtime::WidgetText {
-                    bounds: title_region.bounds,
-                    content: title_region.content,
-                    color: title_region.color,
-                    paint_color: None,
-                    font_size: title_region.font_size,
-                    font_weight: title_region.font_weight,
-                    horizontal_alignment: nana_ui_runtime::TextHorizontalAlignment::Start,
-                    vertical_alignment: nana_ui_runtime::TextVerticalAlignment::Top,
-                    ellipsis: false,
-                    wrap: true,
-                    max_lines: None,
-                    italic: None,
-                    underline: None,
-                    line_through: None,
-                    suppress_spans: false,
-                    preserve_lines: None,
-                    unstyled_glyph: false,
-                    line_height: Some(None),
-                    retained_text: nana_ui_runtime::WidgetRetainedText::None,
-                    tabular_nums: false,
-                    ..Default::default()
-                }),
+                nana_ui_runtime::scene_contract::WidgetPaintOp::Text(
+                    nana_ui_runtime::scene_contract::WidgetText {
+                        bounds: title_region.bounds,
+                        content: title_region.content,
+                        color: title_region.color,
+                        paint_color: None,
+                        font_size: title_region.font_size,
+                        font_weight: title_region.font_weight,
+                        horizontal_alignment: nana_ui_runtime::TextHorizontalAlignment::Start,
+                        vertical_alignment: nana_ui_runtime::TextVerticalAlignment::Top,
+                        ellipsis: false,
+                        wrap: true,
+                        max_lines: None,
+                        italic: None,
+                        underline: None,
+                        line_through: None,
+                        suppress_spans: false,
+                        preserve_lines: None,
+                        unstyled_glyph: false,
+                        line_height: Some(None),
+                        retained_text: nana_ui_runtime::scene_contract::WidgetRetainedText::None,
+                        tabular_nums: false,
+                        ..Default::default()
+                    },
+                ),
             );
             parent.widget_paint = Some(Arc::new(paint));
         }

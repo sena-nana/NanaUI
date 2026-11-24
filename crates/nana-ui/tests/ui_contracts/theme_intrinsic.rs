@@ -1,4 +1,5 @@
 //! Real shaping must export natural width while retaining constrained paint.
+use nana_ui::runtime::scene_contract::WidgetPaintOp;
 use nana_ui::{NanaTextShaper, runtime::*};
 use nana_ui_core::{LengthSpec, TextWeight, ThemeDefinition, TypeRole, WordBreakSpec};
 use nana_ui_scene::{ScenePrimitiveKind, UiScene};
@@ -359,7 +360,9 @@ fn list_metadata_uses_meta_regular_when_a_mounted_theme_changes() {
                 .ops
                 .iter()
                 .find_map(|tagged| match &tagged.op {
-                    nana_ui::runtime::WidgetPaintOp::Text(text) if tagged.slot == slot => {
+                    nana_ui::runtime::scene_contract::WidgetPaintOp::Text(text)
+                        if tagged.slot == slot =>
+                    {
                         Some(text)
                     }
                     _ => None,

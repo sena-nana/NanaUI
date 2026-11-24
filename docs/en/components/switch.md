@@ -63,7 +63,7 @@ The fields are `label: String`, `checked: bool`, `disabled: bool`, `loading: boo
 | `hint` | — | Not in `<Switch>`'s field table |
 | `size` | — | Not in `<Switch>`'s field table |
 | `invalid` | — | Not in `<Switch>`'s field table |
-| `control_position` | `nana_ui::SwitchControlPosition` | Not in `<Switch>`'s field table. The default paints it at the row's end, `SwitchControlPosition::End`; `Start` paints the switch before the text |
+| `control_position` | `nana_ui::runtime::SwitchControlPosition` | Not in `<Switch>`'s field table. The default paints it at the row's end, `SwitchControlPosition::End`; `Start` paints the switch before the text |
 
 ## Events
 

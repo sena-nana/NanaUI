@@ -60,7 +60,7 @@ fn page() -> AppContext {
         LayoutViewport::new(700.0, 600.0),
         &mut bundled_face_shaper(),
     );
-    cx.compat_world_mut().take_system_work();
+    cx.world_mut().take_system_work();
     cx
 }
 
@@ -101,7 +101,7 @@ fn queued(placements: &[LayoutPlacement]) -> MutationQueue {
 
 /// Everything a commit leaves that the frame after it reads.
 fn left(cx: &mut AppContext) -> impl PartialEq + std::fmt::Debug {
-    let world = cx.compat_world_mut();
+    let world = cx.world_mut();
     world.flush_scroll_content();
     let nodes: Vec<_> = world
         .document_order(document())
@@ -138,14 +138,13 @@ fn placements_commit_as_the_queued_mutations_do() {
         let placements = placements(by_queue.world());
         assert_eq!(placements, self::placements(by_placements.world()));
         for cx in [&mut by_queue, &mut by_placements] {
-            cx.compat_world_mut()
+            cx.world_mut()
                 .set_pass_publishes_written_boxes(pass_publishes);
         }
         let queued_report = by_queue.commit_mutations(queued(&placements)).unwrap();
         let placed_report = by_placements.commit_layout_placements(&placements).unwrap();
         for cx in [&mut by_queue, &mut by_placements] {
-            cx.compat_world_mut()
-                .set_pass_publishes_written_boxes(false);
+            cx.world_mut().set_pass_publishes_written_boxes(false);
         }
         assert_eq!(queued_report, placed_report, "publishes {pass_publishes}");
         assert_eq!(queued_report.mutations, placements.len());

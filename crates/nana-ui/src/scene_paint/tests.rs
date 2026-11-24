@@ -2,10 +2,11 @@
 use std::sync::Arc;
 
 use nana_ui_core::{ButtonKind, LengthSpec, OverflowSpec, PaintTransform, SemanticColorRole};
+use nana_ui_runtime::scene_contract::ExtractedNode;
 use nana_ui_runtime::{
     AppContext, Avatar, Button as RuntimeButton, ComputedStyle, CustomRenderNode, DocumentId,
-    ExtractedNode, GpuTextureView, HoverCard, LayoutBox, MutationQueue, NodeKind, NodeStyle,
-    StableNodeId, TextContent,
+    GpuTextureView, HoverCard, LayoutBox, MutationQueue, NodeKind, NodeStyle, StableNodeId,
+    TextContent,
 };
 #[cfg(feature = "graph-canvas")]
 use nana_ui_scene::StrokePattern;
@@ -1526,21 +1527,23 @@ fn spinner_ticks_paint_capsule_coverage_on_gpu() {
         nana_ui_core::LayoutStyle::default(),
         None,
     );
-    let mut spinner_paint = nana_ui_runtime::WidgetPaintOutput::new();
+    let mut spinner_paint = nana_ui_runtime::scene_contract::WidgetPaintOutput::new();
     spinner_paint.push(
         3,
-        nana_ui_runtime::WidgetPaintOp::Icon(nana_ui_runtime::WidgetIcon {
-            bounds: nana_ui_runtime::LayoutBox {
-                x: 20.0,
-                y: 20.0,
-                width: 24.0,
-                height: 24.0,
+        nana_ui_runtime::scene_contract::WidgetPaintOp::Icon(
+            nana_ui_runtime::scene_contract::WidgetIcon {
+                bounds: nana_ui_runtime::LayoutBox {
+                    x: 20.0,
+                    y: 20.0,
+                    width: 24.0,
+                    height: 24.0,
+                },
+                glyph: nana_ui_runtime::scene_contract::WidgetGlyph::Spinner { phase: 0 },
+                color: Some([1.0, 0.0, 0.0, 1.0]),
+                paint_color: None,
+                align_to_adjacent_text: false,
             },
-            glyph: nana_ui_runtime::WidgetGlyph::Spinner { phase: 0 },
-            color: Some([1.0, 0.0, 0.0, 1.0]),
-            paint_color: None,
-            align_to_adjacent_text: false,
-        }),
+        ),
     );
     spinner.widget_paint = Some(Arc::new(spinner_paint));
     scene.apply_delta(
@@ -9883,24 +9886,28 @@ fn an_icon_a_transform_scales_is_rasterized_at_the_size_it_is_seen() {
     let paint = |size: f32, scale: f32| {
         let at = 32.0 - size * 0.5;
         let mut icon = colored_quad_node(1, at, at, size, size, [0.0; 4]);
-        let mut paint = nana_ui_runtime::WidgetPaintOutput {
+        let mut paint = nana_ui_runtime::scene_contract::WidgetPaintOutput {
             suppresses_in_flow_descendants: true,
-            ..nana_ui_runtime::WidgetPaintOutput::new()
+            ..nana_ui_runtime::scene_contract::WidgetPaintOutput::new()
         };
         paint.push(
             3,
-            nana_ui_runtime::WidgetPaintOp::Icon(nana_ui_runtime::WidgetIcon {
-                bounds: nana_ui_runtime::LayoutBox {
-                    x: 0.0,
-                    y: 0.0,
-                    width: size,
-                    height: size,
+            nana_ui_runtime::scene_contract::WidgetPaintOp::Icon(
+                nana_ui_runtime::scene_contract::WidgetIcon {
+                    bounds: nana_ui_runtime::LayoutBox {
+                        x: 0.0,
+                        y: 0.0,
+                        width: size,
+                        height: size,
+                    },
+                    glyph: nana_ui_runtime::scene_contract::WidgetGlyph::Icon(
+                        nana_ui_core::Icon::Search,
+                    ),
+                    color: Some([1.0; 4]),
+                    paint_color: None,
+                    align_to_adjacent_text: true,
                 },
-                glyph: nana_ui_runtime::WidgetGlyph::Icon(nana_ui_core::Icon::Search),
-                color: Some([1.0; 4]),
-                paint_color: None,
-                align_to_adjacent_text: true,
-            }),
+            ),
         );
         icon.widget_paint = Some(Arc::new(paint));
         Arc::make_mut(&mut icon.source_style.layout)
@@ -9946,24 +9953,28 @@ fn an_icon_squeezed_along_one_axis_keeps_its_ink_at_any_sub_pixel_phase() {
     let (device, queue) = test_device();
     let ink = |phase: f32| {
         let mut icon = colored_quad_node(1, 16.0, 16.0 + phase, 32.0, 32.0, [0.0; 4]);
-        let mut paint = nana_ui_runtime::WidgetPaintOutput {
+        let mut paint = nana_ui_runtime::scene_contract::WidgetPaintOutput {
             suppresses_in_flow_descendants: true,
-            ..nana_ui_runtime::WidgetPaintOutput::new()
+            ..nana_ui_runtime::scene_contract::WidgetPaintOutput::new()
         };
         paint.push(
             3,
-            nana_ui_runtime::WidgetPaintOp::Icon(nana_ui_runtime::WidgetIcon {
-                bounds: nana_ui_runtime::LayoutBox {
-                    x: 0.0,
-                    y: 0.0,
-                    width: 32.0,
-                    height: 32.0,
+            nana_ui_runtime::scene_contract::WidgetPaintOp::Icon(
+                nana_ui_runtime::scene_contract::WidgetIcon {
+                    bounds: nana_ui_runtime::LayoutBox {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 32.0,
+                        height: 32.0,
+                    },
+                    glyph: nana_ui_runtime::scene_contract::WidgetGlyph::Icon(
+                        nana_ui_core::Icon::Search,
+                    ),
+                    color: Some([1.0; 4]),
+                    paint_color: None,
+                    align_to_adjacent_text: true,
                 },
-                glyph: nana_ui_runtime::WidgetGlyph::Icon(nana_ui_core::Icon::Search),
-                color: Some([1.0; 4]),
-                paint_color: None,
-                align_to_adjacent_text: true,
-            }),
+            ),
         );
         icon.widget_paint = Some(Arc::new(paint));
         Arc::make_mut(&mut icon.source_style.layout)
@@ -10306,24 +10317,26 @@ fn adjacent_icons_batch_into_one_draw_whatever_their_glyphs() {
                 None,
             );
             icon.parent = Some(StableNodeId::new(1).unwrap());
-            let mut icon_paint = nana_ui_runtime::WidgetPaintOutput {
+            let mut icon_paint = nana_ui_runtime::scene_contract::WidgetPaintOutput {
                 suppresses_in_flow_descendants: true,
-                ..nana_ui_runtime::WidgetPaintOutput::new()
+                ..nana_ui_runtime::scene_contract::WidgetPaintOutput::new()
             };
             icon_paint.push(
                 3,
-                nana_ui_runtime::WidgetPaintOp::Icon(nana_ui_runtime::WidgetIcon {
-                    bounds: nana_ui_runtime::LayoutBox {
-                        x: 0.0,
-                        y: 0.0,
-                        width: size,
-                        height: size,
+                nana_ui_runtime::scene_contract::WidgetPaintOp::Icon(
+                    nana_ui_runtime::scene_contract::WidgetIcon {
+                        bounds: nana_ui_runtime::LayoutBox {
+                            x: 0.0,
+                            y: 0.0,
+                            width: size,
+                            height: size,
+                        },
+                        glyph: nana_ui_runtime::scene_contract::WidgetGlyph::Icon(glyph),
+                        color: Some([1.0; 4]),
+                        paint_color: None,
+                        align_to_adjacent_text: true,
                     },
-                    glyph: nana_ui_runtime::WidgetGlyph::Icon(glyph),
-                    color: Some([1.0; 4]),
-                    paint_color: None,
-                    align_to_adjacent_text: true,
-                }),
+                ),
             );
             icon.widget_paint = Some(Arc::new(icon_paint));
             nodes.push(icon);
@@ -11292,28 +11305,32 @@ fn alternating_live_targets_keep_prepared_geometry_text_and_bindings() {
                 [],
             );
             let mut icon = colored_quad_node(1000, 4.0, 4.0, 16.0, 16.0, [0.0; 4]);
-            let mut icon_paint = nana_ui_runtime::WidgetPaintOutput {
+            let mut icon_paint = nana_ui_runtime::scene_contract::WidgetPaintOutput {
                 suppresses_in_flow_descendants: true,
-                ..nana_ui_runtime::WidgetPaintOutput::new()
+                ..nana_ui_runtime::scene_contract::WidgetPaintOutput::new()
             };
             icon_paint.push(
                 3,
-                nana_ui_runtime::WidgetPaintOp::Icon(nana_ui_runtime::WidgetIcon {
-                    bounds: nana_ui_runtime::LayoutBox {
-                        x: 0.0,
-                        y: 0.0,
-                        width: 16.0,
-                        height: 16.0,
+                nana_ui_runtime::scene_contract::WidgetPaintOp::Icon(
+                    nana_ui_runtime::scene_contract::WidgetIcon {
+                        bounds: nana_ui_runtime::LayoutBox {
+                            x: 0.0,
+                            y: 0.0,
+                            width: 16.0,
+                            height: 16.0,
+                        },
+                        glyph: nana_ui_runtime::scene_contract::WidgetGlyph::Icon(
+                            if index % 2 == 0 {
+                                nana_ui_core::Icon::Search
+                            } else {
+                                nana_ui_core::Icon::Close
+                            },
+                        ),
+                        color: Some([1.0; 4]),
+                        paint_color: None,
+                        align_to_adjacent_text: true,
                     },
-                    glyph: nana_ui_runtime::WidgetGlyph::Icon(if index % 2 == 0 {
-                        nana_ui_core::Icon::Search
-                    } else {
-                        nana_ui_core::Icon::Close
-                    }),
-                    color: Some([1.0; 4]),
-                    paint_color: None,
-                    align_to_adjacent_text: true,
-                }),
+                ),
             );
             icon.widget_paint = Some(Arc::new(icon_paint));
             let mut label = colored_quad_node(1001, 20.0, 2.0, 40.0, 20.0, [0.0; 4]);

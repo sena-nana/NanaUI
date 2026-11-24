@@ -13,7 +13,7 @@
 ```rust view
 use nana_ui::runtime::view;
 use nana_ui::runtime::Drawer;
-use nana_ui::DrawerSide;
+use nana_ui::runtime::DrawerSide;
 
 view! {
     <Widget
@@ -31,7 +31,7 @@ view! {
 ```rust rust
 use nana_ui::runtime::view::{text, widget};
 use nana_ui::runtime::Drawer;
-use nana_ui::DrawerSide;
+use nana_ui::runtime::DrawerSide;
 
 widget(
     Drawer::new("筛选")
@@ -73,7 +73,7 @@ widget(
 
 ## 属性
 
-`.side` 用 `nana_ui::DrawerSide`：`Left`、`Right`、`Bottom`。
+`.side` 用 `nana_ui::runtime::DrawerSide`：`Left`、`Right`、`Bottom`。
 
 `.description` 写在标题下面。
 
@@ -84,7 +84,7 @@ widget(
 | 属性 | 类型 | 说明 |
 | --- | --- | --- |
 | `title` | — | `Drawer::new(title)` |
-| `.side` | `nana_ui::DrawerSide` | `Left`、`Right`、`Bottom`。`Drawer::new(title)` 默认贴在右侧 |
+| `.side` | `nana_ui::runtime::DrawerSide` | `Left`、`Right`、`Bottom`。`Drawer::new(title)` 默认贴在右侧 |
 | `.description` | — | 写在标题下面 |
 | `.close_policy` | `nana_ui::DialogClosePolicy` | 接收 `nana_ui::DialogClosePolicy` |
 | `.initial_focus` | — | 打开后焦点落在表面、第一个动作，还是你指定的节点 |

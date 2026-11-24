@@ -6,13 +6,13 @@ use nana_ui::runtime::view::widget;
 use nana_ui::runtime::{
     ContextMenu, ContextMenuItem, DocumentId, Dropdown, DropdownOption, LayoutViewport, LengthSpec,
     List, ListItem, NodeStyle, RuntimeDocument, ScrollAxes, ScrollView, SearchDropdown,
-    SearchDropdownOption, Text, Workspace,
+    SearchDropdownOption, Text, Workspace, WorkspaceModel, WorkspaceMutation,
 };
 use nana_ui::{
     GpuContext, GpuRenderTarget, GpuTextureDescriptor, GpuTextureFormat, GpuTextureUsages,
     HostTexture, HostTextureAlphaMode, HostTextureRegistry, NanaTextShaper, RegionId, RegionRole,
     RegionState, ScenePaintViewport, SceneWgpuPainter, SettingsTabId, ThemeAppearance,
-    WorkspaceAction, WorkspaceLayout, WorkspaceModel, WorkspaceMutation,
+    WorkspaceAction, WorkspaceLayout,
 };
 use nana_ui_platform::{
     InputModifiers, InputPayload, PointerId, PointerInput, PointerPhase, WheelInput, WheelUnit,

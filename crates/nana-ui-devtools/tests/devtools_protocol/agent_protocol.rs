@@ -87,7 +87,7 @@ fn accessibility_dump_carries_tree_rows() {
                     TreeNode::leaf("camera".into(), "相机"),
                 ])
                 .selection({
-                    let mut selection = nana_ui::SelectionState::single();
+                    let mut selection = nana_ui::runtime::SelectionState::single();
                     selection.select_only("camera".into());
                     selection
                 })
@@ -97,7 +97,7 @@ fn accessibility_dump_carries_tree_rows() {
         document
             .context_mut()
             .on(tree, |tree, request: &TreeSelectionRequested, _| {
-                let mut selection = nana_ui::SelectionState::clone(&tree.selection);
+                let mut selection = nana_ui::runtime::SelectionState::clone(&tree.selection);
                 if request.apply_to(&mut selection, &tree.nodes) {
                     tree.selection = selection.into();
                 }
@@ -162,7 +162,7 @@ fn accessibility_dump_carries_tree_row_toggles() {
                     TreeNode::leaf("camera".into(), "相机").toggles([false, false]),
                 ])
                 .selection({
-                    let mut selection = nana_ui::SelectionState::single();
+                    let mut selection = nana_ui::runtime::SelectionState::single();
                     selection.select_only("model".into());
                     selection
                 })

@@ -95,7 +95,8 @@ pub(super) fn is_triggered_menu(node: &ExtractedNode) -> bool {
         .as_deref()
         .and_then(|w| w.floating_overlay.as_ref())
         .is_some_and(|overlay| {
-            overlay.kind == nana_ui_runtime::WidgetFloatingOverlayKind::TriggeredSurface
+            overlay.kind
+                == nana_ui_runtime::scene_contract::WidgetFloatingOverlayKind::TriggeredSurface
         })
 }
 
@@ -105,7 +106,8 @@ pub(super) fn is_trigger_content(menu: &ExtractedNode, child: StableNodeId) -> b
         .as_deref()
         .and_then(|w| w.floating_overlay.as_ref())
         .is_some_and(|overlay| {
-            overlay.kind == nana_ui_runtime::WidgetFloatingOverlayKind::TriggeredSurface
+            overlay.kind
+                == nana_ui_runtime::scene_contract::WidgetFloatingOverlayKind::TriggeredSurface
                 && overlay.trigger_content == Some(child)
         })
 }
@@ -127,7 +129,7 @@ impl VisualNode {
 pub(super) fn primitive_visual_node(nodes: &SceneNodes, primitive: &ScenePrimitive) -> VisualNode {
     let is_overlay = nodes.get(&primitive.node).is_some_and(|node| {
         if let Some(paint) = node.widget_paint.as_deref()
-            && nana_ui_runtime::is_floating_overlay_slot(paint, primitive.id.slot)
+            && nana_ui_runtime::scene_contract::is_floating_overlay_slot(paint, primitive.id.slot)
         {
             return true;
         }
@@ -150,9 +152,11 @@ fn resolve_scene_overlay_mount(
     nodes: &SceneNodes,
     node: &ExtractedNode,
     mount: nana_ui_core::OverlayMount,
-) -> nana_ui_runtime::VisualParent {
+) -> nana_ui_runtime::scene_contract::VisualParent {
     match mount {
-        nana_ui_core::OverlayMount::TopLayer => nana_ui_runtime::VisualParent::TopLayer,
+        nana_ui_core::OverlayMount::TopLayer => {
+            nana_ui_runtime::scene_contract::VisualParent::TopLayer
+        }
         nana_ui_core::OverlayMount::NearestModal => {
             let mut cursor = node.parent;
             let mut depth = 0usize;
@@ -165,23 +169,23 @@ fn resolve_scene_overlay_mount(
                     break;
                 };
                 if is_modal_frame_node(ancestor) {
-                    return nana_ui_runtime::VisualParent::Modal(ancestor_id);
+                    return nana_ui_runtime::scene_contract::VisualParent::Modal(ancestor_id);
                 }
                 cursor = ancestor.parent;
             }
-            nana_ui_runtime::VisualParent::Root
+            nana_ui_runtime::scene_contract::VisualParent::Root
         }
         nana_ui_core::OverlayMount::Inline => {
             let Some(parent_id) = node.parent else {
-                return nana_ui_runtime::VisualParent::Root;
+                return nana_ui_runtime::scene_contract::VisualParent::Root;
             };
             let Some(parent) = nodes.get(&parent_id) else {
-                return nana_ui_runtime::VisualParent::Root;
+                return nana_ui_runtime::scene_contract::VisualParent::Root;
             };
             if is_triggered_menu(parent) && !is_trigger_content(parent, node.id) {
-                nana_ui_runtime::VisualParent::Overlay(parent_id)
+                nana_ui_runtime::scene_contract::VisualParent::Overlay(parent_id)
             } else {
-                nana_ui_runtime::VisualParent::Node(parent_id)
+                nana_ui_runtime::scene_contract::VisualParent::Node(parent_id)
             }
         }
     }
@@ -190,19 +194,20 @@ fn resolve_scene_overlay_mount(
 pub(super) fn effective_visual_parent(
     nodes: &SceneNodes,
     node: &ExtractedNode,
-) -> Option<nana_ui_runtime::VisualParent> {
+) -> Option<nana_ui_runtime::scene_contract::VisualParent> {
     node.visual_parent.or_else(|| {
         let parent_id = node.parent?;
         let parent = nodes.get(&parent_id)?;
-        (is_triggered_menu(parent) && !is_trigger_content(parent, node.id))
-            .then_some(nana_ui_runtime::VisualParent::Overlay(parent_id))
+        (is_triggered_menu(parent) && !is_trigger_content(parent, node.id)).then_some(
+            nana_ui_runtime::scene_contract::VisualParent::Overlay(parent_id),
+        )
     })
 }
 
 pub(super) fn effective_overlay_visual_parent(
     nodes: &SceneNodes,
     node: &ExtractedNode,
-) -> nana_ui_runtime::VisualParent {
+) -> nana_ui_runtime::scene_contract::VisualParent {
     node.overlay_visual_parent.unwrap_or_else(|| {
         if let Some(overlay) = node
             .widget_paint
@@ -215,13 +220,15 @@ pub(super) fn effective_overlay_visual_parent(
     })
 }
 
-pub(super) const fn visual_parent_to_node(vp: nana_ui_runtime::VisualParent) -> Option<VisualNode> {
+pub(super) const fn visual_parent_to_node(
+    vp: nana_ui_runtime::scene_contract::VisualParent,
+) -> Option<VisualNode> {
     match vp {
-        nana_ui_runtime::VisualParent::Root | nana_ui_runtime::VisualParent::TopLayer => None,
-        nana_ui_runtime::VisualParent::Modal(id) | nana_ui_runtime::VisualParent::Node(id) => {
-            Some(VisualNode::Node(id))
-        }
-        nana_ui_runtime::VisualParent::Overlay(id) => Some(VisualNode::Overlay(id)),
+        nana_ui_runtime::scene_contract::VisualParent::Root
+        | nana_ui_runtime::scene_contract::VisualParent::TopLayer => None,
+        nana_ui_runtime::scene_contract::VisualParent::Modal(id)
+        | nana_ui_runtime::scene_contract::VisualParent::Node(id) => Some(VisualNode::Node(id)),
+        nana_ui_runtime::scene_contract::VisualParent::Overlay(id) => Some(VisualNode::Overlay(id)),
     }
 }
 

@@ -13,9 +13,10 @@
 pub mod host {
     #[cfg(feature = "graph-canvas")]
     pub use nana_ui_runtime::GRAPH_CANVAS_RENDERER;
+    pub use nana_ui_runtime::scene_contract::{ExtractedNode, ExtractedTextSpan};
     pub use nana_ui_runtime::{
-        CustomRenderNode, ExtractedNode, ExtractedTextSpan, GPU_TEXTURE_VIEW_RENDERER,
-        GPU_VIEW_RENDERER, HOST_TEXTURE_RENDERER, pack_gpu_revision, unpack_gpu_revision,
+        CustomRenderNode, GPU_TEXTURE_VIEW_RENDERER, GPU_VIEW_RENDERER, HOST_TEXTURE_RENDERER,
+        pack_gpu_revision, unpack_gpu_revision,
     };
     pub use nana_ui_scene::{RuntimeDocument, RuntimeFrameUpdate, SceneDelta, UiScene};
 }
@@ -52,6 +53,7 @@ pub mod perf {
 /// product code should import from [`crate::runtime`] directly.
 #[doc(hidden)]
 pub mod internal {
+    pub use nana_ui_runtime::scene_contract::*;
     pub use nana_ui_runtime::*;
     pub use nana_ui_scene::{RuntimeDocument, RuntimeFrameUpdate, SceneDelta, UiScene};
 }

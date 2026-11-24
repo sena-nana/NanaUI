@@ -978,7 +978,7 @@ pub(super) mod responsive_queries {
             layout_at: fn(f32) -> LayoutStyle,
         ) -> Self {
             let mut context = AppContext::new();
-            context.compat_world_mut().commit(queue).unwrap();
+            context.world_mut().commit(queue).unwrap();
             let mut panel = Self {
                 context,
                 document,
@@ -1250,7 +1250,7 @@ pub(super) mod responsive_queries {
                 )),
             );
             let mut context = AppContext::new();
-            context.compat_world_mut().commit(queue).unwrap();
+            context.world_mut().commit(queue).unwrap();
             let mut shaper = bundled_face_shaper();
             product_frame(&mut context, document, viewport(), &mut shaper);
             let passes = context.layout_invocations();

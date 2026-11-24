@@ -8662,7 +8662,7 @@ mod free_container {
         // `a` and `b` overlap; `b` is later in the document, so on top.
         let (ax, ay, _, _) = page.rect(ids.a);
         let point = (ax + 50.0, ay + 20.0);
-        page.context.compat_world_mut().rebuild_hit_test(document());
+        page.context.world_mut().rebuild_hit_test(document());
         let hit = |page: &Page| {
             page.context
                 .world()
@@ -8689,7 +8689,7 @@ mod free_container {
         );
         let stats = product_frame(&mut page.context, document(), viewport(), &mut page.shaper);
         assert_eq!(stats.layout_passes, 0);
-        page.context.compat_world_mut().rebuild_hit_test(document());
+        page.context.world_mut().rebuild_hit_test(document());
         let candidates = hit(&page);
         // `(z_index, document_order)`: `a` is above `b` now.
         assert!(rank(&candidates, ids.a) < rank(&candidates, ids.b));
@@ -8699,7 +8699,7 @@ mod free_container {
     fn issue301_a_new_rect_patches_the_hit_index_from_that_item() {
         let mut page = Page::new();
         let ids = page.ids;
-        let world = page.context.compat_world_mut();
+        let world = page.context.world_mut();
         world.rebuild_hit_test(document());
         let mut queue = MutationQueue::new();
         queue.set_explicit_rect(ids.b, Some(ExplicitRect::new(250.0, 200.0, 80.0, 40.0)));
@@ -8713,7 +8713,7 @@ mod free_container {
         );
         // Only the item whose box moved is handed to the hit index.
         assert_eq!(drained.input_hit_test, vec![ids.b]);
-        let world = page.context.compat_world_mut();
+        let world = page.context.world_mut();
         let built = |world: &crate::UiWorld| {
             world
                 .last_work_counters()

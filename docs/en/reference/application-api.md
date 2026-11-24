@@ -92,7 +92,7 @@ New code imports controls from `nana_ui::runtime`. The crate-root control compat
 | `nana_ui::Button`, `Text`, `Workspace`, and other root-level controls | Removed | Use `nana_ui::runtime::{Button, Text, Workspace, ...}` |
 | `nana_ui::Textarea` | Removed | Use `nana_ui::runtime::TextArea` |
 | `nana_ui::components::*` | Compatibility surface (hidden from docs) | New code uses `nana_ui::runtime::*`; the old path is only for migration and catalog checks |
-| `AppContext::world_mut()` | Removed | Use `commit_mutations`; only internal hosts/adapters use `compat_world_mut()` |
+| `AppContext::world_mut()` / `compat_world_mut()` | Removed | Use `commit_mutations` and typed `AppContext` methods |
 | `nana_ui::dock::*` | `nana_ui::runtime::{Dock, DockWorkspace, ...}` + host adapter | The Dock tree belongs only to Runtime |
 
 The `world_mut` and `Textarea` compatibility entry points have been removed. New capabilities may only go into `runtime`

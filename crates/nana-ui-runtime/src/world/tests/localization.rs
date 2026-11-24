@@ -1533,7 +1533,7 @@ pub(super) mod catalog_switching {
             context.set_default_locale(Locale::parse("en-us"));
             let mut queue = MutationQueue::new();
             let windows = windows(&mut queue);
-            context.compat_world_mut().commit(queue).unwrap();
+            context.world_mut().commit(queue).unwrap();
             let mut app = Self {
                 context,
                 windows,
@@ -1856,7 +1856,7 @@ pub(super) mod virtual_feed {
                 Some(LocalizedText::new(&format!("item.{}", button % MESSAGES)).arg("count", 2u32)),
             );
         }
-        context.compat_world_mut().commit(queue).unwrap();
+        context.world_mut().commit(queue).unwrap();
         let mut shaper = bundled_face_shaper();
         let viewport = LayoutViewport::new(1200.0, 800.0);
         product_frame(&mut context, document, viewport, &mut shaper);
@@ -2246,7 +2246,7 @@ pub(super) mod message_formatting {
             "Updated item of {count}",
         ));
         app.context
-            .compat_world_mut()
+            .world_mut()
             .update_message_catalog(updated, &[MessageId::new("item.7")]);
         for id in &saying {
             assert_eq!(app.text(*id), "Updated item of 3");

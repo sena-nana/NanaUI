@@ -3,6 +3,7 @@
 //! characters: each box here is compared with what [`NanaTextShaper`] says
 //! the painted run is.
 
+use nana_ui::runtime::scene_contract::{ComponentTextRegion, WidgetPaintOp};
 use nana_ui::{NanaTextShaper, runtime::*};
 use nana_ui_core::space;
 

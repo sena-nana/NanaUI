@@ -1,6 +1,6 @@
 # SplitPane
 
-`SplitPane` is two pieces of content plus an 8px drag handle. Its size comes from `nana_ui::SplitPaneModel`. Your content stays in the `first` and `second` slots.
+`SplitPane` is two pieces of content plus an 8px drag handle. Its size comes from `nana_ui::runtime::SplitPaneModel`. Your content stays in the `first` and `second` slots.
 
 ## Basic usage
 
@@ -10,8 +10,8 @@ The handle takes no part in the content's layout, and the geometry has one write
 
 ```rust view
 use nana_ui::runtime::view;
-use nana_ui::runtime::SplitPane;
-use nana_ui::{SplitAxis, SplitPaneModel};
+use nana_ui::SplitAxis;
+use nana_ui::runtime::{SplitPane, SplitPaneModel};
 
 let model = SplitPaneModel::new(SplitAxis::Horizontal, 240.0, 120.0, 800.0);
 view! {
@@ -28,8 +28,8 @@ view! {
 
 ```rust rust
 use nana_ui::runtime::view::{column, widget};
-use nana_ui::runtime::SplitPane;
-use nana_ui::{SplitAxis, SplitPaneModel};
+use nana_ui::SplitAxis;
+use nana_ui::runtime::{SplitPane, SplitPaneModel};
 
 let model = SplitPaneModel::new(SplitAxis::Horizontal, 240.0, 120.0, 800.0);
 widget(SplitPane::new(&model).surface(nana_ui::runtime::SemanticColorRole::Surface))

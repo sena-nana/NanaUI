@@ -132,22 +132,12 @@ fn grouped_escaped_and_queried_rows_leave_nothing_behind() {
             ),
         );
         next_anim += 1;
-        runtime
-            .context_mut()
-            .compat_world_mut()
-            .commit(queue)
-            .unwrap();
+        runtime.context_mut().commit_mutations(queue).unwrap();
     }
-    runtime
-        .context_mut()
-        .compat_world_mut()
-        .advance_animations(now);
+    runtime.context_mut().advance_animations(now);
     frame(&mut runtime);
     now += Duration::from_millis(20);
-    runtime
-        .context_mut()
-        .compat_world_mut()
-        .advance_animations(now);
+    runtime.context_mut().advance_animations(now);
     frame(&mut runtime);
     assert!(
         runtime
@@ -211,21 +201,11 @@ fn grouped_escaped_and_queried_rows_leave_nothing_behind() {
             cx.append_child(clip_box, badge).unwrap();
             rows.push((clip_box, badge));
         }
-        runtime
-            .context_mut()
-            .compat_world_mut()
-            .commit(anim_queue)
-            .unwrap();
-        runtime
-            .context_mut()
-            .compat_world_mut()
-            .advance_animations(now);
+        runtime.context_mut().commit_mutations(anim_queue).unwrap();
+        runtime.context_mut().advance_animations(now);
         frame(runtime);
         now += Duration::from_millis(20);
-        runtime
-            .context_mut()
-            .compat_world_mut()
-            .advance_animations(now);
+        runtime.context_mut().advance_animations(now);
         frame(runtime);
         for primitive in runtime.scene().primitives() {
             let _ = runtime.scene().draw_primitive(primitive.id);

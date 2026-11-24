@@ -763,7 +763,7 @@ pub(super) fn text_box_origin(
     vertical: TextVerticalAlignment,
     laid_out_height: f32,
 ) -> [f32; 2] {
-    nana_ui_runtime::text_layout_origin(
+    nana_ui_runtime::scene_contract::text_layout_origin(
         nana_ui_runtime::LayoutBox {
             x: bounds.x,
             y: bounds.y,

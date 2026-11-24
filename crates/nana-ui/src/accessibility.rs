@@ -367,12 +367,11 @@ impl AccessibilityProjector {
             .focused
             .iter()
             .rev()
-            .find(|id| nana_ui_runtime::decode_virtual_menu_item(**id).is_some())
+            .find(|id| nana_ui_runtime::scene_contract::decode_virtual_menu_item(**id).is_some())
             .or_else(|| {
-                self.focused
-                    .iter()
-                    .rev()
-                    .find(|id| nana_ui_runtime::decode_virtual_tree_item(**id).is_some())
+                self.focused.iter().rev().find(|id| {
+                    nana_ui_runtime::scene_contract::decode_virtual_tree_item(**id).is_some()
+                })
             })
             .or_else(|| self.focused.first())
             .copied();
@@ -443,7 +442,9 @@ impl AccessibilityProjector {
         if !self.interactive || node.disabled || node.inert {
             return None;
         }
-        if let Some((menu, slot)) = nana_ui_runtime::decode_virtual_menu_item(target) {
+        if let Some((menu, slot)) =
+            nana_ui_runtime::scene_contract::decode_virtual_menu_item(target)
+        {
             if !is_menu_row(node.role) {
                 return None;
             }
@@ -456,7 +457,7 @@ impl AccessibilityProjector {
             };
             return Some(nana_ui_runtime::AccessibilityActionRequest { target, action });
         }
-        if nana_ui_runtime::decode_virtual_tree_item(target).is_some() {
+        if nana_ui_runtime::scene_contract::decode_virtual_tree_item(target).is_some() {
             if node.role != AccessibilityRole::TreeItem {
                 return None;
             }
@@ -473,7 +474,7 @@ impl AccessibilityProjector {
             };
             return Some(nana_ui_runtime::AccessibilityActionRequest { target, action });
         }
-        if nana_ui_runtime::decode_virtual_tree_toggle(target).is_some() {
+        if nana_ui_runtime::scene_contract::decode_virtual_tree_toggle(target).is_some() {
             if node.role != AccessibilityRole::Checkbox || request.action != Action::Click {
                 return None;
             }
@@ -1261,7 +1262,7 @@ fn project_node(
     // A tree row's toggle only flips; the focus stays with the tree's rows.
     if actionable
         && supports_focus(node.role)
-        && nana_ui_runtime::decode_virtual_tree_toggle(node.id).is_none()
+        && nana_ui_runtime::scene_contract::decode_virtual_tree_toggle(node.id).is_none()
     {
         projected.add_action(Action::Focus);
     }
@@ -1690,8 +1691,11 @@ mod tests {
     #[test]
     fn virtual_menu_row_wins_platform_focus_over_its_trigger() {
         let menu_id = 5u64;
-        let row =
-            nana_ui_runtime::virtual_menu_item_id(StableNodeId::new(menu_id).unwrap(), 1).unwrap();
+        let row = nana_ui_runtime::scene_contract::virtual_menu_item_id(
+            StableNodeId::new(menu_id).unwrap(),
+            1,
+        )
+        .unwrap();
         let mut trigger = node(4, Some(1), &[]);
         trigger.role = AccessibilityRole::ListItem;
         trigger.label = Some("窗口".into());
@@ -2600,7 +2604,7 @@ mod tests {
     #[test]
     fn virtual_menu_items_project_click_and_focus_actions() {
         let menu = StableNodeId::new(2).unwrap();
-        let item = nana_ui_runtime::virtual_menu_item_id(menu, 1).unwrap();
+        let item = nana_ui_runtime::scene_contract::virtual_menu_item_id(menu, 1).unwrap();
         let mut virtual_item = node(item.get(), Some(menu.get()), &[]);
         virtual_item.role = AccessibilityRole::MenuItem;
         virtual_item.label = Some("打开".into());
@@ -2663,7 +2667,9 @@ mod tests {
         cx.layout_document(document, nana_ui_runtime::LayoutViewport::new(300.0, 300.0))
             .unwrap();
         cx.focus_node(document, tree.stable_id()).unwrap();
-        let row = |slot| nana_ui_runtime::virtual_tree_item_id(tree.stable_id(), slot).unwrap();
+        let row = |slot| {
+            nana_ui_runtime::scene_contract::virtual_tree_item_id(tree.stable_id(), slot).unwrap()
+        };
         let (projector, update) =
             AccessibilityProjector::new(cx.world().project_accessibility(document), true, 1.0);
         let node = |id: StableNodeId| {
@@ -2768,9 +2774,12 @@ mod tests {
             .unwrap();
         cx.layout_document(document, nana_ui_runtime::LayoutViewport::new(300.0, 300.0))
             .unwrap();
-        let row = |slot| nana_ui_runtime::virtual_tree_item_id(tree.stable_id(), slot).unwrap();
+        let row = |slot| {
+            nana_ui_runtime::scene_contract::virtual_tree_item_id(tree.stable_id(), slot).unwrap()
+        };
         let toggle = |slot, column| {
-            nana_ui_runtime::virtual_tree_toggle_id(tree.stable_id(), slot, column).unwrap()
+            nana_ui_runtime::scene_contract::virtual_tree_toggle_id(tree.stable_id(), slot, column)
+                .unwrap()
         };
         let (projector, update) =
             AccessibilityProjector::new(cx.world().project_accessibility(document), true, 1.0);
@@ -2840,8 +2849,8 @@ mod tests {
     fn an_open_menu_row_wins_platform_focus_over_a_tree_row() {
         let menu_id = StableNodeId::new(5).unwrap();
         let tree_id = StableNodeId::new(4).unwrap();
-        let menu_row = nana_ui_runtime::virtual_menu_item_id(menu_id, 1).unwrap();
-        let tree_row = nana_ui_runtime::virtual_tree_item_id(tree_id, 1).unwrap();
+        let menu_row = nana_ui_runtime::scene_contract::virtual_menu_item_id(menu_id, 1).unwrap();
+        let tree_row = nana_ui_runtime::scene_contract::virtual_tree_item_id(tree_id, 1).unwrap();
         let mut tree = node(tree_id.get(), Some(1), &[tree_row.get()]);
         tree.role = AccessibilityRole::Tree;
         tree.focused = true;
@@ -2876,7 +2885,7 @@ mod tests {
     #[test]
     fn a_checkable_virtual_menu_row_still_activates_on_click() {
         let menu = StableNodeId::new(2).unwrap();
-        let item = nana_ui_runtime::virtual_menu_item_id(menu, 1).unwrap();
+        let item = nana_ui_runtime::scene_contract::virtual_menu_item_id(menu, 1).unwrap();
         let mut virtual_item = node(item.get(), Some(menu.get()), &[]);
         virtual_item.role = AccessibilityRole::Checkbox;
         virtual_item.label = Some("取消窗口置顶".into());
@@ -2903,9 +2912,9 @@ mod tests {
     #[test]
     fn an_open_combo_box_projects_its_list_box_and_activates_an_option() {
         let field = StableNodeId::new(2).unwrap();
-        let listbox = nana_ui_runtime::virtual_listbox_id(field).unwrap();
-        let first = nana_ui_runtime::virtual_menu_item_id(field, 0x8001).unwrap();
-        let second = nana_ui_runtime::virtual_menu_item_id(field, 0x8002).unwrap();
+        let listbox = nana_ui_runtime::scene_contract::virtual_listbox_id(field).unwrap();
+        let first = nana_ui_runtime::scene_contract::virtual_menu_item_id(field, 0x8001).unwrap();
+        let second = nana_ui_runtime::scene_contract::virtual_menu_item_id(field, 0x8002).unwrap();
         let mut combo = node(field.get(), Some(1), &[listbox.get()]);
         combo.role = AccessibilityRole::ComboBox;
         combo.focused = true;

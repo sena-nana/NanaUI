@@ -81,7 +81,7 @@ A write does not re-assemble automatically.
 
 ## Model
 
-Product state lives in `nana_ui::WorkspaceModel` and `WorkspaceMutation`.
+Product state lives in `nana_ui::runtime::WorkspaceModel` and `WorkspaceMutation`.
 
 Collapse, size and visibility go through the model.
 

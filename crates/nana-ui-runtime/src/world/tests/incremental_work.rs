@@ -81,7 +81,7 @@ mod invalidation_classification {
         edit(&mut next);
         let mut queue = MutationQueue::new();
         queue.set_style(id, next);
-        context.compat_world_mut().commit(queue).unwrap();
+        context.world_mut().commit(queue).unwrap();
     }
 
     fn rewrite_style(context: &mut AppContext, id: StableNodeId) {
@@ -101,7 +101,7 @@ mod invalidation_classification {
     #[test]
     fn issue255_equivalent_write_is_skipped_and_a_width_change_queues_one_typed_cause() {
         let mut context = AppContext::new();
-        let document = install_column(context.compat_world_mut(), 1);
+        let document = install_column(context.world_mut(), 1);
         settle(&mut context, document);
         let row = node(3);
 
@@ -149,7 +149,7 @@ mod invalidation_classification {
     #[test]
     fn issue255_devtools_explains_why_layout_reached_a_node() {
         let mut context = AppContext::new();
-        let document = install_column(context.compat_world_mut(), 3);
+        let document = install_column(context.world_mut(), 3);
         settle(&mut context, document);
         let row = node(3);
         let follower = node(4);
@@ -218,7 +218,7 @@ mod invalidation_classification {
 
     fn classify_one_width_change(rows: u64) -> (Classified, LayoutInvalidation) {
         let mut context = AppContext::new();
-        install_column(context.compat_world_mut(), rows);
+        install_column(context.world_mut(), rows);
         let column = node(2);
         assert_eq!(
             context.world().node(column).unwrap().children.len(),
@@ -281,7 +281,7 @@ mod invalidation_classification {
     #[test]
     fn issue255_a_layout_write_leaves_descendant_results_published() {
         let mut context = AppContext::new();
-        let document = install_column(context.compat_world_mut(), 2_000);
+        let document = install_column(context.world_mut(), 2_000);
         settle(&mut context, document);
         let column = node(2);
         let last_row = node(3 + 1_999);
@@ -308,7 +308,7 @@ mod invalidation_classification {
     #[test]
     fn issue255_paint_opacity_transform_and_accessibility_stay_out_of_layout() {
         let mut context = AppContext::new();
-        let document = install_column(context.compat_world_mut(), 1);
+        let document = install_column(context.world_mut(), 1);
         settle(&mut context, document);
         let row = node(3);
         let laid_out = context.world().layout_box(row).unwrap();
@@ -407,7 +407,7 @@ mod invalidation_classification {
                 ..AccessibilityState::default()
             },
         );
-        context.compat_world_mut().commit(queue).unwrap();
+        context.world_mut().commit(queue).unwrap();
         assert!(context.world().pending_layout_invalidation(row).is_empty());
         settle(&mut context, document);
         assert_eq!(
@@ -452,7 +452,7 @@ mod invalidation_classification {
     #[test]
     fn issue255_a_thousand_equivalent_writes_are_skipped_on_a_10k_tree() {
         let mut context = AppContext::new();
-        install_column(context.compat_world_mut(), 10_000);
+        install_column(context.world_mut(), 10_000);
         let column = node(2);
         let _ = context.take_system_work();
         let before = context.last_work_counters();
@@ -504,7 +504,7 @@ mod invalidation_classification {
         assert_eq!(std::mem::size_of::<LayoutDependencyFootprint>(), 2);
 
         let mut context = AppContext::new();
-        install_column(context.compat_world_mut(), 100_000);
+        install_column(context.world_mut(), 100_000);
         let column = node(2);
         let nodes = context.world().len();
         let slots = context
@@ -651,7 +651,7 @@ mod dirty_frontier {
                     );
                 }
             }
-            context.compat_world_mut().commit(queue).unwrap();
+            context.world_mut().commit(queue).unwrap();
             let mut shaper = bundled_face_shaper();
             frame(&mut context, document, &mut shaper);
             Self {
@@ -674,7 +674,7 @@ mod dirty_frontier {
                     value: value.into(),
                 },
             );
-            self.context.compat_world_mut().commit(queue).unwrap();
+            self.context.world_mut().commit(queue).unwrap();
         }
 
         fn frame(&mut self) -> FrameStats {
@@ -914,7 +914,7 @@ mod dirty_frontier {
             queue.create(node(row), document, NodeKind::Element { tag: "row".into() });
             queue.insert(node(2), node(row), None);
         }
-        context.compat_world_mut().commit(queue).unwrap();
+        context.world_mut().commit(queue).unwrap();
         let indices_hold = |world: &UiWorld| {
             for list in [node(2), node(3)] {
                 let children = world.nodes.get(list).unwrap().hierarchy.children.clone();
@@ -945,7 +945,7 @@ mod dirty_frontier {
         for edit in edits {
             let mut queue = MutationQueue::new();
             edit(&mut queue);
-            context.compat_world_mut().commit(queue).unwrap();
+            context.world_mut().commit(queue).unwrap();
             indices_hold(context.world());
         }
     }
@@ -2466,7 +2466,7 @@ mod scaling_matrix {
                 build_group(&mut tree, shape, &edits, group);
             }
             let mut context = AppContext::new();
-            context.compat_world_mut().commit(tree.queue).unwrap();
+            context.world_mut().commit(tree.queue).unwrap();
             let mut page = Self {
                 shape,
                 groups,
@@ -2536,7 +2536,7 @@ mod scaling_matrix {
                     Scenario::Typography => queue.set_text_scale(target, card_text_scale(on)),
                 }
             }
-            self.context.compat_world_mut().commit(queue).unwrap();
+            self.context.world_mut().commit(queue).unwrap();
         }
 
         fn frame(&mut self) -> FrameStats {
@@ -3445,7 +3445,7 @@ mod scaling_matrix {
                     "Updated item of {count}",
                 ));
                 app.context
-                    .compat_world_mut()
+                    .world_mut()
                     .update_message_catalog(updated, &[MessageId::new("item.7")]);
             });
             measure(&mut app, &|app| {

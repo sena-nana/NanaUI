@@ -82,7 +82,8 @@ fn node(value: u64, parent: Option<u64>, children: &[u64]) -> ExtractedNode {
 
 #[test]
 fn unlabeled_spinner_centers_in_the_node_labeled_spinner_stays_leading() {
-    use nana_ui_runtime::{SpinnerVisual, UiWorld, WidgetPaintCtx, WidgetVisual as _};
+    use nana_ui_runtime::scene_contract::{WidgetPaintCtx, WidgetVisual as _};
+    use nana_ui_runtime::{SpinnerVisual, UiWorld};
 
     let world = UiWorld::new();
     let theme = world.theme();
@@ -479,7 +480,7 @@ fn extracted_text_spans_travel_on_the_text_primitive() {
     labeled.text = Some(TextContent {
         value: "fn main".into(),
     });
-    labeled.text_spans = vec![nana_ui_runtime::ExtractedTextSpan {
+    labeled.text_spans = vec![nana_ui_runtime::scene_contract::ExtractedTextSpan {
         start: 0,
         end: 2,
         color: [0.2, 0.6, 1.0, 1.0],
@@ -576,7 +577,7 @@ fn text_input_clip_em_padding_uses_computed_font_size() {
         suffix: None,
         multiline: true,
         scroll: None,
-        text: nana_ui_runtime::ComponentTextRegion {
+        text: nana_ui_runtime::scene_contract::ComponentTextRegion {
             bounds: LayoutBox {
                 x: 32.0,
                 y: 32.0,
@@ -805,59 +806,65 @@ fn selection_option_emits_surface_text_icon_and_focus_slots() {
         }),
         ..Default::default()
     };
-    let mut paint = nana_ui_runtime::WidgetPaintOutput {
+    let mut paint = nana_ui_runtime::scene_contract::WidgetPaintOutput {
         owns_node_text: true,
-        ..nana_ui_runtime::WidgetPaintOutput::new()
+        ..nana_ui_runtime::scene_contract::WidgetPaintOutput::new()
     };
     paint.push(
         2,
-        nana_ui_runtime::WidgetPaintOp::Text(nana_ui_runtime::WidgetText {
-            bounds: LayoutBox {
-                x: 29.0,
-                y: 0.0,
-                width: 57.0,
-                height: 26.0,
+        nana_ui_runtime::scene_contract::WidgetPaintOp::Text(
+            nana_ui_runtime::scene_contract::WidgetText {
+                bounds: LayoutBox {
+                    x: 29.0,
+                    y: 0.0,
+                    width: 57.0,
+                    height: 26.0,
+                },
+                content: nana_ui_runtime::TextValue::from("Preview"),
+                color: Some([1.0, 1.0, 1.0, 1.0]),
+                paint_color: None,
+                font_size: 13.0,
+                font_weight: Some(500),
+                horizontal_alignment: TextHorizontalAlignment::Start,
+                vertical_alignment: TextVerticalAlignment::Center,
+                ellipsis: false,
+                wrap: false,
+                max_lines: None,
+                italic: None,
+                underline: None,
+                line_through: None,
+                suppress_spans: true,
+                preserve_lines: None,
+                unstyled_glyph: false,
+                line_height: None,
+                retained_text: nana_ui_runtime::scene_contract::WidgetRetainedText::None,
+                tabular_nums: false,
+                ..Default::default()
             },
-            content: nana_ui_runtime::TextValue::from("Preview"),
-            color: Some([1.0, 1.0, 1.0, 1.0]),
-            paint_color: None,
-            font_size: 13.0,
-            font_weight: Some(500),
-            horizontal_alignment: TextHorizontalAlignment::Start,
-            vertical_alignment: TextVerticalAlignment::Center,
-            ellipsis: false,
-            wrap: false,
-            max_lines: None,
-            italic: None,
-            underline: None,
-            line_through: None,
-            suppress_spans: true,
-            preserve_lines: None,
-            unstyled_glyph: false,
-            line_height: None,
-            retained_text: nana_ui_runtime::WidgetRetainedText::None,
-            tabular_nums: false,
-            ..Default::default()
-        }),
+        ),
     );
     paint.push(
         3,
-        nana_ui_runtime::WidgetPaintOp::Icon(nana_ui_runtime::WidgetIcon {
-            bounds: LayoutBox {
-                x: 10.0,
-                y: 6.0,
-                width: 14.0,
-                height: 14.0,
+        nana_ui_runtime::scene_contract::WidgetPaintOp::Icon(
+            nana_ui_runtime::scene_contract::WidgetIcon {
+                bounds: LayoutBox {
+                    x: 10.0,
+                    y: 6.0,
+                    width: 14.0,
+                    height: 14.0,
+                },
+                glyph: nana_ui_runtime::scene_contract::WidgetGlyph::Icon(
+                    nana_ui_core::Icon::Search,
+                ),
+                color: Some([0.8, 0.8, 0.8, 1.0]),
+                paint_color: None,
+                align_to_adjacent_text: false,
             },
-            glyph: nana_ui_runtime::WidgetGlyph::Icon(nana_ui_core::Icon::Search),
-            color: Some([0.8, 0.8, 0.8, 1.0]),
-            paint_color: None,
-            align_to_adjacent_text: false,
-        }),
+        ),
     );
     paint.push(
         7,
-        nana_ui_runtime::WidgetPaintOp::FocusRing {
+        nana_ui_runtime::scene_contract::WidgetPaintOp::FocusRing {
             bounds: LayoutBox {
                 x: 0.0,
                 y: 0.0,
@@ -939,7 +946,7 @@ fn a_menu_surface_paints_the_radius_it_was_handed_not_the_constant() {
         let visual = nana_ui_runtime::MenuSurfaceVisual {
             trigger_image: None,
             open: true,
-            kind: nana_ui_runtime::MenuSurfaceKind::ContextMenu,
+            kind: nana_ui_runtime::scene_contract::MenuSurfaceKind::ContextMenu,
             trigger: None,
             trigger_icon: None,
             gap: 0.0,
@@ -1025,7 +1032,7 @@ fn a_menu_trigger_paints_the_corners_its_style_resolved_to() {
         let visual = nana_ui_runtime::MenuSurfaceVisual {
             trigger_image: image.clone(),
             open: false,
-            kind: nana_ui_runtime::MenuSurfaceKind::Popover,
+            kind: nana_ui_runtime::scene_contract::MenuSurfaceKind::Popover,
             trigger: None,
             trigger_icon: Some(nana_ui_core::Icon::Add),
             gap: 0.0,
@@ -1036,7 +1043,7 @@ fn a_menu_trigger_paints_the_corners_its_style_resolved_to() {
         };
         let geometry = nana_ui_runtime::MenuSurfaceGeometry {
             trigger_image: image,
-            trigger_surface: Some(nana_ui_runtime::ComponentTriggerSurface {
+            trigger_surface: Some(nana_ui_runtime::scene_contract::ComponentTriggerSurface {
                 bounds,
                 background: Some([0.18, 0.18, 0.2, 1.0]),
                 border: None,
@@ -1104,7 +1111,7 @@ fn menu_surface_paints_row_icon_and_iconless_labels() {
     let visual = nana_ui_runtime::MenuSurfaceVisual {
         trigger_image: None,
         open: true,
-        kind: nana_ui_runtime::MenuSurfaceKind::ContextMenu,
+        kind: nana_ui_runtime::scene_contract::MenuSurfaceKind::ContextMenu,
         trigger: None,
         trigger_icon: None,
         gap: 0.0,
@@ -1121,7 +1128,7 @@ fn menu_surface_paints_row_icon_and_iconless_labels() {
                 icon: Some(nana_ui_core::Icon::Add),
                 image: None,
                 accessible_name: None,
-                mark: nana_ui_runtime::MenuItemMark::Command,
+                mark: nana_ui_runtime::scene_contract::MenuItemMark::Command,
             },
             nana_ui_runtime::SelectOptionData {
                 key: None,
@@ -1133,7 +1140,7 @@ fn menu_surface_paints_row_icon_and_iconless_labels() {
                 icon: None,
                 image: None,
                 accessible_name: None,
-                mark: nana_ui_runtime::MenuItemMark::Command,
+                mark: nana_ui_runtime::scene_contract::MenuItemMark::Command,
             },
         ]),
         highlighted: None,
@@ -2726,7 +2733,7 @@ fn editor_input_with_markers_and_line_labels() -> (ExtractedNode, nana_ui_runtim
         suffix: None,
         multiline: true,
         scroll: None,
-        text: nana_ui_runtime::ComponentTextRegion {
+        text: nana_ui_runtime::scene_contract::ComponentTextRegion {
             bounds: LayoutBox {
                 x: 40.0,
                 y: 0.0,
@@ -2839,18 +2846,20 @@ fn long_editor_line_numbers_and_diagnostics_survive_updates_without_collisions()
         })
         .collect();
     *diagnostic_labels = (0..320)
-        .map(|index| nana_ui_runtime::ComponentTextRegion {
-            bounds: LayoutBox {
-                x: 64.0,
-                y: index as f32 * 16.0,
-                width: 60.0,
-                height: 16.0,
+        .map(
+            |index| nana_ui_runtime::scene_contract::ComponentTextRegion {
+                bounds: LayoutBox {
+                    x: 64.0,
+                    y: index as f32 * 16.0,
+                    width: 60.0,
+                    height: 16.0,
+                },
+                content: nana_ui_runtime::TextValue::from(format!("error {index}")),
+                color: Some([1.0; 4]),
+                font_size: type_scale::HINT,
+                font_weight: None,
             },
-            content: nana_ui_runtime::TextValue::from(format!("error {index}")),
-            color: Some([1.0; 4]),
-            font_size: type_scale::HINT,
-            font_weight: None,
-        })
+        )
         .collect();
     *sticky_line = Some(nana_ui_runtime::TextStickyLineGeometry {
         panel: LayoutBox {
@@ -2865,7 +2874,7 @@ fn long_editor_line_numbers_and_diagnostics_survive_updates_without_collisions()
             width: 124.0,
             height: 1.0,
         },
-        text: nana_ui_runtime::ComponentTextRegion {
+        text: nana_ui_runtime::scene_contract::ComponentTextRegion {
             bounds: LayoutBox {
                 x: 40.0,
                 y: 0.0,
@@ -3003,7 +3012,7 @@ fn text_input_match_markers_paint_as_batches_and_current_match_emphasizes() {
         suffix: None,
         multiline: true,
         scroll: None,
-        text: nana_ui_runtime::ComponentTextRegion {
+        text: nana_ui_runtime::scene_contract::ComponentTextRegion {
             bounds: LayoutBox {
                 x: 8.0,
                 y: 0.0,
@@ -3141,7 +3150,7 @@ fn text_input_color_swatches_paint_as_one_per_item_color_batch_and_clear_with_fe
         suffix: None,
         multiline: true,
         scroll: None,
-        text: nana_ui_runtime::ComponentTextRegion {
+        text: nana_ui_runtime::scene_contract::ComponentTextRegion {
             bounds: LayoutBox {
                 x: 8.0,
                 y: 0.0,
@@ -3253,7 +3262,7 @@ fn text_input_minimap_paints_panel_bars_and_indicator_batches() {
         suffix: None,
         multiline: true,
         scroll: None,
-        text: nana_ui_runtime::ComponentTextRegion {
+        text: nana_ui_runtime::scene_contract::ComponentTextRegion {
             bounds: LayoutBox {
                 x: 0.0,
                 y: 0.0,
@@ -3423,7 +3432,7 @@ fn occurrence_whitespace_and_wrap_guides_paint_in_dedicated_slots() {
         suffix: None,
         multiline: true,
         scroll: None,
-        text: nana_ui_runtime::ComponentTextRegion {
+        text: nana_ui_runtime::scene_contract::ComponentTextRegion {
             bounds: LayoutBox {
                 x: 0.0,
                 y: 0.0,
@@ -3603,7 +3612,7 @@ fn text_input_without_editor_extras_paints_no_occurrence_whitespace_or_wrap_slot
         suffix: None,
         multiline: true,
         scroll: None,
-        text: nana_ui_runtime::ComponentTextRegion {
+        text: nana_ui_runtime::scene_contract::ComponentTextRegion {
             bounds: LayoutBox {
                 x: 0.0,
                 y: 0.0,
@@ -3685,7 +3694,7 @@ fn git_gutter_input(
         suffix: None,
         multiline: true,
         scroll: None,
-        text: nana_ui_runtime::ComponentTextRegion {
+        text: nana_ui_runtime::scene_contract::ComponentTextRegion {
             bounds: LayoutBox {
                 x: 46.0,
                 y: 0.0,
@@ -3927,7 +3936,7 @@ fn text_input_sticky_line_paints_panel_divider_and_head_text() {
             width: 200.0,
             height: 1.0,
         },
-        text: nana_ui_runtime::ComponentTextRegion {
+        text: nana_ui_runtime::scene_contract::ComponentTextRegion {
             bounds: LayoutBox {
                 x: 0.0,
                 y: 0.0,
@@ -4013,7 +4022,7 @@ fn fold_gutter_marks_paint_as_two_batches_and_survive_beyond_the_slot_cap() {
         suffix: None,
         multiline: true,
         scroll: None,
-        text: nana_ui_runtime::ComponentTextRegion {
+        text: nana_ui_runtime::scene_contract::ComponentTextRegion {
             bounds: LayoutBox {
                 x: 18.0,
                 y: 0.0,
@@ -4155,7 +4164,7 @@ fn tab_arrows_paint_as_one_batch_and_survive_beyond_the_slot_cap() {
         suffix: None,
         multiline: true,
         scroll: None,
-        text: nana_ui_runtime::ComponentTextRegion {
+        text: nana_ui_runtime::scene_contract::ComponentTextRegion {
             bounds: LayoutBox {
                 x: 18.0,
                 y: 0.0,
@@ -4261,7 +4270,7 @@ fn text_input_paints_additional_cursors_as_a_batch_beside_the_primary_caret() {
         suffix: None,
         multiline: true,
         scroll: None,
-        text: nana_ui_runtime::ComponentTextRegion {
+        text: nana_ui_runtime::scene_contract::ComponentTextRegion {
             bounds: LayoutBox {
                 x: 40.0,
                 y: 0.0,
@@ -4372,7 +4381,7 @@ fn text_input_editor_chrome_paints_caret_line_brackets_and_indent_guides() {
         suffix: None,
         multiline: true,
         scroll: None,
-        text: nana_ui_runtime::ComponentTextRegion {
+        text: nana_ui_runtime::scene_contract::ComponentTextRegion {
             bounds: LayoutBox {
                 x: 8.0,
                 y: 0.0,
@@ -4554,7 +4563,7 @@ fn text_input_geometry_paints_selection_text_caret_preedit_and_focus_in_order() 
         suffix: None,
         multiline: true,
         scroll: None,
-        text: nana_ui_runtime::ComponentTextRegion {
+        text: nana_ui_runtime::scene_contract::ComponentTextRegion {
             bounds: LayoutBox {
                 x: 8.0,
                 y: 0.0,
@@ -4685,7 +4694,7 @@ fn input_text_geometry(multiline: bool) -> nana_ui_runtime::TextInputGeometry {
         suffix: None,
         multiline,
         scroll: None,
-        text: nana_ui_runtime::ComponentTextRegion {
+        text: nana_ui_runtime::scene_contract::ComponentTextRegion {
             bounds: LayoutBox {
                 x: 8.0,
                 y: 0.0,
@@ -4740,84 +4749,90 @@ fn input_text_geometry(multiline: bool) -> nana_ui_runtime::TextInputGeometry {
 #[test]
 fn feedback_geometry_emits_semantic_quad_text_and_icon_primitives() {
     let widget_text = |content: &str, y: f32, size: f32, weight: Option<u16>| {
-        nana_ui_runtime::WidgetPaintOp::Text(nana_ui_runtime::WidgetText {
-            bounds: LayoutBox {
-                x: 16.0,
-                y,
-                width: 80.0,
-                height: 16.0,
+        nana_ui_runtime::scene_contract::WidgetPaintOp::Text(
+            nana_ui_runtime::scene_contract::WidgetText {
+                bounds: LayoutBox {
+                    x: 16.0,
+                    y,
+                    width: 80.0,
+                    height: 16.0,
+                },
+                content: content.into(),
+                color: None,
+                paint_color: None,
+                font_size: size,
+                font_weight: weight,
+                horizontal_alignment: TextHorizontalAlignment::Start,
+                vertical_alignment: TextVerticalAlignment::Top,
+                ellipsis: false,
+                wrap: false,
+                max_lines: None,
+                italic: None,
+                underline: None,
+                line_through: None,
+                suppress_spans: true,
+                preserve_lines: None,
+                unstyled_glyph: false,
+                line_height: None,
+                retained_text: nana_ui_runtime::scene_contract::WidgetRetainedText::None,
+                tabular_nums: false,
+                ..Default::default()
             },
-            content: content.into(),
-            color: None,
-            paint_color: None,
-            font_size: size,
-            font_weight: weight,
-            horizontal_alignment: TextHorizontalAlignment::Start,
-            vertical_alignment: TextVerticalAlignment::Top,
-            ellipsis: false,
-            wrap: false,
-            max_lines: None,
-            italic: None,
-            underline: None,
-            line_through: None,
-            suppress_spans: true,
-            preserve_lines: None,
-            unstyled_glyph: false,
-            line_height: None,
-            retained_text: nana_ui_runtime::WidgetRetainedText::None,
-            tabular_nums: false,
-            ..Default::default()
-        })
+        )
     };
     let mut badge = node(1, None, &[]);
     badge.source_style.layout = Arc::new(nana_ui_core::LayoutStyle {
         background: Some([0.1, 0.2, 0.3, 1.0]),
         ..Default::default()
     });
-    let mut badge_paint = nana_ui_runtime::WidgetPaintOutput {
+    let mut badge_paint = nana_ui_runtime::scene_contract::WidgetPaintOutput {
         owns_node_text: true,
-        root_surface: Some(nana_ui_runtime::WidgetRootSurface {
+        root_surface: Some(nana_ui_runtime::scene_contract::WidgetRootSurface {
             background: Some(Some([0.1, 0.8, 0.4, 0.12])),
             ..Default::default()
         }),
-        ..nana_ui_runtime::WidgetPaintOutput::new()
+        ..nana_ui_runtime::scene_contract::WidgetPaintOutput::new()
     };
     badge_paint.push(2, widget_text("Online", 0.0, 11.0, Some(500)));
     badge_paint.push(
         3,
-        nana_ui_runtime::WidgetPaintOp::Quad(nana_ui_runtime::WidgetQuad {
-            rect: LayoutBox {
-                x: 8.0,
-                y: 8.0,
-                width: 3.0,
-                height: 3.0,
+        nana_ui_runtime::scene_contract::WidgetPaintOp::Quad(
+            nana_ui_runtime::scene_contract::WidgetQuad {
+                rect: LayoutBox {
+                    x: 8.0,
+                    y: 8.0,
+                    width: 3.0,
+                    height: 3.0,
+                },
+                fill: Some([0.1, 0.8, 0.4, 1.0]),
+                corner_radius: [1.5; 4],
+                ..Default::default()
             },
-            fill: Some([0.1, 0.8, 0.4, 1.0]),
-            corner_radius: [1.5; 4],
-            ..Default::default()
-        }),
+        ),
     );
     badge.widget_paint = Some(Arc::new(badge_paint));
 
     let mut validation = node(2, None, &[]);
-    let mut validation_paint = nana_ui_runtime::WidgetPaintOutput {
+    let mut validation_paint = nana_ui_runtime::scene_contract::WidgetPaintOutput {
         owns_node_text: true,
-        ..nana_ui_runtime::WidgetPaintOutput::new()
+        ..nana_ui_runtime::scene_contract::WidgetPaintOutput::new()
     };
     validation_paint.push(2, widget_text("Required", 0.0, 11.0, None));
     validation_paint.push(
         3,
-        nana_ui_runtime::WidgetPaintOp::Quad(nana_ui_runtime::WidgetQuad {
-            rect: LayoutBox {
-                x: 4.0,
-                y: 7.0,
-                width: 5.0,
-                height: 5.0,
+        nana_ui_runtime::scene_contract::WidgetPaintOp::Quad(
+            nana_ui_runtime::scene_contract::WidgetQuad {
+                rect: LayoutBox {
+                    x: 4.0,
+                    y: 7.0,
+                    width: 5.0,
+                    height: 5.0,
+                },
+                border: Some(([0.9, 0.2, 0.2, 1.0], 1.0)),
+                corner_radius: [2.5; 4],
+                ..Default::default()
             },
-            border: Some(([0.9, 0.2, 0.2, 1.0], 1.0)),
-            corner_radius: [2.5; 4],
-            ..Default::default()
-        }),
+        ),
     );
     validation.widget_paint = Some(Arc::new(validation_paint));
 
@@ -4828,66 +4843,74 @@ fn feedback_geometry_emits_semantic_quad_text_and_icon_primitives() {
         width: 68.0,
         height: 52.0,
     };
-    let mut empty_paint = nana_ui_runtime::WidgetPaintOutput {
+    let mut empty_paint = nana_ui_runtime::scene_contract::WidgetPaintOutput {
         owns_node_text: true,
         suppress_root_surface: true,
         clips_descendants: true,
-        ..nana_ui_runtime::WidgetPaintOutput::new()
+        ..nana_ui_runtime::scene_contract::WidgetPaintOutput::new()
     };
     empty_paint.push_tagged(
-        nana_ui_runtime::WidgetTaggedOp::new(
+        nana_ui_runtime::scene_contract::WidgetTaggedOp::new(
             2,
-            nana_ui_runtime::WidgetPaintOp::Text(nana_ui_runtime::WidgetText {
-                wrap: true,
-                vertical_alignment: nana_ui_runtime::TextVerticalAlignment::Top,
-                line_height: Some(None),
-                ..match widget_text("No files", 26.0, 13.0, Some(600)) {
-                    nana_ui_runtime::WidgetPaintOp::Text(text) => text,
-                    _ => unreachable!(),
-                }
-            }),
-        )
-        .with_extra_clip(empty_clip),
-    );
-    empty_paint.push_tagged(
-        nana_ui_runtime::WidgetTaggedOp::new(
-            3,
-            nana_ui_runtime::WidgetPaintOp::Icon(nana_ui_runtime::WidgetIcon {
-                bounds: LayoutBox {
-                    x: 40.0,
-                    y: 2.0,
-                    width: 22.0,
-                    height: 22.0,
+            nana_ui_runtime::scene_contract::WidgetPaintOp::Text(
+                nana_ui_runtime::scene_contract::WidgetText {
+                    wrap: true,
+                    vertical_alignment: nana_ui_runtime::TextVerticalAlignment::Top,
+                    line_height: Some(None),
+                    ..match widget_text("No files", 26.0, 13.0, Some(600)) {
+                        nana_ui_runtime::scene_contract::WidgetPaintOp::Text(text) => text,
+                        _ => unreachable!(),
+                    }
                 },
-                glyph: nana_ui_runtime::WidgetGlyph::Icon(nana_ui_core::Icon::Folder),
-                color: Some([0.5, 0.5, 0.5, 1.0]),
-                paint_color: None,
-                align_to_adjacent_text: false,
-            }),
+            ),
         )
         .with_extra_clip(empty_clip),
     );
     empty_paint.push_tagged(
-        nana_ui_runtime::WidgetTaggedOp::new(
+        nana_ui_runtime::scene_contract::WidgetTaggedOp::new(
+            3,
+            nana_ui_runtime::scene_contract::WidgetPaintOp::Icon(
+                nana_ui_runtime::scene_contract::WidgetIcon {
+                    bounds: LayoutBox {
+                        x: 40.0,
+                        y: 2.0,
+                        width: 22.0,
+                        height: 22.0,
+                    },
+                    glyph: nana_ui_runtime::scene_contract::WidgetGlyph::Icon(
+                        nana_ui_core::Icon::Folder,
+                    ),
+                    color: Some([0.5, 0.5, 0.5, 1.0]),
+                    paint_color: None,
+                    align_to_adjacent_text: false,
+                },
+            ),
+        )
+        .with_extra_clip(empty_clip),
+    );
+    empty_paint.push_tagged(
+        nana_ui_runtime::scene_contract::WidgetTaggedOp::new(
             4,
-            nana_ui_runtime::WidgetPaintOp::Text(nana_ui_runtime::WidgetText {
-                wrap: true,
-                vertical_alignment: nana_ui_runtime::TextVerticalAlignment::Top,
-                line_height: Some(None),
-                ..match widget_text("Create one", 46.0, 12.0, None) {
-                    nana_ui_runtime::WidgetPaintOp::Text(text) => text,
-                    _ => unreachable!(),
-                }
-            }),
+            nana_ui_runtime::scene_contract::WidgetPaintOp::Text(
+                nana_ui_runtime::scene_contract::WidgetText {
+                    wrap: true,
+                    vertical_alignment: nana_ui_runtime::TextVerticalAlignment::Top,
+                    line_height: Some(None),
+                    ..match widget_text("Create one", 46.0, 12.0, None) {
+                        nana_ui_runtime::scene_contract::WidgetPaintOp::Text(text) => text,
+                        _ => unreachable!(),
+                    }
+                },
+            ),
         )
         .with_extra_clip(empty_clip),
     );
     empty.widget_paint = Some(Arc::new(empty_paint));
 
     let mut labeled = node(4, None, &[]);
-    let mut labeled_paint = nana_ui_runtime::WidgetPaintOutput {
+    let mut labeled_paint = nana_ui_runtime::scene_contract::WidgetPaintOutput {
         owns_node_text: true,
-        ..nana_ui_runtime::WidgetPaintOutput::new()
+        ..nana_ui_runtime::scene_contract::WidgetPaintOutput::new()
     };
     labeled_paint.push(2, widget_text("Revision", 0.0, 11.0, None));
     labeled_paint.push(3, widget_text("42", 14.0, 12.0, Some(600)));
@@ -4900,24 +4923,26 @@ fn feedback_geometry_emits_semantic_quad_text_and_icon_primitives() {
         width: 88.0,
         height: 84.0,
     };
-    let mut compact_paint = nana_ui_runtime::WidgetPaintOutput {
+    let mut compact_paint = nana_ui_runtime::scene_contract::WidgetPaintOutput {
         owns_node_text: true,
         suppress_root_surface: true,
         clips_descendants: true,
-        ..nana_ui_runtime::WidgetPaintOutput::new()
+        ..nana_ui_runtime::scene_contract::WidgetPaintOutput::new()
     };
     compact_paint.push_tagged(
-        nana_ui_runtime::WidgetTaggedOp::new(
+        nana_ui_runtime::scene_contract::WidgetTaggedOp::new(
             2,
-            nana_ui_runtime::WidgetPaintOp::Text(nana_ui_runtime::WidgetText {
-                wrap: true,
-                vertical_alignment: nana_ui_runtime::TextVerticalAlignment::Top,
-                line_height: Some(None),
-                ..match widget_text("空状态", 2.0, 12.0, Some(600)) {
-                    nana_ui_runtime::WidgetPaintOp::Text(text) => text,
-                    _ => unreachable!(),
-                }
-            }),
+            nana_ui_runtime::scene_contract::WidgetPaintOp::Text(
+                nana_ui_runtime::scene_contract::WidgetText {
+                    wrap: true,
+                    vertical_alignment: nana_ui_runtime::TextVerticalAlignment::Top,
+                    line_height: Some(None),
+                    ..match widget_text("空状态", 2.0, 12.0, Some(600)) {
+                        nana_ui_runtime::scene_contract::WidgetPaintOp::Text(text) => text,
+                        _ => unreachable!(),
+                    }
+                },
+            ),
         )
         .with_extra_clip(compact_clip),
     );
@@ -5057,40 +5082,42 @@ fn labeled_value_and_card_text_primitives_enable_ellipsis() {
     let long_path: Arc<str> = Arc::from("/Users/dev/workspace/very-long-project/assets/textures");
 
     let mut labeled = node(1, None, &[]);
-    let mut labeled_paint = nana_ui_runtime::WidgetPaintOutput {
+    let mut labeled_paint = nana_ui_runtime::scene_contract::WidgetPaintOutput {
         owns_node_text: true,
-        ..nana_ui_runtime::WidgetPaintOutput::new()
+        ..nana_ui_runtime::scene_contract::WidgetPaintOutput::new()
     };
     let widget_region =
         |content: Arc<str>, y: f32, horizontal_alignment: TextHorizontalAlignment| {
-            nana_ui_runtime::WidgetPaintOp::Text(nana_ui_runtime::WidgetText {
-                bounds: LayoutBox {
-                    x: 12.0,
-                    y,
-                    width: 96.0,
-                    height: 16.0,
+            nana_ui_runtime::scene_contract::WidgetPaintOp::Text(
+                nana_ui_runtime::scene_contract::WidgetText {
+                    bounds: LayoutBox {
+                        x: 12.0,
+                        y,
+                        width: 96.0,
+                        height: 16.0,
+                    },
+                    content: content.into(),
+                    color: None,
+                    paint_color: None,
+                    font_size: 12.0,
+                    font_weight: None,
+                    horizontal_alignment,
+                    vertical_alignment: TextVerticalAlignment::Top,
+                    ellipsis: true,
+                    wrap: false,
+                    max_lines: None,
+                    italic: None,
+                    underline: None,
+                    line_through: None,
+                    suppress_spans: true,
+                    preserve_lines: None,
+                    unstyled_glyph: false,
+                    line_height: None,
+                    retained_text: nana_ui_runtime::scene_contract::WidgetRetainedText::None,
+                    tabular_nums: false,
+                    ..Default::default()
                 },
-                content: content.into(),
-                color: None,
-                paint_color: None,
-                font_size: 12.0,
-                font_weight: None,
-                horizontal_alignment,
-                vertical_alignment: TextVerticalAlignment::Top,
-                ellipsis: true,
-                wrap: false,
-                max_lines: None,
-                italic: None,
-                underline: None,
-                line_through: None,
-                suppress_spans: true,
-                preserve_lines: None,
-                unstyled_glyph: false,
-                line_height: None,
-                retained_text: nana_ui_runtime::WidgetRetainedText::None,
-                tabular_nums: false,
-                ..Default::default()
-            })
+            )
         };
     labeled_paint.push(
         2,
@@ -5103,43 +5130,47 @@ fn labeled_value_and_card_text_primitives_enable_ellipsis() {
     labeled.widget_paint = Some(Arc::new(labeled_paint));
 
     let mut card = node(2, None, &[]);
-    let mut card_paint = nana_ui_runtime::WidgetPaintOutput {
+    let mut card_paint = nana_ui_runtime::scene_contract::WidgetPaintOutput {
         owns_node_text: true,
-        child_text_suppression: nana_ui_runtime::WidgetChildTextSuppression::Matching(Arc::from(
-            "渲染管线",
-        )),
-        ..nana_ui_runtime::WidgetPaintOutput::new()
+        child_text_suppression:
+            nana_ui_runtime::scene_contract::WidgetChildTextSuppression::Matching(Arc::from(
+                "渲染管线",
+            )),
+        ..nana_ui_runtime::scene_contract::WidgetPaintOutput::new()
     };
     card_paint.push(
         2,
-        nana_ui_runtime::WidgetPaintOp::Text(nana_ui_runtime::WidgetText {
-            bounds: LayoutBox {
-                x: 10.0,
-                y: 8.0,
-                width: 60.0,
-                height: 18.0,
+        nana_ui_runtime::scene_contract::WidgetPaintOp::Text(
+            nana_ui_runtime::scene_contract::WidgetText {
+                bounds: LayoutBox {
+                    x: 10.0,
+                    y: 8.0,
+                    width: 60.0,
+                    height: 18.0,
+                },
+                content: nana_ui_runtime::TextValue::from("渲染管线 / Render Pipeline Settings"),
+                color: None,
+                paint_color: None,
+                font_size: 13.0,
+                font_weight: Some(600),
+                horizontal_alignment: TextHorizontalAlignment::Start,
+                vertical_alignment: TextVerticalAlignment::Center,
+                ellipsis: true,
+                wrap: false,
+                max_lines: Some(1),
+                italic: None,
+                underline: None,
+                line_through: None,
+                suppress_spans: false,
+                preserve_lines: Some(false),
+                unstyled_glyph: false,
+                line_height: Some(Some(nana_ui_core::LineHeightSpec::Absolute(18.0))),
+                retained_text:
+                    nana_ui_runtime::scene_contract::WidgetRetainedText::AlwaysClipOverflow,
+                tabular_nums: false,
+                ..Default::default()
             },
-            content: nana_ui_runtime::TextValue::from("渲染管线 / Render Pipeline Settings"),
-            color: None,
-            paint_color: None,
-            font_size: 13.0,
-            font_weight: Some(600),
-            horizontal_alignment: TextHorizontalAlignment::Start,
-            vertical_alignment: TextVerticalAlignment::Center,
-            ellipsis: true,
-            wrap: false,
-            max_lines: Some(1),
-            italic: None,
-            underline: None,
-            line_through: None,
-            suppress_spans: false,
-            preserve_lines: Some(false),
-            unstyled_glyph: false,
-            line_height: Some(Some(nana_ui_core::LineHeightSpec::Absolute(18.0))),
-            retained_text: nana_ui_runtime::WidgetRetainedText::AlwaysClipOverflow,
-            tabular_nums: false,
-            ..Default::default()
-        }),
+        ),
     );
     card.widget_paint = Some(Arc::new(card_paint));
 
@@ -5188,45 +5219,51 @@ fn labeled_value_and_card_text_primitives_enable_ellipsis() {
 #[test]
 fn action_menu_item_label_and_hint_text_primitives_enable_ellipsis() {
     let text = |content: &'static str, x, width, align| {
-        nana_ui_runtime::WidgetPaintOp::Text(nana_ui_runtime::WidgetText {
-            bounds: LayoutBox {
-                x,
-                y: 4.0,
-                width,
-                height: 18.0,
+        nana_ui_runtime::scene_contract::WidgetPaintOp::Text(
+            nana_ui_runtime::scene_contract::WidgetText {
+                bounds: LayoutBox {
+                    x,
+                    y: 4.0,
+                    width,
+                    height: 18.0,
+                },
+                content: nana_ui_runtime::TextValue::from(content),
+                color: None,
+                paint_color: None,
+                font_size: 13.0,
+                font_weight: None,
+                horizontal_alignment: align,
+                vertical_alignment: TextVerticalAlignment::Center,
+                ellipsis: true,
+                retained_text: nana_ui_runtime::scene_contract::WidgetRetainedText::NodeTextIfRich,
+                ..Default::default()
             },
-            content: nana_ui_runtime::TextValue::from(content),
-            color: None,
-            paint_color: None,
-            font_size: 13.0,
-            font_weight: None,
-            horizontal_alignment: align,
-            vertical_alignment: TextVerticalAlignment::Center,
-            ellipsis: true,
-            retained_text: nana_ui_runtime::WidgetRetainedText::NodeTextIfRich,
-            ..Default::default()
-        })
+        )
     };
 
     let mut item = node(1, None, &[]);
-    let mut paint = nana_ui_runtime::WidgetPaintOutput {
+    let mut paint = nana_ui_runtime::scene_contract::WidgetPaintOutput {
         owns_node_text: true,
-        ..nana_ui_runtime::WidgetPaintOutput::new()
+        ..nana_ui_runtime::scene_contract::WidgetPaintOutput::new()
     };
     paint.push(
         3,
-        nana_ui_runtime::WidgetPaintOp::Icon(nana_ui_runtime::WidgetIcon {
-            bounds: LayoutBox {
-                x: 8.0,
-                y: 6.0,
-                width: 16.0,
-                height: 16.0,
+        nana_ui_runtime::scene_contract::WidgetPaintOp::Icon(
+            nana_ui_runtime::scene_contract::WidgetIcon {
+                bounds: LayoutBox {
+                    x: 8.0,
+                    y: 6.0,
+                    width: 16.0,
+                    height: 16.0,
+                },
+                glyph: nana_ui_runtime::scene_contract::WidgetGlyph::Icon(
+                    nana_ui_core::Icon::Folder,
+                ),
+                color: Some([0.8, 0.8, 0.8, 1.0]),
+                paint_color: None,
+                align_to_adjacent_text: false,
             },
-            glyph: nana_ui_runtime::WidgetGlyph::Icon(nana_ui_core::Icon::Folder),
-            color: Some([0.8, 0.8, 0.8, 1.0]),
-            paint_color: None,
-            align_to_adjacent_text: false,
-        }),
+        ),
     );
     paint.push(
         2,
@@ -5893,29 +5930,31 @@ fn docked_drawer_extends_the_flush_edge_so_clipping_squares_that_side() {
 fn confirm_action_scene_restores_label_after_busy_spinner_clears() {
     let mut action = node(51, None, &[]);
     let label_op = |bounds| {
-        nana_ui_runtime::WidgetPaintOp::Text(nana_ui_runtime::WidgetText {
-            bounds,
-            content: nana_ui_runtime::TextValue::from("Delete"),
-            color: Some([1.0; 4]),
-            paint_color: None,
-            font_size: 13.0,
-            font_weight: Some(500),
-            horizontal_alignment: TextHorizontalAlignment::Center,
-            vertical_alignment: nana_ui_runtime::TextVerticalAlignment::Center,
-            ellipsis: true,
-            wrap: false,
-            max_lines: None,
-            italic: None,
-            underline: None,
-            line_through: None,
-            suppress_spans: false,
-            preserve_lines: None,
-            unstyled_glyph: false,
-            line_height: None,
-            retained_text: nana_ui_runtime::WidgetRetainedText::NodeTextIfRich,
-            tabular_nums: false,
-            ..Default::default()
-        })
+        nana_ui_runtime::scene_contract::WidgetPaintOp::Text(
+            nana_ui_runtime::scene_contract::WidgetText {
+                bounds,
+                content: nana_ui_runtime::TextValue::from("Delete"),
+                color: Some([1.0; 4]),
+                paint_color: None,
+                font_size: 13.0,
+                font_weight: Some(500),
+                horizontal_alignment: TextHorizontalAlignment::Center,
+                vertical_alignment: nana_ui_runtime::TextVerticalAlignment::Center,
+                ellipsis: true,
+                wrap: false,
+                max_lines: None,
+                italic: None,
+                underline: None,
+                line_through: None,
+                suppress_spans: false,
+                preserve_lines: None,
+                unstyled_glyph: false,
+                line_height: None,
+                retained_text: nana_ui_runtime::scene_contract::WidgetRetainedText::NodeTextIfRich,
+                tabular_nums: false,
+                ..Default::default()
+            },
+        )
     };
     let label_bounds = LayoutBox {
         x: 10.0,
@@ -5923,31 +5962,33 @@ fn confirm_action_scene_restores_label_after_busy_spinner_clears() {
         width: 80.0,
         height: 24.0,
     };
-    let mut busy_paint = nana_ui_runtime::WidgetPaintOutput {
+    let mut busy_paint = nana_ui_runtime::scene_contract::WidgetPaintOutput {
         owns_node_text: true,
-        root_surface: Some(nana_ui_runtime::WidgetRootSurface {
+        root_surface: Some(nana_ui_runtime::scene_contract::WidgetRootSurface {
             background: Some(Some([0.8, 0.1, 0.1, 1.0])),
             border_color: Some(None),
             border_width: Some(0.0),
             ..Default::default()
         }),
-        ..nana_ui_runtime::WidgetPaintOutput::new()
+        ..nana_ui_runtime::scene_contract::WidgetPaintOutput::new()
     };
     busy_paint.push(2, label_op(label_bounds));
     busy_paint.push(
         3,
-        nana_ui_runtime::WidgetPaintOp::Icon(nana_ui_runtime::WidgetIcon {
-            bounds: LayoutBox {
-                x: 42.0,
-                y: 14.0,
-                width: 16.0,
-                height: 16.0,
+        nana_ui_runtime::scene_contract::WidgetPaintOp::Icon(
+            nana_ui_runtime::scene_contract::WidgetIcon {
+                bounds: LayoutBox {
+                    x: 42.0,
+                    y: 14.0,
+                    width: 16.0,
+                    height: 16.0,
+                },
+                glyph: nana_ui_runtime::scene_contract::WidgetGlyph::Spinner { phase: 4 },
+                color: None,
+                paint_color: None,
+                align_to_adjacent_text: false,
             },
-            glyph: nana_ui_runtime::WidgetGlyph::Spinner { phase: 4 },
-            color: None,
-            paint_color: None,
-            align_to_adjacent_text: false,
-        }),
+        ),
     );
     action.widget_paint = Some(Arc::new(busy_paint));
     let mut scene = UiScene::new();
@@ -5963,15 +6004,15 @@ fn confirm_action_scene_restores_label_after_busy_spinner_clears() {
         ScenePrimitiveKind::Spinner { .. }
     ));
 
-    let mut restored_paint = nana_ui_runtime::WidgetPaintOutput {
+    let mut restored_paint = nana_ui_runtime::scene_contract::WidgetPaintOutput {
         owns_node_text: true,
-        root_surface: Some(nana_ui_runtime::WidgetRootSurface {
+        root_surface: Some(nana_ui_runtime::scene_contract::WidgetRootSurface {
             background: Some(Some([0.2, 0.4, 0.8, 1.0])),
             border_color: Some(None),
             border_width: Some(0.0),
             ..Default::default()
         }),
-        ..nana_ui_runtime::WidgetPaintOutput::new()
+        ..nana_ui_runtime::scene_contract::WidgetPaintOutput::new()
     };
     restored_paint.push(2, label_op(label_bounds));
     action.widget_paint = Some(Arc::new(restored_paint));
@@ -6005,95 +6046,103 @@ fn empty_state_separates_intrinsic_clip_from_focused_action_root_clip() {
         height: 2.0,
     };
     let mut empty = node(10, None, &[11]);
-    let mut empty_paint = nana_ui_runtime::WidgetPaintOutput {
+    let mut empty_paint = nana_ui_runtime::scene_contract::WidgetPaintOutput {
         owns_node_text: true,
         suppress_root_surface: true,
         clips_descendants: true,
-        ..nana_ui_runtime::WidgetPaintOutput::new()
+        ..nana_ui_runtime::scene_contract::WidgetPaintOutput::new()
     };
     empty_paint.push_tagged(
-        nana_ui_runtime::WidgetTaggedOp::new(
+        nana_ui_runtime::scene_contract::WidgetTaggedOp::new(
             2,
-            nana_ui_runtime::WidgetPaintOp::Text(nana_ui_runtime::WidgetText {
-                bounds: LayoutBox {
-                    x: 0.0,
-                    y: 22.0,
-                    width: 40.0,
-                    height: 30.0,
+            nana_ui_runtime::scene_contract::WidgetPaintOp::Text(
+                nana_ui_runtime::scene_contract::WidgetText {
+                    bounds: LayoutBox {
+                        x: 0.0,
+                        y: 22.0,
+                        width: 40.0,
+                        height: 30.0,
+                    },
+                    content: nana_ui_runtime::TextValue::from("Title"),
+                    color: Some([1.0; 4]),
+                    paint_color: None,
+                    font_size: 13.0,
+                    font_weight: Some(600),
+                    horizontal_alignment: nana_ui_runtime::TextHorizontalAlignment::Start,
+                    vertical_alignment: nana_ui_runtime::TextVerticalAlignment::Top,
+                    ellipsis: false,
+                    wrap: true,
+                    max_lines: None,
+                    italic: None,
+                    underline: None,
+                    line_through: None,
+                    suppress_spans: false,
+                    preserve_lines: None,
+                    unstyled_glyph: false,
+                    line_height: Some(None),
+                    retained_text: nana_ui_runtime::scene_contract::WidgetRetainedText::None,
+                    tabular_nums: false,
+                    ..Default::default()
                 },
-                content: nana_ui_runtime::TextValue::from("Title"),
-                color: Some([1.0; 4]),
-                paint_color: None,
-                font_size: 13.0,
-                font_weight: Some(600),
-                horizontal_alignment: nana_ui_runtime::TextHorizontalAlignment::Start,
-                vertical_alignment: nana_ui_runtime::TextVerticalAlignment::Top,
-                ellipsis: false,
-                wrap: true,
-                max_lines: None,
-                italic: None,
-                underline: None,
-                line_through: None,
-                suppress_spans: false,
-                preserve_lines: None,
-                unstyled_glyph: false,
-                line_height: Some(None),
-                retained_text: nana_ui_runtime::WidgetRetainedText::None,
-                tabular_nums: false,
-                ..Default::default()
-            }),
+            ),
         )
         .with_extra_clip(content_clip),
     );
     empty_paint.push_tagged(
-        nana_ui_runtime::WidgetTaggedOp::new(
+        nana_ui_runtime::scene_contract::WidgetTaggedOp::new(
             3,
-            nana_ui_runtime::WidgetPaintOp::Icon(nana_ui_runtime::WidgetIcon {
-                bounds: LayoutBox {
-                    x: 0.0,
-                    y: 0.0,
-                    width: 22.0,
-                    height: 22.0,
+            nana_ui_runtime::scene_contract::WidgetPaintOp::Icon(
+                nana_ui_runtime::scene_contract::WidgetIcon {
+                    bounds: LayoutBox {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 22.0,
+                        height: 22.0,
+                    },
+                    glyph: nana_ui_runtime::scene_contract::WidgetGlyph::Icon(
+                        nana_ui_core::Icon::Folder,
+                    ),
+                    color: Some([0.5, 0.5, 0.5, 1.0]),
+                    paint_color: None,
+                    align_to_adjacent_text: false,
                 },
-                glyph: nana_ui_runtime::WidgetGlyph::Icon(nana_ui_core::Icon::Folder),
-                color: Some([0.5, 0.5, 0.5, 1.0]),
-                paint_color: None,
-                align_to_adjacent_text: false,
-            }),
+            ),
         )
         .with_extra_clip(content_clip),
     );
     empty_paint.push_tagged(
-        nana_ui_runtime::WidgetTaggedOp::new(
+        nana_ui_runtime::scene_contract::WidgetTaggedOp::new(
             4,
-            nana_ui_runtime::WidgetPaintOp::Text(nana_ui_runtime::WidgetText {
-                bounds: LayoutBox {
-                    x: 0.0,
-                    y: 58.0,
-                    width: 60.0,
-                    height: 40.0,
+            nana_ui_runtime::scene_contract::WidgetPaintOp::Text(
+                nana_ui_runtime::scene_contract::WidgetText {
+                    bounds: LayoutBox {
+                        x: 0.0,
+                        y: 58.0,
+                        width: 60.0,
+                        height: 40.0,
+                    },
+                    content: nana_ui_runtime::TextValue::from("Message"),
+                    color: Some([0.7; 4]),
+                    paint_color: None,
+                    font_size: 12.0,
+                    font_weight: None,
+                    horizontal_alignment: nana_ui_runtime::TextHorizontalAlignment::Start,
+                    vertical_alignment: nana_ui_runtime::TextVerticalAlignment::Top,
+                    ellipsis: false,
+                    wrap: true,
+                    max_lines: None,
+                    italic: None,
+                    underline: None,
+                    line_through: None,
+                    suppress_spans: false,
+                    preserve_lines: None,
+                    unstyled_glyph: false,
+                    line_height: Some(None),
+                    retained_text: nana_ui_runtime::scene_contract::WidgetRetainedText::None,
+                    tabular_nums: false,
+                    ..Default::default()
                 },
-                content: nana_ui_runtime::TextValue::from("Message"),
-                color: Some([0.7; 4]),
-                paint_color: None,
-                font_size: 12.0,
-                font_weight: None,
-                horizontal_alignment: nana_ui_runtime::TextHorizontalAlignment::Start,
-                vertical_alignment: nana_ui_runtime::TextVerticalAlignment::Top,
-                ellipsis: false,
-                wrap: true,
-                max_lines: None,
-                italic: None,
-                underline: None,
-                line_through: None,
-                suppress_spans: false,
-                preserve_lines: None,
-                unstyled_glyph: false,
-                line_height: Some(None),
-                retained_text: nana_ui_runtime::WidgetRetainedText::None,
-                tabular_nums: false,
-                ..Default::default()
-            }),
+            ),
         )
         .with_extra_clip(content_clip),
     );
@@ -6106,49 +6155,51 @@ fn empty_state_separates_intrinsic_clip_from_focused_action_root_clip() {
         height: 24.0,
     };
     action.focused = true;
-    let mut action_paint = nana_ui_runtime::WidgetPaintOutput {
+    let mut action_paint = nana_ui_runtime::scene_contract::WidgetPaintOutput {
         owns_node_text: true,
-        root_surface: Some(nana_ui_runtime::WidgetRootSurface {
+        root_surface: Some(nana_ui_runtime::scene_contract::WidgetRootSurface {
             background: Some(Some([0.2, 0.4, 0.8, 1.0])),
             border_color: Some(None),
             border_width: Some(0.0),
             ..Default::default()
         }),
-        ..nana_ui_runtime::WidgetPaintOutput::new()
+        ..nana_ui_runtime::scene_contract::WidgetPaintOutput::new()
     };
     action_paint.push(
         2,
-        nana_ui_runtime::WidgetPaintOp::Text(nana_ui_runtime::WidgetText {
-            bounds: LayoutBox {
-                x: 0.0,
-                y: 0.0,
-                ..action.layout
+        nana_ui_runtime::scene_contract::WidgetPaintOp::Text(
+            nana_ui_runtime::scene_contract::WidgetText {
+                bounds: LayoutBox {
+                    x: 0.0,
+                    y: 0.0,
+                    ..action.layout
+                },
+                content: nana_ui_runtime::TextValue::from("Action"),
+                color: Some([1.0; 4]),
+                paint_color: None,
+                font_size: 13.0,
+                font_weight: None,
+                horizontal_alignment: TextHorizontalAlignment::Center,
+                vertical_alignment: nana_ui_runtime::TextVerticalAlignment::Center,
+                ellipsis: true,
+                wrap: false,
+                max_lines: None,
+                italic: None,
+                underline: None,
+                line_through: None,
+                suppress_spans: false,
+                preserve_lines: None,
+                unstyled_glyph: false,
+                line_height: None,
+                retained_text: nana_ui_runtime::scene_contract::WidgetRetainedText::NodeTextIfRich,
+                tabular_nums: false,
+                ..Default::default()
             },
-            content: nana_ui_runtime::TextValue::from("Action"),
-            color: Some([1.0; 4]),
-            paint_color: None,
-            font_size: 13.0,
-            font_weight: None,
-            horizontal_alignment: TextHorizontalAlignment::Center,
-            vertical_alignment: nana_ui_runtime::TextVerticalAlignment::Center,
-            ellipsis: true,
-            wrap: false,
-            max_lines: None,
-            italic: None,
-            underline: None,
-            line_through: None,
-            suppress_spans: false,
-            preserve_lines: None,
-            unstyled_glyph: false,
-            line_height: None,
-            retained_text: nana_ui_runtime::WidgetRetainedText::NodeTextIfRich,
-            tabular_nums: false,
-            ..Default::default()
-        }),
+        ),
     );
     action_paint.push(
         7,
-        nana_ui_runtime::WidgetPaintOp::FocusRing {
+        nana_ui_runtime::scene_contract::WidgetPaintOp::FocusRing {
             bounds: LayoutBox {
                 x: 0.0,
                 y: 0.0,
@@ -6223,7 +6274,7 @@ fn default_range_geometry(bounds: LayoutBox, track_girth: f32) -> nana_ui_runtim
     nana_ui_runtime::RangeGeometry {
         caution: None,
         label: None,
-        value: nana_ui_runtime::ComponentTextRegion {
+        value: nana_ui_runtime::scene_contract::ComponentTextRegion {
             bounds: LayoutBox::default(),
             content: Arc::<str>::from("").into(),
             color: None,
@@ -6276,7 +6327,7 @@ fn standard_control_visuals_expand_without_backend_tag_matching() {
         width: indicator,
         height: indicator,
     };
-    let mut checkbox_paint = nana_ui_runtime::WidgetPaintOutput {
+    let mut checkbox_paint = nana_ui_runtime::scene_contract::WidgetPaintOutput {
         suppress_root_surface: true,
         node_text_bounds: Some(LayoutBox {
             x: 24.0,
@@ -6284,42 +6335,46 @@ fn standard_control_visuals_expand_without_backend_tag_matching() {
             width: 76.0,
             height: 80.0,
         }),
-        ..nana_ui_runtime::WidgetPaintOutput::new()
+        ..nana_ui_runtime::scene_contract::WidgetPaintOutput::new()
     };
     checkbox_paint.push(
         3,
-        nana_ui_runtime::WidgetPaintOp::Quad(nana_ui_runtime::WidgetQuad {
-            rect: indicator_rect,
-            fill: Some([0.2, 0.5, 0.9, 1.0]),
-            border: Some(([0.1, 0.2, 0.3, 1.0], 1.0)),
-            ..Default::default()
-        }),
+        nana_ui_runtime::scene_contract::WidgetPaintOp::Quad(
+            nana_ui_runtime::scene_contract::WidgetQuad {
+                rect: indicator_rect,
+                fill: Some([0.2, 0.5, 0.9, 1.0]),
+                border: Some(([0.1, 0.2, 0.3, 1.0], 1.0)),
+                ..Default::default()
+            },
+        ),
     );
     checkbox_paint.push(
         4,
-        nana_ui_runtime::WidgetPaintOp::Text(nana_ui_runtime::WidgetText {
-            bounds: indicator_rect,
-            content: "✓".into(),
-            color: None,
-            paint_color: None,
-            font_size: indicator * 0.75,
-            font_weight: Some(700),
-            horizontal_alignment: TextHorizontalAlignment::Center,
-            vertical_alignment: TextVerticalAlignment::Center,
-            ellipsis: false,
-            wrap: false,
-            max_lines: None,
-            italic: None,
-            underline: None,
-            line_through: None,
-            suppress_spans: true,
-            preserve_lines: None,
-            unstyled_glyph: false,
-            line_height: None,
-            retained_text: nana_ui_runtime::WidgetRetainedText::None,
-            tabular_nums: false,
-            ..Default::default()
-        }),
+        nana_ui_runtime::scene_contract::WidgetPaintOp::Text(
+            nana_ui_runtime::scene_contract::WidgetText {
+                bounds: indicator_rect,
+                content: "✓".into(),
+                color: None,
+                paint_color: None,
+                font_size: indicator * 0.75,
+                font_weight: Some(700),
+                horizontal_alignment: TextHorizontalAlignment::Center,
+                vertical_alignment: TextVerticalAlignment::Center,
+                ellipsis: false,
+                wrap: false,
+                max_lines: None,
+                italic: None,
+                underline: None,
+                line_through: None,
+                suppress_spans: true,
+                preserve_lines: None,
+                unstyled_glyph: false,
+                line_height: None,
+                retained_text: nana_ui_runtime::scene_contract::WidgetRetainedText::None,
+                tabular_nums: false,
+                ..Default::default()
+            },
+        ),
     );
     checkbox.widget_paint = Some(Arc::new(checkbox_paint));
     style_mut(&mut checkbox).background = Some([0.2, 0.5, 0.9, 1.0]);
@@ -6575,10 +6630,11 @@ fn quad_parts(scene: &UiScene, node: u64, slot: u64) -> Option<QuadParts> {
     }
 }
 
-const TEST_RING: nana_ui_runtime::ContrastRing = nana_ui_runtime::ContrastRing {
-    ring: [1.0, 1.0, 1.0, 1.0],
-    edge: [0.0, 0.0, 0.0, 0.9],
-};
+const TEST_RING: nana_ui_runtime::scene_contract::ContrastRing =
+    nana_ui_runtime::scene_contract::ContrastRing {
+        ring: [1.0, 1.0, 1.0, 1.0],
+        edge: [0.0, 0.0, 0.0, 0.9],
+    };
 
 /// A gradient track paints its stops as a strip, draws no fill, and marks the
 /// value with a contrast ring (dark edge, light ring, dark edge) that stands
@@ -6798,7 +6854,7 @@ fn a_picture_xy_pad_strokes_its_frame_over_the_paint_and_rings_the_value() {
 }
 
 fn scrollbar_chrome_slot(index: u32) -> u64 {
-    nana_ui_runtime::scrollbar_chrome_slot(index as u64)
+    nana_ui_runtime::scene_contract::scrollbar_chrome_slot(index as u64)
 }
 
 /// A scroll view's widget paint: one vertical axis whose chrome flag reflects `visibility`.
@@ -6806,10 +6862,10 @@ fn scrollbar_paint(
     visibility: nana_ui_core::ScrollbarVisibility,
     thumb_y: Option<f32>,
     track_background: Option<[f32; 4]>,
-) -> nana_ui_runtime::WidgetPaintOutput {
-    let mut out = nana_ui_runtime::WidgetPaintOutput {
+) -> nana_ui_runtime::scene_contract::WidgetPaintOutput {
+    let mut out = nana_ui_runtime::scene_contract::WidgetPaintOutput {
         has_scrollbar_chrome: visibility != nana_ui_core::ScrollbarVisibility::Hidden,
-        ..nana_ui_runtime::WidgetPaintOutput::new()
+        ..nana_ui_runtime::scene_contract::WidgetPaintOutput::new()
     };
     let Some(thumb_y) = thumb_y else {
         return out;
@@ -6817,32 +6873,36 @@ fn scrollbar_paint(
     if let Some(track_background) = track_background {
         out.push(
             scrollbar_chrome_slot(2),
-            nana_ui_runtime::WidgetPaintOp::Quad(nana_ui_runtime::WidgetQuad {
-                rect: LayoutBox {
-                    x: 188.0,
-                    y: 2.0,
-                    width: 8.0,
-                    height: 116.0,
+            nana_ui_runtime::scene_contract::WidgetPaintOp::Quad(
+                nana_ui_runtime::scene_contract::WidgetQuad {
+                    rect: LayoutBox {
+                        x: 188.0,
+                        y: 2.0,
+                        width: 8.0,
+                        height: 116.0,
+                    },
+                    fill: Some(track_background),
+                    corner_radius: [4.0; 4],
+                    ..Default::default()
                 },
-                fill: Some(track_background),
-                corner_radius: [4.0; 4],
-                ..Default::default()
-            }),
+            ),
         );
     }
     out.push(
         scrollbar_chrome_slot(3),
-        nana_ui_runtime::WidgetPaintOp::Quad(nana_ui_runtime::WidgetQuad {
-            rect: LayoutBox {
-                x: 189.0,
-                y: thumb_y,
-                width: 6.0,
-                height: 70.0,
+        nana_ui_runtime::scene_contract::WidgetPaintOp::Quad(
+            nana_ui_runtime::scene_contract::WidgetQuad {
+                rect: LayoutBox {
+                    x: 189.0,
+                    y: thumb_y,
+                    width: 6.0,
+                    height: 70.0,
+                },
+                fill: Some([0.6, 0.6, 0.6, 1.0]),
+                corner_radius: [3.0; 4],
+                ..Default::default()
             },
-            fill: Some([0.6, 0.6, 0.6, 1.0]),
-            corner_radius: [3.0; 4],
-            ..Default::default()
-        }),
+        ),
     );
     out
 }
@@ -6850,7 +6910,7 @@ fn scrollbar_paint(
 fn scroller(
     value: u64,
     children: &[u64],
-    paint: nana_ui_runtime::WidgetPaintOutput,
+    paint: nana_ui_runtime::scene_contract::WidgetPaintOutput,
 ) -> ExtractedNode {
     let mut scroller = node(value, None, children);
     scroller.layout = LayoutBox {
@@ -6962,39 +7022,43 @@ fn scrollbar_chrome_paints_ordinary_quads_over_the_scrollport() {
 
 #[test]
 fn scrollbar_skin_thickness_still_paints_ordinary_quads() {
-    let mut paint = nana_ui_runtime::WidgetPaintOutput {
+    let mut paint = nana_ui_runtime::scene_contract::WidgetPaintOutput {
         has_scrollbar_chrome: true,
-        ..nana_ui_runtime::WidgetPaintOutput::new()
+        ..nana_ui_runtime::scene_contract::WidgetPaintOutput::new()
     };
     paint.push(
         scrollbar_chrome_slot(2),
-        nana_ui_runtime::WidgetPaintOp::Quad(nana_ui_runtime::WidgetQuad {
-            rect: LayoutBox {
-                x: 192.0,
-                y: 0.0,
-                width: 4.0,
-                height: 120.0,
+        nana_ui_runtime::scene_contract::WidgetPaintOp::Quad(
+            nana_ui_runtime::scene_contract::WidgetQuad {
+                rect: LayoutBox {
+                    x: 192.0,
+                    y: 0.0,
+                    width: 4.0,
+                    height: 120.0,
+                },
+                fill: Some([0.2, 0.2, 0.2, 1.0]),
+                border: Some(([0.3, 0.3, 0.3, 0.5], 1.0)),
+                corner_radius: [2.0; 4],
+                ..Default::default()
             },
-            fill: Some([0.2, 0.2, 0.2, 1.0]),
-            border: Some(([0.3, 0.3, 0.3, 0.5], 1.0)),
-            corner_radius: [2.0; 4],
-            ..Default::default()
-        }),
+        ),
     );
     paint.push(
         scrollbar_chrome_slot(3),
-        nana_ui_runtime::WidgetPaintOp::Quad(nana_ui_runtime::WidgetQuad {
-            rect: LayoutBox {
-                x: 192.0,
-                y: 8.0,
-                width: 4.0,
-                height: 48.0,
+        nana_ui_runtime::scene_contract::WidgetPaintOp::Quad(
+            nana_ui_runtime::scene_contract::WidgetQuad {
+                rect: LayoutBox {
+                    x: 192.0,
+                    y: 8.0,
+                    width: 4.0,
+                    height: 48.0,
+                },
+                fill: Some([1.0, 0.0, 0.0, 1.0]),
+                border: Some(([0.0, 0.0, 0.0, 0.8], 1.0)),
+                corner_radius: [2.0; 4],
+                ..Default::default()
             },
-            fill: Some([1.0, 0.0, 0.0, 1.0]),
-            border: Some(([0.0, 0.0, 0.0, 0.8], 1.0)),
-            corner_radius: [2.0; 4],
-            ..Default::default()
-        }),
+        ),
     );
     let scroller = scroller(1, &[], paint);
 
@@ -7134,24 +7198,28 @@ fn focused_icon_does_not_paint_an_external_ring() {
         height: 28.0,
     };
     icon.focused = true;
-    let mut paint = nana_ui_runtime::WidgetPaintOutput {
+    let mut paint = nana_ui_runtime::scene_contract::WidgetPaintOutput {
         suppresses_in_flow_descendants: true,
-        ..nana_ui_runtime::WidgetPaintOutput::new()
+        ..nana_ui_runtime::scene_contract::WidgetPaintOutput::new()
     };
     paint.push(
         3,
-        nana_ui_runtime::WidgetPaintOp::Icon(nana_ui_runtime::WidgetIcon {
-            bounds: LayoutBox {
-                x: 6.0,
-                y: 6.0,
-                width: 16.0,
-                height: 16.0,
+        nana_ui_runtime::scene_contract::WidgetPaintOp::Icon(
+            nana_ui_runtime::scene_contract::WidgetIcon {
+                bounds: LayoutBox {
+                    x: 6.0,
+                    y: 6.0,
+                    width: 16.0,
+                    height: 16.0,
+                },
+                glyph: nana_ui_runtime::scene_contract::WidgetGlyph::Icon(
+                    nana_ui_core::Icon::Settings,
+                ),
+                color: None,
+                paint_color: None,
+                align_to_adjacent_text: true,
             },
-            glyph: nana_ui_runtime::WidgetGlyph::Icon(nana_ui_core::Icon::Settings),
-            color: None,
-            paint_color: None,
-            align_to_adjacent_text: true,
-        }),
+        ),
     );
     icon.widget_paint = Some(Arc::new(paint));
     style_mut(&mut icon).border_color = Some([0.2, 0.6, 1.0, 1.0]);
@@ -7186,13 +7254,13 @@ fn focused_list_item_paints_an_external_keyboard_ring() {
         height: 32.0,
     };
     item.focused = true;
-    let mut paint = nana_ui_runtime::WidgetPaintOutput {
+    let mut paint = nana_ui_runtime::scene_contract::WidgetPaintOutput {
         aligns_child_icon_to_text: true,
-        ..nana_ui_runtime::WidgetPaintOutput::new()
+        ..nana_ui_runtime::scene_contract::WidgetPaintOutput::new()
     };
     paint.push(
         7,
-        nana_ui_runtime::WidgetPaintOp::FocusRing {
+        nana_ui_runtime::scene_contract::WidgetPaintOp::FocusRing {
             bounds: LayoutBox {
                 x: 0.0,
                 y: 0.0,
@@ -7247,13 +7315,13 @@ fn the_theme_focus_ring_sets_the_ring_stroke_and_offset() {
         height: 32.0,
     };
     item.focused = true;
-    let mut paint = nana_ui_runtime::WidgetPaintOutput {
+    let mut paint = nana_ui_runtime::scene_contract::WidgetPaintOutput {
         aligns_child_icon_to_text: true,
-        ..nana_ui_runtime::WidgetPaintOutput::new()
+        ..nana_ui_runtime::scene_contract::WidgetPaintOutput::new()
     };
     paint.push(
         7,
-        nana_ui_runtime::WidgetPaintOp::FocusRing {
+        nana_ui_runtime::scene_contract::WidgetPaintOp::FocusRing {
             bounds: LayoutBox {
                 x: 0.0,
                 y: 0.0,
@@ -7311,10 +7379,12 @@ fn compact_leading_icon_centers_on_the_parent_text_line() {
     row.text = Some(TextContent {
         value: "舞台".into(),
     });
-    row.widget_paint = Some(Arc::new(nana_ui_runtime::WidgetPaintOutput {
-        aligns_child_icon_to_text: true,
-        ..nana_ui_runtime::WidgetPaintOutput::new()
-    }));
+    row.widget_paint = Some(Arc::new(
+        nana_ui_runtime::scene_contract::WidgetPaintOutput {
+            aligns_child_icon_to_text: true,
+            ..nana_ui_runtime::scene_contract::WidgetPaintOutput::new()
+        },
+    ));
     row.source_style.text_vertical_alignment = TextVerticalAlignment::Center;
     style_mut(&mut row).font_size = 12.0;
     style_mut(&mut row).line_height = Some(LineHeightSpec::Absolute(12.0));
@@ -7326,24 +7396,28 @@ fn compact_leading_icon_centers_on_the_parent_text_line() {
         width: 12.0,
         height: 12.0,
     };
-    let mut paint = nana_ui_runtime::WidgetPaintOutput {
+    let mut paint = nana_ui_runtime::scene_contract::WidgetPaintOutput {
         suppresses_in_flow_descendants: true,
-        ..nana_ui_runtime::WidgetPaintOutput::new()
+        ..nana_ui_runtime::scene_contract::WidgetPaintOutput::new()
     };
     paint.push(
         3,
-        nana_ui_runtime::WidgetPaintOp::Icon(nana_ui_runtime::WidgetIcon {
-            bounds: LayoutBox {
-                x: 0.0,
-                y: 0.0,
-                width: 12.0,
-                height: 12.0,
+        nana_ui_runtime::scene_contract::WidgetPaintOp::Icon(
+            nana_ui_runtime::scene_contract::WidgetIcon {
+                bounds: LayoutBox {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 12.0,
+                    height: 12.0,
+                },
+                glyph: nana_ui_runtime::scene_contract::WidgetGlyph::Icon(
+                    nana_ui_core::Icon::Workspace,
+                ),
+                color: None,
+                paint_color: None,
+                align_to_adjacent_text: true,
             },
-            glyph: nana_ui_runtime::WidgetGlyph::Icon(nana_ui_core::Icon::Workspace),
-            color: None,
-            paint_color: None,
-            align_to_adjacent_text: true,
-        }),
+        ),
     );
     icon.widget_paint = Some(Arc::new(paint));
 
@@ -7378,7 +7452,7 @@ fn an_icon_trigger_paints_a_centered_glyph_instead_of_label_text() {
     let visual = nana_ui_runtime::MenuSurfaceVisual {
         trigger_image: None,
         open: false,
-        kind: nana_ui_runtime::MenuSurfaceKind::ActionMenu,
+        kind: nana_ui_runtime::scene_contract::MenuSurfaceKind::ActionMenu,
         trigger: None,
         trigger_icon: Some(nana_ui_core::Icon::Add),
         gap: 0.0,
@@ -7389,7 +7463,7 @@ fn an_icon_trigger_paints_a_centered_glyph_instead_of_label_text() {
     };
     let geometry = nana_ui_runtime::MenuSurfaceGeometry {
         trigger_image: None,
-        trigger_surface: Some(nana_ui_runtime::ComponentTriggerSurface {
+        trigger_surface: Some(nana_ui_runtime::scene_contract::ComponentTriggerSurface {
             bounds: LayoutBox {
                 x: 0.0,
                 y: 0.0,
@@ -7602,24 +7676,28 @@ fn migrated_components_consume_runtime_subregion_geometry() {
         width: 32.0,
         height: 32.0,
     };
-    let mut icon_paint = nana_ui_runtime::WidgetPaintOutput {
+    let mut icon_paint = nana_ui_runtime::scene_contract::WidgetPaintOutput {
         suppresses_in_flow_descendants: true,
-        ..nana_ui_runtime::WidgetPaintOutput::new()
+        ..nana_ui_runtime::scene_contract::WidgetPaintOutput::new()
     };
     icon_paint.push(
         3,
-        nana_ui_runtime::WidgetPaintOp::Icon(nana_ui_runtime::WidgetIcon {
-            bounds: LayoutBox {
-                x: 8.0,
-                y: 8.0,
-                width: 16.0,
-                height: 16.0,
+        nana_ui_runtime::scene_contract::WidgetPaintOp::Icon(
+            nana_ui_runtime::scene_contract::WidgetIcon {
+                bounds: LayoutBox {
+                    x: 8.0,
+                    y: 8.0,
+                    width: 16.0,
+                    height: 16.0,
+                },
+                glyph: nana_ui_runtime::scene_contract::WidgetGlyph::Icon(
+                    nana_ui_core::Icon::Search,
+                ),
+                color: Some([0.1, 0.6, 0.9, 1.0]),
+                paint_color: None,
+                align_to_adjacent_text: true,
             },
-            glyph: nana_ui_runtime::WidgetGlyph::Icon(nana_ui_core::Icon::Search),
-            color: Some([0.1, 0.6, 0.9, 1.0]),
-            paint_color: None,
-            align_to_adjacent_text: true,
-        }),
+        ),
     );
     icon.widget_paint = Some(Arc::new(icon_paint));
     style_mut(&mut icon).background = Some([0.2, 0.3, 0.4, 1.0]);
@@ -7627,120 +7705,130 @@ fn migrated_components_consume_runtime_subregion_geometry() {
     style_mut(&mut icon).color = Some([0.9, 0.9, 0.9, 1.0]);
 
     let mut switch = node(2, None, &[]);
-    let mut switch_paint = nana_ui_runtime::WidgetPaintOutput {
+    let mut switch_paint = nana_ui_runtime::scene_contract::WidgetPaintOutput {
         owns_node_text: true,
-        root_surface: Some(nana_ui_runtime::WidgetRootSurface {
+        root_surface: Some(nana_ui_runtime::scene_contract::WidgetRootSurface {
             border_color: Some(None),
             border_width: Some(0.0),
             ..Default::default()
         }),
-        ..nana_ui_runtime::WidgetPaintOutput::new()
+        ..nana_ui_runtime::scene_contract::WidgetPaintOutput::new()
     };
     switch_paint.push(
         2,
-        nana_ui_runtime::WidgetPaintOp::Text(nana_ui_runtime::WidgetText {
-            bounds: LayoutBox {
-                x: 0.0,
-                y: 8.0,
-                width: 100.0,
-                height: 18.0,
+        nana_ui_runtime::scene_contract::WidgetPaintOp::Text(
+            nana_ui_runtime::scene_contract::WidgetText {
+                bounds: LayoutBox {
+                    x: 0.0,
+                    y: 8.0,
+                    width: 100.0,
+                    height: 18.0,
+                },
+                content: nana_ui_runtime::TextValue::from("Enabled"),
+                color: Some([0.9, 0.9, 0.9, 1.0]),
+                paint_color: None,
+                font_size: 13.0,
+                font_weight: Some(500),
+                horizontal_alignment: TextHorizontalAlignment::Start,
+                vertical_alignment: TextVerticalAlignment::Center,
+                ellipsis: true,
+                wrap: false,
+                max_lines: None,
+                italic: None,
+                underline: None,
+                line_through: None,
+                suppress_spans: false,
+                preserve_lines: None,
+                unstyled_glyph: false,
+                line_height: Some(Some(nana_ui_core::LineHeightSpec::Absolute(18.0))),
+                retained_text: nana_ui_runtime::scene_contract::WidgetRetainedText::None,
+                tabular_nums: false,
+                ..Default::default()
             },
-            content: nana_ui_runtime::TextValue::from("Enabled"),
-            color: Some([0.9, 0.9, 0.9, 1.0]),
-            paint_color: None,
-            font_size: 13.0,
-            font_weight: Some(500),
-            horizontal_alignment: TextHorizontalAlignment::Start,
-            vertical_alignment: TextVerticalAlignment::Center,
-            ellipsis: true,
-            wrap: false,
-            max_lines: None,
-            italic: None,
-            underline: None,
-            line_through: None,
-            suppress_spans: false,
-            preserve_lines: None,
-            unstyled_glyph: false,
-            line_height: Some(Some(nana_ui_core::LineHeightSpec::Absolute(18.0))),
-            retained_text: nana_ui_runtime::WidgetRetainedText::None,
-            tabular_nums: false,
-            ..Default::default()
-        }),
+        ),
     );
     switch_paint.push(
         3,
-        nana_ui_runtime::WidgetPaintOp::Text(nana_ui_runtime::WidgetText {
-            bounds: LayoutBox {
-                x: 0.0,
-                y: 28.0,
-                width: 150.0,
-                height: 16.0,
+        nana_ui_runtime::scene_contract::WidgetPaintOp::Text(
+            nana_ui_runtime::scene_contract::WidgetText {
+                bounds: LayoutBox {
+                    x: 0.0,
+                    y: 28.0,
+                    width: 150.0,
+                    height: 16.0,
+                },
+                content: nana_ui_runtime::TextValue::from("Starts with the workspace"),
+                color: Some([0.6, 0.6, 0.6, 1.0]),
+                paint_color: None,
+                font_size: 12.0,
+                font_weight: Some(400),
+                horizontal_alignment: TextHorizontalAlignment::Start,
+                vertical_alignment: TextVerticalAlignment::Center,
+                ellipsis: true,
+                wrap: false,
+                max_lines: None,
+                italic: None,
+                underline: None,
+                line_through: None,
+                suppress_spans: false,
+                preserve_lines: None,
+                unstyled_glyph: false,
+                line_height: Some(Some(nana_ui_core::LineHeightSpec::Absolute(16.0))),
+                retained_text: nana_ui_runtime::scene_contract::WidgetRetainedText::None,
+                tabular_nums: false,
+                ..Default::default()
             },
-            content: nana_ui_runtime::TextValue::from("Starts with the workspace"),
-            color: Some([0.6, 0.6, 0.6, 1.0]),
-            paint_color: None,
-            font_size: 12.0,
-            font_weight: Some(400),
-            horizontal_alignment: TextHorizontalAlignment::Start,
-            vertical_alignment: TextVerticalAlignment::Center,
-            ellipsis: true,
-            wrap: false,
-            max_lines: None,
-            italic: None,
-            underline: None,
-            line_through: None,
-            suppress_spans: false,
-            preserve_lines: None,
-            unstyled_glyph: false,
-            line_height: Some(Some(nana_ui_core::LineHeightSpec::Absolute(16.0))),
-            retained_text: nana_ui_runtime::WidgetRetainedText::None,
-            tabular_nums: false,
-            ..Default::default()
-        }),
+        ),
     );
     switch_paint.push(
         4,
-        nana_ui_runtime::WidgetPaintOp::Quad(nana_ui_runtime::WidgetQuad {
-            rect: LayoutBox {
-                x: 170.0,
-                y: 18.0,
-                width: 30.0,
-                height: 16.0,
+        nana_ui_runtime::scene_contract::WidgetPaintOp::Quad(
+            nana_ui_runtime::scene_contract::WidgetQuad {
+                rect: LayoutBox {
+                    x: 170.0,
+                    y: 18.0,
+                    width: 30.0,
+                    height: 16.0,
+                },
+                fill: Some([0.2, 0.5, 0.9, 1.0]),
+                border: Some(([0.1, 0.4, 0.8, 1.0], 1.0)),
+                corner_radius: [8.0; 4],
+                ..Default::default()
             },
-            fill: Some([0.2, 0.5, 0.9, 1.0]),
-            border: Some(([0.1, 0.4, 0.8, 1.0], 1.0)),
-            corner_radius: [8.0; 4],
-            ..Default::default()
-        }),
+        ),
     );
     switch_paint.push(
         5,
-        nana_ui_runtime::WidgetPaintOp::Quad(nana_ui_runtime::WidgetQuad {
-            rect: LayoutBox {
-                x: 187.0,
-                y: 21.0,
-                width: 10.0,
-                height: 10.0,
+        nana_ui_runtime::scene_contract::WidgetPaintOp::Quad(
+            nana_ui_runtime::scene_contract::WidgetQuad {
+                rect: LayoutBox {
+                    x: 187.0,
+                    y: 21.0,
+                    width: 10.0,
+                    height: 10.0,
+                },
+                fill: Some([1.0, 1.0, 1.0, 1.0]),
+                corner_radius: [5.0; 4],
+                ..Default::default()
             },
-            fill: Some([1.0, 1.0, 1.0, 1.0]),
-            corner_radius: [5.0; 4],
-            ..Default::default()
-        }),
+        ),
     );
     switch_paint.push(
         7,
-        nana_ui_runtime::WidgetPaintOp::Quad(nana_ui_runtime::WidgetQuad {
-            rect: LayoutBox {
-                x: 166.0,
-                y: 14.0,
-                width: 38.0,
-                height: 24.0,
+        nana_ui_runtime::scene_contract::WidgetPaintOp::Quad(
+            nana_ui_runtime::scene_contract::WidgetQuad {
+                rect: LayoutBox {
+                    x: 166.0,
+                    y: 14.0,
+                    width: 38.0,
+                    height: 24.0,
+                },
+                fill: None,
+                border: Some(([0.3, 0.6, 1.0, 1.0], 2.0)),
+                corner_radius: [12.0; 4],
+                ..Default::default()
             },
-            fill: None,
-            border: Some(([0.3, 0.6, 1.0, 1.0], 2.0)),
-            corner_radius: [12.0; 4],
-            ..Default::default()
-        }),
+        ),
     );
     switch.widget_paint = Some(Arc::new(switch_paint));
     switch.layout.width = 200.0;
@@ -7824,12 +7912,13 @@ fn migrated_components_consume_runtime_subregion_geometry() {
     let mut card = node(4, None, &[]);
     style_mut(&mut card).background = Some([0.12, 0.12, 0.12, 1.0]);
     style_mut(&mut card).border_color = Some([0.3, 0.3, 0.3, 1.0]);
-    let mut card_paint = nana_ui_runtime::WidgetPaintOutput {
+    let mut card_paint = nana_ui_runtime::scene_contract::WidgetPaintOutput {
         owns_node_text: true,
-        child_text_suppression: nana_ui_runtime::WidgetChildTextSuppression::Matching(Arc::from(
-            "Actions",
-        )),
-        root_surface: Some(nana_ui_runtime::WidgetRootSurface {
+        child_text_suppression:
+            nana_ui_runtime::scene_contract::WidgetChildTextSuppression::Matching(Arc::from(
+                "Actions",
+            )),
+        root_surface: Some(nana_ui_runtime::scene_contract::WidgetRootSurface {
             background: None,
             border_color: None,
             border_width: None,
@@ -7844,53 +7933,58 @@ fn migrated_components_consume_runtime_subregion_geometry() {
                 inset: false,
             }),
         }),
-        ..nana_ui_runtime::WidgetPaintOutput::new()
+        ..nana_ui_runtime::scene_contract::WidgetPaintOutput::new()
     };
     card_paint.push(
         2,
-        nana_ui_runtime::WidgetPaintOp::Text(nana_ui_runtime::WidgetText {
-            bounds: LayoutBox {
-                x: 10.0,
-                y: 8.0,
-                width: 50.0,
-                height: 18.0,
+        nana_ui_runtime::scene_contract::WidgetPaintOp::Text(
+            nana_ui_runtime::scene_contract::WidgetText {
+                bounds: LayoutBox {
+                    x: 10.0,
+                    y: 8.0,
+                    width: 50.0,
+                    height: 18.0,
+                },
+                content: nana_ui_runtime::TextValue::from("Actions"),
+                color: None,
+                paint_color: None,
+                font_size: 13.0,
+                font_weight: Some(600),
+                horizontal_alignment: TextHorizontalAlignment::Start,
+                vertical_alignment: TextVerticalAlignment::Center,
+                ellipsis: true,
+                wrap: false,
+                max_lines: Some(1),
+                italic: None,
+                underline: None,
+                line_through: None,
+                suppress_spans: false,
+                preserve_lines: Some(false),
+                unstyled_glyph: false,
+                line_height: Some(Some(nana_ui_core::LineHeightSpec::Absolute(18.0))),
+                retained_text:
+                    nana_ui_runtime::scene_contract::WidgetRetainedText::AlwaysClipOverflow,
+                tabular_nums: false,
+                ..Default::default()
             },
-            content: nana_ui_runtime::TextValue::from("Actions"),
-            color: None,
-            paint_color: None,
-            font_size: 13.0,
-            font_weight: Some(600),
-            horizontal_alignment: TextHorizontalAlignment::Start,
-            vertical_alignment: TextVerticalAlignment::Center,
-            ellipsis: true,
-            wrap: false,
-            max_lines: Some(1),
-            italic: None,
-            underline: None,
-            line_through: None,
-            suppress_spans: false,
-            preserve_lines: Some(false),
-            unstyled_glyph: false,
-            line_height: Some(Some(nana_ui_core::LineHeightSpec::Absolute(18.0))),
-            retained_text: nana_ui_runtime::WidgetRetainedText::AlwaysClipOverflow,
-            tabular_nums: false,
-            ..Default::default()
-        }),
+        ),
     );
     card_paint.push(
         3,
-        nana_ui_runtime::WidgetPaintOp::Icon(nana_ui_runtime::WidgetIcon {
-            bounds: LayoutBox {
-                x: 68.0,
-                y: 10.0,
-                width: 14.0,
-                height: 14.0,
+        nana_ui_runtime::scene_contract::WidgetPaintOp::Icon(
+            nana_ui_runtime::scene_contract::WidgetIcon {
+                bounds: LayoutBox {
+                    x: 68.0,
+                    y: 10.0,
+                    width: 14.0,
+                    height: 14.0,
+                },
+                glyph: nana_ui_runtime::scene_contract::WidgetGlyph::Spinner { phase: 4 },
+                color: None,
+                paint_color: None,
+                align_to_adjacent_text: false,
             },
-            glyph: nana_ui_runtime::WidgetGlyph::Spinner { phase: 4 },
-            color: None,
-            paint_color: None,
-            align_to_adjacent_text: false,
-        }),
+        ),
     );
     card.widget_paint = Some(Arc::new(card_paint));
 
@@ -7898,16 +7992,18 @@ fn migrated_components_consume_runtime_subregion_geometry() {
     list_item.text = Some(TextContent {
         value: "Project".into(),
     });
-    list_item.widget_paint = Some(Arc::new(nana_ui_runtime::WidgetPaintOutput {
-        aligns_child_icon_to_text: true,
-        node_text_bounds: Some(LayoutBox {
-            x: 30.0,
-            y: 6.0,
-            width: 55.0,
-            height: 22.0,
-        }),
-        ..nana_ui_runtime::WidgetPaintOutput::new()
-    }));
+    list_item.widget_paint = Some(Arc::new(
+        nana_ui_runtime::scene_contract::WidgetPaintOutput {
+            aligns_child_icon_to_text: true,
+            node_text_bounds: Some(LayoutBox {
+                x: 30.0,
+                y: 6.0,
+                width: 55.0,
+                height: 22.0,
+            }),
+            ..nana_ui_runtime::scene_contract::WidgetPaintOutput::new()
+        },
+    ));
     style_mut(&mut list_item).background = Some([0.15, 0.15, 0.15, 1.0]);
 
     let mut scene = UiScene::new();
@@ -8402,38 +8498,40 @@ fn host_and_child_text_extract_one_visible_text_primitive() {
     button.text = Some(TextContent {
         value: "Open".into(),
     });
-    let mut paint = nana_ui_runtime::WidgetPaintOutput::new();
+    let mut paint = nana_ui_runtime::scene_contract::WidgetPaintOutput::new();
     paint.owns_node_text = true;
     paint.push(
         2,
-        nana_ui_runtime::WidgetPaintOp::Text(nana_ui_runtime::WidgetText {
-            bounds: LayoutBox {
-                x: 8.0,
-                y: 8.0,
-                width: 48.0,
-                height: 20.0,
+        nana_ui_runtime::scene_contract::WidgetPaintOp::Text(
+            nana_ui_runtime::scene_contract::WidgetText {
+                bounds: LayoutBox {
+                    x: 8.0,
+                    y: 8.0,
+                    width: 48.0,
+                    height: 20.0,
+                },
+                content: nana_ui_runtime::TextValue::from("Open"),
+                color: Some([0.1, 0.1, 0.1, 1.0]),
+                paint_color: None,
+                font_size: 13.0,
+                font_weight: Some(500),
+                horizontal_alignment: nana_ui_runtime::TextHorizontalAlignment::Center,
+                vertical_alignment: nana_ui_runtime::TextVerticalAlignment::Center,
+                ellipsis: true,
+                wrap: false,
+                max_lines: None,
+                italic: None,
+                underline: None,
+                line_through: None,
+                suppress_spans: false,
+                preserve_lines: None,
+                unstyled_glyph: false,
+                line_height: None,
+                retained_text: nana_ui_runtime::scene_contract::WidgetRetainedText::NodeTextIfRich,
+                tabular_nums: false,
+                ..Default::default()
             },
-            content: nana_ui_runtime::TextValue::from("Open"),
-            color: Some([0.1, 0.1, 0.1, 1.0]),
-            paint_color: None,
-            font_size: 13.0,
-            font_weight: Some(500),
-            horizontal_alignment: nana_ui_runtime::TextHorizontalAlignment::Center,
-            vertical_alignment: nana_ui_runtime::TextVerticalAlignment::Center,
-            ellipsis: true,
-            wrap: false,
-            max_lines: None,
-            italic: None,
-            underline: None,
-            line_through: None,
-            suppress_spans: false,
-            preserve_lines: None,
-            unstyled_glyph: false,
-            line_height: None,
-            retained_text: nana_ui_runtime::WidgetRetainedText::NodeTextIfRich,
-            tabular_nums: false,
-            ..Default::default()
-        }),
+        ),
     );
     button.widget_paint = Some(Arc::new(paint));
     let mut scene = UiScene::new();
@@ -8453,47 +8551,52 @@ fn host_and_child_text_extract_one_visible_text_primitive() {
 fn card_body_text_is_painted_independently_of_its_optional_title() {
     for title in [None, Some("Card heading")] {
         let mut card = node(1, None, &[2, 3]);
-        let mut card_paint = nana_ui_runtime::WidgetPaintOutput {
+        let mut card_paint = nana_ui_runtime::scene_contract::WidgetPaintOutput {
             owns_node_text: true,
             child_text_suppression: match title {
                 Some(title) => {
-                    nana_ui_runtime::WidgetChildTextSuppression::Matching(Arc::from(title))
+                    nana_ui_runtime::scene_contract::WidgetChildTextSuppression::Matching(
+                        Arc::from(title),
+                    )
                 }
-                None => nana_ui_runtime::WidgetChildTextSuppression::Allow,
+                None => nana_ui_runtime::scene_contract::WidgetChildTextSuppression::Allow,
             },
-            ..nana_ui_runtime::WidgetPaintOutput::new()
+            ..nana_ui_runtime::scene_contract::WidgetPaintOutput::new()
         };
         if let Some(content) = title {
             card_paint.push(
                 2,
-                nana_ui_runtime::WidgetPaintOp::Text(nana_ui_runtime::WidgetText {
-                    bounds: LayoutBox {
-                        x: 10.0,
-                        y: 8.0,
-                        width: 160.0,
-                        height: 18.0,
+                nana_ui_runtime::scene_contract::WidgetPaintOp::Text(
+                    nana_ui_runtime::scene_contract::WidgetText {
+                        bounds: LayoutBox {
+                            x: 10.0,
+                            y: 8.0,
+                            width: 160.0,
+                            height: 18.0,
+                        },
+                        content: nana_ui_runtime::TextValue::from(content),
+                        color: None,
+                        paint_color: None,
+                        font_size: 13.0,
+                        font_weight: None,
+                        horizontal_alignment: TextHorizontalAlignment::Start,
+                        vertical_alignment: TextVerticalAlignment::Center,
+                        ellipsis: true,
+                        wrap: false,
+                        max_lines: Some(1),
+                        italic: None,
+                        underline: None,
+                        line_through: None,
+                        suppress_spans: false,
+                        preserve_lines: Some(false),
+                        unstyled_glyph: false,
+                        line_height: Some(Some(nana_ui_core::LineHeightSpec::Absolute(18.0))),
+                        retained_text:
+                            nana_ui_runtime::scene_contract::WidgetRetainedText::AlwaysClipOverflow,
+                        tabular_nums: false,
+                        ..Default::default()
                     },
-                    content: nana_ui_runtime::TextValue::from(content),
-                    color: None,
-                    paint_color: None,
-                    font_size: 13.0,
-                    font_weight: None,
-                    horizontal_alignment: TextHorizontalAlignment::Start,
-                    vertical_alignment: TextVerticalAlignment::Center,
-                    ellipsis: true,
-                    wrap: false,
-                    max_lines: Some(1),
-                    italic: None,
-                    underline: None,
-                    line_through: None,
-                    suppress_spans: false,
-                    preserve_lines: Some(false),
-                    unstyled_glyph: false,
-                    line_height: Some(Some(nana_ui_core::LineHeightSpec::Absolute(18.0))),
-                    retained_text: nana_ui_runtime::WidgetRetainedText::AlwaysClipOverflow,
-                    tabular_nums: false,
-                    ..Default::default()
-                }),
+                ),
             );
         }
         card.widget_paint = Some(Arc::new(card_paint));
@@ -8525,43 +8628,47 @@ fn card_child_list_item_keeps_its_label() {
     card.text = Some(TextContent {
         value: "Outputs".into(),
     });
-    let mut card_paint = nana_ui_runtime::WidgetPaintOutput {
+    let mut card_paint = nana_ui_runtime::scene_contract::WidgetPaintOutput {
         owns_node_text: true,
-        child_text_suppression: nana_ui_runtime::WidgetChildTextSuppression::Matching(Arc::from(
-            "Outputs",
-        )),
-        ..nana_ui_runtime::WidgetPaintOutput::new()
+        child_text_suppression:
+            nana_ui_runtime::scene_contract::WidgetChildTextSuppression::Matching(Arc::from(
+                "Outputs",
+            )),
+        ..nana_ui_runtime::scene_contract::WidgetPaintOutput::new()
     };
     card_paint.push(
         2,
-        nana_ui_runtime::WidgetPaintOp::Text(nana_ui_runtime::WidgetText {
-            bounds: LayoutBox {
-                x: 10.0,
-                y: 8.0,
-                width: 80.0,
-                height: 18.0,
+        nana_ui_runtime::scene_contract::WidgetPaintOp::Text(
+            nana_ui_runtime::scene_contract::WidgetText {
+                bounds: LayoutBox {
+                    x: 10.0,
+                    y: 8.0,
+                    width: 80.0,
+                    height: 18.0,
+                },
+                content: nana_ui_runtime::TextValue::from("Outputs"),
+                color: None,
+                paint_color: None,
+                font_size: 13.0,
+                font_weight: Some(600),
+                horizontal_alignment: TextHorizontalAlignment::Start,
+                vertical_alignment: TextVerticalAlignment::Center,
+                ellipsis: true,
+                wrap: false,
+                max_lines: Some(1),
+                italic: None,
+                underline: None,
+                line_through: None,
+                suppress_spans: false,
+                preserve_lines: Some(false),
+                unstyled_glyph: false,
+                line_height: Some(Some(nana_ui_core::LineHeightSpec::Absolute(18.0))),
+                retained_text:
+                    nana_ui_runtime::scene_contract::WidgetRetainedText::AlwaysClipOverflow,
+                tabular_nums: false,
+                ..Default::default()
             },
-            content: nana_ui_runtime::TextValue::from("Outputs"),
-            color: None,
-            paint_color: None,
-            font_size: 13.0,
-            font_weight: Some(600),
-            horizontal_alignment: TextHorizontalAlignment::Start,
-            vertical_alignment: TextVerticalAlignment::Center,
-            ellipsis: true,
-            wrap: false,
-            max_lines: Some(1),
-            italic: None,
-            underline: None,
-            line_through: None,
-            suppress_spans: false,
-            preserve_lines: Some(false),
-            unstyled_glyph: false,
-            line_height: Some(Some(nana_ui_core::LineHeightSpec::Absolute(18.0))),
-            retained_text: nana_ui_runtime::WidgetRetainedText::AlwaysClipOverflow,
-            tabular_nums: false,
-            ..Default::default()
-        }),
+        ),
     );
     card.widget_paint = Some(Arc::new(card_paint));
 
@@ -8572,16 +8679,18 @@ fn card_child_list_item_keeps_its_label() {
     item.text = Some(TextContent {
         value: "Window".into(),
     });
-    item.widget_paint = Some(Arc::new(nana_ui_runtime::WidgetPaintOutput {
-        aligns_child_icon_to_text: true,
-        node_text_bounds: Some(LayoutBox {
-            x: 10.0,
-            y: 36.0,
-            width: 160.0,
-            height: 36.0,
-        }),
-        ..nana_ui_runtime::WidgetPaintOutput::new()
-    }));
+    item.widget_paint = Some(Arc::new(
+        nana_ui_runtime::scene_contract::WidgetPaintOutput {
+            aligns_child_icon_to_text: true,
+            node_text_bounds: Some(LayoutBox {
+                x: 10.0,
+                y: 36.0,
+                width: 160.0,
+                height: 36.0,
+            }),
+            ..nana_ui_runtime::scene_contract::WidgetPaintOutput::new()
+        },
+    ));
 
     let mut scene = UiScene::new();
     scene.apply_delta([card, item], []);
@@ -9549,24 +9658,28 @@ fn rasterized_svg_host_texture_skips_vector_children() {
 #[test]
 fn icon_visual_skips_vector_children() {
     let mut icon = node(1, None, &[2]);
-    let mut icon_paint = nana_ui_runtime::WidgetPaintOutput {
+    let mut icon_paint = nana_ui_runtime::scene_contract::WidgetPaintOutput {
         suppresses_in_flow_descendants: true,
-        ..nana_ui_runtime::WidgetPaintOutput::new()
+        ..nana_ui_runtime::scene_contract::WidgetPaintOutput::new()
     };
     icon_paint.push(
         3,
-        nana_ui_runtime::WidgetPaintOp::Icon(nana_ui_runtime::WidgetIcon {
-            bounds: LayoutBox {
-                x: 42.0,
-                y: 32.0,
-                width: 16.0,
-                height: 16.0,
+        nana_ui_runtime::scene_contract::WidgetPaintOp::Icon(
+            nana_ui_runtime::scene_contract::WidgetIcon {
+                bounds: LayoutBox {
+                    x: 42.0,
+                    y: 32.0,
+                    width: 16.0,
+                    height: 16.0,
+                },
+                glyph: nana_ui_runtime::scene_contract::WidgetGlyph::Icon(
+                    nana_ui_core::Icon::Search,
+                ),
+                color: None,
+                paint_color: None,
+                align_to_adjacent_text: true,
             },
-            glyph: nana_ui_runtime::WidgetGlyph::Icon(nana_ui_core::Icon::Search),
-            color: None,
-            paint_color: None,
-            align_to_adjacent_text: true,
-        }),
+        ),
     );
     icon.widget_paint = Some(Arc::new(icon_paint));
     let mut path = node(2, Some(1), &[]);
@@ -9601,24 +9714,28 @@ fn icon_visual_skips_vector_children() {
 #[test]
 fn an_icon_visual_still_paints_the_surface_it_only_hosts() {
     let mut icon = node(1, None, &[2]);
-    let mut icon_paint = nana_ui_runtime::WidgetPaintOutput {
+    let mut icon_paint = nana_ui_runtime::scene_contract::WidgetPaintOutput {
         suppresses_in_flow_descendants: true,
-        ..nana_ui_runtime::WidgetPaintOutput::new()
+        ..nana_ui_runtime::scene_contract::WidgetPaintOutput::new()
     };
     icon_paint.push(
         3,
-        nana_ui_runtime::WidgetPaintOp::Icon(nana_ui_runtime::WidgetIcon {
-            bounds: LayoutBox {
-                x: 42.0,
-                y: 32.0,
-                width: 16.0,
-                height: 16.0,
+        nana_ui_runtime::scene_contract::WidgetPaintOp::Icon(
+            nana_ui_runtime::scene_contract::WidgetIcon {
+                bounds: LayoutBox {
+                    x: 42.0,
+                    y: 32.0,
+                    width: 16.0,
+                    height: 16.0,
+                },
+                glyph: nana_ui_runtime::scene_contract::WidgetGlyph::Icon(
+                    nana_ui_core::Icon::Search,
+                ),
+                color: None,
+                paint_color: None,
+                align_to_adjacent_text: true,
             },
-            glyph: nana_ui_runtime::WidgetGlyph::Icon(nana_ui_core::Icon::Search),
-            color: None,
-            paint_color: None,
-            align_to_adjacent_text: true,
-        }),
+        ),
     );
     icon.widget_paint = Some(Arc::new(icon_paint));
     let mut tooltip = node(2, Some(1), &[]);
@@ -10026,13 +10143,13 @@ fn text_input_main_text_region_keeps_display_space_spans_but_labels_do_not() {
     };
     set_text_input_paint(&mut input, &geometry);
     input.text_spans = vec![
-        nana_ui_runtime::ExtractedTextSpan {
+        nana_ui_runtime::scene_contract::ExtractedTextSpan {
             start: 0,
             end: 4,
             color: [1.0, 0.0, 0.0, 1.0],
             paint_color: None,
         },
-        nana_ui_runtime::ExtractedTextSpan {
+        nana_ui_runtime::scene_contract::ExtractedTextSpan {
             start: 13,
             end: 16,
             color: [0.0, 1.0, 0.0, 1.0],
@@ -10082,13 +10199,13 @@ fn text_input_main_text_region_keeps_display_space_spans_but_labels_do_not() {
 
 fn widget_custom_gpu_paint(
     transition_until: Option<std::time::Duration>,
-) -> nana_ui_runtime::WidgetPaintOutput {
-    use nana_ui_runtime::{
-        CustomGpuPayload, TextHorizontalAlignment, TextVerticalAlignment, WidgetPaintOp,
-        WidgetPaintOutput, WidgetText,
+) -> nana_ui_runtime::scene_contract::WidgetPaintOutput {
+    use nana_ui_runtime::scene_contract::{
+        CustomGpuPayload, WidgetPaintOp, WidgetPaintOutput, WidgetText,
     };
+    use nana_ui_runtime::{TextHorizontalAlignment, TextVerticalAlignment};
 
-    let mut custom = CustomRenderNode::new(nana_ui_runtime::CHART_RENDERER, "", 0);
+    let mut custom = CustomRenderNode::new(nana_ui_runtime::scene_contract::CHART_RENDERER, "", 0);
     custom.payload = Some(CustomGpuPayload::new(42_u32));
     custom.transition_until = transition_until;
     custom.ink_bounds = Some(nana_ui_core::LogicalRect {
@@ -10141,7 +10258,7 @@ fn widget_custom_gpu_paint(
                 preserve_lines: None,
                 unstyled_glyph: false,
                 line_height: None,
-                retained_text: nana_ui_runtime::WidgetRetainedText::None,
+                retained_text: nana_ui_runtime::scene_contract::WidgetRetainedText::None,
                 tabular_nums: false,
                 ..Default::default()
             }),
@@ -10164,7 +10281,10 @@ fn widget_custom_gpu_emits_one_custom_primitive_and_slotted_labels() {
     let ScenePrimitiveKind::Custom { node, .. } = &custom[0].kind else {
         unreachable!()
     };
-    assert_eq!(node.renderer.as_ref(), nana_ui_runtime::CHART_RENDERER);
+    assert_eq!(
+        node.renderer.as_ref(),
+        nana_ui_runtime::scene_contract::CHART_RENDERER
+    );
     assert_eq!(
         node.payload
             .as_ref()
@@ -12067,13 +12187,13 @@ fn a_toast_paints_its_recipe_mark_and_lift() {
             width: 360.0,
             height: 45.0,
         };
-        let mut paint = nana_ui_runtime::WidgetPaintOutput {
+        let mut paint = nana_ui_runtime::scene_contract::WidgetPaintOutput {
             owns_node_text: true,
-            root_surface: Some(nana_ui_runtime::WidgetRootSurface {
+            root_surface: Some(nana_ui_runtime::scene_contract::WidgetRootSurface {
                 fallback_elevation: Some(lift),
                 ..Default::default()
             }),
-            ..nana_ui_runtime::WidgetPaintOutput::new()
+            ..nana_ui_runtime::scene_contract::WidgetPaintOutput::new()
         };
         if indicator {
             let indicator_box = LayoutBox {
@@ -12085,56 +12205,62 @@ fn a_toast_paints_its_recipe_mark_and_lift() {
             if let Some(glyph) = mark {
                 paint.push(
                     1,
-                    nana_ui_runtime::WidgetPaintOp::Icon(nana_ui_runtime::WidgetIcon {
-                        bounds: indicator_box,
-                        glyph: nana_ui_runtime::WidgetGlyph::Icon(glyph),
-                        color: Some(tone),
-                        paint_color: None,
-                        align_to_adjacent_text: false,
-                    }),
+                    nana_ui_runtime::scene_contract::WidgetPaintOp::Icon(
+                        nana_ui_runtime::scene_contract::WidgetIcon {
+                            bounds: indicator_box,
+                            glyph: nana_ui_runtime::scene_contract::WidgetGlyph::Icon(glyph),
+                            color: Some(tone),
+                            paint_color: None,
+                            align_to_adjacent_text: false,
+                        },
+                    ),
                 );
             } else {
                 paint.push(
                     1,
-                    nana_ui_runtime::WidgetPaintOp::Quad(nana_ui_runtime::WidgetQuad {
-                        rect: indicator_box,
-                        fill: Some(tone),
-                        corner_radius: [8.0; 4],
-                        ..Default::default()
-                    }),
+                    nana_ui_runtime::scene_contract::WidgetPaintOp::Quad(
+                        nana_ui_runtime::scene_contract::WidgetQuad {
+                            rect: indicator_box,
+                            fill: Some(tone),
+                            corner_radius: [8.0; 4],
+                            ..Default::default()
+                        },
+                    ),
                 );
             }
         }
         paint.push(
             2,
-            nana_ui_runtime::WidgetPaintOp::Text(nana_ui_runtime::WidgetText {
-                bounds: LayoutBox {
-                    x: 36.0,
-                    y: 16.5,
-                    width: 312.0,
-                    height: 12.0,
+            nana_ui_runtime::scene_contract::WidgetPaintOp::Text(
+                nana_ui_runtime::scene_contract::WidgetText {
+                    bounds: LayoutBox {
+                        x: 36.0,
+                        y: 16.5,
+                        width: 312.0,
+                        height: 12.0,
+                    },
+                    content: nana_ui_runtime::TextValue::from("Saved"),
+                    color: Some([0.87, 0.87, 0.87, 1.0]),
+                    paint_color: None,
+                    font_size: 12.0,
+                    font_weight: Some(600),
+                    horizontal_alignment: TextHorizontalAlignment::Start,
+                    vertical_alignment: TextVerticalAlignment::Center,
+                    ellipsis: false,
+                    wrap: false,
+                    max_lines: None,
+                    italic: None,
+                    underline: None,
+                    line_through: None,
+                    suppress_spans: true,
+                    preserve_lines: None,
+                    unstyled_glyph: false,
+                    line_height: None,
+                    retained_text: nana_ui_runtime::scene_contract::WidgetRetainedText::None,
+                    tabular_nums: false,
+                    ..Default::default()
                 },
-                content: nana_ui_runtime::TextValue::from("Saved"),
-                color: Some([0.87, 0.87, 0.87, 1.0]),
-                paint_color: None,
-                font_size: 12.0,
-                font_weight: Some(600),
-                horizontal_alignment: TextHorizontalAlignment::Start,
-                vertical_alignment: TextVerticalAlignment::Center,
-                ellipsis: false,
-                wrap: false,
-                max_lines: None,
-                italic: None,
-                underline: None,
-                line_through: None,
-                suppress_spans: true,
-                preserve_lines: None,
-                unstyled_glyph: false,
-                line_height: None,
-                retained_text: nana_ui_runtime::WidgetRetainedText::None,
-                tabular_nums: false,
-                ..Default::default()
-            }),
+            ),
         );
         toast.widget_paint = Some(Arc::new(paint));
         style_mut(&mut toast).background = Some([0.13, 0.13, 0.13, 1.0]);
@@ -12200,23 +12326,25 @@ fn an_assembled_toast_paints_no_text_regions_of_its_own() {
         width: 280.0,
         height: 38.0,
     };
-    let mut paint = nana_ui_runtime::WidgetPaintOutput {
+    let mut paint = nana_ui_runtime::scene_contract::WidgetPaintOutput {
         owns_node_text: true,
-        ..nana_ui_runtime::WidgetPaintOutput::new()
+        ..nana_ui_runtime::scene_contract::WidgetPaintOutput::new()
     };
     paint.push(
         1,
-        nana_ui_runtime::WidgetPaintOp::Quad(nana_ui_runtime::WidgetQuad {
-            rect: LayoutBox {
-                x: 13.0,
-                y: 16.0,
-                width: 6.0,
-                height: 6.0,
+        nana_ui_runtime::scene_contract::WidgetPaintOp::Quad(
+            nana_ui_runtime::scene_contract::WidgetQuad {
+                rect: LayoutBox {
+                    x: 13.0,
+                    y: 16.0,
+                    width: 6.0,
+                    height: 6.0,
+                },
+                fill: Some(tone),
+                corner_radius: [3.0; 4],
+                ..Default::default()
             },
-            fill: Some(tone),
-            corner_radius: [3.0; 4],
-            ..Default::default()
-        }),
+        ),
     );
     toast.widget_paint = Some(Arc::new(paint));
     style_mut(&mut toast).background = Some([0.13, 0.13, 0.13, 1.0]);
@@ -12592,8 +12720,8 @@ fn menu_row_pictures_paint_their_host_texture_slot_over_a_placeholder_circle() {
     let empty_backdrop = scene
         .primitive(PrimitiveId {
             node: menu,
-            slot: nana_ui_runtime::widget_collection_slot(
-                nana_ui_runtime::CONTEXT_MENU_IMAGE_BACKDROPS,
+            slot: nana_ui_runtime::scene_contract::widget_collection_slot(
+                nana_ui_runtime::scene_contract::CONTEXT_MENU_IMAGE_BACKDROPS,
                 1,
             ),
         })
@@ -12603,8 +12731,8 @@ fn menu_row_pictures_paint_their_host_texture_slot_over_a_placeholder_circle() {
         scene
             .primitive(PrimitiveId {
                 node: menu,
-                slot: nana_ui_runtime::widget_collection_slot(
-                    nana_ui_runtime::CONTEXT_MENU_IMAGES,
+                slot: nana_ui_runtime::scene_contract::widget_collection_slot(
+                    nana_ui_runtime::scene_contract::CONTEXT_MENU_IMAGES,
                     1,
                 ),
             })
@@ -12614,8 +12742,8 @@ fn menu_row_pictures_paint_their_host_texture_slot_over_a_placeholder_circle() {
         scene
             .primitive(PrimitiveId {
                 node: menu,
-                slot: nana_ui_runtime::widget_collection_slot(
-                    nana_ui_runtime::CONTEXT_MENU_IMAGE_BACKDROPS,
+                slot: nana_ui_runtime::scene_contract::widget_collection_slot(
+                    nana_ui_runtime::scene_contract::CONTEXT_MENU_IMAGE_BACKDROPS,
                     2,
                 ),
             })
@@ -12625,8 +12753,8 @@ fn menu_row_pictures_paint_their_host_texture_slot_over_a_placeholder_circle() {
         scene
             .primitive(PrimitiveId {
                 node: menu,
-                slot: nana_ui_runtime::widget_collection_slot(
-                    nana_ui_runtime::CONTEXT_MENU_IMAGES,
+                slot: nana_ui_runtime::scene_contract::widget_collection_slot(
+                    nana_ui_runtime::scene_contract::CONTEXT_MENU_IMAGES,
                     2,
                 ),
             })
@@ -12697,7 +12825,7 @@ fn an_open_select_menu_paints_row_pictures_in_its_own_layer() {
         .find(|primitive| matches!(primitive.kind, ScenePrimitiveKind::Custom { .. }))
         .unwrap();
     assert!(
-        nana_ui_runtime::is_select_menu_slot(picture.id.slot),
+        nana_ui_runtime::scene_contract::is_select_menu_slot(picture.id.slot),
         "drawn with the menu's rows"
     );
     assert!(picture.z_index >= 1_000);

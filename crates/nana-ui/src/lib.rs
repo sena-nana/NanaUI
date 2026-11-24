@@ -8,8 +8,8 @@
 //! [`docs/reference/application-api.md`](../../../docs/reference/application-api.md).
 //! Runtime owns the widget surface; the crate root exposes host adapters only.
 //!
-//! [`WorkspaceController`] is a host adapter (Instant→Duration, pointer →
-//! [`WorkspaceMutation`]). Product region state is [`WorkspaceModel`].
+//! [`workspace::WorkspaceController`] is a host adapter (Instant→Duration, pointer →
+//! [`runtime::WorkspaceMutation`]). Product region state is [`runtime::WorkspaceModel`].
 
 #![recursion_limit = "256"]
 
@@ -184,12 +184,10 @@ pub use output::{
     WindowOutputExport, WindowOutputExtent, WindowOutputFit, WindowOutputFrame, WindowOutputLease,
     WindowOutputStatus,
 };
-pub mod selection;
 pub mod settings;
 pub mod split_pane;
 pub mod theme;
 pub mod tooltip;
-pub mod virtual_list;
 pub mod widgets;
 pub mod window_chrome;
 pub mod workspace;
@@ -201,12 +199,7 @@ pub mod runtime;
 
 #[cfg(feature = "accesskit-tree")]
 pub use accessibility_tree::AccessTreeProjector;
-pub use command::{
-    ActionDescriptor, ActionId, ActionMatch, ActionPickerNavigation, ActionPickerSelection,
-    ActionPickerState, ActionRegistry, ActionRegistryError, CONTEXT_IME_COMPOSING, CONTEXT_MODAL,
-    CONTEXT_TEXT_INPUT, ContextPredicate, KeyBinding, KeyContext, KeyModifiers, KeyStroke, Keymap,
-    KeymapMatch, KeymapState, MenuActionMap, MenuActionMapError, action_picker_from_key_name,
-};
+pub use command::{ActionPickerSelection, ActionPickerState, action_picker_from_key_name};
 pub use component_support::{
     ComponentCapability, ComponentFamily, ComponentId, ComponentSupport, component_catalog,
     component_ids, component_support, component_uses_runtime,
@@ -293,19 +286,6 @@ pub use nana_text::{
     register_host_font_file, register_host_font_source, register_host_font_source_file,
     resolve_font_faces, set_sans_serif_family, shaped_face_families, unregister_host_font,
 };
-pub use nana_ui_core::ContentFit;
-pub use nana_ui_core::ControlSize;
-pub use nana_ui_core::ImageSampling;
-/// Which side of its row a `Switch` draws its track on (`Switch::control_position`).
-pub use nana_ui_core::SwitchControlPosition;
-pub use nana_ui_core::{AnchoredMenuPlacement, StatusTone, ToastTone, ValidationIntent};
-pub use nana_ui_core::{AppearanceEvent, CommandPaletteEvent, CommandPaletteItem};
-pub use nana_ui_core::{DrawerSide, PopoverAlignment, PopoverPlacement};
-pub use nana_ui_core::{
-    ExpansionState, SplitPaneModel, SplitPaneMutation, WORKSPACE_REGION_TRANSITION_DURATION,
-    WorkspaceModel, WorkspaceMutation,
-};
-pub use nana_ui_core::{XYPadEvent, XYPadValue};
 #[cfg(all(feature = "gpu", feature = "http-fetch"))]
 pub use nana_ui_platform::NativeFetchHost;
 /// Canonical input: what hosts deliver and programs observe in
@@ -383,10 +363,6 @@ pub use scene_paint::{
     pq_encode_nits, pq_eotf, pq_oetf, resolve_background_image_url, set_background_image_url_base,
     set_material_policy, tone_map_headroom_rgb,
 };
-pub use selection::{
-    KeyedOrder, SelectionGesture, SelectionMode, SelectionModifiers, SelectionMove, SelectionOrder,
-    SelectionState, SelectionStep, SingleSelection, keyed_order,
-};
 pub use settings::{
     AppearancePreference, AppearanceSettings, BackdropTarget, SettingsError, SettingsModel,
     SettingsState, SettingsTab, SettingsTabId, WindowMaterialMode,
@@ -408,14 +384,6 @@ pub use theme::{
 #[cfg(feature = "bundled-fonts")]
 pub use theme::{UI_FONT_REGULAR, ui_font_sources};
 pub use tooltip::{TooltipConfig, TooltipPlacement};
-pub use virtual_list::{
-    TableColumn, TableCursor, TableNavigation, VirtualAlignment, VirtualFrozenWindow,
-    VirtualListLayout, VirtualListMaterialization, VirtualListMaterializationError,
-    VirtualListMaterializer, VirtualListMount, VirtualListWindow, VirtualScrollAnchor,
-    VirtualTableFrozenWindow, VirtualTableLayout, VirtualTableMaterialization,
-    VirtualTableMaterializer, VirtualTableWindow, VirtualTreeLayout, VirtualTreeRow,
-    VirtualTreeWindow, VirtualViewport,
-};
 pub use widgets::{ButtonKind, CardKind};
 pub use window_chrome::{
     TitleBarDragTracker, WindowChrome, WindowChromeAction, WindowChromeEvent, WindowChromeState,

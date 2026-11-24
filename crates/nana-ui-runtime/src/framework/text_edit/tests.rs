@@ -1068,9 +1068,9 @@ mod minimap_tests {
             },
         );
         context.commit_mutations(mutations).unwrap();
-        context.compat_world_mut().resolve_styles(&[node]).unwrap();
+        context.world_mut().resolve_styles(&[node]).unwrap();
         context
-            .compat_world_mut()
+            .world_mut()
             .shape_text(&[node], &mut MeasureTextShaper)
             .unwrap();
         context.focus_node(document, node).unwrap();
@@ -1246,7 +1246,7 @@ mod minimap_tests {
                 .unwrap()
         );
         context
-            .compat_world_mut()
+            .world_mut()
             .shape_text(&[node], &mut MeasureTextShaper)
             .unwrap();
         let text = context.world().text_input_geometry(node).unwrap().text;
@@ -1275,7 +1275,7 @@ mod minimap_tests {
             })
             .unwrap();
         context
-            .compat_world_mut()
+            .world_mut()
             .shape_text(&[node], &mut MeasureTextShaper)
             .unwrap();
     }
@@ -1334,7 +1334,7 @@ mod minimap_tests {
             })
             .unwrap();
         context
-            .compat_world_mut()
+            .world_mut()
             .shape_text(&[node], &mut MeasureTextShaper)
             .unwrap();
         let end = scroll_y_of(&context, node);

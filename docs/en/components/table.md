@@ -48,7 +48,7 @@ widget(Table::new().label("Files")).children((
 
 ## Geometry
 
-Geometry lives in `nana_ui::runtime::VirtualTableLayout`. `VirtualTableLayout::new(row_extents, columns)` takes each row's height and a set of `nana_ui::TableColumn`. `TableColumn::new(key, extent)` gives a column key and width. `.sortable(true)` marks this column's header as a sort control. `.limits(min, max)` bounds the width, and `.resizable` allows resizing.
+Geometry lives in `nana_ui::runtime::VirtualTableLayout`. `VirtualTableLayout::new(row_extents, columns)` takes each row's height and a set of `nana_ui::runtime::TableColumn`. `TableColumn::new(key, extent)` gives a column key and width. `.sortable(true)` marks this column's header as a sort control. `.limits(min, max)` bounds the width, and `.resizable` allows resizing.
 
 `move_column(from, to)` reorders columns, keeping widths and the total width, with `to` the target index after removal. `VirtualTableLayout` answers only which column shows the sort indicator, and the column geometry.
 
@@ -76,7 +76,7 @@ Which rows are selected is your state, usually a `SelectionState<RowKey>` (see b
 
 ## SelectionState
 
-`nana_ui::SelectionState<K>` is pure-data selection state tied to no control, shared by `each_virtual`, `List`, grids, virtual tables and `TreeView` (see [TreeView's Selection](https://github.com/sena-nana/NanaUI/blob/main/docs/en/components/tree-view.md#selection)) alike. It stores only your business keys: the selected set, the current item (where the keyboard is) and the anchor (where a Shift range starts). It stores no positions, rows or nodes, so a row scrolled out of view and never built stays selected.
+`nana_ui::runtime::SelectionState<K>` is pure-data selection state tied to no control, shared by `each_virtual`, `List`, grids, virtual tables and `TreeView` (see [TreeView's Selection](https://github.com/sena-nana/NanaUI/blob/main/docs/en/components/tree-view.md#selection)) alike. It stores only your business keys: the selected set, the current item (where the keyboard is) and the anchor (where a Shift range starts). It stores no positions, rows or nodes, so a row scrolled out of view and never built stays selected.
 
 Operations that need order (Shift ranges, arrow keys, select all, cleanup after the data changes) read it from a `SelectionOrder` you pass in: a slice of keys, or `keyed_order(&items, |item| item.id)`, narrowed with `.selectable(..)` to leave out disabled items. The order is never copied into the state.
 
@@ -99,7 +99,7 @@ In a reactive view keep it in a `Signal<SelectionState<K>>` and bind rows with `
 | `.header_for(&column)` | `&TableColumn` | A header cell: column key, whether it resizes, width range |
 | `.column` / `.resizable` | — | Set the column key, or whether dragging the trailing edge resizes, on their own |
 | `row_extents` | — | Each row's height taken by `VirtualTableLayout::new` |
-| `columns` | A set of `nana_ui::TableColumn` | Same as above |
+| `columns` | A set of `nana_ui::runtime::TableColumn` | Same as above |
 | `key` | — | The column key of `TableColumn::new(key, extent)` |
 | `extent` | — | The width of `TableColumn::new(key, extent)` |
 | `.sortable` | — | `true` marks this column's header as a sort control |

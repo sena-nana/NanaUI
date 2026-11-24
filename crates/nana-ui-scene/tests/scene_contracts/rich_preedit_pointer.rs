@@ -7,9 +7,10 @@ use std::sync::{Arc, Mutex};
 use nana_text::NativeTextEngine;
 use nana_text::font::{FaceDescriptor, FallbackPolicy, FontSystem, GenericFamily, font_blob};
 use nana_ui_input::{CompositionInput, InputPayload, PointerPhase};
+use nana_ui_runtime::scene_contract::rich_editor_caret_box;
 use nana_ui_runtime::{
     DocumentId, Entity, HeadlessInput, LayoutViewport, NanaTextEngineShaper, RichEditCommand,
-    RichTextEditor, RichTextEditorEvent, rich_editor_caret_box,
+    RichTextEditor, RichTextEditorEvent,
 };
 use nana_ui_scene::RuntimeDocument;
 

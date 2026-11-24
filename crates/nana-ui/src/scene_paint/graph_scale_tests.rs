@@ -45,7 +45,7 @@ fn graph_canvas_large_families_survive_gpu_updates_and_shrink() {
             };
             layout.nodes.push((
                 bounds,
-                nana_ui_runtime::ComponentTextRegion {
+                nana_ui_runtime::scene_contract::ComponentTextRegion {
                     bounds,
                     content: "".into(),
                     color: None,

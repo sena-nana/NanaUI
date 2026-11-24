@@ -259,7 +259,7 @@ pub(super) fn write_evidence(
             let option_label = option_paint.as_ref().and_then(|paint| {
                 paint.ops.iter().find_map(|op| {
                     (op.slot == 2).then_some(&op.op).and_then(|op| match op {
-                        nana_ui::runtime::WidgetPaintOp::Text(text) => Some(text),
+                        nana_ui::runtime::scene_contract::WidgetPaintOp::Text(text) => Some(text),
                         _ => None,
                     })
                 })
@@ -400,7 +400,7 @@ pub(super) fn write_evidence(
         target_paint.as_ref().and_then(|paint| {
             paint.ops.iter().find_map(|op| {
                 (op.slot == slot).then_some(&op.op).and_then(|op| match op {
-                    nana_ui::runtime::WidgetPaintOp::Text(text) => Some(text),
+                    nana_ui::runtime::scene_contract::WidgetPaintOp::Text(text) => Some(text),
                     _ => None,
                 })
             })
@@ -410,7 +410,7 @@ pub(super) fn write_evidence(
         target_paint.as_ref().and_then(|paint| {
             paint.ops.iter().find_map(|op| {
                 (op.slot == slot).then_some(&op.op).and_then(|op| match op {
-                    nana_ui::runtime::WidgetPaintOp::Quad(quad) => Some(quad),
+                    nana_ui::runtime::scene_contract::WidgetPaintOp::Quad(quad) => Some(quad),
                     _ => None,
                 })
             })

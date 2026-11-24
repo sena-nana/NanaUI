@@ -1192,7 +1192,7 @@ fn a_number_input_spinner_shows_the_default_cursor() {
     let work = context.take_system_work();
     context.resolve_styles(&work.style).unwrap();
     context
-        .compat_world_mut()
+        .world_mut()
         .shape_text(&work.text, &mut crate::MeasureTextShaper)
         .unwrap();
     context.rebuild_hit_test(doc);
@@ -1311,12 +1311,9 @@ fn the_focused_editors_caret_blinks_and_typing_shows_it() {
     assert_eq!(context.next_animation_deadline(), None);
     let node = focused_editor(&mut context, doc, "text").stable_id();
     let work = context.take_system_work();
+    context.world_mut().resolve_styles(&work.style).unwrap();
     context
-        .compat_world_mut()
-        .resolve_styles(&work.style)
-        .unwrap();
-    context
-        .compat_world_mut()
+        .world_mut()
         .shape_text(&work.text, &mut crate::MeasureTextShaper)
         .unwrap();
     input
@@ -1628,7 +1625,7 @@ fn document_selection_copies_without_editor_focus() {
         .create_component(doc, TextInput::new("selected"))
         .unwrap()
         .stable_id();
-    context.compat_world_mut().set_document_text_selection(
+    context.world_mut().set_document_text_selection(
         doc,
         Some(crate::DocumentTextSelection {
             node,

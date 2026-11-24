@@ -99,14 +99,14 @@ impl UiScene {
         };
         if let Some(w) = parent.widget_paint.as_deref() {
             match &w.child_text_suppression {
-                nana_ui_runtime::WidgetChildTextSuppression::RespectOwnsNodeText => {
+                nana_ui_runtime::scene_contract::WidgetChildTextSuppression::RespectOwnsNodeText => {
                     if w.owns_node_text {
                         return true;
                     }
                 }
-                nana_ui_runtime::WidgetChildTextSuppression::Suppress => return true,
-                nana_ui_runtime::WidgetChildTextSuppression::Allow => return false,
-                nana_ui_runtime::WidgetChildTextSuppression::Matching(expected) => {
+                nana_ui_runtime::scene_contract::WidgetChildTextSuppression::Suppress => return true,
+                nana_ui_runtime::scene_contract::WidgetChildTextSuppression::Allow => return false,
+                nana_ui_runtime::scene_contract::WidgetChildTextSuppression::Matching(expected) => {
                     return node
                         .text
                         .as_ref()

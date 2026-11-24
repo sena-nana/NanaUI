@@ -894,7 +894,7 @@ pub(super) fn ancestor_nodes(
 pub(super) type AncestorStateKey = (
     StableNodeId,
     bool,
-    Option<nana_ui_runtime::VisualParent>,
+    Option<nana_ui_runtime::scene_contract::VisualParent>,
     Option<StableNodeId>,
     bool,
 );

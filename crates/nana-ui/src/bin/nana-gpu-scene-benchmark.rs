@@ -1372,7 +1372,7 @@ fn primitive_kind_name(kind: &ScenePrimitiveKind, _slot: &str) -> &'static str {
         ScenePrimitiveKind::LayerBegin { .. } | ScenePrimitiveKind::LayerEnd { .. } => "layer",
         #[cfg(feature = "charts")]
         ScenePrimitiveKind::Custom { node: custom, .. }
-            if custom.renderer.as_ref() == nana_ui::runtime::CHART_RENDERER =>
+            if custom.renderer.as_ref() == nana_ui::runtime::scene_contract::CHART_RENDERER =>
         {
             "chart"
         }

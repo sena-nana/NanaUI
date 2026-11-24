@@ -147,7 +147,7 @@ mod tests {
             context.append_child(host, scope).unwrap();
             context.append_child(scope, editor).unwrap();
             context
-                .compat_world_mut()
+                .world_mut()
                 .register_focus_scope(scope.stable_id())
                 .unwrap();
         }
@@ -186,7 +186,7 @@ mod tests {
         context.append_child(scope, editor).unwrap();
         context.append_child(other, switch).unwrap();
         context
-            .compat_world_mut()
+            .world_mut()
             .register_focus_scope(scope.stable_id())
             .unwrap();
         focus(&mut context, document, editor.stable_id());
