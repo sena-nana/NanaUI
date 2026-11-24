@@ -23,6 +23,7 @@ mod display_options;
 mod file_dialog;
 mod ime;
 mod keyboard;
+mod live_frame;
 mod login_item;
 mod material;
 mod menu;
@@ -40,6 +41,8 @@ mod underlay;
 mod web_surface;
 #[cfg(target_os = "windows")]
 mod win32;
+#[cfg(target_os = "windows")]
+mod win32_hooks;
 mod work_area;
 
 #[cfg(test)]
@@ -49,8 +52,6 @@ pub(crate) fn test_serial_lock() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-pub use chrome::LiveFrameResize;
 pub use chrome::arm_frameless_guard;
 pub use chrome::drag_custom_title_bar;
 pub use chrome::native_live_resize_active;
@@ -64,9 +65,9 @@ pub use chrome::set_frameless_styles;
 pub use chrome::set_native_window_controls_visible;
 pub use chrome::set_non_client_rendering;
 pub use chrome::set_present_transaction;
-
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-pub use chrome::{FrameGrab, LiveFrameMove};
+pub use live_frame::LiveFrameResize;
+
 pub use chrome::{FrameResizeEdge, NonClientRenderingStrategy};
 pub use color_sampler::{
     ColorSamplerError, ColorSamplerHandle, ColorSamplerResult, ColorSamplerSupport,
@@ -82,6 +83,8 @@ pub use file_dialog::{
 };
 pub use ime::discard_native_ime_preedit;
 pub use keyboard::{KeyboardModifiers, keyboard_modifiers};
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub use live_frame::{FrameGrab, LiveFrameMove};
 pub use login_item::{LoginItem, LoginItemError, LoginItemState, login_item_state, set_login_item};
 pub use material::{
     Appearance, FallbackColor, MaterialEffect, MaterialFallback, MaterialOutcome,

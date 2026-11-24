@@ -81,46 +81,33 @@ fn fill_rect(
 #[cfg(target_os = "windows")]
 pub(crate) use imp::active as hwnd_active;
 #[cfg(target_os = "windows")]
-pub(crate) use imp::fill_maximized;
+pub(crate) use imp::{fill_maximized, refit_active};
 
 #[cfg(target_os = "windows")]
 mod imp {
-    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+    use raw_window_handle::HasWindowHandle;
+    use windows_sys::Win32::Foundation::{HWND, POINT, RECT};
     use windows_sys::Win32::Graphics::Gdi::{
         GetMonitorInfoW, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint,
         MonitorFromWindow,
     };
     use windows_sys::Win32::UI::Shell::{
-        ABE_BOTTOM, ABE_LEFT, ABE_RIGHT, ABE_TOP, ABM_GETAUTOHIDEBAREX, APPBARDATA,
-        DefSubclassProc, RemoveWindowSubclass, SHAppBarMessage, SetWindowSubclass,
+        ABE_BOTTOM, ABE_LEFT, ABE_RIGHT, ABE_TOP, ABM_GETAUTOHIDEBAREX, APPBARDATA, SHAppBarMessage,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetWindowPlacement, IsIconic, IsZoomed, MINMAXINFO, SPI_SETWORKAREA, SW_RESTORE,
-        SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPlacement, SetWindowPos,
-        ShowWindow, WINDOWPLACEMENT, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_NCDESTROY,
-        WM_SETTINGCHANGE,
+        GetWindowPlacement, IsIconic, IsZoomed, MINMAXINFO, SW_RESTORE, SWP_FRAMECHANGED,
+        SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPlacement, SetWindowPos, ShowWindow,
+        WINDOWPLACEMENT,
     };
 
-    use crate::win32::WindowProp;
-
-    const SUBCLASS_ID: usize = 0x4e57_4641; // "NWFA"
-    static STATE_PROP: WindowProp = WindowProp::new("NanaWorkAreaFullscreen");
-
-    struct State {
-        placement: WINDOWPLACEMENT,
-    }
+    use crate::win32_hooks::Win32WindowHooks;
 
     pub(super) fn hwnd<W: HasWindowHandle + ?Sized>(window: &W) -> Option<HWND> {
-        let handle = window.window_handle().ok()?;
-        let RawWindowHandle::Win32(handle) = handle.as_raw() else {
-            return None;
-        };
-        Some(handle.hwnd.get() as HWND)
+        crate::win32::hwnd(window)
     }
 
     pub(crate) fn active(hwnd: HWND) -> bool {
-        STATE_PROP.get(hwnd) != 0
+        Win32WindowHooks::get(hwnd).is_some_and(|hooks| hooks.work_area_placement.get().is_some())
     }
 
     pub(super) fn enter(hwnd: HWND, display_origin: Option<(i32, i32)>) -> bool {
@@ -140,17 +127,10 @@ mod imp {
         if unsafe { GetWindowPlacement(hwnd, &mut placement) } == 0 {
             return false;
         }
-        let state = Box::into_raw(Box::new(State { placement }));
-        // SAFETY: `state` stays allocated until `release` removes the
-        // subclass, on leaving or at WM_NCDESTROY.
-        if unsafe { SetWindowSubclass(hwnd, Some(proc), SUBCLASS_ID, state as usize) } == 0 {
-            unsafe { drop(Box::from_raw(state)) };
+        let Ok(hooks) = Win32WindowHooks::install_or_get(hwnd) else {
             return false;
-        }
-        if !STATE_PROP.set(hwnd, state as usize) {
-            release(hwnd);
-            return false;
-        }
+        };
+        hooks.work_area_placement.set(Some(placement));
         // A maximized window keeps its maximized frame through SetWindowPos.
         // SAFETY: plain state queries and a show command on the live window.
         unsafe {
@@ -168,7 +148,10 @@ mod imp {
     }
 
     pub(super) fn leave(hwnd: HWND) -> bool {
-        let Some(placement) = release(hwnd) else {
+        let Some(hooks) = Win32WindowHooks::get(hwnd) else {
+            return false;
+        };
+        let Some(placement) = hooks.work_area_placement.take() else {
             return false;
         };
         crate::chrome::reapply_window_shape(hwnd);
@@ -177,17 +160,11 @@ mod imp {
         true
     }
 
-    /// Remove the subclass and free the state; its placement, if it was set.
-    fn release(hwnd: HWND) -> Option<WINDOWPLACEMENT> {
-        let state = STATE_PROP.get(hwnd) as *mut State;
-        STATE_PROP.remove(hwnd);
-        if state.is_null() {
-            return None;
-        }
-        // SAFETY: the subclass holds `state`; once removed nothing reads it.
-        unsafe {
-            RemoveWindowSubclass(hwnd, Some(proc), SUBCLASS_ID);
-            Some(Box::from_raw(state).placement)
+    pub(crate) fn refit_active(hwnd: HWND) {
+        if active(hwnd) {
+            // SAFETY: hwnd is the live window this procedure serves.
+            let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+            fit(hwnd, monitor);
         }
     }
 
@@ -265,35 +242,6 @@ mod imp {
         data.rc = monitor;
         // SAFETY: data is a correctly sized in/out parameter.
         unsafe { SHAppBarMessage(ABM_GETAUTOHIDEBAREX, &mut data) != 0 }
-    }
-
-    unsafe extern "system" fn proc(
-        hwnd: HWND,
-        message: u32,
-        wparam: WPARAM,
-        lparam: LPARAM,
-        _id: usize,
-        _data: usize,
-    ) -> LRESULT {
-        if message == WM_NCDESTROY {
-            release(hwnd);
-            return unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
-        }
-        let result = unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
-        // The taskbar moved or changed auto-hide, the resolution changed, or
-        // the window crossed to a monitor of another scale: fill the work
-        // area the window is on now.
-        let refit = match message {
-            WM_SETTINGCHANGE => wparam as u32 == SPI_SETWORKAREA,
-            WM_DISPLAYCHANGE | WM_DPICHANGED => true,
-            _ => false,
-        };
-        if refit && active(hwnd) {
-            // SAFETY: hwnd is the live window this procedure serves.
-            let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
-            fit(hwnd, monitor);
-        }
-        result
     }
 }
 

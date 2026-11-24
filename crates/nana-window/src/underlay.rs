@@ -224,42 +224,31 @@ mod platform {
 
 #[cfg(target_os = "windows")]
 mod platform {
-    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+    use std::cell::Cell;
+    use std::rc::{Rc, Weak};
+
+    use raw_window_handle::HasWindowHandle;
+    use windows_sys::Win32::Foundation::{HWND, POINT, RECT};
     use windows_sys::Win32::Graphics::Dwm::{DWMWA_CLOAK, DwmSetWindowAttribute};
     use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
-    use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GW_HWNDNEXT, GWL_EXSTYLE, GetClientRect, GetWindow, GetWindowRect, HTTRANSPARENT, IsIconic,
-        IsWindowVisible, MA_NOACTIVATE, STYLESTRUCT, SWP_NOACTIVATE, SWP_NOOWNERZORDER,
-        SWP_NOZORDER, SetWindowPos, WINDOWPOS, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_NCHITTEST,
-        WM_SIZE, WM_STYLECHANGING, WM_WINDOWPOSCHANGED, WM_WINDOWPOSCHANGING, WS_EX_APPWINDOW,
-        WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+        GW_HWNDNEXT, GWL_EXSTYLE, GetClientRect, GetWindow, GetWindowLongPtrW, GetWindowRect,
+        IsIconic, IsWindowVisible, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SetWindowLongPtrW,
+        SetWindowPos,
     };
 
     use super::UnderlayError;
+    use crate::win32_hooks::{UnderlayHookTarget, Win32WindowHooks};
 
-    const PARENT_SUBCLASS_ID: usize = 0x4E_41_55_50;
-    const UNDERLAY_SUBCLASS_ID: usize = 0x4E_41_55_55;
-
-    fn hwnd<W: HasWindowHandle + ?Sized>(window: &W) -> Option<HWND> {
-        let handle = window.window_handle().ok()?;
-        let RawWindowHandle::Win32(handle) = handle.as_raw() else {
-            return None;
-        };
-        Some(handle.hwnd.get() as HWND)
-    }
-
-    /// Shared with both subclasses; freed only after both are removed.
     struct Placement {
         parent: HWND,
         underlay: HWND,
-        cloaked: std::cell::Cell<bool>,
+        cloaked: Cell<bool>,
     }
 
     impl Placement {
-        fn sync(&self) {
-            // SAFETY: both windows are live while the subclasses hold this.
+        fn sync_placement(&self) {
+            // SAFETY: both windows are live while `Underlay` retains this.
             let hidden = unsafe { IsIconic(self.parent) != 0 || IsWindowVisible(self.parent) == 0 };
             // Hidden by cloaking, not by `WS_VISIBLE`: winit owns that flag
             // for the underlay and would write it back on its next style
@@ -324,69 +313,20 @@ mod platform {
         }
     }
 
-    unsafe extern "system" fn parent_proc(
-        hwnd: HWND,
-        message: u32,
-        wparam: WPARAM,
-        lparam: LPARAM,
-        _id: usize,
-        data: usize,
-    ) -> LRESULT {
-        // SAFETY: forward first, so the parent has its new geometry.
-        let result = unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
-        // SAFETY: `data` is the placement installed with this subclass; it is
-        // removed before the placement is freed.
-        let placement = unsafe { &*(data as *const Placement) };
-        match message {
-            WM_WINDOWPOSCHANGED | WM_SIZE => placement.sync(),
-            WM_NCDESTROY => unsafe {
-                RemoveWindowSubclass(hwnd, Some(parent_proc), PARENT_SUBCLASS_ID);
-            },
-            _ => {}
+    impl UnderlayHookTarget for Placement {
+        fn parent_hwnd(&self) -> HWND {
+            self.parent
         }
-        result
-    }
 
-    unsafe extern "system" fn underlay_proc(
-        hwnd: HWND,
-        message: u32,
-        wparam: WPARAM,
-        lparam: LPARAM,
-        _id: usize,
-        data: usize,
-    ) -> LRESULT {
-        // SAFETY: as in `parent_proc`.
-        let placement = unsafe { &*(data as *const Placement) };
-        match message {
-            WM_NCHITTEST => return HTTRANSPARENT as LRESULT,
-            WM_MOUSEACTIVATE => return MA_NOACTIVATE as LRESULT,
-            // Whatever reorders the underlay puts it back under the parent.
-            WM_WINDOWPOSCHANGING => {
-                // SAFETY: lparam is the WINDOWPOS this message carries.
-                let pos = unsafe { &mut *(lparam as *mut WINDOWPOS) };
-                if pos.flags & SWP_NOZORDER == 0 {
-                    pos.hwndInsertAfter = placement.parent;
-                }
-            }
-            // winit rewrites the extended style from its own flags; keep the
-            // underlay out of activation, the taskbar and Alt+Tab. Not a tool
-            // window: capture software leaves those out of its window list.
-            WM_STYLECHANGING if wparam as i32 == GWL_EXSTYLE => {
-                // SAFETY: lparam is the STYLESTRUCT this message carries.
-                let style = unsafe { &mut *(lparam as *mut STYLESTRUCT) };
-                style.styleNew =
-                    (style.styleNew | WS_EX_NOACTIVATE) & !(WS_EX_APPWINDOW | WS_EX_TOOLWINDOW);
-            }
-            WM_NCDESTROY => unsafe {
-                RemoveWindowSubclass(hwnd, Some(underlay_proc), UNDERLAY_SUBCLASS_ID);
-            },
-            _ => {}
+        fn sync(&self) {
+            self.sync_placement();
         }
-        unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
     }
 
     pub(super) struct Underlay {
-        placement: *mut Placement,
+        placement: Rc<Placement>,
+        parent_hooks: Weak<Win32WindowHooks>,
+        underlay_hooks: Weak<Win32WindowHooks>,
     }
 
     impl Underlay {
@@ -396,67 +336,57 @@ mod platform {
             U: HasWindowHandle + ?Sized,
         {
             let failed = |reason: &str| UnderlayError::Failed(reason.into());
-            let parent = hwnd(parent).ok_or_else(|| failed("parent has no HWND"))?;
-            let underlay = hwnd(underlay).ok_or_else(|| failed("underlay has no HWND"))?;
-            let placement = Box::into_raw(Box::new(Placement {
+            let parent = crate::win32::hwnd(parent).ok_or_else(|| failed("parent has no HWND"))?;
+            let underlay =
+                crate::win32::hwnd(underlay).ok_or_else(|| failed("underlay has no HWND"))?;
+            let underlay_hooks =
+                Win32WindowHooks::install_or_get(underlay).map_err(UnderlayError::Failed)?;
+            let parent_hooks =
+                Win32WindowHooks::install_or_get(parent).map_err(UnderlayError::Failed)?;
+            let placement = Rc::new(Placement {
                 parent,
                 underlay,
-                cloaked: std::cell::Cell::new(false),
-            }));
-            // SAFETY: `placement` outlives both subclasses; Drop removes them
-            // before freeing it.
-            let installed = unsafe {
-                SetWindowSubclass(
-                    underlay,
-                    Some(underlay_proc),
-                    UNDERLAY_SUBCLASS_ID,
-                    placement as usize,
-                ) != 0
-                    && SetWindowSubclass(
-                        parent,
-                        Some(parent_proc),
-                        PARENT_SUBCLASS_ID,
-                        placement as usize,
-                    ) != 0
-            };
-            if !installed {
-                unsafe {
-                    RemoveWindowSubclass(underlay, Some(underlay_proc), UNDERLAY_SUBCLASS_ID);
-                    drop(Box::from_raw(placement));
-                }
-                return Err(failed("could not subclass the windows"));
-            }
-            // Re-apply the extended style through the subclass above.
-            use windows_sys::Win32::UI::WindowsAndMessaging::{
-                GetWindowLongPtrW, SetWindowLongPtrW,
-            };
+                cloaked: Cell::new(false),
+            });
+            let weak = Rc::downgrade(&placement) as Weak<dyn UnderlayHookTarget>;
+            *underlay_hooks.underlay_self.borrow_mut() = Some(weak.clone());
+            parent_hooks.underlay_children.borrow_mut().push(weak);
+            // Re-apply the extended style through the unified hook above.
             unsafe {
                 let style = GetWindowLongPtrW(underlay, GWL_EXSTYLE);
                 SetWindowLongPtrW(underlay, GWL_EXSTYLE, style);
             }
-            let this = Self { placement };
+            let this = Self {
+                placement,
+                parent_hooks: Rc::downgrade(&parent_hooks),
+                underlay_hooks: Rc::downgrade(&underlay_hooks),
+            };
             this.sync();
             Ok(this)
         }
 
         pub(super) fn sync(&self) {
-            // SAFETY: the placement lives as long as `self`.
-            unsafe { &*self.placement }.sync();
+            self.placement.sync_placement();
         }
     }
 
     impl Drop for Underlay {
         fn drop(&mut self) {
-            // SAFETY: the placement lives until here; both subclasses go first.
-            unsafe {
-                let placement = &*self.placement;
-                RemoveWindowSubclass(placement.parent, Some(parent_proc), PARENT_SUBCLASS_ID);
-                RemoveWindowSubclass(
-                    placement.underlay,
-                    Some(underlay_proc),
-                    UNDERLAY_SUBCLASS_ID,
-                );
-                drop(Box::from_raw(self.placement));
+            let target = Rc::downgrade(&self.placement) as Weak<dyn UnderlayHookTarget>;
+            if let Some(hooks) = self.parent_hooks.upgrade() {
+                hooks
+                    .underlay_children
+                    .borrow_mut()
+                    .retain(|weak| weak.strong_count() > 0 && !Weak::ptr_eq(weak, &target));
+            }
+            if let Some(hooks) = self.underlay_hooks.upgrade() {
+                let mut slot = hooks.underlay_self.borrow_mut();
+                if slot
+                    .as_ref()
+                    .is_some_and(|weak| Weak::ptr_eq(weak, &target))
+                {
+                    *slot = None;
+                }
             }
         }
     }

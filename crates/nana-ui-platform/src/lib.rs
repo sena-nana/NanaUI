@@ -12,7 +12,10 @@ mod persistence_worker;
 pub use persistence_worker::{PersistenceCoordinator, PersistenceWork};
 mod window;
 mod window_shadow;
-pub use window_shadow::*;
+pub use window_shadow::{
+    WindowShadow, WindowShadowBackend, WindowShadowFallback, WindowShadowOutcome,
+    WindowShadowSource, WindowShadowStyle, WindowShadowWork, WindowVisualShape,
+};
 #[cfg(feature = "ws")]
 mod ws;
 
@@ -154,4 +157,11 @@ pub mod host {
     pub use crate::window::{MousePassthroughMode, WindowCommand};
 }
 /// The canonical input contract, owned by `nana-ui-input`.
-pub use nana_ui_input::*;
+pub use nana_ui_input::{
+    CanonicalInputEvent, CommittedText, CompositionInput, CursorIcon, DeviceId, EndpointGeneration,
+    FileDragInput, FileDragKind, HeadlessHostServices, HostServiceError, HostServices,
+    InputDisposition, InputEndpoint, InputMetadata, InputModifiers, InputPayload, InputSequence,
+    InputSequencer, InputSourceId, InputTimestamp, KeyInput, KeyState, LogicalKey, PhysicalKey,
+    PointerId, PointerInput, PointerPhase, PointerType, SurroundingText, TextInputContext,
+    TextInputPurpose, UnsupportedHostServices, WheelInput, WheelUnit,
+};

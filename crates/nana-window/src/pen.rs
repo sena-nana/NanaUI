@@ -92,34 +92,24 @@ impl PenInput {
 #[cfg(target_os = "windows")]
 mod windows_hook {
     use std::cell::Cell;
-    use std::ffi::c_void;
+    use std::rc::{Rc, Weak};
     use std::sync::Arc;
 
-    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+    use raw_window_handle::HasWindowHandle;
+    use windows_sys::Win32::Foundation::WPARAM;
     use windows_sys::Win32::UI::Input::Pointer::{
         GetPointerPenInfo, GetPointerType, POINTER_FLAG_CANCELED, POINTER_PEN_INFO,
     };
-    use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        PEN_MASK_PRESSURE, POINTER_INPUT_TYPE, PT_PEN, WM_POINTERDOWN, WM_POINTERLEAVE,
-        WM_POINTERUP, WM_POINTERUPDATE,
+        PEN_MASK_PRESSURE, POINTER_INPUT_TYPE, PT_PEN,
     };
 
     use super::PenFrame;
-
-    const SUBCLASS_ID: usize = 0x4E_41_50_4E;
-
-    struct HookState {
-        /// Set while the backend's window procedure handles a pen frame.
-        frame: Cell<Option<PenFrame>>,
-        left: Cell<bool>,
-        wake: Arc<dyn Fn() + Send + Sync>,
-    }
+    use crate::win32_hooks::{PenHookState, Win32WindowHooks};
 
     pub(super) struct Hook {
-        hwnd: HWND,
-        state: *mut HookState,
+        hooks: Weak<Win32WindowHooks>,
+        state: Rc<PenHookState>,
     }
 
     impl Hook {
@@ -127,54 +117,46 @@ mod windows_hook {
             window: &W,
             wake: Arc<dyn Fn() + Send + Sync>,
         ) -> Result<Self, String> {
-            let handle = window
-                .window_handle()
-                .map_err(|error| format!("failed to acquire Win32 window handle: {error}"))?;
-            let RawWindowHandle::Win32(handle) = handle.as_raw() else {
-                return Err("pen input requires an HWND".into());
-            };
-            let hwnd = handle.hwnd.get() as *mut c_void;
-            let state = Box::into_raw(Box::new(HookState {
+            let hwnd = crate::win32::hwnd(window)
+                .ok_or_else(|| "pen input requires an HWND".to_string())?;
+            let hooks = Win32WindowHooks::install_or_get(hwnd)?;
+            let state = Rc::new(PenHookState {
                 frame: Cell::new(None),
                 left: Cell::new(false),
                 wake,
-            }));
-            // SAFETY: hwnd belongs to the live winit window. `state` remains
-            // allocated until the subclass is removed by `Drop`.
-            let installed =
-                unsafe { SetWindowSubclass(hwnd, Some(pen_proc), SUBCLASS_ID, state as usize) };
-            if installed == 0 {
-                // SAFETY: ownership was not transferred because install failed.
-                unsafe { drop(Box::from_raw(state)) };
-                return Err("SetWindowSubclass failed for pen input".into());
-            }
-            Ok(Self { hwnd, state })
+            });
+            *hooks.pen.borrow_mut() = Some(Rc::clone(&state));
+            Ok(Self {
+                hooks: Rc::downgrade(&hooks),
+                state,
+            })
         }
 
         pub(super) fn current_frame(&self) -> Option<PenFrame> {
-            // SAFETY: the hook owns `state`; the window procedure that writes
-            // it runs on this same thread.
-            unsafe { &*self.state }.frame.get()
+            self.state.frame.get()
         }
 
         pub(super) fn take_leave(&self) -> bool {
-            // SAFETY: as above.
-            unsafe { &*self.state }.left.replace(false)
+            self.state.left.replace(false)
         }
     }
 
     impl Drop for Hook {
         fn drop(&mut self) {
-            // SAFETY: dropped before the winit Window. Successful removal
-            // guarantees the callback can no longer observe `state`.
-            let removed = unsafe { RemoveWindowSubclass(self.hwnd, Some(pen_proc), SUBCLASS_ID) };
-            if removed != 0 {
-                unsafe { drop(Box::from_raw(self.state)) };
+            if let Some(hooks) = self.hooks.upgrade()
+                && hooks
+                    .pen
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|current| Rc::ptr_eq(current, &self.state))
+            {
+                hooks.clear_pen();
             }
         }
     }
 
-    fn is_pen(pointer_id: u32) -> bool {
+    pub(crate) fn is_pen(wparam: WPARAM) -> bool {
+        let pointer_id = u32::from(wparam as u16);
         let mut kind: POINTER_INPUT_TYPE = 0;
         // SAFETY: a query about a pointer of the message being handled.
         (unsafe { GetPointerType(pointer_id, &mut kind) } != 0) && kind == PT_PEN
@@ -184,10 +166,11 @@ mod windows_hook {
     /// the cancellation even when the pen's frame can no longer be read.
     const POINTER_MESSAGE_FLAG_CANCELED: u32 = 0x8000;
 
-    fn pen_frame(pointer_id: u32, wparam: WPARAM) -> Option<PenFrame> {
-        if !is_pen(pointer_id) {
+    pub(crate) fn pen_frame(wparam: WPARAM) -> Option<PenFrame> {
+        if !is_pen(wparam) {
             return None;
         }
+        let pointer_id = u32::from(wparam as u16);
         let message_canceled = (wparam >> 16) as u32 & POINTER_MESSAGE_FLAG_CANCELED != 0;
         let mut info = POINTER_PEN_INFO::default();
         // SAFETY: as above; `info` is a writable POINTER_PEN_INFO.
@@ -206,43 +189,10 @@ mod windows_hook {
                 || info.pointerInfo.pointerFlags & POINTER_FLAG_CANCELED != 0,
         })
     }
-
-    unsafe extern "system" fn pen_proc(
-        hwnd: HWND,
-        message: u32,
-        wparam: WPARAM,
-        lparam: LPARAM,
-        _subclass_id: usize,
-        ref_data: usize,
-    ) -> LRESULT {
-        let pointer_id = u32::from(wparam as u16);
-        match message {
-            WM_POINTERDOWN | WM_POINTERUPDATE | WM_POINTERUP => {
-                let Some(frame) = pen_frame(pointer_id, wparam) else {
-                    return unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
-                };
-                // SAFETY: ref_data is the live HookState installed with this
-                // subclass; the hook frees it only after removing the subclass.
-                let state = unsafe { &*(ref_data as *const HookState) };
-                // The backend lowers this frame inside DefSubclassProc and
-                // the host receives its events there.
-                let outer = state.frame.replace(Some(frame));
-                let result = unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
-                state.frame.set(outer);
-                result
-            }
-            WM_POINTERLEAVE if is_pen(pointer_id) => {
-                // SAFETY: as above.
-                let state = unsafe { &*(ref_data as *const HookState) };
-                if !state.left.replace(true) {
-                    (state.wake)();
-                }
-                unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
-            }
-            _ => unsafe { DefSubclassProc(hwnd, message, wparam, lparam) },
-        }
-    }
 }
+
+#[cfg(target_os = "windows")]
+pub(crate) use windows_hook::{is_pen as windows_is_pen, pen_frame as windows_pen_frame};
 
 #[cfg(test)]
 mod tests {

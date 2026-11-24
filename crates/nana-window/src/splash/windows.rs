@@ -10,7 +10,9 @@
 //! A subclass follows `WM_SIZE` and `WM_DPICHANGED`, so the logo stays centred
 //! and at its logical size without any callback into the host.
 
+use std::cell::Cell;
 use std::ffi::c_void;
+use std::rc::{Rc, Weak};
 
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use windows::Win32::Foundation::HWND;
@@ -24,27 +26,23 @@ use windows::Win32::Graphics::DirectComposition::{
 };
 use windows::Win32::Graphics::Dxgi::IDXGIDevice;
 use windows::core::Interface;
-use windows_sys::Win32::Foundation::{LPARAM, LRESULT, POINT as SysPoint, RECT, WPARAM};
+use windows_sys::Win32::Foundation::{POINT as SysPoint, RECT};
 use windows_sys::Win32::Graphics::Dwm::DwmFlush;
 use windows_sys::Win32::Graphics::Gdi::{
     ClientToScreen, GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
-use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DestroyWindow, GetClientRect, HTTRANSPARENT, IsIconic, SW_HIDE,
-    SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOSENDCHANGING, SWP_NOZORDER, SetWindowPos, ShowWindow,
-    WM_DPICHANGED, WM_MOVE, WM_NCHITTEST, WM_SIZE, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
-    WS_EX_TOOLWINDOW, WS_POPUP,
+    CreateWindowExW, DestroyWindow, GetClientRect, IsIconic, SW_HIDE, SW_SHOWNOACTIVATE,
+    SWP_NOACTIVATE, SWP_NOSENDCHANGING, SWP_NOZORDER, SetWindowPos, ShowWindow, WS_EX_NOACTIVATE,
+    WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_POPUP,
 };
 
 use super::{LogoInfo, SplashAnimation, SplashFailure, SplashWork, fit_logo};
 use crate::dcomp::{d3d_device, upload};
 use crate::material::FallbackColor;
-
-const SUBCLASS_ID: usize = 0x4E_41_53_50;
-const OWNER_SUBCLASS_ID: usize = SUBCLASS_ID + 1;
+use crate::win32_hooks::{SplashHookTarget, Win32WindowHooks};
 
 /// The D3D11 device a splash uploads its surfaces with. Making one loads
 /// the GPU's user-mode driver, most of a splash's cost, so it is made on a
@@ -86,7 +84,7 @@ struct Tree {
     logo_rotate: IDCompositionRotateTransform,
     image: (u32, u32),
     logo_box: (f64, f64),
-    commits: usize,
+    commits: Cell<usize>,
     // Released last: the surfaces above were created on it.
     _effects: Option<IDCompositionEffectGroup>,
     _surfaces: Vec<IDCompositionSurface>,
@@ -96,7 +94,7 @@ struct Tree {
 impl Tree {
     /// Places the background and logo for the window's current client size
     /// and DPI, then publishes it.
-    fn layout(&mut self) -> windows::core::Result<()> {
+    fn layout(&self) -> windows::core::Result<()> {
         let mut rect = RECT {
             left: 0,
             top: 0,
@@ -129,13 +127,25 @@ impl Tree {
             self.logo.SetOffsetY2(y as f32)?;
             self.device.Commit()?;
         }
-        self.commits += 1;
+        self.commits.set(self.commits.get() + 1);
         Ok(())
     }
 }
 
+impl SplashHookTarget for Tree {
+    fn sync_from_owner(&self) {
+        sync_overlay_geometry(self);
+    }
+
+    fn layout_splash(&self) {
+        let _ = self.layout();
+    }
+}
+
 pub(super) struct Splash {
-    tree: *mut Tree,
+    tree: Rc<Tree>,
+    splash_hooks: Weak<Win32WindowHooks>,
+    owner_hooks: Weak<Win32WindowHooks>,
 }
 
 impl Splash {
@@ -170,76 +180,80 @@ impl Splash {
                 unsafe { DestroyWindow(hwnd.0) };
                 native(error)
             })?;
-        let tree = Box::into_raw(Box::new(tree));
-        // SAFETY: `tree` is live and owned by the returned `Splash` until the
-        // subclass has been removed.
-        if let Err(error) = unsafe { (*tree).layout() } {
-            unsafe { drop(Box::from_raw(tree)) };
+        let tree = Rc::new(tree);
+        if let Err(error) = tree.layout() {
+            drop(tree);
             unsafe { DestroyWindow(hwnd.0) };
             return Err(native(error));
         }
-        // SAFETY: hwnd is the live winit window; `tree` outlives the subclass.
-        let installed =
-            unsafe { SetWindowSubclass(hwnd.0, Some(splash_proc), SUBCLASS_ID, tree as usize) };
-        if installed == 0 {
-            unsafe { drop(Box::from_raw(tree)) };
+        let splash_hooks = Win32WindowHooks::install_or_get(hwnd.0).map_err(|error| {
             unsafe { DestroyWindow(hwnd.0) };
-            return Err(SplashFailure::Native("SetWindowSubclass failed".into()));
-        }
-        let owner_installed = unsafe {
-            SetWindowSubclass(owner.0, Some(splash_proc), OWNER_SUBCLASS_ID, tree as usize)
-        };
-        if owner_installed == 0 {
-            unsafe { RemoveWindowSubclass(hwnd.0, Some(splash_proc), SUBCLASS_ID) };
-            unsafe { drop(Box::from_raw(tree)) };
+            SplashFailure::Native(error)
+        })?;
+        let owner_hooks = Win32WindowHooks::install_or_get(owner.0).map_err(|error| {
             unsafe { DestroyWindow(hwnd.0) };
-            return Err(SplashFailure::Native("failed to track owner window".into()));
-        }
+            SplashFailure::Native(error)
+        })?;
+        let weak = Rc::downgrade(&tree) as Weak<dyn SplashHookTarget>;
+        *splash_hooks.splash_self.borrow_mut() = Some(weak.clone());
+        *owner_hooks.splash_owner.borrow_mut() = Some(weak);
         unsafe { ShowWindow(hwnd.0, SW_SHOWNOACTIVATE) };
-        work.commits += unsafe { (*tree).commits };
-        unsafe { (*tree).commits = 0 };
-        Ok((Self { tree }, animated))
+        work.commits += tree.commits.replace(0);
+        Ok((
+            Self {
+                tree,
+                splash_hooks: Rc::downgrade(&splash_hooks),
+                owner_hooks: Rc::downgrade(&owner_hooks),
+            },
+            animated,
+        ))
     }
 
     pub(super) fn live_resources(&self) -> usize {
-        // SAFETY: the tree lives as long as `self`.
-        let tree = unsafe { &*self.tree };
         // D3D device, composition device, target, logo visual, the logo's two
         // transforms and its surface, plus the background's visual, transform
-        // and surface, the effect group and the subclass.
-        7 + usize::from(tree.background.is_some()) * 3 + usize::from(tree._effects.is_some()) + 1
+        // and surface, the effect group and the hook.
+        7 + usize::from(self.tree.background.is_some()) * 3
+            + usize::from(self.tree._effects.is_some())
+            + 1
     }
 
     /// Takes the tree off the window and releases it. As a handoff it first
     /// waits one DWM composition pass, so a frame the caller presented and saw
     /// complete has been latched and the window is never left uncovered.
     pub(super) fn remove(self, work: &mut SplashWork, handoff: bool) {
-        // SAFETY: the tree lives until the end of this function.
-        let hwnd = unsafe { (*self.tree).hwnd };
-        let owner = unsafe { (*self.tree).owner };
-        // SAFETY: the subclasses were installed with these ids and pointer.
-        let removed = unsafe { RemoveWindowSubclass(hwnd.0, Some(splash_proc), SUBCLASS_ID) };
-        let owner_removed = owner.is_none_or(|owner| unsafe {
-            RemoveWindowSubclass(owner.0, Some(splash_proc), OWNER_SUBCLASS_ID) != 0
-        });
+        let hwnd = self.tree.hwnd;
+        let owner = self.tree.owner;
+        let target = Rc::downgrade(&self.tree) as Weak<dyn SplashHookTarget>;
+        if let Some(hooks) = self.splash_hooks.upgrade() {
+            let mut slot = hooks.splash_self.borrow_mut();
+            if slot
+                .as_ref()
+                .is_some_and(|weak| Weak::ptr_eq(weak, &target))
+            {
+                *slot = None;
+            }
+        }
+        if let Some(hooks) = self.owner_hooks.upgrade() {
+            let mut slot = hooks.splash_owner.borrow_mut();
+            if slot
+                .as_ref()
+                .is_some_and(|weak| Weak::ptr_eq(weak, &target))
+            {
+                *slot = None;
+            }
+        }
         if handoff {
             // SAFETY: blocks until the next composition pass; no arguments.
             unsafe { DwmFlush() };
         }
-        // SAFETY: after removal nothing else can reach the tree.
-        let tree = unsafe { &mut *self.tree };
-        let cleared = unsafe { tree.target.SetRoot(None::<&IDCompositionVisual>) }
-            .and_then(|()| unsafe { tree.device.Commit() });
+        let cleared = unsafe { self.tree.target.SetRoot(None::<&IDCompositionVisual>) }
+            .and_then(|()| unsafe { self.tree.device.Commit() });
         if cleared.is_ok() {
-            work.commits += tree.commits + 1;
+            work.commits += self.tree.commits.get() + 1;
         }
         if owner.is_some() {
             unsafe { DestroyWindow(hwnd.0) };
-        }
-        // Either subclass that could not be removed still holds the pointer:
-        // the tree is then leaked rather than freed under it.
-        if removed != 0 && owner_removed {
-            unsafe { drop(Box::from_raw(self.tree)) };
         }
     }
 }
@@ -326,7 +340,7 @@ fn build_tree(
                 logo_rotate,
                 image: (width, height),
                 logo_box: request.logo_size,
-                commits: 0,
+                commits: Cell::new(0),
                 _effects: effects,
                 _surfaces: surfaces,
                 _d3d: d3d.clone(),
@@ -375,36 +389,6 @@ fn animate(
             }
         }
     }
-}
-
-unsafe extern "system" fn splash_proc(
-    hwnd: windows_sys::Win32::Foundation::HWND,
-    message: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-    _subclass_id: usize,
-    ref_data: usize,
-) -> LRESULT {
-    let tree = unsafe { &*(ref_data as *mut Tree) };
-    let is_splash = tree.hwnd.0 == hwnd;
-    let is_owner = tree.owner.is_some_and(|owner| owner.0 == hwnd);
-    // Pass through to underlying windows on this thread during handoff.
-    if is_splash && message == WM_NCHITTEST {
-        return HTTRANSPARENT as LRESULT;
-    }
-    // SAFETY: forwards to winit's procedure first, so the window has its new
-    // size before the splash follows it.
-    let result = unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
-    if is_owner && matches!(message, WM_MOVE | WM_SIZE | WM_DPICHANGED) {
-        // SetWindowPos may synchronously notify the splash window. Do not
-        // hold a mutable Tree borrow across that call.
-        sync_overlay_geometry(tree);
-    } else if is_splash && matches!(message, WM_SIZE | WM_DPICHANGED) {
-        // SAFETY: ref_data is the live Tree installed with this subclass.
-        let tree = unsafe { &mut *(ref_data as *mut Tree) };
-        let _ = tree.layout();
-    }
-    result
 }
 
 fn sync_overlay_geometry(tree: &Tree) {

@@ -27,6 +27,7 @@ struct StoreCache {
     entries: BTreeMap<String, String>,
     dirty: bool,
     loaded: bool,
+    generation: u64,
 }
 
 impl FileStore {
@@ -63,6 +64,7 @@ impl FileStore {
                     entries,
                     dirty: raw.get(4) == Some(&1),
                     loaded: true,
+                    generation: 1,
                 },
                 None => {
                     // Kept aside for inspection; the application starts from
@@ -75,6 +77,7 @@ impl FileStore {
                         entries: BTreeMap::new(),
                         dirty: false,
                         loaded: true,
+                        generation: 1,
                     }
                 }
             },
@@ -82,6 +85,7 @@ impl FileStore {
                 entries: BTreeMap::new(),
                 dirty: false,
                 loaded: true,
+                generation: 1,
             },
             Err(error) => return Err(StoreError::new(error.to_string())),
         };
@@ -90,11 +94,7 @@ impl FileStore {
         Ok(())
     }
 
-    fn write_map(
-        path: &Path,
-        entries: &BTreeMap<String, String>,
-    ) -> Result<FlushStats, StoreError> {
-        let payload = encode_map(entries)?;
+    fn write_payload(path: &Path, payload: &[u8]) -> Result<FlushStats, StoreError> {
         let stats = FlushStats {
             encoded_bytes: payload.len() as u64,
             written_bytes: payload.len() as u64,
@@ -107,7 +107,7 @@ impl FileStore {
                 .truncate(true)
                 .open(&tmp)
                 .map_err(|error| StoreError::new(error.to_string()))?;
-            file.write_all(&payload)
+            file.write_all(payload)
                 .map_err(|error| StoreError::new(error.to_string()))?;
             file.sync_all()
                 .map_err(|error| StoreError::new(error.to_string()))?;
@@ -140,6 +140,7 @@ impl KvBackend for FileStore {
         }
         cache.entries.insert(key.to_string(), value);
         cache.dirty = true;
+        cache.generation = cache.generation.wrapping_add(1);
         Ok(())
     }
 
@@ -148,6 +149,7 @@ impl KvBackend for FileStore {
         self.load(&mut cache)?;
         if cache.entries.remove(key).is_some() {
             cache.dirty = true;
+            cache.generation = cache.generation.wrapping_add(1);
         }
         Ok(())
     }
@@ -158,6 +160,7 @@ impl KvBackend for FileStore {
         if !cache.entries.is_empty() {
             cache.entries.clear();
             cache.dirty = true;
+            cache.generation = cache.generation.wrapping_add(1);
         }
         Ok(())
     }
@@ -170,16 +173,16 @@ impl KvBackend for FileStore {
 
     fn flush(&self) -> Result<(), StoreError> {
         let _flush = self.flush.lock().map_err(|_| StoreError::poisoned())?;
-        let (path, snapshot) = {
+        let (path, payload, flushed_generation) = {
             let cache = self.cache.lock().map_err(|_| StoreError::poisoned())?;
             if !cache.loaded || !cache.dirty {
                 return Ok(());
             }
-            (self.path(), cache.entries.clone())
+            (self.path(), encode_map(&cache.entries)?, cache.generation)
         };
-        let stats = Self::write_map(&path, &snapshot)?;
+        let stats = Self::write_payload(&path, &payload)?;
         let mut cache = self.cache.lock().map_err(|_| StoreError::poisoned())?;
-        if cache.entries == snapshot {
+        if cache.generation == flushed_generation {
             cache.dirty = false;
         }
         *self.last_flush.lock().map_err(|_| StoreError::poisoned())? = Some(stats);

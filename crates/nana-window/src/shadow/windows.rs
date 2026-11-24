@@ -15,9 +15,10 @@
 //! primary is minimized, maximized or hidden, and destroyed with it.
 
 use std::cell::Cell;
+use std::rc::{Rc, Weak};
 use std::sync::OnceLock;
 
-use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use raw_window_handle::HasWindowHandle;
 use windows::Win32::Foundation::HWND as ComHwnd;
 use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
 use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11DeviceContext};
@@ -33,27 +34,21 @@ use windows_sys::Win32::Graphics::Dwm::{DWMWA_NCRENDERING_ENABLED, DwmGetWindowA
 use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
-use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GWL_STYLE, GetWindowLongPtrW, HTTRANSPARENT,
     IsIconic, IsWindowVisible, IsZoomed, LWA_ALPHA, MA_NOACTIVATE, RegisterClassW, SW_HIDE,
     SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SetLayeredWindowAttributes, SetWindowPos,
-    ShowWindow, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_NCHITTEST, WM_SIZE, WM_WINDOWPOSCHANGED,
-    WNDCLASSW, WS_CAPTION, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
-    WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP, WS_THICKFRAME,
+    ShowWindow, WM_MOUSEACTIVATE, WM_NCHITTEST, WNDCLASSW, WS_CAPTION, WS_EX_LAYERED,
+    WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
+    WS_THICKFRAME,
 };
 
 use super::{ShadowApplied, ShadowShape, ShadowStyle, ShadowWork};
 use crate::dcomp::{d3d_device, upload};
-
-const OWNER_SUBCLASS_ID: usize = 0x4E_41_53_48;
+use crate::win32_hooks::{ShadowHookTarget, Win32WindowHooks};
 
 fn hwnd<W: HasWindowHandle + ?Sized>(window: &W) -> Option<HWND> {
-    let handle = window.window_handle().ok()?;
-    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
-        return None;
-    };
-    Some(handle.hwnd.get() as HWND)
+    crate::win32::hwnd(window)
 }
 
 /// Whether DWM draws this window's frame, and therefore its shadow.
@@ -103,8 +98,8 @@ struct Placement {
 impl Placement {
     /// Put the popup where the body is now, directly below the owner, or hide
     /// it when the owner's state has no shadow.
-    fn sync(&self) {
-        // SAFETY: both windows are live while the subclass holds this.
+    fn sync_placement(&self) {
+        // SAFETY: both windows are live while `Companion` retains this.
         let hidden = unsafe {
             !self.wanted.get()
                 || IsIconic(self.owner) != 0
@@ -141,28 +136,14 @@ impl Placement {
     }
 }
 
-unsafe extern "system" fn owner_proc(
-    hwnd: HWND,
-    message: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-    _id: usize,
-    data: usize,
-) -> LRESULT {
-    // SAFETY: forward first, so the owner has its new geometry.
-    let result = unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
-    // SAFETY: `data` is the placement installed with this subclass; it is
-    // removed before the placement is freed.
-    let placement = unsafe { &*(data as *const Placement) };
-    match message {
-        WM_WINDOWPOSCHANGED | WM_SIZE => placement.sync(),
-        WM_NCDESTROY => unsafe {
-            RemoveWindowSubclass(hwnd, Some(owner_proc), OWNER_SUBCLASS_ID);
-            ShowWindow(placement.companion, SW_HIDE);
-        },
-        _ => {}
+impl ShadowHookTarget for Placement {
+    fn companion_hwnd(&self) -> HWND {
+        self.companion
     }
-    result
+
+    fn sync(&self) {
+        self.sync_placement();
+    }
 }
 
 unsafe extern "system" fn companion_proc(
@@ -290,7 +271,8 @@ struct Tree {
 }
 
 pub(super) struct Companion {
-    placement: *mut Placement,
+    placement: Rc<Placement>,
+    owner_hooks: Weak<Win32WindowHooks>,
     tree: Tree,
     /// What the tile was rasterized for: style, radius and scale.
     tile: Option<(ShadowStyle, f64, f64, u32)>,
@@ -344,7 +326,11 @@ impl Companion {
                 return Some(Err(()));
             }
         };
-        let placement = Box::into_raw(Box::new(Placement {
+        let Ok(owner_hooks) = Win32WindowHooks::install_or_get(owner) else {
+            unsafe { DestroyWindow(companion) };
+            return Some(Err(()));
+        };
+        let placement = Rc::new(Placement {
             companion,
             owner,
             body: Cell::new(RECT {
@@ -357,25 +343,12 @@ impl Companion {
             wanted: Cell::new(false),
             shown: Cell::new(false),
             moves: Cell::new(0),
-        }));
-        // SAFETY: `placement` outlives the subclass; Drop removes it first.
-        let installed = unsafe {
-            SetWindowSubclass(
-                owner,
-                Some(owner_proc),
-                OWNER_SUBCLASS_ID,
-                placement as usize,
-            )
-        };
-        if installed == 0 {
-            unsafe {
-                drop(Box::from_raw(placement));
-                DestroyWindow(companion);
-            }
-            return Some(Err(()));
-        }
+        });
+        let weak = Rc::downgrade(&placement) as Weak<dyn ShadowHookTarget>;
+        owner_hooks.shadow_companions.borrow_mut().push(weak);
         Some(Ok(Self {
             placement,
+            owner_hooks: Rc::downgrade(&owner_hooks),
             tree,
             tile: None,
             size: (0, 0),
@@ -390,9 +363,7 @@ impl Companion {
         visible: bool,
         work: &mut ShadowWork,
     ) -> bool {
-        // SAFETY: the placement lives as long as `self`.
-        let placement = unsafe { &*self.placement };
-        let dpi = unsafe { GetDpiForWindow(placement.owner) };
+        let dpi = unsafe { GetDpiForWindow(self.placement.owner) };
         let scale = if dpi == 0 { 1.0 } else { f64::from(dpi) / 96.0 };
         let px = |v: f32| (f64::from(v) * scale).round() as i32;
         let [x, y, width, height] = shape.rect;
@@ -423,11 +394,11 @@ impl Companion {
                 size,
                 self.size,
                 &body,
-                placement.body.get(),
+                self.placement.body.get(),
                 margin,
-                placement.margin.get(),
-                placement.wanted.get(),
-                placement.shown.get(),
+                self.placement.margin.get(),
+                self.placement.wanted.get(),
+                self.placement.shown.get(),
                 visible,
             )
         {
@@ -443,10 +414,10 @@ impl Companion {
             work.effect_updates += 1;
             self.size = size;
         }
-        placement.body.set(body);
-        placement.margin.set(margin);
-        placement.wanted.set(visible);
-        placement.sync();
+        self.placement.body.set(body);
+        self.placement.margin.set(margin);
+        self.placement.wanted.set(visible);
+        self.placement.sync_placement();
         true
     }
 
@@ -563,25 +534,21 @@ impl Companion {
     }
 
     pub(super) fn add_work(&self, work: &mut ShadowWork) {
-        // SAFETY: the placement lives as long as `self`.
-        work.companion_moves += unsafe { &*self.placement }.moves.get();
+        work.companion_moves += self.placement.moves.get();
     }
 }
 
 impl Drop for Companion {
     fn drop(&mut self) {
-        // SAFETY: the subclass is removed before the placement it reads.
-        unsafe {
-            let placement = &*self.placement;
-            let removed =
-                RemoveWindowSubclass(placement.owner, Some(owner_proc), OWNER_SUBCLASS_ID) != 0;
-            DestroyWindow(placement.companion);
-            // A subclass that could not be removed still holds the pointer;
-            // leak the placement rather than free it under it.
-            if removed {
-                drop(Box::from_raw(self.placement));
-            }
+        let target = Rc::downgrade(&self.placement) as Weak<dyn ShadowHookTarget>;
+        if let Some(hooks) = self.owner_hooks.upgrade() {
+            hooks
+                .shadow_companions
+                .borrow_mut()
+                .retain(|weak| weak.strong_count() > 0 && !Weak::ptr_eq(weak, &target));
         }
+        // SAFETY: the companion HWND belongs to this struct.
+        unsafe { DestroyWindow(self.placement.companion) };
     }
 }
 

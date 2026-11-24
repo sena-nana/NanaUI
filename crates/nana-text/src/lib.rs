@@ -53,6 +53,7 @@ pub mod font;
 pub mod id;
 pub mod layout;
 pub mod metrics;
+#[cfg(any(test, feature = "parity"))]
 pub mod parity;
 #[cfg(feature = "raster")]
 pub mod raster;

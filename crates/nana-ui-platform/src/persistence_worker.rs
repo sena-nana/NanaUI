@@ -21,6 +21,9 @@ pub struct PersistenceWork {
 #[derive(Debug)]
 struct State {
     entries: BTreeMap<String, String>,
+    entries_bytes: u64,
+    pending_clear: bool,
+    pending_ops: BTreeMap<String, Option<String>>,
     work: PersistenceWork,
     deadline: Option<Instant>,
     first_dirty: Option<Instant>,
@@ -76,14 +79,19 @@ impl PersistenceCoordinator {
             }
         }
         let mut entries = BTreeMap::new();
+        let mut entries_bytes = 0u64;
         for key in backend.keys()? {
             if let Some(value) = backend.get(&key)? {
+                entries_bytes += key.len() as u64 + value.len() as u64;
                 entries.insert(key, value);
             }
         }
         let lane = Arc::new(Lane {
             state: Mutex::new(State {
                 entries,
+                entries_bytes,
+                pending_clear: false,
+                pending_ops: BTreeMap::new(),
                 work: PersistenceWork::default(),
                 deadline: None,
                 first_dirty: None,
@@ -157,17 +165,14 @@ impl PersistenceCoordinator {
                 .0;
         }
     }
-    fn mutate(
-        &self,
-        change: impl FnOnce(&mut BTreeMap<String, String>) -> bool,
-    ) -> Result<(), StoreError> {
+    fn mutate(&self, change: impl FnOnce(&mut State) -> bool) -> Result<(), StoreError> {
         let mut state = self
             .owner
             .lane
             .state
             .lock()
             .map_err(|_| StoreError::poisoned())?;
-        if !change(&mut state.entries) {
+        if !change(&mut state) {
             return Ok(());
         }
         if state.work.generation > state.work.completed_generation {
@@ -212,23 +217,42 @@ impl KvBackend for PersistenceCoordinator {
             .collect())
     }
     fn set(&self, key: &str, value: String) -> Result<(), StoreError> {
-        self.mutate(|entries| {
-            if entries.get(key) == Some(&value) {
-                false
+        self.mutate(|state| {
+            if let Some(current) = state.entries.get_mut(key) {
+                if *current == value {
+                    return false;
+                }
+                state.entries_bytes =
+                    state.entries_bytes - current.len() as u64 + value.len() as u64;
+                *current = value.clone();
             } else {
-                entries.insert(key.into(), value);
-                true
+                state.entries_bytes += key.len() as u64 + value.len() as u64;
+                state.entries.insert(key.into(), value.clone());
             }
+            state.pending_ops.insert(key.into(), Some(value));
+            true
         })
     }
     fn remove(&self, key: &str) -> Result<(), StoreError> {
-        self.mutate(|entries| entries.remove(key).is_some())
+        self.mutate(|state| {
+            let Some(removed) = state.entries.remove(key) else {
+                return false;
+            };
+            state.entries_bytes -= key.len() as u64 + removed.len() as u64;
+            state.pending_ops.insert(key.into(), None);
+            true
+        })
     }
     fn clear(&self) -> Result<(), StoreError> {
-        self.mutate(|entries| {
-            let changed = !entries.is_empty();
-            entries.clear();
-            changed
+        self.mutate(|state| {
+            if state.entries.is_empty() {
+                return false;
+            }
+            state.entries.clear();
+            state.entries_bytes = 0;
+            state.pending_clear = true;
+            state.pending_ops.clear();
+            true
         })
     }
     fn flush(&self) -> Result<(), StoreError> {
@@ -309,7 +333,7 @@ impl Drop for PersistenceCoordinator {
 fn run(owner: Arc<Owner>, backend: SharedStore) {
     let lane = owner.lane.clone();
     loop {
-        let (snapshot, generation, stopping) = {
+        let (pending_clear, pending_ops, snapshot_bytes, generation, stopping) = {
             let mut state = lane.state.lock().unwrap_or_else(|e| e.into_inner());
             loop {
                 if state.work.generation == state.work.completed_generation {
@@ -344,21 +368,24 @@ fn run(owner: Arc<Owner>, backend: SharedStore) {
             state.deadline = None;
             state.work.writes_started += 1;
             nana_diagnostics::metric!(nana_diagnostics::framework::persistence::WRITES_STARTED);
-            (state.entries.clone(), state.work.generation, state.stop)
+            (
+                std::mem::take(&mut state.pending_clear),
+                std::mem::take(&mut state.pending_ops),
+                state.entries_bytes,
+                state.work.generation,
+                state.stop,
+            )
         };
         let started = Instant::now();
-        let snapshot_bytes = snapshot
-            .iter()
-            .map(|(key, value)| key.len() as u64 + value.len() as u64)
-            .sum::<u64>();
         let result = (|| {
-            for key in backend.keys()? {
-                if !snapshot.contains_key(&key) {
-                    backend.remove(&key)?;
-                }
+            if pending_clear {
+                backend.clear()?;
             }
-            for (key, value) in &snapshot {
-                backend.set(key, value.clone())?;
+            for (key, value) in &pending_ops {
+                match value {
+                    Some(value) => backend.set(key, value.clone())?,
+                    None => backend.remove(key)?,
+                }
             }
             backend.flush()
         })();
@@ -390,6 +417,15 @@ fn run(owner: Arc<Owner>, backend: SharedStore) {
                 state.error = None;
             }
             Err(error) => {
+                // Re-queue failed ops beneath any newer writes so recovery retries them.
+                if !state.pending_clear {
+                    if pending_clear {
+                        state.pending_clear = true;
+                    }
+                    for (key, value) in pending_ops {
+                        state.pending_ops.entry(key).or_insert(value);
+                    }
+                }
                 // The write a wait timed out on has ended: later waits retry
                 // and report this error instead of timing out at once.
                 state.stalled = false;

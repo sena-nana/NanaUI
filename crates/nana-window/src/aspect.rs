@@ -93,6 +93,27 @@ impl AspectLock {
         };
         [left, top, right, bottom]
     }
+
+    /// Constrain an `[origin_x, origin_y, width, height]` frame to this ratio.
+    #[cfg_attr(not(any(test, target_os = "windows")), allow(dead_code))]
+    pub(crate) fn constrain_origin_size(
+        self,
+        origin_size: [f64; 4],
+        edge: FrameResizeEdge,
+        basis: SizingBasis,
+    ) -> [f64; 4] {
+        let [left, top, right, bottom] = self.constrain_frame(
+            [
+                origin_size[0],
+                origin_size[1],
+                origin_size[0] + origin_size[2],
+                origin_size[1] + origin_size[3],
+            ],
+            edge,
+            basis,
+        );
+        [left, top, right - left, bottom - top]
+    }
 }
 
 fn relative_change(value: f64, reference: f64) -> f64 {
@@ -160,6 +181,15 @@ mod tests {
         let next = WIDE.constrain_frame(proposed, FrameResizeEdge::North, landscape());
         assert_eq!(client(next), (800.0, 450.0));
         assert_eq!((next[0], next[3]), (100.0, 679.0));
+        let origin_size = WIDE.constrain_origin_size(
+            [100.0, 190.0, 1076.0 - 100.0, 679.0 - 190.0],
+            FrameResizeEdge::North,
+            landscape(),
+        );
+        assert_eq!(
+            origin_size,
+            [next[0], next[1], next[2] - next[0], next[3] - next[1]]
+        );
     }
 
     #[test]

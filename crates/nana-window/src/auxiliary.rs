@@ -69,46 +69,18 @@ impl AuxiliaryWindow {
 #[cfg(target_os = "windows")]
 mod platform {
     use super::*;
-    use raw_window_handle::RawWindowHandle;
-    use std::{cell::Cell, rc::Rc};
+    use std::{
+        cell::Cell,
+        rc::{Rc, Weak},
+    };
     use windows_sys::Win32::Foundation::HWND;
-    use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GW_OWNER, GWL_EXSTYLE, GWLP_HWNDPARENT, GetWindow, GetWindowLongPtrW, HWND_NOTOPMOST,
-        HWND_TOPMOST, STYLESTRUCT, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
-        SetWindowLongPtrW, SetWindowPos, WINDOWPOS, WM_NCDESTROY, WM_STYLECHANGING,
-        WM_WINDOWPOSCHANGING, WS_EX_APPWINDOW, WS_EX_TOPMOST,
+        HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetWindowLongPtrW, SetWindowPos,
+        WS_EX_APPWINDOW, WS_EX_TOPMOST,
     };
 
-    /// Subclass identity for the owned window's extended-style guard.
-    const OWNED_STYLE_SUBCLASS_ID: usize = 0x4E_41_4F_57;
-
-    /// Keeps an owned window off the taskbar. winit writes `WS_EX_APPWINDOW`
-    /// back from its own flags on every style change, and that bit gives an
-    /// owned window a taskbar button. Applied after the chain, like the frame
-    /// guard in `chrome.rs`; removes itself on `WM_NCDESTROY`.
-    unsafe extern "system" fn owned_style_proc(
-        window: HWND,
-        message: u32,
-        wparam: usize,
-        lparam: isize,
-        id: usize,
-        _data: usize,
-    ) -> isize {
-        if message == WM_NCDESTROY {
-            unsafe {
-                RemoveWindowSubclass(window, Some(owned_style_proc), id);
-            }
-        }
-        let result = unsafe { DefSubclassProc(window, message, wparam, lparam) };
-        if message == WM_STYLECHANGING && wparam == GWL_EXSTYLE as usize && lparam != 0 {
-            // SAFETY: `WM_STYLECHANGING` passes a `STYLESTRUCT` the handler
-            // edits in place; the sender owns it for the call.
-            let style = unsafe { &mut *(lparam as *mut STYLESTRUCT) };
-            style.styleNew &= !WS_EX_APPWINDOW;
-        }
-        result
-    }
+    use crate::win32_hooks::{AuxiliaryLevelGuard, Win32WindowHooks};
 
     /// Make `parent` the owner of the still hidden `window`.
     ///
@@ -118,13 +90,10 @@ mod platform {
     /// client area (`GetParent` answers the owner of a popup). Set after
     /// creation, the window stays an ordinary overlapped top-level window.
     fn install_owner(parent: HWND, window: HWND) -> Result<(), AuxiliaryWindowError> {
+        let child_hooks = Win32WindowHooks::install_or_get(window).map_err(AuxiliaryWindowError)?;
+        child_hooks.owned_style_guard.set(true);
         // SAFETY: both HWNDs belong to live windows on the host thread.
         unsafe {
-            if SetWindowSubclass(window, Some(owned_style_proc), OWNED_STYLE_SUBCLASS_ID, 0) == 0 {
-                return Err(AuxiliaryWindowError(
-                    std::io::Error::last_os_error().to_string(),
-                ));
-            }
             SetWindowLongPtrW(window, GWLP_HWNDPARENT, parent as isize);
             let ex_style = GetWindowLongPtrW(window, GWL_EXSTYLE);
             if ex_style & WS_EX_APPWINDOW as isize != 0 {
@@ -142,53 +111,8 @@ mod platform {
     pub(super) struct Binding {
         parent: HWND,
         window: HWND,
-        guard: Rc<LevelGuard>,
-    }
-
-    struct LevelGuard {
-        expected: Cell<Option<bool>>,
-        attached: Cell<bool>,
-    }
-
-    unsafe extern "system" fn level_proc(
-        window: HWND,
-        message: u32,
-        wparam: usize,
-        lparam: isize,
-        id: usize,
-        data: usize,
-    ) -> isize {
-        let pointer = data as *const LevelGuard;
-        // SAFETY: the binding retains this Rc while installed. Hold a local
-        // reference before forwarding: another handler can close the child
-        // and release its binding synchronously inside DefSubclassProc.
-        let guard = unsafe {
-            Rc::increment_strong_count(pointer);
-            Rc::from_raw(pointer)
-        };
-        if message == WM_NCDESTROY {
-            guard.attached.set(false);
-            unsafe {
-                RemoveWindowSubclass(window, Some(level_proc), id);
-            }
-        }
-        let result = unsafe { DefSubclassProc(window, message, wparam, lparam) };
-        // Win32 resolves HWND_TOPMOST to an actual insert-after window before
-        // this message. With hidden IME windows in an owned group, that window
-        // can be non-topmost and the call succeeds without changing the band.
-        // Preserve the host's explicit policy at the native commit point. Do
-        // not alter matching bands, move-only work or fullscreen-owned policy.
-        if message == WM_WINDOWPOSCHANGING
-            && guard.attached.get()
-            && guard.expected.get() == Some(true)
-            && unsafe { GetWindowLongPtrW(window, GWL_EXSTYLE) } as u32 & WS_EX_TOPMOST == 0
-        {
-            let pos = unsafe { &mut *(lparam as *mut WINDOWPOS) };
-            if pos.flags & SWP_NOZORDER == 0 {
-                pos.hwndInsertAfter = HWND_TOPMOST;
-            }
-        }
-        result
+        parent_hooks: Weak<Win32WindowHooks>,
+        guard: Rc<AuxiliaryLevelGuard>,
     }
 
     impl Binding {
@@ -197,42 +121,27 @@ mod platform {
             P: HasWindowHandle + HasDisplayHandle + ?Sized,
             W: HasWindowHandle + HasDisplayHandle + ?Sized,
         {
-            let parent = parent
-                .window_handle()
-                .map_err(|e| AuxiliaryWindowError(e.to_string()))?;
-            let window = window
-                .window_handle()
-                .map_err(|e| AuxiliaryWindowError(e.to_string()))?;
-            let (RawWindowHandle::Win32(parent), RawWindowHandle::Win32(window)) =
-                (parent.as_raw(), window.as_raw())
-            else {
-                return Err(AuxiliaryWindowError("expected HWNDs".into()));
-            };
-            let parent = parent.hwnd.get() as HWND;
-            let window = window.hwnd.get() as HWND;
+            let parent = crate::win32::hwnd(parent)
+                .ok_or_else(|| AuxiliaryWindowError("expected HWNDs".into()))?;
+            let window = crate::win32::hwnd(window)
+                .ok_or_else(|| AuxiliaryWindowError("expected HWNDs".into()))?;
             install_owner(parent, window)?;
+            let parent_hooks =
+                Win32WindowHooks::install_or_get(parent).map_err(AuxiliaryWindowError)?;
             let actual =
                 unsafe { GetWindowLongPtrW(parent, GWL_EXSTYLE) } as u32 & WS_EX_TOPMOST != 0;
-            let guard = Rc::new(LevelGuard {
+            let guard = Rc::new(AuxiliaryLevelGuard {
                 expected: Cell::new(Some(actual)),
                 attached: Cell::new(true),
             });
-            if unsafe {
-                SetWindowSubclass(
-                    parent,
-                    Some(level_proc),
-                    window as usize,
-                    Rc::as_ptr(&guard) as usize,
-                )
-            } == 0
-            {
-                return Err(AuxiliaryWindowError(
-                    std::io::Error::last_os_error().to_string(),
-                ));
-            }
+            parent_hooks
+                .auxiliary_levels
+                .borrow_mut()
+                .push(Rc::downgrade(&guard));
             Ok(Self {
                 parent,
                 window,
+                parent_hooks: Rc::downgrade(&parent_hooks),
                 guard,
             })
         }
@@ -242,7 +151,13 @@ mod platform {
             // band without updating winit's cached flags. Reconcile the actual
             // bits after the native operation; never toggle cached flags or
             // activate a window to force an update. Each call is idempotent.
-            if self.guard.attached.get() && self.guard.expected.get().is_some() {
+            if self.guard.attached.get()
+                && self
+                    .parent_hooks
+                    .upgrade()
+                    .is_some_and(|hooks| !hooks.is_destroyed())
+                && self.guard.expected.get().is_some()
+            {
                 self.guard.expected.set(Some(parent_topmost));
                 conform_band(self.parent, parent_topmost);
                 conform_band(self.window, topmost);
@@ -256,10 +171,11 @@ mod platform {
 
     impl Drop for Binding {
         fn drop(&mut self) {
-            if self.guard.attached.replace(false) {
-                unsafe {
-                    RemoveWindowSubclass(self.parent, Some(level_proc), self.window as usize)
-                };
+            self.guard.attached.set(false);
+            if let Some(hooks) = self.parent_hooks.upgrade() {
+                hooks.auxiliary_levels.borrow_mut().retain(|weak| {
+                    weak.strong_count() > 0 && !Weak::ptr_eq(weak, &Rc::downgrade(&self.guard))
+                });
             }
         }
     }

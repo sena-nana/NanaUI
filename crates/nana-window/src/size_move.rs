@@ -85,43 +85,20 @@ impl LiveSizeMove {
 #[cfg(target_os = "windows")]
 mod windows_hook {
     use std::cell::Cell;
-    use std::ffi::c_void;
-    use std::ptr;
+    use std::rc::{Rc, Weak};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
-    use windows_sys::Win32::Graphics::Gdi::InvalidateRect;
-    use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetClientRect, GetWindowRect, IsZoomed, KillTimer, SetTimer, WM_ENTERSIZEMOVE,
-        WM_EXITSIZEMOVE, WM_NCDESTROY, WM_SETTINGCHANGE, WM_SIZING, WM_TIMER,
-    };
+    use raw_window_handle::HasWindowHandle;
+    use windows_sys::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetClientRect, GetWindowRect, IsZoomed};
 
     use crate::aspect::{AspectLock, SizingBasis};
-    use crate::win32::WindowProp;
-
-    const SUBCLASS_ID: usize = 0x4E_41_53_4D;
-    const WAKE_TIMER: usize = SUBCLASS_ID;
-    const WAKE_INTERVAL_MS: u32 = 16;
-
-    /// Holds the installed `HookState` for readers outside the window
-    /// procedure.
-    const STATE_PROP: WindowProp = WindowProp::new("NanaUI.SizeMove");
-
-    struct HookState {
-        active: AtomicBool,
-        wake: Option<Arc<dyn Fn() + Send + Sync>>,
-        aspect: Cell<Option<AspectLock>>,
-        /// Measured when the current size-move loop began, for a window with
-        /// an aspect lock.
-        basis: Cell<Option<SizingBasis>>,
-    }
+    use crate::win32_hooks::{SizeMoveHookState, Win32WindowHooks};
 
     pub(super) struct Hook {
-        hwnd: HWND,
-        state: *mut HookState,
+        hooks: Weak<Win32WindowHooks>,
+        state: Rc<SizeMoveHookState>,
     }
 
     impl Hook {
@@ -129,64 +106,42 @@ mod windows_hook {
             window: &W,
             wake: Option<Arc<dyn Fn() + Send + Sync>>,
         ) -> Result<Self, String> {
-            let handle = window
-                .window_handle()
-                .map_err(|error| format!("failed to acquire Win32 window handle: {error}"))?;
-            let RawWindowHandle::Win32(handle) = handle.as_raw() else {
-                return Err("live size-move requires an HWND".into());
-            };
-            let hwnd = handle.hwnd.get() as *mut c_void;
-            let state = Box::into_raw(Box::new(HookState {
+            let hwnd = crate::win32::hwnd(window)
+                .ok_or_else(|| "live size-move requires an HWND".to_string())?;
+            let hooks = Win32WindowHooks::install_or_get(hwnd)?;
+            let state = Rc::new(SizeMoveHookState {
                 active: AtomicBool::new(false),
                 wake,
                 aspect: Cell::new(None),
                 basis: Cell::new(None),
-            }));
-            // SAFETY: hwnd belongs to the live winit window. `state` remains
-            // allocated until the subclass is removed by `Drop`.
-            let installed = unsafe {
-                SetWindowSubclass(hwnd, Some(size_move_proc), SUBCLASS_ID, state as usize)
-            };
-            if installed == 0 {
-                // SAFETY: ownership was not transferred because install failed.
-                unsafe { drop(Box::from_raw(state)) };
-                return Err("SetWindowSubclass failed for live size-move".into());
-            }
-            // The property is removed before `state` is freed.
-            if !STATE_PROP.set(hwnd, state as usize) {
-                // SAFETY: the subclass was just installed with this state.
-                if unsafe { RemoveWindowSubclass(hwnd, Some(size_move_proc), SUBCLASS_ID) } != 0 {
-                    unsafe { drop(Box::from_raw(state)) };
-                }
-                return Err("SetPropW failed for live size-move".into());
-            }
-            Ok(Self { hwnd, state })
+            });
+            hooks.observe_settings.set(true);
+            *hooks.size_move.borrow_mut() = Some(Rc::clone(&state));
+            Ok(Self {
+                hooks: Rc::downgrade(&hooks),
+                state,
+            })
         }
 
         pub(super) fn is_active(&self) -> bool {
-            // SAFETY: the hook owns `state` for its full lifetime.
-            unsafe { &*self.state }.active.load(Ordering::Acquire)
+            self.state.active.load(Ordering::Acquire)
         }
 
         pub(super) fn set_aspect(&self, lock: Option<AspectLock>) {
-            // SAFETY: the hook owns `state`; the window procedure that also
-            // reads it runs on this same thread.
-            unsafe { &*self.state }.aspect.set(lock);
+            self.state.aspect.set(lock);
         }
     }
 
     impl Drop for Hook {
         fn drop(&mut self) {
-            // SAFETY: a timer belongs to this HWND; removing it does not dispatch callbacks.
-            unsafe { KillTimer(self.hwnd, WAKE_TIMER) };
-            // Readers of the property stop seeing `state` before it is freed.
-            STATE_PROP.remove(self.hwnd);
-            // SAFETY: dropped before the winit Window. Successful removal
-            // guarantees the callback can no longer observe `state`.
-            let removed =
-                unsafe { RemoveWindowSubclass(self.hwnd, Some(size_move_proc), SUBCLASS_ID) };
-            if removed != 0 {
-                unsafe { drop(Box::from_raw(self.state)) };
+            if let Some(hooks) = self.hooks.upgrade()
+                && hooks
+                    .size_move
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|current| Rc::ptr_eq(current, &self.state))
+            {
+                hooks.clear_size_move();
             }
         }
     }
@@ -195,13 +150,9 @@ mod windows_hook {
     /// hook or without a lock, and for a maximized window, which keeps
     /// whatever the platform gave it.
     pub(crate) fn aspect_lock(hwnd: HWND) -> Option<AspectLock> {
-        let data = STATE_PROP.get(hwnd) as *const HookState;
-        if data.is_null() {
-            return None;
-        }
-        // SAFETY: the property holds the live HookState until `Hook::drop`
-        // removes it, before the state is freed.
-        windowed(hwnd, unsafe { &*data }.aspect.get()?)
+        let hooks = Win32WindowHooks::get(hwnd)?;
+        let lock = hooks.size_move.borrow().as_ref()?.aspect.get()?;
+        windowed(hwnd, lock)
     }
 
     /// `lock`, unless `hwnd` is maximized.
@@ -238,13 +189,18 @@ mod windows_hook {
         })
     }
 
-    fn measure(hwnd: HWND) -> Option<SizingBasis> {
+    pub(crate) fn measure_basis(hwnd: HWND) -> Option<SizingBasis> {
         sizing_basis(hwnd, crate::chrome::win32_min_track_size(hwnd))
     }
 
     /// Bring a `WM_SIZING` drag rectangle to the locked ratio. Answers
     /// whether it did.
-    fn constrain_sizing(hwnd: HWND, state: &HookState, wparam: WPARAM, lparam: LPARAM) -> bool {
+    pub(crate) fn constrain_sizing(
+        hwnd: HWND,
+        state: &SizeMoveHookState,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> bool {
         let Some(lock) = state.aspect.get() else {
             return false;
         };
@@ -255,7 +211,7 @@ mod windows_hook {
             return false;
         };
         // A lock set during the loop has no basis yet.
-        let Some(basis) = state.basis.get().or_else(|| measure(hwnd)) else {
+        let Some(basis) = state.basis.get().or_else(|| measure_basis(hwnd)) else {
             return false;
         };
         // SAFETY: WM_SIZING's lParam is the drag rectangle, writable.
@@ -278,83 +234,10 @@ mod windows_hook {
         };
         true
     }
-
-    unsafe extern "system" fn size_move_proc(
-        hwnd: HWND,
-        message: u32,
-        wparam: WPARAM,
-        lparam: LPARAM,
-        _subclass_id: usize,
-        ref_data: usize,
-    ) -> LRESULT {
-        // Every host window carries this subclass, so it also observes the
-        // system setting broadcasts NanaUI reports to programs.
-        if message == WM_SETTINGCHANGE {
-            crate::motion_preference::observe_setting_change(wparam);
-            crate::contrast_preference::observe_setting_change(wparam);
-        }
-        if matches!(message, WM_ENTERSIZEMOVE | WM_EXITSIZEMOVE) {
-            // SAFETY: ref_data is the live HookState installed with this subclass.
-            let state = unsafe { &*(ref_data as *const HookState) };
-            let active =
-                super::size_move_active_after(message, state.active.load(Ordering::Acquire));
-            state.active.store(active, Ordering::Release);
-            let basis = if active && state.aspect.get().is_some() {
-                measure(hwnd)
-            } else {
-                None
-            };
-            state.basis.set(basis);
-            if let Some(wake) = &state.wake {
-                // The outer event loop's waitable timer is not serviced by the
-                // nested DefWindowProc loop. WM_TIMER is, even with a stationary pointer.
-                // SAFETY: this is the live subclassed HWND on its window thread.
-                unsafe {
-                    if active {
-                        SetTimer(hwnd, WAKE_TIMER, WAKE_INTERVAL_MS, None);
-                    } else {
-                        KillTimer(hwnd, WAKE_TIMER);
-                    }
-                }
-                wake();
-            }
-            // SAFETY: hwnd is the subclassed live window.
-            unsafe { InvalidateRect(hwnd, ptr::null(), 0) };
-        }
-        if message == WM_TIMER && wparam == WAKE_TIMER {
-            // SAFETY: ref_data belongs to this installed subclass.
-            let state = unsafe { &*(ref_data as *const HookState) };
-            if state.active.load(Ordering::Acquire)
-                && let Some(wake) = &state.wake
-            {
-                wake();
-            }
-            return 0;
-        }
-        if message == WM_NCDESTROY {
-            // SAFETY: remove the timer before HWND reuse, even if the owner drops later.
-            unsafe { KillTimer(hwnd, WAKE_TIMER) };
-        }
-        if message == WM_SIZING {
-            // winit snaps to resize increments first; the ratio has the last
-            // word, because Windows applies the rectangle as it comes back.
-            // SAFETY: forwards to winit's original window procedure.
-            let result = unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
-            // SAFETY: ref_data is the live HookState installed with this subclass.
-            let state = unsafe { &*(ref_data as *const HookState) };
-            return if constrain_sizing(hwnd, state, wparam, lparam) {
-                1
-            } else {
-                result
-            };
-        }
-        // SAFETY: forwards every message to winit's original window procedure.
-        unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
-    }
 }
 
 #[cfg(target_os = "windows")]
-pub(crate) use windows_hook::{aspect_lock, sizing_basis};
+pub(crate) use windows_hook::{aspect_lock, constrain_sizing, measure_basis, sizing_basis};
 
 #[cfg(test)]
 mod tests {

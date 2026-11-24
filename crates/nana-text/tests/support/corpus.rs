@@ -5,11 +5,16 @@
 //! native [`FontSystem`] up the same way, so a difference between the two is a
 //! difference in shaping or layout rather than in which faces were available.
 
-use nana_text::font::{FaceDescriptor, FallbackPolicy, FontBlob, FontSystem, font_blob};
+#[cfg(feature = "parity")]
+use nana_text::font::{FaceDescriptor, FallbackPolicy, FontSystem};
+use nana_text::font::{FontBlob, font_blob};
+#[cfg(feature = "parity")]
 use nana_text::parity::CorpusCase;
+#[cfg(feature = "parity")]
 use nana_text::{TextSource, TextSpan, TextStyle};
 use nana_ui_core::fonts::UI_FONT_REGULAR;
 use std::path::PathBuf;
+#[cfg(feature = "parity")]
 use std::sync::Arc;
 
 pub fn fixture_family(id: &str) -> &'static str {
@@ -35,6 +40,7 @@ pub fn fixture_bytes(id: &str) -> FontBlob {
 
 /// A font system holding exactly the case's fixtures, in declaration order,
 /// with no platform fallback policy.
+#[cfg(feature = "parity")]
 pub fn hermetic_fonts(case: &CorpusCase) -> FontSystem {
     let mut fonts = FontSystem::with_policy(FallbackPolicy::empty());
     for id in &case.fonts {
@@ -48,6 +54,7 @@ pub fn hermetic_fonts(case: &CorpusCase) -> FontSystem {
 /// The case's style with its fallback chain spelled out: the requested family
 /// (or the first declared font, which is what the reference defaults to), then
 /// every declared font in declaration order.
+#[cfg(feature = "parity")]
 pub fn with_chain(style: &TextStyle, case: &CorpusCase) -> TextStyle {
     let mut families: Vec<String> = Vec::new();
     let first = style
@@ -67,6 +74,7 @@ pub fn with_chain(style: &TextStyle, case: &CorpusCase) -> TextStyle {
 
 /// The case's text and spans as a source, with the fallback chain applied to
 /// every span and authored newlines folded exactly as the constraints ask.
+#[cfg(feature = "parity")]
 pub fn case_source(case: &CorpusCase) -> TextSource {
     let mut source = TextSource::new(case.text.clone());
     let spans: Vec<TextSpan> = case
