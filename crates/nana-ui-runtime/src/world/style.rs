@@ -1733,7 +1733,7 @@ impl UiWorld {
                     nana_ui_core::InvalidationReason::RESOURCE,
                     nana_ui_core::InvalidationKind::MEASURE
                         .union(nana_ui_core::InvalidationKind::PLACEMENT),
-                    nana_ui_core::LayoutFieldMask::ALL,
+                    nana_ui_core::LayoutStyleChange::ALL,
                     nana_ui_core::LayoutDependencyFootprint::ALL,
                 ),
             );
@@ -1751,8 +1751,8 @@ impl UiWorld {
                     nana_ui_core::InvalidationReason::RESOURCE,
                     nana_ui_core::InvalidationKind::MEASURE
                         .union(nana_ui_core::InvalidationKind::PLACEMENT),
-                    nana_ui_core::LayoutFieldMask::INTRINSIC
-                        .union(nana_ui_core::LayoutFieldMask::FLOW),
+                    nana_ui_core::LayoutStyleChange::INTRINSIC
+                        .union(nana_ui_core::LayoutStyleChange::FLOW),
                     nana_ui_core::LayoutDependencyFootprint::intrinsic_container(),
                 ),
             );

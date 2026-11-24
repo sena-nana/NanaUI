@@ -2021,14 +2021,14 @@ impl UiWorld {
                         {
                             (
                                 InvalidationKind::PLACEMENT,
-                                LayoutFieldMask::FLOW,
+                                LayoutStyleChange::FLOW,
                                 LayoutDependencyFootprint::NONE,
                                 InvalidationReason::TEXT,
                             )
                         } else {
                             (
                                 InvalidationKind::MEASURE.union(InvalidationKind::PLACEMENT),
-                                LayoutFieldMask::INTRINSIC.union(LayoutFieldMask::FLOW),
+                                LayoutStyleChange::INTRINSIC.union(LayoutStyleChange::FLOW),
                                 LayoutDependencyFootprint::intrinsic_container(),
                                 InvalidationReason::CONTEXT,
                             )
@@ -2053,7 +2053,7 @@ impl UiWorld {
                                 InvalidationKind::TOPOLOGY
                                     .union(InvalidationKind::MEASURE)
                                     .union(InvalidationKind::PLACEMENT),
-                                LayoutFieldMask::FLOW,
+                                LayoutStyleChange::FLOW,
                                 LayoutDependencyFootprint::ALL,
                             ),
                         );
@@ -2189,7 +2189,7 @@ impl UiWorld {
                             InvalidationKind::TOPOLOGY
                                 .union(InvalidationKind::MEASURE)
                                 .union(InvalidationKind::PLACEMENT),
-                            LayoutFieldMask::FLOW,
+                            LayoutStyleChange::FLOW,
                             LayoutDependencyFootprint::ALL,
                         ),
                     );
@@ -3678,14 +3678,14 @@ fn placement_already(style: &nana_ui_core::LayoutStyle, top: f32, height: Option
 /// Same field groups a style write emits when only the absolute top, or the
 /// top and the imposed height, move.
 fn placement_invalidation(height_changed: bool) -> nana_ui_core::LayoutInvalidation {
-    let mut fields = nana_ui_core::LayoutFieldMask::POSITION;
+    let mut fields = nana_ui_core::LayoutStyleChange::POSITION;
     let mut kind = nana_ui_core::InvalidationKind::PLACEMENT;
     let mut footprint = nana_ui_core::LayoutDependencyFootprint::DEPENDS_ON_CHILD_METRICS
         .union(nana_ui_core::LayoutDependencyFootprint::EXPORTS_INTRINSIC_INLINE)
         .union(nana_ui_core::LayoutDependencyFootprint::EXPORTS_INTRINSIC_BLOCK)
         .union(nana_ui_core::LayoutDependencyFootprint::DEPENDS_ON_CONTAINING_BLOCK);
     if height_changed {
-        fields = fields.union(nana_ui_core::LayoutFieldMask::SIZING);
+        fields = fields.union(nana_ui_core::LayoutStyleChange::SIZING);
         kind = kind.union(nana_ui_core::InvalidationKind::MEASURE);
         footprint = footprint
             .union(nana_ui_core::LayoutDependencyFootprint::CONSUMES_PARENT_INLINE_CONSTRAINT)
@@ -3916,7 +3916,7 @@ impl UiWorld {
                     InvalidationKind::TOPOLOGY
                         .union(InvalidationKind::MEASURE)
                         .union(InvalidationKind::PLACEMENT),
-                    LayoutFieldMask::FLOW.union(LayoutFieldMask::VISIBILITY),
+                    LayoutStyleChange::FLOW.union(LayoutStyleChange::VISIBILITY),
                     LayoutDependencyFootprint::ALL,
                 ),
             );

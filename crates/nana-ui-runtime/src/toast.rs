@@ -586,7 +586,7 @@ impl AppContext {
             let mut style = copy_style(recipe.progress.percent, recipe.progress.percent_role, 0);
             style.text_horizontal_alignment = TextHorizontalAlignment::End;
             let layout = Arc::make_mut(&mut style.layout);
-            layout.white_space_nowrap = true;
+            layout.white_space = nana_ui_core::WhiteSpaceSpec::Nowrap;
             layout.flex_shrink = Some(0.0);
             layout.min_width = Some(LengthSpec::Px(percent_width));
             // Tabular digits where the font has them: every number as wide.

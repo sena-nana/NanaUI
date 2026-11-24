@@ -526,7 +526,7 @@ impl UiScene {
                             node.rich_text.as_ref(),
                             scene_text_spans(&node, None, &text.value),
                         ),
-                        text_shadow: style.paint.text_shadow,
+                        text_shadow: style.paint.primary_text_shadow(),
                         underline: style.text_ext.text_decoration.is_some_and(|d| d.underline),
                         line_through: style
                             .text_ext
@@ -1128,7 +1128,7 @@ impl UiScene {
                             text_shadow: if unstyled_decor {
                                 None
                             } else {
-                                node.source_style.layout.paint.text_shadow
+                                node.source_style.layout.paint.primary_text_shadow()
                             },
                             underline: if unstyled_decor {
                                 false

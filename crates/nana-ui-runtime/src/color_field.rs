@@ -662,7 +662,7 @@ fn saturation_value_pad(field: &ColorField) -> XYPad {
 fn paint_saturation_value(style: &mut NodeStyle, hue: f32) {
     let layout = Arc::make_mut(&mut style.layout);
     let hue_color = hsv_to_rgb(hue, 1.0, 1.0, 1.0);
-    if layout.background == Some(hue_color) && layout.paint.background_image.is_some() {
+    if layout.background == Some(hue_color) && !layout.paint.background_layers.is_empty() {
         return;
     }
     let white = hsv_to_rgb(0.0, 0.0, 1.0, 1.0);
@@ -670,8 +670,10 @@ fn paint_saturation_value(style: &mut NodeStyle, hue: f32) {
     let clear = |color: [f32; 4]| [color[0], color[1], color[2], 0.0];
     layout.background = Some(hue_color);
     // CSS order: the first image is on top. Value over saturation.
-    layout.paint.background_image = Some(linear_gradient(180.0, clear(black), black));
-    layout.paint.background_layers = vec![linear_gradient(90.0, white, clear(white))];
+    layout.paint.background_layers = vec![
+        linear_gradient(180.0, clear(black), black),
+        linear_gradient(90.0, white, clear(white)),
+    ];
 }
 
 fn linear_gradient(angle_deg: f32, from: [f32; 4], to: [f32; 4]) -> BackgroundImage {
@@ -1053,8 +1055,15 @@ mod tests {
             let style = context.world().node_style(pad.stable_id()).unwrap();
             (
                 style.layout.background,
-                style.layout.paint.background_image.clone(),
-                style.layout.paint.background_layers.clone(),
+                style.layout.paint.background_layers.first().cloned(),
+                style
+                    .layout
+                    .paint
+                    .background_layers
+                    .get(1)
+                    .cloned()
+                    .into_iter()
+                    .collect::<Vec<_>>(),
             )
         };
         let (fill, value, saturation) = pad_paint(&context);

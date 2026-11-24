@@ -259,11 +259,11 @@ fn kept_size(
     if scope.affected.contains(&child) || scope.reach.reaches(child) {
         return None;
     }
-    let style = nodes.style(child)?;
+    let style = nodes.style_ref(child)?;
     let entries = &plan.entries;
     let entry = entries.get(plan.entry_index(child)? as usize)?;
     (entry.child == child
-        && (Arc::ptr_eq(&style, &entry.style) || layout_inputs_equal(&style, &entry.style))
+        && (Arc::ptr_eq(style.arc(), &entry.style) || layout_inputs_equal(&style, &entry.style))
         && !reads_main_extent(&style, direction))
     .then_some(entry.intrinsic)
 }
@@ -878,8 +878,8 @@ fn replay_wrapped_flex_line(
             return Ok(None);
         }
         if scope.affected.contains(&entry.child)
-            && !nodes.style(entry.child).is_some_and(|current| {
-                Arc::ptr_eq(&current, &entry.style)
+            && !nodes.style_ref(entry.child).is_some_and(|current| {
+                Arc::ptr_eq(current.arc(), &entry.style)
                     || super::same_but_cross(&current, &entry.style, direction)
             })
         {
@@ -1140,9 +1140,10 @@ fn replay_grid(
         let Some(entry) = entry_of(item.id) else {
             continue;
         };
-        let current = nodes.style(item.id);
-        let cached = Some(Arc::clone(&entry.style));
-        if !retained_style_matches(&current, &cached) || entry.style.aspect_ratio.is_some() {
+        let current = nodes.style_ref(item.id);
+        if !retained_style_matches(current.as_ref(), Some(&entry.style))
+            || entry.style.aspect_ratio.is_some()
+        {
             continue;
         }
         reuse.insert(item.id, entry.size);
@@ -3985,7 +3986,7 @@ fn absolute_containing_block(
         if world.is_document_node(id) {
             return None;
         }
-        if nodes.style(id).is_some_and(|style| {
+        if nodes.style_ref(id).is_some_and(|style| {
             style.position.establishes_containing_block()
                 || free_item_of(id, &style, nodes).is_some()
         }) {

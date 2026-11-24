@@ -120,7 +120,7 @@ impl ComponentView for PathText {
         let layout = Arc::make_mut(&mut style.layout);
         layout.width.get_or_insert(LengthSpec::Fill);
         layout.min_width = Some(LengthSpec::Px(0.0));
-        layout.white_space_nowrap = true;
+        layout.white_space = nana_ui_core::WhiteSpaceSpec::Nowrap;
         if world.text(id) != Some(self.value.as_ref()) {
             mutations.set_text(
                 id,

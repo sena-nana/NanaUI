@@ -420,7 +420,7 @@ impl Select {
             } else {
                 nana_ui_core::HAIRLINE
             });
-            layout.white_space_nowrap = true;
+            layout.white_space = nana_ui_core::WhiteSpaceSpec::Nowrap;
         }
         if needs_radius {
             style.shape = Some(nana_ui_core::ShapeRole::Select);
@@ -1762,7 +1762,7 @@ pub(crate) fn field_style_for_size(size: ControlSize) -> NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
             width: Some(LengthSpec::Fill),
             border_width: Some(nana_ui_core::HAIRLINE),
-            white_space_nowrap: true,
+            white_space: nana_ui_core::WhiteSpaceSpec::Nowrap,
             ..nana_ui_core::LayoutStyle::default()
         }),
         shape: Some(nana_ui_core::ShapeRole::Select),

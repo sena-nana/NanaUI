@@ -1226,10 +1226,10 @@ mod tests {
             height: Some(LengthSpec::Px(64.0)),
             ..Default::default()
         };
-        layout.paint.background_image = Some(BackgroundImage::url_with_fit(
+        layout.paint.background_layers = vec![BackgroundImage::url_with_fit(
             url,
             BackgroundImageFit::Stretch,
-        ));
+        )];
         background
             .context_mut()
             .create_component(DocumentId::new(1).unwrap(), Stack::from_layout(layout))

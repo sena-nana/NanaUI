@@ -1000,7 +1000,7 @@ impl SidebarSection {
         crate::theme_intent::font(layout, nana_ui_core::TypeRole::Hint);
         crate::theme_intent::line_from_type(layout, nana_ui_core::TypeRole::Hint);
         crate::theme_intent::weight(layout, nana_ui_core::TextWeight::Bold);
-        layout.white_space_nowrap = true;
+        layout.white_space = nana_ui_core::WhiteSpaceSpec::Nowrap;
         layout.text_overflow_ellipsis = true;
         layout.flex_grow = Some(0.0);
         layout.flex_shrink = Some(0.0);
@@ -1256,7 +1256,7 @@ fn title_slot_style() -> NodeStyle {
     layout.flex_grow = Some(1.0);
     layout.flex_shrink = Some(1.0);
     layout.width = Some(LengthSpec::Fill);
-    layout.white_space_nowrap = true;
+    layout.white_space = nana_ui_core::WhiteSpaceSpec::Nowrap;
     layout.text_overflow_ellipsis = true;
     style
 }

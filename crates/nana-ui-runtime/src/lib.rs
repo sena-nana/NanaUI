@@ -334,9 +334,9 @@ pub use image_viewer::{
 };
 pub use interaction_request_card::{InteractionRequestCard, InteractionRequestField};
 pub use intrinsic_cache::{
-    Baseline, ConstraintClass, FormattingContextId, IntrinsicCache, IntrinsicCacheBudget,
-    IntrinsicCacheCounters, IntrinsicCacheKey, IntrinsicGeneration, IntrinsicMetrics,
-    InvalidationReason, MaxBlockInput, UsedSize,
+    Baseline, ConstraintClass, FormattingContextId, IntrinsicCacheCounters, IntrinsicCacheKey,
+    IntrinsicGeneration, IntrinsicMetrics, InvalidationReason, MaxBlockInput, PassIntrinsicFacts,
+    UsedSize,
 };
 pub use key_layers::{
     ActionDescriptor, ActionMatch, ActionRegistry, ActionRegistryError, CONTEXT_IME_COMPOSING,

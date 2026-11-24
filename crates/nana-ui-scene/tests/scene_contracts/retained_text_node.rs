@@ -407,7 +407,7 @@ fn shrink_row_around_an_ellipsizing_label(header: f32, label: &str) -> RuntimeDo
         queue.set_style(
             label_id(0),
             label_style(LayoutStyle {
-                white_space_nowrap: true,
+                white_space: nana_ui_core::WhiteSpaceSpec::Nowrap,
                 text_overflow_ellipsis: true,
                 flex_shrink: Some(1.0),
                 min_width: Some(LengthSpec::Px(0.0)),

@@ -1182,9 +1182,31 @@ fn parse_blend(value: Option<&Value>) -> Result<BlendMode, String> {
         None | Some(Value::Null) => Ok(BlendMode::Normal),
         Some(value) => {
             let name = value.as_str().ok_or("a blend mode is a string")?;
-            BlendMode::parse(name).ok_or_else(|| format!("unknown blend `{name}`"))
+            parse_blend_mode(name).ok_or_else(|| format!("unknown blend `{name}`"))
         }
     }
+}
+
+fn parse_blend_mode(input: &str) -> Option<BlendMode> {
+    Some(match input.trim().to_ascii_lowercase().as_str() {
+        "normal" => BlendMode::Normal,
+        "multiply" => BlendMode::Multiply,
+        "screen" => BlendMode::Screen,
+        "overlay" => BlendMode::Overlay,
+        "darken" => BlendMode::Darken,
+        "lighten" => BlendMode::Lighten,
+        "color-dodge" => BlendMode::ColorDodge,
+        "color-burn" => BlendMode::ColorBurn,
+        "hard-light" => BlendMode::HardLight,
+        "soft-light" => BlendMode::SoftLight,
+        "difference" => BlendMode::Difference,
+        "exclusion" => BlendMode::Exclusion,
+        "hue" => BlendMode::Hue,
+        "saturation" => BlendMode::Saturation,
+        "color" => BlendMode::Color,
+        "luminosity" => BlendMode::Luminosity,
+        _ => return None,
+    })
 }
 
 /// A path object's `d` may itself be a path object; the outermost

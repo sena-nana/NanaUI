@@ -128,7 +128,11 @@ impl RichTextView {
 
     /// Keeps the text on one line.
     pub fn nowrap(mut self, nowrap: bool) -> Self {
-        Arc::make_mut(&mut self.style.layout).white_space_nowrap = nowrap;
+        Arc::make_mut(&mut self.style.layout).white_space = if nowrap {
+            nana_ui_core::WhiteSpaceSpec::Nowrap
+        } else {
+            nana_ui_core::WhiteSpaceSpec::Normal
+        };
         self
     }
 }

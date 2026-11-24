@@ -1615,7 +1615,6 @@ pub(crate) fn emit_patch_stmt(layout: &LayoutStyle, path: &str, m: &str, out: &m
             "box_shadows" => emit_set(&setter, &layout.paint.box_shadows, m, out),
             "scrollbar" => emit_set(&setter, &layout.paint.scrollbar, m, out),
             "scroll_edge_fade" => emit_set(&setter, &layout.paint.scroll_edge_fade, m, out),
-            "text_shadow" => emit_set(&setter, &layout.paint.text_shadow, m, out),
             "text_shadows" => emit_set(&setter, &layout.paint.text_shadows, m, out),
             "text_stroke" => emit_set(&setter, &layout.paint.text_stroke, m, out),
             "paint_order_stroke_first" => {
@@ -1628,7 +1627,6 @@ pub(crate) fn emit_patch_stmt(layout: &LayoutStyle, path: &str, m: &str, out: &m
                 emit_set(&setter, &layout.paint.unsupported_border_image, m, out)
             }
             "border_image" => emit_set(&setter, &layout.paint.border_image, m, out),
-            "background_image" => emit_set(&setter, &layout.paint.background_image, m, out),
             "background_layers" => emit_set(&setter, &layout.paint.background_layers, m, out),
             "background_size_list" => emit_set(&setter, &layout.paint.background_size_list, m, out),
             "background_size_lengths" => {
@@ -1712,7 +1710,6 @@ pub(crate) fn emit_patch_stmt(layout: &LayoutStyle, path: &str, m: &str, out: &m
         "inert" => emit_set(path, &layout.inert, m, out),
         "cursor" => emit_set(path, &layout.cursor, m, out),
         "user_select" => emit_set(path, &layout.user_select, m, out),
-        "white_space_nowrap" => emit_set(path, &layout.white_space_nowrap, m, out),
         "white_space" => emit_set(path, &layout.white_space, m, out),
         "aspect_ratio" => emit_set(path, &layout.aspect_ratio, m, out),
         "text_align" => emit_set(path, &layout.text_align, m, out),

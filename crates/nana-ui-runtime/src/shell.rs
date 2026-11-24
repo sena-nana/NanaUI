@@ -1718,7 +1718,7 @@ fn title_label_style() -> NodeStyle {
     crate::theme_intent::weight(layout, nana_ui_core::TextWeight::Semibold);
     layout.overflow_x = OverflowSpec::Hidden;
     layout.overflow_y = OverflowSpec::Hidden;
-    layout.white_space_nowrap = true;
+    layout.white_space = nana_ui_core::WhiteSpaceSpec::Nowrap;
     layout.text_overflow_ellipsis = true;
     style
 }
@@ -2439,7 +2439,7 @@ fn apply_center_column(layout: &mut nana_ui_core::LayoutStyle, width: f32) {
     layout.padding_bottom = Some(LengthSpec::Px(0.0));
     layout.overflow_x = OverflowSpec::Hidden;
     layout.overflow_y = OverflowSpec::Hidden;
-    layout.white_space_nowrap = true;
+    layout.white_space = nana_ui_core::WhiteSpaceSpec::Nowrap;
     layout.text_overflow_ellipsis = true;
     layout.hidden = false;
 }

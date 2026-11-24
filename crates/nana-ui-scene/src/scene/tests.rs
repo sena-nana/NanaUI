@@ -2529,7 +2529,7 @@ fn text_primitive_preserves_content_box_and_paint_semantics() {
             padding_bottom: Some(nana_ui_core::LengthSpec::Px(4.0)),
             padding_left: Some(nana_ui_core::LengthSpec::Px(10.0)),
             border_width: Some(1.0),
-            white_space_nowrap: true,
+            white_space: nana_ui_core::WhiteSpaceSpec::Nowrap,
             text_overflow_ellipsis: true,
             ..Default::default()
         }),
@@ -6740,10 +6740,10 @@ fn a_picture_xy_pad_strokes_its_frame_over_the_paint_and_rings_the_value() {
         let layout = Arc::make_mut(&mut pad.source_style.layout);
         layout.background = Some([1.0, 0.0, 0.0, 1.0]);
         layout.border_width = Some(1.0);
-        layout.paint.background_image =
-            Some(gradient(180.0, [0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]));
-        layout.paint.background_layers =
-            vec![gradient(90.0, [1.0, 1.0, 1.0, 1.0], [1.0, 1.0, 1.0, 0.0])];
+        layout.paint.background_layers = vec![
+            gradient(180.0, [0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
+            gradient(90.0, [1.0, 1.0, 1.0, 1.0], [1.0, 1.0, 1.0, 0.0]),
+        ];
     }
     style_mut(&mut pad).background = Some([1.0, 0.0, 0.0, 1.0]);
     style_mut(&mut pad).border_color = Some([0.4, 0.4, 0.4, 1.0]);
@@ -8604,7 +8604,7 @@ fn css_gradient_and_clip_path_surface_paint_travels_on_quad() {
         layout: Arc::new(nana_ui_core::LayoutStyle {
             background: Some([1.0, 1.0, 1.0, 0.5]),
             paint: nana_ui_core::PaintStyle {
-                background_image: Some(nana_ui_core::BackgroundImage::Gradient(
+                background_layers: vec![nana_ui_core::BackgroundImage::Gradient(
                     nana_ui_core::CssGradient::Linear(nana_ui_core::LinearGradient {
                         angle_deg: 180.0,
                         stops: vec![
@@ -8620,7 +8620,7 @@ fn css_gradient_and_clip_path_surface_paint_travels_on_quad() {
                             },
                         ],
                     }),
-                )),
+                )],
                 clip_path: Some(nana_ui_core::ClipPath::Inset(nana_ui_core::ClipInset {
                     top: nana_ui_core::LengthSpec::Percent(50.0),
                     right: nana_ui_core::LengthSpec::Percent(50.0),
@@ -9171,7 +9171,7 @@ fn css_mask_and_gradient_both_travel_on_quad() {
         layout: Arc::new(nana_ui_core::LayoutStyle {
             background: Some([0.2, 0.2, 0.2, 1.0]),
             paint: nana_ui_core::PaintStyle {
-                background_image: Some(nana_ui_core::BackgroundImage::Gradient(
+                background_layers: vec![nana_ui_core::BackgroundImage::Gradient(
                     nana_ui_core::CssGradient::Linear(nana_ui_core::LinearGradient {
                         angle_deg: 90.0,
                         stops: vec![nana_ui_core::GradientStop {
@@ -9180,7 +9180,7 @@ fn css_mask_and_gradient_both_travel_on_quad() {
                             color: [1.0, 0.0, 0.0, 1.0],
                         }],
                     }),
-                )),
+                )],
                 mask: Some(nana_ui_core::MaskImage::Gradient(
                     nana_ui_core::CssGradient::Linear(nana_ui_core::LinearGradient {
                         angle_deg: 180.0,
@@ -9263,8 +9263,10 @@ fn img_content_image_and_two_background_layers_travel_on_quad() {
     painted.source_style = NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
             paint: nana_ui_core::PaintStyle {
-                background_image: Some(nana_ui_core::BackgroundImage::url("fg.png")),
-                background_layers: vec![nana_ui_core::BackgroundImage::url("bg.png")],
+                background_layers: vec![
+                    nana_ui_core::BackgroundImage::url("fg.png"),
+                    nana_ui_core::BackgroundImage::url("bg.png"),
+                ],
                 content_image: Some(nana_ui_core::BackgroundImage::url_with_fit(
                     "photo.png",
                     nana_ui_core::BackgroundImageFit::Contain,

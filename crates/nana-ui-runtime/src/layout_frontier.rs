@@ -231,7 +231,7 @@ impl LayoutFrontierSeed {
                 LayoutInvalidationSource::Runtime,
                 InvalidationReason::STYLE,
                 InvalidationKind::MEASURE.union(InvalidationKind::PLACEMENT),
-                nana_ui_core::LayoutFieldMask::ALL,
+                nana_ui_core::LayoutStyleChange::ALL,
                 LayoutDependencyFootprint::ALL,
             ),
         )

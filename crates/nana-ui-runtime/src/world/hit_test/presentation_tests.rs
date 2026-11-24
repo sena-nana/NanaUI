@@ -662,7 +662,7 @@ fn a_layout_width_sample_seeds_a_sizing_change_not_a_forced_subtree() {
     assert!(
         seed.invalidation
             .changed_inputs
-            .contains(nana_ui_core::LayoutFieldMask::SIZING)
+            .contains(nana_ui_core::LayoutStyleChange::SIZING)
     );
     assert!(
         !seed

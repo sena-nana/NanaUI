@@ -184,8 +184,14 @@ pub(super) fn quad_surface_from_style(
         presentation_masks: Vec::new(),
         background_material: style.paint.background_material.clone(),
         border_material: style.paint.border_material.clone(),
-        background_image: style.paint.background_image.clone(),
-        background_layers: style.paint.background_layers.clone(),
+        background_image: style.paint.background_layers.first().cloned(),
+        background_layers: style
+            .paint
+            .background_layers
+            .iter()
+            .skip(1)
+            .cloned()
+            .collect(),
         content_image: style.paint.content_image.clone(),
         mask: style.paint.mask.clone(),
         polygon_clip: style

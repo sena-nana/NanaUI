@@ -14,8 +14,6 @@
 
 use std::hash::{Hash, Hasher};
 
-use hashbrown::HashMap;
-
 /// A finite size in the intrinsic/used-size contract.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct UsedSize {
@@ -503,30 +501,10 @@ impl IntrinsicGeneration {
     }
 }
 
-/// Bounded cache size.  Both limits are enforced so one huge subtree cannot
-/// crowd out every small entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct IntrinsicCacheBudget {
-    pub max_entries: usize,
-    pub max_bytes: usize,
-}
-
-impl Default for IntrinsicCacheBudget {
-    fn default() -> Self {
-        Self {
-            max_entries: 4096,
-            max_bytes: 4 * 1024 * 1024,
-        }
-    }
-}
-
 /// Observable work counters for intrinsic measurement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct IntrinsicCacheCounters {
     pub intrinsic_measure_requests: usize,
-    pub cache_hits: usize,
-    pub cache_misses: usize,
-    pub full_subtrees: usize,
     pub intrinsic_measure_cache_hits: usize,
     pub intrinsic_measure_cache_misses: usize,
     pub intrinsic_measure_full_subtrees: usize,
@@ -544,31 +522,15 @@ impl IntrinsicCacheCounters {
         self.intrinsic_measure_requests = self
             .intrinsic_measure_requests
             .saturating_add(other.intrinsic_measure_requests);
-        self.cache_hits = self.cache_hits.saturating_add(other.cache_hits);
-        self.cache_misses = self.cache_misses.saturating_add(other.cache_misses);
-        self.full_subtrees = self.full_subtrees.saturating_add(other.full_subtrees);
-        // `cache_hits`/`cache_misses`/`full_subtrees` are compatibility names
-        // used by the per-pass layout adapter.  New producers fill the
-        // explicitly prefixed fields.  Prefer the canonical value when both
-        // are present so folding does not count one lookup twice.
-        self.intrinsic_measure_cache_hits =
-            self.intrinsic_measure_cache_hits
-                .saturating_add(prefer_canonical(
-                    other.intrinsic_measure_cache_hits,
-                    other.cache_hits,
-                ));
-        self.intrinsic_measure_cache_misses =
-            self.intrinsic_measure_cache_misses
-                .saturating_add(prefer_canonical(
-                    other.intrinsic_measure_cache_misses,
-                    other.cache_misses,
-                ));
-        self.intrinsic_measure_full_subtrees =
-            self.intrinsic_measure_full_subtrees
-                .saturating_add(prefer_canonical(
-                    other.intrinsic_measure_full_subtrees,
-                    other.full_subtrees,
-                ));
+        self.intrinsic_measure_cache_hits = self
+            .intrinsic_measure_cache_hits
+            .saturating_add(other.intrinsic_measure_cache_hits);
+        self.intrinsic_measure_cache_misses = self
+            .intrinsic_measure_cache_misses
+            .saturating_add(other.intrinsic_measure_cache_misses);
+        self.intrinsic_measure_full_subtrees = self
+            .intrinsic_measure_full_subtrees
+            .saturating_add(other.intrinsic_measure_full_subtrees);
         self.generation_bumps = self.generation_bumps.saturating_add(other.generation_bumps);
         self.baseline_queries = self.baseline_queries.saturating_add(other.baseline_queries);
         self.cross_context_hits = self
@@ -583,385 +545,6 @@ impl IntrinsicCacheCounters {
     }
 }
 
-struct Entry {
-    metrics: IntrinsicMetrics,
-    global_generation: u64,
-    node_generation: u64,
-    context: Option<FormattingContextId>,
-    bytes: usize,
-    previous: Option<IntrinsicCacheKey>,
-    next: Option<IntrinsicCacheKey>,
-}
-
-/// LRU intrinsic cache.  `get` accepts an optional context solely to report
-/// cross-context reuse; omitting it is useful for hosts without context IDs.
-pub struct IntrinsicCache {
-    entries: HashMap<IntrinsicCacheKey, Entry>,
-    /// Intrusive LRU links keep lookup and recency updates O(1).
-    head: Option<IntrinsicCacheKey>,
-    tail: Option<IntrinsicCacheKey>,
-    budget: IntrinsicCacheBudget,
-    generation: IntrinsicGeneration,
-    node_generations: HashMap<u64, u64>,
-    bytes: usize,
-    counters: IntrinsicCacheCounters,
-}
-
-impl std::fmt::Debug for IntrinsicCache {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("IntrinsicCache")
-            .field("entries", &self.entries.len())
-            .field("bytes", &self.bytes())
-            .field("generation", &self.generation.get())
-            .finish()
-    }
-}
-
-impl Default for IntrinsicCache {
-    fn default() -> Self {
-        Self::new(IntrinsicCacheBudget::default())
-    }
-}
-
-impl IntrinsicCache {
-    #[must_use]
-    pub fn new(budget: IntrinsicCacheBudget) -> Self {
-        Self {
-            entries: HashMap::new(),
-            head: None,
-            tail: None,
-            budget,
-            generation: IntrinsicGeneration::default(),
-            node_generations: HashMap::new(),
-            bytes: 0,
-            counters: IntrinsicCacheCounters::default(),
-        }
-    }
-
-    #[must_use]
-    pub fn generation(&self) -> IntrinsicGeneration {
-        self.generation
-    }
-
-    #[must_use]
-    pub fn node_generation(&self, node: u64) -> u64 {
-        self.node_generations.get(&node).copied().unwrap_or(0)
-    }
-
-    /// Invalidates all entries and releases stale storage immediately. This
-    /// keeps byte/entry gauges honest and prevents an old generation from
-    /// consuming the new budget.
-    pub fn invalidate(&mut self, reason: InvalidationReason) -> bool {
-        let changed = self.generation.invalidate(reason);
-        if changed {
-            self.counters.generation_bumps = self.counters.generation_bumps.saturating_add(1);
-            self.entries.clear();
-            self.head = None;
-            self.tail = None;
-            self.bytes = 0;
-        }
-        changed
-    }
-
-    /// Invalidate one node's intrinsic facts without flushing siblings.  This
-    /// is the normal path for child/content edits; a parent can then decide
-    /// whether its own metrics need recomputation.  Paint-only reasons are a
-    /// no-op by contract.
-    pub fn invalidate_node(&mut self, node: u64, reason: InvalidationReason) -> bool {
-        if !reason.affects_intrinsic() {
-            return false;
-        }
-        let generation = self.node_generations.entry(node).or_default();
-        let next_generation = generation.saturating_add(1).max(1);
-        if next_generation == *generation {
-            return false;
-        }
-        *generation = next_generation;
-        let keys: Vec<_> = self
-            .entries
-            .keys()
-            .copied()
-            .filter(|key| key.content == node)
-            .collect();
-        for key in keys {
-            self.remove_entry(&key);
-        }
-        self.counters.generation_bumps = self.counters.generation_bumps.saturating_add(1);
-        true
-    }
-
-    /// Marks that a full-subtree walk was required by the caller.
-    pub fn record_full_subtree(&mut self) {
-        self.counters.full_subtrees = self.counters.full_subtrees.saturating_add(1);
-        self.counters.intrinsic_measure_full_subtrees = self
-            .counters
-            .intrinsic_measure_full_subtrees
-            .saturating_add(1);
-    }
-
-    /// Looks up metrics under the current generation.
-    pub fn get(
-        &mut self,
-        key: &IntrinsicCacheKey,
-        context: Option<FormattingContextId>,
-    ) -> Option<IntrinsicMetrics> {
-        self.lookup_with_accounting(key, context, true)
-    }
-
-    fn lookup_with_accounting(
-        &mut self,
-        key: &IntrinsicCacheKey,
-        context: Option<FormattingContextId>,
-        account_measure: bool,
-    ) -> Option<IntrinsicMetrics> {
-        // Callers may construct the public key struct directly instead of
-        // using `IntrinsicCacheKey::new`; normalize here as well so malformed
-        // float constraints cannot create an unreachable duplicate entry.
-        let key = IntrinsicCacheKey {
-            constraints: key.constraints.normalized(),
-            ..*key
-        };
-        if account_measure {
-            self.counters.intrinsic_measure_requests =
-                self.counters.intrinsic_measure_requests.saturating_add(1);
-        }
-        let Some(entry) = self.entries.get(&key) else {
-            if account_measure {
-                self.counters.cache_misses = self.counters.cache_misses.saturating_add(1);
-                self.counters.intrinsic_measure_cache_misses = self
-                    .counters
-                    .intrinsic_measure_cache_misses
-                    .saturating_add(1);
-                if context.is_some() {
-                    self.counters.cross_context_misses =
-                        self.counters.cross_context_misses.saturating_add(1);
-                }
-            }
-            return None;
-        };
-        if entry.global_generation != self.generation.get()
-            || entry.node_generation != self.node_generation(key.content)
-        {
-            if account_measure {
-                self.counters.cache_misses = self.counters.cache_misses.saturating_add(1);
-                self.counters.intrinsic_measure_cache_misses = self
-                    .counters
-                    .intrinsic_measure_cache_misses
-                    .saturating_add(1);
-                if context.is_some() {
-                    self.counters.cross_context_misses =
-                        self.counters.cross_context_misses.saturating_add(1);
-                }
-            }
-            return None;
-        }
-        let cross = context.is_some() && entry.context.is_some() && context != entry.context;
-        let metrics = entry.metrics;
-        self.touch(&key);
-        if account_measure {
-            self.counters.cache_hits = self.counters.cache_hits.saturating_add(1);
-            self.counters.intrinsic_measure_cache_hits =
-                self.counters.intrinsic_measure_cache_hits.saturating_add(1);
-            if cross {
-                self.counters.cross_context_hits =
-                    self.counters.cross_context_hits.saturating_add(1);
-            }
-        }
-        Some(metrics)
-    }
-
-    /// Alias useful at call sites that want to make the intrinsic query
-    /// explicit.
-    pub fn lookup(
-        &mut self,
-        key: &IntrinsicCacheKey,
-        context: Option<FormattingContextId>,
-    ) -> Option<IntrinsicMetrics> {
-        self.get(key, context)
-    }
-
-    /// Shared baseline query.  It counts separately while reusing the same
-    /// generation-checked entry as ordinary intrinsic metrics.
-    pub fn baseline(
-        &mut self,
-        key: &IntrinsicCacheKey,
-        context: Option<FormattingContextId>,
-        which: Baseline,
-    ) -> Option<f32> {
-        self.counters.baseline_queries = self.counters.baseline_queries.saturating_add(1);
-        // Baseline lookup is observable work in its own right. Keep it out of
-        // intrinsic measure hit/miss counters so a placement pass does not
-        // report one measure request for every baseline alignment query.
-        self.lookup_with_accounting(key, context, false)
-            .and_then(|metrics| match which {
-                Baseline::First => metrics.first_baseline,
-                Baseline::Last => metrics.last_baseline,
-            })
-    }
-
-    /// Inserts metrics.  A result from another generation is normalized to
-    /// the cache's current generation; callers generally leave `generation`
-    /// at the value returned by [`Self::generation`].
-    pub fn insert(
-        &mut self,
-        key: IntrinsicCacheKey,
-        mut metrics: IntrinsicMetrics,
-        context: Option<FormattingContextId>,
-    ) -> usize {
-        let key = IntrinsicCacheKey {
-            constraints: key.constraints.normalized(),
-            ..key
-        };
-        metrics = metrics.normalized();
-        metrics.generation = self.generation.get().max(self.node_generation(key.content));
-        let bytes = entry_bytes();
-        if self.budget.max_entries == 0 || bytes > self.budget.max_bytes {
-            return 0;
-        }
-        self.remove_entry(&key);
-        let mut evicted = 0;
-        while self.entries.len().saturating_add(1) > self.budget.max_entries
-            || self.bytes.saturating_add(bytes) > self.budget.max_bytes
-        {
-            let Some(oldest) = self.head else {
-                break;
-            };
-            if self.remove_entry(&oldest).is_some() {
-                evicted += 1;
-            }
-        }
-        self.entries.insert(
-            key,
-            Entry {
-                metrics,
-                global_generation: self.generation.get(),
-                node_generation: self.node_generation(key.content),
-                context,
-                bytes,
-                previous: self.tail,
-                next: None,
-            },
-        );
-        if let Some(tail) = self.tail {
-            self.entries.get_mut(&tail).expect("tail entry").next = Some(key);
-        } else {
-            self.head = Some(key);
-        }
-        self.tail = Some(key);
-        self.bytes = self.bytes.saturating_add(bytes);
-        self.counters.evictions = self.counters.evictions.saturating_add(evicted);
-        evicted
-    }
-
-    pub fn set_budget(&mut self, budget: IntrinsicCacheBudget) -> usize {
-        self.budget = budget;
-        let mut evicted = 0;
-        while (self.entries.len() > budget.max_entries || self.bytes() > budget.max_bytes)
-            && self.evict_oldest()
-        {
-            evicted += 1;
-        }
-        self.counters.evictions = self.counters.evictions.saturating_add(evicted);
-        evicted
-    }
-
-    #[must_use]
-    pub fn budget(&self) -> IntrinsicCacheBudget {
-        self.budget
-    }
-
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-
-    #[must_use]
-    pub fn bytes(&self) -> usize {
-        self.bytes
-    }
-
-    #[must_use]
-    pub fn counters(&self) -> IntrinsicCacheCounters {
-        let mut counters = self.counters;
-        counters.entries = self.len();
-        counters.bytes = self.bytes();
-        counters
-    }
-
-    pub fn reset_counters(&mut self) {
-        self.counters = IntrinsicCacheCounters::default();
-    }
-
-    fn touch(&mut self, key: &IntrinsicCacheKey) {
-        if self.tail == Some(*key) {
-            return;
-        }
-        let Some((previous, next)) = self
-            .entries
-            .get(key)
-            .map(|entry| (entry.previous, entry.next))
-        else {
-            return;
-        };
-        if let Some(previous) = previous {
-            self.entries
-                .get_mut(&previous)
-                .expect("previous entry")
-                .next = next;
-        } else {
-            self.head = next;
-        }
-        if let Some(next) = next {
-            self.entries.get_mut(&next).expect("next entry").previous = previous;
-        }
-        let old_tail = self.tail;
-        if let Some(old_tail) = old_tail {
-            self.entries.get_mut(&old_tail).expect("tail entry").next = Some(*key);
-        }
-        if let Some(entry) = self.entries.get_mut(key) {
-            entry.previous = old_tail;
-            entry.next = None;
-        }
-        self.tail = Some(*key);
-        if self.head.is_none() {
-            self.head = Some(*key);
-        }
-    }
-
-    fn evict_oldest(&mut self) -> bool {
-        self.head
-            .is_some_and(|oldest| self.remove_entry(&oldest).is_some())
-    }
-
-    fn remove_entry(&mut self, key: &IntrinsicCacheKey) -> Option<Entry> {
-        let (previous, next) = self
-            .entries
-            .get(key)
-            .map(|entry| (entry.previous, entry.next))?;
-        if let Some(previous) = previous {
-            self.entries
-                .get_mut(&previous)
-                .expect("previous entry")
-                .next = next;
-        } else {
-            self.head = next;
-        }
-        if let Some(next) = next {
-            self.entries.get_mut(&next).expect("next entry").previous = previous;
-        } else {
-            self.tail = previous;
-        }
-        let entry = self.entries.remove(key)?;
-        self.bytes = self.bytes.saturating_sub(entry.bytes);
-        Some(entry)
-    }
-}
-
 /// Which shared baseline to query.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Baseline {
@@ -969,28 +552,12 @@ pub enum Baseline {
     Last,
 }
 
-/// One layout pass's intrinsic facts: what [`IntrinsicCache`] answers for a
-/// pass, laid out as an arena. A fact's key names its node (`content` is the
-/// node id), so the facts of one node chain from that node's slot in a
-/// table indexed by id, newest first, and the facts themselves sit one
-/// after another in the order they were measured. A lookup reads one slot
-/// and walks a node's few variants; nothing is hashed and no recency list
-/// is kept up, where the cache touched an entry across the table on every
-/// insert and hit.
-///
-/// Counts as the cache counts: a lookup is a measure request that hits or
-/// misses (cross-context when the caller names a context and the fact was
-/// measured in another), a baseline query is not; entries and bytes are the
-/// cache's per entry. A pass holds every fact it measures: the cache's pass
-/// budget was four variants a node, which no pass came near, so nothing is
-/// evicted.
-///
-/// A fact is also what the pass hands the retained cache: the latest
-/// metrics recorded for its key ([`Self::record`]), in measuring order. A
-/// plain leaf records its facts without making them visible to lookups,
-/// as it did when they bypassed the cache.
+/// One layout pass's intrinsic facts, laid out as an arena. A fact's key names
+/// its node (`content` is the node id), so the facts of one node chain from
+/// that node's slot in a table indexed by id, newest first, and the facts
+/// themselves sit one after another in the order they were measured.
 #[derive(Default)]
-pub(crate) struct PassIntrinsicFacts {
+pub struct PassIntrinsicFacts {
     facts: Vec<PassFact>,
     /// Facts lookups see: the cache's entries.
     visible: usize,
@@ -1033,7 +600,7 @@ const NOT_RECORDED: u32 = u32::MAX;
 const RECORDED_AS_HELD: u32 = u32::MAX - 1;
 
 impl PassIntrinsicFacts {
-    pub(crate) fn with_capacity(capacity: usize) -> Self {
+    pub fn with_capacity(capacity: usize) -> Self {
         Self {
             facts: Vec::with_capacity(capacity),
             ..Self::default()
@@ -1177,7 +744,7 @@ impl PassIntrinsicFacts {
 
     /// Make `metrics` what lookups of `key` answer ([`IntrinsicCache::insert`]):
     /// a fact measured again replaces the one it held.
-    pub(crate) fn insert(
+    pub fn insert(
         &mut self,
         key: IntrinsicCacheKey,
         mut metrics: IntrinsicMetrics,
@@ -1225,12 +792,50 @@ impl PassIntrinsicFacts {
     }
 
     /// Every key's latest recording, in measuring order.
+    #[cfg(test)]
     pub(crate) fn recorded(
         &self,
     ) -> impl Iterator<Item = (IntrinsicCacheKey, IntrinsicMetrics)> + '_ {
         self.facts
             .iter()
             .filter_map(|fact| Some((fact.key, self.recording(fact)?)))
+    }
+
+    pub(crate) fn has_recorded(&self, id: crate::StableNodeId) -> bool {
+        let mut index = self.newest.get(&id).copied().unwrap_or(NO_FACT);
+        while index != NO_FACT {
+            let fact = &self.facts[index as usize];
+            if fact.recorded != NOT_RECORDED {
+                return true;
+            }
+            index = fact.older;
+        }
+        false
+    }
+
+    pub(crate) fn for_each_node_recorded(
+        &self,
+        mut visit: impl FnMut(crate::StableNodeId, NodeRecordedFacts<'_>),
+    ) {
+        for (id, &head) in self.newest.iter() {
+            let iter = NodeRecordedFacts {
+                facts: &self.facts,
+                records: &self.records,
+                next: head,
+            };
+            visit(id, iter);
+        }
+    }
+
+    pub(crate) fn record_full_subtree(&mut self) {
+        self.counters.intrinsic_measure_full_subtrees = self
+            .counters
+            .intrinsic_measure_full_subtrees
+            .saturating_add(1);
+    }
+
+    pub(crate) fn record_baseline_miss(&mut self) {
+        self.counters.baseline_queries = self.counters.baseline_queries.saturating_add(1);
     }
 
     fn lookup(
@@ -1253,7 +858,6 @@ impl PassIntrinsicFacts {
                 counters.intrinsic_measure_requests.saturating_add(1);
             match found {
                 Some(fact) => {
-                    counters.cache_hits = counters.cache_hits.saturating_add(1);
                     counters.intrinsic_measure_cache_hits =
                         counters.intrinsic_measure_cache_hits.saturating_add(1);
                     if context.is_some() && fact.context.is_some() && context != fact.context {
@@ -1261,7 +865,6 @@ impl PassIntrinsicFacts {
                     }
                 }
                 None => {
-                    counters.cache_misses = counters.cache_misses.saturating_add(1);
                     counters.intrinsic_measure_cache_misses =
                         counters.intrinsic_measure_cache_misses.saturating_add(1);
                     if context.is_some() {
@@ -1274,8 +877,7 @@ impl PassIntrinsicFacts {
         found.map(|fact| fact.metrics)
     }
 
-    /// [`IntrinsicCache::get`].
-    pub(crate) fn get(
+    pub fn get(
         &mut self,
         key: &IntrinsicCacheKey,
         context: Option<FormattingContextId>,
@@ -1283,8 +885,7 @@ impl PassIntrinsicFacts {
         self.lookup(key, context, true)
     }
 
-    /// [`IntrinsicCache::baseline`].
-    pub(crate) fn baseline(
+    pub fn baseline(
         &mut self,
         key: &IntrinsicCacheKey,
         context: Option<FormattingContextId>,
@@ -1298,17 +899,37 @@ impl PassIntrinsicFacts {
             })
     }
 
-    /// [`IntrinsicCache::counters`].
-    pub(crate) fn counters(&self) -> IntrinsicCacheCounters {
+    pub fn counters(&self) -> IntrinsicCacheCounters {
         let mut counters = self.counters;
         counters.entries = self.visible;
-        counters.bytes = self.visible.saturating_mul(entry_bytes());
+        counters.bytes = self.visible.saturating_mul(std::mem::size_of::<PassFact>());
         counters
     }
 }
 
-const fn entry_bytes() -> usize {
-    std::mem::size_of::<IntrinsicCacheKey>() + std::mem::size_of::<Entry>()
+#[derive(Clone)]
+pub(crate) struct NodeRecordedFacts<'a> {
+    facts: &'a [PassFact],
+    records: &'a [IntrinsicMetrics],
+    next: u32,
+}
+
+impl Iterator for NodeRecordedFacts<'_> {
+    type Item = (IntrinsicCacheKey, IntrinsicMetrics);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.next != NO_FACT {
+            let fact = &self.facts[self.next as usize];
+            self.next = fact.older;
+            let metrics = match fact.recorded {
+                NOT_RECORDED => continue,
+                RECORDED_AS_HELD => fact.metrics,
+                aside => self.records[aside as usize],
+            };
+            return Some((fact.key, metrics));
+        }
+        None
+    }
 }
 
 fn finite(value: f32) -> f32 {
@@ -1317,14 +938,6 @@ fn finite(value: f32) -> f32 {
 
 fn nonnegative(value: f32) -> f32 {
     finite(value).max(0.0)
-}
-
-fn prefer_canonical(canonical: usize, compatibility: usize) -> usize {
-    if canonical != 0 {
-        canonical
-    } else {
-        compatibility
-    }
 }
 
 #[cfg(test)]
@@ -1357,37 +970,14 @@ mod tests {
     }
 
     #[test]
-    fn cross_context_lookup_reuses_entry_and_baselines() {
-        let mut cache = IntrinsicCache::new(IntrinsicCacheBudget::default());
-        let key = IntrinsicCacheKey::new(7, 9, ConstraintClass::Unconstrained);
-        cache.insert(key, metrics(), Some(FormattingContextId::new(1)));
-        assert_eq!(
-            cache.get(&key, Some(FormattingContextId::new(2))),
-            Some(metrics().with_generation(0))
-        );
-        assert_eq!(
-            cache.baseline(&key, Some(FormattingContextId::new(3)), Baseline::Last),
-            Some(18.0)
-        );
-        let counters = cache.counters();
-        assert_eq!(counters.cache_hits, 1);
-        // The baseline query shares the entry but is accounted separately
-        // from intrinsic measure hits.
-        assert_eq!(counters.cross_context_hits, 1);
-        assert_eq!(counters.baseline_queries, 1);
-        assert_eq!(counters.intrinsic_measure_requests, 1);
-    }
-
-    #[test]
     fn only_geometry_invalidations_bump_generation() {
-        let mut cache = IntrinsicCache::default();
-        assert!(!cache.invalidate(InvalidationReason::Paint));
-        assert!(!cache.invalidate(InvalidationReason::Opacity));
-        assert!(!cache.invalidate(InvalidationReason::Transform));
-        assert_eq!(cache.generation().get(), 0);
-        assert!(cache.invalidate(InvalidationReason::ChildMetrics));
-        assert_eq!(cache.generation().get(), 1);
-        assert_eq!(cache.counters().generation_bumps, 1);
+        let mut generation = IntrinsicGeneration::default();
+        assert!(!generation.invalidate(InvalidationReason::Paint));
+        assert!(!generation.invalidate(InvalidationReason::Opacity));
+        assert!(!generation.invalidate(InvalidationReason::Transform));
+        assert_eq!(generation.get(), 0);
+        assert!(generation.invalidate(InvalidationReason::ChildMetrics));
+        assert_eq!(generation.get(), 1);
     }
 
     #[test]
@@ -1395,89 +985,25 @@ mod tests {
         let mut generation = IntrinsicGeneration::new(u64::MAX);
         assert!(!generation.invalidate(InvalidationReason::Content));
         assert_eq!(generation.get(), u64::MAX);
-
-        let mut cache = IntrinsicCache::default();
-        cache.node_generations.insert(9, u64::MAX);
-        assert!(!cache.invalidate_node(9, InvalidationReason::Content));
-        assert_eq!(cache.counters().generation_bumps, 0);
     }
 
     #[test]
-    fn stale_entries_miss_after_generation_bump_and_budget_evicts() {
-        let budget = IntrinsicCacheBudget {
-            max_entries: 1,
-            max_bytes: usize::MAX,
-        };
-        let mut cache = IntrinsicCache::new(budget);
-        let first = IntrinsicCacheKey::new(1, 1, ConstraintClass::Unconstrained);
-        let second = IntrinsicCacheKey::new(2, 1, ConstraintClass::Unconstrained);
-        cache.insert(first, metrics(), None);
-        cache.insert(second, metrics(), None);
-        assert_eq!(cache.len(), 1);
-        assert_eq!(cache.counters().evictions, 1);
-        assert!(cache.invalidate(InvalidationReason::Content));
-        assert!(cache.get(&second, None).is_none());
-        assert_eq!(cache.counters().cache_misses, 1);
-    }
-
-    #[test]
-    fn hit_promotes_entry_before_the_next_lru_eviction() {
-        let budget = IntrinsicCacheBudget {
-            max_entries: 2,
-            max_bytes: usize::MAX,
-        };
-        let mut cache = IntrinsicCache::new(budget);
-        let first = IntrinsicCacheKey::new(1, 1, ConstraintClass::Unconstrained);
-        let second = IntrinsicCacheKey::new(2, 1, ConstraintClass::Unconstrained);
-        let third = IntrinsicCacheKey::new(3, 1, ConstraintClass::Unconstrained);
-        cache.insert(first, metrics(), None);
-        cache.insert(second, metrics(), None);
-        assert!(cache.get(&first, None).is_some());
-        cache.insert(third, metrics(), None);
-        assert!(cache.get(&first, None).is_some());
-        assert!(cache.get(&second, None).is_none());
-        assert!(cache.get(&third, None).is_some());
-    }
-
-    #[test]
-    fn counter_aliases_fold_into_required_names_once() {
+    fn counters_accumulate_canonical_fields() {
         let mut total = IntrinsicCacheCounters::default();
         total.accumulate(IntrinsicCacheCounters {
-            cache_hits: 2,
-            cache_misses: 1,
-            full_subtrees: 3,
+            intrinsic_measure_cache_hits: 2,
+            intrinsic_measure_cache_misses: 1,
+            intrinsic_measure_full_subtrees: 3,
             ..IntrinsicCacheCounters::default()
         });
         assert_eq!(total.intrinsic_measure_cache_hits, 2);
         assert_eq!(total.intrinsic_measure_cache_misses, 1);
         assert_eq!(total.intrinsic_measure_full_subtrees, 3);
         total.accumulate(IntrinsicCacheCounters {
-            cache_hits: 99,
             intrinsic_measure_cache_hits: 4,
             ..IntrinsicCacheCounters::default()
         });
         assert_eq!(total.intrinsic_measure_cache_hits, 6);
-    }
-
-    #[test]
-    fn byte_budget_tracks_replacements_and_evictions() {
-        let bytes_per_entry = entry_bytes();
-        let mut cache = IntrinsicCache::new(IntrinsicCacheBudget {
-            max_entries: 4,
-            max_bytes: bytes_per_entry * 2,
-        });
-        let first = IntrinsicCacheKey::new(1, 1, ConstraintClass::Unconstrained);
-        let second = IntrinsicCacheKey::new(2, 1, ConstraintClass::Unconstrained);
-        let third = IntrinsicCacheKey::new(3, 1, ConstraintClass::Unconstrained);
-        cache.insert(first, metrics(), None);
-        cache.insert(second, metrics(), None);
-        assert_eq!(cache.bytes(), bytes_per_entry * 2);
-        // Replacement reuses the same slot and does not evict another key.
-        cache.insert(first, metrics(), None);
-        assert_eq!(cache.bytes(), bytes_per_entry * 2);
-        cache.insert(third, metrics(), None);
-        assert_eq!(cache.bytes(), bytes_per_entry * 2);
-        assert_eq!(cache.len(), 2);
     }
 
     /// A pass's facts answer and hand over what a fact holding what lookups

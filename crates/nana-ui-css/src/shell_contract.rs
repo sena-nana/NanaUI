@@ -156,7 +156,7 @@ pub fn apply_class_layout_hints(layout: &mut LayoutStyle, class_names: &[String]
                 layout.min_width = Some(layout.min_width.unwrap_or(LengthSpec::Px(0.0)));
                 // Mirrors nana-controls.css label truncation.
                 layout.text_overflow_ellipsis = true;
-                layout.white_space_nowrap = true;
+                layout.white_space = nana_ui_core::WhiteSpaceSpec::Nowrap;
                 if layout.overflow_x == OverflowSpec::Visible {
                     layout.overflow_x = OverflowSpec::Hidden;
                 }
@@ -168,7 +168,7 @@ pub fn apply_class_layout_hints(layout: &mut LayoutStyle, class_names: &[String]
                 layout.allow_shrink = true;
                 layout.min_width = Some(layout.min_width.unwrap_or(LengthSpec::Px(0.0)));
                 layout.text_overflow_ellipsis = true;
-                layout.white_space_nowrap = true;
+                layout.white_space = nana_ui_core::WhiteSpaceSpec::Nowrap;
                 if layout.overflow_x == OverflowSpec::Visible {
                     layout.overflow_x = OverflowSpec::Hidden;
                 }

@@ -761,7 +761,7 @@ fn label_slot_style(hidden: bool, on_line: bool, column: bool) -> NodeStyle {
     }
     layout.flex_shrink = Some(1.0);
     layout.min_width = Some(LengthSpec::Px(0.0));
-    layout.white_space_nowrap = true;
+    layout.white_space = nana_ui_core::WhiteSpaceSpec::Nowrap;
     layout.text_overflow_ellipsis = true;
     layout.hidden = hidden;
     style
@@ -5120,7 +5120,10 @@ mod tests {
             Some(nana_ui_core::type_scale::MEDIUM)
         );
         assert_eq!(label_style.foreground, Some(SemanticColorRole::Text));
-        assert!(label_style.layout.white_space_nowrap);
+        assert_eq!(
+            label_style.layout.white_space,
+            nana_ui_core::WhiteSpaceSpec::Nowrap
+        );
         assert!(label_style.layout.text_overflow_ellipsis);
         assert_eq!(label_style.layout.width, Some(LengthSpec::Fill));
 

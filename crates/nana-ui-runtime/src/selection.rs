@@ -722,7 +722,7 @@ impl SegmentedOption {
             layout.width = None;
             layout.flex_grow = None;
             layout.flex_shrink = None;
-            layout.white_space_nowrap = false;
+            layout.white_space = nana_ui_core::WhiteSpaceSpec::Normal;
             layout.text_ext.overflow_wrap = Some(nana_ui_core::OverflowWrapSpec::Anywhere);
         }
     }
@@ -857,7 +857,7 @@ fn segmented_option_style(size: ControlSize, chrome: SelectionChrome, fill: bool
         font_size: Some(size.text_size()),
         font_weight: None,
         line_height: Some(LineHeightSpec::Absolute(size.line_height())),
-        white_space_nowrap: true,
+        white_space: nana_ui_core::WhiteSpaceSpec::Nowrap,
         align_self: Some(if radio {
             AlignSpec::Stretch
         } else {
@@ -1166,7 +1166,10 @@ mod tests {
             let option = SegmentedOption::new("Preview").size(size);
             assert!(option.style.layout.height.is_none());
             assert_eq!(option.style.layout.font_size, Some(size.text_size()));
-            assert!(option.style.layout.white_space_nowrap);
+            assert_eq!(
+                option.style.layout.white_space,
+                nana_ui_core::WhiteSpaceSpec::Nowrap
+            );
             assert!(option.style.layout.border_radius.is_none());
             assert_eq!(
                 option.style.interaction.selected.background,

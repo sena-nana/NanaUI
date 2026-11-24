@@ -101,9 +101,7 @@ impl PaintStyle {
     set_opt! {
         visibility: VisibilitySpec,
         border_radii: [LengthSpec; 4],
-        text_shadow: TextShadowSpec,
         border_image: BorderImageSpec,
-        background_image: BackgroundImage,
         content_image: BackgroundImage,
         skipped_replaced: String,
         object_fit: BackgroundImageFit,
@@ -116,6 +114,7 @@ impl PaintStyle {
 
     set_val! {
         box_shadows: Vec<BoxShadowSpec>,
+        text_shadows: Vec<TextShadowSpec>,
         outline: OutlineSpec,
         mix_blend: MixBlendMode,
         wide_filter_blur: bool,
@@ -260,7 +259,6 @@ impl LayoutStyle {
         overflow_y: OverflowSpec,
         text_overflow_ellipsis: bool,
         inert: bool,
-        white_space_nowrap: bool,
         white_space: WhiteSpaceSpec,
         text_align: TextAlignSpec,
         hidden: bool,
@@ -435,7 +433,6 @@ mod tests {
             .text_overflow_ellipsis(true)
             .line_clamp(2)
             .pointer_events(PointerEventsSpec::None)
-            .white_space_nowrap(true)
             .white_space(WhiteSpaceSpec::Pre)
             .aspect_ratio(1.5)
             .text_align(TextAlignSpec::Center)
@@ -483,7 +480,7 @@ mod tests {
                         inset: false,
                     }])
                     .mix_blend(MixBlendMode::Multiply)
-                    .background_image(BackgroundImage::url("tile.png"))
+                    .background_layers(vec![BackgroundImage::url("tile.png")])
                     .object_fit(BackgroundImageFit::Cover)
                     .clip_path(ClipPath::Inset(ClipInset {
                         top: LengthSpec::Px(1.0),
@@ -587,7 +584,7 @@ mod tests {
                 slice: [BorderImageSlice::Number(10.0); 4],
                 fill: true,
             })
-            .background_image(BackgroundImage::url("bg.png"))
+            .background_layers(vec![BackgroundImage::url("bg.png")])
             .content_image(BackgroundImage::url("img.png"))
             .object_fit(BackgroundImageFit::Contain)
             .clip_path(ClipPath::Inset(ClipInset {

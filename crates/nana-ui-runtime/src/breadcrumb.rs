@@ -116,7 +116,7 @@ impl BreadcrumbSegment {
 fn segment_style() -> NodeStyle {
     let mut style = NodeStyle::default();
     let layout = Arc::make_mut(&mut style.layout);
-    layout.white_space_nowrap = true;
+    layout.white_space = nana_ui_core::WhiteSpaceSpec::Nowrap;
     layout.text_overflow_ellipsis = true;
     layout.min_width = Some(LengthSpec::Px(0.0));
     layout.flex_shrink = Some(1.0);

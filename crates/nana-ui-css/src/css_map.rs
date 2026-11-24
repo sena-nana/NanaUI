@@ -2717,23 +2717,18 @@ impl LayoutStyleCss for LayoutStyle {
                 self.text_overflow_ellipsis = false;
             }
             "white-space" if val.eq_ignore_ascii_case("nowrap") => {
-                self.white_space_nowrap = true;
                 self.white_space = WhiteSpaceSpec::Nowrap;
             }
             "white-space" if val.eq_ignore_ascii_case("pre") => {
-                self.white_space_nowrap = false;
                 self.white_space = WhiteSpaceSpec::Pre;
             }
             "white-space" if val.eq_ignore_ascii_case("pre-wrap") => {
-                self.white_space_nowrap = false;
                 self.white_space = WhiteSpaceSpec::PreWrap;
             }
             "white-space" if val.eq_ignore_ascii_case("pre-line") => {
-                self.white_space_nowrap = false;
                 self.white_space = WhiteSpaceSpec::PreLine;
             }
             "white-space" if matches!(val.to_ascii_lowercase().as_str(), "normal" | "wrap") => {
-                self.white_space_nowrap = false;
                 self.white_space = WhiteSpaceSpec::Normal;
             }
             "word-break" => {
@@ -2953,12 +2948,12 @@ impl LayoutStyleCss for LayoutStyle {
                 }
             }
             "cursor" => {
-                if let Some(cursor) = CursorSpec::parse(val) {
+                if let Some(cursor) = parse_cursor_spec(val) {
                     self.cursor = Some(cursor);
                 }
             }
             "user-select" | "-webkit-user-select" => {
-                if let Some(user_select) = UserSelectSpec::parse(val) {
+                if let Some(user_select) = parse_user_select_spec(val) {
                     self.user_select = Some(user_select);
                 }
             }
@@ -5501,11 +5496,55 @@ fn apply_border_color_shorthand(style: &mut LayoutStyle, val: &str) {
     style.paint_colors.border_left = Some(left.1);
 }
 
+fn parse_cursor_spec(input: &str) -> Option<CursorSpec> {
+    Some(match input.trim().to_ascii_lowercase().as_str() {
+        "default" => CursorSpec::Default,
+        "pointer" => CursorSpec::Pointer,
+        "text" => CursorSpec::Text,
+        "move" => CursorSpec::Move,
+        "grab" => CursorSpec::Grab,
+        "grabbing" => CursorSpec::Grabbing,
+        "not-allowed" => CursorSpec::NotAllowed,
+        "crosshair" => CursorSpec::Crosshair,
+        "ew-resize" => CursorSpec::EwResize,
+        "ns-resize" => CursorSpec::NsResize,
+        "help" => CursorSpec::Help,
+        "wait" => CursorSpec::Wait,
+        "progress" => CursorSpec::Progress,
+        "zoom-in" => CursorSpec::ZoomIn,
+        "zoom-out" => CursorSpec::ZoomOut,
+        "none" => CursorSpec::None,
+        _ => return None,
+    })
+}
+
+fn parse_user_select_spec(input: &str) -> Option<UserSelectSpec> {
+    Some(match input.trim().to_ascii_lowercase().as_str() {
+        "auto" => UserSelectSpec::Auto,
+        "text" => UserSelectSpec::Text,
+        "all" => UserSelectSpec::All,
+        "contain" => UserSelectSpec::Contain,
+        "none" => UserSelectSpec::None,
+        _ => return None,
+    })
+}
+
+fn parse_border_style(input: &str) -> Option<BorderStyle> {
+    match input.trim().to_ascii_lowercase().as_str() {
+        "none" | "hidden" => Some(BorderStyle::None),
+        "solid" => Some(BorderStyle::Solid),
+        "dashed" => Some(BorderStyle::Dashed),
+        "dotted" => Some(BorderStyle::Dotted),
+        "double" | "groove" | "ridge" | "inset" | "outset" => Some(BorderStyle::Unsupported),
+        _ => None,
+    }
+}
+
 fn apply_border_style_shorthand(style: &mut LayoutStyle, val: &str) {
     let parts = split_css_space_tokens(val);
     let Some(parsed) = parts
         .iter()
-        .map(|part| BorderStyle::parse(part))
+        .map(|part| parse_border_style(part))
         .collect::<Option<Vec<BorderStyle>>>()
     else {
         return;
@@ -5521,7 +5560,7 @@ fn apply_border_style_shorthand(style: &mut LayoutStyle, val: &str) {
 }
 
 fn apply_border_side_style(style: &mut LayoutStyle, val: &str, side: usize) {
-    let Some(parsed) = BorderStyle::parse(val) else {
+    let Some(parsed) = parse_border_style(val) else {
         return;
     };
     match side {
@@ -5548,7 +5587,7 @@ fn apply_border_shorthand(style: &mut LayoutStyle, val: &str, side: Option<usize
     let mut parsed_style = None;
     let mut color_pair = None;
     for part in split_css_space_tokens(trimmed) {
-        if let Some(s) = BorderStyle::parse(&part) {
+        if let Some(s) = parse_border_style(&part) {
             parsed_style = Some(s);
         } else if let Some(v) = parse_css_length_px(&part, None) {
             width = Some(v.max(0.0));
@@ -8390,14 +8429,10 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         let layers = &layout.paint.text_shadows;
         assert_eq!(layers.len(), 3);
         assert_eq!(layers[1].blur_radius, 8.0);
-        assert_eq!(
-            layout.paint.text_shadow,
-            Some(layers[0]),
-            "the first layer stays the legacy one"
-        );
+        assert_eq!(layout.paint.primary_text_shadow(), Some(layers[0]));
         layout.apply_css_text("text-shadow: none", None, None);
         assert!(layout.paint.text_shadows.is_empty());
-        assert!(layout.paint.text_shadow.is_none());
+        assert!(layout.paint.primary_text_shadow().is_none());
     }
 
     #[test]
@@ -8428,7 +8463,7 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
     fn text_shadow_parses_offset_and_color() {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("text-shadow: 2px 3px rgba(0, 0, 0, 0.5)", None, None);
-        let shadow = layout.paint.text_shadow.expect("text-shadow");
+        let shadow = layout.paint.primary_text_shadow().expect("text-shadow");
         assert_eq!(shadow.offset_x, 2.0);
         assert_eq!(shadow.offset_y, 3.0);
         assert!((shadow.color[3] - 0.5).abs() < 0.01);
@@ -8442,7 +8477,7 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
             None,
             None,
         );
-        let shadow = layout.paint.text_shadow.expect("text-shadow");
+        let shadow = layout.paint.primary_text_shadow().expect("text-shadow");
         match shadow.paint_color {
             Some(nana_ui_core::PaintColor::Oklch { l, c, h, alpha }) => {
                 assert!((l - 0.62).abs() < 1e-6);
@@ -9000,13 +9035,13 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
             None,
         );
         assert!(layout.text_overflow_ellipsis);
-        assert!(layout.white_space_nowrap);
+        assert_eq!(layout.white_space, WhiteSpaceSpec::Nowrap);
         assert!(layout.uses_text_ellipsis());
 
         let mut label = LayoutStyle::default();
         label.apply_class_layout_hints(&["nana-sidebar-row__label".into()]);
         assert!(label.uses_text_ellipsis());
-        assert!(label.white_space_nowrap);
+        assert_eq!(label.white_space, WhiteSpaceSpec::Nowrap);
         assert_eq!(label.min_width, Some(LengthSpec::Px(0.0)));
     }
 
@@ -9049,7 +9084,7 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         assert_eq!(wrap.white_space, WhiteSpaceSpec::PreWrap);
         assert!(wrap.white_space.wraps());
         assert!(wrap.white_space.preserve_newlines());
-        assert!(!wrap.white_space_nowrap);
+        assert_ne!(wrap.white_space, WhiteSpaceSpec::Nowrap);
 
         let mut line = LayoutStyle::default();
         line.apply_css_text("white-space: pre-line", None, None);
@@ -9192,7 +9227,7 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         );
         assert_eq!(section.direction, Some(FlexDirection::Row));
         assert_eq!(section.height, Some(LengthSpec::Px(24.0)));
-        assert!(section.white_space_nowrap);
+        assert_eq!(section.white_space, WhiteSpaceSpec::Nowrap);
 
         let mut sort = LayoutStyle::default();
         sort.apply_css_text(
@@ -9202,7 +9237,7 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
             None,
         );
         assert_eq!(sort.width, Some(LengthSpec::Auto));
-        assert!(sort.white_space_nowrap);
+        assert_eq!(sort.white_space, WhiteSpaceSpec::Nowrap);
         assert_eq!(sort.height, Some(LengthSpec::Px(22.0)));
 
         let mut card = LayoutStyle::default();

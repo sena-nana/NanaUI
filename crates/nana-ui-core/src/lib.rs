@@ -24,7 +24,6 @@ pub mod graph;
 pub mod icon;
 mod icon_data;
 pub mod layout;
-pub mod layout_authority;
 pub mod layout_frontier;
 mod layout_overlay;
 mod layout_style_api;
@@ -114,7 +113,6 @@ pub use layout::{
     NarrowBehavior, RegionId, RegionPlacement, RegionRole, RegionScope, RegionState,
     WorkspaceLayout, WorkspaceLayoutError,
 };
-pub use layout_authority::LayoutFieldMask;
 pub use layout_frontier::{
     InvalidationKind, InvalidationReason, LayoutDependencyFootprint, LayoutInvalidation,
     LayoutInvalidationSource, LayoutMetricDelta,

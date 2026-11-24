@@ -215,7 +215,7 @@ impl UiWorld {
                 LayoutInvalidationSource::Resource,
                 InvalidationReason::RESOURCE,
                 InvalidationKind::MEASURE.union(InvalidationKind::PLACEMENT),
-                LayoutFieldMask::INTRINSIC,
+                LayoutStyleChange::INTRINSIC,
                 METRIC_EXPORTS,
             ),
         );

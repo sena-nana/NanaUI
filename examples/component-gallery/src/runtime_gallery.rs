@@ -3107,7 +3107,7 @@ fn workspace_status_text(value: impl Into<String>) -> nana_ui::runtime::Text {
         type_scale::REGULAR,
     );
     let layout = std::sync::Arc::make_mut(&mut text.style.layout);
-    layout.white_space_nowrap = true;
+    layout.white_space = nana_ui::runtime::WhiteSpaceSpec::Nowrap;
     layout.flex_grow = Some(1.0);
     layout.flex_shrink = Some(1.0);
     layout.min_width = Some(LengthSpec::Px(0.0));
@@ -3148,7 +3148,7 @@ fn list_slot_text(
         layout.min_width = Some(LengthSpec::Px(0.0));
         layout.allow_shrink = true;
     }
-    layout.white_space_nowrap = true;
+    layout.white_space = nana_ui::runtime::WhiteSpaceSpec::Nowrap;
     layout.text_overflow_ellipsis = fill;
     text
 }
@@ -3209,7 +3209,7 @@ fn list_item_spec(label: &str, selected: bool, disabled: bool) -> ListItem {
     layout.min_width = Some(LengthSpec::Px(0.0));
     layout.flex_grow = Some(0.0);
     layout.flex_shrink = Some(0.0);
-    layout.white_space_nowrap = true;
+    layout.white_space = nana_ui::runtime::WhiteSpaceSpec::Nowrap;
     layout.text_overflow_ellipsis = true;
     item
 }

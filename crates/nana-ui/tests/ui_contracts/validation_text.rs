@@ -150,7 +150,7 @@ fn validation_preserves_explicit_single_line_overflow() {
     let mut style = NodeStyle::default();
     let layout = std::sync::Arc::make_mut(&mut style.layout);
     layout.width = Some(LengthSpec::Px(140.0));
-    layout.white_space_nowrap = true;
+    layout.white_space = nana_ui_core::WhiteSpaceSpec::Nowrap;
     layout.text_overflow_ellipsis = true;
     let notice = cx
         .create_component(

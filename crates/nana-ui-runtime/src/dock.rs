@@ -2057,7 +2057,7 @@ fn title_style() -> NodeStyle {
     layout.padding_right = Some(LengthSpec::Px(TITLE_PADDING_X));
     crate::theme_intent::font(layout, nana_ui_core::TypeRole::Hint);
     crate::theme_intent::weight(layout, nana_ui_core::TextWeight::Semibold);
-    layout.white_space_nowrap = true;
+    layout.white_space = nana_ui_core::WhiteSpaceSpec::Nowrap;
     layout.text_overflow_ellipsis = true;
     style
 }

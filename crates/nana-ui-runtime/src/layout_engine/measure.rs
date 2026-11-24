@@ -1123,8 +1123,8 @@ fn start_measure_request<'w, 's>(
         && !scope.metrics_changed.contains(&id)
         && let Some(metrics) = scope
             .retained
-            .intrinsic_metrics
-            .get(&PassIntrinsicCache::intrinsic_key(cache_key))
+            .intrinsics
+            .metrics(&PassIntrinsicCache::intrinsic_key(cache_key))
     {
         cache.seed_intrinsic(
             PassIntrinsicCache::intrinsic_key(cache_key),
@@ -1176,7 +1176,7 @@ fn start_measure_request<'w, 's>(
         && let Some(size) = scope
             .retained
             .intrinsics
-            .get(&id)
+            .used(id)
             .and_then(|memo| memo.get(cache_key))
     {
         cache.note_measure_cache_hit();
@@ -1465,7 +1465,7 @@ fn advance_unchanged<'w, 's>(
         let Some(entry) = plan.entry(aff) else {
             continue;
         };
-        if !retained_style_matches(&nodes.style(entry.child), &entry.style) {
+        if !retained_style_matches(nodes.style_ref(entry.child).as_ref(), entry.style.as_ref()) {
             return Ok(Err(common));
         }
         if !scope.measure.contains(&aff) {
@@ -2589,7 +2589,7 @@ fn finish_measure_container(
                         flow_cursor += 1;
                         size
                     });
-                    let style = nodes.style(child);
+                    let style = nodes.style_ref(child);
                     let baseline = intrinsic
                         .filter(|_| ifc && !writing.is_vertical())
                         .zip(style.as_deref())
@@ -2606,7 +2606,7 @@ fn finish_measure_container(
                         .map(|(ascent, _)| ascent);
                     MeasuredChild {
                         child,
-                        style,
+                        style: style.map(|s| s.to_arc()),
                         intrinsic: PackedOptSize::from_opt(intrinsic),
                         at_main: hypothetical
                             .iter()
@@ -2748,8 +2748,8 @@ pub(super) fn plan_missed_change(
     let Some(entry) = plan.entry(child) else {
         return false;
     };
-    let current = nodes.style(child);
-    if !retained_style_matches(&current, &entry.style) {
+    let current = nodes.style_ref(child);
+    if !retained_style_matches(current.as_ref(), entry.style.as_ref()) {
         return true;
     }
     if !measure.contains(&child) || (entry.intrinsic.is_none() && entry.at_main.is_none()) {
@@ -2767,13 +2767,13 @@ pub(super) fn plan_missed_change(
 }
 
 pub(super) fn retained_style_matches(
-    current: &Option<Arc<nana_ui_core::LayoutStyle>>,
-    cached: &Option<Arc<nana_ui_core::LayoutStyle>>,
+    current: Option<&StyleRef<'_>>,
+    cached: Option<&Arc<nana_ui_core::LayoutStyle>>,
 ) -> bool {
     match (current, cached) {
         (None, None) => true,
         (Some(current), Some(cached)) => {
-            Arc::ptr_eq(current, cached) || layout_inputs_equal(current, cached)
+            Arc::ptr_eq(current.arc(), cached) || layout_inputs_equal(current, cached)
         }
         _ => false,
     }
@@ -3179,21 +3179,19 @@ fn advance_sequential_plan<'w, 's>(
         {
             continue;
         }
-        let current_style = nodes.style(entry.child);
+        let current_style = nodes.style_ref(entry.child);
         let context = crate::FormattingContextKind::from_display(&plan.style);
-        let participation = |style: &Option<Arc<LayoutStyle>>| {
-            style
-                .as_ref()
-                .map(|style| nodes.participation(entry.child, style, context))
+        let participation = |style: Option<&LayoutStyle>| {
+            style.map(|style| nodes.participation(entry.child, style, context))
         };
-        if participation(&current_style) != participation(&entry.style) {
+        if participation(current_style.as_deref()) != participation(entry.style.as_deref()) {
             return try_plan_flex_line(common, plan, nodes, cache, scope);
         }
         let Some(old) = entry.intrinsic.get() else {
             continue;
         };
         if !scope.measure.contains(&affected) {
-            if !retained_style_matches(&current_style, &entry.style) {
+            if !retained_style_matches(current_style.as_ref(), entry.style.as_ref()) {
                 return try_plan_flex_line(common, plan, nodes, cache, scope);
             }
             continue;
@@ -3210,7 +3208,7 @@ fn advance_sequential_plan<'w, 's>(
             cursor,
             entry_child: entry.child,
             old,
-            current_style,
+            current_style: current_style.map(|s| s.to_arc()),
         };
         return Ok(PlanStart::Push(MeasureFrame {
             batch: PendingBatch::new(vec![req], false),
@@ -3281,7 +3279,7 @@ fn advance_sequential_arrivals<'w, 's>(
     while cursor < seq.arrivals.len() {
         let child = seq.arrivals[cursor];
         cursor += 1;
-        let child_style = nodes.style(child);
+        let child_style = nodes.style_ref(child);
         let in_flow = match child_style.as_deref() {
             None => false,
             Some(arrival)
@@ -3311,7 +3309,7 @@ fn advance_sequential_arrivals<'w, 's>(
             seq.step = SequentialStep::Arrival {
                 cursor,
                 child,
-                child_style,
+                child_style: child_style.map(|s| s.to_arc()),
             };
             return Ok(PlanStart::Push(MeasureFrame {
                 batch: PendingBatch::new(vec![req], false),
@@ -3324,7 +3322,7 @@ fn advance_sequential_arrivals<'w, 's>(
         }
         seq.arrived.push(MeasuredChild {
             child,
-            style: child_style,
+            style: child_style.map(|s| s.to_arc()),
             intrinsic: PackedOptSize::NONE,
             at_main: None,
             baseline: PackedOptF32::NONE,
@@ -3569,15 +3567,16 @@ fn advance_flex_line_delta<'w, 's>(
             let Some(entry) = plan.entry(affected) else {
                 continue;
             };
-            if !retained_style_matches(&nodes.style(affected), &entry.style) {
+            if !retained_style_matches(nodes.style_ref(affected).as_ref(), entry.style.as_ref()) {
                 return try_plan_ifc_line(common, plan, nodes, cache, scope);
             }
             continue;
         }
         if let Some(entry) = plan.entry(affected)
             && let Some(cached) = entry.style.as_ref()
-            && !nodes.style(affected).is_some_and(|current| {
-                Arc::ptr_eq(&current, cached) || super::same_but_cross(&current, cached, direction)
+            && !nodes.style_ref(affected).is_some_and(|current| {
+                Arc::ptr_eq(current.arc(), cached)
+                    || super::same_but_cross(&current, cached, direction)
             })
         {
             return try_plan_ifc_line(common, plan, nodes, cache, scope);
@@ -3797,10 +3796,10 @@ fn try_plan_grid<'w, 's>(
         if !scope.affected.contains(&child) {
             continue;
         }
-        let current = nodes.style(child);
+        let current = nodes.style_ref(child);
         let style_same = plan
             .entry(child)
-            .is_some_and(|entry| retained_style_matches(&current, &entry.style));
+            .is_some_and(|entry| retained_style_matches(current.as_ref(), entry.style.as_ref()));
         if !scope.measure.contains(&child) {
             if !style_same {
                 patched = true;

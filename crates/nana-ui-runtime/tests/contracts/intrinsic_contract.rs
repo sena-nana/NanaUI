@@ -1,12 +1,13 @@
-//! Public contract checks for Issue #198's shared intrinsic cache.
+//! Public contract checks for shared intrinsic facts.
 //!
-//! These tests deliberately exercise the cache through its public API.  A
-//! formatting context may change from flex to grid to inline, but the key and
-//! metrics remain owned by the node's content/style identities.
+//! These tests exercise [`PassIntrinsicFacts`] and [`IntrinsicGeneration`]
+//! through their public API. A formatting context may change from flex to grid
+//! to inline, while the key and metrics remain owned by the node's
+//! content/style identities.
 
 use nana_ui_runtime::{
-    Baseline, ConstraintClass, FormattingContextId, IntrinsicCache, IntrinsicCacheBudget,
-    IntrinsicCacheKey, IntrinsicMetrics, InvalidationReason, UsedSize,
+    Baseline, ConstraintClass, FormattingContextId, IntrinsicCacheKey, IntrinsicGeneration,
+    IntrinsicMetrics, InvalidationReason, PassIntrinsicFacts, UsedSize,
 };
 
 fn metrics() -> IntrinsicMetrics {
@@ -21,7 +22,7 @@ fn key(class: ConstraintClass) -> IntrinsicCacheKey {
 
 #[test]
 fn one_entry_is_reused_across_flex_grid_and_inline_contexts() {
-    let mut cache = IntrinsicCache::default();
+    let mut cache = PassIntrinsicFacts::default();
     let key = key(ConstraintClass::Unconstrained);
     cache.insert(key, metrics(), Some(FormattingContextId::new(1))); // flex
 
@@ -40,7 +41,7 @@ fn one_entry_is_reused_across_flex_grid_and_inline_contexts() {
 
 #[test]
 fn relevant_constraint_classes_partition_entries_without_context_identity() {
-    let mut cache = IntrinsicCache::default();
+    let mut cache = PassIntrinsicFacts::default();
     let unconstrained = key(ConstraintClass::Unconstrained);
     let max_inline = key(ConstraintClass::MaxInline(320.0));
     let exact_inline = key(ConstraintClass::ExactInline(320.0));
@@ -79,7 +80,7 @@ fn relevant_constraint_classes_partition_entries_without_context_identity() {
 
 #[test]
 fn fill_and_aspect_dependencies_are_separate_constraint_classes() {
-    let mut cache = IntrinsicCache::default();
+    let mut cache = PassIntrinsicFacts::default();
     let fill = key(ConstraintClass::fill(320.0, 200.0));
     let aspect = key(ConstraintClass::aspect_ratio(320.0, 200.0));
     cache.insert(fill, metrics(), Some(FormattingContextId::new(1)));
@@ -104,25 +105,22 @@ fn fill_and_aspect_dependencies_are_separate_constraint_classes() {
 
 #[test]
 fn paint_only_state_keeps_metrics_but_resource_metadata_invalidates_them() {
-    let mut cache = IntrinsicCache::default();
-    let key = key(ConstraintClass::Unconstrained);
-    cache.insert(key, metrics(), None);
+    let mut generation = IntrinsicGeneration::default();
 
-    assert!(!cache.invalidate(InvalidationReason::Paint));
-    assert_eq!(cache.get(&key, None), Some(metrics()));
-    assert!(!cache.invalidate(InvalidationReason::Opacity));
-    assert!(!cache.invalidate(InvalidationReason::Transform));
-    assert!(!cache.invalidate(InvalidationReason::Hover));
-    assert!(!cache.invalidate(InvalidationReason::Accessibility));
-    assert_eq!(cache.get(&key, None), Some(metrics()));
+    assert!(!generation.invalidate(InvalidationReason::Paint));
+    assert!(!generation.invalidate(InvalidationReason::Opacity));
+    assert!(!generation.invalidate(InvalidationReason::Transform));
+    assert!(!generation.invalidate(InvalidationReason::Hover));
+    assert!(!generation.invalidate(InvalidationReason::Accessibility));
+    assert_eq!(generation.get(), 0);
 
-    assert!(cache.invalidate(InvalidationReason::ResourceMetadata));
-    assert!(cache.get(&key, None).is_none());
+    assert!(generation.invalidate(InvalidationReason::ResourceMetadata));
+    assert_eq!(generation.get(), 1);
 }
 
 #[test]
 fn baselines_are_shared_metrics_queries_and_used_size_does_not_mutate_them() {
-    let mut cache = IntrinsicCache::default();
+    let mut cache = PassIntrinsicFacts::default();
     let key = key(ConstraintClass::ExactSize {
         inline: 200.0,
         block: 80.0,
@@ -145,33 +143,6 @@ fn baselines_are_shared_metrics_queries_and_used_size_does_not_mutate_them() {
     assert_eq!(used, UsedSize::new(200.0, 80.0));
     assert_eq!(cache.get(&key, None), Some(original));
     assert_eq!(cache.counters().baseline_queries, 2);
-}
-
-#[test]
-fn cache_budget_is_bounded_for_context_transitions() {
-    let mut cache = IntrinsicCache::new(IntrinsicCacheBudget {
-        max_entries: 2,
-        max_bytes: usize::MAX,
-    });
-    for content in 0..3 {
-        let key = IntrinsicCacheKey::new(content, 1, ConstraintClass::Unconstrained);
-        cache.insert(key, metrics(), Some(FormattingContextId::new(content)));
-    }
-    assert_eq!(cache.len(), 2);
-    assert_eq!(cache.counters().evictions, 1);
-}
-
-#[test]
-fn node_invalidation_does_not_flush_unrelated_intrinsic_facts() {
-    let mut cache = IntrinsicCache::default();
-    let first = IntrinsicCacheKey::new(1, 1, ConstraintClass::Unconstrained);
-    let second = IntrinsicCacheKey::new(2, 1, ConstraintClass::Unconstrained);
-    cache.insert(first, metrics(), None);
-    cache.insert(second, metrics(), None);
-    assert!(cache.invalidate_node(1, InvalidationReason::Content));
-    assert!(cache.get(&first, None).is_none());
-    assert!(cache.get(&second, None).is_some());
-    assert!(!cache.invalidate_node(2, InvalidationReason::Paint));
 }
 
 #[test]

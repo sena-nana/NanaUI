@@ -149,7 +149,7 @@ fn text_field_style(multiline: bool) -> NodeStyle {
         layout.line_height = Some(nana_ui_core::LineHeightSpec::Absolute(
             nana_ui_core::ControlSize::Medium.line_height(),
         ));
-        layout.white_space_nowrap = true;
+        layout.white_space = nana_ui_core::WhiteSpaceSpec::Nowrap;
     }
     NodeStyle {
         layout: Arc::new(layout),
@@ -662,7 +662,11 @@ impl Text {
 
     /// Keeps the text on one line.
     pub fn nowrap(mut self, nowrap: bool) -> Self {
-        Arc::make_mut(&mut self.style.layout).white_space_nowrap = nowrap;
+        Arc::make_mut(&mut self.style.layout).white_space = if nowrap {
+            nana_ui_core::WhiteSpaceSpec::Nowrap
+        } else {
+            nana_ui_core::WhiteSpaceSpec::Normal
+        };
         self
     }
 
@@ -803,7 +807,7 @@ pub(crate) const CARD_LOADING_RESERVE: f32 =
 static BUTTON_DEFAULT_STYLE: std::sync::LazyLock<NodeStyle> = std::sync::LazyLock::new(|| {
     let mut layout = (*control_layout()).clone();
     crate::theme_intent::weight(&mut layout, nana_ui_core::TextWeight::Medium);
-    layout.white_space_nowrap = true;
+    layout.white_space = nana_ui_core::WhiteSpaceSpec::Nowrap;
     // Declared, not solved: only a strip that solves its overflow reads
     // it (Issue #212).
     layout.adaptation = Some(nana_ui_core::dynamic_layout::AdaptationProfile::shared_control());
@@ -2919,7 +2923,7 @@ static LIST_ITEM_DEFAULT_STYLE: std::sync::LazyLock<NodeStyle> = std::sync::Lazy
         nana_ui_core::ControlSize::Small.line_height(),
     ));
     // 列表行是单行原语：过长文本截断省略，不折行撑破固定行高。
-    layout.white_space_nowrap = true;
+    layout.white_space = nana_ui_core::WhiteSpaceSpec::Nowrap;
     layout.text_overflow_ellipsis = true;
     NodeStyle {
         layout: Arc::new(layout),
@@ -4868,7 +4872,7 @@ impl TextArea {
             layout.padding_top = Some(nana_ui_core::LengthSpec::Px((chrome - 2.0 * border) / 2.0));
             layout.padding_bottom = layout.padding_top;
             layout.text_ext.word_break = Some(nana_ui_core::WordBreakSpec::BreakAll);
-            layout.white_space_nowrap = false;
+            layout.white_space = nana_ui_core::WhiteSpaceSpec::Normal;
             // Natural rows are a preferred size. A bounded flex parent may
             // reduce the text viewport down to min_rows while the footer stays.
             // Preserve an explicit consumer policy.

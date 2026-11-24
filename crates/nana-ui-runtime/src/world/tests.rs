@@ -9377,7 +9377,7 @@ fn a_metrics_install_keeps_a_locale_scope_direction() {
     assert_eq!(world.record(node(1)).resolved_layout.dir, rtl);
     let cause = world.pending_layout_invalidation(node(1));
     assert!(
-        cause.changed_inputs.contains(LayoutFieldMask::SIZING),
+        cause.changed_inputs.contains(LayoutStyleChange::SIZING),
         "{cause:?}"
     );
     assert!(
@@ -12817,7 +12817,7 @@ fn typed_layout_seed_stays_narrow_when_coarse_ancestor_bits_are_propagated() {
             LayoutInvalidationSource::Text,
             InvalidationReason::TEXT,
             InvalidationKind::MEASURE,
-            LayoutFieldMask::INTRINSIC,
+            LayoutStyleChange::INTRINSIC,
             LayoutDependencyFootprint::EXPORTS_INTRINSIC_INLINE,
         ),
     );
@@ -12863,7 +12863,7 @@ fn typed_dependency_graph_does_not_scan_unrelated_siblings() {
             LayoutInvalidationSource::Text,
             InvalidationReason::TEXT,
             InvalidationKind::MEASURE.union(InvalidationKind::PLACEMENT),
-            LayoutFieldMask::TYPOGRAPHY.union(LayoutFieldMask::INTRINSIC),
+            LayoutStyleChange::TYPOGRAPHY.union(LayoutStyleChange::INTRINSIC),
             LayoutDependencyFootprint::EXPORTS_INTRINSIC_INLINE,
         ),
     );
@@ -12911,7 +12911,7 @@ fn typed_metric_seed_stops_at_fixed_card_boundary() {
             LayoutInvalidationSource::Text,
             InvalidationReason::TEXT,
             InvalidationKind::MEASURE.union(InvalidationKind::PLACEMENT),
-            LayoutFieldMask::TYPOGRAPHY.union(LayoutFieldMask::INTRINSIC),
+            LayoutStyleChange::TYPOGRAPHY.union(LayoutStyleChange::INTRINSIC),
             LayoutDependencyFootprint::EXPORTS_INTRINSIC_INLINE,
         ),
     );
@@ -12964,7 +12964,7 @@ fn lateral_metric_seed_reaches_fixed_formatting_context() {
             LayoutInvalidationSource::Text,
             InvalidationReason::TEXT,
             InvalidationKind::MEASURE.union(InvalidationKind::PLACEMENT),
-            LayoutFieldMask::TYPOGRAPHY.union(LayoutFieldMask::INTRINSIC),
+            LayoutStyleChange::TYPOGRAPHY.union(LayoutStyleChange::INTRINSIC),
             LayoutDependencyFootprint::EXPORTS_INTRINSIC_INLINE
                 .union(LayoutDependencyFootprint::DEPENDS_ON_SIBLING_PREFIX),
         ),
@@ -13004,7 +13004,7 @@ fn independent_parent_and_child_typed_seeds_survive_one_drain() {
             LayoutInvalidationSource::Author,
             InvalidationReason::STYLE,
             InvalidationKind::MEASURE.union(InvalidationKind::PLACEMENT),
-            LayoutFieldMask::ALL,
+            LayoutStyleChange::ALL,
             LayoutDependencyFootprint::ALL,
         ),
     );
@@ -13014,7 +13014,7 @@ fn independent_parent_and_child_typed_seeds_survive_one_drain() {
             LayoutInvalidationSource::Text,
             InvalidationReason::TEXT,
             InvalidationKind::MEASURE,
-            LayoutFieldMask::INTRINSIC,
+            LayoutStyleChange::INTRINSIC,
             LayoutDependencyFootprint::EXPORTS_INTRINSIC_INLINE,
         ),
     );
@@ -13059,14 +13059,14 @@ fn typed_layout_seed_restore_preserves_each_document_and_typed_cause() {
         LayoutInvalidationSource::Text,
         InvalidationReason::TEXT,
         InvalidationKind::MEASURE,
-        LayoutFieldMask::INTRINSIC,
+        LayoutStyleChange::INTRINSIC,
         LayoutDependencyFootprint::EXPORTS_INTRINSIC_INLINE,
     );
     let writing = LayoutInvalidation::new(
         LayoutInvalidationSource::Author,
         InvalidationReason::WRITING,
         InvalidationKind::WRITING_CONTEXT,
-        LayoutFieldMask::TYPOGRAPHY,
+        LayoutStyleChange::TYPOGRAPHY,
         LayoutDependencyFootprint::DEPENDS_ON_WRITING_CONTEXT,
     );
     world.record_layout_invalidation(node(1), text);

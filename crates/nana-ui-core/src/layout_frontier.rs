@@ -6,8 +6,22 @@
 //! Rust layout and component projection can therefore describe the same
 //! invalidation without depending on one another's implementation.
 
-use crate::layout_authority::{LayoutFieldMask, flag_names};
+use crate::layout_style_change::LayoutStyleChange;
 use std::ops::{BitOr, BitOrAssign};
+
+/// `names(self)` for a set of flag constants, from a `FLAG: "name"` table:
+/// the name of every flag the set holds, in table order.
+macro_rules! flag_names {
+    ($($flag:ident: $name:literal),* $(,)?) => {
+        /// Names of the set flags, for diagnostics.
+        pub fn names(self) -> impl Iterator<Item = &'static str> {
+            [$((Self::$flag, $name)),*]
+                .into_iter()
+                .filter(move |(flag, _)| self.contains(*flag))
+                .map(|(_, name)| name)
+        }
+    };
+}
 
 /// What a layout node consumes or exports at a dependency boundary.
 ///
@@ -261,15 +275,15 @@ pub enum LayoutInvalidationSource {
 
 /// Typed footprint emitted by the layout mutation/resolution authority.
 ///
-/// `changed_inputs` reuses [`LayoutFieldMask`] so the same property
-/// classification used by the layout resolver is visible to the scheduler.
+/// `changed_inputs` carries [`LayoutStyleChange`] so the same property
+/// classification used by the style diff is visible to the scheduler.
 /// `affected_axes` describes dependency edges that may need to be followed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct LayoutInvalidation {
     pub source: LayoutInvalidationSource,
     pub reason: InvalidationReason,
     pub kind: InvalidationKind,
-    pub changed_inputs: LayoutFieldMask,
+    pub changed_inputs: LayoutStyleChange,
     pub affected_axes: LayoutDependencyFootprint,
 }
 
@@ -288,7 +302,7 @@ impl LayoutInvalidation {
         source: LayoutInvalidationSource,
         reason: InvalidationReason,
         kind: InvalidationKind,
-        changed_inputs: LayoutFieldMask,
+        changed_inputs: LayoutStyleChange,
         affected_axes: LayoutDependencyFootprint,
     ) -> Self {
         Self {
@@ -305,7 +319,7 @@ impl LayoutInvalidation {
             LayoutInvalidationSource::Unknown,
             InvalidationReason::NONE,
             InvalidationKind::NONE,
-            LayoutFieldMask::NONE,
+            LayoutStyleChange::NONE,
             LayoutDependencyFootprint::NONE,
         )
     }
@@ -491,14 +505,14 @@ mod tests {
             LayoutInvalidationSource::Text,
             InvalidationReason::TEXT,
             InvalidationKind::MEASURE,
-            LayoutFieldMask::TYPOGRAPHY,
+            LayoutStyleChange::TYPOGRAPHY,
             LayoutDependencyFootprint::EXPORTS_INTRINSIC_INLINE,
         );
         let second = LayoutInvalidation::new(
             LayoutInvalidationSource::Author,
             InvalidationReason::STYLE,
             InvalidationKind::PLACEMENT,
-            LayoutFieldMask::SPACING,
+            LayoutStyleChange::SPACING,
             LayoutDependencyFootprint::DEPENDS_ON_SIBLING_PREFIX,
         );
         let merged = first.merge(second);
@@ -507,8 +521,12 @@ mod tests {
         assert!(merged.reason.contains(InvalidationReason::STYLE));
         assert!(merged.kind.contains(InvalidationKind::MEASURE));
         assert!(merged.kind.contains(InvalidationKind::PLACEMENT));
-        assert!(merged.changed_inputs.contains(LayoutFieldMask::TYPOGRAPHY));
-        assert!(merged.changed_inputs.contains(LayoutFieldMask::SPACING));
+        assert!(
+            merged
+                .changed_inputs
+                .contains(LayoutStyleChange::TYPOGRAPHY)
+        );
+        assert!(merged.changed_inputs.contains(LayoutStyleChange::SPACING));
     }
 
     #[test]
@@ -535,7 +553,7 @@ mod tests {
             LayoutInvalidationSource::Text,
             InvalidationReason::TEXT,
             InvalidationKind::MEASURE,
-            LayoutFieldMask::INTRINSIC,
+            LayoutStyleChange::INTRINSIC,
             LayoutDependencyFootprint::EXPORTS_INTRINSIC_BLOCK,
         );
         assert_eq!(LayoutInvalidation::none().merge(seed), seed);

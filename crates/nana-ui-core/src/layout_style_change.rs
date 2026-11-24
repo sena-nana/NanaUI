@@ -84,6 +84,13 @@ impl LayoutStyleChange {
     /// Whether the subtree is inert: no pointer, focus or accessibility
     /// actions. It moves no box and changes no pixel.
     pub const INERT: Self = Self(1 << 23);
+    /// Non-style intrinsic metrics or content changes (text, replaced media,
+    /// component parts) represented in the same invalidation mask.
+    pub const INTRINSIC: Self = Self(1 << 24);
+    /// Font face/metrics plus text layout properties.
+    pub const TYPOGRAPHY: Self = Self(Self::FONT.0 | Self::TEXT_LAYOUT.0);
+    /// Every field and intrinsic change group.
+    pub const ALL: Self = Self((1 << 25) - 1);
 
     /// Kinds that move or resize boxes.
     pub const LAYOUT: Self = Self(
@@ -101,7 +108,8 @@ impl LayoutStyleChange {
             | Self::TEXT_LAYOUT.0
             | Self::SCROLL.0
             | Self::BORDER_GEOMETRY.0
-            | Self::BORDER_STYLE.0,
+            | Self::BORDER_STYLE.0
+            | Self::INTRINSIC.0,
     );
     /// Layout kinds paint does not also read off the style: a change of only
     /// these moves boxes and changes nothing else about the pixels.
@@ -122,8 +130,16 @@ impl LayoutStyleChange {
     /// Layout kinds a positioned or in-flow child's containing block reads.
     pub const CONTAINING_BLOCK: Self = Self(Self::LAYOUT.0 & !Self::TEXT_LAYOUT.0);
 
+    pub const fn bits(self) -> u32 {
+        self.0
+    }
+
     pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
+    }
+
+    pub const fn intersection(self, other: Self) -> Self {
+        Self(self.0 & other.0)
     }
 
     pub const fn difference(self, other: Self) -> Self {
@@ -140,6 +156,40 @@ impl LayoutStyleChange {
 
     pub const fn is_empty(self) -> bool {
         self.0 == 0
+    }
+
+    pub fn names(self) -> impl Iterator<Item = &'static str> {
+        const FLAGS: &[(LayoutStyleChange, &str)] = &[
+            (LayoutStyleChange::WRITING, "writing"),
+            (LayoutStyleChange::FLOW, "flow"),
+            (LayoutStyleChange::SIZING, "sizing"),
+            (LayoutStyleChange::SPACING, "spacing"),
+            (LayoutStyleChange::POSITION, "position"),
+            (LayoutStyleChange::ALIGNMENT, "alignment"),
+            (LayoutStyleChange::GRID, "grid"),
+            (LayoutStyleChange::TEXT_LAYOUT, "text_layout"),
+            (LayoutStyleChange::SCROLL, "scroll"),
+            (LayoutStyleChange::BORDER_GEOMETRY, "border_geometry"),
+            (LayoutStyleChange::BORDER_STYLE, "border_style"),
+            (LayoutStyleChange::FONT, "font"),
+            (LayoutStyleChange::TRANSFORM, "transform"),
+            (LayoutStyleChange::CURSOR, "cursor"),
+            (LayoutStyleChange::INTERACTION, "interaction"),
+            (LayoutStyleChange::STACKING, "stacking"),
+            (LayoutStyleChange::VISIBILITY, "visibility"),
+            (LayoutStyleChange::PAINT, "paint"),
+            (LayoutStyleChange::SIZING_WIDTH, "sizing_width"),
+            (LayoutStyleChange::SIZING_HEIGHT, "sizing_height"),
+            (LayoutStyleChange::FLEX_FACTOR, "flex_factor"),
+            (LayoutStyleChange::FLOW_SHAPE, "flow_shape"),
+            (LayoutStyleChange::CONTAINER, "container"),
+            (LayoutStyleChange::INERT, "inert"),
+            (LayoutStyleChange::INTRINSIC, "intrinsic"),
+        ];
+        FLAGS
+            .iter()
+            .filter(move |(flag, _)| self.intersects(*flag))
+            .map(|(_, name)| *name)
     }
 }
 
@@ -386,7 +436,6 @@ layout_style_fields! {
         inert: INERT,
         cursor: CURSOR,
         user_select: CURSOR,
-        white_space_nowrap: TEXT_LAYOUT,
         white_space: TEXT_LAYOUT,
         aspect_ratio: SIZING_BOTH,
         text_align: TEXT_LAYOUT,

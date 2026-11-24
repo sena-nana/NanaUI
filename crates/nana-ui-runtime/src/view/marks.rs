@@ -128,7 +128,7 @@ pub fn keycap_label(key: impl Into<String>) -> Text {
         .role(TypeRole::Meta)
         .weight(TextWeight::Semibold)
         .color(SemanticColorRole::Text);
-    Arc::make_mut(&mut text.style.layout).white_space_nowrap = true;
+    Arc::make_mut(&mut text.style.layout).white_space = nana_ui_core::WhiteSpaceSpec::Nowrap;
     text
 }
 

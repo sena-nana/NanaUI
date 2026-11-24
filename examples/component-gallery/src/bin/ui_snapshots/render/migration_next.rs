@@ -666,7 +666,11 @@ fn runtime_fixture(
                 },
             ));
             layout.font_size = Some(13.0);
-            layout.white_space_nowrap = fixture.state == "ellipsis";
+            layout.white_space = if fixture.state == "ellipsis" {
+                nana_ui::runtime::WhiteSpaceSpec::Nowrap
+            } else {
+                nana_ui::runtime::WhiteSpaceSpec::Normal
+            };
             layout.text_overflow_ellipsis = fixture.state == "ellipsis";
             if fixture.state == "emphasis" {
                 // Chinese sets its dots under the text; the Japanese span

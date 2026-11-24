@@ -50,9 +50,7 @@ pub fn apply_css_paint_property(style: &mut nana_ui_core::LayoutStyle, name: &st
             style.paint.backdrop_filter = parse_backdrop_filter(val);
         }
         "text-shadow" => {
-            let layers = crate::css_map::parse_text_shadows(val);
-            style.paint.text_shadow = layers.first().copied();
-            style.paint.text_shadows = layers;
+            style.paint.text_shadows = crate::css_map::parse_text_shadows(val);
         }
         "-webkit-text-stroke" => apply_text_stroke_shorthand(style, val),
         "-webkit-text-stroke-width" => {
@@ -112,7 +110,7 @@ pub fn apply_css_paint_property(style: &mut nana_ui_core::LayoutStyle, name: &st
         }
         "outline-style" => apply_outline_style(style, val),
         "mix-blend-mode" => {
-            if let Some(mode) = MixBlendMode::parse(val) {
+            if let Some(mode) = parse_mix_blend_mode(val) {
                 style.paint.mix_blend = mode;
             }
         }
@@ -155,7 +153,7 @@ pub fn apply_css_paint_property(style: &mut nana_ui_core::LayoutStyle, name: &st
             let v = val.trim();
             if v.eq_ignore_ascii_case("inherit") || v.eq_ignore_ascii_case("unset") {
                 style.pointer_events = None;
-            } else if let Some(spec) = PointerEventsSpec::parse(v) {
+            } else if let Some(spec) = parse_pointer_events_spec(v) {
                 style.pointer_events = Some(spec);
             }
         }
@@ -519,21 +517,42 @@ fn reset_background_placement_lists(style: &mut nana_ui_core::LayoutStyle) {
     style.paint.background_repeat_list.clear();
 }
 
+fn parse_mix_blend_mode(input: &str) -> Option<MixBlendMode> {
+    Some(match input.trim().to_ascii_lowercase().as_str() {
+        "normal" => MixBlendMode::Normal,
+        "multiply" => MixBlendMode::Multiply,
+        "screen" => MixBlendMode::Screen,
+        "overlay" => MixBlendMode::Overlay,
+        "darken" => MixBlendMode::Darken,
+        "lighten" => MixBlendMode::Lighten,
+        "color-dodge" => MixBlendMode::ColorDodge,
+        "color-burn" => MixBlendMode::ColorBurn,
+        "hard-light" => MixBlendMode::HardLight,
+        "soft-light" => MixBlendMode::SoftLight,
+        "difference" => MixBlendMode::Difference,
+        "exclusion" => MixBlendMode::Exclusion,
+        "hue" => MixBlendMode::Hue,
+        "saturation" => MixBlendMode::Saturation,
+        "color" => MixBlendMode::Color,
+        "luminosity" => MixBlendMode::Luminosity,
+        _ => return None,
+    })
+}
+
+fn parse_pointer_events_spec(input: &str) -> Option<PointerEventsSpec> {
+    match input.trim().to_ascii_lowercase().as_str() {
+        "auto" => Some(PointerEventsSpec::Auto),
+        "none" => Some(PointerEventsSpec::None),
+        _ => None,
+    }
+}
+
 fn clear_background_images(style: &mut nana_ui_core::LayoutStyle) {
-    style.paint.background_image = None;
     style.paint.background_layers.clear();
 }
 
-fn assign_background_layers(
-    style: &mut nana_ui_core::LayoutStyle,
-    mut layers: Vec<BackgroundImage>,
-) {
-    style.paint.background_image = layers.first().cloned();
-    if layers.len() > 1 {
-        style.paint.background_layers = layers.split_off(1);
-    } else {
-        style.paint.background_layers.clear();
-    }
+fn assign_background_layers(style: &mut nana_ui_core::LayoutStyle, layers: Vec<BackgroundImage>) {
+    style.paint.background_layers = layers;
 }
 
 fn zip_background_longhands(layers: &mut [BackgroundImage], style: &nana_ui_core::LayoutStyle) {
@@ -551,31 +570,22 @@ fn zip_background_longhands(layers: &mut [BackgroundImage], style: &nana_ui_core
 fn apply_size_to_existing_layers(style: &mut nana_ui_core::LayoutStyle) {
     let fits = style.paint.background_size_list.clone();
     let lengths = style.paint.background_size_lengths.clone();
-    if let Some(layer) = style.paint.background_image.as_mut() {
-        apply_slot_size(layer, cycle(&fits, 0), cycle(&lengths, 0));
-    }
     for (index, layer) in style.paint.background_layers.iter_mut().enumerate() {
-        apply_slot_size(layer, cycle(&fits, index + 1), cycle(&lengths, index + 1));
+        apply_slot_size(layer, cycle(&fits, index), cycle(&lengths, index));
     }
 }
 
 fn apply_position_to_existing_layers(style: &mut nana_ui_core::LayoutStyle) {
     let list = style.paint.background_position_list.clone();
-    if let Some(layer) = style.paint.background_image.as_mut() {
-        apply_slot_position(layer, cycle(&list, 0));
-    }
     for (index, layer) in style.paint.background_layers.iter_mut().enumerate() {
-        apply_slot_position(layer, cycle(&list, index + 1));
+        apply_slot_position(layer, cycle(&list, index));
     }
 }
 
 fn apply_repeat_to_existing_layers(style: &mut nana_ui_core::LayoutStyle) {
     let list = style.paint.background_repeat_list.clone();
-    if let Some(layer) = style.paint.background_image.as_mut() {
-        apply_slot_repeat(layer, cycle(&list, 0));
-    }
     for (index, layer) in style.paint.background_layers.iter_mut().enumerate() {
-        apply_slot_repeat(layer, cycle(&list, index + 1));
+        apply_slot_repeat(layer, cycle(&list, index));
     }
 }
 
@@ -1305,7 +1315,6 @@ fn apply_line_clamp(style: &mut nana_ui_core::LayoutStyle, val: &str) {
     }
     style.text_ext.line_clamp = Some(n);
     style.text_overflow_ellipsis = true;
-    style.white_space_nowrap = false;
     style.overflow_x = OverflowSpec::Hidden;
     style.overflow_y = OverflowSpec::Hidden;
 }
@@ -2450,7 +2459,7 @@ mod tests {
             None,
             None,
         );
-        assert!(layout.paint.background_image.is_some());
+        assert!(layout.paint.primary_background_image().is_some());
     }
 
     #[test]
@@ -2468,7 +2477,7 @@ mod tests {
             None,
         );
         assert!(
-            layout.paint.background_image.is_some(),
+            layout.paint.primary_background_image().is_some(),
             "repeating-linear-gradient must not drop the layer"
         );
         assert!(parse_linear_gradient("repeating-linear-gradient(red 10%, red 10%)").is_none());
@@ -2483,7 +2492,7 @@ mod tests {
             None,
         );
         assert!(
-            overflow.paint.background_image.is_none(),
+            overflow.paint.primary_background_image().is_none(),
             "overflowing repeating-linear-gradient must drop the layer"
         );
     }
@@ -2496,7 +2505,7 @@ mod tests {
             None,
             None,
         );
-        assert!(layout.paint.background_image.is_some());
+        assert!(layout.paint.primary_background_image().is_some());
         assert!(layout.background.is_none());
     }
 
@@ -2721,8 +2730,8 @@ mod tests {
     fn background_image_relative_url_applies_via_css() {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("background-image: url(\"hero.png\")", None, None);
-        match layout.paint.background_image.clone() {
-            Some(BackgroundImage::Url { ref url, .. }) => assert_eq!(url, "hero.png"),
+        match layout.paint.primary_background_image() {
+            Some(BackgroundImage::Url { url, .. }) => assert_eq!(url, "hero.png"),
             other => panic!("expected relative url, got {other:?}"),
         }
     }
@@ -2748,12 +2757,12 @@ mod tests {
             None,
             None,
         );
-        match layout.paint.background_image.clone() {
-            Some(BackgroundImage::Url { ref url, .. }) => assert_eq!(url, "a.png"),
+        assert_eq!(layout.paint.background_layers.len(), 2);
+        match &layout.paint.background_layers[0] {
+            BackgroundImage::Url { url, .. } => assert_eq!(url, "a.png"),
             other => panic!("expected first url, got {other:?}"),
         }
-        assert_eq!(layout.paint.background_layers.len(), 1);
-        match &layout.paint.background_layers[0] {
+        match &layout.paint.background_layers[1] {
             BackgroundImage::Url { url, .. } => assert_eq!(url, "b.png"),
             other => panic!("expected second url, got {other:?}"),
         }
@@ -2767,7 +2776,7 @@ mod tests {
             None,
             None,
         );
-        match layout.paint.background_image.clone() {
+        match layout.paint.primary_background_image() {
             Some(BackgroundImage::Url {
                 fit,
                 size_width,
@@ -2776,12 +2785,12 @@ mod tests {
                 repeat,
                 ..
             }) => {
-                assert_eq!(fit, BackgroundImageFit::Length);
-                assert_eq!(size_width, Some(LengthSpec::Px(32.0)));
-                assert_eq!(size_height, Some(LengthSpec::Px(16.0)));
+                assert_eq!(*fit, BackgroundImageFit::Length);
+                assert_eq!(*size_width, Some(LengthSpec::Px(32.0)));
+                assert_eq!(*size_height, Some(LengthSpec::Px(16.0)));
                 assert_eq!(position.x, LengthSpec::Px(10.0));
                 assert_eq!(position.y, LengthSpec::Px(20.0));
-                assert_eq!(repeat, BackgroundRepeat::RepeatX);
+                assert_eq!(*repeat, BackgroundRepeat::RepeatX);
             }
             other => panic!("expected url placement, got {other:?}"),
         }
@@ -2791,8 +2800,8 @@ mod tests {
             None,
             None,
         );
-        match auto.paint.background_image.clone() {
-            Some(BackgroundImage::Url { fit, .. }) => assert_eq!(fit, BackgroundImageFit::Auto),
+        match auto.paint.primary_background_image() {
+            Some(BackgroundImage::Url { fit, .. }) => assert_eq!(*fit, BackgroundImageFit::Auto),
             other => panic!("expected auto size, got {other:?}"),
         }
     }
@@ -2805,7 +2814,7 @@ mod tests {
             None,
             None,
         );
-        match layout.paint.background_image.clone() {
+        match layout.paint.primary_background_image() {
             Some(BackgroundImage::Url { position, .. }) => {
                 assert_eq!(position.x, LengthSpec::percent_offset(100.0, -8.0));
                 assert_eq!(position.y, LengthSpec::Percent(50.0));
@@ -2829,7 +2838,7 @@ mod tests {
             None,
             None,
         );
-        match ok.paint.background_image.clone() {
+        match ok.paint.primary_background_image() {
             Some(BackgroundImage::Url { position, .. }) => {
                 assert_eq!(position.x, LengthSpec::Px(10.0));
                 assert_eq!(position.y, LengthSpec::Px(20.0));
@@ -2844,7 +2853,7 @@ mod tests {
             None,
         );
         stale.apply_css_text("background-position: left 1px top 2px extra", None, None);
-        match stale.paint.background_image.clone() {
+        match stale.paint.primary_background_image() {
             Some(BackgroundImage::Url { position, .. }) => {
                 assert_eq!(
                     position.x,
@@ -2889,17 +2898,17 @@ mod tests {
             None,
             None,
         );
-        match layout.paint.background_image.clone() {
+        match layout.paint.primary_background_image() {
             Some(BackgroundImage::Url {
                 fit,
                 size_width,
                 repeat,
                 ..
             }) => {
-                assert_eq!(fit, BackgroundImageFit::Length);
-                assert_eq!(size_width, Some(LengthSpec::Px(32.0)));
+                assert_eq!(*fit, BackgroundImageFit::Length);
+                assert_eq!(*size_width, Some(LengthSpec::Px(32.0)));
                 assert_eq!(
-                    repeat,
+                    *repeat,
                     BackgroundRepeat::Repeat,
                     "CSS initial background-repeat is repeat"
                 );
@@ -2916,16 +2925,16 @@ mod tests {
             None,
             None,
         );
-        match layout.paint.background_image.clone() {
+        match layout.paint.primary_background_image() {
             Some(BackgroundImage::Url { repeat, .. }) => {
-                assert_eq!(repeat, BackgroundRepeat::Unsupported);
+                assert_eq!(*repeat, BackgroundRepeat::Unsupported);
             }
             other => panic!("expected space url layer, got {other:?}"),
         }
         layout.apply_css_text("background-repeat: round", None, None);
-        match layout.paint.background_image.clone() {
+        match layout.paint.primary_background_image() {
             Some(BackgroundImage::Url { repeat, .. }) => {
-                assert_eq!(repeat, BackgroundRepeat::Round);
+                assert_eq!(*repeat, BackgroundRepeat::Round);
             }
             other => panic!("expected round url layer, got {other:?}"),
         }
@@ -2947,7 +2956,7 @@ mod tests {
                 && layout.paint.background_position_list.is_empty(),
             "shorthand must reset leftover longhand lists"
         );
-        match &layout.paint.background_image {
+        match layout.paint.primary_background_image() {
             Some(BackgroundImage::Url { repeat, fit, .. }) => {
                 assert_eq!(*repeat, BackgroundRepeat::Repeat);
                 assert_eq!(*fit, BackgroundImageFit::Auto);
@@ -2955,14 +2964,14 @@ mod tests {
             other => panic!("expected shorthand url, got {other:?}"),
         }
         layout.apply_css_text("background-image: url(\"b.png\")", None, None);
-        match layout.paint.background_image.clone() {
+        match layout.paint.primary_background_image() {
             Some(BackgroundImage::Url { repeat, fit, .. }) => {
                 assert_eq!(
-                    repeat,
+                    *repeat,
                     BackgroundRepeat::Repeat,
                     "later background-image must not zip pre-shorthand no-repeat"
                 );
-                assert_eq!(fit, BackgroundImageFit::Auto);
+                assert_eq!(*fit, BackgroundImageFit::Auto);
             }
             other => panic!("expected reset url, got {other:?}"),
         }
@@ -2977,20 +2986,18 @@ mod tests {
             None,
         );
         assert!(layout.background.is_some());
-        match layout.paint.background_image.clone() {
+        assert_eq!(layout.paint.background_layers.len(), 2);
+        match layout.paint.primary_background_image() {
             Some(BackgroundImage::Url {
-                ref url,
-                fit,
-                repeat,
-                ..
+                url, fit, repeat, ..
             }) => {
                 assert_eq!(url, "fg.png");
-                assert_eq!(fit, BackgroundImageFit::Contain);
-                assert_eq!(repeat, BackgroundRepeat::NoRepeat);
+                assert_eq!(*fit, BackgroundImageFit::Contain);
+                assert_eq!(*repeat, BackgroundRepeat::NoRepeat);
             }
             other => panic!("expected fg url, got {other:?}"),
         }
-        match layout.paint.background_layers.first() {
+        match layout.paint.background_layers.get(1) {
             Some(BackgroundImage::Url { url, repeat, .. }) => {
                 assert_eq!(url, "bg.png");
                 assert_eq!(*repeat, BackgroundRepeat::Repeat);
@@ -3130,7 +3137,7 @@ mod tests {
         layout.apply_css_text("-webkit-line-clamp: 2", None, None);
         assert_eq!(layout.text_ext.line_clamp, Some(2));
         assert!(layout.uses_text_ellipsis());
-        assert!(!layout.white_space_nowrap);
+        assert_ne!(layout.white_space, nana_ui_core::WhiteSpaceSpec::Nowrap);
         assert_eq!(layout.overflow_x, OverflowSpec::Hidden);
         assert_eq!(layout.overflow_y, OverflowSpec::Hidden);
         layout.apply_css_text("line-clamp: none", None, None);
@@ -3386,6 +3393,16 @@ mod tests {
 
     #[test]
     fn pointer_events_none_and_auto() {
+        assert_eq!(
+            parse_pointer_events_spec("none"),
+            Some(PointerEventsSpec::None)
+        );
+        assert_eq!(
+            parse_pointer_events_spec("auto"),
+            Some(PointerEventsSpec::Auto)
+        );
+        assert_eq!(parse_pointer_events_spec("visiblePainted"), None);
+
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("pointer-events: none", None, None);
         assert_eq!(layout.pointer_events, Some(PointerEventsSpec::None));
@@ -3418,7 +3435,7 @@ mod tests {
         assert!(
             written
                 .field_mask
-                .contains(nana_ui_core::LayoutFieldMask::INTERACTION)
+                .contains(nana_ui_core::LayoutStyleChange::INERT)
         );
     }
 
@@ -3431,7 +3448,7 @@ mod tests {
         assert_eq!(spec.source.url_str(), Some("frame.png"));
         assert!(spec.fill);
         assert_eq!(spec.slice, [BorderImageSlice::Number(30.0); 4]);
-        assert!(layout.paint.background_image.is_none());
+        assert!(layout.paint.background_layers.is_empty());
         layout.apply_css_text("border-image: none", None, None);
         assert!(layout.paint.border_image.is_none());
         assert!(!layout.paint.unsupported_border_image);
@@ -3532,7 +3549,7 @@ mod tests {
             None,
         );
         let Some(BackgroundImage::Gradient(CssGradient::Linear(oklch_grad))) =
-            &oklch_layout.paint.background_image
+            oklch_layout.paint.primary_background_image()
         else {
             panic!("expected linear gradient in oklch");
         };
@@ -3549,7 +3566,7 @@ mod tests {
             None,
         );
         let Some(BackgroundImage::Gradient(CssGradient::Linear(linear_grad))) =
-            &linear_layout.paint.background_image
+            linear_layout.paint.primary_background_image()
         else {
             panic!("expected linear gradient in srgb-linear");
         };
@@ -3591,7 +3608,7 @@ mod tests {
             None,
         );
         assert!(matches!(
-            radial_layout.paint.background_image,
+            radial_layout.paint.primary_background_image(),
             Some(BackgroundImage::Gradient(CssGradient::Radial(_)))
         ));
     }

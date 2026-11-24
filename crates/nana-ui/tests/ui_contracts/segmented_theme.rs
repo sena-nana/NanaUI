@@ -46,7 +46,7 @@ fn mounted_segmented_and_tabs_options_grow_with_typography_and_keep_complete_lab
             let layout = std::sync::Arc::make_mut(&mut reference_style.layout);
             layout.theme.control_typography(size);
             layout.theme.font_weight = Some(ThemeToken::Weight(TextWeight::Medium).into());
-            layout.white_space_nowrap = true;
+            layout.white_space = nana_ui_core::WhiteSpaceSpec::Nowrap;
             let reference = cx
                 .create_detached_component(id, Text::new("暗色").style(reference_style))
                 .unwrap();

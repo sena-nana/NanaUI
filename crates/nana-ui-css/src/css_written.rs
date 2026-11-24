@@ -10,7 +10,7 @@
 
 use std::sync::OnceLock;
 
-use nana_ui_core::LayoutFieldMask;
+use nana_ui_core::LayoutStyleChange;
 
 use crate::LayoutStyle;
 use crate::css_cascade::DeclarationEntry;
@@ -22,10 +22,10 @@ use crate::rust_expr::emit_patch_stmt;
 pub struct WrittenLayout {
     pub layout: LayoutStyle,
     pub written: Vec<String>,
-    /// Coarse ownership groups written by the declaration set. The original
+    /// Ownership groups written by the declaration set. The original
     /// paths remain available for code generation; the mask lets a resolver
     /// classify invalidation without reparsing CSS.
-    pub field_mask: LayoutFieldMask,
+    pub field_mask: LayoutStyleChange,
 }
 
 impl WrittenLayout {
@@ -276,9 +276,6 @@ impl WrittenLayout {
             for (l_s, d_s) in lp.box_shadows.iter_mut().zip(dp.box_shadows.iter()) {
                 merge_pair_opt(&mut l_s.paint_color, d_s.paint_color, l_s.color, d_s.color);
             }
-            if let (Some(ls), Some(ds)) = (&mut lp.text_shadow, &dp.text_shadow) {
-                merge_pair_opt(&mut ls.paint_color, ds.paint_color, ls.color, ds.color);
-            }
             for (l_s, d_s) in lp.text_shadows.iter_mut().zip(dp.text_shadows.iter()) {
                 merge_pair_opt(&mut l_s.paint_color, d_s.paint_color, l_s.color, d_s.color);
             }
@@ -294,11 +291,6 @@ impl WrittenLayout {
                 && let (Some(ls), Some(ds)) = (&mut lf.drop_shadow, &df.drop_shadow)
             {
                 merge_pair_opt(&mut ls.paint_color, ds.paint_color, ls.color, ds.color);
-            }
-            if let (Some(BackgroundImage::Gradient(lg)), Some(BackgroundImage::Gradient(dg))) =
-                (&mut lp.background_image, &dp.background_image)
-            {
-                merge_gradient(lg, dg);
             }
             for (ll, dl) in lp
                 .background_layers
@@ -336,9 +328,9 @@ pub fn written_layout_in(
     let mut over_witness = witness_layout.clone();
     declarations(&mut over_witness, vars);
     let written = layout.collect_written_leaves(default, &over_witness, witness_layout);
-    let field_mask = written.iter().fold(LayoutFieldMask::NONE, |mask, path| {
-        mask.union(LayoutFieldMask::from_property(path))
-    });
+    let field_mask = default
+        .changed_fields(&layout)
+        .union(witness_layout.changed_fields(&over_witness));
     WrittenLayout {
         layout,
         written,

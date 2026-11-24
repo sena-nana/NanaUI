@@ -19,7 +19,7 @@ mod invalidation_classification {
 
     use nana_ui_core::{
         BoxShadowSpec, InvalidationKind, InvalidationReason, LayoutDependencyFootprint,
-        LayoutFieldMask, LayoutInvalidation, LayoutStyle, LengthSpec, PaintTransform,
+        LayoutInvalidation, LayoutStyle, LayoutStyleChange, LengthSpec, PaintTransform,
         SemanticColorRole, VisibilitySpec, WorkCounters,
     };
 
@@ -131,7 +131,7 @@ mod invalidation_classification {
             "{cause:?}"
         );
         assert!(
-            cause.changed_inputs.contains(LayoutFieldMask::SIZING),
+            cause.changed_inputs.contains(LayoutStyleChange::SIZING),
             "{cause:?}"
         );
         assert!(cause.kind.contains(InvalidationKind::MEASURE), "{cause:?}");
@@ -163,7 +163,7 @@ mod invalidation_classification {
             queued
                 .invalidation
                 .changed_inputs
-                .contains(LayoutFieldMask::SIZING)
+                .contains(LayoutStyleChange::SIZING)
         );
         assert!(
             context
@@ -269,7 +269,11 @@ mod invalidation_classification {
         assert_eq!(small.validation_nodes_scanned, Some(0));
         assert_eq!(small.frontier_seeds, 1);
         assert_eq!(small_cause, large_cause);
-        assert!(small_cause.changed_inputs.contains(LayoutFieldMask::SIZING));
+        assert!(
+            small_cause
+                .changed_inputs
+                .contains(LayoutStyleChange::SIZING)
+        );
     }
 
     /// Gate A, on published results. A layout field of the column does not hide
@@ -439,7 +443,7 @@ mod invalidation_classification {
         );
         let cause = context.world().pending_layout_invalidation(row);
         assert!(cause.reason.contains(InvalidationReason::STYLE));
-        assert!(cause.changed_inputs.contains(LayoutFieldMask::SIZING));
+        assert!(cause.changed_inputs.contains(LayoutStyleChange::SIZING));
     }
 
     /// Gate D. One thousand effective-equivalent width writes on a 10k-row
@@ -3480,7 +3484,7 @@ mod scaling_matrix {
                 b.queue.set_style(
                     label,
                     styled(LayoutStyle {
-                        white_space_nowrap: true,
+                        white_space: nana_ui_core::WhiteSpaceSpec::Nowrap,
                         ..LayoutStyle::default()
                     }),
                 );
@@ -3571,7 +3575,7 @@ mod scaling_matrix {
                 b.queue.set_style(
                     label,
                     styled(LayoutStyle {
-                        white_space_nowrap: true,
+                        white_space: nana_ui_core::WhiteSpaceSpec::Nowrap,
                         ..LayoutStyle::default()
                     }),
                 );

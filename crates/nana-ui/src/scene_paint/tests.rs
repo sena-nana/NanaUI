@@ -6154,8 +6154,11 @@ fn paint_surface_quad_node(
         nana_ui_core::LayoutStyle {
             background: Some(background),
             paint: nana_ui_core::PaintStyle {
-                background_image: surface.background_image.clone(),
-                background_layers: surface.background_layers.clone(),
+                background_layers: surface
+                    .background_image
+                    .into_iter()
+                    .chain(surface.background_layers)
+                    .collect(),
                 content_image: surface.content_image.clone(),
                 mask: surface.mask.clone(),
                 border_image: surface.border_image.clone(),
@@ -13265,7 +13268,7 @@ fn long_line_editor() -> (AppContext, DocumentId, StableNodeId) {
         nana_ui_runtime::TextArea::new("let horizontally_scrolled = editor.value(); // ".repeat(6));
     {
         let layout = Arc::make_mut(&mut view.style.layout);
-        layout.white_space_nowrap = true;
+        layout.white_space = nana_ui_core::WhiteSpaceSpec::Nowrap;
         layout.font_size = Some(16.0);
         layout.margin_left = Some(LengthSpec::Px(10.3));
         layout.margin_top = Some(LengthSpec::Px(4.6));

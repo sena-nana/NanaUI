@@ -202,7 +202,7 @@ overlay! {
         align_content, justify_content, justify_items, justify_self, flex_grow,
         flex_shrink, flex_basis, adaptation, overflow_x, overflow_y,
         text_overflow_ellipsis, pointer_events, inert, cursor, user_select,
-        white_space_nowrap, white_space, aspect_ratio, text_align,
+        white_space, aspect_ratio, text_align,
         font_size, font_weight, font_italic, line_height, color, hidden,
         opacity, background, border_radius, border_width, border_color,
         border_style,
@@ -333,9 +333,9 @@ overlay! {
 overlay! {
     PaintStyle {
         background_material, border_material, text_material, visibility,
-        border_radii, box_shadows, scrollbar, scroll_edge_fade, text_shadow,
+        border_radii, box_shadows, scrollbar, scroll_edge_fade,
         text_shadows, text_stroke, paint_order_stroke_first, mix_blend,
-        wide_filter_blur, motion_shutter, unsupported_border_image, border_image, background_image, background_layers,
+        wide_filter_blur, motion_shutter, unsupported_border_image, border_image, background_layers,
         background_size_list, background_size_lengths, background_position_list,
         background_repeat_list, content_image, skipped_replaced, object_fit,
         object_position, mask, clip_path, filter, backdrop_filter,

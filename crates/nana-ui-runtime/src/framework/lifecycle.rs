@@ -119,7 +119,7 @@ impl AppContext {
             layout.flex_shrink = Some(1.0);
             layout.allow_shrink = true;
             layout.min_width = Some(LengthSpec::Px(0.0));
-            layout.white_space_nowrap = true;
+            layout.white_space = nana_ui_core::WhiteSpaceSpec::Nowrap;
             layout.text_overflow_ellipsis = true;
             layout.hidden = hidden;
             style
@@ -139,7 +139,7 @@ impl AppContext {
             // overflow and never false-triggers `text-overflow: ellipsis`.
             layout.allow_shrink = true;
             layout.text_overflow_ellipsis = true;
-            layout.white_space_nowrap = true;
+            layout.white_space = nana_ui_core::WhiteSpaceSpec::Nowrap;
             layout.hidden = hidden;
             if is_detail {
                 layout.flex_grow = Some(1.0);

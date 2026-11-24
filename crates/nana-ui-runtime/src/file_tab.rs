@@ -210,7 +210,7 @@ impl AppContext {
             });
             let layout = Arc::make_mut(&mut text.style.layout);
             // 名字过长省略号截断:不换行 + 收缩 + 挂在 tab 的最大宽度下。
-            layout.white_space_nowrap = true;
+            layout.white_space = nana_ui_core::WhiteSpaceSpec::Nowrap;
             layout.text_overflow_ellipsis = true;
             layout.min_width = Some(LengthSpec::Px(0.0));
             layout.flex_shrink = Some(1.0);

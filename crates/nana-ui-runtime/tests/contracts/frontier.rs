@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use nana_ui_core::LengthSpec;
 use nana_ui_core::{
-    InvalidationKind, InvalidationReason, LayoutDependencyFootprint, LayoutFieldMask,
-    LayoutInvalidation, LayoutInvalidationSource,
+    InvalidationKind, InvalidationReason, LayoutDependencyFootprint, LayoutInvalidation,
+    LayoutInvalidationSource, LayoutStyleChange,
 };
 use nana_ui_runtime::{
     DocumentId, LayoutDependencyGraph, LayoutFrontier, LayoutFrontierSeed, LayoutStyle,
@@ -68,7 +68,7 @@ fn mutation_authority_emits_typed_style_seed() {
     assert!(
         seed.invalidation
             .changed_inputs
-            .intersects(LayoutFieldMask::SIZING)
+            .intersects(LayoutStyleChange::SIZING)
     );
     assert!(
         seed.invalidation
@@ -101,7 +101,7 @@ fn dependency_graph_keeps_top_down_and_context_work_local() {
             LayoutInvalidationSource::Runtime,
             InvalidationReason::PARENT_CONSTRAINT,
             InvalidationKind::MEASURE,
-            LayoutFieldMask::SIZING,
+            LayoutStyleChange::SIZING,
             LayoutDependencyFootprint::CONSUMES_PARENT_INLINE_CONSTRAINT,
         ),
     );
@@ -117,7 +117,7 @@ fn dependency_graph_keeps_top_down_and_context_work_local() {
             LayoutInvalidationSource::Runtime,
             InvalidationReason::SIBLING,
             InvalidationKind::CONTEXT_REFLOW,
-            LayoutFieldMask::ALIGNMENT,
+            LayoutStyleChange::ALIGNMENT,
             LayoutDependencyFootprint::DEPENDS_ON_SIBLING_PREFIX,
         ),
     );
@@ -151,7 +151,7 @@ fn dependency_graph_respects_isolated_seed_boundary() {
                 LayoutInvalidationSource::Text,
                 InvalidationReason::TEXT,
                 InvalidationKind::MEASURE,
-                LayoutFieldMask::TYPOGRAPHY,
+                LayoutStyleChange::TYPOGRAPHY,
                 LayoutDependencyFootprint::EXPORTS_INTRINSIC_INLINE
                     .union(LayoutDependencyFootprint::DEPENDS_ON_CHILD_METRICS),
             ),

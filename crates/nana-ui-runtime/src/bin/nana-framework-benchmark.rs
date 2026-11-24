@@ -191,7 +191,7 @@ fn wrapped_cell_style() -> NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
             width: Some(LengthSpec::Px(TABLE_COLUMN_EXTENT)),
             max_width: Some(LengthSpec::Px(TABLE_COLUMN_EXTENT)),
-            white_space_nowrap: false,
+            white_space: nana_ui_core::WhiteSpaceSpec::Normal,
             padding_left: Some(LengthSpec::Px(nana_ui_core::UI_METRICS.list_item_padding_x)),
             padding_right: Some(LengthSpec::Px(nana_ui_core::UI_METRICS.list_item_padding_x)),
             ..nana_ui_core::LayoutStyle::default()

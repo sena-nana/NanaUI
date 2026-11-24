@@ -196,10 +196,10 @@ fn asynchronous_image_completion_repaints_static_output_then_returns_to_zero_wor
         base64::engine::general_purpose::STANDARD.encode(bytes.into_inner())
     );
     let mut style = LayoutStyle::default();
-    style.paint.background_image = Some(
+    style.paint.background_layers = vec![
         BackgroundImage::url_with_fit(url, BackgroundImageFit::Stretch)
             .with_sampling(ImageSampling::Resample),
-    );
+    ];
     let mut scene = UiScene::new();
     scene.apply_delta([quad(style)], []);
     let projection = scene.projection_revision();

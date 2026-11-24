@@ -392,12 +392,9 @@ pub fn css_text_effects(style: &nana_ui_core::LayoutStyle) -> SceneTextEffects {
     let paint_of = |paint: Option<nana_ui_core::PaintColor>, srgb: [f32; 4]| {
         paint.unwrap_or(nana_ui_core::PaintColor::srgb(srgb))
     };
-    let layers: Vec<nana_ui_core::TextShadowSpec> = if style.paint.text_shadows.is_empty() {
-        style.paint.text_shadow.into_iter().collect()
-    } else {
-        style.paint.text_shadows.clone()
-    };
-    let shadows: Arc<[nana_ui_core::RichTextShadow]> = layers
+    let shadows: Arc<[nana_ui_core::RichTextShadow]> = style
+        .paint
+        .text_shadows
         .iter()
         .take(nana_ui_core::MAX_TEXT_SHADOWS)
         .map(|shadow| nana_ui_core::RichTextShadow {

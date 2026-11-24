@@ -2,17 +2,15 @@
 
 use nana_ui_core::{DisplaySpec, FontSizeContext, LayoutStyle, PositionSpec};
 
-use crate::StableNodeId;
-use crate::{LayoutBox, ScrollOffset};
-use std::collections::{HashMap, HashSet};
+use crate::{LayoutBox, NodeMap, NodeSet, ScrollOffset, StableNodeId};
 
 /// Dependency index for sticky branches. A scroll visits its own dependents,
 /// never all sticky nodes in every document. Topology changes rebind only the
 /// moved subtree's registered branches.
 #[derive(Debug, Clone, Default)]
 pub struct StickyDependencies {
-    ancestors: HashMap<StableNodeId, Vec<StableNodeId>>,
-    dependents: HashMap<StableNodeId, HashSet<StableNodeId>>,
+    ancestors: NodeMap<Vec<StableNodeId>>,
+    dependents: NodeMap<NodeSet>,
 }
 
 impl StickyDependencies {
@@ -175,16 +173,9 @@ fn project_sticky(
     scroll: [f32; 2],
     writing: nana_ui_core::WritingContext,
 ) -> [f32; 2] {
-    let mut physical;
-    let style = if style.has_logical_box_edges() {
-        physical = style.clone();
-        physical.resolve_logical_box_edges_in(node_writing);
-        &physical
-    } else {
-        style
-    };
     let fonts = FontSizeContext::new(nana_ui_core::FontSizeContext::DEFAULT_ROOT_PX, font_size);
-    let margin = style.resolved_margin_against_fonts(
+    let (margin, offsets) = style.resolved_sticky_edges_in(
+        node_writing,
         Some(writing.inline_size(containing.width, containing.height)),
         fonts,
     );
@@ -199,8 +190,8 @@ fn project_sticky(
         containing.width,
         margin.left,
         margin.right,
-        inset(style.offset_left, viewport.width),
-        inset(style.offset_right, viewport.width),
+        inset(offsets[3], viewport.width),
+        inset(offsets[1], viewport.width),
         writing.physical_axis_reversed(nana_ui_core::FlexDirection::Row),
     );
     let y = sticky_axis(
@@ -213,8 +204,8 @@ fn project_sticky(
         containing.height,
         margin.top,
         margin.bottom,
-        inset(style.offset_top, viewport.height),
-        inset(style.offset_bottom, viewport.height),
+        inset(offsets[0], viewport.height),
+        inset(offsets[2], viewport.height),
         writing.physical_axis_reversed(nana_ui_core::FlexDirection::Column),
     );
     [x, y]

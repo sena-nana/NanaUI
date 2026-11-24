@@ -52,8 +52,8 @@ use std::{
 };
 
 use nana_ui_core::{
-    InvalidationKind, InvalidationReason, LayoutDependencyFootprint, LayoutFieldMask,
-    LayoutInvalidation, LayoutInvalidationSource, LayoutStyle, LengthSpec, PointerEventsSpec,
+    InvalidationKind, InvalidationReason, LayoutDependencyFootprint, LayoutInvalidation,
+    LayoutInvalidationSource, LayoutStyle, LayoutStyleChange, LengthSpec, PointerEventsSpec,
     PositionSpec, SemanticColorRole, SemanticPalette, StyleModelRef, ThemeAppearance,
     ThemeWorkCounters,
 };
@@ -1734,7 +1734,7 @@ impl UiWorld {
                     LayoutInvalidationSource::Runtime,
                     InvalidationReason::UNKNOWN,
                     InvalidationKind::ALL,
-                    LayoutFieldMask::ALL,
+                    LayoutStyleChange::ALL,
                     LayoutDependencyFootprint::ALL,
                 ),
             );
@@ -1861,7 +1861,7 @@ impl UiWorld {
                 InvalidationKind::TOPOLOGY
                     .union(InvalidationKind::MEASURE)
                     .union(InvalidationKind::PLACEMENT),
-                LayoutFieldMask::FLOW,
+                LayoutStyleChange::FLOW,
                 LayoutDependencyFootprint::ALL,
             ),
         );
@@ -1885,7 +1885,7 @@ impl UiWorld {
                 InvalidationKind::TOPOLOGY
                     .union(InvalidationKind::MEASURE)
                     .union(InvalidationKind::PLACEMENT),
-                LayoutFieldMask::FLOW,
+                LayoutStyleChange::FLOW,
                 LayoutDependencyFootprint::intrinsic_container()
                     .union(LayoutDependencyFootprint::EXPORTS_BASELINE),
             ),
@@ -6601,7 +6601,7 @@ impl UiWorld {
             LayoutInvalidationSource::Viewport,
             InvalidationReason::VIEWPORT,
             InvalidationKind::MEASURE.union(InvalidationKind::PLACEMENT),
-            LayoutFieldMask::SIZING,
+            LayoutStyleChange::SIZING,
             axes,
         );
         let basis = LayoutInvalidation {
@@ -7977,7 +7977,7 @@ impl UiWorld {
                     LayoutInvalidationSource::Runtime,
                     InvalidationReason::UNKNOWN,
                     InvalidationKind::ALL,
-                    LayoutFieldMask::ALL,
+                    LayoutStyleChange::ALL,
                     LayoutDependencyFootprint::ALL,
                 ),
             );
@@ -8325,11 +8325,11 @@ impl UiWorld {
         );
         if fixed && (atomic || !display.is_some_and(nana_ui_core::DisplaySpec::is_inline_level)) {
             let (kind, fields) = if atomic {
-                (InvalidationKind::PLACEMENT, LayoutFieldMask::TYPOGRAPHY)
+                (InvalidationKind::PLACEMENT, LayoutStyleChange::TYPOGRAPHY)
             } else {
                 (
                     InvalidationKind::MEASURE.union(InvalidationKind::PLACEMENT),
-                    LayoutFieldMask::TYPOGRAPHY.union(LayoutFieldMask::INTRINSIC),
+                    LayoutStyleChange::TYPOGRAPHY.union(LayoutStyleChange::INTRINSIC),
                 )
             };
             self.record_layout_invalidation(
@@ -8352,7 +8352,7 @@ impl UiWorld {
                 LayoutInvalidationSource::Text,
                 InvalidationReason::TEXT,
                 InvalidationKind::MEASURE.union(InvalidationKind::PLACEMENT),
-                LayoutFieldMask::TYPOGRAPHY.union(LayoutFieldMask::INTRINSIC),
+                LayoutStyleChange::TYPOGRAPHY.union(LayoutStyleChange::INTRINSIC),
                 METRIC_EXPORTS,
             ),
         );
@@ -8368,7 +8368,7 @@ impl UiWorld {
                         LayoutInvalidationSource::Text,
                         InvalidationReason::TEXT,
                         InvalidationKind::PLACEMENT,
-                        LayoutFieldMask::FLOW,
+                        LayoutStyleChange::FLOW,
                         LayoutDependencyFootprint::NONE,
                     ),
                 );
@@ -8386,7 +8386,7 @@ impl UiWorld {
                         LayoutInvalidationSource::Text,
                         InvalidationReason::TEXT,
                         InvalidationKind::MEASURE.union(InvalidationKind::PLACEMENT),
-                        LayoutFieldMask::INTRINSIC.union(LayoutFieldMask::FLOW),
+                        LayoutStyleChange::INTRINSIC.union(LayoutStyleChange::FLOW),
                         LayoutDependencyFootprint::DEPENDS_ON_CHILD_METRICS,
                     ),
                 );
@@ -8960,36 +8960,7 @@ fn layout_style_invalidation(
     let scroll = changed.intersects(Change::SCROLL);
     // Border widths and styles take or give room without a group of their
     // own: classified as everything, as before.
-    let border = changed.intersects(Change::BORDER_GEOMETRY.union(Change::BORDER_STYLE));
-
-    let mut fields = LayoutFieldMask::NONE;
-    if flow {
-        fields = fields.union(LayoutFieldMask::FLOW);
-    }
-    if sizing {
-        fields = fields.union(LayoutFieldMask::SIZING);
-    }
-    if spacing {
-        fields = fields.union(LayoutFieldMask::SPACING);
-    }
-    if position {
-        fields = fields.union(LayoutFieldMask::POSITION);
-    }
-    if alignment {
-        fields = fields.union(LayoutFieldMask::ALIGNMENT);
-    }
-    if grid {
-        fields = fields.union(LayoutFieldMask::GRID);
-    }
-    if typography || writing {
-        fields = fields.union(LayoutFieldMask::TYPOGRAPHY);
-    }
-    if scroll {
-        fields = fields.union(LayoutFieldMask::SCROLL);
-    }
-    if border || fields == LayoutFieldMask::NONE {
-        fields = LayoutFieldMask::ALL;
-    }
+    let fields = changed.intersection(Change::LAYOUT);
 
     let mut kind = if position
         && !sizing

@@ -3050,7 +3050,7 @@ mod tests {
             "{compact}"
         );
         assert!(
-            compact.contains("__nana_patch::set::paint::background_image("),
+            compact.contains("__nana_patch::set::paint::background_layers("),
             "{compact}"
         );
         assert!(

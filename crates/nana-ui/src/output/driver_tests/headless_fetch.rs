@@ -57,10 +57,10 @@ fn scene() -> Arc<UiScene> {
         .create_component(
             id,
             Stack::fill_column(0.0).with_layout(|layout| {
-                layout.paint.background_image = Some(
+                layout.paint.background_layers = vec![
                     BackgroundImage::url_with_fit(URL, BackgroundImageFit::Stretch)
                         .with_sampling(ImageSampling::Resample),
-                );
+                ];
             }),
         )
         .unwrap();

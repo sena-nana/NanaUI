@@ -1122,14 +1122,14 @@ pub(super) fn ifc_line_measure_delta_begin(
         if !scope.affected.contains(&child) {
             continue;
         }
-        let current = nodes.style(child);
+        let current = nodes.style_ref(child);
         let child_style = current.as_deref()?;
         if !ifc_local_child(child_style) {
             return None;
         }
-        let cached_style = plan.entry(child).and_then(|entry| entry.style.clone());
+        let cached_style = plan.entry(child).and_then(|entry| entry.style.as_ref());
         if !scope.measure.contains(&child) {
-            if !retained_style_matches(&current, &cached_style) {
+            if !retained_style_matches(current.as_ref(), cached_style) {
                 return None;
             }
             continue;

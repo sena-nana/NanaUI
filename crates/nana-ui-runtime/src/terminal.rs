@@ -399,7 +399,7 @@ impl AppContext {
                         if !selected {
                             layout.background = background;
                         }
-                        layout.white_space_nowrap = true;
+                        layout.white_space = nana_ui_core::WhiteSpaceSpec::Nowrap;
                         layout.overflow_x = OverflowSpec::Hidden;
                         layout.overflow_y = OverflowSpec::Hidden;
                         ui.child(
