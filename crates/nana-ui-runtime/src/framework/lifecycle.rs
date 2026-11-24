@@ -1540,7 +1540,10 @@ impl AppContext {
             .get(&id)
             .and_then(|view| view.downcast_ref::<IconButton>())
         {
-            return (!button.disabled).then(|| button.tooltip.clone()).flatten();
+            return (!button.disabled)
+                .then(|| button.tooltip.clone())
+                .flatten()
+                .filter(|tip| !tip.label.is_empty());
         }
         if let Some(item) = self
             .store
@@ -2078,6 +2081,17 @@ impl AppContext {
                 | TooltipPlacement::Bottom
                 | TooltipPlacement::FollowCursor => unreachable!(),
             }
+        } else if config.placement == TooltipPlacement::FollowCursor {
+            // Horizontal overflow is clamped independently, so vertical flip must
+            // only check vertical room; otherwise a top-right corner pointer keeps
+            // `follow_above` and clamps down over the pointer.
+            let fits_y = |y: f32| y >= padding && y + height <= viewport.height - padding;
+            let y = if fits_y(follow_above.1) || !fits_y(follow_below.1) {
+                follow_above.1
+            } else {
+                follow_below.1
+            };
+            (cursor.0, y)
         } else if fits(preferred) || !fits(opposite) {
             preferred
         } else {

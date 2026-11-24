@@ -673,12 +673,12 @@ fn place_tooltip(
     } else {
         left
     };
-    let below = y + gap;
     let above = y - gap - size[1];
-    let py = if below + size[1] <= viewport.height - padding || above < padding {
-        below
-    } else {
+    let below = y + gap;
+    let py = if above >= padding || below + size[1] > viewport.height - padding {
         above
+    } else {
+        below
     };
     let max_x = (viewport.width - padding - size[0]).max(padding);
     let max_y = (viewport.height - padding - size[1]).max(padding);
@@ -809,6 +809,23 @@ mod tests {
             !context
                 .read(tooltip, |tooltip| tooltip.style.layout.hidden)
                 .unwrap()
+        );
+        let (tip_x, tip_y, tip_h) = context
+            .read(tooltip, |tooltip| {
+                (
+                    tooltip.style.layout.offset_left,
+                    tooltip.style.layout.offset_top,
+                    tooltip.style.layout.height,
+                )
+            })
+            .unwrap();
+        assert!(
+            matches!(tip_x, Some(LengthSpec::Px(px)) if px > x),
+            "chart tooltip should prefer the pointer's right side ({x}), got {tip_x:?}"
+        );
+        assert!(
+            matches!((tip_y, tip_h), (Some(LengthSpec::Px(py)), Some(LengthSpec::Px(h))) if py + h < y),
+            "chart tooltip should prefer above the pointer ({y}), got {tip_y:?} + {tip_h:?}"
         );
         // The same category again changes nothing.
         let before = context.read(chart, |chart| chart.hover).unwrap();

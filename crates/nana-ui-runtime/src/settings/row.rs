@@ -1311,13 +1311,7 @@ fn help_button(hint: &Arc<str>, open: bool) -> crate::IconButton {
         .compact(true)
         .expanded(open);
     if !open {
-        button = button.tooltip(
-            Arc::clone(hint),
-            nana_ui_core::TooltipConfig {
-                placement: nana_ui_core::TooltipPlacement::Bottom,
-                ..nana_ui_core::TooltipConfig::default()
-            },
-        );
+        button = button.with_tooltip(Arc::clone(hint));
     }
     let overhang = (nana_ui_core::SpacingTokens::DEFAULT.page
         - nana_ui_core::TypographyTokens::DEFAULT.body)

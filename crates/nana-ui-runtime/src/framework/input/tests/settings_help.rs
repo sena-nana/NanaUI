@@ -153,6 +153,10 @@ fn a_click_on_the_help_button_opens_the_hint_and_another_closes_it() {
     };
     let preview = tooltip(&f).expect("hovering previews the hint");
     assert_eq!(&*f.cx.read(preview, |tip| tip.label.clone()).unwrap(), HINT);
+    assert_eq!(
+        f.cx.read(preview, |tip| tip.config.placement).unwrap(),
+        nana_ui_core::TooltipPlacement::FollowCursor
+    );
 
     f.tap(PointerType::Mouse);
     assert!(f.open());

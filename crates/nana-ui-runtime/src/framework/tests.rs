@@ -9957,6 +9957,66 @@ fn tooltip_default_follows_pointer_as_a_compact_card() {
 }
 
 #[test]
+fn follow_cursor_tooltip_flips_below_when_top_right_corner_overflows_both_axes() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let button = context
+        .create_component(
+            document,
+            IconButton::new(nana_ui_core::Icon::About, "Details").tooltip(
+                "Top right corner tooltip text",
+                nana_ui_core::TooltipConfig {
+                    delay_ms: 0,
+                    ..nana_ui_core::TooltipConfig::default()
+                },
+            ),
+        )
+        .unwrap();
+    let tooltip = context.icon_button_tooltip(button).unwrap().unwrap();
+    context
+        .layout_document(document, crate::LayoutViewport::new(200.0, 120.0))
+        .unwrap();
+    let mut layout = MutationQueue::new();
+    layout.write_layout(
+        button.stable_id(),
+        crate::LayoutBox {
+            x: 168.0,
+            y: 4.0,
+            width: 28.0,
+            height: 28.0,
+        },
+    );
+    context.commit_mutations(layout).unwrap();
+
+    // Pointer sits in the top-right corner where `x + width` overflows the right edge
+    // AND `y - height - gap` overflows the top edge.
+    context.set_pointer_location(document, 1, Some((184.0, 12.0)));
+    context
+        .set_pointer_hover_at(document, 1, Some(button.stable_id()), Duration::ZERO)
+        .unwrap();
+    let tooltip_style = context.world().node_style(tooltip.stable_id()).unwrap();
+    let gap = nana_ui_core::TooltipConfig::default().gap;
+    assert!(
+        matches!(
+            tooltip_style.layout.offset_top,
+            Some(LengthSpec::Px(y)) if y >= 12.0 + gap - 0.01
+        ),
+        "top-right FollowCursor tooltip should flip below the pointer (y >= {}), got {:?}",
+        12.0 + gap,
+        tooltip_style.layout.offset_top
+    );
+    let max_x = 200.0 - nana_ui_core::TooltipConfig::default().viewport_padding;
+    assert!(
+        matches!(
+            tooltip_style.layout.offset_left,
+            Some(LengthSpec::Px(x)) if x < 184.0 && x >= nana_ui_core::TooltipConfig::default().viewport_padding && x < max_x
+        ),
+        "horizontal position should clamp inside viewport, got {:?}",
+        tooltip_style.layout.offset_left
+    );
+}
+
+#[test]
 fn loading_components_schedule_only_while_loading() {
     let mut context = AppContext::new();
     let document = DocumentId::new(1).unwrap();
