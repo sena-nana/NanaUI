@@ -9,7 +9,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -41,7 +41,9 @@ use windows::Win32::Graphics::Direct3D11::{
 };
 use windows::Win32::Graphics::Dxgi::IDXGIDevice;
 use windows::Win32::Graphics::Gdi::ScreenToClient;
-use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
+use windows::Win32::System::Com::{
+    COINIT_APARTMENTTHREADED, CoIncrementMTAUsage, CoInitializeEx, CoUninitialize,
+};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::System::WinRT::Composition::ICompositorDesktopInterop;
@@ -49,7 +51,8 @@ use windows::Win32::System::WinRT::Direct3D11::{
     CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess,
 };
 use windows::Win32::System::WinRT::{
-    CreateDispatcherQueueController, DQTAT_COM_STA, DQTYPE_THREAD_CURRENT, DispatcherQueueOptions,
+    CreateDispatcherQueueController, DQTAT_COM_NONE, DQTAT_COM_STA, DQTYPE_THREAD_CURRENT,
+    DispatcherQueueOptions,
 };
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -57,12 +60,13 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AdjustWindowRectEx, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
-    DestroyWindow, DispatchMessageW, GetMessageW, HCURSOR, HTCLIENT, MSG, PM_NOREMOVE,
+    DestroyWindow, DispatchMessageW, GetMessageW, HCURSOR, HTCLIENT, KillTimer, MSG, PM_NOREMOVE,
     PeekMessageW, PostThreadMessageW, RegisterClassExW, SW_HIDE, SW_SHOWNORMAL, SWP_NOMOVE,
-    SWP_NOZORDER, SetCursor, SetForegroundWindow, SetWindowPos, SetWindowTextW, ShowWindow,
-    TranslateMessage, WM_APP, WM_CLOSE, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
-    WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR,
-    WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSEXW, WS_EX_APPWINDOW, WS_OVERLAPPEDWINDOW,
+    SWP_NOZORDER, SetCursor, SetForegroundWindow, SetTimer, SetWindowPos, SetWindowTextW,
+    ShowWindow, TranslateMessage, WM_APP, WM_CLOSE, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN,
+    WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP,
+    WM_SETCURSOR, WM_TIMER, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSEXW, WS_EX_APPWINDOW,
+    WS_OVERLAPPEDWINDOW,
 };
 use windows::core::{BOOL, HSTRING, IInspectable, Interface, PCWSTR, PWSTR, Ref, w};
 use windows_numerics::Vector2;
@@ -83,11 +87,15 @@ enum Request {
 struct Shared {
     events: Mutex<SurfaceEvents>,
     revision: AtomicU64,
+    closed: AtomicBool,
     wake: WebSurfaceWake,
 }
 
 impl Shared {
     fn publish(&self, event: WebSurfaceEvent) {
+        if self.closed.load(Ordering::Acquire) {
+            return;
+        }
         let revision = self.revision.load(Ordering::Acquire);
         if let Ok(mut events) = self.events.lock() {
             events.publish(revision, event);
@@ -114,6 +122,7 @@ impl PlatformSurface {
         let shared = Arc::new(Shared {
             events: Mutex::default(),
             revision: AtomicU64::new(0),
+            closed: AtomicBool::new(false),
             wake,
         });
         let (requests, receiver) = std::sync::mpsc::channel();
@@ -182,6 +191,7 @@ impl PlatformSurface {
 
 impl Drop for PlatformSurface {
     fn drop(&mut self) {
+        self.shared.closed.store(true, Ordering::Release);
         if let Ok(mut events) = self.shared.events.lock() {
             events.close();
         }
@@ -203,10 +213,14 @@ struct Capturer {
     last: Option<Instant>,
     size: [u32; 2],
     sequence: u64,
+    closed: bool,
 }
 
 impl Capturer {
     fn frame_arrived(&mut self, pool: &Direct3D11CaptureFramePool) -> windows::core::Result<()> {
+        if self.closed {
+            return Ok(());
+        }
         let frame = pool.TryGetNextFrame()?;
         let Some(interval) = self.interval else {
             return Ok(());
@@ -284,25 +298,40 @@ struct Capture {
     _item: GraphicsCaptureItem,
     pool: Direct3D11CaptureFramePool,
     session: GraphicsCaptureSession,
+    frame_arrived_token: i64,
 }
 
 impl Drop for Capture {
     fn drop(&mut self) {
         let _ = self.session.Close();
+        let _ = self.pool.RemoveFrameArrived(self.frame_arrived_token);
         let _ = self.pool.Close();
     }
+}
+
+#[derive(Default)]
+struct EventTokens {
+    navigation_starting: Option<i64>,
+    navigation_completed: Option<i64>,
+    source_changed: Option<i64>,
+    document_title_changed: Option<i64>,
+    new_window_requested: Option<i64>,
+    process_failed: Option<i64>,
+    cursor_changed: Option<i64>,
 }
 
 struct Engine {
     hwnd: HWND,
     policy: BrowserPolicy,
     shared: Arc<Shared>,
-    compositor: Compositor,
+    // Drop the child visual before its compositor.
     root: ContainerVisual,
+    compositor: Compositor,
     target: RefCell<Option<DesktopWindowTarget>>,
     controller: RefCell<Option<ICoreWebView2Controller>>,
     composition: RefCell<Option<ICoreWebView2CompositionController>>,
     webview: RefCell<Option<ICoreWebView2>>,
+    tokens: RefCell<EventTokens>,
     direct3d: IDirect3DDevice,
     capturer: Arc<Mutex<Capturer>>,
     capture: RefCell<Option<Capture>>,
@@ -321,6 +350,63 @@ fn engine() -> Option<Rc<Engine>> {
     ENGINE.with(|engine| engine.borrow().clone())
 }
 
+fn shutdown_dispatcher(dispatcher: DispatcherQueueController) {
+    let thread_id = unsafe { GetCurrentThreadId() };
+    let done = Arc::new(AtomicBool::new(false));
+    let Ok(action) = dispatcher.ShutdownQueueAsync() else {
+        return;
+    };
+    let signal = done.clone();
+    if action
+        .when(move |_| {
+            signal.store(true, Ordering::Release);
+            unsafe {
+                let _ = PostThreadMessageW(thread_id, WM_APP, WPARAM(0), LPARAM(0));
+            }
+        })
+        .is_err()
+    {
+        return;
+    }
+    let timer_id = unsafe { SetTimer(None, 0, 2000, None) };
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut message = MSG::default();
+    while !done.load(Ordering::Acquire) && Instant::now() < deadline {
+        let result = unsafe { GetMessageW(&mut message, None, 0, 0) };
+        if result.0 <= 0 {
+            break;
+        }
+        if message.hwnd.is_invalid()
+            && ((message.message == WM_APP)
+                || (message.message == WM_TIMER && timer_id != 0 && message.wParam.0 == timer_id))
+        {
+            if message.message == WM_TIMER {
+                break;
+            }
+            continue;
+        }
+        unsafe {
+            let _ = TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+    }
+    if timer_id != 0 {
+        unsafe {
+            let _ = KillTimer(None, timer_id);
+        }
+    }
+}
+
+/// Keep COM's MTA alive for the process so `CoUninitialize` on a closing
+/// surface thread never unloads WinRT server DLLs cached in
+/// `windows_core::imp::FactoryCache` (e.g. `Compositor`).
+fn ensure_mta_usage() {
+    static MTA: std::sync::Once = std::sync::Once::new();
+    MTA.call_once(|| unsafe {
+        let _ = CoIncrementMTAUsage();
+    });
+}
+
 fn run(
     policy: BrowserPolicy,
     desc: WebSurfaceDesc,
@@ -328,18 +414,21 @@ fn run(
     shared: Arc<Shared>,
     requests: Receiver<Request>,
 ) {
+    ensure_mta_usage();
     let com = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
     match start(policy, desc, frames, shared.clone()) {
         Ok((engine, dispatcher)) => {
             ENGINE.with(|slot| *slot.borrow_mut() = Some(engine.clone()));
-            if let Err(error) = engine.create_webview() {
+            if let Err(error) = engine.create_webview()
+                && !shared.closed.load(Ordering::Acquire)
+            {
                 engine.fail(error);
             }
             pump(&engine, &requests);
             ENGINE.with(|slot| slot.borrow_mut().take());
             engine.shutdown();
-            let _ = dispatcher.ShutdownQueueAsync();
-            drop(dispatcher);
+            drop(engine);
+            shutdown_dispatcher(dispatcher);
         }
         Err(error) => {
             shared.publish(WebSurfaceEvent::State(BrowserState {
@@ -385,11 +474,19 @@ fn start(
 ) -> Result<(Rc<Engine>, DispatcherQueueController), String> {
     let error = |error: windows::core::Error| error.message();
     unsafe {
-        // Windows.UI.Composition needs a dispatcher queue on this thread.
+        // COM STA is already initialized on this thread; avoid a redundant
+        // apartment initialization, falling back if a host requires it.
         let dispatcher = CreateDispatcherQueueController(DispatcherQueueOptions {
             dwSize: std::mem::size_of::<DispatcherQueueOptions>() as u32,
             threadType: DQTYPE_THREAD_CURRENT,
-            apartmentType: DQTAT_COM_STA,
+            apartmentType: DQTAT_COM_NONE,
+        })
+        .or_else(|_| {
+            CreateDispatcherQueueController(DispatcherQueueOptions {
+                dwSize: std::mem::size_of::<DispatcherQueueOptions>() as u32,
+                threadType: DQTYPE_THREAD_CURRENT,
+                apartmentType: DQTAT_COM_STA,
+            })
         })
         .map_err(error)?;
         let compositor = Compositor::new().map_err(error)?;
@@ -445,12 +542,13 @@ fn start(
                 hwnd,
                 policy,
                 shared,
-                compositor,
                 root,
+                compositor,
                 target: RefCell::new(None),
                 controller: RefCell::new(None),
                 composition: RefCell::new(None),
                 webview: RefCell::new(None),
+                tokens: RefCell::new(EventTokens::default()),
                 direct3d,
                 capturer: Arc::new(Mutex::new(Capturer {
                     device,
@@ -461,6 +559,7 @@ fn start(
                     last: None,
                     size: desc.frame_size(),
                     sequence: 0,
+                    closed: false,
                 })),
                 capture: RefCell::new(None),
                 desc: Cell::new(desc),
@@ -505,7 +604,9 @@ fn republish<A, B>(
     engine: std::rc::Weak<Engine>,
 ) -> impl FnMut(A, B) -> windows::core::Result<()> + 'static {
     move |_, _| {
-        if let Some(engine) = engine.upgrade() {
+        if let Some(engine) = engine.upgrade()
+            && !engine.shared.closed.load(Ordering::Acquire)
+        {
             engine.publish_state();
         }
         Ok(())
@@ -514,6 +615,9 @@ fn republish<A, B>(
 
 impl Engine {
     fn create_webview(self: &Rc<Self>) -> Result<(), String> {
+        if self.shared.closed.load(Ordering::Acquire) {
+            return Ok(());
+        }
         let folder = user_data_folder();
         let (sender, receiver) = std::sync::mpsc::channel();
         CreateCoreWebView2EnvironmentCompletedHandler::wait_for_async_operation(
@@ -531,6 +635,9 @@ impl Engine {
             }),
         )
         .map_err(webview2_error)?;
+        if self.shared.closed.load(Ordering::Acquire) {
+            return Ok(());
+        }
         let environment = receiver.recv().ok().flatten().ok_or("无法启动 WebView2")?;
         let environment: ICoreWebView2Environment3 =
             environment.cast().map_err(|error| error.message())?;
@@ -554,6 +661,14 @@ impl Engine {
             .ok()
             .flatten()
             .ok_or("无法创建 WebView2 视图")?;
+        if self.shared.closed.load(Ordering::Acquire) {
+            if let Ok(controller) = composition.cast::<ICoreWebView2Controller>() {
+                unsafe {
+                    let _ = controller.Close();
+                }
+            }
+            return Ok(());
+        }
         let message = |error: windows::core::Error| error.message();
         unsafe {
             let controller: ICoreWebView2Controller = composition.cast().map_err(message)?;
@@ -590,6 +705,9 @@ impl Engine {
                         let (Some(this), Some(args)) = (this.upgrade(), args) else {
                             return Ok(());
                         };
+                        if this.shared.closed.load(Ordering::Acquire) {
+                            return Ok(());
+                        }
                         let mut uri = PWSTR::null();
                         args.Uri(&mut uri)?;
                         let uri = take_pwstr(uri);
@@ -606,6 +724,7 @@ impl Engine {
                     &mut token,
                 )
                 .map_err(message)?;
+            self.tokens.borrow_mut().navigation_starting = Some(token);
             let this = weak.clone();
             webview
                 .add_NavigationCompleted(
@@ -613,6 +732,9 @@ impl Engine {
                         let (Some(this), Some(args)) = (this.upgrade(), args) else {
                             return Ok(());
                         };
+                        if this.shared.closed.load(Ordering::Acquire) {
+                            return Ok(());
+                        }
                         this.loading.set(false);
                         let mut success = BOOL::default();
                         args.IsSuccess(&mut success)?;
@@ -630,18 +752,21 @@ impl Engine {
                     &mut token,
                 )
                 .map_err(message)?;
+            self.tokens.borrow_mut().navigation_completed = Some(token);
             webview
                 .add_SourceChanged(
                     &SourceChangedEventHandler::create(Box::new(republish(weak.clone()))),
                     &mut token,
                 )
                 .map_err(message)?;
+            self.tokens.borrow_mut().source_changed = Some(token);
             webview
                 .add_DocumentTitleChanged(
                     &DocumentTitleChangedEventHandler::create(Box::new(republish(weak.clone()))),
                     &mut token,
                 )
                 .map_err(message)?;
+            self.tokens.borrow_mut().document_title_changed = Some(token);
             let this = weak.clone();
             webview
                 .add_NewWindowRequested(
@@ -650,6 +775,9 @@ impl Engine {
                         let (Some(this), Some(args)) = (this.upgrade(), args) else {
                             return Ok(());
                         };
+                        if this.shared.closed.load(Ordering::Acquire) {
+                            return Ok(());
+                        }
                         args.SetHandled(true)?;
                         let mut uri = PWSTR::null();
                         args.Uri(&mut uri)?;
@@ -664,11 +792,14 @@ impl Engine {
                     &mut token,
                 )
                 .map_err(message)?;
+            self.tokens.borrow_mut().new_window_requested = Some(token);
             let this = weak.clone();
             webview
                 .add_ProcessFailed(
                     &ProcessFailedEventHandler::create(Box::new(move |_, _| {
-                        if let Some(this) = this.upgrade() {
+                        if let Some(this) = this.upgrade()
+                            && !this.shared.closed.load(Ordering::Acquire)
+                        {
                             *this.error.borrow_mut() = Some("网页进程已退出，正在重新加载".into());
                             this.publish_state();
                             if let Some(webview) = this.webview.borrow().as_ref() {
@@ -680,11 +811,14 @@ impl Engine {
                     &mut token,
                 )
                 .map_err(message)?;
+            self.tokens.borrow_mut().process_failed = Some(token);
             let this = weak.clone();
             composition
                 .add_CursorChanged(
                     &CursorChangedEventHandler::create(Box::new(move |sender, _| {
-                        if let (Some(this), Some(sender)) = (this.upgrade(), sender) {
+                        if let (Some(this), Some(sender)) = (this.upgrade(), sender)
+                            && !this.shared.closed.load(Ordering::Acquire)
+                        {
                             let mut cursor = HCURSOR::default();
                             sender.Cursor(&mut cursor)?;
                             this.cursor.set(Some(cursor));
@@ -697,6 +831,7 @@ impl Engine {
                     &mut token,
                 )
                 .map_err(message)?;
+            self.tokens.borrow_mut().cursor_changed = Some(token);
         }
         Ok(())
     }
@@ -730,6 +865,9 @@ impl Engine {
 
     /// Size, scale, background and capture rate; `force` re-applies all of them.
     fn apply(&self, desc: WebSurfaceDesc, force: bool) {
+        if self.shared.closed.load(Ordering::Acquire) {
+            return;
+        }
         let previous = self.desc.replace(desc);
         let frame = desc.frame_size();
         let resized = force || previous.frame_size() != frame || previous.scale != desc.scale;
@@ -790,7 +928,7 @@ impl Engine {
             },
         )?;
         let capturer = self.capturer.clone();
-        pool.FrameArrived(&TypedEventHandler::new(
+        let frame_arrived_token = pool.FrameArrived(&TypedEventHandler::new(
             move |pool: Ref<Direct3D11CaptureFramePool>, _| {
                 if let (Some(pool), Ok(mut capturer)) = (pool.as_ref(), capturer.lock()) {
                     let _ = capturer.frame_arrived(pool);
@@ -806,6 +944,7 @@ impl Engine {
             _item: item,
             pool,
             session,
+            frame_arrived_token,
         });
         Ok(())
     }
@@ -873,6 +1012,9 @@ impl Engine {
 
     /// Returns false once the owner closed the surface.
     fn drain(&self, requests: &Receiver<Request>) -> bool {
+        if self.shared.closed.load(Ordering::Acquire) {
+            return false;
+        }
         while let Ok(request) = requests.try_recv() {
             match request {
                 Request::Close => return false,
@@ -900,8 +1042,11 @@ impl Engine {
                     self.publish_state();
                 }
             }
+            if self.shared.closed.load(Ordering::Acquire) {
+                return false;
+            }
         }
-        true
+        !self.shared.closed.load(Ordering::Acquire)
     }
 
     fn send_mouse(&self, message: u32, wparam: WPARAM, lparam: LPARAM) -> bool {
@@ -951,19 +1096,79 @@ impl Engine {
         true
     }
 
-    fn shutdown(&self) {
+    fn quiesce_capture(&self) {
+        if let Ok(mut capturer) = self.capturer.lock() {
+            capturer.closed = true;
+        }
+        // Drop Capture outside the capturer lock so an in-flight free-threaded
+        // FrameArrived callback cannot deadlock while waiting on that lock.
         self.capture.borrow_mut().take();
-        if let Some(controller) = self.controller.borrow_mut().take() {
+        if let Ok(mut capturer) = self.capturer.lock() {
+            capturer.staging = None;
+        }
+    }
+
+    fn shutdown(&self) {
+        self.shared.closed.store(true, Ordering::Release);
+        self.quiesce_capture();
+        let tokens = std::mem::take(&mut *self.tokens.borrow_mut());
+        let webview = self.webview.borrow_mut().take();
+        let composition = self.composition.borrow_mut().take();
+        let controller = self.controller.borrow_mut().take();
+        if let Some(webview) = &webview {
             unsafe {
+                if let Some(token) = tokens.navigation_starting {
+                    let _ = webview.remove_NavigationStarting(token);
+                }
+                if let Some(token) = tokens.navigation_completed {
+                    let _ = webview.remove_NavigationCompleted(token);
+                }
+                if let Some(token) = tokens.source_changed {
+                    let _ = webview.remove_SourceChanged(token);
+                }
+                if let Some(token) = tokens.document_title_changed {
+                    let _ = webview.remove_DocumentTitleChanged(token);
+                }
+                if let Some(token) = tokens.new_window_requested {
+                    let _ = webview.remove_NewWindowRequested(token);
+                }
+                if let Some(token) = tokens.process_failed {
+                    let _ = webview.remove_ProcessFailed(token);
+                }
+            }
+        }
+        if let Some(composition) = &composition {
+            unsafe {
+                if let Some(token) = tokens.cursor_changed {
+                    let _ = composition.remove_CursorChanged(token);
+                }
+                let _ = composition.SetRootVisualTarget(None::<&windows::core::IUnknown>);
+            }
+        }
+        if let Some(controller) = &controller {
+            unsafe {
+                let _ = controller.SetIsVisible(false);
                 let _ = controller.Close();
             }
         }
-        self.composition.borrow_mut().take();
-        self.webview.borrow_mut().take();
-        self.target.borrow_mut().take();
+        drop(webview);
+        drop(composition);
+        drop(controller);
+        if let Some(target) = self.target.borrow_mut().take() {
+            let _ = target.SetRoot(None::<&Visual>);
+            let _ = target.Close();
+        }
+        if self.interactive.replace(false) {
+            unsafe {
+                let _ = ReleaseCapture();
+                let _ = ShowWindow(self.hwnd, SW_HIDE);
+            }
+        }
         unsafe {
             let _ = DestroyWindow(self.hwnd);
         }
+        let _ = self.root.Close();
+        let _ = self.compositor.Close();
     }
 }
 
@@ -998,4 +1203,132 @@ unsafe extern "system" fn window_proc(
         }
     }
     unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::WebSurface;
+    use super::*;
+    use std::io::{Read, Write};
+    use std::sync::atomic::AtomicUsize;
+
+    fn serve_animated_page() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let address = format!("http://{}/", listener.local_addr().expect("local addr"));
+        let page = r#"<!doctype html><html><body style="margin:0;background:#246">
+<div id=n style="font:48px sans-serif;color:#fff">0</div>
+<script>let n=0;(function f(){document.getElementById('n').textContent=++n;requestAnimationFrame(f)})()</script>
+</body></html>"#;
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let mut buffer = [0u8; 1024];
+                let _ = stream.read(&mut buffer);
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page}",
+                    page.len()
+                );
+            }
+        });
+        address
+    }
+
+    #[test]
+    fn teardown_after_frames_allows_creating_another_surface() {
+        let url = serve_animated_page();
+        let frames = Arc::new(AtomicUsize::new(0));
+        let sink_frames = frames.clone();
+        let mut first = WebSurface::new(
+            BrowserPolicy { allow_web: true },
+            WebSurfaceDesc {
+                size: [320, 240],
+                max_fps: 30,
+                ..WebSurfaceDesc::default()
+            },
+            Arc::new(move |_| {
+                sink_frames.fetch_add(1, Ordering::Relaxed);
+            }),
+            Arc::new(|| {}),
+        )
+        .expect("create first surface");
+        first
+            .command(1, Some(&WebSurfaceCommand::Navigate(url.clone())))
+            .expect("navigate first");
+        let start = Instant::now();
+        while frames.load(Ordering::Relaxed) == 0 && start.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert!(frames.load(Ordering::Relaxed) > 0, "expected captured frames");
+        drop(first);
+        std::thread::sleep(Duration::from_millis(200));
+
+        let mut second = WebSurface::new(
+            BrowserPolicy { allow_web: true },
+            WebSurfaceDesc {
+                size: [320, 240],
+                max_fps: 30,
+                ..WebSurfaceDesc::default()
+            },
+            Arc::new(|_| {}),
+            Arc::new(|| {}),
+        )
+        .expect("create second surface");
+        second
+            .command(1, Some(&WebSurfaceCommand::Navigate(url)))
+            .expect("navigate second");
+        std::thread::sleep(Duration::from_millis(150));
+        drop(second);
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    #[test]
+    fn teardown_while_interaction_window_open_is_safe() {
+        let mut surface = WebSurface::new(
+            BrowserPolicy { allow_web: true },
+            WebSurfaceDesc {
+                size: [320, 240],
+                max_fps: 30,
+                ..WebSurfaceDesc::default()
+            },
+            Arc::new(|_| {}),
+            Arc::new(|| {}),
+        )
+        .expect("create surface");
+        surface
+            .command(
+                1,
+                Some(&WebSurfaceCommand::Navigate("about:blank".to_string())),
+            )
+            .expect("navigate");
+        surface
+            .command(
+                2,
+                Some(&WebSurfaceCommand::ShowWindow {
+                    title: "Teardown test".into(),
+                }),
+            )
+            .expect("show window");
+        std::thread::sleep(Duration::from_millis(150));
+        drop(surface);
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    #[test]
+    fn immediate_drop_during_initialization_is_safe() {
+        for _ in 0..3 {
+            let surface = WebSurface::new(
+                BrowserPolicy { allow_web: true },
+                WebSurfaceDesc {
+                    size: [320, 240],
+                    max_fps: 30,
+                    ..WebSurfaceDesc::default()
+                },
+                Arc::new(|_| {}),
+                Arc::new(|| {}),
+            )
+            .expect("create surface");
+            drop(surface);
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
 }
