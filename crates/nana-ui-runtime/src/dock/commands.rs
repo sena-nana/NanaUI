@@ -301,6 +301,7 @@ fn subtree_limits(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::StableNodeId;
     fn workspace() -> DockWorkspace {
         DockWorkspace::new(DockNode::split(
             DockAxis::Horizontal,

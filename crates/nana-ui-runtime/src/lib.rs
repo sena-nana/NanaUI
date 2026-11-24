@@ -281,11 +281,10 @@ pub use diff_view::{DiffEvent, DiffHunk, DiffLayout, DiffLine, DiffLineKind, Dif
 #[cfg(feature = "dock")]
 pub use dock::{
     DOCK_DIVIDER_HIT_SIZE, DOCK_SPLIT_KEYBOARD_STEP, Dock, DockAxis, DockBoundsPersist,
-    DockCommand, DockCommandOutcome, DockDropZone, DockFloatingPersist, DockFloatingSurface,
-    DockItemLimits, DockNode, DockNodePersist, DockPanel, DockSurfaceSpec, DockWorkspace,
-    DockWorkspaceEvent, DockWorkspacePersist, MAIN_SURFACE_ID, MAX_SPLIT_RATIO, MIN_SPLIT_RATIO,
-    clamp_ratio, dock_nudge_split_ratio, dock_split_child_lengths, dock_split_ratio_from_pointer,
-    dock_surface_window_key,
+    DockCommand, DockCommandOutcome, DockDropZone, DockFloatingSurface, DockItemLimits, DockNode,
+    DockPanel, DockSurfaceSpec, DockWorkspace, DockWorkspaceEvent, MAIN_SURFACE_ID,
+    MAX_SPLIT_RATIO, MIN_SPLIT_RATIO, clamp_ratio, dock_nudge_split_ratio,
+    dock_split_child_lengths, dock_split_ratio_from_pointer, dock_surface_window_key,
 };
 pub use dropdown::{Dropdown, DropdownOption};
 pub use dynamic_form::{DynamicForm, DynamicFormEvent, DynamicFormField, DynamicFormOption};
