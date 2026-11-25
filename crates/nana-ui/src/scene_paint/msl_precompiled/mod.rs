@@ -220,14 +220,6 @@ fn ensure_msl_version(version: (u8, u8), label: &'static str) -> Result<(), Stri
 }
 
 fn check_device_msl_support(device: &wgpu::Device, label: &'static str) -> Result<(), String> {
-    if !device
-        .features()
-        .contains(wgpu::Features::PASSTHROUGH_SHADERS)
-    {
-        return Err(format!(
-            "device does not enable PASSTHROUGH_SHADERS for precompiled MSL `{label}`"
-        ));
-    }
     // SAFETY: only inspects whether the active HAL backend is Metal and reads its MSL floor.
     let hal = unsafe { device.as_hal::<wgpu::hal::api::Metal>() }
         .ok_or_else(|| format!("device backend is not Metal for `{label}`"))?;
