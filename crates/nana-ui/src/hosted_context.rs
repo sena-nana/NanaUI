@@ -5,7 +5,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::gpu_adapter::{
-    GpuAdapterChoice, GpuAdapterInfo, GpuAdapterSelection, automatic_adapter, pick_adapter,
+    AdapterCapabilitySummary, GpuAdapterChoice, GpuAdapterInfo, GpuAdapterSelection,
+    automatic_adapter_with_capabilities, pick_adapter_with_capabilities,
 };
 use crate::{ResolvedSurfaceProfile, SurfacePresentationPolicy};
 use nana_gpu::{__framework, GpuBackend, GpuContext, GpuDeviceLost, GpuTextureFormat};
@@ -324,13 +325,17 @@ impl HostedGpuSurface {
     /// when it moved. Whether it did.
     pub(crate) fn re_resolve_profile(&mut self, gpu: &GpuContext) -> bool {
         let capabilities = self.surface.get_capabilities(__framework::adapter(gpu));
-        let Some(next) = resolve_surface_profile_internal(
+        let Some(next) = crate::surface_profile::resolve_surface_profile_with_format_support(
             self.profile.requested,
             &capabilities,
             self.want_transparent,
+            |format| gpu.supports_render_format(__framework::format_from_wgpu(format)),
         ) else {
             return false;
         };
+        if next.fallback.is_some() {
+            nana_diagnostics::event!(nana_diagnostics::framework::gpu::FORMAT_FALLBACK);
+        }
         if !surface_profile_changed(self.profile, next) {
             return false;
         }
@@ -490,7 +495,7 @@ impl HostedGpuSurface {
         gpu: &GpuContext,
     ) -> Result<(), HostedGpuError> {
         let capabilities = surface.get_capabilities(__framework::adapter(gpu));
-        let profile = resolve_surface_profile_internal(
+        let profile = crate::surface_profile::resolve_surface_profile_with_format_support(
             // Keep the caller's wide-gamut/HDR request across a device
             // migration. Resolving Auto here silently downgraded an existing
             // profile to sRGB after recovery, even when the new surface still
@@ -498,8 +503,15 @@ impl HostedGpuSurface {
             self.profile.requested,
             &capabilities,
             self.want_transparent,
+            |format| gpu.supports_render_format(__framework::format_from_wgpu(format)),
         )
-        .ok_or(HostedGpuError::SurfaceHasNoFormats)?;
+        .ok_or_else(|| {
+            nana_diagnostics::event!(nana_diagnostics::framework::gpu::ADAPTER_INCOMPATIBLE);
+            HostedGpuError::SurfaceHasNoFormats
+        })?;
+        if profile.fallback.is_some() {
+            nana_diagnostics::event!(nana_diagnostics::framework::gpu::FORMAT_FALLBACK);
+        }
         let format = profile.format;
         let alpha_mode = surface_alpha(
             self.target.mode(),
@@ -549,12 +561,19 @@ impl HostedGpuSurface {
     ) -> Result<(), HostedGpuError> {
         let surface = self.target.create_surface(instance, self.window.clone())?;
         let capabilities = surface.get_capabilities(__framework::adapter(gpu));
-        let profile = resolve_surface_profile_internal(
+        let profile = crate::surface_profile::resolve_surface_profile_with_format_support(
             self.profile.requested,
             &capabilities,
             want_transparent,
+            |format| gpu.supports_render_format(__framework::format_from_wgpu(format)),
         )
-        .ok_or(HostedGpuError::SurfaceHasNoFormats)?;
+        .ok_or_else(|| {
+            nana_diagnostics::event!(nana_diagnostics::framework::gpu::ADAPTER_INCOMPATIBLE);
+            HostedGpuError::SurfaceHasNoFormats
+        })?;
+        if profile.fallback.is_some() {
+            nana_diagnostics::event!(nana_diagnostics::framework::gpu::FORMAT_FALLBACK);
+        }
         let hdr_info = surface.display_hdr_info(__framework::adapter(gpu));
         self.configuration.alpha_mode = surface_alpha(
             self.target.mode(),
@@ -1100,8 +1119,19 @@ fn configure_surface(
     target: HostedSurfaceTarget,
     policy: SurfacePresentationPolicy,
 ) -> Result<HostedGpuSurface, HostedGpuError> {
-    let profile = resolve_surface_profile_internal(policy, capabilities, want_transparent)
-        .ok_or(HostedGpuError::SurfaceHasNoFormats)?;
+    let profile = crate::surface_profile::resolve_surface_profile_with_format_support(
+        policy,
+        capabilities,
+        want_transparent,
+        |format| gpu.supports_render_format(__framework::format_from_wgpu(format)),
+    )
+    .ok_or_else(|| {
+        nana_diagnostics::event!(nana_diagnostics::framework::gpu::ADAPTER_INCOMPATIBLE);
+        HostedGpuError::SurfaceHasNoFormats
+    })?;
+    if profile.fallback.is_some() {
+        nana_diagnostics::event!(nana_diagnostics::framework::gpu::FORMAT_FALLBACK);
+    }
     let hdr_info = surface.display_hdr_info(__framework::adapter(gpu));
     let format = profile.format;
     let size = window.surface_size();
@@ -1165,11 +1195,22 @@ impl AcquiredDevice {
     }
 
     pub(crate) fn scene_profile(&self) -> crate::ScenePresentationProfile {
-        resolve_surface_profile_internal(SurfacePresentationPolicy::Auto, &self.capabilities, false)
-            .map(|profile| profile.scene_profile())
-            .unwrap_or_else(|| {
-                crate::ScenePresentationProfile::sdr(__framework::format_from_wgpu(self.format))
-            })
+        let profile = crate::surface_profile::resolve_surface_profile_with_format_support(
+            SurfacePresentationPolicy::Auto,
+            &self.capabilities,
+            false,
+            |format| {
+                self.shared
+                    .gpu
+                    .supports_render_format(__framework::format_from_wgpu(format))
+            },
+        )
+        .map(|profile| profile.scene_profile())
+        .unwrap_or_else(|| {
+            crate::ScenePresentationProfile::sdr(__framework::format_from_wgpu(self.format))
+        });
+        crate::scene_paint::negotiate_presentation_for_gpu(&self.shared.gpu, profile)
+            .unwrap_or(profile)
     }
 }
 
@@ -1270,10 +1311,14 @@ impl DeviceRequest {
             .iter()
             .map(|adapter| GpuAdapterInfo::from_wgpu(&adapter.get_info()))
             .collect();
+        let summaries: Vec<AdapterCapabilitySummary> = compatible
+            .iter()
+            .map(|adapter| adapter_capability_summary(adapter, &surface))
+            .collect();
         let env_name = std::env::var("WGPU_ADAPTER_NAME").ok();
         let power = wgpu::PowerPreference::from_env().unwrap_or_default();
         let (picked, mut requested_missing) =
-            pick_adapter(&infos, &choice, env_name.as_deref(), power);
+            pick_adapter_with_capabilities(&infos, &summaries, &choice, env_name.as_deref(), power);
         // An adapter the program asked for that cannot make a device is
         // passed over for the automatic one, not a failed start.
         let mut chosen = None;
@@ -1289,18 +1334,50 @@ impl DeviceRequest {
             Some((index, device)) => (Some(index), compatible[index].clone(), device),
             None => {
                 let index = if requested_missing {
-                    automatic_adapter(&infos, env_name.as_deref(), power)
+                    automatic_adapter_with_capabilities(
+                        &infos,
+                        &summaries,
+                        env_name.as_deref(),
+                        power,
+                    )
                 } else {
                     picked
                 };
                 let adapter = match index {
                     Some(index) => compatible[index].clone(),
-                    None => wgpu::util::initialize_adapter_from_env_or_default(
-                        &instance,
-                        Some(&surface),
-                    )
-                    .await
-                    .map_err(|error| HostedGpuError::Adapter(error.to_string()))?,
+                    None => {
+                        if !compatible.is_empty() {
+                            nana_diagnostics::event!(
+                                nana_diagnostics::framework::gpu::ADAPTER_INCOMPATIBLE
+                            );
+                            return Err(HostedGpuError::Adapter(
+                                "no surface-compatible GPU adapter supports a renderable surface format"
+                                    .into(),
+                            ));
+                        }
+                        let adapter = wgpu::util::initialize_adapter_from_env_or_default(
+                            &instance,
+                            Some(&surface),
+                        )
+                        .await
+                        .map_err(|error| {
+                            nana_diagnostics::event!(
+                                nana_diagnostics::framework::gpu::ADAPTER_INCOMPATIBLE
+                            );
+                            HostedGpuError::Adapter(error.to_string())
+                        })?;
+                        if !adapter_capability_summary(&adapter, &surface)
+                            .has_renderable_surface_format
+                        {
+                            nana_diagnostics::event!(
+                                nana_diagnostics::framework::gpu::ADAPTER_INCOMPATIBLE
+                            );
+                            return Err(HostedGpuError::Adapter(
+                                "selected GPU adapter has no renderable surface format".into(),
+                            ));
+                        }
+                        adapter
+                    }
                 };
                 let device = request_shared_device(&adapter, required_features)
                     .await
@@ -1311,8 +1388,11 @@ impl DeviceRequest {
             }
         };
         let capabilities = surface.get_capabilities(&adapter);
-        let format = preferred_surface_format(&capabilities.formats)
-            .ok_or(HostedGpuError::SurfaceHasNoFormats)?;
+        let format = preferred_surface_format_for_adapter(&adapter, &capabilities.formats)
+            .ok_or_else(|| {
+                nana_diagnostics::event!(nana_diagnostics::framework::gpu::ADAPTER_INCOMPATIBLE);
+                HostedGpuError::SurfaceHasNoFormats
+            })?;
         let gpu = __framework::adopt_tracking_loss(adapter, device, queue);
         let mut shared = HostedGpuShared::adopt(instance, gpu);
         shared.choice = choice;
@@ -1494,6 +1574,58 @@ fn dx12_shader_compiler(
         })
 }
 
+fn adapter_backend(backend: wgpu::Backend) -> GpuBackend {
+    match backend {
+        wgpu::Backend::Noop => GpuBackend::Noop,
+        wgpu::Backend::Vulkan => GpuBackend::Vulkan,
+        wgpu::Backend::Metal => GpuBackend::Metal,
+        wgpu::Backend::Dx12 => GpuBackend::Dx12,
+        wgpu::Backend::Gl => GpuBackend::Gl,
+        wgpu::Backend::BrowserWebGpu => GpuBackend::BrowserWebGpu,
+    }
+}
+
+fn adapter_supports_render_format(adapter: &wgpu::Adapter, format: wgpu::TextureFormat) -> bool {
+    if format.is_depth_stencil_format() {
+        return false;
+    }
+    let features = adapter.features();
+    if !features.contains(format.required_features()) {
+        return false;
+    }
+    let downlevel = adapter.get_downlevel_capabilities().flags;
+    let use_webgpu_table = !features
+        .contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES)
+        && downlevel.contains(wgpu::DownlevelFlags::WEBGPU_TEXTURE_FORMAT_SUPPORT);
+    let format_features = if use_webgpu_table {
+        format.guaranteed_format_features(features)
+    } else {
+        adapter.get_texture_format_features(format)
+    };
+    format_features
+        .allowed_usages
+        .contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
+}
+
+fn adapter_capability_summary(
+    adapter: &wgpu::Adapter,
+    surface: &wgpu::Surface<'_>,
+) -> AdapterCapabilitySummary {
+    let info = adapter.get_info();
+    let downlevel = adapter.get_downlevel_capabilities();
+    let surface_caps = surface.get_capabilities(adapter);
+    let has_renderable_surface_format = surface_caps
+        .formats
+        .iter()
+        .copied()
+        .any(|format| adapter_supports_render_format(adapter, format));
+    AdapterCapabilitySummary {
+        backend: adapter_backend(info.backend),
+        supports_view_formats: downlevel.flags.contains(wgpu::DownlevelFlags::VIEW_FORMATS),
+        has_renderable_surface_format,
+    }
+}
+
 fn preferred_surface_format(formats: &[wgpu::TextureFormat]) -> Option<wgpu::TextureFormat> {
     formats
         .iter()
@@ -1502,6 +1634,23 @@ fn preferred_surface_format(formats: &[wgpu::TextureFormat]) -> Option<wgpu::Tex
         .or_else(|| formats.first().copied())
 }
 
+fn preferred_surface_format_for_adapter(
+    adapter: &wgpu::Adapter,
+    formats: &[wgpu::TextureFormat],
+) -> Option<wgpu::TextureFormat> {
+    let renderable: Vec<wgpu::TextureFormat> = formats
+        .iter()
+        .copied()
+        .filter(|&format| adapter_supports_render_format(adapter, format))
+        .collect();
+    let picked = preferred_surface_format(&renderable);
+    if picked.is_some() && picked != preferred_surface_format(formats) {
+        nana_diagnostics::event!(nana_diagnostics::framework::gpu::FORMAT_FALLBACK);
+    }
+    picked
+}
+
+#[cfg(test)]
 pub(crate) use crate::surface_profile::resolve_surface_profile_internal;
 pub use crate::surface_profile::surface_profile_changed;
 
@@ -2398,6 +2547,52 @@ mod tests {
         assert_eq!(
             super::resolve_tone_map_headroom(wide_fallback, &wgpu::DisplayHdrInfo::default()),
             1.0
+        );
+    }
+
+    #[test]
+    fn surface_profile_negotiation_skips_unrenderable_formats() {
+        use wgpu::{
+            SurfaceColorSpace as C, SurfaceColorSpaces as S, SurfaceFormatCapabilities as Row,
+            TextureFormat as F,
+        };
+        let caps = wgpu::SurfaceCapabilities {
+            formats: vec![F::Rgba16Float, F::Bgra8UnormSrgb],
+            format_capabilities: vec![
+                Row {
+                    format: F::Rgba16Float,
+                    color_spaces: S::EXTENDED_SRGB_LINEAR,
+                },
+                Row {
+                    format: F::Bgra8UnormSrgb,
+                    color_spaces: S::SRGB,
+                },
+            ],
+            present_modes: vec![wgpu::PresentMode::Fifo],
+            alpha_modes: vec![wgpu::CompositeAlphaMode::Opaque],
+            usages: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        };
+        let resolved = crate::surface_profile::resolve_surface_profile_with_format_support(
+            crate::SurfacePresentationPolicy::Hdr,
+            &caps,
+            false,
+            |format| format != F::Rgba16Float,
+        )
+        .unwrap();
+        assert_eq!(resolved.format, F::Bgra8UnormSrgb);
+        assert_eq!(resolved.color_space, C::Srgb);
+        assert_eq!(
+            resolved.fallback,
+            Some(crate::SurfaceProfileFallback::CapabilityUnavailable)
+        );
+        assert!(
+            crate::surface_profile::resolve_surface_profile_with_format_support(
+                crate::SurfacePresentationPolicy::Auto,
+                &caps,
+                false,
+                |_| false,
+            )
+            .is_none()
         );
     }
 }

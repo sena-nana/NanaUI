@@ -274,7 +274,51 @@ impl ScenePresentationProfile {
             self.target_format
         }
     }
+}
 
+/// Validate `requested` against `gpu`'s renderable, blendable, and filterable
+/// format capabilities before any pipeline or render target is created.
+///
+/// When an optional float working target (`RGBA16_FLOAT`) is requested or
+/// auto-promoted on a device that cannot render, blend, and filter `Rgba16Float`,
+/// this cleanly falls back to a direct target profile when `target_format` is
+/// blendable+filterable and emits `gpu.format.fallback`. If `target_format`
+/// itself is unrenderable, returns `Err(ScenePaintError::UnsupportedFormat)`.
+pub(crate) fn negotiate_presentation_for_gpu(
+    gpu: &GpuContext,
+    requested: ScenePresentationProfile,
+) -> Result<ScenePresentationProfile, ScenePaintError> {
+    let target_raw = __framework::format_to_wgpu(requested.target_format);
+    if !__framework::supports_renderable_format(gpu, target_raw, false, false) {
+        return Err(ScenePaintError::UnsupportedFormat {
+            format: requested.target_format,
+            detail: String::from("target format does not support RENDER_ATTACHMENT on this device"),
+        });
+    }
+    let working = requested.working_format();
+    let working_raw = __framework::format_to_wgpu(working);
+    if __framework::supports_renderable_format(gpu, working_raw, true, true) {
+        return Ok(requested);
+    }
+    if working != requested.target_format
+        && __framework::supports_renderable_format(gpu, target_raw, true, true)
+    {
+        nana_diagnostics::event!(nana_diagnostics::framework::gpu::FORMAT_FALLBACK);
+        return Ok(if requested.target_format.is_srgb() {
+            ScenePresentationProfile::sdr(requested.target_format)
+        } else {
+            ScenePresentationProfile::legacy_linear(requested.target_format)
+        });
+    }
+    Err(ScenePaintError::UnsupportedFormat {
+        format: working,
+        detail: String::from(
+            "working format does not support renderable, blendable, filterable attachments on this device",
+        ),
+    })
+}
+
+impl ScenePresentationProfile {
     /// Surface clear matching the final presentation transfer.  The dynamic
     /// HDR parameters are deliberately supplied separately from the profile:
     /// changing display headroom must not invalidate a painter/pipeline cache
@@ -874,6 +918,7 @@ impl SceneWgpuPainter {
         gpu: &GpuContext,
         presentation: ScenePresentationProfile,
     ) -> Result<Self, ScenePaintError> {
+        let presentation = negotiate_presentation_for_gpu(gpu, presentation)?;
         let device = __framework::device(gpu);
         let queue = __framework::queue(gpu);
         let format = __framework::format_to_wgpu(presentation.working_format());
@@ -1032,6 +1077,7 @@ impl SceneWgpuPainter {
         &mut self,
         presentation: ScenePresentationProfile,
     ) -> Result<(), ScenePaintError> {
+        let presentation = negotiate_presentation_for_gpu(&self.core.gpu, presentation)?;
         self.core.configured_presentation = presentation;
         self.try_apply_presentation(presentation)
     }
@@ -1046,6 +1092,7 @@ impl SceneWgpuPainter {
         &mut self,
         presentation: ScenePresentationProfile,
     ) -> Result<(), ScenePaintError> {
+        let presentation = negotiate_presentation_for_gpu(&self.core.gpu, presentation)?;
         if presentation == self.core.presentation {
             return Ok(());
         }

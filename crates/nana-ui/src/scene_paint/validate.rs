@@ -36,6 +36,11 @@ pub enum ScenePaintError {
         label: &'static str,
         detail: String,
     },
+    /// The requested target or working texture format is unsupported by the GPU device.
+    UnsupportedFormat {
+        format: nana_gpu::GpuTextureFormat,
+        detail: String,
+    },
 }
 
 impl fmt::Display for ScenePaintError {
@@ -85,6 +90,10 @@ impl fmt::Display for ScenePaintError {
             Self::ShaderUnavailable { label, detail } => write!(
                 formatter,
                 "shader `{label}` is unavailable on the active GPU device: {detail}"
+            ),
+            Self::UnsupportedFormat { format, detail } => write!(
+                formatter,
+                "texture format {format:?} is unsupported on the active GPU device: {detail}"
             ),
         }
     }

@@ -151,6 +151,26 @@ pub fn texture_format_features(
     gpu.format_features(format)
 }
 
+/// Whether `format` satisfies render-attachment (and optional blend/filter) requirements on `gpu`.
+pub fn supports_renderable_format(
+    gpu: &GpuContext,
+    format: wgpu::TextureFormat,
+    blendable: bool,
+    filterable: bool,
+) -> bool {
+    crate::context::format_features_satisfy(
+        gpu.format_features(format),
+        format,
+        blendable,
+        filterable,
+    )
+}
+
+/// Whether `gpu` supports alternate-format texture views (`DownlevelFlags::VIEW_FORMATS`).
+pub fn supports_view_formats(gpu: &GpuContext) -> bool {
+    gpu.capabilities().supports_view_formats()
+}
+
 pub fn usages_to_wgpu(usage: GpuTextureUsages) -> wgpu::TextureUsages {
     usage.to_wgpu()
 }

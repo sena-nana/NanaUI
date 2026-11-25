@@ -238,9 +238,12 @@ impl NativeImportPool {
         {
             return Err(NativeImportError::InvalidExtent { width, height });
         }
-        if gpu.capabilities().backend() != GpuBackend::Dx12 || gpu.is_lost() {
+        if gpu.capabilities().backend() != GpuBackend::Dx12
+            || !gpu.capabilities().supports_view_formats()
+            || gpu.is_lost()
+        {
             return Err(NativeImportError::Unsupported(
-                "a live DX12 device is required",
+                "a live DX12 device with VIEW_FORMATS support is required",
             ));
         }
         let retired = Arc::new(AtomicBool::new(false));

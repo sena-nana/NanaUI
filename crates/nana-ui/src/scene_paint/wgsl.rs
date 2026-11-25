@@ -444,6 +444,9 @@ impl Program {
                         }
                         #[cfg(not(any(test, feature = "runtime-wgsl")))]
                         {
+                            nana_diagnostics::event!(
+                                nana_diagnostics::framework::gpu::SHADER_BUILD_FAILED
+                            );
                             Err(super::validate::ScenePaintError::ShaderUnavailable {
                                 label: self.label,
                                 detail: String::from("runtime WGSL shader compiler is disabled"),
@@ -554,6 +557,7 @@ impl Program {
         #[cfg(not(any(test, feature = "runtime-wgsl", not(target_vendor = "apple"))))]
         {
             let _ = (key, flatten);
+            nana_diagnostics::event!(nana_diagnostics::framework::gpu::SHADER_BUILD_FAILED);
             Err(super::validate::ScenePaintError::ShaderUnavailable {
                 label: self.label,
                 detail: String::from("runtime WGSL shader compiler is disabled"),

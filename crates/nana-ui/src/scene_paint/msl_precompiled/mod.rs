@@ -220,6 +220,14 @@ fn ensure_msl_version(version: (u8, u8), label: &'static str) -> Result<(), Stri
 }
 
 fn check_device_msl_support(device: &wgpu::Device, label: &'static str) -> Result<(), String> {
+    if !device
+        .features()
+        .contains(wgpu::Features::PASSTHROUGH_SHADERS)
+    {
+        return Err(format!(
+            "device does not enable PASSTHROUGH_SHADERS for precompiled MSL `{label}`"
+        ));
+    }
     // SAFETY: only inspects whether the active HAL backend is Metal and reads its MSL floor.
     let hal = unsafe { device.as_hal::<wgpu::hal::api::Metal>() }
         .ok_or_else(|| format!("device backend is not Metal for `{label}`"))?;
@@ -910,6 +918,45 @@ pub(in crate::scene_paint) mod tests {
         assert!(err24.contains("2.4"), "{err24}");
         ensure_msl_version((3, 1), "msl.floor.probe").expect("MSL 3.1 satisfies floor");
         ensure_msl_version((3, 2), "msl.floor.probe").expect("MSL 3.2 satisfies floor");
+    }
+
+    #[test]
+    fn stage_span_rejects_out_of_bounds_and_invalid_utf8_without_panicking() {
+        let valid = MslStage {
+            source_hash: 0,
+            entry: "vs_main",
+            msl_entry: "vs_main",
+            constants: &[],
+            workgroup_size: (1, 1, 1),
+            sized_bindings: &[],
+            offset: 2,
+            len: 4,
+        };
+        assert_eq!(
+            stage_span(b"abcdefgh", &valid, "vertex", "probe"),
+            Ok((2, 6))
+        );
+
+        let oob = MslStage {
+            offset: 100,
+            len: 4,
+            ..valid
+        };
+        assert!(stage_span(b"abcdefgh", &oob, "vertex", "probe").is_err());
+
+        let overflow = MslStage {
+            offset: u32::MAX,
+            len: 10,
+            ..valid
+        };
+        assert!(stage_span(b"abcdefgh", &overflow, "vertex", "probe").is_err());
+
+        let bad_utf8 = MslStage {
+            offset: 0,
+            len: 2,
+            ..valid
+        };
+        assert!(stage_span(&[0xff, 0xfe], &bad_utf8, "fragment", "probe").is_err());
     }
 
     /// Builds the painter and every pipeline the product creates lazily

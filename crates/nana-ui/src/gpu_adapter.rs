@@ -2,7 +2,95 @@
 //! startup ([`crate::StartupOptions::with_adapter`]), and what the host found
 //! and chose ([`crate::RuntimeProgramContext::gpu_adapters`]).
 
-use nana_gpu::GpuDeviceType;
+use nana_gpu::{GpuBackend, GpuDeviceType};
+
+/// Minimal adapter capabilities considered while ranking surface-compatible
+/// adapters at startup or recovery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AdapterCapabilitySummary {
+    pub backend: GpuBackend,
+    pub supports_view_formats: bool,
+    pub has_renderable_surface_format: bool,
+}
+
+/// Rank adapters so complete hardware backends supporting `VIEW_FORMATS` and
+/// renderable surface formats always beat incomplete GL/CPU software adapters.
+fn capability_tier(summary: AdapterCapabilitySummary) -> u8 {
+    if !summary.has_renderable_surface_format {
+        return 4;
+    }
+    let is_gl = summary.backend == GpuBackend::Gl;
+    match (summary.supports_view_formats, is_gl) {
+        (true, false) => 0,
+        (false, false) => 1,
+        (true, true) => 2,
+        (false, true) => 3,
+    }
+}
+
+pub(crate) fn automatic_adapter_with_capabilities(
+    adapters: &[GpuAdapterInfo],
+    summaries: &[AdapterCapabilitySummary],
+    env_name: Option<&str>,
+    power: wgpu::PowerPreference,
+) -> Option<usize> {
+    let valid = |index: usize| {
+        summaries
+            .get(index)
+            .is_none_or(|s| s.has_renderable_surface_format)
+    };
+    if let Some(name) = env_name {
+        let name = name.to_lowercase();
+        return adapters
+            .iter()
+            .enumerate()
+            .filter(|(index, adapter)| valid(*index) && adapter.name.to_lowercase().contains(&name))
+            .min_by_key(|(index, _)| {
+                let tier = summaries.get(*index).copied().map_or(0, capability_tier);
+                (tier, *index)
+            })
+            .map(|(index, _)| index);
+    }
+    let integrated_first = power == wgpu::PowerPreference::LowPower;
+    adapters
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| valid(*index))
+        .min_by_key(|(index, adapter)| {
+            let summary = summaries.get(*index).copied();
+            let tier = summary.map_or(0, capability_tier);
+            let cpu_penalty = u8::from(adapter.device_type == GpuDeviceType::Cpu);
+            let power_rank = if power == wgpu::PowerPreference::None {
+                0
+            } else {
+                adapter_order(adapter.device_type, integrated_first)
+            };
+            (tier, cpu_penalty, power_rank, *index)
+        })
+        .map(|(index, _)| index)
+}
+
+pub(crate) fn pick_adapter_with_capabilities(
+    adapters: &[GpuAdapterInfo],
+    summaries: &[AdapterCapabilitySummary],
+    choice: &GpuAdapterChoice,
+    env_name: Option<&str>,
+    power: wgpu::PowerPreference,
+) -> (Option<usize>, bool) {
+    if let GpuAdapterChoice::Matching(id) = choice
+        && let Some(index) = adapters.iter().position(|adapter| id.matches(adapter))
+        && summaries
+            .get(index)
+            .is_none_or(|s| s.has_renderable_surface_format)
+    {
+        return (Some(index), false);
+    }
+    let requested_missing = matches!(choice, GpuAdapterChoice::Matching(_));
+    (
+        automatic_adapter_with_capabilities(adapters, summaries, env_name, power),
+        requested_missing,
+    )
+}
 
 /// One adapter that can present the primary window.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,6 +190,7 @@ impl GpuAdapterSelection {
 /// The index of the adapter `choice` selects among surface-compatible
 /// `adapters`, and whether a requested adapter had to be passed over. `None`
 /// sends the caller to wgpu's own request, which also reports why nothing fits.
+#[cfg(test)]
 pub(crate) fn pick_adapter(
     adapters: &[GpuAdapterInfo],
     choice: &GpuAdapterChoice,
@@ -123,6 +212,7 @@ pub(crate) fn pick_adapter(
 /// The adapter `request_adapter` would choose: the first whose name contains
 /// `WGPU_ADAPTER_NAME` when that is set, else the first in enumeration order
 /// after the stable `WGPU_POWER_PREF` sort `request_adapter` applies.
+#[cfg(test)]
 pub(crate) fn automatic_adapter(
     adapters: &[GpuAdapterInfo],
     env_name: Option<&str>,
@@ -259,6 +349,59 @@ mod tests {
                 wgpu::PowerPreference::HighPerformance
             ),
             (Some(1), true)
+        );
+    }
+
+    #[test]
+    fn automatic_prefers_hardware_with_view_formats_over_incomplete_gl_or_cpu() {
+        let infos = vec![
+            adapter("llvmpipe", 1, GpuDeviceType::Cpu, ""),
+            adapter("Mesa GLES", 2, GpuDeviceType::IntegratedGpu, ""),
+            adapter("RADV Vulkan", 3, GpuDeviceType::DiscreteGpu, "0000:01:00.0"),
+        ];
+        let summaries = vec![
+            AdapterCapabilitySummary {
+                backend: GpuBackend::Gl,
+                supports_view_formats: false,
+                has_renderable_surface_format: true,
+            },
+            AdapterCapabilitySummary {
+                backend: GpuBackend::Gl,
+                supports_view_formats: false,
+                has_renderable_surface_format: true,
+            },
+            AdapterCapabilitySummary {
+                backend: GpuBackend::Vulkan,
+                supports_view_formats: true,
+                has_renderable_surface_format: true,
+            },
+        ];
+        assert_eq!(
+            automatic_adapter_with_capabilities(
+                &infos,
+                &summaries,
+                None,
+                wgpu::PowerPreference::None,
+            ),
+            Some(2)
+        );
+
+        let unrenderable = vec![
+            AdapterCapabilitySummary {
+                backend: GpuBackend::Vulkan,
+                supports_view_formats: true,
+                has_renderable_surface_format: false,
+            };
+            3
+        ];
+        assert_eq!(
+            automatic_adapter_with_capabilities(
+                &infos,
+                &unrenderable,
+                None,
+                wgpu::PowerPreference::HighPerformance,
+            ),
+            None
         );
     }
 }

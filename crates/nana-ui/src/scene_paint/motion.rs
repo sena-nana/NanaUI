@@ -38,14 +38,18 @@ pub(crate) fn eval_format_for_gpu(gpu: &nana_gpu::GpuContext) -> wgpu::TextureFo
             wgpu::TextureFormat::Rgba8Unorm,
         ]
     };
-    formats
+    let picked = formats
         .iter()
         .find(|format| {
             nana_gpu::__framework::texture_format_features(gpu, **format)
                 .is_some_and(|features| features.allowed_usages.contains(usage))
         })
         .copied()
-        .unwrap_or(wgpu::TextureFormat::Rgba8Unorm)
+        .unwrap_or(wgpu::TextureFormat::Rgba8Unorm);
+    if picked == wgpu::TextureFormat::Rgba8Unorm {
+        nana_diagnostics::event!(nana_diagnostics::framework::gpu::FORMAT_FALLBACK);
+    }
+    picked
 }
 
 /// The eval pipeline and readback serve only the CPU/GPU parity tests, so

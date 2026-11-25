@@ -23,9 +23,10 @@ Issue #186 的评估结论为 **NO-GO**：WGPU 仍是 NanaUI 的唯一正式图�
 宿主只在能呈现主窗口的适配器中选择，选择在启动线程完成，设备丢失后的替换设备按同一规则重选：
 
 - 应用经 `StartupOptions::with_adapter(GpuAdapterChoice)` 指定。`Matching(GpuAdapterId)` 按 vendor／device id 匹配，同型号多卡再比 PCI 总线地址，任一方没有总线地址时比名称；该卡不在、不能呈现主窗口或建不出设备时退回自动选择，不算启动失败。
-- `Automatic`（默认）沿用 wgpu `request_adapter` 的规则：设置了 `WGPU_ADAPTER_NAME` 时取名称包含它的第一块，否则按 `WGPU_POWER_PREF` 稳定排序后取第一块；都未设置时就是枚举顺序的第一块。应用的 `Matching` 优先于这两个环境变量。
+- `Automatic`（默认）在 `WGPU_ADAPTER_NAME` 未指定特定适配器时，先跳过不具备可渲染表面格式（`RENDER_ATTACHMENT`）的适配器，再按完整能力层级优先选择具备 `DownlevelFlags::VIEW_FORMATS` 的硬件图形后端（Vulkan / Metal / DX12），避免回落到缺少视图格式或格式支持残缺的软件／GLES 适配器，同层级内仍遵循 `WGPU_POWER_PREF` 排序。若无任何适配器能提供可渲染表面格式，则返回显式 `HostedGpuError::Adapter` 并记录 `gpu.adapter.incompatible`。
 - 程序在 `RuntimeProgramContext::gpu_adapters()` 读到本次设备创建时的 `GpuAdapterSelection`：可呈现主窗口的适配器（枚举顺序）、实际所用的一块，以及所指定的卡是否被跳过（`requested_missing`）。没有替宿主选择设备的上下文（headless、staged、嵌入式注入）返回空列表或只含注入设备一项。设置界面应读这份值，不再自行枚举适配器。
 - 运行中不切换适配器：应用保存新的选择，下次启动生效。
+- `GpuCapabilities` 记录 `supports_view_formats()`、`supports_rgba16_float_render()` 与 `supports_rgba32_float_render()`；`GpuContext::supports_render_format` / `supports_blendable_format` 与 `SceneWgpuPainter::try_new_with_presentation` 在创建目标与管线前校验可渲染、可混合与可过滤格式能力：若请求升格的 `RGBA16_FLOAT` 工作目标不受设备支持，回落到可渲染的直写目标格式并记录 `gpu.format.fallback`；若目标格式本身不可渲染，返回 `ScenePaintError::UnsupportedFormat` 而不在后端校验里 panic。`NativeImportPool` 等需要跨格式视图（`view_formats`）的路径同样在 `supports_view_formats()` 为假时显式拒绝。
 
 ### 2. 统一 GPU 策略（Issue #184）
 

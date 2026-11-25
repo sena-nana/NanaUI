@@ -545,6 +545,17 @@ pub(in crate::scene_paint) mod tests {
     }
 
     #[test]
+    fn corrupt_or_missing_precompiled_naga_stage_returns_none_without_panicking() {
+        assert!(!has_stage(0xdead_beef_cafe_babe, "missing_entry"));
+        assert!(stage(0xdead_beef_cafe_babe, "missing_entry").is_none());
+        assert!(decompress(&[]).is_none());
+        assert!(decompress(b"not-zlib").is_none());
+        assert!(codec::deserialize::<wgpu::naga::Module>(b"").is_err());
+        assert!(codec::deserialize::<wgpu::naga::Module>(b"BAD1\x00").is_err());
+        assert!(codec::deserialize::<wgpu::naga::Module>(b"NAGA1").is_err());
+    }
+
+    #[test]
     #[ignore = "regenerates checked-in .naga IR assets after WGSL shader edits"]
     fn regenerate_precompiled_naga_ir() {
         // A runtime check, not `const { assert!(..) }`: the ignored test

@@ -627,6 +627,12 @@ pub mod gpu {
     /// Custom `MaterialProgram` could not be compiled (e.g. `runtime-wgsl` disabled).
     pub static MATERIAL_REJECTED: EventDescriptor =
         EventDescriptor::new(D, 32, "gpu.material.rejected", Severity::Warn, &[]);
+    /// No GPU adapter satisfies the required surface or downlevel capabilities.
+    pub static ADAPTER_INCOMPATIBLE: EventDescriptor =
+        EventDescriptor::new(D, 33, "gpu.adapter.incompatible", Severity::Error, &[]);
+    /// Requested surface or working target format lacked required capabilities and fell back.
+    pub static FORMAT_FALLBACK: EventDescriptor =
+        EventDescriptor::new(D, 34, "gpu.format.fallback", Severity::Warn, &[]);
 }
 
 pub mod window {
@@ -1093,6 +1099,8 @@ mod tests {
             &gpu::SHADER_PRECOMPILED_FALLBACK,
             &gpu::SHADER_BUILD_FAILED,
             &gpu::MATERIAL_REJECTED,
+            &gpu::ADAPTER_INCOMPATIBLE,
+            &gpu::FORMAT_FALLBACK,
             &window::OPENED,
             &window::CLOSED,
             &window::SCALE_FACTOR_CHANGED,

@@ -1054,3 +1054,23 @@ fn display_p3_sdr_tone_maps_over_white_highlights_and_soft_light_handles_negativ
         "soft-light over negative wide-gamut backdrop produced non-finite pixel: {blend_pixel:?}"
     );
 }
+
+#[test]
+fn capability_negotiation_rejects_unrenderable_formats_without_panicking() {
+    let gpu = crate::test_gpu::context();
+    assert!(gpu.supports_render_format(nana_gpu::GpuTextureFormat::BGRA8_UNORM_SRGB));
+    let unrenderable = nana_gpu::__framework::format_from_wgpu(wgpu::TextureFormat::Rgba8Snorm);
+    assert!(!gpu.supports_render_format(unrenderable));
+
+    let err = match SceneWgpuPainter::try_new(&gpu, unrenderable) {
+        Ok(_) => panic!("expected Rgba8Snorm to be rejected as unrenderable"),
+        Err(err) => err,
+    };
+    assert!(matches!(
+        err,
+        crate::ScenePaintError::UnsupportedFormat {
+            format,
+            ..
+        } if format == unrenderable
+    ));
+}

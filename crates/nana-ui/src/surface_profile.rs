@@ -125,6 +125,16 @@ pub(crate) fn resolve_surface_profile_internal(
     capabilities: &wgpu::SurfaceCapabilities,
     transparent: bool,
 ) -> Option<ResolvedSurfaceProfile> {
+    resolve_surface_profile_with_format_support(requested, capabilities, transparent, |_| true)
+}
+
+#[cfg_attr(not(feature = "hosted"), allow(dead_code))]
+pub(crate) fn resolve_surface_profile_with_format_support(
+    requested: SurfacePresentationPolicy,
+    capabilities: &wgpu::SurfaceCapabilities,
+    transparent: bool,
+    supports_format: impl Fn(wgpu::TextureFormat) -> bool,
+) -> Option<ResolvedSurfaceProfile> {
     use wgpu::{SurfaceColorSpace as C, SurfaceColorSpaces as S, TextureFormat as F};
 
     let srgb_formats = [
@@ -136,6 +146,7 @@ pub(crate) fn resolve_surface_profile_internal(
     let mut rows: Vec<(F, wgpu::SurfaceColorSpaces)> = capabilities
         .format_capabilities
         .iter()
+        .filter(|row| supports_format(row.format))
         .map(|row| (row.format, row.color_spaces))
         .collect();
     if rows.is_empty() {
@@ -143,7 +154,7 @@ pub(crate) fn resolve_surface_profile_internal(
             .formats
             .iter()
             .copied()
-            .filter(|format| srgb_formats.contains(format))
+            .filter(|format| srgb_formats.contains(format) && supports_format(*format))
             .map(|format| (format, S::SRGB))
             .collect();
     }
@@ -254,7 +265,7 @@ pub(crate) fn resolve_surface_profile_internal(
                 .formats
                 .iter()
                 .copied()
-                .find(|format| srgb_formats.contains(format))
+                .find(|format| srgb_formats.contains(format) && supports_format(*format))
         })?;
     Some(ResolvedSurfaceProfile {
         requested,

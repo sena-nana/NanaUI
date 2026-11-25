@@ -206,14 +206,95 @@ pub struct GpuCapabilities {
     vendor_id: u32,
     device_id: u32,
     max_texture_dimension_2d: u32,
+    supports_view_formats: bool,
+    supports_rgba16_float_render: bool,
+    supports_rgba32_float_render: bool,
     features: GpuFeatureSet,
     limits: GpuLimits,
 }
 
+fn format_features_with(
+    adapter: &wgpu::Adapter,
+    device_features: wgpu::Features,
+    webgpu_format_table: bool,
+    format: wgpu::TextureFormat,
+) -> Option<wgpu::TextureFormatFeatures> {
+    if !device_features.contains(format.required_features()) {
+        return None;
+    }
+    Some(if webgpu_format_table {
+        format.guaranteed_format_features(device_features)
+    } else {
+        adapter.get_texture_format_features(format)
+    })
+}
+
+pub(crate) fn format_features_satisfy(
+    features: Option<wgpu::TextureFormatFeatures>,
+    format: wgpu::TextureFormat,
+    blendable: bool,
+    filterable: bool,
+) -> bool {
+    if format.is_depth_stencil_format() {
+        return false;
+    }
+    let Some(features) = features else {
+        return false;
+    };
+    if !features
+        .allowed_usages
+        .contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
+    {
+        return false;
+    }
+    if blendable
+        && !features
+            .flags
+            .contains(wgpu::TextureFormatFeatureFlags::BLENDABLE)
+    {
+        return false;
+    }
+    if filterable
+        && (!features
+            .allowed_usages
+            .contains(wgpu::TextureUsages::TEXTURE_BINDING)
+            || !features
+                .flags
+                .contains(wgpu::TextureFormatFeatureFlags::FILTERABLE))
+    {
+        return false;
+    }
+    true
+}
+
 impl GpuCapabilities {
-    fn read(adapter: &wgpu::Adapter, device: &wgpu::Device) -> Self {
+    fn read(adapter: &wgpu::Adapter, device: &wgpu::Device, webgpu_format_table: bool) -> Self {
         let info = adapter.get_info();
         let features = device.features();
+        let downlevel = adapter.get_downlevel_capabilities();
+        let supports_view_formats = downlevel.flags.contains(wgpu::DownlevelFlags::VIEW_FORMATS);
+        let supports_rgba16_float_render = format_features_satisfy(
+            format_features_with(
+                adapter,
+                features,
+                webgpu_format_table,
+                wgpu::TextureFormat::Rgba16Float,
+            ),
+            wgpu::TextureFormat::Rgba16Float,
+            true,
+            true,
+        );
+        let supports_rgba32_float_render = format_features_satisfy(
+            format_features_with(
+                adapter,
+                features,
+                webgpu_format_table,
+                wgpu::TextureFormat::Rgba32Float,
+            ),
+            wgpu::TextureFormat::Rgba32Float,
+            false,
+            false,
+        );
         Self {
             backend: match info.backend {
                 wgpu::Backend::Noop => GpuBackend::Noop,
@@ -236,6 +317,9 @@ impl GpuCapabilities {
             vendor_id: info.vendor,
             device_id: info.device,
             max_texture_dimension_2d: device.limits().max_texture_dimension_2d,
+            supports_view_formats,
+            supports_rgba16_float_render,
+            supports_rgba32_float_render,
             features: GpuFeatureSet {
                 dual_source_blending: features.contains(wgpu::Features::DUAL_SOURCE_BLENDING),
                 pipeline_cache: features.contains(wgpu::Features::PIPELINE_CACHE),
@@ -297,6 +381,21 @@ impl GpuCapabilities {
 
     pub const fn max_texture_dimension_2d(&self) -> u32 {
         self.max_texture_dimension_2d
+    }
+
+    /// Whether the adapter supports alternate-format texture views (`DownlevelFlags::VIEW_FORMATS`).
+    pub const fn supports_view_formats(&self) -> bool {
+        self.supports_view_formats
+    }
+
+    /// Whether `RGBA16_FLOAT` supports render attachment, blending, and filtering on this device.
+    pub const fn supports_rgba16_float_render(&self) -> bool {
+        self.supports_rgba16_float_render
+    }
+
+    /// Whether `RGBA32_FLOAT` supports render attachment on this device.
+    pub const fn supports_rgba32_float_render(&self) -> bool {
+        self.supports_rgba32_float_render
     }
 
     pub const fn features(&self) -> GpuFeatureSet {
@@ -420,8 +519,6 @@ impl GpuContext {
                 });
             });
         }
-        let capabilities = GpuCapabilities::read(&adapter, &device);
-        let adapter_info = adapter.get_info();
         let webgpu_format_table = !device
             .features()
             .contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES)
@@ -429,6 +526,8 @@ impl GpuContext {
                 .get_downlevel_capabilities()
                 .flags
                 .contains(wgpu::DownlevelFlags::WEBGPU_TEXTURE_FORMAT_SUPPORT);
+        let capabilities = GpuCapabilities::read(&adapter, &device, webgpu_format_table);
+        let adapter_info = adapter.get_info();
         let generation = DeviceGeneration::next();
         let policy = GpuDeviceState::new(generation);
         // Every pipeline on the device, the framework's or not, goes through
@@ -920,15 +1019,24 @@ impl GpuContext {
         &self,
         format: wgpu::TextureFormat,
     ) -> Option<wgpu::TextureFormatFeatures> {
-        let features = self.inner.device.features();
-        if !features.contains(format.required_features()) {
-            return None;
-        }
-        Some(if self.inner.webgpu_format_table {
-            format.guaranteed_format_features(features)
-        } else {
-            self.inner.adapter.get_texture_format_features(format)
-        })
+        format_features_with(
+            &self.inner.adapter,
+            self.inner.device.features(),
+            self.inner.webgpu_format_table,
+            format,
+        )
+    }
+
+    /// Whether `format` is a non-depth color format usable as a `RENDER_ATTACHMENT` on this context.
+    pub fn supports_render_format(&self, format: GpuTextureFormat) -> bool {
+        let raw = format.to_wgpu();
+        format_features_satisfy(self.format_features(raw), raw, false, false)
+    }
+
+    /// Whether `format` supports rendering, blending, sampling, and filtering on this context.
+    pub fn supports_blendable_format(&self, format: GpuTextureFormat) -> bool {
+        let raw = format.to_wgpu();
+        format_features_satisfy(self.format_features(raw), raw, true, true)
     }
 
     pub(crate) fn check_device(&self, found: DeviceGeneration) -> Result<(), GpuError> {
@@ -982,5 +1090,63 @@ mod tests {
             loss.report.lock().unwrap().as_ref().unwrap().message,
             "first"
         );
+    }
+
+    #[test]
+    fn format_features_satisfy_checks_render_blend_filter_and_depth_formats() {
+        let full = Some(wgpu::TextureFormatFeatures {
+            allowed_usages: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING,
+            flags: wgpu::TextureFormatFeatureFlags::BLENDABLE
+                | wgpu::TextureFormatFeatureFlags::FILTERABLE,
+        });
+        assert!(format_features_satisfy(
+            full,
+            wgpu::TextureFormat::Rgba16Float,
+            true,
+            true
+        ));
+        assert!(!format_features_satisfy(
+            None,
+            wgpu::TextureFormat::Rgba16Float,
+            false,
+            false
+        ));
+        assert!(!format_features_satisfy(
+            full,
+            wgpu::TextureFormat::Depth24Plus,
+            false,
+            false
+        ));
+
+        let unblendable = Some(wgpu::TextureFormatFeatures {
+            allowed_usages: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING,
+            flags: wgpu::TextureFormatFeatureFlags::FILTERABLE,
+        });
+        assert!(format_features_satisfy(
+            unblendable,
+            wgpu::TextureFormat::Rgba32Float,
+            false,
+            false
+        ));
+        assert!(!format_features_satisfy(
+            unblendable,
+            wgpu::TextureFormat::Rgba32Float,
+            true,
+            false
+        ));
+
+        let non_render = Some(wgpu::TextureFormatFeatures {
+            allowed_usages: wgpu::TextureUsages::TEXTURE_BINDING,
+            flags: wgpu::TextureFormatFeatureFlags::BLENDABLE
+                | wgpu::TextureFormatFeatureFlags::FILTERABLE,
+        });
+        assert!(!format_features_satisfy(
+            non_render,
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+            false,
+            false
+        ));
     }
 }
