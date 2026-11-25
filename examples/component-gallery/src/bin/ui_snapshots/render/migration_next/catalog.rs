@@ -1095,6 +1095,11 @@ pub(super) const FIXTURE_REGISTRY: &[Fixture] = &[
         "the maximized viewport area fills the whole layout and the others are hidden",
     ),
     f(
+        Component::AreaLayout,
+        "floating",
+        "floating-island areas with Lg corners, 8px gaps, a taller Surface header with a hairline divider, and borderless Raised cards inside",
+    ),
+    f(
         Component::AppMenuBar,
         "rest",
         "app menu bar draws its titles in a row in the theme's text color",

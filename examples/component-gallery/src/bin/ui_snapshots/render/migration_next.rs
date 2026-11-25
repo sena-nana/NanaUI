@@ -569,6 +569,29 @@ fn runtime_fixture(
         document
             .context_mut()
             .set_theme_definition(&definition.with_metrics(nana_ui_core::COMPACT_METRICS))?;
+    } else if matches!(
+        (fixture.component, fixture.state),
+        (Component::AreaLayout, "floating")
+    ) {
+        // Issue #370: a theme that explicitly names `raised` one step above
+        // `surface`, paired with non-default floating-island `AreaChrome`.
+        let (definition, raised) = match theme {
+            ThemeAppearance::Light => (
+                nana_ui_core::ThemeDefinition::NANA_LIGHT,
+                nana_ui_core::SemanticColor::rgb8(255, 255, 255),
+            ),
+            _ => (
+                nana_ui_core::ThemeDefinition::NANA_DARK,
+                nana_ui_core::SemanticColor::rgb8(44, 44, 44),
+            ),
+        };
+        let palette = nana_ui_core::SemanticPalette {
+            raised,
+            ..definition.tokens.palette
+        };
+        document
+            .context_mut()
+            .set_theme_definition(&definition.with_palette(palette))?;
     }
     let mut root_style = NodeStyle::default();
     {
@@ -1161,28 +1184,78 @@ fn runtime_fixture(
             context.create_component(document_id, editor)?.stable_id()
         }
         Component::AreaLayout => {
+            let floating = fixture.state == "floating";
             let (_, layout) = document
                 .context_mut()
                 .mount_view_detached(document_id, || {
                     let layout = entity_ref::<RuntimeAreaLayout>();
-                    let pane = |key: &'static str, text: &'static str| {
-                        widget(RuntimeText::new(text).style(area_pane_style())).key(key)
-                    };
-                    let view = widget(
-                        RuntimeAreaLayout::new(area_layout_model()).style(area_layout_style()),
-                    )
-                    .entity_ref(layout)
-                    .children((
-                        pane("outliner:header", "Outliner"),
-                        pane("outliner", "Parts"),
-                        pane("viewport:header", "Viewport"),
-                        pane("viewport", "Canvas"),
-                        pane("params:header", "Parameters"),
-                        pane("params", "AngleX"),
-                        pane("props:header", "Properties"),
-                        pane("props", "Opacity"),
-                    ));
-                    with_refs(view, layout)
+                    if floating {
+                        let header = |key: &'static str, text: &'static str| {
+                            widget(RuntimeText::new(text).style(area_floating_header_style()))
+                                .key(key)
+                        };
+                        let card = |key: &'static str, text: &'static str| {
+                            widget(RuntimeText::new(text).style(area_raised_card_style())).key(key)
+                        };
+                        let outliner_body =
+                            widget(RuntimeList::new().style(area_floating_pane_style()))
+                                .key("outliner")
+                                .children((card("parts", "Parts"), card("deformers", "Deformers")));
+                        let viewport_body =
+                            widget(RuntimeList::new().style(area_floating_pane_style()))
+                                .key("viewport")
+                                .children((card("canvas", "Canvas"), card("camera", "Camera")));
+                        let params_body =
+                            widget(RuntimeList::new().style(area_floating_pane_style()))
+                                .key("params")
+                                .children(card("angle-x", "AngleX"));
+                        let props_body =
+                            widget(RuntimeList::new().style(area_floating_pane_style()))
+                                .key("props")
+                                .children(card("opacity", "Opacity"));
+                        let view = widget(
+                            RuntimeAreaLayout::new(area_layout_model())
+                                .style(area_layout_style())
+                                .gap(nana_ui_core::space::MD)
+                                .chrome(nana_ui::runtime::AreaChrome {
+                                    frame_radius: nana_ui_core::RadiusTier::Lg,
+                                    header_background: SemanticColorRole::Surface,
+                                    header_divider: true,
+                                    header_height: Some(34.0),
+                                }),
+                        )
+                        .entity_ref(layout)
+                        .children((
+                            header("outliner:header", "Outliner"),
+                            outliner_body,
+                            header("viewport:header", "Viewport"),
+                            viewport_body,
+                            header("params:header", "Parameters"),
+                            params_body,
+                            header("props:header", "Properties"),
+                            props_body,
+                        ));
+                        with_refs(view.into_any(), layout)
+                    } else {
+                        let pane = |key: &'static str, text: &'static str| {
+                            widget(RuntimeText::new(text).style(area_pane_style())).key(key)
+                        };
+                        let view = widget(
+                            RuntimeAreaLayout::new(area_layout_model()).style(area_layout_style()),
+                        )
+                        .entity_ref(layout)
+                        .children((
+                            pane("outliner:header", "Outliner"),
+                            pane("outliner", "Parts"),
+                            pane("viewport:header", "Viewport"),
+                            pane("viewport", "Canvas"),
+                            pane("params:header", "Parameters"),
+                            pane("params", "AngleX"),
+                            pane("props:header", "Properties"),
+                            pane("props", "Opacity"),
+                        ));
+                        with_refs(view.into_any(), layout)
+                    }
                 })?;
             layout.stable_id()
         }
@@ -2045,6 +2118,46 @@ fn area_pane_style() -> NodeStyle {
     style
 }
 
+fn area_floating_header_style() -> NodeStyle {
+    let mut style = NodeStyle {
+        foreground: Some(SemanticColorRole::Text),
+        ..NodeStyle::default()
+    };
+    Arc::make_mut(&mut style.layout).font_weight = Some(600);
+    style
+}
+
+fn area_floating_pane_style() -> NodeStyle {
+    let mut style = NodeStyle::default();
+    let layout = Arc::make_mut(&mut style.layout);
+    layout.display = Some(nana_ui_core::DisplaySpec::Flex);
+    layout.direction = Some(nana_ui_core::FlexDirection::Column);
+    layout.width = Some(LengthSpec::Fill);
+    layout.height = Some(LengthSpec::Fill);
+    layout.padding_left = Some(LengthSpec::Px(nana_ui_core::space::MD));
+    layout.padding_right = Some(LengthSpec::Px(nana_ui_core::space::MD));
+    layout.padding_top = Some(LengthSpec::Px(nana_ui_core::space::MD));
+    layout.padding_bottom = Some(LengthSpec::Px(nana_ui_core::space::MD));
+    layout.gap = Some(LengthSpec::Px(nana_ui_core::space::SM));
+    style
+}
+
+fn area_raised_card_style() -> NodeStyle {
+    let mut style = NodeStyle {
+        background: Some(SemanticColorRole::Raised),
+        foreground: Some(SemanticColorRole::Text),
+        radius: Some(nana_ui_core::RadiusTier::Md),
+        ..NodeStyle::default()
+    };
+    let layout = Arc::make_mut(&mut style.layout);
+    layout.width = Some(LengthSpec::Fill);
+    layout.padding_left = Some(LengthSpec::Px(nana_ui_core::space::SM));
+    layout.padding_right = Some(LengthSpec::Px(nana_ui_core::space::SM));
+    layout.padding_top = Some(LengthSpec::Px(nana_ui_core::space::SM));
+    layout.padding_bottom = Some(LengthSpec::Px(nana_ui_core::space::SM));
+    style
+}
+
 /// Drive the area layout into its state: a corner drag held mid-way shows
 /// its preview; maximize goes through the application call.
 fn exercise_area_layout(
@@ -2113,6 +2226,14 @@ fn exercise_area_layout(
                 .context()
                 .read(layout, |layout| layout.model.maximized.is_some())?)
         }
+        "floating" => Ok(boxes.len() == 4
+            && document.context().read(layout, |layout| {
+                layout.chrome.frame_radius == nana_ui_core::RadiusTier::Lg
+                    && layout.chrome.header_background == SemanticColorRole::Surface
+                    && layout.chrome.header_divider
+                    && layout.chrome.header_height == Some(34.0)
+                    && (layout.gap - nana_ui_core::space::MD).abs() < 0.01
+            })?),
         _ => Ok(false),
     }
 }
