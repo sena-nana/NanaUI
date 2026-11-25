@@ -1022,3 +1022,512 @@ fn open_select_moved(wrapped: bool) {
     assert!(flips >= 6, "the menu flipped {flips} times");
     assert!(kept >= 24, "kept the menu {kept} times");
 }
+
+fn bundled_text_engine() -> nana_text::SharedTextEngine {
+    use nana_text::font::{FaceDescriptor, FallbackPolicy, FontSystem, GenericFamily, font_blob};
+    let mut policy = FallbackPolicy::empty();
+    policy.set_generic(GenericFamily::SansSerif, ["Noto Sans SC"]);
+    let mut fonts = FontSystem::with_policy(policy);
+    fonts
+        .register_bytes(
+            font_blob(nana_ui_core::fonts::UI_FONT_REGULAR),
+            &FaceDescriptor::default(),
+        )
+        .expect("the bundled UI face registers");
+    Arc::new(std::sync::Mutex::new(nana_text::NativeTextEngine::new(
+        fonts,
+    )))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AnimationFrameWork {
+    layout_measure_nodes: usize,
+    layout_placement_nodes: usize,
+    layout_full_document_fallbacks: usize,
+    layout_local_subtree_fallbacks: usize,
+    hit_test_nodes_rebuilt: Option<usize>,
+    render_nodes_extracted: usize,
+    render_nodes_changed: usize,
+    accessibility_updated: usize,
+    text_constraint_relayouts: usize,
+    text_shaped_runs: usize,
+}
+
+#[test]
+fn layout_length_animation_inside_fixed_boundary_has_constant_work_counters() {
+    use nana_ui_runtime::{
+        AnimatableProperty, AnimationId, AnimationSpec, Easing, MotionTo, MotionValue,
+        NanaTextEngineShaper,
+    };
+    use std::time::Duration;
+
+    let run = |sibling_count: usize, prop: AnimatableProperty| {
+        let document = DocumentId::new(1).unwrap();
+        let mut runtime = RuntimeDocument::new(document);
+        let mut queue = MutationQueue::new();
+        let fixed_boundary = id(2);
+        let animated_panel = id(3);
+        let wrapping_text = id(4);
+        let fixed_text = id(5);
+        queue.create(id(ROOT), document, NodeKind::Document);
+        queue.create(
+            id(10),
+            document,
+            NodeKind::Element {
+                tag: "column".into(),
+            },
+        );
+        queue.insert(id(ROOT), id(10), None);
+        queue.set_style(
+            id(10),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    width: Some(LengthSpec::Px(600.0)),
+                    height: Some(LengthSpec::Px(800.0)),
+                    direction: Some(FlexDirection::Column),
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        queue.create(
+            fixed_boundary,
+            document,
+            NodeKind::Element {
+                tag: "boundary".into(),
+            },
+        );
+        queue.insert(id(10), fixed_boundary, None);
+        queue.set_style(
+            fixed_boundary,
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    width: Some(LengthSpec::Px(300.0)),
+                    height: Some(LengthSpec::Px(200.0)),
+                    direction: Some(FlexDirection::Column),
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        queue.create(
+            animated_panel,
+            document,
+            NodeKind::Element {
+                tag: "panel".into(),
+            },
+        );
+        queue.insert(fixed_boundary, animated_panel, None);
+        queue.set_style(
+            animated_panel,
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    width: Some(LengthSpec::Px(240.0)),
+                    height: Some(LengthSpec::Px(120.0)),
+                    direction: Some(FlexDirection::Column),
+                    ..LayoutStyle::default()
+                }),
+                background: Some(SemanticColorRole::Surface),
+                ..NodeStyle::default()
+            },
+        );
+        queue.create(wrapping_text, document, NodeKind::Text);
+        queue.insert(animated_panel, wrapping_text, None);
+        queue.set_text(
+            wrapping_text,
+            TextContent {
+                value: "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda".into(),
+            },
+        );
+        queue.set_style(
+            wrapping_text,
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    width: Some(LengthSpec::Fill),
+                    ..LayoutStyle::default()
+                }),
+                foreground: Some(SemanticColorRole::Text),
+                ..NodeStyle::default()
+            },
+        );
+        queue.create(fixed_text, document, NodeKind::Text);
+        queue.insert(animated_panel, fixed_text, None);
+        queue.set_text(
+            fixed_text,
+            TextContent {
+                value: "short".into(),
+            },
+        );
+        queue.set_style(
+            fixed_text,
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    width: Some(LengthSpec::Px(60.0)),
+                    height: Some(LengthSpec::Px(20.0)),
+                    ..LayoutStyle::default()
+                }),
+                foreground: Some(SemanticColorRole::Text),
+                ..NodeStyle::default()
+            },
+        );
+        for index in 0..sibling_count {
+            let card = id(100 + index as u64 * 2);
+            let label = id(101 + index as u64 * 2);
+            queue.create(card, document, NodeKind::Element { tag: "card".into() });
+            queue.create(label, document, NodeKind::Text);
+            queue.insert(id(10), card, None);
+            queue.insert(card, label, None);
+            queue.set_style(
+                card,
+                NodeStyle {
+                    layout: Arc::new(LayoutStyle {
+                        width: Some(LengthSpec::Px(200.0)),
+                        height: Some(LengthSpec::Px(24.0)),
+                        ..LayoutStyle::default()
+                    }),
+                    ..NodeStyle::default()
+                },
+            );
+            queue.set_text(
+                label,
+                TextContent {
+                    value: format!("card {index}").into(),
+                },
+            );
+            queue.set_style(label, label_style(SemanticColorRole::Text));
+        }
+        runtime.context_mut().commit_mutations(queue).unwrap();
+        let mut shaper = NanaTextEngineShaper::new(bundled_text_engine());
+        let viewport = LayoutViewport::new(600.0, 800.0);
+        runtime.flush(viewport, &mut shaper).unwrap();
+        let initial_lines = runtime
+            .context()
+            .world()
+            .text_layout(wrapping_text)
+            .unwrap()
+            .1
+            .lines
+            .len();
+
+        let (from, to) = match prop {
+            AnimatableProperty::Width => (240.0, 80.0),
+            AnimatableProperty::Height => (120.0, 60.0),
+            AnimatableProperty::Padding => (0.0, 24.0),
+            AnimatableProperty::Margin => (0.0, 18.0),
+            other => unreachable!("{other:?}"),
+        };
+        let mut anim = MutationQueue::new();
+        anim.start_animation(
+            AnimationSpec::new(
+                AnimationId::new(1).unwrap(),
+                animated_panel,
+                Duration::ZERO,
+                Duration::from_millis(100),
+                Duration::from_millis(16),
+                Easing::Linear,
+            )
+            .with_property(prop)
+            .with_range(
+                MotionValue::Scalar(from),
+                MotionTo::Value(MotionValue::Scalar(to)),
+            ),
+        );
+        runtime.context_mut().commit_mutations(anim).unwrap();
+        runtime.context_mut().advance_animations(Duration::ZERO);
+        runtime.flush(viewport, &mut shaper).unwrap();
+
+        let mut last_work = None;
+        for ms in [23, 51, 83] {
+            runtime
+                .context_mut()
+                .advance_animations(Duration::from_millis(ms));
+            let update = runtime.flush(viewport, &mut shaper).unwrap();
+            assert_scene_is_cold(&runtime, &format!("{prop:?} N={sibling_count} at {ms}ms"));
+            let c = runtime.context().last_work_counters();
+            assert_eq!(c.layout_full_document_fallbacks, 0);
+            assert_eq!(c.layout_local_subtree_fallbacks, 0);
+            last_work = Some(AnimationFrameWork {
+                layout_measure_nodes: c.layout_measure_nodes,
+                layout_placement_nodes: c.layout_placement_nodes,
+                layout_full_document_fallbacks: c.layout_full_document_fallbacks,
+                layout_local_subtree_fallbacks: c.layout_local_subtree_fallbacks,
+                hit_test_nodes_rebuilt: c.hit_test_nodes_rebuilt,
+                render_nodes_extracted: c.render_nodes_extracted,
+                render_nodes_changed: c.render_nodes_changed,
+                accessibility_updated: update.accessibility.updated.len(),
+                text_constraint_relayouts: c.text_constraint_relayouts,
+                text_shaped_runs: c.text_shaped_runs,
+            });
+        }
+        let final_lines = runtime
+            .context()
+            .world()
+            .text_layout(wrapping_text)
+            .unwrap()
+            .1
+            .lines
+            .len();
+        (last_work.unwrap(), initial_lines, final_lines)
+    };
+
+    for prop in [
+        AnimatableProperty::Width,
+        AnimatableProperty::Height,
+        AnimatableProperty::Padding,
+        AnimatableProperty::Margin,
+    ] {
+        let (small, small_init_lines, small_final_lines) = run(32, prop);
+        let (large, _, _) = run(256, prop);
+        assert_eq!(
+            small, large,
+            "{prop:?}: structural work inside fixed boundary must be O(1) w.r.t. sibling count"
+        );
+        match prop {
+            AnimatableProperty::Width => {
+                assert!(small.text_constraint_relayouts >= 1);
+                assert_eq!(small.text_shaped_runs, 0);
+                assert!(small_final_lines > small_init_lines);
+            }
+            AnimatableProperty::Height => {
+                assert_eq!(small.text_constraint_relayouts, 0);
+                assert_eq!(small.text_shaped_runs, 0);
+                assert_eq!(small_final_lines, small_init_lines);
+            }
+            AnimatableProperty::Padding => {
+                assert!(small.text_constraint_relayouts >= 1);
+                assert_eq!(small.text_shaped_runs, 0);
+            }
+            AnimatableProperty::Margin => {
+                assert_eq!(small.text_constraint_relayouts, 0);
+                assert_eq!(small.text_shaped_runs, 0);
+                assert_eq!(small_final_lines, small_init_lines);
+            }
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn layout_length_animation_moving_subtree_keeps_descendants_cold_and_constant() {
+    use nana_ui_runtime::{
+        AnimatableProperty, AnimationId, AnimationSpec, Easing, MotionTo, MotionValue, PositionSpec,
+    };
+    use std::collections::BTreeMap;
+    use std::time::Duration;
+
+    let build_and_sample =
+        |descendant_count: usize, use_margin: bool, ms: u64, cold_value: Option<f32>| {
+            let document = DocumentId::new(1).unwrap();
+            let mut runtime = RuntimeDocument::new(document);
+            let mut queue = MutationQueue::new();
+            let col = id(2);
+            let mover = id(3);
+            let container = id(4);
+            let pin_fixed = id(5);
+            queue.create(id(ROOT), document, NodeKind::Document);
+            queue.create(col, document, NodeKind::Element { tag: "col".into() });
+            queue.insert(id(ROOT), col, None);
+            queue.set_style(
+                col,
+                NodeStyle {
+                    layout: Arc::new(LayoutStyle {
+                        width: Some(LengthSpec::Px(300.0)),
+                        height: Some(LengthSpec::Px(800.0)),
+                        direction: Some(FlexDirection::Column),
+                        ..LayoutStyle::default()
+                    }),
+                    ..NodeStyle::default()
+                },
+            );
+            queue.create(
+                mover,
+                document,
+                NodeKind::Element {
+                    tag: "mover".into(),
+                },
+            );
+            queue.insert(col, mover, None);
+            queue.set_style(
+                mover,
+                NodeStyle {
+                    layout: Arc::new(LayoutStyle {
+                        width: Some(LengthSpec::Px(260.0)),
+                        height: Some(LengthSpec::Px(if use_margin {
+                            40.0
+                        } else {
+                            cold_value.unwrap_or(20.0)
+                        })),
+                        margin: use_margin.then(|| LengthSpec::Px(cold_value.unwrap_or(0.0))),
+                        ..LayoutStyle::default()
+                    }),
+                    ..NodeStyle::default()
+                },
+            );
+            queue.create(
+                container,
+                document,
+                NodeKind::Element {
+                    tag: "container".into(),
+                },
+            );
+            queue.insert(col, container, None);
+            queue.set_style(
+                container,
+                NodeStyle {
+                    layout: Arc::new(LayoutStyle {
+                        width: Some(LengthSpec::Px(260.0)),
+                        height: Some(LengthSpec::Px(400.0)),
+                        direction: Some(FlexDirection::Column),
+                        ..LayoutStyle::default()
+                    }),
+                    ..NodeStyle::default()
+                },
+            );
+            for index in 0..descendant_count {
+                let item = id(100 + index as u64 * 2);
+                let label = id(101 + index as u64 * 2);
+                queue.create(item, document, NodeKind::Element { tag: "item".into() });
+                queue.create(label, document, NodeKind::Text);
+                queue.insert(container, item, None);
+                queue.insert(item, label, None);
+                queue.set_style(
+                    item,
+                    NodeStyle {
+                        layout: Arc::new(LayoutStyle {
+                            width: Some(LengthSpec::Px(200.0)),
+                            height: Some(LengthSpec::Px(10.0)),
+                            ..LayoutStyle::default()
+                        }),
+                        ..NodeStyle::default()
+                    },
+                );
+                queue.set_text(
+                    label,
+                    TextContent {
+                        value: format!("item {index}").into(),
+                    },
+                );
+                queue.set_style(label, label_style(SemanticColorRole::Text));
+            }
+            queue.create(pin_fixed, document, NodeKind::Element { tag: "pin".into() });
+            queue.insert(container, pin_fixed, None);
+            queue.set_style(
+                pin_fixed,
+                NodeStyle {
+                    layout: Arc::new(LayoutStyle {
+                        position: PositionSpec::Fixed,
+                        offset_top: Some(LengthSpec::Px(12.0)),
+                        offset_left: Some(LengthSpec::Px(12.0)),
+                        width: Some(LengthSpec::Px(40.0)),
+                        height: Some(LengthSpec::Px(16.0)),
+                        ..LayoutStyle::default()
+                    }),
+                    ..NodeStyle::default()
+                },
+            );
+            runtime.context_mut().commit_mutations(queue).unwrap();
+            flush(&mut runtime);
+
+            if cold_value.is_none() {
+                let (prop, from, to) = if use_margin {
+                    (AnimatableProperty::Margin, 0.0, 27.4)
+                } else {
+                    (AnimatableProperty::Height, 20.0, 47.4)
+                };
+                let mut anim = MutationQueue::new();
+                anim.start_animation(
+                    AnimationSpec::new(
+                        AnimationId::new(1).unwrap(),
+                        mover,
+                        Duration::ZERO,
+                        Duration::from_millis(100),
+                        Duration::from_millis(16),
+                        Easing::Linear,
+                    )
+                    .with_property(prop)
+                    .with_range(
+                        MotionValue::Scalar(from),
+                        MotionTo::Value(MotionValue::Scalar(to)),
+                    ),
+                );
+                runtime.context_mut().commit_mutations(anim).unwrap();
+                runtime.context_mut().advance_animations(Duration::ZERO);
+                let _ = runtime
+                    .flush(LayoutViewport::new(300.0, 800.0), &mut MeasureTextShaper)
+                    .unwrap();
+                runtime
+                    .context_mut()
+                    .advance_animations(Duration::from_millis(ms));
+            }
+            let update = runtime
+                .flush(LayoutViewport::new(300.0, 800.0), &mut MeasureTextShaper)
+                .unwrap();
+            (runtime, update)
+        };
+
+    for use_margin in [false, true] {
+        let ms = 37;
+        let cold_val = if use_margin {
+            27.4 * 0.37
+        } else {
+            20.0 + 27.4 * 0.37
+        };
+        let (small_rt, small_upd) = build_and_sample(16, use_margin, ms, None);
+        let small_c = small_rt.context().last_work_counters();
+        let (large_rt, large_upd) = build_and_sample(128, use_margin, ms, None);
+        let large_c = large_rt.context().last_work_counters();
+
+        assert_eq!(
+            small_c.layout_placement_nodes,
+            large_c.layout_placement_nodes
+        );
+        assert_eq!(
+            small_c.hit_test_nodes_rebuilt,
+            large_c.hit_test_nodes_rebuilt
+        );
+        assert_eq!(
+            small_c.render_nodes_extracted,
+            large_c.render_nodes_extracted
+        );
+        assert_eq!(small_c.render_nodes_changed, large_c.render_nodes_changed);
+        assert_eq!(
+            small_upd.accessibility.updated.len(),
+            large_upd.accessibility.updated.len()
+        );
+        assert!(small_c.render_nodes_extracted <= 4);
+
+        // Twin-page cold parity check on the small tree (hit-test grid, a11y, scene).
+        assert_scene_is_cold(&small_rt, "moved subtree cold scene");
+        let (mut twin_rt, _) = build_and_sample(16, use_margin, ms, Some(cold_val));
+        twin_rt
+            .context_mut()
+            .rebuild_hit_test(DocumentId::new(1).unwrap());
+        let doc = DocumentId::new(1).unwrap();
+        for row in 0..40 {
+            let y = row as f32 * 13.7 + 0.31;
+            for col in 0..20 {
+                let x = col as f32 * 14.3 + 0.27;
+                assert_eq!(
+                    small_rt.context().world().hit_test_candidates(doc, x, y),
+                    twin_rt.context().world().hit_test_candidates(doc, x, y),
+                    "hit test candidates mismatch at ({x}, {y})"
+                );
+            }
+        }
+        let incremental_a11y: BTreeMap<_, _> = small_rt
+            .context()
+            .world()
+            .project_accessibility(doc)
+            .into_iter()
+            .map(|n| (n.id, n))
+            .collect();
+        let cold_a11y: BTreeMap<_, _> = twin_rt
+            .context()
+            .world()
+            .project_accessibility(doc)
+            .into_iter()
+            .map(|n| (n.id, n))
+            .collect();
+        assert_eq!(incremental_a11y, cold_a11y);
+    }
+}

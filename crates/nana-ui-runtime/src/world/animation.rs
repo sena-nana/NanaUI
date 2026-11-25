@@ -816,26 +816,17 @@ impl UiWorld {
                     self.mark_subtree(target, DirtyMask::STYLE | DirtyMask::RENDER);
                 }
                 prop if is_layout_length(prop) => {
+                    let had_definite_height = prop == crate::AnimatableProperty::Height
+                        && self.contains(target)
+                        && self.has_definite_height_constraint(target);
                     self.clear_settled_length_slot_if_unused(target, prop);
                     if self.contains(target) {
-                        if prop != crate::AnimatableProperty::Margin {
-                            self.nodes
-                                .invalidate_text(target, crate::text_node::TextDirty::CONSTRAINT);
-                        }
-                        let change = match prop {
-                            crate::AnimatableProperty::Width => {
-                                nana_ui_core::LayoutStyleChange::WIDTH
-                            }
-                            crate::AnimatableProperty::Height => {
-                                nana_ui_core::LayoutStyleChange::HEIGHT
-                            }
-                            _ => nana_ui_core::LayoutStyleChange::SPACING,
-                        };
-                        let invalidation = self.classify_layout_change(target, change);
-                        self.record_layout_invalidation(target, invalidation);
-                        self.mark_subtree(
+                        let has_definite_height = prop == crate::AnimatableProperty::Height
+                            && self.has_definite_height_constraint(target);
+                        self.invalidate_layout_length_change(
                             target,
-                            DirtyMask::INPUT | DirtyMask::ACCESSIBILITY | DirtyMask::RENDER,
+                            prop,
+                            had_definite_height != has_definite_height,
                         );
                     }
                 }

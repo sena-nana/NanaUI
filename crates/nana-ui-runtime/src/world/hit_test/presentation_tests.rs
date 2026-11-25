@@ -673,6 +673,517 @@ fn a_layout_width_sample_seeds_a_sizing_change_not_a_forced_subtree() {
 }
 
 #[test]
+fn layout_length_samples_and_unbind_do_not_mark_descendants_dirty() {
+    for prop in [
+        AnimatableProperty::Width,
+        AnimatableProperty::Height,
+        AnimatableProperty::Padding,
+        AnimatableProperty::Margin,
+    ] {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(node(1), document(1), NodeKind::Document);
+        queue.create(
+            node(2),
+            document(1),
+            NodeKind::Element {
+                tag: "panel".into(),
+            },
+        );
+        queue.create(
+            node(3),
+            document(1),
+            NodeKind::Element {
+                tag: "child".into(),
+            },
+        );
+        queue.create(node(4), document(1), NodeKind::Text);
+        queue.insert(node(1), node(2), None);
+        queue.insert(node(2), node(3), None);
+        queue.insert(node(3), node(4), None);
+        queue.set_text(
+            node(4),
+            crate::TextContent {
+                value: "nested".into(),
+            },
+        );
+        queue.set_style(
+            node(2),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    width: Some(nana_ui_core::LengthSpec::Px(120.0)),
+                    height: Some(nana_ui_core::LengthSpec::Px(80.0)),
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        let anim_id = AnimationId::new(10).unwrap();
+        queue.start_animation(
+            AnimationSpec::new(
+                anim_id,
+                node(2),
+                Duration::ZERO,
+                Duration::from_millis(100),
+                Duration::from_millis(16),
+                Easing::Linear,
+            )
+            .with_property(prop)
+            .with_range(
+                MotionValue::Scalar(20.0),
+                MotionTo::Value(MotionValue::Scalar(80.0)),
+            ),
+        );
+        world.commit(queue).unwrap();
+        let _ = world.take_system_work();
+
+        world.advance_animations(Duration::from_millis(50));
+        let work = world.take_system_work();
+        assert_eq!(
+            work.render_extraction,
+            vec![node(2)],
+            "{prop:?}: only target node should be marked RENDER on sample"
+        );
+        assert!(
+            work.input_hit_test.is_empty(),
+            "{prop:?}: sample must not eagerly mark INPUT before layout writeback: {:?}",
+            work.input_hit_test
+        );
+        assert!(
+            work.accessibility.is_empty(),
+            "{prop:?}: sample must not eagerly mark ACCESSIBILITY before layout writeback: {:?}",
+            work.accessibility
+        );
+        let seed = work
+            .layout_frontier_seeds
+            .iter()
+            .find(|seed| seed.node == node(2))
+            .expect("the sample seeds layout");
+        assert_ne!(
+            seed.invalidation.affected_axes,
+            nana_ui_core::LayoutDependencyFootprint::ALL,
+            "{prop:?}: sample must emit narrow footprint"
+        );
+
+        let mut stop = MutationQueue::new();
+        stop.stop_animation(anim_id);
+        world.commit(stop).unwrap();
+        let unbind_work = world.take_system_work();
+        assert_eq!(
+            unbind_work.render_extraction,
+            vec![node(2)],
+            "{prop:?}: unbind should mark only target RENDER"
+        );
+        assert!(
+            unbind_work.input_hit_test.is_empty(),
+            "{prop:?}: unbind must not eagerly mark INPUT: {:?}",
+            unbind_work.input_hit_test
+        );
+        assert!(
+            unbind_work.accessibility.is_empty(),
+            "{prop:?}: unbind must not eagerly mark ACCESSIBILITY: {:?}",
+            unbind_work.accessibility
+        );
+        let unbind_seed = unbind_work
+            .layout_frontier_seeds
+            .iter()
+            .find(|seed| seed.node == node(2))
+            .expect("unbind seeds layout");
+        assert_ne!(
+            unbind_seed.invalidation.affected_axes,
+            nana_ui_core::LayoutDependencyFootprint::ALL,
+            "{prop:?}: unbind must emit narrow footprint"
+        );
+    }
+}
+
+#[test]
+fn layout_length_and_same_frame_seeds_merge_without_degrading_to_all() {
+    let setup_world = || {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(node(1), document(1), NodeKind::Document);
+        queue.create(
+            node(2),
+            document(1),
+            NodeKind::Element {
+                tag: "panel".into(),
+            },
+        );
+        queue.create(node(3), document(1), NodeKind::Text);
+        queue.insert(node(1), node(2), None);
+        queue.insert(node(2), node(3), None);
+        queue.set_text(
+            node(3),
+            crate::TextContent {
+                value: "label".into(),
+            },
+        );
+        queue.set_style(
+            node(2),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    width: Some(nana_ui_core::LengthSpec::Px(100.0)),
+                    height: Some(nana_ui_core::LengthSpec::Px(60.0)),
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        world.commit(queue).unwrap();
+        let _ = world.take_system_work();
+        world
+    };
+
+    let assert_narrow_seed =
+        |seeds: &[crate::LayoutFrontierSeed], target: StableNodeId, case: &str| {
+            let seed = seeds
+                .iter()
+                .find(|seed| seed.node == target)
+                .unwrap_or_else(|| panic!("{case}: missing seed for {target:?}"));
+            assert_ne!(
+                seed.invalidation.affected_axes,
+                nana_ui_core::LayoutDependencyFootprint::ALL,
+                "{case}: merged seed degraded to ALL: {:?}",
+                seed.invalidation
+            );
+            assert!(
+                !seed
+                    .invalidation
+                    .reason
+                    .intersects(nana_ui_core::InvalidationReason::UNKNOWN),
+                "{case}: merged seed became UNKNOWN: {:?}",
+                seed.invalidation
+            );
+            assert!(
+                !seed.invalidation.is_unknown_forced_subtree(),
+                "{case}: merged seed became forced subtree: {:?}",
+                seed.invalidation
+            );
+        };
+
+    let start_len = |queue: &mut MutationQueue, id: u64, prop: AnimatableProperty| {
+        queue.start_animation(
+            AnimationSpec::new(
+                AnimationId::new(id).unwrap(),
+                node(2),
+                Duration::ZERO,
+                Duration::from_millis(100),
+                Duration::from_millis(16),
+                Easing::Linear,
+            )
+            .with_property(prop)
+            .with_range(
+                MotionValue::Scalar(40.0),
+                MotionTo::Value(MotionValue::Scalar(120.0)),
+            ),
+        );
+    };
+
+    // 1. Width + Height animations in the same frame.
+    {
+        let mut world = setup_world();
+        let mut queue = MutationQueue::new();
+        start_len(&mut queue, 1, AnimatableProperty::Width);
+        start_len(&mut queue, 2, AnimatableProperty::Height);
+        world.commit(queue).unwrap();
+        world.advance_animations(Duration::from_millis(50));
+        let seeds = world.take_system_work().layout_frontier_seeds;
+        assert_narrow_seed(&seeds, node(2), "width + height");
+    }
+
+    // 2. Width animation + SetStyle (padding + offset_top) in the same frame.
+    {
+        let mut world = setup_world();
+        let mut queue = MutationQueue::new();
+        start_len(&mut queue, 1, AnimatableProperty::Width);
+        world.commit(queue).unwrap();
+        let _ = world.take_system_work();
+
+        world.advance_animations(Duration::from_millis(50));
+        let mut queue = MutationQueue::new();
+        queue.set_style(
+            node(2),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    width: Some(nana_ui_core::LengthSpec::Px(100.0)),
+                    height: Some(nana_ui_core::LengthSpec::Px(60.0)),
+                    padding: Some(nana_ui_core::LengthSpec::Px(8.0)),
+                    offset_top: Some(nana_ui_core::LengthSpec::Px(4.0)),
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        world.commit(queue).unwrap();
+        let seeds = world.take_system_work().layout_frontier_seeds;
+        assert_narrow_seed(&seeds, node(2), "width + SetStyle");
+    }
+
+    // 3. Width animation + FontAxis animation on the same node in the same frame.
+    {
+        let mut world = setup_world();
+        let mut queue = MutationQueue::new();
+        start_len(&mut queue, 1, AnimatableProperty::Width);
+        queue.start_animation(
+            AnimationSpec::new(
+                AnimationId::new(2).unwrap(),
+                node(2),
+                Duration::ZERO,
+                Duration::from_millis(100),
+                Duration::from_millis(16),
+                Easing::Linear,
+            )
+            .with_property(AnimatableProperty::FontAxis(*b"wght"))
+            .with_range(
+                MotionValue::Scalar(400.0),
+                MotionTo::Value(MotionValue::Scalar(700.0)),
+            ),
+        );
+        world.commit(queue).unwrap();
+        let _ = world.take_system_work();
+
+        world.advance_animations(Duration::from_millis(50));
+        let work = world.take_system_work();
+        assert_narrow_seed(&work.layout_frontier_seeds, node(2), "width + FontAxis");
+        assert!(
+            work.input_hit_test.is_empty(),
+            "FontAxis + Width must not eagerly mark INPUT_ELSEWHERE"
+        );
+    }
+
+    // 4. Padding animation + SetText in the same frame.
+    {
+        let mut world = setup_world();
+        let mut queue = MutationQueue::new();
+        queue.start_animation(
+            AnimationSpec::new(
+                AnimationId::new(1).unwrap(),
+                node(3),
+                Duration::ZERO,
+                Duration::from_millis(100),
+                Duration::from_millis(16),
+                Easing::Linear,
+            )
+            .with_property(AnimatableProperty::Padding)
+            .with_range(
+                MotionValue::Scalar(2.0),
+                MotionTo::Value(MotionValue::Scalar(12.0)),
+            ),
+        );
+        world.commit(queue).unwrap();
+        let _ = world.take_system_work();
+
+        world.advance_animations(Duration::from_millis(50));
+        let mut queue = MutationQueue::new();
+        queue.set_text(
+            node(3),
+            crate::TextContent {
+                value: "longer label".into(),
+            },
+        );
+        world.commit(queue).unwrap();
+        let work = world.take_system_work();
+        let mut shaper = crate::MeasureTextShaper;
+        world.resolve_styles(&work.style).unwrap();
+        world.shape_text(&work.text, &mut shaper).unwrap();
+        let post_shape = world.take_system_work();
+        let mut merged = work.layout_frontier_seeds;
+        for seed in post_shape.layout_frontier_seeds {
+            if let Some(existing) = merged.iter_mut().find(|item| item.node == seed.node) {
+                existing.invalidation = existing.invalidation.merge(seed.invalidation);
+            } else {
+                merged.push(seed);
+            }
+        }
+        assert_narrow_seed(&merged, node(3), "padding + SetText");
+    }
+
+    // 5. Height animation + child insertion on the same parent in the same frame.
+    {
+        let mut world = setup_world();
+        let mut queue = MutationQueue::new();
+        start_len(&mut queue, 1, AnimatableProperty::Height);
+        world.commit(queue).unwrap();
+        let _ = world.take_system_work();
+
+        world.advance_animations(Duration::from_millis(50));
+        let mut queue = MutationQueue::new();
+        queue.create(
+            node(4),
+            document(1),
+            NodeKind::Element {
+                tag: "extra".into(),
+            },
+        );
+        queue.insert(node(2), node(4), None);
+        world.commit(queue).unwrap();
+        let seeds = world.take_system_work().layout_frontier_seeds;
+        assert_narrow_seed(&seeds, node(2), "height + child insertion");
+    }
+}
+
+#[test]
+fn layout_length_minimal_text_constraint_invalidation() {
+    let build = |definite_height: bool| {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(node(1), document(1), NodeKind::Document);
+        queue.create(node(2), document(1), NodeKind::Text);
+        queue.insert(node(1), node(2), None);
+        queue.set_text(
+            node(2),
+            crate::TextContent {
+                value: "hello".into(),
+            },
+        );
+        queue.set_style(
+            node(2),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    width: Some(nana_ui_core::LengthSpec::Px(100.0)),
+                    height: definite_height.then_some(nana_ui_core::LengthSpec::Px(40.0)),
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        world.commit(queue).unwrap();
+        let _ = world.take_system_work();
+        world
+    };
+
+    // Margin and Width do not eagerly bump TextDirty::CONSTRAINT before layout.
+    for prop in [AnimatableProperty::Margin, AnimatableProperty::Width] {
+        let mut world = build(true);
+        let before = world.text_revisions(node(2)).unwrap().constraint;
+        let mut queue = MutationQueue::new();
+        queue.start_animation(
+            AnimationSpec::new(
+                AnimationId::new(1).unwrap(),
+                node(2),
+                Duration::ZERO,
+                Duration::from_millis(100),
+                Duration::from_millis(16),
+                Easing::Linear,
+            )
+            .with_property(prop)
+            .with_range(
+                MotionValue::Scalar(10.0),
+                MotionTo::Value(MotionValue::Scalar(50.0)),
+            ),
+        );
+        world.commit(queue).unwrap();
+        world.advance_animations(Duration::from_millis(50));
+        assert_eq!(
+            world.text_revisions(node(2)).unwrap().constraint,
+            before,
+            "{prop:?}: must not eagerly invalidate text constraint before layout"
+        );
+    }
+
+    // Height when already definite: does not eagerly bump constraint revision.
+    {
+        let mut world = build(true);
+        let before = world.text_revisions(node(2)).unwrap().constraint;
+        let mut queue = MutationQueue::new();
+        queue.start_animation(
+            AnimationSpec::new(
+                AnimationId::new(1).unwrap(),
+                node(2),
+                Duration::ZERO,
+                Duration::from_millis(100),
+                Duration::from_millis(16),
+                Easing::Linear,
+            )
+            .with_property(AnimatableProperty::Height)
+            .with_range(
+                MotionValue::Scalar(40.0),
+                MotionTo::Value(MotionValue::Scalar(80.0)),
+            ),
+        );
+        world.commit(queue).unwrap();
+        world.advance_animations(Duration::from_millis(50));
+        assert_eq!(
+            world.text_revisions(node(2)).unwrap().constraint,
+            before,
+            "definite Height animation must not eagerly bump constraint revision"
+        );
+    }
+
+    // Height when auto -> definite -> auto: bumps on auto<->definite transitions only.
+    {
+        let mut world = build(false);
+        let before = world.text_revisions(node(2)).unwrap().constraint;
+        let anim = AnimationId::new(1).unwrap();
+        let mut queue = MutationQueue::new();
+        queue.start_animation(
+            AnimationSpec::new(
+                anim,
+                node(2),
+                Duration::ZERO,
+                Duration::from_millis(100),
+                Duration::from_millis(16),
+                Easing::Linear,
+            )
+            .with_property(AnimatableProperty::Height)
+            .with_range(
+                MotionValue::Scalar(40.0),
+                MotionTo::Value(MotionValue::Scalar(80.0)),
+            ),
+        );
+        world.commit(queue).unwrap();
+        world.advance_animations(Duration::from_millis(20));
+        let after_first = world.text_revisions(node(2)).unwrap().constraint;
+        assert!(
+            after_first > before,
+            "auto -> definite height transition must bump constraint revision"
+        );
+        world.advance_animations(Duration::from_millis(60));
+        assert_eq!(
+            world.text_revisions(node(2)).unwrap().constraint,
+            after_first,
+            "steady definite height sample must not eagerly bump constraint revision"
+        );
+        let mut stop = MutationQueue::new();
+        stop.stop_animation(anim);
+        world.commit(stop).unwrap();
+        assert!(
+            world.text_revisions(node(2)).unwrap().constraint > after_first,
+            "definite -> auto height unbind must bump constraint revision"
+        );
+    }
+
+    // Padding: eagerly bumps constraint revision on the target itself.
+    {
+        let mut world = build(true);
+        let before = world.text_revisions(node(2)).unwrap().constraint;
+        let mut queue = MutationQueue::new();
+        queue.start_animation(
+            AnimationSpec::new(
+                AnimationId::new(1).unwrap(),
+                node(2),
+                Duration::ZERO,
+                Duration::from_millis(100),
+                Duration::from_millis(16),
+                Easing::Linear,
+            )
+            .with_property(AnimatableProperty::Padding)
+            .with_range(
+                MotionValue::Scalar(0.0),
+                MotionTo::Value(MotionValue::Scalar(16.0)),
+            ),
+        );
+        world.commit(queue).unwrap();
+        world.advance_animations(Duration::from_millis(50));
+        assert!(
+            world.text_revisions(node(2)).unwrap().constraint > before,
+            "Padding animation must invalidate target constraint revision"
+        );
+    }
+}
+
+#[test]
 fn flip_play_keeps_last_layout_and_hit_test_follows_presentation() {
     let mut world = UiWorld::new();
     let first = nana_ui_core::FlipRect::new(10.0, 0.0, 40.0, 40.0);

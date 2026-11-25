@@ -201,7 +201,7 @@ impl UiWorld {
         // that neither transforms nor places itself is its parent's map,
         // read without its page box's frame walk or the overlay, escape,
         // sticky and transform lookups, which all answer "none" for it.
-        let plain_page = !self.has_layout_length_overlays()
+        let plain_page = !self.has_transform_overlays()
             && self.overlays_a11y.overlay_host_nodes.is_empty()
             && self.invalidation.z_index_nodes == 0
             && self.tree.detached_mounted.is_empty()
@@ -210,7 +210,6 @@ impl UiWorld {
             && self.invalidation.menu_surfaces == 0
             && self.overlays_a11y.triggered_overlays.is_empty()
             && self.overlays_a11y.select_menus.is_empty()
-            && self.motion.presentation.is_empty()
             && self.invalidation.geometry_frame.get().is_none();
         while let Some(node) = memo.chain.pop() {
             let record = self.nodes.get(node)?;

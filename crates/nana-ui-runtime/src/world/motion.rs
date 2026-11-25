@@ -612,6 +612,71 @@ impl UiWorld {
         !self.motion.settled_length_overlays.is_empty()
     }
 
+    pub(super) fn has_transform_overlays(&self) -> bool {
+        !self.motion.presentation.is_empty()
+            && self
+                .motion
+                .presentation
+                .has_any_property(crate::AnimatableProperty::Transform)
+    }
+
+    pub(super) fn has_definite_height_constraint(&self, id: StableNodeId) -> bool {
+        let layout = &self.record(id).style.layout;
+        layout
+            .height
+            .is_some_and(nana_ui_core::LengthSpec::is_definite_declared)
+            || layout
+                .max_height
+                .is_some_and(nana_ui_core::LengthSpec::is_definite_declared)
+            || self
+                .motion
+                .settled_length_overlays
+                .get(&id)
+                .and_then(|overlay| overlay.get(crate::AnimatableProperty::Height))
+                .is_some()
+    }
+
+    pub(super) fn invalidate_layout_length_change(
+        &mut self,
+        target: StableNodeId,
+        property: crate::AnimatableProperty,
+        definite_height_changed: bool,
+    ) {
+        // Minimal `TextDirty::CONSTRAINT` on `target` only:
+        // - `Padding`: `used_layout_padding` reads the padding overlay directly.
+        // - `Height`: only when height's definiteness (`auto` <-> definite)
+        //   changed, matching `same_text_constraint_layouts`; steady samples
+        //   rely on `write_local_layout` when a box actually resizes.
+        // - `Width` / `Margin`: `text_shape_constraints` reads the laid-out
+        //   `layout.width` and never reads margin; `write_local_layout` sets
+        //   `CONSTRAINT` on any box whose size actually changed.
+        if property == crate::AnimatableProperty::Padding
+            || (property == crate::AnimatableProperty::Height && definite_height_changed)
+        {
+            self.nodes
+                .invalidate_text(target, crate::text_node::TextDirty::CONSTRAINT);
+        }
+        // The sample changed one field group of the node's layout overlay:
+        // seed that rather than forcing the whole subtree to re-layout.
+        let changed = match property {
+            crate::AnimatableProperty::Width => nana_ui_core::LayoutStyleChange::WIDTH,
+            crate::AnimatableProperty::Height => nana_ui_core::LayoutStyleChange::HEIGHT,
+            crate::AnimatableProperty::Padding | crate::AnimatableProperty::Margin => {
+                nana_ui_core::LayoutStyleChange::SPACING
+            }
+            _ => return,
+        };
+        let invalidation = self.classify_layout_change(target, changed);
+        self.record_layout_invalidation(target, invalidation);
+        // Mark only `target`'s RENDER so `ExtractedNode::source_style` (which
+        // carries `motion_layout`) stays current even if `target` only moves
+        // or is clamped. Leave `INPUT` and `ACCESSIBILITY` unmarked so layout
+        // writeback / publish marks only boxes whose own local geometry or
+        // padding actually changed, preserving `MarkOrigin::LayoutMove` and
+        // relative-geometry reuse.
+        self.mark(target, DirtyMask::RENDER);
+    }
+
     pub(super) fn presentation_length_overlay(
         &self,
         id: StableNodeId,
@@ -713,7 +778,10 @@ impl UiWorld {
             return;
         }
         for id in self.axis_inheritors(target) {
-            let _ = self.mark(id, INHERITED_TEXT_DIRTY);
+            let invalidation =
+                self.classify_layout_change(id, nana_ui_core::LayoutStyleChange::TYPOGRAPHY);
+            self.record_layout_invalidation(id, invalidation);
+            let _ = self.mark(id, DirtyMask::STYLE | DirtyMask::TEXT | DirtyMask::RENDER);
         }
         self.account_animation_dirty(INHERITED_TEXT_DIRTY);
     }
@@ -855,29 +923,19 @@ impl UiWorld {
         if !changed {
             return false;
         }
+        let had_definite_height = sample.property == crate::AnimatableProperty::Height
+            && self.has_definite_height_constraint(sample.target);
         self.motion
             .settled_length_overlays
             .entry(sample.target)
             .or_default()
             .set(sample.property, Some(next_px));
-        if sample.property != crate::AnimatableProperty::Margin {
-            // The content box, and whether its height is definite, are the
-            // text's constraints. A margin only moves the box.
-            self.nodes
-                .invalidate_text(sample.target, crate::text_node::TextDirty::CONSTRAINT);
-        }
-        // The sample changed one field group of the node's layout overlay:
-        // seed that rather than forcing the whole subtree to re-layout.
-        let changed = match sample.property {
-            crate::AnimatableProperty::Width => nana_ui_core::LayoutStyleChange::WIDTH,
-            crate::AnimatableProperty::Height => nana_ui_core::LayoutStyleChange::HEIGHT,
-            _ => nana_ui_core::LayoutStyleChange::SPACING,
-        };
-        let invalidation = self.classify_layout_change(sample.target, changed);
-        self.record_layout_invalidation(sample.target, invalidation);
-        self.mark_subtree(
+        let has_definite_height = sample.property == crate::AnimatableProperty::Height
+            && self.has_definite_height_constraint(sample.target);
+        self.invalidate_layout_length_change(
             sample.target,
-            DirtyMask::INPUT | DirtyMask::ACCESSIBILITY | DirtyMask::RENDER,
+            sample.property,
+            had_definite_height != has_definite_height,
         );
         self.account_animation_dirty(DirtyMask::LAYOUT | DirtyMask::RENDER);
         true

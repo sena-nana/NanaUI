@@ -98,7 +98,7 @@ abs(child) = abs(frame) + local(child)
 分类只看节点自己。下面这些要看上面的整条链，所以**不存、每次现推**，按投影或建索引的一次调用记忆：
 
 - **`AccessibleSpace`**（`world/accessibility/space.rs`）：节点的无障碍空间，三个字段 `local`（按偏移放置）、`unit`（盒子在空间里正立时的每轴缩放）、`framed`（空间是某个盒子的本地布局坐标，而不是视口平移过来的）。由 `accessible_space` 沿链求出，记在 `ProjectionMemo` 里。
-- **`moved_root_hands_offsets`**（`world/accessibility/delta.rs`）：平移根的盒子在它的空间里是否正立、链上没有模态框、全局没有动画叠加、长度动画和裁剪 visual。快路径只读一路记录的 `hands_offsets()` 与 `upright()`；不成立时再问 `accessible_space`。
+- **`moved_root_hands_offsets`**（`world/accessibility/delta.rs`）：平移根的盒子在它的空间里是否正立、链上没有模态框、全局没有变换动画叠加（`Transform`，`has_transform_overlays()`）和裁剪 visual；宽度、高度、内边距、外边距等布局长度叠加保留钉子 / 偏移快路径。快路径只读一路记录的 `hands_offsets()` 与 `upright()`；不成立时再问 `accessible_space`。
 - **命中的 3D 上下文**：`build.rs` 建条目时沿种子往下带 `parent_blocks_3d`，与 `opens_3d_context()` 合成子节点的 `child_blocks_3d`；`local_children` 要求一路没有透视、子节点不在 3D 上下文里。
 - **命中的有效样式**：条目按有效样式建。有效样式不是解析样式时（动画叠加、浮层宿主的分支），`NodeSpace::of_style` 按有效样式现分类，不读 `NodeRecord::space`。
 
@@ -243,7 +243,7 @@ abs(child) = abs(frame) + local(child)
 写回时本地偏移变了的盒子标 ACCESSIBILITY；随父节点平移的后代不标。只因布局移动而标的 INPUT 不带 `INPUT_ELSEWHERE`，进 `SystemWork::accessibility_moved`。`project_accessibility_delta`（`delta.rs`）对每个平移根：
 
 - **从钉子找**：`moved_root_hands_offsets` 成立时，根不整棵走，而是 `reach_moved_pins`（`pins.rs`）对 `space_pins` 里每个钉子往上找最近的平移根。路上碰到参照系是页面的盒子就停（它没跟着动）；参照系是某个块的盒子记下那个块，到根之前经过了它才算跟着根动；仍交偏移的钉子（缩放、`sticky`、从随根平移的块量起的绝对定位）不挡路。找到的钉子从它起按 `reach_moved_subtree` 的规则走：没跟着动的进受影响集合，裁剪的整棵重投影，不按偏移放置的逐个 `keeps_relative_bounds`。O(钉子数 × 深度)。
-- **逐个走**：`moved_root_hands_offsets` 不成立（根的空间不正立、根是模态框、有动画叠加、长度动画或裁剪 visual）时 `reach_moved_subtree` 从根往下逐个精确判定，停在别的平移根处。
+- **逐个走**：`moved_root_hands_offsets` 不成立（根的空间不正立、根是模态框、有变换动画叠加或裁剪 visual）时 `reach_moved_subtree` 从根往下逐个精确判定，停在别的平移根处。
 - 平移根自己的相对偏移确实变了，要重投影。布局标了 INPUT、却没进受影响集合的盒子（相对偏移没变），再问一次 `keeps_relative_bounds`，保不住的重投影。
 
 **滚动**：滚动只标滚动容器的 INPUT，并记 `DirtyMask::INPUT_SCROLLED`（不带 `INPUT_ELSEWHERE`），drain 时进 `SystemWork::accessibility_scrolled`；同帧还被别的东西标了 INPUT、被布局移动或改形、改了变换的不算。`project_accessibility_delta` 投影容器自己（`scroll` 与滚动轴变了）；`moved_root_hands_offsets` 成立时，它装着的东西当作「内容平移了」交给 `reach_moved_pins`，以滚过的容器为根和停止点：滚动带不走的（`fixed`、包含块在容器外的绝对定位）、从视口盒放置的（`sticky`、量自别的块的绝对定位；父节点是滚动容器（裁剪溢出，或滚动偏移不为零）时 `keeps_relative_bounds` 不再按「两边的视口盒都是布局盒」保留——只看偏移不为零的话，滚回原点那一帧贴住过的 `sticky` 会被漏掉）与裁剪的整棵（子孙的 `clip` 在视口坐标里，嵌套的滚动容器也是）重投影，其余一个不碰。另一个滚过的容器里的滚动容器整棵重投影（它的裁剪在视口上动了）；`moved_root_hands_offsets` 不成立时整棵重投影，与以前相同。代价 O(钉子数 × 深度) 加容器自己的子节点列表。
@@ -401,7 +401,7 @@ cargo run --release -p component-gallery --bin ui-snapshots --features snapshots
 下面这些有意仍按节点或整棵处理，每条都在当前代码里核实过。
 
 - **3D 与透视**（`transform_3d`、`perspective`、`preserve-3d`）：命中不交出本地坐标、不原地重建（`rebuilt_hit_entry_in_place` 拒绝透视与 `space.depth()`），平移与改变换整棵修补；无障碍退回外接框，平移根下面逐个判定；剔除索引在继承的变换带透视时整棵重算。原因：透视并不进仿射，3D 上下文要把变换往下传，平台的无障碍 `transform` 只有 2D 仿射。
-- **模态框、动画叠加、长度动画、裁剪 visual**：无障碍的平移根与原地改尺寸的转过盒子都退回逐个判定（`moved_root_hands_offsets` 不成立）。原因：叠加能变换任何盒子，裁剪 visual 裁剪它下面的每个盒子，模态框的无障碍盒是 surface。
+- **模态框、变换动画叠加、裁剪 visual**：无障碍的平移根与原地改尺寸的转过盒子都退回逐个判定（`moved_root_hands_offsets` 不成立）。原因：变换叠加（`Transform`）能变换任何盒子，裁剪 visual 裁剪它下面的每个盒子，模态框的无障碍盒是 surface；布局长度动画（`Width` / `Height` / `Padding` / `Margin`）不改变换矩阵，因此仍走钉子 / 偏移快路径。
 - **打开的 MenuSurface**：仍按页面推导（`READS_PAGE`），它或上面的盒子平移时整节点重新提取。原因：表面是菜单项的外接框，菜单项的参照系是页面、由布局在每次平移时重新放置（贴视口翻转），本地表面是「菜单项页面盒子 − 触发器原点」，两边各挪同一个量后相减在末位不同。一次只开一个菜单。
 - **Painter 非恒等局部变换**（`origin_bound`，`custom_paint.rs`）：局部变换绕记录在页面上的角点（`about_origin`），平移量是页面坐标的函数。要改成本地，painter 得在加原点之前先过局部变换，合成矩阵的舍入顺序不同，转过的 painter 内容在末位乃至抗锯齿上与现在不同。只有非恒等局部变换的 painter 节点进集合。
 - **参照系不是父节点的图标**（`PlacementRead::Page`）：按两边的页面原点求差。要与平移无关得沿两边的参照系链求到共同祖先再相减，图标的 `y` 会在末位变。文字宿主下的绝对定位图标、宿主是打开的 MenuSurface 时才出现。

@@ -201,12 +201,10 @@ impl UiWorld {
         }
     }
 
-    /// No motion overlay and no clip visual anywhere: what decides whether
+    /// No transform overlay and no clip visual anywhere: what decides whether
     /// a box is axis-aligned is on its chain.
     pub(super) fn motion_free_unclipped(&self) -> bool {
-        !self.has_layout_length_overlays()
-            && self.motion.presentation.is_empty()
-            && self.invalidation.clip_visuals == 0
+        !self.has_transform_overlays() && self.invalidation.clip_visuals == 0
     }
 
     /// Whether `record`, `id`'s, neither scrolls, transforms nor places

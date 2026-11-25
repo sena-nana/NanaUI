@@ -174,11 +174,10 @@ impl UiWorld {
         };
         if open.is_empty() {
             // Whether `root` holds its box upright in its space: then the
-            // bounds of what it holds come from their offsets. Motion
+            // bounds of what it holds come from their offsets. Transform
             // overlays can transform any box, so they leave only the exact
             // check; a clip visual sends every box to `pending` below.
-            let parent_offsets = self.motion.presentation.is_empty()
-                && !self.has_layout_length_overlays()
+            let parent_offsets = !self.has_transform_overlays()
                 && !self.is_modal_frame(root)
                 && self
                     .accessible_space(root, memo)

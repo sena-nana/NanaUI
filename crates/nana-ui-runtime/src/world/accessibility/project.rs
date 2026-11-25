@@ -59,8 +59,7 @@ impl UiWorld {
     /// accessibility tree. One scan, then the per-node walk does not re-check
     /// ancestors. A single scrolled or transformed node keeps the normal path.
     pub(super) fn accessibility_tree_is_plain(&self) -> bool {
-        if self.has_layout_length_overlays()
-            || !self.motion.presentation.is_empty()
+        if self.has_transform_overlays()
             || self.invalidation.z_index_nodes != 0
             || self.nodes.has_widget_visuals()
             || self.invalidation.modal_frames != 0

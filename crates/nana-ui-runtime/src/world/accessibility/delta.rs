@@ -333,16 +333,15 @@ impl UiWorld {
     /// upright in the viewport), and is no modal frame: then of what it
     /// holds only the pinned boxes ([`NodeSpace::pins_accessibility`]) and
     /// what is under those can project differently
-    /// ([`Self::reach_moved_pins`]). Motion overlays can transform any box,
-    /// and a clip visual cuts every box under it, so either leaves the walk.
+    /// ([`Self::reach_moved_pins`]). Transform overlays can transform any
+    /// box, and a clip visual cuts every box under it, so either leaves the walk.
     pub(super) fn moved_root_hands_offsets(
         &self,
         root: StableNodeId,
         memo: &mut ProjectionMemo,
     ) -> bool {
         if self.invalidation.clip_visuals != 0
-            || !self.motion.presentation.is_empty()
-            || self.has_layout_length_overlays()
+            || self.has_transform_overlays()
             || self.is_modal_frame(root)
         {
             return false;
