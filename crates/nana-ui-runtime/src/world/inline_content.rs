@@ -811,7 +811,8 @@ impl super::mutation::ValidationPlan<'_> {
                 | UiMutation::ParkSubtree { root: id }
                 | UiMutation::DespawnSubtree { root: id }
                 | UiMutation::SetStyle { id, .. } => Some(*id),
-                UiMutation::SetInteraction { id, .. } => Some(*id),
+                UiMutation::SetInteraction { id, .. }
+                | UiMutation::SetHitTestBehavior { id, .. } => Some(*id),
                 UiMutation::SetAccessibility { id, accessibility } => {
                     roles.insert(*id, accessibility.role);
                     Some(*id)

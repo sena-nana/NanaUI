@@ -57,6 +57,7 @@ pub struct PresentationDriver {
     /// One painter for every group: profiles share its atlases and caches,
     /// and each working format keeps a pipeline set inside it.
     painter: Option<crate::SceneWgpuPainter>,
+    retained_url_cache: Option<crate::scene_paint::UrlTextureCache>,
     renderer_tick: u64,
     fetch_host: Option<nana_ui_platform::SharedFetchHost>,
     image_waker: Option<ImageWaker>,
@@ -208,6 +209,7 @@ impl PresentationDriver {
             pending_plan_rebuilds: 0,
             pending_target_recreates: 0,
             painter: None,
+            retained_url_cache: None,
             renderer_tick: 0,
             fetch_host: None,
             image_waker: None,
@@ -378,6 +380,17 @@ impl PresentationDriver {
             .map(|group| group.requirements.profile)
             .collect();
         if let Some(&first) = profiles.first() {
+            let gpu_gen = self.gpu.generation();
+            if self
+                .painter
+                .as_ref()
+                .is_some_and(|painter| painter.gpu().generation() != gpu_gen)
+            {
+                if let Some(painter) = self.painter.as_mut() {
+                    self.retained_url_cache = Some(painter.take_url_cache());
+                }
+                self.painter = None;
+            }
             let painter = match self.painter.as_mut() {
                 Some(painter) => painter,
                 None => {
@@ -385,6 +398,9 @@ impl PresentationDriver {
                         crate::SceneWgpuPainter::try_new_with_presentation(&self.gpu, first)
                             .map_err(|e| PresentationError::Surface(e.into()))?;
                     painter.set_resource_fetch_host(self.fetch_host.clone());
+                    if let Some(cache) = self.retained_url_cache.take() {
+                        painter.restore_url_cache(cache);
+                    }
                     if let Some(wake) = self.image_waker.clone() {
                         painter.set_image_update_waker(wake);
                     }
@@ -400,6 +416,9 @@ impl PresentationDriver {
             }
             painter.retain_presentations(&profiles);
         } else {
+            if let Some(painter) = self.painter.as_mut() {
+                self.retained_url_cache = Some(painter.take_url_cache());
+            }
             self.painter = None;
         }
         self.planner.update(consumers);

@@ -15,7 +15,7 @@ use nana_ui_core::{DataFormat, DataTransfer, LogicalRect, TransferImage, Transfe
 
 /// The cursor the Runtime wants under the pointer. Hosts compose it with
 /// their own (a window frame edge, a program override) before showing it.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub enum CursorIcon {
     #[default]
     Default,
@@ -37,6 +37,8 @@ pub enum CursorIcon {
     NsResize,
     /// `cursor: none`.
     Hidden,
+    /// Custom raster or vector cursor with explicit hotspot and fallback.
+    Custom(nana_ui_core::CustomCursorSpec),
 }
 
 /// What kind of text the focused editor takes, for the IME and soft keyboard.
@@ -223,7 +225,7 @@ impl HeadlessHostServices {
     }
 
     pub fn cursor(&self) -> CursorIcon {
-        self.cursor
+        self.cursor.clone()
     }
 
     pub fn text_input(&self) -> Option<&TextInputContext> {

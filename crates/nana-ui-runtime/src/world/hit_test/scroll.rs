@@ -62,6 +62,9 @@ impl UiWorld {
         node.entry.scroll[1] -= delta[1];
         index.shifted = true;
         index.refresh_bounds(scroller);
+        if delta != [0.0, 0.0] {
+            self.hit_index.region_epoch = self.hit_index.region_epoch.wrapping_add(1);
+        }
         // Ordinary descendants share one lazy scroll shift. Sticky boxes
         // additionally change their offset: each is built again against
         // current layout. Its offset is part of its origin, and what it

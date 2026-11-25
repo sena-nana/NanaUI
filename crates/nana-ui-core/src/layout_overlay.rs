@@ -245,7 +245,7 @@ overlay! {
         min_height, max_height, allow_shrink, align_items, align_self,
         align_content, justify_content, justify_items, justify_self, flex_grow,
         flex_shrink, flex_basis, adaptation, overflow_x, overflow_y,
-        text_overflow_ellipsis, pointer_events, inert, cursor, user_select,
+        text_overflow_ellipsis, pointer_events, hit_test, inert, cursor, user_select,
         white_space, aspect_ratio, text_align,
         font_size, font_weight, font_italic, line_height, hidden,
         opacity, border_radius, border_width, border_style,

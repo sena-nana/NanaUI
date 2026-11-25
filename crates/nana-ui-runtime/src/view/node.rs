@@ -1125,6 +1125,9 @@ pub struct El<C: ComponentView, K = ()> {
     /// Explicit `aria-selected` override ([`Self::aria_selected`]); boxed, as
     /// most elements have none.
     aria_selected: Option<Box<super::prop::PropSource<Option<bool>>>>,
+    /// Explicit native hit-test behavior ([`Self::hit_test`]); boxed, as
+    /// most elements use `HitTestBehavior::Auto`.
+    hit_test: Option<Box<super::prop::PropSource<nana_ui_core::HitTestBehavior>>>,
     bindings: NodeBindings<C>,
     events: Vec<EventInstall<C>>,
     /// Properties that animate to their new value when a binding changes
@@ -1154,6 +1157,7 @@ pub fn widget<C: ComponentView>(component: C) -> El<C> {
         labelled_by: None,
         locale: None,
         aria_selected: None,
+        hit_test: None,
         bindings: NodeBindings::default(),
         events: Vec::new(),
         implicit: Vec::new(),
@@ -1383,6 +1387,13 @@ impl<C: ComponentView, K> El<C, K> {
         self
     }
 
+    /// Set or bind the semantic native window hit-test behavior on this element
+    /// (`Auto`, `Client`, `PassThrough`, `Drag`, `Resize(edge)`).
+    pub fn hit_test(mut self, behavior: impl IntoProp<nana_ui_core::HitTestBehavior>) -> Self {
+        self.hit_test = Some(Box::new(behavior.into_source()));
+        self
+    }
+
     /// The children, added in a block of ordinary Rust:
     ///
     /// ```ignore
@@ -1413,6 +1424,7 @@ impl<C: ComponentView, K> El<C, K> {
             labelled_by: self.labelled_by,
             locale: self.locale,
             aria_selected: self.aria_selected,
+            hit_test: self.hit_test,
             bindings: self.bindings,
             events: self.events,
             implicit: self.implicit,
@@ -1493,6 +1505,7 @@ impl<C: ComponentView, K> El<C, K> {
             labelled_by,
             locale,
             aria_selected,
+            hit_test,
             bindings,
             events,
             implicit,
@@ -1510,6 +1523,7 @@ impl<C: ComponentView, K> El<C, K> {
             labelled_by,
             locale,
             aria_selected,
+            hit_test,
             bindings,
             events,
             implicit,
@@ -1540,6 +1554,7 @@ impl<C: ComponentView> El<C> {
             labelled_by,
             locale,
             aria_selected,
+            hit_test,
             mut bindings,
             events,
             mut implicit,
@@ -1601,13 +1616,18 @@ impl<C: ComponentView> El<C> {
         {
             vb.ui.mutations().set_responsive(id, rule);
         }
-        if labelled_by.is_some() || locale.is_some() || aria_selected.is_some() {
+        if labelled_by.is_some()
+            || locale.is_some()
+            || aria_selected.is_some()
+            || hit_test.is_some()
+        {
             super::relations::bind(
                 vb,
                 id,
                 labelled_by.map(|label| *label),
                 locale.map(|locale| *locale),
                 aria_selected.map(|selected| *selected),
+                hit_test.map(|behavior| *behavior),
                 site,
             );
         }

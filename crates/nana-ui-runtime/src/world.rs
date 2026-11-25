@@ -11,6 +11,9 @@ mod geometry;
 pub(crate) use geometry::{PROGRESS_GIRTH, range_value_thumb_height};
 use nana_ui_core::sort::CompactSort as _;
 mod hit_test;
+pub use hit_test::{
+    InputRegionBackground, WindowInteractionRegionBuilder, WindowInteractionRegionConfig,
+};
 mod i18n;
 mod input;
 mod motion;
@@ -4791,6 +4794,51 @@ impl UiWorld {
         }
     }
 
+    /// Explicit native hit-test behavior override on `id`, if set via
+    /// [`MutationQueue::set_hit_test_behavior`].
+    pub fn hit_test_behavior_override(
+        &self,
+        id: StableNodeId,
+    ) -> Option<nana_ui_core::HitTestBehavior> {
+        if self.hit_index.hit_behaviors.is_empty() {
+            return None;
+        }
+        self.hit_index.hit_behaviors.get(&id).copied()
+    }
+
+    /// Effective native hit-test behavior of `id`, checking the explicit mutation
+    /// override before falling back to [`nana_ui_core::LayoutStyle::hit_test`].
+    pub fn hit_test_behavior(&self, id: StableNodeId) -> nana_ui_core::HitTestBehavior {
+        self.hit_test_behavior_override(id)
+            .or_else(|| self.nodes.get(id).and_then(|r| r.resolved_layout.hit_test))
+            .unwrap_or(nana_ui_core::HitTestBehavior::Auto)
+    }
+
+    fn set_hit_test_behavior_override(
+        &mut self,
+        id: StableNodeId,
+        behavior: Option<nana_ui_core::HitTestBehavior>,
+    ) -> bool {
+        let changed = match behavior {
+            Some(behavior) => self
+                .hit_index
+                .hit_behaviors
+                .insert(id, behavior)
+                .is_none_or(|prev| prev != behavior),
+            None => self.hit_index.hit_behaviors.remove(&id).is_some(),
+        };
+        if changed {
+            self.hit_index.region_epoch = self.hit_index.region_epoch.wrapping_add(1);
+        }
+        changed
+    }
+
+    /// Epoch bumped whenever hit-test geometry, clips, visibility, or native
+    /// hit-test intent changes. Unchanged across idle frames and pointer moves.
+    pub fn input_region_epoch(&self) -> u64 {
+        self.hit_index.region_epoch
+    }
+
     /// Visual mounting scope of `id`, if one was assigned via
     /// [`MutationQueue::set_overlay_mount`].
     pub fn overlay_mount(&self, id: StableNodeId) -> Option<nana_ui_core::OverlayMount> {
@@ -7253,6 +7301,7 @@ impl UiWorld {
     fn mark_with_origin(&mut self, id: StableNodeId, bits: u16, origin: MarkOrigin) -> bool {
         if bits & DirtyMask::INPUT != 0 {
             self.hit_index.non_scroll_hit_dirty.insert(id);
+            self.hit_index.region_epoch = self.hit_index.region_epoch.wrapping_add(1);
         }
         // Internal callers that only have a dirty bit still publish an
         // explicit runtime-wide invalidation, merged into any narrower entry
@@ -7280,6 +7329,7 @@ impl UiWorld {
         debug_assert_eq!(bits & DirtyMask::LAYOUT, 0, "a move is not a layout cause");
         if bits & DirtyMask::INPUT != 0 {
             self.hit_index.non_scroll_hit_dirty.insert(id);
+            self.hit_index.region_epoch = self.hit_index.region_epoch.wrapping_add(1);
         }
         self.mark_keeping_render_reason(id, bits, MarkOrigin::LayoutMove, false)
     }

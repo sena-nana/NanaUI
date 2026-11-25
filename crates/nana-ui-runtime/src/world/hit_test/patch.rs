@@ -38,9 +38,13 @@ impl UiWorld {
         };
         // Escaped boxes the branch reaches but does not hold hang from their
         // clip parent, outside it.
-        deferred
+        let patched = deferred
             .into_iter()
-            .all(|id| self.patch_hit_subtree(document, id))
+            .all(|id| self.patch_hit_subtree(document, id));
+        if patched {
+            self.hit_index.region_epoch = self.hit_index.region_epoch.wrapping_add(1);
+        }
+        patched
     }
 
     /// Remove the entries of `root`'s branch that hang from a clip parent.

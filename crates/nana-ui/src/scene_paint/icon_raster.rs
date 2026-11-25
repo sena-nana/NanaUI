@@ -41,6 +41,76 @@ pub(super) fn white_mask(icon: Icon, pixel_size: u32) -> Option<Vec<u8>> {
     Some(rgba)
 }
 
+/// Rasterize `shapes` on the 24x24 icon grid into straight-alpha RGBA8 pixels
+/// tinted with `color` at `(width, height)`.
+#[cfg(feature = "hosted")]
+pub(crate) fn rasterize_shapes_rgba(
+    shapes: &[IconShape],
+    color: [u8; 4],
+    width: u32,
+    height: u32,
+) -> Option<Vec<u8>> {
+    if width == 0 || height == 0 || shapes.is_empty() {
+        return None;
+    }
+    let edge = width.max(height);
+    let cov = coverage(shapes, edge);
+    let mut rgba = vec![0u8; (width * height * 4) as usize];
+    for y in 0..height as usize {
+        for x in 0..width as usize {
+            let alpha = cov[y * edge as usize + x];
+            let out_alpha = ((u32::from(alpha) * u32::from(color[3]) + 127) / 255) as u8;
+            let idx = (y * width as usize + x) * 4;
+            rgba[idx] = color[0];
+            rgba[idx + 1] = color[1];
+            rgba[idx + 2] = color[2];
+            rgba[idx + 3] = out_alpha;
+        }
+    }
+    Some(rgba)
+}
+
+/// Rasterize an SVG cursor document into straight-alpha RGBA8 pixels at
+/// `(width, height)`, or emit `IMAGE_CODEC_UNAVAILABLE` once when `svg` is off.
+#[cfg(feature = "hosted")]
+pub(crate) fn rasterize_svg_rgba(
+    cache_key: u64,
+    bytes: &[u8],
+    width: u32,
+    height: u32,
+) -> Option<Vec<u8>> {
+    if width == 0 || height == 0 || bytes.is_empty() {
+        return None;
+    }
+    #[cfg(feature = "svg")]
+    {
+        let _ = cache_key;
+        let raster = nana_svg_raster::rasterize_document(bytes, width, height)?;
+        Some(raster.rgba.to_vec())
+    }
+    #[cfg(not(feature = "svg"))]
+    {
+        let _ = (bytes, width, height);
+        emit_svg_hash_unavailable_once(cache_key);
+        None
+    }
+}
+
+#[cfg(all(feature = "hosted", not(feature = "svg")))]
+fn emit_svg_hash_unavailable_once(key: u64) {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+
+    static REPORTED: OnceLock<Mutex<HashSet<u64>>> = OnceLock::new();
+    let set = REPORTED.get_or_init(|| Mutex::new(HashSet::new()));
+    let Ok(mut guard) = set.lock() else {
+        return;
+    };
+    if guard.len() < 1024 && guard.insert(key) {
+        nana_diagnostics::event!(nana_diagnostics::framework::resource::IMAGE_CODEC_UNAVAILABLE);
+    }
+}
+
 #[cfg(not(feature = "svg"))]
 fn emit_svg_codec_unavailable_once(icon: Icon) {
     use std::collections::HashSet;

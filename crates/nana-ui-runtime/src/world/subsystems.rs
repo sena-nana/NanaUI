@@ -284,6 +284,11 @@ pub(in crate::world) struct WorldHitIndex {
     pub(in crate::world) pointer_events_memo: RefCell<Option<NodeMap<PointerEventsSpec>>>,
     pub(in crate::world) hit_test_queries: Cell<u64>,
     pub(in crate::world) hit_scratch: RefCell<hit_test::HitScratch>,
+    /// Explicit per-node window hit-test override (`MutationQueue::set_hit_test_behavior`).
+    pub(in crate::world) hit_behaviors: crate::NodeMap<nana_ui_core::HitTestBehavior>,
+    /// Monotonic counter bumped whenever hit-test geometry, clips, visibility,
+    /// or native interaction intent changes. Zero bumps on static frames or pointer moves.
+    pub(in crate::world) region_epoch: u64,
 }
 
 /// Scroll containers, content-bounds index, deferred clamps, and frame deltas.

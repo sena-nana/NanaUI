@@ -8,6 +8,7 @@ mod candidates;
 mod clip;
 mod in_place;
 mod index;
+mod interaction_region;
 mod patch;
 mod query;
 mod scroll;
@@ -26,6 +27,9 @@ pub(super) use clip::HitPathClip;
 #[cfg(test)]
 pub(super) use index::find_hit_transform;
 pub(super) use index::{HitIndex, count_hit_entries, retain_hit_tree, sort_hit_children};
+pub use interaction_region::{
+    InputRegionBackground, WindowInteractionRegionBuilder, WindowInteractionRegionConfig,
+};
 pub(super) use space::{project_transformed_box, then_hit, transformed_contains};
 
 #[cfg(test)]

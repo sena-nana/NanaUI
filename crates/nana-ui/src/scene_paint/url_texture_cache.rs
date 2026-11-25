@@ -246,7 +246,7 @@ fn load_remote(
     let (bytes, svg) = fetch_remote_bytes(url, Some(host), cancellation)?;
     let (width, height, rgba) = decode_bytes_rgba(&bytes, svg)?;
     let prepared = prepare(Level::new(width, height, rgba), goal);
-    let source = matches!(goal, Goal::First(_)).then(|| Source::Bytes {
+    let source = Some(Source::Bytes {
         bytes: bytes.into(),
         svg,
     });
@@ -358,7 +358,9 @@ struct Entry {
     ready: Option<Prepared>,
     /// What placement resolves against, whatever size the texture is.
     natural: (u32, u32),
-    /// Where a refit reads pixels again; `None` never refits.
+    /// Last uploaded level-0 texture dimensions, preserved for device-recovery re-upload.
+    last_size: Option<(u32, u32)>,
+    /// Where a refit or device recovery reads pixels again; `None` never refits.
     source: Option<Source>,
     job: Option<JobHandle>,
     /// Sized from a painted demand at least once.
@@ -369,10 +371,12 @@ struct Entry {
 
 impl Entry {
     fn new(texture: Option<CachedUrlTexture>, natural: (u32, u32), used: u64) -> Self {
+        let last_size = texture.as_ref().map(|tex| (tex.width, tex.height));
         Self {
             texture,
             ready: None,
             natural,
+            last_size,
             source: None,
             job: None,
             fitted: false,
@@ -490,6 +494,8 @@ pub(crate) struct UrlTextureCache {
     /// Remote URLs already reported via `FETCH_UNAVAILABLE` so a missing
     /// `FetchHost` never re-emits across repeated frames or trims.
     reported_fetch_unavailable: HashSet<String>,
+    /// Device generation whose `wgpu::TextureView` handles live in `entries`.
+    device_generation: Option<u64>,
 }
 
 impl UrlTextureCache {
@@ -524,6 +530,87 @@ impl UrlTextureCache {
     /// Egress for the remote URLs of the document painted next.
     pub(crate) fn set_fetch_host(&mut self, host: Option<SharedFetchHost>) {
         self.fetch_host = host;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn device_generation(&self) -> Option<u64> {
+        self.device_generation
+    }
+
+    /// Rebind this cache to `generation`, dropping all GPU texture views from
+    /// any earlier device and queuing CPU re-preparation from retained sources
+    /// without re-fetching remote URLs.
+    ///
+    /// Returns `true` when the device generation changed and cached GPU views
+    /// were invalidated.
+    pub(crate) fn rebind_device(&mut self, generation: nana_gpu::DeviceGeneration) -> bool {
+        self.rebind_generation(generation.get())
+    }
+
+    pub(crate) fn rebind_generation(&mut self, generation: u64) -> bool {
+        if self.device_generation == Some(generation) {
+            return false;
+        }
+        self.device_generation = Some(generation);
+        self.pass.clear();
+        self.unfitted.clear();
+        let mut requeue = Vec::new();
+        for (&partition, bucket) in &mut self.buckets {
+            for (key, entry) in &mut bucket.entries {
+                entry.texture = None;
+                if entry.ready.is_none()
+                    && entry.job.is_none()
+                    && let Some(source) = entry.source.clone()
+                    && entry.natural.0 > 0
+                    && entry.natural.1 > 0
+                {
+                    let (goal, size) = if key.ends_with(MIPMAP_KEY) {
+                        (Goal::Mipmap, entry.natural)
+                    } else {
+                        let size = entry.last_size.unwrap_or(entry.natural);
+                        (Goal::Size(size), size)
+                    };
+                    requeue.push((partition, key.clone(), source, goal, size));
+                }
+            }
+        }
+        for (partition, key, source, goal, size) in requeue {
+            let job = self.submit(partition, &key, source, goal, size);
+            if let Some(entry) = self
+                .buckets
+                .get_mut(&partition)
+                .and_then(|bucket| bucket.entries.get_mut(&key))
+            {
+                entry.job = job;
+            }
+        }
+        true
+    }
+
+    /// Explicitly invalidate a local/cached URL across all buckets and cancel
+    /// any in-flight work for it (development/devtools hot-reload hook; never
+    /// polls on steady frames).
+    pub(crate) fn invalidate_url(&mut self, url: &str) -> bool {
+        let mipmap_key = cache_key(url, ImageSampling::Mipmap).into_owned();
+        let mut removed = false;
+        for bucket in self.buckets.values_mut() {
+            if bucket.entries.remove(url).is_some() {
+                removed = true;
+            }
+            if bucket.entries.remove(&mipmap_key).is_some() {
+                removed = true;
+            }
+            if let Some(pending) = bucket.pending.remove(url) {
+                pending.cancellation.cancel();
+                removed = true;
+            }
+            if let Some(pending) = bucket.pending.remove(&mipmap_key) {
+                pending.cancellation.cancel();
+                removed = true;
+            }
+        }
+        self.reported_fetch_unavailable.remove(url);
+        removed
     }
     fn egress(&self, url: &str) -> Egress {
         if is_remote(url) {
@@ -675,7 +762,29 @@ impl UrlTextureCache {
                     && let Some(texture) =
                         upload_levels(device, queue, &prepared.levels, work, self.srgb_source)
                 {
+                    entry.last_size = Some((texture.width, texture.height));
                     entry.texture = Some(texture);
+                } else if entry.texture.is_none()
+                    && entry.ready.is_none()
+                    && entry.job.is_none()
+                    && let Some(source) = entry.source.as_ref()
+                    && let Some(level) = source.decode()
+                {
+                    let goal = match sampling {
+                        ImageSampling::Mipmap => Goal::Mipmap,
+                        ImageSampling::Resample => entry
+                            .last_size
+                            .map(Goal::Size)
+                            .unwrap_or(Goal::First(demand)),
+                    };
+                    let prepared = prepare(level, goal);
+                    if let Some(texture) =
+                        upload_levels(device, queue, &prepared.levels, work, self.srgb_source)
+                    {
+                        entry.natural = prepared.natural;
+                        entry.last_size = Some((texture.width, texture.height));
+                        entry.texture = Some(texture);
+                    }
                 }
                 entry.used.set(frame);
                 let natural = entry.natural;
@@ -763,9 +872,9 @@ impl UrlTextureCache {
         let natural = (width, height);
         let source = Source::Url(url.to_owned());
         let mut entry = Entry::new(Some(texture), natural, frame);
+        entry.source = Some(source.clone());
         match sampling {
             ImageSampling::Resample => {
-                entry.source = Some(source);
                 if !matches!(demand, Demand::Waiting) {
                     self.note(&key, demand.resolve(natural));
                 }
@@ -1889,5 +1998,93 @@ mod tests {
             .count();
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(count, 2, "expected one fetch_unavailable per missing URL");
+    }
+
+    #[test]
+    fn rebind_device_drops_views_preserves_sources_and_queues_recovery() {
+        let mut cache = UrlTextureCache::default();
+        cache.set_srgb_source(true);
+        assert!(cache.rebind_generation(1));
+        assert!(!cache.rebind_generation(1));
+
+        // 1x1 red PNG as a local data URL and a synthetic remote Source::Bytes entry.
+        let png_bytes: Vec<u8> = {
+            let mut out = Vec::new();
+            image::RgbaImage::from_raw(
+                2,
+                2,
+                vec![
+                    255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+                ],
+            )
+            .unwrap()
+            .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+            .unwrap();
+            out
+        };
+        use base64::Engine as _;
+        let data_url = format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(&png_bytes)
+        );
+        let mut local_entry = Entry::new(None, (2, 2), 1);
+        local_entry.source = Some(Source::Url(data_url.clone()));
+        local_entry.last_size = Some((2, 2));
+        cache
+            .bucket_mut(Partition {
+                egress: LOCAL,
+                srgb: true,
+            })
+            .entries
+            .insert(data_url.clone(), local_entry);
+
+        let remote_url = "https://example.invalid/recovered.png".to_string();
+        let mut remote_entry = Entry::new(None, (2, 2), 1);
+        remote_entry.source = Some(Source::Bytes {
+            bytes: Arc::from(png_bytes),
+            svg: false,
+        });
+        remote_entry.last_size = Some((2, 2));
+        cache
+            .bucket_mut(Partition {
+                egress: 42,
+                srgb: true,
+            })
+            .entries
+            .insert(
+                cache_key(&remote_url, ImageSampling::Mipmap).into_owned(),
+                remote_entry,
+            );
+
+        assert!(cache.rebind_generation(2));
+        assert_eq!(cache.device_generation(), Some(2));
+        assert_eq!(
+            cache.natural_size(&data_url, ImageSampling::Resample),
+            Some([2, 2])
+        );
+        assert!(cache.has_pending());
+
+        // Poll until the worker finishes CPU preparation from retained sources.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while cache.has_pending() && Instant::now() < deadline {
+            cache.poll();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!cache.has_pending());
+        let local = &cache.buckets[&Partition {
+            egress: LOCAL,
+            srgb: true,
+        }]
+            .entries[&data_url];
+        assert!(local.ready.is_some());
+        let remote = &cache.buckets[&Partition {
+            egress: 42,
+            srgb: true,
+        }]
+            .entries[&cache_key(&remote_url, ImageSampling::Mipmap).into_owned()];
+        assert!(remote.ready.is_some());
+
+        assert!(cache.invalidate_url(&data_url));
+        assert!(!cache.invalidate_url(&data_url));
     }
 }

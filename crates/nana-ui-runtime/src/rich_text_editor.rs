@@ -324,7 +324,7 @@ impl RichTextEditor {
     }
 
     pub fn style(mut self, style: NodeStyle) -> Self {
-        let cursor = self.style.layout.cursor;
+        let cursor = self.style.layout.cursor.clone();
         self.style = style;
         if self.style.layout.cursor.is_none() {
             Arc::make_mut(&mut self.style.layout).cursor = cursor;

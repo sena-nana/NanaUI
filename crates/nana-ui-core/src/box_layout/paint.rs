@@ -15,6 +15,161 @@ pub enum VisibilitySpec {
     Hidden,
 }
 
+/// Client-area edge or corner used to start a native window resize (#159).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum WindowResizeEdge {
+    North,
+    South,
+    East,
+    West,
+    NorthEast,
+    NorthWest,
+    SouthEast,
+    SouthWest,
+}
+
+/// Semantic native window hit-test role of a node (#159).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum HitTestBehavior {
+    /// Resolve from node interaction/listeners (interactive controls -> `Client`,
+    /// otherwise transparent to ancestor or window input shape).
+    #[default]
+    Auto,
+    /// Interactive client content (included in the native input region).
+    Client,
+    /// Explicitly transparent to OS hit-testing; carves an input hole through
+    /// ancestor `Client` / `Drag` regions when not covered by front `Client` UI.
+    PassThrough,
+    /// Draggable title/chrome region (`HTCAPTION` on Windows).
+    Drag,
+    /// Native window resize edge or corner.
+    Resize(WindowResizeEdge),
+}
+
+/// Resolved OS hit-test class of a window region rectangle (#159).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NativeHitTestClass {
+    Client,
+    Drag,
+    Resize(WindowResizeEdge),
+    PassThrough,
+}
+
+/// One coalesced rectangle in [`InputRegionSnapshot`], in logical window client coordinates.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct InputRegionRect {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub class: NativeHitTestClass,
+}
+
+impl InputRegionRect {
+    pub fn contains(&self, px: f32, py: f32) -> bool {
+        px >= self.x && py >= self.y && px < self.x + self.width && py < self.y + self.height
+    }
+
+    pub fn right(&self) -> f32 {
+        self.x + self.width
+    }
+
+    pub fn bottom(&self) -> f32 {
+        self.y + self.height
+    }
+
+    /// Quantize logical bounds into physical pixel `(x, y, width, height)`.
+    pub fn to_physical_i32(&self, scale_factor: f32) -> Option<(i32, i32, i32, i32)> {
+        let scale = if scale_factor.is_finite() && scale_factor > 0.0 {
+            scale_factor
+        } else {
+            1.0
+        };
+        let x0 = (self.x * scale).floor();
+        let y0 = (self.y * scale).floor();
+        let x1 = ((self.x + self.width) * scale).ceil();
+        let y1 = ((self.y + self.height) * scale).ceil();
+        if !x0.is_finite() || !y0.is_finite() || !x1.is_finite() || !y1.is_finite() {
+            return None;
+        }
+        let w = (x1 - x0) as i32;
+        let h = (y1 - y0) as i32;
+        (w > 0 && h > 0).then_some((x0 as i32, y0 as i32, w, h))
+    }
+}
+
+/// Single authoritative snapshot of a window's interactive, drag, resize, and
+/// pass-through regions (#159), shared by native OS region backends and #49 `Forward`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct InputRegionSnapshot {
+    pub revision: u64,
+    pub rects: Vec<InputRegionRect>,
+    pub logical_size: (f32, f32),
+    pub scale_factor: f32,
+    pub capped: bool,
+    pub source_rect_count: usize,
+}
+
+impl InputRegionSnapshot {
+    /// Classify a logical window coordinate `(x, y)` into its effective [`NativeHitTestClass`].
+    ///
+    /// Returns [`NativeHitTestClass::PassThrough`] when out of bounds or uncovered by any
+    /// interactive rectangle.
+    pub fn classify(&self, x: f32, y: f32) -> NativeHitTestClass {
+        if !x.is_finite()
+            || !y.is_finite()
+            || !self.logical_size.0.is_finite()
+            || !self.logical_size.1.is_finite()
+            || x < 0.0
+            || y < 0.0
+            || x >= self.logical_size.0
+            || y >= self.logical_size.1
+        {
+            return NativeHitTestClass::PassThrough;
+        }
+        for rect in &self.rects {
+            if rect.contains(x, y) {
+                return rect.class;
+            }
+        }
+        NativeHitTestClass::PassThrough
+    }
+
+    /// Whether `(x, y)` hits interactive UI or non-client drag/resize chrome (not `PassThrough`).
+    pub fn hits_interactive_or_chrome(&self, x: f32, y: f32) -> bool {
+        self.classify(x, y) != NativeHitTestClass::PassThrough
+    }
+
+    /// Physical rectangles for OS native input-region APIs (`XShapeCombineRectangles`, `wl_region`).
+    pub fn physical_input_rects(&self) -> Vec<(i32, i32, i32, i32)> {
+        self.rects
+            .iter()
+            .filter(|rect| rect.class != NativeHitTestClass::PassThrough)
+            .filter_map(|rect| rect.to_physical_i32(self.scale_factor))
+            .collect()
+    }
+}
+
+/// Platform backend capabilities for native window interaction (#159).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WindowInteractionCapabilities {
+    /// Backend supports native non-visual per-rect input shapes without visual clipping.
+    pub input_region: bool,
+    /// Backend supports native non-client drag/resize chrome hit-testing.
+    pub non_client_chrome: bool,
+    /// Backend supports host-driven `MousePassthroughMode::Forward` toggling.
+    pub passthrough_forward: bool,
+}
+
+/// Applied outcome of the latest [`InputRegionSnapshot`] backend sync (#159).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InputRegionOutcome {
+    NativeApplied { rect_count: usize },
+    ForwardFallback { rect_count: usize },
+    WholeWindow { passthrough: bool },
+    Unsupported,
+}
+
 /// GPU cap for comma-separated `box-shadow` layers.
 pub const MAX_BOX_SHADOWS: usize = 4;
 
@@ -79,11 +234,501 @@ pub enum PointerEventsSpec {
     None,
 }
 
-/// CSS `cursor` keyword subset used by the desktop host.
+/// System semantic cursor variants shared between CSS `cursor`, Runtime
+/// input routing, and platform window hosts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum SystemCursor {
+    #[default]
+    Default,
+    Pointer,
+    Text,
+    Move,
+    Grab,
+    Grabbing,
+    NotAllowed,
+    Crosshair,
+    /// Horizontal resize / scrub (`ew-resize`).
+    EwResize,
+    /// Vertical resize (`ns-resize`).
+    NsResize,
+    Help,
+    Wait,
+    Progress,
+    ZoomIn,
+    ZoomOut,
+    None,
+}
+
+/// Validation failure when constructing a custom raster or vector cursor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CustomCursorError {
+    EmptyDimensions,
+    InvalidScale,
+    HotspotOutOfBounds,
+    ByteLengthMismatch,
+    EmptyVariants,
+    EmptyVectorSource,
+}
+
+impl std::fmt::Display for CustomCursorError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyDimensions => write!(f, "cursor dimensions must be non-zero"),
+            Self::InvalidScale => write!(f, "cursor scale_milli must be non-zero"),
+            Self::HotspotOutOfBounds => write!(f, "cursor hotspot must lie inside image bounds"),
+            Self::ByteLengthMismatch => write!(f, "cursor RGBA buffer length does not match size"),
+            Self::EmptyVariants => write!(f, "raster custom cursor requires at least one variant"),
+            Self::EmptyVectorSource => write!(f, "vector custom cursor source must be non-empty"),
+        }
+    }
+}
+
+impl std::error::Error for CustomCursorError {}
+
+/// One DPI/scale-specific straight-alpha RGBA8 raster cursor bitmap.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CustomCursorVariant {
+    /// Scale factor in thousandths (`1000` = 1x, `2000` = 2x).
+    pub scale_milli: u32,
+    pub width: u16,
+    pub height: u16,
+    /// Hotspot in this variant's pixel coordinates; must satisfy `x < width && y < height`.
+    pub hotspot: [u16; 2],
+    /// Straight-alpha RGBA8 pixel buffer (`width * height * 4` bytes).
+    pub rgba: std::sync::Arc<[u8]>,
+}
+
+impl CustomCursorVariant {
+    /// Validate and construct a raster cursor variant.
+    pub fn new(
+        scale_milli: u32,
+        width: u16,
+        height: u16,
+        hotspot: [u16; 2],
+        rgba: impl Into<std::sync::Arc<[u8]>>,
+    ) -> Result<Self, CustomCursorError> {
+        let rgba: std::sync::Arc<[u8]> = rgba.into();
+        let variant = Self {
+            scale_milli,
+            width,
+            height,
+            hotspot,
+            rgba,
+        };
+        variant.validate()?;
+        Ok(variant)
+    }
+
+    /// Validate scale, non-zero dimensions, hotspot bounds, and RGBA byte count.
+    pub fn validate(&self) -> Result<(), CustomCursorError> {
+        if self.scale_milli == 0 {
+            return Err(CustomCursorError::InvalidScale);
+        }
+        if self.width == 0 || self.height == 0 {
+            return Err(CustomCursorError::EmptyDimensions);
+        }
+        if self.hotspot[0] >= self.width || self.hotspot[1] >= self.height {
+            return Err(CustomCursorError::HotspotOutOfBounds);
+        }
+        let expected = usize::from(self.width) * usize::from(self.height) * 4;
+        if self.rgba.len() != expected {
+            return Err(CustomCursorError::ByteLengthMismatch);
+        }
+        Ok(())
+    }
+
+    pub fn is_valid(&self) -> bool {
+        self.validate().is_ok()
+    }
+}
+
+#[inline]
+fn canonical_f32_bits(value: f32) -> u32 {
+    if value == 0.0 { 0 } else { value.to_bits() }
+}
+
+fn icon_path_eq(a: &[crate::IconPathCommand], b: &[crate::IconPathCommand]) -> bool {
+    use crate::IconPathCommand as Cmd;
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b.iter()).all(|(lhs, rhs)| match (lhs, rhs) {
+        (Cmd::MoveTo(p), Cmd::MoveTo(q)) | (Cmd::LineTo(p), Cmd::LineTo(q)) => {
+            canonical_f32_bits(p[0]) == canonical_f32_bits(q[0])
+                && canonical_f32_bits(p[1]) == canonical_f32_bits(q[1])
+        }
+        (
+            Cmd::CubicTo {
+                control_a: ca1,
+                control_b: cb1,
+                to: t1,
+            },
+            Cmd::CubicTo {
+                control_a: ca2,
+                control_b: cb2,
+                to: t2,
+            },
+        ) => {
+            canonical_f32_bits(ca1[0]) == canonical_f32_bits(ca2[0])
+                && canonical_f32_bits(ca1[1]) == canonical_f32_bits(ca2[1])
+                && canonical_f32_bits(cb1[0]) == canonical_f32_bits(cb2[0])
+                && canonical_f32_bits(cb1[1]) == canonical_f32_bits(cb2[1])
+                && canonical_f32_bits(t1[0]) == canonical_f32_bits(t2[0])
+                && canonical_f32_bits(t1[1]) == canonical_f32_bits(t2[1])
+        }
+        (Cmd::Close, Cmd::Close) => true,
+        _ => false,
+    })
+}
+
+fn icon_path_hash<H: std::hash::Hasher>(cmds: &[crate::IconPathCommand], state: &mut H) {
+    use crate::IconPathCommand as Cmd;
+    use std::hash::Hash as _;
+    cmds.len().hash(state);
+    for cmd in cmds {
+        match *cmd {
+            Cmd::MoveTo(p) => {
+                0u8.hash(state);
+                canonical_f32_bits(p[0]).hash(state);
+                canonical_f32_bits(p[1]).hash(state);
+            }
+            Cmd::LineTo(p) => {
+                1u8.hash(state);
+                canonical_f32_bits(p[0]).hash(state);
+                canonical_f32_bits(p[1]).hash(state);
+            }
+            Cmd::CubicTo {
+                control_a,
+                control_b,
+                to,
+            } => {
+                2u8.hash(state);
+                canonical_f32_bits(control_a[0]).hash(state);
+                canonical_f32_bits(control_a[1]).hash(state);
+                canonical_f32_bits(control_b[0]).hash(state);
+                canonical_f32_bits(control_b[1]).hash(state);
+                canonical_f32_bits(to[0]).hash(state);
+                canonical_f32_bits(to[1]).hash(state);
+            }
+            Cmd::Close => 3u8.hash(state),
+        }
+    }
+}
+
+fn icon_shape_eq(a: &crate::IconShape, b: &crate::IconShape) -> bool {
+    use crate::IconShape as Shape;
+    match (a, b) {
+        (Shape::Path(p), Shape::Path(q)) | (Shape::Fill(p), Shape::Fill(q)) => icon_path_eq(p, q),
+        (
+            Shape::Circle {
+                center: c1,
+                radius: r1,
+            },
+            Shape::Circle {
+                center: c2,
+                radius: r2,
+            },
+        ) => {
+            canonical_f32_bits(c1[0]) == canonical_f32_bits(c2[0])
+                && canonical_f32_bits(c1[1]) == canonical_f32_bits(c2[1])
+                && canonical_f32_bits(*r1) == canonical_f32_bits(*r2)
+        }
+        (
+            Shape::Rect {
+                origin: o1,
+                size: s1,
+                filled: f1,
+            },
+            Shape::Rect {
+                origin: o2,
+                size: s2,
+                filled: f2,
+            },
+        ) => {
+            f1 == f2
+                && canonical_f32_bits(o1[0]) == canonical_f32_bits(o2[0])
+                && canonical_f32_bits(o1[1]) == canonical_f32_bits(o2[1])
+                && canonical_f32_bits(s1[0]) == canonical_f32_bits(s2[0])
+                && canonical_f32_bits(s1[1]) == canonical_f32_bits(s2[1])
+        }
+        (
+            Shape::RoundedRect {
+                origin: o1,
+                size: s1,
+                radius: r1,
+            },
+            Shape::RoundedRect {
+                origin: o2,
+                size: s2,
+                radius: r2,
+            },
+        ) => {
+            canonical_f32_bits(o1[0]) == canonical_f32_bits(o2[0])
+                && canonical_f32_bits(o1[1]) == canonical_f32_bits(o2[1])
+                && canonical_f32_bits(s1[0]) == canonical_f32_bits(s2[0])
+                && canonical_f32_bits(s1[1]) == canonical_f32_bits(s2[1])
+                && canonical_f32_bits(*r1) == canonical_f32_bits(*r2)
+        }
+        _ => false,
+    }
+}
+
+fn icon_shape_hash<H: std::hash::Hasher>(shape: &crate::IconShape, state: &mut H) {
+    use crate::IconShape as Shape;
+    use std::hash::Hash as _;
+    match shape {
+        Shape::Path(cmds) => {
+            0u8.hash(state);
+            icon_path_hash(cmds, state);
+        }
+        Shape::Fill(cmds) => {
+            1u8.hash(state);
+            icon_path_hash(cmds, state);
+        }
+        Shape::Circle { center, radius } => {
+            2u8.hash(state);
+            canonical_f32_bits(center[0]).hash(state);
+            canonical_f32_bits(center[1]).hash(state);
+            canonical_f32_bits(*radius).hash(state);
+        }
+        Shape::Rect {
+            origin,
+            size,
+            filled,
+        } => {
+            3u8.hash(state);
+            canonical_f32_bits(origin[0]).hash(state);
+            canonical_f32_bits(origin[1]).hash(state);
+            canonical_f32_bits(size[0]).hash(state);
+            canonical_f32_bits(size[1]).hash(state);
+            filled.hash(state);
+        }
+        Shape::RoundedRect {
+            origin,
+            size,
+            radius,
+        } => {
+            4u8.hash(state);
+            canonical_f32_bits(origin[0]).hash(state);
+            canonical_f32_bits(origin[1]).hash(state);
+            canonical_f32_bits(size[0]).hash(state);
+            canonical_f32_bits(size[1]).hash(state);
+            canonical_f32_bits(*radius).hash(state);
+        }
+    }
+}
+
+/// Source geometry for a DPI-adaptive vector custom cursor.
+#[derive(Debug, Clone)]
+pub enum CustomCursorVector {
+    /// Compiled `24x24` grid vector icon shapes rasterized without requiring the `svg` feature.
+    Shapes {
+        shapes: std::sync::Arc<[crate::IconShape]>,
+        color: [u8; 4],
+    },
+    /// Raw SVG document bytes rasterized at the target display scale when `svg` is enabled.
+    Svg(std::sync::Arc<[u8]>),
+}
+
+impl PartialEq for CustomCursorVector {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::Shapes {
+                    shapes: s1,
+                    color: c1,
+                },
+                Self::Shapes {
+                    shapes: s2,
+                    color: c2,
+                },
+            ) => {
+                c1 == c2
+                    && (std::sync::Arc::ptr_eq(s1, s2)
+                        || (s1.len() == s2.len()
+                            && s1.iter().zip(s2.iter()).all(|(a, b)| icon_shape_eq(a, b))))
+            }
+            (Self::Svg(a), Self::Svg(b)) => std::sync::Arc::ptr_eq(a, b) || a == b,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for CustomCursorVector {}
+
+impl std::hash::Hash for CustomCursorVector {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            Self::Shapes { shapes, color } => {
+                0u8.hash(state);
+                color.hash(state);
+                shapes.len().hash(state);
+                for shape in shapes.iter() {
+                    icon_shape_hash(shape, state);
+                }
+            }
+            Self::Svg(bytes) => {
+                1u8.hash(state);
+                bytes.hash(state);
+            }
+        }
+    }
+}
+
+/// Custom raster or vector cursor specification with explicit hotspot and system fallback.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum CustomCursorSpec {
+    Raster {
+        variants: std::sync::Arc<[CustomCursorVariant]>,
+        fallback: SystemCursor,
+    },
+    Vector {
+        source: CustomCursorVector,
+        /// Logical cursor size in logical pixels `[width, height]`.
+        logical_size: [u16; 2],
+        /// Hotspot in logical pixels `[x, y]`; must satisfy `x < logical_size[0] && y < logical_size[1]`.
+        hotspot: [u16; 2],
+        fallback: SystemCursor,
+    },
+}
+
+impl CustomCursorSpec {
+    /// Construct a multi-DPI raster custom cursor after validating every variant.
+    pub fn raster(
+        variants: impl Into<std::sync::Arc<[CustomCursorVariant]>>,
+        fallback: SystemCursor,
+    ) -> Result<Self, CustomCursorError> {
+        let variants: std::sync::Arc<[CustomCursorVariant]> = variants.into();
+        if variants.is_empty() {
+            return Err(CustomCursorError::EmptyVariants);
+        }
+        for variant in variants.iter() {
+            variant.validate()?;
+        }
+        Ok(Self::Raster { variants, fallback })
+    }
+
+    /// Construct a single 1x straight-alpha RGBA8 raster custom cursor.
+    pub fn from_rgba(
+        width: u16,
+        height: u16,
+        hotspot: [u16; 2],
+        rgba: impl Into<std::sync::Arc<[u8]>>,
+        fallback: SystemCursor,
+    ) -> Result<Self, CustomCursorError> {
+        let variant = CustomCursorVariant::new(1000, width, height, hotspot, rgba)?;
+        Ok(Self::Raster {
+            variants: std::sync::Arc::from([variant]),
+            fallback,
+        })
+    }
+
+    /// Construct a vector cursor backed by compiled [`crate::IconShape`] geometry.
+    pub fn shapes(
+        shapes: impl Into<std::sync::Arc<[crate::IconShape]>>,
+        color: [u8; 4],
+        logical_size: [u16; 2],
+        hotspot: [u16; 2],
+        fallback: SystemCursor,
+    ) -> Result<Self, CustomCursorError> {
+        let shapes: std::sync::Arc<[crate::IconShape]> = shapes.into();
+        if shapes.is_empty() {
+            return Err(CustomCursorError::EmptyVectorSource);
+        }
+        if logical_size[0] == 0 || logical_size[1] == 0 {
+            return Err(CustomCursorError::EmptyDimensions);
+        }
+        if hotspot[0] >= logical_size[0] || hotspot[1] >= logical_size[1] {
+            return Err(CustomCursorError::HotspotOutOfBounds);
+        }
+        Ok(Self::Vector {
+            source: CustomCursorVector::Shapes { shapes, color },
+            logical_size,
+            hotspot,
+            fallback,
+        })
+    }
+
+    /// Construct a vector cursor backed by an SVG document.
+    pub fn svg(
+        svg_bytes: impl Into<std::sync::Arc<[u8]>>,
+        logical_size: [u16; 2],
+        hotspot: [u16; 2],
+        fallback: SystemCursor,
+    ) -> Result<Self, CustomCursorError> {
+        let svg_bytes: std::sync::Arc<[u8]> = svg_bytes.into();
+        if svg_bytes.is_empty() {
+            return Err(CustomCursorError::EmptyVectorSource);
+        }
+        if logical_size[0] == 0 || logical_size[1] == 0 {
+            return Err(CustomCursorError::EmptyDimensions);
+        }
+        if hotspot[0] >= logical_size[0] || hotspot[1] >= logical_size[1] {
+            return Err(CustomCursorError::HotspotOutOfBounds);
+        }
+        Ok(Self::Vector {
+            source: CustomCursorVector::Svg(svg_bytes),
+            logical_size,
+            hotspot,
+            fallback,
+        })
+    }
+
+    pub fn fallback(&self) -> SystemCursor {
+        match self {
+            Self::Raster { fallback, .. } | Self::Vector { fallback, .. } => *fallback,
+        }
+    }
+
+    /// Select the closest raster variant for `scale_milli` (smallest variant
+    /// `>= scale_milli`, else highest available scale).
+    pub fn select_variant(&self, scale_milli: u32) -> Option<&CustomCursorVariant> {
+        let Self::Raster { variants, .. } = self else {
+            return None;
+        };
+        let target = scale_milli.max(1);
+        let best_ge = variants
+            .iter()
+            .filter(|v| v.is_valid() && v.scale_milli >= target)
+            .min_by_key(|v| v.scale_milli);
+        best_ge.or_else(|| {
+            variants
+                .iter()
+                .filter(|v| v.is_valid())
+                .max_by_key(|v| v.scale_milli)
+        })
+    }
+
+    pub fn is_valid(&self) -> bool {
+        match self {
+            Self::Raster { variants, .. } => {
+                !variants.is_empty() && variants.iter().all(CustomCursorVariant::is_valid)
+            }
+            Self::Vector {
+                source,
+                logical_size,
+                hotspot,
+                ..
+            } => {
+                let non_empty = match source {
+                    CustomCursorVector::Shapes { shapes, .. } => !shapes.is_empty(),
+                    CustomCursorVector::Svg(bytes) => !bytes.is_empty(),
+                };
+                non_empty
+                    && logical_size[0] > 0
+                    && logical_size[1] > 0
+                    && hotspot[0] < logical_size[0]
+                    && hotspot[1] < logical_size[1]
+            }
+        }
+    }
+}
+
+/// CSS `cursor` keyword subset and custom raster/vector cursors used by the desktop host.
 ///
 /// The value is inherited. Custom `url(...)` cursors and unknown keywords are
 /// intentionally rejected by the CSS parser.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub enum CursorSpec {
     #[default]
     Default,
@@ -104,6 +749,61 @@ pub enum CursorSpec {
     ZoomIn,
     ZoomOut,
     None,
+    Custom(CustomCursorSpec),
+}
+
+impl From<SystemCursor> for CursorSpec {
+    fn from(value: SystemCursor) -> Self {
+        match value {
+            SystemCursor::Default => Self::Default,
+            SystemCursor::Pointer => Self::Pointer,
+            SystemCursor::Text => Self::Text,
+            SystemCursor::Move => Self::Move,
+            SystemCursor::Grab => Self::Grab,
+            SystemCursor::Grabbing => Self::Grabbing,
+            SystemCursor::NotAllowed => Self::NotAllowed,
+            SystemCursor::Crosshair => Self::Crosshair,
+            SystemCursor::EwResize => Self::EwResize,
+            SystemCursor::NsResize => Self::NsResize,
+            SystemCursor::Help => Self::Help,
+            SystemCursor::Wait => Self::Wait,
+            SystemCursor::Progress => Self::Progress,
+            SystemCursor::ZoomIn => Self::ZoomIn,
+            SystemCursor::ZoomOut => Self::ZoomOut,
+            SystemCursor::None => Self::None,
+        }
+    }
+}
+
+impl CursorSpec {
+    pub fn as_system(&self) -> Option<SystemCursor> {
+        Some(match self {
+            Self::Default => SystemCursor::Default,
+            Self::Pointer => SystemCursor::Pointer,
+            Self::Text => SystemCursor::Text,
+            Self::Move => SystemCursor::Move,
+            Self::Grab => SystemCursor::Grab,
+            Self::Grabbing => SystemCursor::Grabbing,
+            Self::NotAllowed => SystemCursor::NotAllowed,
+            Self::Crosshair => SystemCursor::Crosshair,
+            Self::EwResize => SystemCursor::EwResize,
+            Self::NsResize => SystemCursor::NsResize,
+            Self::Help => SystemCursor::Help,
+            Self::Wait => SystemCursor::Wait,
+            Self::Progress => SystemCursor::Progress,
+            Self::ZoomIn => SystemCursor::ZoomIn,
+            Self::ZoomOut => SystemCursor::ZoomOut,
+            Self::None => SystemCursor::None,
+            Self::Custom(_) => return None,
+        })
+    }
+
+    pub fn fallback_system(&self) -> SystemCursor {
+        match self {
+            Self::Custom(custom) => custom.fallback(),
+            _ => self.as_system().unwrap_or(SystemCursor::Default),
+        }
+    }
 }
 
 /// CSS `user-select` subset. Inherited, like [`CursorSpec`].

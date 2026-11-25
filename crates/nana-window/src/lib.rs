@@ -3,6 +3,7 @@
 mod browser;
 mod chrome;
 mod clipboard;
+pub mod cursor;
 mod pointer;
 pub use browser::{
     BrowserCommand, BrowserCompletion, BrowserEvent, BrowserPolicy, BrowserRect, BrowserState,
@@ -23,6 +24,7 @@ mod dcomp;
 mod display_options;
 mod file_dialog;
 mod ime;
+pub mod interaction;
 mod keyboard;
 mod live_frame;
 mod login_item;

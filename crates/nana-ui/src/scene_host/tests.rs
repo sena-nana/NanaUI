@@ -977,31 +977,32 @@ fn client_frame_resize_hits_edges_unless_caption_or_maximized() {
 
 #[test]
 fn window_cursor_matches_css_cursor_spec() {
+    use super::host_services::NativeCursor;
     use crate::WindowCursor;
     use winit::cursor::CursorIcon;
     assert_eq!(
-        window_cursor_override(WindowCursor::Automatic),
+        window_cursor_override(&WindowCursor::Automatic),
         (None, None)
     );
     assert_eq!(
-        window_cursor_override(WindowCursor::Help),
-        (Some(CursorIcon::Help), None)
+        window_cursor_override(&WindowCursor::Help),
+        (Some(NativeCursor::System(CursorIcon::Help)), None)
     );
     assert_eq!(
-        window_cursor_override(WindowCursor::Progress),
-        (Some(CursorIcon::Progress), None)
+        window_cursor_override(&WindowCursor::Progress),
+        (Some(NativeCursor::System(CursorIcon::Progress)), None)
     );
     assert_eq!(
-        window_cursor_override(WindowCursor::ZoomIn),
-        (Some(CursorIcon::ZoomIn), None)
+        window_cursor_override(&WindowCursor::ZoomIn),
+        (Some(NativeCursor::System(CursorIcon::ZoomIn)), None)
     );
     assert_eq!(
-        window_cursor_override(WindowCursor::ZoomOut),
-        (Some(CursorIcon::ZoomOut), None)
+        window_cursor_override(&WindowCursor::ZoomOut),
+        (Some(NativeCursor::System(CursorIcon::ZoomOut)), None)
     );
     assert_eq!(
-        window_cursor_override(WindowCursor::None),
-        (Some(CursorIcon::Default), Some(false))
+        window_cursor_override(&WindowCursor::None),
+        (Some(NativeCursor::System(CursorIcon::Default)), Some(false))
     );
 }
 
@@ -1302,4 +1303,85 @@ fn forward_passthrough_keeps_active_gesture_across_transparent_gaps_and_leaves()
         forward_pointer_action(MousePassthroughMode::Forward, false, false, false, &left),
         ForwardPointerAction::RestorePassthrough
     );
+}
+
+#[test]
+fn input_region_snapshot_drives_forward_passthrough_and_resize_single_authority() {
+    use nana_ui_platform::{
+        InputRegionRect, InputRegionSnapshot, NativeHitTestClass, WindowResizeEdge,
+    };
+
+    let snapshot = InputRegionSnapshot {
+        revision: 3,
+        rects: vec![
+            InputRegionRect {
+                x: 0.0,
+                y: 0.0,
+                width: 8.0,
+                height: 80.0,
+                class: NativeHitTestClass::Resize(WindowResizeEdge::West),
+            },
+            InputRegionRect {
+                x: 20.0,
+                y: 20.0,
+                width: 160.0,
+                height: 36.0,
+                class: NativeHitTestClass::Drag,
+            },
+            InputRegionRect {
+                x: 180.0,
+                y: 24.0,
+                width: 32.0,
+                height: 28.0,
+                class: NativeHitTestClass::Client,
+            },
+        ],
+        logical_size: (400.0, 300.0),
+        scale_factor: 2.0,
+        capped: false,
+        source_rect_count: 3,
+    };
+
+    let moved = WinitWindowEvent::PointerMoved {
+        device_id: None,
+        position: PhysicalPosition::new(10.0, 10.0),
+        primary: true,
+        source: PointerSource::Mouse,
+    };
+    assert_eq!(
+        snapshot.classify(4.0, 40.0),
+        NativeHitTestClass::Resize(WindowResizeEdge::West)
+    );
+    assert_eq!(
+        forward_pointer_action(
+            MousePassthroughMode::Forward,
+            false,
+            snapshot.hits_interactive_or_chrome(4.0, 40.0),
+            false,
+            &moved
+        ),
+        ForwardPointerAction::Dispatch
+    );
+    assert_eq!(snapshot.classify(40.0, 30.0), NativeHitTestClass::Drag);
+    assert!(snapshot.hits_interactive_or_chrome(40.0, 30.0));
+    assert_eq!(snapshot.classify(190.0, 32.0), NativeHitTestClass::Client);
+    assert_eq!(
+        snapshot.classify(350.0, 200.0),
+        NativeHitTestClass::PassThrough
+    );
+    assert_eq!(
+        forward_pointer_action(
+            MousePassthroughMode::Forward,
+            false,
+            snapshot.hits_interactive_or_chrome(350.0, 200.0),
+            false,
+            &moved
+        ),
+        ForwardPointerAction::RestorePassthrough
+    );
+
+    let scaled = super::windows::scale_input_region_snapshot(snapshot.clone(), 1.5);
+    assert_eq!(scaled.logical_size, (600.0, 450.0));
+    assert_eq!(scaled.rects[1].x, 30.0);
+    assert_eq!(scaled.rects[1].width, 240.0);
 }

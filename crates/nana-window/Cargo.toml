@@ -7,6 +7,7 @@ description = "Native window material boundary for Nana applications"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
+nana-diagnostics.workspace = true
 nana-ui-core.workspace = true
 nana-ui-platform = { workspace = true, default-features = false }
 raw-window-handle.workspace = true
@@ -17,7 +18,7 @@ png.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2.workspace = true
 block2 = "0.6.2"
-objc2-app-kit = { workspace = true, default-features = false, features = ["NSAnimation", "NSAnimationContext", "NSApplication", "NSGraphics", "NSEvent", "NSView", "NSWindow", "NSImage", "NSButton", "NSColor", "NSColorSampler", "NSColorSpace", "NSControl", "NSCell", "NSMenu", "NSMenuItem", "NSOpenPanel", "block2", "NSPanel", "NSPasteboard", "NSPasteboardItem", "NSResponder", "NSSavePanel", "NSStatusBar", "NSStatusBarButton", "NSStatusItem", "objc2-core-foundation", "objc2-quartz-core"] }
+objc2-app-kit = { workspace = true, default-features = false, features = ["NSAnimation", "NSAnimationContext", "NSApplication", "NSBitmapImageRep", "NSCursor", "NSGraphics", "NSEvent", "NSView", "NSWindow", "NSImage", "NSImageRep", "NSButton", "NSColor", "NSColorSampler", "NSColorSpace", "NSControl", "NSCell", "NSMenu", "NSMenuItem", "NSOpenPanel", "block2", "NSPanel", "NSPasteboard", "NSPasteboardItem", "NSResponder", "NSSavePanel", "NSStatusBar", "NSStatusBarButton", "NSStatusItem", "objc2-core-foundation", "objc2-quartz-core"] }
 objc2-foundation = { workspace = true, default-features = false, features = [
     "NSArray",
     "NSData",

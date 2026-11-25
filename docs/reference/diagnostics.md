@@ -132,7 +132,7 @@ let _span = span!(TRACK_NS);         // 作用域结束时自动记录耗时进�
 | `Layout` | 布局耗时、调用次数、整树布局次数、脏根数、测量与放置节点数（`layout.measure_nodes`、`layout.placement_nodes`）；动态布局（Dynamic Layout）的行求解数、包络重建数与预算回退数 |
 | `Text` | 整形与布局缓存命中/未命中、字形解析数、字形图集（atlas）开页与总字节数、预算拒绝事件（每 10 s 限流一条）、图集压缩与驱逐计数 |
 | `GPU` | 提交耗时、GPU 完成时间上界（每次重绘开头非阻塞 poll，空闲超过 50 ms 的样本自动丢弃）、上传字节、draw call、缓冲重分配、呈现/跳帧、Surface 异常、设备丢失与恢复、帧丢弃（`gpu.frames_discarded` / `gpu.retained_frame_discarded`）、预编译 MSL 解压次数与耗时/字节（`gpu.shader.msl_decompressions` / `gpu.shader.msl_decompress_ns` / `gpu.shader.msl_decompressed_bytes`）、管线回退/构建失败事件（`gpu.shader.precompiled_fallback` / `gpu.shader.build_failed`）与自定义材质拒收事件（`gpu.material.rejected`），并在会话信息中登记适配器与驱动信息 |
-| `Window` | 窗口打开（含物理尺寸）、关闭、DPI 缩放系数变化、遮挡、resize 计数，以及跨平台屏幕取色失败/不支持事件（`window.color_sampler.failed`） |
+| `Window` | 窗口打开（含物理尺寸）、关闭、DPI 缩放系数变化、遮挡、resize 计数、窗口交互区域构建与原生非客户区命中分类指标（`window.interaction.*`，ID 19–28），以及跨平台屏幕取色失败/不支持事件（`window.color_sampler.failed`） |
 | `Resource` | 资源包（`.nrpack`）挂载耗时与 TOC 字节数、每次打包资源读取/认证/解压耗时与字节数、未命中与完整性校验失败故障，以及关闭可选特性时的 `resource.fetch_unavailable`、`resource.fetch_failed`、`resource.image_codec_unavailable` 与 `resource.icu_unavailable` 事件 |
 | `Package` | `package.json` 清单读取耗时、载入/缺失事件、无效清单与身份不匹配故障 |
 | `Host` | 每次重绘的墙钟总耗时（含消息处理、flush、绘制、submit 与 present）、`Continuous` 窗口错过的帧周期数、消息队列排空深度、启动指标（`host.startup.*`）、`HostFailure` 限流故障与事件循环退出 |

@@ -254,3 +254,57 @@ fn a_replacement_device_draws_the_retained_paragraphs_without_laying_them_out() 
         "the glyphs are rasterized for the pixels they now cover"
     );
 }
+
+#[test]
+fn url_texture_cache_recovers_after_device_generation_change() {
+    let mut png_bytes = Vec::new();
+    image::RgbaImage::from_raw(
+        2,
+        2,
+        vec![
+            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+        ],
+    )
+    .unwrap()
+    .write_to(
+        &mut std::io::Cursor::new(&mut png_bytes),
+        image::ImageFormat::Png,
+    )
+    .unwrap();
+    use base64::Engine as _;
+    let data_url = format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(&png_bytes)
+    );
+    let mut cx = AppContext::new();
+    let doc = DocumentId::new(1).unwrap();
+    let root = cx
+        .create_component(
+            doc,
+            Stack::column(0.0).with_layout(|layout| {
+                layout.width = Some(LengthSpec::Px(64.0));
+                layout.height = Some(LengthSpec::Px(64.0));
+                layout.paint.background_layers = vec![nana_ui_core::BackgroundImage::url(data_url)];
+            }),
+        )
+        .unwrap();
+    let viewport = LayoutViewport::new(SIZE[0] as f32, SIZE[1] as f32);
+    cx.resolve_styles(&[root.stable_id()]).unwrap();
+    cx.layout_document(doc, viewport).unwrap();
+    let mut scene = UiScene::new();
+    scene.apply_delta(cx.world().extract_document(doc), []);
+
+    let lost = device();
+    let mut painter = SceneWgpuPainter::new(&lost, GpuTextureFormat::from_wgpu(FORMAT));
+    let before = paint(&lost, &mut painter, &scene, 1);
+    assert_eq!(painter.resource_counters().url_textures, 1);
+    drop(painter);
+    lost.wgpu().device().destroy();
+    drop(lost);
+
+    let replacement = device();
+    let mut painter = SceneWgpuPainter::new(&replacement, GpuTextureFormat::from_wgpu(FORMAT));
+    let after = paint(&replacement, &mut painter, &scene, 1);
+    assert_eq!(painter.resource_counters().url_textures, 1);
+    assert_eq!(before, after);
+}

@@ -31,6 +31,7 @@ struct Relations {
     labelled_by: Option<PropSource<Option<StableNodeId>>>,
     locale: Option<PropSource<Option<Locale>>>,
     aria_selected: Option<PropSource<Option<bool>>>,
+    hit_test: Option<PropSource<nana_ui_core::HitTestBehavior>>,
 }
 
 impl Relations {
@@ -42,11 +43,13 @@ impl Relations {
         Option<Option<StableNodeId>>,
         Option<Option<Locale>>,
         Option<Option<bool>>,
+        Option<nana_ui_core::HitTestBehavior>,
     ) {
         (
             self.labelled_by.as_ref().map(|label| label.get()),
             self.locale.as_ref().map(|locale| locale.get()),
             self.aria_selected.as_ref().map(|selected| selected.get()),
+            self.hit_test.as_ref().map(|behavior| behavior.get()),
         )
     }
 }
@@ -58,12 +61,29 @@ impl StructuralBinding for Relations {
         node: StableNodeId,
         effect: EffectKey,
     ) -> Result<(), FrameworkError> {
-        let (label, locale, selected) = reactive::run_tracked(effect, || self.read());
+        let (label, locale, selected, hit_test) = reactive::run_tracked(effect, || self.read());
         let named = label.map_or(Ok(()), |label| relate(cx, node, label));
         let scoped = locale.map_or(Ok(()), |locale| scope(cx, node, locale));
         let selected = selected.map_or(Ok(()), |selected| select_override(cx, node, selected));
-        named.and(scoped).and(selected)
+        let hit_test = hit_test.map_or(Ok(()), |behavior| hit_test_override(cx, node, behavior));
+        named.and(scoped).and(selected).and(hit_test)
     }
+}
+
+/// Apply `El::hit_test` behavior to `node`.
+fn hit_test_override(
+    cx: &mut AppContext,
+    node: StableNodeId,
+    behavior: nana_ui_core::HitTestBehavior,
+) -> Result<(), FrameworkError> {
+    let target = Some(behavior);
+    let world = cx.world();
+    if !world.contains(node) || world.hit_test_behavior_override(node) == target {
+        return Ok(());
+    }
+    let mut mutations = MutationQueue::new();
+    mutations.set_hit_test_behavior(node, target);
+    cx.commit_mutations(mutations).map(|_| ())
 }
 
 /// Apply `El::aria_selected` override to `node`.
@@ -105,6 +125,7 @@ pub(super) fn bind(
     labelled_by: Option<PropSource<Option<StableNodeId>>>,
     locale: Option<PropSource<Option<Locale>>>,
     aria_selected: Option<PropSource<Option<bool>>>,
+    hit_test: Option<PropSource<nana_ui_core::HitTestBehavior>>,
     site: &'static Location<'static>,
 ) {
     // A constant follows nothing: it is the node's from the start.
@@ -124,20 +145,31 @@ pub(super) fn bind(
         }
         aria_selected => aria_selected,
     };
+    let hit_test = match hit_test {
+        Some(PropSource::Const(behavior)) => {
+            vb.ui
+                .mutations()
+                .set_hit_test_behavior(node, Some(behavior));
+            None
+        }
+        hit_test => hit_test,
+    };
     let relations = Relations {
         labelled_by,
         locale,
         aria_selected,
+        hit_test,
     };
     if relations.labelled_by.is_none()
         && relations.locale.is_none()
         && relations.aria_selected.is_none()
+        && relations.hit_test.is_none()
     {
         return;
     }
     let effect = reactive::create_effect(vb.st.tag, EffectTarget::Structural(node), None, site);
     // What it reads is what it follows.
-    let (_, locale, selected) = reactive::run_tracked(effect, || relations.read());
+    let (_, locale, selected, hit_test) = reactive::run_tracked(effect, || relations.read());
     if let Some(locale) = locale {
         vb.ui.mutations().set_locale(node, locale);
     }
@@ -145,6 +177,11 @@ pub(super) fn bind(
         && selected.is_some()
     {
         vb.ui.mutations().set_selected(node, selected);
+    }
+    if let Some(behavior) = hit_test {
+        vb.ui
+            .mutations()
+            .set_hit_test_behavior(node, Some(behavior));
     }
     if relations.labelled_by.is_some() {
         // A caption declared after the control is not built yet, so the

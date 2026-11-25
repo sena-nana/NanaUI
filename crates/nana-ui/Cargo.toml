@@ -319,6 +319,11 @@ name = "window-shadow-probe"
 required-features = ["hosted", "bundled-fonts"]
 
 [[example]]
+name = "window-input-region-probe"
+required-features = ["hosted", "bundled-fonts"]
+test = false
+
+[[example]]
 name = "window-output-probe"
 required-features = ["hosted", "bundled-fonts", "native-export"]
 

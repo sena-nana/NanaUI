@@ -2924,6 +2924,7 @@ dependencies = [
  "block2 0.6.2",
  "futures-lite",
  "getrandom 0.4.3",
+ "nana-diagnostics",
  "nana-ui-core",
  "nana-ui-platform",
  "objc2 0.6.5",

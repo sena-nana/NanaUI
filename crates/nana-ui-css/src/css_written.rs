@@ -498,6 +498,7 @@ fn reference() -> &'static (LayoutStyle, LayoutStyle) {
             bottom: 1.0,
         });
         // Rust-only, like the edge fade: no CSS property writes them.
+        layout.hit_test = Some(nana_ui_core::HitTestBehavior::Drag);
         layout.paint.wide_filter_blur = true;
         layout.paint.motion_shutter = 0.5;
         // Applying anything ends by resolving logical edges; start from a

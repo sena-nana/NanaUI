@@ -413,6 +413,9 @@ impl<'a> ValidationPlan<'a> {
                     self.require_exists(*id)?;
                     self.interactions.insert(*id, *interaction);
                 }
+                UiMutation::SetHitTestBehavior { id, .. } => {
+                    self.require_exists(*id)?;
+                }
                 UiMutation::SetFocusPolicy { id, policy } => {
                     self.require_exists(*id)?;
                     self.focus_policies.insert(*id, *policy);
@@ -1497,6 +1500,9 @@ impl UiWorld {
             UiMutation::SetSelected { id, selected } => {
                 self.nodes.contains(*id) && self.selected_override(*id) == *selected
             }
+            UiMutation::SetHitTestBehavior { id, behavior } => {
+                self.nodes.contains(*id) && self.hit_test_behavior_override(*id) == *behavior
+            }
             UiMutation::SetFocusPolicy { id, policy } => {
                 self.nodes.contains(*id) && self.explicit_focus_policy(*id) == *policy
             }
@@ -1672,6 +1678,7 @@ impl UiWorld {
             && writes.iter().all(|mutation| match mutation {
                 UiMutation::SetStyle { id: target, .. }
                 | UiMutation::SetInteraction { id: target, .. }
+                | UiMutation::SetHitTestBehavior { id: target, .. }
                 | UiMutation::SetFocusPolicy { id: target, .. }
                 | UiMutation::SetFocusNeighbors { id: target, .. }
                 | UiMutation::SetDirectionalFocus { id: target, .. }

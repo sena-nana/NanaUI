@@ -17,19 +17,20 @@ use nana_ui_core::{
     BackgroundPosition, BackgroundRepeat, BorderImageSlice, BorderImageSpec, BorderStyle,
     BorderWidth, BoxShadowSpec, BoxSizing, CalcBinOp, CalcExpr, ClipCircle, ClipEllipse, ClipInset,
     ClipPath, ClipPoint, ClipShapeRadius, ColorFilter, ContainerType, ControlPadding, ControlSize,
-    CssGradient, CursorSpec, DirSpec, DisplaySpec, FilterDropShadow, FlexDirection, FlexWrap,
-    FontFeatureSetting, FontKerningSpec, FontVariationSetting, GradientStop, GridAutoFlow,
-    GridLine, GridRepeatAuto, GridTemplateAreas, GridTrack, GridTrackListUnsupported, HyphensSpec,
-    ImageSampling, JustifySpec, LayoutStyle, LengthSpec, LineBreakSpec, LineHeightSpec, LineRole,
-    LinearGradient, MaskImage, MaterialRef, MaterialTexture, MixBlendMode, OutlineStyle,
-    OverflowSpec, OverflowWrapSpec, PaintColor, PaintMat4, PaintTransform, PointerEventsSpec,
-    PopoverAlignment, PopoverPlacement, PositionSpec, RadialGradient, RadiusTier, ScrollEdgeFade,
-    ScrollbarSkin, SemanticColorMix, SemanticColorRole, SpacingStep, TextAlignSpec,
-    TextAutospaceSpec, TextDecorationLine, TextEmphasisColor, TextEmphasisPosition,
-    TextEmphasisShape, TextEmphasisStyle, TextJustifySpec, TextOrientationSpec, TextShadowSpec,
-    TextSpacingTrimSpec, TextStrokeSpec, TextWeight, TextWrapStyleSpec, ThemeExpr, ThemeToken,
-    TransformBox, TransformOrigin, TypeRole, UserSelectSpec, VerticalAlignSpec, ViewportAxis,
-    VisibilitySpec, WhiteSpaceSpec, WordBreakSpec, WritingModeSpec,
+    CssGradient, CursorSpec, CustomCursorSpec, CustomCursorVariant, CustomCursorVector, DirSpec,
+    DisplaySpec, FilterDropShadow, FlexDirection, FlexWrap, FontFeatureSetting, FontKerningSpec,
+    FontVariationSetting, GradientStop, GridAutoFlow, GridLine, GridRepeatAuto, GridTemplateAreas,
+    GridTrack, GridTrackListUnsupported, HitTestBehavior, HyphensSpec, ImageSampling, JustifySpec,
+    LayoutStyle, LengthSpec, LineBreakSpec, LineHeightSpec, LineRole, LinearGradient, MaskImage,
+    MaterialRef, MaterialTexture, MixBlendMode, OutlineStyle, OverflowSpec, OverflowWrapSpec,
+    PaintColor, PaintMat4, PaintTransform, PointerEventsSpec, PopoverAlignment, PopoverPlacement,
+    PositionSpec, RadialGradient, RadiusTier, ScrollEdgeFade, ScrollbarSkin, SemanticColorMix,
+    SemanticColorRole, SpacingStep, SystemCursor, TextAlignSpec, TextAutospaceSpec,
+    TextDecorationLine, TextEmphasisColor, TextEmphasisPosition, TextEmphasisShape,
+    TextEmphasisStyle, TextJustifySpec, TextOrientationSpec, TextShadowSpec, TextSpacingTrimSpec,
+    TextStrokeSpec, TextWeight, TextWrapStyleSpec, ThemeExpr, ThemeToken, TransformBox,
+    TransformOrigin, TypeRole, UserSelectSpec, VerticalAlignSpec, ViewportAxis, VisibilitySpec,
+    WhiteSpaceSpec, WindowResizeEdge, WordBreakSpec, WritingModeSpec,
 };
 
 pub(crate) trait EmitRust {
@@ -230,10 +231,275 @@ impl_unit_enum!(JustifySpec, "JustifySpec" => {
 });
 impl_unit_enum!(OverflowSpec, "OverflowSpec" => { Visible, Hidden, Auto, Scroll });
 impl_unit_enum!(PointerEventsSpec, "PointerEventsSpec" => { Auto, None });
-impl_unit_enum!(CursorSpec, "CursorSpec" => {
+impl_unit_enum!(SystemCursor, "SystemCursor" => {
     Default, Pointer, Text, Move, Grab, Grabbing, NotAllowed, Crosshair,
     EwResize, NsResize, Help, Wait, Progress, ZoomIn, ZoomOut, None
 });
+impl_unit_enum!(WindowResizeEdge, "WindowResizeEdge" => {
+    North, South, East, West, NorthEast, NorthWest, SouthEast, SouthWest
+});
+impl EmitRust for HitTestBehavior {
+    fn emit_rust(&self, m: &str, out: &mut String) {
+        out.push_str(m);
+        match self {
+            Self::Auto => out.push_str("::HitTestBehavior::Auto"),
+            Self::Client => out.push_str("::HitTestBehavior::Client"),
+            Self::PassThrough => out.push_str("::HitTestBehavior::PassThrough"),
+            Self::Drag => out.push_str("::HitTestBehavior::Drag"),
+            Self::Resize(edge) => {
+                out.push_str("::HitTestBehavior::Resize(");
+                edge.emit_rust(m, out);
+                out.push(')');
+            }
+        }
+    }
+}
+fn emit_rust_slice<T: EmitRust>(items: &[T], m: &str, out: &mut String) {
+    out.push('[');
+    for (i, item) in items.iter().enumerate() {
+        if i > 0 {
+            out.push_str(", ");
+        }
+        item.emit_rust(m, out);
+    }
+    out.push(']');
+}
+
+impl EmitRust for CustomCursorVariant {
+    fn emit_rust(&self, m: &str, out: &mut String) {
+        let _ = write!(
+            out,
+            "{m}::CustomCursorVariant {{ scale_milli: {}_u32, width: {}_u16, height: {}_u16, hotspot: [{}_u16, {}_u16], rgba:",
+            self.scale_milli, self.width, self.height, self.hotspot[0], self.hotspot[1]
+        );
+        self.rgba.emit_rust(m, out);
+        out.push_str(" }");
+    }
+}
+impl EmitRust for nana_ui_core::IconPathCommand {
+    fn emit_rust(&self, m: &str, out: &mut String) {
+        match self {
+            Self::MoveTo(p) => {
+                out.push_str(m);
+                out.push_str("::IconPathCommand::MoveTo([");
+                p[0].emit_rust(m, out);
+                out.push_str(", ");
+                p[1].emit_rust(m, out);
+                out.push_str("])");
+            }
+            Self::LineTo(p) => {
+                out.push_str(m);
+                out.push_str("::IconPathCommand::LineTo([");
+                p[0].emit_rust(m, out);
+                out.push_str(", ");
+                p[1].emit_rust(m, out);
+                out.push_str("])");
+            }
+            Self::CubicTo {
+                control_a,
+                control_b,
+                to,
+            } => {
+                out.push_str(m);
+                out.push_str("::IconPathCommand::CubicTo { control_a: [");
+                control_a[0].emit_rust(m, out);
+                out.push_str(", ");
+                control_a[1].emit_rust(m, out);
+                out.push_str("], control_b: [");
+                control_b[0].emit_rust(m, out);
+                out.push_str(", ");
+                control_b[1].emit_rust(m, out);
+                out.push_str("], to: [");
+                to[0].emit_rust(m, out);
+                out.push_str(", ");
+                to[1].emit_rust(m, out);
+                out.push_str("] }");
+            }
+            Self::Close => {
+                out.push_str(m);
+                out.push_str("::IconPathCommand::Close");
+            }
+        }
+    }
+}
+impl EmitRust for nana_ui_core::IconShape {
+    fn emit_rust(&self, m: &str, out: &mut String) {
+        match self {
+            Self::Path(cmds) => {
+                out.push_str(m);
+                out.push_str("::IconShape::Path(&");
+                emit_rust_slice(cmds, m, out);
+                out.push(')');
+            }
+            Self::Fill(cmds) => {
+                out.push_str(m);
+                out.push_str("::IconShape::Fill(&");
+                emit_rust_slice(cmds, m, out);
+                out.push(')');
+            }
+            Self::Circle { center, radius } => {
+                out.push_str(m);
+                out.push_str("::IconShape::Circle { center: [");
+                center[0].emit_rust(m, out);
+                out.push_str(", ");
+                center[1].emit_rust(m, out);
+                out.push_str("], radius: ");
+                radius.emit_rust(m, out);
+                out.push_str(" }");
+            }
+            Self::Rect {
+                origin,
+                size,
+                filled,
+            } => {
+                out.push_str(m);
+                out.push_str("::IconShape::Rect { origin: [");
+                origin[0].emit_rust(m, out);
+                out.push_str(", ");
+                origin[1].emit_rust(m, out);
+                out.push_str("], size: [");
+                size[0].emit_rust(m, out);
+                out.push_str(", ");
+                size[1].emit_rust(m, out);
+                out.push_str("], filled: ");
+                filled.emit_rust(m, out);
+                out.push_str(" }");
+            }
+            Self::RoundedRect {
+                origin,
+                size,
+                radius,
+            } => {
+                out.push_str(m);
+                out.push_str("::IconShape::RoundedRect { origin: [");
+                origin[0].emit_rust(m, out);
+                out.push_str(", ");
+                origin[1].emit_rust(m, out);
+                out.push_str("], size: [");
+                size[0].emit_rust(m, out);
+                out.push_str(", ");
+                size[1].emit_rust(m, out);
+                out.push_str("], radius: ");
+                radius.emit_rust(m, out);
+                out.push_str(" }");
+            }
+        }
+    }
+}
+impl EmitRust for CustomCursorVector {
+    fn emit_rust(&self, m: &str, out: &mut String) {
+        match self {
+            Self::Shapes { shapes, color } => {
+                let _ = write!(
+                    out,
+                    "{m}::CustomCursorVector::Shapes {{ shapes: ::std::sync::Arc::from("
+                );
+                emit_rust_slice(shapes, m, out);
+                let _ = write!(
+                    out,
+                    "), color: [{}_u8, {}_u8, {}_u8, {}_u8] }}",
+                    color[0], color[1], color[2], color[3]
+                );
+            }
+            Self::Svg(bytes) => {
+                let _ = write!(out, "{m}::CustomCursorVector::Svg(");
+                bytes.emit_rust(m, out);
+                out.push(')');
+            }
+        }
+    }
+}
+impl EmitRust for CustomCursorSpec {
+    fn emit_rust(&self, m: &str, out: &mut String) {
+        match self {
+            Self::Raster { variants, fallback } => {
+                let _ = write!(
+                    out,
+                    "{m}::CustomCursorSpec::Raster {{ variants: ::std::sync::Arc::from("
+                );
+                emit_rust_slice(variants, m, out);
+                out.push_str("), fallback: ");
+                fallback.emit_rust(m, out);
+                out.push_str(" }");
+            }
+            Self::Vector {
+                source,
+                logical_size,
+                hotspot,
+                fallback,
+            } => {
+                let _ = write!(out, "{m}::CustomCursorSpec::Vector {{ source: ");
+                source.emit_rust(m, out);
+                let _ = write!(
+                    out,
+                    ", logical_size: [{}_u16, {}_u16], hotspot: [{}_u16, {}_u16], fallback: ",
+                    logical_size[0], logical_size[1], hotspot[0], hotspot[1]
+                );
+                fallback.emit_rust(m, out);
+                out.push_str(" }");
+            }
+        }
+    }
+}
+impl EmitRust for CursorSpec {
+    fn emit_rust(&self, m: &str, out: &mut String) {
+        match self {
+            Self::Default => {
+                let _ = write!(out, "{m}::CursorSpec::Default");
+            }
+            Self::Pointer => {
+                let _ = write!(out, "{m}::CursorSpec::Pointer");
+            }
+            Self::Text => {
+                let _ = write!(out, "{m}::CursorSpec::Text");
+            }
+            Self::Move => {
+                let _ = write!(out, "{m}::CursorSpec::Move");
+            }
+            Self::Grab => {
+                let _ = write!(out, "{m}::CursorSpec::Grab");
+            }
+            Self::Grabbing => {
+                let _ = write!(out, "{m}::CursorSpec::Grabbing");
+            }
+            Self::NotAllowed => {
+                let _ = write!(out, "{m}::CursorSpec::NotAllowed");
+            }
+            Self::Crosshair => {
+                let _ = write!(out, "{m}::CursorSpec::Crosshair");
+            }
+            Self::EwResize => {
+                let _ = write!(out, "{m}::CursorSpec::EwResize");
+            }
+            Self::NsResize => {
+                let _ = write!(out, "{m}::CursorSpec::NsResize");
+            }
+            Self::Help => {
+                let _ = write!(out, "{m}::CursorSpec::Help");
+            }
+            Self::Wait => {
+                let _ = write!(out, "{m}::CursorSpec::Wait");
+            }
+            Self::Progress => {
+                let _ = write!(out, "{m}::CursorSpec::Progress");
+            }
+            Self::ZoomIn => {
+                let _ = write!(out, "{m}::CursorSpec::ZoomIn");
+            }
+            Self::ZoomOut => {
+                let _ = write!(out, "{m}::CursorSpec::ZoomOut");
+            }
+            Self::None => {
+                let _ = write!(out, "{m}::CursorSpec::None");
+            }
+            Self::Custom(custom) => {
+                let _ = write!(out, "{m}::CursorSpec::Custom(");
+                custom.emit_rust(m, out);
+                out.push(')');
+            }
+        }
+    }
+}
 impl_unit_enum!(UserSelectSpec, "UserSelectSpec" => { Auto, Text, All, Contain, None });
 impl_unit_enum!(WhiteSpaceSpec, "WhiteSpaceSpec" => { Normal, Nowrap, Pre, PreWrap, PreLine });
 impl_unit_enum!(WordBreakSpec, "WordBreakSpec" => { Normal, BreakAll, BreakWord });
@@ -1730,6 +1996,7 @@ pub(crate) fn emit_patch_stmt(layout: &LayoutStyle, path: &str, m: &str, out: &m
         "overflow_y" => emit_set(path, &layout.overflow_y, m, out),
         "text_overflow_ellipsis" => emit_set(path, &layout.text_overflow_ellipsis, m, out),
         "pointer_events" => emit_set(path, &layout.pointer_events, m, out),
+        "hit_test" => emit_set(path, &layout.hit_test, m, out),
         "inert" => emit_set(path, &layout.inert, m, out),
         "cursor" => emit_set(path, &layout.cursor, m, out),
         "user_select" => emit_set(path, &layout.user_select, m, out),

@@ -8,11 +8,11 @@ use crate::box_layout::{
     BackgroundPosition, BackgroundRepeat, BorderImageSpec, BorderStyle, BoxShadowSpec, BoxSizing,
     ClipPath, ColorFilter, DirSpec, DisplaySpec, FlexDirection, FlexWrap, FontFeatureSetting,
     GridAutoFlow, GridPlacement, GridRepeatAuto, GridTemplateAreas, GridTrack,
-    GridTrackListUnsupported, JustifySpec, LayoutStyle, LengthSpec, LineHeightSpec, LogicalEdges,
-    MaskImage, MixBlendMode, OutlineSpec, OverflowSpec, OverflowWrapSpec, PaintMat4, PaintStyle,
-    PaintTransform, PointerEventsSpec, PositionSpec, TextAlignSpec, TextDecorationLine,
-    TextShadowSpec, TransformBox, TransformOrigin, UserSelectSpec, VerticalAlignSpec,
-    VisibilitySpec, WhiteSpaceSpec, WordBreakSpec,
+    GridTrackListUnsupported, HitTestBehavior, JustifySpec, LayoutStyle, LengthSpec,
+    LineHeightSpec, LogicalEdges, MaskImage, MixBlendMode, OutlineSpec, OverflowSpec,
+    OverflowWrapSpec, PaintMat4, PaintStyle, PaintTransform, PointerEventsSpec, PositionSpec,
+    TextAlignSpec, TextDecorationLine, TextShadowSpec, TransformBox, TransformOrigin,
+    UserSelectSpec, VerticalAlignSpec, VisibilitySpec, WhiteSpaceSpec, WordBreakSpec,
 };
 
 macro_rules! set_opt {
@@ -146,6 +146,7 @@ impl LayoutStyle {
         flex_shrink: f32,
         flex_basis: LengthSpec,
         pointer_events: PointerEventsSpec,
+        hit_test: HitTestBehavior,
         user_select: UserSelectSpec,
         aspect_ratio: f32,
         font_size: f32,

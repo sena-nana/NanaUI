@@ -964,18 +964,10 @@ pub fn aspect_window_size(
     (width, width / ratio)
 }
 
-/// Client-area edge used to start a window resize.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum WindowResizeEdge {
-    North,
-    South,
-    East,
-    West,
-    NorthEast,
-    NorthWest,
-    SouthEast,
-    SouthWest,
-}
+pub use nana_ui_core::{
+    HitTestBehavior, InputRegionOutcome, InputRegionRect, InputRegionSnapshot, NativeHitTestClass,
+    WindowInteractionCapabilities, WindowResizeEdge,
+};
 
 /// Hit-test the outer frame of a client-area window. Corners win over edges.
 pub fn window_resize_edge(

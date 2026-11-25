@@ -433,6 +433,7 @@ layout_style_fields! {
         overflow_y: SCROLL,
         text_overflow_ellipsis: TEXT_LAYOUT,
         pointer_events: INTERACTION,
+        hit_test: INTERACTION,
         inert: INERT,
         cursor: CURSOR,
         user_select: CURSOR,

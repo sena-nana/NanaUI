@@ -128,7 +128,15 @@ pub fn is_argument(tag: &str, attribute: &str) -> bool {
 /// What `<T>` gives its node rather than its message: what every element
 /// takes, the class its `<style>` compiled, and `Text`'s `decorative`. The
 /// theme roles ([`STYLE_ROLES`]) are its node's too.
-const T_NODE_ATTRIBUTES: &[&str] = &["key", "ref", "labelled_by", "locale", "class", "decorative"];
+const T_NODE_ATTRIBUTES: &[&str] = &[
+    "key",
+    "ref",
+    "labelled_by",
+    "locale",
+    "class",
+    "decorative",
+    "hit_test",
+];
 
 /// Whether `attribute` of `tag` is part of the message `<T>` says: `id`,
 /// which names the message, or one of its arguments, which is every
@@ -1566,6 +1574,11 @@ impl Gen<'_> {
                     if text == "locale" {
                         let locale = locale(&attr.value, name.span())?;
                         out = quote!(#out.locale(#locale));
+                        continue;
+                    }
+                    if text == "hit_test" {
+                        let behavior = prop(&attr.value);
+                        out = quote!(#out.hit_test(#behavior));
                         continue;
                     }
                     if STYLE_ROLES.contains(&text.as_str()) {

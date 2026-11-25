@@ -282,6 +282,11 @@ impl AppTitleBar {
         layout.max_height = Some(LengthSpec::Px(TITLE_BAR_HEIGHT));
         layout.flex_grow = Some(0.0);
         layout.flex_shrink = Some(0.0);
+        layout.hit_test = Some(if self.drag_enabled {
+            nana_ui_core::HitTestBehavior::Drag
+        } else {
+            nana_ui_core::HitTestBehavior::Client
+        });
         crate::theme_intent::font(layout, nana_ui_core::TypeRole::Body);
         crate::theme_intent::weight(layout, nana_ui_core::TextWeight::Semibold);
         if columns {
@@ -309,6 +314,11 @@ impl AppTitleBar {
                 })
         });
         let content_only = self.title.is_empty() && self.center.is_none() && !center_has_content;
+        let slot_hit_test = if self.drag_enabled {
+            nana_ui_core::HitTestBehavior::Drag
+        } else {
+            nana_ui_core::HitTestBehavior::Client
+        };
         let mut saw_columns = false;
         for child in children {
             match node_tag(world, child).as_deref() {
@@ -316,6 +326,7 @@ impl AppTitleBar {
                     saw_columns = true;
                     patch_layout(world, mutations, child, |layout| {
                         apply_fill_column(layout, JustifySpec::Start, false);
+                        layout.hit_test = Some(slot_hit_test);
                         layout.overflow_x = OverflowSpec::Hidden;
                         // The native placeholder sits flush with the bar edge
                         // and carries its own clearance; a capsule stands in
@@ -342,6 +353,7 @@ impl AppTitleBar {
                     saw_columns = true;
                     patch_layout(world, mutations, child, |layout| {
                         apply_center_column(layout, self.resolved_center_width());
+                        layout.hit_test = Some(slot_hit_test);
                         layout.hidden = content_only;
                     });
                 }
@@ -354,6 +366,7 @@ impl AppTitleBar {
                         } else {
                             apply_fill_column(layout, JustifySpec::End, true);
                         }
+                        layout.hit_test = Some(slot_hit_test);
                         layout.padding_left = Some(LengthSpec::Px(SLOT_PADDING));
                         layout.theme.padding_left =
                             Some(crate::theme_intent::space(nana_ui_core::SpacingStep::Sm));
@@ -662,6 +675,7 @@ impl AppTitleBarControls {
             style.radius = Some(nana_ui_core::RadiusTier::Full);
         }
         let layout = Arc::make_mut(&mut style.layout);
+        layout.hit_test = Some(nana_ui_core::HitTestBehavior::Client);
         if self.capsule {
             layout.border_width = Some(nana_ui_core::HAIRLINE);
             layout.theme.border_width =

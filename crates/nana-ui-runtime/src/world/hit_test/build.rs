@@ -772,6 +772,7 @@ impl UiWorld {
         let mut index = HitIndex::from_entries(entries);
         index.viewport_roots = viewport_roots;
         self.hit_index.hit_test_index.insert(document, index);
+        self.hit_index.region_epoch = self.hit_index.region_epoch.wrapping_add(1);
         // Every entry of the document is built from current geometry.
         if !self.hit_index.non_scroll_hit_dirty.is_empty() {
             let mut held = std::mem::take(&mut self.hit_index.non_scroll_hit_dirty);

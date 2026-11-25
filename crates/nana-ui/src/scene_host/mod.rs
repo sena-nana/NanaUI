@@ -144,7 +144,7 @@ pub struct CompositionWork {
 struct WindowContext {
     surface_retry: Option<Instant>,
     applied_appearance: Option<windows::WindowAppearance>,
-    cursor_override: Option<CursorIcon>,
+    cursor_override: Option<host_services::NativeCursor>,
     cursor_visible_override: Option<bool>,
     passthrough_mode: MousePassthroughMode,
     os_mouse_passthrough: bool,
@@ -179,6 +179,9 @@ struct WindowContext {
     shadow: nana_window::shadow::WindowShadowState,
     shadow_body: Option<ShadowBody>,
     shadow_reported: nana_window::shadow::ShadowWork,
+    interaction: nana_window::interaction::WindowInteractionState,
+    interaction_regions: nana_ui_runtime::WindowInteractionRegionBuilder,
+    interaction_native_snapshot: Arc<nana_ui_platform::InputRegionSnapshot>,
     underlay: Option<nana_window::Underlay>,
     auxiliary: Option<nana_window::AuxiliaryWindow>,
 }
@@ -194,6 +197,7 @@ struct ShadowBody {
 impl Drop for WindowContext {
     fn drop(&mut self) {
         self.shadow.release();
+        self.interaction = Default::default();
         self.underlay = None;
         self.auxiliary = None;
         clear_system_material(self.surface.window().as_ref());
@@ -217,6 +221,7 @@ struct WindowManager<Program: RuntimeProgram> {
     non_client: nana_window::NonClientRenderingStrategy,
     composition: crate::presentation::CompositionAvailability,
     painter: Option<SceneWgpuPainter>,
+    retained_url_cache: Option<crate::scene_paint::UrlTextureCache>,
     native_renderers:
         HashMap<nana_gpu::GpuTextureFormat, Arc<crate::native_content::NativeContentRenderer>>,
     text: NanaTextShaper,
@@ -284,6 +289,9 @@ struct WindowManager<Program: RuntimeProgram> {
     startup: startup::HostStartup,
     input_generations: HashMap<WindowId, u64>,
     clipboard: nana_ui_platform::SharedClipboardHost,
+    cursor_cache: nana_window::cursor::PlatformCursorCache,
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    winit_custom_cursors: HashMap<(u64, u32), winit::cursor::CustomCursor>,
     pending_icons: Option<Receiver<SceneIcons>>,
     startup_messages: std::collections::VecDeque<Program::Message>,
 }

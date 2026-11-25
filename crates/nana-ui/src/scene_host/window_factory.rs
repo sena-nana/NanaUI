@@ -228,6 +228,9 @@ impl WindowSessionBuilder {
             shadow: nana_window::shadow::WindowShadowState::default(),
             shadow_body: None,
             shadow_reported: Default::default(),
+            interaction: nana_window::interaction::WindowInteractionState::default(),
+            interaction_regions: nana_ui_runtime::WindowInteractionRegionBuilder::default(),
+            interaction_native_snapshot: Arc::new(nana_ui_platform::InputRegionSnapshot::default()),
             underlay: self.underlay,
             auxiliary: self.auxiliary,
         })
@@ -711,6 +714,7 @@ pub(super) fn complete_startup<Program: RuntimeProgram>(
         next_window_id: 1 << 63,
         graphics,
         painter: None,
+        retained_url_cache: None,
         native_renderers: HashMap::new(),
         text: NanaTextShaper::default(),
         proxy,
@@ -769,6 +773,9 @@ pub(super) fn complete_startup<Program: RuntimeProgram>(
         startup: host_startup,
         input_generations: HashMap::from([(WindowId::PRIMARY, 1)]),
         clipboard: host_services::process_clipboard(),
+        cursor_cache: nana_window::cursor::PlatformCursorCache::default(),
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        winit_custom_cursors: HashMap::new(),
         pending_icons,
         startup_messages: std::collections::VecDeque::new(),
     };

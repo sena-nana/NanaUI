@@ -230,7 +230,7 @@ impl HitIndex {
     }
 
     /// A point of `id`'s own coordinates, past its transform, in the window.
-    fn own_to_window(&self, id: StableNodeId, x: f32, y: f32) -> (f32, f32) {
+    pub(super) fn own_to_window(&self, id: StableNodeId, x: f32, y: f32) -> (f32, f32) {
         let (offset, map) = self.entry_space(id);
         let (x, y) = (x + offset[0], y + offset[1]);
         match map {

@@ -1096,6 +1096,51 @@ impl<P: RuntimeProgram> HeadlessRuntime<P> {
                 Request::Material(_, _, _, reply) => reply.finish(Err(WindowError::Unsupported(
                     "a headless window has no material".into(),
                 ))),
+                Request::InteractionCapabilities(id, generation, reply) => {
+                    reply.finish(if self.service.is_current(id, generation) {
+                        Ok(nana_ui_platform::WindowInteractionCapabilities::default())
+                    } else {
+                        Err(WindowError::WindowClosed)
+                    });
+                }
+                Request::InteractionOutcome(id, generation, reply) => {
+                    reply.finish(if self.service.is_current(id, generation) {
+                        Ok(nana_ui_platform::InputRegionOutcome::Unsupported)
+                    } else {
+                        Err(WindowError::WindowClosed)
+                    });
+                }
+                Request::InteractionSnapshot(id, generation, reply) => {
+                    if !self.service.is_current(id, generation) {
+                        reply.finish(Err(WindowError::WindowClosed));
+                        continue;
+                    }
+                    let geometry = self
+                        .windows
+                        .get(&id)
+                        .map(|state| state.window.geometry)
+                        .unwrap_or_default();
+                    let snapshot = self
+                        .program
+                        .read_document(id, |document| {
+                            let mut builder =
+                                nana_ui_runtime::WindowInteractionRegionBuilder::default();
+                            let config = nana_ui_runtime::WindowInteractionRegionConfig {
+                                logical_size: geometry.logical_size,
+                                scale_factor: geometry.scale_factor,
+                                background: nana_ui_runtime::InputRegionBackground::OpaqueClient,
+                                resize_border_thickness: 0.0,
+                            };
+                            document.context().update_input_region(
+                                &mut builder,
+                                document.document(),
+                                config,
+                            );
+                            builder.snapshot().clone()
+                        })
+                        .unwrap_or_default();
+                    reply.finish(Ok(snapshot));
+                }
                 Request::Native(_, _, callback) => callback(Err(WindowError::Unsupported(
                     "a headless window has no native handle".into(),
                 ))),

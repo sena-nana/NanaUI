@@ -151,6 +151,7 @@ pub mod set {
         overflow_y: OverflowSpec,
         text_overflow_ellipsis: bool,
         pointer_events: Option<PointerEventsSpec>,
+        hit_test: Option<HitTestBehavior>,
         inert: bool,
         cursor: Option<CursorSpec>,
         user_select: Option<UserSelectSpec>,

@@ -218,7 +218,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         // A cursor declaration can change under a resting pointer; the
         // Runtime re-derives it once the document's computed styles settle.
         if update.cursor_changed {
-            self.refresh_window_input(id);
+            self.refresh_window_input(id, Some(event_loop));
         }
         self.sync_native_window_controls(id, &update);
         let Some(pending) = self.accessibility_pending_mut(id) else {
@@ -238,6 +238,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         };
         self.sync_native_browsers(id, scene.as_ref());
         self.sync_shadow_body(id, scene.as_ref());
+        self.sync_input_region(id);
         let frame_plan = scene.frame_plan().ok();
         self.update_image_targets(id, scene.instance_id(), frame_plan.as_deref());
         let Some(host) = self.window_contexts.get(&id) else {
@@ -663,7 +664,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             self.synchronize_accessibility(id);
         }
         // Layout moved the caret, or the field under it: the IME follows.
-        self.refresh_window_input(id);
+        self.refresh_window_input(id, None);
         stage_clock.mark(&stage::PRESENTATION_FINISH_NS);
         let mut update = self
             .program
@@ -863,6 +864,9 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             self.graphics.adapter_info().backend,
         );
         self.retire_window_outputs();
+        if let Some(painter) = self.painter.as_mut() {
+            self.retained_url_cache = Some(painter.take_url_cache());
+        }
         self.painter = None;
         self.native_renderers.clear();
         self.next_gpu_retry = None;
@@ -952,6 +956,9 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             .as_ref()
             .is_some_and(|painter| painter.gpu().generation() != current)
         {
+            if let Some(painter) = self.painter.as_mut() {
+                self.retained_url_cache = Some(painter.take_url_cache());
+            }
             self.painter = None;
         }
         if self.painter.is_none() {
@@ -1025,6 +1032,9 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     /// Installs a painter built elsewhere (the startup thread builds the first
     /// one alongside the device) with this host's image waker.
     pub(super) fn adopt_painter(&mut self, mut painter: SceneWgpuPainter) {
+        if let Some(cache) = self.retained_url_cache.take() {
+            painter.restore_url_cache(cache);
+        }
         let (targets, redraws, proxy) = (
             Arc::clone(&self.image_targets),
             Arc::clone(&self.texture_redraws),

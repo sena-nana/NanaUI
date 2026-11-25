@@ -122,12 +122,12 @@ impl AppContext {
         let Some(state) = self.input.sources.get_mut(&source) else {
             return;
         };
-        if state.effects.cursor == Some(icon) {
+        if state.effects.cursor.as_ref() == Some(&icon) {
             return;
         }
         // Before any pointer event the host already shows its default.
         let initial_default = state.effects.cursor.is_none() && icon == CursorIcon::Default;
-        state.effects.cursor = Some(icon);
+        state.effects.cursor = Some(icon.clone());
         if !initial_default {
             self.input.counters.cursor_updates += 1;
             services.set_cursor(icon);
@@ -170,7 +170,7 @@ impl AppContext {
         }
         let css = target
             .and_then(|node| self.world.computed_style(node))
-            .and_then(|style| style.cursor_specified.then_some(style.cursor));
+            .and_then(|style| style.cursor_specified.then_some(&style.cursor));
         match css {
             Some(spec) => cursor_icon_for(spec),
             None if target.is_some_and(|node| {
@@ -344,7 +344,7 @@ fn logical_rect(bounds: LayoutBox) -> LogicalRect {
     LogicalRect::new(bounds.x, bounds.y, bounds.width, bounds.height)
 }
 
-fn cursor_icon_for(spec: CursorSpec) -> CursorIcon {
+fn cursor_icon_for(spec: &CursorSpec) -> CursorIcon {
     match spec {
         CursorSpec::Default => CursorIcon::Default,
         CursorSpec::Pointer => CursorIcon::Pointer,
@@ -362,6 +362,7 @@ fn cursor_icon_for(spec: CursorSpec) -> CursorIcon {
         CursorSpec::ZoomIn => CursorIcon::ZoomIn,
         CursorSpec::ZoomOut => CursorIcon::ZoomOut,
         CursorSpec::None => CursorIcon::Hidden,
+        CursorSpec::Custom(custom) => CursorIcon::Custom(custom.clone()),
     }
 }
 

@@ -3562,6 +3562,18 @@ impl AppContext {
             .or_else(|| self.scrollbar_lane_target(document, x, y))
     }
 
+    /// Incrementally rebuild `builder` against `document`'s retained world and
+    /// `HitIndex`, returning `Some(&InputRegionSnapshot)` only when hit-test state,
+    /// visibility, transform, or `config` changed (#159).
+    pub fn update_input_region<'b>(
+        &self,
+        builder: &'b mut crate::WindowInteractionRegionBuilder,
+        document: DocumentId,
+        config: crate::WindowInteractionRegionConfig,
+    ) -> Option<&'b crate::InputRegionSnapshot> {
+        builder.update(&self.world, document, config)
+    }
+
     pub fn set_pointer_hover(
         &mut self,
         document: DocumentId,

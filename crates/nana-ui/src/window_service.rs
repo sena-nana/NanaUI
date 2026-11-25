@@ -1,7 +1,8 @@
 //! Thread-safe window requests. Native objects remain on the host thread.
 use nana_ui_platform::host::WindowCommand;
 use nana_ui_platform::{
-    DisplayInfo, FullscreenRequest, MousePassthroughMode, WindowId, WindowResizeEdge,
+    DisplayInfo, FullscreenRequest, InputRegionOutcome, InputRegionSnapshot, MousePassthroughMode,
+    WindowId, WindowInteractionCapabilities, WindowResizeEdge,
 };
 use std::{
     future::Future,
@@ -165,7 +166,7 @@ impl<T> Future for WindowRequest<T> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WindowCursor {
     /// Restore Runtime/CSS cursor selection.
     Automatic,
@@ -184,6 +185,8 @@ pub enum WindowCursor {
     ZoomOut,
     /// Hide the system cursor. Does not load a custom image.
     None,
+    /// Custom raster or vector cursor with explicit hotspot and system fallback.
+    Custom(nana_ui_core::CustomCursorSpec),
 }
 
 #[expect(
@@ -214,6 +217,9 @@ pub(crate) enum Request {
         crate::MaterialEffect,
         Reply<crate::MaterialOutcome>,
     ),
+    InteractionCapabilities(WindowId, u64, Reply<WindowInteractionCapabilities>),
+    InteractionOutcome(WindowId, u64, Reply<InputRegionOutcome>),
+    InteractionSnapshot(WindowId, u64, Reply<InputRegionSnapshot>),
     Displays(Reply<Vec<DisplayInfo>>),
     SurfaceInfo(WindowId, u64, Reply<WindowSurfaceInfo>),
     PointerPosition(WindowId, u64, Reply<Option<(f32, f32)>>),
@@ -228,6 +234,9 @@ impl Request {
     fn reject(self, error: WindowError) {
         match self {
             Self::Material(_, _, _, reply) => reply.finish(Err(error)),
+            Self::InteractionCapabilities(_, _, reply) => reply.finish(Err(error)),
+            Self::InteractionOutcome(_, _, reply) => reply.finish(Err(error)),
+            Self::InteractionSnapshot(_, _, reply) => reply.finish(Err(error)),
             Self::Displays(reply) => reply.finish(Err(error)),
             Self::SurfaceInfo(_, _, reply) => reply.finish(Err(error)),
             Self::PointerPosition(_, _, reply) => reply.finish(Err(error)),
@@ -366,6 +375,9 @@ impl WindowHandle {
     }
     pub fn effects(&self) -> WindowEffects {
         WindowEffects(self.clone())
+    }
+    pub fn interaction(&self) -> WindowInteraction {
+        WindowInteraction(self.clone())
     }
     pub fn set_icon(&self, icon: Option<nana_ui_platform::WindowIcon>) -> WindowRequest<()> {
         self.control(Control::Command(WindowCommand::SetIcon {
@@ -613,6 +625,60 @@ impl WindowEffects {
     }
     pub fn set_mouse_passthrough_mode(&self, mode: MousePassthroughMode) -> WindowRequest<()> {
         self.0.set_mouse_passthrough_mode(mode)
+    }
+}
+
+/// Window input-region, hit-test, passthrough, drag, and resize controls (#159).
+#[derive(Clone)]
+pub struct WindowInteraction(WindowHandle);
+impl WindowInteraction {
+    /// Query the active platform interaction capabilities on the host thread.
+    pub fn capabilities(&self) -> WindowRequest<WindowInteractionCapabilities> {
+        let (request, reply) = WindowRequest::pair(self.0.service.host_thread);
+        self.0.service.submit(Request::InteractionCapabilities(
+            self.0.id,
+            self.0.generation,
+            reply,
+        ));
+        request
+    }
+
+    /// Query the latest applied native input-region outcome for this window.
+    pub fn outcome(&self) -> WindowRequest<InputRegionOutcome> {
+        let (request, reply) = WindowRequest::pair(self.0.service.host_thread);
+        self.0.service.submit(Request::InteractionOutcome(
+            self.0.id,
+            self.0.generation,
+            reply,
+        ));
+        request
+    }
+
+    /// Query the latest authoritative [`InputRegionSnapshot`] for this window.
+    pub fn snapshot(&self) -> WindowRequest<InputRegionSnapshot> {
+        let (request, reply) = WindowRequest::pair(self.0.service.host_thread);
+        self.0.service.submit(Request::InteractionSnapshot(
+            self.0.id,
+            self.0.generation,
+            reply,
+        ));
+        request
+    }
+
+    pub fn set_mouse_passthrough(&self, enabled: bool) -> WindowRequest<()> {
+        self.0.set_mouse_passthrough(enabled)
+    }
+    pub fn set_mouse_passthrough_forward(&self, enabled: bool) -> WindowRequest<()> {
+        self.0.set_mouse_passthrough_forward(enabled)
+    }
+    pub fn set_mouse_passthrough_mode(&self, mode: MousePassthroughMode) -> WindowRequest<()> {
+        self.0.set_mouse_passthrough_mode(mode)
+    }
+    pub fn begin_drag(&self) -> WindowRequest<()> {
+        self.0.begin_drag()
+    }
+    pub fn begin_resize(&self, edge: WindowResizeEdge) -> WindowRequest<()> {
+        self.0.begin_resize(edge)
     }
 }
 

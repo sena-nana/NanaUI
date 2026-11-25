@@ -664,6 +664,44 @@ pub mod window {
         /// Host CPU time of each shadow apply or body sync that reached the
         /// platform. Not GPU or render-server time, which is not observable.
         pub SHADOW_PREPARE_NS, D, 18, "window.shadow.prepare", "ns");
+    /// Monotonically incremented when a window's native input-region snapshot rebuilds.
+    pub static INTERACTION_INPUT_REGION_REVISION: Metric = Metric::gauge(
+        D,
+        19,
+        "window.interaction.input_region_revision",
+        "revision",
+    );
+    /// Number of `InputRegionSnapshot` rebuilds from `HitIndex` and node intent.
+    pub static INTERACTION_INPUT_REGION_REBUILDS: Metric =
+        Metric::counter(D, 20, "window.interaction.input_region_rebuilds", "count");
+    /// Candidate boxes inspected before front-to-back coalescing.
+    pub static INTERACTION_INPUT_REGION_SOURCE_RECTS: Metric = Metric::gauge(
+        D,
+        21,
+        "window.interaction.input_region_source_rects",
+        "count",
+    );
+    /// Coalesced disjoint rectangles emitted in `InputRegionSnapshot`.
+    pub static INTERACTION_INPUT_REGION_MERGED_RECTS: Metric = Metric::gauge(
+        D,
+        22,
+        "window.interaction.input_region_merged_rects",
+        "count",
+    );
+    /// Native OS input-region / hit-test sync operations applied by the backend.
+    pub static INTERACTION_NATIVE_REGION_UPDATES: Metric =
+        Metric::counter(D, 23, "window.interaction.native_region_updates", "count");
+    histogram!(
+        /// Host CPU time of each native input-region apply.
+        pub INTERACTION_NATIVE_REGION_UPDATE_NS, D, 24, "window.interaction.native_region_update", "ns");
+    pub static INTERACTION_HIT_TEST_CLIENT: Metric =
+        Metric::counter(D, 25, "window.interaction.hit_test_client", "count");
+    pub static INTERACTION_HIT_TEST_DRAG: Metric =
+        Metric::counter(D, 26, "window.interaction.hit_test_drag", "count");
+    pub static INTERACTION_HIT_TEST_RESIZE: Metric =
+        Metric::counter(D, 27, "window.interaction.hit_test_resize", "count");
+    pub static INTERACTION_HIT_TEST_PASSTHROUGH: Metric =
+        Metric::counter(D, 28, "window.interaction.hit_test_passthrough", "count");
 
     pub static OPENED: EventDescriptor = EventDescriptor::new(
         D,
@@ -1218,6 +1256,16 @@ mod tests {
             &window::SHADOW_COMPANION_MOVES,
             &window::SHADOW_COMPANION_RESIZES,
             &window::SHADOW_PREPARE_NS,
+            &window::INTERACTION_INPUT_REGION_REVISION,
+            &window::INTERACTION_INPUT_REGION_REBUILDS,
+            &window::INTERACTION_INPUT_REGION_SOURCE_RECTS,
+            &window::INTERACTION_INPUT_REGION_MERGED_RECTS,
+            &window::INTERACTION_NATIVE_REGION_UPDATES,
+            &window::INTERACTION_NATIVE_REGION_UPDATE_NS,
+            &window::INTERACTION_HIT_TEST_CLIENT,
+            &window::INTERACTION_HIT_TEST_DRAG,
+            &window::INTERACTION_HIT_TEST_RESIZE,
+            &window::INTERACTION_HIT_TEST_PASSTHROUGH,
             &host::REDRAW_NS,
             &host::FAILURES,
             &host::FRAMES_DROPPED,

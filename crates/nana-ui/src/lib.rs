@@ -406,10 +406,11 @@ pub use workspace::{WorkspaceAction, WorkspaceController};
 pub use nana_ui_scene::DocumentAccessError;
 
 pub use nana_ui_core::{
-    AppSettings, FileDialogError, FileDialogKind, FileDialogRequest, FileDialogResult, FileFilter,
+    AppSettings, CustomCursorError, CustomCursorSpec, CustomCursorVariant, CustomCursorVector,
+    FileDialogError, FileDialogKind, FileDialogRequest, FileDialogResult, FileFilter,
     KEY_APPEARANCE_PREFIX, KEY_DOCK_PREFIX, KEY_WINDOW_PREFIX, KvBackend, LocalStorageAdapter,
     MemoryStore, RestorationKey, RestorationPath, RestorationScopeId, SharedStore, StoreError,
-    ViewStateSchemaVersion, ViewStateStore, appearance_storage_key, dock_storage_key,
+    SystemCursor, ViewStateSchemaVersion, ViewStateStore, appearance_storage_key, dock_storage_key,
     is_framework_storage_key, memory_store, shared_store, window_storage_key,
 };
 pub use nana_ui_platform::{
@@ -425,7 +426,7 @@ mod window_shadow;
 #[cfg(feature = "hosted")]
 pub use window_service::{
     SurfacePresentMode, WindowCapture, WindowCursor, WindowDescriptor, WindowEffects, WindowError,
-    WindowHandle, WindowLevel, WindowRequest, WindowService, WindowSurfaceInfo,
+    WindowHandle, WindowInteraction, WindowLevel, WindowRequest, WindowService, WindowSurfaceInfo,
     WindowSurfacePreference,
 };
 
@@ -436,6 +437,8 @@ pub mod platform_host {
 }
 
 pub use nana_ui_platform::{
-    WindowShadow, WindowShadowBackend, WindowShadowFallback, WindowShadowOutcome,
-    WindowShadowSource, WindowShadowStyle, WindowShadowWork, WindowVisualShape,
+    HitTestBehavior, InputRegionOutcome, InputRegionRect, InputRegionSnapshot, NativeHitTestClass,
+    WindowInteractionCapabilities, WindowResizeEdge, WindowShadow, WindowShadowBackend,
+    WindowShadowFallback, WindowShadowOutcome, WindowShadowSource, WindowShadowStyle,
+    WindowShadowWork, WindowVisualShape,
 };

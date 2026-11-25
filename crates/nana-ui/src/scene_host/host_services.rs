@@ -31,6 +31,26 @@ pub(super) fn process_clipboard() -> SharedClipboardHost {
         .clone()
 }
 
+/// Native cursor applied on the window: either a system icon or a custom spec at a DPI scale.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum NativeCursor {
+    System(CursorIcon),
+    Custom(nana_ui_core::CustomCursorSpec),
+}
+
+impl From<CursorIcon> for NativeCursor {
+    fn from(icon: CursorIcon) -> Self {
+        Self::System(icon)
+    }
+}
+
+/// Applied native cursor state (including quantized `scale_milli` for custom cursors).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum AppliedCursor {
+    System(CursorIcon),
+    Custom(nana_ui_core::CustomCursorSpec, u32),
+}
+
 /// One window's input source.
 #[derive(Debug)]
 pub(super) struct WindowInputSource {
@@ -38,8 +58,8 @@ pub(super) struct WindowInputSource {
     pub(super) sequencer: InputSequencer,
     /// The cursor the Runtime last asked for.
     pub(super) runtime_cursor: nana_ui_platform::CursorIcon,
-    /// Icon and visibility last set on the native window.
-    pub(super) applied_cursor: Option<(CursorIcon, bool)>,
+    /// Icon/custom cursor and visibility last set on the native window.
+    pub(super) applied_cursor: Option<(AppliedCursor, bool)>,
     /// Text-input state the Runtime last asked for.
     pub(super) ime: Option<TextInputContext>,
     /// The native IME session: the state last applied to the window.
@@ -97,9 +117,13 @@ impl WindowInputSource {
     /// here (a text beam, `cursor: none`) would come back over plain UI.
     pub(super) fn reset_cursor(&mut self) -> (CursorIcon, bool) {
         self.runtime_cursor = nana_ui_platform::CursorIcon::Default;
-        let applied = native_cursor(self.runtime_cursor);
-        self.applied_cursor = Some(applied);
-        applied
+        let (cursor, visible) = native_cursor(&self.runtime_cursor);
+        let icon = match cursor {
+            NativeCursor::System(icon) => icon,
+            NativeCursor::Custom(spec) => system_cursor_icon(spec.fallback()),
+        };
+        self.applied_cursor = Some((AppliedCursor::System(icon), visible));
+        (icon, visible)
     }
 }
 
@@ -182,26 +206,54 @@ impl HostServices for NativeWindowServices<'_> {
     }
 }
 
+pub(super) fn system_cursor_icon(cursor: nana_ui_core::SystemCursor) -> CursorIcon {
+    use nana_ui_core::SystemCursor;
+    match cursor {
+        SystemCursor::Default | SystemCursor::None => CursorIcon::Default,
+        SystemCursor::Pointer => CursorIcon::Pointer,
+        SystemCursor::Text => CursorIcon::Text,
+        SystemCursor::Move => CursorIcon::Move,
+        SystemCursor::Grab => CursorIcon::Grab,
+        SystemCursor::Grabbing => CursorIcon::Grabbing,
+        SystemCursor::NotAllowed => CursorIcon::NotAllowed,
+        SystemCursor::Crosshair => CursorIcon::Crosshair,
+        SystemCursor::EwResize => CursorIcon::EwResize,
+        SystemCursor::NsResize => CursorIcon::NsResize,
+        SystemCursor::Help => CursorIcon::Help,
+        SystemCursor::Wait => CursorIcon::Wait,
+        SystemCursor::Progress => CursorIcon::Progress,
+        SystemCursor::ZoomIn => CursorIcon::ZoomIn,
+        SystemCursor::ZoomOut => CursorIcon::ZoomOut,
+    }
+}
+
 /// The native icon for the Runtime's cursor, and whether it shows.
-pub(super) fn native_cursor(cursor: nana_ui_platform::CursorIcon) -> (CursorIcon, bool) {
+pub(super) fn native_cursor(cursor: &nana_ui_platform::CursorIcon) -> (NativeCursor, bool) {
     use nana_ui_platform::CursorIcon as Runtime;
     match cursor {
-        Runtime::Default => (CursorIcon::Default, true),
-        Runtime::Pointer => (CursorIcon::Pointer, true),
-        Runtime::Text => (CursorIcon::Text, true),
-        Runtime::Move => (CursorIcon::Move, true),
-        Runtime::Grab => (CursorIcon::Grab, true),
-        Runtime::Grabbing => (CursorIcon::Grabbing, true),
-        Runtime::NotAllowed => (CursorIcon::NotAllowed, true),
-        Runtime::Crosshair => (CursorIcon::Crosshair, true),
-        Runtime::Help => (CursorIcon::Help, true),
-        Runtime::Wait => (CursorIcon::Wait, true),
-        Runtime::Progress => (CursorIcon::Progress, true),
-        Runtime::ZoomIn => (CursorIcon::ZoomIn, true),
-        Runtime::ZoomOut => (CursorIcon::ZoomOut, true),
-        Runtime::EwResize => (CursorIcon::EwResize, true),
-        Runtime::NsResize => (CursorIcon::NsResize, true),
-        Runtime::Hidden => (CursorIcon::Default, false),
+        Runtime::Default => (NativeCursor::System(CursorIcon::Default), true),
+        Runtime::Pointer => (NativeCursor::System(CursorIcon::Pointer), true),
+        Runtime::Text => (NativeCursor::System(CursorIcon::Text), true),
+        Runtime::Move => (NativeCursor::System(CursorIcon::Move), true),
+        Runtime::Grab => (NativeCursor::System(CursorIcon::Grab), true),
+        Runtime::Grabbing => (NativeCursor::System(CursorIcon::Grabbing), true),
+        Runtime::NotAllowed => (NativeCursor::System(CursorIcon::NotAllowed), true),
+        Runtime::Crosshair => (NativeCursor::System(CursorIcon::Crosshair), true),
+        Runtime::Help => (NativeCursor::System(CursorIcon::Help), true),
+        Runtime::Wait => (NativeCursor::System(CursorIcon::Wait), true),
+        Runtime::Progress => (NativeCursor::System(CursorIcon::Progress), true),
+        Runtime::ZoomIn => (NativeCursor::System(CursorIcon::ZoomIn), true),
+        Runtime::ZoomOut => (NativeCursor::System(CursorIcon::ZoomOut), true),
+        Runtime::EwResize => (NativeCursor::System(CursorIcon::EwResize), true),
+        Runtime::NsResize => (NativeCursor::System(CursorIcon::NsResize), true),
+        Runtime::Hidden => (NativeCursor::System(CursorIcon::Default), false),
+        Runtime::Custom(spec) => {
+            if spec.fallback() == nana_ui_core::SystemCursor::None && !spec.is_valid() {
+                (NativeCursor::System(CursorIcon::Default), false)
+            } else {
+                (NativeCursor::Custom(spec.clone()), true)
+            }
+        }
     }
 }
 
@@ -619,25 +671,25 @@ mod tests {
     fn a_pointer_leaving_resets_the_cursor_the_runtime_asked_for() {
         let mut source = WindowInputSource::new(InputSourceId(1), EndpointGeneration(1));
         source.runtime_cursor = nana_ui_platform::CursorIcon::Hidden;
-        source.applied_cursor = Some(native_cursor(source.runtime_cursor));
+        source.applied_cursor = Some((AppliedCursor::System(CursorIcon::Default), false));
         assert_eq!(source.reset_cursor(), (CursorIcon::Default, true));
         // Re-entering over plain UI: the Runtime sends nothing, and what the
         // host composes is the default.
         assert_eq!(
-            native_cursor(source.runtime_cursor),
-            (CursorIcon::Default, true)
+            native_cursor(&source.runtime_cursor),
+            (NativeCursor::System(CursorIcon::Default), true)
         );
     }
 
     #[test]
     fn hidden_runtime_cursor_hides_the_native_one() {
         assert_eq!(
-            native_cursor(nana_ui_platform::CursorIcon::Hidden),
-            (CursorIcon::Default, false)
+            native_cursor(&nana_ui_platform::CursorIcon::Hidden),
+            (NativeCursor::System(CursorIcon::Default), false)
         );
         assert_eq!(
-            native_cursor(nana_ui_platform::CursorIcon::EwResize),
-            (CursorIcon::EwResize, true)
+            native_cursor(&nana_ui_platform::CursorIcon::EwResize),
+            (NativeCursor::System(CursorIcon::EwResize), true)
         );
     }
 }

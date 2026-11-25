@@ -476,25 +476,33 @@ pub(super) fn frame_resize_edge_for(
 }
 
 pub(super) fn window_cursor_override(
-    cursor: crate::WindowCursor,
-) -> (Option<CursorIcon>, Option<bool>) {
+    cursor: &crate::WindowCursor,
+) -> (Option<super::host_services::NativeCursor>, Option<bool>) {
+    use super::host_services::NativeCursor;
     use crate::WindowCursor;
     match cursor {
         WindowCursor::Automatic => (None, None),
-        WindowCursor::Default => (Some(CursorIcon::Default), None),
-        WindowCursor::Pointer => (Some(CursorIcon::Pointer), None),
-        WindowCursor::Text => (Some(CursorIcon::Text), None),
-        WindowCursor::Move => (Some(CursorIcon::Move), None),
-        WindowCursor::Grab => (Some(CursorIcon::Grab), None),
-        WindowCursor::Grabbing => (Some(CursorIcon::Grabbing), None),
-        WindowCursor::NotAllowed => (Some(CursorIcon::NotAllowed), None),
-        WindowCursor::Crosshair => (Some(CursorIcon::Crosshair), None),
-        WindowCursor::Help => (Some(CursorIcon::Help), None),
-        WindowCursor::Wait => (Some(CursorIcon::Wait), None),
-        WindowCursor::Progress => (Some(CursorIcon::Progress), None),
-        WindowCursor::ZoomIn => (Some(CursorIcon::ZoomIn), None),
-        WindowCursor::ZoomOut => (Some(CursorIcon::ZoomOut), None),
-        WindowCursor::None => (Some(CursorIcon::Default), Some(false)),
+        WindowCursor::Default => (Some(NativeCursor::System(CursorIcon::Default)), None),
+        WindowCursor::Pointer => (Some(NativeCursor::System(CursorIcon::Pointer)), None),
+        WindowCursor::Text => (Some(NativeCursor::System(CursorIcon::Text)), None),
+        WindowCursor::Move => (Some(NativeCursor::System(CursorIcon::Move)), None),
+        WindowCursor::Grab => (Some(NativeCursor::System(CursorIcon::Grab)), None),
+        WindowCursor::Grabbing => (Some(NativeCursor::System(CursorIcon::Grabbing)), None),
+        WindowCursor::NotAllowed => (Some(NativeCursor::System(CursorIcon::NotAllowed)), None),
+        WindowCursor::Crosshair => (Some(NativeCursor::System(CursorIcon::Crosshair)), None),
+        WindowCursor::Help => (Some(NativeCursor::System(CursorIcon::Help)), None),
+        WindowCursor::Wait => (Some(NativeCursor::System(CursorIcon::Wait)), None),
+        WindowCursor::Progress => (Some(NativeCursor::System(CursorIcon::Progress)), None),
+        WindowCursor::ZoomIn => (Some(NativeCursor::System(CursorIcon::ZoomIn)), None),
+        WindowCursor::ZoomOut => (Some(NativeCursor::System(CursorIcon::ZoomOut)), None),
+        WindowCursor::None => (Some(NativeCursor::System(CursorIcon::Default)), Some(false)),
+        WindowCursor::Custom(spec) => {
+            if spec.fallback() == nana_ui_core::SystemCursor::None && !spec.is_valid() {
+                (Some(NativeCursor::System(CursorIcon::Default)), Some(false))
+            } else {
+                (Some(NativeCursor::Custom(spec.clone())), None)
+            }
+        }
     }
 }
 

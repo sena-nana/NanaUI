@@ -455,6 +455,77 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         self.sync_auxiliaries_of(id);
         metric!(diagnostics_window::SHADOW_SYNC_APPLIED);
     }
+
+    pub(super) fn sync_input_region(&mut self, id: WindowId) {
+        let fullscreen = self
+            .window(id)
+            .is_some_and(|window| covers_display(window.as_ref()));
+        let Some(host) = self.window_contexts.get_mut(&id) else {
+            return;
+        };
+        let window = Arc::clone(host.surface.window());
+        let logical_size = host.geometry.logical_size;
+        let scale_factor = host.geometry.scale_factor;
+        let zoom = if host.content_zoom.is_finite() && host.content_zoom > 0.0 {
+            host.content_zoom
+        } else {
+            1.0
+        };
+        let mode = host.passthrough_mode;
+        let background = match mode {
+            MousePassthroughMode::Off => nana_ui_runtime::InputRegionBackground::OpaqueClient,
+            MousePassthroughMode::Forward => {
+                nana_ui_runtime::InputRegionBackground::TransparentForward
+            }
+            MousePassthroughMode::Passthrough => {
+                nana_ui_runtime::InputRegionBackground::FullPassThrough
+            }
+        };
+        let resize_border_thickness = if !host.settings.system_caption
+            && host.settings.resizable
+            && !host.geometry.maximized
+            && !fullscreen
+        {
+            RESIZE_HANDLE_SIZE / zoom
+        } else {
+            0.0
+        };
+        let config = nana_ui_runtime::WindowInteractionRegionConfig {
+            logical_size: (logical_size.0 / zoom, logical_size.1 / zoom),
+            scale_factor,
+            background,
+            resize_border_thickness,
+        };
+        let rebuilt = self
+            .program
+            .read_document(id, |document| {
+                document
+                    .context()
+                    .update_input_region(&mut host.interaction_regions, document.document(), config)
+                    .cloned()
+            })
+            .flatten();
+        if let Some(content_snapshot) = rebuilt {
+            host.interaction_native_snapshot =
+                Arc::new(scale_input_region_snapshot(content_snapshot, zoom));
+        }
+        host.interaction.apply(
+            window.as_ref(),
+            &host.interaction_native_snapshot,
+            mode,
+            scale_factor,
+        );
+    }
+
+    pub(super) fn sync_pointer_capture(&mut self, id: WindowId) {
+        let captured = self.forward_gesture_active(id);
+        if let Some(host) = self.window_contexts.get_mut(&id) {
+            let window = Arc::clone(host.surface.window());
+            host.interaction
+                .set_pointer_captured(window.as_ref(), captured);
+        }
+    }
+
     fn set_mouse_passthrough_mode(
         &mut self,
         event_loop: &dyn ActiveEventLoop,
@@ -464,10 +535,21 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         if let Some(host) = self.window_contexts.get_mut(&id) {
             host.passthrough_mode = mode;
         }
-        let enabled = matches!(
-            mode,
-            MousePassthroughMode::Passthrough | MousePassthroughMode::Forward
-        );
+        self.sync_input_region(id);
+        let native_handled = self.window_contexts.get(&id).is_some_and(|host| {
+            matches!(
+                host.interaction.last_outcome(),
+                nana_ui_platform::InputRegionOutcome::NativeApplied { .. }
+            )
+        });
+        let enabled = match mode {
+            MousePassthroughMode::Off => false,
+            MousePassthroughMode::Passthrough => true,
+            // Native OS shaped input regions (`ShapeInput` / `wl_region`) handle
+            // holes without disabling whole-window hit-testing; platforms without
+            // native transparent holes (`ForwardFallback`) retain #49 sampling.
+            MousePassthroughMode::Forward => !native_handled,
+        };
         self.apply_os_mouse_passthrough(event_loop, id, enabled, true)
     }
 
@@ -575,11 +657,10 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     }
 
     fn forward_hits_content(&mut self, id: WindowId) -> bool {
-        let cursor = self
-            .window_contexts
-            .get(&id)
-            .map(|host| host.input.cursor())
-            .unwrap_or((0.0, 0.0));
+        let Some(host) = self.window_contexts.get(&id) else {
+            return false;
+        };
+        let cursor = host.input.cursor();
         let size = self.content_geometry_of(id).logical_size;
         if !cursor.0.is_finite()
             || !cursor.1.is_finite()
@@ -589,6 +670,14 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             || cursor.1 >= size.1
         {
             return false;
+        }
+        if let Some(host) = self.window_contexts.get(&id) {
+            let snapshot = host.interaction_regions.snapshot();
+            if snapshot.revision > 0 {
+                let class = snapshot.classify(cursor.0, cursor.1);
+                record_hit_test_class_metric(class);
+                return class != nana_ui_platform::NativeHitTestClass::PassThrough;
+            }
         }
         if self.frame_resize_edge_at(id, cursor.0, cursor.1).is_some() {
             return true;
@@ -1850,6 +1939,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         };
         let (icon, visible) = host.input_source.reset_cursor();
         let window = host.surface.window();
+        nana_window::cursor::clear_custom_cursor(window.as_ref());
         window.set_cursor_visible(visible);
         window.set_cursor(icon.into());
     }
@@ -2087,14 +2177,14 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                     // the native live-resize path already does.
                     self.sync_geometry(id);
                     self.redraw(event_loop, id);
-                    self.apply_window_cursor(id);
+                    self.apply_window_cursor(id, Some(event_loop));
                     return true;
                 }
                 InputPayload::Pointer(PointerInput {
                     phase: PointerPhase::Cancel,
                     ..
                 }) => {
-                    self.apply_window_cursor(id);
+                    self.apply_window_cursor(id, Some(event_loop));
                     return true;
                 }
                 InputPayload::Pointer(PointerInput {
@@ -2103,7 +2193,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 }) => {
                     self.end_live_frame_resize(id);
                     self.request_redraw(id);
-                    self.apply_window_cursor(id);
+                    self.apply_window_cursor(id, Some(event_loop));
                     return true;
                 }
                 InputPayload::Pointer(PointerInput {
@@ -2177,6 +2267,15 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         x: f32,
         y: f32,
     ) -> Option<WindowResizeEdge> {
+        if let Some(host) = self.window_contexts.get(&id) {
+            let snapshot = host.interaction_regions.snapshot();
+            if snapshot.revision > 0 {
+                return match snapshot.classify(x, y) {
+                    nana_ui_platform::NativeHitTestClass::Resize(edge) => Some(edge),
+                    _ => None,
+                };
+            }
+        }
         let fullscreen = self
             .window(id)
             .is_some_and(|window| covers_display(window.as_ref()));
@@ -2559,6 +2658,41 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                             }
                         }
                     }
+                    Request::InteractionCapabilities(id, generation, reply) => {
+                        if !self.windows.is_current(id, generation) {
+                            reply.finish(Err(crate::WindowError::WindowClosed));
+                            return true;
+                        }
+                        if let Some(host) = self.window_contexts.get_mut(&id) {
+                            let window = Arc::clone(host.surface.window());
+                            reply.finish(Ok(host.interaction.capabilities(window.as_ref())));
+                        } else {
+                            reply.finish(Err(crate::WindowError::WindowClosed));
+                        }
+                    }
+                    Request::InteractionOutcome(id, generation, reply) => {
+                        if !self.windows.is_current(id, generation) {
+                            reply.finish(Err(crate::WindowError::WindowClosed));
+                            return true;
+                        }
+                        if let Some(host) = self.window_contexts.get(&id) {
+                            reply.finish(Ok(host.interaction.last_outcome().clone()));
+                        } else {
+                            reply.finish(Err(crate::WindowError::WindowClosed));
+                        }
+                    }
+                    Request::InteractionSnapshot(id, generation, reply) => {
+                        if !self.windows.is_current(id, generation) {
+                            reply.finish(Err(crate::WindowError::WindowClosed));
+                            return true;
+                        }
+                        self.sync_input_region(id);
+                        if let Some(host) = self.window_contexts.get(&id) {
+                            reply.finish(Ok(host.interaction_regions.snapshot().clone()));
+                        } else {
+                            reply.finish(Err(crate::WindowError::WindowClosed));
+                        }
+                    }
                     Request::Create(settings, reply) => {
                         let settings = *settings;
                         reply.finish(self.create_service_window(event_loop, settings));
@@ -2707,18 +2841,22 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                     .get_mut(&id)
                     .unwrap()
                     .cursor_visible_override = Some(visible);
+                if !visible {
+                    nana_window::cursor::clear_custom_cursor(window.as_ref());
+                }
                 window.set_cursor_visible(visible);
             }
             Control::Cursor(cursor) => {
                 let host = self.window_contexts.get_mut(&id).unwrap();
-                let (icon, visible) = window_cursor_override(cursor);
+                let is_automatic = matches!(cursor, WindowCursor::Automatic);
+                let (icon, visible) = window_cursor_override(&cursor);
                 host.cursor_override = icon;
-                if cursor == WindowCursor::Automatic || visible.is_some() {
+                if is_automatic || visible.is_some() {
                     host.cursor_visible_override = visible;
                 } else if host.cursor_visible_override == Some(false) {
                     host.cursor_visible_override = None;
                 }
-                self.apply_window_cursor(id);
+                self.apply_window_cursor(id, Some(event_loop));
             }
             Control::Redraw => window.request_redraw(),
             Control::Resize(edge) => {
@@ -2785,6 +2923,43 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         // boundary. Redraw/cursor requests must not rewrite native chrome, and
         // commands already use the same boundary in apply_window_command.
         Ok(())
+    }
+}
+
+pub(super) fn scale_input_region_snapshot(
+    mut snapshot: nana_ui_platform::InputRegionSnapshot,
+    zoom: f32,
+) -> nana_ui_platform::InputRegionSnapshot {
+    if !zoom.is_finite() || zoom <= 0.0 || (zoom - 1.0).abs() <= 1e-5 {
+        return snapshot;
+    }
+    snapshot.logical_size = (
+        snapshot.logical_size.0 * zoom,
+        snapshot.logical_size.1 * zoom,
+    );
+    for rect in &mut snapshot.rects {
+        rect.x *= zoom;
+        rect.y *= zoom;
+        rect.width *= zoom;
+        rect.height *= zoom;
+    }
+    snapshot
+}
+
+fn record_hit_test_class_metric(class: nana_ui_platform::NativeHitTestClass) {
+    match class {
+        nana_ui_platform::NativeHitTestClass::Client => {
+            metric!(diagnostics_window::INTERACTION_HIT_TEST_CLIENT);
+        }
+        nana_ui_platform::NativeHitTestClass::Drag => {
+            metric!(diagnostics_window::INTERACTION_HIT_TEST_DRAG);
+        }
+        nana_ui_platform::NativeHitTestClass::Resize(_) => {
+            metric!(diagnostics_window::INTERACTION_HIT_TEST_RESIZE);
+        }
+        nana_ui_platform::NativeHitTestClass::PassThrough => {
+            metric!(diagnostics_window::INTERACTION_HIT_TEST_PASSTHROUGH);
+        }
     }
 }
 

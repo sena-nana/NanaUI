@@ -524,6 +524,8 @@ pub struct LayoutStyle {
     pub text_overflow_ellipsis: bool,
     /// Specified CSS `pointer-events`. `None` means inherit (not `auto`).
     pub pointer_events: Option<PointerEventsSpec>,
+    /// Semantic native window hit-test role (#159).
+    pub hit_test: Option<HitTestBehavior>,
     /// HTML `inert`: this box and every box under it still lay out, paint and
     /// animate, but take no pointer, cannot be focused (sequentially or
     /// programmatically) and offer no accessibility actions. Unlike
@@ -628,6 +630,7 @@ impl Default for LayoutStyle {
             overflow_y: OverflowSpec::Visible,
             text_overflow_ellipsis: false,
             pointer_events: None,
+            hit_test: None,
             inert: false,
             cursor: None,
             user_select: None,

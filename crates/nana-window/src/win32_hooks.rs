@@ -15,15 +15,17 @@ use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
-use windows_sys::Win32::Graphics::Gdi::InvalidateRect;
+use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows_sys::Win32::Graphics::Gdi::{InvalidateRect, ScreenToClient};
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GWL_EXSTYLE, GWL_STYLE, GetWindowLongPtrW, HWND_TOPMOST, KillTimer, MINMAXINFO, PostMessageW,
-    SPI_SETWORKAREA, STYLESTRUCT, SW_HIDE, SWP_NOZORDER, SetTimer, ShowWindow, WINDOWPLACEMENT,
-    WINDOWPOS, WM_CLOSE, WM_COMMAND, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ENTERSIZEMOVE,
-    WM_EXITSIZEMOVE, WM_GETMINMAXINFO, WM_MOUSEACTIVATE, WM_MOVE, WM_NCDESTROY, WM_NCHITTEST,
-    WM_POINTERDOWN, WM_POINTERLEAVE, WM_POINTERUP, WM_POINTERUPDATE, WM_SETTINGCHANGE, WM_SIZE,
+    GWL_EXSTYLE, GWL_STYLE, GetClientRect, GetWindowLongPtrW, HTBOTTOM, HTBOTTOMLEFT,
+    HTBOTTOMRIGHT, HTCAPTION, HTCLIENT, HTLEFT, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT,
+    HTTRANSPARENT, HWND_TOPMOST, KillTimer, MINMAXINFO, PostMessageW, SPI_SETWORKAREA, STYLESTRUCT,
+    SW_HIDE, SWP_NOZORDER, SetCursor, SetTimer, ShowWindow, WINDOWPLACEMENT, WINDOWPOS, WM_CLOSE,
+    WM_COMMAND, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE,
+    WM_GETMINMAXINFO, WM_MOUSEACTIVATE, WM_MOVE, WM_NCDESTROY, WM_NCHITTEST, WM_POINTERDOWN,
+    WM_POINTERLEAVE, WM_POINTERUP, WM_POINTERUPDATE, WM_SETCURSOR, WM_SETTINGCHANGE, WM_SIZE,
     WM_SIZING, WM_STYLECHANGING, WM_TIMER, WM_WINDOWPOSCHANGED, WM_WINDOWPOSCHANGING,
     WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
 };
@@ -97,6 +99,8 @@ pub(crate) struct Win32WindowHooks {
     pub shadow_companions: RefCell<Vec<Weak<dyn ShadowHookTarget>>>,
     pub splash_self: RefCell<Option<Weak<dyn SplashHookTarget>>>,
     pub splash_owner: RefCell<Option<Weak<dyn SplashHookTarget>>>,
+    pub custom_cursor: RefCell<Option<Arc<crate::cursor::OwnedHcursor>>>,
+    pub interaction: RefCell<Option<crate::interaction::Win32InteractionHookState>>,
 }
 
 impl Win32WindowHooks {
@@ -118,6 +122,8 @@ impl Win32WindowHooks {
             shadow_companions: RefCell::new(Vec::new()),
             splash_self: RefCell::new(None),
             splash_owner: RefCell::new(None),
+            custom_cursor: RefCell::new(None),
+            interaction: RefCell::new(None),
         }
     }
 
@@ -257,6 +263,7 @@ unsafe extern "system" fn window_hooks_proc(
         *hooks.splash_self.borrow_mut() = None;
         *hooks.splash_owner.borrow_mut() = None;
         *hooks.underlay_self.borrow_mut() = None;
+        *hooks.custom_cursor.borrow_mut() = None;
 
         for shadow in hooks.prune_and_collect_shadows() {
             unsafe { ShowWindow(shadow.companion_hwnd(), SW_HIDE) };
@@ -316,7 +323,24 @@ unsafe extern "system" fn window_hooks_proc(
             .and_then(Weak::upgrade)
             .is_some()
     {
-        return windows_sys::Win32::UI::WindowsAndMessaging::HTTRANSPARENT as LRESULT;
+        return HTTRANSPARENT as LRESULT;
+    }
+
+    if message == WM_NCHITTEST {
+        let state = hooks.interaction.borrow().clone();
+        if let Some(state) = state
+            && let Some(hit) = win32_nchittest(hwnd, lparam, &state)
+        {
+            return hit;
+        }
+    }
+
+    if message == WM_SETCURSOR && (lparam as u32 & 0xffff) == HTCLIENT {
+        let custom = hooks.custom_cursor.borrow().clone();
+        if let Some(custom) = custom {
+            unsafe { SetCursor(custom.raw()) };
+            return 1;
+        }
     }
 
     if hooks.menu_enabled.get()
@@ -457,4 +481,83 @@ unsafe extern "system" fn window_hooks_proc(
     }
 
     result
+}
+
+fn win32_nchittest(
+    hwnd: HWND,
+    lparam: LPARAM,
+    state: &crate::interaction::Win32InteractionHookState,
+) -> Option<LRESULT> {
+    if state.mode() == nana_ui_platform::MousePassthroughMode::Passthrough {
+        nana_diagnostics::metric!(
+            nana_diagnostics::framework::window::INTERACTION_HIT_TEST_PASSTHROUGH
+        );
+        return Some(HTTRANSPARENT as LRESULT);
+    }
+    let snapshot = state.snapshot()?;
+    let sx = (lparam as u32 & 0xffff) as i16 as i32;
+    let sy = ((lparam as u32 >> 16) & 0xffff) as i16 as i32;
+    let mut pt = POINT { x: sx, y: sy };
+    let mut client_rect = RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    unsafe {
+        if ScreenToClient(hwnd, &mut pt) == 0 || GetClientRect(hwnd, &mut client_rect) == 0 {
+            return None;
+        }
+    }
+    if pt.x < client_rect.left
+        || pt.y < client_rect.top
+        || pt.x >= client_rect.right
+        || pt.y >= client_rect.bottom
+    {
+        return None;
+    }
+    if state.pointer_captured() {
+        nana_diagnostics::metric!(nana_diagnostics::framework::window::INTERACTION_HIT_TEST_CLIENT);
+        return Some(HTCLIENT as LRESULT);
+    }
+    let scale = state.scale_factor();
+    let lx = pt.x as f32 / scale;
+    let ly = pt.y as f32 / scale;
+    let class = snapshot.classify(lx, ly);
+    match class {
+        nana_ui_platform::NativeHitTestClass::Client => {
+            nana_diagnostics::metric!(
+                nana_diagnostics::framework::window::INTERACTION_HIT_TEST_CLIENT
+            );
+            Some(HTCLIENT as LRESULT)
+        }
+        nana_ui_platform::NativeHitTestClass::Drag => {
+            nana_diagnostics::metric!(
+                nana_diagnostics::framework::window::INTERACTION_HIT_TEST_DRAG
+            );
+            Some(HTCAPTION as LRESULT)
+        }
+        nana_ui_platform::NativeHitTestClass::Resize(edge) => {
+            nana_diagnostics::metric!(
+                nana_diagnostics::framework::window::INTERACTION_HIT_TEST_RESIZE
+            );
+            let code = match edge {
+                nana_ui_platform::WindowResizeEdge::West => HTLEFT,
+                nana_ui_platform::WindowResizeEdge::East => HTRIGHT,
+                nana_ui_platform::WindowResizeEdge::North => HTTOP,
+                nana_ui_platform::WindowResizeEdge::South => HTBOTTOM,
+                nana_ui_platform::WindowResizeEdge::NorthWest => HTTOPLEFT,
+                nana_ui_platform::WindowResizeEdge::NorthEast => HTTOPRIGHT,
+                nana_ui_platform::WindowResizeEdge::SouthWest => HTBOTTOMLEFT,
+                nana_ui_platform::WindowResizeEdge::SouthEast => HTBOTTOMRIGHT,
+            };
+            Some(code as LRESULT)
+        }
+        nana_ui_platform::NativeHitTestClass::PassThrough => {
+            nana_diagnostics::metric!(
+                nana_diagnostics::framework::window::INTERACTION_HIT_TEST_PASSTHROUGH
+            );
+            Some(HTTRANSPARENT as LRESULT)
+        }
+    }
 }

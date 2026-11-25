@@ -235,6 +235,7 @@ impl UiWorld {
                     self.forget_labelled_by(id);
                     self.set_live(id, None);
                     self.set_selected_override(id, None);
+                    self.set_hit_test_behavior_override(id, None);
                     let _removed = self.nodes.remove(id);
                     self.invalidation.theme_state.pending_theme_eval.remove(&id);
                     self.invalidation.theme_state.theme_scopes.remove_owner(id);
@@ -441,6 +442,11 @@ impl UiWorld {
                 );
                 self.recompute_node_theme_deps(*id);
             }
+            UiMutation::SetHitTestBehavior { id, behavior } => {
+                if self.set_hit_test_behavior_override(*id, *behavior) {
+                    self.mark(*id, DirtyMask::INPUT);
+                }
+            }
             UiMutation::SetFocusPolicy { id, policy } => {
                 match policy {
                     Some(policy) => {
@@ -546,7 +552,11 @@ impl UiWorld {
             }
             UiMutation::SetEventListener { id, event, enabled } => {
                 let mut listeners = self.nodes.event_listeners(*id).cloned().unwrap_or_default();
+                let before = listeners.clone();
                 listeners.set(event.to_string(), *enabled);
+                if listeners != before {
+                    self.hit_index.region_epoch = self.hit_index.region_epoch.wrapping_add(1);
+                }
                 if listeners.is_empty() {
                     self.nodes.set_event_listeners(*id, None);
                 } else {

@@ -162,10 +162,22 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             .and_then(|host| host.pen.current_frame());
         if let Some(mut lowered) = self.input_mut(id).map(&event, scale, origin, now) {
             apply_pen_frame(&mut lowered.payload, pen_frame);
+            let drag_press_pos = match lowered.payload {
+                InputPayload::Pointer(PointerInput {
+                    phase: PointerPhase::Down,
+                    button: 0,
+                    is_primary: true,
+                    x,
+                    y,
+                    ..
+                }) => Some((x, y)),
+                _ => None,
+            };
             let resample_cursor = !forward_pointer_event(&event);
             if self.consume_frame_move(event_loop, id, &lowered.payload)
                 || self.consume_frame_resize(event_loop, id, &lowered.payload)
             {
+                self.sync_pointer_capture(id);
                 self.settle_forward_passthrough_after_gesture(
                     event_loop,
                     id,
@@ -177,6 +189,21 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             let disposition = self.deliver_input(event_loop, id, lowered);
             if !self.window_contexts.contains_key(&id) {
                 return;
+            }
+            self.sync_pointer_capture(id);
+            if !disposition.handled
+                && !disposition.prevent_default
+                && let Some((x, y)) = drag_press_pos
+                && !self.frame_move_active(id)
+                && !self.frame_resize_active(id)
+                && self.window_contexts.get(&id).is_some_and(|host| {
+                    let snap = host.interaction_regions.snapshot();
+                    snap.revision > 0
+                        && snap.classify(x, y) == nana_ui_platform::NativeHitTestClass::Drag
+                })
+            {
+                let _ = self.begin_window_move(event_loop, id);
+                self.sync_pointer_capture(id);
             }
             self.settle_forward_passthrough_after_gesture(
                 event_loop,
@@ -258,10 +285,15 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 let geometry_changed = self.sync_geometry(id);
                 // Leaving maximized or fullscreen arrives as a resize.
                 self.conform_content_aspect(event_loop, id);
+                if geometry_changed || matches!(event, WinitWindowEvent::ScaleFactorChanged { .. })
+                {
+                    self.sync_input_region(id);
+                }
                 // A scale change usually means another display; a resize
                 // step does not, and is not worth a display query.
                 if matches!(event, WinitWindowEvent::ScaleFactorChanged { .. }) {
                     self.refresh_surface_display(id);
+                    self.apply_window_cursor(id, Some(event_loop));
                 }
                 #[cfg(target_os = "macos")]
                 let native_live_resize = self.native_live_resize_gesture(id);
@@ -625,7 +657,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             return disposition;
         }
         if pointer_moved {
-            self.apply_window_cursor(id);
+            self.apply_window_cursor(id, Some(event_loop));
         }
         if self
             .program
@@ -689,7 +721,11 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
 
     /// Bring the window's cursor and IME in line with a world that changed
     /// without input: after a frame laid out, or a caret moved.
-    pub(super) fn refresh_window_input(&mut self, id: WindowId) {
+    pub(super) fn refresh_window_input(
+        &mut self,
+        id: WindowId,
+        event_loop: Option<&dyn ActiveEventLoop>,
+    ) {
         let Some(host) = self.window_contexts.get_mut(&id) else {
             return;
         };
@@ -701,7 +737,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 .refresh_input_effects(input_id, &mut services);
         });
         if services.cursor_changed {
-            self.apply_window_cursor(id);
+            self.apply_window_cursor(id, event_loop);
         }
     }
 
@@ -724,30 +760,139 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
 
     /// Show the cursor: the program's override, else a frame edge under the
     /// pointer, else what the Runtime asked for.
-    pub(super) fn apply_window_cursor(&mut self, id: WindowId) {
+    pub(super) fn apply_window_cursor(
+        &mut self,
+        id: WindowId,
+        event_loop: Option<&dyn ActiveEventLoop>,
+    ) {
         let Some(host) = self.window_contexts.get(&id) else {
             return;
         };
         let cursor = host.input.cursor();
+        let scale_milli = nana_window::cursor::quantize_scale_milli(host.geometry.scale_factor);
         let frame_edge = self.frame_resize_edge_at(id, cursor.0, cursor.1);
-        let Some(host) = self.window_contexts.get_mut(&id) else {
+        let Some(host) = self.window_contexts.get(&id) else {
             return;
         };
-        let (icon, visible) = match frame_edge {
-            Some(edge) => (frame_edge_cursor(edge), true),
-            None => host_services::native_cursor(host.input_source.runtime_cursor),
+        let (resolved_cursor, visible) = match frame_edge {
+            Some(edge) => (
+                host_services::NativeCursor::System(frame_edge_cursor(edge)),
+                true,
+            ),
+            None => host_services::native_cursor(&host.input_source.runtime_cursor),
         };
-        let icon = host.cursor_override.unwrap_or(icon);
+        let resolved_cursor = host.cursor_override.clone().unwrap_or(resolved_cursor);
         let visible = host.cursor_visible_override.unwrap_or(visible);
-        if host.input_source.applied_cursor == Some((icon, visible)) {
+        let target_applied = match &resolved_cursor {
+            host_services::NativeCursor::System(icon) => {
+                host_services::AppliedCursor::System(*icon)
+            }
+            host_services::NativeCursor::Custom(spec) => {
+                host_services::AppliedCursor::Custom(spec.clone(), scale_milli)
+            }
+        };
+        if host.input_source.applied_cursor.as_ref() == Some(&(target_applied.clone(), visible)) {
             return;
         }
-        host.input_source.applied_cursor = Some((icon, visible));
-        let window = host.surface.window();
-        window.set_cursor_visible(visible);
-        if visible {
-            window.set_cursor(icon.into());
+        let window = Arc::clone(host.surface.window());
+        if !visible {
+            if let Some(host) = self.window_contexts.get_mut(&id) {
+                host.input_source.applied_cursor = Some((target_applied, false));
+            }
+            nana_window::cursor::clear_custom_cursor(window.as_ref());
+            window.set_cursor_visible(false);
+            return;
         }
+        match resolved_cursor {
+            host_services::NativeCursor::System(icon) => {
+                if let Some(host) = self.window_contexts.get_mut(&id) {
+                    host.input_source.applied_cursor = Some((target_applied, true));
+                }
+                nana_window::cursor::clear_custom_cursor(window.as_ref());
+                window.set_cursor_visible(true);
+                window.set_cursor(icon.into());
+            }
+            host_services::NativeCursor::Custom(spec) => {
+                let applied =
+                    self.apply_custom_cursor_spec(window.as_ref(), &spec, scale_milli, event_loop);
+                if let Some(host) = self.window_contexts.get_mut(&id) {
+                    host.input_source.applied_cursor = Some((
+                        if applied {
+                            target_applied
+                        } else {
+                            host_services::AppliedCursor::System(host_services::system_cursor_icon(
+                                spec.fallback(),
+                            ))
+                        },
+                        true,
+                    ));
+                }
+            }
+        }
+    }
+
+    fn apply_custom_cursor_spec(
+        &mut self,
+        window: &dyn winit::window::Window,
+        spec: &nana_ui_core::CustomCursorSpec,
+        scale_milli: u32,
+        event_loop: Option<&dyn ActiveEventLoop>,
+    ) -> bool {
+        if let Some(bitmap) = prepare_custom_cursor_bitmap(spec, scale_milli) {
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            {
+                let _ = event_loop;
+                if let Ok(handle) = self.cursor_cache.get_or_create(&bitmap)
+                    && matches!(
+                        nana_window::cursor::apply_custom_cursor(
+                            window,
+                            &handle,
+                            bitmap.scale_milli
+                        ),
+                        nana_window::cursor::CustomCursorOutcome::Applied { .. }
+                    )
+                {
+                    window.set_cursor_visible(true);
+                    return true;
+                }
+            }
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+            {
+                let key = (bitmap.cache_key, bitmap.scale_milli);
+                let custom = if let Some(cached) = self.winit_custom_cursors.get(&key) {
+                    Some(cached.clone())
+                } else if let Some(event_loop) = event_loop
+                    && let Ok(source) = winit::cursor::CustomCursorSource::from_rgba(
+                        bitmap.rgba.to_vec(),
+                        bitmap.width,
+                        bitmap.height,
+                        bitmap.hotspot[0],
+                        bitmap.hotspot[1],
+                    )
+                    && let Ok(created) = event_loop.create_custom_cursor(source)
+                {
+                    if self.winit_custom_cursors.len() >= nana_window::cursor::MAX_CACHED_CURSORS {
+                        self.winit_custom_cursors.clear();
+                    }
+                    self.winit_custom_cursors.insert(key, created.clone());
+                    Some(created)
+                } else {
+                    None
+                };
+                if let Some(custom) = custom {
+                    window.set_cursor_visible(true);
+                    window.set_cursor(custom.into());
+                    return true;
+                }
+            }
+        }
+        nana_window::cursor::clear_custom_cursor(window);
+        let fallback_visible = spec.fallback() != nana_ui_core::SystemCursor::None;
+        window.set_cursor_visible(fallback_visible);
+        if fallback_visible {
+            window.set_cursor(host_services::system_cursor_icon(spec.fallback()).into());
+        }
+        false
     }
 
     pub(super) fn input_of(&self, id: WindowId) -> &WinitInputAdapter {
@@ -763,5 +908,166 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             .get_mut(&id)
             .expect("input belongs to a live window")
             .input
+    }
+}
+
+pub(super) fn prepare_custom_cursor_bitmap(
+    spec: &nana_ui_core::CustomCursorSpec,
+    scale_milli: u32,
+) -> Option<nana_window::cursor::CursorBitmap> {
+    use std::hash::{Hash as _, Hasher as _};
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    spec.hash(&mut hasher);
+    let cache_key = hasher.finish();
+    let target_scale = scale_milli.max(250);
+
+    match spec {
+        nana_ui_core::CustomCursorSpec::Raster { .. } => {
+            let variant = spec.select_variant(target_scale)?;
+            let scale_ratio = 1000.0_f64 / f64::from(variant.scale_milli.max(1));
+            let logical_width = ((f64::from(variant.width) * scale_ratio).round() as u16).max(1);
+            let logical_height = ((f64::from(variant.height) * scale_ratio).round() as u16).max(1);
+            let logical_hotspot = [
+                f64::from(variant.hotspot[0]) * scale_ratio,
+                f64::from(variant.hotspot[1]) * scale_ratio,
+            ];
+            Some(nana_window::cursor::CursorBitmap {
+                cache_key,
+                scale_milli: variant.scale_milli,
+                logical_width,
+                logical_height,
+                logical_hotspot,
+                width: variant.width,
+                height: variant.height,
+                hotspot: variant.hotspot,
+                rgba: Arc::clone(&variant.rgba),
+            })
+        }
+        nana_ui_core::CustomCursorSpec::Vector {
+            source,
+            logical_size,
+            hotspot,
+            ..
+        } => {
+            if !spec.is_valid() {
+                return None;
+            }
+            let width =
+                ((u32::from(logical_size[0]) * target_scale + 500) / 1000).clamp(1, 256) as u16;
+            let height =
+                ((u32::from(logical_size[1]) * target_scale + 500) / 1000).clamp(1, 256) as u16;
+            let hot_x = ((u32::from(hotspot[0]) * u32::from(width)) / u32::from(logical_size[0]))
+                .min(u32::from(width - 1)) as u16;
+            let hot_y = ((u32::from(hotspot[1]) * u32::from(height)) / u32::from(logical_size[1]))
+                .min(u32::from(height - 1)) as u16;
+            let rgba = match source {
+                nana_ui_core::CustomCursorVector::Shapes { shapes, color } => {
+                    crate::scene_paint::icon_raster::rasterize_shapes_rgba(
+                        shapes,
+                        *color,
+                        u32::from(width),
+                        u32::from(height),
+                    )?
+                }
+                nana_ui_core::CustomCursorVector::Svg(bytes) => {
+                    crate::scene_paint::icon_raster::rasterize_svg_rgba(
+                        cache_key,
+                        bytes,
+                        u32::from(width),
+                        u32::from(height),
+                    )?
+                }
+            };
+            Some(nana_window::cursor::CursorBitmap {
+                cache_key,
+                scale_milli: target_scale,
+                logical_width: logical_size[0],
+                logical_height: logical_size[1],
+                logical_hotspot: [f64::from(hotspot[0]), f64::from(hotspot[1])],
+                width,
+                height,
+                hotspot: [hot_x, hot_y],
+                rgba: Arc::from(rgba),
+            })
+        }
+    }
+}
+
+#[cfg(test)]
+mod cursor_tests {
+    use super::*;
+    use nana_ui_core::{
+        CustomCursorSpec, CustomCursorVariant, CustomCursorVector, IconPathCommand, IconShape,
+        SystemCursor,
+    };
+
+    #[test]
+    fn prepare_custom_cursor_bitmap_selects_raster_dpi_variant_and_scales_vector_shapes() {
+        let v1_bytes: Arc<[u8]> = Arc::from(vec![255u8; 16 * 16 * 4]);
+        let v1 = CustomCursorVariant::new(1000, 16, 16, [4, 2], v1_bytes).unwrap();
+        let v2_bytes: Arc<[u8]> = Arc::from(vec![200u8; 32 * 32 * 4]);
+        let v2 = CustomCursorVariant::new(2000, 32, 32, [8, 4], v2_bytes).unwrap();
+        let raster = CustomCursorSpec::Raster {
+            variants: Arc::from(vec![v1, v2]),
+            fallback: SystemCursor::Pointer,
+        };
+
+        let at_1x = prepare_custom_cursor_bitmap(&raster, 1000).unwrap();
+        assert_eq!((at_1x.width, at_1x.height), (16, 16));
+        assert_eq!(at_1x.hotspot, [4, 2]);
+        assert_eq!((at_1x.logical_width, at_1x.logical_height), (16, 16));
+        assert_eq!(at_1x.scale_milli, 1000);
+
+        let at_2x = prepare_custom_cursor_bitmap(&raster, 2000).unwrap();
+        assert_eq!((at_2x.width, at_2x.height), (32, 32));
+        assert_eq!(at_2x.hotspot, [8, 4]);
+        assert_eq!((at_2x.logical_width, at_2x.logical_height), (16, 16));
+        assert_eq!(at_2x.scale_milli, 2000);
+
+        const RECT_COMMANDS: &[IconPathCommand] = &[
+            IconPathCommand::MoveTo([2.0, 2.0]),
+            IconPathCommand::LineTo([22.0, 2.0]),
+            IconPathCommand::LineTo([22.0, 22.0]),
+            IconPathCommand::LineTo([2.0, 22.0]),
+            IconPathCommand::Close,
+        ];
+        let shape_slice: Arc<[IconShape]> = Arc::from(vec![IconShape::Fill(RECT_COMMANDS)]);
+        let vector = CustomCursorSpec::Vector {
+            source: CustomCursorVector::Shapes {
+                shapes: shape_slice,
+                color: [255, 128, 0, 255],
+            },
+            logical_size: [16, 16],
+            hotspot: [8, 4],
+            fallback: SystemCursor::Crosshair,
+        };
+
+        let vec_2x = prepare_custom_cursor_bitmap(&vector, 2000).unwrap();
+        assert_eq!((vec_2x.width, vec_2x.height), (32, 32));
+        assert_eq!(vec_2x.hotspot, [16, 8]);
+        assert_eq!((vec_2x.logical_width, vec_2x.logical_height), (16, 16));
+        assert!(vec_2x.rgba.chunks_exact(4).any(|px| px[3] > 0));
+    }
+
+    #[test]
+    fn prepare_custom_cursor_bitmap_svg_respects_feature_and_falls_back_cleanly() {
+        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect x="2" y="2" width="12" height="12" fill="white"/></svg>"#;
+        let spec = CustomCursorSpec::Vector {
+            source: CustomCursorVector::Svg(Arc::from(svg.as_slice())),
+            logical_size: [16, 16],
+            hotspot: [2, 3],
+            fallback: SystemCursor::Crosshair,
+        };
+        let bitmap = prepare_custom_cursor_bitmap(&spec, 1500);
+        if cfg!(feature = "svg") {
+            let bmp = bitmap.expect("svg cursor should rasterize when svg feature is enabled");
+            assert_eq!((bmp.width, bmp.height), (24, 24));
+            assert_eq!(bmp.hotspot, [3, 4]);
+            assert!(bmp.rgba.chunks_exact(4).any(|px| px[3] > 0));
+        } else {
+            assert!(bitmap.is_none());
+            assert_eq!(spec.fallback(), SystemCursor::Crosshair);
+        }
     }
 }

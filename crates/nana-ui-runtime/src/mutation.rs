@@ -174,6 +174,10 @@ pub enum UiMutation {
         id: StableNodeId,
         interaction: InteractionState,
     },
+    SetHitTestBehavior {
+        id: StableNodeId,
+        behavior: Option<nana_ui_core::HitTestBehavior>,
+    },
     SetCustomRender {
         id: StableNodeId,
         content: Option<Box<CustomRenderNode>>,
@@ -456,6 +460,7 @@ impl BatchCapabilities {
             | UiMutation::SetScrollOverscroll { .. }
             | UiMutation::SetScrollMetrics { .. } => Self::LAYOUT_OR_SCROLL,
             UiMutation::SetInteraction { .. }
+            | UiMutation::SetHitTestBehavior { .. }
             | UiMutation::SetCustomRender { .. }
             | UiMutation::SetMediaTime { .. }
             | UiMutation::SetPainter { .. }
@@ -906,6 +911,17 @@ impl MutationQueue {
         self.record(
             BatchCapabilities::VISUAL_OR_INTERACTION,
             UiMutation::SetInteraction { id, interaction },
+        );
+    }
+
+    pub fn set_hit_test_behavior(
+        &mut self,
+        id: StableNodeId,
+        behavior: Option<nana_ui_core::HitTestBehavior>,
+    ) {
+        self.record(
+            BatchCapabilities::VISUAL_OR_INTERACTION,
+            UiMutation::SetHitTestBehavior { id, behavior },
         );
     }
 

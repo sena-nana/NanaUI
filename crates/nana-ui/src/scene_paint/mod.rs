@@ -14,7 +14,7 @@ mod color;
 mod dest;
 mod host_texture;
 mod icon;
-mod icon_raster;
+pub(crate) mod icon_raster;
 mod image_resample;
 pub(crate) mod image_url;
 mod material;
@@ -75,7 +75,8 @@ use nana_gpu::{
 };
 use nana_ui_platform::SharedFetchHost;
 use nana_ui_scene::{RenderOperation, ScenePrimitiveKind, UiScene};
-use url_texture_cache::{UrlTextureCache, egress_of};
+pub(crate) use url_texture_cache::UrlTextureCache;
+use url_texture_cache::egress_of;
 
 use crate::{
     GpuWorkObservation, HostTextureRegistry, PhysicalRect,
@@ -961,6 +962,7 @@ impl SceneWgpuPainter {
                 url_cache: {
                     let mut cache = UrlTextureCache::default();
                     cache.set_srgb_source(!presentation.is_direct_linear());
+                    cache.rebind_device(gpu.generation());
                     cache
                 },
                 backdrop,
@@ -1226,6 +1228,33 @@ impl SceneWgpuPainter {
     /// Completion generation, used by layered snapshot hosts to repaint earlier layers.
     pub fn image_revision(&self) -> u64 {
         self.core.image_revision
+    }
+
+    /// Detach the retained [`UrlTextureCache`] across device replacement so
+    /// decoded CPU sources and natural sizes survive onto the new device.
+    pub(crate) fn take_url_cache(&mut self) -> UrlTextureCache {
+        std::mem::take(&mut self.core.url_cache)
+    }
+
+    /// Restore a retained [`UrlTextureCache`] onto this painter's device,
+    /// dropping any stale GPU views and queuing recovery from CPU sources.
+    pub(crate) fn restore_url_cache(&mut self, mut cache: UrlTextureCache) {
+        cache.set_srgb_source(!self.core.presentation.is_direct_linear());
+        cache.set_fetch_host(self.core.fetch_host.clone());
+        cache.rebind_device(self.core.gpu.generation());
+        self.core.url_cache = cache;
+        self.core.image_revision = self.core.image_revision.wrapping_add(1);
+    }
+
+    /// Development/devtools hook to explicitly invalidate a local image URL
+    /// without steady-state filesystem polling.
+    pub fn invalidate_local_url(&mut self, url: &str) -> bool {
+        if self.core.url_cache.invalidate_url(url) {
+            self.core.image_revision = self.core.image_revision.wrapping_add(1);
+            true
+        } else {
+            false
+        }
     }
 
     /// The natural sizes of `url(...)` content images that `target` drew
