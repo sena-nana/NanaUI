@@ -16975,16 +16975,16 @@ fn gpu_motion_text_icon_path_and_host_texture_evaluate_on_gpu() {
     world.advance_animations(Duration::ZERO);
 
     let mut extracted = world.extract_nodes(&[text_node, icon_node, path_node, host_node]);
-    extracted[0].text = Some(nana_ui_runtime::TextContent { value: "Hi".into() });
+    extracted[0].text = Some(nana_ui_runtime::TextContent { value: "HI".into() });
     extracted[0].style = Arc::new(ComputedStyle::with(|s| {
         s.color = Some([1.0, 1.0, 1.0, 1.0]);
-        s.font_size = 16.0;
+        s.font_size = 18.0;
     }));
     extracted[0].layout = LayoutBox {
         x: 4.0,
         y: 2.0,
-        width: 24.0,
-        height: 20.0,
+        width: 32.0,
+        height: 22.0,
     };
 
     let mut icon_paint = WidgetPaintOutput::new();
@@ -17006,7 +17006,7 @@ fn gpu_motion_text_icon_path_and_host_texture_evaluate_on_gpu() {
     );
     extracted[1].layout = LayoutBox {
         x: 4.0,
-        y: 24.0,
+        y: 26.0,
         width: 16.0,
         height: 16.0,
     };
@@ -17019,7 +17019,7 @@ fn gpu_motion_text_icon_path_and_host_texture_evaluate_on_gpu() {
         .close();
     extracted[2].layout = LayoutBox {
         x: 4.0,
-        y: 44.0,
+        y: 46.0,
         width: 16.0,
         height: 16.0,
     };
@@ -17032,8 +17032,8 @@ fn gpu_motion_text_icon_path_and_host_texture_evaluate_on_gpu() {
     }));
 
     extracted[3].layout = LayoutBox {
-        x: 2.0,
-        y: 2.0,
+        x: 4.0,
+        y: 66.0,
         width: 14.0,
         height: 14.0,
     };
@@ -17103,19 +17103,41 @@ fn gpu_motion_text_icon_path_and_host_texture_evaluate_on_gpu() {
                 "expected GPU transform id for {:?}",
                 draw.node
             );
-            assert_ne!(
-                encode.motion_ids.1, 0,
-                "expected GPU opacity id for {:?}",
-                draw.node
-            );
+            if draw.node == text_node || draw.node == host_node {
+                // Single leaf primitives without widget/custom compound paint
+                // evaluate their own opacity motion directly on the GPU shader.
+                assert_ne!(
+                    encode.motion_ids.1, 0,
+                    "expected direct GPU opacity id for {:?}",
+                    draw.node
+                );
+                assert!(
+                    scene.opacity_groups(draw.node).is_empty(),
+                    "non-compound leaf {:?} must not isolate opacity",
+                    draw.node
+                );
+                assert!((encode.opacity - 1.0).abs() < 1e-5);
+            } else {
+                // Compound widget_paint/custom_paint nodes isolate opacity on
+                // OpacityGroup::opacity_motion_id so sub-primitives never double-fade.
+                assert_eq!(
+                    encode.motion_ids.1, 0,
+                    "compound node {:?} must defer opacity to its group",
+                    draw.node
+                );
+                let groups = scene.opacity_groups(draw.node);
+                assert_eq!(groups.len(), 1);
+                assert_ne!(groups[0].opacity_motion_id, 0);
+                assert!((groups[0].opacity - 1.0).abs() < 1e-5);
+            }
             checked += 1;
         }
     }
     assert_eq!(checked, 4);
 
     let viewport = ScenePaintViewport {
-        logical_size: [96.0, 64.0],
-        physical_size: [96, 64],
+        logical_size: [96.0, 88.0],
+        physical_size: [96, 88],
         scale_factor: 1.0,
         scene_origin: [0.0, 0.0],
         target_origin: [0.0, 0.0],
@@ -17123,7 +17145,7 @@ fn gpu_motion_text_icon_path_and_host_texture_evaluate_on_gpu() {
         clear: true,
     };
     let mut painter = SceneWgpuPainter::for_test(format);
-    let (target_tex, target_view) = test_copy_target(&device, format, 96, 64);
+    let (target_tex, target_view) = test_copy_target(&device, format, 96, 88);
     let mut enc = device.create_command_encoder(&Default::default());
     painter
         .paint_encoder(
@@ -17135,7 +17157,7 @@ fn gpu_motion_text_icon_path_and_host_texture_evaluate_on_gpu() {
             None,
         )
         .unwrap();
-    let out = readback_rgba(&device, &queue, enc, &target_tex, 96, 64);
+    let out = readback_rgba(&device, &queue, enc, &target_tex, 96, 88);
 
     let region_max_rgb = |x0: u32, y0: u32, x1: u32, y1: u32| -> u8 {
         let mut best = 0u8;
@@ -17149,21 +17171,29 @@ fn gpu_motion_text_icon_path_and_host_texture_evaluate_on_gpu() {
     };
 
     assert_eq!(
-        region_max_rgb(2, 2, 16, 60),
+        region_max_rgb(4, 2, 20, 80),
         0,
         "rest regions must remain unpainted once GPU transform moves to +20px"
     );
+    let text_max = region_max_rgb(24, 2, 56, 24);
     assert!(
-        region_max_rgb(22, 2, 36, 16) > 20,
-        "HostTexture/Text at +20px must render with mid-run GPU opacity"
+        text_max > 20 && text_max < 180,
+        "Text at +20px must render with mid-run ~0.5 GPU opacity, got {text_max}"
     );
+    let icon_max = region_max_rgb(24, 26, 40, 42);
     assert!(
-        region_max_rgb(24, 24, 40, 40) > 20,
-        "Icon at +20px must render with mid-run GPU opacity"
+        icon_max > 20 && icon_max < 180,
+        "Icon at +20px must render with mid-run ~0.5 group opacity, got {icon_max}"
     );
+    let path_max = region_max_rgb(24, 46, 40, 62);
     assert!(
-        region_max_rgb(24, 44, 38, 58) > 20,
-        "Path at +20px must render with mid-run GPU opacity"
+        path_max > 20 && path_max < 180,
+        "Path at +20px must render with mid-run ~0.5 group opacity, got {path_max}"
+    );
+    let host_max = region_max_rgb(24, 66, 38, 80);
+    assert!(
+        host_max > 20 && host_max < 180,
+        "HostTexture at +20px must render with mid-run ~0.5 GPU opacity, got {host_max}"
     );
 }
 
@@ -17225,8 +17255,9 @@ fn gpu_motion_isolation_group_evaluates_filter_and_opacity_on_gpu() {
         width: 32.0,
         height: 32.0,
     };
-    extracted[0].widget_paint =
-        colored_quad_node(1, 16.0, 16.0, 32.0, 32.0, [1.0, 1.0, 1.0, 1.0]).widget_paint;
+    let quad = colored_quad_node(1, 16.0, 16.0, 32.0, 32.0, [1.0, 1.0, 1.0, 1.0]);
+    extracted[0].source_style = quad.source_style;
+    extracted[0].style = quad.style;
     let mut scene = UiScene::new();
     scene.apply_delta(extracted, []);
     scene.apply_presentation(
@@ -17255,7 +17286,7 @@ fn gpu_motion_isolation_group_evaluates_filter_and_opacity_on_gpu() {
         .paint_encoder(&scene, &mut enc, &view, viewport, None, None)
         .unwrap();
     let pixels = readback_rgba(&device, &queue, enc, &tex, 64, 64);
-    let halo = pixel(&pixels, 64, 13, 32);
+    let halo = pixel(&pixels, 64, 14, 32);
     let center = pixel(&pixels, 64, 32, 32);
     assert!(
         halo[0] > 5,

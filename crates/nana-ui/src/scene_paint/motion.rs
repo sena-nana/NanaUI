@@ -305,7 +305,7 @@ impl MotionGpuResources {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("nana-ui.scene.motion.eval.target"),
             size: wgpu::Extent3d {
-                width: 2,
+                width: 5,
                 height: 1,
                 depth_or_array_layers: 1,
             },
@@ -412,7 +412,7 @@ impl MotionGpuResources {
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub(super) struct MotionGpuReadback {
-    pub pixels: [[f32; 4]; 2],
+    pub pixels: [[f32; 4]; 5],
 }
 
 pub(super) fn pack_motion_snap(pixel_snap: u32, transform_id: u32, opacity_id: u32) -> u32 {
@@ -722,7 +722,7 @@ fn readback_motion(
     mut encoder: wgpu::CommandEncoder,
     texture: &wgpu::Texture,
     format: wgpu::TextureFormat,
-) -> [[f32; 4]; 2] {
+) -> [[f32; 4]; 5] {
     let bytes_per_row = 256u32;
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("nana-ui.scene.motion.eval.readback"),
@@ -746,7 +746,7 @@ fn readback_motion(
             },
         },
         wgpu::Extent3d {
-            width: 2,
+            width: 5,
             height: 1,
             depth_or_array_layers: 1,
         },
@@ -761,7 +761,7 @@ fn readback_motion(
     let data = slice
         .get_mapped_range()
         .expect("motion eval readback must be mapped");
-    let mut pixels = [[0.0f32; 4]; 2];
+    let mut pixels = [[0.0f32; 4]; 5];
     let bytes_per_pixel = match format {
         wgpu::TextureFormat::Rgba32Float => 16,
         wgpu::TextureFormat::Rgba16Float => 8,
@@ -830,9 +830,9 @@ mod tests {
         LayoutStyle, PaintMat4, PaintTransform,
         motion::{
             AnimatableProperty, AnimationDirection, AnimationFillMode, AnimationIteration,
-            AnimationPlayState, AnimationPlayback, DecayParams, Easing, Keyframe, MotionCurve,
-            MotionHandle, MotionSample, MotionTo, MotionTrack, MotionValue, SpringParams, StepJump,
-            evaluate_track,
+            AnimationPlayState, AnimationPlayback, DecayParams, Easing, FilterValue, Keyframe,
+            MotionCurve, MotionHandle, MotionSample, MotionTo, MotionTrack, MotionTrackId,
+            MotionValue, SpringParams, StepJump, evaluate_track,
         },
     };
     use nana_ui_runtime::scene_contract::ExtractedNode;
@@ -1046,11 +1046,12 @@ mod tests {
         .with_range(MotionValue::Scalar(0.0), to)
     }
 
-    fn compositor_motion_scene(
+    fn motion_track_scene(
         spec: AnimationSpec,
         present_at: Duration,
     ) -> (UiWorld, UiScene, MotionHandle, MotionTrack) {
-        let track = spec.to_motion_track().expect("valid compositor track");
+        let track = spec.to_motion_track().expect("valid motion track");
+        let track_id = MotionTrackId::new(spec.id.get()).unwrap();
         let mut world = UiWorld::new();
         let node = spec.target;
         let mut queue = MutationQueue::new();
@@ -1080,10 +1081,23 @@ mod tests {
             present_at,
             Some(world.motion_descriptors()),
         );
+        let handle = world
+            .motion_descriptors()
+            .handle_for(track_id)
+            .expect("motion descriptor handle");
+        (world, scene, handle, track)
+    }
+
+    fn compositor_motion_scene(
+        spec: AnimationSpec,
+        present_at: Duration,
+    ) -> (UiWorld, UiScene, MotionHandle, MotionTrack) {
+        let node = spec.target;
+        let (world, scene, handle, track) = motion_track_scene(spec, present_at);
         let layer = scene
             .compositor_layer(node)
             .expect("promoted compositor layer");
-        let handle = layer.bindings[0].handle();
+        assert_eq!(layer.bindings[0].handle(), handle);
         (world, scene, handle, track)
     }
 
@@ -1116,6 +1130,16 @@ mod tests {
                     "{label}: evaluate_descriptor {left} != evaluate_track {right}"
                 );
             }
+            (MotionValue::Color(left), MotionValue::Color(right)) => {
+                for ch in 0..4 {
+                    assert!(
+                        gpu_cpu_close(left[ch], right[ch]),
+                        "{label}: evaluate_descriptor color[{ch}] {} != evaluate_track {}",
+                        left[ch],
+                        right[ch]
+                    );
+                }
+            }
             (MotionValue::Transform(left), MotionValue::Transform(right)) => {
                 for (name, l, r) in [
                     ("a", left.a, right.a),
@@ -1131,6 +1155,16 @@ mod tests {
                     );
                 }
             }
+            (MotionValue::Filter(left), MotionValue::Filter(right)) => {
+                for ch in 0..FilterValue::CHANNELS {
+                    assert!(
+                        gpu_cpu_close(left.0[ch], right.0[ch]),
+                        "{label}: evaluate_descriptor filter[{ch}] {} != evaluate_track {}",
+                        left.0[ch],
+                        right.0[ch]
+                    );
+                }
+            }
             (left, right) => assert_eq!(left, right, "{label}: CPU value kinds"),
         }
     }
@@ -1143,6 +1177,16 @@ mod tests {
                     "{label}: cpu scalar {expected} gpu {}",
                     readback.pixels[0][0]
                 );
+            }
+            MotionValue::Color(expected) => {
+                for ch in 0..4 {
+                    assert!(
+                        gpu_cpu_close(readback.pixels[0][ch], expected[ch]),
+                        "{label}: cpu color[{ch}] {} gpu {}",
+                        expected[ch],
+                        readback.pixels[0][ch]
+                    );
+                }
             }
             MotionValue::Transform(expected) => {
                 let gpu = [
@@ -1165,6 +1209,32 @@ mod tests {
                     assert!(
                         gpu_cpu_close(cpu_v, gpu_v),
                         "{label}: cpu {name} {cpu_v} gpu {gpu_v}"
+                    );
+                }
+            }
+            MotionValue::Filter(expected) => {
+                let gpu = [
+                    readback.pixels[0][0],
+                    readback.pixels[0][1],
+                    readback.pixels[0][2],
+                    readback.pixels[0][3],
+                    readback.pixels[2][0],
+                    readback.pixels[2][1],
+                    readback.pixels[2][2],
+                    readback.pixels[2][3],
+                    readback.pixels[3][0],
+                    readback.pixels[3][1],
+                    readback.pixels[3][2],
+                    readback.pixels[3][3],
+                    readback.pixels[4][0],
+                    readback.pixels[4][1],
+                ];
+                for ch in 0..FilterValue::CHANNELS {
+                    assert!(
+                        gpu_cpu_close(gpu[ch], expected.0[ch]),
+                        "{label}: cpu filter[{ch}] {} gpu {}",
+                        expected.0[ch],
+                        gpu[ch]
                     );
                 }
             }
@@ -1559,6 +1629,193 @@ mod tests {
             &track,
             &times,
             "dense keyframes",
+        );
+    }
+
+    #[test]
+    fn gpu_evaluate_matches_cpu_color_and_background() {
+        let (device, queue) = test_device();
+        let color_spec = AnimationSpec::new(
+            AnimationId::new(1).unwrap(),
+            id(1),
+            Duration::ZERO,
+            Duration::from_millis(400),
+            Duration::from_millis(16),
+            Easing::Linear,
+        )
+        .with_property(AnimatableProperty::Color)
+        .with_curve(MotionCurve::Easing(Easing::CubicBezier([
+            0.2, 0.8, 0.2, 1.0,
+        ])))
+        .with_range(
+            MotionValue::Color([0.1, 0.2, 0.9, 0.4]),
+            MotionTo::Value(MotionValue::Color([0.9, 0.7, 0.2, 1.0])),
+        );
+        let (world, scene, handle, track) =
+            motion_track_scene(color_spec, Duration::from_millis(16));
+        assert_cpu_gpu_eval_parity(
+            &device,
+            &queue,
+            &world,
+            &scene,
+            handle,
+            &track,
+            &[
+                Duration::ZERO,
+                Duration::from_millis(100),
+                Duration::from_millis(250),
+                Duration::from_millis(400),
+            ],
+            "color-bezier",
+        );
+
+        let bg_spec = AnimationSpec::new(
+            AnimationId::new(1).unwrap(),
+            id(1),
+            Duration::ZERO,
+            Duration::from_millis(400),
+            Duration::from_millis(16),
+            Easing::Linear,
+        )
+        .with_property(AnimatableProperty::Background)
+        .with_range(
+            MotionValue::Color([0.0, 0.2, 0.4, 1.0]),
+            MotionTo::Keyframes(vec![
+                Keyframe {
+                    offset: 0.0,
+                    value: MotionValue::Color([0.0, 0.2, 0.4, 1.0]),
+                    easing: Some(Easing::EaseOutCubic),
+                },
+                Keyframe {
+                    offset: 0.5,
+                    value: MotionValue::Color([0.8, 0.4, 0.1, 0.75]),
+                    easing: Some(Easing::EaseInOutCubic),
+                },
+                Keyframe {
+                    offset: 1.0,
+                    value: MotionValue::Color([0.2, 0.9, 0.6, 1.0]),
+                    easing: None,
+                },
+            ]),
+        );
+        let (world, scene, handle, track) = motion_track_scene(bg_spec, Duration::from_millis(16));
+        assert_cpu_gpu_eval_parity(
+            &device,
+            &queue,
+            &world,
+            &scene,
+            handle,
+            &track,
+            &[
+                Duration::from_millis(80),
+                Duration::from_millis(200),
+                Duration::from_millis(320),
+                Duration::from_millis(400),
+            ],
+            "background-keyframes",
+        );
+    }
+
+    #[test]
+    fn gpu_evaluate_matches_cpu_filter() {
+        let (device, queue) = test_device();
+        let target_filter = FilterValue([
+            1.6,   // brightness
+            0.4,   // saturate
+            1.35,  // contrast
+            135.0, // hue_rotate_deg
+            0.75,  // invert
+            0.65,  // opacity
+            12.0,  // blur_radius
+            -6.0,  // shadow offset_x
+            10.0,  // shadow offset_y
+            14.0,  // shadow blur
+            0.9,   // shadow r
+            0.35,  // shadow g
+            0.15,  // shadow b
+            0.8,   // shadow a
+        ]);
+        let mut spring_spec = AnimationSpec::new(
+            AnimationId::new(1).unwrap(),
+            id(1),
+            Duration::ZERO,
+            Duration::from_millis(400),
+            Duration::from_millis(16),
+            Easing::Linear,
+        )
+        .with_property(AnimatableProperty::Filter)
+        .with_curve(MotionCurve::Spring(SpringParams::new(180.0, 12.0, 1.0)))
+        .with_range(
+            MotionValue::Filter(FilterValue::IDENTITY),
+            MotionTo::Value(MotionValue::Filter(target_filter)),
+        );
+        spring_spec.velocity = MotionValue::Filter(FilterValue([0.0; FilterValue::CHANNELS]));
+        let (world, scene, handle, track) =
+            motion_track_scene(spring_spec, Duration::from_millis(16));
+        assert_cpu_gpu_eval_parity(
+            &device,
+            &queue,
+            &world,
+            &scene,
+            handle,
+            &track,
+            &[
+                Duration::ZERO,
+                Duration::from_millis(80),
+                Duration::from_millis(160),
+                Duration::from_millis(320),
+            ],
+            "filter-spring",
+        );
+
+        let mid_filter = FilterValue([
+            0.7, 1.8, 0.85, -45.0, 0.25, 0.9, 6.0, 4.0, -5.0, 8.0, 0.2, 0.8, 0.95, 0.5,
+        ]);
+        let keyframe_spec = AnimationSpec::new(
+            AnimationId::new(1).unwrap(),
+            id(1),
+            Duration::ZERO,
+            Duration::from_millis(400),
+            Duration::from_millis(16),
+            Easing::Linear,
+        )
+        .with_property(AnimatableProperty::Filter)
+        .with_range(
+            MotionValue::Filter(FilterValue::IDENTITY),
+            MotionTo::Keyframes(vec![
+                Keyframe {
+                    offset: 0.0,
+                    value: MotionValue::Filter(FilterValue::IDENTITY),
+                    easing: Some(Easing::EaseOutCubic),
+                },
+                Keyframe {
+                    offset: 0.4,
+                    value: MotionValue::Filter(mid_filter),
+                    easing: Some(Easing::CubicBezier([0.2, 0.8, 0.2, 1.0])),
+                },
+                Keyframe {
+                    offset: 1.0,
+                    value: MotionValue::Filter(target_filter),
+                    easing: None,
+                },
+            ]),
+        );
+        let (world, scene, handle, track) =
+            motion_track_scene(keyframe_spec, Duration::from_millis(16));
+        assert_cpu_gpu_eval_parity(
+            &device,
+            &queue,
+            &world,
+            &scene,
+            handle,
+            &track,
+            &[
+                Duration::from_millis(80),
+                Duration::from_millis(160),
+                Duration::from_millis(280),
+                Duration::from_millis(400),
+            ],
+            "filter-keyframes",
         );
     }
 
