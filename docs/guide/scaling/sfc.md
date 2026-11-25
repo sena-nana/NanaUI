@@ -1,6 +1,6 @@
 # .vue 方言
 
-日常写视图用 `view!` 或函数写法。`.vue` 文件适合从 Vue 迁过来、想逐文件对照，或者希望模板、脚本、样式分开放。它不进侧边栏顶部的开关。编译结果和 `view!` 走同一个代码生成器、同一套调用，运行时没有多出来的能力。多出来的是编译器能看见整段脚本，所以能做依赖分析和常量折叠。脚本和模板表达式没有 rust-analyzer 支持。
+日常写视图用 `view!` 或函数写法。`.vue` 文件适合从 Vue 迁过来、想逐文件对照，或者希望模板、脚本、样式分开放。它不进侧边栏顶部的开关。编译结果和 `view!` 走同一个代码生成器、同一套调用，运行时没有多出来的能力。多出来的是编译器能看见整段脚本，所以能做依赖分析和常量折叠。编辑器可通过 `nana-sfc-lsp` 对接 `rust-analyzer`，为 `<script>` 和模板表达式提供实时补全、悬停类型、跳转定义与内联诊断。
 
 ```vue
 <!-- views/TodoList.vue -->
@@ -56,7 +56,7 @@ defineProps!(todo: Todo, on_remove: impl Fn() + Send + 'static);
 
 `<style>` 写不写 `scoped` 都只作用于本组件，在构建时编译。模板仍遵守 Rust 的所有权，同一个值既要传给组件又要被事件闭包使用时，写 `todo.clone()`。
 
-生成的代码排版后写进 `$OUT_DIR/nana_views.rs`，并生成 `$OUT_DIR/nana_views.map.json` 供 `nana-sfc-remap` 把 rustc JSON span 回指 `.vue`。每个组件的信号和每条绑定的分类写进 `$OUT_DIR/nana_views.deps.md`。
+生成的代码排版后写进 `$OUT_DIR/nana_views.rs`，并生成包含 token 级双向映射的 `$OUT_DIR/nana_views.map.json`，供 `nana-sfc-remap` 把 rustc JSON span 回指 `.vue`，也供 `nana-sfc-lsp` 桥接 `rust-analyzer`。每个组件的信号和每条绑定的分类写进 `$OUT_DIR/nana_views.deps.md`。
 
 ## 编译器替你折掉的
 
@@ -66,7 +66,7 @@ defineProps!(todo: Todo, on_remove: impl Fn() + Send + 'static);
 
 看得见的静态依赖包成 `__checked`。debug 构建里每次执行都核对实际读到的信号没有超出声明，不一致报 `runtime.reactive.static_deps_mismatch`。release 里原样返回闭包，正确性不押在这次扫描上。一次「值没变」的节点重跑大约 70 ns。
 
-只改 `.vue` 里的静态文字时，构建脚本写 `Compiler::new(..).hot(debug)`，运行中的窗口可以换字。见 [热重载](https://github.com/sena-nana/NanaUI/blob/main/docs/guide/scaling/hot-reload.md)。
+只改 `.vue` 里的静态文字或静态 `<style>` 属性时，构建脚本写 `Compiler::new(..).hot(debug)`，运行中的窗口可以原地热替换文字或样式补丁。见 [热重载](https://github.com/sena-nana/NanaUI/blob/main/docs/guide/scaling/hot-reload.md)。
 
 ## 和手写差在哪里
 

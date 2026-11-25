@@ -144,6 +144,14 @@ impl RebuildCommand {
         }
     }
 
+    /// Arbitrary command, e.g. a build wrapper or test sentinel.
+    pub fn custom(program: impl Into<String>, args: Vec<String>) -> Self {
+        Self {
+            program: program.into(),
+            args,
+        }
+    }
+
     pub fn run(&self) -> RebuildOutcome {
         match Command::new(&self.program).args(&self.args).output() {
             Ok(output) if output.status.success() => RebuildOutcome::Rebuilt,

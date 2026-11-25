@@ -13,6 +13,9 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
 use std::rc::Rc;
+use std::sync::Arc;
+
+pub use nana_ui_core::{HotSheetAxis, HotSheetQuery, HotStylePatch, HotStyleRule, HotStyleSheet};
 
 use super::reactive::{self, Signal, signal};
 
@@ -20,6 +23,8 @@ struct HotView {
     shape: u64,
     /// Replacement text, in table order; `None` until the first swap.
     text: Signal<Option<Rc<[String]>>>,
+    /// Replacement `<style>` rules, in cascade order; `None` until the first swap.
+    styles: Signal<Option<Arc<HotStyleSheet>>>,
 }
 
 thread_local! {
@@ -34,8 +39,14 @@ pub fn __hot_register(view: &'static str, shape: u64) {
             shape,
             // Every instance reads it, so no instance's scope may own it.
             text: reactive::without_scope(|| signal(None)),
+            styles: reactive::without_scope(|| signal(None)),
         });
     });
+}
+
+/// Signal holding any hot-reloaded `<style>` sheet for `view`.
+pub(crate) fn hot_styles_signal(view: &'static str) -> Option<Signal<Option<Arc<HotStyleSheet>>>> {
+    VIEWS.with(|views| views.borrow().get(view).map(|view| view.styles))
 }
 
 /// Entry `index` of `view`'s static text: the replacement if one was
@@ -93,5 +104,27 @@ pub fn apply_hot_literals(view: &str, shape: u64, text: Vec<String>) -> Result<(
         Ok(hot.text)
     })?;
     signal.set(Some(text.into()));
+    Ok(())
+}
+
+/// Replace the compiled `<style>` rules of every mounted `view` with `styles`
+/// if the view's `shape` matches what it was built with. Bindings update at the
+/// next flush.
+pub fn apply_hot_styles(
+    view: &str,
+    shape: u64,
+    styles: HotStyleSheet,
+) -> Result<(), HotReloadError> {
+    let signal = VIEWS.with(|views| {
+        let views = views.borrow();
+        let hot = views
+            .get(view)
+            .ok_or_else(|| HotReloadError::UnknownView(view.to_owned()))?;
+        if hot.shape != shape {
+            return Err(HotReloadError::ShapeChanged(view.to_owned()));
+        }
+        Ok(hot.styles)
+    })?;
+    signal.set(Some(Arc::new(styles)));
     Ok(())
 }

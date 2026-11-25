@@ -71,7 +71,10 @@ pub use each_virtual::{
 pub use error::{ErrorBoundary, error_boundary, report_error};
 #[doc(hidden)]
 pub use hot::{__hot_register, __hot_text};
-pub use hot::{HotReloadError, apply_hot_literals};
+pub use hot::{
+    HotReloadError, HotSheetAxis, HotSheetQuery, HotStylePatch, HotStyleRule, HotStyleSheet,
+    apply_hot_literals, apply_hot_styles,
+};
 pub use marks::{
     COMPACT_TARGET, CONTENT_INSET, Callout, GroupBlock, GroupRow, HeadingRow, HeadingTools,
     KeycapPainter, RaisedSurfacePainter, ScrollFootFade, SettingsGroupView, callout, chord,

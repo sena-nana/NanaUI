@@ -4,13 +4,13 @@
 
 NanaUI 应用的开发期热重载，只用于开发构建。
 
-它监视源码，在后台增量编译，成功后把窗口几何和应用交给它的状态传给下一个进程，然后原地 re-exec。不做进程内 dylib 热替换。用 `.vue` 视图时，只改了静态文字的保存会直接送进运行中的窗口，不必重建。重载时保留哪些状态由应用决定，本 crate 只交付 `DevSignal` 消息和交接数据。
+它监视源码，在后台增量编译，成功后把窗口几何和应用交给它的状态传给下一个进程，然后原地 re-exec。不做进程内 dylib 热替换。用 `.vue` 视图时，只改了静态文字或静态 `<style>` 属性的保存会直接送进运行中的窗口，不必重建。重载时保留哪些状态由应用决定，本 crate 只交付 `DevSignal` 消息和交接数据。
 
 没有 `debug_assertions` 的构建会被 `compile_error!` 拒绝，所以 release 入口应该是另一个只调用 `run_runtime` 的 `main.rs`，不引用本 crate。无头会话本身在 [`nana-ui-devtools`](../nana-ui-devtools)。
 
 ## Features
 
-- `templates`：引入 `nana-ui-sfc`，提供 `watch_templates` 与 `TemplateText`，用于 `.vue` 静态文字热替换。
+- `templates`：引入 `nana-ui-sfc`，提供 `watch_templates`、`watch_template_events`、`TemplateText` 与 `TemplateStyle`，用于 `.vue` 静态文字与静态 `<style>` 补丁热替换。
 - `headless`：引入 `nana-ui-devtools`，让 dev 二进制响应 `--stdio`、`--screenshot`、`--a11y`，不开窗也能验证重建结果。
 
 ## 示例

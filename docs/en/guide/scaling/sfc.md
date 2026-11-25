@@ -1,6 +1,6 @@
 # .vue Dialect
 
-Day-to-day views are written with `view!` or the function style. `.vue` files suit migrating from Vue with file-by-file comparison, or keeping template, script and style apart. They are not part of the toggle at the top of the sidebar. The output goes through the same code generator and the same calls as `view!`; the runtime gains no extra capabilities. What you gain is that the compiler sees the whole script, so it can analyze dependencies and fold constants. Scripts and template expressions have no rust-analyzer support.
+Day-to-day views are written with `view!` or the function style. `.vue` files suit migrating from Vue with file-by-file comparison, or keeping template, script and style apart. They are not part of the toggle at the top of the sidebar. The output goes through the same code generator and the same calls as `view!`; the runtime gains no extra capabilities. What you gain is that the compiler sees the whole script, so it can analyze dependencies and fold constants. Editors can bridge `<script>` and template expressions to `rust-analyzer` via `nana-sfc-lsp` for live completion, hover types, go-to-definition, and inline diagnostics.
 
 ```vue
 <!-- views/TodoList.vue -->
@@ -56,7 +56,7 @@ A child component declares a view parameter such as `header: impl IntoView` and 
 
 `<style>`, with or without `scoped`, applies only to its own component and is compiled at build time. Templates still follow Rust ownership: when the same value is passed to a component and also used by an event closure, write `todo.clone()`.
 
-The generated code is formatted and written to `$OUT_DIR/nana_views.rs`, along with `$OUT_DIR/nana_views.map.json`, which `nana-sfc-remap` uses to map rustc JSON spans back to `.vue`. Each component's signals and the classification of each binding go into `$OUT_DIR/nana_views.deps.md`.
+The generated code is formatted and written to `$OUT_DIR/nana_views.rs`, along with `$OUT_DIR/nana_views.map.json` (token-aligned bidirectional spans), which `nana-sfc-remap` uses to map rustc JSON spans back to `.vue` and `nana-sfc-lsp` uses to bridge `rust-analyzer`. Each component's signals and the classification of each binding go into `$OUT_DIR/nana_views.deps.md`.
 
 ## What the compiler folds for you
 
@@ -66,7 +66,7 @@ A signal that is never written and never passed out is folded to `constant(…)`
 
 Visible static dependencies are wrapped in `__checked`. In debug builds every run checks that the signals actually read do not exceed the declared ones, and a mismatch reports `runtime.reactive.static_deps_mismatch`. In release the closure is returned as-is, so correctness does not rest on this scan. Rerunning a node whose value did not change costs about 70 ns.
 
-When only static text in a `.vue` file changes, write `Compiler::new(..).hot(debug)` in the build script and a running window can swap the text. See [Hot reload](https://github.com/sena-nana/NanaUI/blob/main/docs/guide/scaling/hot-reload.md).
+When only static text or static `<style>` properties in a `.vue` file change, write `Compiler::new(..).hot(debug)` in the build script and a running window can swap the text or style patches in place. See [Hot reload](https://github.com/sena-nana/NanaUI/blob/main/docs/guide/scaling/hot-reload.md).
 
 ## How it compares with hand-written code
 

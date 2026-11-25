@@ -1018,3 +1018,61 @@ let icon = signal(nana_ui_core::Icon::Add);
         "plain string Button stays on fast path: {code}"
     );
 }
+
+#[test]
+fn hot_mode_keeps_shape_stable_for_static_style_edits() {
+    let view = r#"<script setup lang="rust">
+let open = signal(false);
+</script>
+<template>
+  <Column class="card" class:open="open">
+    <Text class="title">标题</Text>
+  </Column>
+</template>
+<style scoped>
+.card { padding: 8px; opacity: 1; }
+.card.open { opacity: 0.5; }
+.title { flex-grow: 1; }
+</style>"#;
+    let hot = Compiler::new("::nana_ui_runtime").hot(true);
+    let view_of = |text: &str| {
+        hot.hot_views(&[("views/Card.vue".into(), text.into())])
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap()
+    };
+    let initial = view_of(view);
+
+    // Editing declaration values, adding a declaration, or removing a declaration
+    // on existing template classes keeps the shape unchanged.
+    let edited_decl = view_of(&view.replace("padding: 8px; opacity: 1;", "padding: 20px;"));
+    assert_eq!(edited_decl.shape, initial.shape);
+    assert_ne!(edited_decl.styles, initial.styles);
+
+    let added_rule = view_of(&format!(
+        "{view}\n<style scoped>\n.card {{ padding: 4px; }}\n</style>"
+    ));
+    let _ = added_rule;
+    let extra_class_rule = view_of(&view.replace(
+        ".title { flex-grow: 1; }",
+        ".title { flex-grow: 1; }\n.open { margin: 4px; }",
+    ));
+    assert_eq!(extra_class_rule.shape, initial.shape);
+
+    // Changing script or adding a transition/combinator changes the shape.
+    let script_changed = view_of(&view.replace("signal(false)", "signal(true)"));
+    assert_ne!(script_changed.shape, initial.shape);
+
+    let transition_added = view_of(&view.replace(
+        "opacity: 1;",
+        "opacity: 1; transition: opacity 150ms ease-out;",
+    ));
+    assert_ne!(transition_added.shape, initial.shape);
+
+    let combinator_added = view_of(&view.replace(
+        ".title { flex-grow: 1; }",
+        ".card > .title { flex-grow: 1; }",
+    ));
+    assert_ne!(combinator_added.shape, initial.shape);
+}

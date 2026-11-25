@@ -8,7 +8,7 @@
 
 | 修改的内容 | 触发的重载动作 | 实测量级 |
 | --- | --- | --- |
-| **Rust `.vue` 方言：仅改静态文字** | **替换静态文本表（`TemplateText::apply`）**：不重编译、不重启，节点与焦点原地保留 | `< 50 ms` |
+| **Rust `.vue` 方言：仅改静态文字或静态 `<style>` 属性** | **替换静态文本表（`TemplateText::apply`）或开发期样式补丁表（`TemplateStyle::apply`）**：不重编译、不重启，节点与焦点原地保留 | `< 50 ms` |
 | **Rust L3：修改 `.rs` 源码** | **后台增量编译 → 交接窗口几何与会话状态 → `re-exec`**：窗口仅闪动一次 | `1.5–3.6 s`（链接占大头） |
 
 在 macOS（Apple Silicon，已预热的默认 `dev` 配置）上实测 `cargo build -p component-gallery`：仅修改应用 crate（1.8 万行）并重链接 131 MB 二进制耗时 **`1.5–1.6 s`**；修改底层 `nana-ui-runtime`（12.7 万行，连带重编 `scene` 与 `nana-ui`）耗时 **`3.6 s`**。Windows 平台链接耗时更长，建议在本地通过 `cargo build -p <包名> --timings` 实测并为 dev 配置开启 `lld`。
@@ -46,7 +46,7 @@ Message::Dev(DevSignal::Rebuilt) => {
 }
 ```
 
-此外，若使用 `.vue` 方言（Rust 脚本）编写视图且仅修改了静态文案，可在 `build.rs` 中开启 `Compiler::new("::nana_ui::runtime").hot(debug)` 并在 dev 入口使用 `watch_templates`（`templates` feature），即可在不重编译、不重启进程的情况下通过 `TemplateText::apply()` 实时替换窗口文字。
+此外，若使用 `.vue` 方言（Rust 脚本）编写视图且仅修改了静态文案或静态 `<style>` 规则声明，可在 `build.rs` 中开启 `Compiler::new("::nana_ui::runtime").hot(debug)` 并在 dev 入口使用 `watch_templates`（或 `watch_template_events`，`templates` feature）。静态文字通过 `TemplateText::apply()` 原地替换，静态 `<style>` 补丁通过开发期专用数据通道 `TemplateStyle::apply()`（调用 `nana-ui-css` 重编译为 `HotStyleSheet`，仅在开发热模式启用，不进入产品路径）原地注入；若新增了 `transition`、`@keyframes`、组合器或新的交互伪类掩码，则仍会触发增量重建。
 
 ## 结合无头 Agent 会话实现免开窗验证
 

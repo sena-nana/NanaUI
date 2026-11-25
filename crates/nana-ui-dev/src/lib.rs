@@ -38,7 +38,9 @@ pub use config::DevConfig;
 pub use restart::{DevHandoff, HANDOFF_ENV, RebuildCommand, RebuildOutcome, relaunch};
 pub use watch::DevWatcher;
 #[cfg(feature = "templates")]
-pub use wiring::{TemplateText, watch_templates};
+pub use wiring::{
+    TemplateEvent, TemplateStyle, TemplateText, watch_template_events, watch_templates,
+};
 pub use wiring::{request_relaunch, restored_handoff, run_with_restart, watch_and_rebuild};
 
 /// What one settled filesystem batch asks the running application to do.

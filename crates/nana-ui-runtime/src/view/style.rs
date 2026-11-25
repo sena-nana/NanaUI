@@ -32,7 +32,7 @@ use std::panic::Location;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 
-use nana_ui_core::LayoutStyle;
+use nana_ui_core::{HotSheetAxis, HotSheetQuery, HotStyleRule, HotStyleSheet, LayoutStyle};
 
 use super::controls::StyledComponent;
 use super::node::{El, NodeBindings};
@@ -140,6 +140,22 @@ type SiteRule = (u64, &'static StylePatch, Option<&'static SheetQuery>);
 type SiteTransition = (u64, &'static [Implicit]);
 type SiteAnimation = (u64, &'static [KeyframeAnimation]);
 
+/// Dev-only metadata connecting a compiled `Sheet` to its view's hot `<style>`
+/// patch table.
+#[derive(Clone, Copy)]
+struct HotSheetMeta {
+    view: &'static str,
+    classes: &'static [&'static str],
+}
+
+/// Dev-only metadata for one resolved `StyleSite` in hot mode.
+#[derive(Clone, Copy)]
+struct HotSiteMeta {
+    view: &'static str,
+    fixed_names: &'static [&'static str],
+    conditional_names: &'static [&'static str],
+}
+
 /// One element's compiled rules, in cascade order: each patch applies
 /// while every conditional class and interactive pseudo in its mask is active,
 /// and a guarded one only in the buckets of its container where its query holds.
@@ -148,6 +164,7 @@ pub struct StyleSite {
     transitions: &'static [SiteTransition],
     animations: &'static [SiteAnimation],
     used_pseudos: u8,
+    hot: Option<HotSiteMeta>,
     /// What every instance of the site shares.
     composed: Mutex<Option<Composed>>,
 }
@@ -266,6 +283,7 @@ impl StyleSite {
             transitions: &[],
             animations: &[],
             used_pseudos: 0,
+            hot: None,
             composed: Mutex::new(None),
         }
     }
@@ -282,6 +300,24 @@ impl StyleSite {
             transitions,
             animations,
             used_pseudos,
+            hot: None,
+            composed: Mutex::new(None),
+        }
+    }
+
+    const fn with_hot(
+        rules: &'static [SiteRule],
+        transitions: &'static [SiteTransition],
+        animations: &'static [SiteAnimation],
+        used_pseudos: u8,
+        hot: Option<HotSiteMeta>,
+    ) -> Self {
+        Self {
+            rules,
+            transitions,
+            animations,
+            used_pseudos,
+            hot,
             composed: Mutex::new(None),
         }
     }
@@ -500,6 +536,121 @@ impl StyleSite {
             .as_ref()
             .map_or(0, |composed| composed.by_base.len())
     }
+
+    fn hot_rule_matches(meta: HotSiteMeta, active: u64, rule: &HotStyleRule) -> bool {
+        let active_pseudo = (active >> PSEUDO_BIT_SHIFT) as u8;
+        if rule.pseudo & !active_pseudo != 0 {
+            return false;
+        }
+        rule.classes.iter().all(|class| {
+            meta.fixed_names.contains(&class.as_str())
+                || meta
+                    .conditional_names
+                    .iter()
+                    .enumerate()
+                    .any(|(bit, name)| *name == class.as_str() && (active & (1u64 << bit)) != 0)
+        })
+    }
+
+    fn compose_hot(
+        &self,
+        base: &Arc<LayoutStyle>,
+        active: u64,
+        sheet: &HotStyleSheet,
+    ) -> Arc<LayoutStyle> {
+        let Some(meta) = self.hot else {
+            return self.compose(base, active);
+        };
+        let mut layout = (**base).clone();
+        for rule in &sheet.rules {
+            if rule.query.is_none() && Self::hot_rule_matches(meta, active, rule) {
+                rule.patch.apply(&mut layout);
+            }
+        }
+        layout.drop_inert_physical_edges();
+        Arc::new(layout)
+    }
+
+    fn responsive_hot(
+        &self,
+        base: &Arc<LayoutStyle>,
+        active: u64,
+        sheet: &HotStyleSheet,
+        at: &'static Location<'static>,
+    ) -> Option<Arc<ResponsiveRule>> {
+        let meta = self.hot?;
+        let applying: Vec<&HotStyleRule> = sheet
+            .rules
+            .iter()
+            .filter(|rule| Self::hot_rule_matches(meta, active, rule))
+            .collect();
+        let queries: Vec<&HotSheetQuery> = applying
+            .iter()
+            .filter_map(|rule| rule.query.as_ref())
+            .collect();
+        let first = queries.first()?;
+        let mut breakpoints: Vec<f32> = queries
+            .iter()
+            .flat_map(|q| q.intervals.iter())
+            .flat_map(|&(lo, hi)| [lo, hi])
+            .filter(|bound| bound.is_finite())
+            .collect();
+        breakpoints.compact_sort_by(f32::total_cmp);
+        breakpoints.dedup();
+        let why = if queries
+            .iter()
+            .any(|q| q.name != first.name || q.axis != first.axis)
+        {
+            Some("ask more than one container or axis")
+        } else if breakpoints.len() > MAX_RESPONSIVE_BREAKPOINTS {
+            Some("use more breakpoints than one responsive rule holds")
+        } else {
+            None
+        };
+        if let Some(why) = why {
+            nana_diagnostics::fault!(
+                nana_diagnostics::framework::runtime::VIEW_CONTAINER_QUERY_UNSUPPORTED,
+                breakpoints = breakpoints.len() as u64;
+                "the @container rules of the element whose classes are given at {at} {why}: none of \
+                 them apply"
+            );
+            return None;
+        }
+        let authored = self.compose_hot(base, active, sheet);
+        let variants: Vec<Option<StyleVariant>> = (0..=breakpoints.len())
+            .map(|bucket| {
+                let lower = bucket
+                    .checked_sub(1)
+                    .map_or(f32::NEG_INFINITY, |below| breakpoints[below]);
+                let mut styled = (**base).clone();
+                for rule in &applying {
+                    if rule.query.as_ref().is_none_or(|q| q.holds_at(lower)) {
+                        rule.patch.apply(&mut styled);
+                    }
+                }
+                styled.drop_inert_physical_edges();
+                StyleVariant::between(&authored, &styled)
+            })
+            .collect();
+        if variants.iter().all(Option::is_none) {
+            return None;
+        }
+        let axis = match first.axis {
+            HotSheetAxis::Inline => ResponsiveAxis::Inline,
+            HotSheetAxis::Block => ResponsiveAxis::Block,
+            HotSheetAxis::Width => ResponsiveAxis::Width,
+            HotSheetAxis::Height => ResponsiveAxis::Height,
+        };
+        ResponsiveRule::from_buckets(
+            ResponsiveContainer::Nearest {
+                name: first.name.clone(),
+            },
+            axis,
+            breakpoints,
+            variants,
+        )
+        .map(Arc::new)
+    }
 }
 
 /// A stylesheet compiled at build time (`stylesheet!`, a view's `<style>`):
@@ -508,6 +659,7 @@ pub struct Sheet {
     rules: &'static [SheetRule],
     transitions: &'static [SheetTransition],
     animations: &'static [SheetAnimation],
+    hot: Option<HotSheetMeta>,
     /// `(fixed classes, conditional classes) -> (site, static animations)`.
     resolved: Mutex<Vec<Resolved>>,
 }
@@ -547,6 +699,7 @@ impl Sheet {
             rules,
             transitions,
             animations: &[],
+            hot: None,
             resolved: Mutex::new(Vec::new()),
         }
     }
@@ -561,6 +714,24 @@ impl Sheet {
             rules,
             transitions,
             animations,
+            hot: None,
+            resolved: Mutex::new(Vec::new()),
+        }
+    }
+
+    #[doc(hidden)]
+    pub const fn with_hot(
+        rules: &'static [SheetRule],
+        transitions: &'static [SheetTransition],
+        animations: &'static [SheetAnimation],
+        view: &'static str,
+        classes: &'static [&'static str],
+    ) -> Self {
+        Self {
+            rules,
+            transitions,
+            animations,
+            hot: Some(HotSheetMeta { view, classes }),
             resolved: Mutex::new(Vec::new()),
         }
     }
@@ -653,13 +824,36 @@ impl Sheet {
         } else {
             Box::leak(animations.into_boxed_slice())
         };
+        let hot_site = self.hot.map(|meta| {
+            let name_of = |idx: &u16| meta.classes.get(usize::from(*idx)).copied().unwrap_or("");
+            let fixed_names: &'static [&'static str] = Box::leak(
+                fixed
+                    .iter()
+                    .map(name_of)
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
+            );
+            let conditional_names: &'static [&'static str] = Box::leak(
+                conditional
+                    .iter()
+                    .map(name_of)
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
+            );
+            HotSiteMeta {
+                view: meta.view,
+                fixed_names,
+                conditional_names,
+            }
+        });
         // One per distinct class set an element is written with: bounded
         // by the program's source, not by how many nodes it builds.
-        let site: &'static StyleSite = Box::leak(Box::new(StyleSite::with_motion(
+        let site: &'static StyleSite = Box::leak(Box::new(StyleSite::with_hot(
             Box::leak(rules.into_boxed_slice()),
             dynamic_transitions,
             dynamic_animations,
             used_pseudos,
+            hot_site,
         )));
         resolved.push((fixed.to_vec(), conditional.to_vec(), site, static_animate));
         (site, static_animate)
@@ -753,6 +947,9 @@ fn apply_site<C: StyledComponent + ComponentView>(
     let base = &component.node_style().layout;
     let queried = site.has_queries();
     let used_pseudos = site.used_pseudos();
+    let hot_styles = site
+        .hot
+        .and_then(|meta| super::hot::hot_styles_signal(meta.view));
     let motion_mask = if site.has_dynamic_motion() {
         let active_mask = Arc::new(AtomicU64::new(0));
         let mask_clone = Arc::clone(&active_mask);
@@ -766,7 +963,7 @@ fn apply_site<C: StyledComponent + ComponentView>(
     } else {
         None
     };
-    if conditions.is_empty() && used_pseudos == 0 {
+    if conditions.is_empty() && used_pseudos == 0 && hot_styles.is_none() {
         if queried {
             bindings.responsive = Some(ResponsiveBinding::new(site.responsive(base, 0, at)));
         }
@@ -786,7 +983,7 @@ fn apply_site<C: StyledComponent + ComponentView>(
     };
     let base = site.shared_base(base);
     // The binding computes the active classes and pseudo bits once per run, for both.
-    let pending = queried.then(|| {
+    let pending = (queried || hot_styles.is_some()).then(|| {
         let binding = ResponsiveBinding::default();
         let pending = Arc::clone(&binding.pending);
         bindings.responsive = Some(binding);
@@ -806,11 +1003,23 @@ fn apply_site<C: StyledComponent + ComponentView>(
         if let Some(mask) = &motion_mask {
             mask.store(active, Ordering::Relaxed);
         }
-        if let Some(pending) = &pending {
-            let rule = site.responsive(&base, active, at);
-            *pending.lock().unwrap_or_else(PoisonError::into_inner) = Some(rule);
+        if let Some(hot_sheet) = hot_styles.and_then(|sig| sig.get()) {
+            if let Some(pending) = &pending {
+                let rule = site.responsive_hot(&base, active, &hot_sheet, at);
+                *pending.lock().unwrap_or_else(PoisonError::into_inner) = Some(rule);
+            }
+            site.compose_hot(&base, active, &hot_sheet)
+        } else {
+            if let Some(pending) = &pending {
+                let rule = if queried {
+                    site.responsive(&base, active, at)
+                } else {
+                    None
+                };
+                *pending.lock().unwrap_or_else(PoisonError::into_inner) = Some(rule);
+            }
+            site.compose(&base, active)
         }
-        site.compose(&base, active)
     };
     composed.bind_field::<C, ComposedLayout>(component, bindings, at);
 }
@@ -1443,5 +1652,130 @@ mod site_tests {
                 .and_then(|n| n.selected),
             Some(true)
         );
+    }
+
+    static HOT_BASE_PATCH: StylePatch = StylePatch::new(|layout| {
+        layout.padding = Some(LengthSpec::Px(4.0));
+        layout.opacity = Some(0.8);
+    });
+    static HOT_RULES_INIT: [SheetRule; 1] = [SheetRule {
+        classes: &[0],
+        pseudo: 0,
+        patch: &HOT_BASE_PATCH,
+        query: None,
+    }];
+    static HOT_SHEET: Sheet =
+        Sheet::with_hot(&HOT_RULES_INIT, &[], &[], "HotStyleUnit", &["box", "on"]);
+
+    #[test]
+    fn hot_styles_override_revert_defaults_handle_conditional_and_container_queries() {
+        use crate::view::{__hot_register, HotStylePatch, apply_hot_styles, column, signal};
+        use crate::{AppContext, DocumentId};
+
+        let shape = 0x4220_0001;
+        __hot_register("HotStyleUnit", shape);
+        let c_box = Class::new(&HOT_SHEET, 0);
+        let c_on = Class::new(&HOT_SHEET, 1);
+        let flag = signal(false);
+
+        let mut cx = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let root = cx
+            .mount_view_root(document, move || {
+                column().class(c_box).class_when(c_on, flag)
+            })
+            .unwrap()
+            .roots()[0];
+
+        let layout = |cx: &AppContext| cx.world().node_style(root).unwrap().layout.clone();
+        assert_eq!(layout(&cx).padding, Some(LengthSpec::Px(4.0)));
+        assert_eq!(layout(&cx).opacity, Some(0.8));
+
+        // 1. Override padding, remove opacity (reverts to base = None), and add conditional + container rule.
+        let mut box_layout = LayoutStyle::default();
+        box_layout.padding = Some(LengthSpec::Px(16.0));
+        let mut on_layout = LayoutStyle::default();
+        on_layout.opacity = Some(0.4);
+        let mut narrow_layout = LayoutStyle::default();
+        narrow_layout.height = Some(LengthSpec::Px(40.0));
+
+        let sheet = HotStyleSheet {
+            rules: vec![
+                HotStyleRule {
+                    classes: vec!["box".into()],
+                    pseudo: 0,
+                    patch: HotStylePatch::new(box_layout, vec!["padding".into()]),
+                    query: None,
+                },
+                HotStyleRule {
+                    classes: vec!["on".into()],
+                    pseudo: 0,
+                    patch: HotStylePatch::new(on_layout, vec!["opacity".into()]),
+                    query: None,
+                },
+                HotStyleRule {
+                    classes: vec!["box".into()],
+                    pseudo: 0,
+                    patch: HotStylePatch::new(narrow_layout, vec!["height".into()]),
+                    query: Some(HotSheetQuery {
+                        name: None,
+                        axis: HotSheetAxis::Width,
+                        intervals: vec![(f32::NEG_INFINITY, 300.0)],
+                    }),
+                },
+            ],
+        };
+        apply_hot_styles("HotStyleUnit", shape, sheet).unwrap();
+        cx.flush_reactive().unwrap();
+        assert_eq!(layout(&cx).padding, Some(LengthSpec::Px(16.0)));
+        assert_eq!(
+            layout(&cx).opacity,
+            None,
+            "removed property reverts to base"
+        );
+
+        let responsive = cx.world().responsive_rule(root).expect("hot responsive");
+        assert_eq!(responsive.axis(), ResponsiveAxis::Width);
+        assert_eq!(responsive.bucket_for(200.0), 0);
+        assert!(responsive.variant(0).is_some());
+
+        // 2. Toggle conditional class under hot styles.
+        flag.set(true);
+        cx.flush_reactive().unwrap();
+        assert_eq!(layout(&cx).opacity, Some(0.4));
+
+        // 3. Write-back of default (opacity: None or 1.0) overrides earlier rule.
+        let mut default_layout = LayoutStyle::default();
+        default_layout.opacity = Some(1.0);
+        apply_hot_styles(
+            "HotStyleUnit",
+            shape,
+            HotStyleSheet {
+                rules: vec![
+                    HotStyleRule {
+                        classes: vec!["on".into()],
+                        pseudo: 0,
+                        patch: HotStylePatch::new(
+                            LayoutStyle {
+                                opacity: Some(0.2),
+                                ..LayoutStyle::default()
+                            },
+                            vec!["opacity".into()],
+                        ),
+                        query: None,
+                    },
+                    HotStyleRule {
+                        classes: vec!["box".into(), "on".into()],
+                        pseudo: 0,
+                        patch: HotStylePatch::new(default_layout, vec!["opacity".into()]),
+                        query: None,
+                    },
+                ],
+            },
+        )
+        .unwrap();
+        cx.flush_reactive().unwrap();
+        assert_eq!(layout(&cx).opacity, Some(1.0));
+        assert!(cx.world().responsive_rule(root).is_none());
     }
 }

@@ -22,6 +22,65 @@ impl StylePatch {
     }
 }
 
+/// Dev-only data patch: a compiled `LayoutStyle` plus the dotted leaf paths
+/// written by a rule's declarations. Never constructed in product builds.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct HotStylePatch {
+    pub layout: crate::LayoutStyle,
+    pub written: Vec<String>,
+}
+
+impl HotStylePatch {
+    pub fn new(layout: crate::LayoutStyle, written: Vec<String>) -> Self {
+        Self { layout, written }
+    }
+
+    pub fn apply(&self, target: &mut crate::LayoutStyle) {
+        target.apply_written_leaves(&self.layout, &self.written);
+    }
+}
+
+/// Container-query axis carried by [`HotSheetQuery`] without depending on
+/// runtime responsive types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HotSheetAxis {
+    Inline,
+    Block,
+    Width,
+    Height,
+}
+
+/// Container-query guard on a [`HotStyleRule`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct HotSheetQuery {
+    pub name: Option<String>,
+    pub axis: HotSheetAxis,
+    pub intervals: Vec<(f32, f32)>,
+}
+
+impl HotSheetQuery {
+    pub fn holds_at(&self, extent: f32) -> bool {
+        self.intervals
+            .iter()
+            .any(|&(lo, hi)| lo <= extent && extent < hi)
+    }
+}
+
+/// One dev-only hot-reloadable stylesheet rule in cascade order.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HotStyleRule {
+    pub classes: Vec<String>,
+    pub pseudo: u8,
+    pub patch: HotStylePatch,
+    pub query: Option<HotSheetQuery>,
+}
+
+/// A view's `<style>` rules as pure data for dev-only `<style>` hot reload.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct HotStyleSheet {
+    pub rules: Vec<HotStyleRule>,
+}
+
 /// Direct leaf setters on [`crate::LayoutStyle`] for compiled style patches.
 pub mod set {
     use crate::box_layout::*;

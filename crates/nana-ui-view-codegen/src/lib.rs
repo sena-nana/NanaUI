@@ -5,8 +5,10 @@
 
 mod style;
 
+pub use nana_ui_core::{HotSheetAxis, HotSheetQuery, HotStylePatch, HotStyleRule, HotStyleSheet};
 pub use style::{
-    CompiledStyles, StyleAt, StyleWarning, compile_inline, compile_styles, compile_stylesheet,
+    CompiledHotStyles, CompiledStyles, StyleAt, StyleWarning, compile_inline, compile_styles,
+    compile_styles_hot, compile_stylesheet,
 };
 
 use proc_macro2::{Span, TokenStream};

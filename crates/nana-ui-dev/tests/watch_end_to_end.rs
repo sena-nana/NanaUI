@@ -131,3 +131,67 @@ fn a_missing_watch_root_is_an_error_rather_than_a_silent_no_op() {
         "unhelpful error: {error}"
     );
 }
+
+#[cfg(feature = "templates")]
+#[test]
+fn vue_style_edits_dispatch_in_process_without_running_rebuild() {
+    use nana_ui_dev::{DevSignal, RebuildCommand, TemplateEvent, watch_template_events};
+
+    let dir = scratch("e2e-vue-style-hot");
+    let views_dir = dir.join("views");
+    let src_dir = dir.join("src");
+    std::fs::create_dir_all(&views_dir).expect("views dir");
+    std::fs::create_dir_all(&src_dir).expect("src dir");
+
+    let vue_path = views_dir.join("Card.vue");
+    let initial = r#"<script setup lang="rust">
+let open = signal(false);
+</script>
+<template>
+  <Column class="card" class:open="open">
+    <Text>Hello</Text>
+  </Column>
+</template>
+<style scoped>
+.card { padding: 8px; opacity: 1; }
+.card.open { opacity: 0.5; }
+</style>"#;
+    std::fs::write(&vue_path, initial).expect("seed vue");
+
+    let (tx, rx) = channel();
+    let config = DevConfig::new_rust(&src_dir);
+    // Sentinel rebuild command: if invoked on a style edit, it returns Rebuilt.
+    let rebuild = RebuildCommand::custom("true", Vec::new());
+    let _watcher = watch_template_events(
+        &config,
+        &views_dir,
+        "::nana_ui::runtime",
+        rebuild,
+        move |ev| {
+            let _ = tx.send(ev);
+        },
+    )
+    .expect("spawn template watcher");
+
+    // 1. Static <style> edit dispatches TemplateEvent::Style without triggering rebuild.
+    let style_edited = initial.replace("padding: 8px; opacity: 1;", "padding: 24px;");
+    std::fs::write(&vue_path, &style_edited).expect("edit style");
+    let event = rx
+        .recv_timeout(DELIVERY_TIMEOUT)
+        .expect("style hot event should arrive");
+    match event {
+        TemplateEvent::Style(style) => {
+            assert_eq!(style.view, "Card");
+            assert_eq!(style.styles.rules.len(), 2);
+        }
+        other => panic!("expected TemplateEvent::Style, got {other:?}"),
+    }
+
+    // 2. Script edit changes shape and triggers rebuild.
+    let script_edited = style_edited.replace("signal(false)", "signal(true)");
+    std::fs::write(&vue_path, &script_edited).expect("edit script");
+    let event = rx
+        .recv_timeout(DELIVERY_TIMEOUT)
+        .expect("rebuild event should arrive");
+    assert_eq!(event, TemplateEvent::Dev(DevSignal::Rebuilt));
+}

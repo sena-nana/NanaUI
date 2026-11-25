@@ -22,6 +22,7 @@ pub struct Pos {
 
 pub struct Component {
     pub name: String,
+    pub name_span: Span,
     pub props: Vec<PatType>,
     pub script: Vec<Stmt>,
     pub template: Vec<Node>,
@@ -221,7 +222,7 @@ pub fn component(file: &str, text: &str) -> Result<Component, Error> {
         }
         None => None,
     };
-    let (props, script) = match block(&src, "script")? {
+    let (props, script, script_pos) = match block(&src, "script")? {
         Some((attrs, start, end)) => {
             if !attrs.contains("setup") || !attrs.contains("lang=\"rust\"") {
                 return Err(src.error(
@@ -229,20 +230,28 @@ pub fn component(file: &str, text: &str) -> Result<Component, Error> {
                     "the script block must be `<script setup lang=\"rust\">`",
                 ));
             }
-            script(&src, start, end)?
+            let pos = src.pos(start);
+            let (props, script) = script(&src, start, end)?;
+            (props, script, Some(pos))
         }
-        None => (Vec::new(), Vec::new()),
+        None => (Vec::new(), Vec::new(), None),
     };
     let (_, start, end) = block(&src, "template")?
         .ok_or_else(|| src.error(0, "a `.vue` view needs a `<template>`"))?;
+    let template_pos = src.pos(start);
     let mut parser = Template {
         src: &src,
         offset: start,
         end,
     };
     let template = parser.nodes(None)?;
+    let name_pos = script_pos.unwrap_or(template_pos);
+    let name_span = ident_at("__nana_comp", name_pos, file)
+        .map(|id| id.span())
+        .unwrap_or_else(|_| Span::call_site());
     Ok(Component {
         name: component_name(file),
+        name_span,
         props,
         script,
         template,

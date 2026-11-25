@@ -45,6 +45,9 @@ trait Overlay: Sized {
 
     /// The dotted path of each leaf field, under `prefix`.
     fn leaf_paths(prefix: &str, out: &mut Vec<String>);
+
+    /// Copy the leaf named by dotted `path` from `from` into `self`.
+    fn apply_leaf(&mut self, from: &Self, path: &str) -> bool;
 }
 
 /// A nested struct held in place.
@@ -75,6 +78,10 @@ fn plain_unchanged_leaves<T: Overlay>(
     out: &mut Vec<String>,
 ) {
     applied.unchanged_leaves(default, prefix, out);
+}
+
+fn plain_apply_leaf<T: Overlay>(base: &mut T, from: &T, path: &str) -> bool {
+    base.apply_leaf(from, path)
 }
 
 /// A nested struct held as [`Shared`]: untouched, and so still shared,
@@ -112,6 +119,18 @@ fn shared_unchanged_leaves<T: Overlay + SharedDefault>(
     out: &mut Vec<String>,
 ) {
     (**applied).unchanged_leaves(&**default, prefix, out);
+}
+
+fn shared_apply_leaf<T: Overlay + SharedDefault>(
+    base: &mut Shared<T>,
+    from: &Shared<T>,
+    path: &str,
+) -> bool {
+    if base.ptr_eq(from) {
+        return true;
+    }
+    let base: &mut T = base;
+    base.apply_leaf(&**from, path)
 }
 
 macro_rules! overlay {
@@ -174,6 +193,25 @@ macro_rules! overlay {
                     );
                 )*
             }
+
+            fn apply_leaf(&mut self, from: &Self, path: &str) -> bool {
+                match path {
+                    $(
+                        stringify!($leaf) => {
+                            self.$leaf = from.$leaf.clone();
+                            true
+                        }
+                    )*
+                    _ => {
+                        $(
+                            if let Some(rest) = path.strip_prefix(concat!(stringify!($nested), ".")) {
+                                return overlay!(@apply_leaf $kind, &mut self.$nested, &from.$nested, rest);
+                            }
+                        )*
+                        false
+                    }
+                }
+            }
         }
     };
     (@collect plain, $a:expr, $d:expr, $ow:expr, $w:expr, $p:expr, $out:expr) => {
@@ -187,6 +225,12 @@ macro_rules! overlay {
     };
     (@unchanged shared, $a:expr, $d:expr, $p:expr, $out:expr) => {
         shared_unchanged_leaves($a, $d, $p, $out)
+    };
+    (@apply_leaf plain, $b:expr, $f:expr, $p:expr) => {
+        plain_apply_leaf($b, $f, $p)
+    };
+    (@apply_leaf shared, $b:expr, $f:expr, $p:expr) => {
+        shared_apply_leaf($b, $f, $p)
     };
 }
 
@@ -404,6 +448,13 @@ impl LayoutStyle {
         <LayoutStyle as Overlay>::unchanged_leaves(self, default, "", &mut unchanged);
         unchanged
     }
+
+    /// Copy the leaf fields listed in `paths` from `from` into `self`.
+    pub fn apply_written_leaves(&mut self, from: &Self, paths: &[String]) {
+        for path in paths {
+            let _ = <LayoutStyle as Overlay>::apply_leaf(self, from, path);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -446,5 +497,40 @@ mod tests {
         let through = base.overlaid(&LayoutStyle::default());
         assert_eq!(through, base);
         assert!(through.paint.ptr_eq(&base.paint));
+    }
+
+    #[test]
+    fn apply_written_leaves_copies_selected_leaves_and_resets_defaults() {
+        use crate::LengthSpec;
+        let mut target = LayoutStyle {
+            opacity: Some(0.5),
+            order: 7,
+            ..LayoutStyle::default()
+        };
+        target.paint.outline.width = 3.0;
+        let mut patch = LayoutStyle {
+            opacity: Some(1.0),
+            ..LayoutStyle::default()
+        };
+        patch.padding = Some(LengthSpec::Px(12.0));
+        patch.paint.outline.width = 0.0;
+
+        target.apply_written_leaves(
+            &patch,
+            &[
+                "opacity".into(),
+                "padding".into(),
+                "paint.outline.width".into(),
+            ],
+        );
+        assert_eq!(target.opacity, Some(1.0));
+        assert_eq!(target.padding, Some(LengthSpec::Px(12.0)));
+        assert_eq!(target.paint.outline.width, 0.0);
+        assert_eq!(target.order, 7, "unwritten fields stay intact");
+        assert!(!<LayoutStyle as Overlay>::apply_leaf(
+            &mut target,
+            &patch,
+            "no_such_field"
+        ));
     }
 }

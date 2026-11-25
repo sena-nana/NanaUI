@@ -145,21 +145,53 @@ impl TemplateText {
     }
 }
 
-/// Watch `.vue` views compiled in hot mode (`Compiler::hot`) in `views`,
-/// plus the rest of `config`: a save that changes only a view's static text
-/// dispatches [`TemplateText`] for it, without a rebuild; anything else
-/// rebuilds like [`watch_and_rebuild`]. `runtime` is the path the build
-/// script passed to `Compiler::new`, so shapes match the binary's.
+/// New compiled `<style>` rules for one hot `.vue` view, read on the watcher
+/// thread and applied on the UI thread: convert it into the program's message
+/// and call [`Self::apply`] in `update`.
 #[cfg(feature = "templates")]
-pub fn watch_templates<Message>(
+#[derive(Debug, Clone, PartialEq)]
+pub struct TemplateStyle {
+    pub view: String,
+    pub shape: u64,
+    pub styles: nana_ui_sfc::HotStyleSheet,
+}
+
+#[cfg(feature = "templates")]
+impl TemplateStyle {
+    /// Swap the `<style>` patches of every mounted instance of the view; the
+    /// next frame shows them.
+    pub fn apply(self) -> Result<(), nana_ui::runtime::view::HotReloadError> {
+        nana_ui::runtime::view::apply_hot_styles(&self.view, self.shape, self.styles)
+    }
+}
+
+/// Event emitted by [`watch_template_events`] for a settled `.vue` or Rust
+/// change.
+#[cfg(feature = "templates")]
+#[derive(Debug, Clone, PartialEq)]
+pub enum TemplateEvent {
+    Text(TemplateText),
+    Style(TemplateStyle),
+    Dev(DevSignal),
+}
+
+/// Watch `.vue` views compiled in hot mode (`Compiler::hot`) in `views`, plus
+/// the rest of `config`, forwarding [`TemplateEvent`] values to `on_event`.
+///
+/// Saves that change only static text or static `<style>` properties emit
+/// [`TemplateEvent::Text`] / [`TemplateEvent::Style`] in-process without
+/// running `rebuild`; anything else runs `rebuild` and emits
+/// [`TemplateEvent::Dev`].
+#[cfg(feature = "templates")]
+pub fn watch_template_events<F>(
     config: &DevConfig,
     views: impl Into<std::path::PathBuf>,
     runtime: &str,
     rebuild: RebuildCommand,
-    context: &RuntimeProgramContext<Message>,
+    on_event: F,
 ) -> Result<DevWatcher, notify::Error>
 where
-    Message: Send + 'static + From<DevSignal> + From<TemplateText>,
+    F: Fn(TemplateEvent) + Send + 'static,
 {
     use std::collections::HashMap;
     use std::sync::Mutex;
@@ -190,13 +222,14 @@ where
                 .collect()
         }
     };
+    type ViewSnapshot = (u64, Vec<String>, nana_ui_sfc::HotStyleSheet);
     let state =
-        move |sources: &[(String, String)]| -> Result<HashMap<String, (u64, Vec<String>)>, String> {
+        move |sources: &[(String, String)]| -> Result<HashMap<String, ViewSnapshot>, String> {
             Ok(nana_ui_sfc::Compiler::new(&runtime)
                 .hot_views(sources)
                 .map_err(|error| error.to_string())?
                 .into_iter()
-                .map(|view| (view.name, (view.shape, view.literals)))
+                .map(|view| (view.name, (view.shape, view.literals, view.styles)))
                 .collect())
         };
     let built = Mutex::new(
@@ -204,55 +237,85 @@ where
             .and_then(|sources| state(&sources))
             .unwrap_or_default(),
     );
-    let context = context.clone();
     DevWatcher::spawn(&config, move |batch| {
-        let rebuild_now = |context: &RuntimeProgramContext<Message>| {
+        let rebuild_now = || {
             let signal = match rebuild.run() {
                 RebuildOutcome::Rebuilt => DevSignal::Rebuilt,
                 RebuildOutcome::Failed(diagnostics) => DevSignal::BuildFailed(diagnostics),
             };
-            context.dispatch(Message::from(signal));
+            on_event(TemplateEvent::Dev(signal));
         };
         if batch
             .iter()
             .any(|request| !matches!(request, crate::ReloadRequest::Template { .. }))
         {
-            return rebuild_now(&context);
+            return rebuild_now();
         }
         let now = match read().and_then(|sources| state(&sources)) {
             Ok(now) => now,
             Err(error) => {
-                return context.dispatch(Message::from(DevSignal::BuildFailed(error)));
+                return on_event(TemplateEvent::Dev(DevSignal::BuildFailed(error)));
             }
         };
         let mut built = built
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let same_views = now.len() == built.len()
-            && now.iter().all(|(view, (shape, _))| {
+            && now.iter().all(|(view, (shape, _, _))| {
                 built
                     .get(view)
-                    .is_some_and(|(built_shape, _)| built_shape == shape)
+                    .is_some_and(|(built_shape, _, _)| built_shape == shape)
             });
         if !same_views {
             // The binary no longer matches: rebuild, and compare with that.
             *built = now;
             drop(built);
-            return rebuild_now(&context);
+            return rebuild_now();
         }
-        for (view, (shape, text)) in &now {
-            if built
-                .get(view)
-                .is_some_and(|(_, built_text)| built_text != text)
-            {
-                context.dispatch(Message::from(TemplateText {
-                    view: view.clone(),
-                    shape: *shape,
-                    text: text.clone(),
-                }));
+        for (view, (shape, text, styles)) in &now {
+            if let Some((_, built_text, built_styles)) = built.get(view) {
+                if built_text != text {
+                    on_event(TemplateEvent::Text(TemplateText {
+                        view: view.clone(),
+                        shape: *shape,
+                        text: text.clone(),
+                    }));
+                }
+                if built_styles != styles {
+                    on_event(TemplateEvent::Style(TemplateStyle {
+                        view: view.clone(),
+                        shape: *shape,
+                        styles: styles.clone(),
+                    }));
+                }
             }
         }
         *built = now;
+    })
+}
+
+/// Watch `.vue` views compiled in hot mode (`Compiler::hot`) in `views`,
+/// plus the rest of `config`: a save that changes only a view's static text
+/// or static `<style>` properties dispatches [`TemplateText`] /
+/// [`TemplateStyle`] without a rebuild; anything else rebuilds like
+/// [`watch_and_rebuild`]. `runtime` is the path the build script passed to
+/// `Compiler::new`, so shapes match the binary's.
+#[cfg(feature = "templates")]
+pub fn watch_templates<Message>(
+    config: &DevConfig,
+    views: impl Into<std::path::PathBuf>,
+    runtime: &str,
+    rebuild: RebuildCommand,
+    context: &RuntimeProgramContext<Message>,
+) -> Result<DevWatcher, notify::Error>
+where
+    Message: Send + 'static + From<DevSignal> + From<TemplateText> + From<TemplateStyle>,
+{
+    let context = context.clone();
+    watch_template_events(config, views, runtime, rebuild, move |event| match event {
+        TemplateEvent::Text(text) => context.dispatch(Message::from(text)),
+        TemplateEvent::Style(style) => context.dispatch(Message::from(style)),
+        TemplateEvent::Dev(signal) => context.dispatch(Message::from(signal)),
     })
 }
 

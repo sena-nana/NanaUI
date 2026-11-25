@@ -4,7 +4,7 @@ How quickly you see a UI change again depends on what you changed. Hot reload li
 
 | What changed | What happens | Magnitude |
 | --- | --- | --- |
-| Only static text in a `.vue` file | The text table is replaced; nodes, focus and state are untouched | No recompile, no restart |
+| Only static text or static `<style>` properties in a `.vue` file | The text table or dev style patch sheet is replaced; nodes, focus and state are untouched | No recompile, no restart |
 | Rust source | Recompile, hand over window geometry and state, then re-exec | 1.5–3.6 s, mostly linking |
 
 macOS / Apple Silicon, default dev profile, warmed-up incremental build, `cargo build -p component-gallery`: the application crate (18k lines) takes 1.5–1.6 s, including relinking the 131 MB debug binary; after touching `nana-ui-runtime` (127k lines), rebuilding the application takes 3.6 s, which also recompiles `nana-ui-scene` and `nana-ui`. Linking is slower on Windows. Measure once on your own machine with `cargo build -p <your-package> --timings`. The 0.4–1.5 s for recreating the window and GPU has not been re-measured.
@@ -43,7 +43,7 @@ let session = nana_ui_dev::restored_handoff()
     .unwrap_or_default();
 ```
 
-Changing only static text in a `.vue` file needs no restart. The build script turns on hot mode in debug, and the dev entry uses `watch_templates` from the `templates` feature. The `runtime` string must match the one passed to `Compiler::new`. If the shape changes (structure, bindings, script, or text spanning lines), or the change is not in a `.vue` file, it rebuilds as usual. Interpolated text and attribute values are not in the replacement table.
+Changing only static text or static `<style>` declarations in a `.vue` file needs no restart. The build script turns on hot mode in debug, and the dev entry uses `watch_templates` from the `templates` feature (with `From<DevSignal> + From<TemplateText> + From<TemplateStyle>`, or `watch_template_events`). The `runtime` string must match the one passed to `Compiler::new`. If the shape changes (structure, bindings, script, text spanning lines, or adding `transition` / `@keyframes` / combinators / new interactive pseudo-classes), or the change is not in a `.vue` file, it rebuilds as usual. Interpolated text and attribute values are not in the replacement table.
 
 ```rust
 let debug = std::env::var("PROFILE").as_deref() == Ok("debug");
@@ -58,7 +58,7 @@ let watcher = nana_ui_dev::watch_templates(
 )?;
 ```
 
-In `update`, call `apply()` on `TemplateText`. Nodes, focus, scroll and state are untouched; the new text appears on the next frame.
+In `update`, call `apply()` on `TemplateText` and `TemplateStyle`. Nodes, focus, scroll and state are untouched; the new text or styles appear on the next frame.
 
 ## Not yet covered
 

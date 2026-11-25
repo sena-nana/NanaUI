@@ -2,31 +2,31 @@
 
 use serde_json::Value;
 
+use crate::source_map::{SOURCE_MAP_SCHEMA, SourceMap};
+
 /// Remap one rustc JSON diagnostic line. Invalid JSON and diagnostics without
 /// a generated-file span are returned byte-for-byte unchanged.
 pub fn remap_json_line(line: &str, map_json: &str) -> String {
     let Ok(mut value) = serde_json::from_str::<Value>(line) else {
         return line.to_owned();
     };
-    let Ok(map) = serde_json::from_str::<Value>(map_json) else {
+    let Ok(map) = SourceMap::from_json(map_json) else {
         return line.to_owned();
     };
-    if map.get("schema").and_then(Value::as_str) != Some("nana-sfc-source-map/1") {
+    if map.schema != SOURCE_MAP_SCHEMA {
         return line.to_owned();
     }
-    let generated = map
-        .get("generated")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let segments = map
-        .get("segments")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
+    let generated = &map.generated;
     let mut changed = false;
+    let mut first_source: Option<String> = None;
     if let Some(spans) = value.get_mut("spans").and_then(Value::as_array_mut) {
         for span in spans {
-            changed |= remap_span(span, generated, &segments);
+            if let Some(file) = remap_span(span, generated, &map) {
+                changed = true;
+                if first_source.is_none() {
+                    first_source = Some(file);
+                }
+            }
         }
     }
     if !changed {
@@ -36,55 +36,42 @@ pub fn remap_json_line(line: &str, map_json: &str) -> String {
         .get("rendered")
         .and_then(Value::as_str)
         .map(str::to_owned)
+        && let Some(source) = first_source
+        && !source.is_empty()
     {
-        let mut text = rendered;
-        for segment in &segments {
-            let source = segment
-                .get("source")
-                .and_then(|v| v.get("file"))
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            if !source.is_empty() {
-                text = text.replace(generated, source);
-            }
-        }
-        value["rendered"] = Value::String(text);
+        value["rendered"] = Value::String(rendered.replace(generated.as_str(), &source));
     }
     serde_json::to_string(&value).unwrap_or_else(|_| line.to_owned())
 }
 
-fn remap_span(span: &mut Value, generated: &str, segments: &[Value]) -> bool {
-    let Some(file_name) = span.get("file_name").and_then(Value::as_str) else {
-        return false;
-    };
+fn remap_span(span: &mut Value, generated: &str, map: &SourceMap) -> Option<String> {
+    let file_name = span.get("file_name").and_then(Value::as_str)?;
     if file_name != generated
         && !file_name.ends_with(&format!("\\{generated}"))
         && !file_name.ends_with(&format!("/{generated}"))
     {
-        return false;
+        return None;
     }
-    let line = span.get("line_start").and_then(Value::as_u64).unwrap_or(0) as usize;
-    let Some(segment) = segments.iter().find(|segment| {
-        let range = segment.get("generated").unwrap_or(&Value::Null);
-        let start = range.get("start_line").and_then(Value::as_u64).unwrap_or(0) as usize;
-        let end = range.get("end_line").and_then(Value::as_u64).unwrap_or(0) as usize;
-        line >= start && line < end
-    }) else {
-        return false;
-    };
-    let source = segment.get("source").unwrap_or(&Value::Null);
-    let file = source
-        .get("file")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let source_line = source.get("line").and_then(Value::as_u64).unwrap_or(1);
-    let source_column = source.get("column").and_then(Value::as_u64).unwrap_or(1);
-    span["file_name"] = Value::String(file.to_owned());
-    span["line_start"] = Value::from(source_line);
-    span["line_end"] = Value::from(source_line);
-    span["column_start"] = Value::from(source_column);
-    span["column_end"] = Value::from(source_column);
-    true
+    let line_start = span.get("line_start").and_then(Value::as_u64).unwrap_or(0) as usize;
+    let line_end = span
+        .get("line_end")
+        .and_then(Value::as_u64)
+        .unwrap_or(line_start as u64) as usize;
+    let col_start = span
+        .get("column_start")
+        .and_then(Value::as_u64)
+        .unwrap_or(1) as usize;
+    let col_end = span
+        .get("column_end")
+        .and_then(Value::as_u64)
+        .unwrap_or(col_start as u64) as usize;
+    let resolved = map.generated_range_to_vue(line_start, col_start, line_end, col_end)?;
+    span["file_name"] = Value::String(resolved.file.clone());
+    span["line_start"] = Value::from(resolved.start_line as u64);
+    span["line_end"] = Value::from(resolved.end_line as u64);
+    span["column_start"] = Value::from(resolved.start_column as u64);
+    span["column_end"] = Value::from(resolved.end_column as u64);
+    Some(resolved.file)
 }
 
 #[cfg(test)]

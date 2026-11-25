@@ -38,7 +38,8 @@ use std::ops::Range;
 use crate::{Attr, AttrName, AttrValue, Element, Node};
 use nana_ui_core::{
     AnimationDirection, AnimationFillMode, AnimationIteration, AnimationPlayState, ColorFilter,
-    Easing, LengthSpec, MotionCurve, PaintColor, PaintTransform, StepJump,
+    Easing, HotSheetAxis, HotSheetQuery, HotStylePatch, HotStyleRule, HotStyleSheet, LengthSpec,
+    MotionCurve, PaintColor, PaintTransform, StepJump,
 };
 use nana_ui_css::css_motion::{
     ParsedAnimation, css_list_at, easing_from_css_keyword, first_timing_token,
@@ -84,6 +85,8 @@ struct Rule {
     rank: Rank,
     /// Rust setter statements using the local `__nana_patch` module alias.
     patch: String,
+    /// Pure-data patch for dev-only `<style>` hot reload.
+    hot_patch: HotStylePatch,
     /// The `@container` query guarding the rule, in [`Sheet::queries`].
     query: Option<usize>,
 }
@@ -661,10 +664,12 @@ fn compile_rules(
             if entries.is_empty() {
                 continue;
             }
-            let patch = patch_dual(&entries, vars_light, vars_dark);
+            let written = compile_dual_written(&entries, vars_light, vars_dark);
+            let patch = written.patch_rust_stmts("__nana_patch");
             if patch.is_empty() {
                 continue;
             }
+            let hot_patch = HotStylePatch::new(written.layout, written.written);
             for selector in &rule.selectors {
                 let classes = if let Some(classes) = class_selector(selector) {
                     classes.to_vec()
@@ -685,6 +690,7 @@ fn compile_rules(
                     pseudo: 0,
                     rank: rank(important, selector.specificity, rule.source_order),
                     patch: patch.clone(),
+                    hot_patch: hot_patch.clone(),
                     query,
                 });
             }
@@ -715,10 +721,12 @@ fn compile_interactive_rules(
             if entries.is_empty() {
                 continue;
             }
-            let patch = patch_dual(&entries, vars_light, vars_dark);
+            let written = compile_dual_written(&entries, vars_light, vars_dark);
+            let patch = written.patch_rust_stmts("__nana_patch");
             if patch.is_empty() {
                 continue;
             }
+            let hot_patch = HotStylePatch::new(written.layout, written.written);
             let (classes, pseudo) = match &target {
                 SelectorTarget::Plain(classes, pseudo) => (classes.clone(), *pseudo),
                 SelectorTarget::Combinator(ancestors, subject, pseudo) => (
@@ -736,6 +744,7 @@ fn compile_interactive_rules(
                 pseudo,
                 rank: rank(important, rule.selector.specificity, rule.source_order),
                 patch,
+                hot_patch,
                 query,
             });
         }
@@ -1719,7 +1728,19 @@ impl Sheet {
 
     /// The statics of this sheet, `name` the sheet's.
     fn items(&self, name: &syn::Ident, runtime: &TokenStream) -> SheetItems {
-        let mut classes = Vec::new();
+        self.items_with_hot(name, runtime, Vec::new(), None)
+    }
+
+    /// The statics of this sheet, `name` the sheet's, optionally seeded with
+    /// pre-collected template classes and hot-mode view metadata.
+    fn items_with_hot(
+        &self,
+        name: &syn::Ident,
+        runtime: &TokenStream,
+        initial_classes: Vec<String>,
+        hot_view: Option<&str>,
+    ) -> SheetItems {
+        let mut classes = initial_classes;
         let mut patches: BTreeMap<&str, usize> = BTreeMap::new();
         let mut queries: BTreeSet<usize> = BTreeSet::new();
         let mut items = Vec::new();
@@ -1820,7 +1841,17 @@ impl Sheet {
                 }
             });
         }
-        if animations.is_empty() {
+        if let Some(view_name) = hot_view {
+            items.push(quote! {
+                static #name: #runtime::view::Sheet = #runtime::view::Sheet::with_hot(
+                    &[#(#rules),*],
+                    &[#(#transitions),*],
+                    &[#(#animations),*],
+                    #view_name,
+                    &[#(#classes),*],
+                );
+            });
+        } else if animations.is_empty() {
             items.push(quote! {
                 static #name: #runtime::view::Sheet =
                     #runtime::view::Sheet::new(&[#(#rules),*], &[#(#transitions),*]);
@@ -2154,6 +2185,8 @@ pub(crate) struct Styler<'a> {
     name: syn::Ident,
     runtime: &'a TokenStream,
     classes: Vec<String>,
+    sheet_classes: BTreeSet<String>,
+    attach_all: bool,
     ancestors: Vec<AncestorFrame>,
     /// Whether an element uses the sheet, so its statics are needed.
     used: bool,
@@ -2167,11 +2200,23 @@ impl<'a> Styler<'a> {
         name: syn::Ident,
         runtime: &'a TokenStream,
     ) -> Self {
+        let mut sheet_classes = BTreeSet::new();
+        for rule in &sheet.rules {
+            sheet_classes.extend(rule.classes.iter().cloned());
+        }
+        for rule in &sheet.transitions {
+            sheet_classes.extend(rule.classes.iter().cloned());
+        }
+        for rule in &sheet.animations {
+            sheet_classes.extend(rule.classes.iter().cloned());
+        }
         Self {
             sheet,
             name,
             runtime,
             classes,
+            sheet_classes,
+            attach_all: false,
             ancestors: Vec::new(),
             used: false,
             warnings: Vec::new(),
@@ -2355,13 +2400,23 @@ impl<'a> Styler<'a> {
                 .map(|at| at as u16)
         };
         for (class, span) in fixed {
+            let known_in_sheet = self.sheet_classes.contains(&class)
+                || self.sheet.referenced_classes.contains(&class);
             match index(&self.classes, &class) {
-                Some(at) => injected.push(Attr {
-                    name: AttrName::Directive("class".into(), span),
-                    value: AttrValue::Verbatim(quote!(#runtime::view::Class::new(&#name, #at))),
-                }),
-                None if self.sheet.referenced_classes.contains(&class) => {}
-                None => self.warn(
+                Some(at) if known_in_sheet || self.attach_all => {
+                    injected.push(Attr {
+                        name: AttrName::Directive("class".into(), span),
+                        value: AttrValue::Verbatim(quote!(#runtime::view::Class::new(&#name, #at))),
+                    });
+                    if !known_in_sheet {
+                        self.warn(
+                            span,
+                            format!("`<{tag}>`: no rule in `<style>` uses class `{class}`"),
+                        );
+                    }
+                }
+                Some(_) | None if self.sheet.referenced_classes.contains(&class) => {}
+                Some(_) | None => self.warn(
                     span,
                     format!("`<{tag}>`: no rule in `<style>` uses class `{class}`"),
                 ),
@@ -2376,8 +2431,12 @@ impl<'a> Styler<'a> {
             }
         }
         for (class, condition, span) in conditional {
-            let Some(at) = index(&self.classes, &class) else {
-                if !self.sheet.referenced_classes.contains(&class) {
+            let known_in_sheet = self.sheet_classes.contains(&class)
+                || self.sheet.referenced_classes.contains(&class);
+            let Some(at) =
+                index(&self.classes, &class).filter(|_| known_in_sheet || self.attach_all)
+            else {
+                if !known_in_sheet {
                     self.warn(
                         span,
                         format!("`<{tag}>`: no rule in `<style>` uses class `{class}`"),
@@ -2385,6 +2444,12 @@ impl<'a> Styler<'a> {
                 }
                 continue;
             };
+            if !known_in_sheet {
+                self.warn(
+                    span,
+                    format!("`<{tag}>`: no rule in `<style>` uses class `{class}`"),
+                );
+            }
             let condition = match condition {
                 Expr::Path(_) => quote!(#condition),
                 condition => quote!(move || #condition),
@@ -2417,6 +2482,164 @@ impl<'a> Styler<'a> {
 pub struct CompiledStyles {
     pub items: Vec<TokenStream>,
     pub warnings: Vec<StyleWarning>,
+}
+
+/// What compiling a view's styles in hot mode adds, plus the pure-data
+/// [`HotStyleSheet`] and structural `style_shape` token stream.
+pub struct CompiledHotStyles {
+    pub items: Vec<TokenStream>,
+    pub warnings: Vec<StyleWarning>,
+    pub hot_sheet: HotStyleSheet,
+    pub style_shape: TokenStream,
+}
+
+fn collect_template_classes(nodes: &[Node], out: &mut BTreeSet<String>) {
+    for node in nodes {
+        let Node::Element(element) = node else {
+            continue;
+        };
+        for attr in &element.attrs {
+            match (&attr.name, &attr.value) {
+                (AttrName::Plain(name), AttrValue::Lit(Expr::Lit(literal))) if name == "class" => {
+                    if let Lit::Str(text) = &literal.lit {
+                        for class in text.value().split_whitespace() {
+                            out.insert(class.to_owned());
+                        }
+                    }
+                }
+                (AttrName::Directive(directive, _), AttrValue::Expr(_))
+                    if directive.starts_with("class:") =>
+                {
+                    out.insert(directive["class:".len()..].to_owned());
+                }
+                _ => {}
+            }
+            if let AttrValue::View(slot) = &attr.value {
+                collect_template_classes(slot, out);
+            }
+        }
+        collect_template_classes(&element.children, out);
+    }
+}
+
+fn hot_query(query: &ContainerQuery) -> HotSheetQuery {
+    let axis = match query.axis {
+        ContainerAxis::Inline => HotSheetAxis::Inline,
+        ContainerAxis::Block => HotSheetAxis::Block,
+        ContainerAxis::Width => HotSheetAxis::Width,
+        ContainerAxis::Height => HotSheetAxis::Height,
+    };
+    HotSheetQuery {
+        name: query.name.clone(),
+        axis,
+        intervals: query
+            .intervals
+            .iter()
+            .map(|interval| (interval.lo, interval.hi))
+            .collect(),
+    }
+}
+
+fn hot_style_shape(sheet: &Sheet, runtime: &TokenStream) -> TokenStream {
+    let combinators = sheet.combinators.iter().map(|target| {
+        let synth = &target.synth_class;
+        let subject = &target.subject;
+        let ancestors = target.ancestors.iter().map(|(comb, classes)| {
+            let kind = match comb {
+                Combinator::Child => ">",
+                Combinator::Descendant => " ",
+                Combinator::AdjacentSibling => "+",
+                Combinator::SubsequentSibling => "~",
+            };
+            quote!((#kind, [#(#classes),*]))
+        });
+        quote!((#synth, [#(#ancestors),*], [#(#subject),*]);)
+    });
+    let mut ordered_trans: Vec<&TransitionRule> = sheet.transitions.iter().collect();
+    ordered_trans.sort_by_key(|rule| rule.rank);
+    let transitions = ordered_trans.iter().map(|rule| {
+        let classes = &rule.classes;
+        let pseudo = rule.pseudo;
+        let animate = animate_tokens(&rule.items, runtime);
+        quote!((#pseudo, [#(#classes),*], #animate);)
+    });
+    let mut ordered_anims: Vec<&AnimationRule> = sheet.animations.iter().collect();
+    ordered_anims.sort_by_key(|rule| rule.rank);
+    let animations = ordered_anims.iter().map(|rule| {
+        let classes = &rule.classes;
+        let pseudo = rule.pseudo;
+        let entries = rule.items.iter().map(|anim| {
+            let stops = anim
+                .stops
+                .iter()
+                .map(|stop| keyframe_stop_tokens(stop, runtime));
+            let item = animation_item_tokens(anim, quote!(&[#(#stops),*]), runtime);
+            quote!(#item)
+        });
+        quote!((#pseudo, [#(#classes),*], [#(#entries),*]);)
+    });
+    let interactive_keys: BTreeSet<(Vec<String>, u8)> = sheet
+        .rules
+        .iter()
+        .filter(|rule| rule.pseudo != 0)
+        .map(|rule| (rule.classes.clone(), rule.pseudo))
+        .collect();
+    let pseudos = interactive_keys
+        .iter()
+        .map(|(classes, pseudo)| quote!((#pseudo, [#(#classes),*]);));
+    quote! {
+        {
+            #(#combinators)*
+            #(#transitions)*
+            #(#animations)*
+            #(#pseudos)*
+        }
+    }
+}
+
+/// Compile `css` against `nodes` for development hot reload: attaches every
+/// template class to a [`Sheet::with_hot`], returns the pure-data
+/// [`HotStyleSheet`] and structural `style_shape` (excluding rule declarations
+/// so static `<style>` edits do not invalidate the view's shape).
+pub fn compile_styles_hot(
+    css: &str,
+    nodes: &mut [Node],
+    runtime: &TokenStream,
+    view_name: &str,
+) -> CompiledHotStyles {
+    let sheet = parse_sheet(css, true);
+    let mut template_classes = BTreeSet::new();
+    collect_template_classes(nodes, &mut template_classes);
+    let initial_classes: Vec<String> = template_classes.into_iter().collect();
+    let name = format_ident!("__NANA_SHEET");
+    let SheetItems { classes, items } =
+        sheet.items_with_hot(&name, runtime, initial_classes, Some(view_name));
+    let mut styler = Styler::new(&sheet, classes, name, runtime);
+    styler.attach_all = true;
+    styler.nodes(nodes);
+    let mut warnings = sheet.warnings.clone();
+    warnings.extend(styler.warnings);
+
+    let mut ordered_rules: Vec<&Rule> = sheet.rules.iter().collect();
+    ordered_rules.sort_by_key(|rule| rule.rank);
+    let hot_sheet = HotStyleSheet {
+        rules: ordered_rules
+            .iter()
+            .map(|rule| HotStyleRule {
+                classes: rule.classes.clone(),
+                pseudo: rule.pseudo,
+                patch: rule.hot_patch.clone(),
+                query: rule.query.map(|idx| hot_query(&sheet.queries[idx])),
+            })
+            .collect(),
+    };
+    let style_shape = hot_style_shape(&sheet, runtime);
+    CompiledHotStyles {
+        items: if styler.used { items } else { Vec::new() },
+        warnings,
+        hot_sheet,
+        style_shape,
+    }
 }
 
 /// Compile `css` against the elements of `nodes`: each element's
@@ -3262,5 +3485,35 @@ mod tests {
                 Span::call_site()
             });
         assert_eq!(sheet_warnings.len(), 2, "{sheet_warnings:?}");
+    }
+
+    #[test]
+    fn compile_styles_hot_keeps_shape_stable_across_static_declaration_edits() {
+        let mut nodes_a = vec![element("card", &["open"])];
+        let a = compile_styles_hot(
+            ".card { padding: 4px; opacity: 0.9; }\n.card.open { opacity: 0.5; }",
+            &mut nodes_a,
+            &quote!(x),
+            "Card",
+        );
+        let mut nodes_b = vec![element("card", &["open"])];
+        let b = compile_styles_hot(
+            ".card { padding: 16px; }\n.card.open { opacity: 1; }",
+            &mut nodes_b,
+            &quote!(x),
+            "Card",
+        );
+        assert_eq!(a.style_shape.to_string(), b.style_shape.to_string());
+        assert_ne!(a.hot_sheet, b.hot_sheet);
+        assert_eq!(b.hot_sheet.rules.len(), 2);
+
+        let mut nodes_c = vec![element("card", &["open"])];
+        let c = compile_styles_hot(
+            ".card { padding: 16px; transition: opacity 150ms; }",
+            &mut nodes_c,
+            &quote!(x),
+            "Card",
+        );
+        assert_ne!(b.style_shape.to_string(), c.style_shape.to_string());
     }
 }

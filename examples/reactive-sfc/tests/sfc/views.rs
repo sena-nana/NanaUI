@@ -196,6 +196,138 @@ fn static_text_is_swapped_in_the_running_tree() {
     ));
 }
 
+/// A debug build keeps `<style>` rules replaceable in-process: changing
+/// static CSS declarations, removing a property (reverting to base), or
+/// adding a rule for an existing template class updates live nodes without
+/// rebuilding or losing node IDs, while changing a transition or script
+/// changes the shape and returns `ShapeChanged`.
+#[test]
+fn static_styles_are_swapped_in_the_running_tree() {
+    let mut files: Vec<_> = std::fs::read_dir("views")
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "vue"))
+        .collect();
+    files.sort();
+    let sources: Vec<(String, String)> = files
+        .iter()
+        .map(|path| {
+            (
+                path.display().to_string(),
+                std::fs::read_to_string(path).unwrap(),
+            )
+        })
+        .collect();
+    let compiler = nana_ui_sfc::Compiler::new("::nana_ui::runtime");
+    let hot = compiler.hot_views(&sources).unwrap();
+    let list = hot.iter().find(|view| view.name == "TodoList").unwrap();
+
+    let mut cx = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let page = cx.mount_view_root(document, views::app).unwrap().roots()[0];
+    let todos = cx
+        .resolve_assembly_path(page, "todo-section/todos")
+        .unwrap();
+    assert_eq!(
+        cx.world().node_style(todos).unwrap().layout.opacity,
+        Some(0.6)
+    );
+
+    let edited: Vec<(String, String)> = sources
+        .iter()
+        .map(|(file, text)| {
+            if file.ends_with("TodoList.vue") {
+                (
+                    file.clone(),
+                    text.replace(
+                        ".todos.empty { opacity: 0.6; }",
+                        ".todos.empty { opacity: 0.25; padding: 12px; }",
+                    ),
+                )
+            } else {
+                (file.clone(), text.clone())
+            }
+        })
+        .collect();
+    let updated = compiler.hot_views(&edited).unwrap();
+    let updated_list = updated.iter().find(|view| view.name == "TodoList").unwrap();
+    assert_eq!(updated_list.shape, list.shape);
+    nana_ui::runtime::view::apply_hot_styles(
+        "TodoList",
+        updated_list.shape,
+        updated_list.styles.clone(),
+    )
+    .unwrap();
+    cx.flush_reactive().unwrap();
+    let layout = &cx.world().node_style(todos).unwrap().layout;
+    assert_eq!(layout.opacity, Some(0.25));
+    assert_eq!(layout.padding, Some(nana_ui::runtime::LengthSpec::Px(12.0)));
+    assert_eq!(
+        cx.resolve_assembly_path(page, "todo-section/todos")
+            .unwrap(),
+        todos,
+        "node identity preserved across style hot reload"
+    );
+
+    // Removing padding reverts it back to base (None).
+    let reverted: Vec<(String, String)> = sources
+        .iter()
+        .map(|(file, text)| {
+            if file.ends_with("TodoList.vue") {
+                (
+                    file.clone(),
+                    text.replace(
+                        ".todos.empty { opacity: 0.6; }",
+                        ".todos.empty { opacity: 0.9; }",
+                    ),
+                )
+            } else {
+                (file.clone(), text.clone())
+            }
+        })
+        .collect();
+    let reverted_hot = compiler.hot_views(&reverted).unwrap();
+    let reverted_list = reverted_hot
+        .iter()
+        .find(|view| view.name == "TodoList")
+        .unwrap();
+    nana_ui::runtime::view::apply_hot_styles(
+        "TodoList",
+        reverted_list.shape,
+        reverted_list.styles.clone(),
+    )
+    .unwrap();
+    cx.flush_reactive().unwrap();
+    let layout = &cx.world().node_style(todos).unwrap().layout;
+    assert_eq!(layout.opacity, Some(0.9));
+    assert_eq!(layout.padding, None);
+
+    // Changing transition changes the shape.
+    let transition_changed: Vec<(String, String)> = sources
+        .iter()
+        .map(|(file, text)| {
+            (
+                file.clone(),
+                text.replace(
+                    "transition: opacity 120ms ease-out;",
+                    "transition: opacity 300ms linear;",
+                ),
+            )
+        })
+        .collect();
+    let changed = compiler.hot_views(&transition_changed).unwrap();
+    let changed_list = changed.iter().find(|view| view.name == "TodoList").unwrap();
+    assert_ne!(changed_list.shape, list.shape);
+    assert!(matches!(
+        nana_ui::runtime::view::apply_hot_styles(
+            "TodoList",
+            changed_list.shape,
+            changed_list.styles.clone()
+        ),
+        Err(nana_ui::runtime::view::HotReloadError::ShapeChanged(_))
+    ));
+}
+
 /// `<style>` compiled at build time: static classes, a conditional class,
 /// and a transition that animates the change.
 #[test]

@@ -521,7 +521,7 @@ view! { <SwitchRow on={Action::Mute} label="静音" checked={muted} /> }
 
 ## 高级用法：`.vue` 方言
 
-日常写视图用 `view!` 或 Rust 写法。`.vue` 文件适合两种情况：从 Vue 迁移、想逐文件对照着改。或者希望模板、脚本、样式分在独立文件里。它编译出来的代码和 `view!` 走同一个代码生成器、同一套 Rust 调用。能力上没有多出来的东西。多出来的是编译器能看到整段脚本。所以能做下面的依赖分析和常量折叠。代价是脚本和模板表达式没有 rust-analyzer 支持。
+日常写视图用 `view!` 或 Rust 写法。`.vue` 文件适合两种情况：从 Vue 迁移、想逐文件对照着改。或者希望模板、脚本、样式分在独立文件里。它编译出来的代码和 `view!` 走同一个代码生成器、同一套 Rust 调用。能力上没有多出来的东西。多出来的是编译器能看到整段脚本。所以能做下面的依赖分析和常量折叠。编辑器可通过 `nana-sfc-lsp` 桥接 `rust-analyzer`，把 `.vue` 的 `<script>` 与模板表达式映射到虚拟 `$OUT_DIR/nana_views.rs` 上获得类型诊断、悬停提示、补全与跳转定义。
 
 视图也可以写成 `.vue` 文件：模板是 Vue 语法。`<script setup lang="rust">` 里写 Rust。`nana-ui-sfc` 在构建期把它们编译成普通的 Rust 函数。模板部分和 `view!` 共用 `nana-ui-view-codegen` 这一个代码生成器。
 
@@ -569,9 +569,9 @@ pub mod views {
 - `<T id="files" :count="n" />` 是 `t(..)`。参数和 `{{ }}` 插值一样分类：单独的信号读成 `n.get()` 并声明为依赖。只读常量的消息写成 `Fixed(..)`，只写一次。`count="3"` 是字符串参数，数字写 `:count="3"`。`locale="ar"` 在构建时检查。`:locale="sig"` 和其他属性一样是绑定。
 - 内置标签总是建内置的那个。同一批里和它同名的视图（例如 `T.vue`）仍是 Rust 能调用的函数（`views::t(..)`），但在模板里写它的标签是编译错误，不会悄悄换成内置的。
 - `<style>`（写不写 `scoped` 都一样。总是只作用于本组件）在构建时编译。见下文"样式表"。模板里仍然要遵守 Rust 的所有权规则。例如同一个值既要传给组件又要被事件闭包使用时。得写 `todo.clone()`。
-- 生成的代码用 prettyplease 排版后写进 `$OUT_DIR/nana_views.rs`，同时写出版本化的 `$OUT_DIR/nana_views.map.json`。rustc 原生 JSON 诊断仍指向生成文件；把诊断逐行送给 `nana-sfc-remap <nana_views.map.json>` 后，primary/child span 会回指 `.vue` 文件、行和列。模板和脚本本身的错误（语法、标签不配对、缺 `key`、缺参数、computed 成环）在构建时报出。带文件、行、列。
+- 生成的代码用 prettyplease 排版后写进 `$OUT_DIR/nana_views.rs`，同时写出包含 token 级双向映射的版本化 `$OUT_DIR/nana_views.map.json`。rustc 原生 JSON 诊断仍指向生成文件；把诊断逐行送给 `nana-sfc-remap <nana_views.map.json>` 后，primary/child span 会回指 `.vue` 文件、行和列；编辑器里直接运行 `nana-sfc-lsp` 即可将 `.vue` 文档同步为虚拟 Rust 文档转发给 `rust-analyzer`，把诊断、悬停类型、补全与跳转映射回 `.vue`。模板和脚本本身的错误（语法、标签不配对、缺 `key`、缺参数、computed 成环）在构建时报出。带文件、行、列。
 
-开发期热重载：构建脚本写 `Compiler::new(..).hot(debug)`。只改 `.vue` 里的静态文字时。`nana-ui-dev` 的 `watch_templates` 把新文字送进正在运行的窗口。不重建。改了别的就照常重建。见 `docs/reference/hot-reload.md`。
+开发期热重载：构建脚本写 `Compiler::new(..).hot(debug)`。只改 `.vue` 里的静态文字或静态 `<style>` 属性时。`nana-ui-dev` 的 `watch_templates`（`TemplateText` / `TemplateStyle`）把新文字或新样式补丁直接送进正在运行的窗口。不重建。改了别的就照常重建。见 `docs/reference/hot-reload.md`。
 
 ### 编译器能看到什么
 

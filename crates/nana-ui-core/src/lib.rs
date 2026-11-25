@@ -185,7 +185,9 @@ pub use style_model::{
     ColorOverrides, ControlSemantics, PaintColor, PaintColorSlots, SemanticColor, SemanticColorMix,
     SemanticColorRole, SemanticPalette, StyleModelRef, ThemeColorPairRef, intern_theme_color_pair,
 };
-pub use style_patch::StylePatch;
+pub use style_patch::{
+    HotSheetAxis, HotSheetQuery, HotStylePatch, HotStyleRule, HotStyleSheet, StylePatch,
+};
 pub use tab_drag::{
     TabDragGroup, TabDragLease, TabDragRect, TabDragSurface, TabDropIndicator, TabStripPaint,
     drop_before_index, reorder_changes_position, tab_at,

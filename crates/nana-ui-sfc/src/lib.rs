@@ -33,13 +33,18 @@
 
 mod analyze;
 pub mod diagnostics;
+pub mod lsp;
 mod parse;
+pub mod source_map;
 
 use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
 
 use nana_ui_view_codegen::{Attr, AttrName, AttrValue, Element, Node, TextPart};
+pub use nana_ui_view_codegen::{
+    HotSheetAxis, HotSheetQuery, HotStylePatch, HotStyleRule, HotStyleSheet,
+};
 use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote, quote_spanned};
 use syn::spanned::Spanned;
@@ -82,54 +87,31 @@ pub struct Output {
     pub source_map: String,
 }
 
-const SOURCE_MAP_SCHEMA: &str = "nana-sfc-source-map/1";
-
-#[derive(Debug, Clone, serde::Serialize)]
-struct SourceSegment {
-    generated: GeneratedRange,
-    source: SourcePoint,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-struct GeneratedRange {
-    start_line: usize,
-    start_column: usize,
-    end_line: usize,
-    end_column: usize,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-struct SourcePoint {
-    file: String,
-    line: usize,
-    column: usize,
-}
-
-#[derive(Debug, serde::Serialize)]
-struct SourceMapFile<'a> {
-    schema: &'static str,
-    generated: &'a str,
-    segments: Vec<SourceSegment>,
-}
-
 pub struct Compiler {
     runtime: TokenStream,
     hot: bool,
 }
 
 /// One view's hot-reloadable state: the hash of everything but its static
-/// text, and that text in template order (see [`Compiler::hot`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// text and static `<style>` declarations, plus the static text and styles in
+/// template/cascade order (see [`Compiler::hot`]).
+#[derive(Debug, Clone, PartialEq)]
 pub struct HotView {
     /// The view's name, the key the running application knows it by.
     pub name: String,
     pub shape: u64,
     pub literals: Vec<String>,
+    pub styles: HotStyleSheet,
 }
 
 /// A compiled view: its item, report section, warnings, and in hot mode its
-/// shape and static text.
-type CompiledView = (TokenStream, String, Vec<String>, Option<(u64, Vec<String>)>);
+/// shape, static text, and hot style sheet.
+type CompiledView = (
+    TokenStream,
+    String,
+    Vec<String>,
+    Option<(u64, Vec<String>, HotStyleSheet)>,
+);
 
 /// FNV-1a: stable across builds and processes, which the shape needs.
 fn stable_hash(text: &str) -> u64 {
@@ -185,68 +167,6 @@ fn without_source_sites(tokens: &str) -> String {
         }
         rest = &rest[end..];
     }
-}
-
-fn finalize_source_map(rendered: &str) -> (String, String) {
-    let mut lines: Vec<String> = rendered.lines().map(str::to_owned).collect();
-    let mut markers = Vec::new();
-    let mut marker_lines = Vec::new();
-    for (index, line) in lines.iter().enumerate() {
-        let Some(start) = line.find("__NANA_SFC_MARKER__|") else {
-            continue;
-        };
-        let value = &line[start..];
-        let value = value
-            .split('"')
-            .next()
-            .unwrap_or(value)
-            .trim_end_matches(';');
-        let mut parts = value.split('|');
-        let _ = parts.next();
-        let Some(file) = parts.next() else { continue };
-        let Some(line_no) = parts.next().and_then(|v| v.parse().ok()) else {
-            continue;
-        };
-        let Some(column) = parts.next().and_then(|v| v.parse().ok()) else {
-            continue;
-        };
-        let file = file
-            .replace("%5C", "\\")
-            .replace("%7C", "|")
-            .replace("%25", "%");
-        markers.push((index + 1, file, line_no, column));
-        marker_lines.push(index);
-    }
-    for index in marker_lines {
-        lines[index].clear();
-    }
-    let mut segments = Vec::with_capacity(markers.len());
-    for (index, (line, file, source_line, source_column)) in markers.iter().enumerate() {
-        let end_line = markers
-            .get(index + 1)
-            .map_or(lines.len() + 1, |next| next.0);
-        segments.push(SourceSegment {
-            generated: GeneratedRange {
-                start_line: *line,
-                start_column: 1,
-                end_line,
-                end_column: 1,
-            },
-            source: SourcePoint {
-                file: file.clone(),
-                line: *source_line,
-                column: *source_column,
-            },
-        });
-    }
-    let code = lines.join("\n") + if rendered.ends_with('\n') { "\n" } else { "" };
-    let map = serde_json::to_string_pretty(&SourceMapFile {
-        schema: SOURCE_MAP_SCHEMA,
-        generated: "nana_views.rs",
-        segments,
-    })
-    .expect("source map serializes");
-    (code, map + "\n")
 }
 
 /// Replace every text node that is only static text with a read of the
@@ -329,11 +249,12 @@ impl Compiler {
             .map(|(file, component)| {
                 let name = component.name.clone();
                 let (_, _, _, state) = hot.component(file, component, &known)?;
-                let (shape, literals) = state.expect("hot mode records the state");
+                let (shape, literals, styles) = state.expect("hot mode records the state");
                 Ok(HotView {
                     name,
                     shape,
                     literals,
+                    styles,
                 })
             })
             .collect()
@@ -351,19 +272,24 @@ impl Compiler {
             .map(|(_, c)| (c.name.clone(), c.props.clone()))
             .collect();
         let mut items = Vec::new();
+        let mut item_sources: Vec<(&str, &str)> = Vec::new();
         let mut report = String::new();
         let mut warnings = Vec::new();
-        for (file, component) in components {
+        for ((file, component), (_, source_text)) in components.into_iter().zip(sources.iter()) {
             let (item, section, found, _) = self.component(file, component, &known)?;
             items.push(item);
+            item_sources.push((file, source_text.as_str()));
             report.push_str(&section);
             warnings.extend(found.into_iter().map(|w| format!("{file}: {w}")));
         }
         let runtime = &self.runtime;
         // Signatures (`Signal<T>`, `impl IntoView`) resolve at module scope.
-        let file: syn::File = syn::parse2(quote! {
+        let header = quote! {
             #[allow(unused_imports)]
             use #runtime::view::*;
+        };
+        let file: syn::File = syn::parse2(quote! {
+            #header
             #(#items)*
         })
         .map_err(|error| Error {
@@ -373,7 +299,13 @@ impl Compiler {
             message: error.to_string(),
         })?;
         let rendered = prettyplease::unparse(&file);
-        let (code, source_map) = finalize_source_map(&rendered);
+        let mapped_items: Vec<(&str, &str, &TokenStream)> = item_sources
+            .iter()
+            .zip(items.iter())
+            .map(|((file, text), item)| (*file, *text, item))
+            .collect();
+        let (code, map) = source_map::finalize_source_map(&rendered, &header, &mapped_items);
+        let source_map = map.to_json_pretty();
         Ok(Output {
             code,
             report,
@@ -418,6 +350,7 @@ impl Compiler {
     ) -> Result<CompiledView, Error> {
         let Component {
             name,
+            name_span,
             props,
             script,
             mut template,
@@ -447,14 +380,20 @@ impl Compiler {
         analysis.finish();
         // Classes against the view's `<style>`, after the analysis has seen
         // their conditions and before bindings are rewritten.
-        let nana_ui_view_codegen::CompiledStyles {
-            items: style_items,
-            warnings: style_warnings,
-        } = nana_ui_view_codegen::compile_styles(
-            style.as_ref().map_or("", |style| style.css.as_str()),
-            &mut template,
-            &self.runtime,
-        );
+        let css = style.as_ref().map_or("", |style| style.css.as_str());
+        let (style_items, style_warnings, hot_styles, style_shape) = if self.hot {
+            let compiled =
+                nana_ui_view_codegen::compile_styles_hot(css, &mut template, &self.runtime, &name);
+            (
+                compiled.items,
+                compiled.warnings,
+                Some(compiled.hot_sheet),
+                compiled.style_shape,
+            )
+        } else {
+            let compiled = nana_ui_view_codegen::compile_styles(css, &mut template, &self.runtime);
+            (compiled.items, compiled.warnings, None, TokenStream::new())
+        };
         let mut rows = Vec::new();
         let mut rewrite = Rewrite {
             file,
@@ -497,7 +436,7 @@ impl Compiler {
                 None => stmt,
             })
             .collect();
-        let function = nana_ui_view_codegen::function_ident(&name, Span::call_site());
+        let function = nana_ui_view_codegen::function_ident(&name, name_span);
         let (hot, state) = if self.hot {
             // Everything the view is, but its text: equal shapes differ in
             // text only. Where things are in the file is not shape either:
@@ -505,7 +444,7 @@ impl Compiler {
             // the file's path another way.
             let shape = stable_hash(&without_source_sites(
                 &quote! {
-                    fn #function(#(#props),*) { #(#style_items)* #(#script)* #body }
+                    fn #function(#(#props),*) { #style_shape #(#script)* #body }
                 }
                 .to_string(),
             ));
@@ -513,7 +452,7 @@ impl Compiler {
                 const __NANA_HOT: &[&str] = &[#(#literals),*];
                 #runtime::view::__hot_register(#name, #shape);
             };
-            (hot, Some((shape, literals)))
+            (hot, Some((shape, literals, hot_styles.unwrap_or_default())))
         } else {
             (TokenStream::new(), None)
         };

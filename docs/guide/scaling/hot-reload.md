@@ -4,7 +4,7 @@
 
 | 改什么 | 发生什么 | 量级 |
 | --- | --- | --- |
-| `.vue` 里只改静态文字 | 替换文本表，节点、焦点和状态不动 | 不重编译、不重启 |
+| `.vue` 里只改静态文字或静态 `<style>` 属性 | 替换文本表或开发期样式补丁，节点、焦点和状态不动 | 不重编译、不重启 |
 | Rust 源码 | 重编译，交接窗口几何和状态，再重新执行 | 1.5–3.6 s，链接占大头 |
 
 macOS / Apple Silicon、默认 dev profile、已经预热的增量构建，`cargo build -p component-gallery`：应用 crate（1.8 万行）1.5–1.6 s，含重新链接 131 MB 的 debug 二进制；改过 `nana-ui-runtime`（12.7 万行）后再建应用是 3.6 s，连带重编 `nana-ui-scene` 和 `nana-ui`。Windows 的链接更慢。在你自己的机器上用 `cargo build -p <你的包> --timings` 量一次。窗口加 GPU 重建的 0.4–1.5 s 没有重新测量。
@@ -43,7 +43,7 @@ let session = nana_ui_dev::restored_handoff()
     .unwrap_or_default();
 ```
 
-只改 `.vue` 里的静态文字时不必重启。构建脚本在 debug 下打开热模式，dev 入口用 `templates` feature 的 `watch_templates`。`runtime` 字符串要和 `Compiler::new` 的那一个相同。形状变了（结构、绑定、脚本，或文字跨行），或者改的不是 `.vue`，就照常重建。带插值的文字和属性值不在替换表里。
+只改 `.vue` 里的静态文字或静态 `<style>` 声明时不必重启。构建脚本在 debug 下打开热模式，dev 入口用 `templates` feature 的 `watch_templates`（消息类型实现 `From<DevSignal> + From<TemplateText> + From<TemplateStyle>`，或直接用 `watch_template_events`）。`runtime` 字符串要和 `Compiler::new` 的那一个相同。形状变了（结构、绑定、脚本、文字跨行，或新增 `transition` / `@keyframes` / 组合器 / 交互伪类），或者改的不是 `.vue`，就照常重建。带插值的文字和属性值不在替换表里。
 
 ```rust
 let debug = std::env::var("PROFILE").as_deref() == Ok("debug");
@@ -58,7 +58,7 @@ let watcher = nana_ui_dev::watch_templates(
 )?;
 ```
 
-`update` 里对 `TemplateText` 调用 `apply()`。节点、焦点、滚动和状态不动，下一帧换成新文字。
+`update` 里对 `TemplateText` 和 `TemplateStyle` 分别调用 `apply()`。节点、焦点、滚动和状态不动，下一帧换成新文字或新样式。
 
 ## 还没覆盖的
 

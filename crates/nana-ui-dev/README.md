@@ -4,13 +4,13 @@ English · [简体中文](README.zh-CN.md)
 
 Development-time hot reload for NanaUI applications, for development builds only.
 
-It watches the sources and compiles incrementally in the background. On success it hands the window geometry and the state the application gave it to the next process, then re-execs in place. It does no in-process dylib hot swapping. With `.vue` views, a save that only changes static text is sent straight into the running window without a rebuild. Which state survives a reload is up to the application; this crate only delivers `DevSignal` messages and handoff data.
+It watches the sources and compiles incrementally in the background. On success it hands the window geometry and the state the application gave it to the next process, then re-execs in place. It does no in-process dylib hot swapping. With `.vue` views, a save that only changes static text or static `<style>` properties is sent straight into the running window without a rebuild. Which state survives a reload is up to the application; this crate only delivers `DevSignal` messages and handoff data.
 
 Builds without `debug_assertions` are rejected with `compile_error!`, so the release entry point should be a separate `main.rs` that only calls `run_runtime` and does not reference this crate. The headless session itself is in [`nana-ui-devtools`](../nana-ui-devtools).
 
 ## Features
 
-- `templates`: pulls in `nana-ui-sfc` and provides `watch_templates` and `TemplateText`, for hot swapping static text in `.vue`.
+- `templates`: pulls in `nana-ui-sfc` and provides `watch_templates`, `watch_template_events`, `TemplateText`, and `TemplateStyle`, for hot swapping static text and static `<style>` patches in `.vue`.
 - `headless`: pulls in `nana-ui-devtools` so the dev binary responds to `--stdio`, `--screenshot`, and `--a11y`, letting you verify a rebuild without opening a window.
 
 ## Example

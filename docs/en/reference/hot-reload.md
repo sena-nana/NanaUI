@@ -8,7 +8,7 @@ The top of `nana-ui-dev` carries a compile-time gate, `#[cfg(not(debug_assertion
 
 | What you change | Reload action triggered | Measured magnitude |
 | --- | --- | --- |
-| **Rust `.vue` dialect: static text only** | **Replace the static text table (`TemplateText::apply`)**: no recompile, no restart; nodes and focus are preserved in place | `< 50 ms` |
+| **Rust `.vue` dialect: static text or static `<style>` properties only** | **Replace the static text table (`TemplateText::apply`) or dev style patch sheet (`TemplateStyle::apply`)**: no recompile, no restart; nodes and focus are preserved in place | `< 50 ms` |
 | **Rust L3: edit `.rs` sources** | **Background incremental build → hand off window geometry and session state → `re-exec`**: the window flashes only once | `1.5–3.6 s` (dominated by linking) |
 
 Measured with `cargo build -p component-gallery` on macOS (Apple Silicon, default `dev` profile, warm): changing only the application crate (18k lines) and relinking the 131 MB binary takes **`1.5–1.6 s`**; changing the lower-level `nana-ui-runtime` (127k lines, which also rebuilds `scene` and `nana-ui`) takes **`3.6 s`**. Linking takes longer on Windows. Measure locally with `cargo build -p <package> --timings` and enable `lld` for the dev profile.
@@ -46,7 +46,7 @@ Message::Dev(DevSignal::Rebuilt) => {
 }
 ```
 
-In addition, if you write views in the `.vue` dialect (Rust script) and only change static strings, enable `Compiler::new("::nana_ui::runtime").hot(debug)` in `build.rs` and use `watch_templates` (`templates` feature) in the dev entry point. Window text is then replaced live through `TemplateText::apply()` without recompiling or restarting the process.
+In addition, if you write views in the `.vue` dialect (Rust script) and only change static strings or static `<style>` declarations, enable `Compiler::new("::nana_ui::runtime").hot(debug)` in `build.rs` and use `watch_templates` (or `watch_template_events`, `templates` feature) in the dev entry point. Window text is replaced live through `TemplateText::apply()`, and static `<style>` changes recompile via `nana-ui-css` into a dev-only `HotStyleSheet` injected through `TemplateStyle::apply()` without recompiling or restarting the process (product builds keep static `StylePatch` function pointers). Adding `transition`, `@keyframes`, combinators, or new interactive pseudo-classes still triggers an incremental rebuild.
 
 ## Verifying without a window through a headless agent session
 

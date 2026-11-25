@@ -4,9 +4,9 @@ English · [简体中文](README.zh-CN.md)
 
 The compiler for NanaUI's `.vue` dialect. Scripts are written in Rust and compiled in `build.rs` into ordinary view functions, turning each `Foo.vue` into `pub fn foo(..) -> impl IntoView`.
 
-Templates share the same code generator as `view!`, expanding into the exact call chains you would write by hand—no JS runtime and no runtime template parsing. At compile time it analyzes signal usage across the component: signals that are never written fold into constants, and cyclic `computed` dependencies raise compile-time errors. Output goes to `$OUT_DIR`, including `nana_views.rs`, a dependency manifest, and a source map used by `nana-sfc-remap` to point `rustc` diagnostics back to `.vue` line and column numbers.
+Templates share the same code generator as `view!`, expanding into the exact call chains you would write by hand—no JS runtime and no runtime template parsing. At compile time it analyzes signal usage across the component: signals that are never written fold into constants, and cyclic `computed` dependencies raise compile-time errors. Output goes to `$OUT_DIR`, including `nana_views.rs`, a dependency manifest, and a bidirectional source map used by `nana-sfc-remap` (for `rustc` JSON diagnostics) and `nana-sfc-lsp` (for forwarding `.vue` LSP requests to `rust-analyzer`).
 
-This is a build-time dependency; generated code does not depend on it at runtime. File watching and live text patching during development live in [`nana-ui-dev`](../nana-ui-dev).
+This is a build-time dependency; generated code does not depend on it at runtime. File watching and live text/`<style>` patching during development live in [`nana-ui-dev`](../nana-ui-dev).
 
 ## Example
 
