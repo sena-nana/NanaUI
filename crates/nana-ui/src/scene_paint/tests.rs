@@ -12722,6 +12722,295 @@ fn a_gradient_colours_text_across_its_glyphs() {
     assert!(right[2] > right[0] + 40, "blue on the right: {right:?}");
 }
 
+fn paint_shaped_painter(painter: impl nana_ui_runtime::Painter, w: u32, h: u32) -> Vec<u8> {
+    use nana_ui_runtime::Stack;
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let node = context
+        .create_component(
+            document,
+            Stack::column(0.0)
+                .with_layout(|layout| {
+                    layout.width = Some(LengthSpec::Px(w as f32));
+                    layout.height = Some(LengthSpec::Px(h as f32));
+                })
+                .painter(painter),
+        )
+        .unwrap();
+    let ids = [node.stable_id()];
+    context.resolve_styles(&ids).unwrap();
+    context
+        .shape_text(&ids, &mut crate::NanaTextShaper::default())
+        .unwrap();
+    context
+        .layout_document(
+            document,
+            nana_ui_runtime::LayoutViewport::new(w as f32, h as f32),
+        )
+        .unwrap();
+    let mut scene = UiScene::new();
+    scene.apply_delta(context.world().extract_document(document), []);
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let mut painter = SceneWgpuPainter::for_test(format);
+    let viewport = ScenePaintViewport {
+        logical_size: [w as f32, h as f32],
+        physical_size: [w, h],
+        scale_factor: 1.0,
+        scene_origin: [0.0, 0.0],
+        target_origin: [0.0, 0.0],
+        clear_color: [0.0, 0.0, 0.0, 1.0],
+        clear: true,
+    };
+    let (texture, view) = test_copy_target(&device, format, w, h);
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("nana-ui shaped painter"),
+    });
+    painter
+        .paint_encoder_with_options(
+            &scene,
+            &mut encoder,
+            &view,
+            viewport,
+            super::ScenePaintOptions::default(),
+            None,
+            None,
+        )
+        .unwrap();
+    readback_rgba(&device, &queue, encoder, &texture, w, h)
+}
+
+#[test]
+fn paint_text_decorations_overline_and_styles_render_pixels() {
+    use nana_ui_core::TextDecorationStyle;
+    use nana_ui_runtime::{PaintText, PaintTextDecoration};
+
+    let render_style = |style: TextDecorationStyle| {
+        paint_one_painter(
+            PaintFn(move |cx: &mut nana_ui_runtime::PaintContext<'_>| {
+                cx.text(
+                    LayoutBox {
+                        x: 8.0,
+                        y: 12.0,
+                        width: 184.0,
+                        height: 64.0,
+                    },
+                    PaintText::new("MMMM")
+                        .size(32.0)
+                        .paint([0.05, 0.05, 0.05, 1.0])
+                        .decoration(
+                            PaintTextDecoration::underline()
+                                .with_overline(true)
+                                .with_line_through(true)
+                                .style(style)
+                                .color([1.0, 1.0, 0.0, 1.0])
+                                .thickness(3.0),
+                        ),
+                );
+            }),
+            200,
+            88,
+        )
+    };
+
+    let solid = render_style(TextDecorationStyle::Solid);
+    let double = render_style(TextDecorationStyle::Double);
+    let dashed = render_style(TextDecorationStyle::Dashed);
+    let dotted = render_style(TextDecorationStyle::Dotted);
+    let wavy = render_style(TextDecorationStyle::Wavy);
+
+    let yellow_rows: Vec<u32> = (0..88)
+        .filter(|&y| {
+            (0..200).any(|x| {
+                let p = pixel(&solid, 200, x, y);
+                p[0] > 180 && p[1] > 180 && p[2] < 40
+            })
+        })
+        .collect();
+    assert!(
+        yellow_rows.len() >= 3 && yellow_rows.last().unwrap() - yellow_rows[0] >= 16,
+        "expected overline, line-through, and underline rows: {yellow_rows:?}"
+    );
+    assert_ne!(solid, double);
+    assert_ne!(solid, dashed);
+    assert_ne!(solid, dotted);
+    assert_ne!(solid, wavy);
+    assert_ne!(dashed, dotted);
+    assert_ne!(dashed, wavy);
+}
+
+#[test]
+fn paint_text_stroke_and_multi_layer_shadows_render_pixels() {
+    use nana_ui_runtime::{
+        Gradient, PaintText, PaintTextDecoration, PaintTextShadow, PaintTextStroke,
+    };
+
+    // Multi-layer shadows + stroke around dark fill.
+    let pixels = paint_one_painter(
+        PaintFn(|cx: &mut nana_ui_runtime::PaintContext<'_>| {
+            cx.text(
+                LayoutBox {
+                    x: 16.0,
+                    y: 12.0,
+                    width: 140.0,
+                    height: 80.0,
+                },
+                PaintText::new("M")
+                    .size(48.0)
+                    .paint([0.05, 0.05, 0.05, 1.0])
+                    .stroke(PaintTextStroke::new(4.0, [0.0, 1.0, 0.0, 1.0]))
+                    .shadow(PaintTextShadow::new([14.0, 0.0], 0.0, [1.0, 0.0, 0.0, 1.0]))
+                    .shadow(PaintTextShadow::new([0.0, 14.0], 0.0, [0.0, 0.0, 1.0, 1.0])),
+            );
+        }),
+        160,
+        100,
+    );
+    let mut has_stroke_green = false;
+    let mut has_shadow_red = false;
+    let mut has_shadow_blue = false;
+    for y in 0..100 {
+        for x in 0..160 {
+            let p = pixel(&pixels, 160, x, y);
+            if p[1] > 150 && p[0] < 80 && p[2] < 80 {
+                has_stroke_green = true;
+            }
+            if p[0] > 150 && p[1] < 80 && p[2] < 80 {
+                has_shadow_red = true;
+            }
+            if p[2] > 150 && p[0] < 80 && p[1] < 80 {
+                has_shadow_blue = true;
+            }
+        }
+    }
+    assert!(has_stroke_green, "expected green stroke outline pixels");
+    assert!(has_shadow_red, "expected red first shadow layer pixels");
+    assert!(has_shadow_blue, "expected blue second shadow layer pixels");
+
+    // Gradient fill + solid stroke + explicit-color underline stay separated cleanly.
+    let layered = paint_one_painter(
+        PaintFn(|cx: &mut nana_ui_runtime::PaintContext<'_>| {
+            cx.text(
+                LayoutBox {
+                    x: 10.0,
+                    y: 10.0,
+                    width: 180.0,
+                    height: 70.0,
+                },
+                PaintText::new("MMMM")
+                    .size(36.0)
+                    .paint(
+                        Gradient::linear([10.0, 0.0], [190.0, 0.0])
+                            .stop(0.0, [1.0, 0.0, 0.0, 1.0])
+                            .stop(1.0, [0.0, 0.0, 1.0, 1.0]),
+                    )
+                    .stroke(
+                        PaintTextStroke::new(2.0, [0.0, 1.0, 0.0, 1.0])
+                            .placement(nana_ui_core::TextStrokePlacement::Over),
+                    )
+                    .decoration(
+                        PaintTextDecoration::underline()
+                            .color([0.0, 1.0, 1.0, 1.0])
+                            .thickness(2.0),
+                    ),
+            );
+        }),
+        200,
+        90,
+    );
+    let mut has_cyan_underline = false;
+    let mut has_green_stroke = false;
+    for y in 0..90 {
+        for x in 0..200 {
+            let p = pixel(&layered, 200, x, y);
+            if p[1] > 180 && p[2] > 180 && p[0] < 60 {
+                has_cyan_underline = true;
+            }
+            if p[1] > 150 && p[0] < 80 && p[2] < 80 {
+                has_green_stroke = true;
+            }
+        }
+    }
+    assert!(has_cyan_underline, "expected explicit cyan underline");
+    assert!(has_green_stroke, "expected solid green over-stroke");
+}
+
+#[test]
+fn text_path_and_boolean_op_shapes_render_filled_pixels() {
+    use nana_ui_runtime::{PaintPath, PaintText, StrokeStyle};
+
+    let spec = PaintText::new("HI").size(64.0).letter_spacing(4.0);
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(None::<(PaintPath, PaintPath)>));
+    let captured_out = std::sync::Arc::clone(&captured);
+
+    let pixels = paint_shaped_painter(
+        PaintFn(move |cx: &mut nana_ui_runtime::PaintContext<'_>| {
+            // Left half: direct filled glyph outlines from cx.text_path.
+            let left_outline = cx.text_path(&spec, [12.0, 12.0], None);
+            assert!(!left_outline.is_empty());
+            cx.fill_path(&left_outline, [1.0, 0.0, 0.0, 1.0]);
+
+            // Right half: boolean difference (plate - text_path) punched out and filled green.
+            let right_outline = cx.text_path(&spec, [120.0, 12.0], None);
+            let bounds = right_outline.bounds().unwrap();
+            let mut plate = PaintPath::new();
+            plate.rect(LayoutBox {
+                x: bounds.x - 10.0,
+                y: bounds.y - 10.0,
+                width: bounds.width + 20.0,
+                height: bounds.height + 20.0,
+            });
+            let punched = plate.difference(&right_outline);
+            cx.fill_path(&punched, [0.0, 1.0, 0.0, 1.0]);
+            *captured_out.lock().unwrap() = Some((left_outline, right_outline));
+        }),
+        240,
+        100,
+    );
+
+    let (left_outline, right_outline) = captured.lock().unwrap().take().unwrap();
+    let find_deep_interior = |path: &PaintPath| {
+        let b = path.bounds().unwrap();
+        let x0 = b.x.floor().max(1.0) as u32;
+        let x1 = (b.x + b.width).ceil().min(238.0) as u32;
+        let y0 = b.y.floor().max(1.0) as u32;
+        let y1 = (b.y + b.height).ceil().min(98.0) as u32;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let p = [x as f32 + 0.5, y as f32 + 0.5];
+                if path.contains(p) && !path.stroke_contains(p, &StrokeStyle::new(2.0)) {
+                    return Some((x, y));
+                }
+            }
+        }
+        None
+    };
+
+    let (lx, ly) = find_deep_interior(&left_outline).expect("interior pixel in left text_path");
+    let left_px = pixel(&pixels, 240, lx, ly);
+    assert!(
+        left_px[0] > 200 && left_px[1] < 30 && left_px[2] < 30,
+        "expected red filled text_path pixel at ({lx}, {ly}): {left_px:?}"
+    );
+    let corner_px = pixel(&pixels, 240, 2, 2);
+    assert_eq!(corner_px[0], 0, "outside text_path should stay clear");
+
+    let (rx, ry) = find_deep_interior(&right_outline).expect("interior pixel in punched text_path");
+    let hole_px = pixel(&pixels, 240, rx, ry);
+    assert!(
+        hole_px[1] < 30,
+        "punched text_path cutout should remain clear at ({rx}, {ry}): {hole_px:?}"
+    );
+    let rb = right_outline.bounds().unwrap();
+    let plate_x = (rb.x - 5.0).round().max(0.0) as u32;
+    let plate_y = (rb.y - 5.0).round().max(0.0) as u32;
+    let plate_px = pixel(&pixels, 240, plate_x, plate_y);
+    assert!(
+        plate_px[1] > 200 && plate_px[0] < 30,
+        "expected green punched plate pixel at ({plate_x}, {plate_y}): {plate_px:?}"
+    );
+}
+
 #[test]
 fn a_curved_clip_cuts_an_image_along_its_curve_and_an_image_can_fill_a_path() {
     let url = green_image_url();
