@@ -809,7 +809,7 @@ impl AppContext {
     {
         let viewport = clamp_virtual_table_viewport(
             layout,
-            self.virtual_viewport_from_scroll(scroll, overscan)?,
+            self.virtual_table_viewport(scroll, table, overscan)?,
         );
         let pane = layout.window_with_frozen(viewport, frozen);
         let activity = self.virtual_table_activity(table, items)?;
@@ -1031,6 +1031,31 @@ impl AppContext {
         Ok(viewport)
     }
 
+    /// The part of `scroll`'s viewport that falls on `table`, in the table's
+    /// own coordinates.
+    pub(crate) fn virtual_table_viewport(
+        &self,
+        scroll: Entity<ScrollView>,
+        table: Entity<Table>,
+        overscan: [f32; 2],
+    ) -> Result<VirtualViewport, FrameworkError> {
+        let mut viewport = self.virtual_viewport_from_scroll(scroll, overscan)?;
+        let (start_x, start_y) = match (
+            self.world.component_layout_box(table.id),
+            self.world.component_layout_box(scroll.id),
+        ) {
+            (Some(table), Some(scroll)) => (table.x - scroll.x, table.y - scroll.y),
+            _ => (0.0, 0.0),
+        };
+        let left = viewport.offset[0] - start_x;
+        viewport.offset[0] = left.max(0.0);
+        viewport.extent[0] = (viewport.extent[0] + left.min(0.0)).max(0.0);
+        let top = viewport.offset[1] - start_y;
+        viewport.offset[1] = top.max(0.0);
+        viewport.extent[1] = (viewport.extent[1] + top.min(0.0)).max(0.0);
+        Ok(viewport)
+    }
+
     fn virtual_viewport_from_scroll(
         &self,
         scroll: Entity<ScrollView>,
@@ -1063,61 +1088,60 @@ impl AppContext {
 
     fn pin_virtual_table_frozen<R, C>(
         &mut self,
-        items: &VirtualTableItems<R, C>,
+        items: &mut VirtualTableItems<R, C>,
         viewport: VirtualViewport,
     ) -> Result<(), FrameworkError>
     where
         R: Clone + Eq + Hash,
         C: Clone + Eq + Hash,
     {
-        let mut mutations = MutationQueue::new();
-        let mut staged_rows = Vec::new();
-        let mut staged_cells = Vec::new();
-        for entity in items.rows.values().copied() {
-            let Some(transform) = self.read(entity, |row| row.style.layout.transforms.transform)?
+        items.pin_mutations.clear();
+        for &entity in &items.frozen_rows {
+            let Some(transform) = self
+                .read(entity, |row| row.style.layout.transforms.transform)?
+                .filter(|transform| transform.f != viewport.offset[1])
             else {
                 continue;
             };
-            if transform.f == viewport.offset[1] {
-                continue;
+            let next = nana_ui_core::PaintTransform {
+                f: viewport.offset[1],
+                ..transform
+            };
+            if let Some(view) = self
+                .store
+                .views
+                .get_mut(&entity.id)
+                .and_then(|v| v.downcast_mut::<TableRow>())
+            {
+                Arc::make_mut(&mut view.style.layout).transforms.transform = Some(next);
             }
-            let mut row = self.read(entity, Clone::clone)?;
-            Arc::make_mut(&mut row.style.layout).transforms.transform =
-                Some(nana_ui_core::PaintTransform {
-                    f: viewport.offset[1],
-                    ..transform
-                });
-            row.project(entity.id, &self.world, &mut mutations);
-            staged_rows.push((entity.id, row));
+            items.pin_mutations.patch_transform(entity.id, Some(next));
         }
-        for entity in items.cells.values().copied() {
-            let Some(transform) =
-                self.read(entity, |cell| cell.style.layout.transforms.transform)?
+        for &entity in &items.frozen_cells {
+            let Some(transform) = self
+                .read(entity, |cell| cell.style.layout.transforms.transform)?
+                .filter(|transform| transform.e != viewport.offset[0])
             else {
                 continue;
             };
-            if transform.e == viewport.offset[0] {
-                continue;
+            let next = nana_ui_core::PaintTransform {
+                e: viewport.offset[0],
+                ..transform
+            };
+            if let Some(view) = self
+                .store
+                .views
+                .get_mut(&entity.id)
+                .and_then(|v| v.downcast_mut::<TableCell>())
+            {
+                Arc::make_mut(&mut view.style.layout).transforms.transform = Some(next);
             }
-            let mut cell = self.read(entity, Clone::clone)?;
-            Arc::make_mut(&mut cell.style.layout).transforms.transform =
-                Some(nana_ui_core::PaintTransform {
-                    e: viewport.offset[0],
-                    ..transform
-                });
-            cell.project(entity.id, &self.world, &mut mutations);
-            staged_cells.push((entity.id, cell));
+            items.pin_mutations.patch_transform(entity.id, Some(next));
         }
-        if mutations.is_empty() {
+        if items.pin_mutations.is_empty() {
             return Ok(());
         }
-        self.world.commit(mutations)?;
-        for (id, row) in staged_rows {
-            self.install_view(id, row);
-        }
-        for (id, cell) in staged_cells {
-            self.install_view(id, cell);
-        }
+        self.world.commit_ref(&items.pin_mutations)?;
         Ok(())
     }
 }

@@ -4622,6 +4622,32 @@ impl UiWorld {
         }
     }
 
+    /// Explicit `aria-selected` override on `id`, if any (`El::aria_selected`).
+    pub fn selected_override(&self, id: StableNodeId) -> Option<bool> {
+        self.overlays_a11y.selected.get(&id).copied()
+    }
+
+    /// Effective `aria-selected` state of `id`, reading the explicit override
+    /// first and falling back to its component's [`AccessibilityState::selected`].
+    pub fn effective_selected(&self, id: StableNodeId) -> Option<bool> {
+        self.overlays_a11y
+            .selected
+            .get(&id)
+            .copied()
+            .or_else(|| self.nodes.accessibility(id).selected)
+    }
+
+    fn set_selected_override(&mut self, id: StableNodeId, selected: Option<bool>) {
+        match selected {
+            Some(selected) => {
+                self.overlays_a11y.selected.insert(id, selected);
+            }
+            None => {
+                self.overlays_a11y.selected.remove(&id);
+            }
+        }
+    }
+
     /// Visual mounting scope of `id`, if one was assigned via
     /// [`MutationQueue::set_overlay_mount`].
     pub fn overlay_mount(&self, id: StableNodeId) -> Option<nana_ui_core::OverlayMount> {

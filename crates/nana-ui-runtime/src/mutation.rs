@@ -148,6 +148,12 @@ pub enum UiMutation {
         top: f32,
         height: Option<f32>,
     },
+    /// Patch a node's 2D paint transform without rewriting the rest of its
+    /// authored style.
+    PatchTransform {
+        id: StableNodeId,
+        transform: Option<nana_ui_core::PaintTransform>,
+    },
     SetScrollOffset {
         id: StableNodeId,
         offset: ScrollOffset,
@@ -214,6 +220,12 @@ pub enum UiMutation {
     SetLive {
         id: StableNodeId,
         live: Option<AccessibilityLive>,
+    },
+    /// Override `id`'s `aria-selected` state independently of its component's
+    /// own [`AccessibilityState`] (for custom selectable views like grid cards).
+    SetSelected {
+        id: StableNodeId,
+        selected: Option<bool>,
     },
     SetSurfaceOpen {
         id: StableNodeId,
@@ -415,7 +427,8 @@ impl BatchCapabilities {
             | UiMutation::SetResponsive { .. }
             | UiMutation::SetLanguage { .. }
             | UiMutation::SetTextScale { .. }
-            | UiMutation::SetLocale { .. } => Self::STYLE,
+            | UiMutation::SetLocale { .. }
+            | UiMutation::PatchTransform { .. } => Self::STYLE,
             UiMutation::SetText { .. }
             | UiMutation::SetInlineContent { .. }
             | UiMutation::SetRichText { .. }
@@ -440,6 +453,7 @@ impl BatchCapabilities {
             | UiMutation::SetAccessibility { .. }
             | UiMutation::SetLabelledBy { .. }
             | UiMutation::SetLive { .. }
+            | UiMutation::SetSelected { .. }
             | UiMutation::SetSurfaceOpen { .. }
             | UiMutation::SetOverlayHost { .. }
             | UiMutation::SetOverlayMount { .. }
@@ -838,6 +852,18 @@ impl MutationQueue {
         );
     }
 
+    /// Queue [`UiMutation::PatchTransform`].
+    pub fn patch_transform(
+        &mut self,
+        id: StableNodeId,
+        transform: Option<nana_ui_core::PaintTransform>,
+    ) {
+        self.record(
+            BatchCapabilities::STYLE,
+            UiMutation::PatchTransform { id, transform },
+        );
+    }
+
     pub fn set_scroll_offset(&mut self, id: StableNodeId, offset: ScrollOffset) {
         self.record(
             BatchCapabilities::LAYOUT_OR_SCROLL,
@@ -986,6 +1012,15 @@ impl MutationQueue {
         self.record(
             BatchCapabilities::VISUAL_OR_INTERACTION,
             UiMutation::SetLive { id, live },
+        );
+    }
+
+    /// Override `id`'s `aria-selected` state independently of its component's
+    /// own [`AccessibilityState`]; `None` removes the override.
+    pub fn set_selected(&mut self, id: StableNodeId, selected: Option<bool>) {
+        self.record(
+            BatchCapabilities::VISUAL_OR_INTERACTION,
+            UiMutation::SetSelected { id, selected },
         );
     }
 
@@ -1314,6 +1349,11 @@ impl MutationQueue {
 
     pub fn is_empty(&self) -> bool {
         self.mutations.is_empty()
+    }
+
+    pub fn clear(&mut self) {
+        self.mutations.clear();
+        self.capabilities = BatchCapabilities::EMPTY;
     }
 
     pub fn as_slice(&self) -> &[UiMutation] {

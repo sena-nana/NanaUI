@@ -322,7 +322,15 @@ impl UiWorld {
             checked: state.checked,
             mixed: state.mixed,
             orientation: state.orientation,
-            selected: state.selected,
+            selected: if self.overlays_a11y.selected.is_empty() {
+                state.selected
+            } else {
+                self.overlays_a11y
+                    .selected
+                    .get(&id)
+                    .copied()
+                    .or(state.selected)
+            },
             level: None,
             expanded: state.expanded,
             active_descendant: None,

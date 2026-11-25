@@ -2543,4 +2543,54 @@ mod tests {
             Some(TreeViewVisual { rows, .. }) if rows.len() == 4
         ));
     }
+
+    #[test]
+    fn ctrl_shift_arrow_additively_extends_selection() {
+        use nana_ui_input::{
+            InputModifiers, InputPayload, KeyInput, KeyState, LogicalKey, PhysicalKey,
+        };
+        let (mut context, tree, heard) =
+            heard_tree(sample().selection(selection(SelectionMode::Multiple, &["src"])));
+        let mut input = crate::HeadlessInput::bind(&mut context, document());
+        let key = |name: &'static str, modifiers| {
+            InputPayload::Key(KeyInput {
+                physical: PhysicalKey(name.into()),
+                logical: LogicalKey(name.into()),
+                state: KeyState::Pressed,
+                repeat: false,
+                modifiers,
+            })
+        };
+        let ctrl = InputModifiers {
+            control: true,
+            ..InputModifiers::empty()
+        };
+        let ctrl_shift = InputModifiers {
+            control: true,
+            shift: true,
+            ..InputModifiers::empty()
+        };
+        let selected = |context: &AppContext| {
+            context
+                .read(tree, |tree| {
+                    tree.selection
+                        .selected_in(&TreeOrder::all(&tree.nodes))
+                        .iter()
+                        .map(|id| id.to_string())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap()
+        };
+
+        assert!(context.focus_node(document(), tree.stable_id()).unwrap());
+        input.route(&mut context, key("ArrowDown", ctrl)).unwrap();
+        input.route(&mut context, key("ArrowDown", ctrl)).unwrap();
+        input.route(&mut context, key(" ", ctrl)).unwrap();
+        take(&heard);
+        input
+            .route(&mut context, key("ArrowDown", ctrl_shift))
+            .unwrap();
+        assert_eq!(take(&heard), ["move+ctrl+shift(readme)"]);
+        assert_eq!(selected(&context), ["src", "main", "readme"]);
+    }
 }

@@ -64,7 +64,10 @@ pub use controls::{
     thumbnail, tree_view,
 };
 pub(crate) use controls::{edit_control, inspect_control};
-pub use each_virtual::{EachVirtual, VirtualItem, VirtualListRef, each_virtual, virtual_list_ref};
+pub use each_virtual::{
+    EachVirtual, VirtualItem, VirtualListRef, VirtualSelectionRequest, each_virtual,
+    virtual_list_ref,
+};
 pub use error::{ErrorBoundary, error_boundary, report_error};
 #[doc(hidden)]
 pub use hot::{__hot_register, __hot_text};
@@ -112,8 +115,8 @@ pub use structural::{Dynamic, Each, EachExt, EachIn, When, WhenExt, dynamic, eac
 #[doc(hidden)]
 pub use style::{
     __patch, ComposedLayout, MAX_CONDITIONAL_CLASSES, PSEUDO_ACTIVE, PSEUDO_BIT_SHIFT,
-    PSEUDO_FOCUS, PSEUDO_FOCUS_VISIBLE, PSEUDO_HOVER, SheetAnimation, SheetQuery, SheetRule,
-    SheetTransition,
+    PSEUDO_FOCUS, PSEUDO_FOCUS_VISIBLE, PSEUDO_HOVER, PSEUDO_SELECTED, SheetAnimation, SheetQuery,
+    SheetRule, SheetTransition,
 };
 pub use style::{Class, InlineStyle, Sheet, StylePatch, StyleSite};
 pub(crate) use style::{InteractiveStyleBinding, MotionBinding};

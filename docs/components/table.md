@@ -60,16 +60,16 @@ widget(Table::new().label("文件")).children((
 
 ## 改列宽
 
-把表头格子建成 `TableCell::new(标题).header_for(&column)`：它带上列键、是否可改宽，以及 `.limits` 给的宽度范围。指针落在可改宽的表头右边缘 5 px（`TABLE_RESIZE_HANDLE`）内时显示左右拉伸光标，按住拖动就在 `Table` 上发 `TableColumnResized { column, extent, finished }`：拖动中每次移动发一次 `finished: false`，松开再发一次 `finished: true`；宽度已按范围截好。拖动被取消时以起始宽度收尾。
+把表头格子建成 `TableCell::new(标题).header_for(&column)`：它带上列键、是否可改宽，以及 `.limits` 给的宽度范围。指针落在可改宽的表头右边缘 5 px（`TABLE_RESIZE_HANDLE`）内时显示左右拉伸光标，按住拖动就在 `Table` 上发 `TableColumnResized { column, extent, finished }`：拖动中每次移动发一次 `finished: false`，松开再发一次 `finished: true`；宽度已按范围截好。按 `Escape` 或指针被取消时拖动会恢复起始宽度并用 `finished: true` 收尾。
 
-表格不改自己的几何。你在收到时调用 `layout.resize_column_by_key(&column, extent)` 再同步一次（`sync_virtual_table_retained_in`）：表头和表体的格子从同一份列宽放置，冻结的列和表头照样对齐。只想在松开时改，就只处理 `finished: true`。
+表格不改自己的几何。你在收到时调用 `layout.resize_column_by_key(&column, extent)` 再同步一次（`sync_virtual_table_retained_in`）：`VirtualTableLayout::revision()` 会推动窗口重新布局，表头和表体的格子从同一份列宽放置，冻结的列和表头照样对齐（表放在滚动容器其它兄弟节点下方时也会按其在容器内的偏移对齐视口）。只想在松开时改，就只处理 `finished: true`。
 
 ## 选择
 
 选中哪些行是你的状态，通常是一份 `SelectionState<行键>`（见下文）。表格只报告请求：
 
 - 在表体格子上按下，发 `TableSelectionRequested { row, cell, gesture: SelectionGesture::Press(修饰键) }`。Ctrl（macOS 上是 Cmd）是切换，Shift 是从锚点连成一段，两者同按是追加一段。
-- 焦点在表体格子上时，方向键、Home / End、Page Up / Down 移动焦点并发 `Move`；带 Shift 是从锚点扩展；Ctrl 加上下方向键只移动焦点、不改选中；Ctrl+Space 发 `Toggle`；Ctrl+A 发 `SelectAll`。
+- 焦点在表体格子上时，方向键、Home / End、Page Up / Down 移动焦点并发 `Move`；带 Shift 是从锚点扩展，Ctrl+Shift 保留既有选中并追加一段；Ctrl 加上下方向键只移动焦点、不改选中；Ctrl+Space 发 `Toggle`；Ctrl+A 发 `SelectAll`。
 - 表头行不发选择请求。
 
 `row` 是行节点，`VirtualTableItems::row_key_of(&cx, row)` 换成你的行键。把请求交给 `SelectionState::apply(gesture, 行键, &顺序)`，再调用 `cx.sync_virtual_table_selection(&items, |键| 选择.is_selected(键))`：已挂载的行和它们的格子得到 `selected`，画主题的选中底色，并对辅助技术报告已选中；没挂载的行不用管，滚进来时由 `build_row` 用同一个判断建出。选择没变时这一步什么也不写，也不分配。`Table::multiselectable(true)` 告诉辅助技术可以多选。

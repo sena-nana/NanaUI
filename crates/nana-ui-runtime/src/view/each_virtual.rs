@@ -32,11 +32,13 @@ use super::reactive::{self, Computed, EffectKey, EffectTarget, Readable, ScopeKe
 use super::structural::{build_scoped, build_under, container};
 use super::style::{ContainerStyle, container_styles};
 use crate::{
-    AppContext, Entity, FrameworkError, List, ScrollAnchor, ScrollAxes, ScrollChanged,
-    ScrollLaidOut, ScrollOffset, ScrollView, ScrollViewportChanged, StableNodeId, Stack,
-    VirtualAlignment, VirtualListItems,
+    AppContext, Entity, FrameworkError, List, ListSelectionRequested, ScrollAnchor, ScrollAxes,
+    ScrollChanged, ScrollLaidOut, ScrollOffset, ScrollView, ScrollViewportChanged, StableNodeId,
+    Stack, VirtualAlignment, VirtualListItems,
 };
-use nana_ui_core::{AlignSpec, LengthSpec};
+use nana_ui_core::{
+    AlignSpec, LengthSpec, SelectionGesture, SelectionOrder, SelectionState, SelectionStep,
+};
 
 /// Where the rows scroll.
 enum Container {
@@ -90,6 +92,38 @@ enum Unit<K> {
     },
 }
 
+/// A selection request emitted by [`EachVirtual::on_select`] with the
+/// keyed item that received the pointer or keyboard trigger.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VirtualSelectionRequest<K> {
+    pub key: K,
+    pub gesture: SelectionGesture,
+    pub step: Option<SelectionStep>,
+}
+
+impl<K: Eq + Hash + Clone> VirtualSelectionRequest<K> {
+    /// Apply this request to `selection` over `order`, using
+    /// [`SelectionState::navigate`] when [`Self::step`] is present on a
+    /// keyboard move and [`SelectionState::apply`] otherwise. Returns whether
+    /// `selection` changed.
+    pub fn apply_to<O: SelectionOrder<K> + ?Sized>(
+        &self,
+        selection: &mut SelectionState<K>,
+        order: &O,
+    ) -> bool {
+        if let (Some(step), SelectionGesture::Move(modifiers)) = (self.step, self.gesture) {
+            if selection.current().is_none()
+                && !matches!(step, SelectionStep::First | SelectionStep::Last)
+            {
+                selection.set_current(self.key.clone());
+            }
+            selection.navigate(step, modifiers, order).is_some()
+        } else {
+            selection.apply(self.gesture, self.key.clone(), order)
+        }
+    }
+}
+
 /// `v-for` over many rows: see the module docs.
 pub struct EachVirtual<T, K, S, KF, RF> {
     items: S,
@@ -102,6 +136,8 @@ pub struct EachVirtual<T, K, S, KF, RF> {
     grid: Option<Grid>,
     style: ContainerStyle,
     list_ref: Option<VirtualListRef<K>>,
+    multiselectable: bool,
+    on_select: Option<Box<dyn FnMut(&VirtualSelectionRequest<K>) + Send + 'static>>,
     key: Option<Cow<'static, str>>,
     site: &'static Location<'static>,
     _types: PhantomData<fn(T) -> K>,
@@ -135,6 +171,8 @@ where
         grid: None,
         style: ContainerStyle::default(),
         list_ref: None,
+        multiselectable: false,
+        on_select: None,
         key: None,
         site: Location::caller(),
         _types: PhantomData,
@@ -243,6 +281,25 @@ impl<T, K, S, KF, RF> EachVirtual<T, K, S, KF, RF> {
         self
     }
 
+    /// Announce to assistive technology that multiple items can be selected
+    /// (`aria-multiselectable`), and opt the backing [`List`] into selection
+    /// pointer/keyboard requests.
+    pub fn multiselectable(mut self, multiselectable: bool) -> Self {
+        self.multiselectable = multiselectable;
+        self
+    }
+
+    /// Receive [`VirtualSelectionRequest`]s raised by pointer clicks and
+    /// keyboard navigation on items in this virtual list or grid, to apply to
+    /// an application-owned [`SelectionState`](nana_ui_core::SelectionState).
+    pub fn on_select(
+        mut self,
+        handler: impl FnMut(&VirtualSelectionRequest<K>) + Send + 'static,
+    ) -> Self {
+        self.on_select = Some(Box::new(handler));
+        self
+    }
+
     /// Styles go on the list's box in its parent: its own `ScrollView`, or
     /// the list itself with [`Self::within`].
     fn container_style_mut(&mut self) -> &mut ContainerStyle {
@@ -332,6 +389,45 @@ impl<K: Eq + Hash + Clone> VirtualListRef<K> {
         self.request(Request::At(key.clone(), inset.max(0.0)));
     }
 
+    /// Scroll so `key` is in view and move keyboard focus to the focusable
+    /// item built for `key` (or its first focusable descendant).
+    pub fn reveal_and_focus(&self, key: &K) {
+        self.request(Request::RevealFocus(key.clone(), VirtualAlignment::Nearest));
+    }
+
+    /// Resolve the business key of a mounted node inside this list (or one
+    /// of its descendants), as of the list's last sync.
+    pub fn key_of(&self, cx: &AppContext, node: StableNodeId) -> Option<K> {
+        let mut current = Some(node);
+        while let Some(id) = current {
+            if let Some(key) = self.with(|shared| shared.published.item_keys.get(&id).cloned()) {
+                return Some(key);
+            }
+            current = cx.world().parent_id(id);
+        }
+        None
+    }
+
+    /// How many columns the list currently lays out (`1` for a plain list).
+    pub fn columns(&self) -> usize {
+        self.with(|shared| shared.published.units.columns.max(1))
+    }
+
+    /// All deduplicated item keys in display order, as of the last sync.
+    pub fn keys(&self) -> Vec<K> {
+        self.with(|shared| shared.published.units.keys.clone())
+    }
+
+    /// Number of items in the list, as of the last sync.
+    pub fn len(&self) -> usize {
+        self.with(|shared| shared.published.units.keys.len())
+    }
+
+    /// Whether the list has no items, as of the last sync.
+    pub fn is_empty(&self) -> bool {
+        self.with(|shared| shared.published.units.keys.is_empty())
+    }
+
     fn request(&self, request: Request<K>) {
         let wake = self.with(|shared| {
             shared.request = Some(request);
@@ -346,6 +442,7 @@ impl<K: Eq + Hash + Clone> VirtualListRef<K> {
 /// Where a list is asked to scroll to, by item key.
 enum Request<K> {
     Reveal(K, VirtualAlignment),
+    RevealFocus(K, VirtualAlignment),
     /// The viewport's top this far into the item.
     At(K, f32),
     /// Keep the item at the viewport's top where it was, `inset` into it,
@@ -394,6 +491,8 @@ struct Geometry<K> {
     extent: f32,
     /// The node each built item's view is in.
     rows: HashMap<K, StableNodeId>,
+    /// Reverse lookup from a mounted item root (or its slot/cell) to its key.
+    item_keys: HashMap<StableNodeId, K>,
 }
 
 impl<K> Default for Geometry<K> {
@@ -404,6 +503,7 @@ impl<K> Default for Geometry<K> {
             offset: 0.0,
             extent: 0.0,
             rows: HashMap::new(),
+            item_keys: HashMap::new(),
         }
     }
 }
@@ -451,12 +551,9 @@ impl<K: Eq + Hash + Clone> Geometry<K> {
     /// not move it (or whose item is gone).
     fn target(&self, request: &Request<K>) -> Option<f32> {
         let target = match request {
-            Request::Reveal(key, align) => self.layout.offset_for_index(
-                self.unit_of(key)?,
-                self.offset,
-                self.extent,
-                *align,
-            )?,
+            Request::Reveal(key, align) | Request::RevealFocus(key, align) => self
+                .layout
+                .offset_for_index(self.unit_of(key)?, self.offset, self.extent, *align)?,
             // A reading position is a point in the list; the ScrollView
             // clamps it to how far its content scrolls, which for a list
             // within a page includes whatever follows the list.
@@ -467,7 +564,9 @@ impl<K: Eq + Hash + Clone> Geometry<K> {
             }
         };
         match request {
-            Request::Keep(..) if (target - self.offset).abs() < 0.5 => None,
+            Request::Keep(..) | Request::RevealFocus(..) if (target - self.offset).abs() < 0.5 => {
+                None
+            }
             _ => Some(target),
         }
     }
@@ -846,15 +945,40 @@ where
             self.scroll_list_to(cx, scroll, offset)?;
             self.geometry.offset = offset;
         }
-        self.geometry.rows = self.built_rows(cx);
+        let target_cols = self.geometry.units.columns.max(1);
+        if cx
+            .read(self.list, |list| list.grid_columns != target_cols)
+            .unwrap_or(false)
+        {
+            cx.update_component(self.list, |list, _| list.grid_columns = target_cols)?;
+        }
+        let (rows, item_keys) = self.built_rows(cx);
+        self.geometry.rows = rows;
+        self.geometry.item_keys = item_keys;
         if let Some(focus) = focus {
             self.restore_grid_focus(cx, focus)?;
+        }
+        if let Some(Request::RevealFocus(ref key, _)) = request
+            && let Some(slot_or_cell) = self.geometry.rows.get(key).copied()
+            && let Some(target_focus) = first_focusable_in(cx, slot_or_cell)
+            && let Some(document) = cx.world().document_of(target_focus)
+            && cx.world().focused(document) != Some(target_focus)
+        {
+            cx.focus_node_in_place(document, target_focus)?;
         }
         // Rows revealed at their estimate are measured after the next
         // layout, which moves an item aligned to the end or the center:
         // reveal it again then, until nothing it shows is estimated.
         let again = match request {
-            Some(request @ Request::Reveal(..)) if self.state.pending_measure() => Some(request),
+            Some(ref request @ (Request::Reveal(..) | Request::RevealFocus(..)))
+                if self.state.pending_measure() =>
+            {
+                match request {
+                    Request::Reveal(k, a) => Some(Request::Reveal(k.clone(), *a)),
+                    Request::RevealFocus(k, a) => Some(Request::RevealFocus(k.clone(), *a)),
+                    _ => None,
+                }
+            }
             _ => None,
         };
         // Readers get copies of the units and the layout made only when they
@@ -889,6 +1013,7 @@ where
             published.offset = geometry.offset;
             published.extent = geometry.extent;
             published.rows.clone_from(&geometry.rows);
+            published.item_keys.clone_from(&geometry.item_keys);
             if shared.request.is_none() {
                 shared.request = request;
             }
@@ -1004,10 +1129,25 @@ where
     }
 
     /// The node each built item's view is in: its row's slot, or in a grid
-    /// its cell of the row.
-    fn built_rows(&self, cx: &AppContext) -> HashMap<K, StableNodeId> {
+    /// its cell of the row, plus the reverse map from the slot/cell and its
+    /// mounted descendants back to `K`.
+    fn built_rows(&self, cx: &AppContext) -> (HashMap<K, StableNodeId>, HashMap<StableNodeId, K>) {
         let geometry = &self.geometry.units;
         let mut rows = HashMap::new();
+        let mut item_keys = HashMap::new();
+        let record = |rows: &mut HashMap<K, StableNodeId>,
+                      item_keys: &mut HashMap<StableNodeId, K>,
+                      key: K,
+                      slot_or_cell: StableNodeId| {
+            rows.insert(key.clone(), slot_or_cell);
+            let mut stack = vec![slot_or_cell];
+            while let Some(id) = stack.pop() {
+                item_keys.insert(id, key.clone());
+                if let Some(node) = cx.world().node(id) {
+                    stack.extend(node.children.iter().copied());
+                }
+            }
+        };
         for unit in self.state.mounted_keys() {
             let (Some(slot), Some(&at)) = (self.state.entity(unit), geometry.index.get(unit))
             else {
@@ -1016,7 +1156,7 @@ where
             let members = geometry.members[at].clone();
             if self.grid.is_none() {
                 if let Some(key) = geometry.keys.get(members.start) {
-                    rows.insert(key.clone(), slot.stable_id());
+                    record(&mut rows, &mut item_keys, key.clone(), slot.stable_id());
                 }
                 continue;
             }
@@ -1030,12 +1170,33 @@ where
                 .unwrap_or_default();
             for (position, cell) in members.zip(cells) {
                 if let Some(key) = geometry.keys.get(position) {
-                    rows.insert(key.clone(), cell);
+                    record(&mut rows, &mut item_keys, key.clone(), cell);
                 }
             }
         }
-        rows
+        (rows, item_keys)
     }
+}
+
+fn first_focusable_in(cx: &AppContext, root: StableNodeId) -> Option<StableNodeId> {
+    let mut stack = vec![root];
+    while let Some(id) = stack.pop() {
+        if cx
+            .world()
+            .interaction(id)
+            .is_some_and(|interaction| interaction.focusable)
+            && !cx
+                .world()
+                .accessibility(id)
+                .is_some_and(|state| state.disabled || state.display_only)
+        {
+            return Some(id);
+        }
+        if let Some(node) = cx.world().node(id) {
+            stack.extend(node.children.iter().rev().copied());
+        }
+    }
+    None
 }
 
 fn grid_columns(width: f32, grid: Grid) -> usize {
@@ -1111,7 +1272,7 @@ where
         let bump = move || moved.update(|at| *at += 1);
         // The list takes the width it is given, not its rows': rows wrap
         // their text to it and grid columns divide it.
-        let mut list = List::new();
+        let mut list = List::new().multiselectable(self.multiselectable);
         std::sync::Arc::make_mut(&mut list.style.layout).width = Some(LengthSpec::Percent(100.0));
         let (scroll, list, within) = match self.container {
             Container::Own(scroll) => {
@@ -1148,6 +1309,34 @@ where
             let mut shared = shared.lock().unwrap_or_else(PoisonError::into_inner);
             *shared = Shared::default();
             shared.wake = Some(moved);
+        }
+        if let Some(mut on_select) = self.on_select {
+            let shared_for_select = Arc::clone(&shared);
+            vb.ui.on(list, move |_, event: &ListSelectionRequested, _| {
+                let key = {
+                    let shared = shared_for_select
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner);
+                    shared
+                        .published
+                        .item_keys
+                        .get(&event.item)
+                        .cloned()
+                        .or_else(|| {
+                            (event.gesture == SelectionGesture::SelectAll)
+                                .then(|| shared.published.units.keys.first().cloned())
+                                .flatten()
+                        })
+                };
+                if let Some(key) = key {
+                    let request = VirtualSelectionRequest {
+                        key,
+                        gesture: event.gesture,
+                        step: event.step,
+                    };
+                    on_select(&request);
+                }
+            });
         }
         let (items, key_fn) = (self.items, self.key_fn);
         let stamps = Cell::new(0u64);

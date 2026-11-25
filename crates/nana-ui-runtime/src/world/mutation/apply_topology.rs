@@ -232,6 +232,7 @@ impl UiWorld {
                     self.reindex_component(id, None);
                     self.forget_labelled_by(id);
                     self.set_live(id, None);
+                    self.set_selected_override(id, None);
                     let _removed = self.nodes.remove(id);
                     self.invalidation.theme_state.pending_theme_eval.remove(&id);
                     self.invalidation.theme_state.theme_scopes.remove_owner(id);
@@ -347,6 +348,36 @@ impl UiWorld {
                 );
                 if let Some(parent) = self.parent_id(*id) {
                     self.mark_ancestors(parent, DirtyMask::RENDER);
+                }
+            }
+            UiMutation::PatchTransform { id, transform } => {
+                let Some(current) = self.node_style(*id).cloned() else {
+                    return;
+                };
+                if current.layout.transforms.transform == *transform {
+                    return;
+                }
+                let previous_resolved = Arc::clone(&self.record(*id).resolved_layout);
+                let mut style = current;
+                std::sync::Arc::make_mut(&mut style.layout)
+                    .transforms
+                    .transform = *transform;
+                self.write_node_style(*id, style);
+                let resolved = Arc::clone(&self.record(*id).resolved_layout);
+                let facts = self
+                    .invalidation
+                    .layout_pairs
+                    .facts(&previous_resolved, &resolved);
+                let stacking_changed = facts
+                    .changed
+                    .intersects(nana_ui_core::LayoutStyleChange::STACKING);
+                if !stacking_changed && facts.keeps_space {
+                    self.mark_transform_kept(*id);
+                } else {
+                    self.mark(
+                        *id,
+                        DirtyMask::TRANSFORM | DirtyMask::INPUT | DirtyMask::RENDER,
+                    );
                 }
             }
             UiMutation::SetScrollOffset { id, offset } => {
@@ -792,6 +823,18 @@ impl UiWorld {
                 if self.live(*id) != *live {
                     self.set_live(*id, *live);
                     self.mark(*id, DirtyMask::ACCESSIBILITY);
+                }
+            }
+            UiMutation::SetSelected { id, selected } => {
+                if self.selected_override(*id) != *selected {
+                    self.set_selected_override(*id, *selected);
+                    self.mark(*id, DirtyMask::ACCESSIBILITY);
+                    if !self.record(*id).style.interaction.is_empty() {
+                        self.mark(*id, DirtyMask::STYLE | DirtyMask::RENDER);
+                    }
+                    if self.node_painter(*id).is_some() {
+                        self.mark_repaint(*id);
+                    }
                 }
             }
             UiMutation::SetOverlayMount { id, mount } => {

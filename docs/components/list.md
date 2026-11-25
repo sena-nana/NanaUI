@@ -38,11 +38,16 @@ widget(List::new().label("最近文件")).children((
 
 `list_item` 是条目的视图函数，标签既是构造参数，也是显示文字。
 
-选中、禁用和行尾补充写在条目上，不写在这张列表上。
+选中、禁用和行尾补充写在条目上，也可以由列表统一发出选择请求。
 
-## 点击
+## 点击与选择
 
-列表本身不接指针，也不能聚焦；点击落在你放进去的条目上。
+列表默认不接指针，也不改变焦点的普通 Tab 顺序；需要由应用管理单选/多选时，打开 `List::multiselectable(true)` 或监听 `ListSelectionRequested`（`each_virtual` 使用 `.multiselectable(...)` 与 `.on_select(...)`）：
+
+- 在可交互的 `ListItem`、`InteractiveCard` 或带 `.aria_selected(...)` 的自定义条目卡片上按下时，发出 `ListSelectionRequested { item, gesture: SelectionGesture::Press(modifiers), step: None }`（虚拟列表上 `on_select` 接收解析出业务键的 `VirtualSelectionRequest<K>`）。
+- 焦点在列表条目内时，方向键（一维 `ArrowUp`/`ArrowDown`，`grid_columns > 1` 的网格同时支持 `ArrowLeft`/`ArrowRight` 按行跨列步进）、`Home` / `End`、`PageUp` / `PageDown` 发出 `Move`，带 `Shift` 从锚点扩展，`Ctrl+Shift` 追加一段，`Ctrl+Space` 发 `Toggle`，`Ctrl+A` 发 `SelectAll`。
+- 自定义卡片需要接收指针和键盘焦点时，在构建节点上调用 `.hittable().focusable().aria_selected(...)`；CSS 中的 `:selected` 伪类会随选中状态自动同步。
+- 虚拟列表把业务选择状态保留在 `SelectionState<K>` 中（滚动移出视口的键同样保留），用 `VirtualListRef::reveal_and_focus(&key)` 滚到并聚焦导航落点。
 
 ## 工作区
 
@@ -71,13 +76,15 @@ widget(List::new().label("最近文件")).children((
 | 属性 | 类型 | 说明 |
 | --- | --- | --- |
 | `.label` | — | 整张列表的可访问名。不写时，读屏只按角色念「列表」 |
+| `.multiselectable` | `bool` | 打开多选列表语义，向辅助技术声明并启用 `ListSelectionRequested` |
+| `.grid_columns` | `usize` | 网格列数（大于 1 时开启二维方向键跨列/跨行导航） |
 | `.style` | — | 整份替换节点样式。默认样式是一份空的 `NodeStyle` |
 
 ## 事件
 
 | 事件 | 载荷 | 说明 |
 | --- | --- | --- |
-| 无 | 无 | 列表本身不接指针，也不能聚焦 |
+| `ListSelectionRequested` | `{ item, gesture, step }` | 开启选择的列表或 `each_virtual` 在条目按下/选择键时发出 |
 
 ## 插槽
 

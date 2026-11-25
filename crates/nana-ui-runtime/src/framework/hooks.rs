@@ -442,7 +442,7 @@ impl AppContext {
     /// A cancelled pointer whose press a node with pointer hooks captured:
     /// the capture ends with no release, and the node hears the pointer
     /// leave once the hover is cleared.
-    pub(super) fn cancel_pointer_hook(&mut self, document: DocumentId, pointer_id: u64) -> Handled {
+    pub(crate) fn cancel_pointer_hook(&mut self, document: DocumentId, pointer_id: u64) -> Handled {
         let Some(owner) = self.world.pointer_capture(document, pointer_id) else {
             return Ok(false);
         };
@@ -840,6 +840,14 @@ pub(crate) struct TableCapabilities {
 }
 
 #[derive(Clone, Copy)]
+pub(crate) struct ListCapabilities {
+    pub(crate) selection_key:
+        fn(&mut AppContext, DocumentId, &str, nana_ui_core::SelectionModifiers) -> Handled,
+    pub(crate) pointer_press:
+        fn(&mut AppContext, StableNodeId, nana_ui_input::InputModifiers) -> Handled,
+}
+
+#[derive(Clone, Copy)]
 pub(crate) struct ChoiceKeyHooks {
     pub(crate) adjust: fn(&mut AppContext, DocumentId, i32) -> Handled,
     pub(crate) commit: fn(&mut AppContext, DocumentId) -> Handled,
@@ -861,6 +869,7 @@ pub(crate) struct Capabilities {
     pub(crate) popover: Option<&'static PopoverCapabilities>,
     pub(crate) tree: Option<&'static TreeCapabilities>,
     pub(crate) data_table: Option<&'static TableCapabilities>,
+    pub(crate) list: Option<&'static ListCapabilities>,
     pub(crate) auto_overlay_drive:
         Option<fn(&mut AppContext, StableNodeId, Option<bool>) -> Handled>,
     pub(crate) close_hover_card: Option<fn(&mut AppContext, StableNodeId) -> Handled>,

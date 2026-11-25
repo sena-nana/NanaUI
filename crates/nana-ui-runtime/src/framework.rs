@@ -25,10 +25,10 @@ mod roving_focus;
 #[allow(unused_imports)]
 pub(crate) use hooks::{
     A11yBehavior, ActiveDragOps, Capabilities, ChoiceKeyHooks, CurveCapabilities, DockCapabilities,
-    FocusBehavior, MenuBarCapabilities, OverlayBehavior, PointerOps, PopoverCapabilities,
-    RangeSpanCapabilities, ReorderListCapabilities, RichEditorCapabilities, ScrollbarCapabilities,
-    SplitPaneCapabilities, TableCapabilities, TerminalCapabilities, TreeCapabilities,
-    WorkspaceCapabilities,
+    FocusBehavior, ListCapabilities, MenuBarCapabilities, OverlayBehavior, PointerOps,
+    PopoverCapabilities, RangeSpanCapabilities, ReorderListCapabilities, RichEditorCapabilities,
+    ScrollbarCapabilities, SplitPaneCapabilities, TableCapabilities, TerminalCapabilities,
+    TreeCapabilities, WorkspaceCapabilities,
 };
 pub use hooks::{NodePointer, NodePointerHooks, NodeWheel, TypeBehavior};
 pub(crate) use lifecycle::{TOOLTIP_ANCHOR_TAG, lifecycle_hooks};
@@ -1301,6 +1301,7 @@ pub(crate) struct VirtualTablePublished {
     column_len: usize,
     row_extent: f32,
     column_extent: f32,
+    layout_revision: u64,
     activity: HashSet<StableNodeId>,
     fingerprint: u64,
 }
@@ -1337,6 +1338,9 @@ pub struct VirtualTableItems<R, C> {
     materializer: VirtualTableMaterializer<R, C>,
     rows: HashMap<R, Entity<TableRow>>,
     cells: HashMap<(R, C), Entity<TableCell>>,
+    frozen_rows: Vec<Entity<TableRow>>,
+    frozen_cells: Vec<Entity<TableCell>>,
+    pin_mutations: MutationQueue,
     ime_owner: Option<StableNodeId>,
     published: Option<VirtualTablePublished>,
 }
@@ -1347,6 +1351,9 @@ impl<R, C> Default for VirtualTableItems<R, C> {
             materializer: VirtualTableMaterializer::default(),
             rows: HashMap::new(),
             cells: HashMap::new(),
+            frozen_rows: Vec::new(),
+            frozen_cells: Vec::new(),
+            pin_mutations: MutationQueue::new(),
             ime_owner: None,
             published: None,
         }
@@ -1395,6 +1402,7 @@ where
             column_len: layout.column_count(),
             row_extent: layout.row_layout().total_extent(),
             column_extent: layout.column_layout().total_extent(),
+            layout_revision: layout.revision(),
             activity,
             fingerprint,
         });
@@ -1416,6 +1424,7 @@ where
                 && published.column_len == layout.column_count()
                 && published.row_extent == layout.row_layout().total_extent()
                 && published.column_extent == layout.column_layout().total_extent()
+                && published.layout_revision == layout.revision()
                 && published.activity == *activity
                 && published.fingerprint == fingerprint
         })
@@ -2249,6 +2258,19 @@ impl AppContext {
             }
         }
         let written_editors = self.text_histories_written_by(&mutations);
+        let selected_style_targets: Vec<Option<StableNodeId>> = mutations
+            .as_slice()
+            .iter()
+            .filter_map(|mutation| match mutation {
+                crate::UiMutation::SetAccessibility { id, .. }
+                | crate::UiMutation::SetSelected { id, .. }
+                    if self.has_selected_interactive_node(*id) =>
+                {
+                    Some(Some(*id))
+                }
+                _ => None,
+            })
+            .collect();
         let captures_before = self.world.pointer_capture_change_count();
         let (report, parked, inserted) = self
             .world
@@ -2348,6 +2370,9 @@ impl AppContext {
         }
         suspended?;
         self.end_drags_that_lost_their_capture(&lost_captures)?;
+        if !selected_style_targets.is_empty() {
+            self.sync_interactive_style_nodes(&selected_style_targets);
+        }
         self.sync_focus_within_listeners()?;
         Ok(report)
     }
@@ -4271,6 +4296,12 @@ impl AppContext {
         })?;
         self.request_table_move_selection(table, cell, modifiers)?;
         Ok(true)
+    }
+
+    pub(crate) fn has_event_listener<E: 'static>(&self, id: StableNodeId) -> bool {
+        self.lifecycle
+            .event_handlers
+            .contains_key(&(id, TypeId::of::<E>()))
     }
 
     pub fn read<V: View, R>(

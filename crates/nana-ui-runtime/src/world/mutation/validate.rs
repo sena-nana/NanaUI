@@ -361,6 +361,23 @@ impl<'a> ValidationPlan<'a> {
                         return Err(UiWorldError::InvalidStyle(*id));
                     }
                 }
+                UiMutation::PatchTransform { id, transform } => {
+                    self.require_exists(*id)?;
+                    if let Some(transform) = transform
+                        && ![
+                            transform.a,
+                            transform.b,
+                            transform.c,
+                            transform.d,
+                            transform.e,
+                            transform.f,
+                        ]
+                        .into_iter()
+                        .all(f32::is_finite)
+                    {
+                        return Err(UiWorldError::InvalidStyle(*id));
+                    }
+                }
                 UiMutation::SetScrollOffset { id, offset }
                 | UiMutation::SetScrollOverscroll { id, offset } => {
                     self.require_exists(*id)?;
@@ -424,7 +441,9 @@ impl<'a> ValidationPlan<'a> {
                         self.require_exists(*label)?;
                     }
                 }
-                UiMutation::SetLive { id, .. } | UiMutation::SetOverlayMount { id, .. } => {
+                UiMutation::SetLive { id, .. }
+                | UiMutation::SetSelected { id, .. }
+                | UiMutation::SetOverlayMount { id, .. } => {
                     self.require_exists(*id)?;
                 }
                 UiMutation::SetWidgetVisual { id, visual } => {
@@ -1408,6 +1427,12 @@ impl UiWorld {
                 self.node_style(*id).is_some_and(|style| {
                     super::apply_topology::placement_already(style.layout.as_ref(), *top, *height)
                 })
+            }
+            UiMutation::PatchTransform { id, transform } => self
+                .node_style(*id)
+                .is_some_and(|style| style.layout.transforms.transform == *transform),
+            UiMutation::SetSelected { id, selected } => {
+                self.nodes.contains(*id) && self.selected_override(*id) == *selected
             }
             _ => false,
         }

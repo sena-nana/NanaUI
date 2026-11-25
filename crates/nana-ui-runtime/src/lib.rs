@@ -74,6 +74,7 @@ pub use inline_content::{
 };
 pub use inline_flow::InlineFlow;
 mod layout_result;
+mod list_selection;
 mod sticky;
 /// Benchmark-only coarse phase clocks for `--profile-layout`. How much work
 /// layout did, plan reuse included, is on [`WorkCounters`].
@@ -341,6 +342,7 @@ pub use layout_result::{
     LayoutChildPlacement, LayoutFragment, LayoutFragmentKind, LayoutFrame, LayoutPart,
     LayoutPartKind, LayoutResult, LayoutResultSource,
 };
+pub use list_selection::ListSelectionRequested;
 pub use media_time::{MediaPacing, MediaSampleRequest, MediaTimeMapping};
 pub use media_transport::{
     MediaTransportBar, MediaTransportDensity, MediaTransportEvent, MediaTransportIcons,
@@ -509,6 +511,7 @@ pub use tree_view::{
     TreeToggleChanged, TreeToggleColumn, TreeView, TreeViewLayout, TreeViewVisual,
 };
 pub use video::Video;
+pub use view::VirtualSelectionRequest;
 pub use view_components::{
     Activate, Button, ButtonVisual, Card, CardVisual, Checkbox, CheckboxVisual, CodeEditing,
     ComponentView, Dialog, DialogCloseRequested, DialogToggled, Divider, FileDropEvent,

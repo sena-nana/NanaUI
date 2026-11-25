@@ -47,9 +47,9 @@ use crate::{
 pub use nana_ui_core::StylePatch;
 
 #[doc(hidden)]
-pub const PSEUDO_BIT_SHIFT: u32 = 60;
+pub const PSEUDO_BIT_SHIFT: u32 = 59;
 #[doc(hidden)]
-pub const MAX_CONDITIONAL_CLASSES: usize = 60;
+pub const MAX_CONDITIONAL_CLASSES: usize = 59;
 #[doc(hidden)]
 pub const PSEUDO_HOVER: u8 = 1 << 0;
 #[doc(hidden)]
@@ -58,6 +58,8 @@ pub const PSEUDO_FOCUS: u8 = 1 << 1;
 pub const PSEUDO_FOCUS_VISIBLE: u8 = 1 << 2;
 #[doc(hidden)]
 pub const PSEUDO_ACTIVE: u8 = 1 << 3;
+#[doc(hidden)]
+pub const PSEUDO_SELECTED: u8 = 1 << 4;
 
 /// Codegen helpers emitted by compiled stylesheet patches; not part of the
 /// supported public API.
@@ -89,8 +91,8 @@ pub mod __patch {
         TextEmphasisPosition, TextEmphasisShape, TextEmphasisStyle, TextJustifySpec,
         TextOrientationSpec, TextShadowSpec, TextSpacingTrimSpec, TextStrokeSpec, TextWeight,
         TextWrapStyleSpec, ThemeColorPairRef, ThemeExpr, ThemeProperty, ThemeToken, TransformBox,
-        TransformOrigin, TypeRole, UserSelectSpec, ViewportAxis, VisibilitySpec, WhiteSpaceSpec,
-        WordBreakSpec, WritingModeSpec, intern_theme_color_pair,
+        TransformOrigin, TypeRole, UserSelectSpec, VerticalAlignSpec, ViewportAxis, VisibilitySpec,
+        WhiteSpaceSpec, WordBreakSpec, WritingModeSpec, intern_theme_color_pair,
     };
 }
 
@@ -1328,6 +1330,118 @@ mod site_tests {
         assert!(
             SITE.responsive(&base, 0, here()).is_none(),
             "no guarded rule"
+        );
+    }
+
+    static SEL_RESTING: StylePatch = StylePatch::new(|layout| {
+        layout.opacity = Some(1.0);
+        layout.padding = Some(LengthSpec::Px(4.0));
+    });
+    static SEL_ACTIVE: StylePatch = StylePatch::new(|layout| {
+        layout.opacity = Some(0.6);
+        layout.padding = Some(LengthSpec::Px(12.0));
+    });
+    static SEL_RULES: [SheetRule; 2] = [
+        SheetRule {
+            classes: &[0],
+            pseudo: 0,
+            patch: &SEL_RESTING,
+            query: None,
+        },
+        SheetRule {
+            classes: &[0],
+            pseudo: PSEUDO_SELECTED,
+            patch: &SEL_ACTIVE,
+            query: None,
+        },
+    ];
+    static SEL_SHEET: Sheet = Sheet::new(&SEL_RULES, &[]);
+
+    #[test]
+    fn selected_pseudo_class_updates_composed_style_and_aria_selected() {
+        use crate::AccessibilityRole;
+        use crate::view::{column, list_item, signal};
+        use crate::{AppContext, DocumentId};
+
+        let sel_class = Class::new(&SEL_SHEET, 0);
+        let item_selected = signal(false);
+        let card_selected = signal(false);
+        let mut cx = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let root = cx
+            .mount_view_root(document, move || {
+                column().children((
+                    list_item("alpha").class(sel_class).selected(item_selected),
+                    column()
+                        .class(sel_class)
+                        .aria_selected(move || Some(card_selected.get())),
+                ))
+            })
+            .unwrap()
+            .roots()[0];
+        let children = cx.world().node(root).unwrap().children.to_vec();
+        let (item_id, card_id) = (children[0], children[1]);
+
+        let work = cx.take_system_work();
+        cx.resolve_styles(&work.style).unwrap();
+        assert_eq!(
+            cx.world().node_style(item_id).unwrap().layout.opacity,
+            Some(1.0)
+        );
+        assert_eq!(
+            cx.world().node_style(card_id).unwrap().layout.opacity,
+            Some(1.0)
+        );
+        let projected = cx.world().project_accessibility(document);
+        assert_eq!(
+            projected
+                .iter()
+                .find(|n| n.id == item_id && n.role == AccessibilityRole::ListItem)
+                .and_then(|n| n.selected),
+            Some(false)
+        );
+        assert_eq!(
+            projected
+                .iter()
+                .find(|n| n.id == card_id)
+                .and_then(|n| n.selected),
+            Some(false)
+        );
+
+        item_selected.set(true);
+        card_selected.set(true);
+        let work = cx.take_system_work();
+        cx.resolve_styles(&work.style).unwrap();
+        assert_eq!(
+            cx.world().node_style(item_id).unwrap().layout.opacity,
+            Some(0.6)
+        );
+        assert_eq!(
+            cx.world().node_style(item_id).unwrap().layout.padding,
+            Some(LengthSpec::Px(12.0))
+        );
+        assert_eq!(
+            cx.world().node_style(card_id).unwrap().layout.opacity,
+            Some(0.6)
+        );
+        assert_eq!(
+            cx.world().node_style(card_id).unwrap().layout.padding,
+            Some(LengthSpec::Px(12.0))
+        );
+        let projected = cx.world().project_accessibility(document);
+        assert_eq!(
+            projected
+                .iter()
+                .find(|n| n.id == item_id)
+                .and_then(|n| n.selected),
+            Some(true)
+        );
+        assert_eq!(
+            projected
+                .iter()
+                .find(|n| n.id == card_id)
+                .and_then(|n| n.selected),
+            Some(true)
         );
     }
 }

@@ -26,6 +26,7 @@ pub enum InteractivePseudo {
     Focus,
     FocusVisible,
     Active,
+    Selected,
 }
 
 impl InteractivePseudo {
@@ -35,6 +36,7 @@ impl InteractivePseudo {
             "focus" => Some(Self::Focus),
             "focus-visible" => Some(Self::FocusVisible),
             "active" => Some(Self::Active),
+            "selected" => Some(Self::Selected),
             _ => None,
         }
     }
@@ -448,13 +450,14 @@ pub fn keyframes_by_name<'a>(
     keyframes.get(name)
 }
 
-/// Which `:hover` / `:focus` / `:focus-visible` / `:active` pseudos are active on one node.
+/// Which `:hover` / `:focus` / `:focus-visible` / `:active` / `:selected` pseudos are active on one node.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct InteractivePseudoFlags {
     pub hover: bool,
     pub focus: bool,
     pub focus_visible: bool,
     pub active: bool,
+    pub selected: bool,
 }
 
 impl InteractivePseudoFlags {
@@ -464,6 +467,7 @@ impl InteractivePseudoFlags {
             InteractivePseudo::Focus => self.focus,
             InteractivePseudo::FocusVisible => self.focus_visible,
             InteractivePseudo::Active => self.active,
+            InteractivePseudo::Selected => self.selected,
         }
     }
 
@@ -474,6 +478,7 @@ impl InteractivePseudoFlags {
             InteractivePseudo::Focus => next.focus = true,
             InteractivePseudo::FocusVisible => next.focus_visible = true,
             InteractivePseudo::Active => next.active = true,
+            InteractivePseudo::Selected => next.selected = true,
         }
         next
     }
@@ -711,5 +716,18 @@ mod tests {
             sheet.interactive_rules[0].selector.pseudo,
             InteractivePseudo::FocusVisible
         );
+    }
+
+    #[test]
+    fn selected_pseudo_parses_and_sets_flag() {
+        let (sheet, report) = parse_stylesheet_full(".row:selected { opacity: 0.9; }", 0);
+        assert_eq!(report.skipped_selectors, 0);
+        assert_eq!(sheet.interactive_rules.len(), 1);
+        assert_eq!(
+            sheet.interactive_rules[0].selector.pseudo,
+            InteractivePseudo::Selected
+        );
+        let flags = InteractivePseudoFlags::default().with(InteractivePseudo::Selected);
+        assert!(flags.has(InteractivePseudo::Selected));
     }
 }

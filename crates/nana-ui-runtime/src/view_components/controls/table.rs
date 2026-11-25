@@ -65,6 +65,7 @@ impl ComponentView for Table {
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         capabilities: Some(|caps| {
             caps.data_table = Some(&TABLE_CAPABILITIES);
+            caps.add_edit_canceller(crate::AppContext::cancel_table_column_resize);
         }),
         ..crate::TypeBehavior::NONE
     };
@@ -247,6 +248,9 @@ impl ComponentView for TableCell {
     const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::TABLE_CELL.type_id);
 
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        capabilities: Some(|caps| {
+            caps.add_edit_canceller(crate::AppContext::cancel_table_column_resize);
+        }),
         pointer: Some(&crate::data_table::TABLE_CELL_POINTER),
         pointer_ops: Some(&TABLE_CELL_POINTER_OPS),
         ..crate::TypeBehavior::NONE

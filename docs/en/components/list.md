@@ -38,11 +38,16 @@ widget(List::new().label("Recent files")).children((
 
 `list_item` is the view function for an entry; the label is both the constructor argument and the visible text.
 
-Selection, disabling and a trailing accessory are written on the entry, not on this list.
+Selection, disabling and trailing accessories can be bound per entry, while the list or `each_virtual` emits selection requests for your `SelectionState<K>`.
 
-## Clicks
+## Clicks and selection
 
-The list itself does not take the pointer and is not focusable; clicks land on the entries you put inside.
+By default a plain `List` neither takes the pointer nor joins focus; to manage single or multi-item selection, set `List::multiselectable(true)` or listen for `ListSelectionRequested` (on `each_virtual`, call `.multiselectable(...)` and `.on_select(...)`):
+
+- Pressing an interactive `ListItem`, `InteractiveCard`, or custom item card carrying `.aria_selected(...)` emits `ListSelectionRequested { item, gesture: SelectionGesture::Press(modifiers), step: None }` (or `VirtualSelectionRequest<K>` in `each_virtual::on_select`).
+- While focus is inside a selection-active list, arrows (`ArrowUp`/`ArrowDown` in 1D lists, plus `ArrowLeft`/`ArrowRight` and row-striding `ArrowUp`/`ArrowDown` when `grid_columns > 1`), `Home`/`End`, and `PageUp`/`PageDown` emit `Move`; `Shift` extends from the anchor, `Ctrl+Shift` extends additively, `Ctrl+Space` emits `Toggle`, and `Ctrl+A` emits `SelectAll`.
+- For custom cards, call `.hittable().focusable().aria_selected(...)`; the CSS `:selected` pseudo-class updates with the selected state.
+- Virtual lists keep offscreen selections in `SelectionState<K>` and scroll to and focus keyboard targets via `VirtualListRef::reveal_and_focus(&key)`.
 
 ## Workspace
 
@@ -71,13 +76,15 @@ The list's accessible name comes from `.label`; without it, screen readers annou
 | Property | Type | Description |
 | --- | --- | --- |
 | `.label` | — | Accessible name for the whole list. Without it, screen readers announce only the role, "list" |
+| `.multiselectable` | `bool` | Enables multi-selection semantics for assistive technology and `ListSelectionRequested` |
+| `.grid_columns` | `usize` | Grid column count (values > 1 enable 2D arrow navigation across columns and rows) |
 | `.style` | — | Replaces the whole node style. The default style is an empty `NodeStyle` |
 
 ## Events
 
 | Event | Payload | Description |
 | --- | --- | --- |
-| None | None | The list itself does not take the pointer and is not focusable |
+| `ListSelectionRequested` | `{ item, gesture, step }` | Emitted by selection-active `List` / `each_virtual` containers on press or selection key |
 
 ## Slots
 

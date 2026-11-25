@@ -30,15 +30,23 @@ use crate::{AppContext, FrameworkError, Locale, LocaleScope, MutationQueue, Stab
 struct Relations {
     labelled_by: Option<PropSource<Option<StableNodeId>>>,
     locale: Option<PropSource<Option<Locale>>>,
+    aria_selected: Option<PropSource<Option<bool>>>,
 }
 
 impl Relations {
     /// What each relation the node has says now; read under the binding's
     /// effect, it is what the binding follows.
-    fn read(&self) -> (Option<Option<StableNodeId>>, Option<Option<Locale>>) {
+    fn read(
+        &self,
+    ) -> (
+        Option<Option<StableNodeId>>,
+        Option<Option<Locale>>,
+        Option<Option<bool>>,
+    ) {
         (
             self.labelled_by.as_ref().map(|label| label.get()),
             self.locale.as_ref().map(|locale| locale.get()),
+            self.aria_selected.as_ref().map(|selected| selected.get()),
         )
     }
 }
@@ -50,11 +58,27 @@ impl StructuralBinding for Relations {
         node: StableNodeId,
         effect: EffectKey,
     ) -> Result<(), FrameworkError> {
-        let (label, locale) = reactive::run_tracked(effect, || self.read());
+        let (label, locale, selected) = reactive::run_tracked(effect, || self.read());
         let named = label.map_or(Ok(()), |label| relate(cx, node, label));
         let scoped = locale.map_or(Ok(()), |locale| scope(cx, node, locale));
-        named.and(scoped)
+        let selected = selected.map_or(Ok(()), |selected| select_override(cx, node, selected));
+        named.and(scoped).and(selected)
     }
+}
+
+/// Apply `El::aria_selected` override to `node`.
+fn select_override(
+    cx: &mut AppContext,
+    node: StableNodeId,
+    selected: Option<bool>,
+) -> Result<(), FrameworkError> {
+    let world = cx.world();
+    if !world.contains(node) || world.selected_override(node) == selected {
+        return Ok(());
+    }
+    let mut mutations = MutationQueue::new();
+    mutations.set_selected(node, selected);
+    cx.commit_mutations(mutations).map(|_| ())
 }
 
 /// Make `node` a scope of `locale`, or no scope while it is `None`.
@@ -74,12 +98,13 @@ fn scope(
 
 /// Keep `node` related as its element declared: named by what `labelled_by`
 /// names, once the view it is in is in the tree and whenever that moves on;
-/// a scope of `locale` from the commit that creates it.
+/// a scope of `locale` and/or `aria_selected` from the commit that creates it.
 pub(super) fn bind(
     vb: &mut ViewBuilder<'_, '_, '_>,
     node: StableNodeId,
     labelled_by: Option<PropSource<Option<StableNodeId>>>,
     locale: Option<PropSource<Option<Locale>>>,
+    aria_selected: Option<PropSource<Option<bool>>>,
     site: &'static Location<'static>,
 ) {
     // A constant follows nothing: it is the node's from the start.
@@ -90,18 +115,36 @@ pub(super) fn bind(
         }
         locale => locale,
     };
+    let aria_selected = match aria_selected {
+        Some(PropSource::Const(selected)) => {
+            if selected.is_some() {
+                vb.ui.mutations().set_selected(node, selected);
+            }
+            None
+        }
+        aria_selected => aria_selected,
+    };
     let relations = Relations {
         labelled_by,
         locale,
+        aria_selected,
     };
-    if relations.labelled_by.is_none() && relations.locale.is_none() {
+    if relations.labelled_by.is_none()
+        && relations.locale.is_none()
+        && relations.aria_selected.is_none()
+    {
         return;
     }
     let effect = reactive::create_effect(vb.st.tag, EffectTarget::Structural(node), None, site);
     // What it reads is what it follows.
-    let (_, locale) = reactive::run_tracked(effect, || relations.read());
+    let (_, locale, selected) = reactive::run_tracked(effect, || relations.read());
     if let Some(locale) = locale {
         vb.ui.mutations().set_locale(node, locale);
+    }
+    if let Some(selected) = selected
+        && selected.is_some()
+    {
+        vb.ui.mutations().set_selected(node, selected);
     }
     if relations.labelled_by.is_some() {
         // A caption declared after the control is not built yet, so the

@@ -6,7 +6,8 @@ use crate::view::reactive::{self as rx, EffectKey, EffectTarget, FragmentId, Sco
 use crate::view::{
     CompiledMotionValue, FragmentBinding, InteractiveStyleBinding, KeyframeAnimation,
     MotionBinding, Mount, NodePatch, PSEUDO_ACTIVE, PSEUDO_FOCUS, PSEUDO_FOCUS_VISIBLE,
-    PSEUDO_HOVER, Refs, SlotItem, StructuralBinding, ViewBuilder, ViewParts, ViewState,
+    PSEUDO_HOVER, PSEUDO_SELECTED, Refs, SlotItem, StructuralBinding, ViewBuilder, ViewParts,
+    ViewState,
 };
 use crate::{
     AnimatableProperty, AnimationFillMode, AnimationId, AnimationIteration, AnimationPlayState,
@@ -98,10 +99,12 @@ pub(crate) struct ReactiveHost {
     implicit: HashMap<StableNodeId, Box<[crate::view::Implicit]>, crate::BuildIdHasher>,
     /// Nodes that slide when a layout pass moves them within their parent.
     layout_moves: HashMap<StableNodeId, LayoutMove, crate::BuildIdHasher>,
-    /// Interactive pseudo-state signals (`:hover`, `:focus`, `:focus-visible`, `:active`).
+    /// Interactive pseudo-state signals (`:hover`, `:focus`, `:focus-visible`, `:active`, `:selected`).
     interactive_styles: HashMap<StableNodeId, InteractiveStyleBinding, crate::BuildIdHasher>,
     /// Nodes in `interactive_styles` whose pseudo-state mask is currently non-zero.
     active_interactive_nodes: HashSet<StableNodeId, crate::BuildIdHasher>,
+    /// Nodes in `interactive_styles` that subscribe to `:selected`.
+    selected_interactive_nodes: HashSet<StableNodeId, crate::BuildIdHasher>,
     /// Documents that have mounted interactive-style bindings.
     interactive_documents: Vec<DocumentId>,
     /// Nodes carrying compiled CSS dynamic transitions / `@keyframes`.
@@ -131,6 +134,7 @@ impl Default for ReactiveHost {
             layout_moves: HashMap::default(),
             interactive_styles: HashMap::default(),
             active_interactive_nodes: HashSet::default(),
+            selected_interactive_nodes: HashSet::default(),
             interactive_documents: Vec::new(),
             motion_bindings: HashMap::default(),
             keyframe_tracks: HashMap::default(),
@@ -537,6 +541,11 @@ impl AppContext {
         let mut mounted_interactive = Vec::with_capacity(parts.interactive.len());
         for (id, interactive) in parts.interactive {
             if self.world.contains(id) {
+                if interactive.used_pseudos & PSEUDO_SELECTED != 0 {
+                    self.reactive.selected_interactive_nodes.insert(id);
+                } else {
+                    self.reactive.selected_interactive_nodes.remove(&id);
+                }
                 self.reactive.interactive_styles.insert(id, interactive);
                 if let Some(doc) = self.world.document_of(id)
                     && !self.reactive.interactive_documents.contains(&doc)
@@ -1501,6 +1510,7 @@ impl AppContext {
             host.layout_moves.remove(id);
             host.interactive_styles.remove(id);
             host.active_interactive_nodes.remove(id);
+            host.selected_interactive_nodes.remove(id);
             host.motion_bindings.remove(id);
             host.keyframe_tracks.remove(id);
             if let Some(entry) = host.nodes.remove(id) {
@@ -1937,6 +1947,11 @@ impl AppContext {
         {
             bits |= PSEUDO_FOCUS_VISIBLE;
         }
+        if binding.used_pseudos & PSEUDO_SELECTED != 0
+            && self.world.effective_selected(node) == Some(true)
+        {
+            bits |= PSEUDO_SELECTED;
+        }
         if bits != 0 {
             self.reactive.active_interactive_nodes.insert(node);
         } else {
@@ -2014,6 +2029,20 @@ impl AppContext {
             }
         }
         self.sync_interactive_style_ancestors(&targets);
+        if !self.reactive.selected_interactive_nodes.is_empty() {
+            let selected_nodes: Vec<Option<StableNodeId>> = self
+                .reactive
+                .selected_interactive_nodes
+                .iter()
+                .copied()
+                .map(Some)
+                .collect();
+            self.sync_interactive_style_nodes(&selected_nodes);
+        }
+    }
+
+    pub(crate) fn has_selected_interactive_node(&self, id: StableNodeId) -> bool {
+        self.reactive.selected_interactive_nodes.contains(&id)
     }
 
     pub(crate) fn sync_keyframe_animations(

@@ -20,6 +20,14 @@ use crate::{
 #[derive(Debug, Clone, PartialEq)]
 pub struct List {
     pub label: Option<Arc<str>>,
+    /// More than one item can be selected (`aria-multiselectable`), and the
+    /// list raises [`crate::ListSelectionRequested`] for clicks and selection
+    /// keys. The selection itself stays in the application's
+    /// [`nana_ui_core::SelectionState`].
+    pub multiselectable: bool,
+    /// Columns per row when this list lays out a grid (`EachVirtual::grid`);
+    /// 1 for a plain list.
+    pub(crate) grid_columns: usize,
     pub style: NodeStyle,
 }
 
@@ -27,12 +35,19 @@ impl List {
     pub fn new() -> Self {
         Self {
             label: None,
+            multiselectable: false,
+            grid_columns: 1,
             style: NodeStyle::default(),
         }
     }
 
     pub fn label(mut self, label: impl Into<Arc<str>>) -> Self {
         self.label = Some(label.into());
+        self
+    }
+
+    pub fn multiselectable(mut self, multiselectable: bool) -> Self {
+        self.multiselectable = multiselectable;
         self
     }
 
@@ -50,6 +65,13 @@ impl Default for List {
 
 impl ComponentView for List {
     const TYPE_ID: Option<&'static str> = Some(crate::component_descriptors::LIST.type_id);
+
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        capabilities: Some(|caps| {
+            caps.list = Some(&crate::list_selection::LIST_CAPABILITIES);
+        }),
+        ..crate::TypeBehavior::NONE
+    };
 
     fn share_layouts(
         &mut self,
@@ -75,6 +97,7 @@ impl ComponentView for List {
             AccessibilityState {
                 role: AccessibilityRole::List,
                 label: self.label.clone(),
+                multiselectable: self.multiselectable,
                 ..AccessibilityState::default()
             },
         );
@@ -106,6 +129,7 @@ pub struct Stack {
     /// layout only, so a [`crate::SettingsGroup`] reads through it to the
     /// rows themselves.
     structural: bool,
+    focusable: bool,
 }
 
 /// [`edit_layout`] for a length edit: remembered when the length compares
@@ -133,6 +157,7 @@ impl Stack {
             style: Arc::new(style),
             hittable: true,
             structural: false,
+            focusable: false,
         }
     }
 
@@ -150,7 +175,9 @@ impl Stack {
 
     #[inline]
     pub(crate) fn elided_flags(&self) -> u8 {
-        1 | (u8::from(self.hittable) << 1) | (u8::from(self.structural) << 2)
+        1 | (u8::from(self.hittable) << 1)
+            | (u8::from(self.structural) << 2)
+            | (u8::from(self.focusable) << 3)
     }
 
     #[inline]
@@ -159,6 +186,7 @@ impl Stack {
             style,
             hittable: (flags & 0b010) != 0,
             structural: (flags & 0b100) != 0,
+            focusable: (flags & 0b1000) != 0,
         }
     }
 
@@ -199,6 +227,7 @@ impl Stack {
                 style,
                 hittable: false,
                 structural: false,
+                focusable: false,
             };
         }
         let mut style = NodeStyle::default();
@@ -259,6 +288,7 @@ impl Stack {
             style,
             hittable: false,
             structural: false,
+            focusable: false,
         }
     }
 
@@ -309,6 +339,7 @@ impl Stack {
             style: Arc::new(style),
             hittable: false,
             structural: false,
+            focusable: false,
         }
     }
 
@@ -328,6 +359,7 @@ impl Stack {
             style: Arc::new(style),
             hittable: false,
             structural: false,
+            focusable: false,
         }
         .width(nana_ui_core::LengthSpec::Shrink)
     }
@@ -609,6 +641,12 @@ impl Stack {
         self
     }
 
+    /// Make this container focusable (e.g. a selectable card in a virtual list or grid).
+    pub fn focusable(mut self) -> Self {
+        self.focusable = true;
+        self
+    }
+
     pub fn style(mut self, style: NodeStyle) -> Self {
         self.style = Arc::new(style);
         self
@@ -641,6 +679,7 @@ impl ComponentView for Stack {
         let hittable = self.hittable
             && !self.style.layout.hidden
             && self.style.layout.pointer_events != Some(nana_ui_core::PointerEventsSpec::None);
+        let focusable = self.focusable && !self.style.layout.hidden;
         project_common(
             id,
             world,
@@ -648,7 +687,7 @@ impl ComponentView for Stack {
             &self.style,
             InteractionState {
                 pointer_events: hittable,
-                focusable: false,
+                focusable,
             },
             AccessibilityState::default(),
         );

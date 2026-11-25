@@ -3635,4 +3635,41 @@ mod tests {
                 .is_none()
         );
     }
+
+    #[cfg(all(feature = "hosted", not(target_os = "android")))]
+    #[test]
+    fn multiselectable_list_table_and_aria_selected_project_to_accesskit() {
+        let mut root = node(1, None, &[2, 4]);
+
+        let mut list = node(2, Some(1), &[3]);
+        list.role = AccessibilityRole::List;
+        list.multiselectable = true;
+        let mut item = node(3, Some(2), &[]);
+        item.role = AccessibilityRole::ListItem;
+        item.selected = Some(true);
+
+        let mut table = node(4, Some(1), &[5]);
+        table.role = AccessibilityRole::Table;
+        table.multiselectable = true;
+        let mut card = node(5, Some(4), &[]);
+        card.role = AccessibilityRole::Generic;
+        card.selected = Some(true);
+
+        root.focused = false;
+        let (_, update) =
+            AccessibilityProjector::new(vec![root, list, item, table, card], true, 1.0);
+        let projected = |id: u64| {
+            update
+                .nodes
+                .iter()
+                .find(|(node_id, _)| *node_id == NodeId(id))
+                .unwrap()
+                .1
+                .clone()
+        };
+        assert!(projected(2).is_multiselectable());
+        assert_eq!(projected(3).is_selected(), Some(true));
+        assert!(projected(4).is_multiselectable());
+        assert_eq!(projected(5).is_selected(), Some(true));
+    }
 }

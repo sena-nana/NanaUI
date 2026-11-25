@@ -490,3 +490,105 @@ fn issue200_logical_insets_follow_inherited_rtl_and_vertical_writing() {
         assert_eq!(scene.draw_node_bounds(id(4)).unwrap().x, 80.0);
     }
 }
+
+#[test]
+fn scrolled_frozen_virtual_table_aligns_scene_bounds_and_paint_order() {
+    use nana_ui_core::{TableColumn, VirtualTableLayout};
+    use nana_ui_runtime::{
+        AppContext, LayoutViewport, ScrollAxes, ScrollView, Table, TableCell, TableRow,
+        VirtualTableItems,
+    };
+    use nana_ui_scene::RenderOperation;
+
+    let mut cx = AppContext::new();
+    let doc = document();
+    let scroll = cx
+        .create_component(
+            doc,
+            ScrollView::new(ScrollAxes::Both).with_layout(|layout| {
+                layout.width = Some(LengthSpec::Px(240.0));
+                layout.height = Some(LengthSpec::Px(120.0));
+            }),
+        )
+        .unwrap();
+    let table = cx.create_component(doc, Table::new()).unwrap();
+    cx.append_child(scroll, table).unwrap();
+
+    let layout = VirtualTableLayout::new(
+        std::iter::repeat_n(20.0, 40),
+        (0..6).map(|c| TableColumn::new(format!("c{c}"), 60.0)),
+    );
+    let mut items: VirtualTableItems<usize, usize> = VirtualTableItems::default();
+    let mut step = |cx: &mut AppContext, x: f32, y: f32| {
+        if x != 0.0 || y != 0.0 {
+            cx.scroll_to(scroll, ScrollOffset { x, y }).unwrap();
+        }
+        let work = cx.take_system_work();
+        cx.resolve_styles(&work.style).unwrap();
+        cx.layout_document(doc, LayoutViewport::new(240.0, 120.0))
+            .unwrap();
+        cx.sync_virtual_table_retained_in(
+            scroll,
+            table,
+            &mut items,
+            &layout,
+            [0.0, 0.0],
+            0,
+            [1, 1],
+            &[],
+            |i| i,
+            |k| Some(*k),
+            |i| i,
+            |k| Some(*k),
+            |_, _| TableRow::new(),
+            |r, _, c, _| TableCell::new(format!("{r}/{c}")),
+        )
+        .unwrap();
+        let work = cx.take_system_work();
+        cx.resolve_styles(&work.style).unwrap();
+        cx.layout_document(doc, LayoutViewport::new(240.0, 120.0))
+            .unwrap();
+        cx.rebuild_hit_test(doc);
+    };
+    step(&mut cx, 0.0, 0.0);
+    step(&mut cx, 60.0, 100.0);
+
+    let mut scene = UiScene::default();
+    scene.apply_delta(cx.world().extract_document(doc), []);
+
+    let corner = items.cell_entity(&0, &0).unwrap().stable_id();
+    let frozen_header = items.cell_entity(&0, &2).unwrap().stable_id();
+    let frozen_col = items.cell_entity(&7, &0).unwrap().stable_id();
+    let body_cell = items.cell_entity(&7, &2).unwrap().stable_id();
+
+    let corner_rect = scene.draw_node_bounds(corner).unwrap();
+    let header_rect = scene.draw_node_bounds(frozen_header).unwrap();
+    let col_rect = scene.draw_node_bounds(frozen_col).unwrap();
+    let body_rect = scene.draw_node_bounds(body_cell).unwrap();
+
+    assert_eq!((corner_rect.x, corner_rect.y), (0.0, 0.0));
+    assert_eq!((header_rect.x, header_rect.y), (60.0, 0.0));
+    assert_eq!((col_rect.x, col_rect.y), (0.0, 40.0));
+    assert_eq!((body_rect.x, body_rect.y), (60.0, 40.0));
+
+    let ops = scene
+        .visible_operations(SceneRect {
+            x: 0.0,
+            y: 0.0,
+            width: 240.0,
+            height: 120.0,
+        })
+        .unwrap();
+    let op_index = |target: StableNodeId| {
+        ops.iter().position(|op| match op {
+            RenderOperation::Draw(pid)
+            | RenderOperation::InvokeCustom(pid)
+            | RenderOperation::PrepareExternal(pid) => pid.node == target,
+        })
+    };
+    let body_pos = op_index(body_cell).unwrap();
+    let col_pos = op_index(frozen_col).unwrap();
+    let header_pos = op_index(frozen_header).unwrap();
+    let corner_pos = op_index(corner).unwrap();
+    assert!(body_pos < col_pos && col_pos < header_pos && header_pos < corner_pos);
+}

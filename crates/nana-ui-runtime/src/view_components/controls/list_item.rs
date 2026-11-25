@@ -1015,6 +1015,7 @@ impl ComponentView for ListItem {
             caps.sync_row_tools = Some(AppContext::sync_row_tools);
         }),
         activation: Some(crate::AppContext::activate_list_item),
+        pointer: Some(&crate::list_selection::LIST_ITEM_POINTER),
         slot_assembler: Some(assemble_list_item),
         assembler: Some(assemble_list_item),
         slot_projector: Some(Self::project_with_slots),

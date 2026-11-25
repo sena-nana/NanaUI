@@ -795,7 +795,7 @@ impl AppContext {
             .is_some_and(|view| view.is::<SegmentedOption>())
     }
 
-    pub(super) fn sequential_focus_candidate(
+    pub(crate) fn sequential_focus_candidate(
         &self,
         document: DocumentId,
         id: StableNodeId,

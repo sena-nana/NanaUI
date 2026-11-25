@@ -313,6 +313,7 @@ pub(in crate::world) struct WorldOverlaysA11y {
     pub(in crate::world) labelled_by: HashMap<StableNodeId, StableNodeId, BuildIdHasher>,
     pub(in crate::world) labels: HashMap<StableNodeId, HashSet<StableNodeId>, BuildIdHasher>,
     pub(in crate::world) live_regions: HashMap<StableNodeId, AccessibilityLive, BuildIdHasher>,
+    pub(in crate::world) selected: HashMap<StableNodeId, bool, BuildIdHasher>,
     pub(in crate::world) replaced: replaced::ReplacedIndex,
     pub(in crate::world) responsive: responsive::ResponsiveIndex,
     pub(in crate::world) i18n: i18n::I18nIndex,

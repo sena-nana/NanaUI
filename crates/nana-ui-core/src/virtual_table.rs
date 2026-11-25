@@ -298,12 +298,22 @@ where
 /// Retained two-dimensional table geometry. Rows and columns use the same
 /// logarithmic Fenwick index, so scrolling and one measurement update never
 /// require rebuilding the full data set.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default)]
 pub struct VirtualTableLayout {
     rows: VirtualListLayout,
     columns: Vec<TableColumn>,
     column_extents: VirtualListLayout,
     sort: Option<TableSort>,
+    revision: u64,
+}
+
+impl PartialEq for VirtualTableLayout {
+    fn eq(&self, other: &Self) -> bool {
+        self.rows == other.rows
+            && self.columns == other.columns
+            && self.column_extents == other.column_extents
+            && self.sort == other.sort
+    }
 }
 
 impl VirtualTableLayout {
@@ -318,7 +328,12 @@ impl VirtualTableLayout {
             columns,
             column_extents,
             sort: None,
+            revision: 0,
         }
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     pub fn row_layout(&self) -> &VirtualListLayout {
@@ -341,7 +356,11 @@ impl VirtualTableLayout {
     }
 
     pub fn update_row_extent(&mut self, row: usize, extent: f32) -> bool {
-        self.rows.update_item_extent(row, extent)
+        let changed = self.rows.update_item_extent(row, extent);
+        if changed {
+            self.revision = self.revision.wrapping_add(1);
+        }
+        changed
     }
 
     /// Column the table is currently sorted by, if any.
@@ -403,6 +422,7 @@ impl VirtualTableLayout {
         self.columns.insert(to, column);
         self.column_extents =
             VirtualListLayout::new(self.columns.iter().map(|column| column.extent));
+        self.revision = self.revision.wrapping_add(1);
         true
     }
 
@@ -431,7 +451,11 @@ impl VirtualTableLayout {
             return false;
         }
         model.extent = extent;
-        self.column_extents.update_item_extent(column, extent)
+        let changed = self.column_extents.update_item_extent(column, extent);
+        if changed {
+            self.revision = self.revision.wrapping_add(1);
+        }
+        changed
     }
 
     pub fn window(

@@ -62,7 +62,8 @@ const PSEUDO_HOVER: u8 = 1 << 0;
 const PSEUDO_FOCUS: u8 = 1 << 1;
 const PSEUDO_FOCUS_VISIBLE: u8 = 1 << 2;
 const PSEUDO_ACTIVE: u8 = 1 << 3;
-const MAX_CONDITIONAL_CLASSES: usize = 60;
+const PSEUDO_SELECTED: u8 = 1 << 4;
+const MAX_CONDITIONAL_CLASSES: usize = 59;
 
 fn pseudo_bit(pseudo: InteractivePseudo) -> u8 {
     match pseudo {
@@ -70,6 +71,7 @@ fn pseudo_bit(pseudo: InteractivePseudo) -> u8 {
         InteractivePseudo::Focus => PSEUDO_FOCUS,
         InteractivePseudo::FocusVisible => PSEUDO_FOCUS_VISIBLE,
         InteractivePseudo::Active => PSEUDO_ACTIVE,
+        InteractivePseudo::Selected => PSEUDO_SELECTED,
     }
 }
 
@@ -3160,6 +3162,7 @@ mod tests {
             .btn:focus { opacity: 0.8; }\n\
             .btn:focus-visible { opacity: 0.7; }\n\
             .btn:active { opacity: 0.6; }\n\
+            .btn:selected { opacity: 0.55; }\n\
             .card:hover .child { opacity: 0.5; }";
         let sheet = parse(css);
         assert_eq!(sheet.warnings.len(), 1, "{:?}", sheet.warnings);
@@ -3175,7 +3178,8 @@ mod tests {
                 PSEUDO_HOVER,
                 PSEUDO_FOCUS,
                 PSEUDO_FOCUS_VISIBLE,
-                PSEUDO_ACTIVE
+                PSEUDO_ACTIVE,
+                PSEUDO_SELECTED
             ]
         );
         assert_eq!(sheet.transitions.len(), 1);

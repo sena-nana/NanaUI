@@ -466,6 +466,11 @@ impl UiWorld {
         self.overlays_a11y.i18n.virtual_lists.insert(list);
     }
 
+    /// Whether `list` has been materialized as a virtual list or table.
+    pub(crate) fn is_virtual_list(&self, list: StableNodeId) -> bool {
+        self.overlays_a11y.i18n.virtual_lists.contains(&list)
+    }
+
     /// Forget a node of `document` that is gone: as localized text, as a
     /// scope and as a virtual list.
     pub(super) fn forget_i18n(&mut self, id: StableNodeId, document: DocumentId) {

@@ -460,6 +460,16 @@ impl<K> El<Stack, K> {
         let gap = crate::LengthSpec::Px(gap.px().max(0.0));
         self.map_component(|stack| stack.with_layout(|layout| layout.gap = Some(gap)))
     }
+
+    /// Make this container participate in hit testing (`Stack::hittable`).
+    pub fn hittable(self) -> Self {
+        self.map_component(Stack::hittable)
+    }
+
+    /// Make this container focusable (`Stack::focusable`).
+    pub fn focusable(self) -> Self {
+        self.map_component(Stack::focusable)
+    }
 }
 
 /// Text. For interpolation see [`crate::text!`].

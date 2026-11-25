@@ -1107,6 +1107,9 @@ pub struct El<C: ComponentView, K = ()> {
     /// The locale this node's subtree resolves in ([`Self::locale`]);
     /// boxed, as most elements have none.
     locale: Option<Box<super::prop::PropSource<Option<crate::Locale>>>>,
+    /// Explicit `aria-selected` override ([`Self::aria_selected`]); boxed, as
+    /// most elements have none.
+    aria_selected: Option<Box<super::prop::PropSource<Option<bool>>>>,
     bindings: NodeBindings<C>,
     events: Vec<EventInstall<C>>,
     /// Properties that animate to their new value when a binding changes
@@ -1135,6 +1138,7 @@ pub fn widget<C: ComponentView>(component: C) -> El<C> {
         node_refs: Vec::new(),
         labelled_by: None,
         locale: None,
+        aria_selected: None,
         bindings: NodeBindings::default(),
         events: Vec::new(),
         implicit: Vec::new(),
@@ -1279,6 +1283,13 @@ impl<C: ComponentView, K> El<C, K> {
         self
     }
 
+    /// Set or bind `aria-selected` on any node (custom list items, grid
+    /// cards) for assistive technology and `:selected` stylesheet rules.
+    pub fn aria_selected(mut self, selected: impl IntoProp<Option<bool>>) -> Self {
+        self.aria_selected = Some(Box::new(selected.into_source()));
+        self
+    }
+
     /// The children, added in a block of ordinary Rust:
     ///
     /// ```ignore
@@ -1308,6 +1319,7 @@ impl<C: ComponentView, K> El<C, K> {
             node_refs: self.node_refs,
             labelled_by: self.labelled_by,
             locale: self.locale,
+            aria_selected: self.aria_selected,
             bindings: self.bindings,
             events: self.events,
             implicit: self.implicit,
@@ -1387,6 +1399,7 @@ impl<C: ComponentView, K> El<C, K> {
             node_refs,
             labelled_by,
             locale,
+            aria_selected,
             bindings,
             events,
             implicit,
@@ -1403,6 +1416,7 @@ impl<C: ComponentView, K> El<C, K> {
             node_refs,
             labelled_by,
             locale,
+            aria_selected,
             bindings,
             events,
             implicit,
@@ -1432,6 +1446,7 @@ impl<C: ComponentView> El<C> {
             node_refs,
             labelled_by,
             locale,
+            aria_selected,
             mut bindings,
             events,
             mut implicit,
@@ -1493,12 +1508,13 @@ impl<C: ComponentView> El<C> {
         {
             vb.ui.mutations().set_responsive(id, rule);
         }
-        if labelled_by.is_some() || locale.is_some() {
+        if labelled_by.is_some() || locale.is_some() || aria_selected.is_some() {
             super::relations::bind(
                 vb,
                 id,
                 labelled_by.map(|label| *label),
                 locale.map(|locale| *locale),
+                aria_selected.map(|selected| *selected),
                 site,
             );
         }

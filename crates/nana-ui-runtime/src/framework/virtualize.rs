@@ -374,6 +374,23 @@ impl AppContext {
         }
         items.rows = next_rows;
         items.cells = next_cells;
+        items.frozen_rows.clear();
+        items.frozen_cells.clear();
+        if let Some((_, _, frozen)) = placement {
+            for row in &plan.rows.order {
+                let entity = items.rows[row];
+                if row_indices[row] < frozen[1] {
+                    items.frozen_rows.push(entity);
+                }
+                for column in &plan.columns.order {
+                    if column_indices[column] < frozen[0] {
+                        items
+                            .frozen_cells
+                            .push(items.cells[&(row.clone(), column.clone())]);
+                    }
+                }
+            }
+        }
         let window = plan.window.clone();
         items
             .materializer

@@ -60,16 +60,16 @@ When a header is activated, you call `toggle_sort`, read the current `TableSort`
 
 ## Resizing columns
 
-Build header cells as `TableCell::new(title).header_for(&column)`: that carries the column key, whether it resizes, and the width range `.limits` gave. Over the trailing 5 px of a resizable header (`TABLE_RESIZE_HANDLE`) the pointer shows a horizontal resize cursor, and dragging there emits `TableColumnResized { column, extent, finished }` on the `Table`: `finished: false` on each move of the drag, then `finished: true` on release, the width already clamped to the range. A cancelled drag ends at the width it started from.
+Build header cells as `TableCell::new(title).header_for(&column)`: that carries the column key, whether it resizes, and the width range `.limits` gave. Over the trailing 5 px of a resizable header (`TABLE_RESIZE_HANDLE`) the pointer shows a horizontal resize cursor, and dragging there emits `TableColumnResized { column, extent, finished }` on the `Table`: `finished: false` on each move of the drag, then `finished: true` on release, the width already clamped to the range. Pressing `Escape` or receiving a pointer cancel ends the drag at the width it started from (`finished: true`).
 
-The table does not change its own geometry. When you receive it, call `layout.resize_column_by_key(&column, extent)` and sync again (`sync_virtual_table_retained_in`): header and body cells are placed from the same column extents, so they stay aligned, frozen columns and header included. To resize only on release, handle only `finished: true`.
+The table does not change its own geometry. When you receive it, call `layout.resize_column_by_key(&column, extent)` and sync again (`sync_virtual_table_retained_in`): `VirtualTableLayout::revision()` triggers a resync so header and body cells stay aligned, frozen columns and headers included (even when the `Table` sits below sibling content in a `ScrollView`). To resize only on release, handle only `finished: true`.
 
 ## Selection
 
 Which rows are selected is your state, usually a `SelectionState<RowKey>` (see below). The table only reports requests:
 
 - A press on a body cell emits `TableSelectionRequested { row, cell, gesture: SelectionGesture::Press(modifiers) }`. Ctrl (Cmd on macOS) toggles, Shift selects the range from the anchor, both together add a range.
-- With focus on a body cell, the arrows, Home / End and Page Up / Down move focus and emit `Move`; with Shift they extend from the anchor; Ctrl with ArrowUp / ArrowDown moves focus without selecting; Ctrl+Space emits `Toggle`; Ctrl+A emits `SelectAll`.
+- With focus on a body cell, the arrows, Home / End and Page Up / Down move focus and emit `Move`; Shift extends from the anchor and Ctrl+Shift adds a range without clearing disjoint selections; Ctrl with ArrowUp / ArrowDown moves focus without selecting; Ctrl+Space emits `Toggle`; Ctrl+A emits `SelectAll`.
 - Header rows raise no selection requests.
 
 `row` is the row node; `VirtualTableItems::row_key_of(&cx, row)` turns it into your row key. Hand the request to `SelectionState::apply(gesture, row_key, &order)`, then call `cx.sync_virtual_table_selection(&items, |key| selection.is_selected(key))`: mounted rows and their cells get `selected`, paint the theme's selection background and report selected to assistive technology; rows not mounted need nothing, as `build_row` builds them from the same predicate when they scroll in. With an unchanged selection this writes nothing and allocates nothing. `Table::multiselectable(true)` tells assistive technology several rows can be selected.

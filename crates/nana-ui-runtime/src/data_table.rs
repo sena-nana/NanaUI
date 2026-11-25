@@ -218,6 +218,26 @@ fn report_resize(
 }
 
 impl AppContext {
+    /// Escape during an active header column-resize drag cancels the drag
+    /// and restores the column's initial width.
+    pub(crate) fn cancel_table_column_resize(
+        &mut self,
+        document: DocumentId,
+    ) -> Result<bool, FrameworkError> {
+        let captures = self.world().pointer_captures(document);
+        let mut cancelled = false;
+        for (pointer_id, node) in captures {
+            let cell = Entity::<TableCell>::from_stable_id(node);
+            let Ok(Some(start)) = self.read(cell, |c| c.resize.map(|drag| drag.start)) else {
+                continue;
+            };
+            let _ = self.cancel_pointer_hook(document, pointer_id)?;
+            report_resize(self, cell, start, true)?;
+            cancelled = true;
+        }
+        Ok(cancelled)
+    }
+
     /// Whether the window point `(x, y)` over `node` is on a resizable column
     /// boundary, or `node` is dragging one: the cursor shows a resize there.
     pub(crate) fn table_column_edge_at(&self, node: StableNodeId, x: f32, y: f32) -> bool {
@@ -274,7 +294,7 @@ impl AppContext {
         let Some((table, row, cell)) = self.focused_table_cell(document) else {
             return Ok(false);
         };
-        if modifiers.extend && !modifiers.toggle {
+        if modifiers.extend {
             let navigation = match key {
                 "ArrowUp" => TableNavigation::PreviousRow,
                 "ArrowDown" => TableNavigation::NextRow,
@@ -760,5 +780,312 @@ mod tests {
             .find(|node| node.role == AccessibilityRole::Table)
             .unwrap();
         assert!(table.multiselectable);
+    }
+
+    #[test]
+    fn ctrl_shift_arrow_adds_disjoint_range_in_table() {
+        let mut grid = Grid::new();
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&heard);
+        grid.cx
+            .on(grid.table, move |_, event: &TableSelectionRequested, _| {
+                sink.lock().unwrap().push(*event);
+            })
+            .unwrap();
+        let mut input = HeadlessInput::bind(&mut grid.cx, document());
+        let order = grid.order();
+        let drain = |grid: &mut Grid| {
+            for event in std::mem::take(&mut *heard.lock().unwrap()) {
+                let row = *grid.items.row_key_of(&grid.cx, event.row).unwrap();
+                grid.selection.apply(event.gesture, row, &order);
+            }
+            grid.sync();
+        };
+        let click = |input: &mut HeadlessInput, grid: &mut Grid, row, modifiers| {
+            let cell = grid.cell(row, 2);
+            let at = (cell.x + cell.width / 2.0, cell.y + cell.height / 2.0);
+            input
+                .route(&mut grid.cx, pointer(PointerPhase::Down, at, modifiers))
+                .unwrap();
+            input
+                .route(&mut grid.cx, pointer(PointerPhase::Up, at, modifiers))
+                .unwrap();
+        };
+        let selected = |grid: &Grid| {
+            let mut rows = grid.selection.iter().copied().collect::<Vec<_>>();
+            rows.sort_unstable();
+            rows
+        };
+
+        click(&mut input, &mut grid, 2, InputModifiers::empty());
+        drain(&mut grid);
+        click(&mut input, &mut grid, 6, CTRL);
+        drain(&mut grid);
+        assert_eq!(selected(&grid), [2, 6]);
+
+        let ctrl_shift = InputModifiers {
+            control: true,
+            shift: true,
+            ..InputModifiers::empty()
+        };
+        let focus = grid.items.cell_entity(&6, &2).unwrap().stable_id();
+        grid.cx.focus_node(document(), focus).unwrap();
+        input
+            .route(&mut grid.cx, key("ArrowDown", ctrl_shift))
+            .unwrap();
+        drain(&mut grid);
+        assert_eq!(selected(&grid), [2, 6, 7]);
+    }
+
+    #[test]
+    fn scrolled_frozen_table_hits_drags_resizes_and_reorders_without_fingerprint_bump() {
+        let mut grid = Grid::new();
+        let selection_events = Arc::new(Mutex::new(Vec::new()));
+        let sel_sink = Arc::clone(&selection_events);
+        grid.cx
+            .on(grid.table, move |_, event: &TableSelectionRequested, _| {
+                sel_sink.lock().unwrap().push(*event);
+            })
+            .unwrap();
+        let resize_events = Arc::new(Mutex::new(Vec::new()));
+        let res_sink = Arc::clone(&resize_events);
+        grid.cx
+            .on(grid.table, move |_, event: &TableColumnResized, _| {
+                res_sink.lock().unwrap().push(event.clone());
+            })
+            .unwrap();
+
+        // Scroll both axes and resync frozen corner/header/column.
+        grid.cx
+            .scroll_to(grid.scroll, crate::ScrollOffset { x: 120.0, y: 200.0 })
+            .unwrap();
+        grid.sync();
+
+        let mut input = HeadlessInput::bind(&mut grid.cx, document());
+        let visual_center = |grid: &Grid, row: usize, column: usize| {
+            let id = grid.items.cell_entity(&row, &column).unwrap().stable_id();
+            let b = grid.cx.world().presentation_input_bounds(id).unwrap();
+            (b.x + b.width / 2.0, b.y + b.height / 2.0)
+        };
+        let click = |input: &mut HeadlessInput, grid: &mut Grid, row, column| {
+            let at = visual_center(grid, row, column);
+            input
+                .route(
+                    &mut grid.cx,
+                    pointer(PointerPhase::Down, at, InputModifiers::empty()),
+                )
+                .unwrap();
+            input
+                .route(
+                    &mut grid.cx,
+                    pointer(PointerPhase::Up, at, InputModifiers::empty()),
+                )
+                .unwrap();
+        };
+
+        // Corner and scrolled header raise no selection request; frozen column & body do.
+        click(&mut input, &mut grid, 0, 0);
+        click(&mut input, &mut grid, 0, 3);
+        assert!(selection_events.lock().unwrap().is_empty());
+
+        click(&mut input, &mut grid, 12, 0);
+        click(&mut input, &mut grid, 14, 3);
+        let rows: Vec<_> = std::mem::take(&mut *selection_events.lock().unwrap())
+            .into_iter()
+            .map(|e| *grid.items.row_key_of(&grid.cx, e.row).unwrap())
+            .collect();
+        assert_eq!(rows, [12, 14]);
+
+        // Drag trailing edge of scrolled header (0, 3) and apply without changing fingerprint.
+        let h3_id = grid.items.cell_entity(&0, &3).unwrap().stable_id();
+        let h3 = grid.cx.world().presentation_input_bounds(h3_id).unwrap();
+        let edge3 = (h3.x + h3.width - 2.0, h3.y + h3.height / 2.0);
+        input
+            .route(
+                &mut grid.cx,
+                pointer(PointerPhase::Down, edge3, InputModifiers::empty()),
+            )
+            .unwrap();
+        input
+            .route(
+                &mut grid.cx,
+                pointer(
+                    PointerPhase::Move,
+                    (edge3.0 + 35.0, edge3.1),
+                    InputModifiers::empty(),
+                ),
+            )
+            .unwrap();
+        input
+            .route(
+                &mut grid.cx,
+                pointer(
+                    PointerPhase::Up,
+                    (edge3.0 + 35.0, edge3.1),
+                    InputModifiers::empty(),
+                ),
+            )
+            .unwrap();
+        let last = resize_events.lock().unwrap().pop().unwrap();
+        assert_eq!(
+            (last.column.as_ref(), last.extent, last.finished),
+            ("c3", 95.0, true)
+        );
+        assert!(grid.layout.resize_column_by_key(&last.column, last.extent));
+        // Equal-width column move preserves total_extent, detected via VirtualTableLayout::revision().
+        assert!(grid.layout.move_column(2, 4));
+        assert_eq!(grid.layout.column_index("c3"), Some(2));
+        grid.sync();
+        assert_eq!(grid.cell(0, 2).width, 95.0);
+        assert_eq!(grid.cell(14, 2).width, 95.0);
+        for column in [0, 2, 3, 4] {
+            let head = grid.cell(0, column);
+            let body = grid.cell(14, column);
+            assert_eq!((head.x, head.width), (body.x, body.width));
+        }
+    }
+
+    #[test]
+    fn escape_and_pointer_cancel_restore_column_width_and_table_below_sibling_aligns() {
+        let mut grid = Grid::new();
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&heard);
+        grid.cx
+            .on(grid.table, move |_, event: &TableColumnResized, _| {
+                sink.lock().unwrap().push(event.clone());
+            })
+            .unwrap();
+        let header = grid.cell(0, 1);
+        let edge = (
+            header.x + header.width - 2.0,
+            header.y + header.height / 2.0,
+        );
+        let mut input = HeadlessInput::bind(&mut grid.cx, document());
+        let none = InputModifiers::empty();
+
+        // Escape cancels drag back to initial width and drops capture.
+        input
+            .route(&mut grid.cx, pointer(PointerPhase::Down, edge, none))
+            .unwrap();
+        input
+            .route(
+                &mut grid.cx,
+                pointer(PointerPhase::Move, (edge.0 + 30.0, edge.1), none),
+            )
+            .unwrap();
+        input.route(&mut grid.cx, key("Escape", none)).unwrap();
+        let events = std::mem::take(&mut *heard.lock().unwrap());
+        assert_eq!(
+            events.last().map(|e| (e.extent, e.finished)),
+            Some((60.0, true))
+        );
+        assert!(grid.cx.world().pointer_captures(document()).is_empty());
+
+        // PointerPhase::Cancel also cancels drag back to initial width.
+        input
+            .route(&mut grid.cx, pointer(PointerPhase::Down, edge, none))
+            .unwrap();
+        input
+            .route(
+                &mut grid.cx,
+                pointer(PointerPhase::Move, (edge.0 + 25.0, edge.1), none),
+            )
+            .unwrap();
+        input
+            .route(&mut grid.cx, pointer(PointerPhase::Cancel, edge, none))
+            .unwrap();
+        let events = std::mem::take(&mut *heard.lock().unwrap());
+        assert_eq!(
+            events.last().map(|e| (e.extent, e.finished)),
+            Some((60.0, true))
+        );
+        assert!(grid.cx.world().pointer_captures(document()).is_empty());
+
+        // Table below an 80 px sibling inside a ScrollView offsets viewport & pinned header.
+        let mut cx = AppContext::new();
+        let scroll = cx
+            .create_component(
+                document(),
+                ScrollView::new(ScrollAxes::Both).with_layout(|layout| {
+                    layout.width = Some(LengthSpec::Px(WIDTH));
+                    layout.height = Some(LengthSpec::Px(HEIGHT));
+                }),
+            )
+            .unwrap();
+        let wrapper = cx
+            .create_component(document(), crate::Stack::column(0.0))
+            .unwrap();
+        let banner = cx
+            .create_component(
+                document(),
+                crate::Stack::row(0.0).height(LengthSpec::Px(80.0)),
+            )
+            .unwrap();
+        let table = cx.create_component(document(), Table::new()).unwrap();
+        cx.append_child(scroll, wrapper).unwrap();
+        cx.append_child(wrapper, banner).unwrap();
+        cx.append_child(wrapper, table).unwrap();
+
+        let layout = VirtualTableLayout::new(
+            std::iter::repeat_n(20.0, 50),
+            (0..3).map(|c| TableColumn::new(format!("c{c}"), 80.0)),
+        );
+        let mut items: VirtualTableItems<usize, usize> = VirtualTableItems::default();
+        let sync_once = |cx: &mut AppContext, items: &mut VirtualTableItems<usize, usize>| {
+            let work = cx.take_system_work();
+            cx.resolve_styles(&work.style).unwrap();
+            cx.layout_document(document(), LayoutViewport::new(WIDTH, HEIGHT))
+                .unwrap();
+            cx.sync_virtual_table_retained_in(
+                scroll,
+                table,
+                items,
+                &layout,
+                [0.0, 0.0],
+                0,
+                [0, 1],
+                &[],
+                |i| i,
+                |k| Some(*k),
+                |i| i,
+                |k| Some(*k),
+                |_, _| TableRow::new(),
+                |row, _, col, _| TableCell::new(format!("{row}/{col}")),
+            )
+            .unwrap();
+            let work = cx.take_system_work();
+            cx.resolve_styles(&work.style).unwrap();
+            cx.layout_document(document(), LayoutViewport::new(WIDTH, HEIGHT))
+                .unwrap();
+        };
+
+        sync_once(&mut cx, &mut items);
+        let head = items.row_entity(&0).unwrap().stable_id();
+        assert_eq!(
+            cx.world()
+                .node_style(head)
+                .unwrap()
+                .layout
+                .transforms
+                .transform
+                .unwrap()
+                .f,
+            0.0
+        );
+
+        cx.scroll_to(scroll, crate::ScrollOffset { x: 0.0, y: 120.0 })
+            .unwrap();
+        sync_once(&mut cx, &mut items);
+        assert_eq!(
+            cx.world()
+                .node_style(head)
+                .unwrap()
+                .layout
+                .transforms
+                .transform
+                .unwrap()
+                .f,
+            40.0
+        );
     }
 }

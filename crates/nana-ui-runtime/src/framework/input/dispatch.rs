@@ -499,6 +499,9 @@ impl AppContext {
                             (dock.begin_item)(self, document, *pointer_id, source, *x, *y)?;
                         } else {
                             self.press_pointer(document, *pointer_id, target)?;
+                            if let Some(list) = self.capabilities.list {
+                                (list.pointer_press)(self, target, *modifiers)?;
+                            }
                             if let Some(ops) = pointer_ops.filter(|ops| !ops.early_press)
                                 && (!*activation_click || !ops.skip_on_activation_click)
                                 && let Some(press) = ops.press
@@ -937,12 +940,26 @@ impl AppContext {
                 _ => None,
             };
             if let Some(navigation) = navigation {
-                match self.capabilities.data_table {
+                let table_handled = match self.capabilities.data_table {
                     Some(t) => (t.navigate)(self, document, navigation, TABLE_PAGE_ROWS)?,
                     None => false,
-                }
+                };
+                table_handled
+                    || match self.capabilities.list {
+                        Some(list) => (list.selection_key)(
+                            self,
+                            document,
+                            key,
+                            if primary {
+                                nana_ui_core::SelectionModifiers::TOGGLE
+                            } else {
+                                nana_ui_core::SelectionModifiers::NONE
+                            },
+                        )?,
+                        None => false,
+                    }
             } else if primary {
-                // Ctrl with ArrowUp / ArrowDown, Space or A in a tree or a table
+                // Ctrl with ArrowUp / ArrowDown, Space or A in a tree, table, or list
                 let tree_handled = match self.capabilities.tree {
                     Some(tree) => (tree.focused_key)(
                         self,
@@ -952,9 +969,19 @@ impl AppContext {
                     )?,
                     None => false,
                 };
-                tree_handled
+                let table_handled = tree_handled
                     || match self.capabilities.data_table {
                         Some(t) => (t.selection_key)(
+                            self,
+                            document,
+                            key,
+                            nana_ui_core::SelectionModifiers::TOGGLE,
+                        )?,
+                        None => false,
+                    };
+                table_handled
+                    || match self.capabilities.list {
+                        Some(list) => (list.selection_key)(
                             self,
                             document,
                             key,
@@ -972,7 +999,7 @@ impl AppContext {
                 }
             }
         } else if modifiers.shift && !modifiers.alt && !modifiers.control && !modifiers.meta {
-            // Shift with an arrow extends a tree's or a table's selection
+            // Shift with an arrow extends a tree's, table's, or list's selection
             let tree_handled = match self.capabilities.tree {
                 Some(tree) => (tree.focused_key)(
                     self,
@@ -982,7 +1009,7 @@ impl AppContext {
                 )?,
                 None => false,
             };
-            tree_handled
+            let table_handled = tree_handled
                 || match self.capabilities.data_table {
                     Some(t) => (t.selection_key)(
                         self,
@@ -990,6 +1017,36 @@ impl AppContext {
                         key,
                         nana_ui_core::SelectionModifiers::EXTEND,
                     )?,
+                    None => false,
+                };
+            table_handled
+                || match self.capabilities.list {
+                    Some(list) => (list.selection_key)(
+                        self,
+                        document,
+                        key,
+                        nana_ui_core::SelectionModifiers::EXTEND,
+                    )?,
+                    None => false,
+                }
+        } else if modifiers.shift && !modifiers.alt && (modifiers.control || modifiers.meta) {
+            // Ctrl+Shift with an arrow/Home/End/Page extends a tree's, table's, or list's selection additively
+            let mods = nana_ui_core::SelectionModifiers {
+                toggle: true,
+                extend: true,
+            };
+            let tree_handled = match self.capabilities.tree {
+                Some(tree) => (tree.focused_key)(self, document, key, mods)?,
+                None => false,
+            };
+            let table_handled = tree_handled
+                || match self.capabilities.data_table {
+                    Some(t) => (t.selection_key)(self, document, key, mods)?,
+                    None => false,
+                };
+            table_handled
+                || match self.capabilities.list {
+                    Some(list) => (list.selection_key)(self, document, key, mods)?,
                     None => false,
                 }
         } else if modifiers.alt && !modifiers.shift && !modifiers.control && !modifiers.meta {
