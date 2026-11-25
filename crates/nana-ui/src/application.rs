@@ -218,6 +218,15 @@ pub trait ApplicationState: Sized + 'static {
     fn startup_takeover(&self) -> crate::StartupTakeover {
         crate::StartupTakeover::Immediate
     }
+    /// Native desktop notification interaction or dismissal.
+    fn notification_event(
+        &mut self,
+        _event: &nana_ui_platform::NotificationEvent,
+        _windows: &mut HashMap<WindowId, ApplicationWindow>,
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) -> RuntimeProgramUpdate {
+        RuntimeProgramUpdate::default()
+    }
     /// The startup moved to a later phase. See
     /// [`RuntimeProgram::startup_changed`].
     fn startup_changed(
@@ -277,6 +286,14 @@ impl<State: ApplicationState> RuntimeProgram for RuntimeApplication<State> {
         context: &RuntimeProgramContext<Self::Message>,
     ) -> RuntimeProgramUpdate {
         self.state.wake(now, &mut self.windows, context)
+    }
+    fn notification_event(
+        &mut self,
+        event: nana_ui_platform::NotificationEvent,
+        context: &RuntimeProgramContext<Self::Message>,
+    ) -> RuntimeProgramUpdate {
+        self.state
+            .notification_event(&event, &mut self.windows, context)
     }
     fn initialize(
         context: &RuntimeProgramContext<Self::Message>,

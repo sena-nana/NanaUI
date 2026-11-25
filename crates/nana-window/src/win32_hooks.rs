@@ -473,10 +473,14 @@ unsafe extern "system" fn window_hooks_proc(
         splash.layout_splash();
     }
 
-    if hooks.work_area_placement.get().is_some()
-        && matches!(message, WM_SETTINGCHANGE | WM_DISPLAYCHANGE | WM_DPICHANGED)
+    if matches!(message, WM_SETTINGCHANGE | WM_DISPLAYCHANGE)
         && (message != WM_SETTINGCHANGE || wparam as u32 == SPI_SETWORKAREA)
     {
+        crate::display_topology::mark_changed();
+        if hooks.work_area_placement.get().is_some() {
+            crate::work_area::refit_active(hwnd);
+        }
+    } else if message == WM_DPICHANGED && hooks.work_area_placement.get().is_some() {
         crate::work_area::refit_active(hwnd);
     }
 

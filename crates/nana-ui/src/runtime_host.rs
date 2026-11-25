@@ -56,6 +56,7 @@ pub struct RuntimeProgramContext<Message: Send + 'static> {
     store: SharedStore,
     startup: crate::StartupHandle,
     gpu_adapters: Arc<crate::GpuAdapterSelection>,
+    notifications: Option<nana_window::NotificationHost>,
 }
 
 // Cloning host handles never clones a message. A derived implementation would
@@ -83,6 +84,7 @@ impl<Message: Send + 'static> Clone for RuntimeProgramContext<Message> {
             store: Arc::clone(&self.store),
             startup: self.startup.clone(),
             gpu_adapters: Arc::clone(&self.gpu_adapters),
+            notifications: self.notifications.clone(),
         }
     }
 }
@@ -124,6 +126,7 @@ impl<Message: Send + 'static> RuntimeProgramContext<Message> {
             store: memory_store(),
             startup,
             gpu_adapters: Arc::default(),
+            notifications: None,
         }
     }
 
@@ -165,6 +168,20 @@ impl<Message: Send + 'static> RuntimeProgramContext<Message> {
     pub(crate) fn with_windows(mut self, windows: &crate::WindowService) -> Self {
         self.window = Some(windows.handle(self.window_id));
         self
+    }
+
+    pub(crate) fn with_notifications(
+        mut self,
+        notifications: &nana_window::NotificationHost,
+    ) -> Self {
+        self.notifications = Some(notifications.clone());
+        self
+    }
+
+    /// Host-owned desktop notification service, when running under the Scene
+    /// host (`NotificationHost`). `None` in headless test harnesses.
+    pub fn notifications(&self) -> Option<&nana_window::NotificationHost> {
+        self.notifications.as_ref()
     }
 
     pub(crate) fn with_window_tag(mut self, tag: Option<Arc<str>>) -> Self {
@@ -667,6 +684,16 @@ pub trait RuntimeProgram: Sized + 'static {
     fn web_surface_event(
         &mut self,
         _event: crate::WebSurfaceNotice,
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) -> RuntimeProgramUpdate {
+        RuntimeProgramUpdate::default()
+    }
+
+    /// Native desktop notification interaction or dismissal emitted by
+    /// [`nana_window::NotificationHost`].
+    fn notification_event(
+        &mut self,
+        _event: nana_ui_platform::NotificationEvent,
         _context: &RuntimeProgramContext<Self::Message>,
     ) -> RuntimeProgramUpdate {
         RuntimeProgramUpdate::default()

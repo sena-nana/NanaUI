@@ -123,6 +123,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             &self.startup.handle,
         )
         .with_windows(&self.windows)
+        .with_notifications(&self.notifications)
         .with_window_tag(
             self.window_contexts
                 .get(&id)

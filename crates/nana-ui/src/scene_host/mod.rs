@@ -293,6 +293,8 @@ struct WindowManager<Program: RuntimeProgram> {
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     winit_custom_cursors: HashMap<(u64, u32), winit::cursor::CustomCursor>,
     pending_icons: Option<Receiver<SceneIcons>>,
+    notifications: nana_window::NotificationHost,
+    last_displays: Vec<nana_ui_platform::DisplayInfo>,
     startup_messages: std::collections::VecDeque<Program::Message>,
 }
 

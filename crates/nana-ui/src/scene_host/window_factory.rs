@@ -597,7 +597,21 @@ pub(super) fn complete_startup<Program: RuntimeProgram>(
         let wake = Arc::clone(&host_work);
         nana_window::set_text_scale_waker(move || wake.wake());
     }
+    {
+        let wake = Arc::clone(&host_work);
+        nana_window::set_accessibility_preference_waker(move || wake.wake());
+    }
+    {
+        let wake = Arc::clone(&host_work);
+        nana_window::set_display_topology_waker(move || wake.wake());
+    }
+    let last_displays = display::display_infos(event_loop);
     let text_scale = nana_window::system_text_scale();
+    let notifications = nana_window::NotificationHost::new();
+    {
+        let wake = Arc::clone(&host_work);
+        notifications.set_wake(move || wake.wake());
+    }
     let context = program_context(
         message_tx.clone(),
         Arc::clone(&host_work),
@@ -611,6 +625,7 @@ pub(super) fn complete_startup<Program: RuntimeProgram>(
         &host_startup.handle,
     )
     .with_windows(&windows)
+    .with_notifications(&notifications)
     .with_window_tag(settings.tag.clone())
     .with_reduced_motion(reduced_motion)
     .with_high_contrast(high_contrast)
@@ -777,6 +792,8 @@ pub(super) fn complete_startup<Program: RuntimeProgram>(
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         winit_custom_cursors: HashMap::new(),
         pending_icons,
+        notifications,
+        last_displays,
         startup_messages: std::collections::VecDeque::new(),
     };
     ready

@@ -308,17 +308,29 @@ Menus are replaced as a whole: calling `SetMenuBar` again replaces the entire ba
 
 A tray icon cannot be drawn in the UI tree any more than the menu bar can: it is the icon at the right of the menu bar on macOS and the notification-area icon on Windows. It belongs to the application, not to a window: it is how the user gets back to an application whose windows cannot be clicked (click-through, hidden).
 
-`install_tray(&Tray, wake)` shows it. `Tray` is plain data: a tooltip, a PNG icon, a menu (the same `MenuEntry` model as the menu bar), and the id a primary click reports on Windows. Choices go to the same `take_menu_activations()` queue. A choice can arrive while the application draws no frames, so `wake` runs once for every id queued: the host wakes its event loop there (by sending itself a program message, say) and then drains.
+`install_tray(&Tray, wake)` (or `install_tray_with_outcome(&Tray, wake)`, which also returns any unavailability reason) shows the tray. `Tray` is plain data (implementing `Default`): a tooltip, primary PNG icon, explicit `monochrome_light_icon_png` / `monochrome_dark_icon_png` variants (synthesized from the alpha mask when `template_icon: true` and omitted), menu (`MenuEntry`), `attention: TrayAttention` (`Active` / `Passive` / `NeedsAttention`, updatable in place via `set_tray_attention`), the `primary` click id (Windows / Linux), and `double_click` id for `WM_LBUTTONDBLCLK` on Windows. Choices go to the same `take_menu_activations()` queue. A choice can arrive while the application draws no frames, so `wake` runs once for every id queued: the host wakes its event loop there (by sending itself a program message, say) and then drains.
 
-Calling `install_tray` again updates the menu, tooltip and icon in place, and the icon keeps its position; `remove_tray()` takes it away. Call both on the thread that runs the event loop.
+Calling `install_tray` again updates the menu, tooltip, attention state and icon in place, and the icon keeps its position; `remove_tray()` takes it away. Call both on the thread that runs the event loop.
 
 | Platform | `tray_support()` | Notes |
 | --- | --- | --- |
-| macOS | `MenuBarExtra` | `NSStatusItem`. A click always opens the menu; `primary` has no effect. `template_icon` lets the system draw the icon in the menu bar's colour |
-| Windows | `NotificationArea` | `Shell_NotifyIcon`. A right click opens the menu; with `primary` set a left click reports that id, otherwise it opens the menu too. The icon is added back after Explorer restarts |
+| macOS | `MenuBarExtra` | `NSStatusItem`. A click always opens the menu; `primary` has no effect. Picks explicit monochrome variants by menu-bar appearance or uses `template_icon` alpha masking |
+| Windows | `NotificationArea` | `Shell_NotifyIcon`. A right click opens the menu; with `primary` set a left click reports that id, otherwise it opens the menu too; `double_click` handles `WM_LBUTTONDBLCLK`. Tracks `SystemUsesLightTheme` and `SM_CXSMICON` across `ImmersiveColorSet` / `WM_DPICHANGED`, and re-adds after Explorer restarts (`TaskbarCreated`) |
+| Linux | `StatusNotifierItem` | `org.kde.StatusNotifierItem` + `com.canonical.dbusmenu` over `zbus`. Probes session D-Bus and `org.kde.StatusNotifierWatcher` with a bounded 500 ms timeout; returns `TraySupport::Unavailable` with reason when no watcher is running |
 | Others | `Unavailable` | Nothing is installed. Keep the commands in a window |
 
-`installed_tray()` reads back the tooltip and menu entries the platform actually holds (macOS); `crates/nana-window/examples/tray-probe.rs` uses it for native acceptance.
+`installed_tray()` reads back the tooltip and menu entries the platform actually holds (macOS, Linux); `crates/nana-window/examples/tray-probe.rs` uses it for native acceptance.
+
+## Desktop notifications
+
+`NotificationHost` (also owned and woken automatically by the Scene host via `RuntimeProgramContext::notifications()`) provides native desktop notifications, delivering user clicks, action buttons, and dismissals as `NotificationEvent::Activated { id, action_id }` and `NotificationEvent::Dismissed { id, reason }` via `RuntimeProgram::notification_event` (or `NotificationHost::take_events()`):
+
+| Platform | `NotificationBackendKind` | Notes |
+| --- | --- | --- |
+| macOS | `UserNotifications` | `UNUserNotificationCenter`. Checks `NSBundle.mainBundle.bundleIdentifier` first; unbundled binaries (CLI tests/probes) report `Unavailable` cleanly without calling the singleton that throws `NSInternalInconsistencyException` |
+| Windows | `WindowsToast` | `Windows.UI.Notifications.ToastNotificationManager` (XML toast, action buttons, `SetTag` replacement, and `History` withdrawal) |
+| Linux | `FreedesktopNotifications` | `org.freedesktop.Notifications` over `zbus` (`Notify`, `replaces_id`, actions, RGBA `image-data`, and signal listener within a 500 ms D-Bus timeout); returns `Unavailable` when no notification daemon owns the bus name |
+| Others | `Unavailable` | Returns an explicit unavailability reason without panicking |
 
 ## Start at sign-in
 
@@ -495,7 +507,7 @@ The main window and additional windows share the registry and the Device/Queue. 
 
 - Windows: reads "Show animations in Windows" (`SPI_GETCLIENTAREAANIMATION`; off means reduced motion). After the host window subclass receives `WM_SETTINGCHANGE` (`SPI_SETCLIENTAREAANIMATION`), it rereads at the next `about_to_wait`. The event is sent only when the value changes. No polling.
 - macOS: reads "Reduce motion" (`NSWorkspace.accessibilityDisplayShouldReduceMotion`). On first read, a process-level observer is registered with the workspace notification center (`NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification`). Notifications arrive on the main run loop, and the host rereads at the next `about_to_wait`. The event is sent only when the value changes.
-- Linux: not reported yet. Always `false`. No events are sent.
+- Linux: queries and subscribes to `org.freedesktop.portal.Settings` under `org.freedesktop.appearance` (`reduced-motion`) with a bounded 500 ms D-Bus timeout; falls back to `None` (`false` in host) when no portal is present, and `SettingChanged` wakes the event loop when toggled.
 
 ### System high contrast
 
@@ -503,7 +515,7 @@ The main window and additional windows share the registry and the Device/Queue. 
 
 - Windows: reads `HCF_HIGHCONTRASTON` from `SPI_GETHIGHCONTRAST`. After the host window subclass receives `WM_SETTINGCHANGE` (`SPI_SETHIGHCONTRAST`), it rereads at the next `about_to_wait`. The event is sent only when the value changes. This is not DirectWrite text gamma.
 - macOS: reads "Increase contrast" (`NSWorkspace.accessibilityDisplayShouldIncreaseContrast`). Changes go through the same display options notification as reduced motion. The event is sent only when the value changes.
-- Linux: not reported yet. Always `false`. No events are sent.
+- Linux: queries and subscribes to `org.freedesktop.portal.Settings` under `org.freedesktop.appearance` (`high-contrast`) with a bounded 500 ms D-Bus timeout; falls back to `None` (`false` in host) when no portal is present, and `SettingChanged` wakes the event loop when toggled.
 - Tests use `nana_window::force_high_contrast(Some(true))` to force the flag; `None` returns to reading the platform.
 
 ### Reduced transparency
@@ -532,7 +544,7 @@ The main window and additional windows share the registry and the Device/Queue. 
 | macOS | `MonitorHandle::id()` is stable across reconnects |
 | Windows / Linux | Not stable across reconnects; treated as a new display after reconnecting |
 
-There are no display topology events: winit provides no connect/disconnect notifications. After a display is unplugged, the next `displays()` no longer lists it. Windows already fullscreen on that display land on a remaining display as the platform decides. Specifying a display that no longer exists: an explicit `set_fullscreen(Some(FullscreenRequest { display: Some(id), .. }))` returns `WindowError::InvalidParameter`, and the window state does not change. `WindowDescriptor::fullscreen` on the descriptor falls back to windowed mode instead (best effort; creation itself still succeeds).
+When displays are hot-plugged, disconnected, or rearranged (macOS observes `NSApplicationDidChangeScreenParametersNotification`, Windows observes `WM_DISPLAYCHANGE` / `SPI_SETWORKAREA` and wakes the event loop, and Linux diffs snapshots on `about_to_wait`), the host first re-clamps any visible non-minimized, non-maximized, non-fullscreen, non-Underlay window whose bounds are completely off the remaining displays back into the nearest display work area via `clamp_position_to_displays` (updating geometry and emitting `WindowEvent::Moved`), and delivers `WindowEvent::DisplaysChanged { id, displays }` once per topology change to each open window. After a display is unplugged, the next `displays()` no longer lists it. Windows already fullscreen on that display land on a remaining display as the platform decides. Specifying a display that no longer exists: an explicit `set_fullscreen(Some(FullscreenRequest { display: Some(id), .. }))` returns `WindowError::InvalidParameter`, and the window state does not change. `WindowDescriptor::fullscreen` on the descriptor falls back to windowed mode instead (best effort; creation itself still succeeds).
 
 Fullscreen is only borderless, covering the current video mode. There is no exclusive fullscreen (it does not change the display resolution, so it does not fight other Surfaces or capture tools over the display mode).
 

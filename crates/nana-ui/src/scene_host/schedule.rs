@@ -86,6 +86,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         self.deliver_pen_leaves(event_loop);
         self.drain_browser_events(event_loop);
         self.drain_web_surface_events(event_loop);
+        self.drain_notification_events(event_loop);
         // Views' futures whose wakers fired: what they write lands in the
         // next frame of the windows that read it.
         if nana_ui_runtime::view::poll_tasks() > 0 {
@@ -116,6 +117,15 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             self.host_work.wake();
         } else {
             self.startup_messages_applied();
+        }
+    }
+    pub(super) fn drain_notification_events(&mut self, event_loop: &dyn ActiveEventLoop) {
+        for event in self.notifications.take_events() {
+            if self.shutting_down || event_loop.exiting() {
+                return;
+            }
+            let update = self.program.notification_event(event, &self.context());
+            self.apply_update(event_loop, update, None);
         }
     }
     pub(super) fn process_message(
@@ -278,6 +288,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         self.sync_high_contrast(event_loop);
         self.sync_reduced_transparency(event_loop);
         self.sync_text_scale(event_loop);
+        self.sync_display_topology(event_loop);
         let now = Instant::now().max(now);
         if self.next_wakeup().is_some_and(|deadline| now >= deadline) {
             self.wake(event_loop, now);

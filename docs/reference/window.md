@@ -307,17 +307,29 @@ IME：焦点进可编辑字段时 `Window::request_ime_update(Enable)` 一次（
 
 托盘图标和菜单栏一样画不进界面树：macOS 上是菜单栏右侧的图标，Windows 上是通知区域的图标。它属于应用，不属于窗口：应用的窗口都点不到（鼠标穿透、隐藏）时，用户靠它找回应用。
 
-`install_tray(&Tray, wake)` 显示托盘。`Tray` 是纯数据：悬浮提示、PNG 图标、菜单（和菜单栏同一份 `MenuEntry` 模型），以及 Windows 上主键单击报告的 id。选中项进同一个 `take_menu_activations()` 队列。选择可能发生在应用一帧都不画的时候，所以每排进一个 id 就调一次 `wake`：宿主在这里唤醒事件循环（例如给自己发一条程序消息），再去 drain。
+`install_tray(&Tray, wake)`（或返回完整状态与不可用原因的 `install_tray_with_outcome(&Tray, wake)`）显示托盘。`Tray` 是纯数据（支持 `Default`）：悬浮提示、主 PNG 图标、`monochrome_light_icon_png` / `monochrome_dark_icon_png` 单色深浅变体（省略时在 `template_icon: true` 下自动按 alpha 生成黑白遮罩）、菜单（和菜单栏同一份 `MenuEntry` 模型）、`attention: TrayAttention`（`Active` / `Passive` / `NeedsAttention`，可在运行中通过 `set_tray_attention` 原位更新）、Windows 与 Linux 上主键单击报告的 `primary`，以及 Windows 左键双击（`WM_LBUTTONDBLCLK`）报告的 `double_click`。选中项进同一个 `take_menu_activations()` 队列。选择可能发生在应用一帧都不画的时候，所以每排进一个 id 就调一次 `wake`：宿主在这里唤醒事件循环（例如给自己发一条程序消息），再去 drain。
 
-再调一次 `install_tray` 是原位更新菜单、提示和图标，图标位置不变；`remove_tray()` 撤掉。两者都在跑事件循环的线程上调用。
+再调一次 `install_tray` 是原位更新菜单、提示、注意状态与图标，图标位置不变；`remove_tray()` 撤掉。两者都在跑事件循环的线程上调用。
 
 | 平台 | `tray_support()` | 说明 |
 | --- | --- | --- |
-| macOS | `MenuBarExtra` | `NSStatusItem`。点击总是打开菜单，`primary` 不起作用。`template_icon` 让系统按菜单栏的颜色画图标 |
-| Windows | `NotificationArea` | `Shell_NotifyIcon`。右键打开菜单；设了 `primary` 时左键报告那个 id，否则左键也打开菜单。资源管理器重启后图标自动加回 |
+| macOS | `MenuBarExtra` | `NSStatusItem`。点击总是打开菜单，`primary` 不起作用。根据菜单栏深浅选用对应单色变体或 `template_icon` alpha 模板 |
+| Windows | `NotificationArea` | `Shell_NotifyIcon`。右键打开菜单；设了 `primary` 时左键报告那个 id，否则左键也打开菜单；`double_click` 响应 `WM_LBUTTONDBLCLK`。按 `SystemUsesLightTheme` 与 `SM_CXSMICON` 适配任务栏深浅和 DPI（响应 `ImmersiveColorSet` / `WM_DPICHANGED`）；资源管理器重启（`TaskbarCreated`）后自动加回 |
+| Linux | `StatusNotifierItem` | `org.kde.StatusNotifierItem` + `com.canonical.dbusmenu`（`zbus`）。启动时探测会话总线及 `org.kde.StatusNotifierWatcher`（500 ms 超时）；缺失 watcher 时返回 `TraySupport::Unavailable` 并记录原因，不挂起或 panic |
 | 其它 | `Unavailable` | 什么都不装。把这些命令留在窗口里 |
 
-`installed_tray()` 读回平台实际持有的提示与菜单条目（macOS），`crates/nana-window/examples/tray-probe.rs` 用它做真机验收。
+`installed_tray()` 读回平台实际持有的提示与菜单条目（macOS、Linux），`crates/nana-window/examples/tray-probe.rs` 用它做真机验收。
+
+## 桌面通知
+
+`NotificationHost`（`RuntimeProgramContext::notifications()` 持有宿主装配好的共享实例）提供原生系统桌面通知，唤醒后经 `RuntimeProgram::notification_event`（或独立的 `NotificationHost::take_events()`）交付 `NotificationEvent::Activated { id, action_id }` 与 `NotificationEvent::Dismissed { id, reason }`：
+
+| 平台 | `NotificationBackendKind` | 说明 |
+| --- | --- | --- |
+| macOS | `UserNotifications` | `UNUserNotificationCenter`。先检查 `NSBundle.mainBundle.bundleIdentifier`；无 bundle（如 CLI 测试或裸二进制）显式返回 `Unavailable`，绝不触碰会抛出 `NSInternalInconsistencyException` 崩溃的系统单例 |
+| Windows | `WindowsToast` | `Windows.UI.Notifications.ToastNotificationManager`（XML Toast、Action 按钮、`SetTag` 原位替换与 `History` 撤回） |
+| Linux | `FreedesktopNotifications` | `org.freedesktop.Notifications`（`Notify`、`replaces_id`、动作按钮、RGBA `image-data` 与信号监听，D-Bus 操作受 500 ms 超时保护）；无桌面守护进程时返回 `Unavailable` |
+| 其它 | `Unavailable` | 返回显式不可用原因，不上抛 panic |
 
 ## 登录时启动
 
@@ -494,7 +506,7 @@ fn build(&mut self, window: &mut ApplicationWindow, context: &RuntimeProgramCont
 
 - Windows：读取「在 Windows 中显示动画」（`SPI_GETCLIENTAREAANIMATION`。关闭即减少动态效果）。宿主窗口子类收到 `WM_SETTINGCHANGE`（`SPI_SETCLIENTAREAANIMATION`）后在下一次 `about_to_wait` 重新读取。只在值变化时发送事件。不轮询。
 - macOS：读取「减少动态效果」（`NSWorkspace.accessibilityDisplayShouldReduceMotion`）。首次读取时在工作区通知中心注册一个进程级观察者（`NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification`）。通知在主运行循环送达，宿主在下一次 `about_to_wait` 重新读取。只在值变化时发送事件。
-- Linux：暂不上报。恒为 `false`。不发送事件。
+- Linux：通过 `org.freedesktop.portal.Settings` 查询并订阅 `org.freedesktop.appearance` 的 `reduced-motion`（500 ms 超时保护，缺少 Portal 时退回 `None`，宿主视为 `false`）；`SettingChanged` 信号唤醒宿主事件循环并仅在值变化时派发 `ReducedMotionChanged`。
 
 ### 系统高对比
 
@@ -502,7 +514,7 @@ fn build(&mut self, window: &mut ApplicationWindow, context: &RuntimeProgramCont
 
 - Windows：读取 `SPI_GETHIGHCONTRAST` 的 `HCF_HIGHCONTRASTON`。宿主窗口子类收到 `WM_SETTINGCHANGE`（`SPI_SETHIGHCONTRAST`）后在下一次 `about_to_wait` 重新读取。只在值变化时发送事件。这不是 DirectWrite 的文字 gamma。
 - macOS：读取「增强对比度」（`NSWorkspace.accessibilityDisplayShouldIncreaseContrast`）。变化走与减少动态效果同一个显示选项通知。只在值变化时发送事件。
-- Linux：暂不上报。恒为 `false`。不发送事件。
+- Linux：通过 `org.freedesktop.portal.Settings` 查询并订阅 `org.freedesktop.appearance` 的 `high-contrast`（500 ms 超时保护，缺少 Portal 时退回 `None`，宿主视为 `false`）；`SettingChanged` 信号唤醒事件循环并在值变化时派发 `HighContrastChanged`。
 - 测试用 `nana_window::force_high_contrast(Some(true))` 强制该标志，`None` 回到平台读取。
 
 ### 减少透明度
@@ -531,7 +543,7 @@ fn build(&mut self, window: &mut ApplicationWindow, context: &RuntimeProgramCont
 | macOS | `MonitorHandle::id()` 跨重连稳定 |
 | Windows / Linux | 不跨重连；重连后当作新显示器 |
 
-没有显示器拓扑事件：winit 不提供连接/断开通知。拔屏后下一次 `displays()` 不再列出它。已经全屏在该屏上的窗口按平台落到剩余显示器。指定一块已经不存在的屏：显式 `set_fullscreen(Some(FullscreenRequest { display: Some(id), .. }))` 返回 `WindowError::InvalidParameter`。窗口状态不变。描述符上的 `WindowDescriptor::fullscreen` 则退回窗口模式（尽力而为。创建本身仍成功）。
+显示器热插拔、分辨率或排列变化时（macOS 观察 `NSApplicationDidChangeScreenParametersNotification`、Windows 观察 `WM_DISPLAYCHANGE` / `SPI_SETWORKAREA` 并唤醒事件循环、Linux 在 `about_to_wait` 对比拓扑快照）：宿主首先检查可见、未最小化、未最大化、未全屏且非 Underlay 的窗口是否已完全落到当前已连接显示器工作区之外，若脱屏则通过 `clamp_position_to_displays` 将其收回最近显示器的工作区（同步位置与 `Moved` 事件），并向每扇打开窗口派发一次 `WindowEvent::DisplaysChanged { id, displays }`；拔屏后下一次 `displays()` 不再列出它，已经全屏在该屏上的窗口按平台落到剩余显示器。指定一块已经不存在的屏：显式 `set_fullscreen(Some(FullscreenRequest { display: Some(id), .. }))` 返回 `WindowError::InvalidParameter`。窗口状态不变。描述符上的 `WindowDescriptor::fullscreen` 则退回窗口模式（尽力而为。创建本身仍成功）。
 
 全屏只有无边框覆盖当前视频模式。没有独占全屏（不会改显示器分辨率。避免和其他 Surface、采集工具抢显示模式）。
 

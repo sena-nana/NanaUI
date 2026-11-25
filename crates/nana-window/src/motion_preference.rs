@@ -40,14 +40,27 @@ pub fn system_reduced_motion() -> Option<bool> {
             crate::display_options::DisplayOption::ReduceMotion,
         ))
     }
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    {
+        crate::portal_settings_linux::reduced_motion()
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {
         None
     }
 }
 
+/// Registers a wake callback invoked when accessibility preferences
+/// (`reduced_motion`, `high_contrast`) change on background D-Bus listeners.
+pub fn set_accessibility_preference_waker(waker: impl Fn() + Send + Sync + 'static) {
+    #[cfg(target_os = "linux")]
+    crate::portal_settings_linux::set_waker(waker);
+    #[cfg(not(target_os = "linux"))]
+    let _ = waker;
+}
+
 /// Mark the preference changed; the platform observer calls it.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 pub(crate) fn mark_changed() {
     CHANGED.store(true, Ordering::Release);
 }

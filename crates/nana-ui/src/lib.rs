@@ -314,6 +314,11 @@ pub use nana_ui_platform::{
     FetchCancellation, FetchError, FetchErrorKind, FetchHost, FetchPolicy, FetchRequest,
     FetchResponse, SharedFetchHost, shared_fetch_host,
 };
+pub use nana_ui_platform::{
+    NotificationAction, NotificationBackendKind, NotificationCapability, NotificationDismissReason,
+    NotificationError, NotificationEvent, NotificationOutcome, NotificationPermission,
+    NotificationRequest, NotificationSupport, NotificationTimeout,
+};
 pub use nana_ui_runtime::{
     AccessibilityActionRequest, AccessibilityNode, AccessibilityRole, AccessibilityUpdate,
 };
@@ -337,8 +342,9 @@ pub use nana_window::{
 };
 #[cfg(feature = "hosted")]
 pub use nana_window::{
-    LoginItem, LoginItemError, LoginItemState, Tray, TraySupport, install_tray, installed_tray,
-    login_item_state, remove_tray, set_login_item, tray_support,
+    LoginItem, LoginItemError, LoginItemState, NotificationHost, Tray, TrayAttention, TrayOutcome,
+    TraySupport, install_tray, install_tray_with_outcome, installed_tray, login_item_state,
+    remove_tray, set_login_item, set_tray_attention, tray_support,
 };
 #[cfg(feature = "hosted")]
 pub use nana_window::{RevealError, reveal_in_file_manager};

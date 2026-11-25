@@ -1406,7 +1406,8 @@ fn event_window(event: &WindowEvent) -> WindowId {
         | WindowEvent::CloseRequested { id }
         | WindowEvent::Closed { id }
         | WindowEvent::AppearanceChanged { id, .. }
-        | WindowEvent::ModeChanged { id, .. } => *id,
+        | WindowEvent::ModeChanged { id, .. }
+        | WindowEvent::DisplaysChanged { id, .. } => *id,
     }
 }
 

@@ -30,6 +30,7 @@ fn tray(checked: bool) -> Tray {
             MenuEntry::item(3, "Quit"),
         ],
         primary: Some(1),
+        ..Default::default()
     }
 }
 

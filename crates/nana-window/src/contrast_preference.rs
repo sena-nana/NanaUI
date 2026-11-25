@@ -78,14 +78,18 @@ fn platform_high_contrast() -> Option<bool> {
             crate::display_options::DisplayOption::IncreaseContrast,
         ))
     }
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    {
+        crate::portal_settings_linux::high_contrast()
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {
         None
     }
 }
 
 /// Mark the flag changed; the platform observer calls it.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 pub(crate) fn mark_changed() {
     CHANGED.store(true, Ordering::Release);
 }

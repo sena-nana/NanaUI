@@ -253,6 +253,13 @@ pub enum WindowEvent {
         id: WindowId,
         mode: WindowModeState,
     },
+    /// Connected display topology changed (hot-plug, unplug, resolution, or
+    /// arrangement change). Delivered to open windows when the display snapshot
+    /// diverges from the previous observation.
+    DisplaysChanged {
+        id: WindowId,
+        displays: Vec<DisplayInfo>,
+    },
 }
 
 /// Session identity of a connected display. Equal across enumerations within

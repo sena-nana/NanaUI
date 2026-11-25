@@ -43,8 +43,8 @@ pub const fn menu_bar_support() -> MenuBarSupport {
     }
 }
 
-/// Records a chosen id. Called from the platform's menu callback.
-#[cfg(any(test, target_os = "macos", target_os = "windows"))]
+/// Records a chosen id. Called from the platform's menu and tray callbacks.
+#[cfg(any(test, target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub(crate) fn push_activation(id: u32) {
     nana_ui_core::push_menu_activation(id);
 }

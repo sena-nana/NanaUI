@@ -329,6 +329,79 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             .window_event(WindowEvent::ModeChanged { id, mode }, &self.context_for(id));
         self.apply_update(event_loop, update, None);
     }
+
+    pub(super) fn sync_display_topology(&mut self, event_loop: &dyn ActiveEventLoop) {
+        let _native_notified = nana_window::take_display_topology_change();
+        let current = display_infos(event_loop);
+        if !displays_topology_changed(&self.last_displays, &current) {
+            return;
+        }
+        self.last_displays = current.clone();
+        let desktop = scene_desktop(event_loop, true);
+        for id in self.known_window_ids() {
+            if self.shutting_down || event_loop.exiting() {
+                return;
+            }
+            let should_reclamp = self.window_contexts.get(&id).is_some_and(|host| {
+                let window = host.surface.window();
+                let fullscreen = host.mode.as_ref().is_some_and(|m| m.fullscreen.is_some());
+                host.settings.role != WindowRole::Underlay
+                    && window.is_visible() != Some(false)
+                    && window.is_minimized() != Some(true)
+                    && !window.is_maximized()
+                    && !host.geometry.maximized
+                    && !fullscreen
+            });
+            if should_reclamp
+                && let Some(clamped) = reclamp_window_position_for_displays(
+                    &self.geometry_of(id),
+                    desktop.scale,
+                    &desktop.displays,
+                )
+                && let Some(window) = self.window(id).cloned()
+            {
+                window.set_outer_position(desktop_position(clamped, desktop.scale));
+                if self.sync_geometry(id) {
+                    let geometry = self.geometry_of(id);
+                    let update = self
+                        .program
+                        .window_event(WindowEvent::Moved { id, geometry }, &self.context_for(id));
+                    self.apply_update(event_loop, update, None);
+                }
+            }
+            self.refresh_surface_display(id);
+            let update = self.program.window_event(
+                WindowEvent::DisplaysChanged {
+                    id,
+                    displays: current.clone(),
+                },
+                &self.context_for(id),
+            );
+            self.apply_update(event_loop, update, None);
+        }
+    }
+}
+
+pub(super) fn displays_topology_changed(previous: &[DisplayInfo], current: &[DisplayInfo]) -> bool {
+    previous != current
+}
+
+pub(super) fn reclamp_window_position_for_displays(
+    geometry: &WindowGeometry,
+    desktop_scale: f64,
+    displays: &[DisplayBounds],
+) -> Option<(f64, f64)> {
+    if displays.is_empty() || !desktop_scale.is_finite() || desktop_scale <= 0.0 {
+        return None;
+    }
+    let (px, py) = geometry.physical_position?;
+    let pos = (f64::from(px) / desktop_scale, f64::from(py) / desktop_scale);
+    let size = (
+        f64::from(geometry.physical_size.0).max(1.0) / desktop_scale,
+        f64::from(geometry.physical_size.1).max(1.0) / desktop_scale,
+    );
+    let clamped = clamp_position_to_displays(pos, size, displays);
+    ((clamped.0 - pos.0).abs() > 1e-3 || (clamped.1 - pos.1).abs() > 1e-3).then_some(clamped)
 }
 
 #[cfg(test)]
@@ -440,5 +513,57 @@ mod tests {
             Some(fullscreen),
             fullscreen,
         ));
+    }
+
+    #[test]
+    fn disconnected_display_clamps_offscreen_window_and_leaves_visible_window_alone() {
+        let primary = DisplayInfo {
+            id: DisplayId(1),
+            name: Some("Primary".into()),
+            physical_position: Some((0, 0)),
+            physical_size: Some((1920, 1080)),
+            scale_factor: 1.0,
+            refresh_rate_millihertz: None,
+            primary: true,
+        };
+        let secondary = DisplayInfo {
+            id: DisplayId(2),
+            name: Some("External".into()),
+            physical_position: Some((1920, 0)),
+            physical_size: Some((1920, 1080)),
+            scale_factor: 1.0,
+            refresh_rate_millihertz: None,
+            primary: false,
+        };
+        assert!(!displays_topology_changed(
+            &[primary.clone(), secondary.clone()],
+            &[primary.clone(), secondary.clone()],
+        ));
+        assert!(displays_topology_changed(
+            &[primary.clone(), secondary],
+            &[primary.clone()],
+        ));
+
+        let remaining = vec![primary.logical_bounds(1.0).unwrap()];
+        let offscreen = WindowGeometry {
+            physical_position: Some((2200, 100)),
+            physical_size: (400, 300),
+            logical_position: Some((2200.0, 100.0)),
+            logical_size: (400.0, 300.0),
+            scale_factor: 1.0,
+            maximized: false,
+        };
+        let clamped = reclamp_window_position_for_displays(&offscreen, 1.0, &remaining).unwrap();
+        assert_eq!(clamped, (1520.0, 100.0));
+
+        let onscreen = WindowGeometry {
+            physical_position: Some((100, 100)),
+            logical_position: Some((100.0, 100.0)),
+            ..offscreen
+        };
+        assert_eq!(
+            reclamp_window_position_for_displays(&onscreen, 1.0, &remaining),
+            None
+        );
     }
 }

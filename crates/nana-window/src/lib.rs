@@ -22,6 +22,7 @@ mod contrast_preference;
 mod dcomp;
 #[cfg(target_os = "macos")]
 mod display_options;
+mod display_topology;
 mod file_dialog;
 mod ime;
 pub mod interaction;
@@ -31,8 +32,11 @@ mod login_item;
 mod material;
 mod menu;
 mod motion_preference;
+mod notification;
 mod pen;
 mod platform;
+#[cfg(target_os = "linux")]
+mod portal_settings_linux;
 mod reveal;
 pub mod shadow;
 mod size_move;
@@ -82,6 +86,7 @@ pub use color_sampler::{
 pub use contrast_preference::{
     force_high_contrast, system_high_contrast, take_high_contrast_change,
 };
+pub use display_topology::{set_display_topology_waker, take_display_topology_change};
 pub use file_dialog::{
     FileDialogError, FileDialogHandle, FileDialogKind, FileDialogRequest, FileDialogResult,
     FileDialogSupport, FileFilter, describe_configured_dialog, file_dialog_support,
@@ -101,7 +106,14 @@ pub use menu::{
     Menu, MenuBar, MenuBarSupport, MenuEntry, MenuShortcut, install_application_menu_bar,
     install_menu_bar, installed_menu_bar, menu_bar_support, take_menu_activations,
 };
-pub use motion_preference::{system_reduced_motion, take_reduced_motion_change};
+pub use motion_preference::{
+    set_accessibility_preference_waker, system_reduced_motion, take_reduced_motion_change,
+};
+pub use notification::{
+    NotificationAction, NotificationBackendKind, NotificationCapability, NotificationDismissReason,
+    NotificationError, NotificationEvent, NotificationHost, NotificationOutcome,
+    NotificationPermission, NotificationRequest, NotificationSupport, NotificationTimeout,
+};
 pub use pen::{PenFrame, PenInput};
 pub use pointer::pointer_in_client_area;
 pub use reveal::{RevealError, reveal_in_file_manager};
@@ -115,7 +127,10 @@ pub use splash::{
 };
 pub use text_scale_preference::{set_text_scale_waker, system_text_scale, take_text_scale_change};
 pub use transparency_preference::{system_reduced_transparency, take_reduced_transparency_change};
-pub use tray::{Tray, TraySupport, install_tray, installed_tray, remove_tray, tray_support};
+pub use tray::{
+    Tray, TrayAttention, TrayOutcome, TraySupport, install_tray, install_tray_with_outcome,
+    installed_tray, remove_tray, set_tray_attention, tray_support,
+};
 pub use underlay::{Underlay, UnderlayError};
 pub use web_surface::{
     WebFrame, WebFrameSink, WebSurface, WebSurfaceCommand, WebSurfaceCompletion, WebSurfaceDesc,

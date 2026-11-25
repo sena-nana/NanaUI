@@ -4,6 +4,7 @@ pub mod android_assets;
 mod clipboard;
 mod fetch;
 mod locale;
+mod notification;
 pub mod path;
 mod paths;
 mod persist;
@@ -39,6 +40,11 @@ pub use fetch::{
     FetchPolicy, FetchRequest, FetchResponse, FetchSink, SharedFetchHost, shared_fetch_host,
 };
 pub use locale::{negotiate_language, preferred_languages};
+pub use notification::{
+    NotificationAction, NotificationBackendKind, NotificationCapability, NotificationDismissReason,
+    NotificationError, NotificationEvent, NotificationOutcome, NotificationPermission,
+    NotificationRequest, NotificationSupport, NotificationTimeout,
+};
 #[doc(hidden)]
 pub use paths::__identity_marker_bytes;
 pub use paths::{
