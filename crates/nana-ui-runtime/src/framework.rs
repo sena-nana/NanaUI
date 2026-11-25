@@ -46,6 +46,8 @@ mod selection;
 pub use selection::FormValidity;
 #[cfg(feature = "rich-text")]
 mod rich_text_input;
+#[cfg(feature = "rich-text")]
+pub(crate) use rich_text_input::RICH_TEXT_POINTER_OPS;
 mod text_area_resize;
 mod text_input;
 mod value_input;

@@ -2421,7 +2421,11 @@ fn finish_measure_container(
             },
         );
         content = Size::new(
-            crate::rich_text::markdown_content_width(&visual.blocks, &geometry),
+            crate::rich_text::markdown_content_width_with_strings(
+                &visual.blocks,
+                &geometry,
+                nodes.world.framework_strings(),
+            ),
             geometry.bounds.height,
         );
     }

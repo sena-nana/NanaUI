@@ -399,3 +399,101 @@ fn selectable_rich_text_selection_uses_selection_background_paint_color() {
     assert_eq!(*background, Some(wide_selection));
     assert!(runtime.scene().has_extended_color());
 }
+
+#[test]
+fn markdown_fenced_code_spans_and_gfm_alerts_extract_and_follow_theme() {
+    use nana_ui_runtime::{
+        FrameworkStrings, HighlightRequest, SemanticColorRole, TextPresenterFn, TextSpan,
+    };
+
+    let document = DocumentId::new(15).unwrap();
+    let mut runtime = crate::RuntimeDocument::new(document);
+    runtime
+        .context_mut()
+        .register_presenter(Box::new(TextPresenterFn::new(
+            "scene-kw",
+            |text: &str, _: &HighlightRequest| {
+                text.match_indices("fn")
+                    .map(|(start, word)| TextSpan {
+                        start,
+                        end: start + word.len(),
+                        color: SemanticColorRole::Keyword,
+                    })
+                    .collect()
+            },
+        )))
+        .unwrap();
+
+    let markdown = runtime
+        .context_mut()
+        .create_component(
+            document,
+            NativeMarkdown::from_source("> [!NOTE]\n> Alert body.\n\n```rust\nfn main() {}\n```")
+                .code_presenter("scene-kw"),
+        )
+        .unwrap();
+    flush(&mut runtime);
+
+    let id = markdown.stable_id();
+    let light_model = runtime.context().world().node_style_model(id);
+    let light_keyword = nana_ui_core::PaintColor::Srgb {
+        rgba: light_model
+            .color(SemanticColorRole::Keyword)
+            .as_rgba_array(),
+    };
+    let light_accent = light_model.color(SemanticColorRole::Accent).as_rgba_array();
+    let note_title = FrameworkStrings::default().markdown_alert_note;
+
+    assert!(runtime.scene().primitives().any(|p| matches!(
+        &p.kind,
+        ScenePrimitiveKind::Text { content, color, .. }
+            if p.node == id && content.as_ref() == "fn" && *color == light_keyword
+    )));
+    assert!(runtime.scene().primitives().any(|p| matches!(
+        &p.kind,
+        ScenePrimitiveKind::Text { content, color, .. }
+            if p.node == id
+                && content.as_ref() == note_title.as_ref()
+                && *color == nana_ui_core::PaintColor::Srgb { rgba: light_accent }
+    )));
+    assert!(runtime.scene().primitives().any(|p| matches!(
+        &p.kind,
+        ScenePrimitiveKind::Stroke { color, .. }
+            if p.node == id
+                && *color == nana_ui_core::PaintColor::Srgb { rgba: light_accent }
+    )));
+    let mut expected_tint = light_accent;
+    expected_tint[3] *= 0.08;
+    assert!(runtime.scene().primitives().any(|p| matches!(
+        &p.kind,
+        ScenePrimitiveKind::Quad { surface, .. }
+            if p.node == id
+                && surface.background
+                    == Some(nana_ui_core::PaintColor::Srgb {
+                        rgba: expected_tint,
+                    })
+    )));
+
+    let dark = nana_ui_core::SemanticPalette::dark();
+    runtime
+        .context_mut()
+        .set_style_tokens(
+            nana_ui_core::ThemeAppearance::Dark,
+            nana_ui_core::UI_METRICS,
+            dark,
+            dark.surface,
+        )
+        .unwrap();
+    flush(&mut runtime);
+
+    let dark_model = runtime.context().world().node_style_model(id);
+    let dark_keyword = nana_ui_core::PaintColor::Srgb {
+        rgba: dark_model.color(SemanticColorRole::Keyword).as_rgba_array(),
+    };
+    assert_ne!(light_keyword, dark_keyword);
+    assert!(runtime.scene().primitives().any(|p| matches!(
+        &p.kind,
+        ScenePrimitiveKind::Text { content, color, .. }
+            if p.node == id && content.as_ref() == "fn" && *color == dark_keyword
+    )));
+}

@@ -56,6 +56,8 @@ const QUOTE_INDENT: f32 = nana_ui_core::space::XL;
 pub const ALERT_TITLE_HEIGHT: f32 = LINE_HEIGHT;
 /// Width of the bar down a GFM alert's left edge.
 pub const ALERT_BAR_WIDTH: f32 = 3.0;
+/// Pointer travel inside a native diagram that still counts as a click.
+const DIAGRAM_CLICK_SLOP: f32 = 4.0;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MarkdownSpan {
@@ -484,17 +486,31 @@ impl NativeMarkdownLayout {
                         }),
                     );
                 }
-                crate::MarkdownDrawingCommand::Panel { bounds, radius } => {
-                    let mut fill = color;
-                    fill[3] *= 0.06;
-                    let mut edge = color;
-                    edge[3] *= 0.12;
+                crate::MarkdownDrawingCommand::Panel {
+                    bounds,
+                    radius,
+                    color: panel_color,
+                } => {
+                    let (fill, border) = match panel_color {
+                        Some(tint_base) => {
+                            let mut fill = *tint_base;
+                            fill[3] *= 0.08;
+                            (fill, None)
+                        }
+                        None => {
+                            let mut fill = color;
+                            fill[3] *= 0.06;
+                            let mut edge = color;
+                            edge[3] *= 0.12;
+                            (fill, Some((edge, 1.0)))
+                        }
+                    };
                     out.push(
                         slot,
                         WidgetPaintOp::Quad(WidgetQuad {
                             rect: *bounds,
                             fill: Some(fill),
-                            border: Some((edge, 1.0)),
+                            border,
                             corner_radius: [*radius; 4],
                             ..WidgetQuad::default()
                         }),
@@ -1068,7 +1084,12 @@ impl NativeMarkdown {
         self.blocks
             .iter()
             .enumerate()
-            .filter_map(|(index, block)| block.highlight_request().map(|request| (index, request)))
+            .filter_map(|(index, block)| {
+                block.highlight_request().map(|mut request| {
+                    request.presenter = Arc::clone(&self.code_presenter);
+                    (index, request)
+                })
+            })
             .collect()
     }
 
@@ -1107,7 +1128,8 @@ impl NativeMarkdown {
         y: f32,
         geometry: &MarkdownGeometry,
     ) -> bool {
-        self.selection.begin(&geometry.run, x, y)
+        self.selection
+            .begin_with_diagram(&geometry.run, x, y, geometry.diagram_block_at(x, y))
     }
 
     pub fn pointer_move(&self, x: f32, y: f32, bounds: LayoutBox) -> bool {
@@ -1135,20 +1157,17 @@ impl NativeMarkdown {
         y: f32,
         geometry: &MarkdownGeometry,
     ) -> Option<RichTextEvent> {
-        let event = self.selection.finish(&geometry.run, x, y)?;
-        if let RichTextEvent::SelectionChanged(snapshot) = &event
-            && snapshot
-                .as_ref()
-                .is_none_or(|value| value.start == value.end)
-            && let Some(placement) = geometry
-                .blocks
-                .iter()
-                .filter_map(MarkdownBlockGeometry::diagram_placement)
-                .find(|placement| placement.bounds.contains(x, y))
-            && let Some(MarkdownBlock::Mermaid(source)) = self.blocks.get(placement.block_index)
+        let (event, activated_diagram) = self.selection.finish_with_diagram(
+            &geometry.run,
+            x,
+            y,
+            geometry.diagram_block_at(x, y),
+        )?;
+        if let Some(block_index) = activated_diagram
+            && let Some(MarkdownBlock::Mermaid(source)) = self.blocks.get(block_index)
         {
             return Some(RichTextEvent::DiagramActivated(MarkdownDiagram {
-                block_index: placement.block_index,
+                block_index,
                 source: Arc::from(source.as_str()),
             }));
         }
@@ -1207,10 +1226,8 @@ struct MarkdownParser {
     image_start: usize,
     code_block: Option<(Option<String>, String)>,
     quote_depth: usize,
-    /// One entry per open block quote: the alert it is, if it is one.
-    alerts: Vec<Option<MarkdownAlertKind>>,
-    /// The innermost alert has not given a paragraph its title line yet.
-    alert_untitled: bool,
+    /// One entry per open block quote: `(kind, needs_title)` if it is an alert.
+    alerts: Vec<Option<(MarkdownAlertKind, bool)>>,
     lists: Vec<Option<u64>>,
     table: Option<MarkdownTableBuilder>,
     table_header: bool,
@@ -1246,12 +1263,14 @@ impl MarkdownParser {
             Event::InlineMath(value) => self.push_span(value.into_string(), false, true),
             Event::DisplayMath(value) => {
                 self.flush_text();
+                self.ensure_alert_header();
                 self.blocks
                     .push(MarkdownBlock::DisplayMath(value.into_string()));
             }
             Event::SoftBreak | Event::HardBreak => self.push_span("\n".to_owned(), false, false),
             Event::Rule => {
                 self.flush_text();
+                self.ensure_alert_header();
                 self.blocks.push(MarkdownBlock::Rule);
             }
             Event::TaskListMarker(done) => {
@@ -1277,10 +1296,10 @@ impl MarkdownParser {
             }
             Tag::BlockQuote(kind) => {
                 self.flush_text();
+                self.ensure_alert_header();
                 self.quote_depth += 1;
-                let alert = kind.map(MarkdownAlertKind::from_cmark);
-                self.alert_untitled |= alert.is_some();
-                self.alerts.push(alert);
+                self.alerts
+                    .push(kind.map(|k| (MarkdownAlertKind::from_cmark(k), true)));
             }
             Tag::CodeBlock(kind) => {
                 self.flush_text();
@@ -1352,9 +1371,7 @@ impl MarkdownParser {
             TagEnd::BlockQuote(_) => {
                 self.flush_text();
                 // An alert with no paragraph of its own still shows its title.
-                if let Some(Some(kind)) = self.alerts.pop()
-                    && std::mem::take(&mut self.alert_untitled)
-                {
+                if let Some(Some((kind, true))) = self.alerts.pop() {
                     self.blocks.push(MarkdownBlock::Text {
                         kind: MarkdownBlockKind::Alert { kind, opens: true },
                         spans: Vec::new(),
@@ -1438,6 +1455,23 @@ impl MarkdownParser {
         }
     }
 
+    fn take_alert(&mut self) -> Option<(MarkdownAlertKind, bool)> {
+        self.alerts
+            .iter_mut()
+            .rev()
+            .find_map(|entry| entry.as_mut())
+            .map(|(kind, needs_title)| (*kind, std::mem::take(needs_title)))
+    }
+
+    fn ensure_alert_header(&mut self) {
+        if let Some((kind, true)) = self.take_alert() {
+            self.blocks.push(MarkdownBlock::Text {
+                kind: MarkdownBlockKind::Alert { kind, opens: true },
+                spans: Vec::new(),
+            });
+        }
+    }
+
     fn flush_text(&mut self) {
         if self.in_table_cell || self.spans.is_empty() {
             return;
@@ -1446,12 +1480,8 @@ impl MarkdownParser {
             .pending_kind
             .take()
             .unwrap_or(PendingTextKind::Paragraph);
-        let alert = self.alerts.iter().rev().find_map(|alert| *alert);
-        let kind = if let Some(kind) = alert {
-            MarkdownBlockKind::Alert {
-                kind,
-                opens: std::mem::take(&mut self.alert_untitled),
-            }
+        let kind = if let Some((kind, opens)) = self.take_alert() {
+            MarkdownBlockKind::Alert { kind, opens }
         } else if self.quote_depth > 0 {
             MarkdownBlockKind::Quote
         } else {
@@ -1471,6 +1501,7 @@ impl MarkdownParser {
         let Some((language, source)) = self.code_block.take() else {
             return;
         };
+        self.ensure_alert_header();
         let source = source.trim_end_matches(['\r', '\n']).to_owned();
         if language
             .as_deref()
@@ -1513,6 +1544,7 @@ impl MarkdownParser {
         if header.is_empty() && table.rows.is_empty() {
             return;
         }
+        self.ensure_alert_header();
         self.blocks.push(MarkdownBlock::Table(MarkdownTable {
             alignments: table.alignments,
             header,
@@ -1615,6 +1647,7 @@ impl ComponentView for NativeMarkdown {
         capabilities: Some(|caps| {
             caps.rich_text_pointer = Some(crate::AppContext::begin_rich_text_pointer);
         }),
+        pointer_ops: Some(&crate::framework::RICH_TEXT_POINTER_OPS),
         slot_assembler: Some(crate::AppContext::assemble_markdown),
         ..crate::TypeBehavior::NONE
     };
@@ -2007,6 +2040,16 @@ impl TextSelectionGroup {
     }
 
     fn begin(&self, run: &DocumentRun, x: f32, y: f32) -> bool {
+        self.begin_with_diagram(run, x, y, None)
+    }
+
+    fn begin_with_diagram(
+        &self,
+        run: &DocumentRun,
+        x: f32,
+        y: f32,
+        diagram: Option<usize>,
+    ) -> bool {
         let Ok(mut state) = self.state.lock() else {
             return false;
         };
@@ -2015,6 +2058,7 @@ impl TextSelectionGroup {
         state.focus = Some(caret);
         state.dragging = true;
         state.pressed_link = run.link_at(x, y);
+        state.pressed_diagram = diagram.map(|block_index| (block_index, x, y));
         state.cached = Some(run.snapshot_range(caret, caret));
         true
     }
@@ -2025,6 +2069,12 @@ impl TextSelectionGroup {
         };
         if !state.dragging {
             return false;
+        }
+        if let Some((_, down_x, down_y)) = state.pressed_diagram {
+            if (x - down_x).hypot(y - down_y) <= DIAGRAM_CLICK_SLOP {
+                return false;
+            }
+            state.pressed_diagram = None;
         }
         let caret = run.caret_at(x, y);
         if state.focus == Some(caret) {
@@ -2039,6 +2089,17 @@ impl TextSelectionGroup {
     }
 
     fn finish(&self, run: &DocumentRun, x: f32, y: f32) -> Option<RichTextEvent> {
+        self.finish_with_diagram(run, x, y, None)
+            .map(|(event, _)| event)
+    }
+
+    fn finish_with_diagram(
+        &self,
+        run: &DocumentRun,
+        x: f32,
+        y: f32,
+        diagram: Option<usize>,
+    ) -> Option<(RichTextEvent, Option<usize>)> {
         let Ok(mut state) = self.state.lock() else {
             return None;
         };
@@ -2046,7 +2107,18 @@ impl TextSelectionGroup {
             return None;
         }
         state.dragging = false;
+        let pressed_diagram = state.pressed_diagram.take();
         let caret = run.caret_at(x, y);
+        if let Some((block_index, down_x, down_y)) = pressed_diagram
+            && diagram == Some(block_index)
+            && (x - down_x).hypot(y - down_y) <= DIAGRAM_CLICK_SLOP
+        {
+            state.anchor = Some(caret);
+            state.focus = Some(caret);
+            state.cached = None;
+            state.pressed_link = None;
+            return Some((RichTextEvent::SelectionChanged(None), Some(block_index)));
+        }
         if let Some(focus) = state.focus.as_mut() {
             *focus = caret;
         }
@@ -2061,9 +2133,9 @@ impl TextSelectionGroup {
             state.anchor = Some(caret);
             state.focus = Some(caret);
             state.cached = None;
-            return Some(RichTextEvent::LinkActivated(link));
+            return Some((RichTextEvent::LinkActivated(link), None));
         }
-        Some(RichTextEvent::SelectionChanged(snapshot))
+        Some((RichTextEvent::SelectionChanged(snapshot), None))
     }
 }
 
@@ -2073,6 +2145,7 @@ struct GroupState {
     focus: Option<usize>,
     dragging: bool,
     pressed_link: Option<Arc<str>>,
+    pressed_diagram: Option<(usize, f32, f32)>,
     cached: Option<Option<TextSelectionSnapshot>>,
 }
 
@@ -2213,6 +2286,7 @@ impl ComponentView for SelectableRichText {
         capabilities: Some(|caps| {
             caps.rich_text_pointer = Some(crate::AppContext::begin_rich_text_pointer);
         }),
+        pointer_ops: Some(&crate::framework::RICH_TEXT_POINTER_OPS),
         ..crate::TypeBehavior::NONE
     };
 
@@ -2309,6 +2383,10 @@ impl RichTextGeometry {
             graphemes: run.graphemes.clone(),
             run,
         }
+    }
+
+    pub(crate) fn link_at(&self, x: f32, y: f32) -> bool {
+        self.run.link_at(x, y).is_some()
     }
 }
 
@@ -2418,6 +2496,20 @@ pub struct MarkdownGeometry {
     pub bounds: LayoutBox,
     pub blocks: Vec<MarkdownBlockGeometry>,
     run: DocumentRun,
+}
+
+impl MarkdownGeometry {
+    pub(crate) fn diagram_block_at(&self, x: f32, y: f32) -> Option<usize> {
+        self.blocks
+            .iter()
+            .filter_map(MarkdownBlockGeometry::diagram_placement)
+            .find(|placement| placement.bounds.contains(x, y))
+            .map(|placement| placement.block_index)
+    }
+
+    pub(crate) fn link_at(&self, x: f32, y: f32) -> bool {
+        self.run.link_at(x, y).is_some()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2785,19 +2877,51 @@ pub(crate) fn layout_markdown_measured(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn markdown_content_width(blocks: &[MarkdownBlock], geometry: &MarkdownGeometry) -> f32 {
+    markdown_content_width_with_strings(
+        blocks,
+        geometry,
+        &nana_ui_core::FrameworkStrings::default(),
+    )
+}
+
+pub(crate) fn markdown_content_width_with_strings(
+    blocks: &[MarkdownBlock],
+    geometry: &MarkdownGeometry,
+    strings: &nana_ui_core::FrameworkStrings,
+) -> f32 {
     blocks
         .iter()
         .zip(&geometry.blocks)
-        .map(|(_, geometry)| {
+        .map(|(block, geometry)| {
             if let Some(width) = geometry.art.width() {
                 return width.min(geometry.bounds.width);
             }
+            let title_width = match block {
+                MarkdownBlock::Text {
+                    kind: MarkdownBlockKind::Alert { kind, opens: true },
+                    ..
+                } => {
+                    let title = kind.title(strings);
+                    let (size, _) =
+                        crate::markdown_drawing::text_style(MarkdownBlockKind::Paragraph);
+                    let advance = title
+                        .graphemes(true)
+                        .map(|g| crate::markdown_drawing::text_advance(g, size) * 1.15)
+                        .sum::<f32>();
+                    text_indent(MarkdownBlockKind::Alert {
+                        kind: *kind,
+                        opens: true,
+                    }) + advance
+                }
+                _ => 0.0,
+            };
             geometry
                 .graphemes
                 .iter()
                 .map(|grapheme| grapheme.bounds.x + grapheme.bounds.width - geometry.bounds.x)
-                .fold(0.0, f32::max)
+                .fold(title_width, f32::max)
         })
         .fold(0.0, f32::max)
 }
@@ -3600,6 +3724,13 @@ mod tests {
         assert_eq!(unlabeled.blocks()[0].language(), None);
         assert_eq!(unlabeled.blocks()[0].highlight_request(), None);
         assert!(unlabeled.code_highlights().is_empty());
+
+        let custom = NativeMarkdown::from_blocks([MarkdownBlock::code(Some("rust"), "fn f() {}")])
+            .code_presenter("custom-hl");
+        assert_eq!(
+            custom.code_highlights(),
+            [(0, HighlightRequest::new("custom-hl", "rust"))]
+        );
     }
 
     #[test]

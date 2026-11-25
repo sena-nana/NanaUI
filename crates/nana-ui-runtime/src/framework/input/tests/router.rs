@@ -2038,3 +2038,240 @@ fn the_ime_anchor_follows_the_scroll_above_the_field() {
         "anchor {anchor:?} vs field box {laid_out:?}"
     );
 }
+
+#[test]
+fn textarea_resize_grip_hover_uses_ns_resize_unless_disabled() {
+    let mut context = AppContext::new();
+    let doc = document(34);
+    let source = InputSourceId(34);
+    let generation = EndpointGeneration(1);
+    context.bind_input_source(source, generation, doc).unwrap();
+    let mut area_view = crate::TextArea::new("resizable")
+        .height(120.0)
+        .resize_vertical(true);
+    std::sync::Arc::make_mut(&mut area_view.style.layout).width =
+        Some(nana_ui_core::LengthSpec::Px(200.0));
+    let area = context.create_component(doc, area_view).unwrap();
+    let settle = |cx: &mut AppContext| {
+        let work = cx.take_system_work();
+        cx.resolve_styles(&work.style).unwrap();
+        cx.world_mut()
+            .shape_text(&work.text, &mut crate::MeasureTextShaper)
+            .unwrap();
+        cx.layout_document(doc, crate::LayoutViewport::new(400.0, 300.0))
+            .unwrap();
+        cx.rebuild_hit_test(doc);
+    };
+    settle(&mut context);
+
+    let grip = context
+        .world()
+        .text_input_geometry(area.stable_id())
+        .and_then(|g| g.resize_grip)
+        .expect("resize grip");
+    let mut services = HeadlessHostServices::new();
+    let hover = |context: &mut AppContext, seq, x, y, services: &mut HeadlessHostServices| {
+        context
+            .route_input(
+                &event(source, generation, seq, pointer(PointerPhase::Move, x, y)),
+                services,
+                None,
+            )
+            .unwrap();
+        services.cursor()
+    };
+
+    assert_eq!(
+        hover(&mut context, 1, 20.0, 20.0, &mut services),
+        CursorIcon::Text
+    );
+    assert_eq!(
+        hover(
+            &mut context,
+            2,
+            grip.x + grip.width * 0.5,
+            grip.y + grip.height * 0.5,
+            &mut services
+        ),
+        CursorIcon::NsResize
+    );
+
+    context
+        .update_component(area, |view, _| view.disabled = true)
+        .unwrap();
+    settle(&mut context);
+    assert_ne!(
+        hover(
+            &mut context,
+            3,
+            grip.x + grip.width * 0.5,
+            grip.y + grip.height * 0.5,
+            &mut services
+        ),
+        CursorIcon::NsResize
+    );
+}
+
+#[cfg(feature = "rich-text")]
+#[test]
+fn native_markdown_hover_cursors_and_scrolled_diagram_click() {
+    let mut context = AppContext::new();
+    let doc = document(35);
+    let source = InputSourceId(35);
+    let generation = EndpointGeneration(1);
+    context.bind_input_source(source, generation, doc).unwrap();
+
+    let scroll = context
+        .create_component(
+            doc,
+            crate::ScrollView::new(crate::ScrollAxes::Vertical).style({
+                let mut style = NodeStyle::default();
+                let layout = std::sync::Arc::make_mut(&mut style.layout);
+                layout.width = Some(nana_ui_core::LengthSpec::Px(220.0));
+                layout.height = Some(nana_ui_core::LengthSpec::Px(260.0));
+                style
+            }),
+        )
+        .unwrap();
+    let spacer = crate::Stack::column(0.0).with_layout(|layout| {
+        layout.width = Some(nana_ui_core::LengthSpec::Px(200.0));
+        layout.height = Some(nana_ui_core::LengthSpec::Px(80.0));
+        layout.flex_shrink = Some(0.0);
+    });
+    let spacer = context.create_component(doc, spacer).unwrap();
+    context.append_child(scroll, spacer).unwrap();
+
+    let md_src = concat!(
+        "Plain text and [link](https://example.test)\n\n",
+        "```mermaid\nflowchart LR\nA[Long label one] --> B[Long label two] --> C[Long label three]\n```\n\n",
+        "```mermaid\nflowchart TD\nP-->Q\n```",
+    );
+    let markdown = context
+        .create_component(doc, crate::NativeMarkdown::from_source(md_src))
+        .unwrap();
+    context.append_child(scroll, markdown).unwrap();
+    let tail = crate::Stack::column(0.0).with_layout(|layout| {
+        layout.width = Some(nana_ui_core::LengthSpec::Px(200.0));
+        layout.height = Some(nana_ui_core::LengthSpec::Px(240.0));
+        layout.flex_shrink = Some(0.0);
+    });
+    let tail = context.create_component(doc, tail).unwrap();
+    context.append_child(scroll, tail).unwrap();
+
+    let activated = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&activated);
+    context
+        .on(markdown, move |_, event: &crate::RichTextEvent, _| {
+            if let crate::RichTextEvent::DiagramActivated(diagram) = event {
+                sink.lock().unwrap().push(diagram.clone());
+            }
+        })
+        .unwrap();
+
+    let viewport = crate::LayoutViewport::new(300.0, 400.0);
+    let settle = |cx: &mut AppContext| {
+        let work = cx.take_system_work();
+        cx.resolve_styles(&work.style).unwrap();
+        cx.world_mut()
+            .shape_text(&work.text, &mut crate::MeasureTextShaper)
+            .unwrap();
+        cx.layout_document(doc, viewport).unwrap();
+        cx.rebuild_hit_test(doc);
+    };
+    settle(&mut context);
+    context
+        .scroll_to(scroll, crate::ScrollOffset { x: 0.0, y: 80.0 })
+        .unwrap();
+    settle(&mut context);
+
+    let scrolled_y = context
+        .world()
+        .scroll_offset(scroll.stable_id())
+        .unwrap_or_default()
+        .y;
+    assert!((scrolled_y - 80.0).abs() < 0.5, "scrolled_y={scrolled_y}");
+
+    let id = markdown.stable_id();
+    let content = context.world().component_content_box(id).unwrap();
+    let geom = context
+        .read(markdown, |view| {
+            context.world().markdown_layout(id, view.blocks(), content)
+        })
+        .unwrap();
+    let wide = geom.blocks[1].diagram_placement().unwrap();
+    let small = geom.blocks[2].diagram_placement().unwrap();
+    assert!(wide.scale < 1.0);
+    assert_eq!(small.scale, 1.0);
+
+    let link_box = geom.blocks[0]
+        .graphemes
+        .iter()
+        .find(|g| g.link.is_some())
+        .unwrap()
+        .bounds;
+    let plain_box = geom.blocks[0].graphemes[0].bounds;
+    let to_window = |lx: f32, ly: f32| (lx, ly - scrolled_y);
+
+    let mut services = HeadlessHostServices::new();
+    let mut move_to = |seq, lx, ly, services: &mut HeadlessHostServices| {
+        let (wx, wy) = to_window(lx, ly);
+        context
+            .route_input(
+                &event(source, generation, seq, pointer(PointerPhase::Move, wx, wy)),
+                services,
+                None,
+            )
+            .unwrap();
+        services.cursor()
+    };
+
+    assert_eq!(
+        move_to(1, plain_box.x + 1.0, plain_box.y + 1.0, &mut services),
+        CursorIcon::Default
+    );
+    assert_eq!(
+        move_to(2, link_box.x + 1.0, link_box.y + 1.0, &mut services),
+        CursorIcon::Pointer
+    );
+    assert_eq!(
+        move_to(
+            3,
+            wide.bounds.x + wide.bounds.width * 0.5,
+            wide.bounds.y + wide.bounds.height * 0.5,
+            &mut services,
+        ),
+        CursorIcon::ZoomIn
+    );
+    assert_eq!(
+        move_to(
+            4,
+            small.bounds.x + small.bounds.width * 0.5,
+            small.bounds.y + small.bounds.height * 0.5,
+            &mut services,
+        ),
+        CursorIcon::Pointer
+    );
+
+    let (wx, wy) = to_window(
+        wide.bounds.x + wide.bounds.width * 0.5,
+        wide.bounds.y + wide.bounds.height * 0.5,
+    );
+    context
+        .route_input(
+            &event(source, generation, 5, pointer(PointerPhase::Down, wx, wy)),
+            &mut services,
+            None,
+        )
+        .unwrap();
+    context
+        .route_input(
+            &event(source, generation, 6, pointer(PointerPhase::Up, wx, wy)),
+            &mut services,
+            None,
+        )
+        .unwrap();
+    let hits = activated.lock().unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].block_index, 1);
+    assert!(hits[0].source.contains("Long label one"));
+}

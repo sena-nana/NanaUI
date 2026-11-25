@@ -158,6 +158,14 @@ impl AppContext {
         }) {
             return CursorIcon::EwResize;
         }
+        if let Some(icon) = target.and_then(|node| {
+            self.behavior(node)
+                .and_then(|b| b.pointer_ops)
+                .and_then(|p| p.cursor_at)
+                .and_then(|cursor_at| cursor_at(self, node, x, y))
+        }) {
+            return icon;
+        }
         let css = target
             .and_then(|node| self.world.computed_style(node))
             .and_then(|style| style.cursor_specified.then_some(style.cursor));

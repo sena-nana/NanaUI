@@ -8,7 +8,68 @@ static RICH_TEXT_DRAG_OPS: crate::framework::ActiveDragOps = crate::framework::A
     end: |cx, doc, _, ptr, x, y, _, cancel| cx.end_rich_text_pointer(doc, ptr, x, y, cancel),
 };
 
+pub(crate) static RICH_TEXT_POINTER_OPS: crate::framework::PointerOps =
+    crate::framework::PointerOps {
+        cursor_at: Some(AppContext::rich_text_cursor_at),
+        ..crate::framework::PointerOps::EMPTY
+    };
+
 impl AppContext {
+    pub(crate) fn rich_text_cursor_at(
+        &self,
+        node: StableNodeId,
+        x: f32,
+        y: f32,
+    ) -> Option<nana_ui_input::CursorIcon> {
+        if self
+            .world
+            .computed_style(node)
+            .is_some_and(|style| style.cursor_specified)
+            || self
+                .world
+                .accessibility(node)
+                .is_some_and(|state| state.disabled)
+        {
+            return None;
+        }
+        let bounds = self.world.component_content_box(node)?;
+        let (lx, ly) = self.world.pointer_layout_position(node, x, y)?;
+        if let Some(entity) = self.view_entity::<NativeMarkdown>(node) {
+            let geometry = self
+                .read(entity, |view| {
+                    self.world.markdown_layout(node, view.blocks(), bounds)
+                })
+                .ok()?;
+            if let Some(block_index) = geometry.diagram_block_at(lx, ly)
+                && let Some(placement) = geometry
+                    .blocks
+                    .get(block_index)
+                    .and_then(|block| block.diagram_placement())
+            {
+                return Some(if placement.scale < 1.0 {
+                    nana_ui_input::CursorIcon::ZoomIn
+                } else {
+                    nana_ui_input::CursorIcon::Pointer
+                });
+            }
+            if geometry.link_at(lx, ly) {
+                return Some(nana_ui_input::CursorIcon::Pointer);
+            }
+            return None;
+        }
+        if let Some(entity) = self.view_entity::<SelectableRichText>(node) {
+            let geometry = self
+                .read(entity, |view| {
+                    self.world.selectable_rich_text_layout(node, view, bounds)
+                })
+                .ok()?;
+            if geometry.link_at(lx, ly) {
+                return Some(nana_ui_input::CursorIcon::Pointer);
+            }
+        }
+        None
+    }
+
     pub fn begin_rich_text_pointer(
         &mut self,
         document: DocumentId,

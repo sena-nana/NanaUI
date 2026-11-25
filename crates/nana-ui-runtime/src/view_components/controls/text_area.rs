@@ -680,6 +680,7 @@ impl TextArea {
 
 static TEXT_AREA_POINTER_OPS: crate::framework::PointerOps = crate::framework::PointerOps {
     corner_press: Some(AppContext::begin_text_area_resize),
+    cursor_at: Some(AppContext::text_area_cursor_at),
     note_scroll: Some(AppContext::note_text_area_scroll),
     minimap_navigate: Some(AppContext::text_editor_minimap_navigate),
     close_text_atom: Some(AppContext::close_focused_text_atom),
@@ -705,13 +706,17 @@ impl ComponentView for TextArea {
         share(&mut self.style.layout);
     }
 
-    /// Keep caret, selection and undo history when a declarative snapshot
-    /// writes the same value back to a retained editor.
+    /// Keep caret, selection, undo history, and dragged height when a
+    /// declarative snapshot writes back to a retained editor.
     fn reconcile(&mut self, mut next: Self) {
         if self.state.value == next.state.value {
             next.state = self.state.clone();
         }
         next.footer_expanded = next.footer_expanded.or(self.footer_expanded);
+        if next.resize_vertical {
+            next.resized_height = next.resized_height.or(self.resized_height);
+            next.resize_drag = next.resize_drag.or(self.resize_drag);
+        }
         *self = next;
     }
 

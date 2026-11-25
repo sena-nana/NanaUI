@@ -218,12 +218,22 @@ impl Default for WorldMotion {
     }
 }
 
+/// Cached spans produced by a [`TextPresenter`] for one fenced code block.
+#[cfg(feature = "rich-text")]
+pub(in crate::world) struct CodePresentationEntry {
+    pub(in crate::world) hash: u64,
+    pub(in crate::world) presenter: Arc<str>,
+    pub(in crate::world) language: Arc<str>,
+    pub(in crate::world) source: Arc<str>,
+    pub(in crate::world) spans: Arc<[crate::TextSpan]>,
+}
+
 /// Text presenters, language/scale defaults, and editor caches.
 pub(in crate::world) struct WorldText {
     pub(in crate::world) hidden_carets: Vec<StableNodeId>,
     pub(in crate::world) presenters: HashMap<String, Box<dyn TextPresenter>>,
     #[cfg(feature = "rich-text")]
-    pub(in crate::world) code_presentations: RefCell<Vec<(u64, Arc<[crate::TextSpan]>)>>,
+    pub(in crate::world) code_presentations: RefCell<Vec<CodePresentationEntry>>,
     pub(in crate::world) text_backend: Option<crate::text_node::TextBackendEpoch>,
     pub(in crate::world) default_language: Option<nana_text::font::LanguageTag>,
     pub(in crate::world) engine_fallback_language: Option<nana_text::font::LanguageTag>,

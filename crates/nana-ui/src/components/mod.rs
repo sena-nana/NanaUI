@@ -45,9 +45,9 @@ pub use nana_ui_runtime::{GraphCanvas, GraphCanvasEvent, GraphNodeContent};
 pub use nana_ui_runtime::{KeyCaptureEvent, KeyCaptureLayer, KeymapLayer};
 #[cfg(feature = "rich-text")]
 pub use nana_ui_runtime::{
-    MarkdownBlock, MarkdownBlockKind, MarkdownImage, MarkdownSpan, MarkdownTable,
-    MarkdownTableAlignment, NativeMarkdown, SelectableRichText, TextSelectionGroup,
-    TextSelectionSnapshot,
+    MarkdownAlertKind, MarkdownBlock, MarkdownBlockKind, MarkdownDiagram, MarkdownDiagramPlacement,
+    MarkdownImage, MarkdownSpan, MarkdownTable, MarkdownTableAlignment, NativeMarkdown,
+    RichTextEvent, SelectableRichText, TextSelectionGroup, TextSelectionSnapshot,
 };
 #[cfg(feature = "controls")]
 pub use nana_ui_runtime::{

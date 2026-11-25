@@ -4006,6 +4006,30 @@ impl UiWorld {
         self.text.presenters.contains_key(name)
     }
 
+    fn invalidate_presenter(&mut self, name: &str) {
+        let ids = self.nodes.keys().collect::<Vec<_>>();
+        for id in ids {
+            if self
+                .nodes
+                .highlight(id)
+                .is_some_and(|request| request.presenter.as_ref() == name)
+            {
+                self.nodes.set_text_presentation(id, None);
+                self.mark(id, DirtyMask::TEXT | DirtyMask::RENDER);
+            }
+            // Markdown paints fenced code through the presenters directly.
+            #[cfg(feature = "rich-text")]
+            if self
+                .widget_visual_as::<crate::NativeMarkdownVisual>(id)
+                .is_some_and(|visual| visual.code_presenter.as_ref() == name)
+            {
+                self.mark(id, DirtyMask::RENDER);
+            }
+        }
+        #[cfg(feature = "rich-text")]
+        self.text.code_presentations.borrow_mut().clear();
+    }
+
     /// Install a named text presenter. Matching [`HighlightRequest`] nodes are
     /// marked dirty so the next TEXT system can derive spans.
     pub fn register_presenter(
@@ -4021,27 +4045,24 @@ impl UiWorld {
         }
         let name = name.to_owned();
         self.text.presenters.insert(name.clone(), presenter);
-        let ids = self.nodes.keys().collect::<Vec<_>>();
-        for id in ids {
-            if self
-                .nodes
-                .highlight(id)
-                .is_some_and(|request| request.presenter.as_ref() == name)
-            {
-                self.mark(id, DirtyMask::TEXT | DirtyMask::RENDER);
-            }
-            // Markdown paints fenced code through the presenters directly.
-            #[cfg(feature = "rich-text")]
-            if self
-                .widget_visual_as::<crate::NativeMarkdownVisual>(id)
-                .is_some_and(|visual| visual.code_presenter.as_ref() == name.as_str())
-            {
-                self.mark(id, DirtyMask::RENDER);
-            }
-        }
-        #[cfg(feature = "rich-text")]
-        self.text.code_presentations.borrow_mut().clear();
+        self.invalidate_presenter(&name);
         Ok(())
+    }
+
+    /// Install `presenter`, replacing any existing presenter registered under
+    /// the same name and invalidating cached highlights on matching nodes.
+    pub fn replace_presenter(
+        &mut self,
+        presenter: Box<dyn TextPresenter>,
+    ) -> Result<Option<Box<dyn TextPresenter>>, UiWorldError> {
+        let name = presenter.name().trim();
+        if name.is_empty() {
+            return Err(UiWorldError::InvalidPresenter);
+        }
+        let name = name.to_owned();
+        let previous = self.text.presenters.insert(name.clone(), presenter);
+        self.invalidate_presenter(&name);
+        Ok(previous)
     }
 
     /// Spans the presenter `presenter` gives `source` as `language`, or
@@ -4061,14 +4082,13 @@ impl UiWorld {
             (presenter, language, source).hash(&mut hasher);
             hasher.finish()
         };
-        if let Some((_, spans)) = self
-            .text
-            .code_presentations
-            .borrow()
-            .iter()
-            .find(|(entry, _)| *entry == key)
-        {
-            return (!spans.is_empty()).then(|| Arc::clone(spans));
+        if let Some(entry) = self.text.code_presentations.borrow().iter().find(|entry| {
+            entry.hash == key
+                && entry.presenter.as_ref() == presenter
+                && entry.language.as_ref() == language
+                && entry.source.as_ref() == source
+        }) {
+            return (!entry.spans.is_empty()).then(|| Arc::clone(&entry.spans));
         }
         let request = HighlightRequest::new(presenter, language);
         let spans: Arc<[crate::TextSpan]> =
@@ -4078,7 +4098,13 @@ impl UiWorld {
         if held.len() >= 128 {
             held.remove(0);
         }
-        held.push((key, Arc::clone(&spans)));
+        held.push(crate::world::subsystems::CodePresentationEntry {
+            hash: key,
+            presenter: Arc::from(presenter),
+            language: Arc::from(language),
+            source: Arc::from(source),
+            spans: Arc::clone(&spans),
+        });
         (!spans.is_empty()).then_some(spans)
     }
 

@@ -78,6 +78,17 @@ impl AppContext {
             .map_err(FrameworkError::from)
     }
 
+    /// Install `presenter`, replacing any existing presenter under the same
+    /// name and invalidating cached highlights on matching nodes.
+    pub fn replace_presenter(
+        &mut self,
+        presenter: Box<dyn TextPresenter>,
+    ) -> Result<Option<Box<dyn TextPresenter>>, FrameworkError> {
+        self.world
+            .replace_presenter(presenter)
+            .map_err(FrameworkError::from)
+    }
+
     /// What a component type brings once, whichever path created its first
     /// node: reprojection and its [`ComponentView::BEHAVIOR`]. Every path
     /// that creates a component goes through this (via

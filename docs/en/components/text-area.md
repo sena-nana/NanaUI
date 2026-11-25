@@ -48,7 +48,7 @@ Editor text goes through `commit_editor_edit`. Typing, deleting and pasting all 
 
 ## Drag to resize
 
-`resize_vertical(true)` on the `TextArea` component puts a grip in the bottom-right corner; dragging it changes only the height and emits no text events. With `min_height` / `max_height` set the grip still shows, the dragged height stays inside the limits, and the edge follows the pointer again as soon as it comes back inside the range. A `content-box` box model needs an explicit pixel height (`height(px)`) to start from.
+`resize_vertical(true)` on the `TextArea` component puts a grip in the bottom-right corner (showing `NsResize` on hover); dragging it changes only the height, emits no text events, and keeps the dragged height across declarative `reconcile` updates (clearing it when `resize_vertical` turns off). With `min_height` / `max_height` set the grip still shows, the dragged height stays inside the limits, and the edge follows the pointer again as soon as it comes back inside the range. A `content-box` box model needs an explicit pixel height (`height(px)`) to start from.
 
 ## Properties
 

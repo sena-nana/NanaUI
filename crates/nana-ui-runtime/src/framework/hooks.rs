@@ -555,6 +555,8 @@ pub(crate) struct PointerOps {
     pub(crate) select_on_focus_entry:
         Option<fn(&mut AppContext, DocumentId, StableNodeId, Option<(f32, f32)>) -> Handled>,
     pub(crate) column_edge_at: Option<fn(&AppContext, StableNodeId, f32, f32) -> bool>,
+    pub(crate) cursor_at:
+        Option<fn(&AppContext, StableNodeId, f32, f32) -> Option<nana_ui_input::CursorIcon>>,
     pub(crate) wheel_pre_overlay:
         Option<fn(&mut AppContext, StableNodeId, f32, f32, f32) -> Handled>,
     pub(crate) wheel_post_overlay:
@@ -593,6 +595,7 @@ impl PointerOps {
         prepare_context_menu: None,
         select_on_focus_entry: None,
         column_edge_at: None,
+        cursor_at: None,
         wheel_pre_overlay: None,
         wheel_post_overlay: None,
         is_value_range: false,

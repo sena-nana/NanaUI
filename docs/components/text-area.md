@@ -48,7 +48,7 @@ text_area().label("备注").placeholder("可选").model(notes)
 
 ## 拖拽调整高度
 
-组件 `TextArea` 上的 `resize_vertical(true)` 在右下角放一个手柄，拖动只改高度，不发文本事件。设了 `min_height` / `max_height` 时手柄照常显示，拖拽高度夹在上下限之内，指针回到范围内边缘立刻跟随。`content-box` 盒模型需要一个显式像素高度（`height(px)`）作为起点。
+组件 `TextArea` 上的 `resize_vertical(true)` 在右下角放一个手柄（悬停显示 `NsResize` 光标），拖动只改高度，不发文本事件，并在声明式视图 `reconcile` 重投影时保留用户拖出的高度（关闭 `resize_vertical` 时清除）。设了 `min_height` / `max_height` 时手柄照常显示，拖拽高度夹在上下限之内，指针回到范围内边缘立刻跟随。`content-box` 盒模型需要一个显式像素高度（`height(px)`）作为起点。
 
 ## 属性
 

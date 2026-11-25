@@ -35,10 +35,14 @@ pub enum MarkdownDrawingCommand {
         bounds: LayoutBox,
         radius: f32,
     },
-    /// A filled, outlined surface behind a block, such as a code fence.
+    /// A filled, outlined surface behind a block, such as a code fence or an
+    /// alert tint (`color: Some(...)`).
     Panel {
         bounds: LayoutBox,
         radius: f32,
+        /// `None` uses the node's text color at low opacity with a border
+        /// (code fences); `Some` paints a borderless tinted wash (GFM alerts).
+        color: Option<[f32; 4]>,
     },
     /// A native diagram, recorded at the size it is shown, drawn at
     /// `bounds`' origin.
@@ -153,9 +157,14 @@ impl MarkdownDrawing {
                     bounds: transform_box(*bounds, x, y, scale),
                     radius: radius * scale,
                 },
-                MarkdownDrawingCommand::Panel { bounds, radius } => MarkdownDrawingCommand::Panel {
+                MarkdownDrawingCommand::Panel {
+                    bounds,
+                    radius,
+                    color,
+                } => MarkdownDrawingCommand::Panel {
                     bounds: transform_box(*bounds, x, y, scale),
                     radius: radius * scale,
+                    color: *color,
                 },
                 // Diagrams are placed once, at the top level, and never
                 // nested in another drawing.
@@ -364,6 +373,7 @@ pub(crate) fn document_with_geometry(
             output.commands.push(MarkdownDrawingCommand::Panel {
                 bounds: g.bounds,
                 radius: nana_ui_core::RadiusTier::Sm.resolve(metrics),
+                color: None,
             });
         }
         if matches!(block, MarkdownBlock::Rule) {
@@ -497,6 +507,20 @@ fn alert_chrome(
     } else {
         bounds.y
     };
+    output.commands.push(MarkdownDrawingCommand::Panel {
+        bounds: LayoutBox {
+            x: bounds.x,
+            y: top,
+            width: bounds.width,
+            height: bounds.y + bounds.height - top,
+        },
+        radius: if continues {
+            0.0
+        } else {
+            nana_ui_core::RadiusTier::Sm.resolve(paint.metrics)
+        },
+        color: Some(color),
+    });
     let x = bounds.x + crate::rich_text::ALERT_BAR_WIDTH * 0.5;
     output.commands.push(MarkdownDrawingCommand::Line {
         points: vec![[x, top], [x, bounds.y + bounds.height]],
@@ -505,15 +529,21 @@ fn alert_chrome(
     });
     if opens {
         let (size, _) = text_style(MarkdownBlockKind::Paragraph);
+        let indent = crate::rich_text::text_indent(MarkdownBlockKind::Alert { kind, opens });
         output.text(
-            bounds.x + crate::rich_text::text_indent(MarkdownBlockKind::Alert { kind, opens }),
+            bounds.x + indent,
             bounds.y,
             Arc::clone(kind.title(paint.strings)),
             size,
             600,
         );
-        if let Some(MarkdownDrawingCommand::Text { color: title, .. }) = output.commands.last_mut()
+        if let Some(MarkdownDrawingCommand::Text {
+            bounds: title_bounds,
+            color: title,
+            ..
+        }) = output.commands.last_mut()
         {
+            title_bounds.width = title_bounds.width.max((bounds.width - indent).max(1.0));
             *title = Some(color);
         }
     }
@@ -1230,5 +1260,259 @@ mod tests {
         assert!(placement.bounds.y >= content.y - 0.01);
         assert!(placement.bounds.x >= content.x - 0.01);
         assert!(world.markdown_diagram_placement(id, 1).is_none());
+    }
+
+    #[test]
+    fn dense_diagram_click_survives_small_jitter_and_requires_same_press_target() {
+        let source = "flowchart LR\n".to_owned()
+            + &(0..30)
+                .map(|i| format!("N{i}[LongNodeLabel{i}] --> N{}", i + 1))
+                .collect::<Vec<_>>()
+                .join("\n");
+        let markdown = NativeMarkdown::from_source(&format!(
+            "Intro\n\n```mermaid\n{source}\n```\n\n```mermaid\nflowchart TD\nX-->Y\n```"
+        ));
+        let bounds = LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 180.0,
+            height: 1200.0,
+        };
+        let geometry = markdown.layout(bounds);
+        let first = geometry.blocks[1]
+            .diagram_placement()
+            .expect("first diagram");
+        let second = geometry.blocks[2]
+            .diagram_placement()
+            .expect("second diagram");
+        let (x, y) = (
+            first.bounds.x + first.bounds.width * 0.5,
+            first.bounds.y + first.bounds.height * 0.5,
+        );
+
+        // Jitter <= 4px inside the dense diagram must still activate rather than select.
+        assert!(markdown.pointer_down(x, y, bounds));
+        assert!(!markdown.pointer_move(x + 2.0, y, bounds));
+        assert_eq!(
+            markdown.pointer_up(x + 2.0, y, bounds),
+            Some(crate::RichTextEvent::DiagramActivated(
+                crate::MarkdownDiagram {
+                    block_index: 1,
+                    source: Arc::from(source.as_str()),
+                }
+            ))
+        );
+        assert!(markdown.selection_snapshot().is_none());
+
+        // Dragging past the click threshold selects source text instead of activating.
+        markdown.clear_selection();
+        assert!(markdown.pointer_down(x, y, bounds));
+        let _ = markdown.pointer_move(x + 25.0, y, bounds);
+        assert!(matches!(
+            markdown.pointer_up(x + 25.0, y, bounds),
+            Some(crate::RichTextEvent::SelectionChanged(_))
+        ));
+
+        // Pressing outside and releasing on the diagram must not activate it.
+        markdown.clear_selection();
+        assert!(markdown.pointer_down(bounds.x + 1.0, bounds.y + 1.0, bounds));
+        assert!(!matches!(
+            markdown.pointer_up(x, y, bounds),
+            Some(crate::RichTextEvent::DiagramActivated(_))
+        ));
+
+        // Pressing diagram 1 and releasing on diagram 2 must not activate either.
+        markdown.clear_selection();
+        assert!(markdown.pointer_down(x, y, bounds));
+        let (x2, y2) = (
+            second.bounds.x + second.bounds.width * 0.5,
+            second.bounds.y + second.bounds.height * 0.5,
+        );
+        assert!(!matches!(
+            markdown.pointer_up(x2, y2, bounds),
+            Some(crate::RichTextEvent::DiagramActivated(_))
+        ));
+    }
+
+    #[test]
+    fn alert_with_code_or_table_first_and_nested_alerts_emit_ordered_headers_and_tint() {
+        use crate::MarkdownAlertKind;
+        let code_first = NativeMarkdown::from_source("> [!NOTE]\n> ```rust\n> let x = 1;\n> ```");
+        assert!(matches!(
+            code_first.blocks(),
+            [
+                MarkdownBlock::Text {
+                    kind: MarkdownBlockKind::Alert {
+                        kind: MarkdownAlertKind::Note,
+                        opens: true,
+                    },
+                    spans,
+                },
+                MarkdownBlock::Code {
+                    language: Some(lang),
+                    ..
+                },
+            ] if spans.is_empty() && lang == "rust"
+        ));
+
+        let table_first = NativeMarkdown::from_source("> [!TIP]\n> | A |\n> | - |\n> | 1 |");
+        assert!(matches!(
+            table_first.blocks(),
+            [
+                MarkdownBlock::Text {
+                    kind: MarkdownBlockKind::Alert {
+                        kind: MarkdownAlertKind::Tip,
+                        opens: true,
+                    },
+                    spans,
+                },
+                MarkdownBlock::Table(_),
+            ] if spans.is_empty()
+        ));
+
+        let nested =
+            NativeMarkdown::from_source("> [!WARNING]\n> Outer\n>\n> > [!CAUTION]\n> > Inner");
+        let kinds = nested
+            .blocks()
+            .iter()
+            .map(|b| match b {
+                MarkdownBlock::Text { kind, .. } => *kind,
+                other => panic!("unexpected {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            kinds,
+            [
+                MarkdownBlockKind::Alert {
+                    kind: MarkdownAlertKind::Warning,
+                    opens: true,
+                },
+                MarkdownBlockKind::Alert {
+                    kind: MarkdownAlertKind::Caution,
+                    opens: true,
+                },
+            ]
+        );
+
+        let title_only = NativeMarkdown::from_source("> [!IMPORTANT]");
+        let narrow = title_only.layout(LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 400.0,
+            height: 200.0,
+        });
+        assert!(
+            crate::rich_text::markdown_content_width(title_only.blocks(), &narrow)
+                > crate::rich_text::text_indent(MarkdownBlockKind::Alert {
+                    kind: MarkdownAlertKind::Important,
+                    opens: true,
+                }) + 20.0
+        );
+
+        let drawing = code_first.drawing(column());
+        let theme = nana_ui_core::builtin_theme(nana_ui_core::ThemeAppearance::Light);
+        let accent = theme
+            .style_model()
+            .color(nana_ui_core::SemanticColorRole::Accent)
+            .as_rgba_array();
+        assert!(matches!(
+            drawing.commands.first(),
+            Some(MarkdownDrawingCommand::Panel { color: Some(c), .. }) if *c == accent
+        ));
+    }
+
+    #[test]
+    fn replace_presenter_swaps_default_highlighter_and_updates_markdown_and_text_area() {
+        let document = DocumentId::new(84).unwrap();
+        let mut context = AppContext::new();
+        let initial = Box::new(crate::TextPresenterFn::new("swap-lang", |text: &str, _| {
+            text.match_indices("let")
+                .map(|(start, word)| crate::TextSpan {
+                    start,
+                    end: start + word.len(),
+                    color: nana_ui_core::SemanticColorRole::Keyword,
+                })
+                .collect()
+        }));
+        context.register_presenter(initial).unwrap();
+
+        let markdown = context
+            .create_component(
+                document,
+                NativeMarkdown::from_source("```rust\nlet x = 1;\n```").code_presenter("swap-lang"),
+            )
+            .unwrap();
+        let mut area_view = crate::TextArea::new("let x = 1;");
+        area_view.highlight = Some(crate::HighlightRequest::new("swap-lang", "rust"));
+        let area = context.create_component(document, area_view).unwrap();
+        context
+            .layout_document(document, LayoutViewport::new(400.0, 400.0))
+            .unwrap();
+        context
+            .world_mut()
+            .resolve_presentations(&[area.stable_id()])
+            .unwrap();
+
+        let keyword = context
+            .world()
+            .node_style_model(markdown.stable_id())
+            .color(nana_ui_core::SemanticColorRole::Keyword)
+            .as_rgba_array();
+        let string_role = context
+            .world()
+            .node_style_model(markdown.stable_id())
+            .color(nana_ui_core::SemanticColorRole::Accent)
+            .as_rgba_array();
+        assert!(
+            painted_runs(&context, markdown.stable_id())
+                .iter()
+                .any(|(text, color)| text == "let" && *color == Some(keyword))
+        );
+        assert_eq!(
+            context
+                .world()
+                .text_presentation(area.stable_id())
+                .unwrap()
+                .spans,
+            vec![crate::TextSpan {
+                start: 0,
+                end: 3,
+                color: nana_ui_core::SemanticColorRole::Keyword,
+            }]
+        );
+
+        let replacement = Box::new(crate::TextPresenterFn::new("swap-lang", |text: &str, _| {
+            text.match_indices("let")
+                .map(|(start, word)| crate::TextSpan {
+                    start,
+                    end: start + word.len(),
+                    color: nana_ui_core::SemanticColorRole::Accent,
+                })
+                .collect()
+        }));
+        let prev = context.replace_presenter(replacement).unwrap();
+        assert!(prev.is_some());
+        context
+            .world_mut()
+            .resolve_presentations(&[area.stable_id()])
+            .unwrap();
+
+        assert!(
+            painted_runs(&context, markdown.stable_id())
+                .iter()
+                .any(|(text, color)| text == "let" && *color == Some(string_role))
+        );
+        assert_eq!(
+            context
+                .world()
+                .text_presentation(area.stable_id())
+                .unwrap()
+                .spans,
+            vec![crate::TextSpan {
+                start: 0,
+                end: 3,
+                color: nana_ui_core::SemanticColorRole::Accent,
+            }]
+        );
     }
 }

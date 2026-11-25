@@ -10,6 +10,30 @@ static TEXT_AREA_RESIZE_DRAG_OPS: crate::framework::ActiveDragOps =
     };
 
 impl AppContext {
+    pub(crate) fn text_area_cursor_at(
+        &self,
+        node: StableNodeId,
+        x: f32,
+        y: f32,
+    ) -> Option<nana_ui_input::CursorIcon> {
+        let entity = self.view_entity::<TextArea>(node)?;
+        if !self
+            .read(entity, |area| {
+                area.supports_vertical_resize() && !area.disabled
+            })
+            .ok()?
+        {
+            return None;
+        }
+        let (lx, ly) = self.world.pointer_layout_position(node, x, y)?;
+        let grip = self
+            .world
+            .text_input_geometry(node)
+            .and_then(|g| g.resize_grip)?;
+        grip.contains(lx, ly)
+            .then_some(nana_ui_input::CursorIcon::NsResize)
+    }
+
     /// Starts a height-only drag on the editor's projected resize grip.
     pub fn begin_text_area_resize(
         &mut self,

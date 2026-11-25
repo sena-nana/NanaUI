@@ -298,3 +298,81 @@ fn a_multiline_editors_text_primitive_says_its_newlines_are_line_breaks() {
         "a multiline editor preserves the newlines in its value"
     );
 }
+
+#[test]
+fn textarea_resize_reconcile_preserves_dragged_height_and_clamps_percent_and_em_limits() {
+    let mut cx = AppContext::new();
+    let doc = DocumentId::new(1).unwrap();
+    let root = cx
+        .create_component(
+            doc,
+            Stack::column(0.0).with_layout(|layout| {
+                layout.width = Some(nana_ui_core::LengthSpec::Px(300.0));
+                layout.height = Some(nana_ui_core::LengthSpec::Px(400.0));
+            }),
+        )
+        .unwrap();
+    let mut view = TextArea::new("limits").height(150.0).resize_vertical(true);
+    let style = Arc::make_mut(&mut view.style.layout);
+    style.width = Some(nana_ui_core::LengthSpec::Px(260.0));
+    style.font_size = Some(16.0);
+    style.min_height = Some(nana_ui_core::LengthSpec::Em(6.0)); // 96px
+    style.max_height = Some(nana_ui_core::LengthSpec::Percent(0.5)); // 200px of 400px parent
+    let area = cx.create_detached_component(doc, view.clone()).unwrap();
+    cx.append_child(root, area).unwrap();
+    layout(&mut cx, doc, area);
+
+    let (x, y) = grip(&cx, area);
+    let mut adapter = HeadlessInput::bind(&mut cx, doc);
+    adapter
+        .route(&mut cx, pointer(PointerPhase::Down, x, y))
+        .unwrap();
+    adapter
+        .route(&mut cx, pointer(PointerPhase::Move, x, y + 300.0))
+        .unwrap();
+    adapter
+        .route(&mut cx, pointer(PointerPhase::Up, x, y + 300.0))
+        .unwrap();
+    layout(&mut cx, doc, area);
+    assert_eq!(
+        cx.world().layout_box(area.stable_id()).unwrap().height,
+        200.0
+    );
+
+    // Declarative reconcile with resize_vertical still enabled keeps the dragged height.
+    let next = view.clone();
+    cx.update_component(area, |current, _| current.reconcile(next))
+        .unwrap();
+    layout(&mut cx, doc, area);
+    assert_eq!(
+        cx.world().layout_box(area.stable_id()).unwrap().height,
+        200.0
+    );
+
+    // Drag down to em-based min_height.
+    let (x, y) = grip(&cx, area);
+    adapter
+        .route(&mut cx, pointer(PointerPhase::Down, x, y))
+        .unwrap();
+    adapter
+        .route(&mut cx, pointer(PointerPhase::Move, x, y - 300.0))
+        .unwrap();
+    adapter
+        .route(&mut cx, pointer(PointerPhase::Up, x, y - 300.0))
+        .unwrap();
+    layout(&mut cx, doc, area);
+    assert_eq!(
+        cx.world().layout_box(area.stable_id()).unwrap().height,
+        96.0
+    );
+
+    // Disabling resize_vertical during reconcile drops the kept dragged height.
+    let disabled_resize = TextArea::new("limits").height(150.0).resize_vertical(false);
+    cx.update_component(area, |current, _| current.reconcile(disabled_resize))
+        .unwrap();
+    layout(&mut cx, doc, area);
+    assert_eq!(
+        cx.world().layout_box(area.stable_id()).unwrap().height,
+        150.0
+    );
+}
