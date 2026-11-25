@@ -291,11 +291,15 @@ pub use nana_ui_platform::NativeFetchHost;
 /// Canonical input: what hosts deliver and programs observe in
 /// [`RoutedInput`], routed through the context each source is bound to.
 pub use nana_ui_platform::{
-    CanonicalInputEvent, CommittedText, CompositionInput, CursorIcon, FileDragInput, FileDragKind,
-    FocusDirection, HeadlessHostServices, HostServiceError, HostServices, InputDisposition,
-    InputModifiers, InputPayload, KeyInput, KeyState, NavigationInput, NavigationIntent,
-    NavigationSource, PointerInput, PointerPhase, PointerType, TextInputContext, TextInputPurpose,
-    WheelInput, WheelUnit, path,
+    CanonicalInputEvent, CommittedText, CompositionInput, CursorIcon, DEFAULT_MAX_TRANSFER_BYTES,
+    DataFormat, DataFormatError, DataTransfer, DragCancelReason, DragSessionId, DropAccepts,
+    DropEffect, DropEffects, DropKind, FileDragInput, FileDragKind, FocusDirection,
+    HeadlessHostServices, HostServiceError, HostServices, InputDisposition, InputModifiers,
+    InputPayload, InternalPayloadToken, KeyInput, KeyState, LazyFnProvider, MAX_MIME_LEN,
+    NavigationInput, NavigationIntent, NavigationSource, PointerInput, PointerPhase, PointerType,
+    TextInputContext, TextInputPurpose, TransferAction, TransferCachePolicy, TransferEntryMeta,
+    TransferError, TransferImage, TransferLifetime, TransferOrigin, TransferProvider, WheelInput,
+    WheelUnit, file_uri_to_path, format_uri_list, parse_uri_list, path, path_to_file_uri,
 };
 #[cfg(feature = "hosted")]
 pub use nana_ui_platform::{
@@ -326,6 +330,10 @@ pub use nana_window::{
     PlatformMaterialSupport, apply_system_material, clear_system_material,
     hosted_platform_material_support, install_menu_bar, menu_bar_support,
     platform_material_support, take_menu_activations,
+};
+#[cfg(feature = "hosted")]
+pub use nana_window::{
+    ClipboardSupport, NativeClipboard, clipboard_support, native_shared_clipboard,
 };
 #[cfg(feature = "hosted")]
 pub use nana_window::{

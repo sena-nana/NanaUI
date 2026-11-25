@@ -2,6 +2,7 @@
 
 mod browser;
 mod chrome;
+mod clipboard;
 mod pointer;
 pub use browser::{
     BrowserCommand, BrowserCompletion, BrowserEvent, BrowserPolicy, BrowserRect, BrowserState,
@@ -69,6 +70,9 @@ pub use chrome::set_present_transaction;
 pub use live_frame::LiveFrameResize;
 
 pub use chrome::{FrameResizeEdge, NonClientRenderingStrategy};
+pub use clipboard::{
+    ClipboardSupport, NativeClipboard, clipboard_support, native_shared_clipboard,
+};
 pub use color_sampler::{
     ColorSamplerError, ColorSamplerHandle, ColorSamplerResult, ColorSamplerSupport,
     color_sampler_support, pick_screen_color,

@@ -1,13 +1,15 @@
 //! Clipboard host boundary.
 //!
-//! Desktop uses the OS clipboard via `arboard` ([`OsClipboard`]). Android does
-//! not compile arboard; [`default_shared_clipboard`] installs
-//! [`AndroidClipboard`] (JNI `ClipboardManager`). OHOS does not compile it
-//! either and has no default backend: its host answers the clipboard through
-//! its own `HostServices`, and the default reports it unsupported
-//! (`docs/reference/ohos.md`).
+//! Desktop uses the OS clipboard via `arboard` ([`OsClipboard`]) or native
+//! multi-format backends in `nana-window`. Android does not compile arboard;
+//! [`default_shared_clipboard`] installs [`AndroidClipboard`] (JNI
+//! `ClipboardManager`). OHOS does not compile it either and has no default
+//! backend: its host answers the clipboard through its own `HostServices`,
+//! and the default reports it unsupported (`docs/reference/ohos.md`).
 
 use std::sync::{Arc, Mutex};
+
+use nana_ui_input::{DataFormat, DataTransfer, HostServiceError, TransferOrigin};
 
 /// Minimal clipboard contract for Nana hosts — never System WebView.
 pub trait ClipboardHost: Send {
@@ -19,6 +21,51 @@ pub trait ClipboardHost: Send {
     }
     fn read_text(&mut self) -> Option<String>;
     fn write_text(&mut self, text: &str) -> bool;
+
+    /// Read a multi-format [`DataTransfer`] snapshot from the clipboard.
+    ///
+    /// Default wraps [`Self::read_text`] into an external transfer containing
+    /// `text/plain`.
+    fn read_transfer(&mut self) -> Result<Option<DataTransfer>, HostServiceError> {
+        if !self.is_available() {
+            return Err(HostServiceError::Unsupported);
+        }
+        let Some(text) = self.read_text() else {
+            return Ok(None);
+        };
+        let mut transfer = DataTransfer::new(TransferOrigin::External);
+        transfer
+            .set_text(text)
+            .map_err(|_| HostServiceError::Failed)?;
+        Ok(Some(transfer))
+    }
+
+    /// Write a multi-format [`DataTransfer`] to the clipboard.
+    ///
+    /// Default writes `text/plain` if available and otherwise fails closed with
+    /// [`HostServiceError::Unsupported`].
+    fn write_transfer(&mut self, transfer: &DataTransfer) -> Result<(), HostServiceError> {
+        if !self.is_available() {
+            return Err(HostServiceError::Unsupported);
+        }
+        transfer
+            .lifetime()
+            .check()
+            .map_err(|_| HostServiceError::Failed)?;
+        if transfer.has_format(&DataFormat::TextPlain) {
+            let text = transfer
+                .read_text()
+                .map_err(|_| HostServiceError::Failed)?
+                .ok_or(HostServiceError::Failed)?;
+            return if self.write_text(&text) {
+                Ok(())
+            } else {
+                Err(HostServiceError::Failed)
+            };
+        }
+        Err(HostServiceError::Unsupported)
+    }
+
     /// A count the platform advances with every write to the clipboard, by
     /// any process. Read right after a write, it later tells whether the
     /// clipboard still holds that write. `None` where the platform keeps
@@ -39,6 +86,7 @@ pub fn shared_clipboard<C: ClipboardHost + 'static>(clipboard: C) -> SharedClipb
 /// Platform default: OS clipboard on desktop; JNI ClipboardManager on Android;
 /// [`UnsupportedClipboard`] on OHOS and iOS, whose hosts inject the system
 /// pasteboard.
+#[cfg(feature = "clipboard")]
 pub fn default_shared_clipboard() -> SharedClipboardHost {
     #[cfg(target_os = "android")]
     {
@@ -70,12 +118,20 @@ impl ClipboardHost for UnsupportedClipboard {
     fn write_text(&mut self, _text: &str) -> bool {
         false
     }
+
+    fn read_transfer(&mut self) -> Result<Option<DataTransfer>, HostServiceError> {
+        Err(HostServiceError::Unsupported)
+    }
+
+    fn write_transfer(&mut self, _transfer: &DataTransfer) -> Result<(), HostServiceError> {
+        Err(HostServiceError::Unsupported)
+    }
 }
 
 /// In-process clipboard for unit tests (does not touch the OS pasteboard).
 #[derive(Debug, Default, Clone)]
 pub struct MemoryClipboard {
-    text: Option<String>,
+    transfer: Option<DataTransfer>,
     changes: u64,
 }
 
@@ -83,17 +139,40 @@ impl MemoryClipboard {
     pub fn new() -> Self {
         Self::default()
     }
+
+    pub fn transfer(&self) -> Option<&DataTransfer> {
+        self.transfer.as_ref()
+    }
 }
 
 impl ClipboardHost for MemoryClipboard {
     fn read_text(&mut self) -> Option<String> {
-        self.text.clone()
+        let transfer = self.transfer.as_ref()?;
+        if !transfer.has_format(&DataFormat::TextPlain) {
+            return None;
+        }
+        transfer.read_text().ok().flatten()
     }
 
     fn write_text(&mut self, text: &str) -> bool {
-        self.text = Some(text.to_owned());
+        self.write_transfer(&DataTransfer::from_text(text)).is_ok()
+    }
+
+    fn read_transfer(&mut self) -> Result<Option<DataTransfer>, HostServiceError> {
+        Ok(self.transfer.clone())
+    }
+
+    fn write_transfer(&mut self, transfer: &DataTransfer) -> Result<(), HostServiceError> {
+        transfer
+            .lifetime()
+            .check()
+            .map_err(|_| HostServiceError::Failed)?;
+        if transfer.is_empty() {
+            return Err(HostServiceError::Failed);
+        }
+        self.transfer = Some(transfer.clone());
         self.changes += 1;
-        true
+        Ok(())
     }
 
     fn change_count(&mut self) -> Option<u64> {
@@ -103,12 +182,18 @@ impl ClipboardHost for MemoryClipboard {
 
 /// Desktop OS clipboard (`arboard`). Construction never panics; unavailable
 /// backends report failed reads/writes. Not compiled on Android, iOS or OHOS.
-#[cfg(not(any(target_os = "android", target_os = "ios", target_env = "ohos")))]
+#[cfg(all(
+    feature = "clipboard",
+    not(any(target_os = "android", target_os = "ios", target_env = "ohos"))
+))]
 pub struct OsClipboard {
     inner: Option<arboard::Clipboard>,
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios", target_env = "ohos")))]
+#[cfg(all(
+    feature = "clipboard",
+    not(any(target_os = "android", target_os = "ios", target_env = "ohos"))
+))]
 impl std::fmt::Debug for OsClipboard {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OsClipboard")
@@ -117,7 +202,10 @@ impl std::fmt::Debug for OsClipboard {
     }
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios", target_env = "ohos")))]
+#[cfg(all(
+    feature = "clipboard",
+    not(any(target_os = "android", target_os = "ios", target_env = "ohos"))
+))]
 impl OsClipboard {
     pub fn new() -> Self {
         Self {
@@ -130,7 +218,10 @@ impl OsClipboard {
     }
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios", target_env = "ohos")))]
+#[cfg(all(
+    feature = "clipboard",
+    not(any(target_os = "android", target_os = "ios", target_env = "ohos"))
+))]
 impl Default for OsClipboard {
     fn default() -> Self {
         Self::new()
@@ -141,11 +232,11 @@ impl Default for OsClipboard {
 ///
 /// Reads/writes fail honestly when the JNI Activity context is missing (unit
 /// tests, or a call before `android_main`). This is not a second pasteboard.
-#[cfg(target_os = "android")]
+#[cfg(all(feature = "clipboard", target_os = "android"))]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct AndroidClipboard;
 
-#[cfg(target_os = "android")]
+#[cfg(all(feature = "clipboard", target_os = "android"))]
 impl ClipboardHost for AndroidClipboard {
     fn read_text(&mut self) -> Option<String> {
         android_clipboard_text(None)
@@ -156,7 +247,7 @@ impl ClipboardHost for AndroidClipboard {
     }
 }
 
-#[cfg(target_os = "android")]
+#[cfg(all(feature = "clipboard", target_os = "android"))]
 fn android_clipboard_text(write: Option<&str>) -> Option<String> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         android_clipboard_text_inner(write)
@@ -165,7 +256,7 @@ fn android_clipboard_text(write: Option<&str>) -> Option<String> {
     .flatten()
 }
 
-#[cfg(target_os = "android")]
+#[cfg(all(feature = "clipboard", target_os = "android"))]
 fn android_clipboard_text_inner(write: Option<&str>) -> Option<String> {
     use std::mem::ManuallyDrop;
 
@@ -271,7 +362,10 @@ fn android_clipboard_text_inner(write: Option<&str>) -> Option<String> {
     }
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios", target_env = "ohos")))]
+#[cfg(all(
+    feature = "clipboard",
+    not(any(target_os = "android", target_os = "ios", target_env = "ohos"))
+))]
 impl ClipboardHost for OsClipboard {
     fn is_available(&self) -> bool {
         self.inner.is_some()
@@ -296,7 +390,7 @@ impl ClipboardHost for OsClipboard {
 
 /// `NSPasteboard.changeCount` of the general pasteboard: it advances each
 /// time an owner clears it to write.
-#[cfg(target_os = "macos")]
+#[cfg(all(feature = "clipboard", target_os = "macos"))]
 fn os_clipboard_change_count() -> Option<u64> {
     let count = objc2_app_kit::NSPasteboard::generalPasteboard().changeCount();
     u64::try_from(count).ok()
@@ -304,7 +398,7 @@ fn os_clipboard_change_count() -> Option<u64> {
 
 /// `GetClipboardSequenceNumber`: it advances with every change of the
 /// window station's clipboard. Zero means this process cannot see it.
-#[cfg(windows)]
+#[cfg(all(feature = "clipboard", windows))]
 fn os_clipboard_change_count() -> Option<u64> {
     // SAFETY: no arguments and no preconditions; it reads a counter.
     let count = unsafe { windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber() };
@@ -312,13 +406,16 @@ fn os_clipboard_change_count() -> Option<u64> {
 }
 
 /// X11 and Wayland keep no change count the clipboard can be asked for.
-#[cfg(not(any(
-    target_os = "macos",
-    windows,
-    target_os = "android",
-    target_os = "ios",
-    target_env = "ohos"
-)))]
+#[cfg(all(
+    feature = "clipboard",
+    not(any(
+        target_os = "macos",
+        windows,
+        target_os = "android",
+        target_os = "ios",
+        target_env = "ohos"
+    ))
+))]
 fn os_clipboard_change_count() -> Option<u64> {
     None
 }
@@ -335,6 +432,17 @@ pub fn read_shared_clipboard(
         return Err(nana_ui_input::HostServiceError::Unsupported);
     }
     Ok(clipboard.read_text())
+}
+
+/// Read a multi-format [`DataTransfer`] against a shared backend without blocking.
+pub fn read_shared_clipboard_transfer(
+    clipboard: &SharedClipboardHost,
+) -> Result<Option<DataTransfer>, HostServiceError> {
+    let mut clipboard = clipboard.try_lock().map_err(|_| HostServiceError::Busy)?;
+    if !clipboard.is_available() {
+        return Err(HostServiceError::Unsupported);
+    }
+    clipboard.read_transfer()
 }
 
 /// The shared backend's [`ClipboardHost::change_count`]. See
@@ -371,6 +479,18 @@ pub fn write_shared_clipboard(
     }
 }
 
+/// Write a multi-format [`DataTransfer`] against a shared backend without blocking.
+pub fn write_shared_clipboard_transfer(
+    clipboard: &SharedClipboardHost,
+    transfer: &DataTransfer,
+) -> Result<(), HostServiceError> {
+    let mut clipboard = clipboard.try_lock().map_err(|_| HostServiceError::Busy)?;
+    if !clipboard.is_available() {
+        return Err(HostServiceError::Unsupported);
+    }
+    clipboard.write_transfer(transfer)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -393,7 +513,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "android")]
+    #[cfg(all(feature = "clipboard", target_os = "android"))]
     fn android_default_clipboard_uses_jni_backend() {
         let host = default_shared_clipboard();
         let mut clip = host.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -405,7 +525,10 @@ mod tests {
 
     #[test]
     #[ignore = "mutates live OS desktop clipboard; run explicitly with --ignored"]
-    #[cfg(not(any(target_os = "android", target_os = "ios", target_env = "ohos")))]
+    #[cfg(all(
+        feature = "clipboard",
+        not(any(target_os = "android", target_os = "ios", target_env = "ohos"))
+    ))]
     fn os_clipboard_roundtrip_when_available() {
         let mut clip = OsClipboard::new();
         if !clip.is_available() {
@@ -477,7 +600,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_env = "ohos")]
+    #[cfg(all(feature = "clipboard", target_env = "ohos"))]
     fn ohos_default_clipboard_is_unsupported_until_the_host_injects_one() {
         let clipboard = default_shared_clipboard();
         assert_eq!(
@@ -516,6 +639,55 @@ mod tests {
         assert_eq!(
             read_shared_clipboard(&clipboard),
             Err(nana_ui_input::HostServiceError::Busy)
+        );
+    }
+
+    #[test]
+    fn memory_clipboard_supports_multiformat_lazy_and_cancellation() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let mut clip = MemoryClipboard::new();
+        let mut transfer = DataTransfer::internal();
+        transfer.set_text("hello").unwrap();
+        transfer.set_html("<p>hello</p>").unwrap();
+        let custom = nana_ui_input::DataFormat::custom("application/x-nana-card").unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_ref = Arc::clone(&calls);
+        transfer.set_lazy_fn(
+            custom.clone(),
+            Some(4),
+            nana_ui_input::TransferCachePolicy::Cache,
+            move |_| {
+                calls_ref.fetch_add(1, Ordering::Relaxed);
+                Ok(vec![9, 8, 7, 6])
+            },
+        );
+        clip.write_transfer(&transfer).unwrap();
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+        let back = clip.read_transfer().unwrap().unwrap();
+        assert_eq!(back.read_html().unwrap().as_deref(), Some("<p>hello</p>"));
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            back.read_bytes(&custom).unwrap().as_deref(),
+            Some([9u8, 8, 7, 6].as_slice())
+        );
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+
+        let shared = shared_clipboard(clip);
+        let empty = DataTransfer::internal();
+        empty.lifetime().cancel();
+        assert_eq!(
+            write_shared_clipboard_transfer(&shared, &empty),
+            Err(HostServiceError::Failed)
+        );
+        let unsupported = shared_clipboard(UnsupportedClipboard);
+        assert!(matches!(
+            read_shared_clipboard_transfer(&unsupported),
+            Err(HostServiceError::Unsupported)
+        ));
+        assert_eq!(
+            write_shared_clipboard_transfer(&unsupported, &DataTransfer::from_text("x")),
+            Err(HostServiceError::Unsupported)
         );
     }
 }

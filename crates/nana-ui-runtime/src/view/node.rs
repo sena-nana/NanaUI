@@ -1326,6 +1326,26 @@ impl<C: ComponentView, K> El<C, K> {
         self.focus_neighbor(crate::FocusDirection::Right, target)
     }
 
+    /// Register this node as a drop target for the specified kinds/formats/effects.
+    pub fn drop_target(mut self, accepts: nana_ui_core::DropAccepts) -> Self {
+        self.events
+            .push(EventInstall::After(Box::new(move |ui, entity| {
+                ui.after_commit(entity, move |cx, entity| {
+                    cx.set_drop_target(entity, accepts)
+                });
+            })));
+        self
+    }
+
+    /// Register this node as an internal drag source (`DragSource`).
+    pub fn drag_source(mut self, source: crate::DragSource) -> Self {
+        self.events
+            .push(EventInstall::After(Box::new(move |ui, entity| {
+                ui.after_commit(entity, move |cx, entity| cx.set_drag_source(entity, source));
+            })));
+        self
+    }
+
     /// Record the entity this element is built as in `entity_ref`, beside
     /// any [`Self::node_ref`] it also fills.
     pub fn entity_ref(self, entity_ref: EntityRef<C>) -> Self {

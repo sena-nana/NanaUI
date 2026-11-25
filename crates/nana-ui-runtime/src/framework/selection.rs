@@ -45,6 +45,7 @@ impl AppContext {
 
     /// Stops a node accepting drops by id. Clears hover if this node was it.
     pub fn clear_drop_target_node(&mut self, id: StableNodeId) -> bool {
+        let _ = self.clear_drop_hover_for_removed_target(id);
         if self
             .world
             .drop_hover()
@@ -168,19 +169,42 @@ impl AppContext {
         if !x.is_finite() || !y.is_finite() {
             return Err(FrameworkError::InvalidInput);
         }
-        let target = self.drop_target_at(document, x, y, &nana_ui_core::DropKind::Files);
+        let transfer =
+            nana_ui_core::DataTransfer::from_files(nana_ui_core::TransferOrigin::External, paths);
+        let target = self
+            .drop_target_at(document, x, y, &nana_ui_core::DropKind::Files)
+            .or_else(|| {
+                self.drop_target_for_transfer(
+                    document,
+                    x,
+                    y,
+                    &nana_ui_core::DropKind::Files,
+                    &transfer,
+                    nana_ui_core::DropEffects::ALL,
+                    None,
+                )
+            });
         let landed = target.map(|(id, _)| id);
         if kind == nana_ui_core::FileDragKind::Hover {
-            return Ok((self.set_file_drag_hover(document, target, paths)?, landed));
+            return Ok((
+                self.set_file_drag_hover(document, target, paths, &transfer, x, y)?,
+                landed,
+            ));
         }
         // A node that was told `Hovered` is owed a terminal event. Releasing
         // over some *other* target — or over nothing — used to clear the
         // hover silently, leaving whatever state it set on hover latched
         // until an unrelated drag happened to enter it again. `Cancel`
         // already emits `Left`; the two terminal paths agree now.
+        let session = self
+            .input
+            .active_file_drag_session
+            .take()
+            .unwrap_or_else(|| self.next_drag_session_id());
         let previous = self.world.drop_hover();
         if let Some((id, _)) = previous.filter(|(id, _)| landed != Some(*id)) {
             self.emit_file_drop(id, crate::FileDropEvent::Left)?;
+            self.emit_drag_drop_event(id, crate::DragDropEvent::Left { session })?;
         }
         let cleared = self.world.set_drop_hover(None);
         let Some((id, effect)) = target else {
@@ -193,6 +217,18 @@ impl AppContext {
                 effect,
             },
         )?;
+        self.emit_drag_drop_event(
+            id,
+            crate::DragDropEvent::Dropped {
+                session,
+                kind: nana_ui_core::DropKind::Files,
+                transfer,
+                effect,
+                x,
+                y,
+                modifiers: nana_ui_input::InputModifiers::default(),
+            },
+        )?;
         Ok((true, landed))
     }
 
@@ -201,36 +237,91 @@ impl AppContext {
         _document: DocumentId,
         target: Option<(StableNodeId, nana_ui_core::DropEffect)>,
         paths: &[std::path::PathBuf],
+        transfer: &nana_ui_core::DataTransfer,
+        x: f32,
+        y: f32,
     ) -> Result<bool, FrameworkError> {
+        let session = match self.input.active_file_drag_session {
+            Some(session) => session,
+            None => {
+                let session = self.next_drag_session_id();
+                self.input.active_file_drag_session = Some(session);
+                session
+            }
+        };
         let previous = self.world.drop_hover();
         if previous == target {
+            if let Some((id, effect)) = target {
+                self.emit_drag_drop_event(
+                    id,
+                    crate::DragDropEvent::Moved {
+                        session,
+                        kind: nana_ui_core::DropKind::Files,
+                        transfer: transfer.clone(),
+                        effect,
+                        x,
+                        y,
+                        modifiers: nana_ui_input::InputModifiers::default(),
+                    },
+                )?;
+            }
             return Ok(false);
         }
         if let Some((id, _)) =
             previous.filter(|_| previous.map(|(id, _)| id) != target.map(|(id, _)| id))
         {
             self.emit_file_drop(id, crate::FileDropEvent::Left)?;
+            self.emit_drag_drop_event(id, crate::DragDropEvent::Left { session })?;
         }
         self.world.set_drop_hover(target);
-        if let Some((id, effect)) =
-            target.filter(|_| previous.map(|(id, _)| id) != target.map(|(id, _)| id))
-        {
-            self.emit_file_drop(
-                id,
-                crate::FileDropEvent::Hovered {
-                    paths: paths.iter().cloned().collect(),
-                    effect,
-                },
-            )?;
+        if let Some((id, effect)) = target {
+            if previous.map(|(id, _)| id) != target.map(|(id, _)| id) {
+                self.emit_file_drop(
+                    id,
+                    crate::FileDropEvent::Hovered {
+                        paths: paths.iter().cloned().collect(),
+                        effect,
+                    },
+                )?;
+                self.emit_drag_drop_event(
+                    id,
+                    crate::DragDropEvent::Entered {
+                        session,
+                        kind: nana_ui_core::DropKind::Files,
+                        transfer: transfer.clone(),
+                        effect,
+                        x,
+                        y,
+                        modifiers: nana_ui_input::InputModifiers::default(),
+                    },
+                )?;
+            } else {
+                self.emit_drag_drop_event(
+                    id,
+                    crate::DragDropEvent::Moved {
+                        session,
+                        kind: nana_ui_core::DropKind::Files,
+                        transfer: transfer.clone(),
+                        effect,
+                        x,
+                        y,
+                        modifiers: nana_ui_input::InputModifiers::default(),
+                    },
+                )?;
+            }
         }
         Ok(true)
     }
 
     fn clear_file_drag(&mut self, _document: DocumentId) -> Result<bool, FrameworkError> {
+        let session = self.input.active_file_drag_session.take();
         let Some((id, _)) = self.world.drop_hover() else {
             return Ok(false);
         };
         self.emit_file_drop(id, crate::FileDropEvent::Left)?;
+        if let Some(session) = session {
+            self.emit_drag_drop_event(id, crate::DragDropEvent::Left { session })?;
+        }
         self.world.set_drop_hover(None);
         Ok(true)
     }

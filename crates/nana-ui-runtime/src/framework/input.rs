@@ -12,6 +12,8 @@
 
 mod blink;
 mod dispatch;
+mod drag_session;
+pub use drag_session::{ActiveDragSession, DragSource};
 mod edit_actions;
 pub use edit_actions::TextEditAction;
 mod effects;
@@ -290,6 +292,19 @@ pub(crate) struct InputState {
     pub(crate) active_drags: Vec<super::hooks::ActiveDrag>,
     /// Pre-capture armed drags (e.g. `ReorderList` press on a child control).
     pub(crate) armed_drags: Vec<super::hooks::ActiveDrag>,
+    /// Registered typed drag sources (`DragSource`).
+    pub(crate) drag_sources: HashMap<StableNodeId, DragSource>,
+    /// Pending internal drag gestures waiting to cross slop.
+    pub(crate) armed_internal_drags: HashMap<(DocumentId, u64), drag_session::ArmedInternalDrag>,
+    /// Active typed internal drag session (`DragSource` -> `DropTarget`).
+    pub(crate) active_internal_drag: Option<drag_session::InternalDragState>,
+    /// Active external file-drag session id for unified `DragDropEvent` emission.
+    pub(crate) active_file_drag_session: Option<nana_ui_core::DragSessionId>,
+    /// Monotonic counter for `DragSessionId`.
+    pub(crate) next_drag_session: u64,
+    /// Shared lifetimes of transfers emitted by a source, invalidated if source despawns.
+    pub(crate) source_transfer_lifetimes:
+        HashMap<StableNodeId, Vec<nana_ui_core::TransferLifetime>>,
 }
 
 impl Default for InputState {
@@ -310,6 +325,12 @@ impl Default for InputState {
             gesture_listeners: gestures::GestureListeners::default(),
             active_drags: Vec::new(),
             armed_drags: Vec::new(),
+            drag_sources: HashMap::new(),
+            armed_internal_drags: HashMap::new(),
+            active_internal_drag: None,
+            active_file_drag_session: None,
+            next_drag_session: 1,
+            source_transfer_lifetimes: HashMap::new(),
         }
     }
 }
@@ -569,6 +590,11 @@ impl AppContext {
         else {
             return Ok(None);
         };
+        self.cancel_source_internal_drag(
+            source,
+            document,
+            nana_ui_core::DragCancelReason::WindowClosed,
+        )?;
         self.cancel_source_pointers(source, document, None, now)?;
         self.cancel_source_file_drag(source, document)?;
         if should_cancel_composition {
@@ -1054,6 +1080,11 @@ impl AppContext {
         if focused {
             self.sync_text_input(source, document, true, services);
         } else {
+            self.cancel_source_internal_drag(
+                source,
+                document,
+                nana_ui_core::DragCancelReason::WindowBlur,
+            )?;
             self.cancel_source_pointers(source, document, None, now)?;
             self.cancel_source_file_drag(source, document)?;
             // Losing the host window cancels an in-progress IME preedit. A
@@ -1097,6 +1128,11 @@ impl AppContext {
         document: DocumentId,
         now: Duration,
     ) -> Result<(), FrameworkError> {
+        self.cancel_source_internal_drag(
+            source,
+            document,
+            nana_ui_core::DragCancelReason::WindowClosed,
+        )?;
         self.cancel_source_pointers(source, document, None, now)?;
         self.cancel_source_file_drag(source, document)?;
         let Some(state) = self.input.source(source) else {

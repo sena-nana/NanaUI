@@ -135,6 +135,69 @@ pub enum FileDropEvent {
     Left,
 }
 
+/// Typed drag-and-drop lifecycle event emitted on a registered drop target for
+/// both internal (`DragSource` / `DropKind::Custom`) and external (`FileDrag`)
+/// sessions.
+#[derive(Debug, Clone)]
+pub enum DragDropEvent {
+    Entered {
+        session: nana_ui_core::DragSessionId,
+        kind: nana_ui_core::DropKind,
+        transfer: nana_ui_core::DataTransfer,
+        effect: nana_ui_core::DropEffect,
+        x: f32,
+        y: f32,
+        modifiers: nana_ui_input::InputModifiers,
+    },
+    Moved {
+        session: nana_ui_core::DragSessionId,
+        kind: nana_ui_core::DropKind,
+        transfer: nana_ui_core::DataTransfer,
+        effect: nana_ui_core::DropEffect,
+        x: f32,
+        y: f32,
+        modifiers: nana_ui_input::InputModifiers,
+    },
+    Left {
+        session: nana_ui_core::DragSessionId,
+    },
+    Dropped {
+        session: nana_ui_core::DragSessionId,
+        kind: nana_ui_core::DropKind,
+        transfer: nana_ui_core::DataTransfer,
+        effect: nana_ui_core::DropEffect,
+        x: f32,
+        y: f32,
+        modifiers: nana_ui_input::InputModifiers,
+    },
+}
+
+/// Typed drag lifecycle event emitted on the originating `DragSource` node.
+#[derive(Debug, Clone)]
+pub enum DragSourceEvent {
+    Started {
+        session: nana_ui_core::DragSessionId,
+        kind: nana_ui_core::DropKind,
+        allowed_effects: nana_ui_core::DropEffects,
+    },
+    Updated {
+        session: nana_ui_core::DragSessionId,
+        target: Option<StableNodeId>,
+        effect: Option<nana_ui_core::DropEffect>,
+        x: f32,
+        y: f32,
+    },
+    Finished {
+        session: nana_ui_core::DragSessionId,
+        target: StableNodeId,
+        effect: nana_ui_core::DropEffect,
+    },
+    Cancelled {
+        session: nana_ui_core::DragSessionId,
+        reason: nana_ui_core::DragCancelReason,
+    },
+}
+
 /// Enter submission from an editable single-line input, excluding IME preedit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextSubmitted {

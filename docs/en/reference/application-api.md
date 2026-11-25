@@ -34,9 +34,18 @@ Host lowering → InputSequencer stamps (source / device / generation / sequence
   (`AppContext::on_key`) and keymap (`KeymapLayer::resolve_key`) read this same
   `KeyInput`: the physical key stays in `physical`, shortcuts match on `logical`, and the four modifier bits are copied verbatim into
   the stored `KeyModifiers`. This is the only public keyboard event. `FileDrag(FileDragInput)`
-  is a file dragged in from outside the window (hover, drop, cancel). The route hands it to registered drop targets.
+  is a file dragged in from outside the window (hover, drop, cancel). The route hands it to registered drop targets,
+  emitting `FileDropEvent` as well as `DragDropEvent` carrying an external reference-only `DataTransfer` (`text/uri-list`,
+  without eagerly reading file contents).
   `RoutedInput::pointer_hit` is the target it is over or dropped on. A program that wants to accept files on the whole window
   reads the paths of `FileDragKind::Drop` in `input_event`.
+- **Internal typed drag sessions (`DragSource` -> `DropTarget`)**: nodes declare an internal drag source via
+  `AppContext::set_drag_source` / `El::drag_source` (supporting `DropKind::Custom` and `DropEffects` for `Copy` / `Move` / `Link`),
+  and drop targets declare accepted `DropKind`, `DataFormat`, and actions via `set_drop_target` / `El::drop_target`. Once pointer travel
+  crosses the slop threshold, `DragSource` produces a `TransferOrigin::Internal` `DataTransfer` (which may carry a process-local
+  `InternalPayloadToken`-verified typed object without leaking raw pointers/OS handles), emitting `DragSourceEvent` on the source
+  and `DragDropEvent::{Entered, Moved, Left, Dropped}` on the deepest accepting target. `Escape`, pointer cancel, window blur/close,
+  or source node destruction cleanly aborts the session and invalidates lazy providers.
 - **Binding**: `AppContext::bind_input_source(source, generation, document)` returns
   `Result`. A generation that goes backward, or a different document for the same generation, is rejected (`InputBindError`).
   `unbind_input_source` first runs any pointer that is still pressed or captured through the same cancel as an explicit `PointerCancel`,
@@ -66,13 +75,20 @@ Host capabilities go through `HostServices` (also in `nana-ui-input`):
   in logical coordinates), and a text window of at most `SurroundingText::MAX_BYTES` (4000 bytes) around the selection. However large the field is,
   only this window is copied. Password and terminal fields provide no surrounding text. Native hosts combine Runtime's cursor with the window-border resize
   cursor and the program's `WindowCursor` override before setting it on the window.
-- **Clipboard** is the only call with a return value. It happens synchronously at the point in the key chain where the copy/cut/paste shortcut originally sat: the application's
-  key policy (`on_key`) and the terminal see the key first. The host does not wait on a busy backend. It returns `HostServiceError::Busy`.
-  When the clipboard refuses a write, cut does not delete text. Native hosts open the system clipboard only once per process.
+- **Clipboard & `DataTransfer`** is the only call with a return value. Alongside the text convenience methods
+  (`read_clipboard` / `write_clipboard`), `HostServices` and `ClipboardHost` converge on `DataTransfer`
+  (`read_clipboard_transfer` / `write_clipboard_transfer`, plus image helpers `read_clipboard_image` / `write_clipboard_image`)
+  covering `text/plain`, `text/html`, `text/uri-list`, `image/png`, `image/rgba8`, `application/octet-stream`, and validated custom
+  MIME formats with lazy `TransferProvider` materialization and fail-closed cancellation/size bounds. Desktop hosts
+  (`nana-window::NativeClipboard`) map multi-format and lazy reads onto macOS (`NSPasteboard`), Windows (Win32 Clipboard /
+  `CF_HTML` / `CF_HDROP`), and Linux (Wayland `wl-paste`/`wl-copy` or X11 `xclip`, reporting `Unsupported` when unavailable),
+  opening the system clipboard only once per process. It happens synchronously at the point in the key chain where the copy/cut/paste
+  shortcut originally sat: the application's key policy (`on_key`) and the terminal see the key first. The host does not wait on a busy backend. It returns `HostServiceError::Busy`.
+  When the clipboard refuses a write, cut does not delete text.
   `clipboard_change_count()` reports the clipboard's change sequence number: every write from any process advances it; reads do not.
   macOS reads `NSPasteboard.changeCount`, Windows reads `GetClipboardSequenceNumber` (0 means not visible).
   The default implementation, X11/Wayland, Android, and OHOS report `Unsupported`; `HeadlessHostServices` counts its own private clipboard,
-  and `set_clipboard` also counts as an external write. A rich text editor records it after copying and pastes back its in-process rich text only when the number matches;
+  and `set_clipboard` / `set_clipboard_transfer` also count as an external write. A rich text editor records it after copying and pastes back its in-process rich text only when the number matches;
   when unsupported, it matches by text.
 - `HeadlessInput` is an input source with no window (devtools, tests, offscreen test tools). It comes with
   `HeadlessHostServices`, which stores the cursor and IME state the host would have shown, and a private clipboard.

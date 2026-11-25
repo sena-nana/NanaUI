@@ -7,10 +7,10 @@
 use std::sync::OnceLock;
 
 use nana_ui_platform::{
-    EndpointGeneration, HostServiceError, HostServices, InputEndpoint, InputSequencer,
-    InputSourceId, SharedClipboardHost, TextInputContext, TextInputPurpose,
-    default_shared_clipboard, read_shared_clipboard, shared_clipboard_change_count,
-    write_shared_clipboard,
+    DataTransfer, EndpointGeneration, HostServiceError, HostServices, InputEndpoint,
+    InputSequencer, InputSourceId, SharedClipboardHost, TextInputContext, TextInputPurpose,
+    read_shared_clipboard, read_shared_clipboard_transfer, shared_clipboard_change_count,
+    write_shared_clipboard, write_shared_clipboard_transfer,
 };
 use winit::cursor::CursorIcon;
 use winit::window::{
@@ -26,7 +26,9 @@ const ENDPOINT_PAYLOAD_BYTES: usize = 1024 * 1024;
 /// The process's clipboard: one system resource, opened once.
 pub(super) fn process_clipboard() -> SharedClipboardHost {
     static CLIPBOARD: OnceLock<SharedClipboardHost> = OnceLock::new();
-    CLIPBOARD.get_or_init(default_shared_clipboard).clone()
+    CLIPBOARD
+        .get_or_init(nana_window::native_shared_clipboard)
+        .clone()
 }
 
 /// One window's input source.
@@ -162,6 +164,17 @@ impl HostServices for NativeWindowServices<'_> {
 
     fn write_clipboard(&mut self, text: &str) -> Result<(), HostServiceError> {
         write_shared_clipboard(self.clipboard, text)
+    }
+
+    fn read_clipboard_transfer(&mut self) -> Result<Option<DataTransfer>, HostServiceError> {
+        read_shared_clipboard_transfer(self.clipboard)
+    }
+
+    fn write_clipboard_transfer(
+        &mut self,
+        transfer: &DataTransfer,
+    ) -> Result<(), HostServiceError> {
+        write_shared_clipboard_transfer(self.clipboard, transfer)
     }
 
     fn clipboard_change_count(&mut self) -> Result<u64, HostServiceError> {

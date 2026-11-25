@@ -34,9 +34,15 @@
   （`AppContext::on_key`）和 keymap（`KeymapLayer::resolve_key`）读的就是这一份
   `KeyInput`：物理键留在 `physical`，快捷键按 `logical` 匹配，修饰键四位原样抄进
   存储用的 `KeyModifiers`。公开的键盘事件只有这一份。`FileDrag(FileDragInput)`
-  是从窗口外拖入的文件（悬停、放下、取消）。由路由交给登记的放置目标。
+  是从窗口外拖入的文件（悬停、放下、取消）。由路由交给登记的放置目标，发出 `FileDropEvent` 与携带外部只读引用 `DataTransfer`（`text/uri-list`，不自动读取文件内容）的 `DragDropEvent`。
   `RoutedInput::pointer_hit` 是它所在或落下的目标。程序想在整个窗口接收文件。就在
   `input_event` 里读 `FileDragKind::Drop` 的路径。
+- **内部类型化拖拽（`DragSource` -> `DropTarget`）**：节点通过 `AppContext::set_drag_source` / `El::drag_source`
+  声明内部拖拽源（支持 `DropKind::Custom` 与 `DropEffects` 的 `Copy` / `Move` / `Link`），通过
+  `set_drop_target` / `El::drop_target` 声明接受的 `DropKind`、`DataFormat` 与动作集。拖拽超过阈值后由
+  `DragSource` 延迟产生 `TransferOrigin::Internal` 的 `DataTransfer`（可携带进程内校验 `InternalPayloadToken`
+  类型化对象，绝不通过外部 MIME 伪装或泄漏裸 OS 句柄），在源节点发出 `DragSourceEvent` 并在最深匹配目标发出
+  `DragDropEvent::{Entered, Moved, Left, Dropped}`；按 `Esc`、指针取消、窗口失焦/关闭或源节点销毁时自动结束会话并使延迟提供者失效。
 - **绑定**：`AppContext::bind_input_source(source, generation, document)` 返回
   `Result`。generation 回退或同一 generation 换 document 都会被拒绝（`InputBindError`）。
   `unbind_input_source` 先让仍被按住或捕获的指针走一次与显式 `PointerCancel` 相同的取消。
@@ -66,13 +72,20 @@
   符。逻辑坐标）和选区附近最多 `SurroundingText::MAX_BYTES`（4000 字节）的文本窗口。字段再
   大也只复制这个窗口。密码与终端不提供周围文本。原生宿主把 Runtime 的光标与窗口边框缩放
   光标、程序的 `WindowCursor` 覆盖合成后再设给窗口。
-- **剪贴板**是唯一有返回值的调用。在复制/剪切/粘贴快捷键在按键链中原来的位置同步发生：应用
+- **剪贴板与 `DataTransfer`** 是唯一有返回值的调用。`HostServices` 与 `ClipboardHost` 在保留
+  `read_clipboard` / `write_clipboard` 文本便捷方法的同时，统一以 `DataTransfer`（`read_clipboard_transfer` /
+  `write_clipboard_transfer`，以及图片便捷入口 `read_clipboard_image` / `write_clipboard_image`）作为权威契约，
+  支持 `text/plain`、`text/html`、`text/uri-list`、`image/png`、`image/rgba8`、`application/octet-stream`
+  及经校验的自定义 MIME，大载荷通过 `TransferProvider` 按需延迟提供并在取消/源销毁或超限时 fail-closed。
+  桌面原生宿主（`nana-window::NativeClipboard`）在 macOS（`NSPasteboard`）、Windows（Win32 Clipboard / `CF_HTML` /
+  `CF_HDROP`）与 Linux（Wayland `wl-paste`/`wl-copy` 或 X11 `xclip`；无后端时显式返回 `Unsupported`）上映射多格式与延迟读取，
+  整个进程只打开一次。在复制/剪切/粘贴快捷键在按键链中原来的位置同步发生：应用
   的按键策略（`on_key`）和终端先看到按键。宿主不等待忙碌的后端。返回 `HostServiceError::Busy`。
-  剪贴板拒绝写入时。剪切不删除文本。原生宿主整个进程只打开一次系统剪贴板。
+  剪贴板拒绝写入时。剪切不删除文本。
   `clipboard_change_count()` 回答剪贴板的变更序号：任何进程的每次写入都让它前进，读取不变。
   macOS 读 `NSPasteboard.changeCount`，Windows 读 `GetClipboardSequenceNumber`（为 0 视为不可见）。
   默认实现、X11/Wayland、Android 与 OHOS 回答 `Unsupported`；`HeadlessHostServices` 对自己的私有剪贴板计数，
-  `set_clipboard` 也算一次外部写入。富文本编辑器复制后记下它，粘贴时序号相同才贴回进程内的富文本，
+  `set_clipboard` / `set_clipboard_transfer` 也算一次外部写入。富文本编辑器复制后记下它，粘贴时序号相同才贴回进程内的富文本，
   不支持时按文字匹配。
 - `HeadlessInput` 是没有窗口的输入源（devtools、测试、离屏测试工具）。自带
   `HeadlessHostServices`。保存宿主本应显示的光标与 IME 状态和一个私有剪贴板。

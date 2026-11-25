@@ -10,6 +10,7 @@
 
 pub mod action;
 pub mod box_layout;
+pub mod data_transfer;
 pub mod date;
 pub mod dialog;
 pub mod drag;
@@ -87,9 +88,18 @@ pub use box_layout::{
     is_projective_backface, resolve_grid_column_widths, resolve_grid_track_sizes,
     text_line_box_height_px,
 };
+pub use data_transfer::{
+    DEFAULT_MAX_TRANSFER_BYTES, DataFormat, DataFormatError, DataTransfer, InternalPayloadToken,
+    LazyFnProvider, MAX_MIME_LEN, TransferCachePolicy, TransferEntry, TransferEntryMeta,
+    TransferError, TransferImage, TransferLifetime, TransferOrigin, TransferProvider,
+    file_uri_to_path, format_uri_list, parse_uri_list, path_to_file_uri,
+};
 pub use date::{CivilDate, DayCell, MonthGrid, WeekStart, Weekday, days_in_month, is_leap_year};
 pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
-pub use drag::{DropAccepts, DropEffect, DropKind, FileDragKind};
+pub use drag::{
+    DragCancelReason, DragSessionId, DropAccepts, DropEffect, DropEffects, DropKind, FileDragKind,
+    TransferAction,
+};
 pub use expansion::ExpansionState;
 pub use file_dialog::{
     FileDialogError, FileDialogKind, FileDialogRequest, FileDialogResult, FileFilter,

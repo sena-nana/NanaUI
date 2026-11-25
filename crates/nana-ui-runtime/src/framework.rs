@@ -11,8 +11,8 @@ mod frame;
 mod input;
 pub(crate) use input::LINE_SCROLL_EXTENT;
 pub use input::{
-    HeadlessInput, InputBindError, InputCounters, InputRouteError, InputRouteOutcome, RoutedEvent,
-    TextEditAction,
+    ActiveDragSession, DragSource, HeadlessInput, InputBindError, InputCounters, InputRouteError,
+    InputRouteOutcome, RoutedEvent, TextEditAction,
 };
 mod hooks;
 mod keyboard;
@@ -4994,6 +4994,7 @@ impl AppContext {
     }
 
     fn forget_subtree(&mut self, removed: &HashSet<StableNodeId>) {
+        self.forget_drag_nodes(removed);
         self.remove_event_handlers_for(removed);
         self.component_lifecycle
             .text_area_resizes

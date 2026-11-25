@@ -116,7 +116,9 @@ impl AppContext {
         } else {
             state.effects.handle
         };
-        let icon = self.cursor_icon(handle, target, x, y);
+        let icon = self
+            .active_drag_cursor(document)
+            .unwrap_or_else(|| self.cursor_icon(handle, target, x, y));
         let Some(state) = self.input.sources.get_mut(&source) else {
             return;
         };

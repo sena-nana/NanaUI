@@ -215,6 +215,9 @@ impl AppContext {
         let mut number_selected_all = false;
         let component_handled = match phase {
             PointerPhase::Move => {
+                if self.move_internal_drag(document, *pointer_id, *x, *y, *modifiers, now)? {
+                    return Ok(CONSUMED);
+                }
                 if self.move_view_drag(document, *pointer_id, *x, *y, *modifiers, now)? {
                     return Ok(CONSUMED);
                 }
@@ -386,11 +389,13 @@ impl AppContext {
                     focus_target.filter(|id| self.world().focused(document) != Some(*id));
                 // A toast above an open modal takes the press; focus stays in
                 // the modal, as Tab does.
-                if !hit.is_some_and(|id| {
-                    self.preserves_hover_card_editor_focus(id)
-                        || self.press_keeps_modal_focus(document, id)
-                        || self.is_menu_bar_node(id)
-                }) {
+                if self.drag_source_at(document, hit, *x, *y).is_none()
+                    && !hit.is_some_and(|id| {
+                        self.preserves_hover_card_editor_focus(id)
+                            || self.press_keeps_modal_focus(document, id)
+                            || self.is_menu_bar_node(id)
+                    })
+                {
                     if let Some(focus) = focus_target {
                         // The press already sits on its target. Revealing it
                         // would scroll the content out from under the release.
@@ -539,6 +544,17 @@ impl AppContext {
                 }
             }
             PointerPhase::Up if (*is_primary && *button == 0) || *button == 1 => {
+                if self.end_internal_drag(
+                    document,
+                    *pointer_id,
+                    *x,
+                    *y,
+                    *modifiers,
+                    false,
+                    nana_ui_core::DragCancelReason::NoTarget,
+                )? {
+                    return Ok(CONSUMED);
+                }
                 if self.end_view_drag(document, *pointer_id, *x, *y, *modifiers, false)? {
                     return Ok(CONSUMED);
                 }
@@ -583,6 +599,15 @@ impl AppContext {
                 }
             }
             PointerPhase::Cancel => {
+                let internal_drag = self.end_internal_drag(
+                    document,
+                    *pointer_id,
+                    *x,
+                    *y,
+                    *modifiers,
+                    true,
+                    nana_ui_core::DragCancelReason::PointerCancelled,
+                )?;
                 let pre_gesture_drag =
                     self.end_active_drag(document, *pointer_id, true, *x, *y, now, true)?;
                 self.text_editor_pointer_release(*pointer_id);
@@ -598,7 +623,13 @@ impl AppContext {
                 for i in 0..self.capabilities.hover_clears.len() {
                     hover_cleared |= (self.capabilities.hover_clears[i])(self, document)?;
                 }
-                pre_gesture_drag || drag || hover_cleared || pressed || hooked || view_drag
+                internal_drag
+                    || pre_gesture_drag
+                    || drag
+                    || hover_cleared
+                    || pressed
+                    || hooked
+                    || view_drag
             }
             _ => false,
         };
@@ -609,6 +640,7 @@ impl AppContext {
             && !activation_click
             && !number_selected_all
         {
+            self.arm_internal_drag(document, *pointer_id, pointer.pointer_type, *x, *y);
             self.arm_view_drag(document, *pointer_id, pointer.pointer_type, *x, *y);
         }
         let handled = overlay.prevent_default || component_handled;
@@ -758,8 +790,11 @@ impl AppContext {
             && !modifiers.alt
             && !modifiers.control
             && !modifiers.meta
-            && let Some(rl) = self.capabilities.reorder_list
-            && (rl.cancel_drag)(self, document)?
+            && (self.cancel_internal_drag_on_escape(document)?
+                || self
+                    .capabilities
+                    .reorder_list
+                    .is_some_and(|rl| (rl.cancel_drag)(self, document).unwrap_or(false)))
         {
             return Ok(CONSUMED);
         }

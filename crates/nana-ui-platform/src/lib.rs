@@ -1,7 +1,6 @@
 //! Platform input / IME / clipboard abstraction plus Android MVP flags.
 
 pub mod android_assets;
-#[cfg(feature = "clipboard")]
 mod clipboard;
 mod fetch;
 mod locale;
@@ -27,10 +26,11 @@ pub use clipboard::AndroidClipboard;
 ))]
 pub use clipboard::OsClipboard;
 #[cfg(feature = "clipboard")]
+pub use clipboard::default_shared_clipboard;
 pub use clipboard::{
     ClipboardHost, MemoryClipboard, SharedClipboardHost, UnsupportedClipboard,
-    default_shared_clipboard, read_shared_clipboard, shared_clipboard,
-    shared_clipboard_change_count, write_shared_clipboard,
+    read_shared_clipboard, read_shared_clipboard_transfer, shared_clipboard,
+    shared_clipboard_change_count, write_shared_clipboard, write_shared_clipboard_transfer,
 };
 #[cfg(feature = "fetch")]
 pub use fetch::NativeFetchHost;
@@ -158,11 +158,16 @@ pub mod host {
 }
 /// The canonical input contract, owned by `nana-ui-input`.
 pub use nana_ui_input::{
-    CanonicalInputEvent, CommittedText, CompositionInput, CursorIcon, DeviceId, EndpointGeneration,
-    FileDragInput, FileDragKind, FocusDirection, HeadlessHostServices, HostServiceError,
-    HostServices, InputDisposition, InputEndpoint, InputMetadata, InputModifiers, InputPayload,
-    InputSequence, InputSequencer, InputSourceId, InputTimestamp, KeyInput, KeyState, LogicalKey,
-    NavigationInput, NavigationIntent, NavigationSource, PhysicalKey, PointerId, PointerInput,
-    PointerPhase, PointerType, SurroundingText, TextInputContext, TextInputPurpose,
-    UnsupportedHostServices, WheelInput, WheelUnit, gamepad_dpad_navigation,
+    CanonicalInputEvent, CommittedText, CompositionInput, CursorIcon, DEFAULT_MAX_TRANSFER_BYTES,
+    DataFormat, DataFormatError, DataTransfer, DeviceId, DragCancelReason, DragSessionId,
+    DropAccepts, DropEffect, DropEffects, DropKind, EndpointGeneration, FileDragInput,
+    FileDragKind, FocusDirection, HeadlessHostServices, HostServiceError, HostServices,
+    InputDisposition, InputEndpoint, InputMetadata, InputModifiers, InputPayload, InputSequence,
+    InputSequencer, InputSourceId, InputTimestamp, InternalPayloadToken, KeyInput, KeyState,
+    LazyFnProvider, LogicalKey, MAX_MIME_LEN, NavigationInput, NavigationIntent, NavigationSource,
+    PhysicalKey, PointerId, PointerInput, PointerPhase, PointerType, SurroundingText,
+    TextInputContext, TextInputPurpose, TransferAction, TransferCachePolicy, TransferEntry,
+    TransferEntryMeta, TransferError, TransferImage, TransferLifetime, TransferOrigin,
+    TransferProvider, UnsupportedHostServices, WheelInput, WheelUnit, file_uri_to_path,
+    format_uri_list, gamepad_dpad_navigation, parse_uri_list, path_to_file_uri,
 };

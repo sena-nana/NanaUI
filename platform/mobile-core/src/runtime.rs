@@ -14,10 +14,12 @@ use nana_ui_core::{
     ThemeAppearance, ThemeDefinition,
 };
 use nana_ui_platform::{
-    CanonicalInputEvent, CommittedText, CompositionInput, CursorIcon, DeviceId, EndpointGeneration,
-    HostServiceError, HostServices, InputModifiers, InputPayload, InputSequence, InputSequencer,
-    InputSourceId, KeyInput, PointerId, PointerInput, PointerPhase, PointerType,
-    SharedClipboardHost, TextInputContext, read_shared_clipboard, write_shared_clipboard,
+    CanonicalInputEvent, CommittedText, CompositionInput, CursorIcon, DataTransfer, DeviceId,
+    EndpointGeneration, HostServiceError, HostServices, InputModifiers, InputPayload,
+    InputSequence, InputSequencer, InputSourceId, KeyInput, PointerId, PointerInput, PointerPhase,
+    PointerType, SharedClipboardHost, TextInputContext, read_shared_clipboard,
+    read_shared_clipboard_transfer, shared_clipboard_change_count, write_shared_clipboard,
+    write_shared_clipboard_transfer,
 };
 
 use crate::schedule::FrameDemand;
@@ -112,6 +114,21 @@ impl HostServices for Services {
 
     fn write_clipboard(&mut self, text: &str) -> Result<(), HostServiceError> {
         write_shared_clipboard(&self.clipboard, text)
+    }
+
+    fn read_clipboard_transfer(&mut self) -> Result<Option<DataTransfer>, HostServiceError> {
+        read_shared_clipboard_transfer(&self.clipboard)
+    }
+
+    fn write_clipboard_transfer(
+        &mut self,
+        transfer: &DataTransfer,
+    ) -> Result<(), HostServiceError> {
+        write_shared_clipboard_transfer(&self.clipboard, transfer)
+    }
+
+    fn clipboard_change_count(&mut self) -> Result<u64, HostServiceError> {
+        shared_clipboard_change_count(&self.clipboard)
     }
 }
 
