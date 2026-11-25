@@ -383,7 +383,7 @@ pub use nana_ui_core::{
     ThemeDependencyMask, ThemeId, ThemeMetricsPatch, ThemePackage, ThemePackageError, ThemePatch,
     ThemeRecipeFamily, ThemeRegistry, ThemeScopeId, ThemeWorkCounters, TransformOrigin,
     TreeNavigation, TreeNode, TreeOrder, TreeViewEvent, UserSelectSpec, ValidationIntent,
-    ViewportAxis, VirtualAlignment, VirtualFrozenWindow, VirtualListLayout,
+    VerticalAlignSpec, ViewportAxis, VirtualAlignment, VirtualFrozenWindow, VirtualListLayout,
     VirtualListMaterialization, VirtualListMaterializationError, VirtualListMaterializer,
     VirtualListMount, VirtualListWindow, VirtualScrollAnchor, VirtualTableFrozenWindow,
     VirtualTableLayout, VirtualTableMaterialization, VirtualTableMaterializer, VirtualTableWindow,

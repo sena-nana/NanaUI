@@ -163,6 +163,9 @@ pub(super) struct LineInput<'a> {
     /// The envelope of each inline object that declared one, by source
     /// offset, in logical px.
     pub envelopes: Vec<(usize, crate::InlineEnvelope)>,
+    /// Alignment and scaled baseline shift (physical px) for each inline object,
+    /// sorted by source offset.
+    pub object_alignments: Vec<(usize, crate::InlineObjectAlign, f32)>,
     /// Source offsets of the objects that take a line of their own, sorted.
     pub blocks: Vec<usize>,
 }
@@ -211,8 +214,13 @@ struct Prepared {
     /// baseline down from where the text alone would put it.
     lift_px: f32,
     /// How far the line grows below the text's own box (an object's descent,
-    /// emphasis marks under the text): room that does not move the baseline.
+    /// emphasis marks under the text, or top-aligned boxes): room that does
+    /// not move the baseline.
     sink_px: f32,
+    /// Horizontal line baseline anchor `(text_ascent, text_descent)` without
+    /// non-text object inflation, used when placing `baseline_y_px`.
+    anchor_ascent_px: f32,
+    anchor_descent_px: f32,
     /// What the line decision changed on this line's cells.
     adjust: LineAdjust,
 }
@@ -1038,7 +1046,15 @@ impl<'a> Builder<'a> {
         let pieces = self.pieces(cells.clone());
         let trimmed = self.trim(cells.start, cells.end);
         let width_px = self.width(cells.start, trimmed);
-        let (ascent_px, descent_px, height_px, lift_px, sink_px) = self.line_box(&pieces);
+        let (
+            ascent_px,
+            descent_px,
+            height_px,
+            lift_px,
+            sink_px,
+            anchor_ascent_px,
+            anchor_descent_px,
+        ) = self.line_box(&pieces);
         Prepared {
             cells,
             pieces,
@@ -1048,6 +1064,8 @@ impl<'a> Builder<'a> {
             height_px,
             lift_px,
             sink_px,
+            anchor_ascent_px,
+            anchor_descent_px,
             adjust: LineAdjust::default(),
         }
     }
@@ -1105,6 +1123,8 @@ impl<'a> Builder<'a> {
             height_px,
             lift_px,
             sink_px,
+            anchor_ascent_px,
+            anchor_descent_px,
             adjust,
         } = prepared;
         let source = match cells.end.checked_sub(1) {
@@ -1121,10 +1141,6 @@ impl<'a> Builder<'a> {
         }
         let origin_x_px = self.align_offset(width_px, source.start);
         let top_y_px = self.next_top_px;
-        let (strut_ascent, strut_descent) = match self.input.strut {
-            Some(strut) => (strut.metrics.ascent_px, strut.metrics.descent_px),
-            None => (ascent_px, descent_px),
-        };
         // A vertical line's dominant baseline is the central one: upright
         // glyphs hang from the column's centre line, and sideways runs centre
         // their em box on it.
@@ -1132,8 +1148,8 @@ impl<'a> Builder<'a> {
             top_y_px + height_px * 0.5
         } else {
             let half_leading =
-                (height_px - lift_px - sink_px - (strut_ascent + strut_descent)) * 0.5;
-            top_y_px + lift_px + half_leading + strut_ascent
+                (height_px - lift_px - sink_px - (anchor_ascent_px + anchor_descent_px)) * 0.5;
+            top_y_px + lift_px + half_leading + anchor_ascent_px
         };
 
         let run_start = self.runs.len() as u32;
@@ -1318,12 +1334,26 @@ impl<'a> Builder<'a> {
     /// reaches past it. Ruby and emphasis marks over the text stand on its
     /// ascent, marks under it hang from its descent, and grow the line the
     /// same way.
-    fn line_box(&self, pieces: &[Piece]) -> (f32, f32, f32, f32, f32) {
+    fn object_alignment(&self, offset: usize) -> (crate::InlineObjectAlign, f32) {
+        self.input
+            .object_alignments
+            .binary_search_by_key(&offset, |(at, _, _)| *at)
+            .ok()
+            .map_or((crate::InlineObjectAlign::Baseline, 0.0), |idx| {
+                let (_, align, shift) = self.input.object_alignments[idx];
+                (align, shift)
+            })
+    }
+
+    fn line_box(&self, pieces: &[Piece]) -> (f32, f32, f32, f32, f32, f32, f32) {
         let mut ascent_px: f32 = 0.0;
         let mut descent_px: f32 = 0.0;
         let mut height_px = self.input.strut.map_or(0.0, |strut| strut.line_height_px);
         let mut object_above: f32 = 0.0;
         let mut object_below: f32 = 0.0;
+        let mut has_baseline_object = false;
+        let mut top_object_height: f32 = 0.0;
+        let mut bottom_object_height: f32 = 0.0;
         let mut text_runs = 0;
         let ruby_above = self
             .input
@@ -1364,8 +1394,22 @@ impl<'a> Builder<'a> {
             ascent_px = ascent_px.max(run.metrics.ascent_px);
             descent_px = descent_px.max(run.metrics.descent_px);
             if run.is_object() {
-                object_above = object_above.max(run.metrics.ascent_px);
-                object_below = object_below.max(run.metrics.descent_px);
+                let (align, shift) = self.object_alignment(run.source.start);
+                match align {
+                    crate::InlineObjectAlign::Baseline => {
+                        has_baseline_object = true;
+                        object_above = object_above.max(run.metrics.ascent_px + shift);
+                        object_below = object_below.max(run.metrics.descent_px - shift);
+                    }
+                    crate::InlineObjectAlign::Top => {
+                        top_object_height =
+                            top_object_height.max(run.metrics.ascent_px + run.metrics.descent_px);
+                    }
+                    crate::InlineObjectAlign::Bottom => {
+                        bottom_object_height = bottom_object_height
+                            .max(run.metrics.ascent_px + run.metrics.descent_px);
+                    }
+                }
                 continue;
             }
             text_runs += 1;
@@ -1377,10 +1421,6 @@ impl<'a> Builder<'a> {
         if let Some(strut) = self.input.strut {
             ascent_px = ascent_px.max(strut.metrics.ascent_px);
             descent_px = descent_px.max(strut.metrics.descent_px);
-        }
-        let annotated = object_above > 0.0 || object_below > 0.0 || ruby_above > 0.0;
-        if self.input.vertical || (!annotated && emphasis_above <= 0.0 && emphasis_below <= 0.0) {
-            return (ascent_px, descent_px, height_px, 0.0, 0.0);
         }
         let (text_ascent, text_descent) = match self.input.strut {
             Some(strut) => (strut.metrics.ascent_px, strut.metrics.descent_px),
@@ -1394,31 +1434,60 @@ impl<'a> Builder<'a> {
                 })
             }
         };
+        let annotated = has_baseline_object
+            || top_object_height > 0.0
+            || bottom_object_height > 0.0
+            || ruby_above > 0.0;
+        if self.input.vertical || (!annotated && emphasis_above <= 0.0 && emphasis_below <= 0.0) {
+            return (
+                ascent_px,
+                descent_px,
+                height_px,
+                0.0,
+                0.0,
+                text_ascent,
+                text_descent,
+            );
+        }
         let half_leading = (height_px - (text_ascent + text_descent)) * 0.5;
         let above = half_leading + text_ascent;
         let below = height_px - above;
         // An annotation stands on the text's ascent; a mark under the text
         // hangs from its descent.
         let reach = |grows: bool, needed: f32| if grows { needed } else { 0.0 };
-        let lift = (object_above - above)
-            .max(reach(annotated, text_ascent + ruby_above - above))
+        let mut lift = reach(has_baseline_object, object_above - above)
+            .max(reach(ruby_above > 0.0, text_ascent + ruby_above - above))
             .max(reach(
                 emphasis_above > 0.0,
                 text_ascent + emphasis_above - above,
             ))
             .max(0.0);
-        let grown_below = (object_below - below)
+        let mut grown_below = reach(has_baseline_object, object_below - below)
             .max(reach(
                 emphasis_below > 0.0,
                 text_descent + emphasis_below - below,
             ))
             .max(0.0);
+        if top_object_height > 0.0 {
+            let total = height_px + lift + grown_below;
+            if top_object_height > total {
+                grown_below += top_object_height - total;
+            }
+        }
+        if bottom_object_height > 0.0 {
+            let total = height_px + lift + grown_below;
+            if bottom_object_height > total {
+                lift += bottom_object_height - total;
+            }
+        }
         (
             ascent_px,
             descent_px,
             height_px + lift + grown_below,
             lift,
             grown_below,
+            text_ascent,
+            text_descent,
         )
     }
 

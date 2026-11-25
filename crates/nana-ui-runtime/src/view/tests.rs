@@ -7929,4 +7929,120 @@ mod issue420_boxless_fragments {
             (baseline.signals, baseline.effects, baseline.scopes)
         );
     }
+
+    #[test]
+    fn icon_and_inline_children_controls_match_canonical_inline_content() {
+        use nana_ui_core::Icon;
+
+        let (mut cx_a, document_a, root_a) = setup();
+        let (mut cx_b, document_b, root_b) = setup();
+        let suffix = signal("Add".to_owned());
+
+        cx_a.mount_view(root_a, move || {
+            column().children((
+                icon(Icon::Add).size(14.0),
+                button("").inline_children(
+                    inline_pieces()
+                        .child(icon(Icon::Search).size(14.0))
+                        .text(suffix),
+                ),
+                chip("").inline_children(inline_pieces().child(icon(Icon::Close)).text("Tag")),
+                list_item("").inline_children(inline_pieces().child(icon(Icon::Add)).text("Row")),
+                list_item("")
+                    .leading(icon(Icon::Search))
+                    .inline_children(inline_pieces().child(icon(Icon::Add)).text("Slotted")),
+                action_menu_item("")
+                    .inline_children(inline_pieces().child(icon(Icon::Add)).text("Open")),
+                button("Plain"),
+            ))
+        })
+        .unwrap();
+
+        let btn_icon_ref = node_ref();
+        cx_b.mount_view(root_b, || {
+            column().children((
+                widget(crate::IconGlyph::new(Icon::Add).size(14.0)),
+                widget(Button::new("")).child_slot(
+                    widget(crate::IconGlyph::new(Icon::Search).size(14.0)).node_ref(btn_icon_ref),
+                    |btn, id| {
+                        btn.content(
+                            crate::InlineContent::builder()
+                                .child(id)
+                                .text("Add")
+                                .build(),
+                        )
+                    },
+                ),
+                chip("").inline_children(inline_pieces().child(icon(Icon::Close)).text("Tag")),
+                list_item("").inline_children(inline_pieces().child(icon(Icon::Add)).text("Row")),
+                list_item("")
+                    .leading(icon(Icon::Search))
+                    .inline_children(inline_pieces().child(icon(Icon::Add)).text("Slotted")),
+                action_menu_item("")
+                    .inline_children(inline_pieces().child(icon(Icon::Add)).text("Open")),
+                button("Plain"),
+            ))
+        })
+        .unwrap();
+
+        let mut policy = nana_text::font::FallbackPolicy::empty();
+        policy.set_generic(nana_text::font::GenericFamily::SansSerif, ["Noto Sans SC"]);
+        let mut fonts = nana_text::font::FontSystem::with_policy(policy);
+        fonts
+            .register_file(
+                concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../nana-ui/assets/fonts/NotoSansSC-Variable.ttf"
+                ),
+                &nana_text::font::FaceDescriptor::default(),
+            )
+            .expect("the bundled UI face registers");
+        let mut shaper = crate::NanaTextEngineShaper::new(std::sync::Arc::new(
+            std::sync::Mutex::new(nana_text::NativeTextEngine::new(fonts)),
+        ));
+        for _ in 0..3 {
+            let work_a = cx_a.take_system_work();
+            cx_a.resolve_styles(&work_a.style).unwrap();
+            cx_a.shape_text(&work_a.text, &mut shaper).unwrap();
+            cx_a.layout_document(document_a, LayoutViewport::new(400.0, 300.0))
+                .unwrap();
+            cx_a.flush_reactive().unwrap();
+
+            let work_b = cx_b.take_system_work();
+            cx_b.resolve_styles(&work_b.style).unwrap();
+            cx_b.shape_text(&work_b.text, &mut shaper).unwrap();
+            cx_b.layout_document(document_b, LayoutViewport::new(400.0, 300.0))
+                .unwrap();
+            cx_b.flush_reactive().unwrap();
+        }
+
+        let col_a = children(&cx_a, root_a)[0];
+        let col_b = children(&cx_b, root_b)[0];
+        let kids_a = children(&cx_a, col_a);
+        let kids_b = children(&cx_b, col_b);
+        assert_eq!(kids_a.len(), 7);
+        assert_eq!(
+            cx_a.world().inline_content(kids_a[1]),
+            cx_b.world().inline_content(kids_b[1])
+        );
+        assert!(cx_a.world().inline_record(kids_a[2]).is_some());
+        assert!(cx_a.world().inline_record(kids_a[3]).is_some());
+        assert!(cx_a.world().inline_record(kids_a[4]).is_none());
+        assert!(cx_a.world().inline_record(kids_a[5]).is_some());
+        // Plain button keeps zero inline records/atoms.
+        assert!(cx_a.world().inline_record(kids_a[6]).is_none());
+        assert!(
+            cx_b.read(Entity::<Button>::from_stable_id(kids_b[6]), |b| b
+                .content
+                .is_none())
+                .unwrap()
+        );
+
+        suffix.set("Updated".to_owned());
+        cx_a.flush_reactive().unwrap();
+        assert_eq!(
+            cx_a.world().inline_text(kids_a[1], false).as_deref(),
+            Some("Updated")
+        );
+    }
 }

@@ -379,6 +379,13 @@ impl TextShaper for NanaTextEngineShaper {
         })
     }
 
+    fn strut_x_height(&mut self, style: &ComputedStyle) -> Option<f32> {
+        let metrics = nana_text::lock_text_engine(&self.engine)
+            .strut_metrics(&nana_text_style(style), 1.0)?;
+        (metrics.x_height_px.is_finite() && metrics.x_height_px > 0.0)
+            .then_some(metrics.x_height_px)
+    }
+
     fn shape(
         &mut self,
         id: StableNodeId,
@@ -597,6 +604,10 @@ impl PreparedEngineShaper<'_> {
 impl TextShaper for PreparedEngineShaper<'_> {
     fn strut_metrics(&mut self, style: &ComputedStyle) -> Option<crate::FontStrut> {
         self.host.strut_metrics(style)
+    }
+
+    fn strut_x_height(&mut self, style: &ComputedStyle) -> Option<f32> {
+        self.host.strut_x_height(style)
     }
 
     fn shape(

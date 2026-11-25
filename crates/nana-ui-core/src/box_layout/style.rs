@@ -354,6 +354,8 @@ pub struct TextStyleExt {
     pub unsupported_writing_mode: bool,
     /// CSS `text-orientation`. `None` = inherit, then `mixed`.
     pub text_orientation: Option<TextOrientationSpec>,
+    /// CSS `vertical-align` (non-inherited; applies to inline-level boxes).
+    pub vertical_align: VerticalAlignSpec,
     /// `::placeholder` color on a text input (RGBA 0..=1). Not a generated box.
     pub placeholder_color: Option<[f32; 4]>,
     /// `::placeholder` opacity multiplier. Combined with
@@ -1774,6 +1776,11 @@ impl LayoutStyle {
         .into_iter()
         .map(viewport)
         .fold(ViewportAxes::NONE, ViewportAxes::union);
+        let axes = if let VerticalAlignSpec::Offset(len) = self.resolved_vertical_align() {
+            axes.union(len.viewport_axes())
+        } else {
+            axes
+        };
         // The logical group is nearly always the shared default: skip it
         // without reading its 24 lengths.
         if self.logical_edges.is_shared_default() {
@@ -1925,6 +1932,24 @@ impl LayoutStyle {
         }
         self.text_ext.text_orientation = next;
         self.resolve_logical_box_edges();
+    }
+
+    /// CSS `vertical-align` for inline-level boxes (default [`VerticalAlignSpec::Baseline`]).
+    #[inline]
+    pub fn resolved_vertical_align(&self) -> VerticalAlignSpec {
+        if self.text_ext.is_shared_default() {
+            VerticalAlignSpec::Baseline
+        } else {
+            self.text_ext.vertical_align
+        }
+    }
+
+    /// Set CSS `vertical-align` without mutating the shared default when already equal.
+    pub fn set_vertical_align(&mut self, next: VerticalAlignSpec) {
+        if self.resolved_vertical_align() == next {
+            return;
+        }
+        self.text_ext.vertical_align = next;
     }
 
     /// CSS explicit width/height/min-*/border-radius overlay ControlSize tokens.

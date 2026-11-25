@@ -5,8 +5,8 @@ use crate::support;
 
 use nana_text::font::{FaceDescriptor, FallbackPolicy, FontSystem};
 use nana_text::{
-    InlineObject, InlineObjectMetrics, NativeTextEngine, TextConstraints, TextEngine, TextKind,
-    TextLayout, TextSource, TextStyle, TextWorkCounters,
+    InlineObject, InlineObjectAlign, InlineObjectMetrics, NativeTextEngine, TextConstraints,
+    TextEngine, TextKind, TextLayout, TextSource, TextStyle, TextWorkCounters,
 };
 use nana_ui_core::TextWrapBreak;
 use std::sync::Arc;
@@ -37,7 +37,7 @@ fn sticker(offset: usize, width: f32, height: f32) -> InlineObject {
             width_px: width,
             ascent_px: height,
             descent_px: 0.0,
-            envelope: None,
+            ..InlineObjectMetrics::default()
         },
     }
 }
@@ -189,5 +189,136 @@ fn objects_follow_edits_and_only_sit_on_object_characters() {
     assert!(
         source.objects().is_empty(),
         "deleting the character deletes the object"
+    );
+}
+
+#[test]
+fn object_align_and_baseline_shift_position_objects_and_invalidate_cache() {
+    let mut engine = engine();
+    let mut counters = TextWorkCounters::default();
+    let base = lay_out(
+        &mut engine,
+        &source_with(TEXT, vec![sticker(AT, 20.0, 10.0)]),
+        None,
+        &mut counters,
+    );
+    let raised = lay_out(
+        &mut engine,
+        &source_with(
+            TEXT,
+            vec![InlineObject {
+                offset: AT,
+                id: 7,
+                metrics: InlineObjectMetrics {
+                    width_px: 20.0,
+                    ascent_px: 10.0,
+                    descent_px: 0.0,
+                    align: InlineObjectAlign::Baseline,
+                    baseline_shift_px: 6.0,
+                    envelope: None,
+                },
+            }],
+        ),
+        None,
+        &mut counters,
+    );
+    assert!(
+        (raised.objects[0].rect.y - (raised.lines[0].metrics.baseline_y_px - 16.0)).abs() < 0.01,
+        "positive shift raises above baseline: {:?}",
+        raised.objects[0]
+    );
+    assert_ne!(raised.id, base.id, "shift change invalidates layout cache");
+
+    let lowered = lay_out(
+        &mut engine,
+        &source_with(
+            TEXT,
+            vec![InlineObject {
+                offset: AT,
+                id: 7,
+                metrics: InlineObjectMetrics {
+                    width_px: 20.0,
+                    ascent_px: 10.0,
+                    descent_px: 0.0,
+                    align: InlineObjectAlign::Baseline,
+                    baseline_shift_px: -12.0,
+                    envelope: None,
+                },
+            }],
+        ),
+        None,
+        &mut counters,
+    );
+    assert!(
+        (lowered.objects[0].rect.y - (lowered.lines[0].metrics.baseline_y_px + 2.0)).abs() < 0.01,
+        "negative shift lowers below baseline: {:?}",
+        lowered.objects[0]
+    );
+    assert!(
+        lowered.lines[0].metrics.height_px > base.lines[0].metrics.height_px,
+        "lowering below text descent grows the line"
+    );
+
+    let top_and_bottom_text = "hi \u{FFFC} \u{FFFC}";
+    let top_obj = InlineObject {
+        offset: 3,
+        id: 1,
+        metrics: InlineObjectMetrics {
+            width_px: 16.0,
+            ascent_px: 40.0,
+            descent_px: 0.0,
+            align: InlineObjectAlign::Top,
+            baseline_shift_px: 0.0,
+            envelope: None,
+        },
+    };
+    let bottom_obj = InlineObject {
+        offset: 7,
+        id: 2,
+        metrics: InlineObjectMetrics {
+            width_px: 16.0,
+            ascent_px: 52.0,
+            descent_px: 0.0,
+            align: InlineObjectAlign::Bottom,
+            baseline_shift_px: 0.0,
+            envelope: None,
+        },
+    };
+    let top_only = lay_out(
+        &mut engine,
+        &source_with(top_and_bottom_text, vec![top_obj]),
+        None,
+        &mut counters,
+    );
+    assert!(
+        (top_only.objects[0].rect.y - top_only.lines[0].metrics.top_y_px).abs() < 0.01,
+        "top object pins to line top"
+    );
+    assert!(
+        (top_only.lines[0].metrics.height_px - 40.0).abs() < 0.01,
+        "top object grows line to its height"
+    );
+    assert!(
+        (top_only.lines[0].metrics.baseline_y_px - base.lines[0].metrics.baseline_y_px).abs()
+            < 0.01,
+        "top object grows line downward without moving baseline"
+    );
+
+    let both = lay_out(
+        &mut engine,
+        &source_with(top_and_bottom_text, vec![top_obj, bottom_obj]),
+        None,
+        &mut counters,
+    );
+    let line = &both.lines[0];
+    assert!((line.metrics.height_px - 52.0).abs() < 0.01);
+    assert!((both.objects[0].rect.y - line.metrics.top_y_px).abs() < 0.01);
+    assert!(
+        (both.objects[1].rect.y + 52.0 - (line.metrics.top_y_px + line.metrics.height_px)).abs()
+            < 0.01
+    );
+    assert!(
+        line.metrics.baseline_y_px > base.lines[0].metrics.baseline_y_px + 10.0,
+        "bottom object taller than line grows upward and shifts baseline down"
     );
 }

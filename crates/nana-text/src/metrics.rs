@@ -31,6 +31,9 @@ pub struct RunMetrics {
     pub strikeout_offset_px: f32,
     #[serde(default)]
     pub strikeout_thickness_px: f32,
+    /// Font x-height in physical px (from OS/2 `sxHeight`, or `0.5 * ascent_px` fallback).
+    #[serde(default)]
+    pub x_height_px: f32,
 }
 
 impl RunMetrics {

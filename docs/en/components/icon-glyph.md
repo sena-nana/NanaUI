@@ -2,28 +2,27 @@
 
 `IconGlyph` draws one icon. It is decorative: it takes no pointer input and cannot be focused. To make an icon clickable, use `IconButton` and put the icon and accessible name on the button.
 
-There is no `<IconGlyph>` in the control table.
+The template tag is `<Icon icon={…} />` (`view::icon(icon)`). As an inline child inside `<Button>`, `<Chip>`, `<ListItem>`, `<ActionMenuItem>`, `<Text>`, or `<Inline>`, `IconVisual` aligns by its bottom edge (`aligns_by_bottom_edge`).
 
 ## Basic usage
 
-`IconGlyph::new(icon)` takes a `nana_ui::runtime::Icon`.
+`IconGlyph::new(icon)` / `icon(icon)` takes a `nana_ui::runtime::Icon`.
 
 :::api
 
 ```rust view
-use nana_ui::runtime::view;
-use nana_ui::runtime::{Icon, IconGlyph};
+use nana_ui::runtime::{Icon, SemanticColorRole, view};
 
 view! {
-    <Widget of={IconGlyph::new(Icon::Folder).size(16.0).role(nana_ui::runtime::SemanticColorRole::Text)} />
+    <Icon icon={Icon::Folder} size={16.0} foreground={SemanticColorRole::Text} />
 }
 ```
 
 ```rust rust
-use nana_ui::runtime::view::widget;
-use nana_ui::runtime::{Icon, IconGlyph};
+use nana_ui::runtime::view::icon;
+use nana_ui::runtime::{Icon, SemanticColorRole};
 
-widget(IconGlyph::new(Icon::Folder).size(16.0).role(nana_ui::runtime::SemanticColorRole::Text))
+icon(Icon::Folder).size(16.0).foreground(Some(SemanticColorRole::Text))
 ```
 
 :::
@@ -62,10 +61,11 @@ A product's own glyphs go through `icons-tabler` or `Icon::from_data`.
 
 | Property | Type | Description |
 | --- | --- | --- |
-| `icon` | `nana_ui::runtime::Icon` | Taken by `IconGlyph::new(icon)` |
-| `.size` | — | Changes the side. Values below 0 are clamped to 0; width, height, and minimum width and height are all set to this side, and it no longer flexes. The default side is the icon size of a small control |
-| `.role` | — | Switches to another semantic color. The default foreground color is `Muted` |
-| `.style` | — | Replaces the whole node style; size-dependent builder calls must come after it, or they are overwritten |
+| `icon` | `nana_ui::runtime::Icon` | Required constructor argument for `<Icon icon={…}/>` |
+| `size` | `f32` | Changes the side. Values below 0 are clamped to 0; width, height, and minimum width and height are all set to this side, and it no longer flexes. The default side is the icon size of a small control |
+| `decorative` | `bool` | Keeps drawing while hiding from accessibility (`aria-hidden`) |
+| `.role` / `foreground` | `SemanticColorRole` | Switches to another semantic color. The default foreground color is `Muted` |
+| `.style` | `NodeStyle` | Replaces the whole node style; size-dependent builder calls must come after it, or they are overwritten |
 
 ## Events
 

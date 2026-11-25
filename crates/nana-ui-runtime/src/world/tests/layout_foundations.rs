@@ -8791,3 +8791,243 @@ mod free_container {
         );
     }
 }
+
+mod vertical_align {
+    use nana_ui_core::{DisplaySpec, LayoutStyle, LengthSpec, LineHeightSpec, VerticalAlignSpec};
+
+    use crate::world::reflow_oracle::{
+        Builder, assert_matches_cold, bundled_face_shaper, product_frame, styled,
+    };
+    use crate::world::{DocumentId, StableNodeId};
+    use crate::{
+        AppContext, InlineContent, InlineFlow, LayoutViewport, MutationQueue, NanaTextEngineShaper,
+    };
+
+    fn document() -> DocumentId {
+        DocumentId::new(1).unwrap()
+    }
+
+    fn viewport() -> LayoutViewport {
+        LayoutViewport::new(800.0, 600.0)
+    }
+
+    fn settle(cx: &mut AppContext, shaper: &mut NanaTextEngineShaper) {
+        for _ in 0..3 {
+            product_frame(cx, document(), viewport(), shaper);
+        }
+    }
+
+    #[test]
+    fn vertical_align_variants_in_ifc_align_and_update_incrementally_like_cold() {
+        let specs = [
+            VerticalAlignSpec::Baseline,
+            VerticalAlignSpec::Sub,
+            VerticalAlignSpec::Super,
+            VerticalAlignSpec::TextTop,
+            VerticalAlignSpec::TextBottom,
+            VerticalAlignSpec::Middle,
+            VerticalAlignSpec::Top,
+            VerticalAlignSpec::Bottom,
+            VerticalAlignSpec::Offset(LengthSpec::Percent(50.0)),
+            VerticalAlignSpec::Offset(LengthSpec::Px(-4.0)),
+        ];
+        let atom_style = |spec: VerticalAlignSpec, height: f32| {
+            let mut style = LayoutStyle {
+                display: Some(DisplaySpec::InlineFlex),
+                width: Some(LengthSpec::Px(32.0)),
+                height: Some(LengthSpec::Px(height)),
+                line_height: Some(LineHeightSpec::Absolute(20.0)),
+                ..LayoutStyle::default()
+            };
+            style.set_vertical_align(spec);
+            style
+        };
+        let build = |override_spec: Option<VerticalAlignSpec>| {
+            let (mut b, page) = Builder::page(document(), 1, 800.0);
+            let block = b.element(
+                page,
+                LayoutStyle {
+                    width: Some(LengthSpec::Px(600.0)),
+                    font_size: Some(20.0),
+                    line_height: Some(LineHeightSpec::Absolute(40.0)),
+                    ..LayoutStyle::default()
+                },
+            );
+            let tall_top = b.element(block, atom_style(VerticalAlignSpec::Top, 56.0));
+            let tall_bottom = b.element(block, atom_style(VerticalAlignSpec::Bottom, 48.0));
+            let mut atoms = Vec::with_capacity(specs.len());
+            for (idx, spec) in specs.iter().copied().enumerate() {
+                let effective = if idx == 0 {
+                    override_spec.unwrap_or(spec)
+                } else {
+                    spec
+                };
+                atoms.push(b.element(block, atom_style(effective, 16.0)));
+            }
+            let labelled_base = b.element(block, atom_style(VerticalAlignSpec::Baseline, 20.0));
+            b.label(labelled_base, "b");
+            let labelled_top = b.element(block, atom_style(VerticalAlignSpec::Top, 20.0));
+            b.label(labelled_top, "t");
+            let labelled_mid = b.element(block, atom_style(VerticalAlignSpec::Middle, 20.0));
+            b.label(labelled_mid, "m");
+            let mut cx = AppContext::new();
+            cx.commit_mutations(b.queue).unwrap();
+            let mut shaper = bundled_face_shaper();
+            settle(&mut cx, &mut shaper);
+            (
+                cx,
+                shaper,
+                block,
+                tall_top,
+                tall_bottom,
+                atoms,
+                [labelled_base, labelled_top, labelled_mid],
+            )
+        };
+
+        let (
+            mut warm,
+            mut shaper,
+            block,
+            tall_top,
+            tall_bottom,
+            atoms,
+            [labelled_base, labelled_top, labelled_mid],
+        ) = build(None);
+        let box_of = |cx: &AppContext, id: StableNodeId| cx.world().layout_box(id).unwrap();
+        let line_top = box_of(&warm, block).y;
+        let line_bottom = line_top + box_of(&warm, block).height;
+        assert!((box_of(&warm, tall_top).y - line_top).abs() < 0.01);
+        assert!((box_of(&warm, tall_bottom).y + 48.0 - line_bottom).abs() < 0.01);
+
+        // baseline (0), sub (1), super (2), text-top (3), text-bottom (4), middle (5), top (6),
+        // bottom (7), +50% (8), -4px (9)
+        let y_baseline = box_of(&warm, atoms[0]).y;
+        let y_sub = box_of(&warm, atoms[1]).y;
+        let y_super = box_of(&warm, atoms[2]).y;
+        let y_text_top = box_of(&warm, atoms[3]).y;
+        let y_text_bottom = box_of(&warm, atoms[4]).y;
+        let y_top = box_of(&warm, atoms[6]).y;
+        let y_bottom = box_of(&warm, atoms[7]).y;
+        let y_pct50 = box_of(&warm, atoms[8]).y;
+        let y_neg4 = box_of(&warm, atoms[9]).y;
+        assert!(y_super < y_baseline && y_baseline < y_sub);
+        assert!(y_text_top < y_text_bottom);
+        assert!((y_top - line_top).abs() < 0.01);
+        assert!((y_bottom + 16.0 - line_bottom).abs() < 0.01);
+        assert!((y_pct50 - (y_baseline - 10.0)).abs() < 0.01);
+        assert!((y_neg4 - (y_baseline + 4.0)).abs() < 0.01);
+
+        // Non-baseline keywords must not read descendant baselines even with line boxes.
+        assert!(warm.world().atom_sits_on_line_box(labelled_base));
+        assert!(!warm.world().atom_sits_on_line_box(labelled_top));
+        assert!(!warm.world().atom_sits_on_line_box(labelled_mid));
+        assert!(!warm.world().atom_sits_on_line_box(atoms[3]));
+        assert!(!warm.world().atom_sits_on_line_box(atoms[5]));
+        assert!(!warm.world().atom_sits_on_line_box(atoms[6]));
+        assert!(!warm.world().atom_sits_on_line_box(atoms[7]));
+
+        for next in [
+            VerticalAlignSpec::Top,
+            VerticalAlignSpec::Bottom,
+            VerticalAlignSpec::Middle,
+            VerticalAlignSpec::Offset(LengthSpec::Em(0.5)),
+            VerticalAlignSpec::Baseline,
+        ] {
+            let mut q = MutationQueue::new();
+            q.set_style(atoms[0], styled(atom_style(next, 16.0)));
+            warm.commit_mutations(q).unwrap();
+            settle(&mut warm, &mut shaper);
+            let (mut cold, ..) = build(Some(next));
+            assert_matches_cold(&mut warm, &mut cold, document());
+        }
+    }
+
+    #[test]
+    fn vertical_align_variants_in_native_inline_flow_align_and_update_like_cold() {
+        let atom_style = |spec: VerticalAlignSpec, height: f32| {
+            let mut layout = LayoutStyle {
+                display: Some(DisplaySpec::InlineFlex),
+                width: Some(LengthSpec::Px(18.0)),
+                height: Some(LengthSpec::Px(height)),
+                line_height: Some(LineHeightSpec::Absolute(20.0)),
+                ..LayoutStyle::default()
+            };
+            layout.set_vertical_align(spec);
+            crate::NodeStyle {
+                layout: std::sync::Arc::new(layout),
+                ..Default::default()
+            }
+        };
+        let build = |first_spec: VerticalAlignSpec| {
+            let mut cx = AppContext::new();
+            let root = cx
+                .create_component(
+                    document(),
+                    crate::Stack::column(0.0).width(LengthSpec::Px(320.0)),
+                )
+                .unwrap();
+            let flow = cx
+                .create_detached_component(document(), InlineFlow::new(""))
+                .unwrap();
+            let mut atom_a_style = atom_style(first_spec, 12.0);
+            std::sync::Arc::make_mut(&mut atom_a_style.layout).font_size = Some(16.0);
+            let atom_a = cx
+                .create_detached_component(document(), crate::Button::new("").style(atom_a_style))
+                .unwrap();
+            let atom_b = cx
+                .create_detached_component(
+                    document(),
+                    crate::Button::new("").style(atom_style(VerticalAlignSpec::Bottom, 28.0)),
+                )
+                .unwrap();
+            cx.append_child(root, flow).unwrap();
+            cx.append_child(flow, atom_a).unwrap();
+            cx.append_child(flow, atom_b).unwrap();
+            let content = InlineContent::builder()
+                .text("Abc")
+                .child(atom_a.stable_id())
+                .text(" ")
+                .child(atom_b.stable_id())
+                .build();
+            cx.update_component(flow, |f, _| f.content = content)
+                .unwrap();
+            let mut shaper = bundled_face_shaper();
+            settle(&mut cx, &mut shaper);
+            (
+                cx,
+                shaper,
+                flow.stable_id(),
+                atom_a.stable_id(),
+                atom_b.stable_id(),
+            )
+        };
+
+        let (mut warm, mut shaper, flow, atom_a, atom_b) = build(VerticalAlignSpec::Top);
+        let top_a = warm.world().layout_box(atom_a).unwrap();
+        let bottom_b = warm.world().layout_box(atom_b).unwrap();
+        let flow_box = warm.world().layout_box(flow).unwrap();
+        assert!((top_a.y - flow_box.y).abs() < 1.0);
+        assert!((bottom_b.y + bottom_b.height - (flow_box.y + flow_box.height)).abs() < 1.0);
+
+        for next in [
+            VerticalAlignSpec::Baseline,
+            VerticalAlignSpec::Sub,
+            VerticalAlignSpec::Super,
+            VerticalAlignSpec::TextTop,
+            VerticalAlignSpec::TextBottom,
+            VerticalAlignSpec::Middle,
+            VerticalAlignSpec::Offset(LengthSpec::Px(-6.0)),
+            VerticalAlignSpec::Offset(LengthSpec::Percent(50.0)),
+        ] {
+            let mut q = MutationQueue::new();
+            let mut s = atom_style(next, 12.0);
+            std::sync::Arc::make_mut(&mut s.layout).font_size = Some(16.0);
+            q.set_style(atom_a, s);
+            warm.commit_mutations(q).unwrap();
+            settle(&mut warm, &mut shaper);
+            let (mut cold, ..) = build(next);
+            assert_matches_cold(&mut warm, &mut cold, document());
+        }
+    }
+}

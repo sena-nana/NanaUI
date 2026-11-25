@@ -244,7 +244,7 @@ overlay! {
         text_decoration, text_emphasis_style, text_emphasis_position,
         text_emphasis_color, font_features, font_variation_settings,
         font_kerning, line_break, unsupported_font_variation,
-        unsupported_writing_mode, text_orientation, placeholder_color,
+        unsupported_writing_mode, text_orientation, vertical_align, placeholder_color,
         placeholder_opacity,
     }
     nested {

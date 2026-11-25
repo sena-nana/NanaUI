@@ -2583,6 +2583,14 @@ fn finish_measure_container(
                 })
             });
         let recorded = cacheable.then(|| {
+            let ifc_strut = (ifc && !writing.is_vertical()).then(|| {
+                crate::inline_content::ParentLineStrut::from(line_strut(
+                    id,
+                    &common.style,
+                    child_font_px,
+                    nodes,
+                ))
+            });
             let mut flow_cursor = 0usize;
             let mut entries: Vec<MeasuredChild> = child_ids
                 .iter()
@@ -2595,19 +2603,27 @@ fn finish_measure_container(
                     });
                     let style = nodes.style_ref(child);
                     let baseline = intrinsic
-                        .filter(|_| ifc && !writing.is_vertical())
+                        .zip(ifc_strut)
                         .zip(style.as_deref())
-                        .and_then(|(size, child_style)| {
+                        .and_then(|((size, strut), child_style)| {
                             ifc_atom_metrics(
                                 child,
                                 child_style,
                                 size,
                                 child_edge_base,
                                 child_font_px,
+                                strut,
+                                viewport,
                                 nodes,
                             )
                         })
-                        .map(|(ascent, _)| ascent);
+                        .and_then(|placement| match placement {
+                            crate::inline_content::AtomLinePlacement::Baseline {
+                                above, ..
+                            } => Some(above),
+                            crate::inline_content::AtomLinePlacement::Top { .. }
+                            | crate::inline_content::AtomLinePlacement::Bottom { .. } => None,
+                        });
                     MeasuredChild {
                         child,
                         style: style.map(|s| s.to_arc()),
@@ -2866,6 +2882,8 @@ fn step_plan_frame<'w, 's>(
                         cache,
                         Some(scope),
                     )?;
+                    let parent_strut: crate::inline_content::ParentLineStrut =
+                        line_strut(common.id, &common.style, common.child_font_px, nodes).into();
                     let current = nodes
                         .style_ref(entry_child)
                         .and_then(|child_style| {
@@ -2875,10 +2893,18 @@ fn step_plan_frame<'w, 's>(
                                 measured,
                                 edge_base,
                                 common.child_font_px,
+                                parent_strut,
+                                common.viewport,
                                 nodes,
                             )
                         })
-                        .map(|(ascent, _)| ascent);
+                        .and_then(|placement| match placement {
+                            crate::inline_content::AtomLinePlacement::Baseline {
+                                above, ..
+                            } => Some(above),
+                            crate::inline_content::AtomLinePlacement::Top { .. }
+                            | crate::inline_content::AtomLinePlacement::Bottom { .. } => None,
+                        });
                     current != baseline
                 } else {
                     false

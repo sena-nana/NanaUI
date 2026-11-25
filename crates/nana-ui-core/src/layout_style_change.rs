@@ -484,6 +484,7 @@ layout_style_fields! {
         unsupported_font_variation => text_ext_unsupported_font_variation: FONT,
         unsupported_writing_mode => text_ext_unsupported_writing_mode: WRITING,
         text_orientation => text_ext_text_orientation: WRITING,
+        vertical_align => text_ext_vertical_align: ALIGNMENT,
         placeholder_color => text_ext_placeholder_color: PAINT,
         placeholder_opacity => text_ext_placeholder_opacity: PAINT,
     }

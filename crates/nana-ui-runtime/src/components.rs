@@ -2342,6 +2342,12 @@ pub trait TextShaper {
         None
     }
 
+    /// The x-height (lowercase `'x'` height) of `style`'s own face in CSS px,
+    /// used by `vertical-align: middle`. `None` falls back to `0.5em`.
+    fn strut_x_height(&mut self, _style: &ComputedStyle) -> Option<f32> {
+        None
+    }
+
     /// Generation of the font set [`Self::shape`] measures against. A change
     /// makes every metric measured under the old one stale, so text resolved
     /// before it is resolved again. A host whose fonts never change keeps 0.

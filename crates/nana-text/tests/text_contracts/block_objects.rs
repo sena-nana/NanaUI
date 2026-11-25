@@ -43,7 +43,7 @@ fn picture(offset: usize) -> InlineObject {
             width_px: 240.0,
             ascent_px: 120.0,
             descent_px: 0.0,
-            envelope: None,
+            ..InlineObjectMetrics::default()
         },
     }
 }

@@ -45,6 +45,7 @@ impl ListItemAssembled {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ListItem {
     pub label: String,
+    pub content: Option<Arc<crate::InlineContent>>,
     /// 紧跟主文本的次要文字（如译名后的原文）：非空且未挂 content 槽时，
     /// 在主文本之后渲染为与 detail 同字号、同取色的文本区，不改变行高。
     /// 放不下时先让给主文本与 detail，宽度不够就不画；无障碍名照样带上。
@@ -508,9 +509,42 @@ static LIST_ITEM_DEFAULT_STYLE: std::sync::LazyLock<NodeStyle> = std::sync::Lazy
 });
 
 impl ListItem {
+    /// Text, spans and retained children share the label's content box.
+    /// A plain value returns to the allocation-light string representation.
+    pub fn content(mut self, content: impl Into<crate::InlineContent>) -> Self {
+        let content = content.into().normalized();
+        self.label = content.text().to_owned();
+        self.content = if matches!(content, crate::InlineContent::PlainText(_)) {
+            None
+        } else {
+            Some(Arc::new(content))
+        };
+        self
+    }
+
+    pub(crate) fn content_has_atoms(&self) -> bool {
+        self.content
+            .as_deref()
+            .is_some_and(|content| !content.atoms().is_empty())
+    }
+
+    pub(crate) fn is_inline_atom(&self, child: StableNodeId) -> bool {
+        self.content
+            .as_deref()
+            .is_some_and(|content| content.atoms().iter().any(|atom| atom.node == child))
+    }
+
+    pub(crate) fn needs_assembled_copy(&self) -> bool {
+        self.slots.content.is_none()
+            && (self.after_label.is_some()
+                || (self.content_has_atoms()
+                    && (self.slots.leading.is_some() || self.slots.trailing.is_some())))
+    }
+
     pub fn new(label: impl Into<String>) -> Self {
         Self {
             label: label.into(),
+            content: None,
             note: String::new(),
             detail: String::new(),
             selected: false,
@@ -855,6 +889,7 @@ impl ListItem {
         node.children.iter().copied().any(|child| {
             Some(child) != self.slots.leading
                 && Some(child) != self.slots.trailing
+                && !self.is_inline_atom(child)
                 && !is_list_item_internal(world, child)
         })
     }
@@ -1068,21 +1103,37 @@ impl ListItem {
         // 行文本只承载 label；Foundation 发布 note 与 detail 的布局部件
         // （note 紧跟 label，detail 位于行尾），与 label 同行但不挤占
         // 同一文本。挂了 content、after_label 或自定义子节点时由子节点自绘。
-        let has_body = self.has_body_children_with(id, world, copy_slot);
+        let has_body =
+            self.has_body_children_with(id, world, copy_slot) || self.needs_assembled_copy();
         let draws_parts = !has_body;
         let has_note_part = draws_parts && !self.note.is_empty();
         let has_detail_part = draws_parts && !self.detail.is_empty();
         let visible_label = if draws_parts { self.label.as_str() } else { "" };
         let exposes_secondary = draws_parts || copy_slot.is_some();
-        let shares_plain_label = draws_parts && self.note.is_empty() && self.detail.is_empty();
+        let shares_plain_label =
+            draws_parts && self.content.is_none() && self.note.is_empty() && self.detail.is_empty();
         let mut shared = None;
-        if world.text(id) != Some(visible_label) {
-            let value = if shares_plain_label {
-                shared_label(&mut shared, visible_label).into()
-            } else {
-                visible_label.to_owned().into()
-            };
-            mutations.set_text(id, TextContent { value });
+        if draws_parts {
+            if !crate::world::inline_content::project_control_content(
+                id,
+                world,
+                visible_label,
+                self.content.as_deref(),
+                mutations,
+            ) && world.text(id) != Some(visible_label)
+            {
+                let value = if shares_plain_label {
+                    shared_label(&mut shared, visible_label).into()
+                } else {
+                    visible_label.to_owned().into()
+                };
+                mutations.set_text(id, TextContent { value });
+            }
+        } else if world.text(id) != Some("")
+            || world.inline_record(id).is_some()
+            || world.rich_text(id).is_some()
+        {
+            mutations.set_text(id, TextContent { value: "".into() });
         }
         let trailing = self.visible_trailing();
         if self.slots.leading.is_none()
@@ -1111,11 +1162,15 @@ impl ListItem {
             }
         }
         // A note that does not fit is not drawn, but it is still said.
-        let label_arc = if shares_plain_label {
-            match world.accessible_label_arc(id) {
+        let inline_a11y =
+            draws_parts && self.content.is_some() && self.note.is_empty() && self.detail.is_empty();
+        let label_arc = if inline_a11y {
+            None
+        } else if shares_plain_label {
+            Some(match world.accessible_label_arc(id) {
                 Some(current) if *current == *self.label => current,
                 _ => shared_label(&mut shared, self.label.as_str()),
-            }
+            })
         } else {
             let mut accessible = self.label.clone();
             if exposes_secondary && !self.note.is_empty() {
@@ -1126,7 +1181,7 @@ impl ListItem {
                 accessible.push_str("  ");
                 accessible.push_str(&self.detail);
             }
-            Arc::from(accessible.as_str())
+            Some(Arc::from(accessible.as_str()))
         };
         project_common(
             id,
@@ -1142,7 +1197,7 @@ impl ListItem {
                     ListItemRole::ListItem => AccessibilityRole::ListItem,
                     ListItemRole::Button | ListItemRole::ToggleButton => AccessibilityRole::Button,
                 },
-                label: Some(label_arc),
+                label: label_arc,
                 disabled: self.disabled,
                 display_only: self.read_only && !self.disabled,
                 // A pressed toggle paints as selected, so the look holds.

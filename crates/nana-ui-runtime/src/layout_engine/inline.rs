@@ -89,10 +89,18 @@ pub(super) fn place_native_inline(
             cache,
             scope,
         )?;
-        measured.insert(
+        let parent_strut = nodes.world.inline_parent_strut(id, font);
+        let (object_metrics, _) = nodes.atom_line_metrics(
             child,
-            nodes.atom_line_metrics(child, writing, size, margin, font, content.width),
+            writing,
+            size,
+            margin,
+            font,
+            content.width,
+            parent_strut,
+            viewport,
         );
+        measured.insert(child, object_metrics);
         let rect = by_node
             .get(&child)
             .and_then(|offset| positions.get(offset))
@@ -137,6 +145,8 @@ pub(super) fn place_native_inline(
                         width_px: 0.0,
                         ascent_px: 0.0,
                         descent_px: 0.0,
+                        align: nana_text::InlineObjectAlign::Baseline,
+                        baseline_shift_px: 0.0,
                         envelope: None,
                     },
                 ),
@@ -256,28 +266,33 @@ pub(super) fn ifc_item_outer(
 /// horizontal line of an ordinary block, margins included
 /// ([`LayoutInputMap::atom_line_metrics`]). `None` for a block-level item,
 /// which holds a line alone and sits at its top.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn ifc_atom_metrics(
     child: StableNodeId,
     style: &LayoutStyle,
     size: Size,
     content_width: f32,
     parent_font_px: f32,
+    parent_strut: crate::inline_content::ParentLineStrut,
+    viewport: LayoutViewport,
     nodes: &LayoutInputMap<'_>,
-) -> Option<(f32, f32)> {
+) -> Option<crate::inline_content::AtomLinePlacement> {
     if !style.is_inline_level() {
         return None;
     }
     let margin =
         style.resolved_margin_against_fonts(Some(content_width), fonts_of(style, parent_font_px));
-    let metrics = nodes.atom_line_metrics(
+    let (_, placement) = nodes.atom_line_metrics(
         child,
         nana_ui_core::WritingContext::HORIZONTAL_LTR,
         size,
         margin,
         parent_font_px,
         content_width,
+        parent_strut,
+        viewport,
     );
-    Some((metrics.ascent_px, metrics.descent_px))
+    Some(placement)
 }
 
 /// Derives, for each atom among `items` that sits on its line by its last
@@ -743,18 +758,27 @@ pub(super) fn line_strut(
     nodes: &LayoutInputMap<'_>,
 ) -> LineStrut {
     let font = font_px.max(0.0);
-    let (ascent, descent) = nodes.world.block_strut(id).map_or_else(
+    let (font_ascent, font_descent) = nodes.world.block_strut(id).map_or_else(
         || {
             let ascent = font * nana_ui_core::TEXT_APPROX_ASCENT_EM;
             (ascent, font - ascent)
         },
         |strut| (font * strut.ascent, font * strut.descent),
     );
+    let x_height = nodes
+        .world
+        .block_x_height(id)
+        .filter(|ratio| ratio.is_finite() && *ratio > 0.0)
+        .map_or(font * 0.5, |ratio| font * ratio);
     let half_leading =
-        (text_line_box_height_px(font, style.line_height) - (ascent + descent)) * 0.5;
+        (text_line_box_height_px(font, style.line_height) - (font_ascent + font_descent)) * 0.5;
     LineStrut {
-        ascent: ascent + half_leading,
-        descent: descent + half_leading,
+        ascent: font_ascent + half_leading,
+        descent: font_descent + half_leading,
+        font_ascent,
+        font_descent,
+        x_height,
+        font_px: font,
     }
 }
 
@@ -771,15 +795,36 @@ pub(super) fn ifc_line_metrics(
     strut: LineStrut,
     nodes: &LayoutInputMap<'_>,
 ) -> (f32, f32) {
-    let (mut ascent, mut descent, mut from_top) = (0.0f32, 0.0f32, 0.0f32);
+    let parent_strut = strut.into();
+    let (mut baseline_above, mut baseline_below, mut max_top, mut max_bottom, mut from_top) =
+        (0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32);
     for (child, size) in items {
         let Some(style) = nodes.style_ref(child) else {
             continue;
         };
-        match ifc_atom_metrics(child, &style, size, content_width, parent_font_px, nodes) {
-            Some((above, below)) => {
-                ascent = ascent.max(above).max(strut.ascent);
-                descent = descent.max(below).max(strut.descent);
+        match ifc_atom_metrics(
+            child,
+            &style,
+            size,
+            content_width,
+            parent_font_px,
+            parent_strut,
+            viewport,
+            nodes,
+        ) {
+            Some(crate::inline_content::AtomLinePlacement::Baseline { above, below }) => {
+                baseline_above = baseline_above.max(above).max(strut.ascent);
+                baseline_below = baseline_below.max(below).max(strut.descent);
+            }
+            Some(crate::inline_content::AtomLinePlacement::Top { height }) => {
+                baseline_above = baseline_above.max(strut.ascent);
+                baseline_below = baseline_below.max(strut.descent);
+                max_top = max_top.max(height);
+            }
+            Some(crate::inline_content::AtomLinePlacement::Bottom { height }) => {
+                baseline_above = baseline_above.max(strut.ascent);
+                baseline_below = baseline_below.max(strut.descent);
+                max_bottom = max_bottom.max(height);
             }
             None => {
                 let (_, outer) =
@@ -788,7 +833,16 @@ pub(super) fn ifc_line_metrics(
             }
         }
     }
-    (ascent, (ascent + descent).max(from_top))
+    let mut ascent = baseline_above;
+    let mut height = baseline_above + baseline_below;
+    if max_top > height {
+        height = max_top;
+    }
+    if max_bottom > height {
+        ascent += max_bottom - height;
+        height = max_bottom;
+    }
+    (ascent, height.max(from_top))
 }
 
 /// IFC wrap using the existing content-width line packer, with per-line available
@@ -1213,6 +1267,8 @@ pub(super) fn ifc_line_measure_delta_finish(
     size.height = content.height;
     let mut updated = plan.clone();
     updated.size = size;
+    let parent_strut: crate::inline_content::ParentLineStrut =
+        line_strut(id, style, child_font_px, nodes).into();
     for (child, measured) in flow.into_iter().zip(sizes) {
         let Ok(slot) = updated
             .entries
@@ -1229,9 +1285,15 @@ pub(super) fn ifc_line_measure_delta_finish(
                     measured,
                     edge_base,
                     child_font_px,
+                    parent_strut,
+                    viewport,
                     nodes,
                 )
-                .map(|(ascent, _)| ascent),
+                .and_then(|placement| match placement {
+                    crate::inline_content::AtomLinePlacement::Baseline { above, .. } => Some(above),
+                    crate::inline_content::AtomLinePlacement::Top { .. }
+                    | crate::inline_content::AtomLinePlacement::Bottom { .. } => None,
+                }),
             );
             updated.entries[slot].style = Some(child_style);
         }

@@ -3,6 +3,7 @@
 //! reference ordinary retained nodes; they are never wrapper components.
 
 use crate::StableNodeId;
+use crate::layout_engine::{LayoutViewport, Size};
 use nana_ui_core::sort::CompactSort as _;
 use nana_ui_core::{RichSpanStyle, RichText};
 use std::{ops::Range, sync::Arc};
@@ -288,32 +289,149 @@ pub(crate) struct InlineRecord {
     pub objects: Arc<[nana_text::InlineObject]>,
 }
 
-/// Atomic exports are outer logical metrics; placement retains the ordinary
-/// node's border box inside its resolved physical margins.
-///
-/// `baseline` is the atom's own, from its border-box top. Without one the
-/// atom sits on the line by its bottom margin edge (CSS 2.1 §10.8.1): all of
-/// its margin box is above the baseline.
-pub(crate) fn atomic_metrics(
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ParentLineStrut {
+    pub(crate) font_ascent: f32,
+    pub(crate) font_descent: f32,
+    pub(crate) x_height: f32,
+    pub(crate) font_px: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum AtomLinePlacement {
+    Baseline { above: f32, below: f32 },
+    Top { height: f32 },
+    Bottom { height: f32 },
+}
+
+/// Resolves both native-paragraph `nana-text::InlineObjectMetrics` and block IFC
+/// `AtomLinePlacement` from one CSS `vertical-align` model.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn resolve_atom_vertical_align(
+    child_style: &nana_ui_core::LayoutStyle,
     writing: nana_ui_core::WritingContext,
-    width: f32,
-    height: f32,
+    used: Size,
     margin: nana_ui_core::PaddingSpec,
-    baseline: Option<f32>,
-) -> nana_text::InlineObjectMetrics {
+    own_baseline: Option<f32>,
+    parent_strut: ParentLineStrut,
+    parent_font_px: f32,
+    viewport: LayoutViewport,
+) -> (nana_text::InlineObjectMetrics, AtomLinePlacement) {
     let (inline, block) = writing.logical_size(
-        width + margin.left + margin.right,
-        height + margin.top + margin.bottom,
+        used.width + margin.left + margin.right,
+        used.height + margin.top + margin.bottom,
     );
-    let ascent = match baseline {
-        Some(baseline) if !writing.is_vertical() => baseline + margin.top,
-        _ => block,
+    let width_px = inline.max(0.0);
+    let block = block.max(0.0);
+    if writing.is_vertical() {
+        return (
+            nana_text::InlineObjectMetrics {
+                width_px,
+                ascent_px: block,
+                descent_px: 0.0,
+                align: nana_text::InlineObjectAlign::Baseline,
+                baseline_shift_px: 0.0,
+                envelope: None,
+            },
+            AtomLinePlacement::Baseline {
+                above: block,
+                below: 0.0,
+            },
+        );
+    }
+    let spec = child_style.resolved_vertical_align();
+    let own_above = if spec.uses_own_baseline() {
+        own_baseline.map_or(block, |baseline| {
+            (baseline.clamp(0.0, used.height.max(0.0)) + margin.top).clamp(0.0, block)
+        })
+    } else {
+        block
     };
-    nana_text::InlineObjectMetrics {
-        width_px: inline.max(0.0),
-        ascent_px: ascent.max(0.0),
-        descent_px: (block - ascent).max(0.0),
-        envelope: None,
+    let own_below = block - own_above;
+    match spec {
+        nana_ui_core::VerticalAlignSpec::Top => (
+            nana_text::InlineObjectMetrics {
+                width_px,
+                ascent_px: block,
+                descent_px: 0.0,
+                align: nana_text::InlineObjectAlign::Top,
+                baseline_shift_px: 0.0,
+                envelope: None,
+            },
+            AtomLinePlacement::Top { height: block },
+        ),
+        nana_ui_core::VerticalAlignSpec::Bottom => (
+            nana_text::InlineObjectMetrics {
+                width_px,
+                ascent_px: own_above,
+                descent_px: own_below,
+                align: nana_text::InlineObjectAlign::Bottom,
+                baseline_shift_px: 0.0,
+                envelope: None,
+            },
+            AtomLinePlacement::Bottom { height: block },
+        ),
+        other => {
+            let (above, below, shift) = match other {
+                nana_ui_core::VerticalAlignSpec::Baseline => (own_above, own_below, 0.0),
+                nana_ui_core::VerticalAlignSpec::Sub => {
+                    let shift = -(parent_strut.font_px.max(0.0) * 0.2);
+                    (own_above + shift, own_below - shift, shift)
+                }
+                nana_ui_core::VerticalAlignSpec::Super => {
+                    let shift = parent_strut.font_px.max(0.0) / 3.0;
+                    (own_above + shift, own_below - shift, shift)
+                }
+                nana_ui_core::VerticalAlignSpec::TextTop => {
+                    let above = parent_strut.font_ascent;
+                    let below = block - above;
+                    (above, below, above - own_above)
+                }
+                nana_ui_core::VerticalAlignSpec::TextBottom => {
+                    let below = parent_strut.font_descent;
+                    let above = block - below;
+                    (above, below, above - own_above)
+                }
+                nana_ui_core::VerticalAlignSpec::Middle => {
+                    let half_x = parent_strut.x_height * 0.5;
+                    let above = block * 0.5 + half_x;
+                    let below = block * 0.5 - half_x;
+                    (above, below, above - own_above)
+                }
+                nana_ui_core::VerticalAlignSpec::Offset(len) => {
+                    let child_fonts = nana_ui_core::FontSizeContext::new(
+                        nana_ui_core::FontSizeContext::DEFAULT_ROOT_PX,
+                        child_style.font_size.unwrap_or(parent_font_px),
+                    );
+                    let child_line_height = nana_ui_core::text_line_box_height_px(
+                        child_fonts.element_px,
+                        child_style.line_height,
+                    );
+                    let shift = len
+                        .resolve_with_fonts(
+                            Some(child_line_height),
+                            Some((viewport.width, viewport.height)),
+                            child_fonts,
+                        )
+                        .unwrap_or(0.0);
+                    (own_above + shift, own_below - shift, shift)
+                }
+                nana_ui_core::VerticalAlignSpec::Top | nana_ui_core::VerticalAlignSpec::Bottom => {
+                    unreachable!()
+                }
+            };
+            (
+                nana_text::InlineObjectMetrics {
+                    width_px,
+                    ascent_px: own_above,
+                    descent_px: own_below,
+                    align: nana_text::InlineObjectAlign::Baseline,
+                    baseline_shift_px: shift,
+                    envelope: None,
+                },
+                AtomLinePlacement::Baseline { above, below },
+            )
+        }
     }
 }
 

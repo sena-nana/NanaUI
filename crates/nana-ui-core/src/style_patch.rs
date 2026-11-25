@@ -262,6 +262,7 @@ pub mod set {
             unsupported_font_variation: bool,
             unsupported_writing_mode: bool,
             text_orientation: Option<TextOrientationSpec>,
+            vertical_align: VerticalAlignSpec,
             placeholder_color: Option<[f32; 4]>,
             placeholder_opacity: Option<f32>,
         });

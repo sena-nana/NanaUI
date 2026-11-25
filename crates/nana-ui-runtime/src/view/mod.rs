@@ -30,7 +30,7 @@ mod error;
 mod hot;
 mod inline;
 mod labelled;
-pub use inline::{Inline, inline};
+pub use inline::{Inline, InlineContentTarget, InlinePieces, inline, inline_pieces};
 mod marks;
 mod node;
 mod panes;
@@ -58,7 +58,7 @@ pub use crate::VirtualAlignment;
 pub use controls::__arg;
 pub use controls::{
     Px, StyledComponent, action_menu, action_menu_item, avatar, button, checkbox, chip,
-    color_field, column, curve, divider, empty_state, fields, icon_button, labeled_value,
+    color_field, column, curve, divider, empty_state, fields, icon, icon_button, labeled_value,
     list_item, localized, number_input, progress, range_span, row, select, size_field, slider,
     spinner, status_badge, switch, t, tabs, text, text_area, text_input, texture, theme_scope,
     thumbnail, tree_view,

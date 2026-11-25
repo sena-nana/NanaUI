@@ -42,6 +42,19 @@ pub enum CompositionSegment {
 /// one move and a selection takes it whole.
 pub const OBJECT_REPLACEMENT: char = '\u{FFFC}';
 
+/// Vertical alignment of an inline object relative to its line box.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum InlineObjectAlign {
+    /// Positioned relative to the line's baseline (plus [`InlineObjectMetrics::baseline_shift_px`]).
+    #[default]
+    Baseline,
+    /// Margin-box top aligned to the line box top.
+    Top,
+    /// Margin-box bottom aligned to the line box bottom.
+    Bottom,
+}
+
 /// How much room an inline object takes on its line, in logical px.
 ///
 /// The object sits on the baseline: `ascent_px` above it, `descent_px` below.
@@ -52,6 +65,13 @@ pub struct InlineObjectMetrics {
     pub width_px: f32,
     pub ascent_px: f32,
     pub descent_px: f32,
+    /// How this object aligns on the line (`baseline`, `top`, `bottom`).
+    #[serde(default)]
+    pub align: InlineObjectAlign,
+    /// Vertical offset in logical px above (`> 0`) or below (`< 0`) the line
+    /// baseline when [`Self::align`] is [`InlineObjectAlign::Baseline`].
+    #[serde(default)]
+    pub baseline_shift_px: f32,
     /// What the object gives a line deciding where to break (Issue #211):
     /// a gap it keeps after itself that may close up, and whether a line may
     /// break before or after it. `None`: no gap, and breaks as UAX #14 says.

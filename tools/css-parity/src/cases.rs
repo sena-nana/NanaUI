@@ -16,7 +16,8 @@ pub const PRIORITY_CASE_IDS: &[&str] = &[
     "T-G33", "T-G34", "T-G35", "T-G36", "T-P01", "T-P02", "T-P03", "T-P04", "T-P05", "T-P06",
     "T-P07", "T-P08", "T-P09", "T-P10", "T-P11", "T-P12", "T-P13", "T-P14", "T-P15", "T-P16",
     "T-P17", "T-P18", "T-P19", "T-P20", "T-P21", "T-I01", "T-I02", "T-I03", "T-I04", "T-I05",
-    "T-I06", "T-I07", "T-FX01", "T-FX02", "T-FX03", "T-GB01", "T-GB02",
+    "T-I06", "T-I07", "T-I08", "T-I09", "T-I10", "T-I11", "T-I12", "T-FX01", "T-FX02", "T-FX03",
+    "T-GB01", "T-GB02",
 ];
 
 /// `(id, status_pass, gap)` — `gap` 仅仍 ignore 的用例有值。
@@ -164,6 +165,11 @@ pub fn catalog() -> &'static [(&'static str, bool, Option<&'static str>)] {
         ("T-I05", true, None),  // mixed-height inline-flex atoms share a baseline (Chrome 152 实测)
         ("T-I06", true, None),  // a line box starts from the block's strut (Chrome 152 实测)
         ("T-I07", true, None), // an inline container's baseline comes from its descendant line box (Chrome 152 实测)
+        ("T-I08", true, None), // IFC vertical-align: baseline | top | bottom
+        ("T-I09", true, None), // IFC vertical-align: text-top | text-bottom | middle
+        ("T-I10", true, None), // IFC vertical-align: sub | super and signed lengths
+        ("T-I11", true, None), // IFC vertical-align: percentages and calc()
+        ("T-I12", true, None), // IFC vertical-align: tall bottom shifts baseline downward
         ("T-FX01", true, None), // a flex container on a baseline row sits by its top line's or start item's baseline (Chrome 152 实测)
         ("T-FX02", true, None), // an inline-flex/container ending in a wrapping flex container sits by that container's first baseline (Chrome 152 实测)
         ("T-FX03", true, None), // an inline container ending in a column flex container sits by its first item's baseline (Chrome 152 实测)

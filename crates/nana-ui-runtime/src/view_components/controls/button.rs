@@ -817,6 +817,10 @@ impl crate::WidgetVisual for IconVisual {
         true
     }
 
+    fn aligns_by_bottom_edge(&self) -> bool {
+        true
+    }
+
     fn paint(&self, ctx: &crate::WidgetPaintCtx<'_>) -> crate::WidgetPaintOutput {
         let extent = self
             .size

@@ -503,6 +503,7 @@ impl TextShaper for NanaTextShaper {
     forward_text_shaper_methods! {
         fn font_generation(&self) -> u64;
         fn strut_metrics(&mut self, style: &ComputedStyle) -> Option<nana_ui_runtime::FontStrut>;
+        fn strut_x_height(&mut self, style: &ComputedStyle) -> Option<f32>;
         fn retains_measurement(&self, id: StableNodeId) -> bool;
         fn text_engine(&self) -> Option<nana_text::SharedTextEngine>;
         fn take_text_work(&mut self) -> nana_text::TextWorkCounters;

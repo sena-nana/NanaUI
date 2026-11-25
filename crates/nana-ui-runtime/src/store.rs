@@ -1307,6 +1307,8 @@ pub(crate) struct NodeStore {
     cold_rects: Box<ColdRects>,
     text_natural_widths: crate::NodeMap<f32>,
     block_struts: crate::NodeMap<crate::FontStrut>,
+    block_x_heights: crate::NodeMap<f32>,
+    inline_struts: crate::NodeMap<(crate::FontStrut, Option<f32>)>,
     text_wrap_limits: crate::NodeMap<f32>,
     languages: crate::NodeMap<nana_text::font::LanguageTag>,
     text_scales: crate::NodeMap<f32>,
@@ -1688,6 +1690,7 @@ impl NodeStore {
             }
             if bits.contains(NodePresenceBits::BLOCK_STRUT) {
                 self.block_struts.remove(&id);
+                self.block_x_heights.remove(&id);
                 bits.clear(NodePresenceBits::BLOCK_STRUT);
             }
             if bits.contains(NodePresenceBits::TEXT_WRAP_LIMIT) {
@@ -1711,6 +1714,7 @@ impl NodeStore {
                 bits.clear(NodePresenceBits::RICH_TEXT);
             }
             if bits.contains(NodePresenceBits::INLINE_CONTENT) {
+                self.inline_struts.remove(&id);
                 bits.clear(NodePresenceBits::INLINE_CONTENT);
             }
             if bits.contains(NodePresenceBits::INLINE_PARENT) {
@@ -2659,7 +2663,44 @@ impl NodeStore {
 
     /// Every block holding a strut: what a new font set can change.
     pub(crate) fn strut_holders(&self) -> impl Iterator<Item = StableNodeId> + '_ {
-        self.block_struts.keys().copied()
+        self.block_struts
+            .keys()
+            .copied()
+            .chain(self.inline_struts.keys().copied())
+    }
+
+    pub(crate) fn block_x_height(&self, id: StableNodeId) -> Option<f32> {
+        self.block_x_heights.get(&id).copied()
+    }
+
+    pub(crate) fn set_block_x_height(&mut self, id: StableNodeId, value: Option<f32>) {
+        match value {
+            Some(x_height) => {
+                self.block_x_heights.insert(id, x_height);
+            }
+            None => {
+                self.block_x_heights.remove(&id);
+            }
+        }
+    }
+
+    pub(crate) fn inline_strut(&self, id: StableNodeId) -> Option<(crate::FontStrut, Option<f32>)> {
+        self.inline_struts.get(&id).copied()
+    }
+
+    pub(crate) fn set_inline_strut(
+        &mut self,
+        id: StableNodeId,
+        value: Option<(crate::FontStrut, Option<f32>)>,
+    ) {
+        match value {
+            Some(strut) => {
+                self.inline_struts.insert(id, strut);
+            }
+            None => {
+                self.inline_struts.remove(&id);
+            }
+        }
     }
     sparse!(
         languages,
@@ -2925,6 +2966,8 @@ impl NodeStore {
                             width_px: 0.0,
                             ascent_px: 0.0,
                             descent_px: 0.0,
+                            align: nana_text::InlineObjectAlign::Baseline,
+                            baseline_shift_px: 0.0,
                             envelope: None,
                         },
                     ),

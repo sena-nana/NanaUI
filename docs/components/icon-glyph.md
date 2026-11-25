@@ -2,28 +2,27 @@
 
 `IconGlyph` 负责画出一个图标。它是装饰：不接收指针，也不能聚焦。要点击，用 `IconButton`，把图标和可访问名放在按钮上。
 
-控件表里没有 `<IconGlyph>`。
+模板里的标签是 `<Icon icon={…} />`（Rust 构造器 `view::icon(icon)`）；作为行内子项时按边框底边对齐（`aligns_by_bottom_edge`），可在 `<Button>`、`<Chip>`、`<ListItem>`、`<ActionMenuItem>`、`<Text>`、`<Inline>` 中直接内联混排。
 
 ## 基本用法
 
-`IconGlyph::new(icon)` 接收 `nana_ui::runtime::Icon`。
+`IconGlyph::new(icon)` / `icon(icon)` 接收 `nana_ui::runtime::Icon`。
 
 :::api
 
 ```rust view
-use nana_ui::runtime::view;
-use nana_ui::runtime::{Icon, IconGlyph};
+use nana_ui::runtime::{Icon, SemanticColorRole, view};
 
 view! {
-    <Widget of={IconGlyph::new(Icon::Folder).size(16.0).role(nana_ui::runtime::SemanticColorRole::Text)} />
+    <Icon icon={Icon::Folder} size={16.0} foreground={SemanticColorRole::Text} />
 }
 ```
 
 ```rust rust
-use nana_ui::runtime::view::widget;
-use nana_ui::runtime::{Icon, IconGlyph};
+use nana_ui::runtime::view::icon;
+use nana_ui::runtime::{Icon, SemanticColorRole};
 
-widget(IconGlyph::new(Icon::Folder).size(16.0).role(nana_ui::runtime::SemanticColorRole::Text))
+icon(Icon::Folder).size(16.0).foreground(Some(SemanticColorRole::Text))
 ```
 
 :::
@@ -62,10 +61,11 @@ widget(IconGlyph::new(Icon::Folder).size(16.0).role(nana_ui::runtime::SemanticCo
 
 | 属性 | 类型 | 说明 |
 | --- | --- | --- |
-| `icon` | `nana_ui::runtime::Icon` | `IconGlyph::new(icon)` 接收 |
-| `.size` | — | 改边长。小于 0 的值收成 0，宽高、最小宽高都写成这个边长，并且不再伸缩。默认边长是小号控件的图标尺寸 |
-| `.role` | — | 换成别的语义色。默认前景色是 `Muted` |
-| `.style` | — | 整份替换节点样式；依赖尺寸的构造要写在它后面，否则会被盖掉 |
+| `icon` | `nana_ui::runtime::Icon` | `<Icon icon={…}/>` 必传构造参数 |
+| `size` | `f32` | 改边长。小于 0 的值收成 0，宽高、最小宽高都写成这个边长，并且不再伸缩。默认边长是小号控件的图标尺寸 |
+| `decorative` | `bool` | 保留绘制并从无障碍树隐藏（`aria-hidden`） |
+| `.role` / `foreground` | `SemanticColorRole` | 换成别的语义色。默认前景色是 `Muted` |
+| `.style` | `NodeStyle` | 整份替换节点样式；依赖尺寸的构造要写在它后面，否则会被盖掉 |
 
 ## 事件
 

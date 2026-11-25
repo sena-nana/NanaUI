@@ -973,3 +973,48 @@ let value = signal(String::from("42%"));
         "inline strings never become retained Text children: {code}"
     );
 }
+
+#[test]
+fn builtin_inline_controls_and_icon_normalize_and_keep_plain_fast_path() {
+    let out = compile(&[(
+        "ControlsPage.vue",
+        r#"<script setup lang="rust">
+let label = signal(String::from("Save"));
+let icon = signal(nana_ui_core::Icon::Add);
+</script>
+<template>
+  <Column>
+    <Icon :icon="icon" size="14.0" />
+    <Button><Icon :icon="icon" />{{ label }}</Button>
+    <Chip><Icon :icon="icon" />Tag</Chip>
+    <ListItem><Icon :icon="icon" />Row</ListItem>
+    <ActionMenuItem><Icon :icon="icon" />Open</ActionMenuItem>
+    <Button>{{ label }}</Button>
+  </Column>
+</template>"#,
+    )])
+    .unwrap();
+    let code = squash(&out.code);
+    assert!(code.contains("view::icon("), "{code}");
+    assert!(
+        code.contains("view::button(\"\").inline_children("),
+        "{code}"
+    );
+    assert!(code.contains("view::chip(\"\").inline_children("), "{code}");
+    assert!(
+        code.contains("view::list_item(\"\").inline_children("),
+        "{code}"
+    );
+    assert!(
+        code.contains("view::action_menu_item(\"\").inline_children("),
+        "{code}"
+    );
+    assert!(
+        code.contains("view::button(::nana_ui_runtime::view::Fixed(::std::format!(\"{}\",label)))"),
+        "{code}"
+    );
+    assert!(
+        !code.contains("label))).inline_children"),
+        "plain string Button stays on fast path: {code}"
+    );
+}

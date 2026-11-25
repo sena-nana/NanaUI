@@ -3057,7 +3057,7 @@ pub(super) fn arrange_flow<'a>(
         f32,
         f32,
         bool,
-        Option<f32>,
+        Option<(f32, f32)>,
     )> = Vec::with_capacity(line_slots.len());
     // Items measured again at the main size their line gave them.
     let mut hypothetical: HashMap<StableNodeId, (f32, Size)> = HashMap::new();
@@ -3231,7 +3231,7 @@ pub(super) fn arrange_flow<'a>(
             slot.main_available,
             slot.cross_y,
             slot.pin_cross,
-            line_baseline_y.map(|(baseline, _)| baseline),
+            line_baseline_y,
         ));
     }
     let align_content = style.align_content;
@@ -3414,27 +3414,39 @@ pub(super) fn arrange_flow<'a>(
                     scope,
                 )?;
             }
-            let atom_ascent = line_atom_baseline
-                .and_then(|_| {
-                    ifc_atom_metrics(
-                        child,
-                        child_style,
-                        child_size,
-                        content.width,
-                        child_font_px,
-                        nodes,
-                    )
-                })
-                .map(|(ascent, _)| ascent);
+            let atom_placement = line_atom_baseline.and_then(|_| {
+                let strut = line_strut(id, style, child_font_px, nodes).into();
+                ifc_atom_metrics(
+                    child,
+                    child_style,
+                    child_size,
+                    content.width,
+                    child_font_px,
+                    strut,
+                    viewport,
+                    nodes,
+                )
+            });
             let aligned_baseline = (align == AlignSpec::Baseline).then(|| {
                 intrinsic
                     .baseline(child, crate::Baseline::First)
                     .unwrap_or_else(|| nodes.baseline(child, child_fonts.element_px, child_size))
             });
-            let cross_offset = if let (Some(line), Some(ascent)) = (line_atom_baseline, atom_ascent)
+            let cross_offset = if let (Some((line_base, line_height)), Some(placement)) =
+                (line_atom_baseline, atom_placement)
             {
-                // The margin box's top is `ascent` above the baseline.
-                cross_cursor + line - ascent + cross_lead(margin)
+                match placement {
+                    crate::inline_content::AtomLinePlacement::Baseline { above, .. } => {
+                        // The margin box's top is `above` above the baseline.
+                        cross_cursor + line_base - above + cross_lead(margin)
+                    }
+                    crate::inline_content::AtomLinePlacement::Top { .. } => {
+                        cross_cursor + cross_lead(margin)
+                    }
+                    crate::inline_content::AtomLinePlacement::Bottom { height } => {
+                        cross_cursor + line_height - height + cross_lead(margin)
+                    }
+                }
             } else {
                 match align {
                     AlignSpec::Start | AlignSpec::Stretch => cross_cursor + cross_lead(margin),
@@ -3499,7 +3511,7 @@ pub(super) fn arrange_flow<'a>(
         nodes.scratch.give_sizes(line_sizes);
         lines.push(ArrangedLine {
             cross_start: line_start_cross,
-            atom_baseline: line_atom_baseline,
+            atom_baseline: line_atom_baseline.map(|(baseline, _)| baseline),
             auto_main,
             children: first_child..children.len(),
         });

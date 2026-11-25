@@ -909,6 +909,14 @@ impl UiWorld {
         self.nodes.block_strut(id).copied()
     }
 
+    pub(crate) fn block_x_height(&self, id: StableNodeId) -> Option<f32> {
+        self.nodes.block_x_height(id)
+    }
+
+    pub(crate) fn inline_strut(&self, id: StableNodeId) -> Option<(crate::FontStrut, Option<f32>)> {
+        self.nodes.inline_strut(id)
+    }
+
     /// Whether `id` lays its children's lines out with a strut of its own: an
     /// ordinary block (not a flex or grid container) with no line box of its
     /// own whose children include an inline-level one in flow (CSS 2.1
@@ -985,10 +993,42 @@ impl UiWorld {
                 continue;
             }
             let next = self.fresh_block_strut(id, shaper);
-            if self.nodes.block_strut(id).copied() == next {
+            let next_xh = next.and_then(|_| {
+                let style = &self.nodes.get(id)?.resolved.0;
+                let size = style.font_size;
+                let x = shaper.strut_x_height(style)?;
+                let per_px = x / size;
+                (per_px.is_finite() && per_px > 0.0).then_some(per_px)
+            });
+            let next_inline = self.inline_record(id).and_then(|_| {
+                let style = &self.nodes.get(id)?.resolved.0;
+                let size = style.font_size;
+                if !(size.is_finite() && size > 0.0) {
+                    return None;
+                }
+                let metrics = shaper.strut_metrics(style)?;
+                let per_px = crate::FontStrut {
+                    ascent: metrics.ascent / size,
+                    descent: metrics.descent / size,
+                };
+                if !(per_px.ascent.is_finite() && per_px.descent.is_finite()) {
+                    return None;
+                }
+                let xh = shaper
+                    .strut_x_height(style)
+                    .map(|x| x / size)
+                    .filter(|v| v.is_finite() && *v > 0.0);
+                Some((per_px, xh))
+            });
+            let strut_changed = self.nodes.block_strut(id).copied() != next
+                || self.nodes.block_x_height(id) != next_xh
+                || self.nodes.inline_strut(id) != next_inline;
+            if !strut_changed {
                 continue;
             }
             self.nodes.set_block_strut(id, next);
+            self.nodes.set_block_x_height(id, next_xh);
+            self.nodes.set_inline_strut(id, next_inline);
             self.note_layout_source_change();
             if self.presence_live(id) {
                 self.propagate_layout_from_node(id);

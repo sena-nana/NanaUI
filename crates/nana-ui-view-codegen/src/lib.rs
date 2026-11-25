@@ -1348,7 +1348,7 @@ impl Gen<'_> {
         if tag == "Span" {
             return Err(syn::Error::new(
                 span,
-                "Span must be a direct child of Inline",
+                "Span must be a direct child of Inline or an inline-content control",
             ));
         }
         if matches!(
@@ -1372,46 +1372,8 @@ impl Gen<'_> {
                 (quote_spanned!(span=> #krate::view::t(#message)), Vec::new())
             }
             ("Inline", _) => {
-                let mut out = quote_spanned!(span=> #krate::view::inline());
-                for child in children {
-                    out = match child {
-                        Node::Text(text) => {
-                            let text = string_prop(text);
-                            quote!(#out.text(#text))
-                        }
-                        Node::Expr(expr) => {
-                            let text = prop(&AttrValue::Expr(expr.clone()));
-                            quote!(#out.text(#text))
-                        }
-                        Node::Mixed(parts, at) => {
-                            let text = mixed_prop(parts, *at);
-                            quote!(#out.text(#text))
-                        }
-                        Node::Verbatim(text, _) => quote!(#out.text(#text)),
-                        Node::Element(element) if element.name == "Span" => {
-                            if element.attrs.iter().any(
-                                |attr| !matches!(&attr.name,AttrName::Plain(name) if name=="style"),
-                            ) {
-                                return Err(syn::Error::new(
-                                    element.name.span(),
-                                    "Inline Span takes only style={RichSpanStyle}",
-                                ));
-                            }
-                            let text = self.string_child(element, "value")?;
-                            let style = element
-                                .plain("style")
-                                .map(|attr| raw(&attr.value, span))
-                                .transpose()?
-                                .unwrap_or_else(|| quote!(::core::default::Default::default()));
-                            quote!(#out.span(#text,#style))
-                        }
-                        _ => {
-                            let child = self.node(child)?;
-                            quote!(#out.child(#child))
-                        }
-                    };
-                }
-                (out, Vec::new())
+                let base = quote_spanned!(span=> #krate::view::inline());
+                (self.inline_piece_chain(children, base)?, Vec::new())
             }
             ("Column" | "Row", _) => {
                 let make = format_ident!("{}", tag.to_lowercase(), span = span);
@@ -1496,9 +1458,47 @@ impl Gen<'_> {
             (_, Some(control)) => {
                 self.check_name(element, control);
                 let function = Ident::new(control.function, span);
+                let inline_attr = if control.field("content") == Some("InlineContent") {
+                    Some("content")
+                } else if control.field("inline_content") == Some("InlineContent") {
+                    Some("inline_content")
+                } else {
+                    None
+                };
+                let supports_inline = inline_attr.is_some();
+                let text_arg = control
+                    .arguments
+                    .iter()
+                    .find(|(_, kind)| *kind == "text")
+                    .map(|(name, _)| *name);
+                let rich_inline = supports_inline
+                    && !children.is_empty()
+                    && !matches!(
+                        children.as_slice(),
+                        [Node::Text(_) | Node::Mixed(..) | Node::Expr(_) | Node::Verbatim(..)]
+                    );
+                if rich_inline {
+                    if let Some(attr) = inline_attr
+                        && element.plain(attr).is_some()
+                    {
+                        return Err(syn::Error::new(
+                            span,
+                            format!("`<{tag}>` cannot take both `{attr}=` and inline children"),
+                        ));
+                    }
+                    if let Some(name) = text_arg
+                        && element.plain(name).is_some()
+                    {
+                        return Err(syn::Error::new(
+                            span,
+                            format!("`<{tag}>` cannot take both `{name}=` and inline children"),
+                        ));
+                    }
+                }
                 let mut args = Vec::new();
                 for &(name, kind) in control.arguments {
                     args.push(match kind {
+                        "text" if rich_inline => quote_spanned!(span=> ""),
                         "text" => self.string_child(element, name)?,
                         "expr" => {
                             let attr = element.plain(name).ok_or_else(|| {
@@ -1519,8 +1519,16 @@ impl Gen<'_> {
                 {
                     return Err(syn::Error::new(span, format!("`<{tag}>` has no children")));
                 }
+                let mut expr = quote_spanned!(span=> #krate::view::#function(#(#args),*));
+                if rich_inline {
+                    let pieces = self.inline_piece_chain(
+                        children,
+                        quote_spanned!(span=> #krate::view::inline_pieces()),
+                    )?;
+                    expr = quote_spanned!(span=> #expr.inline_children(#pieces));
+                }
                 (
-                    quote_spanned!(span=> #krate::view::#function(#(#args),*)),
+                    expr,
                     control.arguments.iter().map(|(name, _)| *name).collect(),
                 )
             }
@@ -1816,7 +1824,7 @@ impl Gen<'_> {
     /// argument (`<Button></Button>`), or no `label` on a control named only
     /// by it.
     fn check_name(&self, element: &Element, control: &Control) {
-        if element.plain("content").is_some() {
+        if element.plain("content").is_some() || element.plain("inline_content").is_some() {
             return;
         }
         let tag = control.tag;
@@ -1860,6 +1868,54 @@ impl Gen<'_> {
                 message,
             });
         }
+    }
+
+    fn inline_piece_chain(
+        &self,
+        children: &[Node],
+        mut out: TokenStream,
+    ) -> syn::Result<TokenStream> {
+        for child in children {
+            out =
+                match child {
+                    Node::Text(text) => {
+                        let text = string_prop(text);
+                        quote!(#out.text(#text))
+                    }
+                    Node::Expr(expr) => {
+                        let text = prop(&AttrValue::Expr(expr.clone()));
+                        quote!(#out.text(#text))
+                    }
+                    Node::Mixed(parts, at) => {
+                        let text = mixed_prop(parts, *at);
+                        quote!(#out.text(#text))
+                    }
+                    Node::Verbatim(text, _) => quote!(#out.text(#text)),
+                    Node::Element(element) if element.name == "Span" => {
+                        if element.attrs.iter().any(
+                            |attr| !matches!(&attr.name, AttrName::Plain(name) if name == "style"),
+                        ) {
+                            return Err(syn::Error::new(
+                                element.name.span(),
+                                "Inline Span takes only style={RichSpanStyle}",
+                            ));
+                        }
+                        let text = self.string_child(element, "value")?;
+                        let span = element.name.span();
+                        let style = element
+                            .plain("style")
+                            .map(|attr| raw(&attr.value, span))
+                            .transpose()?
+                            .unwrap_or_else(|| quote!(::core::default::Default::default()));
+                        quote!(#out.span(#text, #style))
+                    }
+                    _ => {
+                        let child = self.node(child)?;
+                        quote!(#out.child(#child))
+                    }
+                };
+        }
+        Ok(out)
     }
 
     fn string_child(&self, element: &Element, name: &str) -> syn::Result<TokenStream> {

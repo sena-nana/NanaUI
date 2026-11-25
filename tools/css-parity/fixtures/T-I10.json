@@ -1,0 +1,26 @@
+{
+  "id": "T-I10",
+  "title": "IFC vertical-align: sub | super and signed lengths",
+  "status": "pass",
+  "viewport": [360, 80],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "width:360px;font-size:20px;line-height:20px",
+    "children": [
+      { "id": "a", "style": "display:inline-flex;width:40px;height:16px" },
+      { "id": "b", "style": "display:inline-flex;width:40px;height:16px;vertical-align:sub" },
+      { "id": "c", "style": "display:inline-flex;width:40px;height:16px;vertical-align:super" },
+      { "id": "d", "style": "display:inline-flex;width:40px;height:16px;vertical-align:6px" },
+      { "id": "e", "style": "display:inline-flex;width:40px;height:16px;vertical-align:-4px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 360, "h": 27 },
+    { "id": "a", "x": 0, "y": 7, "w": 40, "h": 16 },
+    { "id": "b", "x": 40, "y": 11, "w": 40, "h": 16 },
+    { "id": "c", "x": 80, "y": 0, "w": 40, "h": 16 },
+    { "id": "d", "x": 120, "y": 1, "w": 40, "h": 16 },
+    { "id": "e", "x": 160, "y": 11, "w": 40, "h": 16 }
+  ]
+}

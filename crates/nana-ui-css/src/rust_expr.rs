@@ -28,8 +28,8 @@ use nana_ui_core::{
     TextAutospaceSpec, TextDecorationLine, TextEmphasisColor, TextEmphasisPosition,
     TextEmphasisShape, TextEmphasisStyle, TextJustifySpec, TextOrientationSpec, TextShadowSpec,
     TextSpacingTrimSpec, TextStrokeSpec, TextWeight, TextWrapStyleSpec, ThemeExpr, ThemeToken,
-    TransformBox, TransformOrigin, TypeRole, UserSelectSpec, ViewportAxis, VisibilitySpec,
-    WhiteSpaceSpec, WordBreakSpec, WritingModeSpec,
+    TransformBox, TransformOrigin, TypeRole, UserSelectSpec, VerticalAlignSpec, ViewportAxis,
+    VisibilitySpec, WhiteSpaceSpec, WordBreakSpec, WritingModeSpec,
 };
 
 pub(crate) trait EmitRust {
@@ -239,6 +239,41 @@ impl_unit_enum!(WhiteSpaceSpec, "WhiteSpaceSpec" => { Normal, Nowrap, Pre, PreWr
 impl_unit_enum!(WordBreakSpec, "WordBreakSpec" => { Normal, BreakAll, BreakWord });
 impl_unit_enum!(OverflowWrapSpec, "OverflowWrapSpec" => { Normal, Anywhere });
 impl_unit_enum!(TextAlignSpec, "TextAlignSpec" => { Start, Center, End, Left, Right, Justify });
+impl EmitRust for VerticalAlignSpec {
+    fn emit_rust(&self, m: &str, out: &mut String) {
+        match self {
+            Self::Baseline => {
+                let _ = write!(out, "{m}::VerticalAlignSpec::Baseline");
+            }
+            Self::Sub => {
+                let _ = write!(out, "{m}::VerticalAlignSpec::Sub");
+            }
+            Self::Super => {
+                let _ = write!(out, "{m}::VerticalAlignSpec::Super");
+            }
+            Self::TextTop => {
+                let _ = write!(out, "{m}::VerticalAlignSpec::TextTop");
+            }
+            Self::TextBottom => {
+                let _ = write!(out, "{m}::VerticalAlignSpec::TextBottom");
+            }
+            Self::Middle => {
+                let _ = write!(out, "{m}::VerticalAlignSpec::Middle");
+            }
+            Self::Top => {
+                let _ = write!(out, "{m}::VerticalAlignSpec::Top");
+            }
+            Self::Bottom => {
+                let _ = write!(out, "{m}::VerticalAlignSpec::Bottom");
+            }
+            Self::Offset(len) => {
+                let _ = write!(out, "{m}::VerticalAlignSpec::Offset(");
+                len.emit_rust(m, out);
+                out.push(')');
+            }
+        }
+    }
+}
 impl_unit_enum!(FontKerningSpec, "FontKerningSpec" => { Auto, Normal, None });
 impl_unit_enum!(LineBreakSpec, "LineBreakSpec" => { Auto, Normal, Anywhere, Strict, Loose });
 impl_unit_enum!(TextSpacingTrimSpec, "TextSpacingTrimSpec" => { SpaceAll, Normal, TrimBoth, Auto });
@@ -1516,6 +1551,7 @@ pub(crate) fn emit_patch_stmt(layout: &LayoutStyle, path: &str, m: &str, out: &m
             }
             "unsupported_writing_mode" => emit_set(&setter, &te.unsupported_writing_mode, m, out),
             "text_orientation" => emit_set(&setter, &te.text_orientation, m, out),
+            "vertical_align" => emit_set(&setter, &te.vertical_align, m, out),
             "placeholder_color" => emit_set(&setter, &te.placeholder_color, m, out),
             "placeholder_opacity" => emit_set(&setter, &te.placeholder_opacity, m, out),
             _ => panic!("unknown LayoutStyle leaf path: {path}"),

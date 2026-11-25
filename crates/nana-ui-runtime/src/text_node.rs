@@ -610,6 +610,8 @@ pub(crate) fn rich_text_objects(rich: &RichText) -> Vec<nana_text::InlineObject>
                     width_px,
                     ascent_px,
                     descent_px,
+                    align: nana_text::InlineObjectAlign::Baseline,
+                    baseline_shift_px: 0.0,
                     envelope: None,
                 },
             }

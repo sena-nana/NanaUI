@@ -59,6 +59,10 @@ impl<S: TextShaper + TextProbeTarget + ?Sized> TextShaper for CountingShaper<'_,
         self.inner.strut_metrics(style)
     }
 
+    fn strut_x_height(&mut self, style: &ComputedStyle) -> Option<f32> {
+        self.inner.strut_x_height(style)
+    }
+
     fn font_generation(&self) -> u64 {
         self.inner.font_generation()
     }

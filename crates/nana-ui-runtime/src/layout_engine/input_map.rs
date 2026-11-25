@@ -684,9 +684,14 @@ impl<'a> LayoutInputMap<'a> {
         writing: nana_ui_core::WritingContext,
         used: Size,
         margin: nana_ui_core::PaddingSpec,
-        fallback_font_px: f32,
+        parent_font_px: f32,
         inline_base: f32,
-    ) -> nana_text::InlineObjectMetrics {
+        parent_strut: crate::inline_content::ParentLineStrut,
+        viewport: crate::LayoutViewport,
+    ) -> (
+        nana_text::InlineObjectMetrics,
+        crate::inline_content::AtomLinePlacement,
+    ) {
         let block = writing.logical_size(used.width, used.height).1.max(0.0);
         let on_line_box = !writing.is_vertical() && self.atom_sits_on_line_box(id);
         // Every line reads one derived value: a caller that did not prime
@@ -708,7 +713,7 @@ impl<'a> LayoutInputMap<'a> {
         let baseline = on_line_box
             .then(|| {
                 let metrics =
-                    self.baseline_metrics(id, fallback_font_px, Some(inline_base), Some(used));
+                    self.baseline_metrics(id, parent_font_px, Some(inline_base), Some(used));
                 if first_only {
                     metrics.first.or(metrics.last)
                 } else {
@@ -717,7 +722,18 @@ impl<'a> LayoutInputMap<'a> {
             })
             .flatten()
             .map(|baseline| baseline.clamp(0.0, block));
-        crate::inline_content::atomic_metrics(writing, used.width, used.height, margin, baseline)
+        let default_style = nana_ui_core::LayoutStyle::default();
+        let child_style = self.style_ref(id);
+        crate::inline_content::resolve_atom_vertical_align(
+            child_style.as_deref().unwrap_or(&default_style),
+            writing,
+            used,
+            margin,
+            baseline,
+            parent_strut,
+            parent_font_px,
+            viewport,
+        )
     }
 
     /// Shared baseline authority for all formatting contexts. Retained

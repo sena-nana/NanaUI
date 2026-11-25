@@ -957,15 +957,17 @@ fn placed_objects(
                 continue;
             };
             let ascent = run.metrics.ascent_px;
+            let height = ascent + run.metrics.descent_px;
             // An envelope's gap is room after the object, not the object: the
             // box keeps its own width and the gap, closed up or not, follows
             // it in the line's direction.
+            let scale = request.constraints.scale.px_per_logical;
+            let has_label = label_box(request, object.offset).is_some();
+            let width_scaled = object.metrics.width_px.max(0.0) * scale;
+            let ratio = fit_ratio(request, object.offset, width_scaled, ObjectSizing::Fit);
             let (x, width) = match object.metrics.envelope {
-                Some(_) if label_box(request, object.offset).is_none() => {
-                    let own =
-                        object.metrics.width_px.max(0.0) * request.constraints.scale.px_per_logical;
-                    let own = (own * fit_ratio(request, object.offset, own, ObjectSizing::Fit))
-                        .min(run.advance_px);
+                Some(_) if !has_label => {
+                    let own = (width_scaled * ratio).min(run.advance_px);
                     let x = match run.direction {
                         RunDirection::Rtl => run.origin_x_px + run.advance_px - own,
                         _ => run.origin_x_px,
@@ -974,16 +976,25 @@ fn placed_objects(
                 }
                 _ => (run.origin_x_px, run.advance_px),
             };
+            let y = if has_label {
+                line.metrics.baseline_y_px - ascent
+            } else {
+                match object.metrics.align {
+                    crate::InlineObjectAlign::Baseline => {
+                        let shift = object.metrics.baseline_shift_px * scale * ratio;
+                        line.metrics.baseline_y_px - (ascent + shift)
+                    }
+                    crate::InlineObjectAlign::Top => line.metrics.top_y_px,
+                    crate::InlineObjectAlign::Bottom => {
+                        line.metrics.top_y_px + line.metrics.height_px - height
+                    }
+                }
+            };
             placed.push(super::ir::PlacedObject {
                 id: object.id,
                 offset: object.offset,
                 line: line.index,
-                rect: TextRect::new(
-                    x,
-                    line.metrics.baseline_y_px - ascent,
-                    width,
-                    ascent + run.metrics.descent_px,
-                ),
+                rect: TextRect::new(x, y, width, height),
             });
         }
     }
@@ -1027,6 +1038,30 @@ fn line_input<'r>(
                     .map(|envelope| (object.offset, envelope))
             })
             .collect(),
+        object_alignments: if request.source.objects().is_empty() {
+            Vec::new()
+        } else {
+            let scale = request.constraints.scale.px_per_logical;
+            request
+                .source
+                .objects()
+                .iter()
+                .map(|object| {
+                    let (align, shift) = if label_box(request, object.offset).is_some() {
+                        (crate::InlineObjectAlign::Baseline, 0.0)
+                    } else {
+                        let width_scaled = object.metrics.width_px.max(0.0) * scale;
+                        let ratio =
+                            fit_ratio(request, object.offset, width_scaled, ObjectSizing::Fit);
+                        (
+                            object.metrics.align,
+                            object.metrics.baseline_shift_px * scale * ratio,
+                        )
+                    };
+                    (object.offset, align, shift)
+                })
+                .collect()
+        },
         blocks: block_offsets(request.source),
     }
 }

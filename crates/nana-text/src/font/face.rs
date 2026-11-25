@@ -143,6 +143,7 @@ pub fn read_metrics(
         underline_thickness_px,
         strikeout_offset_px,
         strikeout_thickness_px,
+        x_height_px: x_height,
     })
 }
 

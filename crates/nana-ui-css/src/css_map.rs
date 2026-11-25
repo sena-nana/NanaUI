@@ -85,8 +85,8 @@ pub use nana_ui_core::box_layout::{
     GridRepeatAuto, GridTemplateAreas, GridTrack, GridTrackListUnsupported, JustifySpec,
     LayoutStyle, LengthAtom, LengthSpec, LineHeightSpec, LogicalEdge, LogicalEdges, OverflowSpec,
     PaddingSpec, ParentBox, PositionSpec, TextAlignSpec, TextOrientationSpec, TextShadowSpec,
-    UserSelectSpec, ViewportAxis, VisibilitySpec, WhiteSpaceSpec, WritingModeSpec,
-    resolve_grid_column_widths, resolve_grid_track_sizes,
+    UserSelectSpec, VerticalAlignSpec, ViewportAxis, VisibilitySpec, WhiteSpaceSpec,
+    WritingModeSpec, resolve_grid_column_widths, resolve_grid_track_sizes,
 };
 pub use nana_ui_core::{
     FontFeatureSetting, FontKerningSpec, FontVariationSetting, LineBreakSpec, TextAutospaceSpec,
@@ -2794,6 +2794,7 @@ impl LayoutStyleCss for LayoutStyle {
             "direction" => apply_css_direction(self, val),
             "writing-mode" => apply_css_writing_mode(self, val),
             "text-orientation" => apply_css_text_orientation(self, val),
+            "vertical-align" => apply_css_vertical_align(self, val),
             // Fail-closed: do not pretend bidi isolation or IFC bidi.
             "unicode-bidi" => {}
             "font-size" => {
@@ -3292,6 +3293,68 @@ fn apply_css_text_orientation(layout: &mut LayoutStyle, val: &str) {
         _ => return,
     };
     layout.set_text_orientation(next);
+}
+
+fn parse_vertical_align_length(input: &str) -> Option<LengthSpec> {
+    let s = input.trim();
+    if s.is_empty() || s.eq_ignore_ascii_case("auto") || s.eq_ignore_ascii_case("none") {
+        return None;
+    }
+    if matches!(s, "0" | "+0" | "-0") {
+        return Some(LengthSpec::Px(0.0));
+    }
+    if let Some(p) = s.strip_suffix('%') {
+        let pct = p.trim().parse::<f32>().ok()?;
+        return pct.is_finite().then_some(LengthSpec::Percent(pct));
+    }
+    if let Some(px) = s.strip_suffix("px").or_else(|| s.strip_suffix("PX")) {
+        let px = px.trim().parse::<f32>().ok()?;
+        return px.is_finite().then_some(LengthSpec::Px(px));
+    }
+    if let Some(spec) = parse_font_relative_length(s) {
+        return Some(spec);
+    }
+    let lower = s.to_ascii_lowercase();
+    if lower.starts_with("calc(")
+        || lower.starts_with("min(")
+        || lower.starts_with("max(")
+        || lower.starts_with("clamp(")
+        || lower.contains("vh")
+        || lower.contains("vw")
+        || lower.contains("vmin")
+        || lower.contains("vmax")
+    {
+        return match LengthSpec::parse(s)? {
+            LengthSpec::Fill => Some(LengthSpec::Percent(100.0)),
+            LengthSpec::Shrink
+            | LengthSpec::Auto
+            | LengthSpec::MinContent
+            | LengthSpec::MaxContent
+            | LengthSpec::FitContent => None,
+            other => Some(other),
+        };
+    }
+    None
+}
+
+fn apply_css_vertical_align(layout: &mut LayoutStyle, val: &str) {
+    let kw = val.trim().to_ascii_lowercase();
+    let next = match kw.as_str() {
+        "baseline" | "initial" | "unset" => VerticalAlignSpec::Baseline,
+        "sub" => VerticalAlignSpec::Sub,
+        "super" => VerticalAlignSpec::Super,
+        "text-top" => VerticalAlignSpec::TextTop,
+        "text-bottom" => VerticalAlignSpec::TextBottom,
+        "middle" => VerticalAlignSpec::Middle,
+        "top" => VerticalAlignSpec::Top,
+        "bottom" => VerticalAlignSpec::Bottom,
+        _ => match parse_vertical_align_length(val) {
+            Some(LengthSpec::Px(v)) if v == 0.0 => VerticalAlignSpec::Baseline,
+            Some(spec) => VerticalAlignSpec::Offset(spec),
+            None => return,
+        },
+    };
+    layout.set_vertical_align(next);
 }
 
 /// A logical two-value shorthand (`padding-inline`, `margin-block`, …): one
@@ -6907,6 +6970,71 @@ mod tests {
             skipped.text_ext.text_typography,
             nana_ui_core::TextTypography::INHERIT
         );
+    }
+
+    #[test]
+    fn vertical_align_parses_keywords_lengths_and_rejects_invalid() {
+        for (css, expected) in [
+            ("vertical-align: baseline", VerticalAlignSpec::Baseline),
+            ("vertical-align: sub", VerticalAlignSpec::Sub),
+            ("vertical-align: super", VerticalAlignSpec::Super),
+            ("vertical-align: text-top", VerticalAlignSpec::TextTop),
+            ("vertical-align: text-bottom", VerticalAlignSpec::TextBottom),
+            ("vertical-align: middle", VerticalAlignSpec::Middle),
+            ("vertical-align: top", VerticalAlignSpec::Top),
+            ("vertical-align: bottom", VerticalAlignSpec::Bottom),
+            ("vertical-align: 0", VerticalAlignSpec::Baseline),
+            (
+                "vertical-align: 10px",
+                VerticalAlignSpec::Offset(LengthSpec::Px(10.0)),
+            ),
+            (
+                "vertical-align: -8px",
+                VerticalAlignSpec::Offset(LengthSpec::Px(-8.0)),
+            ),
+            (
+                "vertical-align: 50%",
+                VerticalAlignSpec::Offset(LengthSpec::Percent(50.0)),
+            ),
+            (
+                "vertical-align: -25%",
+                VerticalAlignSpec::Offset(LengthSpec::Percent(-25.0)),
+            ),
+            (
+                "vertical-align: 0.5em",
+                VerticalAlignSpec::Offset(LengthSpec::Em(0.5)),
+            ),
+            (
+                "vertical-align: -1rem",
+                VerticalAlignSpec::Offset(LengthSpec::Rem(-1.0)),
+            ),
+        ] {
+            let mut layout = LayoutStyle::default();
+            layout.apply_css_text(css, None, None);
+            assert_eq!(layout.resolved_vertical_align(), expected, "{css}");
+        }
+
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("vertical-align: calc(50% - 4px)", None, None);
+        assert!(matches!(
+            layout.resolved_vertical_align(),
+            VerticalAlignSpec::Offset(LengthSpec::PercentOffset { .. })
+        ));
+
+        let mut stay = LayoutStyle::default();
+        stay.apply_css_text("vertical-align: top", None, None);
+        for invalid in [
+            "vertical-align: auto",
+            "vertical-align: foo",
+            "vertical-align: 2",
+        ] {
+            stay.apply_css_text(invalid, None, None);
+            assert_eq!(
+                stay.resolved_vertical_align(),
+                VerticalAlignSpec::Top,
+                "{invalid}"
+            );
+        }
     }
 
     /// The deprecated `word-break: break-word` a stylesheet writes breaks

@@ -196,7 +196,8 @@ impl UiWorld {
             let flex_or_grid = style
                 .display
                 .is_some_and(|d| d.is_flex_container() || d.is_grid_container());
-            !self.aligns_by_bottom_edge(id, &style)
+            style.resolved_vertical_align().uses_own_baseline()
+                && !self.aligns_by_bottom_edge(id, &style)
                 && (flex_or_grid || (!style.overflow_x.clips() && !style.overflow_y.clips()))
                 && (self.holds_line_box_in(id, memo)
                     || self.has_in_flow_flex_or_grid_item(id, &style))
@@ -240,6 +241,9 @@ impl UiWorld {
             {
                 !style.position.is_out_of_flow() && !style.omits_box()
             } else if style.is_inline_level() {
+                if !style.resolved_vertical_align().uses_own_baseline() {
+                    return false;
+                }
                 let flex_or_grid = style
                     .display
                     .is_some_and(|d| d.is_flex_container() || d.is_grid_container());
@@ -506,6 +510,56 @@ impl UiWorld {
         self.mark(id, DirtyMask::ACCESSIBILITY);
         self.recompute_node_theme_deps(id);
     }
+    /// Resolves the inline parent's font strut and x-height for `vertical-align`
+    /// keywords (`text-top`, `text-bottom`, `middle`, `sub`, `super`).
+    pub(crate) fn inline_parent_strut(
+        &self,
+        parent: StableNodeId,
+        parent_font_px: f32,
+    ) -> crate::inline_content::ParentLineStrut {
+        let font = self
+            .computed_style(parent)
+            .map_or(parent_font_px, |style| style.font_size)
+            .max(0.0);
+        let (font_ascent, font_descent, x_height) = self
+            .inline_strut(parent)
+            .or_else(|| {
+                self.block_strut(parent)
+                    .map(|strut| (strut, self.block_x_height(parent)))
+            })
+            .map(|(strut, x_h)| {
+                (
+                    font * strut.ascent,
+                    font * strut.descent,
+                    x_h.map_or(font * 0.5, |ratio| font * ratio),
+                )
+            })
+            .or_else(|| {
+                self.text_layout(parent).and_then(|(_, layout)| {
+                    layout.runs.iter().find(|run| !run.is_object()).map(|run| {
+                        let xh = if run.metrics.x_height_px.is_finite()
+                            && run.metrics.x_height_px > 0.0
+                        {
+                            run.metrics.x_height_px
+                        } else {
+                            font * 0.5
+                        };
+                        (run.metrics.ascent_px, run.metrics.descent_px, xh)
+                    })
+                })
+            })
+            .unwrap_or_else(|| {
+                let ascent = font * nana_ui_core::TEXT_APPROX_ASCENT_EM;
+                (ascent, font - ascent, font * 0.5)
+            });
+        crate::inline_content::ParentLineStrut {
+            font_ascent,
+            font_descent,
+            x_height,
+            font_px: font,
+        }
+    }
+
     /// Update only paragraphs reached by this layout scope. A pixel/hover
     /// mutation never calls this and equal exported metrics queue no work.
     pub(crate) fn sync_inline_metrics(
@@ -513,6 +567,7 @@ impl UiWorld {
         scope: &[StableNodeId],
         baseline_of: impl Fn(StableNodeId, bool) -> Option<f32>,
         mut solved: hashbrown::HashMap<StableNodeId, Arc<[nana_text::InlineObject]>>,
+        viewport: crate::LayoutViewport,
     ) {
         let mut parents = NodeSet::default();
         for &id in scope {
@@ -566,12 +621,23 @@ impl UiWorld {
                         .then(|| baseline_of(atom.node, first_only).or(retained))
                         .flatten()
                         .map(|baseline| baseline.clamp(0.0, block_size.max(0.0)));
-                    let metrics = crate::inline_content::atomic_metrics(
+                    let default_style = nana_ui_core::LayoutStyle::default();
+                    let child_style = self.layout_style(atom.node);
+                    let parent_font_px = self
+                        .computed_style(parent)
+                        .map_or(nana_ui_core::FontSizeContext::DEFAULT_ROOT_PX, |style| {
+                            style.font_size
+                        });
+                    let parent_strut = self.inline_parent_strut(parent, parent_font_px);
+                    let (metrics, _) = crate::inline_content::resolve_atom_vertical_align(
+                        child_style.as_deref().unwrap_or(&default_style),
                         writing,
-                        bounds.width,
-                        bounds.height,
+                        crate::layout_engine::Size::new(bounds.width, bounds.height),
                         margin,
                         baseline,
+                        parent_strut,
+                        parent_font_px,
+                        viewport,
                     );
                     nana_text::InlineObject {
                         offset: atom.offset,
@@ -583,6 +649,8 @@ impl UiWorld {
                                 width_px: 0.0,
                                 ascent_px: 0.0,
                                 descent_px: 0.0,
+                                align: nana_text::InlineObjectAlign::Baseline,
+                                baseline_shift_px: 0.0,
                                 envelope: None,
                             }
                         },

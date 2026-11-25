@@ -264,6 +264,39 @@ impl TextAlignSpec {
     }
 }
 
+/// CSS `vertical-align` subset for inline-level boxes in IFC and native paragraphs.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub enum VerticalAlignSpec {
+    #[default]
+    Baseline,
+    Sub,
+    Super,
+    TextTop,
+    TextBottom,
+    Middle,
+    Top,
+    Bottom,
+    /// Positive raises the box above the baseline; negative lowers it.
+    /// Percentages resolve against the element's own used `line-height` (CSS 2.1 §10.8.1).
+    Offset(LengthSpec),
+}
+
+impl VerticalAlignSpec {
+    /// Whether alignment is relative to the line box (`top` / `bottom`) rather
+    /// than the parent's baseline / font metrics.
+    pub const fn is_line_box_relative(self) -> bool {
+        matches!(self, Self::Top | Self::Bottom)
+    }
+
+    /// Whether the atom's own baseline participates in placing it on the line.
+    pub const fn uses_own_baseline(self) -> bool {
+        matches!(
+            self,
+            Self::Baseline | Self::Sub | Self::Super | Self::Offset(_)
+        )
+    }
+}
+
 /// `white-space` 子集。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WhiteSpaceSpec {

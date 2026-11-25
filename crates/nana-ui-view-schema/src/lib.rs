@@ -168,6 +168,7 @@ macro_rules! for_each_control {
             with { on_change: SelectChanged, on_toggle: SelectToggled }
             model value: Option<Arc<str>> => SelectChanged |event| Some(event.value.clone());
             ListItem => list_item(label: text) for ListItem {
+                inline_content: InlineContent = inline,
                 label: String = set,
                 note: String = set,
                 detail: String = set,
@@ -209,6 +210,11 @@ macro_rules! for_each_control {
                 resource: TextureSlotName = set,
                 opacity: f32 = set,
                 corner_radius: f32 = set,
+            };
+            Icon => icon(icon: expr) for IconGlyph {
+                icon: Icon = set,
+                size: f32 = builder,
+                decorative: bool = set,
             };
             IconButton => icon_button(icon: expr, label: text) for IconButton {
                 icon: Icon = set,

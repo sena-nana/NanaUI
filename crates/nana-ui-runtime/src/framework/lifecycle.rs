@@ -18,7 +18,26 @@ impl AppContext {
         item: Entity<ListItem>,
         slots: ListItemSlots,
     ) -> Result<bool, FrameworkError> {
-        self.sync_list_item_children(item, slots)
+        let will_need_copy = self.read(item, |row| {
+            slots.content.is_none()
+                && (row.after_label.is_some()
+                    || (row.content_has_atoms()
+                        && (slots.leading.is_some() || slots.trailing.is_some())))
+        })?;
+        if will_need_copy && self.world.inline_record(item.id).is_some() {
+            let mut clear = MutationQueue::new();
+            clear.set_text(item.id, crate::TextContent { value: "".into() });
+            self.commit_mutations(clear)?;
+        }
+        let mut changed = self.sync_list_item_children(item, slots)?;
+        if will_need_copy
+            || self
+                .assembled_slot::<crate::view_components::ListItemAssembled>(item.id)
+                .is_some()
+        {
+            changed |= self.assemble_list_item(item)?;
+        }
+        Ok(changed)
     }
 
     pub(crate) fn assemble_list_item(
@@ -40,15 +59,18 @@ impl AppContext {
             .node(item.id)
             .ok_or(FrameworkError::MissingView(item.id))?
             .document;
-        let (after_label, content, label, note, detail) = self.read(item, |row| {
-            (
-                row.after_label,
-                row.slots.content,
-                row.label.clone(),
-                row.note.clone(),
-                row.detail.clone(),
-            )
-        })?;
+        let (after_label, content, inline_content, label, note, detail, needs_copy) =
+            self.read(item, |row| {
+                (
+                    row.after_label,
+                    row.slots.content,
+                    row.content.clone(),
+                    row.label.clone(),
+                    row.note.clone(),
+                    row.detail.clone(),
+                    row.needs_assembled_copy(),
+                )
+            })?;
         let existing_assembled = self
             .assembled_slot::<crate::view_components::ListItemAssembled>(item.id)
             .cloned()
@@ -66,10 +88,15 @@ impl AppContext {
         } else {
             None
         };
-        let Some(mark) = mark else {
+        let should_assemble =
+            needs_copy && content.is_none() && (mark.is_some() || inline_content.is_some());
+        if !should_assemble {
             let mut cleared = false;
             if let Some(line) = live(self, label_line_slot) {
                 self.reconcile_children(line, &[])?;
+            }
+            if let Some(label_id) = live(self, label_slot) {
+                self.reconcile_children(label_id, &[])?;
             }
             if let Some(copy) = live(self, copy_slot) {
                 self.reconcile_children(copy, &[])?;
@@ -106,7 +133,7 @@ impl AppContext {
                 cleared = true;
             }
             return Ok(cleared);
-        };
+        }
 
         let label_text_style = |hidden: bool| {
             let mut style = NodeStyle::default();
@@ -155,12 +182,18 @@ impl AppContext {
         };
 
         let mut changed = false;
+        let label_atoms: Vec<StableNodeId> = inline_content
+            .as_deref()
+            .map(|inline| inline.atoms().iter().map(|atom| atom.node).collect())
+            .unwrap_or_default();
         let label_id = match live(self, label_slot) {
             Some(id) => {
                 self.update_component(Entity::<Text>::from_stable_id(id), |text, _| {
                     let style = label_text_style(label.is_empty());
-                    if text.value != label || text.style != style {
+                    if text.value != label || text.content != inline_content || text.style != style
+                    {
                         text.value = label.clone();
+                        text.content = inline_content.clone();
                         text.style = style;
                     }
                 })?;
@@ -168,15 +201,15 @@ impl AppContext {
             }
             None => {
                 changed = true;
-                self.create_detached_component(
-                    document,
-                    Text::new(label.clone())
-                        .decorative()
-                        .style(label_text_style(label.is_empty())),
-                )?
-                .stable_id()
+                let mut component = Text::new(label.clone())
+                    .decorative()
+                    .style(label_text_style(label.is_empty()));
+                component.content = inline_content.clone();
+                self.create_detached_component(document, component)?
+                    .stable_id()
             }
         };
+        changed |= self.reconcile_children(label_id, &label_atoms)?;
         let note_id = match (live(self, note_slot), !note.is_empty()) {
             (Some(id), _) => {
                 self.update_component(Entity::<Text>::from_stable_id(id), |text, _| {
@@ -253,7 +286,7 @@ impl AppContext {
             }
         };
         let line_children: Vec<_> = std::iter::once(label_id)
-            .chain(std::iter::once(mark))
+            .chain(mark)
             .chain(note_id)
             .collect();
         changed |= self.reconcile_children(line_id, &line_children)?;
@@ -308,11 +341,31 @@ impl AppContext {
             item: item.id,
             slot: Some(slot),
         };
+        let inline_atoms: Vec<StableNodeId> = if copy_slot.is_none() && slots.content.is_none() {
+            self.read(item, |row| {
+                row.content
+                    .as_deref()
+                    .map(|content| {
+                        content
+                            .atoms()
+                            .iter()
+                            .map(|atom| atom.node)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            })?
+            .into_iter()
+            .filter(|id| self.world.contains(*id))
+            .collect()
+        } else {
+            Vec::new()
+        };
         let mut bands = Vec::new();
         let mut extra_body = Vec::new();
         let mut tooltip_anchors = Vec::new();
         for &child in &item_node.children {
-            if unique.contains(&child) || Some(child) == copy_slot {
+            if unique.contains(&child) || Some(child) == copy_slot || inline_atoms.contains(&child)
+            {
                 continue;
             }
             if crate::view_components::is_list_item_band(&self.world, child) {
@@ -364,6 +417,7 @@ impl AppContext {
         if let Some(middle) = middle {
             children.push(middle);
         }
+        children.extend(inline_atoms);
         children.extend(extra_body.iter().copied());
         if let Some((slot, band)) = trailing {
             children.push(band.unwrap_or(slot));

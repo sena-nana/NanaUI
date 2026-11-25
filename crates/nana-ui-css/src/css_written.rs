@@ -374,6 +374,7 @@ const WITNESS_DECLARATIONS: &[(&str, &str)] = &[
     ("writing-mode", "vertical-rl"),
     ("writing-mode", "sideways-lr"),
     ("text-orientation", "upright"),
+    ("vertical-align", "top"),
     ("font-size", "13px"),
     ("font-weight", "700"),
     ("font-style", "italic"),

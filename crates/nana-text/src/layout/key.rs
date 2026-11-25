@@ -175,10 +175,10 @@ pub(crate) struct LayoutKey {
     /// not a shaping input, so it cannot come in through the shaped identity.
     run_line_heights: Vec<u32>,
     empty_line_height: u32,
-    /// Every inline object's offset and box (width, ascent, descent). Not a
+    /// Every inline object's offset and box (width, ascent, descent, align, shift). Not a
     /// shaping input — objects shape as placeholders — so it cannot come in
     /// through the shaped identity either.
-    objects: Vec<(usize, [u32; 7])>,
+    objects: Vec<(usize, [u32; 9])>,
     /// Every object placement's offset, flow and fitting, as bits. A source
     /// at the same revision may place the same objects differently.
     placements: Vec<(usize, u32)>,
@@ -247,6 +247,8 @@ impl LayoutKey {
                             canonical_f32_bits(object.metrics.width_px),
                             canonical_f32_bits(object.metrics.ascent_px),
                             canonical_f32_bits(object.metrics.descent_px),
+                            object.metrics.align as u32,
+                            canonical_f32_bits(object.metrics.baseline_shift_px),
                             u32::from(envelope.is_some()),
                             envelope.map_or(0, |envelope| canonical_f32_bits(envelope.gap_px)),
                             envelope
@@ -287,7 +289,7 @@ impl LayoutKey {
             + self.run_line_heights.capacity() * std::mem::size_of::<u32>()
             + self.paragraph_alignments.capacity()
                 * std::mem::size_of::<(usize, Option<TextAlignSpec>)>()
-            + self.objects.capacity() * std::mem::size_of::<(usize, [u32; 7])>()
+            + self.objects.capacity() * std::mem::size_of::<(usize, [u32; 9])>()
             + self.placements.capacity() * std::mem::size_of::<(usize, u32)>()
             + self.emphasis.capacity()
                 * std::mem::size_of::<(std::ops::Range<usize>, bool, Arc<ShapedText>)>()

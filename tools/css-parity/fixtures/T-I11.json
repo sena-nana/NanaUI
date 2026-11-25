@@ -1,0 +1,24 @@
+{
+  "id": "T-I11",
+  "title": "IFC vertical-align: percentages against child line-height and calc()",
+  "status": "pass",
+  "viewport": [300, 80],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "width:300px;font-size:20px;line-height:40px",
+    "children": [
+      { "id": "a", "style": "display:inline-flex;width:40px;height:20px" },
+      { "id": "b", "style": "display:inline-flex;width:40px;height:20px;line-height:20px;vertical-align:50%" },
+      { "id": "c", "style": "display:inline-flex;width:40px;height:20px;line-height:20px;vertical-align:-25%" },
+      { "id": "d", "style": "display:inline-flex;width:40px;height:20px;line-height:20px;vertical-align:calc(50% - 2px)" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 300, "h": 44 },
+    { "id": "a", "x": 0, "y": 10, "w": 40, "h": 20 },
+    { "id": "b", "x": 40, "y": 0, "w": 40, "h": 20 },
+    { "id": "c", "x": 80, "y": 15, "w": 40, "h": 20 },
+    { "id": "d", "x": 120, "y": 2, "w": 40, "h": 20 }
+  ]
+}

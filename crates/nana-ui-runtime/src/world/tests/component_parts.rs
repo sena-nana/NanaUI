@@ -8000,4 +8000,168 @@ mod modal_theme_colors {
             }
         }
     }
+
+    #[test]
+    fn list_item_inline_content_fast_path_styled_and_slotted_projection() {
+        use crate::{IconGlyph, InlineContent, ListItem};
+        use nana_ui_core::Icon;
+
+        let mut shaper = bundled_face_shaper();
+        // 1. Plain-text `.content("Save")` matches `ListItem::new("Save")` with 0 inline overhead.
+        let mut plain_cx = AppContext::new();
+        let root = plain_cx
+            .create_component(document(), Stack::column(0.0).width(LengthSpec::Px(280.0)))
+            .unwrap();
+        let row_plain = plain_cx
+            .create_detached_component(document(), ListItem::new("").content("Save"))
+            .unwrap();
+        plain_cx.append_child(root, row_plain).unwrap();
+        product_frame(&mut plain_cx, document(), viewport(), &mut shaper);
+        let steady = product_frame(&mut plain_cx, document(), viewport(), &mut shaper);
+        assert_eq!(plain_cx.world().len(), 2);
+        assert!(
+            plain_cx
+                .world()
+                .inline_record(row_plain.stable_id())
+                .is_none()
+        );
+        assert!(plain_cx.world().rich_text(row_plain.stable_id()).is_none());
+        assert_eq!(plain_cx.world().text(row_plain.stable_id()), Some("Save"));
+        assert_eq!(steady.execution.inline_reflows, 0);
+        assert_eq!(steady.execution.inline_atomic_measure_requests, 0);
+
+        // 2. Styled text + leading slot projects directly onto the row with 0 wrapper entities.
+        let mut styled_cx = AppContext::new();
+        let root = styled_cx
+            .create_component(document(), Stack::column(0.0).width(LengthSpec::Px(280.0)))
+            .unwrap();
+        let lead = styled_cx
+            .create_detached_component(document(), IconGlyph::new(Icon::Add))
+            .unwrap();
+        let rich = InlineContent::builder()
+            .styled("Save", nana_ui_core::RichSpanStyle::new().size(18.0))
+            .build();
+        let row_styled = styled_cx
+            .create_detached_component(document(), ListItem::new("").content(rich))
+            .unwrap();
+        styled_cx.append_child(root, row_styled).unwrap();
+        styled_cx.append_child(row_styled, lead).unwrap();
+        styled_cx
+            .set_list_item_slots(
+                row_styled,
+                crate::ListItemSlots {
+                    leading: Some(lead.stable_id()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        product_frame(&mut styled_cx, document(), viewport(), &mut shaper);
+        assert_eq!(styled_cx.world().len(), 3);
+        assert!(
+            styled_cx
+                .world()
+                .rich_text(row_styled.stable_id())
+                .is_some()
+        );
+        assert!(
+            styled_cx
+                .world()
+                .inline_record(row_styled.stable_id())
+                .is_none()
+        );
+
+        // 3. Slotless mixed content stays on the direct 0-wrapper-entity path.
+        let mut slotless_cx = AppContext::new();
+        let root = slotless_cx
+            .create_component(document(), Stack::column(0.0).width(LengthSpec::Px(280.0)))
+            .unwrap();
+        let atom = slotless_cx
+            .create_detached_component(document(), IconGlyph::new(Icon::Add))
+            .unwrap();
+        let mixed = InlineContent::builder()
+            .child(atom.stable_id())
+            .text("Row")
+            .build();
+        let row_slotless = slotless_cx
+            .create_detached_component(document(), ListItem::new("").content(mixed))
+            .unwrap();
+        slotless_cx.append_child(root, row_slotless).unwrap();
+        slotless_cx.append_child(row_slotless, atom).unwrap();
+        product_frame(&mut slotless_cx, document(), viewport(), &mut shaper);
+        assert_eq!(slotless_cx.world().len(), 3);
+        assert!(
+            slotless_cx
+                .world()
+                .inline_record(row_slotless.stable_id())
+                .is_some()
+        );
+        assert_eq!(
+            slotless_cx
+                .world()
+                .inline_content(row_slotless.stable_id())
+                .unwrap()
+                .atoms()
+                .len(),
+            1
+        );
+
+        // 4. Mixed content + leading slot projects into the assembled `label_slot`.
+        let mut slotted_cx = AppContext::new();
+        let root = slotted_cx
+            .create_component(document(), Stack::column(0.0).width(LengthSpec::Px(280.0)))
+            .unwrap();
+        let lead = slotted_cx
+            .create_detached_component(document(), IconGlyph::new(Icon::Search))
+            .unwrap();
+        let inline_atom = slotted_cx
+            .create_detached_component(document(), IconGlyph::new(Icon::Add))
+            .unwrap();
+        let mixed = InlineContent::builder()
+            .child(inline_atom.stable_id())
+            .text("Row")
+            .build();
+        let row_slotted = slotted_cx
+            .create_detached_component(document(), ListItem::new("").content(mixed))
+            .unwrap();
+        slotted_cx.append_child(root, row_slotted).unwrap();
+        slotted_cx.append_child(row_slotted, inline_atom).unwrap();
+        slotted_cx
+            .set_list_item_slots(
+                row_slotted,
+                crate::ListItemSlots {
+                    leading: Some(lead.stable_id()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        product_frame(&mut slotted_cx, document(), viewport(), &mut shaper);
+        assert!(
+            slotted_cx
+                .world()
+                .inline_record(row_slotted.stable_id())
+                .is_none()
+        );
+        let copy_slot = slotted_cx
+            .world()
+            .node(row_slotted.stable_id())
+            .unwrap()
+            .children
+            .iter()
+            .copied()
+            .find(|&id| id != lead.stable_id())
+            .expect("assembled copy slot");
+        assert!(
+            slotted_cx
+                .world()
+                .inline_record(inline_atom.stable_id())
+                .is_none()
+        );
+        let label_line = slotted_cx.world().node(copy_slot).unwrap().children[0];
+        let label_slot = slotted_cx.world().node(label_line).unwrap().children[0];
+        assert!(slotted_cx.world().inline_record(label_slot).is_some());
+        assert_eq!(
+            slotted_cx.world().node(label_slot).unwrap().children,
+            vec![inline_atom.stable_id()]
+        );
+    }
 }

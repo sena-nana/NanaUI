@@ -1,0 +1,22 @@
+{
+  "id": "T-I12",
+  "title": "IFC vertical-align: tall bottom shifts baseline downward alongside top and baseline",
+  "status": "pass",
+  "viewport": [300, 80],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "width:300px;font-size:20px;line-height:20px",
+    "children": [
+      { "id": "a", "style": "display:inline-flex;width:40px;height:20px" },
+      { "id": "b", "style": "display:inline-flex;width:40px;height:10px;vertical-align:top" },
+      { "id": "c", "style": "display:inline-flex;width:40px;height:40px;vertical-align:bottom" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 300, "h": 40 },
+    { "id": "a", "x": 0, "y": 16, "w": 40, "h": 20 },
+    { "id": "b", "x": 40, "y": 0, "w": 40, "h": 10 },
+    { "id": "c", "x": 80, "y": 0, "w": 40, "h": 40 }
+  ]
+}

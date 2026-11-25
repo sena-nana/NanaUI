@@ -743,7 +743,10 @@ impl Rewrite<'_> {
         }
         // A text-bearing element's one child is its value.
         if builtin
-            && matches!(name.as_str(), "Text" | "Button" | "Checkbox")
+            && matches!(
+                name.as_str(),
+                "Text" | "Button" | "Checkbox" | "Chip" | "ListItem" | "ActionMenuItem"
+            )
             && let [child @ Node::Mixed(..)] = element.children.as_mut_slice()
         {
             if let Some(value) = self.text(child, &format!("<{name}> 文本")) {

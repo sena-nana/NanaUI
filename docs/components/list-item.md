@@ -2,7 +2,7 @@
 
 `list_item(label)` 创建一行列表项。`label` 既是构造参数，也是可读的主文本。
 
-模板里的标签是 `<ListItem>`。子文本和 `label` 都写成这一个字段。
+模板里的标签是 `<ListItem>`。单段子文本和 `label` 都写成 `label` 字段；包含 `<Icon>`、`<Span>` 或多段子项时，模板下沉到 `El::inline_children` / `ListItem::content`（`InlineContent`），纯文本仍保持零包装实体直通路径，无前后槽时的样式文本与行内混排也直接投影到行本身；与 `.leading` / `.trailing` 或 `.after_label` 共存时，带原子的混排内容通过装配后的 `label_slot` 承载（`El<ListItem>::content` 仍为自定义内容槽，结构化行内绑定字段名为 `inline_content`）。
 
 ## 基本用法
 

@@ -2,7 +2,7 @@
 
 `list_item(label)` creates one list row. `label` is both the constructor argument and the readable main text.
 
-The template tag is `<ListItem>`. Child text and `label` both write to this one field.
+The template tag is `<ListItem>`. Single string children and `label` both write to `label`. When children include `<Icon>`, `<Span>`, or multiple inline pieces, templates lower to `El::inline_children` / `ListItem::content` (`InlineContent`): plain text stays on the zero-wrapper-entity fast path, slotless styled or mixed content projects directly on the row, and mixed content alongside `.leading` / `.trailing` or `.after_label` projects via the assembled `label_slot` (`El<ListItem>::content` stays the custom body slot helper, while structured inline binding uses `inline_content`).
 
 ## Basic usage
 

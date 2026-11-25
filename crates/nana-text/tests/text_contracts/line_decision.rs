@@ -447,6 +447,7 @@ fn lay_out_badge(
             ascent_px: em,
             descent_px: 0.0,
             envelope,
+            ..InlineObjectMetrics::default()
         },
     }]);
     let mut counters = TextWorkCounters::default();

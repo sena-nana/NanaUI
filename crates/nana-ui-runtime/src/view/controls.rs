@@ -228,7 +228,6 @@ styled!(
     FormField,
     Breadcrumb,
     StatusBar,
-    IconGlyph,
     GpuView,
     Video,
     SidebarRow,
@@ -239,6 +238,11 @@ styled!(
     AppTitleBar,
     OverlayHost
 );
+
+/// An inline icon glyph (`<Icon icon={...}/>`).
+pub fn icon(icon: Icon) -> El<IconGlyph> {
+    widget(IconGlyph::new(icon))
+}
 
 /// Expands the control table of `nana-ui-view-schema`: per control, one
 /// [`FieldWrite`] and `El` setter per field, `model` and event methods, and

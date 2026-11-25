@@ -3558,3 +3558,55 @@ fn a_pickable_thumbnail_binds_from_a_template() {
         .intrinsic_size(Some((512, 256)))
         .on_pick(|_: &ThumbnailPick| {});
 }
+
+#[test]
+fn builtin_icon_and_inline_content_controls_match_hand_written_builders() {
+    use nana_ui_core::Icon;
+    use nana_ui_runtime::view::{action_menu_item, chip, icon, inline_pieces, list_item};
+
+    let (mut cx_t, doc) = (AppContext::new(), DocumentId::new(1).unwrap());
+    let mut cx_f = AppContext::new();
+    let label = signal("Add".to_owned());
+    let t = cx_t
+        .mount_view_root(doc, move || {
+            view! {
+                <Column>
+                    <Icon icon={Icon::Add} size={14.0} />
+                    <Button><Icon icon={Icon::Search} size={14.0} />{label}</Button>
+                    <Text>"hi "<Span style={nana_ui_core::RichSpanStyle::new().size(18.0)}>"big"</Span></Text>
+                    <Chip><Icon icon={Icon::Close} />"Tag"</Chip>
+                    <ListItem><Icon icon={Icon::Add} />"Row"</ListItem>
+                    <ActionMenuItem><Icon icon={Icon::Add} />"Open"</ActionMenuItem>
+                    <Button>"Plain"</Button>
+                </Column>
+            }
+        })
+        .unwrap();
+    let f = cx_f
+        .mount_view_root(doc, || {
+            column().children((
+                icon(Icon::Add).size(14.0),
+                button("").inline_children(
+                    inline_pieces()
+                        .child(icon(Icon::Search).size(14.0))
+                        .text("Add"),
+                ),
+                text("").inline_children(
+                    inline_pieces()
+                        .text("hi ")
+                        .span("big", nana_ui_core::RichSpanStyle::new().size(18.0)),
+                ),
+                chip("").inline_children(inline_pieces().child(icon(Icon::Close)).text("Tag")),
+                list_item("").inline_children(inline_pieces().child(icon(Icon::Add)).text("Row")),
+                action_menu_item("")
+                    .inline_children(inline_pieces().child(icon(Icon::Add)).text("Open")),
+                button("Plain"),
+            ))
+        })
+        .unwrap();
+    assert_eq!(dump(&cx_t, t.roots()[0]), dump(&cx_f, f.roots()[0]));
+    let kids = &cx_t.world().node(t.roots()[0]).unwrap().children;
+    assert!(cx_t.world().inline_record(kids[1]).is_some());
+    assert!(cx_t.world().rich_text(kids[2]).is_some());
+    assert!(cx_t.world().inline_record(kids[6]).is_none());
+}

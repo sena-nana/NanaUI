@@ -613,6 +613,7 @@ impl AppContext {
                         .intrinsic_baseline(document, id, first_only)
                 },
                 inline_objects,
+                viewport,
             );
             #[cfg(feature = "benchmark")]
             phase.lap(13);
