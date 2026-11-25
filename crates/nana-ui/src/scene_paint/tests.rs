@@ -17338,13 +17338,20 @@ fn porter_duff_modes_and_masks_render_and_clear_accurately() {
     );
     assert_eq!(pixel(&cleared, 40, 20, 20), [0, 0, 0, 0]);
 
-    // Lighter sums clamped channels; SourceIn keeps source RGB inside destination alpha.
+    // Lighter sums linear premultiplied channels and clamps above 1.0; SourceIn keeps source RGB inside destination alpha.
     let blended = paint_one_painter_onto(
         PaintFn(|cx: &mut PaintContext<'_>| {
             cx.push_layer(1.0, BlendMode::Normal);
-            cx.fill_path(&rect_path(0.0, 0.0, 20.0, 20.0), [0.4, 0.0, 0.0, 1.0]);
+            cx.fill_path(&rect_path(0.0, 0.0, 10.0, 20.0), [0.4, 0.0, 0.0, 1.0]);
             cx.set_blend(BlendMode::Lighter);
-            cx.fill_path(&rect_path(0.0, 0.0, 20.0, 20.0), [0.4, 0.5, 0.0, 1.0]);
+            cx.fill_path(&rect_path(0.0, 0.0, 10.0, 20.0), [0.4, 0.5, 0.0, 1.0]);
+            cx.pop_layer();
+
+            // Two bright inputs clamp to 1.0 (255).
+            cx.push_layer(1.0, BlendMode::Normal);
+            cx.fill_path(&rect_path(10.0, 0.0, 10.0, 20.0), [0.8, 0.0, 0.0, 1.0]);
+            cx.set_blend(BlendMode::Lighter);
+            cx.fill_path(&rect_path(10.0, 0.0, 10.0, 20.0), [0.8, 0.0, 0.0, 1.0]);
             cx.pop_layer();
 
             cx.push_layer(1.0, BlendMode::Normal);
@@ -17359,10 +17366,16 @@ fn porter_duff_modes_and_masks_render_and_clear_accurately() {
         [0.0, 0.0, 0.0, 0.0],
         |_| {},
     );
-    let sum_px = pixel(&blended, 40, 10, 10);
+    // In linear Rgba8Unorm, sRGB 0.4 -> ~0.133 linear (sum ~0.266 -> 68/255) and 0.5 -> ~0.214 (55/255).
+    let sum_px = pixel(&blended, 40, 5, 10);
     assert!(
-        sum_px[0] > 190 && sum_px[1] > 110,
-        "Lighter sum: {sum_px:?}"
+        sum_px[0].abs_diff(68) <= 3 && sum_px[1].abs_diff(55) <= 3 && sum_px[3] == 255,
+        "Lighter linear sum: {sum_px:?}"
+    );
+    assert_eq!(
+        pixel(&blended, 40, 15, 10),
+        [255, 0, 0, 255],
+        "Lighter clamps above 1.0"
     );
     assert_eq!(pixel(&blended, 40, 30, 10), [0, 0, 255, 255]);
     assert_eq!(pixel(&blended, 40, 21, 10), [0, 0, 0, 0]);
@@ -17655,11 +17668,11 @@ fn analytic_solid_shadow_and_thin_gpu_stroke_render_accurately() {
                     shadow: Some(shadow),
                 },
             );
-            // Thin 1.0px curved stroke rendered via GPU stroke primitive.
+            // Thin 1.0px curved stroke aligned to pixel row 48 center (`y = 48.5`).
             let mut curve = PaintPath::new();
             curve
-                .move_to(8.0, 48.0)
-                .cubic_to(24.0, 48.0, 56.0, 48.0, 72.0, 48.0);
+                .move_to(8.0, 48.5)
+                .cubic_to(24.0, 48.5, 56.0, 48.5, 72.0, 48.5);
             cx.stroke_path(&curve, StrokeStyle::new(1.0), [0.0, 1.0, 0.0, 1.0]);
         }),
         80,
