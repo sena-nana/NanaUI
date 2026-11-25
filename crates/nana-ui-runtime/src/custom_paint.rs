@@ -218,8 +218,10 @@ pub struct PaintTextMetrics {
     pub lines: Vec<PaintTextLineMetrics>,
 }
 
-/// 与下层内容的混合方式，同 CSS `mix-blend-mode`。
+/// 与下层内容的混合方式，同 CSS `mix-blend-mode` 与 Canvas Porter-Duff 合成模式。
 pub type BlendMode = nana_ui_core::MixBlendMode;
+/// Mask sampling mode for [`PaintContext::push_mask`].
+pub type MaskKind = nana_ui_core::MaskKind;
 
 /// Host text services invoked during custom paint recording.
 pub(crate) trait PaintTextHost {
@@ -458,8 +460,24 @@ pub enum GradientShape {
     Linear { start: [f32; 2], end: [f32; 2] },
     /// 以 `center` 为圆心，`t = 0` 在圆心、`t = 1` 在半径处。
     Radial { center: [f32; 2], radius: f32 },
+    /// Two-circle focal radial gradient (`(x0, y0, r0)` -> `(x1, y1, r1)`).
+    RadialTwoCircle {
+        start: [f32; 2],
+        start_radius: f32,
+        end: [f32; 2],
+        end_radius: f32,
+    },
     /// 绕 `center` 一周，`t = 0` 在 `start_angle`（弧度，0 指向 +x，顺时针为正，y 轴向下）。
     Conic { center: [f32; 2], start_angle: f32 },
+}
+
+/// Color space in which gradient stops interpolate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GradientColorSpace {
+    #[default]
+    PremulSrgb,
+    LinearScRgb,
+    Oklab,
 }
 
 /// `t` 落在 `0..=1` 之外时怎么取色。
@@ -472,13 +490,14 @@ pub enum GradientExtend {
     Reflect,
 }
 
-/// 线性 / 径向 / 锥形渐变。色标在 retained linear scRGB 中按
-/// premultiplied 方式插值；sRGB 输入只在进入 Scene 时解码一次。
+/// 线性 / 径向 / 锥形渐变。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Gradient {
     pub shape: GradientShape,
     pub stops: Vec<ColorStop>,
     pub extend: GradientExtend,
+    pub transform: Affine,
+    pub color_space: Option<GradientColorSpace>,
 }
 
 impl Gradient {
@@ -488,6 +507,38 @@ impl Gradient {
 
     pub fn radial(center: [f32; 2], radius: f32) -> Self {
         Self::new(GradientShape::Radial { center, radius })
+    }
+
+    /// Two-circle focal radial gradient (`(x0, y0, r0)` to `(x1, y1, r1)`).
+    pub fn radial_two_circle(
+        start: [f32; 2],
+        start_radius: f32,
+        end: [f32; 2],
+        end_radius: f32,
+    ) -> Self {
+        Self::new(GradientShape::RadialTwoCircle {
+            start,
+            start_radius: start_radius.max(0.0),
+            end,
+            end_radius: end_radius.max(0.0),
+        })
+    }
+
+    /// Elliptical radial gradient centered at `center` with semi-axes `(rx, ry)`
+    /// and clockwise `rotation` (radians).
+    pub fn elliptical_radial(center: [f32; 2], rx: f32, ry: f32, rotation: f32) -> Self {
+        let (sin, cos) = rotation.sin_cos();
+        let rx = rx.max(1e-4);
+        let ry = ry.max(1e-4);
+        let transform = [
+            cos * rx,
+            sin * rx,
+            -sin * ry,
+            cos * ry,
+            center[0],
+            center[1],
+        ];
+        Self::radial([0.0, 0.0], 1.0).transform(transform)
     }
 
     pub fn conic(center: [f32; 2], start_angle: f32) -> Self {
@@ -502,6 +553,8 @@ impl Gradient {
             shape,
             stops: Vec::new(),
             extend: GradientExtend::default(),
+            transform: AFFINE_IDENTITY,
+            color_space: None,
         }
     }
 
@@ -517,13 +570,166 @@ impl Gradient {
         self.extend = extend;
         self
     }
+
+    /// Applies an affine transform in gradient space (used for elliptical radials).
+    pub fn transform(mut self, transform: Affine) -> Self {
+        self.transform = transform;
+        self
+    }
+
+    /// Selects the stop interpolation color space (`PremulSrgb`, `LinearScRgb`, `Oklab`).
+    pub fn color_space(mut self, color_space: GradientColorSpace) -> Self {
+        self.color_space = Some(color_space);
+        self
+    }
 }
 
-/// 填充或描边用什么上色：纯色或渐变。
+/// Tiling repetition mode for [`PaintPattern`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PatternRepeat {
+    #[default]
+    Repeat,
+    RepeatX,
+    RepeatY,
+    NoRepeat,
+}
+
+/// Image pattern paint usable for fills, strokes, and text.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PaintPattern {
+    pub source: Arc<str>,
+    pub src_rect: Option<LayoutBox>,
+    pub repeat: PatternRepeat,
+    pub transform: Affine,
+    pub sampling: Option<nana_ui_core::ImageSampling>,
+}
+
+impl PaintPattern {
+    pub fn new(source: impl Into<Arc<str>>) -> Self {
+        Self {
+            source: source.into(),
+            src_rect: None,
+            repeat: PatternRepeat::Repeat,
+            transform: AFFINE_IDENTITY,
+            sampling: None,
+        }
+    }
+
+    pub fn with_src_rect(mut self, rect: LayoutBox) -> Self {
+        self.src_rect = Some(rect);
+        self
+    }
+
+    pub fn with_repeat(mut self, repeat: PatternRepeat) -> Self {
+        self.repeat = repeat;
+        self
+    }
+
+    pub fn with_transform(mut self, transform: Affine) -> Self {
+        self.transform = transform;
+        self
+    }
+
+    pub fn with_smoothing(mut self, smoothing: bool) -> Self {
+        self.sampling = Some(if smoothing {
+            nana_ui_core::ImageSampling::Resample
+        } else {
+            nana_ui_core::ImageSampling::Nearest
+        });
+        self
+    }
+
+    pub fn with_sampling(mut self, sampling: nana_ui_core::ImageSampling) -> Self {
+        self.sampling = Some(sampling);
+        self
+    }
+}
+
+/// Options for drawing an image with optional source crop, nine-slice, and sampling.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PaintImage {
+    pub source: Arc<str>,
+    pub src_rect: Option<LayoutBox>,
+    pub fit: ImageFit,
+    pub radii: [f32; 4],
+    pub sampling: Option<nana_ui_core::ImageSampling>,
+    /// Optional 9-slice insets `[top, right, bottom, left]` in source pixels.
+    pub nine_slice: Option<[f32; 4]>,
+    pub nine_slice_fill: bool,
+}
+
+impl PaintImage {
+    pub fn new(source: impl Into<Arc<str>>) -> Self {
+        Self {
+            source: source.into(),
+            src_rect: None,
+            fit: ImageFit::Fill,
+            radii: [0.0; 4],
+            sampling: None,
+            nine_slice: None,
+            nine_slice_fill: true,
+        }
+    }
+
+    pub fn with_src_rect(mut self, rect: LayoutBox) -> Self {
+        self.src_rect = Some(rect);
+        self
+    }
+
+    pub fn with_fit(mut self, fit: ImageFit) -> Self {
+        self.fit = fit;
+        self
+    }
+
+    pub fn with_radii(mut self, radii: [f32; 4]) -> Self {
+        self.radii = radii;
+        self
+    }
+
+    pub fn with_smoothing(mut self, smoothing: bool) -> Self {
+        self.sampling = Some(if smoothing {
+            nana_ui_core::ImageSampling::Resample
+        } else {
+            nana_ui_core::ImageSampling::Nearest
+        });
+        self
+    }
+
+    pub fn with_sampling(mut self, sampling: nana_ui_core::ImageSampling) -> Self {
+        self.sampling = Some(sampling);
+        self
+    }
+
+    pub fn with_nine_slice(mut self, insets: [f32; 4], fill: bool) -> Self {
+        self.nine_slice = Some(insets);
+        self.nine_slice_fill = fill;
+        self
+    }
+}
+
+/// Lightweight atlas sub-rectangle handle for batched sprite draws without
+/// creating retained UI nodes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextureRegion {
+    pub source: Arc<str>,
+    pub rect: LayoutBox,
+}
+
+impl TextureRegion {
+    pub fn new(source: impl Into<Arc<str>>, rect: LayoutBox) -> Self {
+        Self {
+            source: source.into(),
+            rect,
+        }
+    }
+}
+
+/// 填充或描边用什么上色：纯色、渐变或纹理图案。
 #[derive(Debug, Clone, PartialEq)]
 pub enum Paint {
     Color(PaintColor),
     Gradient(Gradient),
+    Pattern(PaintPattern),
 }
 
 impl<C: Into<PaintColor>> From<C> for Paint {
@@ -538,15 +744,33 @@ impl From<Gradient> for Paint {
     }
 }
 
+impl From<PaintPattern> for Paint {
+    fn from(pattern: PaintPattern) -> Self {
+        Self::Pattern(pattern)
+    }
+}
+
 /// 按主题解析后的渐变：色标已排序并夹到 `0..=1`，颜色为 sRGB RGBA。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedGradient {
     pub shape: GradientShape,
     pub stops: Vec<(f32, [f32; 4])>,
     /// Linear scRGB stops when at least one stop was supplied in an explicit
-    /// authoring space. Legacy callers keep using `stops` (sRGB) unchanged.
+    /// authoring space or when `color_space` is `LinearScRgb` / `Oklab`.
     pub linear_stops: Option<Vec<(f32, [f32; 4])>>,
     pub extend: GradientExtend,
+    pub transform: Affine,
+    pub color_space: GradientColorSpace,
+}
+
+/// Resolved pattern paint for scene and GPU rendering.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedPattern {
+    pub source: Arc<str>,
+    pub src_rect: Option<LayoutBox>,
+    pub repeat: PatternRepeat,
+    pub transform: Affine,
+    pub sampling: nana_ui_core::ImageSampling,
 }
 
 /// 按主题解析后的上色。
@@ -556,6 +780,7 @@ pub enum ResolvedPaint {
     /// An explicit authoring-space solid retained until the scene painter.
     Authoring(nana_ui_core::PaintColor),
     Gradient(Arc<ResolvedGradient>),
+    Pattern(Arc<ResolvedPattern>),
 }
 
 impl ResolvedPaint {
@@ -565,6 +790,7 @@ impl ResolvedPaint {
             Self::Solid(color) => color[3] <= 0.0,
             Self::Authoring(color) => color.to_linear_sc_rgb().1 <= 0.0,
             Self::Gradient(gradient) => gradient.stops.iter().all(|(_, color)| color[3] <= 0.0),
+            Self::Pattern(pattern) => pattern.source.is_empty(),
         }
     }
 }
@@ -1727,6 +1953,12 @@ pub enum PaintOp {
         blend: BlendMode,
     },
     PopLayer,
+    /// Opens an arbitrary custom-paint mask layer (`MaskKind::Alpha` or
+    /// `MaskKind::Luminance`) applied to the enclosing layer on [`Self::PopMask`].
+    PushMask {
+        kind: MaskKind,
+    },
+    PopMask,
     FillPath {
         path: Arc<PaintPath>,
         paint: ResolvedPaint,
@@ -1756,6 +1988,16 @@ pub enum PaintOp {
         /// 录制时的 [`PaintContext::set_image_sampling`]。
         sampling: nana_ui_core::ImageSampling,
         radii: [f32; 4],
+        src_rect: Option<LayoutBox>,
+        nine_slice: Option<[f32; 4]>,
+        nine_slice_fill: bool,
+    },
+    /// Lightweight batch of atlas sub-rectangle sprite draws sharing one source texture.
+    TextureRegionBatch {
+        source: Arc<str>,
+        sampling: nana_ui_core::ImageSampling,
+        /// `(src_rect, dest_rect)` pairs in source and local layout coordinates.
+        items: Vec<(LayoutBox, LayoutBox)>,
     },
     /// 图片摆进 `rect`，只露出 `path` 以内的部分。
     FillImage {
@@ -1824,13 +2066,65 @@ impl PaintRecording {
     }
 }
 
+#[derive(Clone, Copy)]
+struct HitLayer {
+    blend: BlendMode,
+    visible: bool,
+    mask_kind: Option<MaskKind>,
+    hit: bool,
+}
+
+fn compose_hit(dst: bool, src: bool, blend: BlendMode) -> bool {
+    match blend {
+        BlendMode::Copy | BlendMode::DestinationAtop => src,
+        BlendMode::SourceIn | BlendMode::DestinationIn | BlendMode::SourceAtop => dst && src,
+        BlendMode::SourceOut => !dst && src,
+        BlendMode::DestinationOut => dst && !src,
+        BlendMode::Xor => dst ^ src,
+        _ => dst || src,
+    }
+}
+
+fn paint_has_luminance(paint: &ResolvedPaint) -> bool {
+    match paint {
+        ResolvedPaint::Solid([r, g, b, a]) => {
+            *a > 0.0 && (0.2126 * r + 0.7152 * g + 0.0722 * b) > 1e-4
+        }
+        ResolvedPaint::Authoring(color) => {
+            let ([r, g, b], a) = color.to_linear_sc_rgb();
+            a > 0.0 && (0.2126 * r + 0.7152 * g + 0.0722 * b) > 1e-4
+        }
+        ResolvedPaint::Gradient(_) | ResolvedPaint::Pattern(_) => true,
+    }
+}
+
 fn phase_contains(ops: &[PaintOp], p: [f32; 2], size: [f32; 2]) -> bool {
     let mut t = AFFINE_IDENTITY;
     let mut clips: Vec<(&PaintPath, Affine)> = Vec::new();
     let mut visible = true;
-    // Layers open, each whether it composites at all.
-    let mut layers: Vec<bool> = Vec::new();
+    let mut layers = vec![HitLayer {
+        blend: BlendMode::Normal,
+        visible: true,
+        mask_kind: None,
+        hit: false,
+    }];
+    let close_layer = |layers: &mut Vec<HitLayer>| {
+        if layers.len() <= 1 {
+            return;
+        }
+        let layer = layers.pop().expect("len > 1 checked above");
+        let parent = layers.last_mut().expect("root layer present");
+        let src = layer.hit && layer.visible;
+        if layer.mask_kind.is_some() {
+            parent.hit = parent.hit && src;
+        } else {
+            parent.hit = compose_hit(parent.hit, src, layer.blend);
+        }
+    };
     for op in ops {
+        let luminance_mask = layers
+            .last()
+            .is_some_and(|l| l.mask_kind == Some(MaskKind::Luminance));
         let hit = match op {
             PaintOp::SetTransform(transform) => {
                 t = *transform;
@@ -1844,15 +2138,45 @@ fn phase_contains(ops: &[PaintOp], p: [f32; 2], size: [f32; 2]) -> bool {
                 clips.pop();
                 false
             }
-            PaintOp::FillPath { path, .. } | PaintOp::FillImage { path, .. } => {
-                path_contains(path, t, p)
+            PaintOp::FillPath { path, paint } => {
+                (!luminance_mask || paint_has_luminance(paint)) && path_contains(path, t, p)
             }
-            PaintOp::StrokePath { path, stroke, .. } => stroke_contains(path, stroke, t, p),
-            PaintOp::RoundedRect { rect, radii, .. } | PaintOp::Image { rect, radii, .. } => {
+            PaintOp::FillImage { path, .. } => path_contains(path, t, p),
+            PaintOp::StrokePath {
+                path,
+                paint,
+                stroke,
+            } => {
+                (!luminance_mask || paint_has_luminance(paint))
+                    && stroke_contains(path, stroke, t, p)
+            }
+            PaintOp::RoundedRect {
+                rect,
+                radii,
+                fill,
+                border,
+                ..
+            } => {
+                let luma_ok = !luminance_mask
+                    || fill.as_ref().is_some_and(paint_has_luminance)
+                    || border.is_some_and(|([r, g, b, a], _)| {
+                        a > 0.0 && (0.2126 * r + 0.7152 * g + 0.0722 * b) > 1e-4
+                    });
+                luma_ok
+                    && inverse_apply(t, p).is_some_and(|q| rounded_rect_contains(*rect, *radii, q))
+            }
+            PaintOp::Image { rect, radii, .. } => {
                 inverse_apply(t, p).is_some_and(|q| rounded_rect_contains(*rect, *radii, q))
             }
-            PaintOp::Text { rect, .. } | PaintOp::Icon { rect, .. } => {
-                inverse_apply(t, p).is_some_and(|q| rounded_rect_contains(*rect, [0.0; 4], q))
+            PaintOp::TextureRegionBatch { items, .. } => inverse_apply(t, p).is_some_and(|q| {
+                items
+                    .iter()
+                    .any(|(_, dest)| rounded_rect_contains(*dest, [0.0; 4], q))
+            }),
+            PaintOp::Text { rect, paint, .. } | PaintOp::Icon { rect, paint, .. } => {
+                (!luminance_mask || paint_has_luminance(paint))
+                    && inverse_apply(t, p)
+                        .is_some_and(|q| rounded_rect_contains(*rect, [0.0; 4], q))
             }
             PaintOp::DrawDefault => inverse_apply(t, p)
                 .is_some_and(|q| q[0] >= 0.0 && q[1] >= 0.0 && q[0] <= size[0] && q[1] <= size[1]),
@@ -1861,25 +2185,46 @@ fn phase_contains(ops: &[PaintOp], p: [f32; 2], size: [f32; 2]) -> bool {
                 visible = *opacity > 0.0;
                 false
             }
-            PaintOp::PushLayer { opacity, .. } => {
-                layers.push(*opacity > 0.0);
+            PaintOp::PushLayer { opacity, blend } => {
+                layers.push(HitLayer {
+                    blend: *blend,
+                    visible: *opacity > 0.0,
+                    mask_kind: None,
+                    hit: false,
+                });
                 false
             }
             PaintOp::PopLayer => {
-                layers.pop();
+                close_layer(&mut layers);
+                false
+            }
+            PaintOp::PushMask { kind } => {
+                layers.push(HitLayer {
+                    blend: BlendMode::Normal,
+                    visible: true,
+                    mask_kind: Some(*kind),
+                    hit: false,
+                });
+                false
+            }
+            PaintOp::PopMask => {
+                close_layer(&mut layers);
                 false
             }
             PaintOp::Shadow { .. } => false,
         };
         if hit
             && visible
-            && layers.iter().all(|shown| *shown)
             && clips.iter().all(|(clip, ct)| path_contains(clip, *ct, p))
+            && let Some(top) = layers.last_mut()
         {
-            return true;
+            top.hit = true;
         }
     }
-    false
+    while layers.len() > 1 {
+        close_layer(&mut layers);
+    }
+    layers[0].hit
 }
 
 fn inverse_apply(t: Affine, p: [f32; 2]) -> Option<[f32; 2]> {
@@ -2236,6 +2581,13 @@ fn rounded_rect_contains(rect: LayoutBox, radii: [f32; 4], q: [f32; 2]) -> bool 
     true
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OpenScope {
+    Layer,
+    Mask,
+    Clip,
+}
+
 /// 录制绘制命令的上下文，相当于 `QPainter`。
 ///
 /// 坐标原点是节点布局盒的左上角，单位逻辑像素。节点的 transform、裁剪、
@@ -2249,8 +2601,8 @@ pub struct PaintContext<'a> {
     default_drawn: bool,
     clip_depth: usize,
     layer_depth: usize,
-    /// What is open, innermost last: `true` a layer, `false` a clip.
-    open: Vec<bool>,
+    /// Open scopes, innermost last.
+    open: Vec<OpenScope>,
     transform: Affine,
     opacity: f32,
     blend: BlendMode,
@@ -2390,12 +2742,28 @@ impl<'a> PaintContext<'a> {
         self.image_sampling
     }
 
+    /// Enables bilinear/resampled smoothing (`true`) or nearest-neighbor sampling
+    /// (`false`, matching Canvas `imageSmoothingEnabled`) for subsequent images and patterns.
+    pub fn set_image_smoothing(&mut self, smoothing: bool) {
+        if smoothing {
+            if self.image_sampling == nana_ui_core::ImageSampling::Nearest {
+                self.image_sampling = nana_ui_core::ImageSampling::Resample;
+            }
+        } else {
+            self.image_sampling = nana_ui_core::ImageSampling::Nearest;
+        }
+    }
+
+    pub fn image_smoothing(&self) -> bool {
+        self.image_sampling != nana_ui_core::ImageSampling::Nearest
+    }
+
     /// 开一个图层：之后的命令先画进图层，[`Self::pop_layer`] 时按 `opacity`
     /// 和 `blend` 整体合成，重叠部分不会叠加透明度。
     pub fn push_layer(&mut self, opacity: f32, blend: BlendMode) {
         self.sync_state();
         self.layer_depth += 1;
-        self.open.push(true);
+        self.open.push(OpenScope::Layer);
         self.ops.push(PaintOp::PushLayer {
             opacity: if opacity.is_finite() {
                 opacity.clamp(0.0, 1.0)
@@ -2409,10 +2777,29 @@ impl<'a> PaintContext<'a> {
     /// 合成最近一个 [`Self::push_layer`] 打开的图层；没有打开的图层时什么都
     /// 不做。
     pub fn pop_layer(&mut self) {
-        if let Some(at) = self.open.iter().rposition(|layer| *layer) {
+        if let Some(at) = self.open.iter().rposition(|s| *s == OpenScope::Layer) {
             self.open.remove(at);
             self.layer_depth -= 1;
             self.ops.push(PaintOp::PopLayer);
+        }
+    }
+
+    /// Opens an arbitrary custom-paint mask layer (`MaskKind::Alpha` or
+    /// `MaskKind::Luminance`). Commands drawn until [`Self::pop_mask`] define
+    /// the mask applied to the enclosing layer.
+    pub fn push_mask(&mut self, kind: MaskKind) {
+        self.sync_state();
+        self.layer_depth += 1;
+        self.open.push(OpenScope::Mask);
+        self.ops.push(PaintOp::PushMask { kind });
+    }
+
+    /// Applies and closes the mask opened by [`Self::push_mask`].
+    pub fn pop_mask(&mut self) {
+        if let Some(at) = self.open.iter().rposition(|s| *s == OpenScope::Mask) {
+            self.open.remove(at);
+            self.layer_depth -= 1;
+            self.ops.push(PaintOp::PopMask);
         }
     }
 
@@ -2492,38 +2879,69 @@ impl<'a> PaintContext<'a> {
                 if stops.is_empty() {
                     stops.push((0.0, [0.0; 4]));
                 }
-                let linear_stops = gradient
+                let has_authoring = gradient
                     .stops
                     .iter()
-                    .any(|stop| matches!(stop.color, PaintColor::Authoring(_)))
-                    .then(|| {
-                        let mut stops = gradient
-                            .stops
-                            .iter()
-                            .filter(|stop| stop.offset.is_finite())
-                            .map(|stop| {
-                                let offset = stop.offset.clamp(0.0, 1.0);
-                                let resolved = match stop.color {
-                                    PaintColor::Authoring(color) => color,
-                                    color => nana_ui_core::PaintColor::Srgb {
-                                        rgba: self.color(color),
-                                    },
-                                };
-                                let (channels, alpha) = resolved.to_linear_sc_rgb();
-                                (offset, [channels[0], channels[1], channels[2], alpha])
-                            })
-                            .collect::<Vec<_>>();
-                        stops.compact_sort_by(|a, b| a.0.total_cmp(&b.0));
-                        if stops.is_empty() {
-                            stops.push((0.0, [0.0; 4]));
-                        }
-                        stops
-                    });
+                    .any(|stop| matches!(stop.color, PaintColor::Authoring(_)));
+                let color_space = gradient.color_space.unwrap_or(if has_authoring {
+                    GradientColorSpace::LinearScRgb
+                } else {
+                    GradientColorSpace::PremulSrgb
+                });
+                let needs_linear = has_authoring
+                    || matches!(
+                        color_space,
+                        GradientColorSpace::LinearScRgb | GradientColorSpace::Oklab
+                    );
+                let linear_stops = needs_linear.then(|| {
+                    let mut stops = gradient
+                        .stops
+                        .iter()
+                        .filter(|stop| stop.offset.is_finite())
+                        .map(|stop| {
+                            let offset = stop.offset.clamp(0.0, 1.0);
+                            let resolved = match stop.color {
+                                PaintColor::Authoring(color) => color,
+                                color => nana_ui_core::PaintColor::Srgb {
+                                    rgba: self.color(color),
+                                },
+                            };
+                            let (channels, alpha) = resolved.to_linear_sc_rgb();
+                            (offset, [channels[0], channels[1], channels[2], alpha])
+                        })
+                        .collect::<Vec<_>>();
+                    stops.compact_sort_by(|a, b| a.0.total_cmp(&b.0));
+                    if stops.is_empty() {
+                        stops.push((0.0, [0.0; 4]));
+                    }
+                    stops
+                });
+                let transform = if gradient.transform.iter().all(|v| v.is_finite()) {
+                    gradient.transform
+                } else {
+                    AFFINE_IDENTITY
+                };
                 ResolvedPaint::Gradient(Arc::new(ResolvedGradient {
                     shape: gradient.shape,
                     stops,
                     linear_stops,
                     extend: gradient.extend,
+                    transform,
+                    color_space,
+                }))
+            }
+            Paint::Pattern(pattern) => {
+                let transform = if pattern.transform.iter().all(|v| v.is_finite()) {
+                    pattern.transform
+                } else {
+                    AFFINE_IDENTITY
+                };
+                ResolvedPaint::Pattern(Arc::new(ResolvedPattern {
+                    source: pattern.source,
+                    src_rect: pattern.src_rect,
+                    repeat: pattern.repeat,
+                    transform,
+                    sampling: pattern.sampling.unwrap_or(self.image_sampling),
                 }))
             }
         }
@@ -2827,7 +3245,78 @@ impl<'a> PaintContext<'a> {
             fit,
             sampling: self.image_sampling,
             radii,
+            src_rect: None,
+            nine_slice: None,
+            nine_slice_fill: true,
         });
+    }
+
+    /// Draws an image described by [`PaintImage`] (source crop, 9-slice, fit,
+    /// corner radii, and smoothing).
+    pub fn draw_image(&mut self, rect: LayoutBox, image: PaintImage) {
+        if image.source.is_empty() {
+            return;
+        }
+        let radii = fit_radii(rect, image.radii);
+        self.push(PaintOp::Image {
+            rect,
+            source: image.source,
+            fit: image.fit,
+            sampling: image.sampling.unwrap_or(self.image_sampling),
+            radii,
+            src_rect: image.src_rect,
+            nine_slice: image.nine_slice,
+            nine_slice_fill: image.nine_slice_fill,
+        });
+    }
+
+    /// Draws one [`TextureRegion`] sub-rectangle into `dest`.
+    pub fn draw_texture_region(&mut self, region: &TextureRegion, dest: LayoutBox) {
+        if region.source.is_empty() || dest.width <= 0.0 || dest.height <= 0.0 {
+            return;
+        }
+        self.push(PaintOp::Image {
+            rect: dest,
+            source: Arc::clone(&region.source),
+            fit: ImageFit::Fill,
+            sampling: self.image_sampling,
+            radii: [0.0; 4],
+            src_rect: Some(region.rect),
+            nine_slice: None,
+            nine_slice_fill: true,
+        });
+    }
+
+    /// Draws a batch of atlas [`TextureRegion`] sprites without creating UI
+    /// nodes. Contiguous regions sharing the same source texture emit a single
+    /// batched draw call.
+    pub fn draw_texture_regions(&mut self, items: &[(&TextureRegion, LayoutBox)]) {
+        let mut index = 0;
+        while index < items.len() {
+            let (first_region, first_dest) = items[index];
+            index += 1;
+            if first_region.source.is_empty() || first_dest.width <= 0.0 || first_dest.height <= 0.0
+            {
+                continue;
+            }
+            let source = Arc::clone(&first_region.source);
+            let mut batch = vec![(first_region.rect, first_dest)];
+            while index < items.len() {
+                let (region, dest) = items[index];
+                if region.source.as_ref() != source.as_ref() {
+                    break;
+                }
+                if dest.width > 0.0 && dest.height > 0.0 {
+                    batch.push((region.rect, dest));
+                }
+                index += 1;
+            }
+            self.push(PaintOp::TextureRegionBatch {
+                source,
+                sampling: self.image_sampling,
+                items: batch,
+            });
+        }
     }
 
     /// 之后的绘制裁剪到 `path` 以内（与已有裁剪取交集），直到 [`Self::pop_clip`]。
@@ -2836,7 +3325,7 @@ impl<'a> PaintContext<'a> {
     /// 不会被裁掉；子节点也不受影响。
     pub fn push_clip(&mut self, path: &PaintPath) {
         self.clip_depth += 1;
-        self.open.push(false);
+        self.open.push(OpenScope::Clip);
         self.sync_state();
         self.ops.push(PaintOp::PushClip {
             path: Arc::new(path.clone()),
@@ -2845,7 +3334,7 @@ impl<'a> PaintContext<'a> {
 
     /// 撤掉最近一个 [`Self::push_clip`]；没有裁剪时什么都不做。
     pub fn pop_clip(&mut self) {
-        if let Some(at) = self.open.iter().rposition(|layer| !*layer) {
+        if let Some(at) = self.open.iter().rposition(|s| *s == OpenScope::Clip) {
             self.open.remove(at);
             self.clip_depth -= 1;
             self.ops.push(PaintOp::PopClip);
@@ -2854,11 +3343,11 @@ impl<'a> PaintContext<'a> {
 
     fn finish(mut self) -> (Vec<PaintOp>, bool) {
         // What was left open closes innermost first.
-        while let Some(layer) = self.open.pop() {
-            self.ops.push(if layer {
-                PaintOp::PopLayer
-            } else {
-                PaintOp::PopClip
+        while let Some(scope) = self.open.pop() {
+            self.ops.push(match scope {
+                OpenScope::Layer => PaintOp::PopLayer,
+                OpenScope::Mask => PaintOp::PopMask,
+                OpenScope::Clip => PaintOp::PopClip,
             });
         }
         (self.ops, self.default_drawn)
@@ -4222,5 +4711,207 @@ mod tests {
         world.extract_nodes(&[text_node, plain_node]);
         assert_eq!(text_calls.load(Ordering::SeqCst), 2);
         assert_eq!(plain_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn porter_duff_and_mask_hit_testing_matches_compositing() {
+        let make_rect = |x, y, width, height| {
+            let mut p = PaintPath::new();
+            p.rect(LayoutBox {
+                x,
+                y,
+                width,
+                height,
+            });
+            p
+        };
+        let full = make_rect(0.0, 0.0, 40.0, 40.0);
+        let hole = make_rect(10.0, 10.0, 20.0, 20.0);
+
+        struct CutoutPainter {
+            full: PaintPath,
+            hole: PaintPath,
+        }
+        impl Painter for CutoutPainter {
+            fn paint(&self, cx: &mut PaintContext<'_>) {
+                cx.fill_path(&self.full, [1.0, 0.0, 0.0, 1.0]);
+                cx.set_blend(BlendMode::DestinationOut);
+                cx.fill_path(&self.hole, [0.0, 0.0, 0.0, 1.0]);
+            }
+            fn paint_key(&self) -> u64 {
+                901
+            }
+        }
+        let rec_cut = record_plain(
+            &CutoutPainter {
+                full: full.clone(),
+                hole: hole.clone(),
+            },
+            [40.0, 40.0],
+        );
+        assert!(rec_cut.contains([5.0, 5.0], [40.0, 40.0]));
+        assert!(!rec_cut.contains([20.0, 20.0], [40.0, 40.0]));
+
+        struct LumMaskPainter {
+            full: PaintPath,
+            bright: PaintPath,
+            dark: PaintPath,
+        }
+        impl Painter for LumMaskPainter {
+            fn paint(&self, cx: &mut PaintContext<'_>) {
+                cx.fill_path(&self.full, [0.0, 1.0, 0.0, 1.0]);
+                cx.push_mask(MaskKind::Luminance);
+                cx.fill_path(&self.bright, [1.0, 1.0, 1.0, 1.0]);
+                cx.fill_path(&self.dark, [0.0, 0.0, 0.0, 1.0]);
+                cx.pop_mask();
+            }
+            fn paint_key(&self) -> u64 {
+                902
+            }
+        }
+        let rec_mask = record_plain(
+            &LumMaskPainter {
+                full,
+                bright: make_rect(0.0, 0.0, 20.0, 40.0),
+                dark: make_rect(20.0, 0.0, 20.0, 40.0),
+            },
+            [40.0, 40.0],
+        );
+        assert!(rec_mask.contains([10.0, 20.0], [40.0, 40.0]));
+        assert!(!rec_mask.contains([30.0, 20.0], [40.0, 40.0]));
+    }
+
+    #[test]
+    fn gradient_pattern_image_and_smoothing_builders_record_p3_fields() {
+        struct P3Painter;
+        impl Painter for P3Painter {
+            fn paint(&self, cx: &mut PaintContext<'_>) {
+                let make_rect = |x, y, width, height| {
+                    let mut p = PaintPath::new();
+                    p.rect(LayoutBox {
+                        x,
+                        y,
+                        width,
+                        height,
+                    });
+                    p
+                };
+                let grad = Gradient::radial_two_circle([10.0, 10.0], 2.0, [20.0, 20.0], 18.0)
+                    .stop(0.0, [1.0, 0.0, 0.0, 1.0])
+                    .stop(1.0, [0.0, 0.0, 1.0, 1.0])
+                    .color_space(GradientColorSpace::Oklab)
+                    .transform([2.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
+                cx.fill_path(&make_rect(0.0, 0.0, 20.0, 20.0), grad);
+
+                let pattern = PaintPattern::new("atlas.png")
+                    .with_src_rect(LayoutBox {
+                        x: 4.0,
+                        y: 4.0,
+                        width: 8.0,
+                        height: 8.0,
+                    })
+                    .with_repeat(PatternRepeat::RepeatX)
+                    .with_smoothing(false);
+                cx.fill_path(&make_rect(0.0, 20.0, 20.0, 20.0), pattern);
+
+                cx.save();
+                cx.set_image_smoothing(false);
+                assert!(!cx.image_smoothing());
+                assert_eq!(cx.image_sampling(), nana_ui_core::ImageSampling::Nearest);
+                cx.draw_image(
+                    LayoutBox {
+                        x: 20.0,
+                        y: 0.0,
+                        width: 20.0,
+                        height: 20.0,
+                    },
+                    PaintImage::new("frame.png")
+                        .with_src_rect(LayoutBox {
+                            x: 0.0,
+                            y: 0.0,
+                            width: 16.0,
+                            height: 16.0,
+                        })
+                        .with_nine_slice([4.0, 4.0, 4.0, 4.0], true),
+                );
+                cx.restore();
+                assert!(cx.image_smoothing());
+
+                let r1 = TextureRegion::new(
+                    "atlas.png",
+                    LayoutBox {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 8.0,
+                        height: 8.0,
+                    },
+                );
+                let r2 = TextureRegion::new(
+                    "atlas.png",
+                    LayoutBox {
+                        x: 8.0,
+                        y: 0.0,
+                        width: 8.0,
+                        height: 8.0,
+                    },
+                );
+                cx.draw_texture_regions(&[
+                    (
+                        &r1,
+                        LayoutBox {
+                            x: 20.0,
+                            y: 20.0,
+                            width: 10.0,
+                            height: 10.0,
+                        },
+                    ),
+                    (
+                        &r2,
+                        LayoutBox {
+                            x: 30.0,
+                            y: 20.0,
+                            width: 10.0,
+                            height: 10.0,
+                        },
+                    ),
+                ]);
+            }
+            fn paint_key(&self) -> u64 {
+                903
+            }
+        }
+
+        let rec = record_plain(&P3Painter, [40.0, 40.0]);
+        assert!(matches!(
+            &rec.behind_children[0],
+            PaintOp::FillPath {
+                paint: ResolvedPaint::Gradient(g),
+                ..
+            } if g.color_space == GradientColorSpace::Oklab
+                && matches!(g.shape, GradientShape::RadialTwoCircle { .. })
+                && g.transform == [2.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+        ));
+        assert!(matches!(
+            &rec.behind_children[1],
+            PaintOp::FillPath {
+                paint: ResolvedPaint::Pattern(p),
+                ..
+            } if p.repeat == PatternRepeat::RepeatX
+                && p.sampling == nana_ui_core::ImageSampling::Nearest
+        ));
+        assert!(matches!(
+            &rec.behind_children[2],
+            PaintOp::Image {
+                sampling: nana_ui_core::ImageSampling::Nearest,
+                src_rect: Some(_),
+                nine_slice: Some([4.0, 4.0, 4.0, 4.0]),
+                nine_slice_fill: true,
+                ..
+            }
+        ));
+        assert!(matches!(
+            &rec.behind_children[3],
+            PaintOp::TextureRegionBatch { items, .. } if items.len() == 2
+        ));
     }
 }

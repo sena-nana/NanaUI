@@ -724,3 +724,10 @@ let mut binding = FrameBinding::new(
 `FrameExchange<E, M = ()>` 的 `M` 是随 GPU 拷贝一起发布的不可变应用载荷，与 epoch 和 `FrameToken<E>` 身份分离。通过 `new_with_payload` 构造，`copy_from_with_payload`（或 `wgpu-interop` 下的 `copy_from_wgpu_with_payload`）同时提交纹理、颜色元数据和载荷；`FrameLease::payload()` 与 `FrameBinding<E, M>::payload()` 只返回对应 lease / 当前绑定帧的数据。原有无载荷构造与复制接口保持兼容。
 
 载荷在 pending copy、完成发布、绑定和呈现后退役之间与纹理共同保留；丢帧、代际失效和槽回收遵循原规则。更新载荷不切换 epoch、不清空最新帧，也不新增历史索引或扩大纹理池。消费者不得将旧纹理配上另读的最新生产状态。载荷类型由应用定义，框架不依赖应用的坐标或模型类型。
+
+## 自绘着色器与合成优化（#219 / #220 / #222 / #439）
+
+- **Porter-Duff 与遮罩合成（`layer_blend.wgsl`）**：目标合成管线覆盖全部分离/不可分离 CSS 混合模式与 11 种 Porter-Duff 操作，以及 `MaskKind::Luminance`（线性预乘 Rec.709 亮度遮罩）。清场模式（`copy` / `source-in` / `source-out` / `destination-in` / `destination-atop`）与遮罩层在源图层为空或落在目标外时仍按完整目标区域清空；其余模式继续只合成组包围盒以节省像素填充。
+- **渐变、图集与图案（`path.wgsl` / `quad_paint*.wgsl`）**：`path.wgsl` 支持线性、单圆/双圆焦点径向与圆锥渐变、在 `PremulSrgb` / `LinearScRgb` / `Oklab` 中插值，并通过 `@group(2)` 绑定平滑/最近邻纹理图案；`quad_paint.wgsl` 通过 `url_src_uv` 子矩形重映射与九宫格拼砖实现零渗色图集与九宫格渲染。
+- **解析圆角阴影与细线描边（#222）**：Canvas `shadow(path)` 在轮廓可归约为圆角矩形且无路径裁剪时置位 `PAINT_SHADOW_SOLID` 并走 `Quad` SDF 阴影渲染（实心内部），直立相似变换的 `rounded_rect` 外阴影走 CSS 空心 `Quad` SDF 渲染；屏幕有效宽度 `<= 1.5 px` 的实线无虚线描边优先发往 `ScenePrimitiveKind::Stroke` 线胶囊管线，跳过多边形描边扩展与布尔简化；高曲率细路径采用自适应 `>= 0.25 px` 展平容差。
+- **快门与投影耦合采样上限（#439）**：`layer.wgsl` 仅在组同时存在非微弱 `motion_streak`（`|streak| >= 0.5 px`）与可见 `drop-shadow` 时开启快门投影耦合，以固定 `4` 个快门抽头乘以紧缩 `5×5` 模糊核执行，最坏每像素总采样数封顶为 `100` 次（无模糊阴影最多 `9` 次），避免大模糊半径下乘法爆炸；其余路径保持不变。修改 `.wgsl` 后须按 `nana_ui::scene_paint::{naga_ir,msl_precompiled}` 重生预编译资产（#435）。

@@ -36,6 +36,15 @@ pub(super) fn precompiled_inputs() -> (String, u64) {
     )
 }
 
+fn pattern_layout_key() -> u64 {
+    ResourceTable::new(vec![
+        LogicalBinding::new(0, LogicalBindingType::SampledTexture, MESH_FRAGMENT),
+        LogicalBinding::new(1, LogicalBindingType::Sampler, MESH_FRAGMENT),
+    ])
+    .expect("pattern table")
+    .layout_key()
+}
+
 fn mesh_layout_key() -> u64 {
     ResourceTable::new(vec![
         LogicalBinding::new(0, LogicalBindingType::UniformBuffer, MESH_VERTEX)
@@ -54,6 +63,7 @@ fn mesh_layout_key() -> u64 {
     .expect("mesh table")
     .layout_key()
         ^ super::motion::motion_layout_key().rotate_left(19)
+        ^ pattern_layout_key().rotate_left(29)
 }
 
 pub(super) struct StrokeStyle<'a> {
@@ -241,17 +251,19 @@ const NO_GRADIENT: u32 = u32::MAX;
 const GRADIENT_STOPS: usize = 16;
 const INITIAL_GRADIENTS: usize = 4;
 
-/// One gradient. Matches `GpuGradient` in `path.wgsl`.
+/// One gradient or pattern entry. Matches `GpuGradient` in `path.wgsl`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 struct GpuGradient {
-    /// kind (0 linear, 1 radial, 2 conic), extend (0 pad, 1 repeat, 2
-    /// reflect), stop count, the space the stops interpolate in (0 sRGB, 1
-    /// linear scRGB).
+    /// kind (0 linear, 1 radial, 2 conic, 3 two-circle radial, 4 pattern),
+    /// extend (0 pad, 1 repeat, 2 reflect; or pattern repeat bits),
+    /// stop count, interpolation color space (0 PremulSrgb, 1 LinearScRgb, 2 Oklab).
     header: [u32; 4],
     /// Linear: start.xy, end.xy. Radial: center.xy, radius. Conic: center.xy,
-    /// start angle.
+    /// start angle. Two-circle radial: start.xy, end.xy. Pattern: src uv [u0, v0, du, dv].
     geometry: [f32; 4],
+    /// Two-circle radial: [start_radius, end_radius, 0, 0]. Pattern: [tile_w, tile_h, 0, 0].
+    geometry2: [f32; 4],
     offsets: [[f32; 4]; GRADIENT_STOPS / 4],
     /// Premultiplied stops, in the space `header.w` names.
     colors: [[f32; 4]; GRADIENT_STOPS],
@@ -261,43 +273,93 @@ struct GpuGradient {
     space: [[f32; 4]; 2],
 }
 
+#[allow(clippy::excessive_precision)]
+fn linear_to_oklab([r, g, b]: [f32; 3]) -> [f32; 3] {
+    let l = (0.412_221_47 * r + 0.536_332_55 * g + 0.051_445_995 * b).cbrt();
+    let m = (0.211_903_5 * r + 0.680_699_5 * g + 0.107_396_96 * b).cbrt();
+    let s = (0.088_302_46 * r + 0.281_718_85 * g + 0.629_978_7 * b).cbrt();
+    [
+        0.210_454_26 * l + 0.793_617_8 * m - 0.004_072_047 * s,
+        1.977_998_5 * l - 2.428_592_2 * m + 0.450_593_7 * s,
+        0.025_904_037 * l + 0.782_771_77 * m - 0.808_675_77 * s,
+    ]
+}
+
 impl GpuGradient {
     fn from_resolved(gradient: &nana_ui_runtime::ResolvedGradient) -> Self {
-        use nana_ui_runtime::{GradientExtend, GradientShape};
-        let (kind, geometry) = match gradient.shape {
-            GradientShape::Linear { start, end } => (0, [start[0], start[1], end[0], end[1]]),
-            GradientShape::Radial { center, radius } => (1, [center[0], center[1], radius, 0.0]),
+        use nana_ui_runtime::{GradientColorSpace, GradientExtend, GradientShape};
+        let (kind, geometry, geometry2) = match gradient.shape {
+            GradientShape::Linear { start, end } => {
+                (0, [start[0], start[1], end[0], end[1]], [0.0; 4])
+            }
+            GradientShape::Radial { center, radius } => {
+                (1, [center[0], center[1], radius, 0.0], [0.0; 4])
+            }
+            GradientShape::RadialTwoCircle {
+                start,
+                start_radius,
+                end,
+                end_radius,
+            } => (
+                3,
+                [start[0], start[1], end[0], end[1]],
+                [start_radius.max(0.0), end_radius.max(0.0), 0.0, 0.0],
+            ),
             GradientShape::Conic {
                 center,
                 start_angle,
-            } => (2, [center[0], center[1], start_angle, 0.0]),
+            } => (2, [center[0], center[1], start_angle, 0.0], [0.0; 4]),
         };
         let extend = match gradient.extend {
             GradientExtend::Pad => 0,
             GradientExtend::Repeat => 1,
             GradientExtend::Reflect => 2,
         };
-        // Plain sRGB stops interpolate in sRGB, as a browser blends them (a
-        // black-to-white midpoint is 50% grey, not 73%); the shader decodes
-        // the result once. Stops written in a colour space of their own
-        // arrive linear and interpolate there.
-        let (source, space) = match gradient.linear_stops.as_deref() {
-            Some(stops) => (stops, 1),
-            None => (gradient.stops.as_slice(), 0),
+        let space = match gradient.color_space {
+            GradientColorSpace::PremulSrgb => u32::from(gradient.linear_stops.is_some()),
+            GradientColorSpace::LinearScRgb => 1,
+            GradientColorSpace::Oklab => 2,
         };
-        let stops: Vec<(f32, [f32; 4])> = if source.len() <= GRADIENT_STOPS {
-            source.to_vec()
+        let raw_source = match space {
+            0 => gradient.stops.as_slice(),
+            _ => gradient
+                .linear_stops
+                .as_deref()
+                .unwrap_or(gradient.stops.as_slice()),
+        };
+        let converted: Vec<(f32, [f32; 4])> = if space == 2 {
+            raw_source
+                .iter()
+                .map(|&(offset, [r, g, b, a])| {
+                    let [l, ok_a, ok_b] = if gradient.linear_stops.is_some() {
+                        linear_to_oklab([r, g, b])
+                    } else {
+                        let (linear_rgb, _) = nana_ui_core::PaintColor::Srgb {
+                            rgba: [r, g, b, 1.0],
+                        }
+                        .to_linear_sc_rgb();
+                        linear_to_oklab(linear_rgb)
+                    };
+                    (offset, [l, ok_a, ok_b, a])
+                })
+                .collect()
+        } else {
+            raw_source.to_vec()
+        };
+        let stops: Vec<(f32, [f32; 4])> = if converted.len() <= GRADIENT_STOPS {
+            converted
         } else {
             (0..GRADIENT_STOPS)
                 .map(|i| {
                     let t = i as f32 / (GRADIENT_STOPS - 1) as f32;
-                    (t, sample_stops(source, t))
+                    (t, sample_stops(&converted, t))
                 })
                 .collect()
         };
         let mut packed = Self::zeroed();
         packed.header = [kind, extend, stops.len() as u32, space];
         packed.geometry = geometry;
+        packed.geometry2 = geometry2;
         for (index, (offset, [r, g, b, a])) in stops.iter().enumerate() {
             let alpha = if a.is_finite() {
                 a.clamp(0.0, 1.0)
@@ -307,6 +369,35 @@ impl GpuGradient {
             packed.offsets[index / 4][index % 4] = *offset;
             packed.colors[index] = [r * alpha, g * alpha, b * alpha, alpha];
         }
+        packed
+    }
+
+    fn from_pattern(pattern: &nana_ui_runtime::ResolvedPattern, tex_w: u32, tex_h: u32) -> Self {
+        use nana_ui_runtime::PatternRepeat;
+        let repeat_bits = match pattern.repeat {
+            PatternRepeat::NoRepeat => 0u32,
+            PatternRepeat::RepeatX => 1u32,
+            PatternRepeat::RepeatY => 2u32,
+            PatternRepeat::Repeat => 3u32,
+        };
+        let tw = tex_w.max(1) as f32;
+        let th = tex_h.max(1) as f32;
+        let (src_uv, tile_size) = match pattern.src_rect {
+            Some(sr) => {
+                let u0 = (sr.x / tw).clamp(0.0, 1.0);
+                let v0 = (sr.y / th).clamp(0.0, 1.0);
+                let u1 = ((sr.x + sr.width) / tw).clamp(u0, 1.0);
+                let v1 = ((sr.y + sr.height) / th).clamp(v0, 1.0);
+                let du = (u1 - u0).max(1e-6);
+                let dv = (v1 - v0).max(1e-6);
+                ([u0, v0, du, dv], [(du * tw).max(1.0), (dv * th).max(1.0)])
+            }
+            None => ([0.0, 0.0, 1.0, 1.0], [tw, th]),
+        };
+        let mut packed = Self::zeroed();
+        packed.header = [4, repeat_bits, 0, 0];
+        packed.geometry = src_uv;
+        packed.geometry2 = [tile_size[0], tile_size[1], 0.0, 0.0];
         packed
     }
 }
@@ -441,6 +532,8 @@ pub(super) struct PathRange {
     pub index_count: u32,
     /// The draw's [`GpuPathInstance`]. Ranges merge only within one.
     pub instance: u32,
+    /// Cache key when painted with a [`ResolvedPattern`].
+    pub pattern: Option<String>,
 }
 
 /// A cheap fingerprint of what a mesh puts in the arena: a hash of its
@@ -1177,6 +1270,11 @@ pub(super) struct MeshPipeline {
     keep_pipeline: wgpu::RenderPipeline,
     bind_layout: wgpu::BindGroupLayout,
     dummy_motion: wgpu::BindGroup,
+    pattern_layout: wgpu::BindGroupLayout,
+    pattern_fallback_view: wgpu::TextureView,
+    pattern_fallback_group: wgpu::BindGroup,
+    pattern_sampler_linear: wgpu::Sampler,
+    pattern_sampler_nearest: wgpu::Sampler,
 }
 
 impl MeshPipeline {
@@ -1280,9 +1378,82 @@ impl MeshPipeline {
             &motion_layout,
             "nana-ui.scene.mesh.dummy_motion",
         );
+        let pattern_layout = if let Some(policy) = policy {
+            let table = ResourceTable::new(vec![
+                LogicalBinding::new(0, LogicalBindingType::SampledTexture, MESH_FRAGMENT),
+                LogicalBinding::new(1, LogicalBindingType::Sampler, MESH_FRAGMENT),
+            ])
+            .expect("pattern logical table is valid")
+            .for_generation(policy.generation());
+            let logical = __framework::logical_layout(device, policy.generation(), &table)
+                .expect("pattern logical layout matches the device");
+            __framework::resource_layout(&logical).clone()
+        } else {
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("nana-ui.scene.path.pattern.layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            })
+        };
+        let pattern_fallback_view = device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("nana-ui.scene.path.pattern.fallback"),
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            })
+            .create_view(&Default::default());
+        let pattern_sampler_linear = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("nana-ui.scene.path.pattern.sampler.linear"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            ..Default::default()
+        });
+        let pattern_sampler_nearest = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("nana-ui.scene.path.pattern.sampler.nearest"),
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+        let pattern_fallback_group = create_pattern_bind_group(
+            device,
+            &pattern_layout,
+            &pattern_fallback_view,
+            &pattern_sampler_linear,
+        );
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("nana-ui.scene.triangle.solid.pipeline"),
-            bind_group_layouts: &[Some(&bind_layout), Some(&motion_layout)],
+            bind_group_layouts: &[
+                Some(&bind_layout),
+                Some(&motion_layout),
+                Some(&pattern_layout),
+            ],
             immediate_size: 0,
         });
         let pipeline = try_cached_mesh_pipeline(policy, device, &shader, &layout, format, 1, 1)?;
@@ -1380,6 +1551,11 @@ impl MeshPipeline {
             keep_pipeline,
             bind_layout,
             dummy_motion,
+            pattern_layout,
+            pattern_fallback_view,
+            pattern_fallback_group,
+            pattern_sampler_linear,
+            pattern_sampler_nearest,
         })
     }
 
@@ -1422,6 +1598,8 @@ impl MeshPipeline {
             pending_clips: Vec::new(),
             uploaded_clips: Vec::new(),
             clip_intern: HashMap::new(),
+            pattern_bind_groups: HashMap::new(),
+            pending_patterns: std::collections::HashSet::new(),
             corner_exponent: 2.0,
             motion_ids: [0, 0],
             motion_origin: [0.0, 0.0],
@@ -1433,9 +1611,14 @@ impl MeshPipeline {
         target: &MeshPipelineTarget,
         pass: &mut wgpu::RenderPass<'_>,
         motion: Option<&wgpu::BindGroup>,
+        pattern: Option<&str>,
     ) {
         pass.set_bind_group(0, &target.bind_group, &[]);
         pass.set_bind_group(1, motion.unwrap_or(&self.dummy_motion), &[]);
+        let pat_group = pattern
+            .and_then(|key| target.pattern_bind_groups.get(key))
+            .unwrap_or(&self.pattern_fallback_group);
+        pass.set_bind_group(2, pat_group, &[]);
         pass.set_vertex_buffer(0, target.paths.vertices.slice(..));
         pass.set_vertex_buffer(1, target.paths.instances.slice(..));
         pass.set_index_buffer(target.paths.indices.slice(..), wgpu::IndexFormat::Uint32);
@@ -1461,7 +1644,7 @@ impl MeshPipeline {
             nana_ui_scene::LayerMaskMode::Tint => &self.tint_pipeline,
             nana_ui_scene::LayerMaskMode::Keep => &self.keep_pipeline,
         });
-        self.bind_path_buffers(target, pass, motion);
+        self.bind_path_buffers(target, pass, motion, range.pattern.as_deref());
         pass.set_scissor_rect(scissor.x, scissor.y, scissor.width, scissor.height);
         pass.draw_indexed(
             range.first_index..range.first_index + range.index_count,
@@ -1493,7 +1676,7 @@ impl MeshPipeline {
         } else {
             &self.path_pipeline
         });
-        self.bind_path_buffers(target, pass, motion);
+        self.bind_path_buffers(target, pass, motion, range.pattern.as_deref());
         pass.set_scissor_rect(scissor.x, scissor.y, scissor.width, scissor.height);
         pass.draw_indexed(
             range.first_index..range.first_index + range.index_count,
@@ -1511,6 +1694,7 @@ impl MeshPipeline {
         target: &mut MeshPipelineTarget,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        url_cache: &super::url_texture_cache::UrlTextureCache,
         physical_size: [u32; 2],
         scale_factor: f32,
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
@@ -1545,6 +1729,28 @@ impl MeshPipeline {
                 &target.paths.gradients,
             );
         }
+        for key in &target.pending_patterns {
+            if target.pattern_bind_groups.contains_key(key) {
+                continue;
+            }
+            let view = url_cache
+                .get(key)
+                .and_then(|c| c.as_ref())
+                .map(|c| &c.view)
+                .unwrap_or(&self.pattern_fallback_view);
+            let sampler = if super::url_texture_cache::is_nearest_key(key) {
+                &self.pattern_sampler_nearest
+            } else {
+                &self.pattern_sampler_linear
+            };
+            target.pattern_bind_groups.insert(
+                key.clone(),
+                create_pattern_bind_group(device, &self.pattern_layout, view, sampler),
+            );
+        }
+        target
+            .pattern_bind_groups
+            .retain(|key, _| url_cache.contains_retained(key));
         if target.pending_instances.is_empty() && target.paths.pending_instances.is_empty() {
             target.uploaded_instances.clear();
             target.uploaded_clips.clear();
@@ -1659,6 +1865,7 @@ impl MeshPipeline {
         });
         pass.set_bind_group(0, &target.bind_group, &[]);
         pass.set_bind_group(1, motion.unwrap_or(&self.dummy_motion), &[]);
+        pass.set_bind_group(2, &self.pattern_fallback_group, &[]);
         pass.set_vertex_buffer(0, target.instances.slice(..));
         pass.set_scissor_rect(scissor.x, scissor.y, scissor.width, scissor.height);
         pass.draw(
@@ -1670,6 +1877,28 @@ impl MeshPipeline {
             work.record_draw_call();
         }
     }
+}
+
+fn create_pattern_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    view: &wgpu::TextureView,
+    sampler: &wgpu::Sampler,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("nana-ui.scene.path.pattern.bind_group"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+        ],
+    })
 }
 
 fn mesh_bind_group(
@@ -4029,6 +4258,8 @@ pub(super) struct MeshPipelineTarget {
     pending_clips: Vec<GpuClip>,
     clip_intern: HashMap<ClipInternKey, u32>,
     uploaded_clips: Vec<GpuClip>,
+    pattern_bind_groups: HashMap<String, wgpu::BindGroup>,
+    pending_patterns: std::collections::HashSet<String>,
     /// The scene's corner curve exponent, set each frame before upload.
     corner_exponent: f32,
     motion_ids: [u32; 2],
@@ -4051,9 +4282,14 @@ impl MeshPipelineTarget {
         self.pending_instances.clear();
         self.pending_clips.clear();
         self.clip_intern.clear();
+        self.pending_patterns.clear();
         self.motion_ids = [0, 0];
         self.motion_origin = [0.0, 0.0];
         self.paths.begin_frame();
+    }
+
+    pub(super) fn invalidate_image_bindings(&mut self) {
+        self.pattern_bind_groups.clear();
     }
 
     /// Queue a custom-paint path mesh (Issue #217). `origin` places the
@@ -4073,31 +4309,63 @@ impl MeshPipelineTarget {
         opacity: f32,
         fragment_clip: FragmentClip,
         node_mask: Option<&Arc<nana_ui_scene::NodeMask>>,
+        pattern_ctx: Option<(
+            &wgpu::Device,
+            &wgpu::Queue,
+            &mut super::url_texture_cache::UrlTextureCache,
+            Option<&crate::gpu_work::GpuWorkSink>,
+        )>,
     ) -> Option<PathRange> {
         if mesh.indices.is_empty() || (opacity <= 0.0 && self.motion_ids[1] == 0) {
             return None;
         }
+        let mut pattern_key: Option<String> = None;
+        let gradient = if let Some(resolved_pattern) = mesh.pattern.as_ref() {
+            let (device, queue, url_cache, work) = pattern_ctx?;
+            let (tex_w, tex_h) = url_cache.load_image(
+                device,
+                queue,
+                &resolved_pattern.source,
+                resolved_pattern.sampling,
+                super::url_texture_cache::Demand::Waiting,
+                work,
+            )?;
+            let key = super::url_texture_cache::cache_key(
+                &resolved_pattern.source,
+                resolved_pattern.sampling,
+            )
+            .into_owned();
+            self.pending_patterns.insert(key.clone());
+            pattern_key = Some(key);
+            self.paths.pending_gradients.push(GpuGradient::from_pattern(
+                resolved_pattern,
+                tex_w,
+                tex_h,
+            ));
+            self.paths.pending_gradients.len() as u32 - 1
+        } else {
+            match mesh.gradient.as_ref() {
+                None => NO_GRADIENT,
+                Some(resolved) => {
+                    let paths = &mut self.paths;
+                    *paths
+                        .gradient_intern
+                        .entry(Arc::as_ptr(resolved) as usize)
+                        .or_insert_with(|| {
+                            paths
+                                .pending_gradients
+                                .push(GpuGradient::from_resolved(resolved));
+                            paths.pending_gradients.len() as u32 - 1
+                        })
+                }
+            }
+        };
         let clip_index = intern_clip(
             &mut self.pending_clips,
             &mut self.clip_intern,
             fragment_clip,
         );
         let [a, b, c, d, e, f] = affine;
-        let gradient = match mesh.gradient.as_ref() {
-            None => NO_GRADIENT,
-            Some(resolved) => {
-                let paths = &mut self.paths;
-                *paths
-                    .gradient_intern
-                    .entry(Arc::as_ptr(resolved) as usize)
-                    .or_insert_with(|| {
-                        paths
-                            .pending_gradients
-                            .push(GpuGradient::from_resolved(resolved));
-                        paths.pending_gradients.len() as u32 - 1
-                    })
-            }
-        };
         // The mask is evaluated where each fragment lands, AA fringe
         // included. Its own entry each time: its map depends on where the
         // mesh is.
@@ -4129,6 +4397,7 @@ impl MeshPipelineTarget {
                 first_index,
                 index_count,
                 instance,
+                pattern: pattern_key.clone(),
             });
         }
         let instance = self.paths.instance(GpuPathInstance {
@@ -4146,6 +4415,7 @@ impl MeshPipelineTarget {
             first_index,
             index_count,
             instance,
+            pattern: pattern_key,
         })
     }
 
@@ -4301,6 +4571,11 @@ mod gradient_space_tests {
     use nana_ui_runtime::{GradientExtend, GradientShape, ResolvedGradient};
 
     fn gradient(linear: Option<Vec<(f32, [f32; 4])>>) -> ResolvedGradient {
+        let color_space = if linear.is_some() {
+            nana_ui_runtime::GradientColorSpace::LinearScRgb
+        } else {
+            nana_ui_runtime::GradientColorSpace::PremulSrgb
+        };
         ResolvedGradient {
             shape: GradientShape::Linear {
                 start: [0.0, 0.0],
@@ -4309,6 +4584,8 @@ mod gradient_space_tests {
             stops: vec![(0.0, [0.0, 0.0, 0.0, 1.0]), (1.0, [1.0, 1.0, 1.0, 1.0])],
             linear_stops: linear,
             extend: GradientExtend::Pad,
+            transform: nana_ui_runtime::AFFINE_IDENTITY,
+            color_space,
         }
     }
 

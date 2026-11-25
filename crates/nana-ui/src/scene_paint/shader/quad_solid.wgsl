@@ -368,7 +368,8 @@ fn solid_fs_main(
             clamp(0.5 - shadow_edge, 0.0, 1.0),
             blur <= 0.0,
         );
-        let under = select(1.0 - quad_alpha, fill_alpha, inset);
+        let solid_shadow = !inset && (paint.flags & PAINT_SHADOW_SOLID) != 0u;
+        let under = select(select(1.0 - quad_alpha, fill_alpha, inset), 1.0, solid_shadow);
         // `clip-path` clips the shadow too.
         return mix(quad_color, input.shadow_color, under * shadow_alpha * polygon_cover) * fade;
     } else {

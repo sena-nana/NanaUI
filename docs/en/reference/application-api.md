@@ -407,14 +407,21 @@ interaction state, font set) are unchanged. When it only moves, even the triangu
   `PATH_FLATTEN_TOLERANCE` (matching Scene), returning a `PaintPath`. `contains` /
   `stroke_contains` correspond to Canvas `isPointInPath` / `isPointInStroke`. There are also
   `bounds` and `transformed`. `cx.fill_path` / `cx.stroke_path` are anti-aliased.
-- Color: fills, strokes, rounded rectangles, text, and icons all accept a solid color or a `Gradient` (`linear` /
-  `radial` / `conic`, any number of color stops, `Pad` / `Repeat` / `Reflect`). Gradients are evaluated per pixel.
-  Once in the Scene, color stops are interpolated premultiplied in linear scRGB; sRGB input is decoded
-  only once. More than 16 color stops are resampled.
+- Color: fills, strokes, rounded rectangles, text, and icons all accept a solid color, a `Gradient`,
+  or a `PaintPattern` (`Paint::Pattern`). `Gradient` supports `linear` / `radial` (single-circle or
+  `radial_two_circle` focal gradients) / `elliptical_radial` (with any local affine `transform`) /
+  `conic`, any number of color stops, and `Pad` / `Repeat` / `Reflect`. Gradients are evaluated per pixel,
+  and interpolation color space can be selected via
+  `.color_space(GradientColorSpace::PremulSrgb | LinearScRgb | Oklab)` (`Oklab` blends in perceptually
+  uniform Oklab space; `LinearScRgb` and `PremulSrgb` interpolate premultiplied in their respective spaces;
+  more than 16 color stops are resampled). `PaintPattern` tiles a decoded image with optional `src_rect`,
+  `PatternRepeat` (`Repeat` / `RepeatX` / `RepeatY` / `NoRepeat`), `transform`, and
+  `with_smoothing(bool)` / `with_sampling(..)`.
 - Strokes: `StrokeStyle` sets width, line cap, join, and miter limit (Canvas `miterLimit`).
   Defaults match Canvas: butt cap, miter join, limit 10.
   `.dash(pattern, offset)` has Canvas `setLineDash` / `lineDashOffset` semantics.
   Each segment ends with the line cap. A stroke that would split into more than ten thousand dashes is drawn solid (each segment is already under a pixel).
+  Undashed solid strokes with effective screen width ≤ `1.5 px` use the GPU stroke-capsule primitive directly instead of generating a tessellated stroke polygon mesh.
 - Local transforms: `translate` / `scale` / `rotate` / `concat` / `set_transform`.
   `save` / `restore` save and restore the transform, opacity, and blend mode, as in Canvas.
   `restore` also pops clips pushed after `save` (layers are still managed separately by `push_layer` / `pop_layer`).
@@ -422,26 +429,36 @@ interaction state, font set) are unchanged. When it only moves, even the triangu
   gradients follow the transform. Strokes and dashes are computed in pre-transform coordinates and then transformed as a whole (as in Canvas).
   Shadow offset and blur do not follow the transform. Text, icons, images, and the built-in appearance from `draw_default()` also
   follow the current transform.
-- Opacity and blending: `set_opacity` (Canvas `globalAlpha`, applied per command),
+- Opacity, blending, and masks: `set_opacity` (Canvas `globalAlpha`, applied per command),
   `set_blend(mode)`, and `push_layer(opacity, blend)` / `pop_layer`, which draw a group of commands
-  into a layer and then composite it as a whole, so overlapping parts do not accumulate opacity. The blend modes are the full CSS
+  into a layer and then composite it as a whole, so overlapping parts do not accumulate opacity. The blend modes cover the full CSS
   `mix-blend-mode` set (`multiply`, `screen`, `overlay`, `darken`, `lighten`,
   `color-dodge`, `color-burn`, `hard-light`, `soft-light`, `difference`,
-  `exclusion`, `hue`, `saturation`, `color`, `luminosity`). CSS
-  `mix-blend-mode` supports these values as well.
-- `cx.shadow(path, ..)`: a shadow along the path outline. Outer shadow or `inset` inner shadow.
+  `exclusion`, `hue`, `saturation`, `color`, `luminosity`) plus all 11 Porter-Duff compositing operators
+  (`source-over`, `source-in`, `source-out`, `source-atop`, `destination-over`,
+  `destination-in`, `destination-out`, `destination-atop`, `xor`, `copy`, `lighter`).
+  Clearing Porter-Duff modes (`copy`, `source-in`, `source-out`, `destination-in`, `destination-atop`)
+  clear outside their drawn bounds across the target, even when the group is empty or offscreen; top-level
+  custom paint that uses Porter-Duff clearing/masking is automatically isolated inside the node's own layer so outer page backgrounds are never erased.
+  `cx.push_mask(MaskKind::Alpha | MaskKind::Luminance)` / `cx.pop_mask()` turns the following custom-paint commands
+  into an alpha or Rec.709 linear-luminance mask applied to the isolated destination group.
+- `cx.shadow(path, ..)`: a shadow along the path outline. Outer shadow or `inset` inner shadow. (Rounded) rectangle and similarity-transformed rectangle shadows route through the analytic SDF quad pass instead of mesh extrusion.
 - `cx.push_clip(path)` / `cx.pop_clip()`: clips only content recorded afterward. It does not affect child nodes,
   and it does not clip shadows drawn before `push_clip`. Any path is exact: path geometry is cut on the CPU and
   keeps anti-aliasing. Text, icons, images, and the built-in appearance from `draw_default()` use GPU clipping directly when the clip path is a (rounded)
   rectangle or a polygon with at most 8 vertices. Other shapes are drawn into a layer masked by the path.
 - `cx.rounded_rect` (independent radius per corner; can carry a border and shadow), `cx.text`, `cx.icon`,
   `cx.image(rect, source, fit, radii)` (`source` has the same origin rules as CSS `url()`; `fit` is
-  the same as `object-fit`; loaded asynchronously). `cx.fill_path_with_image(path, rect, source, fit)`
-  fills an arbitrary path with an image. How subsequent images are sampled is set by `cx.set_image_sampling(..)`
+  the same as `object-fit`; loaded asynchronously), `cx.draw_image(rect, PaintImage)` (adds `src_rect` atlas sub-rect crop,
+  `nine_slice(insets, fill)`, `with_smoothing(bool)`, and `with_sampling`), and
+  `cx.draw_texture_region` / `cx.draw_texture_regions` (shared-atlas sub-rect batching).
+  `cx.fill_path_with_image(path, rect, source, fit)` fills an arbitrary path with an image. How subsequent images are sampled is set by
+  `cx.set_image_sampling(..)` or Canvas-style `cx.set_image_smoothing(bool)` (`false` selects `ImageSampling::Nearest`)
   (saved and restored with `save` / `restore`). See [Image sampling](#image-sampling) below.
 - Hit testing: points where `Painter::hit_test(local, size)` returns `Some(false)` pass through to what is below.
   When `hit_painted_outline()` is true, the hit region equals the recorded content (fills, strokes including dash gaps,
   rounded rectangles, images, text boxes, the node rectangle from `draw_default()`, computed with transforms and clips).
+  `DestinationOut`, `SourceIn`, `DestinationIn`, `Xor`, `Copy`, and `push_mask` scopes update hit testing accordingly.
   Shadows do not participate in hit testing, consistent with CSS `box-shadow` and Canvas `isPointInPath`.
   Content drawn after `set_opacity(0)`, or inside a layer with zero opacity, does not participate either. Strokes
   are tested by distance to the center line of at most half the line width, so line caps and joins always count as round. Hit testing reads the node's
@@ -463,6 +480,10 @@ a path). Lengths can be written relative to the node size as `"50%"` or `"100% -
 role names, theme mixes, or typed paint; when calling Runtime
 `PaintScript::from_json`, pass typed paint. Paths accept SVG path strings, segment arrays, boolean path objects
 `{ "op": "union" | "intersect" | "difference" | "xor", "paths": [...] }`, and `{ "textPath": { "text": "...", "origin": [x, y], ... } }`.
+Gradients accept two-circle arrays (`"radial": [x0, y0, r0, x1, y1, r1]`), elliptical objects (`"radial": { "center": ..., "rx": ..., "ry": ..., "rotation": ... }`), `transform`, and `colorSpace` (`"premul-srgb"` / `"linear-scrgb"` / `"oklab"`);
+`paint` also accepts `{ "pattern": { "src": "...", "srcRect": ..., "repeat": "repeat" | "repeat-x" | "repeat-y" | "no-repeat", "transform": ..., "smoothing": false } }`.
+`image` accepts `srcRect`, `nineSlice`, `fill`, and `smoothing`; `textureRegions` batches atlas sub-rectangles;
+`imageSmoothing`, `blend` (including Porter-Duff keywords), and `pushMask` / `popMask` (`"alpha"` / `"luminance"`) have matching commands.
 The `text` command also supports `family`, `letterSpacing`, `decoration`, `stroke`, and `shadows`. Commands can be filtered by interaction state.
 A misspelled field name is an error (see the docs of `PaintScript::from_json` for the format). Icons are drawn by built-in
 icon name.
@@ -564,7 +585,8 @@ cx.set_image_sampling(ImageSampling::Mipmap); // subsequent cx.image calls in a 
 ```
 
 `ImageSampling::Mipmap` keeps the decoded size, generates a full mip chain in the background, and samples trilinearly
-(`MipmapFilterMode::Linear`). The two sampling modes for the same URL are two independent cache entries.
+(`MipmapFilterMode::Linear`). `ImageSampling::Nearest` (also selected via `cx.set_image_smoothing(false)`)
+keeps the natural decoded resolution and samples with nearest-neighbor filtering (`FilterMode::Nearest`) without bilinear or CatmullRom resampling, suited to crisp pixel art and tile atlases. Each sampling mode for the same URL uses an independent cache entry.
 
 Local images (files, `data:`, `nana://res/`) are still decoded synchronously on the frame the first time they appear and are first shown at the decoded size.
 The resampled image or mip chain replaces it once finished in the background. Remote images are fetched, decoded, and prepared directly at the target size on a background thread.

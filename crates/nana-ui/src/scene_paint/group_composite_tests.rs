@@ -484,6 +484,114 @@ fn an_open_shutter_streaks_behind_the_motion_and_a_closed_one_does_not() {
     assert!(pixel(&closed, 256, 108, 64)[0] > 250 && pixel(&closed, 256, 123, 64)[0] > 250);
 }
 
+/// Issue #439: when both motion shutter and a drop shadow are active on the same
+/// group, the drop shadow trails along the shutter streak within a bounded tap cap.
+#[test]
+fn an_open_shutter_also_streaks_drop_shadow_with_bounded_taps() {
+    use nana_ui_core::{
+        ColorFilter, FilterDropShadow, PaintTransform,
+        motion::{
+            AnimatableProperty, AnimationPlayback, Easing, MotionCurve, MotionTargetId,
+            MotionTiming, MotionTrack, MotionTrackId, MotionValue, PresentationStore,
+        },
+    };
+    use std::time::Duration;
+
+    let make_store = |end_x: f32| {
+        let track = MotionTrack::transition(
+            MotionTrackId::new(1).unwrap(),
+            MotionTargetId::new(1).unwrap(),
+            AnimatableProperty::Transform,
+            MotionValue::Transform(PaintTransform::default()),
+            MotionValue::Transform(PaintTransform {
+                e: end_x,
+                ..PaintTransform::default()
+            }),
+            MotionTiming::new(
+                Duration::ZERO,
+                Duration::from_secs(1),
+                Duration::from_millis(16),
+            ),
+            MotionCurve::Easing(Easing::Linear),
+            AnimationPlayback::default(),
+        );
+        let mut store = PresentationStore::new();
+        store.insert(track, MotionValue::Transform(PaintTransform::default()));
+        store
+    };
+
+    let make_shadow_square = |blur: f32, shutter: f32| {
+        extracted_div(
+            1,
+            &[],
+            8.0,
+            40.0,
+            16.0,
+            16.0,
+            nana_ui_core::LayoutStyle {
+                paint_colors: nana_ui_core::PaintColorSlots {
+                    background: Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0])),
+                    ..Default::default()
+                }
+                .into(),
+                paint: nana_ui_core::PaintStyle {
+                    filter: Some(ColorFilter {
+                        drop_shadow: Some(FilterDropShadow {
+                            offset_x: 0.0,
+                            offset_y: 28.0,
+                            blur_radius: blur,
+                            color: nana_ui_core::PaintColor::srgb([0.0, 0.0, 1.0, 1.0]),
+                        }),
+                        ..Default::default()
+                    }),
+                    wide_filter_blur: true,
+                    motion_shutter: shutter,
+                    ..Default::default()
+                }
+                .into(),
+                ..Default::default()
+            },
+            Some([1.0, 0.0, 0.0, 1.0]),
+        )
+    };
+
+    let store = make_store(200.0);
+    let paint = |blur: f32, shutter: f32| {
+        let mut scene = UiScene::new();
+        scene.apply_delta([make_shadow_square(blur, shutter)], []);
+        scene.set_presentation_frame_interval(Duration::from_millis(100));
+        scene.apply_presentation(&store, Duration::from_millis(500), None);
+        paint_256x128(&scene)
+    };
+
+    // Unblurred shadow streaked 20px behind (square spans x=108..124, y=40..56; shadow y=68..84).
+    let closed = paint(0.0, 0.0);
+    let open = paint(0.0, 1.0);
+    assert_eq!(
+        pixel(&closed, 256, 94, 76)[2],
+        0,
+        "closed shutter leaves shadow unstreaked behind square"
+    );
+    assert!(
+        pixel(&open, 256, 94, 76)[2] > 20,
+        "open shutter streaks blue shadow behind motion: {:?}",
+        pixel(&open, 256, 94, 76)
+    );
+
+    // Worst-case 64px shutter streak + 64px blur stays bounded and renders smoothly.
+    let wide_store = make_store(800.0);
+    let mut wide_scene = UiScene::new();
+    wide_scene.apply_delta([make_shadow_square(64.0, 1.0)], []);
+    wide_scene.set_presentation_frame_interval(Duration::from_millis(80));
+    wide_scene.apply_presentation(&wide_store, Duration::from_millis(200), None);
+    let wide_pixels = paint_256x128(&wide_scene);
+    assert!(
+        pixel(&wide_pixels, 256, 130, 76)[2] > 5,
+        "max 64px streak + 64px blur must render bounded streaked shadow: {:?}",
+        pixel(&wide_pixels, 256, 130, 76)
+    );
+}
+
 /// Issue #312: the painter composites a group's filter as the compositor
 /// sampled it at `now`.
 #[test]

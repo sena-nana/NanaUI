@@ -48,6 +48,11 @@ const MIN_DEMAND: u32 = 16;
 /// Appended to the URL to key its [`ImageSampling::Mipmap`] entry. NUL cannot
 /// appear in a URL, a path or a generated key.
 const MIPMAP_KEY: &str = "\u{0}mipmap";
+const NEAREST_KEY: &str = "\u{0}nearest";
+
+pub(crate) fn is_nearest_key(key: &str) -> bool {
+    key.ends_with(NEAREST_KEY)
+}
 
 pub(crate) type ImageWake = Arc<dyn Fn(&str) + Send + Sync>;
 
@@ -74,11 +79,14 @@ pub(crate) fn cache_key(url: &str, sampling: ImageSampling) -> Cow<'_, str> {
     match sampling {
         ImageSampling::Resample => Cow::Borrowed(url),
         ImageSampling::Mipmap => Cow::Owned(format!("{url}{MIPMAP_KEY}")),
+        ImageSampling::Nearest => Cow::Owned(format!("{url}{NEAREST_KEY}")),
     }
 }
 
 fn url_of(key: &str) -> &str {
-    key.strip_suffix(MIPMAP_KEY).unwrap_or(key)
+    key.strip_suffix(MIPMAP_KEY)
+        .or_else(|| key.strip_suffix(NEAREST_KEY))
+        .unwrap_or(key)
 }
 
 pub(crate) struct CachedUrlTexture {
@@ -187,6 +195,8 @@ enum Goal {
     /// A refit to this level-0 size.
     Size((u32, u32)),
     Mipmap,
+    /// Natural decoded dimensions, unfiltered (`ImageSampling::Nearest`).
+    Natural,
 }
 
 /// Levels ready for upload.
@@ -217,6 +227,7 @@ fn prepare(level: Level, goal: Goal) -> Prepared {
         }
         Goal::Size((width, height)) => vec![resampled(level, width, height)],
         Goal::Mipmap => image_resample::mip_chain(level),
+        Goal::Natural => vec![level],
     };
     Prepared { natural, levels }
 }
@@ -776,6 +787,7 @@ impl UrlTextureCache {
                             .last_size
                             .map(Goal::Size)
                             .unwrap_or(Goal::First(demand)),
+                        ImageSampling::Nearest => Goal::Natural,
                     };
                     let prepared = prepare(level, goal);
                     if let Some(texture) =
@@ -802,6 +814,7 @@ impl UrlTextureCache {
         let goal = match sampling {
             ImageSampling::Resample => Goal::First(demand),
             ImageSampling::Mipmap => Goal::Mipmap,
+            ImageSampling::Nearest => Goal::Natural,
         };
         if is_remote(url) {
             // No host means no egress: refused here, before any socket.
@@ -883,6 +896,7 @@ impl UrlTextureCache {
             ImageSampling::Mipmap => {
                 entry.job = self.submit(egress, &key, source, goal, natural);
             }
+            ImageSampling::Nearest => {}
         }
         self.bucket_mut(egress)
             .entries

@@ -95,6 +95,8 @@ pub enum ImageSampling {
     Resample,
     /// Decoded size plus a mip chain, trilinear.
     Mipmap,
+    /// Unfiltered nearest-neighbor sampling at natural decoded resolution.
+    Nearest,
 }
 
 /// A logical-pixel rectangle that can be handed to a content view.

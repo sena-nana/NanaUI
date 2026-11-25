@@ -73,6 +73,7 @@ pub(super) struct MeshPaint {
     color: [f32; 4],
     paint_color: Option<nana_ui_core::PaintColor>,
     gradient: Option<Arc<ResolvedGradient>>,
+    pattern: Option<Arc<ResolvedPattern>>,
 }
 
 /// Builds a recording's meshes, reusing the previous recording's where the
@@ -176,6 +177,7 @@ impl<'a> MeshReuse<'a> {
         let dress = |mut mesh: PathMesh| {
             mesh.paint_color = paint.paint_color;
             mesh.gradient = paint.gradient.clone();
+            mesh.pattern = paint.pattern.clone();
             Arc::new(mesh)
         };
         if !paint.color.iter().all(|channel| channel.is_finite()) {
@@ -245,7 +247,12 @@ pub(super) fn recolored(mesh: &Arc<PathMesh>, from: [f32; 4], paint: &MeshPaint)
         (Some(a), Some(b)) => Arc::ptr_eq(a, b) || a == b,
         _ => false,
     };
-    if same_color && same_gradient && mesh.paint_color == paint.paint_color {
+    let same_pattern = match (&mesh.pattern, &paint.pattern) {
+        (None, None) => true,
+        (Some(a), Some(b)) => Arc::ptr_eq(a, b) || a == b,
+        _ => false,
+    };
+    if same_color && same_gradient && same_pattern && mesh.paint_color == paint.paint_color {
         return Arc::clone(mesh);
     }
     let mut out = PathMesh::clone(mesh);
@@ -262,6 +269,7 @@ pub(super) fn recolored(mesh: &Arc<PathMesh>, from: [f32; 4], paint: &MeshPaint)
     }
     out.paint_color = paint.paint_color;
     out.gradient = paint.gradient.clone();
+    out.pattern = paint.pattern.clone();
     Arc::new(out)
 }
 
@@ -294,6 +302,8 @@ pub(super) fn build_ops(ops: &[PaintOp], masked: bool, reuse: &mut MeshReuse) ->
         transform: AFFINE_IDENTITY,
         opacity: 1.0,
     };
+    let mut implicit_root_layer = false;
+    let mut layer_depth: usize = 0;
     for op in ops {
         let clip = stack.last();
         let t = state.transform;
@@ -301,12 +311,48 @@ pub(super) fn build_ops(ops: &[PaintOp], masked: bool, reuse: &mut MeshReuse) ->
         match op {
             PaintOp::SetTransform(transform) => state.transform = *transform,
             PaintOp::SetOpacity(opacity) => state.opacity = *opacity,
-            PaintOp::PushLayer { opacity, blend } => built.push(BuiltOp::LayerBegin {
-                opacity: *opacity,
-                blend: *blend,
-                clip: None,
-            }),
-            PaintOp::PopLayer => built.push(BuiltOp::LayerEnd { mask: None }),
+            PaintOp::PushLayer { opacity, blend } => {
+                layer_depth += 1;
+                built.push(BuiltOp::LayerBegin {
+                    opacity: *opacity,
+                    blend: *blend,
+                    clip: None,
+                    mask: None,
+                });
+            }
+            PaintOp::PopLayer => {
+                layer_depth = layer_depth.saturating_sub(1);
+                built.push(BuiltOp::LayerEnd { mask: None });
+            }
+            PaintOp::PushMask { kind } => {
+                if layer_depth == 0 && !implicit_root_layer {
+                    // Wrap top-level phase content in an isolated layer so a
+                    // standalone `push_mask` only masks this painter's content
+                    // rather than erasing the UI behind the node.
+                    implicit_root_layer = true;
+                    layer_depth += 1;
+                    built.insert(
+                        0,
+                        BuiltOp::LayerBegin {
+                            opacity: 1.0,
+                            blend: BlendMode::Normal,
+                            clip: None,
+                            mask: None,
+                        },
+                    );
+                }
+                layer_depth += 1;
+                built.push(BuiltOp::LayerBegin {
+                    opacity: 1.0,
+                    blend: BlendMode::Normal,
+                    clip: None,
+                    mask: Some(*kind),
+                });
+            }
+            PaintOp::PopMask => {
+                layer_depth = layer_depth.saturating_sub(1);
+                built.push(BuiltOp::LayerEnd { mask: None });
+            }
             PaintOp::PushClip { path } => {
                 reuse.key.clear();
                 if let Some(outer) = clip {
@@ -371,6 +417,7 @@ pub(super) fn build_ops(ops: &[PaintOp], masked: bool, reuse: &mut MeshReuse) ->
                         border: None,
                         border_color_space: None,
                         shadow: None,
+                        shadow_solid: false,
                         transform: t,
                     });
                     continue;
@@ -403,9 +450,53 @@ pub(super) fn build_ops(ops: &[PaintOp], masked: bool, reuse: &mut MeshReuse) ->
                         border: Some((fade(color, alpha), stroke.width)),
                         border_color_space: paint_authoring_color(paint, alpha),
                         shadow: None,
+                        shadow_solid: false,
                         transform: t,
                     });
                     continue;
+                }
+                // Thin solid undashed strokes route to GPU capsule segments
+                // without i_overlay / lyon polygon tessellation (#222).
+                let scale = affine_scale(t).max(1e-3);
+                let screen_width = stroke.width * scale;
+                if !masked
+                    && stroke.width.is_finite()
+                    && stroke.width > 0.0
+                    && screen_width <= 1.5
+                    && stroke.cap != LineCap::Square
+                    && dash_pattern(&stroke.dash).is_none()
+                    && matches!(paint, ResolvedPaint::Solid(_) | ResolvedPaint::Authoring(_))
+                    && let Some(color) = paint_srgb(paint)
+                    && let Some(clips_for_op) =
+                        clip.map_or(Some(Arc::clone(&no_clips)), |c| c.built.local.clone())
+                    && path_is_drawable(path, t)
+                {
+                    let tol = TOLERANCE.max(0.25) / scale;
+                    let cap = match stroke.cap {
+                        LineCap::Round => StrokeCap::Round,
+                        _ => StrokeCap::Butt,
+                    };
+                    let subpaths = flatten(path, AFFINE_IDENTITY, tol);
+                    if subpaths.len() == 1 {
+                        let (mut pts, closed) = subpaths.into_iter().next().expect("len == 1");
+                        if closed && pts.len() >= 2 && pts.first() != pts.last() {
+                            pts.push(pts[0]);
+                        }
+                        if pts.len() >= 2 {
+                            built.push(BuiltOp::Stroke {
+                                points: pts
+                                    .into_iter()
+                                    .map(|[x, y]| [x as f32, y as f32])
+                                    .collect(),
+                                width: stroke.width.min(MAX_LENGTH),
+                                color: fade(color, alpha),
+                                cap,
+                                clips: clips_for_op,
+                                transform: t,
+                            });
+                        }
+                        continue;
+                    }
                 }
                 reuse.begin(KEY_STROKE, t, clip);
                 reuse.words(&[stroke.width, stroke.miter_limit, stroke.dash_offset]);
@@ -419,6 +510,27 @@ pub(super) fn build_ops(ops: &[PaintOp], masked: bool, reuse: &mut MeshReuse) ->
                 });
             }
             PaintOp::Shadow { path, shadow } => {
+                if !masked
+                    && clip.is_none()
+                    && path_is_drawable(path, t)
+                    && let Some((rect, radii)) = quad_shape(path)
+                    && let Some(quad_shadow) = similarity_shadow(*shadow, t, alpha)
+                {
+                    if quad_shadow.color.to_srgb()[3] > 0.0 {
+                        built.push(BuiltOp::Quad {
+                            rect,
+                            radii,
+                            fill: None,
+                            fill_color_space: None,
+                            border: None,
+                            border_color_space: None,
+                            shadow: Some(quad_shadow),
+                            shadow_solid: true,
+                            transform: t,
+                        });
+                    }
+                    continue;
+                }
                 reuse.begin(KEY_SHADOW, t, clip);
                 reuse.path(path);
                 push_shadow(&mut built, reuse, shadow, alpha, clip, || {
@@ -447,30 +559,40 @@ pub(super) fn build_ops(ops: &[PaintOp], masked: bool, reuse: &mut MeshReuse) ->
                     None => Some(None),
                     Some(paint) => paint_srgb(paint).map(|color| Some(fade(color, alpha))),
                 };
-                // The SDF quad draws a solid box under any affine transform;
-                // a gradient or a path clip needs the box as paths, and so
-                // does a shadow under more than a translation — the quad
-                // would turn and scale it, and a painter's shadows do not.
-                let translation = t[..4] == AFFINE_IDENTITY[..4];
                 if !masked
                     && clip.is_none()
-                    && (shadow.is_none() || translation)
-                    && let Some(fill) = solid
+                    && let Some(fill_solid) = solid
                 {
-                    built.push(BuiltOp::Quad {
-                        rect,
-                        radii: *radii,
-                        fill,
-                        fill_color_space,
-                        border: border.map(|(color, width)| (fade(color, alpha), width)),
-                        border_color_space,
-                        shadow: shadow.map(|shadow| ComponentElevation {
-                            color: scale_paint_alpha(shadow.color, alpha),
-                            ..shadow
-                        }),
-                        transform: t,
-                    });
-                    continue;
+                    if shadow.is_none() {
+                        built.push(BuiltOp::Quad {
+                            rect,
+                            radii: *radii,
+                            fill: fill_solid,
+                            fill_color_space,
+                            border: border.map(|(color, width)| (fade(color, alpha), width)),
+                            border_color_space,
+                            shadow: None,
+                            shadow_solid: false,
+                            transform: t,
+                        });
+                        continue;
+                    }
+                    if let Some(s) = shadow
+                        && let Some(quad_shadow) = similarity_shadow(*s, t, alpha)
+                    {
+                        built.push(BuiltOp::Quad {
+                            rect,
+                            radii: *radii,
+                            fill: fill_solid,
+                            fill_color_space,
+                            border: border.map(|(color, width)| (fade(color, alpha), width)),
+                            border_color_space,
+                            shadow: (quad_shadow.color.to_srgb()[3] > 0.0).then_some(quad_shadow),
+                            shadow_solid: false,
+                            transform: t,
+                        });
+                        continue;
+                    }
                 }
                 let outline = OnceCell::new();
                 let outline = || outline.get_or_init(|| rounded_shapes(rect, *radii, t));
@@ -522,6 +644,9 @@ pub(super) fn build_ops(ops: &[PaintOp], masked: bool, reuse: &mut MeshReuse) ->
                 fit,
                 sampling,
                 radii,
+                src_rect,
+                nine_slice,
+                nine_slice_fill,
             } => {
                 let rect = scene_rect(*rect);
                 let start = built.len();
@@ -531,12 +656,46 @@ pub(super) fn build_ops(ops: &[PaintOp], masked: bool, reuse: &mut MeshReuse) ->
                     fit: *fit,
                     sampling: *sampling,
                     radii: *radii,
+                    src_rect: src_rect.map(scene_rect),
+                    nine_slice: *nine_slice,
+                    nine_slice_fill: *nine_slice_fill,
                     opacity: alpha,
                     clips,
                     transform: t,
                 });
                 if masked {
                     keep_mask(&mut built, start, local_area(rect, 1.0, t));
+                }
+            }
+            PaintOp::TextureRegionBatch {
+                source,
+                sampling,
+                items,
+            } => {
+                let start = built.len();
+                let mut bounds: Option<SceneRect> = None;
+                for (src_rect, dest_rect) in items {
+                    let rect = scene_rect(*dest_rect);
+                    bounds = Some(match bounds {
+                        Some(b) => super::union_rect(&[b, rect]),
+                        None => rect,
+                    });
+                    clipped(&mut built, clip, &no_clips, |clips| BuiltOp::Image {
+                        rect,
+                        source: Arc::clone(source),
+                        fit: ImageFit::Fill,
+                        sampling: *sampling,
+                        radii: [0.0; 4],
+                        src_rect: Some(scene_rect(*src_rect)),
+                        nine_slice: None,
+                        nine_slice_fill: true,
+                        opacity: alpha,
+                        clips,
+                        transform: t,
+                    });
+                }
+                if masked && let Some(area_rect) = bounds {
+                    keep_mask(&mut built, start, local_area(area_rect, 1.0, t));
                 }
             }
             PaintOp::FillImage {
@@ -560,6 +719,7 @@ pub(super) fn build_ops(ops: &[PaintOp], masked: bool, reuse: &mut MeshReuse) ->
                     opacity: 1.0,
                     blend: BlendMode::Normal,
                     clip: Some(area),
+                    mask: None,
                 });
                 built.push(BuiltOp::Image {
                     rect: scene_rect(*rect),
@@ -567,6 +727,9 @@ pub(super) fn build_ops(ops: &[PaintOp], masked: bool, reuse: &mut MeshReuse) ->
                     fit: *fit,
                     sampling: *sampling,
                     radii: [0.0; 4],
+                    src_rect: None,
+                    nine_slice: None,
+                    nine_slice_fill: true,
                     opacity: alpha,
                     clips: Arc::clone(&no_clips),
                     transform: t,
@@ -611,11 +774,19 @@ pub(super) fn build_ops(ops: &[PaintOp], masked: bool, reuse: &mut MeshReuse) ->
                         effects: rich,
                     })
                 };
-                let paint_is_gradient = matches!(paint, ResolvedPaint::Gradient(_));
+                let paint_is_gradient = matches!(
+                    paint,
+                    ResolvedPaint::Gradient(_) | ResolvedPaint::Pattern(_)
+                );
                 let stroke_is_gradient = effects
                     .as_ref()
                     .and_then(|e| e.stroke.as_ref())
-                    .is_some_and(|s| matches!(s.paint, ResolvedPaint::Gradient(_)));
+                    .is_some_and(|s| {
+                        matches!(
+                            s.paint,
+                            ResolvedPaint::Gradient(_) | ResolvedPaint::Pattern(_)
+                        )
+                    });
 
                 let resolve_solid_stroke = |stroke: &nana_ui_runtime::ResolvedPaintTextStroke| {
                     let color = match &stroke.paint {
@@ -623,7 +794,7 @@ pub(super) fn build_ops(ops: &[PaintOp], masked: bool, reuse: &mut MeshReuse) ->
                             Some(nana_ui_core::PaintColor::srgb(fade(*rgba, alpha)))
                         }
                         ResolvedPaint::Authoring(c) => Some(scale_paint_alpha(*c, alpha)),
-                        ResolvedPaint::Gradient(_) => None,
+                        ResolvedPaint::Gradient(_) | ResolvedPaint::Pattern(_) => None,
                     }?;
                     Some(nana_ui_core::RichTextStroke {
                         width_px: stroke.width,
@@ -747,7 +918,10 @@ pub(super) fn build_ops(ops: &[PaintOp], masked: bool, reuse: &mut MeshReuse) ->
                             stroke: Some(resolve_solid_stroke(stroke).unwrap_or(white_stroke)),
                             ..SceneTextEffects::default()
                         };
-                        let stroke_paint = if matches!(stroke.paint, ResolvedPaint::Gradient(_)) {
+                        let stroke_paint = if matches!(
+                            stroke.paint,
+                            ResolvedPaint::Gradient(_) | ResolvedPaint::Pattern(_)
+                        ) {
                             &stroke.paint
                         } else {
                             &ResolvedPaint::Solid([0.0; 4])
@@ -812,7 +986,10 @@ pub(super) fn build_ops(ops: &[PaintOp], masked: bool, reuse: &mut MeshReuse) ->
                             stroke: Some(resolve_solid_stroke(stroke).unwrap_or(white_stroke)),
                             ..SceneTextEffects::default()
                         };
-                        let stroke_paint = if matches!(stroke.paint, ResolvedPaint::Gradient(_)) {
+                        let stroke_paint = if matches!(
+                            stroke.paint,
+                            ResolvedPaint::Gradient(_) | ResolvedPaint::Pattern(_)
+                        ) {
                             &stroke.paint
                         } else {
                             &ResolvedPaint::Solid([0.0; 4])
@@ -901,6 +1078,9 @@ pub(super) fn build_ops(ops: &[PaintOp], masked: bool, reuse: &mut MeshReuse) ->
             }
         }
     }
+    if implicit_root_layer {
+        built.push(BuiltOp::LayerEnd { mask: None });
+    }
     run_quads(built)
 }
 
@@ -908,6 +1088,51 @@ pub(super) fn build_ops(ops: &[PaintOp], masked: bool, reuse: &mut MeshReuse) ->
 /// into a [`BuiltOp::QuadRun`]: a canvas of thousands of boxes then costs
 /// the scene and the painter one primitive, not one each. Order is kept —
 /// a run only ever holds quads that were adjacent.
+
+/// Maps a node-local shadow into local quad space when `t` is a similarity
+/// transform (uniform scale + rotation/reflection). Returns `None` under
+/// non-uniform scale or shear, or when any shadow length is non-finite.
+fn similarity_shadow(
+    shadow: ComponentElevation,
+    t: Affine,
+    alpha: f32,
+) -> Option<ComponentElevation> {
+    let lengths = [
+        shadow.offset_x,
+        shadow.offset_y,
+        shadow.blur_radius,
+        shadow.spread_radius,
+    ];
+    if lengths.iter().any(|l| !l.is_finite()) || !alpha.is_finite() {
+        return None;
+    }
+    let [a, b, c, d, _, _] = t;
+    let len_x2 = a * a + b * b;
+    let len_y2 = c * c + d * d;
+    let dot = a * c + b * d;
+    let det = a * d - b * c;
+    if !det.is_finite()
+        || det.abs() <= 1e-6
+        || (len_x2 - len_y2).abs() > 1e-4 * (len_x2 + len_y2 + 1.0)
+        || dot.abs() > 1e-4 * (len_x2 + 1.0)
+    {
+        return None;
+    }
+    let s = len_x2.sqrt();
+    if s <= 1e-6 {
+        return None;
+    }
+    let inv_ox = (d * shadow.offset_x - c * shadow.offset_y) / det;
+    let inv_oy = (a * shadow.offset_y - b * shadow.offset_x) / det;
+    Some(ComponentElevation {
+        color: scale_paint_alpha(shadow.color, alpha),
+        offset_x: inv_ox,
+        offset_y: inv_oy,
+        blur_radius: (shadow.blur_radius.min(MAX_LENGTH) / s).max(0.0),
+        spread_radius: shadow.spread_radius.clamp(-MAX_LENGTH, MAX_LENGTH) / s,
+        inset: shadow.inset,
+    })
+}
 
 /// Straight RGBA with its alpha scaled.
 pub(super) fn fade([r, g, b, a]: [f32; 4], alpha: f32) -> [f32; 4] {
@@ -955,6 +1180,7 @@ pub(super) fn clipped_op(
             opacity: 1.0,
             blend: BlendMode::Normal,
             clip: Some(area),
+            mask: None,
         },
         op(Arc::clone(no_clips)),
         BuiltOp::LayerEnd {
@@ -998,6 +1224,28 @@ pub(super) fn tinted(
                 opacity: 1.0,
                 blend: BlendMode::Normal,
                 clip: None,
+                mask: None,
+            });
+            built.extend(content([1.0; 4], None));
+            built.push(BuiltOp::LayerEnd {
+                mask: mask.map(|mesh| (mesh, LayerMaskMode::Tint)),
+            });
+        }
+        ResolvedPaint::Pattern(pattern) => {
+            let over = outset(rect, reach);
+            let mut area = PaintPath::new();
+            area.rect(LayoutBox {
+                x: over.x,
+                y: over.y,
+                width: over.width,
+                height: over.height,
+            });
+            let mask = pattern_mesh(fill_shapes(&area, state.transform), pattern, state);
+            built.push(BuiltOp::LayerBegin {
+                opacity: 1.0,
+                blend: BlendMode::Normal,
+                clip: None,
+                mask: None,
             });
             built.extend(content([1.0; 4], None));
             built.push(BuiltOp::LayerEnd {
@@ -1028,6 +1276,7 @@ pub(super) fn keep_mask(built: &mut Vec<BuiltOp>, start: usize, area: Option<Sce
             opacity: 1.0,
             blend: BlendMode::Normal,
             clip: Some(area),
+            mask: None,
         },
     );
     built.push(BuiltOp::LayerEnd {
@@ -1081,10 +1330,25 @@ pub(super) fn gradient_mesh(
     let mut mesh = fill_mesh(
         shapes,
         [1.0, 1.0, 1.0, state.opacity],
-        Some(state.transform),
+        Some(affine_multiply(state.transform, gradient.transform)),
         None,
     )?;
     mesh.gradient = Some(Arc::clone(gradient));
+    Some(Arc::new(mesh))
+}
+
+pub(super) fn pattern_mesh(
+    shapes: Shapes,
+    pattern: &Arc<ResolvedPattern>,
+    state: OpState,
+) -> Option<Arc<PathMesh>> {
+    let mut mesh = fill_mesh(
+        shapes,
+        [1.0, 1.0, 1.0, state.opacity],
+        Some(affine_multiply(state.transform, pattern.transform)),
+        None,
+    )?;
+    mesh.pattern = Some(Arc::clone(pattern));
     Some(Arc::new(mesh))
 }
 
@@ -1123,27 +1387,50 @@ pub(super) fn push_fill(
     if paint.is_invisible() || state.opacity <= 0.0 {
         return;
     }
-    let paint = match paint {
-        ResolvedPaint::Solid(color) => MeshPaint {
-            color: fade(*color, state.opacity),
-            paint_color: None,
-            gradient: None,
-        },
-        ResolvedPaint::Authoring(color) => MeshPaint {
-            color: fade(color.to_srgb(), state.opacity),
-            paint_color: Some(*color),
-            gradient: None,
-        },
-        ResolvedPaint::Gradient(gradient) => MeshPaint {
-            color: [1.0, 1.0, 1.0, state.opacity],
-            paint_color: None,
-            gradient: Some(Arc::clone(gradient)),
-        },
+    let (paint, paint_transform) = match paint {
+        ResolvedPaint::Solid(color) => (
+            MeshPaint {
+                color: fade(*color, state.opacity),
+                paint_color: None,
+                gradient: None,
+                pattern: None,
+            },
+            None,
+        ),
+        ResolvedPaint::Authoring(color) => (
+            MeshPaint {
+                color: fade(color.to_srgb(), state.opacity),
+                paint_color: Some(*color),
+                gradient: None,
+                pattern: None,
+            },
+            None,
+        ),
+        ResolvedPaint::Gradient(gradient) => (
+            MeshPaint {
+                color: [1.0, 1.0, 1.0, state.opacity],
+                paint_color: None,
+                gradient: Some(Arc::clone(gradient)),
+                pattern: None,
+            },
+            Some(affine_multiply(state.transform, gradient.transform)),
+        ),
+        ResolvedPaint::Pattern(pattern) => (
+            MeshPaint {
+                color: [1.0, 1.0, 1.0, state.opacity],
+                paint_color: None,
+                gradient: None,
+                pattern: Some(Arc::clone(pattern)),
+            },
+            Some(affine_multiply(state.transform, pattern.transform)),
+        ),
     };
-    let gradient_space = paint.gradient.is_some().then_some(state.transform);
-    reuse.key.push(u32::from(gradient_space.is_some()));
+    reuse.key.push(u32::from(paint_transform.is_some()));
+    if let Some(pt) = paint_transform {
+        reuse.affine(pt);
+    }
     if let Some(mesh) = reuse.mesh(&paint, |color| {
-        fill_mesh(shapes(), color, gradient_space, clip)
+        fill_mesh(shapes(), color, paint_transform, clip)
     }) {
         built.push(BuiltOp::Mesh(mesh));
     }
@@ -1153,7 +1440,7 @@ pub(super) fn paint_srgb(paint: &ResolvedPaint) -> Option<[f32; 4]> {
     match paint {
         ResolvedPaint::Solid(color) => Some(*color),
         ResolvedPaint::Authoring(color) => Some(color.to_srgb()),
-        ResolvedPaint::Gradient(_) => None,
+        ResolvedPaint::Gradient(_) | ResolvedPaint::Pattern(_) => None,
     }
 }
 
@@ -1163,7 +1450,7 @@ pub(super) fn paint_authoring_color(
 ) -> Option<nana_ui_core::PaintColor> {
     match paint {
         ResolvedPaint::Authoring(color) => Some(scale_paint_alpha(*color, opacity)),
-        ResolvedPaint::Solid(_) | ResolvedPaint::Gradient(_) => None,
+        ResolvedPaint::Solid(_) | ResolvedPaint::Gradient(_) | ResolvedPaint::Pattern(_) => None,
     }
 }
 
@@ -1231,6 +1518,7 @@ pub(super) fn push_shadow(
         color,
         paint_color: Some(shadow.color),
         gradient: None,
+        pattern: None,
     };
     let mesh = reuse.mesh(&paint, |color| {
         // Past a screen's reach a blur or spread only costs geometry.
@@ -1379,7 +1667,7 @@ impl MeshBuilder {
     /// An outer shadow of `shapes`, and the outer edge of its band: the
     /// region it reaches. `fade_thin` lowers the peak of a shape thinner
     /// than the blur, as a real Gaussian would.
-    fn shadow(
+    pub(super) fn shadow(
         &mut self,
         mut shapes: Shapes,
         shadow: &ComponentElevation,
@@ -1498,7 +1786,7 @@ impl MeshBuilder {
     /// CSS `box-shadow: inset` inside the outline: dark where the outline,
     /// offset and shrunk by the spread, does not reach, fading over `±blur`
     /// at its edge, and cut to the outline.
-    fn inset_shadow(&mut self, shapes: Shapes, shadow: &ComponentElevation) {
+    pub(super) fn inset_shadow(&mut self, shapes: Shapes, shadow: &ComponentElevation) {
         if shapes.is_empty() {
             return;
         }
@@ -1596,7 +1884,7 @@ impl MeshBuilder {
         }
     }
 
-    fn finish(self) -> Option<PathMesh> {
+    pub(super) fn finish(self) -> Option<PathMesh> {
         if self.indices.is_empty() {
             return None;
         }
@@ -1622,6 +1910,7 @@ impl MeshBuilder {
                 height: max[1] - min[1],
             },
             gradient: None,
+            pattern: None,
             paint_color: None,
         })
     }

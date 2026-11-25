@@ -402,14 +402,20 @@ slots / overlay 组装接口。`mount` 仍用于按 key 构造并销毁缺席组
   `PATH_FLATTEN_TOLERANCE` 展平为折线路径，结果仍是 `PaintPath`）。`contains` /
   `stroke_contains` 对应 Canvas `isPointInPath` / `isPointInStroke`。另有
   `bounds`、`transformed`。`cx.fill_path` / `cx.stroke_path` 带抗锯齿。
-- 上色：填充、描边、圆角矩形、文字和图标都接受纯色或 `Gradient`（`linear` /
-  `radial` / `conic`。任意多个色标。`Pad` / `Repeat` / `Reflect`）。渐变逐像素
-  求值。色标进入 Scene 后在 linear scRGB 中按 premultiplied 方式插值；sRGB 输入只
-  解码一次。超过 16 个色标时重采样。
+- 上色：填充、描边、圆角矩形、文字和图标都接受纯色、`Gradient` 或 `PaintPattern`
+  （`Paint::Pattern`）。`Gradient` 支持 `linear` / `radial`（单圆或
+  `radial_two_circle` 两圆焦点）/ `elliptical_radial`（以及任意 `transform` 局部仿射）/
+  `conic`、任意多个色标和 `Pad` / `Repeat` / `Reflect`。渐变逐像素求值，
+  可通过 `.color_space(GradientColorSpace::PremulSrgb | LinearScRgb | Oklab)` 指定色标插值空间
+  （`Oklab` 在 Oklab 感知均匀空间内混合；`LinearScRgb` 与 `PremulSrgb` 在各自预乘空间内线性插值；
+  超过 16 个色标时重采样）。`PaintPattern` 以解码图片为平铺纹理图案，支持 `src_rect`、
+  `PatternRepeat`（`Repeat` / `RepeatX` / `RepeatY` / `NoRepeat`）、`transform`
+  以及 `with_smoothing(bool)` / `with_sampling(..)`。
 - 描边：`StrokeStyle` 设宽度、线帽、连接、尖角限制（Canvas `miterLimit`）。
   缺省与 Canvas 一致：平头线帽、尖角连接、限制 10。
   `.dash(pattern, offset)` 是 Canvas `setLineDash` / `lineDashOffset` 语义。
   每段按线帽收尾。一条描边切出超过一万段虚线时按实线画（每段已不到一个像素）。
+  屏幕有效宽度 ≤ `1.5 px` 的实线无虚线描边走独立线胶囊 GPU 原语（细线更快、不走完整折线布尔网格）。
 - 局部变换：`translate` / `scale` / `rotate` / `concat` / `set_transform`。
   `save` / `restore` 保存恢复变换、不透明度和混合方式。和 Canvas 一样。
   `restore` 也弹出 `save` 之后压入的裁剪（图层仍由 `push_layer` / `pop_layer`
@@ -417,14 +423,19 @@ slots / overlay 组装接口。`mount` 仍用于按 key 构造并销毁缺席组
   渐变随变换。描边和虚线先在变换前的坐标里算好再整体变换（与 Canvas 一致）。
   阴影的偏移和模糊不随变换。文字、图标、图片和 `draw_default()` 的内建外观也
   跟随当前变换。
-- 不透明度与混合：`set_opacity`（Canvas `globalAlpha`。逐条命令生效）、
+- 不透明度、混合与遮罩：`set_opacity`（Canvas `globalAlpha`。逐条命令生效）、
   `set_blend(mode)`。以及 `push_layer(opacity, blend)` / `pop_layer` 把一组命令
-  先画进图层再整体合成。重叠部分不会叠加透明度。混合方式是完整的 CSS
-  `mix-blend-mode` 集合（`multiply`、`screen`、`overlay`、`darken`、`lighten`、
+  先画进图层再整体合成。重叠部分不会叠加透明度。混合方式覆盖全部 CSS
+  `mix-blend-mode`（`multiply`、`screen`、`overlay`、`darken`、`lighten`、
   `color-dodge`、`color-burn`、`hard-light`、`soft-light`、`difference`、
-  `exclusion`、`hue`、`saturation`、`color`、`luminosity`）。CSS 的
-  `mix-blend-mode` 也随之支持这些值。
-- `cx.shadow(path, ..)`：沿路径轮廓的阴影。外阴影或 `inset` 内阴影。
+  `exclusion`、`hue`、`saturation`、`color`、`luminosity`）与全部 11 种 Porter-Duff 合成模式
+  （`source-over`、`source-in`、`source-out`、`source-atop`、`destination-over`、
+  `destination-in`、`destination-out`、`destination-atop`、`xor`、`copy`、`lighter`）。
+  对于会清除源外区域的清场模式（`copy`、`source-in`、`source-out`、`destination-in`、
+  `destination-atop`），即使绘制为空或越界也会按目标区清空；顶层自绘在节点首次命中任意自绘混合/清场时自动隔离在节点图层内，不误伤外部页面背景。
+  `cx.push_mask(MaskKind::Alpha | MaskKind::Luminance)` / `cx.pop_mask()` 把紧接着录制的任意自绘内容
+  用作遮罩层，先将后续绘制隔离成源图层，再按 alpha 或 Rec.709 线性亮度遮罩合成到下方内容上。
+- `cx.shadow(path, ..)`：沿路径轮廓的阴影。外阴影或 `inset` 内阴影。（圆角）矩形与直立相似变换矩形的阴影直接走解析 SDF 四边形渲染，不生成轮廓网格。
 - `cx.push_clip(path)` / `cx.pop_clip()`：只裁剪之后录的内容。不影响子节点。
   也不会裁掉 `push_clip` 之前画的阴影。任意路径都精确：路径几何在 CPU 上切割并
   保留抗锯齿。文字、图标、图片和 `draw_default()` 的内建外观在裁剪路径是（圆角）
@@ -432,12 +443,16 @@ slots / overlay 组装接口。`mount` 仍用于按 key 构造并销毁缺席组
   图层。
 - `cx.rounded_rect`（四角独立圆角。可带边框和阴影）、`cx.text`、`cx.icon`、
   `cx.image(rect, source, fit, radii)`（`source` 与 CSS `url()` 同源。`fit`
-  同 `object-fit`。异步加载）。`cx.fill_path_with_image(path, rect, source, fit)`
-  用图片填充任意路径。之后的图片怎样采样由 `cx.set_image_sampling(..)` 决定
+  同 `object-fit`。异步加载）、`cx.draw_image(rect, PaintImage)`（支持 `src_rect` 图集子矩形裁剪、
+  `nine_slice(insets, fill)` 九宫格缩放、`with_smoothing(bool)` 与 `with_sampling`）、
+  以及 `cx.draw_texture_region` / `cx.draw_texture_regions`（共享纹理图集按同一着色器合批）。
+  `cx.fill_path_with_image(path, rect, source, fit)` 用图片填充任意路径。之后的图片怎样采样由
+  `cx.set_image_sampling(..)` 或 Canvas 风格的 `cx.set_image_smoothing(bool)`（false 即 `ImageSampling::Nearest`）决定
   （随 `save` / `restore` 保存恢复）。见下文 [图片采样](#图片采样)。
 - 命中：`Painter::hit_test(local, size)` 返回 `Some(false)` 的点点穿到下面。
   `hit_painted_outline()` 为真时命中区域等于录下的内容（填充、描边含虚线空段、
   圆角矩形、图片、文字框、`draw_default()` 的节点矩形。按变换和裁剪计算）。
+  `DestinationOut`、`SourceIn`、`DestinationIn`、`Xor`、`Copy` 与 `push_mask` 遮罩在命中求值时同样按实际可见覆盖率裁切/擦除命中区域；
   阴影不参与命中。与 CSS `box-shadow` 和 Canvas `isPointInPath` 一致。
   `set_opacity(0)` 之后、或不透明度为 0 的图层里画的内容也不参与命中。描边
   按到中线的距离不超过半个线宽判断。即线帽和连接一律按圆形算。命中读的是节点
@@ -459,7 +474,12 @@ painter。组件重写节点样式也不会把它冲掉。适合给内建组件�
 角色名、主题混色或 typed paint；调用 Runtime
 `PaintScript::from_json` 时请传 typed paint。路径支持 SVG path 字符串、分段数组、布尔组合对象
 `{ "op": "union" | "intersect" | "difference" | "xor", "paths": [...] }` 以及文字转路径对象
-`{ "textPath": { "text": "...", "origin": [x, y], ... } }`。`text` 命令同样支持 `family`、`letterSpacing`、
+`{ "textPath": { "text": "...", "origin": [x, y], ... } }`。渐变支持两圆焦点（`"radial": [x0, y0, r0, x1, y1, r1]`）、
+椭圆半径（`"radial": { "center": ..., "rx": ..., "ry": ..., "rotation": ... }`）、`transform` 与 `colorSpace`（`"premul-srgb"` / `"linear-scrgb"` / `"oklab"`）；
+`paint` 还支持 `{ "pattern": { "src": "...", "srcRect": ..., "repeat": "repeat" | "repeat-x" | "repeat-y" | "no-repeat", "transform": ..., "smoothing": false } }`。
+`image` 支持 `srcRect`、`nineSlice`、`fill` 与 `smoothing`；`textureRegions` 批量提交图集子矩形；
+`imageSmoothing`、`blend`（含 Porter-Duff 关键词）与 `pushMask` / `popMask`（`"alpha"` / `"luminance"`）均有对应命令。
+`text` 命令同样支持 `family`、`letterSpacing`、
 `decoration`、`stroke` 与 `shadows`。命令可按交互状态筛选。
 写错的字段名直接报错（格式见 `PaintScript::from_json` 的文档）。图标按内建
 图标名画。
@@ -561,7 +581,8 @@ cx.set_image_sampling(ImageSampling::Mipmap); // Painter 里之后的 cx.image
 ```
 
 `ImageSampling::Mipmap` 保留解码尺寸。在后台生成完整 mip 链。三线性采样
-（`MipmapFilterMode::Linear`）。同一 URL 的两种采样是两份独立的缓存项。
+（`MipmapFilterMode::Linear`）。`ImageSampling::Nearest`（也可通过 `cx.set_image_smoothing(false)` 选择）
+保持自然解码分辨率并以最近邻采样（`FilterMode::Nearest`），不做双线性或 CatmullRom 重采样，适合像素画与精细瓦片图。同一 URL 的不同采样模式是各自独立的缓存项。
 
 本地图片（文件、`data:`、`nana://res/`）第一次出现时仍在帧上同步解码并先按解码尺寸显示。
 重采样或 mip 链在后台完成后替换。远程图片在后台线程里取回、解码并直接准备到目标尺寸。

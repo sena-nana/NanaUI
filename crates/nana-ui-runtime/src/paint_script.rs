@@ -14,10 +14,12 @@ use nana_ui_core::{
 use serde_json::Value;
 
 use crate::{
-    BlendMode, BoxPaint, ColorStop, CornerRadii, FillRule, Gradient, GradientExtend, ImageFit,
-    LayoutBox, LineCap, LineJoin, Paint, PaintColor, PaintContext, PaintPath, PaintPhase,
-    PaintShadow, PaintState, PaintText, PaintTextDecoration, PaintTextShadow, PaintTextStroke,
-    Painter, PathBooleanOp, Radius, StrokeStyle, TextHorizontalAlignment, TextVerticalAlignment,
+    AFFINE_IDENTITY, Affine, BlendMode, BoxPaint, ColorStop, CornerRadii, FillRule, Gradient,
+    GradientColorSpace, GradientExtend, ImageFit, LayoutBox, LineCap, LineJoin, MaskKind, Paint,
+    PaintColor, PaintContext, PaintImage, PaintPath, PaintPattern, PaintPhase, PaintShadow,
+    PaintState, PaintText, PaintTextDecoration, PaintTextShadow, PaintTextStroke, Painter,
+    PathBooleanOp, PatternRepeat, Radius, StrokeStyle, TextHorizontalAlignment,
+    TextVerticalAlignment, TextureRegion,
 };
 
 /// 一份解析好的绘制脚本。相同的 JSON 得到相同的 `paint_key`。
@@ -314,7 +316,16 @@ enum Op {
         src: Arc<str>,
         fit: ImageFit,
         radii: [ScriptRadius; 4],
+        src_rect: Option<[f32; 4]>,
+        nine_slice: Option<[f32; 4]>,
+        nine_slice_fill: bool,
+        smoothing: Option<bool>,
     },
+    TextureRegions {
+        src: Arc<str>,
+        items: Vec<([f32; 4], [Len; 4])>,
+    },
+    ImageSmoothing(bool),
     Icon {
         rect: [Len; 4],
         icon: nana_ui_core::Icon,
@@ -337,6 +348,8 @@ enum Op {
     Blend(BlendMode),
     PushLayer(f32, BlendMode),
     PopLayer,
+    PushMask(MaskKind),
+    PopMask,
     PushClip(ScriptPath),
     PopClip,
     DrawDefault,
@@ -435,12 +448,62 @@ impl Op {
                 src,
                 fit,
                 radii,
-            } => cx.image(
-                rect_of(rect, size),
-                Arc::clone(src),
-                *fit,
-                radii_of(radii, size),
-            ),
+                src_rect,
+                nine_slice,
+                nine_slice_fill,
+                smoothing,
+            } => {
+                if src_rect.is_some() || nine_slice.is_some() || smoothing.is_some() {
+                    let mut image = PaintImage::new(Arc::clone(src))
+                        .with_fit(*fit)
+                        .with_radii(radii.map(|r| cx.radius(r.resolve(size))));
+                    if let Some([x, y, width, height]) = *src_rect {
+                        image = image.with_src_rect(LayoutBox {
+                            x,
+                            y,
+                            width,
+                            height,
+                        });
+                    }
+                    if let Some(insets) = *nine_slice {
+                        image = image.with_nine_slice(insets, *nine_slice_fill);
+                    }
+                    if let Some(smooth) = *smoothing {
+                        image = image.with_smoothing(smooth);
+                    }
+                    cx.draw_image(rect_of(rect, size), image);
+                } else {
+                    cx.image(
+                        rect_of(rect, size),
+                        Arc::clone(src),
+                        *fit,
+                        radii_of(radii, size),
+                    );
+                }
+            }
+            Self::TextureRegions { src, items } => {
+                let regions: Vec<(TextureRegion, LayoutBox)> = items
+                    .iter()
+                    .map(|([sx, sy, sw, sh], dest)| {
+                        (
+                            TextureRegion::new(
+                                Arc::clone(src),
+                                LayoutBox {
+                                    x: *sx,
+                                    y: *sy,
+                                    width: *sw,
+                                    height: *sh,
+                                },
+                            ),
+                            rect_of(dest, size),
+                        )
+                    })
+                    .collect();
+                let refs: Vec<(&TextureRegion, LayoutBox)> =
+                    regions.iter().map(|(r, d)| (r, *d)).collect();
+                cx.draw_texture_regions(&refs);
+            }
+            Self::ImageSmoothing(smoothing) => cx.set_image_smoothing(*smoothing),
             Self::Icon { rect, icon, paint } => {
                 cx.icon(rect_of(rect, size), *icon, paint.resolve(size));
             }
@@ -464,6 +527,8 @@ impl Op {
             Self::Blend(mode) => cx.set_blend(*mode),
             Self::PushLayer(opacity, blend) => cx.push_layer(*opacity, *blend),
             Self::PopLayer => cx.pop_layer(),
+            Self::PushMask(kind) => cx.push_mask(*kind),
+            Self::PopMask => cx.pop_mask(),
             Self::PushClip(path) => {
                 let path = path.build(Some(cx), size);
                 cx.push_clip(&path);
@@ -490,6 +555,15 @@ enum ScriptPaint {
         shape: GradientSpec,
         stops: Vec<(f32, PaintColor)>,
         extend: GradientExtend,
+        transform: Affine,
+        color_space: Option<GradientColorSpace>,
+    },
+    Pattern {
+        src: Arc<str>,
+        src_rect: Option<[f32; 4]>,
+        repeat: PatternRepeat,
+        transform: Affine,
+        smoothing: Option<bool>,
     },
 }
 
@@ -497,6 +571,8 @@ enum ScriptPaint {
 enum GradientSpec {
     Linear([Len; 4]),
     Radial([Len; 2], Len),
+    RadialTwoCircle([Len; 2], Len, [Len; 2], Len),
+    EllipticalRadial([Len; 2], Len, Len, f32),
     Conic([Len; 2], f32),
 }
 
@@ -508,6 +584,8 @@ impl ScriptPaint {
                 shape,
                 stops,
                 extend,
+                transform,
+                color_space,
             } => {
                 let point = |x: Len, y: Len| [x.resolve(size[0]), y.resolve(size[1])];
                 let mut gradient = match *shape {
@@ -516,6 +594,22 @@ impl ScriptPaint {
                     }
                     GradientSpec::Radial([x, y], radius) => {
                         Gradient::radial(point(x, y), short_side(radius, size))
+                    }
+                    GradientSpec::RadialTwoCircle([x0, y0], r0, [x1, y1], r1) => {
+                        Gradient::radial_two_circle(
+                            point(x0, y0),
+                            short_side(r0, size),
+                            point(x1, y1),
+                            short_side(r1, size),
+                        )
+                    }
+                    GradientSpec::EllipticalRadial([cx, cy], rx, ry, rotation) => {
+                        Gradient::elliptical_radial(
+                            point(cx, cy),
+                            rx.resolve(size[0]),
+                            ry.resolve(size[1]),
+                            rotation,
+                        )
                     }
                     GradientSpec::Conic([x, y], angle) => Gradient::conic(point(x, y), angle),
                 };
@@ -526,7 +620,37 @@ impl ScriptPaint {
                         color: *color,
                     })
                     .collect();
-                Paint::Gradient(gradient.extend(*extend))
+                gradient = gradient.extend(*extend);
+                if *transform != AFFINE_IDENTITY {
+                    gradient = gradient.transform(*transform);
+                }
+                if let Some(space) = *color_space {
+                    gradient = gradient.color_space(space);
+                }
+                Paint::Gradient(gradient)
+            }
+            Self::Pattern {
+                src,
+                src_rect,
+                repeat,
+                transform,
+                smoothing,
+            } => {
+                let mut pattern = PaintPattern::new(Arc::clone(src))
+                    .with_repeat(*repeat)
+                    .with_transform(*transform);
+                if let Some([x, y, width, height]) = *src_rect {
+                    pattern = pattern.with_src_rect(LayoutBox {
+                        x,
+                        y,
+                        width,
+                        height,
+                    });
+                }
+                if let Some(smooth) = *smoothing {
+                    pattern = pattern.with_smoothing(smooth);
+                }
+                Paint::Pattern(pattern)
             }
         }
     }
@@ -763,7 +887,18 @@ fn op_keys(op: &str) -> Option<&'static [&'static str]> {
             "stroke",
             "shadows",
         ],
-        "image" => &["rect", "src", "fit", "radii"],
+        "image" => &[
+            "rect",
+            "src",
+            "fit",
+            "radii",
+            "srcRect",
+            "nineSlice",
+            "fill",
+            "smoothing",
+        ],
+        "textureRegions" => &["src", "items"],
+        "imageSmoothing" => &["value"],
         "icon" => &["rect", "name", "paint"],
         "fillImage" => &["path", "rect", "src", "fit"],
         "translate" | "scale" => &["x", "y"],
@@ -772,8 +907,9 @@ fn op_keys(op: &str) -> Option<&'static [&'static str]> {
         "opacity" => &["value"],
         "blend" => &["mode"],
         "pushLayer" => &["opacity", "blend"],
+        "pushMask" => &["kind"],
         "pushClip" => &["path"],
-        "save" | "restore" | "popLayer" | "popClip" | "drawDefault" => &[],
+        "save" | "restore" | "popLayer" | "popMask" | "popClip" | "drawDefault" => &[],
         _ => return None,
     })
 }
@@ -911,7 +1047,40 @@ fn parse_op(op: &str, map: &Map, color_parser: ColorParser<'_>) -> Result<Op, St
             radii: map
                 .get("radii")
                 .map_or(Ok([ScriptRadius::Len(px(0.0)); 4]), parse_radii)?,
+            src_rect: map.get("srcRect").map(parse_f32_quad).transpose()?,
+            nine_slice: map.get("nineSlice").map(parse_f32_quad).transpose()?,
+            nine_slice_fill: flag(map, "fill", true)?,
+            smoothing: map
+                .get("smoothing")
+                .map(|v| {
+                    v.as_bool()
+                        .ok_or_else(|| "`smoothing` is a bool".to_string())
+                })
+                .transpose()?,
         },
+        "textureRegions" => {
+            let src = source(map)?;
+            let list = required(map, "items")?
+                .as_array()
+                .ok_or("`items` is an array")?;
+            let items = list
+                .iter()
+                .map(|entry| {
+                    let entry = entry.as_object().ok_or("each region item is an object")?;
+                    only_keys(entry, &["srcRect", "dest"], "`textureRegions.items[]`")?;
+                    Ok((
+                        parse_f32_quad(required(entry, "srcRect")?)?,
+                        lens::<4>(required(entry, "dest")?, "dest")?,
+                    ))
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            Op::TextureRegions { src, items }
+        }
+        "imageSmoothing" => Op::ImageSmoothing(
+            required(map, "value")?
+                .as_bool()
+                .ok_or("`value` is a bool")?,
+        ),
         "icon" => {
             let name = required(map, "name")?
                 .as_str()
@@ -951,6 +1120,8 @@ fn parse_op(op: &str, map: &Map, color_parser: ColorParser<'_>) -> Result<Op, St
         "blend" => Op::Blend(parse_blend(map.get("mode"))?),
         "pushLayer" => Op::PushLayer(number("opacity", 1.0)?, parse_blend(map.get("blend"))?),
         "popLayer" => Op::PopLayer,
+        "pushMask" => Op::PushMask(parse_mask_kind(map.get("kind"))?),
+        "popMask" => Op::PopMask,
         "pushClip" => Op::PushClip(path()?),
         "popClip" => Op::PopClip,
         "drawDefault" => Op::DrawDefault,
@@ -1287,6 +1458,34 @@ fn parse_color(value: &Value, color_parser: ColorParser<'_>) -> Result<PaintColo
         .ok_or_else(|| format!("unknown colour `{text}`"))
 }
 
+fn parse_f32_quad(value: &Value) -> Result<[f32; 4], String> {
+    let list = value
+        .as_array()
+        .filter(|l| l.len() == 4)
+        .ok_or("expected 4 numbers")?;
+    let parsed = list
+        .iter()
+        .map(|v| v.as_f64().map(|n| n as f32).ok_or("expected number"))
+        .collect::<Result<Vec<_>, _>>()?;
+    parsed.try_into().map_err(|_| "expected 4 numbers".into())
+}
+
+fn parse_matrix_value(value: &Value) -> Result<[f32; 6], String> {
+    let values = value
+        .as_array()
+        .ok_or("`transform` is six numbers")?
+        .iter()
+        .map(|v| {
+            v.as_f64()
+                .map(|v| v as f32)
+                .ok_or("`transform` is six numbers")
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    values
+        .try_into()
+        .map_err(|_| "`transform` is six numbers".to_string())
+}
+
 fn parse_paint(value: &Value, color_parser: ColorParser<'_>) -> Result<ScriptPaint, String> {
     let Some(map) = value.as_object() else {
         return parse_color(value, color_parser).map(ScriptPaint::Color);
@@ -1294,22 +1493,87 @@ fn parse_paint(value: &Value, color_parser: ColorParser<'_>) -> Result<ScriptPai
     if map.contains_key("mix") || map.contains_key("alpha") {
         return parse_color(value, color_parser).map(ScriptPaint::Color);
     }
+    if let Some(pat) = map.get("pattern") {
+        only_keys(map, &["pattern"], "a pattern paint")?;
+        let pat = pat.as_object().ok_or("`pattern` is an object")?;
+        only_keys(
+            pat,
+            &["src", "srcRect", "repeat", "transform", "smoothing"],
+            "a pattern",
+        )?;
+        let src: Arc<str> = required(pat, "src")?
+            .as_str()
+            .ok_or("`src` is a string")?
+            .into();
+        let src_rect = pat.get("srcRect").map(parse_f32_quad).transpose()?;
+        let repeat = match pat.get("repeat").and_then(Value::as_str) {
+            None | Some("repeat") => PatternRepeat::Repeat,
+            Some("repeat-x") => PatternRepeat::RepeatX,
+            Some("repeat-y") => PatternRepeat::RepeatY,
+            Some("no-repeat") => PatternRepeat::NoRepeat,
+            Some(other) => return Err(format!("unknown pattern repeat `{other}`")),
+        };
+        let transform = pat
+            .get("transform")
+            .map(parse_matrix_value)
+            .transpose()?
+            .unwrap_or(AFFINE_IDENTITY);
+        let smoothing = pat
+            .get("smoothing")
+            .map(|v| {
+                v.as_bool()
+                    .ok_or_else(|| "`smoothing` is a bool".to_string())
+            })
+            .transpose()?;
+        return Ok(ScriptPaint::Pattern {
+            src,
+            src_rect,
+            repeat,
+            transform,
+            smoothing,
+        });
+    }
     only_keys(
         map,
-        &["linear", "radial", "conic", "stops", "extend"],
+        &[
+            "linear",
+            "radial",
+            "conic",
+            "stops",
+            "extend",
+            "transform",
+            "colorSpace",
+        ],
         "a gradient",
     )?;
     let shape = if let Some(v) = map.get("linear") {
         GradientSpec::Linear(lens::<4>(v, "linear")?)
     } else if let Some(v) = map.get("radial") {
-        let list = v
-            .as_array()
-            .filter(|l| l.len() == 3)
-            .ok_or("`radial` is [cx, cy, r]")?;
-        GradientSpec::Radial(
-            [parse_len(&list[0])?, parse_len(&list[1])?],
-            parse_len(&list[2])?,
-        )
+        if let Some(list) = v.as_array() {
+            match list.as_slice() {
+                [cx, cy, r] => {
+                    GradientSpec::Radial([parse_len(cx)?, parse_len(cy)?], parse_len(r)?)
+                }
+                [x0, y0, r0, x1, y1, r1] => GradientSpec::RadialTwoCircle(
+                    [parse_len(x0)?, parse_len(y0)?],
+                    parse_len(r0)?,
+                    [parse_len(x1)?, parse_len(y1)?],
+                    parse_len(r1)?,
+                ),
+                _ => return Err("`radial` is [cx, cy, r] or [x0, y0, r0, x1, y1, r1]".into()),
+            }
+        } else if let Some(obj) = v.as_object() {
+            only_keys(obj, &["center", "rx", "ry", "rotation"], "`radial`")?;
+            let center = lens::<2>(required(obj, "center")?, "center")?;
+            let rx = parse_len(required(obj, "rx")?)?;
+            let ry = parse_len(required(obj, "ry")?)?;
+            let rotation = optional_number(obj, "rotation")?.unwrap_or(0.0);
+            GradientSpec::EllipticalRadial(center, rx, ry, rotation)
+        } else {
+            return Err(
+                "`radial` is [cx, cy, r], [x0, y0, r0, x1, y1, r1], or {center, rx, ry}".into(),
+            );
+        }
     } else if let Some(v) = map.get("conic") {
         let list = v
             .as_array()
@@ -1343,10 +1607,24 @@ fn parse_paint(value: &Value, color_parser: ColorParser<'_>) -> Result<ScriptPai
         Some("reflect") => GradientExtend::Reflect,
         Some(other) => return Err(format!("unknown extend `{other}`")),
     };
+    let transform = map
+        .get("transform")
+        .map(parse_matrix_value)
+        .transpose()?
+        .unwrap_or(AFFINE_IDENTITY);
+    let color_space = match map.get("colorSpace").and_then(Value::as_str) {
+        None => None,
+        Some("srgb") | Some("premul-srgb") => Some(GradientColorSpace::PremulSrgb),
+        Some("linear") | Some("linear-scrgb") => Some(GradientColorSpace::LinearScRgb),
+        Some("oklab") => Some(GradientColorSpace::Oklab),
+        Some(other) => return Err(format!("unknown colorSpace `{other}`")),
+    };
     Ok(ScriptPaint::Gradient {
         shape,
         stops,
         extend,
+        transform,
+        color_space,
     })
 }
 
@@ -1438,9 +1716,17 @@ fn parse_blend(value: Option<&Value>) -> Result<BlendMode, String> {
     }
 }
 
+fn parse_mask_kind(value: Option<&Value>) -> Result<MaskKind, String> {
+    match value.and_then(Value::as_str) {
+        None | Some("alpha") => Ok(MaskKind::Alpha),
+        Some("luminance") => Ok(MaskKind::Luminance),
+        Some(other) => Err(format!("unknown mask kind `{other}`")),
+    }
+}
+
 fn parse_blend_mode(input: &str) -> Option<BlendMode> {
     Some(match input.trim().to_ascii_lowercase().as_str() {
-        "normal" => BlendMode::Normal,
+        "normal" | "source-over" => BlendMode::Normal,
         "multiply" => BlendMode::Multiply,
         "screen" => BlendMode::Screen,
         "overlay" => BlendMode::Overlay,
@@ -1456,6 +1742,16 @@ fn parse_blend_mode(input: &str) -> Option<BlendMode> {
         "saturation" => BlendMode::Saturation,
         "color" => BlendMode::Color,
         "luminosity" => BlendMode::Luminosity,
+        "source-in" => BlendMode::SourceIn,
+        "source-out" => BlendMode::SourceOut,
+        "source-atop" => BlendMode::SourceAtop,
+        "destination-over" => BlendMode::DestinationOver,
+        "destination-in" => BlendMode::DestinationIn,
+        "destination-out" => BlendMode::DestinationOut,
+        "destination-atop" => BlendMode::DestinationAtop,
+        "xor" => BlendMode::Xor,
+        "copy" => BlendMode::Copy,
+        "lighter" => BlendMode::Lighter,
         _ => return None,
     })
 }
@@ -2071,6 +2367,112 @@ mod tests {
                 r#"[{"op":"fill","path":{"op":"bogus","paths":["M0 0"]},"paint":"accent"}]"#
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn parses_porter_duff_masks_gradients_patterns_and_texture_regions() {
+        let recording = record(
+            r##"[
+                {"op": "blend", "mode": "destination-out"},
+                {"op": "imageSmoothing", "value": false},
+                {
+                    "op": "fill",
+                    "path": [["rect", 0, 0, 40, 40]],
+                    "paint": {
+                        "radial": [10, 10, 2, 20, 20, 18],
+                        "colorSpace": "oklab",
+                        "stops": [[0, [1, 0, 0, 1]], [1, [0, 0, 1, 1]]]
+                    }
+                },
+                {"op": "blend", "mode": "normal"},
+                {
+                    "op": "fill",
+                    "path": [["rect", 0, 0, 20, 20]],
+                    "paint": {
+                        "pattern": {
+                            "src": "atlas.png",
+                            "srcRect": [0, 0, 8, 8],
+                            "repeat": "repeat-y",
+                            "smoothing": false
+                        }
+                    }
+                },
+                {"op": "pushMask", "kind": "luminance"},
+                {
+                    "op": "image",
+                    "rect": [0, 0, 20, 20],
+                    "src": "panel.png",
+                    "srcRect": [2, 2, 12, 12],
+                    "nineSlice": [3, 3, 3, 3],
+                    "fill": false,
+                    "smoothing": true
+                },
+                {
+                    "op": "textureRegions",
+                    "src": "atlas.png",
+                    "items": [
+                        {"srcRect": [0, 0, 8, 8], "dest": [0, 0, 16, 16]},
+                        {"srcRect": [8, 0, 8, 8], "dest": [16, 0, 16, 16]}
+                    ]
+                },
+                {"op": "popMask"}
+            ]"##,
+            [100.0, 100.0],
+            PaintState::default(),
+        );
+        assert!(recording.behind_children.iter().any(|op| matches!(
+            op,
+            PaintOp::PushLayer {
+                blend: BlendMode::DestinationOut,
+                ..
+            }
+        )));
+        assert!(recording.behind_children.iter().any(|op| matches!(
+            op,
+            PaintOp::FillPath {
+                paint: crate::ResolvedPaint::Gradient(g),
+                ..
+            } if g.color_space == GradientColorSpace::Oklab
+                && matches!(g.shape, crate::GradientShape::RadialTwoCircle { .. })
+        )));
+        assert!(recording.behind_children.iter().any(|op| matches!(
+            op,
+            PaintOp::FillPath {
+                paint: crate::ResolvedPaint::Pattern(p),
+                ..
+            } if p.repeat == PatternRepeat::RepeatY
+                && p.sampling == nana_ui_core::ImageSampling::Nearest
+        )));
+        assert!(recording.behind_children.iter().any(|op| matches!(
+            op,
+            PaintOp::PushMask {
+                kind: MaskKind::Luminance
+            }
+        )));
+        assert!(recording.behind_children.iter().any(|op| matches!(
+            op,
+            PaintOp::Image {
+                sampling: nana_ui_core::ImageSampling::Resample,
+                src_rect: Some(_),
+                nine_slice: Some([3.0, 3.0, 3.0, 3.0]),
+                nine_slice_fill: false,
+                ..
+            }
+        )));
+        assert!(recording.behind_children.iter().any(|op| matches!(
+            op,
+            PaintOp::TextureRegionBatch {
+                items,
+                sampling: nana_ui_core::ImageSampling::Nearest,
+                ..
+            } if items.len() == 2
+        )));
+        assert!(
+            recording
+                .behind_children
+                .iter()
+                .any(|op| matches!(op, PaintOp::PopMask))
         );
     }
 }

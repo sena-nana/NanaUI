@@ -13,6 +13,8 @@ const PAINT_MASK_URL: u32 = 256u;
 const PAINT_URL_PREMULT: u32 = 512u;
 // Gradient stops are premultiplied sRGB: decode after interpolating.
 const PAINT_GRADIENT_SRGB: u32 = 1024u;
+// Standalone solid-interior Canvas shadow (not hollowed under the box).
+const PAINT_SHADOW_SOLID: u32 = 2048u;
 
 struct QuadPaintData {
     flags: u32,
@@ -68,6 +70,7 @@ struct QuadPaintData {
     border_color_left: vec4<f32>,
     presentation0: vec4<f32>, presentation1: vec4<f32>,
     target0: vec4<f32>, target1: vec4<f32>,
+    url_src_uv: vec4<f32>,
 }
 
 fn gradient_axis(angle_deg: f32) -> vec2<f32> {

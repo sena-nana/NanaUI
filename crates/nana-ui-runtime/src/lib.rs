@@ -263,12 +263,14 @@ pub use curve_field::{
 };
 pub use custom_paint::{
     AFFINE_IDENTITY, Affine, BlendMode, BoxPaint, ColorStop, CornerRadii, FillRule, Gradient,
-    GradientExtend, GradientShape, ImageFit, LineCap, LineJoin, MAX_PATH_COORDINATE, NodePainter,
-    PATH_FLATTEN_TOLERANCE, Paint, PaintColor, PaintContext, PaintOp, PaintPath, PaintPhase,
-    PaintRecording, PaintShadow, PaintState, PaintText, PaintTextDecoration, PaintTextLineMetrics,
-    PaintTextMetrics, PaintTextShadow, PaintTextStroke, Painter, PathBooleanOp, PathVerb, Radius,
-    ResolvedGradient, ResolvedPaint, ResolvedPaintTextDecoration, ResolvedPaintTextEffects,
-    ResolvedPaintTextStroke, StrokeStyle, affine_multiply,
+    GradientColorSpace, GradientExtend, GradientShape, ImageFit, LineCap, LineJoin,
+    MAX_PATH_COORDINATE, MaskKind, NodePainter, PATH_FLATTEN_TOLERANCE, Paint, PaintColor,
+    PaintContext, PaintImage, PaintOp, PaintPath, PaintPattern, PaintPhase, PaintRecording,
+    PaintShadow, PaintState, PaintText, PaintTextDecoration, PaintTextLineMetrics,
+    PaintTextMetrics, PaintTextShadow, PaintTextStroke, Painter, PathBooleanOp, PathVerb,
+    PatternRepeat, Radius, ResolvedGradient, ResolvedPaint, ResolvedPaintTextDecoration,
+    ResolvedPaintTextEffects, ResolvedPaintTextStroke, ResolvedPattern, StrokeStyle, TextureRegion,
+    affine_multiply,
 };
 pub use data_table::{
     TABLE_RESIZE_HANDLE, TableColumnResized, TableSelectionRequested, selection_modifiers,

@@ -76,7 +76,10 @@ fn sample_url(local: vec2<f32>, paint: QuadPaintData) -> vec4<f32> {
     } else if (uv.y < 0.0 || uv.y > 1.0) {
         return vec4(0.0);
     }
-    return textureSampleGrad(url_tex, url_sampler, uv, uv_dx, uv_dy);
+    let has_subrect = paint.url_src_uv.z > 0.0 || paint.url_src_uv.w > 0.0;
+    let src_uv = select(vec4(0.0, 0.0, 1.0, 1.0), paint.url_src_uv, has_subrect);
+    let tex_uv = src_uv.xy + uv * src_uv.zw;
+    return textureSampleGrad(url_tex, url_sampler, tex_uv, uv_dx * src_uv.zw, uv_dy * src_uv.zw);
 }
 
 fn quad_srgb_channel_to_linear(u: f32) -> f32 {

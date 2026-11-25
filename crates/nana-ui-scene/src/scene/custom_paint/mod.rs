@@ -25,7 +25,8 @@ use std::sync::OnceLock;
 
 use nana_ui_runtime::{
     AFFINE_IDENTITY, Affine, BlendMode, FillRule, ImageFit, LineCap, LineJoin, PaintOp, PaintPath,
-    PaintPhase, PaintRecording, PathVerb, ResolvedGradient, ResolvedPaint, StrokeStyle,
+    PaintPhase, PaintRecording, PathVerb, ResolvedGradient, ResolvedPaint, ResolvedPattern,
+    StrokeStyle,
 };
 
 use super::*;
@@ -63,6 +64,8 @@ pub struct PathMesh {
     /// [`PathVertex::paint_pos`]; the vertex colour then only tints it
     /// (coverage and opacity). `None`: the vertex colour is the colour.
     pub gradient: Option<Arc<ResolvedGradient>>,
+    /// Texture pattern paint evaluated at [`PathVertex::paint_pos`].
+    pub pattern: Option<Arc<ResolvedPattern>>,
     /// Explicit authoring-space solid, if the mesh was made from one. The
     /// GPU uses its linear scRGB channels directly instead of decoding the
     /// compatibility sRGB vertex colour a second time.
@@ -116,6 +119,15 @@ pub(super) enum BuiltOp {
         border: Option<([f32; 4], f32)>,
         border_color_space: Option<nana_ui_core::PaintColor>,
         shadow: Option<ComponentElevation>,
+        shadow_solid: bool,
+        transform: Affine,
+    },
+    Stroke {
+        points: Vec<[f32; 2]>,
+        width: f32,
+        color: [f32; 4],
+        cap: StrokeCap,
+        clips: Arc<[LocalClip]>,
         transform: Affine,
     },
     /// Solid quads painted one after another with nothing between them, the
@@ -132,6 +144,9 @@ pub(super) enum BuiltOp {
         fit: ImageFit,
         sampling: nana_ui_core::ImageSampling,
         radii: [f32; 4],
+        src_rect: Option<SceneRect>,
+        nine_slice: Option<[f32; 4]>,
+        nine_slice_fill: bool,
         opacity: f32,
         clips: Arc<[LocalClip]>,
         transform: Affine,
@@ -163,6 +178,7 @@ pub(super) enum BuiltOp {
         opacity: f32,
         blend: BlendMode,
         clip: Option<SceneRect>,
+        mask: Option<nana_ui_core::MaskKind>,
     },
     LayerEnd {
         mask: Option<(Arc<PathMesh>, LayerMaskMode)>,
@@ -495,6 +511,7 @@ impl UiScene {
                         opacity: layer_opacity,
                         blend,
                         clip,
+                        mask,
                     } => (
                         clip.map_or(
                             SceneRect {
@@ -509,6 +526,7 @@ impl UiScene {
                             opacity: *layer_opacity,
                             blend: *blend,
                             clip: clip.map(|clip| offset_rect(clip, origin)),
+                            mask: *mask,
                         },
                         Arc::clone(clips),
                         transform,
@@ -554,6 +572,7 @@ impl UiScene {
                         border,
                         border_color_space,
                         shadow,
+                        shadow_solid,
                         transform: local_transform,
                     } => (
                         offset_rect(*rect, origin),
@@ -566,11 +585,58 @@ impl UiScene {
                             border_width: border.map_or(0.0, |(_, width)| width),
                             corner_radius: *radii,
                             shadow: *shadow,
-                            surface: Box::default(),
+                            surface: if *shadow_solid {
+                                Box::new(QuadSurfacePaint {
+                                    shadow_solid: true,
+                                    ..QuadSurfacePaint::default()
+                                })
+                            } else {
+                                Box::default()
+                            },
                         },
                         Arc::clone(clips),
                         under(local_transform),
                     ),
+                    BuiltOp::Stroke {
+                        points,
+                        width: stroke_width,
+                        color,
+                        cap,
+                        clips: local,
+                        transform: local_transform,
+                    } => {
+                        let mut min = [f32::INFINITY; 2];
+                        let mut max = [f32::NEG_INFINITY; 2];
+                        for p in points {
+                            min[0] = min[0].min(p[0]);
+                            min[1] = min[1].min(p[1]);
+                            max[0] = max[0].max(p[0]);
+                            max[1] = max[1].max(p[1]);
+                        }
+                        let pad = *stroke_width * 0.5 + 1.0;
+                        let box_rect = SceneRect {
+                            x: min[0] - pad,
+                            y: min[1] - pad,
+                            width: (max[0] - min[0]).max(0.0) + pad * 2.0,
+                            height: (max[1] - min[1]).max(0.0) + pad * 2.0,
+                        };
+                        (
+                            offset_rect(box_rect, origin),
+                            ScenePrimitiveKind::Stroke {
+                                points: points
+                                    .iter()
+                                    .map(|p| [p[0] + origin[0], p[1] + origin[1]])
+                                    .collect(),
+                                width: *stroke_width,
+                                color: *color,
+                                widths: Vec::new(),
+                                cap: *cap,
+                                pattern: None,
+                            },
+                            local_clips(local),
+                            under(local_transform),
+                        )
+                    }
                     BuiltOp::QuadRun {
                         items,
                         radii,
@@ -599,6 +665,9 @@ impl UiScene {
                         fit,
                         sampling,
                         radii,
+                        src_rect,
+                        nine_slice,
+                        nine_slice_fill,
                         opacity: op_opacity,
                         clips: local,
                         transform: local_transform,
@@ -606,7 +675,15 @@ impl UiScene {
                         primitive_opacity *= op_opacity;
                         (
                             offset_rect(*rect, origin),
-                            image_quad(source, *fit, *sampling, *radii),
+                            image_quad(
+                                source,
+                                *fit,
+                                *sampling,
+                                *radii,
+                                *src_rect,
+                                *nine_slice,
+                                *nine_slice_fill,
+                            ),
                             local_clips(local),
                             under(local_transform),
                         )
@@ -740,6 +817,9 @@ pub(super) fn image_quad(
     fit: ImageFit,
     sampling: nana_ui_core::ImageSampling,
     radii: [f32; 4],
+    src_rect: Option<SceneRect>,
+    nine_slice: Option<[f32; 4]>,
+    nine_slice_fill: bool,
 ) -> ScenePrimitiveKind {
     let mut image = BackgroundImage::url_with_fit(
         source.as_ref(),
@@ -767,6 +847,9 @@ pub(super) fn image_quad(
         shadow: None,
         surface: Box::new(QuadSurfacePaint {
             content_image: Some(image),
+            content_src_rect: src_rect,
+            content_nine_slice: nine_slice,
+            content_nine_slice_fill: nine_slice_fill,
             ..QuadSurfacePaint::default()
         }),
     }
@@ -972,6 +1055,19 @@ pub(super) fn stroke_quad_radii(radii: [f32; 4], stroke: &StrokeStyle) -> Option
 pub(super) fn affine_apply(t: Affine, p: [f32; 2]) -> [f32; 2] {
     let [a, b, c, d, e, f] = t;
     [a * p[0] + c * p[1] + e, b * p[0] + d * p[1] + f]
+}
+
+pub(super) fn affine_multiply(lhs: Affine, rhs: Affine) -> Affine {
+    let [a0, b0, c0, d0, e0, f0] = lhs;
+    let [a1, b1, c1, d1, e1, f1] = rhs;
+    [
+        a0 * a1 + c0 * b1,
+        b0 * a1 + d0 * b1,
+        a0 * c1 + c0 * d1,
+        b0 * c1 + d0 * d1,
+        a0 * e1 + c0 * f1 + e0,
+        b0 * e1 + d0 * f1 + f0,
+    ]
 }
 
 pub(super) fn affine_inverse(t: Affine) -> Option<Affine> {

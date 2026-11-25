@@ -562,7 +562,9 @@ impl_unit_enum!(ContainerType, "ContainerType" => { Normal, InlineSize, Size });
 impl_unit_enum!(VisibilitySpec, "VisibilitySpec" => { Visible, Hidden });
 impl_unit_enum!(MixBlendMode, "MixBlendMode" => {
     Normal, Multiply, Screen, Overlay, Darken, Lighten, ColorDodge, ColorBurn,
-    HardLight, SoftLight, Difference, Exclusion, Hue, Saturation, Color, Luminosity
+    HardLight, SoftLight, Difference, Exclusion, Hue, Saturation, Color, Luminosity,
+    SourceIn, SourceOut, SourceAtop, DestinationOver, DestinationIn, DestinationOut,
+    DestinationAtop, Xor, Copy, Lighter
 });
 impl_unit_enum!(BackgroundImageFit, "BackgroundImageFit" => {
     Cover, Contain, Stretch, Auto, Length, ScaleDown
@@ -570,7 +572,7 @@ impl_unit_enum!(BackgroundImageFit, "BackgroundImageFit" => {
 impl_unit_enum!(BackgroundRepeat, "BackgroundRepeat" => {
     NoRepeat, Repeat, RepeatX, RepeatY, Round, RoundX, RoundY, Unsupported
 });
-impl_unit_enum!(ImageSampling, "ImageSampling" => { Resample, Mipmap });
+impl_unit_enum!(ImageSampling, "ImageSampling" => { Resample, Mipmap, Nearest });
 impl_unit_enum!(ViewportAxis, "ViewportAxis" => { Width, Height, Min, Max });
 impl_unit_enum!(CalcBinOp, "CalcBinOp" => { Add, Sub, Mul, Div });
 impl_unit_enum!(KeepWith, "KeepWith" => { None, Previous, Next });

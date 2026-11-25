@@ -120,6 +120,47 @@ fn fs_blend(input: VertexOutput) -> @location(0) vec4<f32> {
     // Premultiplied source after the group's opacity, filter and clip.
     let src = layer_source(input);
     let dst = textureSample(backdrop, source_sampler, input.uv);
+    switch layer.mix_blend {
+        case 16u: { // SourceIn
+            return src * dst.a;
+        }
+        case 17u: { // SourceOut
+            return src * (1.0 - dst.a);
+        }
+        case 18u: { // SourceAtop
+            return src * dst.a + dst * (1.0 - src.a);
+        }
+        case 19u: { // DestinationOver
+            return src * (1.0 - dst.a) + dst;
+        }
+        case 20u: { // DestinationIn
+            return dst * src.a;
+        }
+        case 21u: { // DestinationOut
+            return dst * (1.0 - src.a);
+        }
+        case 22u: { // DestinationAtop
+            return src * (1.0 - dst.a) + dst * src.a;
+        }
+        case 23u: { // Xor
+            return src * (1.0 - dst.a) + dst * (1.0 - src.a);
+        }
+        case 24u: { // Copy
+            return src;
+        }
+        case 25u: { // Lighter
+            return clamp(src + dst, vec4<f32>(0.0), vec4<f32>(1.0));
+        }
+        case 26u: { // LuminanceMask (premultiplied Rec.709 linear luminance)
+            let luma = clamp(
+                dot(max(src.rgb, vec3<f32>(0.0)), vec3<f32>(0.2126, 0.7152, 0.0722)),
+                0.0,
+                1.0,
+            );
+            return dst * luma;
+        }
+        default: {}
+    }
     let cs = select(vec3<f32>(0.0), src.rgb / src.a, src.a > 0.0);
     let cb = select(vec3<f32>(0.0), dst.rgb / dst.a, dst.a > 0.0);
     let mixed = blend_rgb(layer.mix_blend, cb, cs);

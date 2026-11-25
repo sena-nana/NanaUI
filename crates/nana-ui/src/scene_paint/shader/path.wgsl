@@ -8,10 +8,13 @@ const GRADIENT_STOPS: u32 = 16u;
 
 // Matches `GpuGradient` in `mesh.rs`.
 struct GpuGradient {
-    // kind (0 linear, 1 radial, 2 conic), extend (0 pad, 1 repeat, 2 reflect),
-    // stop count, the space stops interpolate in (0 sRGB, 1 linear scRGB).
+    // kind (0 linear, 1 radial, 2 conic, 3 two-circle radial, 4 pattern),
+    // extend (0 pad, 1 repeat, 2 reflect; for pattern: repeat_x bit 1 | repeat_y bit 2),
+    // stop count,
+    // the space stops interpolate in (0 sRGB, 1 linear scRGB, 2 Oklab).
     header: vec4<u32>,
     geometry: vec4<f32>,
+    geometry2: vec4<f32>,
     offsets: array<vec4<f32>, 4>,
     // Premultiplied, in the space `header.w` names.
     colors: array<vec4<f32>, 16>,
@@ -26,6 +29,11 @@ struct GradientPalette {
 
 @group(0) @binding(2)
 var<storage, read> gradient_palette: GradientPalette;
+
+@group(2) @binding(0)
+var pattern_tex: texture_2d<f32>;
+@group(2) @binding(1)
+var pattern_sampler: sampler;
 
 // A mesh's vertices stay on the GPU node-local, as the mesh was built; what a
 // frame changes comes per draw in `PathInstanceInput`.
@@ -164,9 +172,60 @@ fn gradient_offset(g: GpuGradient, i: u32) -> f32 {
     return g.offsets[i / 4u][i % 4u];
 }
 
+fn oklab_to_linear(lab: vec3<f32>) -> vec3<f32> {
+    let l_ = lab.x + 0.3963377774 * lab.y + 0.2158037573 * lab.z;
+    let m_ = lab.x - 0.1055613458 * lab.y - 0.0638541728 * lab.z;
+    let s_ = lab.x - 0.0894841775 * lab.y - 1.2914855480 * lab.z;
+    let ll = l_ * l_ * l_;
+    let mm = m_ * m_ * m_;
+    let ss = s_ * s_ * s_;
+    return vec3<f32>(
+        4.0767416621 * ll - 3.3077115913 * mm + 0.2309699292 * ss,
+        -1.2684380046 * ll + 2.6097574011 * mm - 0.3413193965 * ss,
+        -0.0041960863 * ll - 0.7034186147 * mm + 1.7076147010 * ss,
+    );
+}
+
+fn pattern_color(
+    g: GpuGradient,
+    p: vec2<f32>,
+    paint_dx: vec2<f32>,
+    paint_dy: vec2<f32>,
+) -> vec4<f32> {
+    let tile = max(g.geometry2.xy, vec2<f32>(1.0));
+    var uv = p / tile;
+    let src_uv = g.geometry;
+    let uv_dx = (paint_dx / tile) * src_uv.zw;
+    let uv_dy = (paint_dy / tile) * src_uv.zw;
+    let repeat_x = (g.header.y & 1u) != 0u;
+    let repeat_y = (g.header.y & 2u) != 0u;
+    var in_bounds = true;
+    if repeat_x {
+        uv.x = fract(uv.x);
+    } else {
+        in_bounds = in_bounds && (uv.x >= 0.0 && uv.x <= 1.0);
+    }
+    if repeat_y {
+        uv.y = fract(uv.y);
+    } else {
+        in_bounds = in_bounds && (uv.y >= 0.0 && uv.y <= 1.0);
+    }
+    let tex_uv = src_uv.xy + clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0)) * src_uv.zw;
+    let texel = textureSampleGrad(pattern_tex, pattern_sampler, tex_uv, uv_dx, uv_dy);
+    return select(vec4<f32>(0.0), vec4<f32>(texel.rgb * texel.a, texel.a), in_bounds);
+}
+
 // Premultiplied linear colour of gradient `index` at `p`.
-fn gradient_color(index: u32, p: vec2<f32>) -> vec4<f32> {
+fn gradient_color(
+    index: u32,
+    p: vec2<f32>,
+    paint_dx: vec2<f32>,
+    paint_dy: vec2<f32>,
+) -> vec4<f32> {
     let g = gradient_palette.items[index];
+    if g.header.x == 4u {
+        return pattern_color(g, p, paint_dx, paint_dy);
+    }
     var t = 0.0;
     switch g.header.x {
         case 0u: {
@@ -176,6 +235,46 @@ fn gradient_color(index: u32, p: vec2<f32>) -> vec4<f32> {
         }
         case 1u: {
             t = length(p - g.geometry.xy) / max(g.geometry.z, 1e-6);
+        }
+        case 3u: {
+            let c0 = g.geometry.xy;
+            let c1 = g.geometry.zw;
+            let r0 = g.geometry2.x;
+            let r1 = g.geometry2.y;
+            let cd = c1 - c0;
+            let dr = r1 - r0;
+            let dp = p - c0;
+            let quad_a = dot(cd, cd) - dr * dr;
+            let quad_b = dot(dp, cd) + r0 * dr;
+            let quad_c = dot(dp, dp) - r0 * r0;
+            if abs(quad_a) < 1e-6 {
+                if abs(quad_b) < 1e-6 {
+                    return vec4<f32>(0.0);
+                }
+                t = quad_c / (2.0 * quad_b);
+                if r0 + t * dr < -1e-5 {
+                    return vec4<f32>(0.0);
+                }
+            } else {
+                let disc = quad_b * quad_b - quad_a * quad_c;
+                if disc < 0.0 {
+                    return vec4<f32>(0.0);
+                }
+                let sq = sqrt(disc);
+                let t0 = (quad_b + sq) / quad_a;
+                let t1 = (quad_b - sq) / quad_a;
+                let v0 = (r0 + t0 * dr) >= -1e-5;
+                let v1 = (r0 + t1 * dr) >= -1e-5;
+                if v0 && v1 {
+                    t = max(t0, t1);
+                } else if v0 {
+                    t = t0;
+                } else if v1 {
+                    t = t1;
+                } else {
+                    return vec4<f32>(0.0);
+                }
+            }
         }
         default: {
             let d = p - g.geometry.xy;
@@ -197,36 +296,35 @@ fn gradient_color(index: u32, p: vec2<f32>) -> vec4<f32> {
         }
     }
     let count = min(g.header.z, GRADIENT_STOPS);
-    var srgb = g.colors[0];
+    var sampled = g.colors[0];
     if t >= gradient_offset(g, 0u) {
         // A gradient with no stops packs `count == 0`; its colours are all
         // zero, so stop 0 stands in for the missing last one.
-        srgb = g.colors[max(count, 1u) - 1u];
+        sampled = g.colors[max(count, 1u) - 1u];
         for (var i = 1u; i < count; i = i + 1u) {
             let o1 = gradient_offset(g, i);
             if t <= o1 {
                 let o0 = gradient_offset(g, i - 1u);
                 let k = select(1.0, (t - o0) / (o1 - o0), o1 > o0);
-                srgb = mix(g.colors[i - 1u], g.colors[i], k);
+                sampled = mix(g.colors[i - 1u], g.colors[i], k);
                 break;
             }
         }
     }
-    // Plain sRGB stops interpolated in sRGB, as a browser blends them, and
-    // decode once here. Stops in a colour space of their own arrive linear
-    // and keep extended values until the presentation transform.
-    if srgb.a <= 0.0 {
+    if sampled.a <= 0.0 {
         return vec4<f32>(0.0);
     }
-    var straight = srgb.rgb / srgb.a;
+    var straight = sampled.rgb / sampled.a;
     if g.header.w == 0u {
         straight = vec3<f32>(
             srgb_channel_to_linear(straight.r),
             srgb_channel_to_linear(straight.g),
             srgb_channel_to_linear(straight.b),
         );
+    } else if g.header.w == 2u {
+        straight = oklab_to_linear(straight);
     }
-    return vec4<f32>(straight * srgb.a, srgb.a);
+    return vec4<f32>(straight * sampled.a, sampled.a);
 }
 
 fn srgb_channel_to_linear(u: f32) -> f32 {
@@ -287,13 +385,18 @@ fn path_node_mask(input: PathVertexOutput) -> f32 {
         space[0].x * p.x + space[0].z * p.y + space[1].x,
         space[0].y * p.x + space[0].w * p.y + space[1].y,
     );
-    return gradient_color(input.mask, at).a;
+    return gradient_color(input.mask, at, vec2<f32>(0.0), vec2<f32>(0.0)).a;
 }
 
 // The premultiplied colour of `input`'s fragment at coverage `alpha`.
-fn path_shade(input: PathVertexOutput, alpha: f32) -> vec4<f32> {
+fn path_shade(
+    input: PathVertexOutput,
+    alpha: f32,
+    paint_dx: vec2<f32>,
+    paint_dy: vec2<f32>,
+) -> vec4<f32> {
     if input.gradient != NO_GRADIENT {
-        return gradient_color(input.gradient, input.paint_pos) * (input.color.a * alpha);
+        return gradient_color(input.gradient, input.paint_pos, paint_dx, paint_dy) * (input.color.a * alpha);
     }
     return premultiply(input.color) * alpha;
 }
@@ -311,6 +414,8 @@ fn path_fs_main(
     // Coverage is linear across a triangle; its screen gradient, taken while
     // every invocation of the quad still runs, reaches any sample from here.
     let ramp = vec2<f32>(dpdx(input.coverage), dpdy(input.coverage));
+    let paint_dx = dpdx(input.paint_pos);
+    let paint_dy = dpdy(input.paint_pos);
     let fringe = input.fringe > 0.5;
     var coverage = path_alpha(input.coverage, fringe);
     if PATH_SAMPLES == 4.0 {
@@ -327,7 +432,7 @@ fn path_fs_main(
     if alpha <= 0.0 {
         discard;
     }
-    return path_shade(input, alpha);
+    return path_shade(input, alpha, paint_dx, paint_dy);
 }
 
 // A painter layer keeping its node's mask (`LayerMaskMode::Keep`), drawn

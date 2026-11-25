@@ -127,8 +127,9 @@ pub(super) struct GroupSlot {
 
 impl GroupSlot {
     /// Whether compositing can put pixels where the group drew none: a blur
-    /// or drop shadow spreads them, and a colour filter is not relied on to
-    /// leave a transparent pixel transparent.
+    /// or drop shadow spreads them, a colour filter is not relied on to leave
+    /// a transparent pixel transparent, and Porter-Duff modes that clear
+    /// transparent regions affect the full clip/layer extent.
     pub fn spreads(&self) -> bool {
         self.filter_motion_id != 0
             || self.filter_blur > 0.5
@@ -137,6 +138,7 @@ impl GroupSlot {
             || self.filter != [1.0, 1.0, 1.0]
             || self.filter_hue.abs() > 0.0001
             || self.filter_invert > 0.0001
+            || blend_clears_outside(self.mix_blend)
     }
 
     pub fn dest(
@@ -320,6 +322,13 @@ fn group_layer_bind_group(
 /// [`nana_ui_core::MixBlendMode::gpu_index`] of the first blend mode the blend
 /// unit cannot do.
 const FIRST_READING_BLEND: u32 = 3;
+
+/// Internal `GroupSlot::mix_blend` index for a luminance mask layer (`MaskKind::Luminance`).
+pub(super) const LUMINANCE_MASK_BLEND: u32 = 26;
+
+pub(super) fn blend_clears_outside(mix_blend: u32) -> bool {
+    matches!(mix_blend, 16 | 17 | 20 | 22 | 24 | LUMINANCE_MASK_BLEND)
+}
 
 pub(super) fn slot_reads_backdrop(slot: &GroupSlot) -> bool {
     slot.mix_blend >= FIRST_READING_BLEND
@@ -1600,6 +1609,15 @@ impl DestTarget {
         self.slot_blend
             .get(slot as usize)
             .is_some_and(|blend| *blend >= FIRST_READING_BLEND)
+    }
+
+    /// Whether `slot` clears destination pixels outside the drawn source region
+    /// (Porter-Duff `Copy`/`SourceIn`/`SourceOut`/`DestinationIn`/`DestinationAtop`
+    /// and alpha/luminance mask layers).
+    pub(super) fn clears_outside(&self, slot: u32) -> bool {
+        self.slot_blend
+            .get(slot as usize)
+            .is_some_and(|blend| blend_clears_outside(*blend))
     }
 
     /// Copy `area` of what a reading blend composites onto — `parent`'s

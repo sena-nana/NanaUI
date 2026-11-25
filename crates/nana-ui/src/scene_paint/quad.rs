@@ -48,6 +48,7 @@ const PAINT_URL_PREMULT: u32 = 512;
 /// The gradient stops are premultiplied sRGB, interpolated as a browser
 /// blends plain sRGB colours and decoded once in the shader.
 const PAINT_GRADIENT_SRGB: u32 = 1024;
+const PAINT_SHADOW_SOLID: u32 = 2048;
 const QUAD_VERTEX_FRAGMENT: &[ShaderStage] = &[ShaderStage::Vertex, ShaderStage::Fragment];
 const QUAD_FRAGMENT: &[ShaderStage] = &[ShaderStage::Fragment];
 /// What the precompiled quad stages must have been compiled from: the
@@ -155,9 +156,10 @@ struct QuadPaintData {
     presentation1: [f32; 4],
     target0: [f32; 4],
     target1: [f32; 4],
+    url_src_uv: [f32; 4],
 }
 
-const _: () = assert!(std::mem::size_of::<QuadPaintData>() == 528);
+const _: () = assert!(std::mem::size_of::<QuadPaintData>() == 544);
 const _: () = assert!(std::mem::align_of::<QuadPaintData>() == 4);
 
 #[repr(C)]
@@ -183,6 +185,7 @@ pub(super) struct QuadPipeline {
     bind_layout: wgpu::BindGroupLayout,
     url_view: wgpu::TextureView,
     url_sampler: wgpu::Sampler,
+    url_sampler_nearest: wgpu::Sampler,
     motion_layout: wgpu::BindGroupLayout,
     #[allow(
         dead_code,
@@ -245,6 +248,13 @@ impl QuadPipeline {
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            ..Default::default()
+        });
+        let url_sampler_nearest = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("nana-ui.scene.quad.url.sampler.nearest"),
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
         let url_view = device
@@ -382,6 +392,7 @@ impl QuadPipeline {
             bind_layout,
             url_view,
             url_sampler,
+            url_sampler_nearest,
             motion_layout,
             motion_dummy,
         })
@@ -500,8 +511,13 @@ impl QuadPipeline {
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         }));
-        let fallback_group =
-            self.create_url_bind_group_with(device, &uniforms, &paint_buffer, &self.url_view);
+        let fallback_group = self.create_url_bind_group_with(
+            device,
+            &uniforms,
+            &paint_buffer,
+            &self.url_view,
+            &self.url_sampler,
+        );
         let mut url_bind_groups = HashMap::new();
         url_bind_groups.insert(None, fallback_group);
         QuadPipelineTarget {
@@ -738,7 +754,7 @@ impl QuadPipeline {
                     &mut target.pending,
                     &mut target.pending_paint,
                     &mut target.pending_urls,
-                    shadow_only_paint(false),
+                    shadow_only_paint(false, surface.shadow_solid),
                     None,
                     position,
                     [bounds.width, bounds.height],
@@ -889,37 +905,113 @@ impl QuadPipeline {
             }
         }
         if let Some(layer) = content_layer {
-            let (paint, paint_url) = pack_layer(
-                device,
-                queue,
-                url_cache,
-                surface,
-                layer,
-                bounds.width,
-                bounds.height,
-                image_scale,
-                work,
-            );
-            push_solid_instance(
-                &mut target.pending,
-                &mut target.pending_paint,
-                &mut target.pending_urls,
-                paint,
-                paint_url,
-                position,
-                [bounds.width, bounds.height],
-                None,
-                zero_colors,
-                zero_widths,
-                corner_radius,
-                None,
-                opacity,
-                snap,
-                target.motion_origin,
-                instance_affine,
-                instance_persp,
-                fragment_clip,
-            );
+            if let Some(insets) = surface.content_nine_slice
+                && let BackgroundImage::Url { url, sampling, .. } = layer
+            {
+                if let Some((tex_w, tex_h)) =
+                    url_cache.load_image(device, queue, url, *sampling, Demand::Waiting, work)
+                {
+                    let tex_wf = tex_w.max(1) as f32;
+                    let tex_hf = tex_h.max(1) as f32;
+                    let (su0, sv0, su1, sv1) = match surface.content_src_rect {
+                        Some(sr) => {
+                            let u0 = (sr.x / tex_wf).clamp(0.0, 1.0);
+                            let v0 = (sr.y / tex_hf).clamp(0.0, 1.0);
+                            let u1 = ((sr.x + sr.width) / tex_wf).clamp(u0, 1.0);
+                            let v1 = ((sr.y + sr.height) / tex_hf).clamp(v0, 1.0);
+                            (u0, v0, u1, v1)
+                        }
+                        None => (0.0, 0.0, 1.0, 1.0),
+                    };
+                    let sdu = (su1 - su0).max(1.0e-6);
+                    let sdv = (sv1 - sv0).max(1.0e-6);
+                    let src_w = (sdu * tex_wf).max(1.0);
+                    let src_h = (sdv * tex_hf).max(1.0);
+                    let spec = BorderImageSpec {
+                        source: (*layer).clone(),
+                        slice: insets.map(nana_ui_core::BorderImageSlice::Number),
+                        fill: surface.content_nine_slice_fill,
+                    };
+                    let mut tiles = spec.tiles(src_w, src_h, bounds.width, bounds.height);
+                    if !tiles.is_empty() {
+                        if pixel_snap == 0 {
+                            seal_border_image_seams(
+                                &mut tiles,
+                                position,
+                                [bounds.width, bounds.height],
+                                affine,
+                                persp,
+                                target.grid_scale,
+                            );
+                        }
+                        let cache_k = cache_key(url, *sampling).into_owned();
+                        for tile in tiles {
+                            let u0 = su0 + tile.u0 * sdu;
+                            let v0 = sv0 + tile.v0 * sdv;
+                            let u1 = su0 + tile.u1 * sdu;
+                            let v1 = sv0 + tile.v1 * sdv;
+                            let paint = QuadPaintData {
+                                flags: PAINT_URL,
+                                url_dest: [0.0, 0.0, 1.0, 1.0],
+                                url_src_uv: [u0, v0, (u1 - u0).max(1.0e-6), (v1 - v0).max(1.0e-6)],
+                                ..Default::default()
+                            };
+                            push_solid_instance(
+                                &mut target.pending,
+                                &mut target.pending_paint,
+                                &mut target.pending_urls,
+                                paint,
+                                Some(cache_k.clone()),
+                                [position[0] + tile.dest_x, position[1] + tile.dest_y],
+                                [tile.dest_w, tile.dest_h],
+                                None,
+                                zero_colors,
+                                zero_widths,
+                                [0.0; 4],
+                                None,
+                                opacity,
+                                snap,
+                                target.motion_origin,
+                                instance_affine,
+                                instance_persp,
+                                fragment_clip,
+                            );
+                        }
+                    }
+                }
+            } else {
+                let (paint, paint_url) = pack_layer(
+                    device,
+                    queue,
+                    url_cache,
+                    surface,
+                    layer,
+                    bounds.width,
+                    bounds.height,
+                    image_scale,
+                    work,
+                );
+                push_solid_instance(
+                    &mut target.pending,
+                    &mut target.pending_paint,
+                    &mut target.pending_urls,
+                    paint,
+                    paint_url,
+                    position,
+                    [bounds.width, bounds.height],
+                    None,
+                    zero_colors,
+                    zero_widths,
+                    corner_radius,
+                    None,
+                    opacity,
+                    snap,
+                    target.motion_origin,
+                    instance_affine,
+                    instance_persp,
+                    fragment_clip,
+                );
+            }
         }
         if split_shadows {
             for layer in insets.iter().rev() {
@@ -927,7 +1019,7 @@ impl QuadPipeline {
                     &mut target.pending,
                     &mut target.pending_paint,
                     &mut target.pending_urls,
-                    shadow_only_paint(true),
+                    shadow_only_paint(true, false),
                     None,
                     position,
                     [bounds.width, bounds.height],
@@ -1104,7 +1196,18 @@ impl QuadPipeline {
             .and_then(|cached| cached.as_ref())
             .map(|cached| &cached.view)
             .unwrap_or(&self.url_view);
-        self.create_url_bind_group_with(device, &target.uniforms, &target.paint_buffer, url_view)
+        let sampler = if url.is_some_and(super::url_texture_cache::is_nearest_key) {
+            &self.url_sampler_nearest
+        } else {
+            &self.url_sampler
+        };
+        self.create_url_bind_group_with(
+            device,
+            &target.uniforms,
+            &target.paint_buffer,
+            url_view,
+            sampler,
+        )
     }
 
     fn create_url_bind_group_with(
@@ -1113,6 +1216,7 @@ impl QuadPipeline {
         uniforms: &wgpu::Buffer,
         paint_buffer: &wgpu::Buffer,
         url_view: &wgpu::TextureView,
+        url_sampler: &wgpu::Sampler,
     ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("nana-ui.scene.quad.bind_group"),
@@ -1132,7 +1236,7 @@ impl QuadPipeline {
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: wgpu::BindingResource::Sampler(&self.url_sampler),
+                    resource: wgpu::BindingResource::Sampler(url_sampler),
                 },
             ],
         })
@@ -1291,8 +1395,11 @@ fn shadow_peak(size: [f32; 2], shadow: &ComponentElevation) -> f32 {
     1.0 - (1.0 + x * (0.278_393 + x * (0.230_389 + x * (0.000_972 + x * 0.078_108)))).powi(-4)
 }
 
-fn shadow_only_paint(inset: bool) -> QuadPaintData {
+fn shadow_only_paint(inset: bool, solid: bool) -> QuadPaintData {
     let mut paint = QuadPaintData::default();
+    if solid {
+        paint.flags |= PAINT_SHADOW_SOLID;
+    }
     if inset {
         paint.flags |= PAINT_SHADOW_INSET;
     }
@@ -1522,6 +1629,9 @@ fn pack_shared(
     work: Option<&crate::gpu_work::GpuWorkSink>,
 ) -> QuadPaintData {
     let mut paint = QuadPaintData::default();
+    if surface.shadow_solid {
+        paint.flags |= PAINT_SHADOW_SOLID;
+    }
     if let Some(BackgroundImage::Gradient(grad)) = layer {
         match grad {
             CssGradient::Linear(linear) => {
@@ -1591,15 +1701,17 @@ fn pack_shared(
         paint.poly2 = [flat[4][0], flat[4][1], flat[5][0], flat[5][1]];
         paint.poly3 = [flat[6][0], flat[6][1], flat[7][0], flat[7][1]];
     }
-    if let Some(BackgroundImage::Url {
-        url,
-        fit,
-        size_width,
-        size_height,
-        position,
-        repeat,
-        sampling,
-    }) = layer
+    if let Some(
+        src_layer @ BackgroundImage::Url {
+            url,
+            fit,
+            size_width,
+            size_height,
+            position,
+            repeat,
+            sampling,
+        },
+    ) = layer
         && let Some((tex_w, tex_h)) = cache.load_image(
             device,
             queue,
@@ -1628,6 +1740,24 @@ fn pack_shared(
             BackgroundImageFit::Length => 4,
             BackgroundImageFit::ScaleDown => 5,
         };
+        let is_content = surface
+            .content_image
+            .as_ref()
+            .is_some_and(|c| std::ptr::eq(c, src_layer));
+        let (eff_w, eff_h) = if is_content && let Some(sr) = surface.content_src_rect {
+            let tw = tex_w.max(1) as f32;
+            let th = tex_h.max(1) as f32;
+            let u0 = (sr.x / tw).clamp(0.0, 1.0);
+            let v0 = (sr.y / th).clamp(0.0, 1.0);
+            let u1 = ((sr.x + sr.width) / tw).clamp(u0, 1.0);
+            let v1 = ((sr.y + sr.height) / th).clamp(v0, 1.0);
+            let du = (u1 - u0).max(1.0e-6);
+            let dv = (v1 - v0).max(1.0e-6);
+            paint.url_src_uv = [u0, v0, du, dv];
+            ((du * tw).max(1.0), (dv * th).max(1.0))
+        } else {
+            (tex_w as f32, tex_h as f32)
+        };
         paint.url_dest = url_dest_rect(
             *fit,
             *size_width,
@@ -1636,8 +1766,8 @@ fn pack_shared(
             *repeat,
             width,
             height,
-            tex_w as f32,
-            tex_h as f32,
+            eff_w,
+            eff_h,
         );
     }
     if paint.flags & PAINT_URL == 0

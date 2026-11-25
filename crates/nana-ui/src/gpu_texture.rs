@@ -1541,6 +1541,7 @@ impl GpuTexturePrimitive {
             let sampler = match self.layer.sampling {
                 nana_ui_core::ImageSampling::Resample => &pipeline.sampler,
                 nana_ui_core::ImageSampling::Mipmap => &pipeline.mip_sampler,
+                nana_ui_core::ImageSampling::Nearest => &pipeline.nearest_sampler,
             };
             let layout = &pipeline.bind_group_layout;
             if let Some(prepared) = target.textures.get_mut(&key) {
@@ -1743,6 +1744,7 @@ pub struct GpuTexturePipeline {
     sampler: wgpu::Sampler,
     /// Trilinear, for nodes that ask for `ImageSampling::Mipmap`.
     mip_sampler: wgpu::Sampler,
+    nearest_sampler: wgpu::Sampler,
     mask_fallback: wgpu::TextureView,
     dummy_motion: wgpu::BindGroup,
 }
@@ -1966,6 +1968,14 @@ impl GpuTexturePipeline {
             mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..wgpu::SamplerDescriptor::default()
         });
+        let nearest_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("nana-ui host texture nearest sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            ..wgpu::SamplerDescriptor::default()
+        });
 
         let mask_fallback = white_mask_fallback(device, queue);
         let dummy_motion = crate::scene_paint::motion::dummy_motion_bind_group(
@@ -1981,6 +1991,7 @@ impl GpuTexturePipeline {
             bind_group_layout,
             sampler,
             mip_sampler,
+            nearest_sampler,
             mask_fallback,
             dummy_motion,
         })
@@ -1994,6 +2005,7 @@ impl GpuTexturePipeline {
         match sampling {
             nana_ui_core::ImageSampling::Resample => &self.sampler,
             nana_ui_core::ImageSampling::Mipmap => &self.mip_sampler,
+            nana_ui_core::ImageSampling::Nearest => &self.nearest_sampler,
         }
     }
 }

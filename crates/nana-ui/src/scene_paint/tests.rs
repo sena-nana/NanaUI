@@ -13617,6 +13617,7 @@ fn group_extents_union_what_each_group_draws_and_widen_for_filters() {
             first_index: 0,
             index_count: 3,
             instance: 0,
+            pattern: None,
         },
         scissor,
     };
@@ -17297,5 +17298,390 @@ fn gpu_motion_isolation_group_evaluates_filter_and_opacity_on_gpu() {
         center[0] > 80 && center[0] < 200,
         "GPU group opacity at t=200ms (~0.6) must attenuate center pixel, got {:?}",
         center
+    );
+}
+
+#[test]
+fn porter_duff_modes_and_masks_render_and_clear_accurately() {
+    use nana_ui_runtime::{BlendMode, MaskKind, PaintContext};
+
+    // DestinationOut punches a hole inside the node's isolated group without erasing outer backdrop.
+    let cutout = paint_one_painter_onto(
+        PaintFn(|cx: &mut PaintContext<'_>| {
+            cx.fill_path(&rect_path(0.0, 0.0, 40.0, 40.0), [0.0, 1.0, 0.0, 1.0]);
+            cx.set_blend(BlendMode::DestinationOut);
+            cx.fill_path(&rect_path(10.0, 10.0, 20.0, 20.0), [1.0, 0.0, 0.0, 1.0]);
+        }),
+        40,
+        40,
+        wgpu::TextureFormat::Rgba8Unorm,
+        [0.0, 0.0, 0.0, 0.0],
+        |_| {},
+    );
+    assert_eq!(pixel(&cutout, 40, 4, 4), [0, 255, 0, 255]);
+    assert_eq!(pixel(&cutout, 40, 20, 20), [0, 0, 0, 0]);
+
+    // Copy with an empty source layer clears the inner destination group to transparent.
+    let cleared = paint_one_painter_onto(
+        PaintFn(|cx: &mut PaintContext<'_>| {
+            cx.fill_path(&rect_path(0.0, 0.0, 40.0, 40.0), [0.0, 1.0, 0.0, 1.0]);
+            cx.push_layer(1.0, BlendMode::Copy);
+            cx.set_opacity(0.0);
+            cx.fill_path(&rect_path(0.0, 0.0, 40.0, 40.0), [1.0, 0.0, 0.0, 1.0]);
+            cx.pop_layer();
+        }),
+        40,
+        40,
+        wgpu::TextureFormat::Rgba8Unorm,
+        [0.0, 0.0, 0.0, 0.0],
+        |_| {},
+    );
+    assert_eq!(pixel(&cleared, 40, 20, 20), [0, 0, 0, 0]);
+
+    // Lighter sums clamped channels; SourceIn keeps source RGB inside destination alpha.
+    let blended = paint_one_painter_onto(
+        PaintFn(|cx: &mut PaintContext<'_>| {
+            cx.push_layer(1.0, BlendMode::Normal);
+            cx.fill_path(&rect_path(0.0, 0.0, 20.0, 20.0), [0.4, 0.0, 0.0, 1.0]);
+            cx.set_blend(BlendMode::Lighter);
+            cx.fill_path(&rect_path(0.0, 0.0, 20.0, 20.0), [0.4, 0.5, 0.0, 1.0]);
+            cx.pop_layer();
+
+            cx.push_layer(1.0, BlendMode::Normal);
+            cx.fill_path(&rect_path(25.0, 5.0, 10.0, 10.0), [0.0, 1.0, 0.0, 1.0]);
+            cx.set_blend(BlendMode::SourceIn);
+            cx.fill_path(&rect_path(20.0, 0.0, 20.0, 20.0), [0.0, 0.0, 1.0, 1.0]);
+            cx.pop_layer();
+        }),
+        40,
+        20,
+        wgpu::TextureFormat::Rgba8Unorm,
+        [0.0, 0.0, 0.0, 0.0],
+        |_| {},
+    );
+    let sum_px = pixel(&blended, 40, 10, 10);
+    assert!(
+        sum_px[0] > 190 && sum_px[1] > 110,
+        "Lighter sum: {sum_px:?}"
+    );
+    assert_eq!(pixel(&blended, 40, 30, 10), [0, 0, 255, 255]);
+    assert_eq!(pixel(&blended, 40, 21, 10), [0, 0, 0, 0]);
+
+    // Alpha and Luminance arbitrary custom-paint masks.
+    let masked = paint_one_painter_onto(
+        PaintFn(|cx: &mut PaintContext<'_>| {
+            cx.push_layer(1.0, BlendMode::Normal);
+            cx.fill_path(&rect_path(0.0, 0.0, 20.0, 20.0), [1.0, 0.0, 0.0, 1.0]);
+            cx.push_mask(MaskKind::Alpha);
+            cx.fill_path(&rect_path(0.0, 0.0, 10.0, 20.0), [1.0, 1.0, 1.0, 0.5]);
+            cx.pop_mask();
+            cx.pop_layer();
+
+            cx.push_layer(1.0, BlendMode::Normal);
+            cx.fill_path(&rect_path(20.0, 0.0, 20.0, 20.0), [0.0, 1.0, 0.0, 1.0]);
+            cx.push_mask(MaskKind::Luminance);
+            cx.fill_path(&rect_path(20.0, 0.0, 10.0, 20.0), [1.0, 1.0, 1.0, 1.0]);
+            cx.fill_path(&rect_path(30.0, 0.0, 10.0, 20.0), [0.0, 0.0, 0.0, 1.0]);
+            cx.pop_mask();
+            cx.pop_layer();
+        }),
+        40,
+        20,
+        wgpu::TextureFormat::Rgba8Unorm,
+        [0.0, 0.0, 0.0, 0.0],
+        |_| {},
+    );
+    let alpha_half = pixel(&masked, 40, 5, 10);
+    assert!(
+        alpha_half[0].abs_diff(128) <= 4 && alpha_half[3].abs_diff(128) <= 4,
+        "{alpha_half:?}"
+    );
+    assert_eq!(pixel(&masked, 40, 15, 10), [0, 0, 0, 0]);
+    assert_eq!(pixel(&masked, 40, 25, 10), [0, 255, 0, 255]);
+    assert_eq!(pixel(&masked, 40, 35, 10), [0, 0, 0, 0]);
+}
+
+#[test]
+fn two_circle_radial_oklab_gradients_and_atlas_image_features_render() {
+    use base64::Engine as _;
+    use nana_ui_runtime::{
+        Gradient, GradientColorSpace, PaintContext, PaintImage, PaintPattern, PaintText,
+        PatternRepeat, Stack, TextureRegion,
+    };
+
+    // #220 Gradients: two-circle radial + Oklab vs PremulSrgb interpolation.
+    let grad_pixels = paint_one_painter_onto(
+        PaintFn(|cx: &mut PaintContext<'_>| {
+            let two_circle = Gradient::radial_two_circle([10.0, 10.0], 2.0, [20.0, 20.0], 18.0)
+                .stop(0.0, [1.0, 1.0, 1.0, 1.0])
+                .stop(1.0, [0.0, 0.0, 1.0, 1.0]);
+            cx.fill_path(&rect_path(0.0, 0.0, 40.0, 40.0), two_circle);
+
+            let premul = Gradient::linear([40.0, 0.0], [80.0, 0.0])
+                .stop(0.0, [1.0, 0.0, 0.0, 1.0])
+                .stop(1.0, [0.0, 0.0, 1.0, 1.0])
+                .color_space(GradientColorSpace::PremulSrgb);
+            cx.fill_path(&rect_path(40.0, 0.0, 40.0, 20.0), premul);
+
+            let oklab = Gradient::linear([40.0, 20.0], [80.0, 20.0])
+                .stop(0.0, [1.0, 0.0, 0.0, 1.0])
+                .stop(1.0, [0.0, 0.0, 1.0, 1.0])
+                .color_space(GradientColorSpace::Oklab);
+            cx.fill_path(&rect_path(40.0, 20.0, 40.0, 20.0), oklab);
+        }),
+        80,
+        40,
+        wgpu::TextureFormat::Rgba8Unorm,
+        [0.0, 0.0, 0.0, 1.0],
+        |_| {},
+    );
+    let inner_focal = pixel(&grad_pixels, 80, 10, 10);
+    let outer_edge = pixel(&grad_pixels, 80, 35, 20);
+    assert!(
+        inner_focal[0] > 200 && inner_focal[1] > 200,
+        "{inner_focal:?}"
+    );
+    assert!(outer_edge[2] > 200 && outer_edge[0] < 40, "{outer_edge:?}");
+    let premul_mid = pixel(&grad_pixels, 80, 60, 10);
+    let oklab_mid = pixel(&grad_pixels, 80, 60, 30);
+    assert_ne!(
+        oklab_mid, premul_mid,
+        "Oklab midpoint must differ from PremulSrgb"
+    );
+    assert!(
+        oklab_mid[2] > 50,
+        "Oklab midpoint retains blue energy: {oklab_mid:?}"
+    );
+
+    // 4x4 RGBA atlas PNG: TL red, TR green, BL blue, BR white.
+    let img = image::RgbaImage::from_fn(4, 4, |x, y| match (x < 2, y < 2) {
+        (true, true) => image::Rgba([255, 0, 0, 255]),
+        (false, true) => image::Rgba([0, 255, 0, 255]),
+        (true, false) => image::Rgba([0, 0, 255, 255]),
+        (false, false) => image::Rgba([255, 255, 255, 255]),
+    });
+    let mut png = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut png, image::ImageFormat::Png).unwrap();
+    let atlas_url: Arc<str> = Arc::from(format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(png.into_inner())
+    ));
+
+    let painter_url = Arc::clone(&atlas_url);
+    let mut context = AppContext::new();
+    let doc = DocumentId::new(1).unwrap();
+    let node = context
+        .create_component(
+            doc,
+            Stack::column(0.0)
+                .with_layout(|l| {
+                    l.width = Some(LengthSpec::Px(64.0));
+                    l.height = Some(LengthSpec::Px(64.0));
+                })
+                .painter(PaintFn(move |cx: &mut PaintContext<'_>| {
+                    cx.set_image_smoothing(false);
+                    // Top-left 20x20: crop TR green quadrant only.
+                    cx.draw_image(
+                        LayoutBox {
+                            x: 0.0,
+                            y: 0.0,
+                            width: 20.0,
+                            height: 20.0,
+                        },
+                        PaintImage::new(Arc::clone(&painter_url))
+                            .with_src_rect(LayoutBox {
+                                x: 2.0,
+                                y: 0.0,
+                                width: 2.0,
+                                height: 2.0,
+                            })
+                            .with_smoothing(false),
+                    );
+                    // Atlas TextureRegionBatch into (20..60, 0..20).
+                    let bl = TextureRegion::new(
+                        Arc::clone(&painter_url),
+                        LayoutBox {
+                            x: 0.0,
+                            y: 2.0,
+                            width: 2.0,
+                            height: 2.0,
+                        },
+                    );
+                    let br = TextureRegion::new(
+                        Arc::clone(&painter_url),
+                        LayoutBox {
+                            x: 2.0,
+                            y: 2.0,
+                            width: 2.0,
+                            height: 2.0,
+                        },
+                    );
+                    cx.draw_texture_regions(&[
+                        (
+                            &bl,
+                            LayoutBox {
+                                x: 20.0,
+                                y: 0.0,
+                                width: 20.0,
+                                height: 20.0,
+                            },
+                        ),
+                        (
+                            &br,
+                            LayoutBox {
+                                x: 40.0,
+                                y: 0.0,
+                                width: 20.0,
+                                height: 20.0,
+                            },
+                        ),
+                    ]);
+                    // PaintPattern fill + PaintPattern text on lower strip.
+                    let pat = PaintPattern::new(Arc::clone(&painter_url))
+                        .with_src_rect(LayoutBox {
+                            x: 0.0,
+                            y: 0.0,
+                            width: 2.0,
+                            height: 2.0,
+                        })
+                        .with_repeat(PatternRepeat::Repeat)
+                        .with_smoothing(false);
+                    cx.fill_path(&rect_path(0.0, 20.0, 32.0, 20.0), pat.clone());
+                    cx.text(
+                        LayoutBox {
+                            x: 0.0,
+                            y: 42.0,
+                            width: 60.0,
+                            height: 20.0,
+                        },
+                        PaintText::new("HI").size(16.0).paint(pat),
+                    );
+                })),
+        )
+        .unwrap();
+    let ids = [node.stable_id()];
+    context.resolve_styles(&ids).unwrap();
+    context
+        .layout_document(doc, nana_ui_runtime::LayoutViewport::new(64.0, 64.0))
+        .unwrap();
+    let mut scene = UiScene::new();
+    scene.apply_delta(context.world().extract_document(doc), []);
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let mut gpu_painter = SceneWgpuPainter::for_test(format);
+    let viewport = ScenePaintViewport {
+        logical_size: [64.0, 64.0],
+        physical_size: [64, 64],
+        scale_factor: 1.0,
+        scene_origin: [0.0, 0.0],
+        target_origin: [0.0, 0.0],
+        clear_color: [0.0, 0.0, 0.0, 1.0],
+        clear: true,
+    };
+    let mut atlas_pixels;
+    let deadline = Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let (tex, view) = test_copy_target(&device, format, 64, 64);
+        let mut enc = device.create_command_encoder(&Default::default());
+        gpu_painter
+            .paint_encoder(&scene, &mut enc, &view, viewport, None, None)
+            .unwrap();
+        atlas_pixels = readback_rgba(&device, &queue, enc, &tex, 64, 64);
+        if !gpu_painter.has_pending_images() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "atlas image work timed out");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(
+        pixel(&atlas_pixels, 64, 10, 10),
+        [0, 255, 0, 255],
+        "src_rect green crop"
+    );
+    assert_eq!(
+        pixel(&atlas_pixels, 64, 30, 10),
+        [0, 0, 255, 255],
+        "TextureRegion BL blue"
+    );
+    assert_eq!(
+        pixel(&atlas_pixels, 64, 50, 10),
+        [255, 255, 255, 255],
+        "TextureRegion BR white"
+    );
+    assert_eq!(
+        pixel(&atlas_pixels, 64, 16, 30),
+        [255, 0, 0, 255],
+        "PaintPattern TL red"
+    );
+}
+
+#[test]
+fn analytic_solid_shadow_and_thin_gpu_stroke_render_accurately() {
+    use nana_ui_runtime::{BoxPaint, PaintContext, PaintPath, PaintShadow, StrokeStyle};
+
+    let pixels = paint_one_painter_onto(
+        PaintFn(|cx: &mut PaintContext<'_>| {
+            let mut rrect = PaintPath::new();
+            rrect.rounded_rect(
+                LayoutBox {
+                    x: 8.0,
+                    y: 8.0,
+                    width: 24.0,
+                    height: 24.0,
+                },
+                [6.0; 4],
+            );
+            let shadow = PaintShadow::Custom {
+                color: nana_ui_runtime::PaintColor::from([1.0, 0.0, 0.0, 0.5]),
+                offset: [0.0, 0.0],
+                blur: 8.0,
+                spread: 0.0,
+                inset: false,
+            };
+            // Canvas shadow fills solid interior via PAINT_SHADOW_SOLID.
+            cx.shadow(&rrect, shadow);
+            // CSS rounded_rect shadow on the right stays hollowed inside.
+            cx.rounded_rect(
+                LayoutBox {
+                    x: 48.0,
+                    y: 8.0,
+                    width: 24.0,
+                    height: 24.0,
+                },
+                6.0,
+                BoxPaint {
+                    fill: None,
+                    border: None,
+                    shadow: Some(shadow),
+                },
+            );
+            // Thin 1.0px curved stroke rendered via GPU stroke primitive.
+            let mut curve = PaintPath::new();
+            curve
+                .move_to(8.0, 48.0)
+                .cubic_to(24.0, 48.0, 56.0, 48.0, 72.0, 48.0);
+            cx.stroke_path(&curve, StrokeStyle::new(1.0), [0.0, 1.0, 0.0, 1.0]);
+        }),
+        80,
+        64,
+        wgpu::TextureFormat::Rgba8Unorm,
+        [0.0, 0.0, 0.0, 1.0],
+        |_| {},
+    );
+    let solid_interior = pixel(&pixels, 80, 20, 20);
+    let hollow_interior = pixel(&pixels, 80, 60, 20);
+    assert!(
+        solid_interior[0] > 100 && solid_interior[0] < 160,
+        "Canvas shadow fills rounded-rect interior: {solid_interior:?}"
+    );
+    assert_eq!(
+        hollow_interior,
+        [0, 0, 0, 255],
+        "CSS rounded_rect shadow hollows interior"
+    );
+    let thin_px = pixel(&pixels, 80, 40, 48);
+    assert!(
+        thin_px[1] > 150,
+        "Thin 1.0px GPU curve stroke visible: {thin_px:?}"
     );
 }

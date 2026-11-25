@@ -233,6 +233,10 @@ pub(super) fn quad_surface_from_style(
         } else {
             style.paint.border_image.clone()
         },
+        content_src_rect: None,
+        content_nine_slice: None,
+        content_nine_slice_fill: false,
+        shadow_solid: false,
     }
 }
 

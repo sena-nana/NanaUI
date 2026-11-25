@@ -49,7 +49,14 @@ pub(super) fn stroke_shapes(path: &PaintPath, stroke: &StrokeStyle, t: Affine) -
             LineJoin::Round => OverlayJoin::Round(0.1),
             LineJoin::Bevel => OverlayJoin::Bevel,
         });
-    let tolerance = TOLERANCE / affine_scale(t).max(1e-3);
+    let scale = affine_scale(t).max(1e-3);
+    let screen_width = stroke.width * scale;
+    let base_tolerance = if screen_width <= 2.5 {
+        TOLERANCE.max(0.25)
+    } else {
+        TOLERANCE
+    };
+    let tolerance = base_tolerance / scale;
     let dash = dash_pattern(&stroke.dash);
     let mut contours: Vec<Contour> = Vec::new();
     for (points, closed) in flatten(path, AFFINE_IDENTITY, tolerance) {

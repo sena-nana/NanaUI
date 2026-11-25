@@ -134,6 +134,53 @@ fn shutter_sample(uv: vec2<f32>, filter_blur: f32, blur_taps: f32) -> vec4<f32> 
     return acc / f32(samples);
 }
 
+// Bounded shadow-along-shutter sampling (#439): used only when both
+// `motion_streak` (>= 0.5 px) and `drop_shadow` are active on the group.
+// Worst case (`64px` streak + `64px` blur) is strictly capped at 4 shutter
+// positions × 5×5 Gaussian blur taps = 100 texture reads per pixel.
+fn shutter_shadow_blur_alpha(uv: vec2<f32>, radius: f32) -> f32 {
+    let dims = vec2<f32>(textureDimensions(source));
+    let texel = 1.0 / max(dims, vec2<f32>(1.0));
+    let step = radius * 0.5;
+    var acc = 0.0;
+    var wsum = 0.0;
+    for (var row = -2; row <= 2; row = row + 1) {
+        for (var column = -2; column <= 2; column = column + 1) {
+            let d = vec2<f32>(f32(column), f32(row));
+            let w = exp(-dot(d, d) * 0.5);
+            acc += textureSample(source, source_sampler, uv + d * step * texel).a * w;
+            wsum += w;
+        }
+    }
+    return acc / max(wsum, 0.0001);
+}
+
+fn shutter_drop_shadow_alpha(shadow_uv: vec2<f32>, shadow_blur: f32) -> f32 {
+    let streak = layer.motion_streak;
+    let length_px = length(streak);
+    let dims = vec2<f32>(textureDimensions(source));
+    let streak_uv = streak / max(dims, vec2<f32>(1.0));
+    if (shadow_blur <= 0.5) {
+        let taps = clamp(i32(ceil(length_px * 0.5)), 2, 8);
+        let samples = taps + 1;
+        var acc = 0.0;
+        for (var i = 0; i < samples; i = i + 1) {
+            acc += textureSample(
+                source,
+                source_sampler,
+                shadow_uv - streak_uv * (f32(i) / f32(taps)),
+            ).a;
+        }
+        return acc / f32(samples);
+    }
+    var acc = 0.0;
+    for (var i = 0; i < 4; i = i + 1) {
+        let tap_uv = shadow_uv - streak_uv * (f32(i) / 3.0);
+        acc += shutter_shadow_blur_alpha(tap_uv, shadow_blur);
+    }
+    return acc * 0.25;
+}
+
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     return layer_source(input);
@@ -215,11 +262,15 @@ fn layer_source(input: VertexOutput) -> vec4<f32> {
         let dims = vec2<f32>(textureDimensions(source));
         let offset_uv = fshadow_offset / max(dims, vec2<f32>(1.0));
         let shadow_uv = input.uv - offset_uv;
-        var shadow_sample = textureSample(source, source_sampler, shadow_uv);
-        if (fshadow_blur > 0.5) {
-            shadow_sample = element_filter_blur(shadow_uv, fshadow_blur, fblur_taps);
+        var shadow_alpha = 0.0;
+        if (length(layer.motion_streak) >= 0.5) {
+            shadow_alpha = shutter_drop_shadow_alpha(shadow_uv, fshadow_blur);
+        } else if (fshadow_blur > 0.5) {
+            shadow_alpha = element_filter_blur(shadow_uv, fshadow_blur, fblur_taps).a;
+        } else {
+            shadow_alpha = textureSample(source, source_sampler, shadow_uv).a;
         }
-        let shadow_a = shadow_sample.a * fshadow_color.a;
+        let shadow_a = shadow_alpha * fshadow_color.a;
         let shadow = vec4<f32>(fshadow_color.rgb * shadow_a, shadow_a);
         sampled = sampled + shadow * (1.0 - sampled.a);
     }

@@ -1797,6 +1797,7 @@ impl SceneWgpuPainter {
             target_res.last_encoded_key = None;
             target_res.changing_frame_streak = 0;
             target_res.quads.invalidate_image_bindings();
+            target_res.meshes.invalidate_image_bindings();
             HostTexturePipeline::invalidate_target_image_bindings(&mut target_res.host_textures);
         }
         if target_res.material_revision != core.material_revision {
@@ -1815,6 +1816,7 @@ impl SceneWgpuPainter {
             target_res.changing_frame_streak = 0;
             target_res.prepared_batch = None;
             target_res.quads.invalidate_image_bindings();
+            target_res.meshes.invalidate_image_bindings();
             HostTexturePipeline::invalidate_target_image_bindings(&mut target_res.host_textures);
         }
         target_res.text.set_subpixel(&core.device, options.text_aa);
@@ -2080,6 +2082,7 @@ impl SceneWgpuPainter {
                         opacity: layer_opacity,
                         blend,
                         clip: layer_clip,
+                        mask,
                     } => {
                         let layer_clip = layer_clip.map(|rect| primitive.place(rect));
                         if let Some(rect) = layer_clip
@@ -2106,12 +2109,19 @@ impl SceneWgpuPainter {
                         group_slots = group_slots.saturating_add(1);
                         group_depth = group_depth.saturating_add(1);
                         scratch.max_group_depth = scratch.max_group_depth.max(group_depth);
+                        let blend_index = match mask {
+                            None => blend.gpu_index(),
+                            Some(nana_ui_core::MaskKind::Alpha) => {
+                                nana_ui_core::MixBlendMode::DestinationIn.gpu_index()
+                            }
+                            Some(nana_ui_core::MaskKind::Luminance) => dest::LUMINANCE_MASK_BLEND,
+                        };
                         scratch.group_slots.push(GroupSlot::dest(
                             *layer_opacity,
                             [1.0, 1.0, 1.0],
                             0.0,
                             0.0,
-                            blend.gpu_index(),
+                            blend_index,
                             frag,
                         ));
                         scratch
@@ -2138,6 +2148,12 @@ impl SceneWgpuPainter {
                                 1.0,
                                 clip::FragmentClip::PASS,
                                 mask.node_mask.as_ref(),
+                                (mask.mode == nana_ui_scene::LayerMaskMode::Tint).then_some((
+                                    &core.device,
+                                    &core.queue,
+                                    &mut core.url_cache,
+                                    Some(&gpu_work),
+                                )),
                             ) {
                                 scratch.commands.push(DrawCommand::PathMask {
                                     range,
@@ -2717,6 +2733,12 @@ impl SceneWgpuPainter {
                             opacity,
                             frag_clip,
                             node_mask.as_ref(),
+                            Some((
+                                &core.device,
+                                &core.queue,
+                                &mut core.url_cache,
+                                Some(&gpu_work),
+                            )),
                         ) {
                             // The AA fringe is physical pixels past the
                             // mesh whatever the transform: one along an
@@ -2994,6 +3016,7 @@ impl SceneWgpuPainter {
                 &mut target_res.meshes,
                 &core.device,
                 &core.queue,
+                &core.url_cache,
                 dest_physical,
                 scale,
                 Some(&gpu_work),
@@ -4532,12 +4555,27 @@ fn encode_ordered(
                     index += 1;
                     continue;
                 };
+                let group_dest = dest.expect("dest target present for groups");
+                let clears_outside = group_dest.clears_outside(frame.slot);
                 if !layer_ready.get(frame.layer).copied().unwrap_or(false) {
-                    // Nothing drew into the layer, so it was never cleared:
-                    // it still holds whatever last used that depth. An empty
-                    // group composites to nothing, filters and blends alike.
-                    index += 1;
-                    continue;
+                    if !clears_outside {
+                        // Nothing drew into the layer, so it was never cleared:
+                        // it still holds whatever last used that depth. An empty
+                        // group composites to nothing, filters and blends alike.
+                        index += 1;
+                        continue;
+                    }
+                    // Porter-Duff operators that clear or mask out destination pixels
+                    // (Copy, SourceIn, SourceOut, DestinationIn, DestinationAtop, and
+                    // PushMask) must still run with a transparent source layer.
+                    let pass = group_dest.begin_group_pass(
+                        encoder,
+                        frame.layer,
+                        wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        dest_passes,
+                    );
+                    drop(pass);
+                    layer_ready[frame.layer] = true;
                 }
                 // Where the group can change its parent. Outside it the layer
                 // is still transparent, which no blend composites into a
@@ -4546,9 +4584,7 @@ fn encode_ordered(
                 // only there. While something moves on the GPU the extents are
                 // the encoded bounds, not where it is now, so only the
                 // backdrop copy — which needs them — is limited.
-                let reads_backdrop = dest
-                    .expect("dest target present for groups")
-                    .reads_backdrop(frame.slot);
+                let reads_backdrop = group_dest.reads_backdrop(frame.slot);
                 let whole = PhysicalRect {
                     x: 0,
                     y: 0,
@@ -4556,7 +4592,9 @@ fn encode_ordered(
                     height: dest_physical[1],
                 };
                 let mut area = None;
-                if reads_backdrop || pipelines.group_extents_exact {
+                if clears_outside {
+                    area = Some(whole);
+                } else if reads_backdrop || pipelines.group_extents_exact {
                     let region = match pipelines.group_extents.get(frame.slot as usize) {
                         Some(GroupExtent::Empty) => {
                             // Nothing drawn: every blend of a transparent

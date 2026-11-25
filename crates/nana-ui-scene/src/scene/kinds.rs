@@ -30,6 +30,14 @@ pub struct QuadSurfacePaint {
     pub border_styles: [u8; 4],
     /// Minimal `border-image` 9-slice (`url()` / linear-gradient + slice).
     pub border_image: Option<BorderImageSpec>,
+    /// Optional source pixel crop `(x, y, width, height)` for `content_image`.
+    pub content_src_rect: Option<SceneRect>,
+    /// Optional 9-slice inset `[top, right, bottom, left]` in source pixels for `content_image`.
+    pub content_nine_slice: Option<[f32; 4]>,
+    /// Whether the center tile of `content_nine_slice` is painted (default `true` for 9-slice panels).
+    pub content_nine_slice_fill: bool,
+    /// When set, outer shadows fill the solid box interior instead of hollowing CSS box-shadow style.
+    pub shadow_solid: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -161,6 +169,7 @@ pub enum ScenePrimitiveKind {
         opacity: f32,
         blend: MixBlendMode,
         clip: Option<SceneRect>,
+        mask: Option<nana_ui_core::MaskKind>,
     },
     /// The layer closes, after `mask` has been applied to it.
     LayerEnd { mask: Option<LayerMask> },

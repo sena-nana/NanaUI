@@ -200,6 +200,9 @@ pub(super) fn inline_object_primitives(
                     nana_ui_runtime::ImageFit::Contain,
                     nana_ui_core::ImageSampling::default(),
                     [0.0; 4],
+                    None,
+                    None,
+                    false,
                 )
             }
             nana_ui_core::RichObjectContent::HostTexture { slot } => {
@@ -287,6 +290,9 @@ pub(super) fn inline_object_primitives(
                             nana_ui_runtime::ImageFit::Cover,
                             nana_ui_core::ImageSampling::default(),
                             corner_radii(radius),
+                            None,
+                            None,
+                            false,
                         ),
                     });
                 }

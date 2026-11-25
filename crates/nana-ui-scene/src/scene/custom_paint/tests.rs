@@ -41,14 +41,31 @@ fn custom_authoring_path_keeps_extended_linear_channels() {
     assert_eq!(only_mesh(&built).paint_color, Some(color));
 }
 
+fn build_shadow_mesh(path: &PaintPath, shadow: &ComponentElevation) -> PathMesh {
+    let shapes = fill_shapes(path, AFFINE_IDENTITY);
+    let mut mesh = MeshBuilder::default();
+    if shadow.inset {
+        mesh.inset_shadow(shapes, shadow);
+    } else {
+        mesh.shadow(shapes, shadow, false);
+    }
+    mesh.finish().expect("expected shadow mesh")
+}
+
 #[test]
 fn custom_authoring_shadow_keeps_linear_channels_without_double_decode() {
     let color = nana_ui_core::PaintColor::LinearScRgb {
         channels: [0.2, 0.1, 0.05],
         alpha: 0.6,
     };
+    let mut triangle = PaintPath::new();
+    triangle
+        .move_to(0.0, 0.0)
+        .line_to(10.0, 0.0)
+        .line_to(5.0, 10.0)
+        .close();
     let built = build_ops(&[PaintOp::Shadow {
-        path: Arc::new(rect_path(0.0, 0.0, 10.0, 10.0)),
+        path: Arc::new(triangle),
         shadow: ComponentElevation {
             color,
             offset_x: 0.0,
@@ -115,9 +132,9 @@ fn coverage_at(mesh: &PathMesh, p: [f32; 2]) -> (f32, usize) {
 
 #[test]
 fn a_shadow_ramps_with_distance_to_the_outline_and_never_overlaps() {
-    let built = build_ops(&[PaintOp::Shadow {
-        path: Arc::new(rect_path(0.0, 0.0, 100.0, 60.0)),
-        shadow: ComponentElevation {
+    let mesh = build_shadow_mesh(
+        &rect_path(0.0, 0.0, 100.0, 60.0),
+        &ComponentElevation {
             color: nana_ui_core::PaintColor::Srgb {
                 rgba: [0.0, 0.0, 0.0, 0.5],
             },
@@ -127,8 +144,8 @@ fn a_shadow_ramps_with_distance_to_the_outline_and_never_overlaps() {
             spread_radius: 0.0,
             inset: false,
         },
-    }]);
-    let mesh = only_mesh(&built);
+    );
+    let mesh = &mesh;
     // Below the bottom edge (y = 66 after the offset), and left of the left
     // edge (x = 0), the ramp is the same: 0.5 on the edge, 0 at `blur`.
     for (label, at) in [
@@ -334,9 +351,9 @@ fn non_finite_or_far_off_input_draws_nothing_instead_of_hanging() {
 
 #[test]
 fn an_inset_shadow_covers_every_point_of_a_corner_once() {
-    let built = build_ops(&[PaintOp::Shadow {
-        path: Arc::new(rect_path(0.0, 0.0, 100.0, 60.0)),
-        shadow: ComponentElevation {
+    let mesh = build_shadow_mesh(
+        &rect_path(0.0, 0.0, 100.0, 60.0),
+        &ComponentElevation {
             color: nana_ui_core::PaintColor::Srgb {
                 rgba: [0.0, 0.0, 0.0, 1.0],
             },
@@ -346,8 +363,8 @@ fn an_inset_shadow_covers_every_point_of_a_corner_once() {
             spread_radius: 0.0,
             inset: true,
         },
-    }]);
-    let mesh = only_mesh(&built);
+    );
+    let mesh = &mesh;
     // The offset puts the band's mitred corner (12, 12) inside the
     // outline, where the solid region past it has to meet it without
     // overlap. Sample at offsets no triangle edge runs through: a point
@@ -424,9 +441,9 @@ fn a_corner_tighter_than_the_blur_does_not_fold_the_band() {
         },
         [6.0; 4],
     );
-    let built = build_ops(&[PaintOp::Shadow {
-        path: Arc::new(path),
-        shadow: ComponentElevation {
+    let mesh = build_shadow_mesh(
+        &path,
+        &ComponentElevation {
             color: nana_ui_core::PaintColor::Srgb {
                 rgba: [0.0, 0.0, 0.0, 0.5],
             },
@@ -436,8 +453,8 @@ fn a_corner_tighter_than_the_blur_does_not_fold_the_band() {
             spread_radius: 0.0,
             inset: false,
         },
-    }]);
-    let mesh = only_mesh(&built);
+    );
+    let mesh = &mesh;
     // Every point in a grid around the top-left corner is covered once at
     // most, and coverage never rises going outwards along the diagonal.
     for y in -14..14 {
@@ -457,9 +474,9 @@ fn a_corner_tighter_than_the_blur_does_not_fold_the_band() {
 
 #[test]
 fn a_shadow_band_spans_blur_either_side_of_the_offset_outline() {
-    let built = build_ops(&[PaintOp::Shadow {
-        path: Arc::new(rect_path(0.0, 0.0, 100.0, 60.0)),
-        shadow: ComponentElevation {
+    let mesh = build_shadow_mesh(
+        &rect_path(0.0, 0.0, 100.0, 60.0),
+        &ComponentElevation {
             color: nana_ui_core::PaintColor::Srgb {
                 rgba: [0.0, 0.0, 0.0, 0.5],
             },
@@ -469,8 +486,8 @@ fn a_shadow_band_spans_blur_either_side_of_the_offset_outline() {
             spread_radius: 0.0,
             inset: false,
         },
-    }]);
-    let mesh = only_mesh(&built);
+    );
+    let mesh = &mesh;
     let b = mesh.bounds;
     assert!((b.x + 12.0).abs() < 0.6, "{b:?}");
     assert!((b.y - (6.0 - 12.0)).abs() < 0.6, "{b:?}");
@@ -564,6 +581,8 @@ fn a_gradient_mesh_remembers_where_its_vertices_came_from() {
         stops: vec![(0.0, [1.0, 0.0, 0.0, 1.0]), (1.0, [0.0, 0.0, 1.0, 1.0])],
         linear_stops: None,
         extend: Default::default(),
+        transform: AFFINE_IDENTITY,
+        color_space: nana_ui_runtime::GradientColorSpace::PremulSrgb,
     });
     let built = build_ops(&[
         PaintOp::SetTransform([1.0, 0.0, 0.0, 1.0, 30.0, 40.0]),
@@ -625,6 +644,7 @@ fn kinds(built: &[BuiltOp]) -> Vec<&'static str> {
             BuiltOp::Mesh(_) => "mesh",
             BuiltOp::Quad { .. } => "quad",
             BuiltOp::QuadRun { .. } => "quad-run",
+            BuiltOp::Stroke { .. } => "stroke",
             BuiltOp::Image { .. } => "image",
             BuiltOp::Text { .. } => "text",
             BuiltOp::Icon { .. } => "icon",
@@ -697,6 +717,8 @@ fn a_gradient_on_glyphs_tints_them_in_a_layer() {
         stops: vec![(0.0, [1.0, 0.0, 0.0, 1.0]), (1.0, [0.0, 0.0, 1.0, 1.0])],
         linear_stops: None,
         extend: Default::default(),
+        transform: AFFINE_IDENTITY,
+        color_space: nana_ui_runtime::GradientColorSpace::PremulSrgb,
     });
     let built = build_ops(&[text_op(ResolvedPaint::Gradient(gradient))]);
     assert_eq!(kinds(&built), ["begin", "text", "end-tint"]);
@@ -859,6 +881,9 @@ fn a_masked_node_draws_no_quads_and_keeps_its_mask_on_glyphs_and_images() {
             fit: ImageFit::Fill,
             sampling: nana_ui_core::ImageSampling::Resample,
             radii: [0.0; 4],
+            src_rect: None,
+            nine_slice: None,
+            nine_slice_fill: false,
         },
     ];
     assert_eq!(
@@ -1620,6 +1645,8 @@ fn styled_custom_paint_text_emits_rich_effects_and_plain_keeps_zero_overhead() {
             stops: vec![(0.0, [1.0, 0.0, 0.0, 1.0]), (1.0, [0.0, 0.0, 1.0, 1.0])],
             linear_stops: None,
             extend: nana_ui_runtime::GradientExtend::Pad,
+            transform: AFFINE_IDENTITY,
+            color_space: nana_ui_runtime::GradientColorSpace::PremulSrgb,
         })),
         size: 16.0,
         weight: None,
@@ -1665,4 +1692,189 @@ fn styled_custom_paint_text_emits_rich_effects_and_plain_keeps_zero_overhead() {
         op,
         BuiltOp::Text { text, .. } if text.letter_spacing == 3.0 && text.effects.as_ref().is_some_and(|r| r.max_shadows() == 1)
     )));
+}
+
+#[test]
+fn masks_emit_layer_begin_and_analytic_shadows_and_thin_strokes_avoid_extrusion() {
+    let mut rrect = PaintPath::new();
+    rrect.rounded_rect(
+        LayoutBox {
+            x: 10.0,
+            y: 10.0,
+            width: 80.0,
+            height: 40.0,
+        },
+        [8.0; 4],
+    );
+    let shadow_spec = ComponentElevation {
+        color: nana_ui_core::PaintColor::Srgb {
+            rgba: [0.0, 0.0, 0.0, 0.5],
+        },
+        offset_x: 2.0,
+        offset_y: 4.0,
+        blur_radius: 10.0,
+        spread_radius: 0.0,
+        inset: false,
+    };
+
+    // #222: Canvas PaintOp::Shadow on rounded rect -> analytic Quad with shadow_solid = true.
+    let solid_shadow = build_ops(&[PaintOp::Shadow {
+        path: Arc::new(rrect.clone()),
+        shadow: shadow_spec,
+    }]);
+    assert!(matches!(
+        &solid_shadow[..],
+        [BuiltOp::Quad {
+            shadow_solid: true,
+            ..
+        }]
+    ));
+
+    // #222: Similarity-transformed RoundedRect -> analytic hollowed Quad (shadow_solid = false).
+    let angle = std::f32::consts::FRAC_PI_2;
+    let rot90 = [
+        angle.cos(),
+        angle.sin(),
+        -angle.sin(),
+        angle.cos(),
+        50.0,
+        0.0,
+    ];
+    let rotated_shadow = build_ops(&[
+        PaintOp::SetTransform(rot90),
+        PaintOp::RoundedRect {
+            rect: LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 40.0,
+                height: 20.0,
+            },
+            radii: [4.0; 4],
+            fill: None,
+            border: None,
+            border_paint: None,
+            shadow: Some(shadow_spec),
+        },
+    ]);
+    assert!(matches!(
+        &rotated_shadow[..],
+        [BuiltOp::Quad {
+            shadow_solid: false,
+            ..
+        }]
+    ));
+
+    // #222: Thin solid undashed curved stroke (<= 1.5 px) lowers to BuiltOp::Stroke capsule chain.
+    let mut curve = PaintPath::new();
+    curve
+        .move_to(0.0, 0.0)
+        .cubic_to(20.0, 40.0, 40.0, -20.0, 80.0, 0.0);
+    let thin = build_ops(&[PaintOp::StrokePath {
+        path: Arc::new(curve.clone()),
+        stroke: StrokeStyle::new(1.2),
+        paint: ResolvedPaint::Solid([1.0, 0.0, 0.0, 1.0]),
+    }]);
+    assert!(matches!(
+        &thin[..],
+        [BuiltOp::Stroke { width, .. }] if (*width - 1.2).abs() < 1e-4
+    ));
+
+    // Wide stroke still builds extruded polygon mesh.
+    let wide = build_ops(&[PaintOp::StrokePath {
+        path: Arc::new(curve),
+        stroke: StrokeStyle::new(4.0),
+        paint: ResolvedPaint::Solid([1.0, 0.0, 0.0, 1.0]),
+    }]);
+    assert!(matches!(&wide[..], [BuiltOp::Mesh(_)]));
+
+    // #219: PushMask(Luminance) emits LayerBegin { mask: Some(Luminance) }.
+    let masked = build_ops(&[
+        PaintOp::FillPath {
+            path: Arc::new(rect_path(0.0, 0.0, 40.0, 40.0)),
+            paint: ResolvedPaint::Solid([1.0, 0.0, 0.0, 1.0]),
+        },
+        PaintOp::PushMask {
+            kind: nana_ui_core::MaskKind::Luminance,
+        },
+        PaintOp::FillPath {
+            path: Arc::new(rect_path(0.0, 0.0, 20.0, 40.0)),
+            paint: ResolvedPaint::Solid([1.0, 1.0, 1.0, 1.0]),
+        },
+        PaintOp::PopMask,
+    ]);
+    assert!(masked.iter().any(|op| matches!(
+        op,
+        BuiltOp::LayerBegin {
+            mask: Some(nana_ui_core::MaskKind::Luminance),
+            ..
+        }
+    )));
+
+    // #220: Pattern fills & TextureRegionBatch lower cleanly.
+    let pattern = Arc::new(nana_ui_runtime::ResolvedPattern {
+        source: Arc::from("atlas.png"),
+        src_rect: Some(LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 8.0,
+            height: 8.0,
+        }),
+        repeat: nana_ui_runtime::PatternRepeat::Repeat,
+        transform: AFFINE_IDENTITY,
+        sampling: nana_ui_core::ImageSampling::Nearest,
+    });
+    let batch = build_ops(&[
+        PaintOp::FillPath {
+            path: Arc::new(rect_path(0.0, 0.0, 20.0, 20.0)),
+            paint: ResolvedPaint::Pattern(pattern),
+        },
+        PaintOp::TextureRegionBatch {
+            source: Arc::from("atlas.png"),
+            sampling: nana_ui_core::ImageSampling::Nearest,
+            items: vec![
+                (
+                    LayoutBox {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 8.0,
+                        height: 8.0,
+                    },
+                    LayoutBox {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 16.0,
+                        height: 16.0,
+                    },
+                ),
+                (
+                    LayoutBox {
+                        x: 8.0,
+                        y: 0.0,
+                        width: 8.0,
+                        height: 8.0,
+                    },
+                    LayoutBox {
+                        x: 16.0,
+                        y: 0.0,
+                        width: 16.0,
+                        height: 16.0,
+                    },
+                ),
+            ],
+        },
+    ]);
+    assert!(matches!(
+        &batch[..],
+        [
+            BuiltOp::Mesh(m),
+            BuiltOp::Image {
+                src_rect: Some(_),
+                ..
+            },
+            BuiltOp::Image {
+                src_rect: Some(_),
+                ..
+            }
+        ] if m.pattern.is_some()
+    ));
 }

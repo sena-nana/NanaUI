@@ -185,8 +185,18 @@ pub struct BoxShadowSpec {
     pub inset: bool,
 }
 
-/// CSS `mix-blend-mode` (Compositing and Blending Level 1). Unknown values
-/// fail closed.
+/// Mask mode used by custom paint [`PaintContext::push_mask`] layers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum MaskKind {
+    /// Modulate destination by mask alpha (`DestinationIn`).
+    #[default]
+    Alpha,
+    /// Modulate destination by Rec.709 mask luminance (`0.2126 R + 0.7152 G + 0.0722 B`, premultiplied by alpha).
+    Luminance,
+}
+
+/// CSS `mix-blend-mode` (Compositing and Blending Level 1) plus Canvas/Porter-Duff
+/// compositing operators used by custom paint layers. Unknown CSS keywords fail closed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum MixBlendMode {
     #[default]
@@ -206,9 +216,23 @@ pub enum MixBlendMode {
     Saturation,
     Color,
     Luminosity,
+    SourceIn,
+    SourceOut,
+    SourceAtop,
+    DestinationOver,
+    DestinationIn,
+    DestinationOut,
+    DestinationAtop,
+    Xor,
+    Copy,
+    Lighter,
 }
 
 impl MixBlendMode {
+    /// Alias for [`Self::Normal`] (Porter-Duff `source-over`).
+    #[allow(non_upper_case_globals)]
+    pub const SourceOver: Self = Self::Normal;
+
     pub fn is_normal(self) -> bool {
         matches!(self, Self::Normal)
     }
@@ -218,6 +242,24 @@ impl MixBlendMode {
     /// declaration order.
     pub fn gpu_index(self) -> u32 {
         self as u32
+    }
+
+    /// True for Porter-Duff operators that clear or replace destination pixels
+    /// even where the source layer is transparent (`alpha == 0`).
+    pub fn clears_outside(self) -> bool {
+        matches!(
+            self,
+            Self::SourceIn
+                | Self::SourceOut
+                | Self::DestinationIn
+                | Self::DestinationAtop
+                | Self::Copy
+        )
+    }
+
+    /// True when compositing reads the parent backdrop in the shader pass.
+    pub fn reads_backdrop(self) -> bool {
+        self.gpu_index() >= 3
     }
 }
 
