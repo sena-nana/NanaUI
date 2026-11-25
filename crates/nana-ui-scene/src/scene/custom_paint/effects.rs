@@ -303,7 +303,24 @@ pub(super) fn build_ops(ops: &[PaintOp], masked: bool, reuse: &mut MeshReuse) ->
         opacity: 1.0,
     };
     let mut implicit_root_layer = false;
-    let mut layer_depth: usize = 0;
+    let mut user_depth: usize = 0;
+    let isolate_phase_root = |built: &mut Vec<BuiltOp>, implicit_root_layer: &mut bool| {
+        if !*implicit_root_layer {
+            // Wrap top-level phase content in an isolated layer so a
+            // standalone `push_mask` or top-level Porter-Duff op only
+            // masks/clears this painter's own layer rather than the outer backdrop.
+            *implicit_root_layer = true;
+            built.insert(
+                0,
+                BuiltOp::LayerBegin {
+                    opacity: 1.0,
+                    blend: BlendMode::Normal,
+                    clip: None,
+                    mask: None,
+                },
+            );
+        }
+    };
     for op in ops {
         let clip = stack.last();
         let t = state.transform;
@@ -312,7 +329,10 @@ pub(super) fn build_ops(ops: &[PaintOp], masked: bool, reuse: &mut MeshReuse) ->
             PaintOp::SetTransform(transform) => state.transform = *transform,
             PaintOp::SetOpacity(opacity) => state.opacity = *opacity,
             PaintOp::PushLayer { opacity, blend } => {
-                layer_depth += 1;
+                if user_depth == 0 && blend.is_porter_duff() {
+                    isolate_phase_root(&mut built, &mut implicit_root_layer);
+                }
+                user_depth += 1;
                 built.push(BuiltOp::LayerBegin {
                     opacity: *opacity,
                     blend: *blend,
@@ -321,27 +341,14 @@ pub(super) fn build_ops(ops: &[PaintOp], masked: bool, reuse: &mut MeshReuse) ->
                 });
             }
             PaintOp::PopLayer => {
-                layer_depth = layer_depth.saturating_sub(1);
+                user_depth = user_depth.saturating_sub(1);
                 built.push(BuiltOp::LayerEnd { mask: None });
             }
             PaintOp::PushMask { kind } => {
-                if layer_depth == 0 && !implicit_root_layer {
-                    // Wrap top-level phase content in an isolated layer so a
-                    // standalone `push_mask` only masks this painter's content
-                    // rather than erasing the UI behind the node.
-                    implicit_root_layer = true;
-                    layer_depth += 1;
-                    built.insert(
-                        0,
-                        BuiltOp::LayerBegin {
-                            opacity: 1.0,
-                            blend: BlendMode::Normal,
-                            clip: None,
-                            mask: None,
-                        },
-                    );
+                if user_depth == 0 {
+                    isolate_phase_root(&mut built, &mut implicit_root_layer);
                 }
-                layer_depth += 1;
+                user_depth += 1;
                 built.push(BuiltOp::LayerBegin {
                     opacity: 1.0,
                     blend: BlendMode::Normal,
@@ -350,7 +357,7 @@ pub(super) fn build_ops(ops: &[PaintOp], masked: bool, reuse: &mut MeshReuse) ->
                 });
             }
             PaintOp::PopMask => {
-                layer_depth = layer_depth.saturating_sub(1);
+                user_depth = user_depth.saturating_sub(1);
                 built.push(BuiltOp::LayerEnd { mask: None });
             }
             PaintOp::PushClip { path } => {

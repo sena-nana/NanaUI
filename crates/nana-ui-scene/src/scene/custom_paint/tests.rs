@@ -1877,4 +1877,124 @@ fn masks_emit_layer_begin_and_analytic_shadows_and_thin_strokes_avoid_extrusion(
             }
         ] if m.pattern.is_some()
     ));
+
+    // #219: Top-level Porter-Duff compositing isolates inside implicit normal layer;
+    // top-level CSS mix-blend-mode preserves parent backdrop blending.
+    let pd_top = build_ops(&[
+        PaintOp::FillPath {
+            path: Arc::new(rect_path(0.0, 0.0, 20.0, 20.0)),
+            paint: ResolvedPaint::Solid([0.0, 1.0, 0.0, 1.0]),
+        },
+        PaintOp::PushLayer {
+            opacity: 1.0,
+            blend: BlendMode::DestinationOut,
+        },
+        PaintOp::FillPath {
+            path: Arc::new(rect_path(5.0, 5.0, 10.0, 10.0)),
+            paint: ResolvedPaint::Solid([1.0, 0.0, 0.0, 1.0]),
+        },
+        PaintOp::PopLayer,
+    ]);
+    assert!(matches!(
+        &pd_top[..],
+        [
+            BuiltOp::LayerBegin {
+                blend: BlendMode::Normal,
+                mask: None,
+                ..
+            },
+            BuiltOp::Mesh(_),
+            BuiltOp::LayerBegin {
+                blend: BlendMode::DestinationOut,
+                ..
+            },
+            BuiltOp::Mesh(_),
+            BuiltOp::LayerEnd { .. },
+            BuiltOp::LayerEnd { .. },
+        ]
+    ));
+
+    let css_top = build_ops(&[
+        PaintOp::PushLayer {
+            opacity: 1.0,
+            blend: BlendMode::Multiply,
+        },
+        PaintOp::FillPath {
+            path: Arc::new(rect_path(0.0, 0.0, 10.0, 10.0)),
+            paint: ResolvedPaint::Solid([1.0, 0.0, 0.0, 1.0]),
+        },
+        PaintOp::PopLayer,
+    ]);
+    assert!(matches!(
+        &css_top[..],
+        [
+            BuiltOp::LayerBegin {
+                blend: BlendMode::Multiply,
+                ..
+            },
+            BuiltOp::Mesh(_),
+            BuiltOp::LayerEnd { .. },
+        ]
+    ));
+}
+
+#[test]
+fn thousand_analytic_shadows_and_thin_strokes_build_without_meshes() {
+    let mut rrect = PaintPath::new();
+    rrect.rounded_rect(
+        LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 48.0,
+            height: 24.0,
+        },
+        [6.0; 4],
+    );
+    let mut curve = PaintPath::new();
+    curve
+        .move_to(0.0, 0.0)
+        .cubic_to(16.0, 20.0, 32.0, -20.0, 48.0, 0.0);
+    let shadow = ComponentElevation {
+        color: nana_ui_core::PaintColor::srgb([0.0, 0.0, 0.0, 0.4]),
+        offset_x: 0.0,
+        offset_y: 4.0,
+        blur_radius: 8.0,
+        spread_radius: 0.0,
+        inset: false,
+    };
+    let ops: Vec<PaintOp> = (0..1_000)
+        .flat_map(|_| {
+            [
+                PaintOp::Shadow {
+                    path: Arc::new(rrect.clone()),
+                    shadow,
+                },
+                PaintOp::StrokePath {
+                    path: Arc::new(curve.clone()),
+                    stroke: StrokeStyle::new(1.0),
+                    paint: ResolvedPaint::Solid([1.0, 0.0, 0.0, 1.0]),
+                },
+            ]
+        })
+        .collect();
+    let t0 = std::time::Instant::now();
+    let built = build_ops(&ops);
+    let elapsed = t0.elapsed();
+    let mesh_count = built
+        .iter()
+        .filter(|op| matches!(op, BuiltOp::Mesh(_)))
+        .count();
+    assert_eq!(
+        mesh_count, 0,
+        "analytic shadows + <=1.5px strokes emit 0 extruded meshes"
+    );
+    assert_eq!(built.len(), 2_000);
+    println!(
+        "#222 CPU build_ops 1000 analytic shadows + 1000 thin strokes: {:.3}ms (0 extruded meshes)",
+        elapsed.as_secs_f64() * 1_000.0
+    );
+    assert!(
+        elapsed.as_secs_f64() < 1.0,
+        "1000 analytic shadows + thin strokes built too slowly: {elapsed:?}"
+    );
 }

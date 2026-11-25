@@ -17685,3 +17685,224 @@ fn analytic_solid_shadow_and_thin_gpu_stroke_render_accurately() {
         "Thin 1.0px GPU curve stroke visible: {thin_px:?}"
     );
 }
+
+#[test]
+fn top_level_porter_duff_clearing_and_cutout_preserve_outer_backdrop() {
+    use nana_ui_runtime::{BlendMode, PaintContext, PaintRecording, Painter};
+
+    struct CutoutNode;
+    impl Painter for CutoutNode {
+        fn paint(&self, cx: &mut PaintContext<'_>) {
+            cx.fill_path(&rect_path(0.0, 0.0, 40.0, 40.0), [0.0, 1.0, 0.0, 1.0]);
+            // Top-level DestinationOut without explicit push_layer must only erase this node.
+            cx.set_blend(BlendMode::DestinationOut);
+            cx.fill_path(&rect_path(10.0, 10.0, 20.0, 20.0), [1.0, 0.0, 0.0, 1.0]);
+        }
+        fn paint_key(&self) -> u64 {
+            1
+        }
+    }
+
+    struct EmptyCopyNode;
+    impl Painter for EmptyCopyNode {
+        fn paint(&self, cx: &mut PaintContext<'_>) {
+            // Top-level Copy with empty source must only clear this node's isolated layer.
+            cx.push_layer(1.0, BlendMode::Copy);
+            cx.set_opacity(0.0);
+            cx.fill_path(&rect_path(0.0, 0.0, 16.0, 16.0), [1.0, 0.0, 0.0, 1.0]);
+            cx.pop_layer();
+        }
+        fn paint_key(&self) -> u64 {
+            2
+        }
+    }
+
+    let theme = nana_ui_core::CompiledTheme::default();
+    let mut cutout_node = colored_quad_node(2, 8.0, 8.0, 40.0, 40.0, [0.0; 4]);
+    cutout_node.custom_paint = Some(Arc::new(PaintRecording::record(
+        &CutoutNode,
+        &theme,
+        [40.0, 40.0],
+        Default::default(),
+    )));
+    let mut copy_node = colored_quad_node(3, 56.0, 8.0, 16.0, 16.0, [0.0; 4]);
+    copy_node.custom_paint = Some(Arc::new(PaintRecording::record(
+        &EmptyCopyNode,
+        &theme,
+        [16.0, 16.0],
+        Default::default(),
+    )));
+
+    let mut scene = UiScene::new();
+    scene.apply_delta(
+        [
+            colored_quad_node(1, 0.0, 0.0, 80.0, 56.0, [0.0, 0.0, 1.0, 1.0]),
+            cutout_node,
+            copy_node,
+        ],
+        [],
+    );
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let mut painter = SceneWgpuPainter::for_test(format);
+    let pixels = paint_scene_rgba(
+        &device,
+        &queue,
+        &mut painter,
+        &scene,
+        [80.0, 56.0],
+        [80, 56],
+        1.0,
+    );
+    // Green frame stays intact, cutout exposes solid blue parent backdrop (not transparent),
+    // and EmptyCopyNode leaves the blue backdrop intact inside and outside its bounds.
+    assert_eq!(pixel(&pixels, 80, 12, 12), [0, 255, 0, 255]);
+    assert_eq!(pixel(&pixels, 80, 28, 28), [0, 0, 255, 255]);
+    assert_eq!(pixel(&pixels, 80, 64, 16), [0, 0, 255, 255]);
+    assert_eq!(pixel(&pixels, 80, 4, 4), [0, 0, 255, 255]);
+}
+
+#[test]
+#[ignore = "bounded timing probe (#222); run serialized with --ignored --nocapture --test-threads=1"]
+fn measure_1000_node_analytic_shadow_and_thin_stroke_vs_quads() {
+    use nana_ui_runtime::{
+        BoxPaint, PaintContext, PaintPath, PaintRecording, PaintShadow, StrokeStyle,
+    };
+    use std::time::{Duration, Instant};
+
+    struct ShadowStrokePainter {
+        rrect: PaintPath,
+        curve: PaintPath,
+    }
+    impl nana_ui_runtime::Painter for ShadowStrokePainter {
+        fn paint(&self, cx: &mut PaintContext<'_>) {
+            cx.shadow(
+                &self.rrect,
+                PaintShadow::Custom {
+                    color: nana_ui_runtime::PaintColor::from([0.0, 0.0, 0.0, 0.4]),
+                    offset: [0.0, 3.0],
+                    blur: 6.0,
+                    spread: 0.0,
+                    inset: false,
+                },
+            );
+            cx.rounded_rect(
+                LayoutBox {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 24.0,
+                    height: 16.0,
+                },
+                4.0,
+                BoxPaint::fill([0.2, 0.4, 0.8, 1.0]),
+            );
+            cx.stroke_path(&self.curve, StrokeStyle::new(1.0), [1.0, 1.0, 1.0, 1.0]);
+        }
+        fn paint_key(&self) -> u64 {
+            222
+        }
+    }
+
+    let mut rrect = PaintPath::new();
+    rrect.rounded_rect(
+        LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 24.0,
+            height: 16.0,
+        },
+        [4.0; 4],
+    );
+    let mut curve = PaintPath::new();
+    curve
+        .move_to(2.0, 8.0)
+        .cubic_to(8.0, 2.0, 16.0, 14.0, 22.0, 8.0);
+    let theme = nana_ui_core::CompiledTheme::default();
+    let rec = Arc::new(PaintRecording::record(
+        &ShadowStrokePainter { rrect, curve },
+        &theme,
+        [24.0, 16.0],
+        Default::default(),
+    ));
+
+    let custom_nodes: Vec<ExtractedNode> = (1..=1_000u64)
+        .map(|id| {
+            let col = ((id - 1) % 40) as f32 * 28.0;
+            let row = ((id - 1) / 40) as f32 * 20.0;
+            let mut n = colored_quad_node(id, col, row, 24.0, 16.0, [0.0; 4]);
+            n.custom_paint = Some(Arc::clone(&rec));
+            n
+        })
+        .collect();
+    let quad_nodes: Vec<ExtractedNode> = (1..=1_000u64)
+        .map(|id| {
+            let col = ((id - 1) % 40) as f32 * 28.0;
+            let row = ((id - 1) / 40) as f32 * 20.0;
+            let mut n = colored_quad_node(id, col, row, 24.0, 16.0, [0.2, 0.4, 0.8, 1.0]);
+            n.source_style.layout = Arc::new(nana_ui_core::LayoutStyle {
+                border_radius: Some(4.0),
+                paint: nana_ui_core::PaintStyle {
+                    box_shadows: vec![nana_ui_core::BoxShadowSpec {
+                        offset_x: 0.0,
+                        offset_y: 3.0,
+                        blur_radius: 6.0,
+                        spread_radius: 0.0,
+                        color: [0.0, 0.0, 0.0, 0.4].into(),
+                        inset: false,
+                    }],
+                    ..Default::default()
+                }
+                .into(),
+                ..Default::default()
+            });
+            n
+        })
+        .collect();
+
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let viewport = ScenePaintViewport {
+        logical_size: [1120.0, 520.0],
+        physical_size: [1120, 520],
+        scale_factor: 1.0,
+        scene_origin: [0.0, 0.0],
+        target_origin: [0.0, 0.0],
+        clear_color: [0.0, 0.0, 0.0, 1.0],
+        clear: true,
+    };
+    let (_tex, view) = test_copy_target(&device, format, 1120, 520);
+
+    let time_nodes = |nodes: Vec<ExtractedNode>| -> f64 {
+        let mut scene = UiScene::new();
+        scene.apply_delta(nodes, []);
+        let mut painter = SceneWgpuPainter::for_test(format);
+        let cap = Instant::now();
+        let mut ms = Vec::with_capacity(8);
+        for i in 0..12 {
+            if cap.elapsed() > Duration::from_secs(5) {
+                break;
+            }
+            let t0 = Instant::now();
+            let mut enc = device.create_command_encoder(&Default::default());
+            painter
+                .paint_encoder(&scene, &mut enc, &view, viewport, None, None)
+                .unwrap();
+            let sub = queue.submit([enc.finish()]);
+            let _ = device.poll(wgpu::PollType::Wait {
+                submission_index: Some(sub),
+                timeout: Some(Duration::from_secs(5)),
+            });
+            if i >= 4 {
+                ms.push(t0.elapsed().as_secs_f64() * 1_000.0);
+            }
+        }
+        ms.sort_by(f64::total_cmp);
+        ms[ms.len() / 2]
+    };
+
+    let custom_ms = time_nodes(custom_nodes);
+    let quad_ms = time_nodes(quad_nodes);
+    println!(
+        "#222 1000-node custom_analytic_shadow+1px_stroke={custom_ms:.3}ms vs builtin_quads={quad_ms:.3}ms"
+    );
+}

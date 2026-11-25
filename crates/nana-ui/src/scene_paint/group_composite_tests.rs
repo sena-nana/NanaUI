@@ -592,6 +592,118 @@ fn an_open_shutter_also_streaks_drop_shadow_with_bounded_taps() {
     );
 }
 
+#[test]
+#[ignore = "bounded timing probe (#439); run serialized with --ignored --nocapture --test-threads=1"]
+fn measure_shutter_64_drop_shadow_64_worst_case() {
+    use nana_ui_core::{
+        ColorFilter, FilterDropShadow, PaintTransform,
+        motion::{
+            AnimatableProperty, AnimationPlayback, Easing, MotionCurve, MotionTargetId,
+            MotionTiming, MotionTrack, MotionTrackId, MotionValue, PresentationStore,
+        },
+    };
+    use std::time::{Duration, Instant};
+
+    let track = MotionTrack::transition(
+        MotionTrackId::new(1).unwrap(),
+        MotionTargetId::new(1).unwrap(),
+        AnimatableProperty::Transform,
+        MotionValue::Transform(PaintTransform::default()),
+        MotionValue::Transform(PaintTransform {
+            e: 800.0,
+            ..PaintTransform::default()
+        }),
+        MotionTiming::new(
+            Duration::ZERO,
+            Duration::from_secs(1),
+            Duration::from_millis(16),
+        ),
+        MotionCurve::Easing(Easing::Linear),
+        AnimationPlayback::default(),
+    );
+    let mut store = PresentationStore::new();
+    store.insert(track, MotionValue::Transform(PaintTransform::default()));
+    let node = extracted_div(
+        1,
+        &[],
+        80.0,
+        160.0,
+        128.0,
+        128.0,
+        nana_ui_core::LayoutStyle {
+            paint_colors: nana_ui_core::PaintColorSlots {
+                background: Some(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0])),
+                ..Default::default()
+            }
+            .into(),
+            paint: nana_ui_core::PaintStyle {
+                filter: Some(ColorFilter {
+                    drop_shadow: Some(FilterDropShadow {
+                        offset_x: 0.0,
+                        offset_y: 24.0,
+                        blur_radius: 64.0,
+                        color: nana_ui_core::PaintColor::srgb([0.0, 0.0, 1.0, 1.0]),
+                    }),
+                    ..Default::default()
+                }),
+                wide_filter_blur: true,
+                motion_shutter: 1.0,
+                ..Default::default()
+            }
+            .into(),
+            ..Default::default()
+        },
+        Some([1.0, 0.0, 0.0, 1.0]),
+    );
+    let mut scene = UiScene::new();
+    scene.apply_delta([node], []);
+    scene.set_presentation_frame_interval(Duration::from_millis(80));
+    scene.apply_presentation(&store, Duration::from_millis(200), None);
+
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let mut painter = SceneWgpuPainter::for_test(format);
+    let viewport = ScenePaintViewport {
+        logical_size: [512.0, 512.0],
+        physical_size: [512, 512],
+        scale_factor: 1.0,
+        scene_origin: [0.0, 0.0],
+        target_origin: [0.0, 0.0],
+        clear_color: [0.0, 0.0, 0.0, 1.0],
+        clear: true,
+    };
+    let (tex, view) = test_copy_target(&device, format, 512, 512);
+    let cap_start = Instant::now();
+    let mut samples_ms = Vec::with_capacity(10);
+    for i in 0..15 {
+        if cap_start.elapsed() > Duration::from_secs(5) {
+            break;
+        }
+        let t0 = Instant::now();
+        let mut enc = device.create_command_encoder(&Default::default());
+        painter
+            .paint_encoder(&scene, &mut enc, &view, viewport, None, None)
+            .unwrap();
+        let sub = queue.submit([enc.finish()]);
+        let _ = device.poll(wgpu::PollType::Wait {
+            submission_index: Some(sub),
+            timeout: Some(Duration::from_secs(5)),
+        });
+        let dt_ms = t0.elapsed().as_secs_f64() * 1_000.0;
+        if i >= 5 {
+            samples_ms.push(dt_ms);
+        }
+    }
+    let _ = tex;
+    samples_ms.sort_by(f64::total_cmp);
+    let median = samples_ms[samples_ms.len() / 2];
+    println!(
+        "#439 shutter=64px+blur=64px 512x512 samples={} median={median:.3}ms max={:.3}ms",
+        samples_ms.len(),
+        samples_ms.last().copied().unwrap_or(0.0)
+    );
+}
+
 /// Issue #312: the painter composites a group's filter as the compositor
 /// sampled it at `now`.
 #[test]

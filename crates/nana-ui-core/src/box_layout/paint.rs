@@ -257,6 +257,11 @@ impl MixBlendMode {
         )
     }
 
+    /// True for Porter-Duff compositing modes other than `Normal`/`SourceOver`.
+    pub fn is_porter_duff(self) -> bool {
+        self.gpu_index() >= 16
+    }
+
     /// True when compositing reads the parent backdrop in the shader pass.
     pub fn reads_backdrop(self) -> bool {
         self.gpu_index() >= 3
