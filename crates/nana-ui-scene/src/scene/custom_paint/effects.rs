@@ -587,45 +587,278 @@ pub(super) fn build_ops(ops: &[PaintOp], masked: bool, reuse: &mut MeshReuse) ->
                 family,
                 italic,
                 line_height,
+                letter_spacing,
                 wrap,
                 max_lines,
                 horizontal,
                 vertical,
+                effects,
             } => {
                 let rect = scene_rect(*rect);
-                let text = Arc::new(TextStyle {
-                    content: Arc::clone(content),
-                    size: *size,
-                    weight: *weight,
-                    family: family.clone(),
-                    italic: *italic,
-                    line_height: *line_height,
-                    wrap: *wrap,
-                    max_lines: *max_lines,
-                    horizontal: *horizontal,
-                    vertical: *vertical,
-                });
-                // Glyphs can reach past their box: italics, a clipped
-                // ellipsis. A tint must reach them too.
-                let reach = size * 0.5;
-                let start = built.len();
-                tinted(
-                    &mut built,
-                    paint,
-                    rect,
-                    reach,
-                    state,
-                    |color, paint_color| {
-                        clipped_op(clip, &no_clips, |clips| BuiltOp::Text {
-                            rect,
-                            text: Arc::clone(&text),
-                            color,
-                            paint_color,
-                            clips,
-                            transform: t,
+                let make_text = |rich: Option<Arc<SceneRichPaint>>| {
+                    Arc::new(TextStyle {
+                        content: Arc::clone(content),
+                        size: *size,
+                        weight: *weight,
+                        family: family.clone(),
+                        italic: *italic,
+                        line_height: *line_height,
+                        letter_spacing: *letter_spacing,
+                        wrap: *wrap,
+                        max_lines: *max_lines,
+                        horizontal: *horizontal,
+                        vertical: *vertical,
+                        effects: rich,
+                    })
+                };
+                let paint_is_gradient = matches!(paint, ResolvedPaint::Gradient(_));
+                let stroke_is_gradient = effects
+                    .as_ref()
+                    .and_then(|e| e.stroke.as_ref())
+                    .is_some_and(|s| matches!(s.paint, ResolvedPaint::Gradient(_)));
+
+                let resolve_solid_stroke = |stroke: &nana_ui_runtime::ResolvedPaintTextStroke| {
+                    let color = match &stroke.paint {
+                        ResolvedPaint::Solid(rgba) => {
+                            Some(nana_ui_core::PaintColor::srgb(fade(*rgba, alpha)))
+                        }
+                        ResolvedPaint::Authoring(c) => Some(scale_paint_alpha(*c, alpha)),
+                        ResolvedPaint::Gradient(_) => None,
+                    }?;
+                    Some(nana_ui_core::RichTextStroke {
+                        width_px: stroke.width,
+                        color,
+                        join: stroke.join,
+                        placement: stroke.placement,
+                    })
+                };
+                let resolve_shadows = |shadows: &[nana_ui_core::RichTextShadow]| {
+                    let list: Vec<_> = shadows
+                        .iter()
+                        .map(|s| nana_ui_core::RichTextShadow {
+                            color: scale_paint_alpha(s.color, alpha),
+                            ..*s
                         })
-                    },
+                        .collect();
+                    Arc::<[nana_ui_core::RichTextShadow]>::from(list)
+                };
+                let resolve_deco = |deco: &nana_ui_runtime::ResolvedPaintTextDecoration| {
+                    (
+                        deco.line,
+                        deco.color.map(|c| scale_paint_alpha(c, alpha)),
+                        deco.style,
+                        deco.thickness,
+                    )
+                };
+
+                let base_effects = effects.as_ref().map(|e| {
+                    let (decoration, decoration_color, decoration_style, decoration_thickness_px) =
+                        e.decoration.as_ref().map_or(
+                            (
+                                nana_ui_core::TextDecorationLine::default(),
+                                None,
+                                nana_ui_core::TextDecorationStyle::default(),
+                                None,
+                            ),
+                            resolve_deco,
+                        );
+                    SceneTextEffects {
+                        material: None,
+                        decoration,
+                        decoration_color,
+                        decoration_style,
+                        decoration_thickness_px,
+                        stroke: e.stroke.as_ref().and_then(resolve_solid_stroke),
+                        shadows: resolve_shadows(&e.shadows),
+                        emphasis_color: None,
+                    }
+                });
+                let reach = (size * 0.5).max(
+                    base_effects.as_ref().map_or(0.0, |fx| fx.reach()).max(
+                        effects
+                            .as_ref()
+                            .and_then(|e| e.stroke.as_ref())
+                            .map_or(0.0, |s| s.width * 0.5),
+                    ),
                 );
+                let start = built.len();
+                if !paint_is_gradient && !stroke_is_gradient {
+                    let rich = base_effects.and_then(|fx| SceneRichPaint::new(fx, Vec::new()));
+                    let text = make_text(rich);
+                    tinted(
+                        &mut built,
+                        paint,
+                        rect,
+                        reach,
+                        state,
+                        |color, paint_color| {
+                            clipped_op(clip, &no_clips, |clips| BuiltOp::Text {
+                                rect,
+                                text: Arc::clone(&text),
+                                color,
+                                paint_color,
+                                clips,
+                                transform: t,
+                            })
+                        },
+                    );
+                } else if let Some(eff) = effects.as_ref() {
+                    let emit_plain =
+                        |built: &mut Vec<BuiltOp>, rich: SceneTextEffects, p: &ResolvedPaint| {
+                            let Some(rich) = SceneRichPaint::new(rich, Vec::new()) else {
+                                return;
+                            };
+                            let text = make_text(Some(rich));
+                            tinted(built, p, rect, reach, state, |color, paint_color| {
+                                clipped_op(clip, &no_clips, |clips| BuiltOp::Text {
+                                    rect,
+                                    text: Arc::clone(&text),
+                                    color,
+                                    paint_color,
+                                    clips,
+                                    transform: t,
+                                })
+                            });
+                        };
+                    // 1. Shadows (never tinted by text fill gradient).
+                    if !eff.shadows.is_empty() {
+                        emit_plain(
+                            &mut built,
+                            SceneTextEffects {
+                                shadows: resolve_shadows(&eff.shadows),
+                                ..SceneTextEffects::default()
+                            },
+                            &ResolvedPaint::Solid([0.0; 4]),
+                        );
+                    }
+                    // 2. Under-stroke.
+                    if let Some(stroke) = eff
+                        .stroke
+                        .as_ref()
+                        .filter(|s| s.placement == nana_ui_core::TextStrokePlacement::Under)
+                    {
+                        let white_stroke = nana_ui_core::RichTextStroke {
+                            width_px: stroke.width,
+                            color: nana_ui_core::PaintColor::srgb([1.0, 1.0, 1.0, 1.0]),
+                            join: stroke.join,
+                            placement: stroke.placement,
+                        };
+                        let fx = SceneTextEffects {
+                            stroke: Some(resolve_solid_stroke(stroke).unwrap_or(white_stroke)),
+                            ..SceneTextEffects::default()
+                        };
+                        let stroke_paint = if matches!(stroke.paint, ResolvedPaint::Gradient(_)) {
+                            &stroke.paint
+                        } else {
+                            &ResolvedPaint::Solid([0.0; 4])
+                        };
+                        emit_plain(&mut built, fx, stroke_paint);
+                    }
+                    // 3. Fill (+ decoration if decoration inherits fill).
+                    let deco_uses_fill = eff.decoration.as_ref().is_some_and(|d| d.color.is_none());
+                    let fill_rich = if deco_uses_fill {
+                        eff.decoration.as_ref().and_then(|d| {
+                            let (
+                                decoration,
+                                decoration_color,
+                                decoration_style,
+                                decoration_thickness_px,
+                            ) = resolve_deco(d);
+                            SceneRichPaint::new(
+                                SceneTextEffects {
+                                    decoration,
+                                    decoration_color,
+                                    decoration_style,
+                                    decoration_thickness_px,
+                                    ..SceneTextEffects::default()
+                                },
+                                Vec::new(),
+                            )
+                        })
+                    } else {
+                        None
+                    };
+                    let fill_text = make_text(fill_rich);
+                    tinted(
+                        &mut built,
+                        paint,
+                        rect,
+                        reach,
+                        state,
+                        |color, paint_color| {
+                            clipped_op(clip, &no_clips, |clips| BuiltOp::Text {
+                                rect,
+                                text: Arc::clone(&fill_text),
+                                color,
+                                paint_color,
+                                clips,
+                                transform: t,
+                            })
+                        },
+                    );
+                    // 4. Over-stroke.
+                    if let Some(stroke) = eff
+                        .stroke
+                        .as_ref()
+                        .filter(|s| s.placement == nana_ui_core::TextStrokePlacement::Over)
+                    {
+                        let white_stroke = nana_ui_core::RichTextStroke {
+                            width_px: stroke.width,
+                            color: nana_ui_core::PaintColor::srgb([1.0, 1.0, 1.0, 1.0]),
+                            join: stroke.join,
+                            placement: stroke.placement,
+                        };
+                        let fx = SceneTextEffects {
+                            stroke: Some(resolve_solid_stroke(stroke).unwrap_or(white_stroke)),
+                            ..SceneTextEffects::default()
+                        };
+                        let stroke_paint = if matches!(stroke.paint, ResolvedPaint::Gradient(_)) {
+                            &stroke.paint
+                        } else {
+                            &ResolvedPaint::Solid([0.0; 4])
+                        };
+                        emit_plain(&mut built, fx, stroke_paint);
+                    }
+                    // 5. Explicit-color decoration.
+                    if let Some(deco) = eff.decoration.as_ref().filter(|d| d.color.is_some()) {
+                        let (
+                            decoration,
+                            decoration_color,
+                            decoration_style,
+                            decoration_thickness_px,
+                        ) = resolve_deco(deco);
+                        emit_plain(
+                            &mut built,
+                            SceneTextEffects {
+                                decoration,
+                                decoration_color,
+                                decoration_style,
+                                decoration_thickness_px,
+                                ..SceneTextEffects::default()
+                            },
+                            &ResolvedPaint::Solid([0.0; 4]),
+                        );
+                    }
+                } else {
+                    let text = make_text(None);
+                    tinted(
+                        &mut built,
+                        paint,
+                        rect,
+                        reach,
+                        state,
+                        |color, paint_color| {
+                            clipped_op(clip, &no_clips, |clips| BuiltOp::Text {
+                                rect,
+                                text: Arc::clone(&text),
+                                color,
+                                paint_color,
+                                clips,
+                                transform: t,
+                            })
+                        },
+                    );
+                }
                 if masked {
                     keep_mask(&mut built, start, local_area(rect, reach, t));
                 }

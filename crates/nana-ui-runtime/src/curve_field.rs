@@ -1380,7 +1380,6 @@ mod tests {
         let field = CurveField::new(vec![0.25, 0.5], 0.01).ends(0.0, 1.0);
         let style = field.effective_style();
         let painter = style.painter.as_ref().unwrap().painter();
-        let measure = |_: &crate::PaintText, _: f32, _: Option<f32>| crate::TextSize::default();
         let inset = field.plot_inset();
         let size = 90.0 + 2.0 * inset;
         let recorded = record(
@@ -1388,7 +1387,7 @@ mod tests {
             theme.as_ref(),
             [size, size],
             crate::PaintState::default(),
-            &measure,
+            &crate::custom_paint::EmPaintTextHost,
         );
         let strokes: Vec<_> = recorded
             .behind_children

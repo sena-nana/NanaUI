@@ -21,6 +21,9 @@ pub struct SceneTextEffects {
     pub decoration: nana_ui_core::TextDecorationLine,
     /// `None` draws the lines in the glyphs' own fill.
     pub decoration_color: Option<nana_ui_core::PaintColor>,
+    pub decoration_style: nana_ui_core::TextDecorationStyle,
+    /// Optional explicit thickness in logical px; `None` uses font metrics.
+    pub decoration_thickness_px: Option<f32>,
     pub stroke: Option<nana_ui_core::RichTextStroke>,
     /// CSS order: the first is drawn on top. At most
     /// [`nana_ui_core::MAX_TEXT_SHADOWS`].
@@ -62,6 +65,8 @@ impl SceneTextEffects {
             material: over.material.clone().or_else(|| self.material.clone()),
             decoration: over.decoration.unwrap_or(self.decoration),
             decoration_color: over.decoration_color.or(self.decoration_color),
+            decoration_style: self.decoration_style,
+            decoration_thickness_px: self.decoration_thickness_px,
             stroke: over.stroke.or(self.stroke),
             shadows: over
                 .shadows
@@ -355,8 +360,14 @@ fn hash_paint(color: &nana_ui_core::PaintColor, hasher: &mut impl std::hash::Has
 fn hash_effects(effects: &SceneTextEffects, hasher: &mut impl std::hash::Hasher) {
     hasher.write_u64(effects.material.as_ref().map_or(0, |m| m.key()));
     hasher.write_u8(
-        u8::from(effects.decoration.underline) | u8::from(effects.decoration.line_through) << 1,
+        u8::from(effects.decoration.underline)
+            | u8::from(effects.decoration.line_through) << 1
+            | u8::from(effects.decoration.overline) << 2,
     );
+    hasher.write_u8(effects.decoration_style as u8);
+    if let Some(thickness) = effects.decoration_thickness_px {
+        hasher.write_u32(thickness.to_bits());
+    }
     if let Some(color) = &effects.decoration_color {
         hash_paint(color, hasher);
     }
@@ -424,6 +435,8 @@ pub fn css_text_effects(style: &nana_ui_core::LayoutStyle) -> SceneTextEffects {
         material: style.paint.text_material.clone(),
         decoration: text_ext.text_decoration.unwrap_or_default(),
         decoration_color: None,
+        decoration_style: nana_ui_core::TextDecorationStyle::default(),
+        decoration_thickness_px: None,
         stroke,
         shadows,
         emphasis_color: text_ext

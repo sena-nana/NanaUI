@@ -1050,6 +1050,7 @@ fn outline(width: f32, color: [f32; 4]) -> SceneTextEffects {
         decoration: nana_ui_core::TextDecorationLine {
             underline: true,
             line_through: false,
+            overline: false,
         },
         ..SceneTextEffects::default()
     }
@@ -1153,8 +1154,11 @@ fn effects_are_instances_of_one_entry_in_paint_order() {
         decoration: nana_ui_core::TextDecorationLine {
             underline: true,
             line_through: true,
+            overline: false,
         },
+        decoration_style: Default::default(),
         decoration_color: None,
+        decoration_thickness_px: None,
         emphasis_color: None,
         stroke: Some(nana_ui_core::RichTextStroke::new(
             2.0,

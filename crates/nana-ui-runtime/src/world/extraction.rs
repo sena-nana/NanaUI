@@ -427,16 +427,18 @@ impl UiWorld {
         }
         let engine = self.paint_text_engine.clone();
         let measured = std::cell::Cell::new(false);
-        let measure = |text: &crate::PaintText, size: f32, max_width: Option<f32>| {
-            measured.set(true);
-            measure_paint_text(id, engine.as_ref(), &base, text, size, max_width)
+        let text_host = WorldPaintTextHost {
+            id,
+            engine: engine.as_ref(),
+            base: &base,
+            used: &measured,
         };
         let recording = Arc::new(crate::custom_paint::record(
             painter.painter(),
             self.node_theme(id),
             size,
             state,
-            &measure,
+            &text_host,
         ));
         let mut recordings = self.invalidation.paint_recordings.borrow_mut();
         // The same ops as last time keep the same `Arc`: the scene reuses
@@ -501,16 +503,18 @@ impl UiWorld {
         }
         let engine = self.paint_text_engine.clone();
         let measured = std::cell::Cell::new(false);
-        let measure = |text: &crate::PaintText, size: f32, max_width: Option<f32>| {
-            measured.set(true);
-            measure_paint_text(id, engine.as_ref(), &base, text, size, max_width)
+        let text_host = WorldPaintTextHost {
+            id,
+            engine: engine.as_ref(),
+            base: &base,
+            used: &measured,
         };
         let recording = Arc::new(crate::custom_paint::record_surface(
             painter.painter(),
             self.node_theme(id),
             size,
             sections,
-            &measure,
+            &text_host,
         ));
         let mut recordings = self.invalidation.modal_surface_recordings.borrow_mut();
         // The same ops keep the same `Arc`, so the scene reuses the card's
@@ -589,29 +593,53 @@ impl UiWorld {
     }
 }
 
-/// What `PaintContext::measure_text` answers: the host's `nana-text` engine
-/// when one has shaped this world, the em estimate otherwise.
-fn measure_paint_text(
+/// What `PaintContext::measure_text` and `PaintContext::text_path` use: the
+/// host's `nana-text` engine when one has shaped this world, falling back to
+/// the em estimate (and empty outline) otherwise.
+struct WorldPaintTextHost<'a> {
     id: StableNodeId,
-    engine: Option<&nana_text::SharedTextEngine>,
-    base: &crate::ComputedStyle,
-    text: &crate::PaintText,
-    size: f32,
-    max_width: Option<f32>,
-) -> crate::TextSize {
-    use crate::TextShaper as _;
-    let (style, constraints, content) =
-        crate::custom_paint::paint_text_request(base, text, size, max_width);
-    let metrics = match engine {
-        Some(engine) => crate::NanaTextEngineShaper::new(engine.clone()).shape(
-            id,
-            &content,
-            &style,
-            constraints,
-        ),
-        None => crate::components::measure_em_text(&content, &style, constraints),
-    };
-    crate::custom_paint::paint_text_size(&metrics, size)
+    engine: Option<&'a nana_text::SharedTextEngine>,
+    base: &'a crate::ComputedStyle,
+    used: &'a std::cell::Cell<bool>,
+}
+
+impl crate::custom_paint::PaintTextHost for WorldPaintTextHost<'_> {
+    fn measure_text(
+        &self,
+        text: &crate::PaintText,
+        size: f32,
+        max_width: Option<f32>,
+    ) -> crate::PaintTextMetrics {
+        self.used.set(true);
+        match self.engine {
+            Some(engine) => crate::custom_paint::paint_text_metrics_from_engine(
+                engine, self.base, text, size, max_width,
+            ),
+            None => {
+                let _ = self.id;
+                let (style, constraints, content) =
+                    crate::custom_paint::paint_text_request(self.base, text, size, max_width);
+                let metrics = crate::components::measure_em_text(&content, &style, constraints);
+                crate::custom_paint::paint_text_metrics_fallback(&metrics, size)
+            }
+        }
+    }
+
+    fn text_path(
+        &self,
+        text: &crate::PaintText,
+        size: f32,
+        origin: [f32; 2],
+        max_width: Option<f32>,
+    ) -> crate::PaintPath {
+        self.used.set(true);
+        match self.engine {
+            Some(engine) => crate::custom_paint::paint_text_to_path(
+                engine, self.base, text, size, origin, max_width,
+            ),
+            None => crate::PaintPath::new(),
+        }
+    }
 }
 
 impl UiWorld {

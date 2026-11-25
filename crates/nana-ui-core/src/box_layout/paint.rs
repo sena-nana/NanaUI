@@ -246,17 +246,29 @@ pub struct TextStrokeSpec {
     pub color: Option<PaintColor>,
 }
 
-/// CSS `text-decoration-line` subset Scene can stroke (underline / line-through).
+/// CSS `text-decoration-line` subset Scene can stroke (underline / line-through / overline).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct TextDecorationLine {
     pub underline: bool,
     pub line_through: bool,
+    pub overline: bool,
 }
 
 impl TextDecorationLine {
     pub fn is_active(self) -> bool {
-        self.underline || self.line_through
+        self.underline || self.line_through || self.overline
     }
+}
+
+/// CSS `text-decoration-style` variants for text decoration lines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TextDecorationStyle {
+    #[default]
+    Solid,
+    Double,
+    Dotted,
+    Dashed,
+    Wavy,
 }
 
 /// One OpenType `font-feature-settings` tag (`"liga" 1`).

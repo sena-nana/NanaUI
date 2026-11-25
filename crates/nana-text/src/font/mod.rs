@@ -17,12 +17,12 @@ mod face;
 pub(crate) use face::map_char_for_test;
 #[cfg(feature = "svg")]
 pub(crate) use face::read_svg_glyph;
+pub(crate) use face::{FaceOutlineSink, FaceScalerCache, scale_plain_outline};
 #[cfg(feature = "raster")]
 pub(crate) use face::{
     ColorBrush, ColorCompositeMode, ColorExtend, ColorGlyphOutline, ColorOutlineVerb, ColorPaintOp,
-    ColorPaintRecording, ColorStopPaint, ColorTransform, FaceOutlineSink, FaceScalerCache,
-    RawBitmapPayload, read_color_bitmap, read_raster_caps, record_color_v1_glyph,
-    scale_color_outline, scale_plain_outline,
+    ColorPaintRecording, ColorStopPaint, ColorTransform, RawBitmapPayload, read_color_bitmap,
+    read_raster_caps, record_color_v1_glyph, scale_color_outline,
 };
 mod fallback;
 mod mapped;

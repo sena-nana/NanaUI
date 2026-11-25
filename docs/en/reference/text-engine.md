@@ -1776,6 +1776,8 @@ Painting a laid-out run of text has to walk the same path again: the line's base
 
 `TextLayout::glyph_placements(scale, origin)` gives every glyph to draw in paint order: first the lines, then ruby, emphasis marks and object labels. Each entry carries the font instance, the raster font size (layout px times `scale`), the glyph id, the pen position (x keeps a fraction for subpixels, y lands on a whole-pixel baseline), the byte offset it represents and its source (`GlyphSource`). A vertical paragraph gives columns; a sideways run is marked `sideways` and rasterizes with a quarter turn clockwise. A run the font layer failed to instantiate has no glyphs to draw and is skipped; its advance is still in the line, so later glyphs do not move. The renderer's resolve is this pass plus color.
 
+`NativeTextEngine::emit_layout_outlines` and `layout_ink_bounds` are unconditionally available without enabling the `raster` feature, scaling outlines via `skrifa` in `font/face.rs` through the backend-neutral `OutlineSink` trait for custom paint `cx.text_path` / `PaintPath::from_text` and `PaintTextMetrics::actual_bounding_box_*`.
+
 The `raster` feature (`gpu` in `nana-ui` turns it on) brings `nana_text::raster`:
 
 - **Raster key**: `GlyphRasterKey` and its parts (`GlyphFontId`, `GlyphVariationId`, `GlyphSynthesis`, `GlyphRenderMode`, the quarter-pixel `SubpixelBin`, the font size stored as bits). Color, opacity and transform are not in the key.

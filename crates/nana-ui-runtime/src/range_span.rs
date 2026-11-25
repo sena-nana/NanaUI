@@ -2268,24 +2268,29 @@ mod tests {
             indicator: None,
             under_thumbs: false,
         };
-        let measure = |_: &crate::PaintText, _: f32, _: Option<f32>| crate::TextSize::default();
         let bars = |disabled: bool| {
             let state = crate::PaintState {
                 disabled,
                 ..crate::PaintState::default()
             };
-            record(&painter, theme.as_ref(), [220.0, 32.0], state, &measure)
-                .behind_children
-                .iter()
-                .filter_map(|op| match op {
-                    PaintOp::RoundedRect {
-                        rect,
-                        fill: Some(ResolvedPaint::Solid(color)),
-                        ..
-                    } => Some((*rect, *color)),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
+            record(
+                &painter,
+                theme.as_ref(),
+                [220.0, 32.0],
+                state,
+                &crate::custom_paint::EmPaintTextHost,
+            )
+            .behind_children
+            .iter()
+            .filter_map(|op| match op {
+                PaintOp::RoundedRect {
+                    rect,
+                    fill: Some(ResolvedPaint::Solid(color)),
+                    ..
+                } => Some((*rect, *color)),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
         };
         let color = |role| theme.style_model().color(role).as_rgba_array();
         let drawn = bars(false);

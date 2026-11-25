@@ -9,6 +9,11 @@
 //! 颜色写 [`SemanticColorRole`]、圆角写 [`RadiusTier`]、阴影写 [`ElevationRole`]，
 //! 由 `cx` 按当前主题解析，所以切换主题会自动重录。这里不暴露 GPU。
 
+use i_overlay::core::fill_rule::FillRule as OverlayFill;
+use i_overlay::core::overlay_rule::OverlayRule;
+use i_overlay::float::simplify::SimplifyShape;
+use i_overlay::float::single::SingleFloatOverlay;
+use nana_text::TextEngine as _;
 use nana_ui_core::sort::CompactSort as _;
 use std::any::TypeId;
 use std::fmt;
@@ -170,20 +175,91 @@ pub struct PaintState {
     pub selected: bool,
 }
 
-/// 一段文字排出来的尺寸，逻辑像素。
+/// Curve flattening tolerance in logical px. Shared with `nana-ui-scene` so
+/// `PaintPath` booleans, hit-testing, and GPU tessellation agree on geometry.
+pub const PATH_FLATTEN_TOLERANCE: f32 = 0.05;
+
+/// Maximum coordinate magnitude from the node origin before a path is treated
+/// as non-drawable.
+pub const MAX_PATH_COORDINATE: f32 = 1.0e6;
+
+/// Single-line metrics of a laid-out [`PaintText`], in logical px.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct TextSize {
+pub struct PaintTextLineMetrics {
+    pub width: f32,
+    /// Distance from the text box top to this line's baseline.
+    pub baseline: f32,
+    pub line_height: f32,
+    pub ascent: f32,
+    pub descent: f32,
+}
+
+/// Measurement of a [`PaintText`] block, including per-line metrics and Canvas
+/// `TextMetrics` ink bounding box extents, in logical px.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PaintTextMetrics {
     pub width: f32,
     pub height: f32,
-    /// 首行基线到文字框顶部的距离。
+    /// Distance from the text box top to the first line's baseline.
     pub baseline: f32,
+    /// First-line font ascent above the alphabetic baseline.
+    pub ascent: f32,
+    /// First-line font descent below the alphabetic baseline.
+    pub descent: f32,
+    /// Distance left from the alignment origin to the leftmost glyph ink.
+    pub actual_bounding_box_left: f32,
+    /// Distance right from the alignment origin to the rightmost glyph ink.
+    pub actual_bounding_box_right: f32,
+    /// Distance up from the first line's baseline to the highest glyph ink.
+    pub actual_bounding_box_ascent: f32,
+    /// Distance down from the first line's baseline to the lowest glyph ink.
+    pub actual_bounding_box_descent: f32,
+    /// Per-line layout metrics, in visual line order.
+    pub lines: Vec<PaintTextLineMetrics>,
 }
 
 /// 与下层内容的混合方式，同 CSS `mix-blend-mode`。
 pub type BlendMode = nana_ui_core::MixBlendMode;
 
-/// 测量一段文字：内容、样式、最大宽度（`None` 不折行）。
-pub(crate) type TextMeasure<'a> = &'a dyn Fn(&PaintText, f32, Option<f32>) -> TextSize;
+/// Host text services invoked during custom paint recording.
+pub(crate) trait PaintTextHost {
+    fn measure_text(&self, text: &PaintText, size: f32, max_width: Option<f32>)
+    -> PaintTextMetrics;
+    fn text_path(
+        &self,
+        text: &PaintText,
+        size: f32,
+        origin: [f32; 2],
+        max_width: Option<f32>,
+    ) -> PaintPath;
+}
+
+/// Fallback text host when no `UiWorld` / `nana-text` engine is attached.
+pub(crate) struct EmPaintTextHost;
+
+impl PaintTextHost for EmPaintTextHost {
+    fn measure_text(
+        &self,
+        text: &PaintText,
+        size: f32,
+        max_width: Option<f32>,
+    ) -> PaintTextMetrics {
+        let base = crate::ComputedStyle::default();
+        let (style, constraints, content) = paint_text_request(&base, text, size, max_width);
+        let metrics = crate::components::measure_em_text(&content, &style, constraints);
+        paint_text_metrics_fallback(&metrics, size)
+    }
+
+    fn text_path(
+        &self,
+        _text: &PaintText,
+        _size: f32,
+        _origin: [f32; 2],
+        _max_width: Option<f32>,
+    ) -> PaintPath {
+        PaintPath::new()
+    }
+}
 
 /// 颜色：语义角色、角色混色，或者直接给定的 RGBA。
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -540,6 +616,15 @@ pub enum PathVerb {
     Close,
 }
 
+/// Boolean operation between two [`PaintPath`] shapes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathBooleanOp {
+    Union,
+    Intersect,
+    Difference,
+    Xor,
+}
+
 /// 节点内坐标系下的路径（原点是节点左上角，单位逻辑像素）。
 ///
 /// 构建方式与 Canvas / `QPainterPath` 相同。[`Self::arc_to`] 用来给任意拐角倒圆，
@@ -596,6 +681,86 @@ impl PaintPath {
     /// `isPointInStroke`；线帽和连接按圆形算。
     pub fn stroke_contains(&self, point: [f32; 2], stroke: &StrokeStyle) -> bool {
         stroke_contains(self, stroke, AFFINE_IDENTITY, point)
+    }
+
+    /// Boolean operation (`union` / `intersect` / `difference` / `xor`) between
+    /// `self` and `other`, interpreting each input according to its own
+    /// [`FillRule`]. Curves are flattened at [`PATH_FLATTEN_TOLERANCE`] before
+    /// the boolean, returning a polyline `PaintPath` usable for fill, stroke,
+    /// clip, hit-testing, and further booleans.
+    pub fn boolean(&self, other: &Self, op: PathBooleanOp) -> Self {
+        let a = path_to_overlay_shapes(self);
+        let b = path_to_overlay_shapes(other);
+        let shapes = match op {
+            PathBooleanOp::Union => {
+                if a.is_empty() {
+                    b
+                } else if b.is_empty() {
+                    a
+                } else {
+                    a.overlay(&b, OverlayRule::Union, OverlayFill::NonZero)
+                }
+            }
+            PathBooleanOp::Intersect => {
+                if a.is_empty() || b.is_empty() {
+                    Vec::new()
+                } else {
+                    a.overlay(&b, OverlayRule::Intersect, OverlayFill::NonZero)
+                }
+            }
+            PathBooleanOp::Difference => {
+                if a.is_empty() {
+                    Vec::new()
+                } else if b.is_empty() {
+                    a
+                } else {
+                    a.overlay(&b, OverlayRule::Difference, OverlayFill::NonZero)
+                }
+            }
+            PathBooleanOp::Xor => {
+                if a.is_empty() {
+                    b
+                } else if b.is_empty() {
+                    a
+                } else {
+                    a.overlay(&b, OverlayRule::Xor, OverlayFill::NonZero)
+                }
+            }
+        };
+        overlay_shapes_to_path(&shapes)
+    }
+
+    /// Boolean union (`self ∪ other`).
+    pub fn union(&self, other: &Self) -> Self {
+        self.boolean(other, PathBooleanOp::Union)
+    }
+
+    /// Boolean intersection (`self ∩ other`).
+    pub fn intersect(&self, other: &Self) -> Self {
+        self.boolean(other, PathBooleanOp::Intersect)
+    }
+
+    /// Boolean difference (`self \ other`).
+    pub fn difference(&self, other: &Self) -> Self {
+        self.boolean(other, PathBooleanOp::Difference)
+    }
+
+    /// Boolean symmetric difference (`self ⊕ other`).
+    pub fn xor(&self, other: &Self) -> Self {
+        self.boolean(other, PathBooleanOp::Xor)
+    }
+
+    /// Converts a [`PaintText`] to glyph outline paths via `engine`, placed at
+    /// `origin` with optional wrapping width `max_width`.
+    pub fn from_text(
+        engine: &nana_text::SharedTextEngine,
+        text: &PaintText,
+        origin: [f32; 2],
+        max_width: Option<f32>,
+    ) -> Self {
+        let base = crate::ComputedStyle::default();
+        let size = text.size.unwrap_or(nana_ui_core::UI_BASE_TEXT_SIZE);
+        paint_text_to_path(engine, &base, text, size, origin, max_width)
     }
 
     /// 所有点（含曲线控制点）的外接矩形；空路径为 `None`。曲线本身不会超出它。
@@ -1258,6 +1423,129 @@ impl BoxPaint {
     }
 }
 
+/// Decoration lines for [`PaintText`] (underline, line-through, overline).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct PaintTextDecoration {
+    pub underline: bool,
+    pub line_through: bool,
+    pub overline: bool,
+    pub style: nana_ui_core::TextDecorationStyle,
+    pub color: Option<PaintColor>,
+    pub thickness: Option<f32>,
+}
+
+impl PaintTextDecoration {
+    pub fn underline() -> Self {
+        Self {
+            underline: true,
+            ..Self::default()
+        }
+    }
+
+    pub fn line_through() -> Self {
+        Self {
+            line_through: true,
+            ..Self::default()
+        }
+    }
+
+    pub fn overline() -> Self {
+        Self {
+            overline: true,
+            ..Self::default()
+        }
+    }
+
+    pub fn with_underline(mut self, underline: bool) -> Self {
+        self.underline = underline;
+        self
+    }
+
+    pub fn with_line_through(mut self, line_through: bool) -> Self {
+        self.line_through = line_through;
+        self
+    }
+
+    pub fn with_overline(mut self, overline: bool) -> Self {
+        self.overline = overline;
+        self
+    }
+
+    pub fn style(mut self, style: nana_ui_core::TextDecorationStyle) -> Self {
+        self.style = style;
+        self
+    }
+
+    pub fn color(mut self, color: impl Into<PaintColor>) -> Self {
+        self.color = Some(color.into());
+        self
+    }
+
+    pub fn thickness(mut self, thickness: f32) -> Self {
+        self.thickness = Some(thickness);
+        self
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.underline || self.line_through || self.overline
+    }
+}
+
+/// Outline stroke for [`PaintText`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct PaintTextStroke {
+    pub width: f32,
+    pub paint: Paint,
+    pub join: nana_ui_core::TextStrokeJoin,
+    pub placement: nana_ui_core::TextStrokePlacement,
+}
+
+impl PaintTextStroke {
+    pub fn new(width: f32, paint: impl Into<Paint>) -> Self {
+        Self {
+            width,
+            paint: paint.into(),
+            join: nana_ui_core::TextStrokeJoin::Round,
+            placement: nana_ui_core::TextStrokePlacement::Under,
+        }
+    }
+
+    pub fn join(mut self, join: nana_ui_core::TextStrokeJoin) -> Self {
+        self.join = join;
+        self
+    }
+
+    pub fn placement(mut self, placement: nana_ui_core::TextStrokePlacement) -> Self {
+        self.placement = placement;
+        self
+    }
+}
+
+/// Shadow layer for [`PaintText`] (CSS `text-shadow` semantics).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PaintTextShadow {
+    pub offset: [f32; 2],
+    pub blur: f32,
+    pub spread: f32,
+    pub color: PaintColor,
+}
+
+impl PaintTextShadow {
+    pub fn new(offset: [f32; 2], blur: f32, color: impl Into<PaintColor>) -> Self {
+        Self {
+            offset,
+            blur,
+            spread: 0.0,
+            color: color.into(),
+        }
+    }
+
+    pub fn spread(mut self, spread: f32) -> Self {
+        self.spread = spread;
+        self
+    }
+}
+
 /// 一段文字。字号缺省为主题正文字号。
 #[derive(Debug, Clone, PartialEq)]
 pub struct PaintText {
@@ -1271,12 +1559,17 @@ pub struct PaintText {
     pub italic: bool,
     /// 行高，逻辑像素；`None` 用字体默认行高。
     pub line_height: Option<f32>,
+    /// Additional tracking between glyphs in logical px (default `0.0`).
+    pub letter_spacing: f32,
     /// 超出宽度时折行；否则单行，超长省略。
     pub wrap: bool,
     /// 最多几行，超出省略。
     pub max_lines: Option<u16>,
     pub horizontal: TextHorizontalAlignment,
     pub vertical: TextVerticalAlignment,
+    pub decoration: Option<PaintTextDecoration>,
+    pub stroke: Option<PaintTextStroke>,
+    pub shadows: Vec<PaintTextShadow>,
 }
 
 impl PaintText {
@@ -1289,10 +1582,14 @@ impl PaintText {
             family: None,
             italic: false,
             line_height: None,
+            letter_spacing: 0.0,
             wrap: false,
             max_lines: None,
             horizontal: TextHorizontalAlignment::Start,
             vertical: TextVerticalAlignment::Center,
+            decoration: None,
+            stroke: None,
+            shadows: Vec::new(),
         }
     }
 
@@ -1313,6 +1610,11 @@ impl PaintText {
 
     pub fn line_height(mut self, line_height: f32) -> Self {
         self.line_height = Some(line_height);
+        self
+    }
+
+    pub fn letter_spacing(mut self, letter_spacing: f32) -> Self {
+        self.letter_spacing = letter_spacing;
         self
     }
 
@@ -1352,6 +1654,52 @@ impl PaintText {
         self.vertical = vertical;
         self
     }
+
+    pub fn decoration(mut self, decoration: PaintTextDecoration) -> Self {
+        self.decoration = Some(decoration);
+        self
+    }
+
+    pub fn stroke(mut self, stroke: PaintTextStroke) -> Self {
+        self.stroke = Some(stroke);
+        self
+    }
+
+    pub fn shadow(mut self, shadow: PaintTextShadow) -> Self {
+        self.shadows.push(shadow);
+        self
+    }
+
+    pub fn shadows(mut self, shadows: impl IntoIterator<Item = PaintTextShadow>) -> Self {
+        self.shadows.extend(shadows);
+        self
+    }
+}
+
+/// Theme-resolved decoration for a recorded [`PaintOp::Text`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedPaintTextDecoration {
+    pub line: nana_ui_core::TextDecorationLine,
+    pub style: nana_ui_core::TextDecorationStyle,
+    pub color: Option<nana_ui_core::PaintColor>,
+    pub thickness: Option<f32>,
+}
+
+/// Theme-resolved outline stroke for a recorded [`PaintOp::Text`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedPaintTextStroke {
+    pub width: f32,
+    pub paint: ResolvedPaint,
+    pub join: nana_ui_core::TextStrokeJoin,
+    pub placement: nana_ui_core::TextStrokePlacement,
+}
+
+/// Theme-resolved decorations, stroke, and shadow layers for [`PaintOp::Text`].
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ResolvedPaintTextEffects {
+    pub decoration: Option<ResolvedPaintTextDecoration>,
+    pub stroke: Option<ResolvedPaintTextStroke>,
+    pub shadows: Arc<[nana_ui_core::RichTextShadow]>,
 }
 
 /// 绘制阶段：子节点下面（背景）或上面（前景）。
@@ -1426,10 +1774,12 @@ pub enum PaintOp {
         family: Option<Arc<str>>,
         italic: bool,
         line_height: Option<f32>,
+        letter_spacing: f32,
         wrap: bool,
         max_lines: Option<u16>,
         horizontal: TextHorizontalAlignment,
         vertical: TextVerticalAlignment,
+        effects: Option<Arc<ResolvedPaintTextEffects>>,
     },
     Icon {
         rect: LayoutBox,
@@ -1542,9 +1892,90 @@ fn inverse_apply(t: Affine, p: [f32; 2]) -> Option<[f32; 2]> {
     Some([(d * x - c * y) / det, (a * y - b * x) / det])
 }
 
-/// Sub-paths as polylines in the path's own coordinates, with whether each
-/// was closed. Coarse, for hit testing: a curve is sixteen segments.
+const MAX_CURVE_SUBDIVISIONS: u8 = 12;
+
+fn point_sane(p: [f32; 2]) -> bool {
+    p.iter()
+        .all(|v| v.is_finite() && v.abs() <= MAX_PATH_COORDINATE)
+}
+
+fn path_is_drawable(path: &PaintPath) -> bool {
+    path.verbs().iter().all(|verb| match *verb {
+        PathVerb::MoveTo(p) | PathVerb::LineTo(p) => point_sane(p),
+        PathVerb::QuadTo(c, p) => point_sane(c) && point_sane(p),
+        PathVerb::CubicTo(a, b, p) => point_sane(a) && point_sane(b) && point_sane(p),
+        PathVerb::Close => true,
+    })
+}
+
+fn dist2(a: [f32; 2], b: [f32; 2]) -> f32 {
+    let dx = b[0] - a[0];
+    let dy = b[1] - a[1];
+    dx * dx + dy * dy
+}
+
+fn midpoint(a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
+    [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5]
+}
+
+fn lerp2(a: [f32; 2], b: [f32; 2], t: f32) -> [f32; 2] {
+    [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
+}
+
+fn flatten_quad(
+    p0: [f32; 2],
+    p1: [f32; 2],
+    p2: [f32; 2],
+    tol_sq: f32,
+    depth: u8,
+    out: &mut Vec<[f32; 2]>,
+) {
+    // Max deviation of a quadratic Bezier from its chord is 0.5 * |p1 - mid(p0, p2)|.
+    let mid = midpoint(p0, p2);
+    if depth >= MAX_CURVE_SUBDIVISIONS || 0.25 * dist2(p1, mid) <= tol_sq {
+        out.push(p2);
+        return;
+    }
+    let a = midpoint(p0, p1);
+    let b = midpoint(p1, p2);
+    let c = midpoint(a, b);
+    flatten_quad(p0, a, c, tol_sq, depth + 1, out);
+    flatten_quad(c, b, p2, tol_sq, depth + 1, out);
+}
+
+fn flatten_cubic(
+    p0: [f32; 2],
+    p1: [f32; 2],
+    p2: [f32; 2],
+    p3: [f32; 2],
+    tol_sq: f32,
+    depth: u8,
+    out: &mut Vec<[f32; 2]>,
+) {
+    // Max deviation of a cubic Bezier from chord p0..p3 is bounded by 0.75 * max(d1, d2).
+    let d1 = dist2(p1, lerp2(p0, p3, 1.0 / 3.0));
+    let d2 = dist2(p2, lerp2(p0, p3, 2.0 / 3.0));
+    if depth >= MAX_CURVE_SUBDIVISIONS || 0.5625 * d1.max(d2) <= tol_sq {
+        out.push(p3);
+        return;
+    }
+    let p01 = midpoint(p0, p1);
+    let p12 = midpoint(p1, p2);
+    let p23 = midpoint(p2, p3);
+    let p012 = midpoint(p01, p12);
+    let p123 = midpoint(p12, p23);
+    let p0123 = midpoint(p012, p123);
+    flatten_cubic(p0, p01, p012, p0123, tol_sq, depth + 1, out);
+    flatten_cubic(p0123, p123, p23, p3, tol_sq, depth + 1, out);
+}
+
+/// Sub-paths as polylines in the path's own coordinates, flattened at
+/// [`PATH_FLATTEN_TOLERANCE`], with whether each was closed.
 fn polylines(path: &PaintPath) -> Vec<(Vec<[f32; 2]>, bool)> {
+    if !path_is_drawable(path) {
+        return Vec::new();
+    }
+    let tol_sq = PATH_FLATTEN_TOLERANCE * PATH_FLATTEN_TOLERANCE;
     let mut out: Vec<(Vec<[f32; 2]>, bool)> = Vec::new();
     let mut current: Vec<[f32; 2]> = Vec::new();
     let mut start = [0.0f32; 2];
@@ -1573,28 +2004,13 @@ fn polylines(path: &PaintPath) -> Vec<(Vec<[f32; 2]>, bool)> {
                 if current.is_empty() {
                     current.push(from);
                 }
-                for i in 1..=16 {
-                    let k = i as f32 / 16.0;
-                    let m = 1.0 - k;
-                    current.push([
-                        m * m * from[0] + 2.0 * m * k * c[0] + k * k * p[0],
-                        m * m * from[1] + 2.0 * m * k * c[1] + k * k * p[1],
-                    ]);
-                }
+                flatten_quad(from, c, p, tol_sq, 0, &mut current);
             }
             PathVerb::CubicTo(c1, c2, p) => {
                 if current.is_empty() {
                     current.push(from);
                 }
-                for i in 1..=16 {
-                    let k = i as f32 / 16.0;
-                    let m = 1.0 - k;
-                    let (w0, w1, w2, w3) = (m * m * m, 3.0 * m * m * k, 3.0 * m * k * k, k * k * k);
-                    current.push([
-                        w0 * from[0] + w1 * c1[0] + w2 * c2[0] + w3 * p[0],
-                        w0 * from[1] + w1 * c1[1] + w2 * c2[1] + w3 * p[1],
-                    ]);
-                }
+                flatten_cubic(from, c1, c2, p, tol_sq, 0, &mut current);
             }
             PathVerb::Close => {
                 finish(&mut current, &mut out, true);
@@ -1603,6 +2019,60 @@ fn polylines(path: &PaintPath) -> Vec<(Vec<[f32; 2]>, bool)> {
         }
     }
     finish(&mut current, &mut out, false);
+    out
+}
+
+fn path_to_overlay_shapes(path: &PaintPath) -> Vec<Vec<Vec<[f64; 2]>>> {
+    if path.is_empty() {
+        return Vec::new();
+    }
+    let contours: Vec<Vec<[f64; 2]>> = polylines(path)
+        .into_iter()
+        .filter_map(|(pts, _)| {
+            let mut contour: Vec<[f64; 2]> = Vec::with_capacity(pts.len());
+            for p in pts {
+                let pt = [f64::from(p[0]), f64::from(p[1])];
+                let same_last = contour
+                    .last()
+                    .is_some_and(|l| (l[0] - pt[0]).abs() < 1e-4 && (l[1] - pt[1]).abs() < 1e-4);
+                if !same_last {
+                    contour.push(pt);
+                }
+            }
+            if contour.len() > 1 {
+                let first = contour[0];
+                let last = contour[contour.len() - 1];
+                if (first[0] - last[0]).abs() < 1e-4 && (first[1] - last[1]).abs() < 1e-4 {
+                    contour.pop();
+                }
+            }
+            (contour.len() >= 3).then_some(contour)
+        })
+        .collect();
+    if contours.is_empty() {
+        return Vec::new();
+    }
+    let rule = match path.fill_rule() {
+        FillRule::NonZero => OverlayFill::NonZero,
+        FillRule::EvenOdd => OverlayFill::EvenOdd,
+    };
+    contours.simplify_shape(rule)
+}
+
+fn overlay_shapes_to_path(shapes: &[Vec<Vec<[f64; 2]>>]) -> PaintPath {
+    let mut out = PaintPath::new();
+    for shape in shapes {
+        for contour in shape {
+            if contour.len() < 3 {
+                continue;
+            }
+            out.move_to(contour[0][0] as f32, contour[0][1] as f32);
+            for pt in &contour[1..] {
+                out.line_to(pt[0] as f32, pt[1] as f32);
+            }
+            out.close();
+        }
+    }
     out
 }
 
@@ -1774,7 +2244,7 @@ pub struct PaintContext<'a> {
     theme: &'a CompiledTheme,
     size: [f32; 2],
     state: PaintState,
-    measure: TextMeasure<'a>,
+    text_host: &'a dyn PaintTextHost,
     ops: Vec<PaintOp>,
     default_drawn: bool,
     clip_depth: usize,
@@ -1801,14 +2271,14 @@ impl<'a> PaintContext<'a> {
         theme: &'a CompiledTheme,
         size: [f32; 2],
         state: PaintState,
-        measure: TextMeasure<'a>,
+        text_host: &'a dyn PaintTextHost,
         default_drawn: bool,
     ) -> Self {
         Self {
             theme,
             size,
             state,
-            measure,
+            text_host,
             ops: Vec::new(),
             default_drawn,
             clip_depth: 0,
@@ -1866,11 +2336,30 @@ impl<'a> PaintContext<'a> {
 
     /// 按节点字体和当前字体集测量一段文字；`max_width` 为 `None` 时不折行。
     /// 字号缺省为主题正文字号。与 [`Self::text`] 画出来的尺寸一致。
-    pub fn measure_text(&self, text: &PaintText, max_width: Option<f32>) -> TextSize {
+    pub fn measure_text(&self, text: &PaintText, max_width: Option<f32>) -> PaintTextMetrics {
         let size = text
             .size
             .unwrap_or_else(|| self.theme.style_model().base_text_size());
-        (self.measure)(text, size, max_width)
+        self.text_host.measure_text(text, size, max_width)
+    }
+
+    /// Converts `text` into glyph outline paths using the host's `nana-text`
+    /// engine, laid out at `origin` with optional wrapping width `max_width`.
+    /// The returned [`PaintPath`] can be filled, stroked, clipped, hit-tested,
+    /// or combined with [`PaintPath`] boolean operations.
+    pub fn text_path(
+        &self,
+        text: &PaintText,
+        origin: [f32; 2],
+        max_width: Option<f32>,
+    ) -> PaintPath {
+        if text.content.is_empty() {
+            return PaintPath::new();
+        }
+        let size = text
+            .size
+            .unwrap_or_else(|| self.theme.style_model().base_text_size());
+        self.text_host.text_path(text, size, origin, max_width)
     }
 
     /// 之后每条命令的不透明度（Canvas `globalAlpha`），`0..=1`。
@@ -2203,6 +2692,14 @@ impl<'a> PaintContext<'a> {
         });
     }
 
+    /// resolves a [`PaintColor`] into a [`nana_ui_core::PaintColor`], preserving authoring spaces.
+    fn resolve_core_paint_color(&self, color: PaintColor) -> nana_ui_core::PaintColor {
+        match color {
+            PaintColor::Authoring(color) => color,
+            color => nana_ui_core::PaintColor::srgb(self.color(color)),
+        }
+    }
+
     /// 一段文字，排在 `rect` 里。纯色或渐变；`wrap` / `max_lines` 控制折行。
     pub fn text(&mut self, rect: LayoutBox, text: PaintText) {
         if text.content.is_empty() {
@@ -2212,6 +2709,57 @@ impl<'a> PaintContext<'a> {
         let size = text
             .size
             .unwrap_or_else(|| self.theme.style_model().base_text_size());
+        let letter_spacing = if text.letter_spacing.is_finite() {
+            text.letter_spacing
+        } else {
+            0.0
+        };
+        let decoration =
+            text.decoration
+                .filter(|d| d.is_active())
+                .map(|d| ResolvedPaintTextDecoration {
+                    line: nana_ui_core::TextDecorationLine {
+                        underline: d.underline,
+                        line_through: d.line_through,
+                        overline: d.overline,
+                    },
+                    style: d.style,
+                    color: d.color.map(|c| self.resolve_core_paint_color(c)),
+                    thickness: d.thickness.filter(|t| t.is_finite() && *t > 0.0),
+                });
+        let stroke = text
+            .stroke
+            .filter(|s| s.width.is_finite() && s.width > 0.0)
+            .map(|s| ResolvedPaintTextStroke {
+                width: s.width.min(1.0e4),
+                paint: self.paint(s.paint),
+                join: s.join,
+                placement: s.placement,
+            });
+        let shadows: Vec<nana_ui_core::RichTextShadow> = text
+            .shadows
+            .iter()
+            .filter(|s| s.offset[0].is_finite() && s.offset[1].is_finite() && s.blur.is_finite())
+            .map(|s| nana_ui_core::RichTextShadow {
+                offset: s.offset,
+                blur_px: s.blur.max(0.0),
+                spread_px: if s.spread.is_finite() {
+                    s.spread.max(0.0)
+                } else {
+                    0.0
+                },
+                color: self.resolve_core_paint_color(s.color),
+            })
+            .collect();
+        let effects = if decoration.is_some() || stroke.is_some() || !shadows.is_empty() {
+            Some(Arc::new(ResolvedPaintTextEffects {
+                decoration,
+                stroke,
+                shadows: shadows.into(),
+            }))
+        } else {
+            None
+        };
         self.push(PaintOp::Text {
             rect,
             content: text.content,
@@ -2221,10 +2769,12 @@ impl<'a> PaintContext<'a> {
             family: text.family,
             italic: text.italic,
             line_height: text.line_height,
+            letter_spacing,
             wrap: text.wrap,
             max_lines: text.max_lines,
             horizontal: text.horizontal,
             vertical: text.vertical,
+            effects,
         });
     }
 
@@ -2316,7 +2866,7 @@ impl<'a> PaintContext<'a> {
 }
 
 /// What a painter's text is shaped as: the node's resolved style with the
-/// text's own size, weight, slant and line height.
+/// text's own size, weight, slant, letter spacing, and line height.
 pub(crate) fn paint_text_request(
     base: &crate::ComputedStyle,
     text: &PaintText,
@@ -2334,12 +2884,17 @@ pub(crate) fn paint_text_request(
         style.font_family = Some(Arc::clone(family));
     }
     style.italic = text.italic;
-    style.letter_spacing = 0.0;
+    style.letter_spacing = if text.letter_spacing.is_finite() {
+        text.letter_spacing
+    } else {
+        0.0
+    };
     style.line_height = text.line_height.map(nana_ui_core::LineHeightSpec::Absolute);
     let constraints = crate::TextShapeConstraints {
         max_width,
         wrap: text.wrap && max_width.is_some(),
         max_lines: text.max_lines,
+        preserve_lines: text.wrap || text.max_lines.is_some(),
         ..crate::TextShapeConstraints::default()
     };
     let content = crate::TextContent {
@@ -2348,13 +2903,137 @@ pub(crate) fn paint_text_request(
     (style, constraints, content)
 }
 
-pub(crate) fn paint_text_size(metrics: &crate::TextMetrics, size: f32) -> TextSize {
-    TextSize {
+pub(crate) fn paint_text_layout(
+    engine: &nana_text::SharedTextEngine,
+    base: &crate::ComputedStyle,
+    text: &PaintText,
+    size: f32,
+    max_width: Option<f32>,
+) -> Arc<nana_text::TextLayout> {
+    let (style, constraints, content) = paint_text_request(base, text, size, max_width);
+    let nana_style = crate::text_node::nana_text_style(&style);
+    let nana_constraints =
+        crate::text_node::nana_text_constraints(&style, &constraints, text.horizontal);
+    let kind = crate::text_node::text_kind(&constraints);
+    let source = nana_text::TextSource::new(content.value.as_str());
+    let mut counters = nana_text::TextWorkCounters::default();
+    let mut engine = nana_text::lock_text_engine(engine);
+    engine.layout(kind, &source, &nana_style, &nana_constraints, &mut counters)
+}
+
+pub(crate) fn paint_text_metrics_from_engine(
+    engine: &nana_text::SharedTextEngine,
+    base: &crate::ComputedStyle,
+    text: &PaintText,
+    size: f32,
+    max_width: Option<f32>,
+) -> PaintTextMetrics {
+    let layout = paint_text_layout(engine, base, text, size, max_width);
+    let (width, height) = layout.physical_size();
+    let lines: Vec<PaintTextLineMetrics> = layout
+        .lines
+        .iter()
+        .map(|line| PaintTextLineMetrics {
+            width: line.metrics.width_px,
+            baseline: line.metrics.baseline_y_px,
+            line_height: line.metrics.height_px,
+            ascent: line.metrics.ascent_px,
+            descent: line.metrics.descent_px,
+        })
+        .collect();
+    let first = lines.first().copied();
+    let ascent = first.map_or(size * nana_ui_core::TEXT_APPROX_ASCENT_EM, |l| l.ascent);
+    let descent = first.map_or((size * 1.2 - ascent).max(0.0), |l| l.descent);
+    let baseline = first.map_or(ascent, |l| l.baseline);
+    let ink = nana_text::lock_text_engine(engine).layout_ink_bounds(&layout);
+    let (actual_left, actual_right, actual_ascent, actual_descent) = match ink {
+        Some(ink) => (
+            -ink.x,
+            ink.right(),
+            baseline - ink.y,
+            ink.bottom() - baseline,
+        ),
+        None => (0.0, 0.0, 0.0, 0.0),
+    };
+    PaintTextMetrics {
+        width,
+        height,
+        baseline,
+        ascent,
+        descent,
+        actual_bounding_box_left: actual_left,
+        actual_bounding_box_right: actual_right,
+        actual_bounding_box_ascent: actual_ascent,
+        actual_bounding_box_descent: actual_descent,
+        lines,
+    }
+}
+
+pub(crate) fn paint_text_to_path(
+    engine: &nana_text::SharedTextEngine,
+    base: &crate::ComputedStyle,
+    text: &PaintText,
+    size: f32,
+    origin: [f32; 2],
+    max_width: Option<f32>,
+) -> PaintPath {
+    if text.content.is_empty() {
+        return PaintPath::new();
+    }
+    struct PathSink(PaintPath);
+    impl nana_text::OutlineSink for PathSink {
+        fn move_to(&mut self, x: f32, y: f32) {
+            self.0.move_to(x, y);
+        }
+        fn line_to(&mut self, x: f32, y: f32) {
+            self.0.line_to(x, y);
+        }
+        fn quad_to(&mut self, cx: f32, cy: f32, x: f32, y: f32) {
+            self.0.quad_to(cx, cy, x, y);
+        }
+        fn curve_to(&mut self, cx0: f32, cy0: f32, cx1: f32, cy1: f32, x: f32, y: f32) {
+            self.0.cubic_to(cx0, cy0, cx1, cy1, x, y);
+        }
+        fn close(&mut self) {
+            self.0.close();
+        }
+    }
+    let layout = paint_text_layout(engine, base, text, size, max_width);
+    let mut sink = PathSink(PaintPath::new());
+    nana_text::lock_text_engine(engine).emit_layout_outlines(&layout, origin, &mut sink);
+    sink.0
+}
+
+pub(crate) fn paint_text_metrics_fallback(
+    metrics: &crate::TextMetrics,
+    size: f32,
+) -> PaintTextMetrics {
+    let ascent = metrics
+        .ascent
+        .unwrap_or(size * nana_ui_core::TEXT_APPROX_ASCENT_EM);
+    let line_height = metrics.height.max(ascent);
+    let descent = (line_height - ascent).max(0.0);
+    PaintTextMetrics {
         width: metrics.width,
         height: metrics.height,
-        baseline: metrics
-            .ascent
-            .unwrap_or(size * nana_ui_core::TEXT_APPROX_ASCENT_EM),
+        baseline: ascent,
+        ascent,
+        descent,
+        actual_bounding_box_left: 0.0,
+        actual_bounding_box_right: metrics.width,
+        actual_bounding_box_ascent: ascent,
+        actual_bounding_box_descent: descent,
+        lines: if metrics.width > 0.0 || metrics.height > 0.0 {
+            vec![PaintTextLineMetrics {
+                width: metrics.width,
+                baseline: ascent,
+                line_height,
+                ascent,
+                descent,
+            }]
+        } else {
+            Vec::new()
+        },
     }
 }
 
@@ -2369,15 +3048,7 @@ impl PaintRecording {
         size: [f32; 2],
         state: PaintState,
     ) -> Self {
-        let base = crate::ComputedStyle::default();
-        let measure = |text: &PaintText, font: f32, max_width: Option<f32>| {
-            let (style, constraints, content) = paint_text_request(&base, text, font, max_width);
-            paint_text_size(
-                &crate::components::measure_em_text(&content, &style, constraints),
-                font,
-            )
-        };
-        record(painter, theme, size, state, &measure)
+        record(painter, theme, size, state, &EmPaintTextHost)
     }
 
     /// 把 `painter` 当作一张 `size` 大、分段为 `sections` 的模态对话框卡面
@@ -2391,15 +3062,7 @@ impl PaintRecording {
         size: [f32; 2],
         sections: crate::ModalSurfaceSections,
     ) -> Self {
-        let base = crate::ComputedStyle::default();
-        let measure = |text: &PaintText, font: f32, max_width: Option<f32>| {
-            let (style, constraints, content) = paint_text_request(&base, text, font, max_width);
-            paint_text_size(
-                &crate::components::measure_em_text(&content, &style, constraints),
-                font,
-            )
-        };
-        record_surface(painter, theme, size, sections, &measure)
+        record_surface(painter, theme, size, sections, &EmPaintTextHost)
     }
 }
 
@@ -2409,12 +3072,12 @@ pub(crate) fn record(
     theme: &CompiledTheme,
     size: [f32; 2],
     state: PaintState,
-    measure: TextMeasure<'_>,
+    text_host: &dyn PaintTextHost,
 ) -> PaintRecording {
-    let mut behind = PaintContext::new(theme, size, state, measure, false);
+    let mut behind = PaintContext::new(theme, size, state, text_host, false);
     painter.paint(&mut behind);
     let (behind_children, default_drawn) = behind.finish();
-    let mut over = PaintContext::new(theme, size, state, measure, default_drawn);
+    let mut over = PaintContext::new(theme, size, state, text_host, default_drawn);
     painter.paint_over_children(&mut over);
     let (over_children, _) = over.finish();
     PaintRecording {
@@ -2430,9 +3093,9 @@ pub(crate) fn record_surface(
     theme: &CompiledTheme,
     size: [f32; 2],
     sections: crate::ModalSurfaceSections,
-    measure: TextMeasure<'_>,
+    text_host: &dyn PaintTextHost,
 ) -> PaintRecording {
-    let mut surface = PaintContext::new(theme, size, PaintState::default(), measure, false);
+    let mut surface = PaintContext::new(theme, size, PaintState::default(), text_host, false);
     surface.sections = Some(sections);
     painter.paint(&mut surface);
     let (behind_children, _) = surface.finish();
@@ -2470,17 +3133,13 @@ mod tests {
         }
     }
 
-    fn no_measure(_: &PaintText, _: f32, _: Option<f32>) -> TextSize {
-        TextSize::default()
-    }
-
     fn record_plain(painter: &dyn Painter, size: [f32; 2]) -> PaintRecording {
         record(
             painter,
             nana_ui_core::builtin_theme_arc(ThemeAppearance::Dark).as_ref(),
             size,
             PaintState::default(),
-            &no_measure,
+            &EmPaintTextHost,
         )
     }
 
@@ -2818,12 +3477,11 @@ mod tests {
     #[test]
     fn a_gradient_resolves_its_roles_and_sorts_its_stops() {
         let theme = nana_ui_core::builtin_theme_arc(ThemeAppearance::Dark);
-        let measure = no_measure;
         let cx = PaintContext::new(
             theme.as_ref(),
             [10.0, 10.0],
             PaintState::default(),
-            &measure,
+            &EmPaintTextHost,
             false,
         );
         let ResolvedPaint::Gradient(gradient) = cx.paint(
@@ -2852,7 +3510,7 @@ mod tests {
             theme.as_ref(),
             [10.0, 10.0],
             PaintState::default(),
-            &no_measure,
+            &EmPaintTextHost,
             false,
         );
         let color = nana_ui_core::PaintColor::LinearScRgb {
@@ -2975,7 +3633,7 @@ mod tests {
 
     #[test]
     fn text_is_measured_and_wraps_when_narrowed() {
-        struct Measures(Arc<std::sync::Mutex<Vec<TextSize>>>);
+        struct Measures(Arc<std::sync::Mutex<Vec<PaintTextMetrics>>>);
         impl Painter for Measures {
             fn paint(&self, cx: &mut PaintContext<'_>) {
                 let text = PaintText::new("a label long enough to wrap")
@@ -2993,7 +3651,7 @@ mod tests {
         let world = painted_world_with(Measures(Arc::clone(&sizes)));
         world.extract_nodes(&[node()]);
         let sizes = sizes.lock().unwrap();
-        let (line, wrapped) = (sizes[0], sizes[1]);
+        let (line, wrapped) = (&sizes[0], &sizes[1]);
         assert!(line.width > 40.0 && line.height > 0.0, "{line:?}");
         assert!(wrapped.width <= 40.0 + 1e-3, "{wrapped:?}");
         assert!(
@@ -3225,5 +3883,344 @@ mod tests {
         let work = commit(&mut world, queue);
         assert_eq!(work.render_extraction, vec![node()]);
         assert!(world.extract_nodes(&[node()])[0].custom_paint.is_none());
+    }
+
+    #[test]
+    fn path_boolean_ops_cover_all_four_ops_self_intersection_evenodd_and_empty() {
+        let mut left = PaintPath::new();
+        left.rect(LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 20.0,
+            height: 20.0,
+        });
+        let mut right = PaintPath::new();
+        right.rect(LayoutBox {
+            x: 10.0,
+            y: 0.0,
+            width: 20.0,
+            height: 20.0,
+        });
+
+        let u = left.union(&right);
+        assert!(u.contains([5.0, 10.0]));
+        assert!(u.contains([15.0, 10.0]));
+        assert!(u.contains([25.0, 10.0]));
+        assert!(!u.contains([35.0, 10.0]));
+
+        let i = left.intersect(&right);
+        assert!(!i.contains([5.0, 10.0]));
+        assert!(i.contains([15.0, 10.0]));
+        assert!(!i.contains([25.0, 10.0]));
+
+        let d = left.difference(&right);
+        assert!(d.contains([5.0, 10.0]));
+        assert!(!d.contains([15.0, 10.0]));
+        assert!(!d.contains([25.0, 10.0]));
+
+        let x = left.xor(&right);
+        assert!(x.contains([5.0, 10.0]));
+        assert!(!x.contains([15.0, 10.0]));
+        assert!(x.contains([25.0, 10.0]));
+
+        // Disjoint intersection and self-contained difference return empty paths.
+        let mut far = PaintPath::new();
+        far.rect(LayoutBox {
+            x: 100.0,
+            y: 100.0,
+            width: 10.0,
+            height: 10.0,
+        });
+        assert!(left.intersect(&far).is_empty());
+        assert!(left.difference(&left).is_empty());
+
+        // Self-intersecting bowtie: NonZero fills the center cross, EvenOdd still fills two lobes.
+        let mut bowtie = PaintPath::new();
+        bowtie
+            .move_to(0.0, 0.0)
+            .line_to(20.0, 20.0)
+            .line_to(20.0, 0.0)
+            .line_to(0.0, 20.0)
+            .close();
+        let bowtie_u = bowtie.union(&PaintPath::new());
+        assert!(bowtie_u.contains([3.0, 10.0]));
+        assert!(bowtie_u.contains([17.0, 10.0]));
+
+        // EvenOdd concentric square cuts out the inner hole before boolean ops.
+        let mut holed = PaintPath::new().with_fill_rule(FillRule::EvenOdd);
+        holed
+            .rect(LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 40.0,
+                height: 40.0,
+            })
+            .rect(LayoutBox {
+                x: 10.0,
+                y: 10.0,
+                width: 20.0,
+                height: 20.0,
+            });
+        let mut strip = PaintPath::new();
+        strip.rect(LayoutBox {
+            x: 15.0,
+            y: 0.0,
+            width: 10.0,
+            height: 40.0,
+        });
+        let holed_intersect = holed.intersect(&strip);
+        assert!(holed_intersect.contains([20.0, 5.0]));
+        assert!(!holed_intersect.contains([20.0, 20.0]), "hole preserved");
+        assert!(holed_intersect.contains([20.0, 35.0]));
+
+        // Curved inputs flatten at PATH_FLATTEN_TOLERANCE into a polyline usable for stroke_contains.
+        let mut circle = PaintPath::new();
+        circle.ellipse(LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 20.0,
+            height: 20.0,
+        });
+        let clipped_circle = circle.difference(&right);
+        assert!(clipped_circle.verbs().iter().all(|v| matches!(
+            v,
+            PathVerb::MoveTo(_) | PathVerb::LineTo(_) | PathVerb::Close
+        )));
+        assert!(clipped_circle.contains([5.0, 10.0]));
+        assert!(!clipped_circle.contains([15.0, 10.0]));
+        assert!(clipped_circle.stroke_contains([10.0, 5.0], &StrokeStyle::new(2.0)));
+    }
+
+    fn bundled_test_text_engine() -> nana_text::SharedTextEngine {
+        let mut policy = nana_text::font::FallbackPolicy::empty();
+        policy.set_generic(nana_text::font::GenericFamily::SansSerif, ["Noto Sans SC"]);
+        let mut fonts = nana_text::font::FontSystem::with_policy(policy);
+        fonts
+            .register_file(
+                concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../nana-ui/assets/fonts/NotoSansSC-Variable.ttf"
+                ),
+                &nana_text::font::FaceDescriptor::default(),
+            )
+            .expect("the bundled UI face registers");
+        Arc::new(std::sync::Mutex::new(nana_text::NativeTextEngine::new(
+            fonts,
+        )))
+    }
+
+    #[test]
+    fn text_path_and_metrics_unify_with_nana_text_and_path_booleans() {
+        let engine = bundled_test_text_engine();
+
+        let base_text = PaintText::new("Ág\nxy").size(24.0).wrap(true);
+        let spaced = PaintText::new("Ág\nxy")
+            .size(24.0)
+            .wrap(true)
+            .letter_spacing(6.0);
+        let m1 = paint_text_metrics_from_engine(
+            &engine,
+            &crate::ComputedStyle::default(),
+            &base_text,
+            24.0,
+            Some(200.0),
+        );
+        let m2 = paint_text_metrics_from_engine(
+            &engine,
+            &crate::ComputedStyle::default(),
+            &spaced,
+            24.0,
+            Some(200.0),
+        );
+        assert_eq!(m1.lines.len(), 2);
+        assert!(m1.lines[1].baseline > m1.lines[0].baseline);
+        assert!(m1.ascent > 0.0 && m1.descent > 0.0);
+        assert!(m1.actual_bounding_box_ascent > 0.0);
+        assert!(m1.actual_bounding_box_descent > 0.0);
+        assert!(m1.actual_bounding_box_right > 0.0);
+        assert!(m2.width > m1.width, "letter_spacing widens text");
+
+        // PaintPath::from_text produces outlines usable in booleans.
+        let text_outline = PaintPath::from_text(
+            &engine,
+            &PaintText::new("HI").size(32.0),
+            [10.0, 10.0],
+            None,
+        );
+        assert!(!text_outline.is_empty());
+        let bounds = text_outline.bounds().unwrap();
+        let mut plate = PaintPath::new();
+        plate.rect(LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: bounds.x + bounds.width + 20.0,
+            height: bounds.y + bounds.height + 20.0,
+        });
+        let punched = plate.difference(&text_outline);
+        assert!(!punched.is_empty());
+        assert!(punched.contains([2.0, 2.0]));
+    }
+
+    #[test]
+    fn paint_text_records_letter_spacing_decorations_stroke_and_shadows() {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(
+            node(),
+            DocumentId::new(1).unwrap(),
+            NodeKind::Element { tag: "div".into() },
+        );
+        struct StyledText;
+        impl Painter for StyledText {
+            fn paint(&self, cx: &mut PaintContext<'_>) {
+                let text = PaintText::new("Hi")
+                    .size(16.0)
+                    .letter_spacing(2.5)
+                    .decoration(
+                        PaintTextDecoration::underline()
+                            .with_overline(true)
+                            .style(nana_ui_core::TextDecorationStyle::Wavy)
+                            .color([1.0, 0.0, 0.0, 1.0])
+                            .thickness(2.0),
+                    )
+                    .stroke(PaintTextStroke::new(1.5, [0.0, 0.0, 0.0, 1.0]))
+                    .shadow(PaintTextShadow::new([1.0, 2.0], 3.0, [0.0, 0.0, 0.0, 0.5]))
+                    .shadow(PaintTextShadow::new([3.0, 4.0], 6.0, [0.0, 0.0, 1.0, 0.4]));
+                cx.text(cx.bounds(), text);
+            }
+            fn paint_key(&self) -> u64 {
+                1
+            }
+        }
+        queue.set_style(node(), NodeStyle::default().painter(StyledText));
+        queue.write_layout(
+            node(),
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 120.0,
+                height: 40.0,
+            },
+        );
+        commit(&mut world, queue);
+        let extracted = world.extract_nodes(&[node()]);
+        let recording = extracted[0].custom_paint.as_ref().unwrap();
+        let [
+            PaintOp::Text {
+                letter_spacing,
+                effects: Some(effects),
+                ..
+            },
+        ] = &recording.behind_children[..]
+        else {
+            panic!("expected styled PaintOp::Text: {recording:?}");
+        };
+        assert_eq!(*letter_spacing, 2.5);
+        assert!(
+            effects
+                .decoration
+                .as_ref()
+                .is_some_and(|d| d.line.underline && d.line.overline)
+        );
+        assert!(effects.stroke.is_some());
+        assert_eq!(effects.shadows.len(), 2);
+    }
+
+    #[test]
+    fn custom_paint_text_path_and_metrics_invalidate_without_costing_unused_nodes() {
+        let mut world = UiWorld::new();
+        let mut shaper = crate::NanaTextEngineShaper::new(bundled_test_text_engine());
+        let doc = DocumentId::new(1).unwrap();
+        let text_node = StableNodeId::new(1).unwrap();
+        let plain_node = StableNodeId::new(2).unwrap();
+        let text_calls = Arc::new(AtomicUsize::new(0));
+        let plain_calls = Arc::new(AtomicUsize::new(0));
+
+        struct OutlinePainter(Arc<AtomicUsize>);
+        impl Painter for OutlinePainter {
+            fn paint(&self, cx: &mut PaintContext<'_>) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                let spec = PaintText::new("HI").letter_spacing(1.5);
+                let metrics = cx.measure_text(&spec, None);
+                assert!(metrics.width > 0.0 && metrics.ascent > 0.0);
+                let outline = cx.text_path(&spec, [4.0, 4.0], None);
+                assert!(!outline.is_empty());
+                cx.fill_path(&outline, [0.2, 0.4, 0.8, 1.0]);
+            }
+            fn paint_key(&self) -> u64 {
+                77
+            }
+        }
+        struct PlainPainter(Arc<AtomicUsize>);
+        impl Painter for PlainPainter {
+            fn paint(&self, cx: &mut PaintContext<'_>) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                cx.rounded_rect(cx.bounds(), 0.0, BoxPaint::fill([0.1, 0.1, 0.1, 1.0]));
+            }
+            fn paint_key(&self) -> u64 {
+                88
+            }
+        }
+
+        let mut queue = MutationQueue::new();
+        for id in [text_node, plain_node] {
+            queue.create(id, doc, NodeKind::Element { tag: "div".into() });
+            queue.write_layout(
+                id,
+                LayoutBox {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 200.0,
+                    height: 80.0,
+                },
+            );
+        }
+        queue.set_style(
+            text_node,
+            NodeStyle::default().painter(OutlinePainter(Arc::clone(&text_calls))),
+        );
+        queue.set_style(
+            plain_node,
+            NodeStyle::default().painter(PlainPainter(Arc::clone(&plain_calls))),
+        );
+        commit(&mut world, queue);
+
+        let work = world.take_system_work();
+        world.shape_text(&work.text, &mut shaper).unwrap();
+        let initial_extracted = world.extract_nodes(&[text_node, plain_node]);
+        assert!(matches!(
+            &initial_extracted[0].custom_paint.as_ref().unwrap().behind_children[0],
+            PaintOp::FillPath { path, .. } if !path.is_empty()
+        ));
+        assert_eq!(text_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(plain_calls.load(Ordering::SeqCst), 1);
+
+        // Font change on plain_node does not re-record it (zero text dependency overhead),
+        // whereas font change on text_node triggers re-recording because it used text_path/measure_text.
+        let mut queue = MutationQueue::new();
+        queue.set_style(
+            text_node,
+            NodeStyle {
+                layout: Arc::new(nana_ui_core::LayoutStyle {
+                    font_size: Some(28.0),
+                    ..nana_ui_core::LayoutStyle::default()
+                }),
+                ..NodeStyle::default().painter(OutlinePainter(Arc::clone(&text_calls)))
+            },
+        );
+        queue.set_style(
+            plain_node,
+            NodeStyle {
+                layout: Arc::new(nana_ui_core::LayoutStyle {
+                    font_size: Some(28.0),
+                    ..nana_ui_core::LayoutStyle::default()
+                }),
+                ..NodeStyle::default().painter(PlainPainter(Arc::clone(&plain_calls)))
+            },
+        );
+        commit(&mut world, queue);
+        world.extract_nodes(&[text_node, plain_node]);
+        assert_eq!(text_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(plain_calls.load(Ordering::SeqCst), 1);
     }
 }

@@ -7,14 +7,17 @@
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-use nana_ui_core::{ElevationRole, RadiusTier, SemanticColorMix, SemanticColorRole};
+use nana_ui_core::{
+    ElevationRole, RadiusTier, SemanticColorMix, SemanticColorRole, TextDecorationStyle,
+    TextStrokeJoin, TextStrokePlacement,
+};
 use serde_json::Value;
 
 use crate::{
     BlendMode, BoxPaint, ColorStop, CornerRadii, FillRule, Gradient, GradientExtend, ImageFit,
     LayoutBox, LineCap, LineJoin, Paint, PaintColor, PaintContext, PaintPath, PaintPhase,
-    PaintShadow, PaintState, PaintText, Painter, Radius, StrokeStyle, TextHorizontalAlignment,
-    TextVerticalAlignment,
+    PaintShadow, PaintState, PaintText, PaintTextDecoration, PaintTextShadow, PaintTextStroke,
+    Painter, PathBooleanOp, Radius, StrokeStyle, TextHorizontalAlignment, TextVerticalAlignment,
 };
 
 /// 一份解析好的绘制脚本。相同的 JSON 得到相同的 `paint_key`。
@@ -140,7 +143,10 @@ impl PaintScript {
             Some(Value::String(mode)) if mode == "bounds" => HitMode::Bounds,
             Some(Value::String(mode)) if mode == "painted" => HitMode::Painted,
             Some(Value::Object(shape)) if shape.len() == 1 && shape.contains_key("path") => {
-                HitMode::Path(parse_path(&shape["path"]).map_err(|error| format!("hit: {error}"))?)
+                HitMode::Path(
+                    parse_path(&shape["path"], color_parser)
+                        .map_err(|error| format!("hit: {error}"))?,
+                )
             }
             Some(_) => {
                 return Err("`hit` is \"bounds\", \"painted\" or { \"path\": 路径 }".into());
@@ -193,7 +199,7 @@ impl Painter for PaintScript {
 
     fn hit_test(&self, local: [f32; 2], size: [f32; 2]) -> Option<bool> {
         match &self.hit {
-            HitMode::Path(path) => Some(path.build(size).contains(local)),
+            HitMode::Path(path) => Some(path.build(None, size).contains(local)),
             HitMode::Bounds | HitMode::Painted => None,
         }
     }
@@ -337,29 +343,75 @@ enum Op {
 }
 
 #[derive(Debug, Clone)]
+struct PaintTextStrokeSpec {
+    width: f32,
+    paint: ScriptPaint,
+    join: TextStrokeJoin,
+    placement: TextStrokePlacement,
+}
+
+#[derive(Debug, Clone)]
 struct PaintTextSpec {
     content: Arc<str>,
     paint: ScriptPaint,
     size: Option<f32>,
     weight: Option<u16>,
+    family: Option<Arc<str>>,
     italic: bool,
     line_height: Option<f32>,
+    letter_spacing: f32,
     wrap: bool,
     max_lines: Option<u16>,
     horizontal: TextHorizontalAlignment,
     vertical: TextVerticalAlignment,
+    decoration: Option<PaintTextDecoration>,
+    stroke: Option<PaintTextStrokeSpec>,
+    shadows: Vec<PaintTextShadow>,
+}
+
+impl PaintTextSpec {
+    fn to_paint_text(&self, size: [f32; 2]) -> PaintText {
+        let mut paint_text = PaintText::new(Arc::clone(&self.content))
+            .paint(self.paint.resolve(size))
+            .italic(self.italic)
+            .letter_spacing(self.letter_spacing)
+            .wrap(self.wrap)
+            .align(self.horizontal, self.vertical);
+        paint_text.size = self.size;
+        paint_text.weight = self.weight;
+        paint_text.family = self.family.clone();
+        paint_text.line_height = self.line_height;
+        paint_text.max_lines = self.max_lines;
+        paint_text.decoration = self.decoration;
+        paint_text.stroke = self.stroke.as_ref().map(|s| {
+            PaintTextStroke::new(s.width, s.paint.resolve(size))
+                .join(s.join)
+                .placement(s.placement)
+        });
+        paint_text.shadows = self.shadows.clone();
+        paint_text
+    }
 }
 
 impl Op {
     fn apply(&self, cx: &mut PaintContext<'_>, size: [f32; 2]) {
         match self {
-            Self::Fill { path, paint } => cx.fill_path(&path.build(size), paint.resolve(size)),
+            Self::Fill { path, paint } => {
+                let path = path.build(Some(cx), size);
+                cx.fill_path(&path, paint.resolve(size));
+            }
             Self::Stroke {
                 path,
                 paint,
                 stroke,
-            } => cx.stroke_path(&path.build(size), stroke.clone(), paint.resolve(size)),
-            Self::Shadow { path, shadow } => cx.shadow(&path.build(size), *shadow),
+            } => {
+                let path = path.build(Some(cx), size);
+                cx.stroke_path(&path, stroke.clone(), paint.resolve(size));
+            }
+            Self::Shadow { path, shadow } => {
+                let path = path.build(Some(cx), size);
+                cx.shadow(&path, *shadow);
+            }
             Self::RoundedRect {
                 rect,
                 radii,
@@ -376,16 +428,7 @@ impl Op {
                 },
             ),
             Self::Text { rect, text } => {
-                let mut paint_text = PaintText::new(Arc::clone(&text.content))
-                    .paint(text.paint.resolve(size))
-                    .italic(text.italic)
-                    .wrap(text.wrap)
-                    .align(text.horizontal, text.vertical);
-                paint_text.size = text.size;
-                paint_text.weight = text.weight;
-                paint_text.line_height = text.line_height;
-                paint_text.max_lines = text.max_lines;
-                cx.text(rect_of(rect, size), paint_text);
+                cx.text(rect_of(rect, size), text.to_paint_text(size));
             }
             Self::Image {
                 rect,
@@ -406,12 +449,10 @@ impl Op {
                 rect,
                 src,
                 fit,
-            } => cx.fill_path_with_image(
-                &path.build(size),
-                rect_of(rect, size),
-                Arc::clone(src),
-                *fit,
-            ),
+            } => {
+                let path = path.build(Some(cx), size);
+                cx.fill_path_with_image(&path, rect_of(rect, size), Arc::clone(src), *fit);
+            }
             Self::Save => cx.save(),
             Self::Restore => cx.restore(),
             Self::Translate(x, y) => cx.translate(x.resolve(size[0]), y.resolve(size[1])),
@@ -423,7 +464,10 @@ impl Op {
             Self::Blend(mode) => cx.set_blend(*mode),
             Self::PushLayer(opacity, blend) => cx.push_layer(*opacity, *blend),
             Self::PopLayer => cx.pop_layer(),
-            Self::PushClip(path) => cx.push_clip(&path.build(size)),
+            Self::PushClip(path) => {
+                let path = path.build(Some(cx), size);
+                cx.push_clip(&path);
+            }
             Self::PopClip => cx.pop_clip(),
             Self::DrawDefault => cx.draw_default(),
         }
@@ -489,9 +533,22 @@ impl ScriptPaint {
 }
 
 #[derive(Debug, Clone)]
-struct ScriptPath {
-    segments: Arc<[Segment]>,
-    fill_rule: FillRule,
+enum ScriptPath {
+    Segments {
+        segments: Arc<[Segment]>,
+        fill_rule: FillRule,
+    },
+    Boolean {
+        op: PathBooleanOp,
+        paths: Arc<[ScriptPath]>,
+        fill_rule: Option<FillRule>,
+    },
+    TextPath {
+        text: Box<PaintTextSpec>,
+        origin: [Len; 2],
+        max_width: Option<Len>,
+        fill_rule: Option<FillRule>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -509,63 +566,116 @@ enum Segment {
 }
 
 impl ScriptPath {
-    fn build(&self, size: [f32; 2]) -> PaintPath {
-        let x = |len: Len| len.resolve(size[0]);
-        let y = |len: Len| len.resolve(size[1]);
-        let rect = |r: &[Len; 4]| LayoutBox {
-            x: x(r[0]),
-            y: y(r[1]),
-            width: x(r[2]),
-            height: y(r[3]),
-        };
-        let mut path = PaintPath::new().with_fill_rule(self.fill_rule);
-        for segment in self.segments.iter() {
-            match segment {
-                Segment::Move(a, b) => {
-                    path.move_to(x(*a), y(*b));
+    fn build(&self, cx: Option<&PaintContext<'_>>, size: [f32; 2]) -> PaintPath {
+        match self {
+            Self::Segments {
+                segments,
+                fill_rule,
+            } => {
+                let x = |len: Len| len.resolve(size[0]);
+                let y = |len: Len| len.resolve(size[1]);
+                let rect = |r: &[Len; 4]| LayoutBox {
+                    x: x(r[0]),
+                    y: y(r[1]),
+                    width: x(r[2]),
+                    height: y(r[3]),
+                };
+                let mut path = PaintPath::new().with_fill_rule(*fill_rule);
+                for segment in segments.iter() {
+                    match segment {
+                        Segment::Move(a, b) => {
+                            path.move_to(x(*a), y(*b));
+                        }
+                        Segment::Line(a, b) => {
+                            path.line_to(x(*a), y(*b));
+                        }
+                        Segment::Quad(v) => {
+                            path.quad_to(x(v[0]), y(v[1]), x(v[2]), y(v[3]));
+                        }
+                        Segment::Cubic(v) => {
+                            path.cubic_to(x(v[0]), y(v[1]), x(v[2]), y(v[3]), x(v[4]), y(v[5]));
+                        }
+                        Segment::ArcTo(v, radius) => {
+                            path.arc_to(
+                                x(v[0]),
+                                y(v[1]),
+                                x(v[2]),
+                                y(v[3]),
+                                short_side(*radius, size),
+                            );
+                        }
+                        Segment::Arc(center, radius, start, sweep) => {
+                            path.arc(
+                                x(center[0]),
+                                y(center[1]),
+                                short_side(*radius, size),
+                                *start,
+                                *sweep,
+                            );
+                        }
+                        Segment::Rect(r) => {
+                            path.rect(rect(r));
+                        }
+                        Segment::RoundedRect(r, radii) => {
+                            path.rounded_rect(
+                                rect(r),
+                                radii.map(|radius| short_side(radius, size)),
+                            );
+                        }
+                        Segment::Ellipse(r) => {
+                            path.ellipse(rect(r));
+                        }
+                        Segment::Close => {
+                            path.close();
+                        }
+                    }
                 }
-                Segment::Line(a, b) => {
-                    path.line_to(x(*a), y(*b));
+                path
+            }
+            Self::Boolean {
+                op,
+                paths,
+                fill_rule,
+            } => {
+                let mut iter = paths.iter();
+                let Some(first) = iter.next() else {
+                    return PaintPath::new();
+                };
+                let mut acc = first.build(cx, size);
+                let mut any = false;
+                for next in iter {
+                    acc = acc.boolean(&next.build(cx, size), *op);
+                    any = true;
                 }
-                Segment::Quad(v) => {
-                    path.quad_to(x(v[0]), y(v[1]), x(v[2]), y(v[3]));
+                if !any {
+                    // Simplify a single-entry boolean path through self-union.
+                    acc = acc.union(&PaintPath::new());
                 }
-                Segment::Cubic(v) => {
-                    path.cubic_to(x(v[0]), y(v[1]), x(v[2]), y(v[3]), x(v[4]), y(v[5]));
+                if let Some(rule) = fill_rule {
+                    acc.set_fill_rule(*rule);
                 }
-                Segment::ArcTo(v, radius) => {
-                    path.arc_to(
-                        x(v[0]),
-                        y(v[1]),
-                        x(v[2]),
-                        y(v[3]),
-                        short_side(*radius, size),
-                    );
+                acc
+            }
+            Self::TextPath {
+                text,
+                origin,
+                max_width,
+                fill_rule,
+            } => {
+                let Some(cx) = cx else {
+                    return PaintPath::new();
+                };
+                let mut path = cx.text_path(
+                    &text.to_paint_text(size),
+                    [origin[0].resolve(size[0]), origin[1].resolve(size[1])],
+                    max_width.map(|w| w.resolve(size[0])),
+                );
+                if let Some(rule) = fill_rule {
+                    path.set_fill_rule(*rule);
                 }
-                Segment::Arc(center, radius, start, sweep) => {
-                    path.arc(
-                        x(center[0]),
-                        y(center[1]),
-                        short_side(*radius, size),
-                        *start,
-                        *sweep,
-                    );
-                }
-                Segment::Rect(r) => {
-                    path.rect(rect(r));
-                }
-                Segment::RoundedRect(r, radii) => {
-                    path.rounded_rect(rect(r), radii.map(|radius| short_side(radius, size)));
-                }
-                Segment::Ellipse(r) => {
-                    path.ellipse(rect(r));
-                }
-                Segment::Close => {
-                    path.close();
-                }
+                path
             }
         }
-        path
     }
 }
 
@@ -642,11 +752,16 @@ fn op_keys(op: &str) -> Option<&'static [&'static str]> {
             "paint",
             "size",
             "weight",
+            "family",
             "italic",
             "lineHeight",
+            "letterSpacing",
             "wrap",
             "maxLines",
             "align",
+            "decoration",
+            "stroke",
+            "shadows",
         ],
         "image" => &["rect", "src", "fit", "radii"],
         "icon" => &["rect", "name", "paint"],
@@ -707,7 +822,7 @@ fn parse_op(op: &str, map: &Map, color_parser: ColorParser<'_>) -> Result<Op, St
     }) {
         return Err(format!("unknown key `{key}` for `{op}`"));
     }
-    let path = || required(map, "path").and_then(parse_path);
+    let path = || required(map, "path").and_then(|v| parse_path(v, color_parser));
     let paint = |key: &str| required(map, key).and_then(|value| parse_paint(value, color_parser));
     let number = |key: &str, default: f32| optional_number(map, key).map(|v| v.unwrap_or(default));
     let rect = || required(map, "rect").and_then(|v| lens::<4>(v, "rect"));
@@ -787,29 +902,8 @@ fn parse_op(op: &str, map: &Map, color_parser: ColorParser<'_>) -> Result<Op, St
         },
         "text" => Op::Text {
             rect: rect()?,
-            text: PaintTextSpec {
-                content: Arc::from(
-                    required(map, "text")?
-                        .as_str()
-                        .ok_or("`text` is a string")?,
-                ),
-                paint: map.get("paint").map_or(
-                    Ok(ScriptPaint::Color(PaintColor::Role(
-                        SemanticColorRole::Text,
-                    ))),
-                    |value| parse_paint(value, color_parser),
-                )?,
-                size: optional_number(map, "size")?,
-                weight: optional_number(map, "weight")?.map(|w| w.clamp(1.0, 1000.0) as u16),
-                italic: flag(map, "italic", false)?,
-                line_height: optional_number(map, "lineHeight")?,
-                wrap: flag(map, "wrap", false)?,
-                max_lines: optional_number(map, "maxLines")?.map(|n| n.clamp(1.0, 65535.0) as u16),
-                horizontal: TextHorizontalAlignment::Start,
-                vertical: TextVerticalAlignment::Center,
-            },
-        }
-        .with_align(map.get("align"))?,
+            text: parse_text_spec(map, color_parser)?,
+        },
         "image" => Op::Image {
             rect: rect()?,
             src: source(map)?,
@@ -864,29 +958,199 @@ fn parse_op(op: &str, map: &Map, color_parser: ColorParser<'_>) -> Result<Op, St
     })
 }
 
-impl Op {
-    fn with_align(mut self, align: Option<&Value>) -> Result<Self, String> {
-        let (Self::Text { text, .. }, Some(align)) = (&mut self, align) else {
-            return Ok(self);
+fn parse_align_pair(
+    align: Option<&Value>,
+) -> Result<(TextHorizontalAlignment, TextVerticalAlignment), String> {
+    let Some(align) = align else {
+        return Ok((
+            TextHorizontalAlignment::Start,
+            TextVerticalAlignment::Center,
+        ));
+    };
+    let pair = align
+        .as_array()
+        .ok_or("`align` is [horizontal, vertical]")?;
+    let word = |index: usize| pair.get(index).and_then(Value::as_str);
+    let horizontal = match word(0) {
+        None | Some("start") => TextHorizontalAlignment::Start,
+        Some("center") => TextHorizontalAlignment::Center,
+        Some("end") => TextHorizontalAlignment::End,
+        Some(other) => return Err(format!("unknown horizontal alignment `{other}`")),
+    };
+    let vertical = match word(1) {
+        None | Some("center") => TextVerticalAlignment::Center,
+        Some("top") => TextVerticalAlignment::Top,
+        Some("bottom") => TextVerticalAlignment::Bottom,
+        Some(other) => return Err(format!("unknown vertical alignment `{other}`")),
+    };
+    Ok((horizontal, vertical))
+}
+
+fn parse_text_decoration(
+    value: &Value,
+    color_parser: ColorParser<'_>,
+) -> Result<PaintTextDecoration, String> {
+    if let Some(word) = value.as_str() {
+        return match word {
+            "underline" => Ok(PaintTextDecoration::underline()),
+            "line-through" => Ok(PaintTextDecoration::line_through()),
+            "overline" => Ok(PaintTextDecoration::overline()),
+            other => Err(format!("unknown decoration `{other}`")),
         };
-        let pair = align
-            .as_array()
-            .ok_or("`align` is [horizontal, vertical]")?;
-        let word = |index: usize| pair.get(index).and_then(Value::as_str);
-        text.horizontal = match word(0) {
-            None | Some("start") => TextHorizontalAlignment::Start,
-            Some("center") => TextHorizontalAlignment::Center,
-            Some("end") => TextHorizontalAlignment::End,
-            Some(other) => return Err(format!("unknown horizontal alignment `{other}`")),
-        };
-        text.vertical = match word(1) {
-            None | Some("center") => TextVerticalAlignment::Center,
-            Some("top") => TextVerticalAlignment::Top,
-            Some("bottom") => TextVerticalAlignment::Bottom,
-            Some(other) => return Err(format!("unknown vertical alignment `{other}`")),
-        };
-        Ok(self)
     }
+    let map = value
+        .as_object()
+        .ok_or("`decoration` is a string or an object")?;
+    only_keys(
+        map,
+        &[
+            "underline",
+            "lineThrough",
+            "overline",
+            "style",
+            "color",
+            "thickness",
+        ],
+        "`decoration`",
+    )?;
+    let style = match map.get("style").and_then(Value::as_str) {
+        None | Some("solid") => TextDecorationStyle::Solid,
+        Some("double") => TextDecorationStyle::Double,
+        Some("dotted") => TextDecorationStyle::Dotted,
+        Some("dashed") => TextDecorationStyle::Dashed,
+        Some("wavy") => TextDecorationStyle::Wavy,
+        Some(other) => return Err(format!("unknown decoration style `{other}`")),
+    };
+    let color = map
+        .get("color")
+        .map(|v| parse_color(v, color_parser))
+        .transpose()?;
+    Ok(PaintTextDecoration {
+        underline: flag(map, "underline", false)?,
+        line_through: flag(map, "lineThrough", false)?,
+        overline: flag(map, "overline", false)?,
+        style,
+        color,
+        thickness: optional_number(map, "thickness")?,
+    })
+}
+
+fn parse_text_stroke(
+    value: &Value,
+    color_parser: ColorParser<'_>,
+) -> Result<PaintTextStrokeSpec, String> {
+    let map = value.as_object().ok_or("`stroke` is an object")?;
+    only_keys(
+        map,
+        &["width", "paint", "join", "placement"],
+        "`text.stroke`",
+    )?;
+    let width = optional_number(map, "width")?.unwrap_or(1.0);
+    let paint = parse_paint(required(map, "paint")?, color_parser)?;
+    let join = match map.get("join").and_then(Value::as_str) {
+        None | Some("round") => TextStrokeJoin::Round,
+        Some("miter") => TextStrokeJoin::Miter,
+        Some("bevel") => TextStrokeJoin::Bevel,
+        Some(other) => return Err(format!("unknown stroke join `{other}`")),
+    };
+    let placement = match map.get("placement").and_then(Value::as_str) {
+        None | Some("under") => TextStrokePlacement::Under,
+        Some("over") => TextStrokePlacement::Over,
+        Some(other) => return Err(format!("unknown stroke placement `{other}`")),
+    };
+    Ok(PaintTextStrokeSpec {
+        width,
+        paint,
+        join,
+        placement,
+    })
+}
+
+fn parse_text_shadows(
+    value: &Value,
+    color_parser: ColorParser<'_>,
+) -> Result<Vec<PaintTextShadow>, String> {
+    let list = value
+        .as_array()
+        .ok_or("`shadows` is an array of shadow objects")?;
+    list.iter()
+        .map(|entry| {
+            let map = entry.as_object().ok_or("a text shadow is an object")?;
+            only_keys(
+                map,
+                &["offset", "blur", "spread", "color"],
+                "`text.shadows[]`",
+            )?;
+            let offset = match map.get("offset") {
+                None => [0.0, 0.0],
+                Some(value) => {
+                    let pair = value
+                        .as_array()
+                        .filter(|l| l.len() == 2)
+                        .ok_or("`offset` is [x, y]")?;
+                    [
+                        pair[0].as_f64().ok_or("`offset` holds numbers")? as f32,
+                        pair[1].as_f64().ok_or("`offset` holds numbers")? as f32,
+                    ]
+                }
+            };
+            let color = map
+                .get("color")
+                .map_or(Ok(PaintColor::Rgba([0.0, 0.0, 0.0, 0.25])), |v| {
+                    parse_color(v, color_parser)
+                })?;
+            Ok(PaintTextShadow {
+                offset,
+                blur: optional_number(map, "blur")?.unwrap_or(0.0),
+                spread: optional_number(map, "spread")?.unwrap_or(0.0),
+                color,
+            })
+        })
+        .collect()
+}
+
+fn parse_text_spec(map: &Map, color_parser: ColorParser<'_>) -> Result<PaintTextSpec, String> {
+    let (horizontal, vertical) = parse_align_pair(map.get("align"))?;
+    let family = match map.get("family") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(Arc::from(value.as_str().ok_or("`family` is a string")?)),
+    };
+    Ok(PaintTextSpec {
+        content: Arc::from(
+            required(map, "text")?
+                .as_str()
+                .ok_or("`text` is a string")?,
+        ),
+        paint: map.get("paint").map_or(
+            Ok(ScriptPaint::Color(PaintColor::Role(
+                SemanticColorRole::Text,
+            ))),
+            |value| parse_paint(value, color_parser),
+        )?,
+        size: optional_number(map, "size")?,
+        weight: optional_number(map, "weight")?.map(|w| w.clamp(1.0, 1000.0) as u16),
+        family,
+        italic: flag(map, "italic", false)?,
+        line_height: optional_number(map, "lineHeight")?,
+        letter_spacing: optional_number(map, "letterSpacing")?.unwrap_or(0.0),
+        wrap: flag(map, "wrap", false)?,
+        max_lines: optional_number(map, "maxLines")?.map(|n| n.clamp(1.0, 65535.0) as u16),
+        horizontal,
+        vertical,
+        decoration: map
+            .get("decoration")
+            .map(|v| parse_text_decoration(v, color_parser))
+            .transpose()?,
+        stroke: map
+            .get("stroke")
+            .map(|v| parse_text_stroke(v, color_parser))
+            .transpose()?,
+        shadows: map
+            .get("shadows")
+            .map(|v| parse_text_shadows(v, color_parser))
+            .transpose()?
+            .unwrap_or_default(),
+    })
 }
 
 fn required<'a>(map: &'a Map, key: &str) -> Result<&'a Value, String> {
@@ -1196,28 +1460,102 @@ fn parse_blend_mode(input: &str) -> Option<BlendMode> {
     })
 }
 
-/// A path object's `d` may itself be a path object; the outermost
-/// `fillRule` wins. Walked as a loop, so nesting costs no stack.
-fn parse_path(mut value: &Value) -> Result<ScriptPath, String> {
+fn parse_fill_rule(value: Option<&Value>) -> Result<Option<FillRule>, String> {
+    match value.and_then(Value::as_str) {
+        None => Ok(None),
+        Some("nonzero") => Ok(Some(FillRule::NonZero)),
+        Some("evenodd") => Ok(Some(FillRule::EvenOdd)),
+        Some(other) => Err(format!("unknown fill rule `{other}`")),
+    }
+}
+
+/// A path may be an SVG string, a segment list, a `{ d, fillRule }` wrapper,
+/// a boolean object `{ op, paths }`, or a `{ textPath: { ... } }` object.
+fn parse_path(mut value: &Value, color_parser: ColorParser<'_>) -> Result<ScriptPath, String> {
     let mut fill_rule = None;
     let segments = loop {
         match value {
             Value::String(text) => break parse_svg_path(text)?,
             Value::Array(list) => break parse_segments(list)?,
+            Value::Object(map) if map.contains_key("op") => {
+                only_keys(map, &["op", "paths", "fillRule"], "a boolean path object")?;
+                let op = match required(map, "op")?.as_str() {
+                    Some("union") => PathBooleanOp::Union,
+                    Some("intersect") => PathBooleanOp::Intersect,
+                    Some("difference") => PathBooleanOp::Difference,
+                    Some("xor") => PathBooleanOp::Xor,
+                    Some(other) => return Err(format!("unknown path boolean op `{other}`")),
+                    None => return Err("`op` is a string".into()),
+                };
+                let raw_paths = required(map, "paths")?
+                    .as_array()
+                    .ok_or("`paths` is a non-empty array of paths")?;
+                if raw_paths.is_empty() {
+                    return Err("`paths` must not be empty".into());
+                }
+                let paths = raw_paths
+                    .iter()
+                    .map(|p| parse_path(p, color_parser))
+                    .collect::<Result<Vec<_>, _>>()?;
+                if let Some(rule) = parse_fill_rule(map.get("fillRule"))? {
+                    fill_rule.get_or_insert(rule);
+                }
+                return Ok(ScriptPath::Boolean {
+                    op,
+                    paths: paths.into(),
+                    fill_rule,
+                });
+            }
+            Value::Object(map) if map.contains_key("textPath") => {
+                only_keys(map, &["textPath", "fillRule"], "a textPath object")?;
+                if let Some(rule) = parse_fill_rule(map.get("fillRule"))? {
+                    fill_rule.get_or_insert(rule);
+                }
+                let spec = required(map, "textPath")?
+                    .as_object()
+                    .ok_or("`textPath` is an object")?;
+                only_keys(
+                    spec,
+                    &[
+                        "text",
+                        "origin",
+                        "maxWidth",
+                        "size",
+                        "weight",
+                        "family",
+                        "italic",
+                        "lineHeight",
+                        "letterSpacing",
+                        "wrap",
+                        "maxLines",
+                        "align",
+                    ],
+                    "`textPath`",
+                )?;
+                let origin = match spec.get("origin") {
+                    None => [px(0.0), px(0.0)],
+                    Some(v) => lens::<2>(v, "origin")?,
+                };
+                let max_width = spec.get("maxWidth").map(parse_len).transpose()?;
+                let text = parse_text_spec(spec, color_parser)?;
+                return Ok(ScriptPath::TextPath {
+                    text: Box::new(text),
+                    origin,
+                    max_width,
+                    fill_rule,
+                });
+            }
             Value::Object(map) => {
                 only_keys(map, &["d", "fillRule"], "a path object")?;
-                let rule = match map.get("fillRule").and_then(Value::as_str) {
-                    None | Some("nonzero") => FillRule::NonZero,
-                    Some("evenodd") => FillRule::EvenOdd,
-                    Some(other) => return Err(format!("unknown fill rule `{other}`")),
-                };
-                fill_rule.get_or_insert(rule);
+                if let Some(rule) = parse_fill_rule(map.get("fillRule"))? {
+                    fill_rule.get_or_insert(rule);
+                }
                 value = required(map, "d")?;
             }
             _ => return Err("a path is an SVG path string or an array of segments".into()),
         }
     };
-    Ok(ScriptPath {
+    Ok(ScriptPath::Segments {
         segments: segments.into(),
         fill_rule: fill_rule.unwrap_or(FillRule::NonZero),
     })
@@ -1314,12 +1652,11 @@ mod tests {
 
     fn record(script: &str, size: [f32; 2], state: PaintState) -> crate::PaintRecording {
         let script = PaintScript::from_json_str(script).expect("a valid script");
-        crate::custom_paint::record(
+        crate::PaintRecording::record(
             &script,
             nana_ui_core::builtin_theme_arc(nana_ui_core::ThemeAppearance::Dark).as_ref(),
             size,
             state,
-            &|_, _, _| crate::TextSize::default(),
         )
     }
 
@@ -1541,11 +1878,11 @@ mod tests {
     fn svg_path_data_parses_relative_smooth_and_arc_commands() {
         let segments =
             parse_svg_path("m10 10 l5 0 h5 v5 s5 5 10 0 t5 5 a5 5 0 0 1 10 0 z").unwrap();
-        let path = ScriptPath {
+        let path = ScriptPath::Segments {
             segments: segments.into(),
             fill_rule: FillRule::NonZero,
         }
-        .build([0.0, 0.0]);
+        .build(None, [0.0, 0.0]);
         let verbs = path.verbs();
         assert_eq!(verbs[0], PathVerb::MoveTo([10.0, 10.0]));
         assert_eq!(verbs[1], PathVerb::LineTo([15.0, 10.0]));
@@ -1626,14 +1963,114 @@ mod tests {
         let json = json.replacen("nonzero", "evenodd", 1);
         let path = std::thread::Builder::new()
             .stack_size(512 * 1024)
-            .spawn(move || parse_path(&serde_json::from_str(&json).unwrap()))
+            .spawn(move || parse_path(&serde_json::from_str(&json).unwrap(), None))
             .unwrap()
             .join()
             .unwrap()
             .unwrap();
-        assert_eq!(path.fill_rule, FillRule::EvenOdd);
-        assert_eq!(path.segments.len(), 3);
-        let plain = parse_path(&serde_json::json!({"d": "M0 0"})).unwrap();
-        assert_eq!(plain.fill_rule, FillRule::NonZero);
+        let ScriptPath::Segments {
+            segments,
+            fill_rule,
+        } = path
+        else {
+            panic!("expected segment path");
+        };
+        assert_eq!(fill_rule, FillRule::EvenOdd);
+        assert_eq!(segments.len(), 3);
+        let plain = parse_path(&serde_json::json!({"d": "M0 0"}), None).unwrap();
+        let ScriptPath::Segments { fill_rule, .. } = plain else {
+            panic!("expected segment path");
+        };
+        assert_eq!(fill_rule, FillRule::NonZero);
+    }
+
+    #[test]
+    fn script_supports_path_booleans_and_styled_text() {
+        let recording = record(
+            r##"[
+                {
+                    "op": "fill",
+                    "path": {
+                        "op": "difference",
+                        "paths": [
+                            [["rect", 0, 0, 40, 40]],
+                            [["rect", 10, 10, 20, 20]]
+                        ]
+                    },
+                    "paint": "accent"
+                },
+                {
+                    "op": "text",
+                    "rect": [0, 0, 100, 40],
+                    "text": "Styled",
+                    "family": "monospace",
+                    "letterSpacing": 2.0,
+                    "decoration": {
+                        "underline": true,
+                        "overline": true,
+                        "style": "dashed",
+                        "color": [1, 0, 0, 1],
+                        "thickness": 2.0
+                    },
+                    "stroke": {
+                        "width": 1.5,
+                        "paint": [0, 0, 0, 1],
+                        "join": "bevel",
+                        "placement": "over"
+                    },
+                    "shadows": [
+                        {"offset": [1, 2], "blur": 3, "color": [0, 0, 0, 0.5]}
+                    ]
+                }
+            ]"##,
+            [100.0, 40.0],
+            PaintState::default(),
+        );
+        let PaintOp::FillPath { path, .. } = &recording.behind_children[0] else {
+            panic!("expected FillPath: {recording:?}");
+        };
+        assert!(path.contains([5.0, 5.0]));
+        assert!(!path.contains([20.0, 20.0]), "boolean hole carved");
+
+        let PaintOp::Text {
+            family,
+            letter_spacing,
+            effects: Some(effects),
+            ..
+        } = &recording.behind_children[1]
+        else {
+            panic!("expected styled Text: {recording:?}");
+        };
+        assert_eq!(family.as_deref(), Some("monospace"));
+        assert_eq!(*letter_spacing, 2.0);
+        let deco = effects.decoration.as_ref().expect("decoration");
+        assert!(deco.line.underline && deco.line.overline);
+        assert_eq!(deco.style, TextDecorationStyle::Dashed);
+        assert_eq!(deco.thickness, Some(2.0));
+        let stroke = effects.stroke.as_ref().expect("stroke");
+        assert_eq!(stroke.width, 1.5);
+        assert_eq!(stroke.join, TextStrokeJoin::Bevel);
+        assert_eq!(stroke.placement, TextStrokePlacement::Over);
+        assert_eq!(effects.shadows.len(), 1);
+
+        // textPath parses cleanly and rejects unknown keys.
+        assert!(
+            PaintScript::from_json_str(
+                r#"[{"op":"fill","path":{"textPath":{"text":"Hi","origin":[4,8],"size":20}},"paint":"accent"}]"#
+            )
+            .is_ok()
+        );
+        assert!(
+            PaintScript::from_json_str(
+                r#"[{"op":"fill","path":{"op":"union","paths":[]},"paint":"accent"}]"#
+            )
+            .is_err()
+        );
+        assert!(
+            PaintScript::from_json_str(
+                r#"[{"op":"fill","path":{"op":"bogus","paths":["M0 0"]},"paint":"accent"}]"#
+            )
+            .is_err()
+        );
     }
 }

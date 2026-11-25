@@ -24,6 +24,15 @@ pub enum GlyphSource {
     Label(usize),
 }
 
+/// Receiver for vector glyph outlines in layout coordinates (logical px, Y-down).
+pub trait OutlineSink {
+    fn move_to(&mut self, x: f32, y: f32);
+    fn line_to(&mut self, x: f32, y: f32);
+    fn quad_to(&mut self, cx: f32, cy: f32, x: f32, y: f32);
+    fn curve_to(&mut self, cx0: f32, cy0: f32, cx1: f32, cy1: f32, x: f32, y: f32);
+    fn close(&mut self);
+}
+
 /// One glyph, placed.
 #[derive(Clone, Copy, Debug)]
 pub struct GlyphPlacement<'a> {

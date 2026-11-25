@@ -130,6 +130,72 @@ mod span_color_tests {
         assert_eq!(channels, [1.25, -0.125, 0.25]);
         assert_eq!(alpha, 0.7);
     }
+
+    #[test]
+    fn decoration_quads_emit_overline_and_styled_segments() {
+        use nana_text::TextEngine;
+
+        let mut policy = nana_text::font::FallbackPolicy::empty();
+        policy.set_generic(nana_text::font::GenericFamily::SansSerif, ["Noto Sans SC"]);
+        let mut fonts = nana_text::font::FontSystem::with_policy(policy);
+        fonts
+            .register_file(
+                concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/assets/fonts/NotoSansSC-Variable.ttf"
+                ),
+                &nana_text::font::FaceDescriptor::default(),
+            )
+            .expect("bundled font registers");
+        let mut engine = nana_text::NativeTextEngine::new(fonts);
+        let mut counters = nana_text::TextWorkCounters::default();
+        let layout = engine.layout(
+            nana_text::TextKind::Label,
+            &nana_text::TextSource::new("Decoration"),
+            &nana_text::TextStyle {
+                font_size_px: 16.0,
+                ..nana_text::TextStyle::default()
+            },
+            &nana_text::TextConstraints::default(),
+            &mut counters,
+        );
+        let colors = SpanColors::new("Decoration", &[], [1.0, 1.0, 1.0, 1.0], None);
+
+        for (style, min_quads) in [
+            (nana_ui_core::TextDecorationStyle::Solid, 2),
+            (nana_ui_core::TextDecorationStyle::Double, 4),
+            (nana_ui_core::TextDecorationStyle::Dashed, 4),
+            (nana_ui_core::TextDecorationStyle::Dotted, 6),
+            (nana_ui_core::TextDecorationStyle::Wavy, 6),
+        ] {
+            let rich = SceneRichPaint::new(
+                SceneTextEffects {
+                    decoration: nana_ui_core::TextDecorationLine {
+                        underline: true,
+                        line_through: false,
+                        overline: true,
+                    },
+                    decoration_style: style,
+                    decoration_thickness_px: Some(2.0),
+                    ..SceneTextEffects::default()
+                },
+                Vec::new(),
+            )
+            .expect("rich paint");
+            let mut solids = Vec::new();
+            decoration_quads(&layout, &rich, &colors, 1.0, [0.0, 0.0], &mut solids);
+            assert!(
+                solids.len() >= min_quads,
+                "{style:?} expected >= {min_quads} quads, got {}",
+                solids.len()
+            );
+            assert!(
+                solids
+                    .iter()
+                    .any(|q| q.size[1] == 2 || style == nana_ui_core::TextDecorationStyle::Double)
+            );
+        }
+    }
 }
 
 impl SpanColors {
@@ -607,6 +673,9 @@ pub(super) fn layer_effects(
     strokes(out, nana_ui_core::TextStrokePlacement::Under);
     let fill_start = out.runs.len();
     for run in &fills.runs {
+        if run.color[3] <= 0.0 && run.paint_color.is_none() {
+            continue;
+        }
         for glyph in fills.glyphs_of(run) {
             let fx = effects.effects_at(glyph.cluster as usize);
             let synthesis = if outlined(fx) {
@@ -646,6 +715,8 @@ pub(super) fn decoration_quads(
     #[derive(Clone, Copy, PartialEq)]
     struct Key {
         decoration: nana_ui_core::TextDecorationLine,
+        style: nana_ui_core::TextDecorationStyle,
+        thickness_bits: u32,
         color: [u32; 4],
         paint_color: Option<nana_ui_core::PaintColor>,
     }
@@ -676,32 +747,96 @@ pub(super) fn decoration_quads(
                 } else {
                     (size * 0.1, size / 14.0, size * 0.3, size / 14.0)
                 };
+            let overline_offset = if metrics.ascent_px > 0.0 {
+                metrics.ascent_px
+            } else {
+                size * 0.8
+            };
             let flush = |open: Option<Open>, out: &mut Vec<SolidQuad>| {
                 let Some(open) = open else {
                     return;
                 };
                 let left = (open.left * scale + origin[0]).round();
                 let right = (open.right * scale + origin[0]).round();
-                let width = (right - left).max(1.0) as u32;
-                let mut emit = |top: f32, thickness: f32, line_through: bool| {
-                    out.push(SolidQuad {
-                        origin: [left as i32, top as i32],
-                        size: [width, (thickness * scale).round().max(1.0) as u32],
-                        color: open.color,
-                        paint_color: open.key.paint_color,
-                        line_through,
-                        cluster: open.cluster,
-                    });
+                let total_width = (right - left).max(1.0) as u32;
+                let override_thickness =
+                    (open.key.thickness_bits != 0).then(|| f32::from_bits(open.key.thickness_bits));
+                let mut emit_styled = |top: f32, default_thickness: f32, line_through: bool| {
+                    let thickness_px = (override_thickness.unwrap_or(default_thickness) * scale)
+                        .round()
+                        .max(1.0) as u32;
+                    let push_quad = |out: &mut Vec<SolidQuad>, x: i32, y: i32, w: u32, h: u32| {
+                        out.push(SolidQuad {
+                            origin: [x, y],
+                            size: [w.max(1), h.max(1)],
+                            color: open.color,
+                            paint_color: open.key.paint_color,
+                            line_through,
+                            cluster: open.cluster,
+                        });
+                    };
+                    let x0 = left as i32;
+                    let y0 = top as i32;
+                    match open.key.style {
+                        nana_ui_core::TextDecorationStyle::Solid => {
+                            push_quad(out, x0, y0, total_width, thickness_px);
+                        }
+                        nana_ui_core::TextDecorationStyle::Double => {
+                            let bar = ((thickness_px as f32 * 0.6).round() as u32).max(1);
+                            let gap = ((thickness_px as f32 * 0.8).round() as u32).max(1);
+                            push_quad(out, x0, y0, total_width, bar);
+                            push_quad(out, x0, y0 + (bar + gap) as i32, total_width, bar);
+                        }
+                        nana_ui_core::TextDecorationStyle::Dashed => {
+                            let dash = (thickness_px * 3).max(3);
+                            let gap = (thickness_px * 2).max(2);
+                            let mut cur = 0u32;
+                            while cur < total_width {
+                                let w = dash.min(total_width - cur);
+                                push_quad(out, x0 + cur as i32, y0, w, thickness_px);
+                                cur = cur.saturating_add(dash + gap);
+                            }
+                        }
+                        nana_ui_core::TextDecorationStyle::Dotted => {
+                            let dot = thickness_px.max(1);
+                            let mut cur = 0u32;
+                            while cur < total_width {
+                                let w = dot.min(total_width - cur);
+                                push_quad(out, x0 + cur as i32, y0, w, dot);
+                                cur = cur.saturating_add(dot * 2);
+                            }
+                        }
+                        nana_ui_core::TextDecorationStyle::Wavy => {
+                            let step = thickness_px.max(1);
+                            let amp = (thickness_px as f32).max(1.0);
+                            let period = (amp * 4.0).max(4.0);
+                            let mut cur = 0u32;
+                            while cur < total_width {
+                                let w = step.min(total_width - cur);
+                                let phase = (cur as f32 / period) * std::f32::consts::TAU;
+                                let dy = (phase.sin() * amp * 0.5).round() as i32;
+                                push_quad(out, x0 + cur as i32, y0 + dy, w, thickness_px);
+                                cur = cur.saturating_add(step);
+                            }
+                        }
+                    }
                 };
                 if open.key.decoration.underline {
-                    emit(
+                    emit_styled(
                         baseline + (underline_offset * scale).round(),
                         underline_thickness,
                         false,
                     );
                 }
+                if open.key.decoration.overline {
+                    emit_styled(
+                        baseline - (overline_offset * scale).round(),
+                        underline_thickness,
+                        false,
+                    );
+                }
                 if open.key.decoration.line_through {
-                    emit(
+                    emit_styled(
                         baseline - (strike_offset * scale).round(),
                         strike_thickness,
                         true,
@@ -724,6 +859,11 @@ pub(super) fn decoration_quads(
                 };
                 let key = Key {
                     decoration: fx.decoration,
+                    style: fx.decoration_style,
+                    thickness_bits: fx
+                        .decoration_thickness_px
+                        .filter(|t| t.is_finite() && *t > 0.0)
+                        .map_or(0, f32::to_bits),
                     color: color.map(f32::to_bits),
                     paint_color,
                 };

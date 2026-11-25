@@ -2799,6 +2799,7 @@ dependencies = [
  "fixed_decimal",
  "foldhash",
  "hashbrown 0.17.1",
+ "i_overlay",
  "icu_calendar",
  "icu_datetime",
  "icu_decimal",

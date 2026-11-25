@@ -8,11 +8,13 @@
 use crate::constraints::TextConstraints;
 use crate::counters::TextWorkCounters;
 use crate::font::{
-    FontInstanceKey, FontQuery, FontSystem, FontVariations, LanguageTag, canonical_f32_bits,
+    FaceOutlineSink, FaceScalerCache, FontInstanceKey, FontQuery, FontSystem, FontVariations,
+    LanguageTag, canonical_f32_bits, scale_plain_outline,
 };
 use crate::id::FontGeneration;
 use crate::layout::{
-    IntrinsicWidths, LayoutCounters, LayoutRequest, Layouter, ShapedEmphasis, TextLayout,
+    IntrinsicWidths, LayoutCounters, LayoutRequest, Layouter, OutlineSink, ShapedEmphasis,
+    TextLayout, TextRect,
 };
 use crate::metrics::RunMetrics;
 use crate::shaping::{ShapeCounters, ShapeRequest, ShapedText, Shaper};
@@ -320,6 +322,178 @@ impl NativeTextEngine {
         self.struts.insert(key, metrics);
         Some(metrics)
     }
+
+    /// Emits vector glyph outlines for every glyph in `layout`, in layout
+    /// coordinates (logical px, Y-down) starting at `origin`.
+    pub fn emit_layout_outlines(
+        &self,
+        layout: &TextLayout,
+        origin: [f32; 2],
+        sink: &mut dyn OutlineSink,
+    ) {
+        /// Synthetic-oblique tangent for 14°, matching `raster::outline::OBLIQUE_DEGREES`.
+        const OBLIQUE_TAN: f32 = 0.249_328; // tan(14°)
+
+        struct GlyphAdapter<'a> {
+            sink: &'a mut dyn OutlineSink,
+            origin: [f32; 2],
+            oblique: bool,
+            sideways: bool,
+            subpath_open: bool,
+        }
+
+        impl GlyphAdapter<'_> {
+            #[inline]
+            fn map(&self, mut x: f32, y: f32) -> [f32; 2] {
+                if self.oblique {
+                    x += y * OBLIQUE_TAN;
+                }
+                if self.sideways {
+                    // Font Y-up rotated 90° CW into screen Y-down: (x, y) -> (y, x).
+                    [self.origin[0] + y, self.origin[1] + x]
+                } else {
+                    // Font Y-up to screen Y-down.
+                    [self.origin[0] + x, self.origin[1] - y]
+                }
+            }
+        }
+
+        impl FaceOutlineSink for GlyphAdapter<'_> {
+            fn begin_layer(&mut self, _color: Option<[u8; 4]>) {}
+
+            fn move_to(&mut self, x: f32, y: f32) {
+                if self.subpath_open {
+                    self.sink.close();
+                }
+                let [px, py] = self.map(x, y);
+                self.sink.move_to(px, py);
+                self.subpath_open = true;
+            }
+
+            fn line_to(&mut self, x: f32, y: f32) {
+                let [px, py] = self.map(x, y);
+                self.sink.line_to(px, py);
+            }
+
+            fn quad_to(&mut self, cx0: f32, cy0: f32, x: f32, y: f32) {
+                let [c0x, c0y] = self.map(cx0, cy0);
+                let [px, py] = self.map(x, y);
+                self.sink.quad_to(c0x, c0y, px, py);
+            }
+
+            fn curve_to(&mut self, cx0: f32, cy0: f32, cx1: f32, cy1: f32, x: f32, y: f32) {
+                let [c0x, c0y] = self.map(cx0, cy0);
+                let [c1x, c1y] = self.map(cx1, cy1);
+                let [px, py] = self.map(x, y);
+                self.sink.curve_to(c0x, c0y, c1x, c1y, px, py);
+            }
+
+            fn close(&mut self) {
+                if self.subpath_open {
+                    self.sink.close();
+                    self.subpath_open = false;
+                }
+            }
+
+            fn finish_layer(&mut self) {
+                if self.subpath_open {
+                    self.sink.close();
+                    self.subpath_open = false;
+                }
+            }
+        }
+
+        let mut cache = FaceScalerCache::default();
+        let generation = self.fonts.generation().get();
+        for placed in layout.glyph_placements(1.0, origin) {
+            let Ok(glyph_id) = u16::try_from(placed.glyph_id) else {
+                continue;
+            };
+            let Some(data) = self.fonts.face_data(placed.instance.font) else {
+                continue;
+            };
+            let font_key = u64::from(placed.instance.font.index()) | (u64::from(generation) << 32);
+            let mut adapter = GlyphAdapter {
+                sink,
+                origin: placed.position,
+                oblique: placed.instance.synthesis.oblique,
+                sideways: placed.sideways,
+                subpath_open: false,
+            };
+            scale_plain_outline(
+                data.bytes(),
+                data.index(),
+                font_key,
+                &placed.instance.coords,
+                placed.font_size_px,
+                false,
+                glyph_id,
+                &mut cache,
+                &mut adapter,
+            );
+        }
+    }
+
+    /// Tight bounding box of every glyph outline in `layout`, in layout
+    /// coordinates (`origin = [0, 0]`). Returns `None` when no outline points
+    /// were emitted (empty text or whitespace only).
+    pub fn layout_ink_bounds(&self, layout: &TextLayout) -> Option<TextRect> {
+        struct BoundsSink {
+            min_x: f32,
+            min_y: f32,
+            max_x: f32,
+            max_y: f32,
+            any: bool,
+        }
+
+        impl BoundsSink {
+            fn visit(&mut self, x: f32, y: f32) {
+                if x.is_finite() && y.is_finite() {
+                    self.min_x = self.min_x.min(x);
+                    self.min_y = self.min_y.min(y);
+                    self.max_x = self.max_x.max(x);
+                    self.max_y = self.max_y.max(y);
+                    self.any = true;
+                }
+            }
+        }
+
+        impl OutlineSink for BoundsSink {
+            fn move_to(&mut self, x: f32, y: f32) {
+                self.visit(x, y);
+            }
+            fn line_to(&mut self, x: f32, y: f32) {
+                self.visit(x, y);
+            }
+            fn quad_to(&mut self, cx: f32, cy: f32, x: f32, y: f32) {
+                self.visit(cx, cy);
+                self.visit(x, y);
+            }
+            fn curve_to(&mut self, cx0: f32, cy0: f32, cx1: f32, cy1: f32, x: f32, y: f32) {
+                self.visit(cx0, cy0);
+                self.visit(cx1, cy1);
+                self.visit(x, y);
+            }
+            fn close(&mut self) {}
+        }
+
+        let mut sink = BoundsSink {
+            min_x: f32::INFINITY,
+            min_y: f32::INFINITY,
+            max_x: f32::NEG_INFINITY,
+            max_y: f32::NEG_INFINITY,
+            any: false,
+        };
+        self.emit_layout_outlines(layout, [0.0, 0.0], &mut sink);
+        sink.any.then(|| {
+            TextRect::new(
+                sink.min_x,
+                sink.min_y,
+                (sink.max_x - sink.min_x).max(0.0),
+                (sink.max_y - sink.min_y).max(0.0),
+            )
+        })
+    }
 }
 
 /// The style a ruby annotation is shaped in: its base's, at
@@ -480,5 +654,88 @@ impl TextEngine for NativeTextEngine {
             layouts.vertical_writing_fallbacks - layouts_before.vertical_writing_fallbacks;
         counters.text_bytes_hashed += after.text_bytes_hashed - before.text_bytes_hashed;
         layout
+    }
+}
+
+#[cfg(test)]
+mod outline_tests {
+    use super::*;
+    use crate::font::FaceDescriptor;
+
+    #[test]
+    fn emit_layout_outlines_and_ink_bounds_extract_glyph_contours() {
+        let mut policy = crate::font::FallbackPolicy::empty();
+        policy.set_generic(crate::font::GenericFamily::SansSerif, ["Noto Sans SC"]);
+        let mut fonts = FontSystem::with_policy(policy);
+        fonts
+            .register_file(
+                concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../nana-ui/assets/fonts/NotoSansSC-Variable.ttf"
+                ),
+                &FaceDescriptor::default(),
+            )
+            .expect("bundled font registers");
+        let mut engine = NativeTextEngine::new(fonts);
+        let source = TextSource::new("Ag");
+        let style = TextStyle {
+            font_size_px: 32.0,
+            ..TextStyle::default()
+        };
+        let mut counters = TextWorkCounters::default();
+        let layout = engine.layout(
+            TextKind::Label,
+            &source,
+            &style,
+            &TextConstraints::default(),
+            &mut counters,
+        );
+
+        #[derive(Default)]
+        struct CounterSink {
+            moves: usize,
+            segments: usize,
+            closes: usize,
+        }
+        impl OutlineSink for CounterSink {
+            fn move_to(&mut self, _: f32, _: f32) {
+                self.moves += 1;
+            }
+            fn line_to(&mut self, _: f32, _: f32) {
+                self.segments += 1;
+            }
+            fn quad_to(&mut self, _: f32, _: f32, _: f32, _: f32) {
+                self.segments += 1;
+            }
+            fn curve_to(&mut self, _: f32, _: f32, _: f32, _: f32, _: f32, _: f32) {
+                self.segments += 1;
+            }
+            fn close(&mut self) {
+                self.closes += 1;
+            }
+        }
+        let mut sink = CounterSink::default();
+        engine.emit_layout_outlines(&layout, [10.0, 20.0], &mut sink);
+        assert!(
+            sink.moves >= 2,
+            "expected contours for A and g: {}",
+            sink.moves
+        );
+        assert!(sink.segments > 4);
+        assert!(sink.closes >= 2);
+
+        let ink_ag = engine
+            .layout_ink_bounds(&layout)
+            .expect("ink bounds for Ag");
+        assert!(ink_ag.width > 10.0 && ink_ag.height > 10.0);
+
+        let space_layout = engine.layout(
+            TextKind::Label,
+            &TextSource::new("   "),
+            &style,
+            &TextConstraints::default(),
+            &mut counters,
+        );
+        assert!(engine.layout_ink_bounds(&space_layout).is_none());
     }
 }

@@ -46,7 +46,7 @@ pub(super) type Shapes = Vec<Vec<Contour>>;
 
 /// Curve flattening tolerance in logical px. A 2x display sees 0.1 physical
 /// px of error at most.
-pub(super) const TOLERANCE: f32 = 0.05;
+pub(super) const TOLERANCE: f32 = nana_ui_runtime::PATH_FLATTEN_TOLERANCE;
 /// Longest a miter extrusion may get, in units of the offset. Keeps the AA
 /// fringe and shadow band of a spike from shooting across the node.
 pub(super) const MITER_LIMIT: f32 = 4.0;
@@ -178,10 +178,12 @@ pub(super) struct TextStyle {
     family: Option<Arc<str>>,
     italic: bool,
     line_height: Option<f32>,
+    letter_spacing: f32,
     wrap: bool,
     max_lines: Option<u16>,
     horizontal: TextHorizontalAlignment,
     vertical: TextVerticalAlignment,
+    effects: Option<Arc<SceneRichPaint>>,
 }
 
 /// A recording's geometry, kept per node. See the module docs.
@@ -787,7 +789,7 @@ pub(super) fn custom_text(
             .or(node.style.font_family.as_deref())
             .map(str::to_owned),
         line_height: text.line_height.map(nana_ui_core::LineHeightSpec::Absolute),
-        letter_spacing: 0.0,
+        letter_spacing: text.letter_spacing,
         wrap: text.wrap,
         ellipsis: true,
         max_lines: if text.wrap { text.max_lines } else { Some(1) },
@@ -803,7 +805,7 @@ pub(super) fn custom_text(
         wrap_break: nana_ui_core::TextWrapBreak::default(),
         opentype: SceneTextOpenType::from_computed(&node.style),
         layout: None,
-        rich: None,
+        rich: text.effects.clone(),
         presentation: None,
     }
 }

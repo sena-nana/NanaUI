@@ -310,6 +310,7 @@ fn css_text_effects_are_the_base_a_span_overrides() {
     layout.text_ext.text_decoration = Some(nana_ui_core::TextDecorationLine {
         underline: true,
         line_through: false,
+        overline: false,
     });
     layout.paint.text_shadows = vec![
         nana_ui_core::TextShadowSpec {

@@ -68,6 +68,7 @@ fancy-regex = { version = "0.16.2", optional = true }
 hashbrown = "0.17.1"
 # Fixed-seed hashing for cache identities (the intrinsic cache's environment).
 foldhash = "0.2.0"
+i_overlay.workspace = true
 nana-ui-view-schema = { path = "../nana-ui-view-schema" }
 nana-ui-core.workspace = true
 nana-ui-charts = { workspace = true, optional = true }

@@ -387,12 +387,19 @@ slots / overlay 组装接口。`mount` 仍用于按 key 构造并销毁缺席组
   不必算进 `paint_key`。悬停只看节点自己是不是命中目标。指针落在子节点上时
   父节点的 `hovered` 为假。与内建交互外观一致。
 - 文字：`cx.measure_text(&text, max_width)` 用宿主当前的排版引擎测量（未接引擎时
-  按 em 估算）。与 `cx.text` 画出来的一致。`PaintText` 支持折行、最多行数、
-  行高、斜体和字体族（`family`，CSS `font-family` 语法；测量和绘制读同一个）。颜色可以是渐变。
+  按 em 估算），返回 [`PaintTextMetrics`]（包含整体宽高、`baseline`、`ascent` / `descent`、
+  Canvas `actualBoundingBox*` 字形墨迹包围盒以及逐行 `lines` 度量）。与 `cx.text` 画出来的一致。
+  `PaintText` 支持折行、最多行数、行高、字间距（`letter_spacing`）、斜体、字体族（`family`，CSS `font-family` 语法；测量和绘制读同一个）、
+  装饰线（`decoration`：下划线 / 删除线 / 上划线，支持颜色、`Solid`/`Double`/`Dotted`/`Dashed`/`Wavy` 样式与粗细）、
+  描边（`stroke`）和多层阴影（`shadows`）。颜色和描边都可以是渐变。
+- 文字转路径：`cx.text_path(&text, origin, max_width)`（或 `PaintPath::from_text`）通过宿主 `nana-text`
+  的 `OutlineSink`（`skrifa` 轮廓抽取）把排版后的字形转成 `PaintPath`，可直接用于填充、描边、裁剪、命中与布尔运算。
 - 路径：`PaintPath` 支持直线、二次 / 三次贝塞尔、`arc` 和 Canvas 语义的
   `arc_to`（任意拐角倒圆。凹角也可以）。NonZero / EvenOdd。参数与 Canvas 一样
   写成标量（`arc` 的最后一个参数是扫过的角度。与 `QPainterPath::arcTo` 相同。
-  不是 Canvas 的终止角）。`PaintPath::from_svg` 从 SVG path 数据建路径。`contains` /
+  不是 Canvas 的终止角）。`PaintPath::from_svg` 从 SVG path 数据建路径。支持路径布尔运算
+  `union` / `intersect` / `difference` / `xor`（按各自填充规则解析输入，曲线按与 Scene 一致的
+  `PATH_FLATTEN_TOLERANCE` 展平为折线路径，结果仍是 `PaintPath`）。`contains` /
   `stroke_contains` 对应 Canvas `isPointInPath` / `isPointInStroke`。另有
   `bounds`、`transformed`。`cx.fill_path` / `cx.stroke_path` 带抗锯齿。
 - 上色：填充、描边、圆角矩形、文字和图标都接受纯色或 `Gradient`（`linear` /
@@ -450,7 +457,10 @@ painter。组件重写节点样式也不会把它冲掉。适合给内建组件�
 全部绘制命令（需要读回结果的 `measure_text` 和自定义命中逻辑除外。命中可以给
 一条路径）。长度可以写成相对节点尺寸的 `"50%"`、`"100% - 12"`。颜色写语义
 角色名、主题混色或 typed paint；调用 Runtime
-`PaintScript::from_json` 时请传 typed paint。路径写 SVG path 字符串。命令可按交互状态筛选。
+`PaintScript::from_json` 时请传 typed paint。路径支持 SVG path 字符串、分段数组、布尔组合对象
+`{ "op": "union" | "intersect" | "difference" | "xor", "paths": [...] }` 以及文字转路径对象
+`{ "textPath": { "text": "...", "origin": [x, y], ... } }`。`text` 命令同样支持 `family`、`letterSpacing`、
+`decoration`、`stroke` 与 `shadows`。命令可按交互状态筛选。
 写错的字段名直接报错（格式见 `PaintScript::from_json` 的文档）。图标按内建
 图标名画。
 

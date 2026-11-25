@@ -763,6 +763,8 @@ impl EmitRust for TextDecorationLine {
         self.underline.emit_rust(m, out);
         out.push_str(",line_through:");
         self.line_through.emit_rust(m, out);
+        out.push_str(",overline:");
+        self.overline.emit_rust(m, out);
         out.push('}');
     }
 }

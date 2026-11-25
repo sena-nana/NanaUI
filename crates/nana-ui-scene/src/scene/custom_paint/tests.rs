@@ -598,10 +598,12 @@ fn text_op(paint: ResolvedPaint) -> PaintOp {
         family: None,
         italic: false,
         line_height: None,
+        letter_spacing: 0.0,
         wrap: false,
         max_lines: None,
         horizontal: Default::default(),
         vertical: Default::default(),
+        effects: None,
     }
 }
 
@@ -1515,10 +1517,12 @@ fn concave_clip_erase_outside_spread_shadow_and_recording_contains_stay_consiste
             family: None,
             italic: false,
             line_height: None,
+            letter_spacing: 0.0,
             wrap: false,
             max_lines: None,
             horizontal: Default::default(),
             vertical: Default::default(),
+            effects: None,
         },
         PaintOp::PopClip,
     ];
@@ -1572,4 +1576,93 @@ fn concave_clip_erase_outside_spread_shadow_and_recording_contains_stay_consiste
     );
     assert_eq!(coverage_at(spread_sharp, [60.3, 60.7]).1, 0);
     assert_eq!(coverage_at(spread_blurred, [60.3, 60.7]).1, 0);
+}
+
+#[test]
+fn styled_custom_paint_text_emits_rich_effects_and_plain_keeps_zero_overhead() {
+    let rect = LayoutBox {
+        x: 0.0,
+        y: 0.0,
+        width: 120.0,
+        height: 40.0,
+    };
+    let plain = PaintOp::Text {
+        rect,
+        content: Arc::from("plain"),
+        paint: ResolvedPaint::Solid([1.0; 4]),
+        size: 14.0,
+        weight: None,
+        family: None,
+        italic: false,
+        line_height: None,
+        letter_spacing: 0.0,
+        wrap: false,
+        max_lines: None,
+        horizontal: Default::default(),
+        vertical: Default::default(),
+        effects: None,
+    };
+    let built_plain = build_ops(&[plain]);
+    let [BuiltOp::Text { text, .. }] = &built_plain[..] else {
+        panic!("expected single BuiltOp::Text: {built_plain:?}");
+    };
+    assert_eq!(text.letter_spacing, 0.0);
+    assert!(text.effects.is_none());
+
+    let styled = PaintOp::Text {
+        rect,
+        content: Arc::from("styled"),
+        paint: ResolvedPaint::Gradient(Arc::new(ResolvedGradient {
+            shape: nana_ui_runtime::GradientShape::Linear {
+                start: [0.0, 0.0],
+                end: [100.0, 0.0],
+            },
+            stops: vec![(0.0, [1.0, 0.0, 0.0, 1.0]), (1.0, [0.0, 0.0, 1.0, 1.0])],
+            linear_stops: None,
+            extend: nana_ui_runtime::GradientExtend::Pad,
+        })),
+        size: 16.0,
+        weight: None,
+        family: None,
+        italic: false,
+        line_height: None,
+        letter_spacing: 3.0,
+        wrap: false,
+        max_lines: None,
+        horizontal: Default::default(),
+        vertical: Default::default(),
+        effects: Some(Arc::new(nana_ui_runtime::ResolvedPaintTextEffects {
+            decoration: Some(nana_ui_runtime::ResolvedPaintTextDecoration {
+                line: nana_ui_core::TextDecorationLine {
+                    underline: true,
+                    line_through: false,
+                    overline: true,
+                },
+                style: nana_ui_core::TextDecorationStyle::Wavy,
+                color: Some(nana_ui_core::PaintColor::srgb([0.0, 1.0, 0.0, 1.0])),
+                thickness: Some(2.0),
+            }),
+            stroke: Some(nana_ui_runtime::ResolvedPaintTextStroke {
+                width: 2.0,
+                paint: ResolvedPaint::Solid([0.0, 0.0, 0.0, 1.0]),
+                join: nana_ui_core::TextStrokeJoin::Round,
+                placement: nana_ui_core::TextStrokePlacement::Under,
+            }),
+            shadows: Arc::from([nana_ui_core::RichTextShadow::new(
+                [2.0, 2.0],
+                4.0,
+                nana_ui_core::PaintColor::srgb([0.0, 0.0, 0.0, 0.5]),
+            )]),
+        })),
+    };
+    let built_styled = build_ops(&[styled]);
+    // Shadows + under-stroke + tinted fill layer + explicit-color decoration.
+    assert!(
+        built_styled.len() >= 5,
+        "expected separated shadow/stroke/tinted fill/decoration ops: {built_styled:?}"
+    );
+    assert!(built_styled.iter().any(|op| matches!(
+        op,
+        BuiltOp::Text { text, .. } if text.letter_spacing == 3.0 && text.effects.as_ref().is_some_and(|r| r.max_shadows() == 1)
+    )));
 }

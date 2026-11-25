@@ -67,5 +67,5 @@ pub use ir::{
     LineBox, LineBreakCause, OverflowFlags, PlacedEmphasis, PlacedObject, PlacedRuby, TextLayout,
     TextRect,
 };
-pub use placement::{GlyphPlacement, GlyphSource};
+pub use placement::{GlyphPlacement, GlyphSource, OutlineSink};
 pub use store::{StaleLayout, TextLayoutStore};

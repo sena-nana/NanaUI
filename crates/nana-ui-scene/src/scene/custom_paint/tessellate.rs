@@ -98,7 +98,7 @@ pub(super) fn path_is_drawable(path: &PaintPath, t: Affine) -> bool {
 
 /// How far from the node's origin a path may reach, under its transform,
 /// and still be drawn: a million pixels is far past any screen.
-pub(super) const MAX_COORDINATE: f32 = 1.0e6;
+pub(super) const MAX_COORDINATE: f32 = nana_ui_runtime::MAX_PATH_COORDINATE;
 
 /// The longest stroke width, blur or spread drawn as asked.
 pub(super) const MAX_LENGTH: f32 = 1.0e4;

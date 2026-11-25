@@ -76,8 +76,8 @@ pub use engine::{
 pub use id::{FontGeneration, FontId, FontSourceId, ShapeRunId, TextLayoutId, TextRevision};
 pub use layout::{
     GlyphPlacement, GlyphSource, IntrinsicWidths, LayoutCacheBudget, LayoutCounters, LayoutRequest,
-    Layouter, LineBox, LineBreakCause, OverflowFlags, PlacedEmphasis, PlacedObject, PlacedRuby,
-    ShapedEmphasis, StaleLayout, TextLayout, TextLayoutStore, TextRect,
+    Layouter, LineBox, LineBreakCause, OutlineSink, OverflowFlags, PlacedEmphasis, PlacedObject,
+    PlacedRuby, ShapedEmphasis, StaleLayout, TextLayout, TextLayoutStore, TextRect,
 };
 pub use metrics::{LineMetrics, RunMetrics};
 pub use shape::{GlyphFlags, RunDirection, RunOrientation, ScriptTag, ShapedGlyph, ShapedRun};

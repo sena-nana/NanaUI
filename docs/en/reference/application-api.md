@@ -390,12 +390,21 @@ interaction state, font set) are unchanged. When it only moves, even the triangu
   so it does not have to be folded into `paint_key`. Hover only considers whether the node itself is the hit target. When the pointer is over a child,
   the parent's `hovered` is false. This matches the built-in interactive appearance.
 - Text: `cx.measure_text(&text, max_width)` measures with the host's current layout engine (when no engine is wired,
-  it estimates by em). It matches what `cx.text` draws. `PaintText` supports wrapping, a maximum line count,
-  line height, italics, and font family (`family`, CSS `font-family` syntax; measuring and drawing read the same value). The color can be a gradient.
+  it estimates by em), returning `PaintTextMetrics` (overall width/height, `baseline`, `ascent` / `descent`,
+  Canvas `actualBoundingBox*` ink bounds, and per-line `lines` metrics). It matches what `cx.text` draws.
+  `PaintText` supports wrapping, a maximum line count, line height, letter spacing (`letter_spacing`), italics, font family
+  (`family`, CSS `font-family` syntax; measuring and drawing read the same value), text decorations (`decoration`:
+  underline / line-through / overline with color, `Solid`/`Double`/`Dotted`/`Dashed`/`Wavy` style, and thickness),
+  text stroke (`stroke`), and multi-layer text shadows (`shadows`). Both fill and stroke accept gradients.
+- Text-to-path: `cx.text_path(&text, origin, max_width)` (or `PaintPath::from_text`) converts shaped glyphs into a
+  `PaintPath` via `nana-text`'s `OutlineSink` (`skrifa` outline scaling), ready for fill, stroke, clip, hit-testing,
+  and path boolean operations.
 - Paths: `PaintPath` supports lines, quadratic / cubic Béziers, `arc`, and Canvas-semantics
   `arc_to` (rounds any corner, including concave ones). NonZero / EvenOdd. Parameters are written as scalars like Canvas
   (the last argument of `arc` is the sweep angle, the same as `QPainterPath::arcTo`,
-  not Canvas's end angle). `PaintPath::from_svg` builds a path from SVG path data. `contains` /
+  not Canvas's end angle). `PaintPath::from_svg` builds a path from SVG path data. Path boolean operations
+  `union` / `intersect` / `difference` / `xor` interpret each input by its own fill rule and flatten curves at
+  `PATH_FLATTEN_TOLERANCE` (matching Scene), returning a `PaintPath`. `contains` /
   `stroke_contains` correspond to Canvas `isPointInPath` / `isPointInStroke`. There are also
   `bounds` and `transformed`. `cx.fill_path` / `cx.stroke_path` are anti-aliased.
 - Color: fills, strokes, rounded rectangles, text, and icons all accept a solid color or a `Gradient` (`linear` /
@@ -452,7 +461,9 @@ Consumers that cannot use a Rust trait use `PaintScript` (behind Cargo feature `
 drawing commands (except `measure_text`, which needs to read back a result, and custom hit logic; for hit testing you can give
 a path). Lengths can be written relative to the node size as `"50%"` or `"100% - 12"`. Colors are semantic
 role names, theme mixes, or typed paint; when calling Runtime
-`PaintScript::from_json`, pass typed paint. Paths are SVG path strings. Commands can be filtered by interaction state.
+`PaintScript::from_json`, pass typed paint. Paths accept SVG path strings, segment arrays, boolean path objects
+`{ "op": "union" | "intersect" | "difference" | "xor", "paths": [...] }`, and `{ "textPath": { "text": "...", "origin": [x, y], ... } }`.
+The `text` command also supports `family`, `letterSpacing`, `decoration`, `stroke`, and `shadows`. Commands can be filtered by interaction state.
 A misspelled field name is an error (see the docs of `PaintScript::from_json` for the format). Icons are drawn by built-in
 icon name.
 

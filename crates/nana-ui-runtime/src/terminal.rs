@@ -400,6 +400,7 @@ impl AppContext {
                             text_ext.text_decoration = Some(TextDecorationLine {
                                 underline: cell.underline,
                                 line_through: false,
+                                overline: false,
                             });
                         }
                         layout.line_height = Some(LineHeightSpec::Absolute(view.cell_height));
@@ -489,6 +490,7 @@ impl AppContext {
                         text_ext.text_decoration = Some(TextDecorationLine {
                             underline: true,
                             line_through: false,
+                            overline: false,
                         });
                     }
                     ui.child("preedit", Text::new(view.preedit.clone()).style(style))?;

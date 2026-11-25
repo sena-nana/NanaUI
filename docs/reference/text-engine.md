@@ -1816,6 +1816,8 @@ cutover 之后仍有几条路径不经过 `nana-text` 量字。或者量了但�
 
 `TextLayout::glyph_placements(scale, origin)` 按绘制顺序给出每个要画的字形：先是各行，然后是 ruby、着重号、对象标签。每项带字体实例、栅格字号（排版 px 乘 `scale`）、字形号、笔位置（x 留小数做子像素，y 落在整像素基线上）、它代表的字节偏移和来源（`GlyphSource`）。竖排段落按列给出，侧躺的 run 标 `sideways`，栅格时顺时针转四分之一。字体层没能实例化的 run 没有字可画，跳过；它的前进量仍在行里，后面的字不动。renderer 的 resolve 就是这一遍加上颜色。
 
+`NativeTextEngine::emit_layout_outlines` 与 `layout_ink_bounds` 在无需开启 `raster` 特性时也可通过 `font/face.rs` 中的 `skrifa` 轮廓缩放提取矢量轮廓（经后端无关的 `OutlineSink` 输出），供自绘 `cx.text_path` / `PaintPath::from_text` 与 `PaintTextMetrics::actual_bounding_box_*` 复用。
+
 `raster` 特性（`nana-ui` 的 `gpu` 打开它）带来 `nana_text::raster`：
 
 - **栅格键**：`GlyphRasterKey` 及其各部分（`GlyphFontId`、`GlyphVariationId`、`GlyphSynthesis`、`GlyphRenderMode`、四分之一像素的 `SubpixelBin`、按位存的字号）。颜色、不透明度和变换不在键里。
