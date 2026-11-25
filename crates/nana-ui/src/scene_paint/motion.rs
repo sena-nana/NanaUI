@@ -831,8 +831,9 @@ mod tests {
         motion::{
             AnimatableProperty, AnimationDirection, AnimationFillMode, AnimationIteration,
             AnimationPlayState, AnimationPlayback, DecayParams, Easing, FilterValue, Keyframe,
-            MotionCurve, MotionHandle, MotionSample, MotionTo, MotionTrack, MotionTrackId,
-            MotionValue, SpringParams, StepJump, evaluate_track,
+            MotionCodecId, MotionCurve, MotionDescriptorStore, MotionHandle, MotionSample,
+            MotionTo, MotionTrack, MotionTrackId, MotionValue, SpringParams, StepJump,
+            evaluate_track,
         },
     };
     use nana_ui_runtime::scene_contract::ExtractedNode;
@@ -1088,6 +1089,35 @@ mod tests {
         (world, scene, handle, track)
     }
 
+    fn shader_track_scene(
+        spec: AnimationSpec,
+        present_at: Duration,
+    ) -> (MotionDescriptorStore, UiScene, MotionHandle, MotionTrack) {
+        let track = spec.to_motion_track().expect("valid motion track");
+        let codec = MotionCodecId::for_compositor_property(track.property)
+            .expect("GPU shader motion codec");
+        let mut store = MotionDescriptorStore::new();
+        let handle = store
+            .bind_shader(&track, codec)
+            .expect("shader motion descriptor handle");
+        let mut world = UiWorld::new();
+        let node = spec.target;
+        let mut queue = MutationQueue::new();
+        queue.create(node, DocumentId::new(1).unwrap(), NodeKind::Document);
+        world.commit(queue).unwrap();
+        let mut extracted: Vec<ExtractedNode> = world.extract_nodes(&[node]);
+        extracted[0].layout = LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 64.0,
+            height: 64.0,
+        };
+        let mut scene = UiScene::new();
+        scene.apply_delta(extracted, []);
+        scene.apply_presentation(world.presentation_store(), present_at, Some(&store));
+        (store, scene, handle, track)
+    }
+
     fn compositor_motion_scene(
         spec: AnimationSpec,
         present_at: Duration,
@@ -1255,6 +1285,33 @@ mod tests {
 
     #[expect(
         clippy::too_many_arguments,
+        reason = "parity fixture: GPU harness plus one descriptor store, track, and timestamps"
+    )]
+    fn assert_store_cpu_gpu_eval_parity(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        store: &MotionDescriptorStore,
+        scene: &UiScene,
+        handle: MotionHandle,
+        track: &MotionTrack,
+        timestamps: &[Duration],
+        label: &str,
+    ) {
+        let mut gpu = MotionGpuResources::new(device, &motion_bind_layout(device));
+        for now in timestamps {
+            let via_desc = store.evaluate(handle, *now).expect("evaluate_descriptor");
+            let via_track = evaluate_track(track, *now);
+            let stamp = format!("{label} @{}ms", now.as_millis());
+            assert_cpu_samples_match(&via_desc, &via_track, &stamp);
+            let readback = gpu
+                .evaluate_readback(device, queue, scene, handle.index().saturating_add(1), *now)
+                .expect("evaluate_readback");
+            assert_gpu_matches_cpu(&via_desc, &readback, &stamp);
+        }
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
         reason = "parity fixture: GPU harness plus one track and its timestamps"
     )]
     fn assert_cpu_gpu_eval_parity(
@@ -1267,20 +1324,16 @@ mod tests {
         timestamps: &[Duration],
         label: &str,
     ) {
-        let mut gpu = MotionGpuResources::new(device, &motion_bind_layout(device));
-        for now in timestamps {
-            let via_desc = world
-                .motion_descriptors()
-                .evaluate(handle, *now)
-                .expect("evaluate_descriptor");
-            let via_track = evaluate_track(track, *now);
-            let stamp = format!("{label} @{}ms", now.as_millis());
-            assert_cpu_samples_match(&via_desc, &via_track, &stamp);
-            let readback = gpu
-                .evaluate_readback(device, queue, scene, handle.index().saturating_add(1), *now)
-                .expect("evaluate_readback");
-            assert_gpu_matches_cpu(&via_desc, &readback, &stamp);
-        }
+        assert_store_cpu_gpu_eval_parity(
+            device,
+            queue,
+            world.motion_descriptors(),
+            scene,
+            handle,
+            track,
+            timestamps,
+            label,
+        );
     }
 
     fn assert_scalar_not_linear(cpu: &MotionSample, linear: f32, label: &str) {
@@ -1651,12 +1704,12 @@ mod tests {
             MotionValue::Color([0.1, 0.2, 0.9, 0.4]),
             MotionTo::Value(MotionValue::Color([0.9, 0.7, 0.2, 1.0])),
         );
-        let (world, scene, handle, track) =
-            motion_track_scene(color_spec, Duration::from_millis(16));
-        assert_cpu_gpu_eval_parity(
+        let (store, scene, handle, track) =
+            shader_track_scene(color_spec, Duration::from_millis(16));
+        assert_store_cpu_gpu_eval_parity(
             &device,
             &queue,
-            &world,
+            &store,
             &scene,
             handle,
             &track,
@@ -1698,11 +1751,11 @@ mod tests {
                 },
             ]),
         );
-        let (world, scene, handle, track) = motion_track_scene(bg_spec, Duration::from_millis(16));
-        assert_cpu_gpu_eval_parity(
+        let (store, scene, handle, track) = shader_track_scene(bg_spec, Duration::from_millis(16));
+        assert_store_cpu_gpu_eval_parity(
             &device,
             &queue,
-            &world,
+            &store,
             &scene,
             handle,
             &track,
