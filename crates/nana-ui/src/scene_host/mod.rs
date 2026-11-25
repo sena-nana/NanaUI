@@ -143,6 +143,7 @@ pub struct CompositionWork {
 
 struct WindowContext {
     surface_retry: Option<Instant>,
+    surface_generation: u64,
     applied_appearance: Option<windows::WindowAppearance>,
     cursor_override: Option<host_services::NativeCursor>,
     cursor_visible_override: Option<bool>,
@@ -232,7 +233,6 @@ struct WindowManager<Program: RuntimeProgram> {
     color_samplers: color_sampler::ColorSamplers,
     tasks: SyncSender<Task<Program::Message>>,
     animation_clock: RuntimeAnimationClock,
-    surface_generation: u64,
     frame_schedules: HashMap<WindowId, crate::runtime_host::FrameSchedule>,
     window_outputs: HashMap<WindowId, crate::output::window_output::WindowOutputState>,
     producer_frames: production::WindowProducerCache,

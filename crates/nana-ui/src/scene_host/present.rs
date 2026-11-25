@@ -871,7 +871,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         self.native_renderers.clear();
         self.next_gpu_retry = None;
         self.render_suspended = false;
-        self.bump_surface_generation();
+        self.bump_all_surface_generations();
         for (id, error) in failed {
             self.suspend_surface(id, error);
         }
@@ -929,8 +929,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         if recovered.is_empty() {
             return;
         }
-        self.bump_surface_generation();
         for id in recovered {
+            self.bump_window_surface_generation(id);
             if let Err(error) = self.sync_window_material(id) {
                 self.suspend_surface(id, error);
             } else {
@@ -1068,7 +1068,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
 
 /// Preserve the retained native target until a complete replacement is ready.
 /// A failed attempt consumes its deadline, so repeated loop wakes cannot spin.
-fn retry_surface<T, E>(
+pub(super) fn retry_surface<T, E>(
     surface: &mut T,
     deadline: &mut Option<Instant>,
     now: Instant,
@@ -1087,6 +1087,32 @@ fn retry_surface<T, E>(
             false
         }
     }
+}
+
+/// Retry suspended window surfaces and bump `surface_generation` ONLY for the
+/// recovered window(s), leaving healthy sibling windows untouched.
+#[cfg(test)]
+pub(super) fn recover_window_surfaces<T, E>(
+    windows: &mut [(
+        WindowId,
+        &mut T,
+        &mut Option<Instant>,
+        &mut u64,
+        &mut nana_ui_scene::RuntimeDocument,
+    )],
+    now: Instant,
+    mut rebind: impl FnMut(WindowId, &mut T) -> Result<(), E>,
+) -> Vec<WindowId> {
+    let mut recovered = Vec::new();
+    for (id, surface, retry, generation, document) in windows {
+        if retry_surface(*surface, *retry, now, |surface| rebind(*id, surface)) {
+            let doc_gen = document.scene().surface_generation();
+            let next = super::schedule::advance_surface_generation(*generation, doc_gen);
+            document.set_surface_generation(next);
+            recovered.push(*id);
+        }
+    }
+    recovered
 }
 
 #[cfg(test)]

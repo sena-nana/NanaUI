@@ -37,7 +37,7 @@ After `flush`, the host acquires the current window's Surface, and records graph
 
 - **One authority for submit and rollback**: submit (`submit`) and discard (`discard` / drop) are owned exclusively by `FrameContext`. As soon as encoding or painting fails, the whole frame is discarded immediately, and retained-state writes the painter registered on that frame roll back automatically. If a previous frame painted a render target but has neither submitted nor discarded, painting that target again returns `ScenePaintError::TargetInFlight`.
 - **When textures are released**: only after the `window_frame_presented` callback fires can the application safely release or reuse textures replaced in the previous frame.
-- **On-demand refresh and hidden recovery**: static windows stay on `FrameDemand::OnDemand`. When a window has an active compositor track, only that window switches to the lightweight `FrameDemand::Continuous`. While a window is minimized or occluded, no hidden GPU frames run; when it becomes visible again it evaluates directly at absolute time. After the device or Surface is rebuilt, the host calls `UiScene::set_surface_generation`.
+- **On-demand refresh and hidden recovery**: static windows stay on `FrameDemand::OnDemand`. When a window has an active compositor track, only that window switches to the lightweight `FrameDemand::Continuous`. While a window is minimized or occluded, no hidden GPU frames run; when it becomes visible again it evaluates directly at absolute time. Single-window surface recovery bumps `UiScene::set_surface_generation` only for the recovered window(s), while device-loss recovery bumps every window.
 
 ## Read next
 

@@ -189,6 +189,7 @@ impl WindowSessionBuilder {
         let pending_fullscreen = self.settings.fullscreen;
         Ok(WindowContext {
             surface_retry: None,
+            surface_generation: 0,
             applied_appearance: None,
             cursor_override: None,
             cursor_visible_override: None,
@@ -741,7 +742,6 @@ pub(super) fn complete_startup<Program: RuntimeProgram>(
         web_surfaces: HashMap::new(),
         tasks,
         animation_clock,
-        surface_generation: 0,
         frame_schedules: HashMap::new(),
         window_outputs: HashMap::new(),
         producer_frames: production::WindowProducerCache::default(),

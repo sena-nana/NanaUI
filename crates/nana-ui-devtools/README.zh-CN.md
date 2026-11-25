@@ -17,7 +17,7 @@ NanaUI 的无头会话与离屏快照，给开发工具和测试用。
 - `headless-host`：在 `runtime-agent` 之上加 `HeadlessHost`，按原生宿主的钩子顺序运行整个 `RuntimeProgram`（并提供可控时钟与稳态推进、目标定位、命中测试、场景探针、视图检查、直通 PNG 导出与像素比对）。
 - `reactive-trace`：在 `runtime-agent` 视图检查结果与 `inspect-overlay` 信号追踪中附带节点最近一次变化的原因（可与 `inspect-overlay` 单独搭配，不拉入 `offscreen` 或 GPU crate）。
 
-这条链之外，`inspect-overlay`（只依赖 Runtime，不含 GPU）给开发期宿主一个窗口内实时检查叠加层：`inspect::InspectOverlay` 把文档转成绘制数据——指针下节点的 margin、border、padding、content 四层盒子和尺寸标签，最近一次布局重算过的节点（布局缓存未命中；没高亮的已布局节点复用了缓存），以及悬停节点的绑定位置和布局原因，开 `reactive-trace` 时再附上最近一次修补它的信号写入。矩形和标签由宿主画在自己那一帧之上，保留树和场景里不增加任何东西。叠加层关闭时 `update` 在第一个判断就返回：不分配、不做命中测试、没有要画的东西。
+这条链之外，`inspect-overlay`（只依赖 Runtime，不含 GPU）给开发期宿主一个窗口内实时检查叠加层：`inspect::InspectOverlay` 把文档转成绘制数据——指针下节点的 margin、border、padding、content 四层盒子和尺寸标签、最近一次布局重算过的节点（布局缓存未命中；没高亮的已布局节点复用了缓存）、经 `UiWorld::inspect_motion()` 读取的活跃动效轨道（CPU/GPU 求值后端、合成层、回退原因、实时 `MotionHandle`、`next_deadline` 及 `OverlayFrame::motion_rows` 面板行），以及悬停节点的绑定位置和布局原因，开 `reactive-trace` 时再附上最近一次修补它的信号写入。矩形和标签由宿主画在自己那一帧之上，保留树和场景里不增加任何东西。叠加层关闭时 `update` 在第一个判断就返回：不分配、不做命中测试、没有要画的东西。
 
 ## 示例
 

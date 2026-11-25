@@ -94,7 +94,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 painter,
             );
         let mut host_revision = image_revision
-            ^ self.surface_generation.rotate_left(32)
+            ^ self.window_surface_generation(id).rotate_left(32)
             ^ renderer_revision.flatten().unwrap_or(0).rotate_left(11);
         if let Some(revision) = producer_revision {
             use std::hash::{Hash, Hasher};
@@ -307,13 +307,14 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     ) {
         self.ensure_direct_output_trace(id);
         let device = self.graphics.gpu().generation();
+        let resource_generation = self.window_surface_generation(id).saturating_add(1);
         let Some(trace) = self.direct_output_traces.get_mut(&id) else {
             return;
         };
         trace.extent = extent;
         trace.format = profile.target_format;
         trace.device_generation = device;
-        trace.resource_generation = self.surface_generation.saturating_add(1);
+        trace.resource_generation = resource_generation;
         trace.content_revision = trace.content_revision.saturating_add(1);
         trace.state = crate::output::OutputTraceState::Submitted;
         trace.deferral_reason = crate::output::OutputTraceDeferral::None;

@@ -37,7 +37,7 @@
 
 - **提交与回滚单一权威**：提交（`submit`）与丢弃（`discard` / drop）均由 `FrameContext` 独占负责。一旦编码或绘制出错，整帧立即丢弃，painter 登记在该帧上的保留状态写入会自动回滚；若前一帧画过某个渲染目标但尚未提交也未丢弃，再次绘制该目标会返回 `ScenePaintError::TargetInFlight`。
 - **纹理释放时点**：直到 `window_frame_presented` 回调触发后，应用才可以安全释放或复用上一帧被替换下来的纹理。
-- **按需刷新与隐藏恢复**：静态窗口保持 `FrameDemand::OnDemand`；当某扇窗口存在活动合成器轨道时，仅将该窗口切入轻量的 `FrameDemand::Continuous`。窗口最小化或被遮挡期间不空跑隐藏 GPU 帧，恢复可见后按绝对时间直接求值；设备或 Surface 重建后由宿主调用 `UiScene::set_surface_generation`。
+- **按需刷新与隐藏恢复**：静态窗口保持 `FrameDemand::OnDemand`；当某扇窗口存在活动合成器轨道时，仅将该窗口切入轻量的 `FrameDemand::Continuous`。窗口最小化或被遮挡期间不空跑隐藏 GPU 帧，恢复可见后按绝对时间直接求值；单窗口 Surface 重建只按受影响窗口递增 `UiScene::set_surface_generation`，仅设备丢失全局切换时为所有窗口递增。
 
 ## 接着读
 

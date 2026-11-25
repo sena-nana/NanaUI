@@ -626,15 +626,36 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         });
     }
 
-    pub(super) fn bump_surface_generation(&mut self) {
-        self.surface_generation = self.surface_generation.wrapping_add(1);
-        let generation = self.surface_generation;
+    pub(super) fn window_surface_generation(&self, id: WindowId) -> u64 {
+        self.window_contexts
+            .get(&id)
+            .map_or(0, |host| host.surface_generation)
+    }
+
+    pub(super) fn bump_window_surface_generation(&mut self, id: WindowId) -> Option<u64> {
+        let doc_generation = self
+            .program
+            .read_document(id, |document| document.scene().surface_generation())
+            .unwrap_or(0);
+        let host = self.window_contexts.get_mut(&id)?;
+        let next = advance_surface_generation(&mut host.surface_generation, doc_generation);
+        let _ = self.program.write_document(id, |document| {
+            document.set_surface_generation(next);
+        });
+        Some(next)
+    }
+
+    pub(super) fn bump_all_surface_generations(&mut self) {
         for id in self.known_window_ids() {
-            let _ = self.program.write_document(id, |document| {
-                document.set_surface_generation(generation);
-            });
+            self.bump_window_surface_generation(id);
         }
     }
+}
+
+pub(super) fn advance_surface_generation(window_generation: &mut u64, doc_generation: u64) -> u64 {
+    let next = (*window_generation).max(doc_generation).wrapping_add(1);
+    *window_generation = next;
+    next
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1197,6 +1218,242 @@ mod tests {
             None,
             "once pending events drain, an idle document schedules no wakeup"
         );
+    }
+
+    #[test]
+    fn dual_window_compositor_wakes_only_active_window_and_recovers_single_surface() {
+        use nana_ui_platform::WindowId;
+        use nana_ui_runtime::{
+            AnimatableProperty, AnimationFillMode, AnimationId, AnimationPlayback, AnimationSpec,
+            DocumentId, Easing, LayoutViewport, MeasureTextShaper, MotionTo, MotionValue,
+            MutationQueue, Stack,
+        };
+        use nana_ui_scene::RuntimeDocument;
+
+        let epoch = Instant::now();
+        let clock = crate::RuntimeAnimationClock::new(epoch);
+        let viewport = LayoutViewport::new(320.0, 240.0);
+
+        let doc1_id = DocumentId::new(1).unwrap();
+        let doc2_id = DocumentId::new(2).unwrap();
+        let mut doc1 = RuntimeDocument::new(doc1_id);
+        let mut doc2 = RuntimeDocument::new(doc2_id);
+
+        let build_node = |doc: &mut RuntimeDocument,
+                          doc_id: DocumentId,
+                          anim_dur: Duration|
+         -> (nana_ui_runtime::StableNodeId, AnimationId) {
+            let entity = doc
+                .context_mut()
+                .create_component(doc_id, Stack::fill_column(0.0))
+                .unwrap();
+            let node = entity.stable_id();
+            let anim_id = AnimationId::for_node(node, AnimatableProperty::Opacity);
+            let mut queue = MutationQueue::new();
+            queue.start_animation(
+                AnimationSpec::new(
+                    anim_id,
+                    node,
+                    Duration::ZERO,
+                    anim_dur,
+                    Duration::from_millis(16),
+                    Easing::Linear,
+                )
+                .with_property(AnimatableProperty::Opacity)
+                .with_range(
+                    MotionValue::Scalar(1.0),
+                    MotionTo::Value(MotionValue::Scalar(0.3)),
+                )
+                .with_playback(AnimationPlayback {
+                    fill_mode: AnimationFillMode::Forwards,
+                    ..AnimationPlayback::default()
+                }),
+            );
+            doc.context_mut().commit_mutations(queue).unwrap();
+            (node, anim_id)
+        };
+
+        let (node1, anim1) = build_node(&mut doc1, doc1_id, Duration::from_millis(800));
+        let (node2, anim2) = build_node(&mut doc2, doc2_id, Duration::from_millis(10));
+
+        // Promote compositor layers on both windows past LAYER_PROMOTE_HOLD (16ms),
+        // then advance past doc2's completion + demotion hold so doc2 holds its
+        // finished layer idle (`compositor_needs_tick() == false`) while doc1
+        // stays actively animating.
+        for ms in [0u64, 20, 160] {
+            let runtime_now = Duration::from_millis(ms);
+            for doc in [&mut doc1, &mut doc2] {
+                doc.sync_presentation_clock(runtime_now);
+                doc.context_mut().advance_animations(runtime_now);
+                doc.flush(viewport, &mut MeasureTextShaper).unwrap();
+            }
+        }
+
+        assert!(doc1.compositor_needs_tick());
+        assert!(!doc2.compositor_needs_tick());
+        assert!(doc1.scene().compositor_layer(node1).is_some());
+        assert!(doc2.scene().compositor_layer(node2).is_some());
+        assert_ne!(doc1.scene().compositor_gpu_motion_ids(node1), (0, 0));
+
+        // Part (a): Drive host frame demand across 10 steps at 120 Hz. Only the
+        // active compositor window wakes and redraws; the idle neighbor stays
+        // `OnDemand` with 0 redraws.
+        let mut sched1 = FrameSchedule::default();
+        let mut sched2 = FrameSchedule::default();
+        let mut redraws1 = 0u32;
+        let mut redraws2 = 0u32;
+        let step = Duration::from_secs(1) / 120;
+        let sim_start = epoch + Duration::from_millis(160);
+        for index in 0u32..10 {
+            let now = sim_start + step * index;
+            for (doc, sched, redraws) in [
+                (&mut doc1, &mut sched1, &mut redraws1),
+                (&mut doc2, &mut sched2, &mut redraws2),
+            ] {
+                doc.sync_presentation_clock(clock.runtime_time(now));
+                let demand = super::window_present_demand(
+                    FrameDemand::OnDemand,
+                    doc.compositor_needs_tick(),
+                    true,
+                    None,
+                );
+                let tick = frame_tick(true, sched.due(demand, now), true);
+                if tick == FrameTick::Present {
+                    *redraws += 1;
+                    let _ = sched.advance_served(demand, now);
+                } else {
+                    let _ = sched.arm(demand, now);
+                }
+            }
+            assert!(!super::animation_due(clock, &doc2, now));
+        }
+        assert!(
+            redraws1 >= 8,
+            "active compositor window should redraw at ~120Hz, got {redraws1}"
+        );
+        assert_eq!(
+            redraws2, 0,
+            "idle neighbor window must stay OnDemand with 0 redraws"
+        );
+        assert_eq!(
+            super::window_present_demand(
+                FrameDemand::OnDemand,
+                doc2.compositor_needs_tick(),
+                true,
+                None
+            ),
+            FrameDemand::OnDemand
+        );
+
+        // Part (b): Single-window surface recovery bumps ONLY window 1's
+        // `surface_generation` and preserves valid handles without touching
+        // window 2's scene, compositor layer, or presentation epoch.
+        let win1 = WindowId::PRIMARY;
+        let win2 = WindowId(2);
+        let mut surf1 = 10u32;
+        let mut surf2 = 20u32;
+        let recover_at = sim_start + Duration::from_millis(100);
+        let mut retry1 = Some(recover_at);
+        let mut retry2 = None;
+        let mut gen1 = 0u64;
+        let mut gen2 = 0u64;
+        let doc2_epoch_before = doc2.scene().presentation_epoch();
+        let handle1_before = doc1
+            .context()
+            .world()
+            .motion_descriptors()
+            .handle_for(anim1.track_id())
+            .expect("live descriptor handle for active window");
+        assert!(!handle1_before.is_null());
+        let handle2_before = doc2
+            .context()
+            .world()
+            .motion_descriptors()
+            .handle_for(anim2.track_id());
+
+        let recovered = {
+            let mut windows = [
+                (win1, &mut surf1, &mut retry1, &mut gen1, &mut doc1),
+                (win2, &mut surf2, &mut retry2, &mut gen2, &mut doc2),
+            ];
+            super::super::present::recover_window_surfaces(
+                &mut windows,
+                recover_at,
+                |id, surface| {
+                    assert_eq!(id, win1, "only suspended window should be rebound");
+                    *surface += 1;
+                    Ok::<_, ()>(())
+                },
+            )
+        };
+
+        assert_eq!(recovered, vec![win1]);
+        assert_eq!(surf1, 11);
+        assert_eq!(surf2, 20);
+        assert_eq!(gen1, 1);
+        assert_eq!(gen2, 0);
+        assert_eq!(doc1.scene().surface_generation(), 1);
+        assert_eq!(
+            doc1.scene()
+                .compositor_layer(node1)
+                .unwrap()
+                .surface_generation,
+            1
+        );
+        assert_eq!(doc2.scene().surface_generation(), 0);
+        assert_eq!(
+            doc2.scene()
+                .compositor_layer(node2)
+                .unwrap()
+                .surface_generation,
+            0
+        );
+        assert_eq!(doc2.scene().presentation_epoch(), doc2_epoch_before);
+        assert_eq!(
+            doc2.context()
+                .world()
+                .motion_descriptors()
+                .handle_for(anim2.track_id()),
+            handle2_before
+        );
+
+        // Recovered window continues evaluating with valid live MotionHandle
+        // and non-zero GPU motion IDs at surface_generation == 1.
+        let post_recovery = Duration::from_millis(260);
+        doc1.sync_presentation_clock(post_recovery);
+        doc1.context_mut().advance_animations(post_recovery);
+        doc1.flush(viewport, &mut MeasureTextShaper).unwrap();
+        let handle1_after = doc1
+            .context()
+            .world()
+            .motion_descriptors()
+            .handle_for(anim1.track_id())
+            .expect("recovered window retains live descriptor handle");
+        assert_eq!(handle1_after, handle1_before);
+        assert!(!handle1_after.is_null());
+        assert!(
+            doc1.context()
+                .world()
+                .motion_descriptors()
+                .evaluate(handle1_after, post_recovery)
+                .is_some()
+        );
+        assert_ne!(doc1.scene().compositor_gpu_motion_ids(node1), (0, 0));
+        assert_eq!(
+            doc1.scene()
+                .compositor_layer(node1)
+                .unwrap()
+                .surface_generation,
+            1
+        );
+
+        // Device-wide replacement bumps every window independently.
+        let next1 = super::advance_surface_generation(&mut gen1, doc1.scene().surface_generation());
+        let next2 = super::advance_surface_generation(&mut gen2, doc2.scene().surface_generation());
+        doc1.set_surface_generation(next1);
+        doc2.set_surface_generation(next2);
+        assert_eq!(doc1.scene().surface_generation(), 2);
+        assert_eq!(doc2.scene().surface_generation(), 1);
     }
 }
 

@@ -21,8 +21,12 @@
 //! host draws nothing; turning it on allocates only inside `update`.
 
 use std::fmt::Write as _;
+use std::time::Duration;
 
-use nana_ui::runtime::{AppContext, DocumentId, LayoutBox, StableNodeId};
+use nana_ui::runtime::{
+    AnimatableProperty, AnimationClass, AppContext, DocumentId, LayoutBox, MotionEvaluatorBackend,
+    MotionHandle, MotionInspectorEntry, MotionValue, StableNodeId,
+};
 use nana_ui_core::{FontSizeContext, PaddingSpec};
 
 /// Most relayout rectangles one frame draws; a full relayout of a large
@@ -34,6 +38,10 @@ pub const MAX_RELAYOUT_QUADS: usize = 4096;
 pub enum QuadRole {
     /// A node the latest layout pass recomputed (a layout cache miss).
     Relayout,
+    /// An active motion track evaluated on the GPU compositor path.
+    MotionGpu,
+    /// An active motion track evaluated on the CPU (Layout/Paint/Discrete or CPU fallback).
+    MotionCpu,
     /// The hovered node's margin box.
     Margin,
     /// Its border box.
@@ -50,6 +58,8 @@ impl QuadRole {
     pub const fn color(self) -> [f32; 4] {
         match self {
             Self::Relayout => [0.85, 0.20, 0.75, 0.22],
+            Self::MotionGpu => [0.16, 0.78, 0.56, 0.34],
+            Self::MotionCpu => [0.95, 0.58, 0.16, 0.34],
             Self::Margin => [0.96, 0.70, 0.42, 0.55],
             Self::Border => [1.00, 0.86, 0.50, 0.60],
             Self::Padding => [0.58, 0.77, 0.49, 0.55],
@@ -95,6 +105,7 @@ pub struct InspectLayers {
     pub box_model: bool,
     pub relayout: bool,
     pub bindings: bool,
+    pub motion: bool,
 }
 
 impl Default for InspectLayers {
@@ -103,18 +114,42 @@ impl Default for InspectLayers {
             box_model: true,
             relayout: true,
             bindings: true,
+            motion: true,
         }
     }
+}
+
+/// One structured Motion Inspector row projected from [`MotionInspectorEntry`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct MotionInspectorRow {
+    pub node: StableNodeId,
+    pub property: AnimatableProperty,
+    pub animation_class: AnimationClass,
+    pub evaluator: MotionEvaluatorBackend,
+    pub layer: Option<u64>,
+    pub layer_promotion_reason: Option<&'static str>,
+    pub cpu_fallback: Option<String>,
+    pub ineffective_reason: Option<String>,
+    pub logical: Option<MotionValue>,
+    pub presentation: Option<MotionValue>,
+    pub next_deadline: Option<Duration>,
+    pub gpu_handle: Option<MotionHandle>,
+    pub has_live_handle: bool,
+    pub rect: Option<LayoutBox>,
+    pub summary: String,
+    pub diagnostics: String,
 }
 
 /// Draw data for one frame. Empty while the overlay is off.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct OverlayFrame {
-    /// Rectangles in paint order: relayout highlights, then the hovered
-    /// node's margin, border, padding and content boxes.
+    /// Rectangles in paint order: relayout highlights, active motion overlay
+    /// tracks, then the hovered node's margin, border, padding and content boxes.
     pub quads: Vec<OverlayQuad>,
     /// Text in paint order, after every quad.
     pub labels: Vec<OverlayLabel>,
+    /// Visual Motion Inspector panel rows backed by `UiWorld::inspect_motion`.
+    pub motion_rows: Vec<MotionInspectorRow>,
     pub hovered: Option<HoveredBox>,
     /// Nodes of this document the latest layout pass recomputed, including
     /// any past [`MAX_RELAYOUT_QUADS`].
@@ -124,12 +159,13 @@ pub struct OverlayFrame {
 impl OverlayFrame {
     /// Nothing to draw.
     pub fn is_empty(&self) -> bool {
-        self.quads.is_empty() && self.labels.is_empty()
+        self.quads.is_empty() && self.labels.is_empty() && self.motion_rows.is_empty()
     }
 
     fn clear(&mut self) {
         self.quads.clear();
         self.labels.clear();
+        self.motion_rows.clear();
         self.hovered = None;
         self.relaid_out = 0;
     }
@@ -190,12 +226,28 @@ impl InspectOverlay {
     /// Rebuild the draw data from `document` after its layout pass. Off,
     /// this returns at once: no allocation, no lookup, an empty frame.
     pub fn update(&mut self, context: &AppContext, document: DocumentId) -> &OverlayFrame {
+        self.update_with_motion_annotation(context, document, |_| {})
+    }
+
+    /// Rebuild draw data from `document` and let the caller annotate
+    /// [`MotionInspectorEntry`] rows (for example via
+    /// `UiScene::annotate_motion_inspector`) without performing GPU readback.
+    /// Off, this returns at once with zero allocations and zero queries.
+    pub fn update_with_motion_annotation(
+        &mut self,
+        context: &AppContext,
+        document: DocumentId,
+        annotate: impl FnOnce(&mut [MotionInspectorEntry]),
+    ) -> &OverlayFrame {
         if !self.enabled {
             return &self.frame;
         }
         self.frame.clear();
         if self.layers.relayout {
             self.collect_relayout(context, document);
+        }
+        if self.layers.motion {
+            self.collect_motion(context, document, annotate);
         }
         if let Some((x, y)) = self.pointer
             && (self.layers.box_model || self.layers.bindings)
@@ -204,6 +256,97 @@ impl InspectOverlay {
             self.collect_hovered(context, node);
         }
         &self.frame
+    }
+
+    fn collect_motion(
+        &mut self,
+        context: &AppContext,
+        document: DocumentId,
+        annotate: impl FnOnce(&mut [MotionInspectorEntry]),
+    ) {
+        let world = context.world();
+        let mut entries = world.inspect_motion();
+        entries.retain(|entry| {
+            StableNodeId::new(entry.node).and_then(|id| world.document_of(id)) == Some(document)
+        });
+        if entries.is_empty() {
+            return;
+        }
+        annotate(&mut entries);
+
+        let mut fallback_y = 8.0f32;
+        for entry in entries {
+            let Some(node) = StableNodeId::new(entry.node) else {
+                continue;
+            };
+            let rect = world.layout_result(node).map(|result| result.border_box);
+            let role = match entry.evaluator {
+                MotionEvaluatorBackend::Gpu => QuadRole::MotionGpu,
+                MotionEvaluatorBackend::Cpu => QuadRole::MotionCpu,
+            };
+            if let Some(rect) = rect {
+                self.frame.quads.push(OverlayQuad {
+                    rect,
+                    role,
+                    color: role.color(),
+                });
+            }
+
+            let has_live_handle = entry.gpu_handle.is_some_and(|handle| !handle.is_null());
+            let summary = entry.format_summary();
+            let diagnostics = entry.format_diagnostics();
+
+            let (anchor_x, mut line_y) = match rect {
+                Some(rect) => (rect.x, rect.y),
+                None => (8.0, fallback_y),
+            };
+            let mut push_label = |text: String| {
+                self.frame.labels.push(OverlayLabel {
+                    anchor: (anchor_x, line_y),
+                    text,
+                });
+                line_y += LABEL_LINE;
+            };
+
+            for line in diagnostics.lines() {
+                push_label(line.to_owned());
+            }
+            if !has_live_handle {
+                push_label(String::from("GPU handle: none"));
+            }
+            if entry.base.is_some() || entry.presentation.is_some() {
+                let mut values = String::new();
+                let _ = write!(
+                    values,
+                    "Values: logical={} presentation={}",
+                    format_opt_motion_value(entry.base),
+                    format_opt_motion_value(entry.presentation),
+                );
+                push_label(values);
+            }
+            if rect.is_none() {
+                fallback_y = line_y + 4.0;
+            }
+
+            self.frame.motion_rows.push(MotionInspectorRow {
+                node,
+                property: entry.property,
+                animation_class: entry.class,
+                evaluator: entry.evaluator,
+                layer: entry.layer,
+                layer_promotion_reason: entry.layer_promotion_reason,
+                cpu_fallback: entry.cpu_fallback_reason,
+                ineffective_reason: entry.ineffective_reason,
+                logical: entry.base,
+                presentation: entry.presentation,
+                next_deadline: entry.next_deadline,
+                gpu_handle: entry.gpu_handle,
+                has_live_handle,
+                rect,
+                summary,
+                diagnostics,
+            });
+        }
     }
 
     fn collect_relayout(&mut self, context: &AppContext, document: DocumentId) {
@@ -336,6 +479,22 @@ impl InspectOverlay {
 
 /// Line height the labels are laid out with, in document pixels.
 pub const LABEL_LINE: f32 = 16.0;
+
+fn format_opt_motion_value(value: Option<MotionValue>) -> String {
+    match value {
+        Some(MotionValue::Scalar(scalar)) => format!("{scalar:.3}"),
+        Some(MotionValue::Color([r, g, b, a])) => format!("rgba({r:.3},{g:.3},{b:.3},{a:.3})"),
+        Some(MotionValue::Transform(transform)) => format!(
+            "matrix({:.2},{:.2},{:.2},{:.2},{:.2},{:.2})",
+            transform.a, transform.b, transform.c, transform.d, transform.e, transform.f
+        ),
+        Some(MotionValue::Filter(filter)) => {
+            format!("filter(blur={:.2},op={:.2})", filter.0[6], filter.0[5])
+        }
+        Some(MotionValue::Discrete(tag)) => format!("discrete({tag})"),
+        None => String::from("none"),
+    }
+}
 
 fn round(value: f32) -> f32 {
     (value * 10.0).round() / 10.0
@@ -543,6 +702,7 @@ mod tests {
             box_model: false,
             relayout: true,
             bindings: false,
+            motion: false,
         });
         let frame = overlay.update(&context, document);
         assert_eq!(frame.quads.len(), 2);
@@ -679,6 +839,169 @@ mod tests {
                 .iter()
                 .any(|label| label.text.contains("signal ")),
             "expected signal creation location in labels: {:?}",
+            frame.labels
+        );
+    }
+
+    #[test]
+    fn motion_inspector_renders_gpu_vs_cpu_handles_and_next_deadline() {
+        use nana_ui::runtime::{
+            AnimationId, AnimationPlayback, AnimationSpec, Easing, MotionTo, MutationQueue,
+        };
+
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        context
+            .mount_view_root(document, || {
+                let gpu_box = Stack::column(0.0).with_layout(|layout| {
+                    layout.width = Some(LengthSpec::Px(120.0));
+                    layout.height = Some(LengthSpec::Px(40.0));
+                });
+                let cpu_box = Stack::column(0.0).with_layout(|layout| {
+                    layout.width = Some(LengthSpec::Px(100.0));
+                    layout.height = Some(LengthSpec::Px(40.0));
+                });
+                widget(Stack::column(0.0)).children((widget(gpu_box), widget(cpu_box)))
+            })
+            .unwrap();
+        let nodes = context.world().document_order(document);
+        let gpu_node = nodes[1];
+        let cpu_node = nodes[2];
+
+        let mut queue = MutationQueue::new();
+        queue.start_animation(
+            AnimationSpec::new(
+                AnimationId::new(1).unwrap(),
+                gpu_node,
+                Duration::ZERO,
+                Duration::from_millis(200),
+                Duration::from_millis(16),
+                Easing::Linear,
+            )
+            .with_property(AnimatableProperty::Opacity)
+            .with_range(
+                MotionValue::Scalar(1.0),
+                MotionTo::Value(MotionValue::Scalar(0.25)),
+            )
+            .with_playback(AnimationPlayback::default()),
+        );
+        queue.start_animation(
+            AnimationSpec::new(
+                AnimationId::new(2).unwrap(),
+                cpu_node,
+                Duration::ZERO,
+                Duration::from_millis(200),
+                Duration::from_millis(16),
+                Easing::Linear,
+            )
+            .with_property(AnimatableProperty::Width)
+            .with_range(
+                MotionValue::Scalar(100.0),
+                MotionTo::Value(MotionValue::Scalar(180.0)),
+            )
+            .with_playback(AnimationPlayback::default()),
+        );
+        context.commit_mutations(queue).unwrap();
+        context.advance_animations(Duration::from_millis(32));
+
+        let nodes = context.world().document_order(document);
+        context.resolve_styles(&nodes).unwrap();
+        context.shape_text(&nodes, &mut MeasureTextShaper).unwrap();
+        context
+            .layout_document(document, LayoutViewport::new(400.0, 300.0))
+            .unwrap();
+
+        let mut overlay = InspectOverlay::new();
+        overlay.set_layers(InspectLayers {
+            box_model: false,
+            relayout: false,
+            bindings: false,
+            motion: true,
+        });
+
+        // Off: zero allocations and empty motion rows.
+        let (empty, allocations) = counted(|| overlay.update(&context, document).is_empty());
+        assert!(empty);
+        assert_eq!(allocations, 0);
+
+        overlay.set_enabled(true);
+        let frame = overlay.update_with_motion_annotation(&context, document, |entries| {
+            for entry in entries {
+                if entry.node == gpu_node.get() {
+                    entry.layer = Some(gpu_node.get());
+                }
+            }
+        });
+
+        assert_eq!(frame.motion_rows.len(), 2);
+        let gpu_row = frame
+            .motion_rows
+            .iter()
+            .find(|row| row.node == gpu_node)
+            .expect("gpu compositor row");
+        assert_eq!(gpu_row.animation_class, AnimationClass::Compositor);
+        assert_eq!(gpu_row.evaluator, MotionEvaluatorBackend::Gpu);
+        assert_eq!(gpu_row.layer, Some(gpu_node.get()));
+        assert!(gpu_row.has_live_handle);
+        assert!(gpu_row.gpu_handle.is_some_and(|handle| !handle.is_null()));
+        assert_eq!(gpu_row.cpu_fallback, None);
+        assert!(gpu_row.next_deadline.is_some());
+        assert_eq!(gpu_row.logical, Some(MotionValue::Scalar(1.0)));
+        assert_ne!(gpu_row.presentation, gpu_row.logical);
+        assert!(gpu_row.summary.contains("Class: Compositor"));
+        assert!(gpu_row.summary.contains("Evaluator: GPU"));
+        assert!(
+            gpu_row
+                .summary
+                .contains(&format!("Layer: #{}", gpu_node.get()))
+        );
+
+        let cpu_row = frame
+            .motion_rows
+            .iter()
+            .find(|row| row.node == cpu_node)
+            .expect("cpu layout row");
+        assert_eq!(cpu_row.animation_class, AnimationClass::Layout);
+        assert_eq!(cpu_row.evaluator, MotionEvaluatorBackend::Cpu);
+        assert_eq!(cpu_row.layer, None);
+        assert!(!cpu_row.has_live_handle);
+        assert!(cpu_row.cpu_fallback.is_some());
+        assert!(cpu_row.next_deadline.is_some());
+        assert!(cpu_row.summary.contains("Class: Layout"));
+        assert!(cpu_row.summary.contains("Evaluator: CPU"));
+
+        assert!(frame.quads.iter().any(|q| q.role == QuadRole::MotionGpu));
+        assert!(frame.quads.iter().any(|q| q.role == QuadRole::MotionCpu));
+        assert!(
+            frame
+                .labels
+                .iter()
+                .any(|l| l.text.contains("GPU handle: index=")),
+            "expected live handle label: {:?}",
+            frame.labels
+        );
+        assert!(
+            frame
+                .labels
+                .iter()
+                .any(|l| l.text.contains("GPU handle: none")),
+            "expected absent handle label: {:?}",
+            frame.labels
+        );
+        assert!(
+            frame
+                .labels
+                .iter()
+                .any(|l| l.text.contains("Next deadline:")),
+            "expected next_deadline label: {:?}",
+            frame.labels
+        );
+        assert!(
+            frame
+                .labels
+                .iter()
+                .any(|l| l.text.contains("Values: logical=")),
+            "expected logical vs presentation value label: {:?}",
             frame.labels
         );
     }
