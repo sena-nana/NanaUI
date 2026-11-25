@@ -116,6 +116,59 @@ pub enum KeyState {
     Released,
 }
 
+/// Cardinal direction for 2D spatial focus navigation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FocusDirection {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+/// Source device of a high-level navigation intent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NavigationSource {
+    Keyboard,
+    Gamepad,
+}
+
+/// Unified navigation intent shared across keyboard and gamepad D-pad/stick
+/// inputs so controls do not duplicate device-specific navigation logic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NavigationIntent {
+    Move(FocusDirection),
+    Next,
+    Previous,
+    Confirm,
+    Cancel,
+}
+
+/// A canonical navigation intent delivered to the document focus router.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NavigationInput {
+    pub intent: NavigationIntent,
+    pub source: NavigationSource,
+    pub repeat: bool,
+}
+
+impl NavigationInput {
+    pub const fn new(intent: NavigationIntent, source: NavigationSource, repeat: bool) -> Self {
+        Self {
+            intent,
+            source,
+            repeat,
+        }
+    }
+
+    pub const fn gamepad(intent: NavigationIntent, repeat: bool) -> Self {
+        Self::new(intent, NavigationSource::Gamepad, repeat)
+    }
+
+    pub const fn keyboard(intent: NavigationIntent, repeat: bool) -> Self {
+        Self::new(intent, NavigationSource::Keyboard, repeat)
+    }
+}
+
 /// Hardware position, e.g. `KeyQ`; independent of the active keyboard layout.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhysicalKey(pub Cow<'static, str>);
@@ -219,6 +272,9 @@ pub enum InputPayload {
     },
     Wheel(WheelInput),
     Key(KeyInput),
+    /// Unified directional/sequential/confirm/cancel navigation intent
+    /// (keyboard or gamepad D-pad).
+    Navigation(NavigationInput),
     /// The platform's committed text. Never inferred from `KeyInput`.
     Text(CommittedText),
     Composition(CompositionInput),
@@ -685,5 +741,11 @@ mod tests {
         );
         assert!(!InputPayload::Text(CommittedText::new("a")).is_coalescible());
         assert!(!InputPayload::Focus { focused: true }.is_coalescible());
+        let nav = InputPayload::Navigation(NavigationInput::gamepad(
+            NavigationIntent::Move(FocusDirection::Down),
+            false,
+        ));
+        assert!(!nav.is_coalescible());
+        assert_eq!(nav.allocation_bytes(), 0);
     }
 }

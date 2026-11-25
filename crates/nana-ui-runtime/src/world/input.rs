@@ -254,6 +254,8 @@ pub(super) struct WorldInputState {
     /// Absent means keyboard, which is also what a document that has seen no
     /// input at all reads as: a programmatic `focus_node` should show itself.
     pub(super) pointer_modality: HashSet<DocumentId>,
+    /// Most recent modality recorded per document.
+    pub(super) last_modality: HashMap<DocumentId, InputModality>,
     /// Documents whose *current* focus arrived while [`Self::pointer_modality`]
     /// held, snapshotted when the focus was written.
     ///
@@ -274,6 +276,15 @@ pub(super) struct WorldInputState {
     /// with Escape should put a visible focus back where it came from.
     pub(super) focus_from_pointer: HashSet<DocumentId>,
     pub(super) focus_scopes: HashMap<StableNodeId, Option<StableNodeId>>,
+    pub(super) focus_policies: HashMap<StableNodeId, crate::FocusPolicy, BuildIdHasher>,
+    pub(super) focus_neighbors: HashMap<StableNodeId, crate::FocusNeighbors, BuildIdHasher>,
+    pub(super) directional_scopes:
+        HashMap<StableNodeId, crate::DirectionalFocusScope, BuildIdHasher>,
+    pub(super) active_focus_traps: HashSet<StableNodeId, BuildIdHasher>,
+    pub(super) focus_counters: crate::FocusCounters,
+    pub(super) focus_nav_epoch: u64,
+    pub(super) focus_nav_cache:
+        HashMap<DocumentId, super::focus_nav::SpatialFocusIndex, BuildIdHasher>,
     pub(super) pointer_captures: HashMap<(DocumentId, u64), StableNodeId>,
     pub(super) pointer_hover: HashMap<(DocumentId, u64), StableNodeId>,
     pub(super) pointer_press: HashMap<(DocumentId, u64), StableNodeId>,

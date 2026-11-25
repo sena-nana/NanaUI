@@ -123,6 +123,21 @@ pub mod runtime {
     /// `ThemeScope` cache misses (#104).
     pub static THEME_SCOPE_CACHE_MISSES: Metric =
         Metric::counter(D, 58, "runtime.theme.scope_cache_misses", "count");
+    /// Modal focus trap activations (#111).
+    pub static FOCUS_TRAP_ENTERS: Metric =
+        Metric::counter(D, 59, "runtime.focus.trap_enters", "count");
+    /// Modal focus trap exits (#111).
+    pub static FOCUS_TRAP_EXITS: Metric =
+        Metric::counter(D, 60, "runtime.focus.trap_exits", "count");
+    /// Currently active modal focus traps (#111).
+    pub static FOCUS_TRAPS_ACTIVE: Metric =
+        Metric::gauge(D, 61, "runtime.focus.traps_active", "count");
+    /// Directional or explicit-neighbor focus navigation queries (#111).
+    pub static FOCUS_NAVIGATION_QUERIES: Metric =
+        Metric::counter(D, 62, "runtime.focus.navigation_queries", "count");
+    /// Candidate nodes evaluated during focus navigation queries (#111).
+    pub static FOCUS_NAVIGATION_CANDIDATES: Metric =
+        Metric::counter(D, 63, "runtime.focus.navigation_candidates", "count");
     /// Fault: a `ThemeScope` patch failed fail-closed validation and kept the parent theme.
     pub static THEME_SCOPE_INVALID_PATCH: EventDescriptor = EventDescriptor::new(
         D,
@@ -1110,6 +1125,16 @@ mod tests {
             &runtime::HIT_TEST_NODES_REBUILT,
             &runtime::SCENE_NODES_EXTRACTED,
             &runtime::SCENE_NODES_CHANGED,
+            &runtime::THEME_DEPENDENCY_SKIPPED,
+            &runtime::RESOLVED_STYLE_UNCHANGED,
+            &runtime::THEME_MOTION_POLICY_INVALIDATIONS,
+            &runtime::THEME_SCOPE_CACHE_HITS,
+            &runtime::THEME_SCOPE_CACHE_MISSES,
+            &runtime::FOCUS_TRAP_ENTERS,
+            &runtime::FOCUS_TRAP_EXITS,
+            &runtime::FOCUS_TRAPS_ACTIVE,
+            &runtime::FOCUS_NAVIGATION_QUERIES,
+            &runtime::FOCUS_NAVIGATION_CANDIDATES,
             &layout::PASS_NS,
             &layout::INVOCATIONS,
             &layout::FULL_INVOCATIONS,

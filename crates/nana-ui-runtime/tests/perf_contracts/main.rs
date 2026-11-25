@@ -60,6 +60,7 @@ unsafe impl GlobalAlloc for CountingAllocator {
 static GLOBAL: CountingAllocator = CountingAllocator;
 
 mod data_table_alloc;
+mod focus_navigation;
 mod i18n_alloc;
 mod input_alloc;
 mod metric_delta;

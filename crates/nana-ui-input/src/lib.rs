@@ -13,9 +13,10 @@ mod lowering;
 
 pub use canonical::{
     CanonicalInputEvent, CommittedText, CompositionInput, DeviceId, EndpointGeneration,
-    FileDragInput, InputEndpoint, InputMetadata, InputPayload, InputSequence, InputSequencer,
-    InputSourceId, InputTimestamp, KeyInput, KeyState, LogicalKey, PhysicalKey, PointerId,
-    PointerInput, WheelInput, WheelUnit,
+    FileDragInput, FocusDirection, InputEndpoint, InputMetadata, InputPayload, InputSequence,
+    InputSequencer, InputSourceId, InputTimestamp, KeyInput, KeyState, LogicalKey, NavigationInput,
+    NavigationIntent, NavigationSource, PhysicalKey, PointerId, PointerInput, WheelInput,
+    WheelUnit,
 };
 pub use host_services::{
     CursorIcon, HeadlessHostServices, HostServiceError, HostServices, SurroundingText,
@@ -24,7 +25,8 @@ pub use host_services::{
 pub use input::{InputDisposition, InputModifiers, PointerPhase, PointerType};
 pub use lowering::{
     DragTransferTracker, PRIMARY_MOUSE_BUTTON, PenFramePatch, PointerDescriptor, PointerState,
-    ScreenSpace, held_mouse_button, mouse_button_mask, screen_position, shift_wheel_axes,
+    ScreenSpace, gamepad_dpad_navigation, held_mouse_button, mouse_button_mask, screen_position,
+    shift_wheel_axes,
 };
 /// The phase a [`FileDragInput`] reports.
 pub use nana_ui_core::FileDragKind;

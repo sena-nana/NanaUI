@@ -100,6 +100,7 @@ mod auto_overlay;
 pub(crate) use auto_overlay::OverlayActivity;
 mod build;
 pub(crate) use assemble::{AssembledKey, AssemblyKey};
+mod directional_focus;
 mod document_text;
 mod overlay;
 mod reactive;
@@ -3762,10 +3763,7 @@ impl AppContext {
         document: DocumentId,
         target: StableNodeId,
     ) -> Result<bool, FrameworkError> {
-        if !self
-            .world
-            .interaction(target)
-            .is_some_and(|interaction| interaction.focusable)
+        if !self.world.focus_policy(target).allows_programmatic()
             || self.confirm_busy_action_subtree(target)
             || self.world.is_inert(target)
         {

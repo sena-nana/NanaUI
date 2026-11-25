@@ -5,6 +5,7 @@ mod child_numbering;
 pub(crate) mod child_order;
 mod clip_chain;
 mod extraction;
+mod focus_nav;
 mod focus_scope;
 mod geometry;
 pub(crate) use geometry::{PROGRESS_GIRTH, range_value_thumb_height};
@@ -859,6 +860,8 @@ struct PlannedNode {
 pub enum InputModality {
     Keyboard,
     Pointer,
+    Gamepad,
+    Programmatic,
 }
 
 /// The work counters a world keeps: the last drain's, the frame's being
@@ -1928,6 +1931,7 @@ impl UiWorld {
                 }
             }
         }
+        self.input.focus_nav_epoch = self.input.focus_nav_epoch.wrapping_add(1);
         #[cfg(feature = "benchmark")]
         phase.lap(9);
     }
@@ -3409,10 +3413,149 @@ impl UiWorld {
     /// causes invisible — not every focus after it, and never a text field's
     /// (see [`Self::focus_visible`]).
     pub fn note_input_modality(&mut self, document: DocumentId, modality: InputModality) {
+        self.input.last_modality.insert(document, modality);
         match modality {
             InputModality::Pointer => self.input.pointer_modality.insert(document),
-            InputModality::Keyboard => self.input.pointer_modality.remove(&document),
+            InputModality::Keyboard | InputModality::Gamepad | InputModality::Programmatic => {
+                self.input.pointer_modality.remove(&document)
+            }
         };
+    }
+
+    /// Most recent input modality recorded for `document`.
+    pub fn input_modality(&self, document: DocumentId) -> InputModality {
+        self.input
+            .last_modality
+            .get(&document)
+            .copied()
+            .unwrap_or(InputModality::Programmatic)
+    }
+
+    /// Effective focus policy for `id` (explicit override if any, else derived
+    /// from `InteractionState::focusable`, and always `None` when disabled).
+    pub fn focus_policy(&self, id: StableNodeId) -> crate::FocusPolicy {
+        if !self.contains(id) {
+            return crate::FocusPolicy::None;
+        }
+        let base = match self.input.focus_policies.get(&id).copied() {
+            Some(policy) => policy,
+            None => {
+                if self.record(id).interaction.focusable {
+                    crate::FocusPolicy::Strong
+                } else {
+                    crate::FocusPolicy::None
+                }
+            }
+        };
+        if base == crate::FocusPolicy::None || self.is_disabled_in_chain(id) {
+            crate::FocusPolicy::None
+        } else {
+            base
+        }
+    }
+
+    pub fn explicit_focus_policy(&self, id: StableNodeId) -> Option<crate::FocusPolicy> {
+        self.input.focus_policies.get(&id).copied()
+    }
+
+    pub fn focus_neighbors(&self, id: StableNodeId) -> crate::FocusNeighbors {
+        self.input
+            .focus_neighbors
+            .get(&id)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    pub fn directional_focus_scope(
+        &self,
+        id: StableNodeId,
+    ) -> Option<crate::DirectionalFocusScope> {
+        self.input.directional_scopes.get(&id).copied()
+    }
+
+    pub(crate) fn has_directional_focus_scopes(&self) -> bool {
+        !self.input.directional_scopes.is_empty()
+    }
+
+    pub fn is_disabled_in_chain(&self, mut id: StableNodeId) -> bool {
+        loop {
+            let Some(record) = self.nodes.get(id) else {
+                return false;
+            };
+            if self.nodes.accessibility(id).disabled {
+                return true;
+            }
+            let Some(parent) = record.hierarchy.parent else {
+                return false;
+            };
+            id = parent;
+        }
+    }
+
+    pub fn focus_counters(&self) -> crate::FocusCounters {
+        self.input.focus_counters
+    }
+
+    pub(crate) fn record_focus_navigation_query(&mut self, candidates_considered: u64) {
+        self.input.focus_counters.navigation_queries += 1;
+        self.input.focus_counters.navigation_candidates_considered += candidates_considered;
+        nana_diagnostics::metric!(nana_diagnostics::framework::runtime::FOCUS_NAVIGATION_QUERIES);
+        if candidates_considered > 0 {
+            nana_diagnostics::metric!(
+                nana_diagnostics::framework::runtime::FOCUS_NAVIGATION_CANDIDATES,
+                candidates_considered
+            );
+        }
+    }
+
+    pub(crate) fn is_focus_trap_root_active(&self, root: StableNodeId) -> bool {
+        let Some(record) = self.nodes.get(root) else {
+            return false;
+        };
+        if !self.is_mounted(root)
+            || !self.nodes.accessibility(root).modal
+            || self.surface_closed(root)
+            || !self.is_overlay_reachable(root)
+        {
+            return false;
+        }
+        record.hierarchy.parent.is_some_and(|host| {
+            self.overlay_host(host)
+                .is_some_and(|state| state.active == Some(root))
+        })
+    }
+
+    pub(crate) fn sync_focus_trap(&mut self, root: StableNodeId) {
+        let active = self.is_focus_trap_root_active(root);
+        let was_active = self.input.active_focus_traps.contains(&root);
+        if active == was_active {
+            return;
+        }
+        if active {
+            self.input.active_focus_traps.insert(root);
+            self.input.focus_counters.trap_enters += 1;
+            nana_diagnostics::metric!(nana_diagnostics::framework::runtime::FOCUS_TRAP_ENTERS);
+        } else {
+            self.input.active_focus_traps.remove(&root);
+            self.input.focus_counters.trap_exits += 1;
+            nana_diagnostics::metric!(nana_diagnostics::framework::runtime::FOCUS_TRAP_EXITS);
+        }
+        let count = self.input.active_focus_traps.len() as u64;
+        self.input.focus_counters.traps_active = count;
+        nana_diagnostics::metric!(
+            nana_diagnostics::framework::runtime::FOCUS_TRAPS_ACTIVE,
+            count
+        );
+    }
+
+    pub(crate) fn sync_active_focus_traps(&mut self) {
+        if self.input.active_focus_traps.is_empty() {
+            return;
+        }
+        let roots: Vec<StableNodeId> = self.input.active_focus_traps.iter().copied().collect();
+        for root in roots {
+            self.sync_focus_trap(root);
+        }
     }
 
     /// The focused node, when focus should also be *shown*.
@@ -6074,6 +6217,7 @@ impl UiWorld {
         {
             self.input.focused.remove(&document);
             self.release_focus(focused);
+            self.input.focus_counters.focus_changes += 1;
         }
         let inside = subtree.iter().copied().collect::<HashSet<_>>();
         let released = self
@@ -6298,7 +6442,7 @@ impl UiWorld {
                 && self.contains(restore_focus)
                 && self.is_mounted(restore_focus)
                 && self.record(restore_focus).document == document
-                && self.record(restore_focus).interaction.focusable
+                && self.focus_policy(restore_focus).allows_programmatic()
                 && self.record(restore_focus).resolved.0.visible
                 && !self.is_inert(restore_focus)
                 && self.active_modal_allows_focus_now(document, restore_focus)
@@ -6311,6 +6455,7 @@ impl UiWorld {
                     self.release_focus(old);
                 }
                 self.input.focused.insert(document, restore_focus);
+                self.input.focus_counters.focus_changes += 1;
                 self.mark_focus_changed(restore_focus);
             }
         }

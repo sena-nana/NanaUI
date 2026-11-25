@@ -48,6 +48,7 @@ mod dynamic_form;
 mod feedback;
 mod file_tab;
 mod find_replace;
+mod focus;
 mod form_surfaces;
 mod framework;
 mod gpu_slots;
@@ -283,6 +284,7 @@ pub use feedback::{
 };
 pub use file_tab::{FileTab, FileTabEvent};
 pub use find_replace::{FindReplaceBar, FindReplaceEvent, TextSearchBar};
+pub use focus::{DirectionalFocusScope, FocusCounters, FocusNeighbors, FocusPolicy};
 pub use form_surfaces::{FormField, FormFieldVisual, InteractiveCard};
 pub use framework::MountedView;
 pub(crate) use framework::UiBuilder;
@@ -397,6 +399,7 @@ pub use nana_ui_core::{
     KeyedOrder, SelectionGesture, SelectionMode, SelectionModifiers, SelectionMove, SelectionOrder,
     SelectionState, SelectionStep, SingleSelection, TableColumn, keyed_order,
 };
+pub use nana_ui_input::{FocusDirection, NavigationInput, NavigationIntent, NavigationSource};
 pub use overlay_surfaces::{
     ConfirmDialog, ConfirmIntent, ConfirmSlots, Drawer, ModalBehavior, ModalFrameGeometry,
     ModalFrameVisual, ModalInitialFocus, ModalSlots, ModalSurface, ModalSurfaceKind,

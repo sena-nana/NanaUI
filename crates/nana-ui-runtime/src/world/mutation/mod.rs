@@ -86,6 +86,7 @@ impl UiWorld {
         // first mutation that does; a batch of nothing but no-ops keeps it.
         let mut applied = false;
         let mut layout_inputs_changed = false;
+        let mut focus_nav_dirty = false;
         let mut layout_result_ids = Vec::new();
         let mutations = queue.as_slice();
         let mut max_create_id: Option<StableNodeId> = None;
@@ -141,6 +142,24 @@ impl UiWorld {
             ) {
                 layout_inputs_changed = true;
             }
+            if !matches!(
+                mutation,
+                UiMutation::RequestFocus { .. }
+                    | UiMutation::RestoreFocusWithin { .. }
+                    | UiMutation::CapturePointer { .. }
+                    | UiMutation::ReleasePointer { .. }
+                    | UiMutation::SetIme { .. }
+                    | UiMutation::SetTextSelection { .. }
+                    | UiMutation::StartAnimation { .. }
+                    | UiMutation::ReplaceAnimation { .. }
+                    | UiMutation::StopAnimation { .. }
+                    | UiMutation::FinishAnimation { .. }
+                    | UiMutation::ReverseAnimation { .. }
+                    | UiMutation::PauseAnimation { .. }
+                    | UiMutation::ResumeAnimation { .. }
+            ) {
+                focus_nav_dirty = true;
+            }
             let layout_result_id = match mutation {
                 UiMutation::WriteLayout { .. } | UiMutation::PlaceLayout { .. }
                     if publish_written_deferred =>
@@ -183,6 +202,9 @@ impl UiWorld {
         );
         if !applied {
             return Ok(report);
+        }
+        if focus_nav_dirty {
+            self.input.focus_nav_epoch = self.input.focus_nav_epoch.wrapping_add(1);
         }
         self.reframe_layouts();
         self.place_document_layouts();

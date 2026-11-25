@@ -279,6 +279,18 @@ pub enum UiMutation {
     RestoreFocusWithin {
         root: StableNodeId,
     },
+    SetFocusPolicy {
+        id: StableNodeId,
+        policy: Option<crate::FocusPolicy>,
+    },
+    SetFocusNeighbors {
+        id: StableNodeId,
+        neighbors: Box<crate::FocusNeighbors>,
+    },
+    SetDirectionalFocus {
+        id: StableNodeId,
+        scope: Option<crate::DirectionalFocusScope>,
+    },
     SetIme {
         id: StableNodeId,
         composition: Option<Box<ImeComposition>>,
@@ -466,7 +478,11 @@ impl BatchCapabilities {
             | UiMutation::ReverseAnimation { .. }
             | UiMutation::PauseAnimation { .. }
             | UiMutation::ResumeAnimation { .. } => Self::ANIMATION,
-            UiMutation::RequestFocus { .. } | UiMutation::RestoreFocusWithin { .. } => Self::FOCUS,
+            UiMutation::RequestFocus { .. }
+            | UiMutation::RestoreFocusWithin { .. }
+            | UiMutation::SetFocusPolicy { .. }
+            | UiMutation::SetFocusNeighbors { .. }
+            | UiMutation::SetDirectionalFocus { .. } => Self::FOCUS,
             UiMutation::SetTextInput { .. } | UiMutation::ReplaceTextSelection { .. } => {
                 Self::EDITOR.union(Self::WRITES_TEXT)
             }
@@ -1189,6 +1205,34 @@ impl MutationQueue {
         self.record(
             BatchCapabilities::FOCUS,
             UiMutation::RestoreFocusWithin { root },
+        );
+    }
+
+    pub fn set_focus_policy(&mut self, id: StableNodeId, policy: Option<crate::FocusPolicy>) {
+        self.record(
+            BatchCapabilities::FOCUS,
+            UiMutation::SetFocusPolicy { id, policy },
+        );
+    }
+
+    pub fn set_focus_neighbors(&mut self, id: StableNodeId, neighbors: crate::FocusNeighbors) {
+        self.record(
+            BatchCapabilities::FOCUS,
+            UiMutation::SetFocusNeighbors {
+                id,
+                neighbors: Box::new(neighbors),
+            },
+        );
+    }
+
+    pub fn set_directional_focus(
+        &mut self,
+        id: StableNodeId,
+        scope: Option<crate::DirectionalFocusScope>,
+    ) {
+        self.record(
+            BatchCapabilities::FOCUS,
+            UiMutation::SetDirectionalFocus { id, scope },
         );
     }
 

@@ -232,3 +232,97 @@ fn moves_that_change_hover_allocate_nothing() {
     assert_eq!(context.input_counters().hover_changes - hover_changes, 240);
     assert_eq!(allocations, 0);
 }
+
+/// Static frames and pointer-only frames pay zero focus-navigation or spatial
+/// index build work.
+#[test]
+fn static_frames_and_pointer_moves_do_zero_focus_navigation_work() {
+    let (mut context, document) = column(false);
+    let mut input = HeadlessInput::bind(&mut context, document);
+    moves(&mut input, &mut context, 0, 120, true);
+    let _ = context.take_system_work();
+    let counters = context.focus_counters();
+    assert_eq!(counters.navigation_queries, 0);
+    assert_eq!(counters.navigation_candidates_considered, 0);
+    assert_eq!(counters.spatial_index_builds, 0);
+}
+
+/// A 32x32 (1,024 focusable nodes) grid builds the spatial focus index once
+/// and reuses it across directional steps while pruning distant cells.
+#[test]
+fn thousand_node_grid_reuses_spatial_index_and_prunes_candidates() {
+    use std::sync::Arc;
+
+    use nana_ui_core::LayoutStyle;
+    use nana_ui_runtime::view::{column, entity_ref, row, with_refs};
+    use nana_ui_runtime::{Button, DirectionalFocusScope, FocusDirection};
+
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let btn_layout = Arc::new(LayoutStyle {
+        width: Some(LengthSpec::Px(32.0)),
+        height: Some(LengthSpec::Px(24.0)),
+        ..Default::default()
+    });
+    let (_, origin) = context
+        .mount_view_root(document, || {
+            let origin = entity_ref::<Button>();
+            let mut rows = Vec::with_capacity(32);
+            for r in 0..32 {
+                let mut cols = Vec::with_capacity(32);
+                for c in 0..32 {
+                    let mut b = widget(Button::new("x").layout(Arc::clone(&btn_layout)));
+                    if r == 0 && c == 0 {
+                        b = b.entity_ref(origin);
+                    }
+                    cols.push(b);
+                }
+                rows.push(row().gap(4.0).children(cols));
+            }
+            with_refs(
+                column()
+                    .gap(4.0)
+                    .directional_focus(DirectionalFocusScope::new())
+                    .children(rows),
+                origin,
+            )
+        })
+        .unwrap();
+    let nodes = context.world().document_order(document);
+    context.resolve_styles(&nodes).unwrap();
+    context.shape_text(&nodes, &mut MeasureTextShaper).unwrap();
+    context
+        .layout_document(document, LayoutViewport::new(1400.0, 1000.0))
+        .unwrap();
+    context.rebuild_hit_test(document);
+
+    assert!(context.focus_node(document, origin.stable_id()).unwrap());
+    assert!(
+        context
+            .navigate_directional_focus(document, FocusDirection::Right)
+            .unwrap()
+    );
+    let after_first = context.focus_counters();
+    assert_eq!(after_first.spatial_index_builds, 1);
+    assert_eq!(after_first.navigation_queries, 1);
+
+    for step in 0..20 {
+        let dir = if step % 2 == 0 {
+            FocusDirection::Down
+        } else {
+            FocusDirection::Right
+        };
+        assert!(context.navigate_directional_focus(document, dir).unwrap());
+    }
+    let after_all = context.focus_counters();
+    assert_eq!(
+        after_all.spatial_index_builds, 1,
+        "steady directional moves must reuse the spatial focus index without rebuilding"
+    );
+    assert_eq!(after_all.navigation_queries, 21);
+    assert!(
+        after_all.navigation_candidates_considered < 21 * 120,
+        "spatial grid pruning must avoid scanning all 1024 nodes per step (got {} across 21 queries)",
+        after_all.navigation_candidates_considered
+    );
+}

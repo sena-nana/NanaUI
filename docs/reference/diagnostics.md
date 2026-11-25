@@ -128,7 +128,7 @@ let _span = span!(TRACK_NS);         // 作用域结束时自动记录耗时进�
 | 框架域 | 核心监控指标与事件 |
 | --- | --- |
 | `Runtime` | 每次 `flush` 的 CPU 总耗时与 9 个阶段直方图（复用 `FrameProfiler`）、`flush` 次数与轮数、样式解析/命中更新/场景抽取计数（`runtime.style.nodes_resolved`、`runtime.hit_test.nodes_rebuilt`、`runtime.extract.nodes_{extracted,changed}`）、禁用 `snippet-transforms` 时的一次性 `runtime.snippet.transform_unavailable`、祖先链上第 5 层非恒等滤镜保持恒等时每节点一次的 `runtime.paint.filter_depth_exceeded`、未收敛及样式/文本布局失败计数 |
-| `Input` | 接收事件数、合并次数、载荷字节数、路由拒绝、裁剪拒绝、路由耗时、命中查询、焦点/捕获/hover 变化（`runtime.input.*`，ID 20–37） |
+| `Input` | 接收事件数、合并次数、载荷字节数、路由拒绝、裁剪拒绝、路由耗时、命中查询、焦点/捕获/hover 变化（`runtime.input.*`，ID 20–37）与焦点陷阱进入/退出/活跃数、方向导航查询/候选扫描计数（`runtime.focus.*`，ID 59–63） |
 | `Layout` | 布局耗时、调用次数、整树布局次数、脏根数、测量与放置节点数（`layout.measure_nodes`、`layout.placement_nodes`）；动态布局（Dynamic Layout）的行求解数、包络重建数与预算回退数 |
 | `Text` | 整形与布局缓存命中/未命中、字形解析数、字形图集（atlas）开页与总字节数、预算拒绝事件（每 10 s 限流一条）、图集压缩与驱逐计数 |
 | `GPU` | 提交耗时、GPU 完成时间上界（每次重绘开头非阻塞 poll，空闲超过 50 ms 的样本自动丢弃）、上传字节、draw call、缓冲重分配、呈现/跳帧、Surface 异常、设备丢失与恢复、帧丢弃（`gpu.frames_discarded` / `gpu.retained_frame_discarded`）、预编译 MSL 解压次数与耗时/字节（`gpu.shader.msl_decompressions` / `gpu.shader.msl_decompress_ns` / `gpu.shader.msl_decompressed_bytes`）、管线回退/构建失败事件（`gpu.shader.precompiled_fallback` / `gpu.shader.build_failed`）与自定义材质拒收事件（`gpu.material.rejected`），并在会话信息中登记适配器与驱动信息 |

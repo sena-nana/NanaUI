@@ -276,7 +276,9 @@ impl AppContext {
                             .accessibility(target)
                             .is_some_and(|a| !a.disabled)
                     {
-                        self.focus_node(document, target)?;
+                        if self.world().focus_policy(target).allows_pointer() {
+                            self.focus_node(document, target)?;
+                        }
                         prep(self, target, *x, *y)?;
                     } else if self.world().text_input(target).is_some()
                         && self
@@ -285,7 +287,9 @@ impl AppContext {
                             .is_some_and(|a| !a.disabled)
                     {
                         let unfocused = self.world().focused(document) != Some(target);
-                        self.focus_node(document, target)?;
+                        if self.world().focus_policy(target).allows_pointer() {
+                            self.focus_node(document, target)?;
+                        }
                         if unfocused
                             && let Some(select_entry) = self
                                 .behavior(target)
@@ -1068,7 +1072,12 @@ impl AppContext {
                 && !modifiers.meta
                 && !modifiers.shift
                 && self.roving_focus_key(document, key)?)
-            || self.keyboard_menu_key(document, key, repeat, modifiers)?;
+            || self.keyboard_menu_key(document, key, repeat, modifiers)?
+            || (!modifiers.alt
+                && !modifiers.control
+                && !modifiers.meta
+                && !modifiers.shift
+                && self.keyboard_directional_focus_key(document, key)?);
         Ok(InputDisposition {
             handled,
             prevent_default: handled || keyboard_barrier,
@@ -1696,10 +1705,8 @@ pub(super) fn reborrow_text_shaper<'s>(
 
 fn nearest_focusable(context: &AppContext, mut target: StableNodeId) -> Option<StableNodeId> {
     loop {
-        if context
-            .world()
-            .interaction(target)
-            .is_some_and(|interaction| interaction.focusable)
+        if context.world().focus_policy(target).allows_pointer()
+            && !context.world().is_inert(target)
         {
             return Some(target);
         }

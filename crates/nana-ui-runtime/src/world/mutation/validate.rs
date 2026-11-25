@@ -22,6 +22,7 @@ pub(in crate::world) struct ValidationPlan<'a> {
     /// (#389).
     leaving: NodeMap<NodeSet>,
     pub(in crate::world) interactions: NodeMap<InteractionState>,
+    pub(in crate::world) focus_policies: NodeMap<Option<crate::FocusPolicy>>,
     pub(in crate::world) styles: NodeMap<NodeStyle>,
     pub(in crate::world) focus: HashMap<DocumentId, Option<StableNodeId>>,
     pub(in crate::world) scope_focus: NodeMap<StableNodeId>,
@@ -74,6 +75,7 @@ impl<'a> ValidationPlan<'a> {
             detached: Default::default(),
             leaving: Default::default(),
             interactions: Default::default(),
+            focus_policies: Default::default(),
             styles: Default::default(),
             focus: HashMap::new(),
             scope_focus: Default::default(),
@@ -267,13 +269,15 @@ impl<'a> ValidationPlan<'a> {
         mutations: &[UiMutation],
         caps: crate::mutation::BatchCapabilities,
     ) -> Result<(), UiWorldError> {
-        // Staged accessibility is read only to check overlay hosts; with none
-        // in the world or in this batch, skip copying it.
+        // Staged accessibility is read to check overlay hosts and focusability;
+        // when neither is present in the world or batch, skip copying it.
         let overlays = !self.source.overlays_a11y.overlay_host_nodes.is_empty()
             || (caps.intersects(crate::mutation::BatchCapabilities::VISUAL_OR_INTERACTION)
                 && mutations
                     .iter()
                     .any(|mutation| matches!(mutation, UiMutation::SetOverlayHost { .. })));
+        let track_accessibility =
+            overlays || caps.intersects(crate::mutation::BatchCapabilities::FOCUS);
         for mutation in mutations {
             match mutation {
                 UiMutation::Insert { child: id, .. }
@@ -409,6 +413,14 @@ impl<'a> ValidationPlan<'a> {
                     self.require_exists(*id)?;
                     self.interactions.insert(*id, *interaction);
                 }
+                UiMutation::SetFocusPolicy { id, policy } => {
+                    self.require_exists(*id)?;
+                    self.focus_policies.insert(*id, *policy);
+                }
+                UiMutation::SetFocusNeighbors { id, .. }
+                | UiMutation::SetDirectionalFocus { id, .. } => {
+                    self.require_exists(*id)?;
+                }
                 UiMutation::SetPainter { id, .. } | UiMutation::SetMediaTime { id, .. } => {
                     self.require_exists(*id)?;
                 }
@@ -431,7 +443,7 @@ impl<'a> ValidationPlan<'a> {
                 }
                 UiMutation::SetAccessibility { id, accessibility } => {
                     self.require_exists(*id)?;
-                    if overlays {
+                    if track_accessibility {
                         self.accessibility.insert(*id, (**accessibility).clone());
                     }
                 }
@@ -546,16 +558,9 @@ impl<'a> ValidationPlan<'a> {
                                 target: *target,
                             });
                         }
-                        let interaction =
-                            self.interactions.get(target).copied().unwrap_or_else(|| {
-                                self.source
-                                    .nodes
-                                    .get(*target)
-                                    .map(|node| node.interaction)
-                                    .unwrap_or_default()
-                            });
+                        let policy = self.effective_focus_policy(*target)?;
                         let visible = self.focus_target_visible(*target)?;
-                        if !interaction.focusable
+                        if !policy.allows_programmatic()
                             || !visible
                             || !self.active_modal_allows_focus(*document, *target)?
                         {
@@ -1154,6 +1159,64 @@ impl<'a> ValidationPlan<'a> {
         Ok(state.is_none_or(|state| state.active == Some(id)))
     }
 
+    pub(in crate::world) fn effective_focus_policy(
+        &mut self,
+        target: StableNodeId,
+    ) -> Result<crate::FocusPolicy, UiWorldError> {
+        let base = match self.focus_policies.get(&target).copied() {
+            Some(Some(policy)) => policy,
+            Some(None) => {
+                let interaction = self.interactions.get(&target).copied().unwrap_or_else(|| {
+                    self.source
+                        .nodes
+                        .get(target)
+                        .map(|node| node.interaction)
+                        .unwrap_or_default()
+                });
+                if interaction.focusable {
+                    crate::FocusPolicy::Strong
+                } else {
+                    crate::FocusPolicy::None
+                }
+            }
+            None => match self.source.explicit_focus_policy(target) {
+                Some(policy) => policy,
+                None => {
+                    let interaction =
+                        self.interactions.get(&target).copied().unwrap_or_else(|| {
+                            self.source
+                                .nodes
+                                .get(target)
+                                .map(|node| node.interaction)
+                                .unwrap_or_default()
+                        });
+                    if interaction.focusable {
+                        crate::FocusPolicy::Strong
+                    } else {
+                        crate::FocusPolicy::None
+                    }
+                }
+            },
+        };
+        if base == crate::FocusPolicy::None {
+            return Ok(crate::FocusPolicy::None);
+        }
+        let mut ancestor = Some(target);
+        while let Some(node) = ancestor {
+            if self
+                .accessibility
+                .get(&node)
+                .map(std::borrow::Cow::Borrowed)
+                .or_else(|| self.source.accessibility(node))
+                .is_some_and(|state| state.disabled)
+            {
+                return Ok(crate::FocusPolicy::None);
+            }
+            ancestor = self.node(node)?.parent;
+        }
+        Ok(base)
+    }
+
     pub(in crate::world) fn focus_target_visible(
         &mut self,
         mut id: StableNodeId,
@@ -1434,6 +1497,15 @@ impl UiWorld {
             UiMutation::SetSelected { id, selected } => {
                 self.nodes.contains(*id) && self.selected_override(*id) == *selected
             }
+            UiMutation::SetFocusPolicy { id, policy } => {
+                self.nodes.contains(*id) && self.explicit_focus_policy(*id) == *policy
+            }
+            UiMutation::SetFocusNeighbors { id, neighbors } => {
+                self.nodes.contains(*id) && self.focus_neighbors(*id) == **neighbors
+            }
+            UiMutation::SetDirectionalFocus { id, scope } => {
+                self.nodes.contains(*id) && self.directional_focus_scope(*id) == *scope
+            }
             _ => false,
         }
     }
@@ -1600,6 +1672,9 @@ impl UiWorld {
             && writes.iter().all(|mutation| match mutation {
                 UiMutation::SetStyle { id: target, .. }
                 | UiMutation::SetInteraction { id: target, .. }
+                | UiMutation::SetFocusPolicy { id: target, .. }
+                | UiMutation::SetFocusNeighbors { id: target, .. }
+                | UiMutation::SetDirectionalFocus { id: target, .. }
                 | UiMutation::SetAccessibility { id: target, .. }
                 | UiMutation::SetComponentType { id: target, .. } => *target == id,
                 _ => false,

@@ -292,9 +292,10 @@ pub use nana_ui_platform::NativeFetchHost;
 /// [`RoutedInput`], routed through the context each source is bound to.
 pub use nana_ui_platform::{
     CanonicalInputEvent, CommittedText, CompositionInput, CursorIcon, FileDragInput, FileDragKind,
-    HeadlessHostServices, HostServiceError, HostServices, InputDisposition, InputModifiers,
-    InputPayload, KeyInput, KeyState, PointerInput, PointerPhase, PointerType, TextInputContext,
-    TextInputPurpose, WheelInput, WheelUnit, path,
+    FocusDirection, HeadlessHostServices, HostServiceError, HostServices, InputDisposition,
+    InputModifiers, InputPayload, KeyInput, KeyState, NavigationInput, NavigationIntent,
+    NavigationSource, PointerInput, PointerPhase, PointerType, TextInputContext, TextInputPurpose,
+    WheelInput, WheelUnit, path,
 };
 #[cfg(feature = "hosted")]
 pub use nana_ui_platform::{

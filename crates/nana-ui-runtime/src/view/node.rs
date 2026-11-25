@@ -1093,6 +1093,21 @@ impl<C: View> EntityRef<C> {
     }
 }
 
+impl<C: 'static> IntoProp<Option<StableNodeId>> for EntityRef<C> {
+    fn bind_field<Target: 'static, W: FieldWrite<Target, Option<StableNodeId>> + 'static>(
+        self,
+        target: &mut Target,
+        bindings: &mut NodeBindings<Target>,
+        site: &'static Location<'static>,
+    ) {
+        self.node.bind_field::<Target, W>(target, bindings, site);
+    }
+
+    fn into_source(self) -> super::prop::PropSource<Option<StableNodeId>> {
+        self.node.into_source()
+    }
+}
+
 /// One component node with its constant fields, bindings, event handlers
 /// and children.
 pub struct El<C: ComponentView, K = ()> {
@@ -1251,6 +1266,64 @@ impl<C: ComponentView, K> El<C, K> {
                 });
             })));
         self
+    }
+
+    /// Set the node's [`FocusPolicy`](crate::FocusPolicy) when built.
+    pub fn focus_policy(mut self, policy: crate::FocusPolicy) -> Self {
+        self.events
+            .push(EventInstall::After(Box::new(move |ui, entity| {
+                ui.after_commit(entity, move |cx, entity| {
+                    cx.set_focus_policy(entity.stable_id(), Some(policy))
+                });
+            })));
+        self
+    }
+
+    /// Declare this element a [`DirectionalFocusScope`](crate::DirectionalFocusScope)
+    /// for keyboard 2D arrow navigation.
+    pub fn directional_focus(mut self, scope: crate::DirectionalFocusScope) -> Self {
+        self.events
+            .push(EventInstall::After(Box::new(move |ui, entity| {
+                ui.after_commit(entity, move |cx, entity| {
+                    cx.set_directional_focus(entity.stable_id(), Some(scope))
+                });
+            })));
+        self
+    }
+
+    fn focus_neighbor(
+        mut self,
+        direction: crate::FocusDirection,
+        target: impl IntoProp<Option<StableNodeId>> + 'static,
+    ) -> Self {
+        let source = target.into_source();
+        self.events
+            .push(EventInstall::After(Box::new(move |ui, entity| {
+                ui.after_commit(entity, move |cx, entity| {
+                    cx.set_focus_neighbor(entity.stable_id(), direction, source.get())
+                });
+            })));
+        self
+    }
+
+    /// Set the explicit upward focus neighbor (`ArrowUp` / D-pad Up).
+    pub fn neighbor_up(self, target: impl IntoProp<Option<StableNodeId>> + 'static) -> Self {
+        self.focus_neighbor(crate::FocusDirection::Up, target)
+    }
+
+    /// Set the explicit downward focus neighbor (`ArrowDown` / D-pad Down).
+    pub fn neighbor_down(self, target: impl IntoProp<Option<StableNodeId>> + 'static) -> Self {
+        self.focus_neighbor(crate::FocusDirection::Down, target)
+    }
+
+    /// Set the explicit leftward focus neighbor (`ArrowLeft` / D-pad Left).
+    pub fn neighbor_left(self, target: impl IntoProp<Option<StableNodeId>> + 'static) -> Self {
+        self.focus_neighbor(crate::FocusDirection::Left, target)
+    }
+
+    /// Set the explicit rightward focus neighbor (`ArrowRight` / D-pad Right).
+    pub fn neighbor_right(self, target: impl IntoProp<Option<StableNodeId>> + 'static) -> Self {
+        self.focus_neighbor(crate::FocusDirection::Right, target)
     }
 
     /// Record the entity this element is built as in `entity_ref`, beside

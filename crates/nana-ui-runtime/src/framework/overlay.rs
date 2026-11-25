@@ -34,7 +34,7 @@ impl RuntimeOverlayKind {
         matches!(self, Self::Tooltip | Self::Status)
     }
 
-    const fn traps_focus(self) -> bool {
+    pub(super) const fn traps_focus(self) -> bool {
         matches!(self, Self::Dialog | Self::Menu)
     }
 }

@@ -805,10 +805,7 @@ impl AppContext {
                 .world
                 .node(id)
                 .is_some_and(|node| node.document == document)
-            && self
-                .world
-                .interaction(id)
-                .is_some_and(|interaction| interaction.focusable)
+            && self.world.focus_policy(id).allows_keyboard()
             && self.is_roving_tab_stop(id)
             && !self.confirm_busy_action_subtree(id)
             && !self.world.is_inert(id)

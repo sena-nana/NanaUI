@@ -246,6 +246,8 @@ Compact + Overlay 适合分离窗底栏（单行加边距约 52px）。Compact +
 
 Dock 那种从入口上方升起的一列胶囊就是两者合用：入口 `has_popup`，`SecondaryPress` 里打开胶囊列，再 `focus_roving_edge(列, press.focus.unwrap_or(RovingEdge::End))` 聚焦（列在入口上方，ArrowUp 和菜单键都落在离入口最近的末项）；胶囊列是不首尾相接的竖向组，`RovingFocusEdge::End`（越过离入口最近的一项）时收起，焦点回入口。
 
+**焦点策略与 2D 方向导航。** `FocusPolicy`（`None` / `Click` / `Tab` / `Strong` / `Programmatic`）通过 `El::focus_policy` 或 `AppContext::set_focus_policy` 区分不可聚焦、仅指针点击、仅键盘可达、强聚焦（指针+键盘）与仅编程触发；未显式设置时沿用 `InteractionState::focusable`（`Strong` 或 `None`），禁用节点始终解析为 `None`。容器声明 `.directional_focus(DirectionalFocusScope::new())`（`.contain(true)` 限定不越出子树）后，或节点通过 `.neighbor_up/down/left/right`（及 `AppContext::set_focus_neighbors`）声明显式四向邻居时，方向键在焦点控件与 roving 组未消费时按显式邻居优先、未配置或不可达时按惰性空间网格 2D 几何回退选优（自动跳过禁用、隐藏、`inert` 与非滚动裁剪节点，对同滚动容器内的离屏目标按最近边界滚入视口，并受当前模态焦点陷阱约束）。手柄 D-pad 与键盘导航意图可统一降低为 `InputPayload::Navigation`（`NavigationInput` / `NavigationIntent`），在路由层与键盘共用同一套方向与焦点策略解析，不进入具体控件。
+
 平台文件拖放由宿主降级为 `InputPayload::FileDrag`（`FileDragKind::{Hover, Drop, Cancel}`）。经输入路由交给放置目标。命中目标发 `FileDropEvent::{Hovered, Dropped, Left}`，并画 hover chrome。未登记节点不接收文件拖放。悬停与放下都带 `modifiers`。拖动期间键盘仍归拖动源。宿主在 Windows（`GetAsyncKeyState`）和 macOS（`NSEvent.modifierFlags`）上每次映射都采样系统状态。Linux 退回最近一次跟踪到的修饰键。Windows 的 OLE 循环在按键变化时也会补发位置。所以只按下 Ctrl 不动鼠标也会收到新的悬停。宿主接受 Copy。macOS 另接受 Link（Copy 优先）。因为 AppKit 会把按住 Control 的 Finder 拖动收窄为 Link。只接受 Copy 时系统会拒绝这次松手。松手后取路径失败时发 `Cancel`。拖动不会悬而不决。窗口失焦或关闭也会结束悬停。
 
 `TextArea` 的行号、诊断沟、minimap、git gutter 是视图属性：`line_numbers` / `diagnostics` / `minimap` / `git_gutter`。buffer revision、LSP、git 状态仍由应用喂入。

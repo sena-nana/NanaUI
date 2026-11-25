@@ -159,9 +159,10 @@ pub mod host {
 /// The canonical input contract, owned by `nana-ui-input`.
 pub use nana_ui_input::{
     CanonicalInputEvent, CommittedText, CompositionInput, CursorIcon, DeviceId, EndpointGeneration,
-    FileDragInput, FileDragKind, HeadlessHostServices, HostServiceError, HostServices,
-    InputDisposition, InputEndpoint, InputMetadata, InputModifiers, InputPayload, InputSequence,
-    InputSequencer, InputSourceId, InputTimestamp, KeyInput, KeyState, LogicalKey, PhysicalKey,
-    PointerId, PointerInput, PointerPhase, PointerType, SurroundingText, TextInputContext,
-    TextInputPurpose, UnsupportedHostServices, WheelInput, WheelUnit,
+    FileDragInput, FileDragKind, FocusDirection, HeadlessHostServices, HostServiceError,
+    HostServices, InputDisposition, InputEndpoint, InputMetadata, InputModifiers, InputPayload,
+    InputSequence, InputSequencer, InputSourceId, InputTimestamp, KeyInput, KeyState, LogicalKey,
+    NavigationInput, NavigationIntent, NavigationSource, PhysicalKey, PointerId, PointerInput,
+    PointerPhase, PointerType, SurroundingText, TextInputContext, TextInputPurpose,
+    UnsupportedHostServices, WheelInput, WheelUnit, gamepad_dpad_navigation,
 };

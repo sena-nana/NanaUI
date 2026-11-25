@@ -192,4 +192,12 @@ impl HeadlessInput {
     ) -> Result<InputRouteOutcome, InputRouteError> {
         self.route(context, InputPayload::Composition(composition))
     }
+
+    pub fn navigate(
+        &mut self,
+        context: &mut AppContext,
+        navigation: nana_ui_input::NavigationInput,
+    ) -> Result<InputRouteOutcome, InputRouteError> {
+        self.route(context, InputPayload::Navigation(navigation))
+    }
 }

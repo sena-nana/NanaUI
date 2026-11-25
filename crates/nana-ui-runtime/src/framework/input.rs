@@ -827,6 +827,10 @@ impl AppContext {
                 }
                 disposition
             }
+            InputPayload::Navigation(nav) => {
+                self.note_input_time(now);
+                self.dispatch_navigation(document, *nav)?
+            }
             InputPayload::Text(committed) => {
                 let suppressed = committed.key.is_some()
                     && self
@@ -959,6 +963,7 @@ impl AppContext {
                 },
                 InputPayload::PointerLeave { .. } => OverlayActivity::Leave,
                 InputPayload::Key(key) if key.state == KeyState::Pressed => OverlayActivity::Key,
+                InputPayload::Navigation(_) => OverlayActivity::Key,
                 _ => OverlayActivity::None,
             };
             // A key press does not move the clock on its own; the idle

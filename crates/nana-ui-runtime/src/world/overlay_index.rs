@@ -59,6 +59,13 @@ impl UiWorld {
                 .or_default()
                 .insert(host);
         }
+        for root in previous
+            .and_then(|s| s.active)
+            .into_iter()
+            .chain(state.and_then(|s| s.active))
+        {
+            self.sync_focus_trap(root);
+        }
     }
 }
 

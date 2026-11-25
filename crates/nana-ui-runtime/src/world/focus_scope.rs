@@ -81,30 +81,12 @@ impl ValidationPlan<'_> {
         if self.node(target)?.document != document || !self.has_ancestor(target, root)? {
             return Ok(None);
         }
-        let interaction = self
-            .interactions
-            .get(&target)
-            .copied()
-            .or_else(|| self.source.interaction(target))
-            .unwrap_or_default();
-        if !interaction.focusable
+        let policy = self.effective_focus_policy(target)?;
+        if !policy.allows_programmatic()
             || !self.focus_target_visible(target)?
             || !self.active_modal_allows_focus(document, target)?
         {
             return Ok(None);
-        }
-        let mut ancestor = Some(target);
-        while let Some(node) = ancestor {
-            if self
-                .accessibility
-                .get(&node)
-                .map(std::borrow::Cow::Borrowed)
-                .or_else(|| self.source.accessibility(node))
-                .is_some_and(|state| state.disabled)
-            {
-                return Ok(None);
-            }
-            ancestor = self.node(node)?.parent;
         }
         Ok(Some((document, target)))
     }

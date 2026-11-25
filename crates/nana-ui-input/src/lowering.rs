@@ -11,9 +11,14 @@ use std::path::PathBuf;
 use nana_ui_core::FileDragKind;
 
 use crate::{
-    DeviceId, FileDragInput, InputModifiers, InputPayload, PointerId, PointerInput, PointerPhase,
-    PointerType,
+    DeviceId, FileDragInput, FocusDirection, InputModifiers, InputPayload, NavigationInput,
+    NavigationIntent, PointerId, PointerInput, PointerPhase, PointerType,
 };
+
+/// Lower a gamepad D-pad direction into a canonical [`NavigationInput`].
+pub const fn gamepad_dpad_navigation(direction: FocusDirection, repeat: bool) -> NavigationInput {
+    NavigationInput::gamepad(NavigationIntent::Move(direction), repeat)
+}
 
 /// W3C code of the primary mouse button, whose drag semantics follow the
 /// platform's native window drag.

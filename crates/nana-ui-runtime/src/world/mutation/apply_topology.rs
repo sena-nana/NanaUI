@@ -184,6 +184,7 @@ impl UiWorld {
                 self.refresh_root_membership(*id);
                 self.theme_scope_reparented(*id, old_parent);
                 self.recompute_node_theme_deps(*id);
+                self.sync_active_focus_traps();
             }
             UiMutation::ParkSubtree { root } => {
                 let old_parent = self.parent_id(*root);
@@ -195,6 +196,7 @@ impl UiWorld {
                 self.rebind_sticky_subtree(*root);
                 self.refresh_root_membership(*root);
                 self.theme_scope_reparented(*root, old_parent);
+                self.sync_active_focus_traps();
             }
             UiMutation::DespawnSubtree { root } => {
                 self.record_topology_invalidation(*root);
@@ -242,6 +244,27 @@ impl UiWorld {
                         }
                         *root != id
                     });
+                    self.input.focus_policies.remove(&id);
+                    self.input.directional_scopes.remove(&id);
+                    self.input.focus_neighbors.remove(&id);
+                    if !self.input.focus_neighbors.is_empty() {
+                        self.input.focus_neighbors.retain(|_, neighbors| {
+                            if neighbors.up == Some(id) {
+                                neighbors.up = None;
+                            }
+                            if neighbors.down == Some(id) {
+                                neighbors.down = None;
+                            }
+                            if neighbors.left == Some(id) {
+                                neighbors.left = None;
+                            }
+                            if neighbors.right == Some(id) {
+                                neighbors.right = None;
+                            }
+                            !neighbors.is_empty()
+                        });
+                    }
+                    self.sync_focus_trap(id);
                     self.invalidation.dirty_entities.remove(&id);
                     self.hit_index.non_scroll_hit_dirty.remove(&id);
                     // A cause queued for a node that is gone seeds nothing,
@@ -252,6 +275,7 @@ impl UiWorld {
                     self.remove_document_root(snapshot.document, id);
                     if self.input.focused.get(&snapshot.document) == Some(&id) {
                         self.input.focused.remove(&snapshot.document);
+                        self.input.focus_counters.focus_changes += 1;
                     }
                     if let Some(index) = self.hit_index.hit_test_index.get_mut(&snapshot.document) {
                         retain_hit_tree(index, id);
@@ -417,6 +441,47 @@ impl UiWorld {
                 );
                 self.recompute_node_theme_deps(*id);
             }
+            UiMutation::SetFocusPolicy { id, policy } => {
+                match policy {
+                    Some(policy) => {
+                        self.input.focus_policies.insert(*id, *policy);
+                    }
+                    None => {
+                        self.input.focus_policies.remove(id);
+                    }
+                }
+                let document = self.record(*id).document;
+                if self.input.focused.get(&document) == Some(id)
+                    && !self.focus_policy(*id).allows_programmatic()
+                {
+                    self.input.focused.remove(&document);
+                    self.release_focus(*id);
+                    self.input.focus_counters.focus_changes += 1;
+                }
+                self.mark(
+                    *id,
+                    DirtyMask::STATE
+                        | DirtyMask::INPUT
+                        | DirtyMask::FOCUS_IME
+                        | DirtyMask::ACCESSIBILITY,
+                );
+            }
+            UiMutation::SetFocusNeighbors { id, neighbors } => {
+                if neighbors.is_empty() {
+                    self.input.focus_neighbors.remove(id);
+                } else {
+                    self.input.focus_neighbors.insert(*id, **neighbors);
+                }
+                self.mark(*id, DirtyMask::STATE | DirtyMask::INPUT);
+            }
+            UiMutation::SetDirectionalFocus { id, scope } => match scope {
+                Some(scope) => {
+                    self.input.directional_scopes.insert(*id, *scope);
+                }
+                None => {
+                    self.input.directional_scopes.remove(id);
+                }
+            },
             UiMutation::SetCustomRender { id, content } => {
                 let previous = self.nodes.custom_render(*id);
                 let same_resource = match (previous, content.as_ref()) {
@@ -879,9 +944,24 @@ impl UiWorld {
                 if interaction_style_changed && self.node_painter(*id).is_some() {
                     self.mark_repaint(*id);
                 }
+                if accessibility.modal || self.input.active_focus_traps.contains(id) {
+                    self.sync_focus_trap(*id);
+                }
+                if accessibility.disabled {
+                    let document = self.record(*id).document;
+                    if let Some(focused) = self.input.focused.get(&document).copied()
+                        && self.is_descendant_or_self(focused, *id)
+                        && !self.focus_policy(focused).allows_programmatic()
+                    {
+                        self.input.focused.remove(&document);
+                        self.release_focus(focused);
+                        self.input.focus_counters.focus_changes += 1;
+                    }
+                }
             }
             UiMutation::SetSurfaceOpen { id, open, menu } => {
                 self.set_surface_open(*id, *open, *menu);
+                self.sync_focus_trap(*id);
             }
             UiMutation::SetOverlayHost { host, state } => {
                 let previous = self.nodes.overlay_host(*host).copied();
@@ -998,6 +1078,9 @@ impl UiWorld {
                     Some(target) => self.input.focused.insert(*document, *target),
                     None => self.input.focused.remove(document),
                 };
+                if old != *target {
+                    self.input.focus_counters.focus_changes += 1;
+                }
                 if let Some(old) = old.filter(|old| Some(*old) != *target) {
                     self.release_focus(old);
                     // A rich editor draws its caret only while focused.
@@ -1138,6 +1221,7 @@ impl UiWorld {
         let previous = self.nodes.scroll_offset(id);
         if previous != offset {
             self.nodes.set_scroll_offset(id, offset);
+            self.input.focus_nav_epoch = self.input.focus_nav_epoch.wrapping_add(1);
             // Hit-index patch + Scene extract of this scroller only.
             // Descendants keep LayoutBox; paint uses scroll_offset.
             self.scroll
