@@ -26,7 +26,17 @@
 //! (flow-relative).
 
 use crate::box_layout::{DirSpec, FlexDirection, TextOrientationSpec, WritingModeSpec};
+use crate::typography::DominantBaselineSpec;
 use serde::{Deserialize, Serialize};
+
+/// Resolved dominant baseline metric model on the block axis (#395).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum UsedBaselineKind {
+    Central,
+    #[default]
+    Alphabetic,
+    Ideographic,
+}
 
 /// One side of a box on the page.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -261,6 +271,58 @@ impl WritingContext {
             return (x, y);
         }
         (y, self.block_to_page_x(x, box_width))
+    }
+
+    /// Resolved dominant baseline for a box with `orientation` and
+    /// `dominant_baseline` (CSS Writing Modes 3 §4.2).
+    pub const fn used_baseline_kind(
+        self,
+        orientation: TextOrientationSpec,
+        dominant_baseline: DominantBaselineSpec,
+    ) -> UsedBaselineKind {
+        match dominant_baseline {
+            DominantBaselineSpec::Central => UsedBaselineKind::Central,
+            DominantBaselineSpec::Alphabetic => UsedBaselineKind::Alphabetic,
+            DominantBaselineSpec::Ideographic => UsedBaselineKind::Ideographic,
+            DominantBaselineSpec::Auto => {
+                if self.is_vertical() && !matches!(orientation, TextOrientationSpec::Sideways) {
+                    UsedBaselineKind::Central
+                } else {
+                    UsedBaselineKind::Alphabetic
+                }
+            }
+        }
+    }
+
+    /// Distance from the container's `block-start` edge to the child box's
+    /// `block-start` edge (all dimensions in page coordinates).
+    pub fn block_origin_offset(
+        self,
+        offset: (f32, f32),
+        child_size: (f32, f32),
+        container_content: (f32, f32),
+    ) -> f32 {
+        match self.mode {
+            WritingModeSpec::HorizontalTb => offset.1,
+            WritingModeSpec::VerticalLr => offset.0,
+            WritingModeSpec::VerticalRl => container_content.0 - (offset.0 + child_size.0),
+        }
+    }
+
+    /// Sortable inline-start coordinate of a placed child (`offset`, `child_size`)
+    /// so smaller values always come nearer `inline-start`.
+    pub fn inline_start_coord(self, offset: (f32, f32), child_size: (f32, f32)) -> f32 {
+        if self.is_vertical() {
+            if self.inline_reversed() {
+                -(offset.1 + child_size.1)
+            } else {
+                offset.1
+            }
+        } else if self.inline_reversed() {
+            -(offset.0 + child_size.0)
+        } else {
+            offset.0
+        }
     }
 }
 

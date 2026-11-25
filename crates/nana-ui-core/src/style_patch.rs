@@ -301,8 +301,8 @@ pub mod set {
     pub mod text_ext {
         use crate::box_layout::*;
         use crate::typography::{
-            FontKerningSpec, FontVariationSetting, HyphensSpec, LineBreakSpec, TextEmphasisColor,
-            TextEmphasisPosition, TextEmphasisStyle,
+            DominantBaselineSpec, FontKerningSpec, FontVariationSetting, HyphensSpec,
+            LineBreakSpec, TextEmphasisColor, TextEmphasisPosition, TextEmphasisStyle,
         };
 
         shared_group_setters!(text_ext {
@@ -323,6 +323,7 @@ pub mod set {
             unsupported_font_variation: bool,
             unsupported_writing_mode: bool,
             text_orientation: Option<TextOrientationSpec>,
+            dominant_baseline: Option<DominantBaselineSpec>,
             vertical_align: VerticalAlignSpec,
             placeholder_color: Option<[f32; 4]>,
             placeholder_opacity: Option<f32>,

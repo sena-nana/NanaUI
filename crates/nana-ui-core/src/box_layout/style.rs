@@ -1,7 +1,9 @@
 //! Retained `LayoutStyle` struct, logical edges, and box/layout resolution helpers.
 
 use crate::style_model::{PaintColor, StyleModelRef};
-use crate::typography::{FontKerningSpec, FontVariationSetting, HyphensSpec, LineBreakSpec};
+use crate::typography::{
+    DominantBaselineSpec, FontKerningSpec, FontVariationSetting, HyphensSpec, LineBreakSpec,
+};
 
 use super::grid::{lookup_named_line_after, lookup_named_line_nth, *};
 use super::paint::{PAINT_MAT4_EPS, edge_paints_stroke, paint_border_width, used_border_width, *};
@@ -356,6 +358,8 @@ pub struct TextStyleExt {
     pub unsupported_writing_mode: bool,
     /// CSS `text-orientation`. `None` = inherit, then `mixed`.
     pub text_orientation: Option<TextOrientationSpec>,
+    /// CSS `dominant-baseline`. `None` = inherit / `auto`.
+    pub dominant_baseline: Option<DominantBaselineSpec>,
     /// CSS `vertical-align` (non-inherited; applies to inline-level boxes).
     pub vertical_align: VerticalAlignSpec,
     /// `::placeholder` color on a text input (RGBA 0..=1). Not a generated box.
@@ -381,6 +385,7 @@ impl TextStyleExt {
             || self.text_emphasis_position.is_some()
             || self.text_emphasis_color.is_some()
             || self.text_orientation.is_some()
+            || self.dominant_baseline.is_some()
     }
 }
 
@@ -1658,7 +1663,8 @@ impl LayoutStyle {
             || (p.font_variation_settings.is_some() && cur.font_variation_settings.is_none())
             || (p.font_kerning.is_some() && cur.font_kerning.is_none())
             || (p.line_break.is_some() && cur.line_break.is_none())
-            || (p.hyphens.is_some() && cur.hyphens.is_none());
+            || (p.hyphens.is_some() && cur.hyphens.is_none())
+            || (p.dominant_baseline.is_some() && cur.dominant_baseline.is_none());
         if !needs_copy {
             return;
         }
@@ -1701,6 +1707,9 @@ impl LayoutStyle {
         }
         if ext.hyphens.is_none() {
             ext.hyphens = p.hyphens;
+        }
+        if ext.dominant_baseline.is_none() {
+            ext.dominant_baseline = p.dominant_baseline;
         }
     }
 

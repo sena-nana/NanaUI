@@ -517,22 +517,174 @@ pub(super) struct Grid2dPrepared {
 }
 
 pub(super) enum Grid2dStart {
-    Ready(Grid2DLayout),
+    Ready(Grid2dPrepared),
     NeedsPass2(Grid2dPrepared),
 }
 
+fn distribute_spanned_auto_tracks(
+    tracks: &[GridTrack],
+    auto_sizes: &mut [f32],
+    container: f32,
+    gap: f32,
+    spans: &[(usize, usize, f32)],
+) {
+    if spans.is_empty() || tracks.is_empty() {
+        return;
+    }
+    let mut ordered: Vec<(usize, usize, f32)> = spans.to_vec();
+    ordered.sort_unstable_by_key(|&(_, span, _)| span);
+    let mut current_sizes = resolve_grid_track_sizes(tracks, container, gap, auto_sizes);
+    for (start, span, need) in ordered {
+        let end = start.saturating_add(span).min(tracks.len());
+        if start >= end || span <= 1 {
+            continue;
+        }
+        let current = grid_span_extent(&current_sizes, start, span, gap);
+        let extra = (need - current).max(0.0);
+        if extra <= 0.0 {
+            continue;
+        }
+        let auto_count = (start..end)
+            .filter(|&index| matches!(tracks[index], GridTrack::Auto))
+            .count();
+        if auto_count == 0 {
+            continue;
+        }
+        let share = extra / auto_count as f32;
+        for index in start..end {
+            if matches!(tracks[index], GridTrack::Auto) {
+                current_sizes[index] += share;
+                auto_sizes[index] = current_sizes[index];
+            }
+        }
+    }
+}
+
+/// CSS Grid 2 §12.5 baseline shim for `GridTrack::Auto` rows before track resolution:
+/// expands an auto row to hold the combined ascent + descent of single-row
+/// baseline-aligned items sharing that row's baseline.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn apply_grid_row_baseline_shim(
+    style: &LayoutStyle,
+    state: &mut Grid2dPrepared,
+    measured: &[Size],
+    viewport: LayoutViewport,
+    child_font_px: f32,
+    nodes: &mut LayoutInputMap<'_>,
+    cache: &mut PassIntrinsicCache,
+    scope: Option<&ScopeContext<'_>>,
+) -> Result<(), UiWorldError> {
+    if !state.items.iter().enumerate().any(|(idx, item)| {
+        item.row_span == 1
+            && matches!(state.row_tracks.get(item.row), Some(GridTrack::Auto))
+            && nodes.style_ref(item.id).is_some_and(|child_style| {
+                child_style.resolved_align_self(style.align_items) == AlignSpec::Baseline
+            })
+            && idx < state.items.len()
+    }) {
+        return Ok(());
+    }
+    let mut query_sizes: HashMap<usize, Size> = HashMap::new();
+    for (&(item_index, _, _), &size) in state.queries.iter().zip(measured) {
+        query_sizes.insert(item_index, size);
+    }
+    let mut row_ascent: HashMap<usize, f32> = HashMap::new();
+    let mut row_descent: HashMap<usize, f32> = HashMap::new();
+    for (item_index, (item, margin)) in state.items.iter().zip(&state.margins).enumerate() {
+        if item.row_span != 1 || !matches!(state.row_tracks.get(item.row), Some(GridTrack::Auto)) {
+            continue;
+        }
+        let Some(child_style) = nodes.style(item.id) else {
+            continue;
+        };
+        if child_style.resolved_align_self(style.align_items) != AlignSpec::Baseline {
+            continue;
+        }
+        let cell_inline =
+            grid_span_extent(&state.col_sizes, item.col, item.col_span, state.col_gap);
+        let child_fonts = fonts_of(child_style.as_ref(), child_font_px);
+        let item_size = query_sizes
+            .get(&item_index)
+            .copied()
+            .unwrap_or(item.intrinsic);
+        prime_first_baselines(
+            [(item.id, item_size)],
+            cell_inline,
+            viewport,
+            child_font_px,
+            nodes,
+            cache,
+            scope,
+        )?;
+        let baseline = cache
+            .baseline(item.id, crate::Baseline::First)
+            .unwrap_or_else(|| nodes.baseline(item.id, child_fonts.element_px, item_size));
+        let item_block = state
+            .writing
+            .logical_size(item_size.width, item_size.height)
+            .1;
+        let clamped_base = baseline.clamp(0.0, item_block.max(0.0));
+        let lead = margin_at(*margin, state.writing.block_start());
+        let trail = margin_at(*margin, state.writing.block_end());
+        row_ascent
+            .entry(item.row)
+            .and_modify(|max_a| *max_a = max_a.max(lead + clamped_base))
+            .or_insert(lead + clamped_base);
+        row_descent
+            .entry(item.row)
+            .and_modify(|max_d| *max_d = max_d.max((item_block - clamped_base) + trail))
+            .or_insert((item_block - clamped_base) + trail);
+    }
+    for (row, ascent) in row_ascent {
+        let descent = row_descent.get(&row).copied().unwrap_or(0.0);
+        if row < state.row_auto.len() {
+            state.row_auto[row] = state.row_auto[row].max(ascent + descent);
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn layout_grid_2d_finish(mut state: Grid2dPrepared, measured: &[Size]) -> Grid2DLayout {
-    for ((item_index, _, _), measured) in state.queries.iter().zip(measured) {
+    let mut query_blocks: HashMap<usize, f32> = HashMap::new();
+    for (&(item_index, _, _), measured) in state.queries.iter().zip(measured) {
         let block = state
             .writing
             .logical_size(measured.width, measured.height)
             .1;
-        let item = &state.items[*item_index];
-        let margin = state.margins[*item_index];
-        let block_margins = margin_at(margin, state.writing.block_start())
-            + margin_at(margin, state.writing.block_end());
-        state.row_auto[item.row] = state.row_auto[item.row].max(block + block_margins);
+        query_blocks.insert(item_index, block);
+        let item = &state.items[item_index];
+        if item.row_span == 1 && item.row < state.row_auto.len() {
+            let margin = state.margins[item_index];
+            let block_margins = margin_at(margin, state.writing.block_start())
+                + margin_at(margin, state.writing.block_end());
+            state.row_auto[item.row] = state.row_auto[item.row].max(block + block_margins);
+        }
     }
+    let spanned_rows: Vec<(usize, usize, f32)> = state
+        .items
+        .iter()
+        .zip(&state.margins)
+        .enumerate()
+        .filter(|(_, (item, _))| item.row_span > 1)
+        .map(|(item_index, (item, margin))| {
+            let block = query_blocks.get(&item_index).copied().unwrap_or_else(|| {
+                state
+                    .writing
+                    .logical_size(item.intrinsic.width, item.intrinsic.height)
+                    .1
+            });
+            let block_margins = margin_at(*margin, state.writing.block_start())
+                + margin_at(*margin, state.writing.block_end());
+            (item.row, item.row_span, block + block_margins)
+        })
+        .collect();
+    distribute_spanned_auto_tracks(
+        &state.row_tracks,
+        &mut state.row_auto,
+        state.content_block,
+        state.row_gap,
+        &spanned_rows,
+    );
     let mut row_sizes = resolve_grid_track_sizes(
         &state.row_tracks,
         state.content_block,
@@ -581,8 +733,20 @@ pub(super) fn layout_grid_2d(
         inherited,
         nodes,
     ) {
-        Grid2dStart::Ready(layout) => Ok(layout),
-        Grid2dStart::NeedsPass2(state) => {
+        Grid2dStart::Ready(mut state) => {
+            apply_grid_row_baseline_shim(
+                style,
+                &mut state,
+                &[],
+                viewport,
+                fonts.element_px,
+                nodes,
+                cache,
+                scope,
+            )?;
+            Ok(layout_grid_2d_finish(state, &[]))
+        }
+        Grid2dStart::NeedsPass2(mut state) => {
             let mut measured = Vec::with_capacity(state.queries.len());
             for &(_, item_id, avail) in &state.queries {
                 measured.push(intrinsic_size_scoped(
@@ -596,6 +760,16 @@ pub(super) fn layout_grid_2d(
                     scope,
                 )?);
             }
+            apply_grid_row_baseline_shim(
+                style,
+                &mut state,
+                &measured,
+                viewport,
+                fonts.element_px,
+                nodes,
+                cache,
+                scope,
+            )?;
             Ok(layout_grid_2d_finish(state, &measured))
         }
     }
@@ -925,16 +1099,27 @@ pub(super) fn layout_grid_2d_begin(
         })
         .collect::<Vec<_>>();
     let mut col_auto = vec![0.0f32; col_tracks.len()];
+    let mut col_spanned = Vec::new();
     for (item, margin) in items.iter().zip(&margins) {
+        let inline = writing
+            .logical_size(item.intrinsic.width, item.intrinsic.height)
+            .0;
+        let inline_margins =
+            margin_at(*margin, writing.inline_start()) + margin_at(*margin, writing.inline_end());
+        let need = inline + inline_margins;
         if item.col_span == 1 && item.col < col_auto.len() {
-            let inline = writing
-                .logical_size(item.intrinsic.width, item.intrinsic.height)
-                .0;
-            let inline_margins = margin_at(*margin, writing.inline_start())
-                + margin_at(*margin, writing.inline_end());
-            col_auto[item.col] = col_auto[item.col].max(inline + inline_margins);
+            col_auto[item.col] = col_auto[item.col].max(need);
+        } else if item.col_span > 1 {
+            col_spanned.push((item.col, item.col_span, need));
         }
     }
+    distribute_spanned_auto_tracks(
+        &col_tracks,
+        &mut col_auto,
+        content_inline,
+        col_gap,
+        &col_spanned,
+    );
     let mut col_sizes = resolve_grid_track_sizes(&col_tracks, content_inline, col_gap, &col_auto);
     distribute_auto_track_leftover(&col_tracks, &mut col_sizes, content_inline, col_gap);
     // Rows are sized once the columns are (CSS Grid §11.5): an auto row
@@ -942,7 +1127,10 @@ pub(super) fn layout_grid_2d_begin(
     let mut row_auto = vec![0.0f32; row_tracks.len()];
     let mut queries = Vec::new();
     for (item_index, (item, margin)) in items.iter().zip(&margins).enumerate() {
-        if item.row_span != 1 || !matches!(row_tracks.get(item.row), Some(GridTrack::Auto)) {
+        let row_end = item.row.saturating_add(item.row_span).min(row_tracks.len());
+        let spans_auto_row =
+            (item.row..row_end).any(|row| matches!(row_tracks.get(row), Some(GridTrack::Auto)));
+        if !spans_auto_row {
             continue;
         }
         let (inline, block) = writing.logical_size(item.intrinsic.width, item.intrinsic.height);
@@ -960,9 +1148,11 @@ pub(super) fn layout_grid_2d_begin(
                 .flatten()
                 .is_some_and(LengthSpec::is_definite_declared)
         {
-            let block_margins =
-                margin_at(*margin, writing.block_start()) + margin_at(*margin, writing.block_end());
-            row_auto[item.row] = row_auto[item.row].max(block + block_margins);
+            if item.row_span == 1 {
+                let block_margins = margin_at(*margin, writing.block_start())
+                    + margin_at(*margin, writing.block_end());
+                row_auto[item.row] = row_auto[item.row].max(block + block_margins);
+            }
         } else {
             let (width, height) = writing.physical_size(area, 0.0);
             queries.push((item_index, item.id, Size::new(width, height)));
@@ -981,7 +1171,7 @@ pub(super) fn layout_grid_2d_begin(
         queries,
     };
     if state.queries.is_empty() {
-        Grid2dStart::Ready(layout_grid_2d_finish(state, &[]))
+        Grid2dStart::Ready(state)
     } else {
         Grid2dStart::NeedsPass2(state)
     }
@@ -1234,10 +1424,10 @@ pub(super) fn arrange_grid_2d(
                 child_fonts,
             );
         }
-        if align == AlignSpec::Baseline && !writing.is_vertical() {
+        if align == AlignSpec::Baseline {
             prime_first_baselines(
                 [(item.id, child_size)],
-                cell.width,
+                writing.inline_size(cell.width, cell.height),
                 viewport,
                 child_font_px,
                 nodes,

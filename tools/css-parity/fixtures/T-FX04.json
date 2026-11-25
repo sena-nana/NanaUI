@@ -1,0 +1,48 @@
+{
+  "id": "T-FX04",
+  "title": "flex baseline 行交叉轴按 max_ascent + max_descent 增长（#409）",
+  "status": "pass",
+  "viewport": [240, 200],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:flex;flex-direction:column;gap:10px;width:200px",
+    "children": [
+      {
+        "id": "row",
+        "style": "display:flex;flex-direction:row;align-items:baseline;gap:8px;width:200px",
+        "children": [
+          { "id": "a", "style": "width:40px;height:30px;margin-top:10px" },
+          {
+            "id": "b",
+            "style": "display:flex;width:40px;height:50px",
+            "children": [
+              { "id": "b_top", "style": "width:40px;height:20px" }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "wrap_row",
+        "style": "display:flex;flex-direction:row;flex-wrap:wrap;align-items:baseline;gap:8px;width:100px",
+        "children": [
+          { "id": "wa", "style": "width:40px;height:30px;margin-top:10px" },
+          {
+            "id": "wb",
+            "style": "display:flex;width:40px;height:50px",
+            "children": [
+              { "id": "wb_top", "style": "width:40px;height:20px" }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expected": [
+    { "id": "row", "x": 0, "y": 0, "w": 200, "h": 70 },
+    { "id": "a", "x": 0, "y": 10, "w": 40, "h": 30 },
+    { "id": "b", "x": 48, "y": 20, "w": 40, "h": 50 },
+    { "id": "wrap_row", "x": 0, "y": 80, "w": 100, "h": 70 },
+    { "id": "wb", "x": 48, "y": 100, "w": 40, "h": 50 }
+  ]
+}

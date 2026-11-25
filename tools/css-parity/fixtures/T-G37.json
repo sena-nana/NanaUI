@@ -1,0 +1,51 @@
+{
+  "id": "T-G37",
+  "title": "定宽 inline-flex / inline-grid 内部自动宽度 grid 拉伸铺满容器内宽（#409）",
+  "status": "pass",
+  "viewport": [260, 120],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:flex;flex-direction:column;gap:10px;width:240px",
+    "children": [
+      {
+        "id": "iflex_col",
+        "style": "display:inline-flex;flex-direction:column;width:200px",
+        "children": [
+          {
+            "id": "g1",
+            "style": "display:grid;grid-template-columns:1fr 1fr",
+            "children": [
+              { "id": "g1a", "style": "height:20px" },
+              { "id": "g1b", "style": "height:20px" }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "igrid",
+        "style": "display:inline-grid;width:200px",
+        "children": [
+          {
+            "id": "g2",
+            "style": "display:grid;grid-template-columns:1fr 1fr",
+            "children": [
+              { "id": "g2a", "style": "height:20px" },
+              { "id": "g2b", "style": "height:20px" }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expected": [
+    { "id": "iflex_col", "x": 0, "y": 0, "w": 200, "h": 20 },
+    { "id": "g1", "x": 0, "y": 0, "w": 200, "h": 20 },
+    { "id": "g1a", "x": 0, "y": 0, "w": 100, "h": 20 },
+    { "id": "g1b", "x": 100, "y": 0, "w": 100, "h": 20 },
+    { "id": "igrid", "x": 0, "y": 30, "w": 200, "h": 20 },
+    { "id": "g2", "x": 0, "y": 30, "w": 200, "h": 20 },
+    { "id": "g2a", "x": 0, "y": 30, "w": 100, "h": 20 },
+    { "id": "g2b", "x": 100, "y": 30, "w": 100, "h": 20 }
+  ]
+}

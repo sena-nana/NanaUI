@@ -71,6 +71,19 @@ pub enum HyphensSpec {
     Auto,
 }
 
+/// CSS `dominant-baseline` subset for vertical & horizontal baseline alignment (#395).
+///
+/// `Auto` resolves to `Central` in vertical writing modes with `mixed`/`upright`
+/// text orientation, and to `Alphabetic` in horizontal writing or vertical `sideways`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum DominantBaselineSpec {
+    #[default]
+    Auto,
+    Central,
+    Alphabetic,
+    Ideographic,
+}
+
 /// CSS `text-spacing-trim`: how much of the blank half of fullwidth CJK
 /// punctuation a line keeps.
 ///

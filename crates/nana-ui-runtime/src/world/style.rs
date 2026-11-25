@@ -525,6 +525,9 @@ impl UiWorld {
             text_orientation: text_ext
                 .text_orientation
                 .unwrap_or(inherited.text_orientation),
+            dominant_baseline: text_ext
+                .dominant_baseline
+                .unwrap_or(inherited.dominant_baseline),
             text_scale,
             font_size_base,
             line_height_base,

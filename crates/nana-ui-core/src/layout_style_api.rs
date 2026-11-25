@@ -173,6 +173,7 @@ impl LayoutStyle {
         word_break => word_break: WordBreakSpec,
         overflow_wrap => overflow_wrap: OverflowWrapSpec,
         hyphens => hyphens: crate::typography::HyphensSpec,
+        dominant_baseline => dominant_baseline: crate::typography::DominantBaselineSpec,
         font_family => font_family: String,
         letter_spacing => letter_spacing: f32,
         text_decoration => text_decoration: TextDecorationLine,

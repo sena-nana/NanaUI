@@ -860,6 +860,7 @@ pub(super) struct MeasurePlan {
     /// per-pass cache key that the plan, keyed by id alone, has to carry.
     pub(super) available: Size,
     pub(super) parent_direction: Option<FlexDirection>,
+    pub(super) parent_stretches: bool,
     pub(super) viewport: LayoutViewport,
     pub(super) parent_font_px: f32,
     /// The container's effective style, compared by pointer with a value
@@ -1009,6 +1010,7 @@ impl MeasurePlan {
         &self,
         available: Size,
         parent_direction: Option<FlexDirection>,
+        parent_stretches: bool,
         viewport: LayoutViewport,
         parent_font_px: f32,
         style: &Arc<nana_ui_core::LayoutStyle>,
@@ -1040,6 +1042,7 @@ impl MeasurePlan {
             && own_matches
             && self.available == available
             && self.parent_direction == parent_direction
+            && self.parent_stretches == parent_stretches
             && viewport_basis(&self.style, self.viewport) == viewport_basis(style, viewport)
             && self.parent_font_px == parent_font_px
             && (Arc::ptr_eq(&self.style, style) || measure_inputs_equal(&self.style, style))

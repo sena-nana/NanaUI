@@ -6,9 +6,9 @@ use std::{
 };
 
 use nana_ui_core::{
-    ControlSize, FontFeatureSetting, FontKerningSpec, FontVariationSetting, HyphensSpec, Icon,
-    LayoutStyle, LineBreakSpec, LineHeightSpec, PopoverAlignment, PopoverPlacement,
-    SemanticColorRole, UI_BASE_TEXT_SIZE, WordBreakSpec,
+    ControlSize, DominantBaselineSpec, FontFeatureSetting, FontKerningSpec, FontVariationSetting,
+    HyphensSpec, Icon, LayoutStyle, LineBreakSpec, LineHeightSpec, PopoverAlignment,
+    PopoverPlacement, SemanticColorRole, UI_BASE_TEXT_SIZE, WordBreakSpec,
 };
 
 /// The **default theme's** status-tone mapping.
@@ -2008,6 +2008,8 @@ pub struct InheritedStyle {
     pub writing_mode: nana_ui_core::WritingModeSpec,
     /// CSS `text-orientation` after inherit (initial `mixed`).
     pub text_orientation: nana_ui_core::TextOrientationSpec,
+    /// CSS `dominant-baseline` after inherit (initial `auto`).
+    pub dominant_baseline: DominantBaselineSpec,
     /// The typography scale text under this node is set at: the node's own
     /// ([`crate::MutationQueue::set_text_scale`]), else its parent's, else
     /// its window's, else the application's. 1 unless one of them sets one.
@@ -2054,6 +2056,7 @@ impl Default for InheritedStyle {
             direction: nana_ui_core::DirSpec::Ltr,
             writing_mode: nana_ui_core::WritingModeSpec::HorizontalTb,
             text_orientation: nana_ui_core::TextOrientationSpec::Mixed,
+            dominant_baseline: DominantBaselineSpec::Auto,
             text_scale: 1.0,
             font_size_base: UI_BASE_TEXT_SIZE,
             line_height_base: None,

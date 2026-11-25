@@ -36,6 +36,78 @@ impl UiWorld {
             crate::text_layout_origin(bounds, node.style.text_vertical_alignment, metrics.height);
         metrics.ascent.map(|ascent| origin[1] + ascent.max(0.0))
     }
+    pub(crate) fn node_baseline_kind(&self, id: StableNodeId) -> nana_ui_core::UsedBaselineKind {
+        let writing = self.layout_writing(id);
+        let (orientation, dominant) = self.computed_style(id).map_or_else(
+            || {
+                self.layout_style(id).map_or(
+                    (
+                        nana_ui_core::TextOrientationSpec::default(),
+                        nana_ui_core::DominantBaselineSpec::default(),
+                    ),
+                    |s| {
+                        (
+                            s.text_ext.text_orientation.unwrap_or_default(),
+                            s.text_ext.dominant_baseline.unwrap_or_default(),
+                        )
+                    },
+                )
+            },
+            |s| (s.text_orientation, s.dominant_baseline),
+        );
+        writing.used_baseline_kind(orientation, dominant)
+    }
+
+    pub(crate) fn text_line_baseline_from_block_start(
+        &self,
+        line: &nana_text::LineBox,
+        writing: nana_ui_core::WritingContext,
+        kind: nana_ui_core::UsedBaselineKind,
+        font_ascent: f32,
+        font_descent: f32,
+    ) -> f32 {
+        let top = line.metrics.top_y_px;
+        let height = line.metrics.height_px;
+        if !writing.is_vertical() {
+            return match kind {
+                nana_ui_core::UsedBaselineKind::Alphabetic => line.metrics.baseline_y_px,
+                nana_ui_core::UsedBaselineKind::Central => top + height * 0.5,
+                nana_ui_core::UsedBaselineKind::Ideographic => {
+                    (line.metrics.baseline_y_px + line.metrics.descent_px).min(top + height)
+                }
+            };
+        }
+        let center = line.metrics.baseline_y_px;
+        let ascent = if font_ascent > 0.0 {
+            font_ascent
+        } else {
+            line.metrics.ascent_px
+        };
+        let descent = if font_descent > 0.0 {
+            font_descent
+        } else {
+            line.metrics.descent_px
+        };
+        let half_leading = (height - (ascent + descent)) * 0.5;
+        match kind {
+            nana_ui_core::UsedBaselineKind::Central => center,
+            nana_ui_core::UsedBaselineKind::Alphabetic => {
+                if writing.block_reversed() {
+                    top + half_leading + ascent
+                } else {
+                    top + half_leading + descent
+                }
+            }
+            nana_ui_core::UsedBaselineKind::Ideographic => {
+                if writing.block_reversed() {
+                    (center + 0.5 * (ascent + descent)).min(top + height)
+                } else {
+                    (center - 0.5 * (ascent + descent)).max(top)
+                }
+            }
+        }
+    }
+
     pub(super) fn native_text_fragments(
         &self,
         id: StableNodeId,
@@ -43,6 +115,8 @@ impl UiWorld {
     ) -> Option<(Vec<crate::LayoutFragment>, Option<f32>, Option<f32>)> {
         let (_, layout) = self.text_layout(id)?;
         let origin = self.native_text_origin(id, bounds, layout);
+        let writing = self.layout_writing(id);
+        let kind = self.node_baseline_kind(id);
         let mut fragments = Vec::with_capacity(layout.lines.len() + layout.runs.len());
         let to_box = |rect: nana_text::TextRect| {
             let rect = layout.page_rect(rect, bounds.width);
@@ -56,8 +130,17 @@ impl UiWorld {
         let mut first = None;
         let mut last = None;
         for line in &layout.lines {
-            let baseline =
-                (!layout.is_vertical()).then_some(origin[1] + line.metrics.baseline_y_px);
+            let origin_block = if layout.is_vertical() { 0.0 } else { origin[1] };
+            let baseline = Some(
+                origin_block
+                    + self.text_line_baseline_from_block_start(
+                        line,
+                        writing,
+                        kind,
+                        line.metrics.ascent_px,
+                        line.metrics.descent_px,
+                    ),
+            );
             first = first.or(baseline);
             last = baseline;
             let mut fragment = crate::LayoutFragment::new(
@@ -557,6 +640,7 @@ impl UiWorld {
             font_descent,
             x_height,
             font_px: font,
+            dominant_baseline: self.node_baseline_kind(parent),
         }
     }
 
@@ -609,8 +693,13 @@ impl UiWorld {
                         writing.inline_size(available.width, available.height),
                     );
                     let block_size = writing.logical_size(bounds.width, bounds.height).1;
-                    let retained =
-                        (!writing.is_vertical()).then_some(previous.metrics.ascent_px - margin.top);
+                    let block_lead = match writing.block_start() {
+                        nana_ui_core::PhysicalEdge::Top => margin.top,
+                        nana_ui_core::PhysicalEdge::Right => margin.right,
+                        nana_ui_core::PhysicalEdge::Bottom => margin.bottom,
+                        nana_ui_core::PhysicalEdge::Left => margin.left,
+                    };
+                    let retained = Some(previous.metrics.ascent_px - block_lead);
                     let first_only = self.layout_style(atom.node).is_some_and(|style| {
                         style.display.is_some_and(|display| {
                             display.is_flex_container() || display.is_grid_container()

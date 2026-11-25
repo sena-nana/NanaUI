@@ -171,6 +171,7 @@ pub(super) struct LineStrut {
     pub(super) font_descent: f32,
     pub(super) x_height: f32,
     pub(super) font_px: f32,
+    pub(super) dominant_baseline: nana_ui_core::UsedBaselineKind,
 }
 
 impl From<LineStrut> for crate::inline_content::ParentLineStrut {
@@ -180,6 +181,7 @@ impl From<LineStrut> for crate::inline_content::ParentLineStrut {
             font_descent: strut.font_descent,
             x_height: strut.x_height,
             font_px: strut.font_px,
+            dominant_baseline: strut.dominant_baseline,
         }
     }
 }

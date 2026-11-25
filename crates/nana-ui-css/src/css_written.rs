@@ -387,6 +387,7 @@ const WITNESS_DECLARATIONS: &[(&str, &str)] = &[
     ("font-kerning", "none"),
     ("line-break", "anywhere"),
     ("hyphens", "none"),
+    ("dominant-baseline", "central"),
     ("text-spacing-trim", "trim-both"),
     ("text-autospace", "normal"),
     ("text-justify", "inter-word"),

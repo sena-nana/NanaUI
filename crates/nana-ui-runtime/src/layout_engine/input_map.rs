@@ -693,7 +693,7 @@ impl<'a> LayoutInputMap<'a> {
         crate::inline_content::AtomLinePlacement,
     ) {
         let block = writing.logical_size(used.width, used.height).1.max(0.0);
-        let on_line_box = !writing.is_vertical() && self.atom_sits_on_line_box(id);
+        let on_line_box = self.atom_sits_on_line_box(id);
         // Every line reads one derived value: a caller that did not prime
         // this atom ([`inline::prime_atom_baselines`]) would place it by the
         // approximation instead.
@@ -751,9 +751,17 @@ impl<'a> LayoutInputMap<'a> {
         let Some(style) = self.style(id) else {
             return BaselineMetrics::default();
         };
-        let font = fonts_of(&style, fallback_font_px).element_px;
-        let chrome_top =
-            style.resolved_padding_against(inline_base).top + style.resolved_border_width();
+        let writing = self
+            .nodes
+            .get(&id)
+            .map_or_else(Default::default, |node| node.writing);
+        let kind = self.world.node_baseline_kind(id);
+        let fonts = fonts_of(&style, fallback_font_px);
+        let font = fonts.element_px;
+        let padding = style.resolved_padding_against_fonts(inline_base, fonts);
+        let border = style.resolved_border_edges();
+        let chrome_block_start = grid::margin_at(padding, writing.block_start())
+            + grid::margin_at(border, writing.block_start());
         let uses_card_title = self
             .world
             .widget_visual_ref(id)
@@ -762,15 +770,11 @@ impl<'a> LayoutInputMap<'a> {
             return BaselineMetrics::default();
         }
         if self.aligns_by_bottom_edge(id, &style) {
-            // Replaced content's baseline is its border-box bottom. The
-            // measure caller supplies the used extent when it is available;
-            // an absent extent remains an explicit fallback for a later query.
-            let block = used.and_then(|used| {
-                let (_, block) = self
-                    .nodes
-                    .get(&id)
-                    .map(|node| node.writing.logical_size(used.width, used.height))?;
-                Some(block.max(0.0))
+            // Replaced content's baseline is its block-end (horizontal) or
+            // dominant-baseline position (vertical).
+            let block = used.map(|used| {
+                let (_, block) = writing.logical_size(used.width, used.height);
+                crate::inline_content::synthesized_block_baseline(block, writing, kind)
             });
             return BaselineMetrics {
                 first: block,
@@ -778,9 +782,6 @@ impl<'a> LayoutInputMap<'a> {
             };
         }
         if uses_card_title && let Some(used) = used {
-            let padding = style
-                .resolved_padding_against_fonts(inline_base, fonts_of(&style, fallback_font_px));
-            let border = style.resolved_border_edges();
             let bounds = LayoutBox {
                 x: 0.0,
                 y: 0.0,
@@ -803,19 +804,34 @@ impl<'a> LayoutInputMap<'a> {
             let parts = self.world.solve_content_parts_at(id, content, bounds);
             if let Some(header) = parts::part_bounds(&parts, crate::LayoutPartKind::Header) {
                 if let Some((_, layout)) = self.world.text_layout(id) {
-                    if layout.is_vertical() {
-                        return BaselineMetrics::default();
-                    }
-                    let top = self.world.native_text_origin(id, header, layout)[1];
+                    let top = if layout.is_vertical() {
+                        writing.block_origin_offset(
+                            (header.x, header.y),
+                            (header.width, header.height),
+                            (used.width, used.height),
+                        )
+                    } else {
+                        self.world.native_text_origin(id, header, layout)[1]
+                    };
                     return BaselineMetrics {
-                        first: layout
-                            .lines
-                            .first()
-                            .map(|line| top + line.metrics.baseline_y_px),
-                        last: layout
-                            .lines
-                            .last()
-                            .map(|line| top + line.metrics.baseline_y_px),
+                        first: layout.lines.first().map(|line| {
+                            top + self.world.text_line_baseline_from_block_start(
+                                line,
+                                writing,
+                                kind,
+                                line.metrics.ascent_px,
+                                line.metrics.descent_px,
+                            )
+                        }),
+                        last: layout.lines.last().map(|line| {
+                            top + self.world.text_line_baseline_from_block_start(
+                                line,
+                                writing,
+                                kind,
+                                line.metrics.ascent_px,
+                                line.metrics.descent_px,
+                            )
+                        }),
                     };
                 }
                 let baseline = self.world.single_text_baseline(id, header);
@@ -826,41 +842,50 @@ impl<'a> LayoutInputMap<'a> {
             }
         }
         if let Some((_, layout)) = self.world.text_layout(id)
-            && !layout.is_vertical()
             && !layout.lines.is_empty()
         {
-            let content_height = used.map_or(layout.physical_size().1, |used| {
-                let padding = style.resolved_padding_against_fonts(
-                    inline_base,
-                    fonts_of(&style, fallback_font_px),
-                );
-                let border = style.resolved_border_edges();
-                (used.height - padding.top - padding.bottom - border.top - border.bottom).max(0.0)
-            });
-            let alignment = self
-                .world
-                .node_style(id)
-                .map_or(crate::TextVerticalAlignment::Top, |style| {
-                    style.text_vertical_alignment
+            let top = if layout.is_vertical() {
+                chrome_block_start
+            } else {
+                let content_height = used.map_or(layout.physical_size().1, |used| {
+                    (used.height - padding.top - padding.bottom - border.top - border.bottom)
+                        .max(0.0)
                 });
-            let top = crate::text_layout_origin(
-                LayoutBox {
-                    x: 0.0,
-                    y: chrome_top,
-                    width: 0.0,
-                    height: content_height,
-                },
-                alignment,
-                layout.physical_size().1,
-            )[1];
-            let first = layout
-                .lines
-                .first()
-                .map(|line| top + line.metrics.baseline_y_px);
-            let last = layout
-                .lines
-                .last()
-                .map(|line| top + line.metrics.baseline_y_px);
+                let alignment = self
+                    .world
+                    .node_style(id)
+                    .map_or(crate::TextVerticalAlignment::Top, |style| {
+                        style.text_vertical_alignment
+                    });
+                crate::text_layout_origin(
+                    LayoutBox {
+                        x: 0.0,
+                        y: chrome_block_start,
+                        width: 0.0,
+                        height: content_height,
+                    },
+                    alignment,
+                    layout.physical_size().1,
+                )[1]
+            };
+            let first = layout.lines.first().map(|line| {
+                top + self.world.text_line_baseline_from_block_start(
+                    line,
+                    writing,
+                    kind,
+                    line.metrics.ascent_px,
+                    line.metrics.descent_px,
+                )
+            });
+            let last = layout.lines.last().map(|line| {
+                top + self.world.text_line_baseline_from_block_start(
+                    line,
+                    writing,
+                    kind,
+                    line.metrics.ascent_px,
+                    line.metrics.descent_px,
+                )
+            });
             return BaselineMetrics { first, last };
         }
         let button_label = self
@@ -869,11 +894,8 @@ impl<'a> LayoutInputMap<'a> {
             .and_then(crate::WidgetVisualHandle::button_label_state);
         if button_label == Some(false) {
             let block = used.map(|used| {
-                let writing = self
-                    .nodes
-                    .get(&id)
-                    .map_or_else(Default::default, |node| node.writing);
-                writing.logical_size(used.width, used.height).1.max(0.0)
+                let (_, block) = writing.logical_size(used.width, used.height);
+                crate::inline_content::synthesized_block_baseline(block, writing, kind)
             });
             return BaselineMetrics {
                 first: block,
@@ -881,31 +903,60 @@ impl<'a> LayoutInputMap<'a> {
             };
         }
         // A box with no line box in it, of its own or a descendant's, has
-        // no baseline: one is synthesized from its border-box bottom (CSS
-        // Align 3 §9.1), as a flex container takes from such an item (#394).
+        // no baseline: one is synthesized from its border-box under/central edge
+        // (CSS Align 3 §9.1 / CSS Writing Modes 3 §4.2).
         if !self.holds_line_box(id)
             && !self.world.has_in_flow_flex_or_grid_item(id, &style)
             && let Some(used) = used
         {
-            let writing = self
-                .nodes
-                .get(&id)
-                .map_or_else(Default::default, |node| node.writing);
-            let block = Some(writing.logical_size(used.width, used.height).1.max(0.0));
+            let (_, block) = writing.logical_size(used.width, used.height);
+            let block = Some(crate::inline_content::synthesized_block_baseline(
+                block, writing, kind,
+            ));
             return BaselineMetrics {
                 first: block,
                 last: block,
             };
         }
         let button_with_label = button_label == Some(true);
-        let ascent = self
+        let font_ascent = self
             .nodes
             .get(&id)
             .and_then(|node| node.text_metrics)
             .and_then(|metrics| metrics.ascent)
-            .filter(|value| value.is_finite() && *value >= 0.0);
-        let ascent = ascent.unwrap_or(font * nana_ui_core::TEXT_APPROX_ASCENT_EM);
-        let approximate = Some(chrome_top + ascent);
+            .filter(|value| value.is_finite() && *value >= 0.0)
+            .unwrap_or(font * nana_ui_core::TEXT_APPROX_ASCENT_EM);
+        let line_h = text_line_box_height_px(font, style.line_height);
+        let font_descent = (font - font_ascent).max(0.0);
+        let half_leading = (line_h - (font_ascent + font_descent)) * 0.5;
+        let approx_in_line = if !writing.is_vertical() {
+            match kind {
+                nana_ui_core::UsedBaselineKind::Alphabetic => font_ascent + half_leading,
+                nana_ui_core::UsedBaselineKind::Central => line_h * 0.5,
+                nana_ui_core::UsedBaselineKind::Ideographic => {
+                    (font_ascent + half_leading + font_descent).min(line_h)
+                }
+            }
+        } else {
+            match kind {
+                nana_ui_core::UsedBaselineKind::Central => line_h * 0.5,
+                nana_ui_core::UsedBaselineKind::Alphabetic => {
+                    if writing.block_reversed() {
+                        font_ascent + half_leading
+                    } else {
+                        font_descent + half_leading
+                    }
+                }
+                nana_ui_core::UsedBaselineKind::Ideographic => {
+                    if writing.block_reversed() {
+                        (line_h * 0.5 + 0.5 * (font_ascent + font_descent)).min(line_h)
+                    } else {
+                        (line_h * 0.5 - 0.5 * (font_ascent + font_descent)).max(0.0)
+                    }
+                }
+            }
+        };
+        let approximate = Some(chrome_block_start + approx_in_line);
         if button_with_label {
             // A labelled button's baseline belongs to its internal label
             // content. The shaped text metrics above are authoritative; the

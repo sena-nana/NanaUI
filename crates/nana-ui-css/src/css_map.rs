@@ -89,8 +89,9 @@ pub use nana_ui_core::box_layout::{
     WritingModeSpec, resolve_grid_column_widths, resolve_grid_track_sizes,
 };
 pub use nana_ui_core::{
-    FontFeatureSetting, FontKerningSpec, FontVariationSetting, HyphensSpec, LineBreakSpec,
-    TextAutospaceSpec, TextJustifySpec, TextSpacingTrimSpec, TextWrapStyleSpec, WordBreakSpec,
+    DominantBaselineSpec, FontFeatureSetting, FontKerningSpec, FontVariationSetting, HyphensSpec,
+    LineBreakSpec, TextAutospaceSpec, TextJustifySpec, TextSpacingTrimSpec, TextWrapStyleSpec,
+    WordBreakSpec,
 };
 
 /// CSS keyword / length parsing for Style Model layout enums.
@@ -2846,6 +2847,11 @@ impl LayoutStyleCss for LayoutStyle {
                     self.text_ext.hyphens = Some(mode);
                 }
             }
+            "dominant-baseline" => {
+                if let Some(baseline) = parse_css_dominant_baseline(val) {
+                    self.text_ext.dominant_baseline = Some(baseline);
+                }
+            }
             "color" => {
                 if let Some(pc) = resolve_css_paint_color_core(val) {
                     self.paint_colors.color = Some(pc);
@@ -5298,6 +5304,18 @@ pub fn parse_css_hyphens(input: &str) -> Option<HyphensSpec> {
         "none" => Some(HyphensSpec::None),
         "manual" | "initial" => Some(HyphensSpec::Manual),
         "auto" => Some(HyphensSpec::Auto),
+        _ => None,
+    }
+}
+
+/// CSS `dominant-baseline` subset (`auto | central | alphabetic | ideographic`).
+pub fn parse_css_dominant_baseline(input: &str) -> Option<DominantBaselineSpec> {
+    let expanded = expand_css_var_fallback(input.trim());
+    match expanded.trim().to_ascii_lowercase().as_str() {
+        "auto" | "initial" => Some(DominantBaselineSpec::Auto),
+        "central" => Some(DominantBaselineSpec::Central),
+        "alphabetic" => Some(DominantBaselineSpec::Alphabetic),
+        "ideographic" => Some(DominantBaselineSpec::Ideographic),
         _ => None,
     }
 }
@@ -9655,5 +9673,31 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         assert_eq!(layout.text_ext.hyphens, Some(HyphensSpec::Auto));
         layout.apply_css_text("hyphens: manual", None, None);
         assert_eq!(layout.text_ext.hyphens, Some(HyphensSpec::Manual));
+    }
+
+    #[test]
+    fn dominant_baseline_css_property_parses_all_variants() {
+        let mut layout = LayoutStyle::default();
+        assert_eq!(layout.text_ext.dominant_baseline, None);
+        layout.apply_css_text("dominant-baseline: central", None, None);
+        assert_eq!(
+            layout.text_ext.dominant_baseline,
+            Some(DominantBaselineSpec::Central)
+        );
+        layout.apply_css_text("dominant-baseline: alphabetic", None, None);
+        assert_eq!(
+            layout.text_ext.dominant_baseline,
+            Some(DominantBaselineSpec::Alphabetic)
+        );
+        layout.apply_css_text("dominant-baseline: ideographic", None, None);
+        assert_eq!(
+            layout.text_ext.dominant_baseline,
+            Some(DominantBaselineSpec::Ideographic)
+        );
+        layout.apply_css_text("dominant-baseline: auto", None, None);
+        assert_eq!(
+            layout.text_ext.dominant_baseline,
+            Some(DominantBaselineSpec::Auto)
+        );
     }
 }

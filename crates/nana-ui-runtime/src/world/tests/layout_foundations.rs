@@ -8199,6 +8199,432 @@ mod baseline_alignment {
         let (mut cold, _, _, _, _) = make([100.0, 100.0], &mut shaper);
         assert_matches_cold(&mut warm, &mut cold, doc);
     }
+
+    /// Vertical writing (`vertical-rl`) uses CSS Writing Modes baseline semantics
+    /// (`central` by default, `alphabetic` / `ideographic` under `dominant-baseline`)
+    /// and derives descendant first/last baselines across inline containers (#395).
+    #[test]
+    fn issue395_vertical_writing_baseline_and_descendant_derivation() {
+        use nana_ui_core::{DominantBaselineSpec, OverflowSpec, TextStyleExt, WritingModeSpec};
+        let build = |dominant: DominantBaselineSpec, inner_h: f32, font: f32| {
+            let (mut b, doc_root) = Builder::page(document(), 1, 800.0);
+            let root = b.element(
+                doc_root,
+                LayoutStyle {
+                    writing_mode: Some(WritingModeSpec::VerticalRl),
+                    width: Some(LengthSpec::Px(240.0)),
+                    height: Some(LengthSpec::Px(180.0)),
+                    text_ext: TextStyleExt {
+                        dominant_baseline: Some(dominant),
+                        ..Default::default()
+                    }
+                    .into(),
+                    ..LayoutStyle::default()
+                },
+            );
+            let a = b.element(
+                root,
+                LayoutStyle {
+                    display: Some(DisplaySpec::InlineFlex),
+                    width: Some(LengthSpec::Px(20.0)),
+                    height: Some(LengthSpec::Px(30.0)),
+                    ..LayoutStyle::default()
+                },
+            );
+            let w = b.element(
+                root,
+                LayoutStyle {
+                    display: Some(DisplaySpec::InlineFlex),
+                    width: Some(LengthSpec::Px(40.0)),
+                    height: Some(LengthSpec::Px(30.0)),
+                    ..LayoutStyle::default()
+                },
+            );
+            let nested = b.element(
+                root,
+                LayoutStyle {
+                    display: Some(DisplaySpec::InlineFlex),
+                    overflow_x: OverflowSpec::Hidden,
+                    overflow_y: OverflowSpec::Hidden,
+                    padding_right: Some(LengthSpec::Px(8.0)),
+                    width: Some(LengthSpec::Px(48.0)),
+                    height: Some(LengthSpec::Px(80.0)),
+                    ..LayoutStyle::default()
+                },
+            );
+            let inner_container = b.element(
+                nested,
+                LayoutStyle {
+                    display: Some(DisplaySpec::InlineFlex),
+                    height: Some(LengthSpec::Px(inner_h)),
+                    font_size: Some(font),
+                    ..LayoutStyle::default()
+                },
+            );
+            let inner = b.label(inner_container, "Vertical");
+            let mut cx = AppContext::new();
+            cx.commit_mutations(b.queue).unwrap();
+            product_frame(&mut cx, document(), viewport(), &mut bundled_face_shaper());
+            (cx, root, a, w, nested, inner_container, inner)
+        };
+        let mut shaper = bundled_face_shaper();
+        let (mut warm, root, a, w, nested, inner_container, inner) =
+            build(DominantBaselineSpec::Central, 64.0, 16.0);
+        let box_of = |cx: &AppContext, id| cx.world().layout_box(id).unwrap();
+        let root_box = box_of(&warm, root);
+        let a_box = box_of(&warm, a);
+        let w_box = box_of(&warm, w);
+        let nested_box = box_of(&warm, nested);
+        let inner_box = box_of(&warm, inner);
+        let w_center = w_box.x + w_box.width * 0.5;
+        // Central baseline: `a` (w=20 -> center at x+10) and `w` (w=40 -> center at x+20) share block center.
+        assert!(
+            ((a_box.x + a_box.width * 0.5) - w_center).abs() < 0.01,
+            "vertical central centers should match: {a_box:?} vs {w_box:?} in {root_box:?}"
+        );
+        // `nested` (`overflow: hidden`, `padding-right: 8`) derives its vertical central baseline
+        // from `inner`'s column center (`inner_box.x + inner_box.width * 0.5`), aligning it to `w_center`.
+        assert!(
+            ((inner_box.x + inner_box.width * 0.5) - w_center).abs() < 0.01,
+            "nested derived vertical center ({nested_box:?}, {inner_box:?}) should match {w_center}"
+        );
+        // Incremental font-size mutation on `inner_container` shifts `nested`'s derived baseline identically to cold.
+        let mut q = MutationQueue::new();
+        q.set_style(
+            inner_container,
+            styled(LayoutStyle {
+                display: Some(DisplaySpec::InlineFlex),
+                height: Some(LengthSpec::Px(72.0)),
+                font_size: Some(24.0),
+                ..LayoutStyle::default()
+            }),
+        );
+        warm.commit_mutations(q).unwrap();
+        product_frame(&mut warm, document(), viewport(), &mut shaper);
+        assert!(
+            (box_of(&warm, nested).x - nested_box.x).abs() > 1.0,
+            "larger descendant vertical font must shift nested box x"
+        );
+        let (mut cold, ..) = build(DominantBaselineSpec::Central, 72.0, 24.0);
+        assert_matches_cold(&mut warm, &mut cold, document());
+
+        // Switching `dominant-baseline` to `Ideographic` updates incrementally to match cold.
+        let mut q = MutationQueue::new();
+        q.set_style(
+            root,
+            styled(LayoutStyle {
+                writing_mode: Some(WritingModeSpec::VerticalRl),
+                width: Some(LengthSpec::Px(240.0)),
+                height: Some(LengthSpec::Px(180.0)),
+                text_ext: TextStyleExt {
+                    dominant_baseline: Some(DominantBaselineSpec::Ideographic),
+                    ..Default::default()
+                }
+                .into(),
+                ..LayoutStyle::default()
+            }),
+        );
+        warm.commit_mutations(q).unwrap();
+        product_frame(&mut warm, document(), viewport(), &mut shaper);
+        let (mut cold_ideo, ..) = build(DominantBaselineSpec::Ideographic, 72.0, 24.0);
+        assert_matches_cold(&mut warm, &mut cold_ideo, document());
+    }
+
+    /// Gate L2 (#409): flex baseline cross growth, grid baseline shim, multi-row
+    /// `auto` span distribution, and auto-width `display: grid` stretching inside
+    /// sized `inline-flex`/`inline-grid` atomic containers all match cold layout incrementally.
+    #[test]
+    fn issue409_flex_baseline_growth_grid_shim_span_and_atomic_grid_stretch() {
+        use nana_ui_core::{GridLine, GridPlacement, GridTrack};
+        let build = |b_top_h: f32, container_w: f32| {
+            let (mut b, doc_root) = Builder::page(document(), 1, 800.0);
+            let page = b.element(
+                doc_root,
+                LayoutStyle {
+                    display: Some(DisplaySpec::Flex),
+                    direction: Some(FlexDirection::Column),
+                    gap: Some(LengthSpec::Px(10.0)),
+                    width: Some(LengthSpec::Px(300.0)),
+                    ..LayoutStyle::default()
+                },
+            );
+            // 1. Flex baseline row cross-size growth: max_ascent (40) + max_descent (50 - b_top_h).
+            let flex_row = b.element(
+                page,
+                LayoutStyle {
+                    display: Some(DisplaySpec::Flex),
+                    direction: Some(FlexDirection::Row),
+                    align_items: AlignSpec::Baseline,
+                    width: Some(LengthSpec::Px(200.0)),
+                    ..LayoutStyle::default()
+                },
+            );
+            b.element(
+                flex_row,
+                LayoutStyle {
+                    width: Some(LengthSpec::Px(40.0)),
+                    height: Some(LengthSpec::Px(30.0)),
+                    margin_top: Some(LengthSpec::Px(10.0)),
+                    ..LayoutStyle::default()
+                },
+            );
+            let fb = b.element(
+                flex_row,
+                LayoutStyle {
+                    display: Some(DisplaySpec::Flex),
+                    width: Some(LengthSpec::Px(40.0)),
+                    height: Some(LengthSpec::Px(50.0)),
+                    ..LayoutStyle::default()
+                },
+            );
+            let fb_top = b.element(
+                fb,
+                LayoutStyle {
+                    width: Some(LengthSpec::Px(40.0)),
+                    height: Some(LengthSpec::Px(b_top_h)),
+                    ..LayoutStyle::default()
+                },
+            );
+
+            // 2. Grid baseline shim (§12.5).
+            let shim_grid = b.element(
+                page,
+                LayoutStyle {
+                    display: Some(DisplaySpec::Grid),
+                    align_items: AlignSpec::Baseline,
+                    width: Some(LengthSpec::Px(120.0)),
+                    grid: nana_ui_core::GridStyle {
+                        columns: Some(vec![GridTrack::Px(50.0), GridTrack::Px(50.0)]),
+                        ..Default::default()
+                    }
+                    .into(),
+                    ..LayoutStyle::default()
+                },
+            );
+            b.element(
+                shim_grid,
+                LayoutStyle {
+                    width: Some(LengthSpec::Px(40.0)),
+                    height: Some(LengthSpec::Px(30.0)),
+                    margin_top: Some(LengthSpec::Px(10.0)),
+                    ..LayoutStyle::default()
+                },
+            );
+            let gb = b.element(
+                shim_grid,
+                LayoutStyle {
+                    display: Some(DisplaySpec::Flex),
+                    width: Some(LengthSpec::Px(40.0)),
+                    height: Some(LengthSpec::Px(50.0)),
+                    ..LayoutStyle::default()
+                },
+            );
+            let gb_top = b.element(
+                gb,
+                LayoutStyle {
+                    width: Some(LengthSpec::Px(40.0)),
+                    height: Some(LengthSpec::Px(b_top_h)),
+                    ..LayoutStyle::default()
+                },
+            );
+
+            // 3. Multi-row auto span distribution.
+            let span_grid = b.element(
+                page,
+                LayoutStyle {
+                    display: Some(DisplaySpec::Grid),
+                    width: Some(LengthSpec::Px(130.0)),
+                    gap: Some(LengthSpec::Px(10.0)),
+                    grid: nana_ui_core::GridStyle {
+                        columns: Some(vec![GridTrack::Px(60.0), GridTrack::Px(60.0)]),
+                        rows: Some(vec![GridTrack::Auto, GridTrack::Auto]),
+                        ..Default::default()
+                    }
+                    .into(),
+                    ..LayoutStyle::default()
+                },
+            );
+            b.element(
+                span_grid,
+                LayoutStyle {
+                    width: Some(LengthSpec::Px(60.0)),
+                    height: Some(LengthSpec::Px(20.0)),
+                    ..LayoutStyle::default()
+                },
+            );
+            b.element(
+                span_grid,
+                LayoutStyle {
+                    width: Some(LengthSpec::Px(60.0)),
+                    height: Some(LengthSpec::Px(80.0)),
+                    grid: nana_ui_core::GridStyle {
+                        placement: GridPlacement {
+                            column_start: GridLine::Index(2),
+                            row_start: GridLine::Index(1),
+                            row_end: GridLine::Span(2),
+                            ..Default::default()
+                        }
+                        .into(),
+                        ..Default::default()
+                    }
+                    .into(),
+                    ..LayoutStyle::default()
+                },
+            );
+            let r2c1 = b.element(
+                span_grid,
+                LayoutStyle {
+                    width: Some(LengthSpec::Px(60.0)),
+                    height: Some(LengthSpec::Px(20.0)),
+                    ..LayoutStyle::default()
+                },
+            );
+
+            // 4. Auto-width grid stretching inside sized inline-flex (column) & inline-grid.
+            let iflex_col = b.element(
+                page,
+                LayoutStyle {
+                    display: Some(DisplaySpec::InlineFlex),
+                    direction: Some(FlexDirection::Column),
+                    width: Some(LengthSpec::Px(container_w)),
+                    ..LayoutStyle::default()
+                },
+            );
+            let g1 = b.element(
+                iflex_col,
+                LayoutStyle {
+                    display: Some(DisplaySpec::Grid),
+                    grid: nana_ui_core::GridStyle {
+                        columns: Some(vec![GridTrack::Fr(1.0), GridTrack::Fr(1.0)]),
+                        ..Default::default()
+                    }
+                    .into(),
+                    ..LayoutStyle::default()
+                },
+            );
+            b.element(
+                g1,
+                LayoutStyle {
+                    height: Some(LengthSpec::Px(20.0)),
+                    ..LayoutStyle::default()
+                },
+            );
+            b.element(
+                g1,
+                LayoutStyle {
+                    height: Some(LengthSpec::Px(20.0)),
+                    ..LayoutStyle::default()
+                },
+            );
+
+            let igrid = b.element(
+                page,
+                LayoutStyle {
+                    display: Some(DisplaySpec::InlineGrid),
+                    width: Some(LengthSpec::Px(container_w)),
+                    ..LayoutStyle::default()
+                },
+            );
+            let g2 = b.element(
+                igrid,
+                LayoutStyle {
+                    display: Some(DisplaySpec::Grid),
+                    grid: nana_ui_core::GridStyle {
+                        columns: Some(vec![GridTrack::Fr(1.0), GridTrack::Fr(1.0)]),
+                        ..Default::default()
+                    }
+                    .into(),
+                    ..LayoutStyle::default()
+                },
+            );
+            b.element(
+                g2,
+                LayoutStyle {
+                    height: Some(LengthSpec::Px(20.0)),
+                    ..LayoutStyle::default()
+                },
+            );
+            b.element(
+                g2,
+                LayoutStyle {
+                    height: Some(LengthSpec::Px(20.0)),
+                    ..LayoutStyle::default()
+                },
+            );
+
+            let mut cx = AppContext::new();
+            cx.commit_mutations(b.queue).unwrap();
+            product_frame(&mut cx, document(), viewport(), &mut bundled_face_shaper());
+            (
+                cx, flex_row, fb_top, shim_grid, gb_top, span_grid, r2c1, iflex_col, g1, igrid, g2,
+            )
+        };
+        let mut shaper = bundled_face_shaper();
+        let (
+            mut warm,
+            flex_row,
+            fb_top,
+            shim_grid,
+            gb_top,
+            span_grid,
+            r2c1,
+            iflex_col,
+            g1,
+            igrid,
+            g2,
+        ) = build(20.0, 200.0);
+        let b = |cx: &AppContext, id| cx.world().layout_box(id).unwrap();
+        assert!((b(&warm, flex_row).height - 70.0).abs() < 0.01);
+        assert!((b(&warm, shim_grid).height - 70.0).abs() < 0.01);
+        assert!((b(&warm, span_grid).height - 80.0).abs() < 0.01);
+        assert!((b(&warm, r2c1).y - (b(&warm, span_grid).y + 45.0)).abs() < 0.01);
+        assert!((b(&warm, g1).width - 200.0).abs() < 0.01);
+        assert!((b(&warm, g2).width - 200.0).abs() < 0.01);
+
+        // Incremental baseline & container-width mutations match cold layout.
+        let mut q = MutationQueue::new();
+        q.set_style(
+            fb_top,
+            styled(LayoutStyle {
+                width: Some(LengthSpec::Px(40.0)),
+                height: Some(LengthSpec::Px(10.0)),
+                ..LayoutStyle::default()
+            }),
+        );
+        q.set_style(
+            gb_top,
+            styled(LayoutStyle {
+                width: Some(LengthSpec::Px(40.0)),
+                height: Some(LengthSpec::Px(10.0)),
+                ..LayoutStyle::default()
+            }),
+        );
+        q.set_style(
+            iflex_col,
+            styled(LayoutStyle {
+                display: Some(DisplaySpec::InlineFlex),
+                direction: Some(FlexDirection::Column),
+                width: Some(LengthSpec::Px(260.0)),
+                ..LayoutStyle::default()
+            }),
+        );
+        q.set_style(
+            igrid,
+            styled(LayoutStyle {
+                display: Some(DisplaySpec::InlineGrid),
+                width: Some(LengthSpec::Px(260.0)),
+                ..LayoutStyle::default()
+            }),
+        );
+        warm.commit_mutations(q).unwrap();
+        product_frame(&mut warm, document(), viewport(), &mut shaper);
+        assert!((b(&warm, flex_row).height - 80.0).abs() < 0.01);
+        assert!((b(&warm, shim_grid).height - 80.0).abs() < 0.01);
+        assert!((b(&warm, g1).width - 260.0).abs() < 0.01);
+        assert!((b(&warm, g2).width - 260.0).abs() < 0.01);
+        let (mut cold, ..) = build(10.0, 260.0);
+        assert_matches_cold(&mut warm, &mut cold, document());
+    }
 }
 
 mod free_container {

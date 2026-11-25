@@ -1069,6 +1069,53 @@ fn drive_measure<'w, 's>(
     Ok(Size::default())
 }
 
+fn parent_stretches_inline_auto_width(
+    id: StableNodeId,
+    style: &nana_ui_core::LayoutStyle,
+    writing: nana_ui_core::WritingContext,
+    parent_direction: Option<FlexDirection>,
+    world: &crate::UiWorld,
+) -> bool {
+    if style.width.is_some_and(LengthSpec::is_definite_declared)
+        || style.width.is_some_and(LengthSpec::is_content_sized)
+    {
+        return false;
+    }
+    if style.display.is_some_and(|display| {
+        matches!(
+            display,
+            DisplaySpec::InlineFlex | DisplaySpec::InlineGrid | DisplaySpec::Inline
+        )
+    }) {
+        return false;
+    }
+    if parent_direction.is_none() {
+        return true;
+    }
+    if style.display != Some(DisplaySpec::Grid) {
+        return false;
+    }
+    let Some(parent_id) = world.parent_id(id) else {
+        return false;
+    };
+    let Some(parent_style) = world.layout_style(parent_id) else {
+        return false;
+    };
+    let parent_display = parent_style.display;
+    let parent_definite_inline = !parent_style.width.is_none_or(LengthSpec::is_content_sized);
+    if parent_display.is_some_and(DisplaySpec::is_grid_container) {
+        return (parent_display == Some(DisplaySpec::Grid) || parent_definite_inline)
+            && style.resolved_justify_self(parent_style.justify_items) == AlignSpec::Stretch;
+    }
+    if parent_display.is_some_and(DisplaySpec::is_flex_container) {
+        return !writing.is_vertical()
+            && matches!(parent_direction, Some(FlexDirection::Column))
+            && parent_definite_inline
+            && style.resolved_align_self(parent_style.child_align_items()) == AlignSpec::Stretch;
+    }
+    false
+}
+
 fn start_measure_request<'w, 's>(
     req: MeasureRequest,
     nodes: &mut LayoutInputMap<'w>,
@@ -1093,8 +1140,10 @@ fn start_measure_request<'w, 's>(
     let Some((node, style_facts)) = nodes.get_with_facts(id)? else {
         return Ok(StartOutcome::Fast(Size::default()));
     };
-    let direction_sensitive = parent_direction.is_none()
-        && !node.children.is_empty()
+    let stretches_inline =
+        parent_stretches_inline_auto_width(id, &node.style, node.writing, parent_direction, world);
+    let direction_sensitive = (parent_direction.is_none() || stretches_inline)
+        && (!node.children.is_empty() || node.style.display == Some(DisplaySpec::Grid))
         && !node.style.width.is_some_and(LengthSpec::is_content_sized);
     let mut keyed_available = available;
     if node.children.is_empty() && !style_facts.block_containing_size_affects_leaf(node.writing) {
@@ -1381,6 +1430,7 @@ fn start_measure_request<'w, 's>(
         && plan.inputs_match(
             available,
             parent_direction,
+            stretches_inline,
             viewport,
             parent_font_px,
             &common.style,
@@ -1736,10 +1786,11 @@ fn step_container_frame<'w, 's>(
             let mut child_sizes = nodes.scratch.sizes(results.len());
             child_sizes.extend(results);
             let ifc = state.context.inline();
-            let baseline_lines = (ifc && !state.common.writing.is_vertical()).then(|| {
+            let baseline_lines = ifc.then(|| {
                 line_strut(
                     state.common.id,
                     state.common.style.as_ref(),
+                    state.common.writing,
                     state.common.child_font_px,
                     nodes,
                 )
@@ -1778,8 +1829,18 @@ fn step_container_frame<'w, 's>(
         ContainerPhase::GridPass2 {
             flow_children,
             child_sizes,
-            state: grid_prep,
+            state: mut grid_prep,
         } => {
+            super::grid::apply_grid_row_baseline_shim(
+                state.common.style.as_ref(),
+                &mut grid_prep,
+                &results,
+                state.common.viewport,
+                state.common.child_font_px,
+                nodes,
+                cache,
+                scope,
+            )?;
             let grid = layout_grid_2d_finish(grid_prep, &results);
             let subgrid =
                 state.common.style.is_subgrid_columns() || state.common.style.is_subgrid_rows();
@@ -1932,7 +1993,18 @@ fn after_flow_children_step<'w, 's>(
             None,
             nodes,
         ) {
-            super::grid::Grid2dStart::Ready(grid) => {
+            super::grid::Grid2dStart::Ready(mut grid_prep) => {
+                super::grid::apply_grid_row_baseline_shim(
+                    style.as_ref(),
+                    &mut grid_prep,
+                    &[],
+                    state.common.viewport,
+                    state.common.child_font_px,
+                    nodes,
+                    cache,
+                    scope,
+                )?;
+                let grid = layout_grid_2d_finish(grid_prep, &[]);
                 let subgrid = style.is_subgrid_columns() || style.is_subgrid_rows();
                 let recorded_grid = (!subgrid).then(|| Box::new(GridTrackPlan::from_layout(&grid)));
                 let (width, height) = writing.physical_size(
@@ -2119,6 +2191,9 @@ fn after_flow_children_step<'w, 's>(
     }
 
     if state.wrapping {
+        let flex_baseline = (!state.context.inline()
+            && style.display.is_some_and(DisplaySpec::is_flex_container))
+        .then_some((style.as_ref(), &mut *cache, scope));
         let children_size = wrap_intrinsic_size(
             direction,
             state.wrap,
@@ -2132,8 +2207,10 @@ fn after_flow_children_step<'w, 's>(
             state.common.viewport,
             state.common.child_font_px,
             nodes,
+            writing,
             baseline_lines,
-        );
+            flex_baseline,
+        )?;
         return finish_children_layout(
             state,
             flow_children,
@@ -2284,6 +2361,57 @@ fn finish_sequential_children<'w, 's>(
         cross = cross.max(reach);
     }
     let sequential_main_sum = main;
+    if !state.context.inline()
+        && state
+            .common
+            .style
+            .display
+            .is_some_and(DisplaySpec::is_flex_container)
+        && state.direction == state.common.writing.inline_flex_direction()
+        && flow_children.iter().any(|&child| {
+            nodes.style_ref(child).is_some_and(|child_style| {
+                child_style.resolved_align_self(state.common.style.child_align_items())
+                    == AlignSpec::Baseline
+            })
+        })
+    {
+        super::inline::prime_first_baselines(
+            flow_children
+                .iter()
+                .copied()
+                .zip(used_sizes.iter().copied()),
+            child_edge_base,
+            state.common.viewport,
+            state.common.child_font_px,
+            nodes,
+            cache,
+            scope,
+        )?;
+        let cross_axis = match state.direction {
+            FlexDirection::Row => FlexDirection::Column,
+            FlexDirection::Column => FlexDirection::Row,
+        };
+        let cross_reversed = state.common.writing.physical_axis_reversed(cross_axis)
+            ^ matches!(state.wrap, FlexWrap::WrapReverse);
+        if let Some((_, grown)) = super::inline::flex_baseline_line_metrics(
+            flow_children
+                .iter()
+                .copied()
+                .zip(used_sizes.iter().copied()),
+            state.common.style.as_ref(),
+            state.common.writing,
+            state.direction,
+            cross_reversed,
+            child_edge_base,
+            state.common.child_font_px,
+            nodes,
+            cache,
+        ) && grown > cross
+        {
+            cross = grown;
+            at_cross = 0;
+        }
+    }
     let sequential_cross = (cross, at_cross);
     let main = main as f32;
     let children_size = match state.direction {
@@ -2510,13 +2638,14 @@ fn finish_measure_container(
     } else {
         max_content_w
     };
+    let parent_stretches =
+        parent_stretches_inline_auto_width(id, style, writing, parent_direction, nodes.world);
     let default_width = match style.width {
         Some(LengthSpec::MinContent) => min_content_w,
         Some(LengthSpec::MaxContent) | Some(LengthSpec::Shrink) => max_content_w,
         Some(LengthSpec::FitContent) => max_content_w.min(available.width).max(fit_min_w),
-        _ if parent_direction.is_none()
-            && !style.width.is_some_and(LengthSpec::is_content_sized)
-            && !flow_children.is_empty() =>
+        _ if parent_stretches
+            && (!flow_children.is_empty() || style.display == Some(DisplaySpec::Grid)) =>
         {
             available.width
         }
@@ -2573,6 +2702,7 @@ fn finish_measure_container(
             && !wrapping
             && hypothetical.is_empty()
             && style.justify_content == JustifySpec::Start
+            && style.child_align_items() != AlignSpec::Baseline
             && style.aspect_ratio.is_none()
             && text_metrics.is_none()
             && nodes.world.widget_visual_ref(id).is_none()
@@ -2580,13 +2710,45 @@ fn finish_measure_container(
                 nodes.style_ref(*child).is_some_and(|child_style| {
                     child_style.flex_grow.unwrap_or(0.0) <= 0.0
                         && child_style.flex_shrink.unwrap_or(0.0) <= 0.0
+                        && child_style.align_self != Some(AlignSpec::Baseline)
                 })
             });
+        let has_container_baseline_items = !ifc
+            && ((style.display.is_some_and(DisplaySpec::is_flex_container)
+                && direction == writing.inline_flex_direction())
+                || recorded_grid.is_some())
+            && flow_children.iter().any(|&child| {
+                nodes.style_ref(child).is_some_and(|cs| {
+                    cs.resolved_align_self(style.child_align_items()) == AlignSpec::Baseline
+                })
+            });
+        if cacheable && has_container_baseline_items {
+            let baseline_items: Vec<(StableNodeId, Size)> = flow_children
+                .iter()
+                .copied()
+                .zip(child_sizes.iter().copied())
+                .filter(|(child, _)| {
+                    nodes.style_ref(*child).is_some_and(|cs| {
+                        cs.resolved_align_self(style.child_align_items()) == AlignSpec::Baseline
+                    })
+                })
+                .collect();
+            super::inline::prime_first_baselines(
+                baseline_items,
+                child_edge_base,
+                viewport,
+                child_font_px,
+                nodes,
+                cache,
+                scope,
+            )?;
+        }
         let recorded = cacheable.then(|| {
-            let ifc_strut = (ifc && !writing.is_vertical()).then(|| {
+            let ifc_strut = ifc.then(|| {
                 crate::inline_content::ParentLineStrut::from(line_strut(
                     id,
                     &common.style,
+                    writing,
                     child_font_px,
                     nodes,
                 ))
@@ -2601,32 +2763,55 @@ fn finish_measure_container(
                         flow_cursor += 1;
                         size
                     });
-                    let style = nodes.style_ref(child);
-                    let baseline = intrinsic
-                        .zip(ifc_strut)
-                        .zip(style.as_deref())
-                        .and_then(|((size, strut), child_style)| {
-                            ifc_atom_metrics(
-                                child,
-                                child_style,
-                                size,
-                                child_edge_base,
-                                child_font_px,
-                                strut,
-                                viewport,
-                                nodes,
-                            )
-                        })
-                        .and_then(|placement| match placement {
-                            crate::inline_content::AtomLinePlacement::Baseline {
-                                above, ..
-                            } => Some(above),
-                            crate::inline_content::AtomLinePlacement::Top { .. }
-                            | crate::inline_content::AtomLinePlacement::Bottom { .. } => None,
-                        });
+                    let child_style_ref = nodes.style_ref(child);
+                    let baseline = if let Some(strut) = ifc_strut {
+                        intrinsic
+                            .zip(child_style_ref.as_deref())
+                            .and_then(|(size, cs)| {
+                                ifc_atom_metrics(
+                                    child,
+                                    cs,
+                                    size,
+                                    writing,
+                                    child_edge_base,
+                                    child_font_px,
+                                    strut,
+                                    viewport,
+                                    nodes,
+                                )
+                            })
+                            .and_then(|placement| match placement {
+                                crate::inline_content::AtomLinePlacement::Baseline {
+                                    above,
+                                    ..
+                                } => Some(above),
+                                crate::inline_content::AtomLinePlacement::Top { .. }
+                                | crate::inline_content::AtomLinePlacement::Bottom { .. } => None,
+                            })
+                    } else if has_container_baseline_items {
+                        intrinsic
+                            .zip(child_style_ref.as_deref())
+                            .filter(|(_, cs)| {
+                                cs.resolved_align_self(style.child_align_items())
+                                    == AlignSpec::Baseline
+                            })
+                            .and_then(|(size, cs)| {
+                                let cf = fonts_of(cs, child_font_px);
+                                nodes
+                                    .baseline_metrics(
+                                        child,
+                                        cf.element_px,
+                                        Some(child_edge_base),
+                                        Some(size),
+                                    )
+                                    .first
+                            })
+                    } else {
+                        None
+                    };
                     MeasuredChild {
                         child,
-                        style: style.map(|s| s.to_arc()),
+                        style: child_style_ref.map(|s| s.to_arc()),
                         intrinsic: PackedOptSize::from_opt(intrinsic),
                         at_main: hypothetical
                             .iter()
@@ -2640,6 +2825,7 @@ fn finish_measure_container(
             MeasurePlan {
                 available,
                 parent_direction,
+                parent_stretches,
                 viewport,
                 parent_font_px,
                 style: Arc::clone(&common.style),
@@ -2860,19 +3046,17 @@ fn step_plan_frame<'w, 's>(
                 at_main,
             } => {
                 let measured = results[0];
-                let ifc = !plan.writing.is_vertical()
-                    && (baseline.is_some()
-                        || nodes
-                            .contexts
-                            .get(&common.id)
-                            .copied()
-                            .or_else(|| nodes.world.established_layout_context(common.id))
-                            .is_some_and(|kind| kind == crate::FormattingContextKind::Inline));
+                let ifc = nodes
+                    .contexts
+                    .get(&common.id)
+                    .copied()
+                    .or_else(|| nodes.world.established_layout_context(common.id))
+                    .is_some_and(|kind| kind == crate::FormattingContextKind::Inline);
+                let edge_base = plan
+                    .writing
+                    .logical_size(plan.child_available.width, plan.child_available.height)
+                    .0;
                 let baseline_changed = if ifc {
-                    let edge_base = plan
-                        .writing
-                        .logical_size(plan.child_available.width, plan.child_available.height)
-                        .0;
                     prime_atom_baselines(
                         [(entry_child, measured)],
                         edge_base,
@@ -2882,8 +3066,14 @@ fn step_plan_frame<'w, 's>(
                         cache,
                         Some(scope),
                     )?;
-                    let parent_strut: crate::inline_content::ParentLineStrut =
-                        line_strut(common.id, &common.style, common.child_font_px, nodes).into();
+                    let parent_strut: crate::inline_content::ParentLineStrut = line_strut(
+                        common.id,
+                        &common.style,
+                        plan.writing,
+                        common.child_font_px,
+                        nodes,
+                    )
+                    .into();
                     let current = nodes
                         .style_ref(entry_child)
                         .and_then(|child_style| {
@@ -2891,6 +3081,7 @@ fn step_plan_frame<'w, 's>(
                                 entry_child,
                                 child_style.as_ref(),
                                 measured,
+                                plan.writing,
                                 edge_base,
                                 common.child_font_px,
                                 parent_strut,
@@ -2906,9 +3097,50 @@ fn step_plan_frame<'w, 's>(
                             | crate::inline_content::AtomLinePlacement::Bottom { .. } => None,
                         });
                     current != baseline
+                } else if ((plan
+                    .style
+                    .display
+                    .is_some_and(DisplaySpec::is_flex_container)
+                    && plan.child_direction == plan.writing.inline_flex_direction())
+                    || plan.grid.is_some())
+                    && (baseline.is_some()
+                        || nodes.style_ref(entry_child).is_some_and(|cs| {
+                            cs.resolved_align_self(plan.style.child_align_items())
+                                == AlignSpec::Baseline
+                        }))
+                {
+                    super::inline::prime_first_baselines(
+                        [(entry_child, measured)],
+                        edge_base,
+                        common.viewport,
+                        common.child_font_px,
+                        nodes,
+                        cache,
+                        Some(scope),
+                    )?;
+                    let current = nodes.style_ref(entry_child).and_then(|cs| {
+                        let cf = fonts_of(cs.as_ref(), common.child_font_px);
+                        nodes
+                            .baseline_metrics(
+                                entry_child,
+                                cf.element_px,
+                                Some(edge_base),
+                                Some(measured),
+                            )
+                            .first
+                    });
+                    current != baseline
                 } else {
                     false
                 };
+                if baseline_changed && !ifc {
+                    return Ok(start_to_frame_outcome(start_container_frame(
+                        common,
+                        nodes,
+                        cache,
+                        Some(scope),
+                    )?));
+                }
                 if measured != cached || baseline_changed {
                     let next = try_plan_sequential(common, plan, nodes, cache, scope)?;
                     return plan_start_to_frame_outcome(next, nodes, cache, scope);
@@ -3083,6 +3315,53 @@ fn step_plan_frame<'w, 's>(
                     }
                 }
                 if !grid_state.patched {
+                    let edge_base = plan
+                        .writing
+                        .logical_size(plan.child_available.width, plan.child_available.height)
+                        .0;
+                    let align_items = plan.style.child_align_items();
+                    let baseline_items: Vec<(StableNodeId, Size)> = grid_state
+                        .flow
+                        .iter()
+                        .copied()
+                        .zip(grid_state.sizes.iter().copied())
+                        .filter(|&(child, _)| {
+                            nodes.style_ref(child).is_some_and(|cs| {
+                                cs.resolved_align_self(align_items) == AlignSpec::Baseline
+                            })
+                        })
+                        .collect();
+                    if !baseline_items.is_empty() {
+                        super::inline::prime_first_baselines(
+                            baseline_items.iter().copied(),
+                            edge_base,
+                            common.viewport,
+                            common.child_font_px,
+                            nodes,
+                            cache,
+                            Some(scope),
+                        )?;
+                        for (child, size) in baseline_items {
+                            let cached_base = plan.entry(child).and_then(|e| e.baseline.get());
+                            let current_base = nodes.style_ref(child).and_then(|cs| {
+                                let cf = fonts_of(cs.as_ref(), common.child_font_px);
+                                nodes
+                                    .baseline_metrics(
+                                        child,
+                                        cf.element_px,
+                                        Some(edge_base),
+                                        Some(size),
+                                    )
+                                    .first
+                            });
+                            if current_base != cached_base {
+                                grid_state.patched = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if !grid_state.patched {
                     return Ok(start_to_frame_outcome(start_container_frame(
                         common,
                         nodes,
@@ -3092,7 +3371,17 @@ fn step_plan_frame<'w, 's>(
                 }
                 start_grid_delta_pass2(common, plan, grid_state, nodes, cache, scope)
             }
-            GridDeltaStep::Pass2(prepared) => {
+            GridDeltaStep::Pass2(mut prepared) => {
+                super::grid::apply_grid_row_baseline_shim(
+                    common.style.as_ref(),
+                    &mut prepared,
+                    &results,
+                    common.viewport,
+                    common.child_font_px,
+                    nodes,
+                    cache,
+                    Some(scope),
+                )?;
                 let solved = layout_grid_2d_finish(prepared, &results);
                 finish_grid_delta(
                     common,
@@ -3684,8 +3973,10 @@ fn advance_flex_line_delta<'w, 's>(
         common.viewport,
         common.child_font_px,
         nodes,
+        plan.writing,
         None,
-    );
+        Some((&plan.style, &mut *cache, Some(scope))),
+    )?;
     let new_content = wrap_intrinsic_size(
         direction,
         FlexWrap::Wrap,
@@ -3699,8 +3990,10 @@ fn advance_flex_line_delta<'w, 's>(
         common.viewport,
         common.child_font_px,
         nodes,
+        plan.writing,
         None,
-    );
+        Some((&plan.style, &mut *cache, Some(scope))),
+    )?;
     let mut size = plan.size;
     match direction {
         FlexDirection::Row => size.height += new_content.height - old_content.height,
@@ -3903,16 +4196,29 @@ fn start_grid_delta_pass2<'w, 's>(
         None,
         nodes,
     ) {
-        Grid2dStart::Ready(solved) => finish_grid_delta(
-            common,
-            plan,
-            grid_state.flow,
-            grid_state.sizes,
-            solved,
-            nodes,
-            cache,
-            scope,
-        ),
+        Grid2dStart::Ready(mut prepared) => {
+            super::grid::apply_grid_row_baseline_shim(
+                style,
+                &mut prepared,
+                &[],
+                common.viewport,
+                fonts.element_px,
+                nodes,
+                cache,
+                Some(scope),
+            )?;
+            let solved = layout_grid_2d_finish(prepared, &[]);
+            finish_grid_delta(
+                common,
+                plan,
+                grid_state.flow,
+                grid_state.sizes,
+                solved,
+                nodes,
+                cache,
+                scope,
+            )
+        }
         Grid2dStart::NeedsPass2(prepared) => {
             let requests = prepared
                 .queries
@@ -3958,8 +4264,15 @@ fn finish_grid_delta<'w, 's>(
         grid_axis_extent(&solved.row_sizes, solved.row_gap),
     );
     let content = Size::new(width, height);
+    let parent_stretches = parent_stretches_inline_auto_width(
+        id,
+        &common.style,
+        plan.writing,
+        plan.parent_direction,
+        nodes.world,
+    );
     let Some(size) = finish_planned_size(id, plan, nodes, |chrome| {
-        let default_width = if plan.parent_direction.is_none() {
+        let default_width = if parent_stretches {
             plan.available.width
         } else {
             content.width + chrome.width

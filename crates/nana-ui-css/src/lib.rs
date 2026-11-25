@@ -69,13 +69,14 @@ pub use css_map::{
     FlexWrap, FontSizeContext, GridAutoFlow, GridTrack, GridTrackListParse,
     GridTrackListUnsupported, JustifySpec, LayoutStyle, LayoutStyleCss, LengthSpec, LineHeightSpec,
     OverflowSpec, PaddingSpec, ParentBox, PositionSpec, collect_document_css_custom_properties,
-    parse_box_edge_length, parse_css_font_family, parse_css_font_feature_settings,
-    parse_css_font_kerning, parse_css_font_size, parse_css_font_size_in,
-    parse_css_font_variation_settings, parse_css_font_weight, parse_css_hyphens,
-    parse_css_length_px, parse_css_letter_spacing, parse_css_line_break, parse_css_line_height,
-    parse_css_word_break, parse_grid_template_columns, parse_grid_track_list_result,
-    parse_grid_track_list_result_in, parse_inset_length, resolve_grid_column_widths,
-    resolve_grid_track_sizes, resolve_paint_color, resolve_paint_color_in, with_dynamic_light_dark,
+    parse_box_edge_length, parse_css_dominant_baseline, parse_css_font_family,
+    parse_css_font_feature_settings, parse_css_font_kerning, parse_css_font_size,
+    parse_css_font_size_in, parse_css_font_variation_settings, parse_css_font_weight,
+    parse_css_hyphens, parse_css_length_px, parse_css_letter_spacing, parse_css_line_break,
+    parse_css_line_height, parse_css_word_break, parse_grid_template_columns,
+    parse_grid_track_list_result, parse_grid_track_list_result_in, parse_inset_length,
+    resolve_grid_column_widths, resolve_grid_track_sizes, resolve_paint_color,
+    resolve_paint_color_in, with_dynamic_light_dark,
 };
 pub use css_motion::{ParsedAnimation, motion_curve_from_css_token, parse_animation_declarations};
 pub use css_written::{WrittenLayout, written_layout, written_layout_in};

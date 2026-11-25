@@ -13,11 +13,11 @@ pub const PRIORITY_CASE_IDS: &[&str] = &[
     "T-G03", "T-G04", "T-G05", "T-G06", "T-G07", "T-G08", "T-G09", "T-G10", "T-G11", "T-G12",
     "T-G13", "T-G14", "T-G15", "T-G16", "T-G17", "T-G18", "T-G19", "T-G20", "T-G21", "T-G22",
     "T-G23", "T-G24", "T-G25", "T-G26", "T-G27", "T-G28", "T-G29", "T-G30", "T-G31", "T-G32",
-    "T-G33", "T-G34", "T-G35", "T-G36", "T-P01", "T-P02", "T-P03", "T-P04", "T-P05", "T-P06",
-    "T-P07", "T-P08", "T-P09", "T-P10", "T-P11", "T-P12", "T-P13", "T-P14", "T-P15", "T-P16",
-    "T-P17", "T-P18", "T-P19", "T-P20", "T-P21", "T-I01", "T-I02", "T-I03", "T-I04", "T-I05",
-    "T-I06", "T-I07", "T-I08", "T-I09", "T-I10", "T-I11", "T-I12", "T-FX01", "T-FX02", "T-FX03",
-    "T-GB01", "T-GB02",
+    "T-G33", "T-G34", "T-G35", "T-G36", "T-G37", "T-P01", "T-P02", "T-P03", "T-P04", "T-P05",
+    "T-P06", "T-P07", "T-P08", "T-P09", "T-P10", "T-P11", "T-P12", "T-P13", "T-P14", "T-P15",
+    "T-P16", "T-P17", "T-P18", "T-P19", "T-P20", "T-P21", "T-I01", "T-I02", "T-I03", "T-I04",
+    "T-I05", "T-I06", "T-I07", "T-I08", "T-I09", "T-I10", "T-I11", "T-I12", "T-FX01", "T-FX02",
+    "T-FX03", "T-FX04", "T-GB01", "T-GB02", "T-GB03", "T-WM01",
 ];
 
 /// `(id, status_pass, gap)` — `gap` 仅仍 ignore 的用例有值。
@@ -137,6 +137,7 @@ pub fn catalog() -> &'static [(&'static str, bool, Option<&'static str>)] {
         ("T-G34", true, None),  // auto-fill copies [mid] per expansion; mid 2
         ("T-G35", true, None),  // subgrid inherits parent column track sizes
         ("T-G36", true, None),  // auto row 按解析后的列宽量可折行内容
+        ("T-G37", true, None),  // 定宽 inline-flex/inline-grid 内部自动宽度 grid 拉伸（#409）
         ("T-P01", true, None),  // position:relative + inset
         ("T-P02", true, None),  // absolute 脱流 + top/left
         ("T-P03", true, None),  // absolute right/bottom
@@ -173,7 +174,10 @@ pub fn catalog() -> &'static [(&'static str, bool, Option<&'static str>)] {
         ("T-FX01", true, None), // a flex container on a baseline row sits by its top line's or start item's baseline (Chrome 152 实测)
         ("T-FX02", true, None), // an inline-flex/container ending in a wrapping flex container sits by that container's first baseline (Chrome 152 实测)
         ("T-FX03", true, None), // an inline container ending in a column flex container sits by its first item's baseline (Chrome 152 实测)
+        ("T-FX04", true, None), // flex baseline row growth by max_ascent + max_descent (#409)
         ("T-GB01", true, None), // grid items share a baseline per row; a grid sits by its first row's (Chrome 152 实测)
         ("T-GB02", true, None), // an inline container ending in a grid sits by the grid's first row (Chrome 152 实测)
+        ("T-GB03", true, None), // grid §12.5 baseline shim and multi-row auto span distribution (#409)
+        ("T-WM01", true, None), // vertical-rl central baseline alignment and descendant baseline derivation (#395)
     ]
 }

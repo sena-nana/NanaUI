@@ -1,0 +1,44 @@
+{
+  "id": "T-GB03",
+  "title": "grid §12.5 baseline shim 与多行 auto span 分配（#409）",
+  "status": "pass",
+  "viewport": [200, 220],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:flex;flex-direction:column;gap:12px;width:160px",
+    "children": [
+      {
+        "id": "shim_grid",
+        "style": "display:grid;grid-template-columns:50px 50px;align-items:baseline;width:100px",
+        "children": [
+          { "id": "ga", "style": "width:40px;height:30px;margin-top:10px" },
+          {
+            "id": "gb",
+            "style": "display:flex;width:40px;height:50px",
+            "children": [
+              { "id": "gb_top", "style": "width:40px;height:20px" }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "span_grid",
+        "style": "display:grid;grid-template-columns:60px 60px;grid-template-rows:auto auto;gap:10px;width:130px",
+        "children": [
+          { "id": "r1c1", "style": "width:60px;height:20px" },
+          { "id": "sp", "style": "grid-column:2;grid-row:1 / span 2;width:60px;height:80px" },
+          { "id": "r2c1", "style": "width:60px;height:20px" }
+        ]
+      }
+    ]
+  },
+  "expected": [
+    { "id": "shim_grid", "x": 0, "y": 0, "w": 100, "h": 70 },
+    { "id": "ga", "x": 0, "y": 10, "w": 40, "h": 30 },
+    { "id": "gb", "x": 50, "y": 20, "w": 40, "h": 50 },
+    { "id": "span_grid", "x": 0, "y": 82, "w": 130, "h": 80 },
+    { "id": "sp", "x": 70, "y": 82, "w": 60, "h": 80 },
+    { "id": "r2c1", "x": 0, "y": 127, "w": 60, "h": 20 }
+  ]
+}

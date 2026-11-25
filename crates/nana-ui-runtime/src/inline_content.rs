@@ -295,6 +295,43 @@ pub(crate) struct ParentLineStrut {
     pub(crate) font_descent: f32,
     pub(crate) x_height: f32,
     pub(crate) font_px: f32,
+    pub(crate) dominant_baseline: nana_ui_core::UsedBaselineKind,
+}
+
+fn block_start_edge(
+    edges: nana_ui_core::PaddingSpec,
+    writing: nana_ui_core::WritingContext,
+) -> f32 {
+    match writing.block_start() {
+        nana_ui_core::PhysicalEdge::Top => edges.top,
+        nana_ui_core::PhysicalEdge::Right => edges.right,
+        nana_ui_core::PhysicalEdge::Bottom => edges.bottom,
+        nana_ui_core::PhysicalEdge::Left => edges.left,
+    }
+}
+
+/// Synthesized baseline from `block-start` when an inline box holds no line box
+/// (CSS Writing Modes 3 §4.2, CSS Align 3 §9.1).
+pub(crate) fn synthesized_block_baseline(
+    block: f32,
+    writing: nana_ui_core::WritingContext,
+    kind: nana_ui_core::UsedBaselineKind,
+) -> f32 {
+    let block = block.max(0.0);
+    if !writing.is_vertical() {
+        return block;
+    }
+    match kind {
+        nana_ui_core::UsedBaselineKind::Central => block * 0.5,
+        nana_ui_core::UsedBaselineKind::Alphabetic
+        | nana_ui_core::UsedBaselineKind::Ideographic => {
+            if writing.block_reversed() {
+                block
+            } else {
+                0.0
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -323,29 +360,17 @@ pub(crate) fn resolve_atom_vertical_align(
     );
     let width_px = inline.max(0.0);
     let block = block.max(0.0);
-    if writing.is_vertical() {
-        return (
-            nana_text::InlineObjectMetrics {
-                width_px,
-                ascent_px: block,
-                descent_px: 0.0,
-                align: nana_text::InlineObjectAlign::Baseline,
-                baseline_shift_px: 0.0,
-                envelope: None,
-            },
-            AtomLinePlacement::Baseline {
-                above: block,
-                below: 0.0,
-            },
-        );
-    }
+    let used_block = writing.logical_size(used.width, used.height).1.max(0.0);
+    let block_lead = block_start_edge(margin, writing);
+    let fallback_baseline =
+        synthesized_block_baseline(block, writing, parent_strut.dominant_baseline);
     let spec = child_style.resolved_vertical_align();
     let own_above = if spec.uses_own_baseline() {
-        own_baseline.map_or(block, |baseline| {
-            (baseline.clamp(0.0, used.height.max(0.0)) + margin.top).clamp(0.0, block)
+        own_baseline.map_or(fallback_baseline, |baseline| {
+            (baseline.clamp(0.0, used_block) + block_lead).clamp(0.0, block)
         })
     } else {
-        block
+        fallback_baseline
     };
     let own_below = block - own_above;
     match spec {

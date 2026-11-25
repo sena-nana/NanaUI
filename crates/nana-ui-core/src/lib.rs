@@ -236,9 +236,10 @@ pub use tree::{
     tree_navigation_event, tree_preorder,
 };
 pub use typography::{
-    FontKerningSpec, FontVariationSetting, HyphensSpec, LineBreakSpec, TextAutospaceSpec,
-    TextEmphasis, TextEmphasisColor, TextEmphasisPosition, TextEmphasisShape, TextEmphasisStyle,
-    TextJustifySpec, TextSpacingTrimSpec, TextTypography, TextWrapStyleSpec, UsedTextTypography,
+    DominantBaselineSpec, FontKerningSpec, FontVariationSetting, HyphensSpec, LineBreakSpec,
+    TextAutospaceSpec, TextEmphasis, TextEmphasisColor, TextEmphasisPosition, TextEmphasisShape,
+    TextEmphasisStyle, TextJustifySpec, TextSpacingTrimSpec, TextTypography, TextWrapStyleSpec,
+    UsedTextTypography,
 };
 pub use url_jail::{
     MAX_LOCAL_URL_BYTES, canonicalize_within_jail, file_url_to_path,
@@ -263,4 +264,4 @@ pub use work::{
 pub use workspace_model::{
     WORKSPACE_REGION_TRANSITION_DURATION, WorkspaceModel, WorkspaceMutation,
 };
-pub use writing::{PhysicalEdge, WritingContext};
+pub use writing::{PhysicalEdge, UsedBaselineKind, WritingContext};

@@ -18,19 +18,20 @@ use nana_ui_core::{
     BorderWidth, BoxShadowSpec, BoxSizing, CalcBinOp, CalcExpr, ClipCircle, ClipEllipse, ClipInset,
     ClipPath, ClipPoint, ClipShapeRadius, ColorFilter, ContainerType, ControlPadding, ControlSize,
     CssGradient, CursorSpec, CustomCursorSpec, CustomCursorVariant, CustomCursorVector, DirSpec,
-    DisplaySpec, FilterDropShadow, FlexDirection, FlexWrap, FontFeatureSetting, FontKerningSpec,
-    FontVariationSetting, GradientStop, GridAutoFlow, GridLine, GridRepeatAuto, GridTemplateAreas,
-    GridTrack, GridTrackListUnsupported, HitTestBehavior, HyphensSpec, ImageSampling, JustifySpec,
-    LayoutStyle, LengthSpec, LineBreakSpec, LineHeightSpec, LineRole, LinearGradient, MaskImage,
-    MaterialRef, MaterialTexture, MixBlendMode, OutlineStyle, OverflowSpec, OverflowWrapSpec,
-    PaintColor, PaintMat4, PaintTransform, PointerEventsSpec, PopoverAlignment, PopoverPlacement,
-    PositionSpec, RadialGradient, RadiusTier, ScrollEdgeFade, ScrollbarSkin, SemanticColorMix,
-    SemanticColorRole, SpacingStep, SystemCursor, TextAlignSpec, TextAutospaceSpec,
-    TextDecorationLine, TextEmphasisColor, TextEmphasisPosition, TextEmphasisShape,
-    TextEmphasisStyle, TextJustifySpec, TextOrientationSpec, TextShadowSpec, TextSpacingTrimSpec,
-    TextStrokeSpec, TextWeight, TextWrapStyleSpec, ThemeExpr, ThemeToken, TransformBox,
-    TransformOrigin, TypeRole, UserSelectSpec, VerticalAlignSpec, ViewportAxis, VisibilitySpec,
-    WhiteSpaceSpec, WindowResizeEdge, WordBreakSpec, WritingModeSpec,
+    DisplaySpec, DominantBaselineSpec, FilterDropShadow, FlexDirection, FlexWrap,
+    FontFeatureSetting, FontKerningSpec, FontVariationSetting, GradientStop, GridAutoFlow,
+    GridLine, GridRepeatAuto, GridTemplateAreas, GridTrack, GridTrackListUnsupported,
+    HitTestBehavior, HyphensSpec, ImageSampling, JustifySpec, LayoutStyle, LengthSpec,
+    LineBreakSpec, LineHeightSpec, LineRole, LinearGradient, MaskImage, MaterialRef,
+    MaterialTexture, MixBlendMode, OutlineStyle, OverflowSpec, OverflowWrapSpec, PaintColor,
+    PaintMat4, PaintTransform, PointerEventsSpec, PopoverAlignment, PopoverPlacement, PositionSpec,
+    RadialGradient, RadiusTier, ScrollEdgeFade, ScrollbarSkin, SemanticColorMix, SemanticColorRole,
+    SpacingStep, SystemCursor, TextAlignSpec, TextAutospaceSpec, TextDecorationLine,
+    TextEmphasisColor, TextEmphasisPosition, TextEmphasisShape, TextEmphasisStyle, TextJustifySpec,
+    TextOrientationSpec, TextShadowSpec, TextSpacingTrimSpec, TextStrokeSpec, TextWeight,
+    TextWrapStyleSpec, ThemeExpr, ThemeToken, TransformBox, TransformOrigin, TypeRole,
+    UserSelectSpec, VerticalAlignSpec, ViewportAxis, VisibilitySpec, WhiteSpaceSpec,
+    WindowResizeEdge, WordBreakSpec, WritingModeSpec,
 };
 
 pub(crate) trait EmitRust {
@@ -543,6 +544,7 @@ impl EmitRust for VerticalAlignSpec {
 impl_unit_enum!(FontKerningSpec, "FontKerningSpec" => { Auto, Normal, None });
 impl_unit_enum!(LineBreakSpec, "LineBreakSpec" => { Auto, Normal, Anywhere, Strict, Loose });
 impl_unit_enum!(HyphensSpec, "HyphensSpec" => { None, Manual, Auto });
+impl_unit_enum!(DominantBaselineSpec, "DominantBaselineSpec" => { Auto, Central, Alphabetic, Ideographic });
 impl_unit_enum!(TextSpacingTrimSpec, "TextSpacingTrimSpec" => { SpaceAll, Normal, TrimBoth, Auto });
 impl_unit_enum!(TextAutospaceSpec, "TextAutospaceSpec" => { NoAutospace, Normal });
 impl_unit_enum!(TextJustifySpec, "TextJustifySpec" => { Auto, None, InterWord, InterCharacter });
@@ -1821,6 +1823,7 @@ pub(crate) fn emit_patch_stmt(layout: &LayoutStyle, path: &str, m: &str, out: &m
             }
             "unsupported_writing_mode" => emit_set(&setter, &te.unsupported_writing_mode, m, out),
             "text_orientation" => emit_set(&setter, &te.text_orientation, m, out),
+            "dominant_baseline" => emit_set(&setter, &te.dominant_baseline, m, out),
             "vertical_align" => emit_set(&setter, &te.vertical_align, m, out),
             "placeholder_color" => emit_set(&setter, &te.placeholder_color, m, out),
             "placeholder_opacity" => emit_set(&setter, &te.placeholder_opacity, m, out),

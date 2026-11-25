@@ -789,6 +789,7 @@ pub(crate) fn classify_computed_style_change(
         || previous.word_break != next.word_break
         || previous.line_break != next.line_break
         || previous.hyphens != next.hyphens
+        || previous.dominant_baseline != next.dominant_baseline
         || previous.text_typography != next.text_typography
         || previous.writing_mode != next.writing_mode
         || previous.text_emphasis.style != next.text_emphasis.style

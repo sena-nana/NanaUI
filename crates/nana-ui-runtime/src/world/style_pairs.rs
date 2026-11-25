@@ -74,6 +74,7 @@ impl LayoutPairFacts {
                         || pt.word_break != nt.word_break
                         || pt.line_break != nt.line_break
                         || pt.hyphens != nt.hyphens
+                        || pt.dominant_baseline != nt.dominant_baseline
                         || pt.text_typography != nt.text_typography
                         || pt.text_emphasis_style != nt.text_emphasis_style
                         || pt.text_emphasis_position != nt.text_emphasis_position

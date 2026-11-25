@@ -2999,10 +2999,11 @@ pub(super) fn arrange_flow<'a>(
             .into_iter()
             .map(|range| line_slot(range.collect()))
             .collect()
-        } else if ifc && !writing.is_vertical() {
+        } else if ifc {
+            let inline_avail = writing.inline_size(content.width, content.height);
             prime_atom_baselines(
                 flow.iter().copied().zip(child_sizes.iter().copied()),
-                content.width,
+                inline_avail,
                 viewport,
                 child_font_px,
                 nodes,
@@ -3012,12 +3013,13 @@ pub(super) fn arrange_flow<'a>(
             pack_ifc_line_boxes(
                 flow,
                 child_sizes,
-                content.width,
+                writing,
+                content,
                 gap,
                 cross_gap,
                 viewport,
                 child_font_px,
-                line_strut(id, style, child_font_px, nodes),
+                line_strut(id, style, writing, child_font_px, nodes),
                 nodes,
             )
         } else {
@@ -3058,6 +3060,7 @@ pub(super) fn arrange_flow<'a>(
         f32,
         bool,
         Option<(f32, f32)>,
+        Option<f32>,
     )> = Vec::with_capacity(line_slots.len());
     // Items measured again at the main size their line gave them.
     let mut hypothetical: HashMap<StableNodeId, (f32, Size)> = HashMap::new();
@@ -3193,10 +3196,11 @@ pub(super) fn arrange_flow<'a>(
             .fold(0.0, f32::max);
         // A line of an ordinary block: its baseline, and the span its
         // items cover once they sit on it.
+        let inline_avail = writing.inline_size(content.width, content.height);
         let line_baseline_y = if slot.baseline_aligned {
             prime_atom_baselines(
                 line_flow.iter().copied().zip(line_sizes.iter().copied()),
-                content.width,
+                inline_avail,
                 viewport,
                 child_font_px,
                 nodes,
@@ -3205,16 +3209,52 @@ pub(super) fn arrange_flow<'a>(
             )?;
             Some(ifc_line_metrics(
                 line_flow.iter().copied().zip(line_sizes.iter().copied()),
-                content.width,
+                writing,
+                content,
                 viewport,
                 child_font_px,
-                line_strut(id, style, child_font_px, nodes),
+                line_strut(id, style, writing, child_font_px, nodes),
                 nodes,
             ))
         } else {
             None
         };
-        let line_cross = line_baseline_y.map_or(line_cross, |(_, height)| height);
+        let mut flex_line_ascent = None;
+        let mut line_cross = line_baseline_y.map_or(line_cross, |(_, height)| height);
+        if !slot.baseline_aligned
+            && style.display.is_some_and(DisplaySpec::is_flex_container)
+            && direction == writing.inline_flex_direction()
+            && line_flow.iter().any(|child| {
+                nodes.style_ref(*child).is_some_and(|child_style| {
+                    child_style.resolved_align_self(style.child_align_items())
+                        == AlignSpec::Baseline
+                })
+            })
+        {
+            prime_first_baselines(
+                line_flow.iter().copied().zip(line_sizes.iter().copied()),
+                inline_avail,
+                viewport,
+                child_font_px,
+                nodes,
+                intrinsic,
+                scope,
+            )?;
+            if let Some((line_ascent, grown_cross)) = flex_baseline_line_metrics(
+                line_flow.iter().copied().zip(line_sizes.iter().copied()),
+                style,
+                writing,
+                direction,
+                cross_reversed,
+                child_edge_base,
+                child_font_px,
+                nodes,
+                intrinsic,
+            ) {
+                line_cross = line_cross.max(grown_cross);
+                flex_line_ascent = Some(line_ascent);
+            }
+        }
         // A line's start, measured from main-start: its physical left offset,
         // or the room its right end leaves when the main axis runs from the
         // right.
@@ -3232,6 +3272,7 @@ pub(super) fn arrange_flow<'a>(
             slot.cross_y,
             slot.pin_cross,
             line_baseline_y,
+            flex_line_ascent,
         ));
     }
     let align_content = style.align_content;
@@ -3240,7 +3281,7 @@ pub(super) fn arrange_flow<'a>(
     let (mut cross_cursor, extra_cross_gap) = if line_count > 1 {
         let total = packed
             .iter()
-            .map(|(_, _, cross, _, _, _, _, _)| *cross)
+            .map(|(_, _, cross, _, _, _, _, _, _)| *cross)
             .sum::<f32>()
             + cross_gap * line_count.saturating_sub(1) as f32;
         if matches!(align_content, JustifySpec::Stretch | JustifySpec::Start)
@@ -3299,6 +3340,7 @@ pub(super) fn arrange_flow<'a>(
             line_cross_y,
             pin_cross,
             line_atom_baseline,
+            flex_line_ascent,
         ),
     ) in packed.into_iter().enumerate()
     {
@@ -3342,7 +3384,9 @@ pub(super) fn arrange_flow<'a>(
                 scope,
             )?;
         }
-        let line_baseline = if needs_baseline {
+        let line_baseline = if let Some(ascent) = flex_line_ascent {
+            ascent
+        } else if needs_baseline {
             line_flow
                 .iter()
                 .zip(line_sizes.iter())
@@ -3406,7 +3450,7 @@ pub(super) fn arrange_flow<'a>(
             if line_atom_baseline.is_some() {
                 prime_atom_baselines(
                     [(child, child_size)],
-                    content.width,
+                    writing.inline_size(content.width, content.height),
                     viewport,
                     child_font_px,
                     nodes,
@@ -3415,12 +3459,13 @@ pub(super) fn arrange_flow<'a>(
                 )?;
             }
             let atom_placement = line_atom_baseline.and_then(|_| {
-                let strut = line_strut(id, style, child_font_px, nodes).into();
+                let strut = line_strut(id, style, writing, child_font_px, nodes).into();
                 ifc_atom_metrics(
                     child,
                     child_style,
                     child_size,
-                    content.width,
+                    writing,
+                    writing.inline_size(content.width, content.height),
                     child_font_px,
                     strut,
                     viewport,
@@ -3452,7 +3497,11 @@ pub(super) fn arrange_flow<'a>(
                     AlignSpec::Start | AlignSpec::Stretch => cross_cursor + cross_lead(margin),
                     AlignSpec::Baseline => {
                         let base = aligned_baseline.unwrap_or_default();
-                        cross_cursor + (line_baseline - base).max(0.0)
+                        if flex_line_ascent.is_some() {
+                            cross_cursor + line_baseline - base
+                        } else {
+                            cross_cursor + (line_baseline - base).max(0.0)
+                        }
                     }
                     AlignSpec::Center => {
                         cross_cursor

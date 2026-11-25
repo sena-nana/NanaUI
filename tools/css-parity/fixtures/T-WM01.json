@@ -1,0 +1,28 @@
+{
+  "id": "T-WM01",
+  "title": "writing-mode:vertical-rl 默认 central 基线对齐与后代推导（#395）",
+  "status": "pass",
+  "viewport": [240, 140],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "writing-mode:vertical-rl;width:200px;height:120px",
+    "children": [
+      { "id": "narrow", "style": "display:inline-flex;width:20px;height:30px" },
+      { "id": "wide", "style": "display:inline-flex;width:40px;height:30px" },
+      {
+        "id": "nested",
+        "style": "display:inline-flex;overflow:hidden;padding-right:8px;width:36px;height:30px",
+        "children": [
+          { "id": "inner", "style": "display:inline-flex;width:10px;height:20px" }
+        ]
+      }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 200, "h": 120 },
+    { "id": "narrow", "x": 170, "y": 0, "w": 20, "h": 30 },
+    { "id": "wide", "x": 160, "y": 30, "w": 40, "h": 30 },
+    { "id": "nested", "x": 157, "y": 60, "w": 36, "h": 30 }
+  ]
+}

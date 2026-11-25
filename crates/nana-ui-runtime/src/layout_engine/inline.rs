@@ -82,7 +82,7 @@ pub(super) fn place_native_inline(
             .inline_object_margin(child, writing.inline_size(content.width, content.height));
         prime_atom_baselines(
             [(child, size)],
-            content.width,
+            writing.inline_size(content.width, content.height),
             viewport,
             font,
             nodes,
@@ -96,7 +96,7 @@ pub(super) fn place_native_inline(
             size,
             margin,
             font,
-            content.width,
+            writing.inline_size(content.width, content.height),
             parent_strut,
             viewport,
         );
@@ -238,20 +238,21 @@ pub(super) fn pack_wrap_lines(
 pub(super) fn ifc_item_outer(
     style: &LayoutStyle,
     size: Size,
-    content_width: f32,
+    writing: nana_ui_core::WritingContext,
+    content: Size,
     viewport: LayoutViewport,
     parent_font_px: f32,
 ) -> (f32, f32) {
-    let direction = FlexDirection::Row;
+    let direction = writing.inline_flex_direction();
+    let inline_size = writing.inline_size(content.width, content.height);
     let margin =
-        style.resolved_margin_against_fonts(Some(content_width), fonts_of(style, parent_font_px));
+        style.resolved_margin_against_fonts(Some(inline_size), fonts_of(style, parent_font_px));
     let main = packing_main_size(
         style,
         size,
         direction,
-        content_width,
-        // A horizontal line box: its width is the inline size.
-        content_width,
+        inline_size,
+        inline_size,
         viewport,
         parent_font_px,
         None,
@@ -263,15 +264,16 @@ pub(super) fn ifc_item_outer(
 }
 
 /// An inline-level item's ascent and descent about the baseline of a
-/// horizontal line of an ordinary block, margins included
+/// line of an ordinary block, margins included
 /// ([`LayoutInputMap::atom_line_metrics`]). `None` for a block-level item,
-/// which holds a line alone and sits at its top.
+/// which holds a line alone and sits at its start.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn ifc_atom_metrics(
     child: StableNodeId,
     style: &LayoutStyle,
     size: Size,
-    content_width: f32,
+    writing: nana_ui_core::WritingContext,
+    inline_base: f32,
     parent_font_px: f32,
     parent_strut: crate::inline_content::ParentLineStrut,
     viewport: LayoutViewport,
@@ -281,14 +283,14 @@ pub(super) fn ifc_atom_metrics(
         return None;
     }
     let margin =
-        style.resolved_margin_against_fonts(Some(content_width), fonts_of(style, parent_font_px));
+        style.resolved_margin_against_fonts(Some(inline_base), fonts_of(style, parent_font_px));
     let (_, placement) = nodes.atom_line_metrics(
         child,
-        nana_ui_core::WritingContext::HORIZONTAL_LTR,
+        writing,
         size,
         margin,
         parent_font_px,
-        content_width,
+        inline_base,
         parent_strut,
         viewport,
     );
@@ -425,11 +427,7 @@ fn derive_baselines(
     };
     let (child_ids, writing) = (node.children, node.writing);
     // A subgrid's tracks are its parent's.
-    if writing.is_vertical()
-        || style.omits_box()
-        || style.is_subgrid_columns()
-        || style.is_subgrid_rows()
-    {
+    if style.omits_box() || style.is_subgrid_columns() || style.is_subgrid_rows() {
         return Ok(BaselineMetrics::default());
     }
     let flex = style.display.is_some_and(DisplaySpec::is_flex_container);
@@ -437,7 +435,8 @@ fn derive_baselines(
     let child_font_px = fonts.element_px;
     let padding = style.resolved_padding_against_fonts(Some(inline_base), fonts);
     let border = style.resolved_border_edges();
-    let top = border.top + padding.top;
+    let top = grid::margin_at(border, writing.block_start())
+        + grid::margin_at(padding, writing.block_start());
     // The content box placement lays the children out in.
     let content = Size::new(
         used.width - padding.left - padding.right - border.left - border.right,
@@ -480,8 +479,17 @@ fn derive_baselines(
             scope,
             None,
         )?;
-        let first = grid_first_baseline(&arranged, viewport, child_font_px, nodes, cache, scope)?
-            .map(|baseline| top + baseline);
+        let first = grid_first_baseline(
+            &arranged,
+            writing,
+            content,
+            viewport,
+            child_font_px,
+            nodes,
+            cache,
+            scope,
+        )?
+        .map(|baseline| top + baseline);
         // Like a flex container's, its last baseline is its first.
         return Ok(BaselineMetrics { first, last: first });
     }
@@ -532,6 +540,7 @@ fn derive_baselines(
             &arranged,
             direction,
             writing,
+            content,
             child_edge_base,
             viewport,
             child_font_px,
@@ -580,7 +589,12 @@ fn derive_baselines(
                     cache,
                     scope,
                 )? {
-                    found.set(which, top + item.offset.y + baseline);
+                    let item_block_start = writing.block_origin_offset(
+                        (item.offset.x, item.offset.y),
+                        (item.size.width, item.size.height),
+                        (content.width, content.height),
+                    );
+                    found.set(which, top + item_block_start + baseline);
                     break 'lines;
                 }
             }
@@ -589,15 +603,11 @@ fn derive_baselines(
     Ok(found)
 }
 
-/// A grid container's first baseline from its content box's top, read off
-/// where placement puts its items (CSS Grid 2 §11.8, as Chrome lays it
-/// out): of the first row an item starts in, the baseline its items share
-/// under `align-self: baseline`, or else the first baseline of its first
-/// item in grid order (the one in the column nearest the inline start),
-/// synthesized from that item's border-box bottom where it holds no line.
 #[allow(clippy::too_many_arguments)]
 fn grid_first_baseline(
     arranged: &[ArrangedGridItem],
+    writing: nana_ui_core::WritingContext,
+    content: Size,
     viewport: LayoutViewport,
     child_font_px: f32,
     nodes: &mut LayoutInputMap<'_>,
@@ -608,43 +618,51 @@ fn grid_first_baseline(
         return Ok(None);
     };
     let first_row = || arranged.iter().filter(move |item| item.row == row);
-    if let Some(shared) =
-        first_row().find_map(|item| item.baseline.map(|baseline| item.offset.y + baseline))
-    {
+    if let Some(shared) = first_row().find_map(|item| {
+        item.baseline.map(|baseline| {
+            writing.block_origin_offset(
+                (item.offset.x, item.offset.y),
+                (item.size.width, item.size.height),
+                (content.width, content.height),
+            ) + baseline
+        })
+    }) {
         return Ok(Some(shared));
     }
     let Some(item) = first_row().min_by_key(|item| item.col) else {
         return Ok(None);
     };
+    let item_inline = writing.inline_size(item.cell.width, item.cell.height);
+    let item_block = writing.logical_size(item.size.width, item.size.height).1;
+    let kind = nodes.world.node_baseline_kind(item.id);
     let baseline = block_baseline(
         item.id,
         item.size,
         crate::Baseline::First,
-        item.cell.width,
+        item_inline,
         viewport,
         child_font_px,
         nodes,
         cache,
         scope,
     )?
-    .unwrap_or(item.size.height);
-    Ok(Some(item.offset.y + baseline))
+    .unwrap_or_else(|| {
+        crate::inline_content::synthesized_block_baseline(item_block, writing, kind)
+    });
+    let item_block_start = writing.block_origin_offset(
+        (item.offset.x, item.offset.y),
+        (item.size.width, item.size.height),
+        (content.width, content.height),
+    );
+    Ok(Some(item_block_start + baseline))
 }
 
-/// A flex container's first baseline from its content box's top, read off
-/// where placement puts its items (CSS Flexbox §8.5, as Chrome lays it
-/// out): of the line nearest the top of the page, the baseline its items
-/// share under `align-self: baseline`, or else the first baseline of its
-/// item nearest the inline start, synthesized from that item's border-box
-/// bottom where it holds no line. A column's line is its column nearest
-/// the inline start and its item the topmost. Lines and items are taken
-/// where they land, so a reversed direction or `wrap-reverse` picks the
-/// line and item on top and at the start, not the first in the flow.
 #[allow(clippy::too_many_arguments)]
 fn flex_first_baseline(
     arranged: &ArrangedFlow,
     direction: FlexDirection,
     writing: nana_ui_core::WritingContext,
+    content: Size,
     inline_base: f32,
     viewport: LayoutViewport,
     child_font_px: f32,
@@ -652,37 +670,54 @@ fn flex_first_baseline(
     cache: &mut PassIntrinsicCache,
     scope: Option<&ScopeContext<'_>>,
 ) -> Result<Option<f32>, UiWorldError> {
-    let rtl = writing.inline_reversed();
-    // How far an item stands from the inline start.
-    let inline_start = |item: &ArrangedChild| {
-        if rtl {
-            -(item.offset.x + item.size.width)
-        } else {
-            item.offset.x
-        }
-    };
+    let main_is_inline = direction == writing.inline_flex_direction();
     // Lines are arranged from the cross start of the page: placement packs
     // a `wrap-reverse` flow's last line first.
     let Some(line) = arranged.lines.iter().find(|line| !line.children.is_empty()) else {
         return Ok(None);
     };
     let items = &arranged.children[line.children.clone()];
-    if direction.is_row()
-        && let Some(shared) = items
-            .iter()
-            .find_map(|item| item.baseline.map(|baseline| item.offset.y + baseline))
+    if main_is_inline
+        && let Some(shared) = items.iter().find_map(|item| {
+            item.baseline.map(|baseline| {
+                writing.block_origin_offset(
+                    (item.offset.x, item.offset.y),
+                    (item.size.width, item.size.height),
+                    (content.width, content.height),
+                ) + baseline
+            })
+        })
     {
         return Ok(Some(shared));
     }
-    let Some(item) = items.iter().min_by(|a, b| {
-        if direction.is_row() {
-            inline_start(a).total_cmp(&inline_start(b))
-        } else {
-            a.offset.y.total_cmp(&b.offset.y)
-        }
-    }) else {
+    let Some(item) =
+        items.iter().min_by(|a, b| {
+            if main_is_inline {
+                writing
+                    .inline_start_coord((a.offset.x, a.offset.y), (a.size.width, a.size.height))
+                    .total_cmp(&writing.inline_start_coord(
+                        (b.offset.x, b.offset.y),
+                        (b.size.width, b.size.height),
+                    ))
+            } else {
+                writing
+                    .block_origin_offset(
+                        (a.offset.x, a.offset.y),
+                        (a.size.width, a.size.height),
+                        (content.width, content.height),
+                    )
+                    .total_cmp(&writing.block_origin_offset(
+                        (b.offset.x, b.offset.y),
+                        (b.size.width, b.size.height),
+                        (content.width, content.height),
+                    ))
+            }
+        })
+    else {
         return Ok(None);
     };
+    let item_block = writing.logical_size(item.size.width, item.size.height).1;
+    let kind = nodes.world.node_baseline_kind(item.child);
     let baseline = block_baseline(
         item.child,
         item.size,
@@ -694,8 +729,15 @@ fn flex_first_baseline(
         cache,
         scope,
     )?
-    .unwrap_or(item.size.height);
-    Ok(Some(item.offset.y + baseline))
+    .unwrap_or_else(|| {
+        crate::inline_content::synthesized_block_baseline(item_block, writing, kind)
+    });
+    let item_block_start = writing.block_origin_offset(
+        (item.offset.x, item.offset.y),
+        (item.size.width, item.size.height),
+        (content.width, content.height),
+    );
+    Ok(Some(item_block_start + baseline))
 }
 
 /// The first or last baseline of block-level `child` of a box's flow, from
@@ -754,6 +796,7 @@ fn block_baseline(
 pub(super) fn line_strut(
     id: StableNodeId,
     style: &LayoutStyle,
+    writing: nana_ui_core::WritingContext,
     font_px: f32,
     nodes: &LayoutInputMap<'_>,
 ) -> LineStrut {
@@ -770,31 +813,120 @@ pub(super) fn line_strut(
         .block_x_height(id)
         .filter(|ratio| ratio.is_finite() && *ratio > 0.0)
         .map_or(font * 0.5, |ratio| font * ratio);
-    let half_leading =
-        (text_line_box_height_px(font, style.line_height) - (font_ascent + font_descent)) * 0.5;
+    let line_h = text_line_box_height_px(font, style.line_height);
+    let half_leading = (line_h - (font_ascent + font_descent)) * 0.5;
+    let dominant_baseline = nodes.world.node_baseline_kind(id);
+    let ascent = if !writing.is_vertical() {
+        match dominant_baseline {
+            nana_ui_core::UsedBaselineKind::Alphabetic => font_ascent + half_leading,
+            nana_ui_core::UsedBaselineKind::Central => line_h * 0.5,
+            nana_ui_core::UsedBaselineKind::Ideographic => {
+                (font_ascent + half_leading + font_descent).min(line_h)
+            }
+        }
+    } else {
+        match dominant_baseline {
+            nana_ui_core::UsedBaselineKind::Central => line_h * 0.5,
+            nana_ui_core::UsedBaselineKind::Alphabetic => {
+                if writing.block_reversed() {
+                    font_ascent + half_leading
+                } else {
+                    font_descent + half_leading
+                }
+            }
+            nana_ui_core::UsedBaselineKind::Ideographic => {
+                if writing.block_reversed() {
+                    (line_h * 0.5 + 0.5 * (font_ascent + font_descent)).min(line_h)
+                } else {
+                    (line_h * 0.5 - 0.5 * (font_ascent + font_descent)).max(0.0)
+                }
+            }
+        }
+    };
     LineStrut {
-        ascent: font_ascent + half_leading,
-        descent: font_descent + half_leading,
+        ascent,
+        descent: line_h - ascent,
         font_ascent,
         font_descent,
         x_height,
         font_px: font,
+        dominant_baseline,
     }
 }
 
-/// A horizontal line box of an ordinary block: its baseline below the
-/// line's top, and its height. Its inline-level items sit on that baseline
-/// with the block's strut, and the line spans the highest top to the lowest
-/// bottom among them (CSS 2.1 §10.8); a block-level item holds a line alone,
-/// counted from the line's top, with no strut.
+/// Shared baseline-aligned flex line cross-size computation (CSS Flexbox §9.4):
+/// returns `Some((line_ascent, line_cross))` when `direction` aligns along the
+/// inline axis and at least one item aligns by baseline, growing the line cross
+/// size to `max_non_baseline.max(max_ascent + max_descent)`.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn flex_baseline_line_metrics(
+    items: impl IntoIterator<Item = (StableNodeId, Size)>,
+    container_style: &LayoutStyle,
+    writing: nana_ui_core::WritingContext,
+    direction: FlexDirection,
+    cross_reversed: bool,
+    edge_base: f32,
+    child_font_px: f32,
+    nodes: &LayoutInputMap<'_>,
+    intrinsic: &mut PassIntrinsicCache,
+) -> Option<(f32, f32)> {
+    if direction != writing.inline_flex_direction() {
+        return None;
+    }
+    let mut has_baseline = false;
+    let mut max_ascent = 0.0f32;
+    let mut max_descent = 0.0f32;
+    let mut max_non_baseline = 0.0f32;
+    for (child, size) in items {
+        let Some(child_style) = nodes.style_ref(child) else {
+            continue;
+        };
+        let fonts = fonts_of(child_style.as_ref(), child_font_px);
+        let margin = child_style.resolved_margin_against_fonts(Some(edge_base), fonts);
+        let lead = if cross_reversed {
+            cross_end_margin(margin, direction)
+        } else {
+            cross_start_margin(margin, direction)
+        };
+        let trail = if cross_reversed {
+            cross_start_margin(margin, direction)
+        } else {
+            cross_end_margin(margin, direction)
+        };
+        let item_cross = cross_extent(size, direction);
+        if child_style.resolved_align_self(container_style.child_align_items())
+            == AlignSpec::Baseline
+        {
+            has_baseline = true;
+            let baseline = intrinsic
+                .baseline(child, crate::Baseline::First)
+                .unwrap_or_else(|| nodes.baseline(child, fonts.element_px, size))
+                .max(child_style.resolved_border_width())
+                .min(item_cross.max(child_style.resolved_border_width()));
+            max_ascent = max_ascent.max(lead + baseline);
+            max_descent = max_descent.max((item_cross - baseline) + trail);
+        } else {
+            max_non_baseline = max_non_baseline.max(item_cross + lead + trail);
+        }
+    }
+    has_baseline.then(|| (max_ascent, max_non_baseline.max(max_ascent + max_descent)))
+}
+
+/// A line box of an ordinary block: its baseline from `block-start`, and its
+/// block extent. Its inline-level items sit on that baseline with the block's
+/// strut, and the line spans the highest `block-start` to the furthest
+/// `block-end` among them (CSS 2.1 §10.8); a block-level item holds a line
+/// alone, counted from the line's `block-start`, with no strut.
 pub(super) fn ifc_line_metrics(
     items: impl IntoIterator<Item = (StableNodeId, Size)>,
-    content_width: f32,
+    writing: nana_ui_core::WritingContext,
+    content: Size,
     viewport: LayoutViewport,
     parent_font_px: f32,
     strut: LineStrut,
     nodes: &LayoutInputMap<'_>,
 ) -> (f32, f32) {
+    let inline_size = writing.inline_size(content.width, content.height);
     let parent_strut = strut.into();
     let (mut baseline_above, mut baseline_below, mut max_top, mut max_bottom, mut from_top) =
         (0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32);
@@ -806,7 +938,8 @@ pub(super) fn ifc_line_metrics(
             child,
             &style,
             size,
-            content_width,
+            writing,
+            inline_size,
             parent_font_px,
             parent_strut,
             viewport,
@@ -828,7 +961,7 @@ pub(super) fn ifc_line_metrics(
             }
             None => {
                 let (_, outer) =
-                    ifc_item_outer(&style, size, content_width, viewport, parent_font_px);
+                    ifc_item_outer(&style, size, writing, content, viewport, parent_font_px);
                 from_top = from_top.max(outer);
             }
         }
@@ -851,7 +984,8 @@ pub(super) fn ifc_line_metrics(
 pub(super) fn pack_ifc_line_boxes(
     children: &[StableNodeId],
     sizes: &[Size],
-    content_width: f32,
+    writing: nana_ui_core::WritingContext,
+    content: Size,
     gap: f32,
     cross_gap: f32,
     viewport: LayoutViewport,
@@ -863,7 +997,7 @@ pub(super) fn pack_ifc_line_boxes(
     let mut current = Vec::new();
     let mut line_main = 0.0f32;
     let mut line_y = 0.0f32;
-    let available = content_width;
+    let available = writing.inline_size(content.width, content.height);
     let flush = |lines: &mut Vec<LineBoxSlot>,
                  current: &mut Vec<usize>,
                  line_main: &mut f32,
@@ -873,7 +1007,8 @@ pub(super) fn pack_ifc_line_boxes(
         }
         let (_, line_cross) = ifc_line_metrics(
             current.iter().map(|&index| (children[index], sizes[index])),
-            content_width,
+            writing,
+            content,
             viewport,
             parent_font_px,
             strut,
@@ -901,14 +1036,15 @@ pub(super) fn pack_ifc_line_boxes(
             let (_, outer_cross) = ifc_item_outer(
                 style_ref,
                 sizes[index],
-                content_width,
+                writing,
+                content,
                 viewport,
                 parent_font_px,
             );
             lines.push(LineBoxSlot {
                 indices: vec![index],
                 main_start: 0.0,
-                main_available: content_width,
+                main_available: available,
                 cross_y: line_y,
                 pin_cross: true,
                 baseline_aligned: false,
@@ -919,7 +1055,8 @@ pub(super) fn pack_ifc_line_boxes(
         let (outer, _) = ifc_item_outer(
             style_ref,
             sizes[index],
-            content_width,
+            writing,
+            content,
             viewport,
             parent_font_px,
         );
@@ -943,7 +1080,7 @@ pub(super) fn pack_ifc_line_boxes(
         lines.push(LineBoxSlot {
             indices: Vec::new(),
             main_start: 0.0,
-            main_available: content_width,
+            main_available: available,
             cross_y: 0.0,
             pin_cross: true,
             baseline_aligned: false,
@@ -966,12 +1103,20 @@ pub(super) fn wrap_intrinsic_size(
     grid_tracks: Option<&[GridTrack]>,
     viewport: LayoutViewport,
     parent_font_px: f32,
-    nodes: &LayoutInputMap<'_>,
+    nodes: &mut LayoutInputMap<'_>,
+    writing: nana_ui_core::WritingContext,
     // The lines of an ordinary block, with its strut: inline-level items
     // share a baseline and a line is as tall as they span
     // ([`ifc_line_metrics`]).
     baseline_lines: Option<LineStrut>,
-) -> Size {
+    // When measuring a wrapping flex container with baseline-aligned items,
+    // pass container style + intrinsic cache so line cross size includes baseline growth.
+    flex_baseline: Option<(
+        &LayoutStyle,
+        &mut PassIntrinsicCache,
+        Option<&ScopeContext<'_>>,
+    )>,
+) -> Result<Size, UiWorldError> {
     let content_main = main_extent(available, direction);
     let mut lines = pack_wrap_lines(
         children,
@@ -991,6 +1136,7 @@ pub(super) fn wrap_intrinsic_size(
     }
     let mut cross = 0.0f32;
     let mut max_main = 0.0f32;
+    let mut flex_baseline = flex_baseline;
     for (line_index, line) in lines.iter().enumerate() {
         let mut line_main = 0.0f32;
         let mut line_cross = 0.0f32;
@@ -1024,13 +1170,52 @@ pub(super) fn wrap_intrinsic_size(
         if let Some(strut) = baseline_lines {
             line_cross = ifc_line_metrics(
                 line.iter().map(|&index| (children[index], sizes[index])),
-                edge_base,
+                writing,
+                available,
                 viewport,
                 parent_font_px,
                 strut,
                 nodes,
             )
             .1;
+        } else if let Some((container_style, cache, scope)) = &mut flex_baseline
+            && direction == writing.inline_flex_direction()
+            && line.iter().any(|&index| {
+                nodes.style_ref(children[index]).is_some_and(|child| {
+                    child.resolved_align_self(container_style.child_align_items())
+                        == AlignSpec::Baseline
+                })
+            })
+        {
+            let cache_ref: &mut PassIntrinsicCache = cache;
+            prime_first_baselines(
+                line.iter().map(|&index| (children[index], sizes[index])),
+                edge_base,
+                viewport,
+                parent_font_px,
+                nodes,
+                cache_ref,
+                *scope,
+            )?;
+            let cross_axis = match direction {
+                FlexDirection::Row => FlexDirection::Column,
+                FlexDirection::Column => FlexDirection::Row,
+            };
+            let cross_reversed =
+                writing.physical_axis_reversed(cross_axis) ^ matches!(wrap, FlexWrap::WrapReverse);
+            if let Some((_, grown)) = flex_baseline_line_metrics(
+                line.iter().map(|&index| (children[index], sizes[index])),
+                container_style,
+                writing,
+                direction,
+                cross_reversed,
+                edge_base,
+                parent_font_px,
+                nodes,
+                cache_ref,
+            ) {
+                line_cross = line_cross.max(grown);
+            }
         }
         max_main = max_main.max(line_main);
         cross += line_cross;
@@ -1038,10 +1223,10 @@ pub(super) fn wrap_intrinsic_size(
             cross += cross_gap;
         }
     }
-    match direction {
+    Ok(match direction {
         FlexDirection::Row => Size::new(max_main, cross),
         FlexDirection::Column => Size::new(cross, max_main),
-    }
+    })
 }
 
 /// A horizontal IFC whose line breaks are a function of cached child border
@@ -1259,16 +1444,22 @@ pub(super) fn ifc_line_measure_delta_finish(
         viewport,
         child_font_px,
         nodes,
-        Some(line_strut(id, style, child_font_px, nodes)),
-    );
+        plan.writing,
+        Some(line_strut(id, style, plan.writing, child_font_px, nodes)),
+        None,
+    )?;
     let mut size = plan.size;
     // The inline size is the definite line budget. Only the block size follows
     // the lines, and this plan has no padding or border to add back.
-    size.height = content.height;
+    if plan.writing.is_vertical() {
+        size.width = content.width;
+    } else {
+        size.height = content.height;
+    }
     let mut updated = plan.clone();
     updated.size = size;
     let parent_strut: crate::inline_content::ParentLineStrut =
-        line_strut(id, style, child_font_px, nodes).into();
+        line_strut(id, style, plan.writing, child_font_px, nodes).into();
     for (child, measured) in flow.into_iter().zip(sizes) {
         let Ok(slot) = updated
             .entries
@@ -1283,6 +1474,7 @@ pub(super) fn ifc_line_measure_delta_finish(
                     child,
                     &child_style,
                     measured,
+                    plan.writing,
                     edge_base,
                     child_font_px,
                     parent_strut,
