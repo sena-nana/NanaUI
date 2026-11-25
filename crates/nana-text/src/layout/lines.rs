@@ -14,8 +14,8 @@ use crate::shape::{RunDirection, ShapedRun};
 use crate::shaping::{PARAGRAPH_SEPARATORS, ShapedParagraph, ShapedText, bidi_visual_order};
 use nana_ui_core::sort::CompactSort as _;
 use nana_ui_core::{
-    DirSpec, LineBreakSpec, TextAlignSpec, TextAutospaceSpec, TextJustifySpec, TextSpacingTrimSpec,
-    TextWrapBreak, TextWrapStyleSpec, WordBreakSpec,
+    DirSpec, HyphensSpec, LineBreakSpec, TextAlignSpec, TextAutospaceSpec, TextJustifySpec,
+    TextSpacingTrimSpec, TextWrapBreak, TextWrapStyleSpec, WordBreakSpec,
 };
 use std::ops::Range;
 
@@ -134,6 +134,7 @@ struct Cell {
     run: usize,
     glyphs: Range<usize>,
     whitespace: bool,
+    soft_hyphen: bool,
 }
 
 /// What the layout engine hands the line builder.
@@ -150,6 +151,7 @@ pub(super) struct LineInput<'a> {
     pub empty_line_height_px: f32,
     pub base_direction: RunDirection,
     pub ellipsis: Option<&'a Ellipsis>,
+    pub hyphen: Option<&'a Ellipsis>,
     /// Ruby annotations: no line breaks inside a base, and room above it.
     pub rubies: Vec<super::engine::RubyBox>,
     /// Graphemes that take an emphasis mark, in text order: room above or
@@ -223,6 +225,8 @@ struct Prepared {
     anchor_descent_px: f32,
     /// What the line decision changed on this line's cells.
     adjust: LineAdjust,
+    /// True when the line broke at a soft hyphen (`U+00AD`) and renders `-`.
+    soft_hyphen: bool,
 }
 
 /// A line already placed, and what re-placing it would have to undo.
@@ -337,7 +341,8 @@ impl<'a> Builder<'a> {
             let mut start = lo;
             for stop in stops.iter().copied().chain(std::iter::once(hi)) {
                 let trimmed = self.trim(start, stop);
-                widths.min_px = widths.min_px.max(self.width(start, trimmed));
+                let hyphen = self.hyphen_advance_for(start, stop, stop != hi);
+                widths.min_px = widths.min_px.max(self.width(start, trimmed) + hyphen);
                 start = stop;
             }
         }
@@ -408,8 +413,9 @@ impl<'a> Builder<'a> {
             // along. At a hard break the whitespace is authored content and
             // stays on the line.
             let emitted = if soft { self.trim(start, end) } else { end };
+            let soft_hyphen = soft && self.breaks_at_soft_hyphen(emitted);
             let at = self.cells[start].start;
-            let prepared = self.prepare(start..emitted);
+            let prepared = self.prepare_line(start..emitted, soft_hyphen);
             if !self.place_within_budget(prepared, cause, at) {
                 return;
             }
@@ -425,13 +431,16 @@ impl<'a> Builder<'a> {
         lo: usize,
         hi: usize,
     ) -> Vec<usize> {
+        let suppress_soft_hyphen = self.input.constraints.hyphens == HyphensSpec::None;
         match policy {
             // Nothing to scan for: the paragraph is the line.
             BreakPolicy::None => Vec::new(),
             // Every cluster boundary is a stop, so UAX #14 has nothing to add.
             BreakPolicy::Glyph => {
                 self.work.line_break_candidates += hi.saturating_sub(lo + 1);
-                let stops = (lo + 1..hi).collect();
+                let stops: Vec<usize> = (lo + 1..hi)
+                    .filter(|index| !self.cells[*index].soft_hyphen)
+                    .collect();
                 match &self.typo {
                     Some(typo) => typo.tailor(self.input.text, &self.cells, stops, lo, hi, true),
                     None => stops,
@@ -445,6 +454,7 @@ impl<'a> Builder<'a> {
                     .iter()
                     .filter_map(|offset| self.cell_at(*offset))
                     .filter(|index| *index > lo && *index < hi)
+                    .filter(|index| !(suppress_soft_hyphen && self.cells[*index - 1].soft_hyphen))
                     .filter(|index| !self.inside_ruby(*index))
                     .collect();
                 match &self.typo {
@@ -491,7 +501,7 @@ impl<'a> Builder<'a> {
                 probe += 1;
                 continue;
             }
-            let width = self.width(start, drawn);
+            let width = self.width(start, drawn) + self.hyphen_advance_for(start, stop, stop != hi);
             if width <= max_width + WIDTH_EPSILON_PX {
                 if stop == hi {
                     return (hi, false);
@@ -543,7 +553,7 @@ impl<'a> Builder<'a> {
             let first = start == lo;
             let decision = match ends.get(line) {
                 Some(&end) => {
-                    let (fit, _) = self.fit_of(start, end, first);
+                    let (fit, _) = self.fit_of(start, end, first, end != hi);
                     let fit = if matches!(fit, Fit::No) {
                         Fit::Fits { end_closed: false }
                     } else {
@@ -560,9 +570,10 @@ impl<'a> Builder<'a> {
                 end_cause
             };
             let emitted = if soft { self.trim(start, end) } else { end };
+            let soft_hyphen = soft && self.breaks_at_soft_hyphen(emitted);
             let at = self.cells[start].start;
             let adjust = self.adjust_for(start, end, soft, first, fit);
-            let prepared = self.prepare_with(start..emitted, adjust);
+            let prepared = self.prepare_with(start..emitted, adjust, soft_hyphen);
             if !self.place_within_budget(prepared, cause, at) {
                 return;
             }
@@ -572,7 +583,7 @@ impl<'a> Builder<'a> {
     }
 
     /// How the line `start..stop` fits its box, and its drawn end.
-    fn fit_of(&self, start: usize, stop: usize, first: bool) -> (Fit, usize) {
+    fn fit_of(&self, start: usize, stop: usize, first: bool, soft: bool) -> (Fit, usize) {
         let drawn = self.trim(start, stop);
         let (Some(typo), Some(max)) = (&self.typo, self.max_width_px) else {
             return (Fit::Fits { end_closed: false }, drawn);
@@ -582,7 +593,8 @@ impl<'a> Builder<'a> {
         }
         let last = drawn - 1;
         let (always, optional) = typo.end_trims(last);
-        let width = self.width(start, drawn) - typo.start_trim(start, first) - always;
+        let hyphen = self.hyphen_advance_for(start, stop, soft);
+        let width = self.width(start, drawn) + hyphen - typo.start_trim(start, first) - always;
         if width <= max + WIDTH_EPSILON_PX {
             return (Fit::Fits { end_closed: false }, drawn);
         }
@@ -599,16 +611,17 @@ impl<'a> Builder<'a> {
     }
 
     /// The width the line `start..stop` sets at once fitted as `fit`.
-    fn fitted_width(&self, start: usize, stop: usize, first: bool, fit: Fit) -> f32 {
+    fn fitted_width(&self, start: usize, stop: usize, first: bool, fit: Fit, soft: bool) -> f32 {
         let drawn = self.trim(start, stop);
+        let hyphen = self.hyphen_advance_for(start, stop, soft);
         let Some(typo) = &self.typo else {
-            return self.width(start, drawn);
+            return self.width(start, drawn) + hyphen;
         };
         if drawn == start {
             return 0.0;
         }
         let (always, optional) = typo.end_trims(drawn - 1);
-        let mut width = self.width(start, drawn) - typo.start_trim(start, first) - always;
+        let mut width = self.width(start, drawn) + hyphen - typo.start_trim(start, first) - always;
         match fit {
             Fit::Fits { end_closed: true } => width -= optional,
             Fit::Squeezed { deficit } => width -= optional + deficit,
@@ -645,7 +658,7 @@ impl<'a> Builder<'a> {
                 continue;
             }
             self.work.opportunities_considered += 1;
-            match self.fit_of(start, stop, first).0 {
+            match self.fit_of(start, stop, first, stop != hi).0 {
                 fit @ Fit::Fits { .. } => {
                     if stop == hi {
                         return (hi, false, fit);
@@ -662,7 +675,7 @@ impl<'a> Builder<'a> {
         }
         let em = self.typo.as_ref().map_or(16.0, |typo| typo.em[start]);
         let mut chosen: Option<(u64, usize, Fit)> = best.map(|(stop, fit)| {
-            let slack = max_width - self.fitted_width(start, stop, first, fit);
+            let slack = max_width - self.fitted_width(start, stop, first, fit, stop != hi);
             (Typography::raggedness(slack, em), stop, fit)
         });
         for (stop, deficit) in squeezed {
@@ -757,7 +770,9 @@ impl<'a> Builder<'a> {
             && let Some(justify) = typo.justify
             && justify != TextJustifySpec::None
         {
-            let width = self.width(start, drawn) + adjust.width_delta(drawn);
+            let width = self.width(start, drawn)
+                + self.hyphen_advance_for(start, end, soft)
+                + adjust.width_delta(drawn);
             let slack = max - width;
             if slack > WIDTH_EPSILON_PX {
                 let words = matches!(justify, TextJustifySpec::Auto | TextJustifySpec::InterWord);
@@ -834,7 +849,7 @@ impl<'a> Builder<'a> {
                     }
                     steps += 1;
                     self.work.opportunities_considered += 1;
-                    let fit = self.fit_of(start, stop, first).0;
+                    let fit = self.fit_of(start, stop, first, stop != hi).0;
                     if matches!(fit, Fit::No) {
                         break;
                     }
@@ -845,7 +860,8 @@ impl<'a> Builder<'a> {
                         }
                     } else {
                         let em = self.typo.as_ref().map_or(16.0, |typo| typo.em[start]);
-                        let slack = max_width - self.fitted_width(start, stop, first, fit);
+                        let slack =
+                            max_width - self.fitted_width(start, stop, first, fit, stop != hi);
                         match fit {
                             Fit::Squeezed { deficit } => Typography::squeeze_cost(deficit),
                             _ => Typography::raggedness(slack, em),
@@ -908,7 +924,11 @@ impl<'a> Builder<'a> {
     /// gets that glyph rather than an empty line and an endless loop.
     fn emergency(&self, start: usize, limit: usize, max_width: f32) -> usize {
         let mut end = start + 1;
-        while end < limit && self.width(start, end + 1) <= max_width + WIDTH_EPSILON_PX {
+        while end < limit
+            && self.width(start, end + 1)
+                + self.hyphen_advance_for(start, end + 1, end + 1 != limit)
+                <= max_width + WIDTH_EPSILON_PX
+        {
             end += 1;
         }
         // Whitespace alone is not a line either, however narrow the box: cut
@@ -917,6 +937,21 @@ impl<'a> Builder<'a> {
             end += 1;
         }
         end
+    }
+
+    fn breaks_at_soft_hyphen(&self, end: usize) -> bool {
+        self.input.hyphen.is_some()
+            && self.input.constraints.hyphens != HyphensSpec::None
+            && end > 0
+            && self.cells.get(end - 1).is_some_and(|cell| cell.soft_hyphen)
+    }
+
+    fn hyphen_advance_for(&self, start: usize, end: usize, soft: bool) -> f32 {
+        if soft && end > start && self.breaks_at_soft_hyphen(end) {
+            self.input.hyphen.map_or(0.0, |hyphen| hyphen.advance_px)
+        } else {
+            0.0
+        }
     }
 
     /// True when the container allows a line to break at all.
@@ -1043,9 +1078,18 @@ impl<'a> Builder<'a> {
 
     /// Measures a line without placing it.
     fn prepare(&self, cells: Range<usize>) -> Prepared {
+        self.prepare_line(cells, false)
+    }
+
+    fn prepare_line(&self, cells: Range<usize>, soft_hyphen: bool) -> Prepared {
         let pieces = self.pieces(cells.clone());
         let trimmed = self.trim(cells.start, cells.end);
-        let width_px = self.width(cells.start, trimmed);
+        let hyphen_px = if soft_hyphen {
+            self.input.hyphen.map_or(0.0, |hyphen| hyphen.advance_px)
+        } else {
+            0.0
+        };
+        let width_px = self.width(cells.start, trimmed) + hyphen_px;
         let (
             ascent_px,
             descent_px,
@@ -1067,12 +1111,13 @@ impl<'a> Builder<'a> {
             anchor_ascent_px,
             anchor_descent_px,
             adjust: LineAdjust::default(),
+            soft_hyphen,
         }
     }
 
-    /// [`Self::prepare`] with what the line decision changed on the line.
-    fn prepare_with(&self, cells: Range<usize>, adjust: LineAdjust) -> Prepared {
-        let mut prepared = self.prepare(cells.clone());
+    /// [`Self::prepare_line`] with what the line decision changed on the line.
+    fn prepare_with(&self, cells: Range<usize>, adjust: LineAdjust, soft_hyphen: bool) -> Prepared {
+        let mut prepared = self.prepare_line(cells.clone(), soft_hyphen);
         let trimmed = self.trim(cells.start, cells.end);
         prepared.width_px += adjust.width_delta(trimmed);
         prepared.adjust = adjust;
@@ -1126,6 +1171,7 @@ impl<'a> Builder<'a> {
             anchor_ascent_px,
             anchor_descent_px,
             adjust,
+            soft_hyphen,
         } = prepared;
         let source = match cells.end.checked_sub(1) {
             Some(last) if cells.start < cells.end => {
@@ -1135,6 +1181,7 @@ impl<'a> Builder<'a> {
         };
 
         let ellipsis = self.input.ellipsis.filter(|_| with_ellipsis);
+        let hyphen = self.input.hyphen.filter(|_| !with_ellipsis && soft_hyphen);
         let mut ordered = self.visual_order(&pieces);
         if let Some(ellipsis) = ellipsis {
             width_px += ellipsis.advance_px;
@@ -1164,11 +1211,15 @@ impl<'a> Builder<'a> {
         } else {
             origin_x_px
         };
-        // The ellipsis marks the visual end of the line, which is the left edge
-        // in an RTL paragraph.
+        // The ellipsis or break hyphen marks the visual end of the line, which
+        // is the left edge in an RTL paragraph.
         let mut placed: Vec<ShapedRun> = Vec::with_capacity(ordered.len() + 1);
         let ellipsis_runs = ellipsis.map(|ellipsis| ellipsis.placed(source.end));
-        if let Some(runs) = &ellipsis_runs
+        let trailing_runs = ellipsis_runs
+            .as_ref()
+            .cloned()
+            .or_else(|| hyphen.map(|hyphen| hyphen.placed(source.end)));
+        if let Some(runs) = &trailing_runs
             && self.input.base_direction.is_rtl()
         {
             placed.extend(runs.iter().cloned());
@@ -1178,7 +1229,7 @@ impl<'a> Builder<'a> {
                 .drain(..)
                 .map(|piece| self.placed_run(&piece, &adjust)),
         );
-        if let Some(runs) = &ellipsis_runs
+        if let Some(runs) = &trailing_runs
             && !self.input.base_direction.is_rtl()
         {
             placed.extend(runs.iter().cloned());
@@ -1692,6 +1743,7 @@ fn cells(text: &str, runs: &[ShapedRun]) -> Vec<Cell> {
                 run: index,
                 glyphs: offset..offset + 1,
                 whitespace: false,
+                soft_hyphen: false,
             });
         }
         if run.direction.is_rtl() {
@@ -1699,9 +1751,10 @@ fn cells(text: &str, runs: &[ShapedRun]) -> Vec<Cell> {
         }
     }
     for cell in &mut cells {
-        cell.whitespace = text
-            .get(cell.start..cell.end)
-            .is_some_and(|slice| !slice.is_empty() && slice.chars().all(char::is_whitespace));
+        let slice = text.get(cell.start..cell.end);
+        cell.whitespace =
+            slice.is_some_and(|slice| !slice.is_empty() && slice.chars().all(char::is_whitespace));
+        cell.soft_hyphen = slice == Some("\u{00AD}");
     }
     cells
 }

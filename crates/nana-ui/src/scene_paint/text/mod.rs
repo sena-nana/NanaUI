@@ -1546,6 +1546,7 @@ impl TextPipeline {
             wrap: wrap.then_some(wrap_break),
             word_break: opentype.word_break,
             line_break: opentype.line_break,
+            hyphens: opentype.hyphens,
             max_lines,
             ellipsis,
             // What the Runtime measured this node with. `white-space: normal`

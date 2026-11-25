@@ -480,6 +480,7 @@ layout_style_fields! {
         font_variation_settings => text_ext_font_variation_settings: FONT,
         font_kerning => text_ext_font_kerning: FONT,
         line_break => text_ext_line_break: TEXT_LAYOUT,
+        hyphens => text_ext_hyphens: TEXT_LAYOUT,
         text_typography => text_ext_text_typography: TEXT_LAYOUT,
         unsupported_font_variation => text_ext_unsupported_font_variation: FONT,
         unsupported_writing_mode => text_ext_unsupported_writing_mode: WRITING,

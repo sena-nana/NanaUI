@@ -24,8 +24,8 @@ use std::sync::Arc;
 use nana_ui_core::DrawerSide;
 use nana_ui_core::{
     BackgroundImage, BorderImageSpec, ClipPath, ColorFilter, DirSpec, FontFeatureSetting,
-    FontKerningSpec, FontVariationSetting, Icon, LineBreakSpec, LineHeightSpec, MixBlendMode,
-    WordBreakSpec, WritingModeSpec, icon_y_on_text_glyph_center,
+    FontKerningSpec, FontVariationSetting, HyphensSpec, Icon, LineBreakSpec, LineHeightSpec,
+    MixBlendMode, WordBreakSpec, WritingModeSpec, icon_y_on_text_glyph_center,
 };
 use nana_ui_runtime::scene_contract::{
     ComponentElevation, ComponentTextRegion, ExtractedMove, ExtractedNode,

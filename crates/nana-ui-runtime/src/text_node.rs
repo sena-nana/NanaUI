@@ -788,6 +788,7 @@ pub(crate) fn classify_computed_style_change(
     if previous.line_height != next.line_height
         || previous.word_break != next.word_break
         || previous.line_break != next.line_break
+        || previous.hyphens != next.hyphens
         || previous.text_typography != next.text_typography
         || previous.writing_mode != next.writing_mode
         || previous.text_emphasis.style != next.text_emphasis.style
@@ -882,6 +883,7 @@ pub(crate) fn nana_text_constraints(
         wrap: constraints.wrap.then_some(constraints.wrap_break),
         word_break: style.word_break,
         line_break: style.line_break,
+        hyphens: style.hyphens,
         max_lines: constraints.max_lines,
         ellipsis: constraints.ellipsis,
         preserve_lines: constraints.preserve_lines,

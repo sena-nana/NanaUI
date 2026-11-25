@@ -103,6 +103,106 @@ pub fn rasterize_document_capped_with_fonts(
     )
 }
 
+/// OpenType `SVG ` table glyph rasterization: renders `#glyph<id>` (or the
+/// whole document when `allow_root_fallback` is true) scaled by `size_px / upem`
+/// into straight RGBA8 with `(left, top, width, height)` in y-up baseline-relative
+/// raster pixels.
+pub fn rasterize_opentype_svg_glyph(
+    bytes: &[u8],
+    glyph_id: u16,
+    allow_root_fallback: bool,
+    size_px: f32,
+    upem: u16,
+    max_edge: u32,
+) -> Option<(i32, i32, RasterizedSvg)> {
+    if !size_px.is_finite() || size_px <= 0.0 || upem == 0 {
+        return None;
+    }
+    let mut options = resvg::usvg::Options::default();
+    options.image_href_resolver.resolve_string = Box::new(|_, _| None);
+    options.default_size = resvg::usvg::Size::from_wh(f32::from(upem), f32::from(upem))?;
+    let tree = resvg::usvg::Tree::from_data(bytes, &options).ok()?;
+    let target_id = format!("glyph{glyph_id}");
+    let node = tree.node_by_id(&target_id);
+    if node.is_none() && !allow_root_fallback {
+        return None;
+    }
+    let bbox = match node {
+        Some(node) => node.abs_layer_bounding_box()?.to_rect(),
+        None => tree.root().abs_bounding_box(),
+    };
+    let scale = size_px / f32::from(upem);
+    let min_x = (bbox.left() * scale).floor();
+    let min_y = (bbox.top() * scale).floor();
+    let max_x = (bbox.right() * scale).ceil();
+    let max_y = (bbox.bottom() * scale).ceil();
+    if !min_x.is_finite() || !min_y.is_finite() || !max_x.is_finite() || !max_y.is_finite() {
+        return None;
+    }
+    let width = (max_x - min_x).max(0.0) as u32;
+    let height = (max_y - min_y).max(0.0) as u32;
+    if width == 0 || height == 0 {
+        return Some((
+            0,
+            0,
+            RasterizedSvg {
+                width: 0,
+                height: 0,
+                rgba: Arc::from([]),
+            },
+        ));
+    }
+    if width > max_edge || height > max_edge {
+        return None;
+    }
+    let mut pixmap = tiny_skia::Pixmap::new(width, height)?;
+    match node {
+        Some(node) => {
+            // `resvg::render_node` pre-translates by `-bbox.xy()` in root-canvas space
+            // and renders the node without ancestor transforms (`viewBox`, parent `<g>`),
+            // so feed ancestor transforms back in and cancel its internal `-bbox.xy()`.
+            let parent_transform = match node {
+                resvg::usvg::Node::Group(group) => group
+                    .abs_transform()
+                    .pre_concat(group.transform().invert().unwrap_or_default()),
+                resvg::usvg::Node::Path(path) => path.abs_transform(),
+                resvg::usvg::Node::Image(image) => image.abs_transform(),
+                resvg::usvg::Node::Text(text) => text
+                    .flattened()
+                    .abs_transform()
+                    .pre_concat(text.flattened().transform().invert().unwrap_or_default()),
+            };
+            let transform = tiny_skia::Transform::from_row(scale, 0.0, 0.0, scale, -min_x, -min_y)
+                .pre_concat(parent_transform)
+                .pre_translate(bbox.x(), bbox.y());
+            resvg::render_node(node, transform, &mut pixmap.as_mut())?;
+        }
+        None => {
+            let transform = tiny_skia::Transform::from_row(scale, 0.0, 0.0, scale, -min_x, -min_y);
+            resvg::render(&tree, transform, &mut pixmap.as_mut());
+        }
+    }
+    let mut rgba = pixmap.data().to_vec();
+    for pixel in rgba.as_chunks_mut::<4>().0 {
+        let a = pixel[3] as u16;
+        if a > 0 && a < 255 {
+            for channel in &mut pixel[..3] {
+                let scaled = (*channel as u16).saturating_mul(255).saturating_add(a / 2);
+                *channel = scaled.checked_div(a).unwrap_or(255).min(255) as u8;
+            }
+        }
+    }
+    Some((
+        min_x as i32,
+        -(min_y as i32),
+        RasterizedSvg {
+            width,
+            height,
+            rgba: rgba.into(),
+        },
+    ))
+}
+
 enum Source<'a> {
     Str(&'a str),
     Bytes(&'a [u8]),

@@ -29,8 +29,9 @@ use crate::id::TextRevision;
 use crate::shaping::ShapedText;
 use crate::style::TextKind;
 use nana_ui_core::{
-    DirSpec, LineBreakSpec, TextAlignSpec, TextAutospaceSpec, TextJustifySpec, TextOrientationSpec,
-    TextSpacingTrimSpec, TextWrapBreak, TextWrapStyleSpec, WordBreakSpec, WritingModeSpec,
+    DirSpec, HyphensSpec, LineBreakSpec, TextAlignSpec, TextAutospaceSpec, TextJustifySpec,
+    TextOrientationSpec, TextSpacingTrimSpec, TextWrapBreak, TextWrapStyleSpec, WordBreakSpec,
+    WritingModeSpec,
 };
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -47,6 +48,7 @@ struct ConstraintsKey {
     wrap: u8,
     word_break: u8,
     line_break: u8,
+    hyphens: u8,
     max_lines: Option<u16>,
     ellipsis: bool,
     preserve_lines: bool,
@@ -73,6 +75,7 @@ impl ConstraintsKey {
             wrap,
             word_break,
             line_break,
+            hyphens,
             max_lines,
             ellipsis,
             preserve_lines,
@@ -107,6 +110,11 @@ impl ConstraintsKey {
                 LineBreakSpec::Anywhere => 2,
                 LineBreakSpec::Strict => 3,
                 LineBreakSpec::Loose => 4,
+            },
+            hyphens: match hyphens {
+                HyphensSpec::None => 0,
+                HyphensSpec::Manual => 1,
+                HyphensSpec::Auto => 2,
             },
             max_lines,
             ellipsis,
@@ -167,6 +175,8 @@ pub(crate) struct LayoutKey {
     /// The shaped ellipsis this layout may truncate with. A different ellipsis
     /// is a different layout, and no ellipsis at all is a third.
     ellipsis: Option<Arc<ShapedText>>,
+    /// The shaped `-` inserted when a line breaks at a soft hyphen (`U+00AD`).
+    hyphen: Option<Arc<ShapedText>>,
     kind: TextKind,
     constraints: ConstraintsKey,
     /// Ascent, descent, line gap and line box height of the strut.
@@ -204,6 +214,7 @@ impl LayoutKey {
         shaped: &Arc<ShapedText>,
         revision: TextRevision,
         ellipsis: Option<&Arc<ShapedText>>,
+        hyphen: Option<&Arc<ShapedText>>,
         kind: TextKind,
         constraints: &TextConstraints,
         strut: Option<LineStrut>,
@@ -221,6 +232,7 @@ impl LayoutKey {
             paragraph_alignments: paragraph_alignments.to_vec(),
             revision,
             ellipsis: ellipsis.map(Arc::clone),
+            hyphen: hyphen.map(Arc::clone),
             kind,
             constraints: ConstraintsKey::new(constraints),
             strut: strut.map(|strut| {
@@ -305,6 +317,11 @@ impl PartialEq for LayoutKey {
                 (Some(left), Some(right)) => Arc::ptr_eq(left, right),
                 _ => false,
             }
+            && match (&self.hyphen, &other.hyphen) {
+                (None, None) => true,
+                (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+                _ => false,
+            }
             && self.kind == other.kind
             && self.constraints == other.constraints
             && self.strut == other.strut
@@ -341,6 +358,10 @@ impl Hash for LayoutKey {
         self.shaped_identity().hash(state);
         self.revision.hash(state);
         self.ellipsis
+            .as_ref()
+            .map(|shaped| Arc::as_ptr(shaped) as *const u8 as usize)
+            .hash(state);
+        self.hyphen
             .as_ref()
             .map(|shaped| Arc::as_ptr(shaped) as *const u8 as usize)
             .hash(state);

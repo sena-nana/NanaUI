@@ -48,7 +48,7 @@ snippet-transforms = ["nana-ui-runtime/snippet-transforms"]
 # their own geometry and do not need it. Without it an SVG image fails to
 # decode like any unreadable file, and `usvg`, `resvg` and `tiny-skia`
 # (about 0.8 MiB) are not linked. Only takes effect with `gpu`.
-svg = ["dep:nana-svg-raster"]
+svg = ["dep:nana-svg-raster", "nana-text/svg"]
 bundled-fonts = ["nana-ui-core/bundled-fonts"]
 # Compatibility flags must gate real code: every entry here either maps to a
 # `cfg(feature = …)` component module or pulls a runtime feature. No-op aliases

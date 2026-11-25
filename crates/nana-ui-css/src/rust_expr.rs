@@ -19,7 +19,7 @@ use nana_ui_core::{
     ClipPath, ClipPoint, ClipShapeRadius, ColorFilter, ContainerType, ControlPadding, ControlSize,
     CssGradient, CursorSpec, DirSpec, DisplaySpec, FilterDropShadow, FlexDirection, FlexWrap,
     FontFeatureSetting, FontKerningSpec, FontVariationSetting, GradientStop, GridAutoFlow,
-    GridLine, GridRepeatAuto, GridTemplateAreas, GridTrack, GridTrackListUnsupported,
+    GridLine, GridRepeatAuto, GridTemplateAreas, GridTrack, GridTrackListUnsupported, HyphensSpec,
     ImageSampling, JustifySpec, LayoutStyle, LengthSpec, LineBreakSpec, LineHeightSpec, LineRole,
     LinearGradient, MaskImage, MaterialRef, MaterialTexture, MixBlendMode, OutlineStyle,
     OverflowSpec, OverflowWrapSpec, PaintColor, PaintMat4, PaintTransform, PointerEventsSpec,
@@ -276,6 +276,7 @@ impl EmitRust for VerticalAlignSpec {
 }
 impl_unit_enum!(FontKerningSpec, "FontKerningSpec" => { Auto, Normal, None });
 impl_unit_enum!(LineBreakSpec, "LineBreakSpec" => { Auto, Normal, Anywhere, Strict, Loose });
+impl_unit_enum!(HyphensSpec, "HyphensSpec" => { None, Manual, Auto });
 impl_unit_enum!(TextSpacingTrimSpec, "TextSpacingTrimSpec" => { SpaceAll, Normal, TrimBoth, Auto });
 impl_unit_enum!(TextAutospaceSpec, "TextAutospaceSpec" => { NoAutospace, Normal });
 impl_unit_enum!(TextJustifySpec, "TextJustifySpec" => { Auto, None, InterWord, InterCharacter });
@@ -1546,6 +1547,7 @@ pub(crate) fn emit_patch_stmt(layout: &LayoutStyle, path: &str, m: &str, out: &m
             "font_variation_settings" => emit_set(&setter, &te.font_variation_settings, m, out),
             "font_kerning" => emit_set(&setter, &te.font_kerning, m, out),
             "line_break" => emit_set(&setter, &te.line_break, m, out),
+            "hyphens" => emit_set(&setter, &te.hyphens, m, out),
             "unsupported_font_variation" => {
                 emit_set(&setter, &te.unsupported_font_variation, m, out)
             }

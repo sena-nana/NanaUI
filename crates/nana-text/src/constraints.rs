@@ -2,8 +2,9 @@
 //! policy — see [`TextScale`] for where the device scale stops.
 
 use nana_ui_core::{
-    DirSpec, LineBreakSpec, TextAlignSpec, TextAutospaceSpec, TextJustifySpec, TextOrientationSpec,
-    TextSpacingTrimSpec, TextWrapBreak, TextWrapStyleSpec, WordBreakSpec, WritingModeSpec,
+    DirSpec, HyphensSpec, LineBreakSpec, TextAlignSpec, TextAutospaceSpec, TextJustifySpec,
+    TextOrientationSpec, TextSpacingTrimSpec, TextWrapBreak, TextWrapStyleSpec, WordBreakSpec,
+    WritingModeSpec,
 };
 use serde::{Deserialize, Serialize};
 
@@ -45,6 +46,8 @@ pub struct TextConstraints {
     pub word_break: WordBreakSpec,
     #[serde(default)]
     pub line_break: LineBreakSpec,
+    #[serde(default)]
+    pub hyphens: HyphensSpec,
     #[serde(default)]
     pub max_lines: Option<u16>,
     #[serde(default)]
@@ -101,6 +104,7 @@ impl Default for TextConstraints {
             wrap: None,
             word_break: WordBreakSpec::default(),
             line_break: LineBreakSpec::default(),
+            hyphens: HyphensSpec::default(),
             max_lines: None,
             ellipsis: false,
             preserve_lines: false,

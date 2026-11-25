@@ -89,8 +89,8 @@ pub use nana_ui_core::box_layout::{
     WritingModeSpec, resolve_grid_column_widths, resolve_grid_track_sizes,
 };
 pub use nana_ui_core::{
-    FontFeatureSetting, FontKerningSpec, FontVariationSetting, LineBreakSpec, TextAutospaceSpec,
-    TextJustifySpec, TextSpacingTrimSpec, TextWrapStyleSpec, WordBreakSpec,
+    FontFeatureSetting, FontKerningSpec, FontVariationSetting, HyphensSpec, LineBreakSpec,
+    TextAutospaceSpec, TextJustifySpec, TextSpacingTrimSpec, TextWrapStyleSpec, WordBreakSpec,
 };
 
 /// CSS keyword / length parsing for Style Model layout enums.
@@ -2841,6 +2841,11 @@ impl LayoutStyleCss for LayoutStyle {
                     self.text_ext.line_break = Some(mode);
                 }
             }
+            "hyphens" => {
+                if let Some(mode) = parse_css_hyphens(val) {
+                    self.text_ext.hyphens = Some(mode);
+                }
+            }
             "color" => {
                 if let Some(pc) = resolve_css_paint_color_core(val) {
                     self.paint_colors.color = Some(pc);
@@ -5275,6 +5280,19 @@ pub fn parse_css_line_break(input: &str) -> Option<LineBreakSpec> {
         "anywhere" => Some(LineBreakSpec::Anywhere),
         "strict" => Some(LineBreakSpec::Strict),
         "loose" => Some(LineBreakSpec::Loose),
+        _ => None,
+    }
+}
+
+/// CSS `hyphens`. `manual` breaks at explicit `U+00AD` soft hyphens; `none`
+/// suppresses them; `auto` uses explicit `U+00AD` breaks when no language
+/// hyphenation dictionary is installed.
+pub fn parse_css_hyphens(input: &str) -> Option<HyphensSpec> {
+    let expanded = expand_css_var_fallback(input.trim());
+    match expanded.trim().to_ascii_lowercase().as_str() {
+        "none" => Some(HyphensSpec::None),
+        "manual" | "initial" => Some(HyphensSpec::Manual),
+        "auto" => Some(HyphensSpec::Auto),
         _ => None,
     }
 }
@@ -9537,5 +9555,17 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         assert!(!layout.text_ext.unsupported_font_variation);
         layout.apply_css_text("font-variation-settings: nope", None, None);
         assert!(layout.text_ext.unsupported_font_variation);
+    }
+
+    #[test]
+    fn hyphens_css_property_parses_none_manual_auto() {
+        let mut layout = LayoutStyle::default();
+        assert_eq!(layout.text_ext.hyphens, None);
+        layout.apply_css_text("hyphens: none", None, None);
+        assert_eq!(layout.text_ext.hyphens, Some(HyphensSpec::None));
+        layout.apply_css_text("hyphens: auto", None, None);
+        assert_eq!(layout.text_ext.hyphens, Some(HyphensSpec::Auto));
+        layout.apply_css_text("hyphens: manual", None, None);
+        assert_eq!(layout.text_ext.hyphens, Some(HyphensSpec::Manual));
     }
 }

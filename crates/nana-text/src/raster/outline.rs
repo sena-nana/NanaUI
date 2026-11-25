@@ -8,9 +8,13 @@ use std::sync::Arc;
 
 use nana_ui_core::sort::CompactSort as _;
 
+#[cfg(feature = "svg")]
+use crate::font::read_svg_glyph;
 use crate::font::{
-    AxisCoord, FaceOutlineSink, FaceScalerCache, FontInstanceKey, RawBitmapPayload,
-    read_color_bitmap, read_raster_caps, scale_color_outline, scale_plain_outline,
+    AxisCoord, ColorBrush, ColorCompositeMode, ColorExtend, ColorGlyphOutline, ColorOutlineVerb,
+    ColorPaintOp, ColorPaintRecording, ColorStopPaint, ColorTransform, FaceOutlineSink,
+    FaceScalerCache, FontInstanceKey, RawBitmapPayload, read_color_bitmap, read_raster_caps,
+    record_color_v1_glyph, scale_color_outline, scale_plain_outline,
 };
 
 use super::{
@@ -444,7 +448,8 @@ impl OutlineRasterizer {
             embolden += f32::from(spread_q) * 0.5;
         }
         // Colour sources take no embolden.
-        let plain = key.mode.is_derived() || !(caps.has_color_outlines || caps.has_color_bitmaps);
+        let plain = key.mode.is_derived()
+            || !(caps.has_color_outlines || caps.has_color_bitmaps || caps.has_svg);
         let how = Outlining {
             format,
             offset,
@@ -478,6 +483,7 @@ impl OutlineRasterizer {
                 caps.has_outlines,
                 caps.has_color_outlines,
                 caps.has_color_bitmaps,
+                caps.has_svg,
                 &how,
                 &mut self.scaler_cache,
                 &mut self.outline,
@@ -531,6 +537,7 @@ fn drawn(
     has_outlines: bool,
     has_color_outlines: bool,
     has_color_bitmaps: bool,
+    has_svg: bool,
     how: &Outlining,
     cache: &mut FaceScalerCache,
     outline: &mut ScaledOutline,
@@ -538,6 +545,11 @@ fn drawn(
 ) -> Option<GlyphImage> {
     if !how.mode.is_derived() {
         if has_color_outlines {
+            if let Some(recording) = record_color_v1_glyph(data, index, coords, glyph_id)
+                && let Some(image) = render_color_v1(&recording, size_px, how, scratch)
+            {
+                return Some(image);
+            }
             outline.clear();
             if scale_color_outline(
                 data, index, font_key, coords, size_px, hint, glyph_id, cache, outline,
@@ -546,6 +558,11 @@ fn drawn(
                 return Some(image);
             }
         }
+        #[cfg(feature = "svg")]
+        if has_svg && let Some(image) = color_svg_glyph(data, index, size_px, glyph_id) {
+            return Some(image);
+        }
+        let _ = has_svg;
         if has_color_bitmaps && let Some(image) = color_bitmap(data, index, size_px, glyph_id) {
             return Some(image);
         }
@@ -924,6 +941,909 @@ fn color_layers(
     })
 }
 
+const MAX_COLR_V1_EDGE: u32 = 4096;
+
+#[cfg(feature = "svg")]
+fn color_svg_glyph(data: &[u8], index: u32, size_px: f32, glyph_id: u16) -> Option<GlyphImage> {
+    let raw = read_svg_glyph(data, index, glyph_id)?;
+    let (left, top, svg) = nana_svg_raster::rasterize_opentype_svg_glyph(
+        raw.document,
+        glyph_id,
+        raw.allow_root_fallback,
+        size_px,
+        raw.upem,
+        MAX_COLR_V1_EDGE,
+    )?;
+    Some(GlyphImage {
+        format: GlyphImageFormat::ColorRgba,
+        width: svg.width,
+        height: svg.height,
+        left,
+        top,
+        data: svg.rgba.to_vec(),
+    })
+}
+
+fn transform_mul(a: ColorTransform, b: ColorTransform) -> ColorTransform {
+    ColorTransform {
+        xx: a.xx * b.xx + a.xy * b.yx,
+        yx: a.yx * b.xx + a.yy * b.yx,
+        xy: a.xx * b.xy + a.xy * b.yy,
+        yy: a.yx * b.xy + a.yy * b.yy,
+        dx: a.xx * b.dx + a.xy * b.dy + a.dx,
+        dy: a.yx * b.dx + a.yy * b.dy + a.dy,
+    }
+}
+
+fn transform_point(t: ColorTransform, p: [f32; 2]) -> [f32; 2] {
+    [
+        t.xx * p[0] + t.xy * p[1] + t.dx,
+        t.yx * p[0] + t.yy * p[1] + t.dy,
+    ]
+}
+
+fn transform_invert(t: ColorTransform) -> Option<ColorTransform> {
+    let det = t.xx * t.yy - t.xy * t.yx;
+    if !det.is_finite() || det.abs() <= 1e-18 {
+        return None;
+    }
+    let inv_det = 1.0 / det;
+    let xx = t.yy * inv_det;
+    let xy = -t.xy * inv_det;
+    let yx = -t.yx * inv_det;
+    let yy = t.xx * inv_det;
+    Some(ColorTransform {
+        xx,
+        yx,
+        xy,
+        yy,
+        dx: -(xx * t.dx + xy * t.dy),
+        dy: -(yx * t.dx + yy * t.dy),
+    })
+}
+
+fn root_colr_transform(upem: u16, size_px: f32, how: &Outlining) -> ColorTransform {
+    let scale = size_px / f32::from(upem.max(1));
+    let mut t = ColorTransform {
+        xx: scale,
+        yx: 0.0,
+        xy: 0.0,
+        yy: scale,
+        dx: 0.0,
+        dy: 0.0,
+    };
+    if let Some(extra) = how.transform {
+        // `zeno::Transform` stores `xy`/`yx` transposed relative to `ColorTransform`.
+        let m = ColorTransform {
+            xx: extra.xx,
+            xy: extra.yx,
+            yx: extra.xy,
+            yy: extra.yy,
+            dx: extra.x,
+            dy: extra.y,
+        };
+        t = transform_mul(m, t);
+    }
+    ColorTransform {
+        dx: t.dx + how.offset.x,
+        dy: t.dy + how.offset.y,
+        ..t
+    }
+}
+
+fn transformed_outline_into(
+    outline: &ColorGlyphOutline,
+    transform: ColorTransform,
+    points: &mut Vec<zeno::Point>,
+    verbs: &mut Vec<zeno::Verb>,
+) {
+    points.clear();
+    verbs.clear();
+    points.extend(outline.points.iter().map(|&p| {
+        let q = transform_point(transform, p);
+        zeno::Point::new(q[0], q[1])
+    }));
+    verbs.extend(outline.verbs.iter().map(|verb| match verb {
+        ColorOutlineVerb::MoveTo => zeno::Verb::MoveTo,
+        ColorOutlineVerb::LineTo => zeno::Verb::LineTo,
+        ColorOutlineVerb::QuadTo => zeno::Verb::QuadTo,
+        ColorOutlineVerb::CurveTo => zeno::Verb::CurveTo,
+        ColorOutlineVerb::Close => zeno::Verb::Close,
+    }));
+}
+
+fn transformed_box_into(
+    rect: [f32; 4],
+    transform: ColorTransform,
+    points: &mut Vec<zeno::Point>,
+    verbs: &mut Vec<zeno::Verb>,
+) {
+    points.clear();
+    verbs.clear();
+    let corners = [
+        [rect[0], rect[1]],
+        [rect[2], rect[1]],
+        [rect[2], rect[3]],
+        [rect[0], rect[3]],
+    ];
+    for c in corners {
+        let q = transform_point(transform, c);
+        points.push(zeno::Point::new(q[0], q[1]));
+    }
+    verbs.extend_from_slice(&[
+        zeno::Verb::MoveTo,
+        zeno::Verb::LineTo,
+        zeno::Verb::LineTo,
+        zeno::Verb::LineTo,
+        zeno::Verb::Close,
+    ]);
+}
+
+#[derive(Clone, Copy)]
+struct RectBounds {
+    min_x: f32,
+    min_y: f32,
+    max_x: f32,
+    max_y: f32,
+}
+
+impl RectBounds {
+    const EMPTY: Self = Self {
+        min_x: f32::INFINITY,
+        min_y: f32::INFINITY,
+        max_x: f32::NEG_INFINITY,
+        max_y: f32::NEG_INFINITY,
+    };
+
+    fn is_empty(self) -> bool {
+        !(self.min_x < self.max_x && self.min_y < self.max_y)
+    }
+
+    fn union(self, other: Self) -> Self {
+        if other.is_empty() {
+            return self;
+        }
+        if self.is_empty() {
+            return other;
+        }
+        Self {
+            min_x: self.min_x.min(other.min_x),
+            min_y: self.min_y.min(other.min_y),
+            max_x: self.max_x.max(other.max_x),
+            max_y: self.max_y.max(other.max_y),
+        }
+    }
+
+    fn intersect(self, other: Self) -> Self {
+        Self {
+            min_x: self.min_x.max(other.min_x),
+            min_y: self.min_y.max(other.min_y),
+            max_x: self.max_x.min(other.max_x),
+            max_y: self.max_y.min(other.max_y),
+        }
+    }
+
+    fn from_points(points: &[zeno::Point]) -> Self {
+        let mut out = Self::EMPTY;
+        for p in points {
+            out.min_x = out.min_x.min(p.x);
+            out.min_y = out.min_y.min(p.y);
+            out.max_x = out.max_x.max(p.x);
+            out.max_y = out.max_y.max(p.y);
+        }
+        out
+    }
+}
+
+fn compute_colr_v1_bounds(recording: &ColorPaintRecording, root: ColorTransform) -> RectBounds {
+    let mut transforms = vec![root];
+    let mut clip_stack: Vec<RectBounds> = Vec::new();
+    let mut total = RectBounds::EMPTY;
+    let mut scratch_pts = Vec::new();
+    let mut scratch_verbs = Vec::new();
+
+    for op in &recording.ops {
+        let cur = *transforms.last().unwrap_or(&root);
+        match op {
+            ColorPaintOp::PushTransform(t) => transforms.push(transform_mul(cur, *t)),
+            ColorPaintOp::PopTransform => {
+                if transforms.len() > 1 {
+                    transforms.pop();
+                }
+            }
+            ColorPaintOp::PushClipGlyph(idx) => {
+                let mut bounds = recording.outlines.get(*idx).map_or(RectBounds::EMPTY, |o| {
+                    transformed_outline_into(o, cur, &mut scratch_pts, &mut scratch_verbs);
+                    RectBounds::from_points(&scratch_pts)
+                });
+                if let Some(&parent) = clip_stack.last() {
+                    bounds = bounds.intersect(parent);
+                }
+                clip_stack.push(bounds);
+            }
+            ColorPaintOp::PushClipBox(rect) => {
+                transformed_box_into(*rect, cur, &mut scratch_pts, &mut scratch_verbs);
+                let mut bounds = RectBounds::from_points(&scratch_pts);
+                if let Some(&parent) = clip_stack.last() {
+                    bounds = bounds.intersect(parent);
+                }
+                clip_stack.push(bounds);
+            }
+            ColorPaintOp::PopClip => {
+                clip_stack.pop();
+            }
+            ColorPaintOp::Fill(_) => {
+                if let Some(&clip) = clip_stack.last() {
+                    total = total.union(clip);
+                }
+            }
+            ColorPaintOp::PushLayer | ColorPaintOp::PopLayer(_) => {}
+        }
+    }
+    total
+}
+
+struct ClipMask {
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    alpha: Vec<u8>,
+}
+
+impl ClipMask {
+    fn empty() -> Self {
+        Self {
+            x0: 0,
+            y0: 0,
+            x1: 0,
+            y1: 0,
+            alpha: Vec::new(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.x0 >= self.x1 || self.y0 >= self.y1
+    }
+
+    fn coverage_at(&self, x: i32, y: i32) -> u8 {
+        if x < self.x0 || x >= self.x1 || y < self.y0 || y >= self.y1 {
+            return 0;
+        }
+        let w = (self.x1 - self.x0) as usize;
+        let idx = (y - self.y0) as usize * w + (x - self.x0) as usize;
+        self.alpha[idx]
+    }
+}
+
+fn rasterize_clip_mask(
+    points: &[zeno::Point],
+    verbs: &[zeno::Verb],
+    surf_left: i32,
+    surf_top: i32,
+    surf_w: u32,
+    surf_h: u32,
+    parent: Option<&ClipMask>,
+    scratch: &mut zeno::Scratch,
+    coverage_buf: &mut Vec<u8>,
+) -> ClipMask {
+    if points.is_empty() || verbs.is_empty() || parent.is_some_and(ClipMask::is_empty) {
+        return ClipMask::empty();
+    }
+    coverage_buf.clear();
+    let placement = zeno::Mask::with_scratch((points, verbs), scratch)
+        .origin(zeno::Origin::BottomLeft)
+        .inspect(|format, width, height| coverage_buf.resize(format.buffer_size(width, height), 0))
+        .render_into(&mut coverage_buf[..], None);
+    if placement.width == 0 || placement.height == 0 {
+        return ClipMask::empty();
+    }
+    let rel_x = placement.left - surf_left;
+    let rel_y = surf_top - placement.top;
+    let mut x0 = rel_x.max(0);
+    let mut y0 = rel_y.max(0);
+    let mut x1 = (rel_x + placement.width as i32).min(surf_w as i32);
+    let mut y1 = (rel_y + placement.height as i32).min(surf_h as i32);
+    if let Some(p) = parent {
+        x0 = x0.max(p.x0);
+        y0 = y0.max(p.y0);
+        x1 = x1.min(p.x1);
+        y1 = y1.min(p.y1);
+    }
+    if x0 >= x1 || y0 >= y1 {
+        return ClipMask::empty();
+    }
+    let w = (x1 - x0) as usize;
+    let h = (y1 - y0) as usize;
+    let mut alpha = vec![0u8; w * h];
+    let pw = placement.width as usize;
+    for row in 0..h {
+        let sy = (y0 + row as i32 - rel_y) as usize;
+        let dst_row = &mut alpha[row * w..(row + 1) * w];
+        let src_row = &coverage_buf[sy * pw..sy * pw + pw];
+        for col in 0..w {
+            let sx = (x0 + col as i32 - rel_x) as usize;
+            let cov = src_row[sx];
+            dst_row[col] = match parent {
+                Some(p) => {
+                    ((u32::from(cov) * u32::from(p.coverage_at(x0 + col as i32, y0 + row as i32))
+                        + 127)
+                        / 255) as u8
+                }
+                None => cov,
+            };
+        }
+    }
+    ClipMask {
+        x0,
+        y0,
+        x1,
+        y1,
+        alpha,
+    }
+}
+
+fn premul_rgba(color: Option<[u8; 4]>, extra_alpha: f32) -> [f32; 4] {
+    let base = color.unwrap_or(LAYER_FOREGROUND);
+    let a = (f32::from(base[3]) / 255.0 * extra_alpha).clamp(0.0, 1.0);
+    [
+        f32::from(base[0]) / 255.0 * a,
+        f32::from(base[1]) / 255.0 * a,
+        f32::from(base[2]) / 255.0 * a,
+        a,
+    ]
+}
+
+fn apply_extend(t: f32, extend: ColorExtend) -> f32 {
+    match extend {
+        ColorExtend::Pad => t.clamp(0.0, 1.0),
+        ColorExtend::Repeat => t.rem_euclid(1.0),
+        ColorExtend::Reflect => {
+            let u = t.rem_euclid(2.0);
+            if u > 1.0 { 2.0 - u } else { u }
+        }
+    }
+}
+
+fn sample_stops(stops: &[ColorStopPaint], t: f32, extend: ColorExtend) -> [f32; 4] {
+    if stops.is_empty() {
+        return [0.0; 4];
+    }
+    if stops.len() == 1 {
+        return premul_rgba(stops[0].color, stops[0].alpha);
+    }
+    let u = apply_extend(t, extend);
+    if u <= stops[0].offset {
+        return premul_rgba(stops[0].color, stops[0].alpha);
+    }
+    let last = stops.len() - 1;
+    if u >= stops[last].offset {
+        return premul_rgba(stops[last].color, stops[last].alpha);
+    }
+    for pair in stops.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        if u <= b.offset {
+            let span = b.offset - a.offset;
+            let frac = if span > 1e-6 {
+                ((u - a.offset) / span).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let ca = premul_rgba(a.color, a.alpha);
+            let cb = premul_rgba(b.color, b.alpha);
+            return [
+                ca[0] + (cb[0] - ca[0]) * frac,
+                ca[1] + (cb[1] - ca[1]) * frac,
+                ca[2] + (cb[2] - ca[2]) * frac,
+                ca[3] + (cb[3] - ca[3]) * frac,
+            ];
+        }
+    }
+    premul_rgba(stops[last].color, stops[last].alpha)
+}
+
+fn eval_brush(brush: &ColorBrush, p: [f32; 2]) -> [f32; 4] {
+    match brush {
+        ColorBrush::Solid { color, alpha } => premul_rgba(*color, *alpha),
+        ColorBrush::LinearGradient {
+            p0,
+            p1,
+            stops,
+            extend,
+        } => {
+            let dx = p1[0] - p0[0];
+            let dy = p1[1] - p0[1];
+            let len_sq = dx * dx + dy * dy;
+            if len_sq <= 1e-12 {
+                return stops
+                    .first()
+                    .map_or([0.0; 4], |s| premul_rgba(s.color, s.alpha));
+            }
+            let t = ((p[0] - p0[0]) * dx + (p[1] - p0[1]) * dy) / len_sq;
+            sample_stops(stops, t, *extend)
+        }
+        ColorBrush::RadialGradient {
+            c0,
+            r0,
+            c1,
+            r1,
+            stops,
+            extend,
+        } => {
+            let dcx = c1[0] - c0[0];
+            let dcy = c1[1] - c0[1];
+            let dr = r1 - r0;
+            let dpx = p[0] - c0[0];
+            let dpy = p[1] - c0[1];
+            let a = dcx * dcx + dcy * dcy - dr * dr;
+            let b = dpx * dcx + dpy * dcy + r0 * dr;
+            let c = dpx * dpx + dpy * dpy - r0 * r0;
+            let t = if a.abs() <= 1e-6 {
+                if b.abs() <= 1e-6 {
+                    return [0.0; 4];
+                }
+                let t = c / (2.0 * b);
+                if r0 + t * dr < 0.0 {
+                    return [0.0; 4];
+                }
+                t
+            } else {
+                let disc = b * b - a * c;
+                if disc < 0.0 {
+                    return [0.0; 4];
+                }
+                let sqrt_disc = disc.sqrt();
+                let t1 = (b + sqrt_disc) / a;
+                let t2 = (b - sqrt_disc) / a;
+                let (t_hi, t_lo) = if t1 >= t2 { (t1, t2) } else { (t2, t1) };
+                if r0 + t_hi * dr >= 0.0 {
+                    t_hi
+                } else if r0 + t_lo * dr >= 0.0 {
+                    t_lo
+                } else {
+                    return [0.0; 4];
+                }
+            };
+            sample_stops(stops, t, *extend)
+        }
+        ColorBrush::SweepGradient {
+            c0,
+            start_angle,
+            end_angle,
+            stops,
+            extend,
+        } => {
+            let dx = p[0] - c0[0];
+            let dy = p[1] - c0[1];
+            let angle = (-dy).atan2(dx).to_degrees().rem_euclid(360.0);
+            let span = end_angle - start_angle;
+            if span.abs() <= 1e-6 {
+                return match extend {
+                    ColorExtend::Pad => {
+                        if angle < *start_angle {
+                            stops
+                                .first()
+                                .map_or([0.0; 4], |s| premul_rgba(s.color, s.alpha))
+                        } else {
+                            stops
+                                .last()
+                                .map_or([0.0; 4], |s| premul_rgba(s.color, s.alpha))
+                        }
+                    }
+                    _ => [0.0; 4],
+                };
+            }
+            let t = (angle - start_angle) / span;
+            sample_stops(stops, t, *extend)
+        }
+    }
+}
+
+fn src_over(dst: [f32; 4], src: [f32; 4]) -> [f32; 4] {
+    let inv = 1.0 - src[3];
+    [
+        src[0] + dst[0] * inv,
+        src[1] + dst[1] * inv,
+        src[2] + dst[2] * inv,
+        src[3] + dst[3] * inv,
+    ]
+}
+
+fn lum(c: [f32; 3]) -> f32 {
+    0.3 * c[0] + 0.59 * c[1] + 0.11 * c[2]
+}
+
+fn clip_color(mut c: [f32; 3]) -> [f32; 3] {
+    let l = lum(c);
+    let n = c[0].min(c[1]).min(c[2]);
+    let x = c[0].max(c[1]).max(c[2]);
+    if n < 0.0 {
+        let d = l - n;
+        if d > 1e-6 {
+            for ch in &mut c {
+                *ch = l + (*ch - l) * l / d;
+            }
+        }
+    }
+    if x > 1.0 {
+        let d = x - l;
+        if d > 1e-6 {
+            for ch in &mut c {
+                *ch = l + (*ch - l) * (1.0 - l) / d;
+            }
+        }
+    }
+    c
+}
+
+fn set_lum(c: [f32; 3], l: f32) -> [f32; 3] {
+    let d = l - lum(c);
+    clip_color([c[0] + d, c[1] + d, c[2] + d])
+}
+
+fn sat(c: [f32; 3]) -> f32 {
+    c[0].max(c[1]).max(c[2]) - c[0].min(c[1]).min(c[2])
+}
+
+fn set_sat(c: [f32; 3], s: f32) -> [f32; 3] {
+    let mut idx = [0usize, 1, 2];
+    idx.sort_by(|&i, &j| c[i].total_cmp(&c[j]));
+    let [i_min, i_mid, i_max] = idx;
+    let mut out = [0.0; 3];
+    if c[i_max] > c[i_min] {
+        out[i_mid] = ((c[i_mid] - c[i_min]) * s) / (c[i_max] - c[i_min]);
+        out[i_max] = s;
+    }
+    out
+}
+
+fn blend_channel(cb: f32, cs: f32, mode: ColorCompositeMode) -> f32 {
+    match mode {
+        ColorCompositeMode::Multiply => cb * cs,
+        ColorCompositeMode::Screen => cb + cs - cb * cs,
+        ColorCompositeMode::Overlay => blend_channel(cs, cb, ColorCompositeMode::HardLight),
+        ColorCompositeMode::Darken => cb.min(cs),
+        ColorCompositeMode::Lighten => cb.max(cs),
+        ColorCompositeMode::ColorDodge => {
+            if cb <= 0.0 {
+                0.0
+            } else if cs >= 1.0 {
+                1.0
+            } else {
+                (cb / (1.0 - cs)).min(1.0)
+            }
+        }
+        ColorCompositeMode::ColorBurn => {
+            if cb >= 1.0 {
+                1.0
+            } else if cs <= 0.0 {
+                0.0
+            } else {
+                1.0 - ((1.0 - cb) / cs).min(1.0)
+            }
+        }
+        ColorCompositeMode::HardLight => {
+            if cs <= 0.5 {
+                cb * (2.0 * cs)
+            } else {
+                let s = 2.0 * cs - 1.0;
+                cb + s - cb * s
+            }
+        }
+        ColorCompositeMode::SoftLight => {
+            if cs <= 0.5 {
+                cb - (1.0 - 2.0 * cs) * cb * (1.0 - cb)
+            } else {
+                let d = if cb <= 0.25 {
+                    ((16.0 * cb - 12.0) * cb + 4.0) * cb
+                } else {
+                    cb.sqrt()
+                };
+                cb + (2.0 * cs - 1.0) * (d - cb)
+            }
+        }
+        ColorCompositeMode::Difference => (cb - cs).abs(),
+        ColorCompositeMode::Exclusion => cb + cs - 2.0 * cb * cs,
+        _ => cs,
+    }
+}
+
+fn composite_pixel(dst: [f32; 4], src: [f32; 4], mode: ColorCompositeMode) -> [f32; 4] {
+    let sa = src[3].clamp(0.0, 1.0);
+    let da = dst[3].clamp(0.0, 1.0);
+    match mode {
+        ColorCompositeMode::Clear => [0.0; 4],
+        ColorCompositeMode::Src => src,
+        ColorCompositeMode::Dest => dst,
+        ColorCompositeMode::SrcOver => src_over(dst, src),
+        ColorCompositeMode::DestOver => [
+            dst[0] + src[0] * (1.0 - da),
+            dst[1] + src[1] * (1.0 - da),
+            dst[2] + src[2] * (1.0 - da),
+            da + sa * (1.0 - da),
+        ],
+        ColorCompositeMode::SrcIn => [src[0] * da, src[1] * da, src[2] * da, sa * da],
+        ColorCompositeMode::DestIn => [dst[0] * sa, dst[1] * sa, dst[2] * sa, da * sa],
+        ColorCompositeMode::SrcOut => [
+            src[0] * (1.0 - da),
+            src[1] * (1.0 - da),
+            src[2] * (1.0 - da),
+            sa * (1.0 - da),
+        ],
+        ColorCompositeMode::DestOut => [
+            dst[0] * (1.0 - sa),
+            dst[1] * (1.0 - sa),
+            dst[2] * (1.0 - sa),
+            da * (1.0 - sa),
+        ],
+        ColorCompositeMode::SrcAtop => [
+            src[0] * da + dst[0] * (1.0 - sa),
+            src[1] * da + dst[1] * (1.0 - sa),
+            src[2] * da + dst[2] * (1.0 - sa),
+            da,
+        ],
+        ColorCompositeMode::DestAtop => [
+            dst[0] * sa + src[0] * (1.0 - da),
+            dst[1] * sa + src[1] * (1.0 - da),
+            dst[2] * sa + src[2] * (1.0 - da),
+            sa,
+        ],
+        ColorCompositeMode::Xor => [
+            src[0] * (1.0 - da) + dst[0] * (1.0 - sa),
+            src[1] * (1.0 - da) + dst[1] * (1.0 - sa),
+            src[2] * (1.0 - da) + dst[2] * (1.0 - sa),
+            sa + da - 2.0 * sa * da,
+        ],
+        ColorCompositeMode::Plus => [
+            (src[0] + dst[0]).min(1.0),
+            (src[1] + dst[1]).min(1.0),
+            (src[2] + dst[2]).min(1.0),
+            (sa + da).min(1.0),
+        ],
+        _ => {
+            if sa <= 0.0 {
+                return dst;
+            }
+            if da <= 0.0 {
+                return src;
+            }
+            let cb = [
+                (dst[0] / da).clamp(0.0, 1.0),
+                (dst[1] / da).clamp(0.0, 1.0),
+                (dst[2] / da).clamp(0.0, 1.0),
+            ];
+            let cs = [
+                (src[0] / sa).clamp(0.0, 1.0),
+                (src[1] / sa).clamp(0.0, 1.0),
+                (src[2] / sa).clamp(0.0, 1.0),
+            ];
+            let blended = match mode {
+                ColorCompositeMode::HslHue => set_lum(set_sat(cs, sat(cb)), lum(cb)),
+                ColorCompositeMode::HslSaturation => set_lum(set_sat(cb, sat(cs)), lum(cb)),
+                ColorCompositeMode::HslColor => set_lum(cs, lum(cb)),
+                ColorCompositeMode::HslLuminosity => set_lum(cb, lum(cs)),
+                _ => [
+                    blend_channel(cb[0], cs[0], mode),
+                    blend_channel(cb[1], cs[1], mode),
+                    blend_channel(cb[2], cs[2], mode),
+                ],
+            };
+            let out_a = (sa + da - sa * da).clamp(0.0, 1.0);
+            [
+                (1.0 - sa) * dst[0] + (1.0 - da) * src[0] + sa * da * blended[0],
+                (1.0 - sa) * dst[1] + (1.0 - da) * src[1] + sa * da * blended[1],
+                (1.0 - sa) * dst[2] + (1.0 - da) * src[2] + sa * da * blended[2],
+                out_a,
+            ]
+        }
+    }
+}
+
+fn render_color_v1(
+    recording: &ColorPaintRecording,
+    size_px: f32,
+    how: &Outlining,
+    scratch: &mut zeno::Scratch,
+) -> Option<GlyphImage> {
+    if !size_px.is_finite() || size_px <= 0.0 {
+        return None;
+    }
+    let root = root_colr_transform(recording.upem, size_px, how);
+    let bounds = compute_colr_v1_bounds(recording, root);
+    if bounds.is_empty() {
+        return Some(GlyphImage {
+            format: GlyphImageFormat::ColorRgba,
+            width: 0,
+            height: 0,
+            left: 0,
+            top: 0,
+            data: Vec::new(),
+        });
+    }
+    let left = bounds.min_x.floor() as i32;
+    let bottom = bounds.min_y.floor() as i32;
+    let right = bounds.max_x.ceil() as i32;
+    let top = bounds.max_y.ceil() as i32;
+    let width = (right - left).max(0) as u32;
+    let height = (top - bottom).max(0) as u32;
+    if width == 0 || height == 0 {
+        return Some(GlyphImage {
+            format: GlyphImageFormat::ColorRgba,
+            width: 0,
+            height: 0,
+            left: 0,
+            top: 0,
+            data: Vec::new(),
+        });
+    }
+    if width > MAX_COLR_V1_EDGE || height > MAX_COLR_V1_EDGE {
+        return None;
+    }
+    let pixel_count = (width as usize).checked_mul(height as usize)?;
+    let mut layers = vec![vec![[0.0f32; 4]; pixel_count]];
+    let mut transforms = vec![root];
+    let mut clips: Vec<ClipMask> = Vec::new();
+    let mut scratch_pts = Vec::new();
+    let mut scratch_verbs = Vec::new();
+    let mut coverage_buf = Vec::new();
+
+    for op in &recording.ops {
+        let cur = *transforms.last().unwrap_or(&root);
+        match op {
+            ColorPaintOp::PushTransform(t) => transforms.push(transform_mul(cur, *t)),
+            ColorPaintOp::PopTransform => {
+                if transforms.len() > 1 {
+                    transforms.pop();
+                }
+            }
+            ColorPaintOp::PushClipGlyph(idx) => {
+                let mask = match recording.outlines.get(*idx) {
+                    Some(outline) => {
+                        transformed_outline_into(
+                            outline,
+                            cur,
+                            &mut scratch_pts,
+                            &mut scratch_verbs,
+                        );
+                        rasterize_clip_mask(
+                            &scratch_pts,
+                            &scratch_verbs,
+                            left,
+                            top,
+                            width,
+                            height,
+                            clips.last(),
+                            scratch,
+                            &mut coverage_buf,
+                        )
+                    }
+                    None => ClipMask::empty(),
+                };
+                clips.push(mask);
+            }
+            ColorPaintOp::PushClipBox(rect) => {
+                transformed_box_into(*rect, cur, &mut scratch_pts, &mut scratch_verbs);
+                let mask = rasterize_clip_mask(
+                    &scratch_pts,
+                    &scratch_verbs,
+                    left,
+                    top,
+                    width,
+                    height,
+                    clips.last(),
+                    scratch,
+                    &mut coverage_buf,
+                );
+                clips.push(mask);
+            }
+            ColorPaintOp::PopClip => {
+                clips.pop();
+            }
+            ColorPaintOp::Fill(brush) => {
+                let Some(surface) = layers.last_mut() else {
+                    continue;
+                };
+                let (x0, y0, x1, y1, clip_ref) = match clips.last() {
+                    Some(clip) => {
+                        if clip.is_empty() {
+                            continue;
+                        }
+                        (clip.x0, clip.y0, clip.x1, clip.y1, Some(clip))
+                    }
+                    None => (0, 0, width as i32, height as i32, None),
+                };
+                match brush {
+                    ColorBrush::Solid { color, alpha } => {
+                        let solid = premul_rgba(*color, *alpha);
+                        if solid[3] <= 0.0 {
+                            continue;
+                        }
+                        for py in y0..y1 {
+                            let row_off = py as usize * width as usize;
+                            for px in x0..x1 {
+                                let cov = clip_ref
+                                    .map_or(1.0, |c| f32::from(c.coverage_at(px, py)) / 255.0);
+                                if cov <= 0.0 {
+                                    continue;
+                                }
+                                let src = [
+                                    solid[0] * cov,
+                                    solid[1] * cov,
+                                    solid[2] * cov,
+                                    solid[3] * cov,
+                                ];
+                                let dst = &mut surface[row_off + px as usize];
+                                *dst = src_over(*dst, src);
+                            }
+                        }
+                    }
+                    _ => {
+                        let Some(inv) = transform_invert(cur) else {
+                            continue;
+                        };
+                        for py in y0..y1 {
+                            let row_off = py as usize * width as usize;
+                            let world_y = top as f32 - py as f32 - 0.5;
+                            for px in x0..x1 {
+                                let cov = clip_ref
+                                    .map_or(1.0, |c| f32::from(c.coverage_at(px, py)) / 255.0);
+                                if cov <= 0.0 {
+                                    continue;
+                                }
+                                let world_x = left as f32 + px as f32 + 0.5;
+                                let local = transform_point(inv, [world_x, world_y]);
+                                let c = eval_brush(brush, local);
+                                if c[3] <= 0.0 {
+                                    continue;
+                                }
+                                let src = [c[0] * cov, c[1] * cov, c[2] * cov, c[3] * cov];
+                                let dst = &mut surface[row_off + px as usize];
+                                *dst = src_over(*dst, src);
+                            }
+                        }
+                    }
+                }
+            }
+            ColorPaintOp::PushLayer => {
+                layers.push(vec![[0.0f32; 4]; pixel_count]);
+            }
+            ColorPaintOp::PopLayer(mode) => {
+                if layers.len() >= 2 {
+                    let src = layers.pop().expect("len >= 2");
+                    let dst = layers.last_mut().expect("len >= 1");
+                    for (d, s) in dst.iter_mut().zip(src.iter()) {
+                        *d = composite_pixel(*d, *s, *mode);
+                    }
+                }
+            }
+        }
+    }
+
+    let root_surface = layers.pop()?;
+    let mut data = vec![0u8; pixel_count * 4];
+    for (src, out) in root_surface.iter().zip(data.as_chunks_mut::<4>().0) {
+        let a = src[3].clamp(0.0, 1.0);
+        let a_u8 = (a * 255.0).round().clamp(0.0, 255.0) as u8;
+        if a_u8 == 0 {
+            out.copy_from_slice(&[0, 0, 0, 0]);
+        } else {
+            let inv_a = 1.0 / a;
+            out[0] = ((src[0] * inv_a) * 255.0).round().clamp(0.0, 255.0) as u8;
+            out[1] = ((src[1] * inv_a) * 255.0).round().clamp(0.0, 255.0) as u8;
+            out[2] = ((src[2] * inv_a) * 255.0).round().clamp(0.0, 255.0) as u8;
+            out[3] = a_u8;
+        }
+    }
+    Some(GlyphImage {
+        format: GlyphImageFormat::ColorRgba,
+        width,
+        height,
+        left,
+        top,
+        data,
+    })
+}
+
 /// Lays `color` over an RGBA `target` through a coverage `mask` whose
 /// top-left pixel goes at `at`; what falls outside the target is dropped.
 ///
@@ -1224,6 +2144,7 @@ mod tests {
                                     caps.has_outlines,
                                     caps.has_color_outlines,
                                     caps.has_color_bitmaps,
+                                    caps.has_svg,
                                     &how,
                                     &mut cache,
                                     &mut outline,
@@ -1293,6 +2214,7 @@ mod tests {
                 caps.has_outlines,
                 caps.has_color_outlines,
                 caps.has_color_bitmaps,
+                caps.has_svg,
                 &color_how,
                 &mut cache,
                 &mut outline,
@@ -1313,6 +2235,7 @@ mod tests {
                     caps.has_outlines,
                     caps.has_color_outlines,
                     caps.has_color_bitmaps,
+                    caps.has_svg,
                     &stroke_how,
                     &mut cache,
                     &mut outline,
@@ -1376,5 +2299,538 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn build_sfnt(tables: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
+        let mut sorted: Vec<(&[u8; 4], &[u8])> = tables
+            .iter()
+            .map(|(tag, data)| (*tag, data.as_slice()))
+            .collect();
+        sorted.sort_by_key(|(tag, _)| *tag);
+        let num_tables = sorted.len() as u16;
+        let search_range = (num_tables.next_power_of_two()
+            >> (1 - usize::from(num_tables.is_power_of_two())))
+            * 16;
+        let entry_selector = (search_range / 16).trailing_zeros() as u16;
+        let range_shift = num_tables * 16 - search_range;
+
+        let mut out = Vec::new();
+        out.extend_from_slice(&0x0001_0000u32.to_be_bytes());
+        out.extend_from_slice(&num_tables.to_be_bytes());
+        out.extend_from_slice(&search_range.to_be_bytes());
+        out.extend_from_slice(&entry_selector.to_be_bytes());
+        out.extend_from_slice(&range_shift.to_be_bytes());
+
+        let dir_len = 12 + sorted.len() * 16;
+        let mut offset = dir_len;
+        let mut body = Vec::new();
+        for (tag, data) in &sorted {
+            let mut sum = 0u32;
+            for chunk in data.chunks(4) {
+                let mut b = [0u8; 4];
+                b[..chunk.len()].copy_from_slice(chunk);
+                sum = sum.wrapping_add(u32::from_be_bytes(b));
+            }
+            out.extend_from_slice(*tag);
+            out.extend_from_slice(&sum.to_be_bytes());
+            out.extend_from_slice(&(offset as u32).to_be_bytes());
+            out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            body.extend_from_slice(data);
+            while !body.len().is_multiple_of(4) {
+                body.push(0);
+            }
+            offset = dir_len + body.len();
+        }
+        out.extend_from_slice(&body);
+        out
+    }
+
+    fn glyf_rect(x0: i16, y0: i16, x1: i16, y1: i16) -> Vec<u8> {
+        let mut g = Vec::new();
+        g.extend_from_slice(&1i16.to_be_bytes()); // numberOfContours
+        g.extend_from_slice(&x0.to_be_bytes());
+        g.extend_from_slice(&y0.to_be_bytes());
+        g.extend_from_slice(&x1.to_be_bytes());
+        g.extend_from_slice(&y1.to_be_bytes());
+        g.extend_from_slice(&3u16.to_be_bytes()); // endPtsOfContours[0]
+        g.extend_from_slice(&0u16.to_be_bytes()); // instructionLength
+        // 4 points (short x/y deltas, flags: on-curve=1, x-short=2, y-short=4, same/pos=16/32)
+        // p0=(x0,y0), p1=(x1-x0,0), p2=(0,y1-y0), p3=(-(x1-x0),0)
+        // Use 16-bit signed vectors (flag=1 on-curve) so coordinates up to 1000 never overflow u8.
+        g.extend_from_slice(&[1, 1, 1, 1]);
+        let dx = x1 - x0;
+        let dy = y1 - y0;
+        for &vx in &[x0, dx, 0, -dx] {
+            g.extend_from_slice(&vx.to_be_bytes());
+        }
+        for &vy in &[y0, 0, dy, 0] {
+            g.extend_from_slice(&vy.to_be_bytes());
+        }
+        if !g.len().is_multiple_of(4) {
+            while !g.len().is_multiple_of(4) {
+                g.push(0);
+            }
+        }
+        g
+    }
+
+    fn base_sfnt_tables(
+        num_glyphs: u16,
+        cmap_entries: &[(u32, u16)],
+    ) -> Vec<(&'static [u8; 4], Vec<u8>)> {
+        // head (54 bytes), unitsPerEm = 1000, indexToLocFormat = 1 (long loca)
+        let mut head = vec![0u8; 54];
+        head[0..4].copy_from_slice(&0x0001_0000u32.to_be_bytes());
+        head[4..8].copy_from_slice(&0x0001_0000u32.to_be_bytes());
+        head[12..16].copy_from_slice(&0x5F0F_3CF5u32.to_be_bytes());
+        head[18..20].copy_from_slice(&1000u16.to_be_bytes());
+        head[40..42].copy_from_slice(&1000i16.to_be_bytes());
+        head[42..44].copy_from_slice(&1000i16.to_be_bytes());
+        head[50..52].copy_from_slice(&1i16.to_be_bytes());
+
+        // maxp v1.0 (32 bytes)
+        let mut maxp = vec![0u8; 32];
+        maxp[0..4].copy_from_slice(&0x0001_0000u32.to_be_bytes());
+        maxp[4..6].copy_from_slice(&num_glyphs.to_be_bytes());
+        maxp[6..8].copy_from_slice(&8u16.to_be_bytes());
+        maxp[8..10].copy_from_slice(&2u16.to_be_bytes());
+
+        // hhea (36 bytes)
+        let mut hhea = vec![0u8; 36];
+        hhea[0..4].copy_from_slice(&0x0001_0000u32.to_be_bytes());
+        hhea[4..6].copy_from_slice(&800i16.to_be_bytes());
+        hhea[6..8].copy_from_slice(&(-200i16).to_be_bytes());
+        hhea[10..12].copy_from_slice(&1000u16.to_be_bytes());
+        hhea[34..36].copy_from_slice(&num_glyphs.to_be_bytes());
+
+        // hmtx
+        let mut hmtx = Vec::with_capacity(num_glyphs as usize * 4);
+        for _ in 0..num_glyphs {
+            hmtx.extend_from_slice(&1000u16.to_be_bytes());
+            hmtx.extend_from_slice(&0i16.to_be_bytes());
+        }
+
+        // glyf + long loca: glyph 0 empty, glyphs 1..num_glyphs squares
+        let mut glyf = Vec::new();
+        let mut loca = Vec::with_capacity((num_glyphs as usize + 1) * 4);
+        loca.extend_from_slice(&0u32.to_be_bytes());
+        loca.extend_from_slice(&0u32.to_be_bytes());
+        for gid in 1..num_glyphs {
+            let rect = match gid {
+                1 => glyf_rect(0, 0, 1000, 1000),
+                2 => glyf_rect(150, 150, 850, 850),
+                _ => glyf_rect(250, 250, 950, 950),
+            };
+            glyf.extend_from_slice(&rect);
+            loca.extend_from_slice(&(glyf.len() as u32).to_be_bytes());
+        }
+
+        // cmap format 12
+        let mut cmap = Vec::new();
+        cmap.extend_from_slice(&0u16.to_be_bytes()); // version
+        cmap.extend_from_slice(&1u16.to_be_bytes()); // numTables
+        cmap.extend_from_slice(&3u16.to_be_bytes()); // platformID
+        cmap.extend_from_slice(&10u16.to_be_bytes()); // encodingID
+        cmap.extend_from_slice(&12u32.to_be_bytes()); // offset
+        let sub_len = 16 + cmap_entries.len() as u32 * 12;
+        cmap.extend_from_slice(&12u16.to_be_bytes()); // format 12
+        cmap.extend_from_slice(&0u16.to_be_bytes());
+        cmap.extend_from_slice(&sub_len.to_be_bytes());
+        cmap.extend_from_slice(&0u32.to_be_bytes()); // language
+        cmap.extend_from_slice(&(cmap_entries.len() as u32).to_be_bytes());
+        for &(cp, gid) in cmap_entries {
+            cmap.extend_from_slice(&cp.to_be_bytes());
+            cmap.extend_from_slice(&cp.to_be_bytes());
+            cmap.extend_from_slice(&(gid as u32).to_be_bytes());
+        }
+
+        vec![
+            (b"head", head),
+            (b"maxp", maxp),
+            (b"hhea", hhea),
+            (b"hmtx", hmtx),
+            (b"glyf", glyf),
+            (b"loca", loca),
+            (b"cmap", cmap),
+        ]
+    }
+
+    fn build_cpal(bgra: &[[u8; 4]]) -> Vec<u8> {
+        let mut cpal = Vec::new();
+        cpal.extend_from_slice(&0u16.to_be_bytes()); // version 0
+        cpal.extend_from_slice(&(bgra.len() as u16).to_be_bytes());
+        cpal.extend_from_slice(&1u16.to_be_bytes()); // numPalettes
+        cpal.extend_from_slice(&(bgra.len() as u16).to_be_bytes());
+        cpal.extend_from_slice(&14u32.to_be_bytes()); // colorRecordsArrayOffset
+        cpal.extend_from_slice(&0u16.to_be_bytes()); // colorRecordIndices[0]
+        for entry in bgra {
+            cpal.extend_from_slice(entry);
+        }
+        cpal
+    }
+
+    fn push_u24(out: &mut Vec<u8>, v: u32) {
+        out.push(((v >> 16) & 0xFF) as u8);
+        out.push(((v >> 8) & 0xFF) as u8);
+        out.push((v & 0xFF) as u8);
+    }
+
+    fn patch_u24(out: &mut [u8], at: usize, v: u32) {
+        out[at] = ((v >> 16) & 0xFF) as u8;
+        out[at + 1] = ((v >> 8) & 0xFF) as u8;
+        out[at + 2] = (v & 0xFF) as u8;
+    }
+
+    fn push_color_line(out: &mut Vec<u8>, extend: u8, stops: &[(i16, u16, i16)]) {
+        out.push(extend);
+        out.extend_from_slice(&(stops.len() as u16).to_be_bytes());
+        for &(offset, palette_idx, alpha) in stops {
+            out.extend_from_slice(&offset.to_be_bytes());
+            out.extend_from_slice(&palette_idx.to_be_bytes());
+            out.extend_from_slice(&alpha.to_be_bytes());
+        }
+    }
+
+    fn build_synthetic_colrv1_font() -> Vec<u8> {
+        let mut tables =
+            base_sfnt_tables(4, &[(b'A' as u32, 1), (b'B' as u32, 2), (b'C' as u32, 3)]);
+        // Palette: 0=red, 1=green, 2=blue, 3=yellow (BGRA)
+        let cpal = build_cpal(&[
+            [0, 0, 255, 255],
+            [0, 255, 0, 255],
+            [255, 0, 0, 255],
+            [0, 255, 255, 255],
+        ]);
+
+        // LayerList: 2 layers used by glyph 1's PaintColrLayers
+        // Layer 0: PaintGlyph(gid=1) -> PaintLinearGradient(red -> blue)
+        // Layer 1: PaintTransform(scale 0.5, translate 250,250) -> PaintGlyph(gid=2) -> PaintSolid(green)
+        let mut layer_list = Vec::new();
+        layer_list.extend_from_slice(&2u32.to_be_bytes()); // numLayers
+        layer_list.extend_from_slice(&0u32.to_be_bytes()); // layer[0] offset placeholder
+        layer_list.extend_from_slice(&0u32.to_be_bytes()); // layer[1] offset placeholder
+
+        let l0 = layer_list.len() as u32;
+        layer_list[4..8].copy_from_slice(&l0.to_be_bytes());
+        // PaintGlyph: format=10, offset=6, gid=1
+        layer_list.push(10);
+        push_u24(&mut layer_list, 6);
+        layer_list.extend_from_slice(&1u16.to_be_bytes());
+        // PaintLinearGradient: format=4, colorLineOffset=16, x0=0,y0=0,x1=1000,y1=0,x2=0,y2=1000
+        layer_list.push(4);
+        push_u24(&mut layer_list, 16);
+        for v in [0i16, 0, 1000, 0, 0, 1000] {
+            layer_list.extend_from_slice(&v.to_be_bytes());
+        }
+        push_color_line(&mut layer_list, 0, &[(0, 0, 0x4000), (0x4000, 2, 0x4000)]);
+
+        let l1 = layer_list.len() as u32;
+        layer_list[8..12].copy_from_slice(&l1.to_be_bytes());
+        // PaintTransform: format=12, paintOffset (placeholder), transformOffset (placeholder)
+        let t_start = layer_list.len();
+        layer_list.push(12);
+        push_u24(&mut layer_list, 0);
+        push_u24(&mut layer_list, 0);
+        let paint_off = (layer_list.len() - t_start) as u32;
+        patch_u24(&mut layer_list, t_start + 1, paint_off);
+        // PaintGlyph(gid=2) -> PaintSolid(palette=1, alpha=1.0)
+        layer_list.push(10);
+        push_u24(&mut layer_list, 6);
+        layer_list.extend_from_slice(&2u16.to_be_bytes());
+        layer_list.push(2);
+        layer_list.extend_from_slice(&1u16.to_be_bytes());
+        layer_list.extend_from_slice(&0x4000i16.to_be_bytes());
+        let xform_off = (layer_list.len() - t_start) as u32;
+        patch_u24(&mut layer_list, t_start + 4, xform_off);
+        // Affine2x3 (Fixed 16.16): xx=0.5, yx=0, xy=0, yy=0.5, dx=250, dy=250
+        for v in [0x8000i32, 0, 0, 0x8000, 250 << 16, 250 << 16] {
+            layer_list.extend_from_slice(&v.to_be_bytes());
+        }
+
+        // BaseGlyphList: 3 records (gid 1, 2, 3)
+        let mut base_list = Vec::new();
+        base_list.extend_from_slice(&3u32.to_be_bytes());
+        for gid in 1u16..=3 {
+            base_list.extend_from_slice(&gid.to_be_bytes());
+            base_list.extend_from_slice(&0u32.to_be_bytes());
+        }
+
+        // Base gid 1: PaintColrLayers(numLayers=2, firstLayerIndex=0)
+        let b1 = base_list.len() as u32;
+        base_list[6..10].copy_from_slice(&b1.to_be_bytes());
+        base_list.push(1);
+        base_list.push(2);
+        base_list.extend_from_slice(&0u32.to_be_bytes());
+
+        // Base gid 2: PaintComposite(Xor=11, source=PaintGlyph(3,Sweep), backdrop=PaintGlyph(1,Radial))
+        let b2 = base_list.len() as u32;
+        base_list[12..16].copy_from_slice(&b2.to_be_bytes());
+        let comp_start = base_list.len();
+        base_list.push(32);
+        push_u24(&mut base_list, 0); // src offset placeholder
+        base_list.push(11); // Xor
+        push_u24(&mut base_list, 0); // dst offset placeholder
+        let src_off = (base_list.len() - comp_start) as u32;
+        patch_u24(&mut base_list, comp_start + 1, src_off);
+        base_list.push(10); // PaintGlyph(3)
+        push_u24(&mut base_list, 6);
+        base_list.extend_from_slice(&3u16.to_be_bytes());
+        base_list.push(8); // PaintSweepGradient: offset=12, cx=500, cy=500, start=0, end=1.0
+        push_u24(&mut base_list, 12);
+        base_list.extend_from_slice(&500i16.to_be_bytes());
+        base_list.extend_from_slice(&500i16.to_be_bytes());
+        base_list.extend_from_slice(&0i16.to_be_bytes());
+        base_list.extend_from_slice(&0x4000i16.to_be_bytes());
+        push_color_line(&mut base_list, 1, &[(0, 0, 0x4000), (0x4000, 1, 0x4000)]);
+        let dst_off = (base_list.len() - comp_start) as u32;
+        patch_u24(&mut base_list, comp_start + 5, dst_off);
+        base_list.push(10); // PaintGlyph(1)
+        push_u24(&mut base_list, 6);
+        base_list.extend_from_slice(&1u16.to_be_bytes());
+        base_list.push(6); // PaintRadialGradient: offset=16, (500,500,50)->(500,500,500)
+        push_u24(&mut base_list, 16);
+        base_list.extend_from_slice(&500i16.to_be_bytes());
+        base_list.extend_from_slice(&500i16.to_be_bytes());
+        base_list.extend_from_slice(&50u16.to_be_bytes());
+        base_list.extend_from_slice(&500i16.to_be_bytes());
+        base_list.extend_from_slice(&500i16.to_be_bytes());
+        base_list.extend_from_slice(&500u16.to_be_bytes());
+        push_color_line(&mut base_list, 2, &[(0, 3, 0x4000), (0x4000, 2, 0x4000)]);
+
+        // Base gid 3: PaintGlyph(1) -> PaintSolid(red) clipped by ClipList [200,200..600,600]
+        let b3 = base_list.len() as u32;
+        base_list[18..22].copy_from_slice(&b3.to_be_bytes());
+        base_list.push(10);
+        push_u24(&mut base_list, 6);
+        base_list.extend_from_slice(&1u16.to_be_bytes());
+        base_list.push(2);
+        base_list.extend_from_slice(&0u16.to_be_bytes());
+        base_list.extend_from_slice(&0x4000i16.to_be_bytes());
+
+        // ClipList: format=1, numClips=1, (3..=3 -> offset=12), ClipBoxFormat1(200,200,600,600)
+        let mut clip_list = Vec::new();
+        clip_list.push(1);
+        clip_list.extend_from_slice(&1u32.to_be_bytes());
+        clip_list.extend_from_slice(&3u16.to_be_bytes());
+        clip_list.extend_from_slice(&3u16.to_be_bytes());
+        push_u24(&mut clip_list, 12);
+        clip_list.push(1); // ClipBoxFormat1
+        for v in [200i16, 200, 600, 600] {
+            clip_list.extend_from_slice(&v.to_be_bytes());
+        }
+
+        let header_len = 34u32;
+        let base_off = header_len;
+        let layer_off = base_off + base_list.len() as u32;
+        let clip_off = layer_off + layer_list.len() as u32;
+        let mut colr = Vec::new();
+        colr.extend_from_slice(&1u16.to_be_bytes()); // version 1
+        colr.extend_from_slice(&0u16.to_be_bytes());
+        colr.extend_from_slice(&0u32.to_be_bytes());
+        colr.extend_from_slice(&0u32.to_be_bytes());
+        colr.extend_from_slice(&0u16.to_be_bytes());
+        colr.extend_from_slice(&base_off.to_be_bytes());
+        colr.extend_from_slice(&layer_off.to_be_bytes());
+        colr.extend_from_slice(&clip_off.to_be_bytes());
+        colr.extend_from_slice(&0u32.to_be_bytes());
+        colr.extend_from_slice(&0u32.to_be_bytes());
+        colr.extend_from_slice(&base_list);
+        colr.extend_from_slice(&layer_list);
+        colr.extend_from_slice(&clip_list);
+
+        tables.push((b"CPAL", cpal));
+        tables.push((b"COLR", colr));
+        build_sfnt(&tables)
+    }
+
+    #[test]
+    fn colr_v1_layers_gradients_transforms_composite_and_clipbox_rasterize_to_color_rgba() {
+        let font = build_synthetic_colrv1_font();
+        let caps = read_raster_caps(&font, 0).expect("synthetic colrv1 caps");
+        assert!(caps.has_color_outlines);
+        assert!(caps.has_outlines);
+
+        let mut cache = FaceScalerCache::default();
+        let mut outline = ScaledOutline::default();
+        let mut scratch = zeno::Scratch::new();
+        let color_how = Outlining {
+            format: zeno::Format::Alpha,
+            offset: zeno::Vector::new(0.0, 0.0),
+            transform: None,
+            mode: GlyphRenderMode::Mask,
+        };
+
+        let mut unique_colors = |gid: u16, size: f32| -> (GlyphImage, usize) {
+            let img = drawn(
+                &font,
+                0,
+                9001,
+                &[],
+                size,
+                false,
+                gid,
+                caps.has_outlines,
+                caps.has_color_outlines,
+                caps.has_color_bitmaps,
+                caps.has_svg,
+                &color_how,
+                &mut cache,
+                &mut outline,
+                &mut scratch,
+            )
+            .expect("colrv1 glyph renders");
+            assert_eq!(img.format, GlyphImageFormat::ColorRgba);
+            let distinct = img
+                .data
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .filter(|px| px[3] > 20)
+                .map(|px| (px[0] / 32, px[1] / 32, px[2] / 32))
+                .collect::<std::collections::HashSet<_>>()
+                .len();
+            (img, distinct)
+        };
+
+        // Glyph 1: linear gradient + transformed green overlay must yield multiple distinct colors.
+        let (img1, colors1) = unique_colors(1, 32.0);
+        assert!(
+            colors1 >= 3,
+            "expected gradient + solid green, got {colors1}"
+        );
+        assert!(img1.width >= 28 && img1.height >= 28);
+
+        // Glyph 2: radial + sweep + Xor composite must produce multiple distinct colors.
+        let (_img2, colors2) = unique_colors(2, 32.0);
+        assert!(
+            colors2 >= 3,
+            "expected sweep/radial composite colors, got {colors2}"
+        );
+
+        // Glyph 3: 1000-unit square clipped to [200..600] (400 units wide) at 50px -> ~20px box, not ~50px.
+        let (img3, _) = unique_colors(3, 50.0);
+        assert!(
+            img3.width <= 24 && img3.height <= 24,
+            "clip box should bound glyph 3 to ~20x20, got {}x{}",
+            img3.width,
+            img3.height
+        );
+        // Derived stroke mode stays a coverage mask rather than color layers.
+        let stroke = drawn(
+            &font,
+            0,
+            9001,
+            &[],
+            32.0,
+            false,
+            1,
+            caps.has_outlines,
+            caps.has_color_outlines,
+            caps.has_color_bitmaps,
+            caps.has_svg,
+            &Outlining {
+                format: zeno::Format::Alpha,
+                offset: zeno::Vector::new(0.0, 0.0),
+                transform: None,
+                mode: GlyphRenderMode::Stroke {
+                    width_q: 4,
+                    join: StrokeJoin::Round,
+                },
+            },
+            &mut cache,
+            &mut outline,
+            &mut scratch,
+        )
+        .expect("derived stroke renders");
+        assert_eq!(stroke.format, GlyphImageFormat::Mask);
+    }
+
+    #[cfg(feature = "svg")]
+    #[test]
+    fn opentype_svg_glyphs_rasterize_to_color_rgba_and_share_documents() {
+        let mut tables = base_sfnt_tables(3, &[(b'S' as u32, 1), (b'T' as u32, 2)]);
+        let svg_doc = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -1000 1000 1000"><rect id="glyph1" x="100" y="-900" width="800" height="800" fill="#ff2200"/><circle id="glyph2" cx="500" cy="-500" r="350" fill="#0088ff"/></svg>"##;
+        // SVG header (10 bytes) + DocumentList (1 entry covering glyph 1..=2)
+        let mut svg_table = Vec::new();
+        svg_table.extend_from_slice(&0u16.to_be_bytes()); // version
+        svg_table.extend_from_slice(&10u32.to_be_bytes()); // svgDocumentListOffset
+        svg_table.extend_from_slice(&0u32.to_be_bytes()); // reserved
+        // SVGDocumentList: numEntries=1, record(1..=2, docOffset=14 from list start, len)
+        svg_table.extend_from_slice(&1u16.to_be_bytes());
+        svg_table.extend_from_slice(&1u16.to_be_bytes());
+        svg_table.extend_from_slice(&2u16.to_be_bytes());
+        svg_table.extend_from_slice(&14u32.to_be_bytes());
+        svg_table.extend_from_slice(&(svg_doc.len() as u32).to_be_bytes());
+        svg_table.extend_from_slice(svg_doc);
+        tables.push((b"SVG ", svg_table));
+        let font = build_sfnt(&tables);
+
+        let caps = read_raster_caps(&font, 0).expect("synthetic svg caps");
+        assert!(caps.has_svg);
+        assert!(!caps.has_color_outlines);
+
+        let mut cache = FaceScalerCache::default();
+        let mut outline = ScaledOutline::default();
+        let mut scratch = zeno::Scratch::new();
+        let how = Outlining {
+            format: zeno::Format::Alpha,
+            offset: zeno::Vector::new(0.0, 0.0),
+            transform: None,
+            mode: GlyphRenderMode::Mask,
+        };
+
+        let g1 = drawn(
+            &font,
+            0,
+            9002,
+            &[],
+            40.0,
+            false,
+            1,
+            caps.has_outlines,
+            caps.has_color_outlines,
+            caps.has_color_bitmaps,
+            caps.has_svg,
+            &how,
+            &mut cache,
+            &mut outline,
+            &mut scratch,
+        )
+        .expect("svg glyph 1 renders");
+        assert_eq!(g1.format, GlyphImageFormat::ColorRgba);
+        assert!(
+            g1.data
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .any(|px| px[0] > 200 && px[2] < 40 && px[3] > 200)
+        );
+
+        let g2 = drawn(
+            &font,
+            0,
+            9002,
+            &[],
+            40.0,
+            false,
+            2,
+            caps.has_outlines,
+            caps.has_color_outlines,
+            caps.has_color_bitmaps,
+            caps.has_svg,
+            &how,
+            &mut cache,
+            &mut outline,
+            &mut scratch,
+        )
+        .expect("svg glyph 2 renders from shared SVG document");
+        assert_eq!(g2.format, GlyphImageFormat::ColorRgba);
+        assert!(
+            g2.data
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .any(|px| px[2] > 200 && px[0] < 40 && px[3] > 200)
+        );
     }
 }

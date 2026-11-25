@@ -287,7 +287,7 @@ overlay! {
         font_family, letter_spacing, line_clamp, word_break, overflow_wrap,
         text_decoration, text_emphasis_style, text_emphasis_position,
         text_emphasis_color, font_features, font_variation_settings,
-        font_kerning, line_break, unsupported_font_variation,
+        font_kerning, line_break, hyphens, unsupported_font_variation,
         unsupported_writing_mode, text_orientation, vertical_align, placeholder_color,
         placeholder_opacity,
     }

@@ -24,6 +24,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 /// other text, so it picks up the same face, features and fallback.
 const ELLIPSIS: &str = "…";
 
+/// The visible hyphen drawn at the end of a line broken at `U+00AD` soft hyphen.
+const HYPHEN: &str = "-";
+
 pub trait TextEngine {
     /// Bumped by every mutation of the face set. A layout produced under a
     /// different generation is stale.
@@ -86,6 +89,8 @@ pub struct NativeTextEngine {
     /// lands in the ordinary cache. Shaped at most once per style, not once per
     /// node.
     ellipsis: TextSource,
+    /// The visible hyphen `-` inserted only when a soft hyphen (`U+00AD`) breaks.
+    hyphen: TextSource,
     language: Option<LanguageTag>,
     language_generation: u64,
     /// Strut metrics by face instance and size. Reading them means parsing the
@@ -104,6 +109,7 @@ impl NativeTextEngine {
             shaper: Shaper::default(),
             layouter: Layouter::default(),
             ellipsis: TextSource::new(ELLIPSIS),
+            hyphen: TextSource::new(HYPHEN),
             language: None,
             language_generation: 0,
             struts: crate::bounded::BoundedCache::new(STRUT_CAP),
@@ -168,13 +174,12 @@ impl NativeTextEngine {
     ) -> IntrinsicWidths {
         let source = self.fold_lines(source, constraints);
         let shaped = self.shape(source, base, constraints);
-        self.layouter.intrinsic_widths(&LayoutRequest::new(
-            TextKind::Paragraph,
-            source,
-            &shaped,
-            base,
-            constraints,
-        ))
+        let hyphen = (constraints.hyphens != nana_ui_core::HyphensSpec::None
+            && source.text().contains('\u{00AD}'))
+        .then(|| self.shape_hyphen(base, constraints));
+        let request = LayoutRequest::new(TextKind::Paragraph, source, &shaped, base, constraints)
+            .with_hyphen(hyphen.as_ref());
+        self.layouter.intrinsic_widths(&request)
     }
 
     fn shape(
@@ -281,6 +286,11 @@ impl NativeTextEngine {
         self.shape(&ellipsis, base, constraints)
     }
 
+    fn shape_hyphen(&mut self, base: &TextStyle, constraints: &TextConstraints) -> Arc<ShapedText> {
+        let hyphen = self.hyphen.clone();
+        self.shape(&hyphen, base, constraints)
+    }
+
     /// Metrics of the base style's own face, which every line box then starts
     /// from. Without them a line containing one taller fallback glyph would
     /// move its own baseline. In physical px at `scale` physical px per
@@ -382,6 +392,10 @@ impl TextEngine for NativeTextEngine {
         let ellipsis = constraints
             .ellipsis
             .then(|| self.shape_ellipsis(base, constraints));
+        let hyphen = (constraints.hyphens != nana_ui_core::HyphensSpec::None
+            && constraints.wraps()
+            && source.text().contains('\u{00AD}'))
+        .then(|| self.shape_hyphen(base, constraints));
         let strut = self.strut_metrics(base, constraints.scale.px_per_logical);
 
         // Each annotation shaped once, at its share of its base's size; the
@@ -431,6 +445,7 @@ impl TextEngine for NativeTextEngine {
         let layouts_before = self.layouter.counters();
         let request = LayoutRequest::new(kind, source, &shaped, base, constraints)
             .with_ellipsis(ellipsis.as_ref())
+            .with_hyphen(hyphen.as_ref())
             .with_strut(strut)
             .with_rubies(&rubies)
             .with_emphasis(&emphasis)

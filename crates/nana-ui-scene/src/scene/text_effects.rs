@@ -440,6 +440,7 @@ pub struct SceneTextOpenType {
     pub kerning: FontKerningSpec,
     pub word_break: WordBreakSpec,
     pub line_break: LineBreakSpec,
+    pub hyphens: HyphensSpec,
     /// CSS `direction` after inherit. Drives the same RLI/PDI wrap as shaping.
     pub direction: DirSpec,
     /// Whether an authored newline is a line break rather than a space.
@@ -472,6 +473,7 @@ impl SceneTextOpenType {
             kerning: style.font_kerning,
             word_break: style.word_break,
             line_break: style.line_break,
+            hyphens: style.hyphens,
             // The used direction: `text-orientation: upright` reads `ltr`.
             direction: style.writing_context().direction,
             writing_mode: style.writing_mode,

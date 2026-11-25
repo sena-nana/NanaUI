@@ -145,6 +145,10 @@ impl TextLayout {
                     centre - (run.metrics.ascent_px - run.metrics.descent_px) * 0.5 * scale;
                 let mut pen = run.origin_x_px;
                 for glyph in &run.glyphs {
+                    if glyph.flags.contains(crate::shape::GlyphFlags::IGNORED) {
+                        pen += glyph.advance_px;
+                        continue;
+                    }
                     let position = if sideways {
                         // Font y (up) is page x; font x is page y.
                         [
@@ -189,6 +193,10 @@ fn push_run<'a>(
         return;
     };
     for glyph in &run.glyphs {
+        if glyph.flags.contains(crate::shape::GlyphFlags::IGNORED) {
+            pen += glyph.advance_px;
+            continue;
+        }
         let x = (pen + glyph.offset_x_px) * scale + origin[0];
         // `offset_y_px` is the shaper's, positive up; screen y grows down.
         // `floor`, not `trunc`: rounding toward zero would snap text above

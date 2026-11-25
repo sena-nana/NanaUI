@@ -43,6 +43,7 @@ let layout = engine.layout(
 ## Features
 
 - `raster`: rasterizes glyphs into bitmaps on the CPU (`nana_text::raster`). `nana-ui`'s `gpu` feature turns it on, and hosts that composite text themselves can use it on its own.
+- `svg`: turns on `raster` and adds OpenType `SVG ` table glyph rasterization via `nana-svg-raster` (not in default features; `nana-ui`'s `svg` feature enables it).
 
 ## Tests
 

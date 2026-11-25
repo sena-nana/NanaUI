@@ -123,6 +123,9 @@ impl GlyphFlags {
     /// Fullwidth CJK punctuation whose ink sits in the second half: the first
     /// half is blank, and may close up.
     pub const PUNCT_BLANK_BEFORE: Self = Self(1 << 4);
+    /// Default-ignorable soft hyphen (`U+00AD`): keeps zero advance and draws
+    /// nothing unless line breaking ends a line at it.
+    pub const IGNORED: Self = Self(1 << 5);
 
     pub const fn contains(self, flag: Self) -> bool {
         self.0 & flag.0 == flag.0

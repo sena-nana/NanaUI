@@ -171,6 +171,7 @@ impl LayoutStyle {
         line_clamp => line_clamp: u16,
         word_break => word_break: WordBreakSpec,
         overflow_wrap => overflow_wrap: OverflowWrapSpec,
+        hyphens => hyphens: crate::typography::HyphensSpec,
         font_family => font_family: String,
         letter_spacing => letter_spacing: f32,
         text_decoration => text_decoration: TextDecorationLine,

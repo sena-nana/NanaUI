@@ -534,3 +534,139 @@ fn a_badge_envelope_drops_its_gap_at_a_line_end_and_keeps_its_breaks() {
             .any(|line| line.starts_with("中\u{FFFC}"))
     );
 }
+
+#[test]
+fn soft_hyphen_is_invisible_when_unbroken_and_renders_hyphen_only_on_break() {
+    let mut engine = engine();
+    let soft = "hy\u{00AD}phen";
+    let plain = "hyphen";
+
+    let c_wide = TextConstraints {
+        max_width_px: Some(500.0),
+        wrap: Some(TextWrapBreak::Word),
+        hyphens: nana_ui_core::HyphensSpec::Manual,
+        ..TextConstraints::default()
+    };
+    let soft_wide = lay_out(&mut engine, soft, &c_wide);
+    let plain_wide = lay_out(&mut engine, plain, &c_wide);
+    assert_eq!(soft_wide.lines.len(), 1);
+    assert!(
+        (soft_wide.lines[0].metrics.width_px - plain_wide.lines[0].metrics.width_px).abs() < 0.01,
+        "unbroken U+00AD must have zero width"
+    );
+    assert_eq!(
+        soft_wide.glyph_placements(1.0, [0.0, 0.0]).len(),
+        plain_wide.glyph_placements(1.0, [0.0, 0.0]).len(),
+        "unbroken U+00AD must emit no glyph or .notdef"
+    );
+
+    let hy_w = lay_out(&mut engine, "hy", &TextConstraints::default()).lines[0]
+        .metrics
+        .width_px;
+    let hy_dash_w = lay_out(&mut engine, "hy-", &TextConstraints::default()).lines[0]
+        .metrics
+        .width_px;
+    // Wide enough for "hy-" + a small margin, narrower than "hyphen".
+    let c_break = TextConstraints {
+        max_width_px: Some(hy_dash_w + 1.0),
+        wrap: Some(TextWrapBreak::Word),
+        hyphens: nana_ui_core::HyphensSpec::Manual,
+        ..TextConstraints::default()
+    };
+    let broken = lay_out(&mut engine, soft, &c_break);
+    assert_eq!(lines(&broken, soft), vec!["hy\u{00AD}", "phen"]);
+    assert!(
+        (broken.lines[0].metrics.width_px - hy_dash_w).abs() < 0.05,
+        "broken line width {} should include rendered '-' ({})",
+        broken.lines[0].metrics.width_px,
+        hy_dash_w
+    );
+    let line0_runs =
+        &broken.runs[broken.lines[0].runs.start as usize..broken.lines[0].runs.end as usize];
+    let line0_glyphs: usize = line0_runs
+        .iter()
+        .flat_map(|r| r.glyphs.iter())
+        .filter(|g| !g.flags.contains(GlyphFlags::IGNORED))
+        .count();
+    assert_eq!(
+        line0_glyphs, 3,
+        "line 0 should draw 'h', 'y', and the inserted '-' (ignoring U+00AD)"
+    );
+    let placements = broken.glyph_placements(1.0, [0.0, 0.0]);
+    assert_eq!(placements.len(), 7);
+    assert!(
+        (placements[2].position[1] - placements[0].position[1]).abs() < 0.01,
+        "inserted '-' placement must sit on line 0's baseline"
+    );
+
+    // Fits "hy" only, NOT "hy-": must NOT break at U+00AD and draw '-' past max_width.
+    let word_with_prefix = "go hy\u{00AD}phen";
+    let go_w = lay_out(&mut engine, "go ", &TextConstraints::default()).lines[0]
+        .metrics
+        .width_px;
+    let fell_back = lay_out(
+        &mut engine,
+        word_with_prefix,
+        &TextConstraints {
+            max_width_px: Some(go_w + hy_w + 0.5),
+            wrap: Some(TextWrapBreak::Word),
+            hyphens: nana_ui_core::HyphensSpec::Manual,
+            ..TextConstraints::default()
+        },
+    );
+    assert_eq!(lines(&fell_back, word_with_prefix)[0], "go");
+}
+
+#[test]
+fn hyphens_none_suppresses_soft_hyphen_breaks_and_affects_intrinsic_widths() {
+    let mut engine = engine();
+    let soft = "hy\u{00AD}phen";
+    let plain = "hyphen";
+    let hy_dash_w = lay_out(&mut engine, "hy-", &TextConstraints::default()).lines[0]
+        .metrics
+        .width_px;
+    let plain_w = lay_out(&mut engine, plain, &TextConstraints::default()).lines[0]
+        .metrics
+        .width_px;
+
+    let manual_intr = engine.intrinsic_widths(
+        &TextSource::new(soft),
+        &style(),
+        &TextConstraints {
+            wrap: Some(TextWrapBreak::Word),
+            hyphens: nana_ui_core::HyphensSpec::Manual,
+            ..TextConstraints::default()
+        },
+    );
+    let none_intr = engine.intrinsic_widths(
+        &TextSource::new(soft),
+        &style(),
+        &TextConstraints {
+            wrap: Some(TextWrapBreak::Word),
+            hyphens: nana_ui_core::HyphensSpec::None,
+            ..TextConstraints::default()
+        },
+    );
+    assert!((manual_intr.max_px - plain_w).abs() < 0.05);
+    assert!((none_intr.max_px - plain_w).abs() < 0.05);
+    assert!(
+        manual_intr.min_px < none_intr.min_px - 0.5,
+        "manual min {} should split at U+00AD whereas none min {} keeps whole word",
+        manual_intr.min_px,
+        none_intr.min_px
+    );
+    assert!(manual_intr.min_px >= hy_dash_w - 0.05);
+
+    let none_layout = lay_out(
+        &mut engine,
+        soft,
+        &TextConstraints {
+            max_width_px: Some(hy_dash_w + 1.0),
+            wrap: Some(TextWrapBreak::Word),
+            hyphens: nana_ui_core::HyphensSpec::None,
+            ..TextConstraints::default()
+        },
+    );
+    assert_eq!(lines(&none_layout, soft), vec![soft]);
+    assert_eq!(none_layout.glyph_placements(1.0, [0.0, 0.0]).len(), 6);
+}

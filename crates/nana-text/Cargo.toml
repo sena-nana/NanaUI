@@ -15,6 +15,8 @@ default = []
 # Glyph rasterization on the CPU (`raster`): what the renderer scales its
 # atlas glyphs with, and what a host that composites text itself uses.
 raster = ["dep:zeno", "dep:png"]
+# Optional OpenType `SVG ` table glyph rasterization via `nana-svg-raster`.
+svg = ["raster", "dep:nana-svg-raster"]
 # Migration parity corpus and structural diff against frozen goldens.
 parity = []
 
@@ -45,6 +47,7 @@ unicode-linebreak = "0.1.5"
 # (`raster/outline.rs`), named from that file only.
 zeno = { workspace = true, optional = true }
 png = { workspace = true, optional = true }
+nana-svg-raster = { workspace = true, optional = true }
 
 [dev-dependencies]
 nana-ui-core = { workspace = true, features = ["bundled-fonts"] }

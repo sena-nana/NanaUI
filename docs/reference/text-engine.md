@@ -565,6 +565,8 @@ layout 在那里断行、`preserve_lines: false` 把单字节的那些折成空�
 | `wrap: WordOrGlyph` 或 `word-break: break-word` | 先按词，放不下的词再按字素簇切 |
 | `wrap: Glyph`、`word-break: break-all`、`line-break: anywhere` | 每个字素簇边界都是机会 |
 
+- **软连字符（`U+00AD`）与 `hyphens`**：`U+00AD` 在整形阶段被标为忽略（零宽、不出字形也不报 `.notdef`），仅在开启断词时作为隐形断点。未在该处换行时不占有宽度且不绘制；实际在该处换行（`hyphens: manual | auto`）则在行尾补画连字符 `-` 并把 `-` 的前进宽度计入行宽与断行适应。`hyphens: none` 下不触发 `U+00AD` 断行也不补 `-`；当前未接入语言连字符词典，`hyphens: auto` 在效果上等同于 `manual`（#424）。
+
 - **行尾空白悬挂**：软换行处的空白不绘制。`LineBox::source` 也不含它（与参照引擎一致）。
   硬换行与段落末尾的空白是作者写下的内容。glyph 保留在行上。两种情况下它都**不进行宽**：
   `metrics.width_px` / `bounds` 是去掉行尾空白后的宽度。溢出判定（`CLIPPED_WIDTH`、省略号裁切）
@@ -1817,7 +1819,7 @@ cutover 之后仍有几条路径不经过 `nana-text` 量字。或者量了但�
 `raster` 特性（`nana-ui` 的 `gpu` 打开它）带来 `nana_text::raster`：
 
 - **栅格键**：`GlyphRasterKey` 及其各部分（`GlyphFontId`、`GlyphVariationId`、`GlyphSynthesis`、`GlyphRenderMode`、四分之一像素的 `SubpixelBin`、按位存的字号）。颜色、不透明度和变换不在键里。
-- **`OutlineRasterizer`**：在 CPU 上把一个键栅格成 `GlyphImage`——灰度覆盖率、彩色位图或子像素覆盖率，以及描边与模糊的派生覆盖率。face 取自同一个引擎的字体层，所以栅格用的就是塑形时那份实例。轮廓缩放与位图 strike 提取经 `font/face.rs` 调用 `skrifa`，路径光栅化与 PNG 位图解码使用 `zeno` 和 `png`（两者只在 `raster/outline.rs` 里出现）。
+- **`OutlineRasterizer`**：在 CPU 上把一个键栅格成 `GlyphImage`——灰度覆盖率、彩色位图或子像素覆盖率，以及描边与模糊的派生覆盖率。face 取自同一个引擎的字体层，所以栅格用的就是塑形时那份实例。轮廓缩放与位图 strike 提取经 `font/face.rs` 调用 `skrifa`（同时把 OpenType `COLR` v1 画图指令录成帧内 IR），路径光栅化、COLRv1 混合（Solid / Linear / Radial / Sweep 渐变、ClipBox、Layer / Transform / Composite）与 PNG 位图解码使用 `zeno` 和 `png`（两者只在 `raster/outline.rs` 里出现）。打开可选的 `svg` feature 后，OpenType `SVG ` 表字形经 `nana-svg-raster`（`usvg` + `resvg`）在 CPU 上栅格为 `GlyphImageFormat::ColorRgba`，默认特征图不会拉入 SVG 依赖。
 - **`rasterize_layout`**：一段文字的所有字形，栅格好并放到位（位图左上角的栅格像素），给自己合成文字、不走 renderer atlas 的宿主用。它每次都重新栅格；常常重画的调用方自己在 `OutlineRasterizer::rasterize` 上面做缓存。
 
 这里没有 GPU：上传、atlas 和合成都归调用方。renderer 在它上面实现自己的 `GlyphRasterizer` 边界、raster cache 与 atlas；Windows 上 DirectWrite 接管轮廓字形，其余仍交给 `OutlineRasterizer`。

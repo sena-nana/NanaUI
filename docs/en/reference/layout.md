@@ -1001,7 +1001,7 @@ This is not a second TextInput.
 
 An author's `::selection` and `::-moz-selection` resolve only `background`, `background-color`, and `color`, painted onto the document selection highlight. Other properties fail closed. This is not the full CSS Highlight API. When nothing is written, the selection backing still uses the theme's `accent_soft`.
 
-`word-break: keep-all` is skipped. `line-break: strict|loose`, `text-spacing-trim`, `text-autospace`, `text-justify`, and `text-wrap-style` go to the text engine's CJK line decisions (#211), and all inherit. Letter spacing is approximate.
+`word-break: keep-all` is skipped. `line-break: strict|loose`, `text-spacing-trim`, `text-autospace`, `text-justify`, and `text-wrap-style` go to the text engine's CJK line decisions (#211), and `hyphens: none | manual | auto` controls `U+00AD` soft-hyphen breaking (#424, with `auto` currently behaving like `manual`); all inherit. Letter spacing is approximate.
 
 **Hiding.** `display: none` takes no space and takes no clicks.
 

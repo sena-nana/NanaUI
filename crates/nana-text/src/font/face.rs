@@ -378,6 +378,10 @@ mod blank_glyph_tests {
 mod raster_support {
     use crate::font::AxisCoord;
     use skrifa::bitmap::{BitmapData, BitmapFormat, BitmapStrikes, Origin as BitmapOrigin};
+    use skrifa::color::{
+        Brush as SkrifaBrush, ColorGlyphFormat, ColorPainter, ColorPalette, CompositeMode, Extend,
+        Transform as SkrifaTransform,
+    };
     use skrifa::instance::NormalizedCoord;
     use skrifa::outline::{
         DrawSettings, HintingInstance, HintingMode, LcdLayout, OutlineGlyphCollection,
@@ -385,8 +389,10 @@ mod raster_support {
     };
     use skrifa::prelude::{LocationRef, Size};
     use skrifa::raw::TableProvider;
+    use skrifa::raw::types::BoundingBox;
     use skrifa::string::StringId;
     use skrifa::{FontRef, GlyphId, MetadataProvider, Tag};
+    use std::collections::HashMap;
 
     /// Maximum cached `HintingInstance` entries per outline format.
     const MAX_CACHED_HINT_INSTANCES: usize = 8;
@@ -413,6 +419,134 @@ mod raster_support {
         pub has_outlines: bool,
         pub has_color_outlines: bool,
         pub has_color_bitmaps: bool,
+        pub has_svg: bool,
+    }
+
+    /// Raw SVG document entry from an OpenType `SVG ` table.
+    #[cfg(feature = "svg")]
+    pub(crate) struct RawSvgGlyph<'a> {
+        pub document: &'a [u8],
+        pub allow_root_fallback: bool,
+        pub upem: u16,
+    }
+
+    /// Affine matrix from COLRv1 `Transform`, in font units.
+    #[derive(Clone, Copy, Debug)]
+    pub(crate) struct ColorTransform {
+        pub xx: f32,
+        pub yx: f32,
+        pub xy: f32,
+        pub yy: f32,
+        pub dx: f32,
+        pub dy: f32,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub(crate) enum ColorExtend {
+        Pad,
+        Repeat,
+        Reflect,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub(crate) enum ColorCompositeMode {
+        Clear,
+        Src,
+        Dest,
+        SrcOver,
+        DestOver,
+        SrcIn,
+        DestIn,
+        SrcOut,
+        DestOut,
+        SrcAtop,
+        DestAtop,
+        Xor,
+        Plus,
+        Screen,
+        Overlay,
+        Darken,
+        Lighten,
+        ColorDodge,
+        ColorBurn,
+        HardLight,
+        SoftLight,
+        Difference,
+        Exclusion,
+        Multiply,
+        HslHue,
+        HslSaturation,
+        HslColor,
+        HslLuminosity,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub(crate) struct ColorStopPaint {
+        pub offset: f32,
+        pub color: Option<[u8; 4]>,
+        pub alpha: f32,
+    }
+
+    #[derive(Clone, Debug)]
+    pub(crate) enum ColorBrush {
+        Solid {
+            color: Option<[u8; 4]>,
+            alpha: f32,
+        },
+        LinearGradient {
+            p0: [f32; 2],
+            p1: [f32; 2],
+            stops: Vec<ColorStopPaint>,
+            extend: ColorExtend,
+        },
+        RadialGradient {
+            c0: [f32; 2],
+            r0: f32,
+            c1: [f32; 2],
+            r1: f32,
+            stops: Vec<ColorStopPaint>,
+            extend: ColorExtend,
+        },
+        SweepGradient {
+            c0: [f32; 2],
+            start_angle: f32,
+            end_angle: f32,
+            stops: Vec<ColorStopPaint>,
+            extend: ColorExtend,
+        },
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub(crate) enum ColorOutlineVerb {
+        MoveTo,
+        LineTo,
+        QuadTo,
+        CurveTo,
+        Close,
+    }
+
+    #[derive(Clone, Debug, Default)]
+    pub(crate) struct ColorGlyphOutline {
+        pub points: Vec<[f32; 2]>,
+        pub verbs: Vec<ColorOutlineVerb>,
+    }
+
+    #[derive(Clone, Debug)]
+    pub(crate) enum ColorPaintOp {
+        PushTransform(ColorTransform),
+        PopTransform,
+        PushClipGlyph(usize),
+        PushClipBox([f32; 4]),
+        PopClip,
+        Fill(ColorBrush),
+        PushLayer,
+        PopLayer(ColorCompositeMode),
+    }
+
+    pub(crate) struct ColorPaintRecording {
+        pub upem: u16,
+        pub outlines: Vec<ColorGlyphOutline>,
+        pub ops: Vec<ColorPaintOp>,
     }
 
     /// Borrowed color bitmap bytes stored inside a strike table.
@@ -531,18 +665,19 @@ mod raster_support {
         }
     }
 
-    /// Reads whether a face carries scalable outlines, COLR/CPAL layers, or color bitmap strikes.
+    /// Reads whether a face carries scalable outlines, COLR/CPAL layers, color bitmap strikes, or SVG glyphs.
     pub(crate) fn read_raster_caps(data: &[u8], index: u32) -> Option<FaceRasterCaps> {
         let font = FontRef::from_index(data, index).ok()?;
         let has_outlines = font.outline_glyphs().format().is_some();
-        let has_color_outlines = font.table_data(Tag::new(b"COLR")).is_some()
-            && font.table_data(Tag::new(b"CPAL")).is_some();
+        let has_color_outlines = font.table_data(Tag::new(b"COLR")).is_some();
         let has_color_bitmaps = BitmapStrikes::with_format(&font, BitmapFormat::Sbix).is_some()
             || BitmapStrikes::with_format(&font, BitmapFormat::Cbdt).is_some();
+        let has_svg = font.table_data(Tag::new(b"SVG ")).is_some();
         Some(FaceRasterCaps {
             has_outlines,
             has_color_outlines,
             has_color_bitmaps,
+            has_svg,
         })
     }
 
@@ -637,6 +772,339 @@ mod raster_support {
             None,
             sink,
         )
+    }
+
+    struct RawOutlinePen<'a>(&'a mut ColorGlyphOutline);
+
+    impl OutlinePen for RawOutlinePen<'_> {
+        fn move_to(&mut self, x: f32, y: f32) {
+            self.0.points.push([x, y]);
+            self.0.verbs.push(ColorOutlineVerb::MoveTo);
+        }
+
+        fn line_to(&mut self, x: f32, y: f32) {
+            self.0.points.push([x, y]);
+            self.0.verbs.push(ColorOutlineVerb::LineTo);
+        }
+
+        fn quad_to(&mut self, cx0: f32, cy0: f32, x: f32, y: f32) {
+            self.0.points.push([cx0, cy0]);
+            self.0.points.push([x, y]);
+            self.0.verbs.push(ColorOutlineVerb::QuadTo);
+        }
+
+        fn curve_to(&mut self, cx0: f32, cy0: f32, cx1: f32, cy1: f32, x: f32, y: f32) {
+            self.0.points.push([cx0, cy0]);
+            self.0.points.push([cx1, cy1]);
+            self.0.points.push([x, y]);
+            self.0.verbs.push(ColorOutlineVerb::CurveTo);
+        }
+
+        fn close(&mut self) {
+            self.0.verbs.push(ColorOutlineVerb::Close);
+        }
+    }
+
+    struct ColrV1Recorder<'a> {
+        outlines: OutlineGlyphCollection<'a>,
+        coords: &'a [NormalizedCoord],
+        palette: Option<ColorPalette<'a>>,
+        outline_map: HashMap<u32, usize>,
+        recorded_outlines: Vec<ColorGlyphOutline>,
+        ops: Vec<ColorPaintOp>,
+        layer_modes: Vec<ColorCompositeMode>,
+    }
+
+    impl<'a> ColrV1Recorder<'a> {
+        fn new(
+            font: &'a FontRef<'a>,
+            coords: &'a [NormalizedCoord],
+            palette: Option<ColorPalette<'a>>,
+        ) -> Self {
+            Self {
+                outlines: font.outline_glyphs(),
+                coords,
+                palette,
+                outline_map: HashMap::new(),
+                recorded_outlines: Vec::new(),
+                ops: Vec::new(),
+                layer_modes: Vec::new(),
+            }
+        }
+
+        fn intern_glyph(&mut self, gid: GlyphId) -> usize {
+            let raw_id = gid.to_u32();
+            if let Some(&idx) = self.outline_map.get(&raw_id) {
+                return idx;
+            }
+            let mut outline = ColorGlyphOutline::default();
+            if let Some(glyph) = self.outlines.get(gid) {
+                let settings =
+                    DrawSettings::unhinted(Size::unscaled(), LocationRef::new(self.coords));
+                let _ = glyph.draw(settings, &mut RawOutlinePen(&mut outline));
+            }
+            let idx = self.recorded_outlines.len();
+            self.recorded_outlines.push(outline);
+            self.outline_map.insert(raw_id, idx);
+            idx
+        }
+
+        fn palette_color(&self, palette_index: u16) -> Option<[u8; 4]> {
+            if palette_index == 0xFFFF {
+                return None;
+            }
+            Some(self.palette.as_ref().map_or([0, 0, 0, 0], |pal| {
+                pal.colors()
+                    .get(usize::from(palette_index))
+                    .map_or([0, 0, 0, 0], |entry| {
+                        [entry.red(), entry.green(), entry.blue(), entry.alpha()]
+                    })
+            }))
+        }
+
+        fn convert_extend(extend: Extend) -> ColorExtend {
+            match extend {
+                Extend::Pad => ColorExtend::Pad,
+                Extend::Repeat => ColorExtend::Repeat,
+                Extend::Reflect => ColorExtend::Reflect,
+                _ => ColorExtend::Pad,
+            }
+        }
+
+        fn convert_transform(t: SkrifaTransform) -> ColorTransform {
+            ColorTransform {
+                xx: t.xx,
+                yx: t.yx,
+                xy: t.xy,
+                yy: t.yy,
+                dx: t.dx,
+                dy: t.dy,
+            }
+        }
+
+        fn convert_mode(mode: CompositeMode) -> ColorCompositeMode {
+            match mode {
+                CompositeMode::Clear => ColorCompositeMode::Clear,
+                CompositeMode::Src => ColorCompositeMode::Src,
+                CompositeMode::Dest => ColorCompositeMode::Dest,
+                CompositeMode::SrcOver => ColorCompositeMode::SrcOver,
+                CompositeMode::DestOver => ColorCompositeMode::DestOver,
+                CompositeMode::SrcIn => ColorCompositeMode::SrcIn,
+                CompositeMode::DestIn => ColorCompositeMode::DestIn,
+                CompositeMode::SrcOut => ColorCompositeMode::SrcOut,
+                CompositeMode::DestOut => ColorCompositeMode::DestOut,
+                CompositeMode::SrcAtop => ColorCompositeMode::SrcAtop,
+                CompositeMode::DestAtop => ColorCompositeMode::DestAtop,
+                CompositeMode::Xor => ColorCompositeMode::Xor,
+                CompositeMode::Plus => ColorCompositeMode::Plus,
+                CompositeMode::Screen => ColorCompositeMode::Screen,
+                CompositeMode::Overlay => ColorCompositeMode::Overlay,
+                CompositeMode::Darken => ColorCompositeMode::Darken,
+                CompositeMode::Lighten => ColorCompositeMode::Lighten,
+                CompositeMode::ColorDodge => ColorCompositeMode::ColorDodge,
+                CompositeMode::ColorBurn => ColorCompositeMode::ColorBurn,
+                CompositeMode::HardLight => ColorCompositeMode::HardLight,
+                CompositeMode::SoftLight => ColorCompositeMode::SoftLight,
+                CompositeMode::Difference => ColorCompositeMode::Difference,
+                CompositeMode::Exclusion => ColorCompositeMode::Exclusion,
+                CompositeMode::Multiply => ColorCompositeMode::Multiply,
+                CompositeMode::HslHue => ColorCompositeMode::HslHue,
+                CompositeMode::HslSaturation => ColorCompositeMode::HslSaturation,
+                CompositeMode::HslColor => ColorCompositeMode::HslColor,
+                CompositeMode::HslLuminosity => ColorCompositeMode::HslLuminosity,
+                _ => ColorCompositeMode::SrcOver,
+            }
+        }
+
+        fn convert_stops(&self, stops: &[skrifa::color::ColorStop]) -> Vec<ColorStopPaint> {
+            stops
+                .iter()
+                .map(|stop| ColorStopPaint {
+                    offset: stop.offset,
+                    color: self.palette_color(stop.palette_index),
+                    alpha: stop.alpha,
+                })
+                .collect()
+        }
+
+        fn convert_brush(&self, brush: SkrifaBrush<'_>) -> ColorBrush {
+            match brush {
+                SkrifaBrush::Solid {
+                    palette_index,
+                    alpha,
+                } => ColorBrush::Solid {
+                    color: self.palette_color(palette_index),
+                    alpha,
+                },
+                SkrifaBrush::LinearGradient {
+                    p0,
+                    p1,
+                    color_stops,
+                    extend,
+                } => ColorBrush::LinearGradient {
+                    p0: [p0.x, p0.y],
+                    p1: [p1.x, p1.y],
+                    stops: self.convert_stops(color_stops),
+                    extend: Self::convert_extend(extend),
+                },
+                SkrifaBrush::RadialGradient {
+                    c0,
+                    r0,
+                    c1,
+                    r1,
+                    color_stops,
+                    extend,
+                } => ColorBrush::RadialGradient {
+                    c0: [c0.x, c0.y],
+                    r0,
+                    c1: [c1.x, c1.y],
+                    r1,
+                    stops: self.convert_stops(color_stops),
+                    extend: Self::convert_extend(extend),
+                },
+                SkrifaBrush::SweepGradient {
+                    c0,
+                    start_angle,
+                    end_angle,
+                    color_stops,
+                    extend,
+                } => ColorBrush::SweepGradient {
+                    c0: [c0.x, c0.y],
+                    start_angle,
+                    end_angle,
+                    stops: self.convert_stops(color_stops),
+                    extend: Self::convert_extend(extend),
+                },
+            }
+        }
+    }
+
+    impl ColorPainter for ColrV1Recorder<'_> {
+        fn push_transform(&mut self, transform: SkrifaTransform) {
+            self.ops
+                .push(ColorPaintOp::PushTransform(Self::convert_transform(
+                    transform,
+                )));
+        }
+
+        fn pop_transform(&mut self) {
+            self.ops.push(ColorPaintOp::PopTransform);
+        }
+
+        fn push_clip_glyph(&mut self, glyph_id: GlyphId) {
+            let idx = self.intern_glyph(glyph_id);
+            self.ops.push(ColorPaintOp::PushClipGlyph(idx));
+        }
+
+        fn push_clip_box(&mut self, clip_box: BoundingBox<f32>) {
+            self.ops.push(ColorPaintOp::PushClipBox([
+                clip_box.x_min,
+                clip_box.y_min,
+                clip_box.x_max,
+                clip_box.y_max,
+            ]));
+        }
+
+        fn pop_clip(&mut self) {
+            self.ops.push(ColorPaintOp::PopClip);
+        }
+
+        fn fill(&mut self, brush: SkrifaBrush<'_>) {
+            let converted = self.convert_brush(brush);
+            self.ops.push(ColorPaintOp::Fill(converted));
+        }
+
+        fn push_layer(&mut self, composite_mode: CompositeMode) {
+            let mode = Self::convert_mode(composite_mode);
+            self.layer_modes.push(mode);
+            self.ops.push(ColorPaintOp::PushLayer);
+        }
+
+        fn pop_layer(&mut self) {
+            let mode = self
+                .layer_modes
+                .pop()
+                .unwrap_or(ColorCompositeMode::SrcOver);
+            self.ops.push(ColorPaintOp::PopLayer(mode));
+        }
+    }
+
+    /// Records the COLRv1 paint graph of `glyph_id` into Nana-internal paint commands.
+    pub(crate) fn record_color_v1_glyph(
+        data: &[u8],
+        index: u32,
+        coords: &[AxisCoord],
+        glyph_id: u16,
+    ) -> Option<ColorPaintRecording> {
+        let font = FontRef::from_index(data, index).ok()?;
+        let color_glyph = font
+            .color_glyphs()
+            .get_with_format(GlyphId::from(glyph_id), ColorGlyphFormat::ColrV1)?;
+        let upem = font.head().ok()?.units_per_em();
+        if upem == 0 {
+            return None;
+        }
+        let location = if coords.is_empty() {
+            skrifa::instance::Location::default()
+        } else {
+            font.axes().location(
+                coords
+                    .iter()
+                    .map(|coord| (Tag::new(&coord.tag), coord.value)),
+            )
+        };
+        let palettes = font.color_palettes();
+        let palette = palettes.get(0);
+        let mut recorder = ColrV1Recorder::new(&font, location.coords(), palette);
+        color_glyph.paint(&location, &mut recorder).ok()?;
+        Some(ColorPaintRecording {
+            upem,
+            outlines: recorder.recorded_outlines,
+            ops: recorder.ops,
+        })
+    }
+
+    /// Reads the OpenType `SVG ` table document covering `glyph_id`, if present.
+    #[cfg(feature = "svg")]
+    pub(crate) fn read_svg_glyph(
+        data: &[u8],
+        index: u32,
+        glyph_id: u16,
+    ) -> Option<RawSvgGlyph<'_>> {
+        let font = FontRef::from_index(data, index).ok()?;
+        let upem = font.head().ok()?.units_per_em();
+        if upem == 0 {
+            return None;
+        }
+        let svg_table = font.table_data(Tag::new(b"SVG "))?;
+        let table = svg_table.as_bytes();
+        if table.len() < 10 {
+            return None;
+        }
+        let doc_list_offset = u32::from_be_bytes([table[2], table[3], table[4], table[5]]) as usize;
+        let doc_list = table.get(doc_list_offset..)?;
+        if doc_list.len() < 2 {
+            return None;
+        }
+        let num_entries = u16::from_be_bytes([doc_list[0], doc_list[1]]) as usize;
+        let records = doc_list.get(2..2usize.checked_add(num_entries.checked_mul(12)?)?)?;
+        for record in records.chunks_exact(12) {
+            let start_gid = u16::from_be_bytes([record[0], record[1]]);
+            let end_gid = u16::from_be_bytes([record[2], record[3]]);
+            if glyph_id >= start_gid && glyph_id <= end_gid {
+                let doc_offset =
+                    u32::from_be_bytes([record[4], record[5], record[6], record[7]]) as usize;
+                let doc_len =
+                    u32::from_be_bytes([record[8], record[9], record[10], record[11]]) as usize;
+                let document = doc_list.get(doc_offset..doc_offset.checked_add(doc_len)?)?;
+                return Some(RawSvgGlyph {
+                    document,
+                    allow_root_fallback: start_gid == end_gid,
+                    upem,
+                });
+            }
+        }
+        None
     }
 
     /// Scales a COLRv0 layered color glyph into `sink` using CPAL palette 0.
@@ -765,8 +1233,12 @@ mod raster_support {
 
 #[cfg(all(test, feature = "raster"))]
 pub(crate) use raster_support::map_char_for_test;
+#[cfg(feature = "svg")]
+pub(crate) use raster_support::read_svg_glyph;
 #[cfg(feature = "raster")]
 pub(crate) use raster_support::{
-    FaceOutlineSink, FaceScalerCache, RawBitmapPayload, read_color_bitmap, read_raster_caps,
+    ColorBrush, ColorCompositeMode, ColorExtend, ColorGlyphOutline, ColorOutlineVerb, ColorPaintOp,
+    ColorPaintRecording, ColorStopPaint, ColorTransform, FaceOutlineSink, FaceScalerCache,
+    RawBitmapPayload, read_color_bitmap, read_raster_caps, record_color_v1_glyph,
     scale_color_outline, scale_plain_outline,
 };

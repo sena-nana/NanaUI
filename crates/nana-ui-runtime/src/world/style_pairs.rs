@@ -73,6 +73,7 @@ impl LayoutPairFacts {
                         || pt.font_kerning != nt.font_kerning
                         || pt.word_break != nt.word_break
                         || pt.line_break != nt.line_break
+                        || pt.hyphens != nt.hyphens
                         || pt.text_typography != nt.text_typography
                         || pt.text_emphasis_style != nt.text_emphasis_style
                         || pt.text_emphasis_position != nt.text_emphasis_position

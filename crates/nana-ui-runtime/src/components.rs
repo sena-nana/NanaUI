@@ -6,9 +6,9 @@ use std::{
 };
 
 use nana_ui_core::{
-    ControlSize, FontFeatureSetting, FontKerningSpec, FontVariationSetting, Icon, LayoutStyle,
-    LineBreakSpec, LineHeightSpec, PopoverAlignment, PopoverPlacement, SemanticColorRole,
-    UI_BASE_TEXT_SIZE, WordBreakSpec,
+    ControlSize, FontFeatureSetting, FontKerningSpec, FontVariationSetting, HyphensSpec, Icon,
+    LayoutStyle, LineBreakSpec, LineHeightSpec, PopoverAlignment, PopoverPlacement,
+    SemanticColorRole, UI_BASE_TEXT_SIZE, WordBreakSpec,
 };
 
 /// The **default theme's** status-tone mapping.
@@ -2001,6 +2001,7 @@ pub struct InheritedStyle {
     pub font_kerning: FontKerningSpec,
     pub word_break: WordBreakSpec,
     pub line_break: LineBreakSpec,
+    pub hyphens: HyphensSpec,
     /// CSS `direction` after inherit (initial LTR).
     pub direction: nana_ui_core::DirSpec,
     /// CSS `writing-mode` after inherit (initial `horizontal-tb`).
@@ -2049,6 +2050,7 @@ impl Default for InheritedStyle {
             font_kerning: FontKerningSpec::Auto,
             word_break: WordBreakSpec::Normal,
             line_break: LineBreakSpec::Auto,
+            hyphens: HyphensSpec::Manual,
             direction: nana_ui_core::DirSpec::Ltr,
             writing_mode: nana_ui_core::WritingModeSpec::HorizontalTb,
             text_orientation: nana_ui_core::TextOrientationSpec::Mixed,

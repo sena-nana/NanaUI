@@ -32,7 +32,7 @@
 //!   typography types so the eventual UiWorld adapter is a field-for-field move
 //!   rather than a dozen hand-written enum conversions. Only these items may be
 //!   named from `nana_ui_core`: `FontVariationSetting`, `FontKerningSpec`,
-//!   `LineBreakSpec`, `FontFeatureSetting`, `LineHeightSpec`, `WordBreakSpec`,
+//!   `LineBreakSpec`, `HyphensSpec`, `FontFeatureSetting`, `LineHeightSpec`, `WordBreakSpec`,
 //!   `TextWrapBreak`, `TextAlignSpec`, `DirSpec`, `WritingModeSpec`,
 //!   `TextOrientationSpec`, `WritingContext`.
 //!

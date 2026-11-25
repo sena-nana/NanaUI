@@ -2642,6 +2642,7 @@ dependencies = [
  "fontdb 0.24.0",
  "harfrust",
  "memmap2",
+ "nana-svg-raster",
  "nana-ui-core",
  "png",
  "serde",

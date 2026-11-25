@@ -300,7 +300,7 @@ pub mod set {
     pub mod text_ext {
         use crate::box_layout::*;
         use crate::typography::{
-            FontKerningSpec, FontVariationSetting, LineBreakSpec, TextEmphasisColor,
+            FontKerningSpec, FontVariationSetting, HyphensSpec, LineBreakSpec, TextEmphasisColor,
             TextEmphasisPosition, TextEmphasisStyle,
         };
 
@@ -318,6 +318,7 @@ pub mod set {
             font_variation_settings: Option<Vec<FontVariationSetting>>,
             font_kerning: Option<FontKerningSpec>,
             line_break: Option<LineBreakSpec>,
+            hyphens: Option<HyphensSpec>,
             unsupported_font_variation: bool,
             unsupported_writing_mode: bool,
             text_orientation: Option<TextOrientationSpec>,

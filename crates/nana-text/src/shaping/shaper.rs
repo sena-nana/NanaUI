@@ -416,7 +416,8 @@ impl Shaper {
                     scale,
                 );
                 let unusable_face = glyphs.is_none();
-                let missing = unshaped_ranges(glyphs.as_deref(), &piece.range);
+                let mut missing = unshaped_ranges(glyphs.as_deref(), &piece.range);
+                missing.retain(|gap| text.get(gap.clone()) != Some("\u{00AD}"));
                 let shaped = (glyphs.unwrap_or_default(), instance);
                 let mut replacements = Vec::with_capacity(missing.len());
                 for gap in &missing {
@@ -579,6 +580,19 @@ impl Shaper {
             .iter()
             .enumerate()
             .map(|(index, glyph)| {
+                let c_end = cluster_end(glyph.cluster);
+                if text.get(glyph.cluster as usize..c_end as usize) == Some("\u{00AD}") {
+                    return ShapedGlyph {
+                        glyph_id: 0,
+                        cluster: glyph.cluster,
+                        cluster_end: c_end,
+                        advance_px: 0.0,
+                        advance_y_px: 0.0,
+                        offset_x_px: 0.0,
+                        offset_y_px: 0.0,
+                        flags: GlyphFlags::IGNORED,
+                    };
+                }
                 let mut flags = GlyphFlags::NONE;
                 flags.set(GlyphFlags::MISSING, glyph.glyph_id == 0);
                 flags.set(GlyphFlags::FALLBACK_FONT, fallback);
@@ -591,7 +605,7 @@ impl Shaper {
                 ShapedGlyph {
                     glyph_id: glyph.glyph_id,
                     cluster: glyph.cluster,
-                    cluster_end: cluster_end(glyph.cluster),
+                    cluster_end: c_end,
                     advance_px: glyph.x_advance + spacing,
                     advance_y_px: glyph.y_advance,
                     offset_x_px: glyph.x_offset,

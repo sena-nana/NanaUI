@@ -76,6 +76,7 @@ NANA_TEXT_CORE_ALLOWLIST = {
     "FontFeatureSetting",
     "FontKerningSpec",
     "FontVariationSetting",
+    "HyphensSpec",
     "LineBreakSpec",
     "LineHeightSpec",
     "sort",

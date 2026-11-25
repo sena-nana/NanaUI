@@ -516,6 +516,7 @@ impl UiWorld {
             font_kerning: text_ext.font_kerning.unwrap_or(inherited.font_kerning),
             word_break: text_ext.word_break.unwrap_or(inherited.word_break),
             line_break: text_ext.line_break.unwrap_or(inherited.line_break),
+            hyphens: text_ext.hyphens.unwrap_or(inherited.hyphens),
             direction: layout.dir.unwrap_or(inherited.direction),
             writing_mode: layout.writing_mode.unwrap_or(inherited.writing_mode),
             text_orientation: text_ext

@@ -994,7 +994,7 @@ Select、Dropdown、SearchDropdown 打开的菜单也排在根层叠上下文。
 
 作者的 `::selection` 和 `::-moz-selection` 只兑现 `background`、`background-color`、`color`，画到文档选区高亮。其余属性 fail-closed。这不是完整的 CSS Highlight API。未写时，选中底仍用主题的 `accent_soft`。
 
-`word-break: keep-all` 会跳过。`line-break: strict|loose`、`text-spacing-trim`、`text-autospace`、`text-justify`、`text-wrap-style` 交给文本引擎的 CJK 行决策（#211），都会继承。字距是近似。
+`word-break: keep-all` 会跳过。`line-break: strict|loose`、`text-spacing-trim`、`text-autospace`、`text-justify`、`text-wrap-style` 交给文本引擎的 CJK 行决策（#211），`hyphens: none | manual | auto` 控制 `U+00AD` 软连字符断行（#424，未接入语言词典前 `auto` 等同于 `manual`），都会继承。字距是近似。
 
 **隐藏。** `display: none` 不占位，也不参与点击。
 

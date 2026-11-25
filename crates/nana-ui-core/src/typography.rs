@@ -58,6 +58,19 @@ pub enum LineBreakSpec {
     Loose,
 }
 
+/// CSS `hyphens`. `Manual` (the initial value) breaks at explicit soft hyphens
+/// (`U+00AD`) and draws `-` at the line end only when a break happens there.
+/// `None` suppresses soft-hyphen breaks and rendering; `Auto` uses the same
+/// explicit soft-hyphen mechanism when no language hyphenation dictionary is
+/// installed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum HyphensSpec {
+    None,
+    #[default]
+    Manual,
+    Auto,
+}
+
 /// CSS `text-spacing-trim`: how much of the blank half of fullwidth CJK
 /// punctuation a line keeps.
 ///

@@ -44,6 +44,9 @@ pub struct LayoutRequest<'a> {
     /// path is what keeps it out of the per-node work: every node with the same
     /// style shares one cached shaping of it.
     pub ellipsis: Option<&'a Arc<ShapedText>>,
+    /// `-`, already shaped with the base style, inserted only when a line breaks
+    /// at a soft hyphen (`U+00AD`).
+    pub hyphen: Option<&'a Arc<ShapedText>>,
     /// Metrics of the base style's own face. See [`LineStrut`].
     pub strut_metrics: Option<RunMetrics>,
     /// The shaped annotation of each of [`TextSource::rubies`], in order;
@@ -82,6 +85,7 @@ impl<'a> LayoutRequest<'a> {
             style,
             constraints,
             ellipsis: None,
+            hyphen: None,
             strut_metrics: None,
             rubies: &[],
             labels: &[],
@@ -110,6 +114,12 @@ impl<'a> LayoutRequest<'a> {
     #[must_use]
     pub fn with_ellipsis(mut self, ellipsis: Option<&'a Arc<ShapedText>>) -> Self {
         self.ellipsis = ellipsis;
+        self
+    }
+
+    #[must_use]
+    pub fn with_hyphen(mut self, hyphen: Option<&'a Arc<ShapedText>>) -> Self {
+        self.hyphen = hyphen;
         self
     }
 
@@ -228,6 +238,7 @@ impl Layouter {
             request.shaped,
             request.source.revision(),
             request.ellipsis,
+            request.hyphen,
             request.kind,
             request.constraints,
             strut,
@@ -283,6 +294,10 @@ impl Layouter {
         let scale = request.constraints.scale.px_per_logical;
         let base_line_height = line_height_px(request.style, scale);
         let run_line_heights = run_line_heights(request, scale);
+        let hyphen = request
+            .hyphen
+            .filter(|_| request.constraints.hyphens != nana_ui_core::HyphensSpec::None)
+            .and_then(|shaped| Ellipsis::new(shaped));
         let measure = |sizing| {
             let sized = sized_runs(request, scale, sizing);
             Builder::new(line_input(
@@ -292,6 +307,7 @@ impl Layouter {
                 &run_line_heights,
                 base_line_height,
                 None,
+                hyphen.as_ref(),
             ))
             .intrinsic_widths()
         };
@@ -321,6 +337,10 @@ impl Layouter {
             .ellipsis
             .filter(|_| request.constraints.ellipsis)
             .and_then(|shaped| Ellipsis::new(shaped));
+        let hyphen = request
+            .hyphen
+            .filter(|_| request.constraints.hyphens != nana_ui_core::HyphensSpec::None)
+            .and_then(|shaped| Ellipsis::new(shaped));
         let sized = sized_runs(
             request,
             request.constraints.scale.px_per_logical,
@@ -333,6 +353,7 @@ impl Layouter {
             run_line_heights,
             base_line_height,
             ellipsis.as_ref(),
+            hyphen.as_ref(),
         );
         let builder = Builder::new(input);
         let fast_path = uses_label_fast_path(request);
@@ -1009,6 +1030,7 @@ fn line_input<'r>(
     run_line_heights: &'r [f32],
     base_line_height: f32,
     ellipsis: Option<&'r Ellipsis>,
+    hyphen: Option<&'r Ellipsis>,
 ) -> LineInput<'r> {
     LineInput {
         text: request.source.text(),
@@ -1026,6 +1048,7 @@ fn line_input<'r>(
             DirSpec::Rtl => RunDirection::Rtl,
         },
         ellipsis,
+        hyphen,
         vertical: request.shaped.vertical,
         envelopes: request
             .source

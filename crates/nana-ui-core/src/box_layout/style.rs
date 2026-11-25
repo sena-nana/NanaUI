@@ -1,7 +1,7 @@
 //! Retained `LayoutStyle` struct, logical edges, and box/layout resolution helpers.
 
 use crate::style_model::{PaintColor, StyleModelRef};
-use crate::typography::{FontKerningSpec, FontVariationSetting, LineBreakSpec};
+use crate::typography::{FontKerningSpec, FontVariationSetting, HyphensSpec, LineBreakSpec};
 
 use super::grid::{lookup_named_line_after, lookup_named_line_nth, *};
 use super::paint::{PAINT_MAT4_EPS, edge_paints_stroke, paint_border_width, used_border_width, *};
@@ -343,6 +343,8 @@ pub struct TextStyleExt {
     pub font_kerning: Option<FontKerningSpec>,
     /// CSS `line-break`. `None` = inherit.
     pub line_break: Option<LineBreakSpec>,
+    /// CSS `hyphens`. `None` = inherit / `manual`.
+    pub hyphens: Option<HyphensSpec>,
     /// CSS `text-spacing-trim`, `text-autospace`, `text-justify` and
     /// `text-wrap-style`, each inherited when unset (Issue #211).
     pub text_typography: crate::typography::TextTypography,
@@ -373,6 +375,7 @@ impl TextStyleExt {
             || self.font_kerning.is_some()
             || self.word_break.is_some()
             || self.line_break.is_some()
+            || self.hyphens.is_some()
             || self.text_typography != crate::typography::TextTypography::default()
             || self.text_emphasis_style.is_some()
             || self.text_emphasis_position.is_some()
@@ -1651,7 +1654,8 @@ impl LayoutStyle {
             || (p.font_features.is_some() && cur.font_features.is_none())
             || (p.font_variation_settings.is_some() && cur.font_variation_settings.is_none())
             || (p.font_kerning.is_some() && cur.font_kerning.is_none())
-            || (p.line_break.is_some() && cur.line_break.is_none());
+            || (p.line_break.is_some() && cur.line_break.is_none())
+            || (p.hyphens.is_some() && cur.hyphens.is_none());
         if !needs_copy {
             return;
         }
@@ -1691,6 +1695,9 @@ impl LayoutStyle {
         }
         if ext.line_break.is_none() {
             ext.line_break = p.line_break;
+        }
+        if ext.hyphens.is_none() {
+            ext.hyphens = p.hyphens;
         }
     }
 

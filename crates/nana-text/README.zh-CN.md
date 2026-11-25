@@ -43,6 +43,7 @@ let layout = engine.layout(
 ## Features
 
 - `raster`：在 CPU 上把字形光栅化成位图（`nana_text::raster`）。`nana-ui` 的 `gpu` feature 会打开它，自己合成文字的宿主也可以单独使用。
+- `svg`：打开 `raster` 并启用 OpenType `SVG ` 表字形的 CPU 光栅化（经由 `nana-svg-raster`，不在默认特性中；`nana-ui` 的 `svg` feature 会打开它）。
 
 ## 测试
 

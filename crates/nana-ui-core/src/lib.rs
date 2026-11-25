@@ -232,9 +232,9 @@ pub use tree::{
     tree_navigation_event, tree_preorder,
 };
 pub use typography::{
-    FontKerningSpec, FontVariationSetting, LineBreakSpec, TextAutospaceSpec, TextEmphasis,
-    TextEmphasisColor, TextEmphasisPosition, TextEmphasisShape, TextEmphasisStyle, TextJustifySpec,
-    TextSpacingTrimSpec, TextTypography, TextWrapStyleSpec, UsedTextTypography,
+    FontKerningSpec, FontVariationSetting, HyphensSpec, LineBreakSpec, TextAutospaceSpec,
+    TextEmphasis, TextEmphasisColor, TextEmphasisPosition, TextEmphasisShape, TextEmphasisStyle,
+    TextJustifySpec, TextSpacingTrimSpec, TextTypography, TextWrapStyleSpec, UsedTextTypography,
 };
 pub use url_jail::{
     MAX_LOCAL_URL_BYTES, canonicalize_within_jail, file_url_to_path,
