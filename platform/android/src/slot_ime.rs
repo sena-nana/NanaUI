@@ -33,6 +33,72 @@ pub struct SlotEditorInfo {
     pub ime_options: u32,
 }
 
+/// Snapshot mirrored onto Android `android.view.inputmethod.CursorAnchorInfo`
+/// so CJK candidate windows follow the focused editor's caret and preedit.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SlotCursorAnchorInfo {
+    pub selection_start: i32,
+    pub selection_end: i32,
+    pub composing_start: Option<i32>,
+    pub composing_text: Option<String>,
+    pub insertion_marker_x: f32,
+    pub insertion_marker_y: f32,
+    pub insertion_marker_bottom: f32,
+    pub bounds: [f32; 4],
+}
+
+/// Converts focused editor text, UTF-8 selection/marked offsets, and logical
+/// caret/editor boxes into physical-pixel `CursorAnchorInfo` data (UTF-16 offsets).
+pub fn build_cursor_anchor_info(
+    text: &str,
+    selection: (usize, usize),
+    marked: Option<(usize, usize)>,
+    caret_logical: (f32, f32, f32, f32),
+    bounds_logical: (f32, f32, f32, f32),
+    scale: f32,
+) -> SlotCursorAnchorInfo {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    let sel_start = byte_to_utf16_index(text, selection.0.min(text.len())) as i32;
+    let sel_end = byte_to_utf16_index(text, selection.1.min(text.len())) as i32;
+    let (composing_start, composing_text) = match marked {
+        Some((start, end)) => {
+            let s = floor_boundary(text, start.min(text.len()));
+            let e = floor_boundary(text, end.min(text.len()));
+            if s < e {
+                (
+                    Some(byte_to_utf16_index(text, s) as i32),
+                    Some(text[s..e].to_owned()),
+                )
+            } else {
+                (None, None)
+            }
+        }
+        None => (None, None),
+    };
+    let marker_x = caret_logical.0 * scale;
+    let marker_y = caret_logical.1 * scale;
+    let marker_bottom = (caret_logical.1 + caret_logical.3.max(1.0)) * scale;
+    SlotCursorAnchorInfo {
+        selection_start: sel_start,
+        selection_end: sel_end,
+        composing_start,
+        composing_text,
+        insertion_marker_x: marker_x,
+        insertion_marker_y: marker_y,
+        insertion_marker_bottom: marker_bottom,
+        bounds: [
+            bounds_logical.0 * scale,
+            bounds_logical.1 * scale,
+            bounds_logical.2 * scale,
+            bounds_logical.3 * scale,
+        ],
+    }
+}
+
 /// Password / multiline flags from the Runtime focus mirror.
 pub fn editor_info_from_request(password: bool, multiline: bool) -> SlotEditorInfo {
     let mut input_type = TYPE_CLASS_TEXT;
@@ -473,5 +539,27 @@ mod tests {
                 selection: Some((3, 3)),
             }]
         );
+    }
+
+    #[test]
+    fn cursor_anchor_info_maps_utf16_and_scales_physical_pixels() {
+        // "你" is 3 UTF-8 bytes and 1 UTF-16 code unit; "😀" is 4 UTF-8 bytes and 2 UTF-16 units.
+        let text = "你😀ab";
+        let anchor = build_cursor_anchor_info(
+            text,
+            (7, 8),       // "a" (UTF-16 offsets 3..4)
+            Some((3, 7)), // "😀" (UTF-16 start 1)
+            (10.0, 20.0, 2.0, 18.0),
+            (4.0, 16.0, 120.0, 40.0),
+            2.5,
+        );
+        assert_eq!(anchor.selection_start, 3);
+        assert_eq!(anchor.selection_end, 4);
+        assert_eq!(anchor.composing_start, Some(1));
+        assert_eq!(anchor.composing_text.as_deref(), Some("😀"));
+        assert_eq!(anchor.insertion_marker_x, 25.0);
+        assert_eq!(anchor.insertion_marker_y, 50.0);
+        assert_eq!(anchor.insertion_marker_bottom, 95.0);
+        assert_eq!(anchor.bounds, [10.0, 40.0, 300.0, 100.0]);
     }
 }

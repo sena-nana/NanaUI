@@ -181,7 +181,7 @@ fn a_tap_activates_and_the_frame_after_it_settles() {
 }
 
 #[test]
-fn a_second_finger_is_not_followed() {
+fn concurrent_multi_touch_pointers_route_distinct_ids() {
     let mut fixture = fixture();
     let (x, y) = fixture.centre(fixture.button.stable_id());
     assert!(
@@ -190,13 +190,45 @@ fn a_second_finger_is_not_followed() {
             .push_touch(TouchPhase::Down, x, y, 1)
             .unwrap()
     );
+    // Duplicate down for the same active pointer id is ignored.
     assert!(
         !fixture
             .runtime
-            .push_touch(TouchPhase::Down, x, y, 2)
+            .push_touch(TouchPhase::Down, x, y, 1)
             .unwrap()
     );
-    assert!(!fixture.runtime.push_touch(TouchPhase::Up, x, y, 2).unwrap());
+    // A second concurrent finger enters and moves alongside pointer 1.
+    assert!(
+        fixture
+            .runtime
+            .push_touch(TouchPhase::Down, x + 20.0, y + 10.0, 2)
+            .unwrap()
+    );
+    assert!(
+        fixture
+            .runtime
+            .push_touch(TouchPhase::Move, x + 24.0, y + 14.0, 2)
+            .unwrap()
+    );
+    assert!(
+        fixture
+            .runtime
+            .push_touch(TouchPhase::Move, x + 2.0, y + 2.0, 1)
+            .unwrap()
+    );
+    // Lifting pointer 2 ends only pointer 2; unknown pointer 99 is ignored.
+    assert!(
+        !fixture
+            .runtime
+            .push_touch(TouchPhase::Up, x, y, 99)
+            .unwrap()
+    );
+    assert!(
+        fixture
+            .runtime
+            .push_touch(TouchPhase::Up, x + 24.0, y + 14.0, 2)
+            .unwrap()
+    );
     assert!(fixture.runtime.push_touch(TouchPhase::Up, x, y, 1).unwrap());
     assert_eq!(*fixture.presses.lock().unwrap(), 1);
 }

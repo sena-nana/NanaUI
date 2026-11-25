@@ -51,9 +51,9 @@ iOS 宿主（`platform/ios`）是一条**实验性**宿主路径，和 [Android]
 
 UIKit 按 UTF-16 偏移计数，代理负责和 UTF-8 字节偏移互相换算。回调在宿主的输入路由内部运行，不能同步回调宿主，外壳一律派发到主队列再处理。
 
-已知限制：
+已知限制与说明：
 
-- `UITextInteraction` 会画自己的光标和选区高亮，NanaUI 编辑器的光标同时也在画，所以会出现两个光标。原型没有处理这一点。
+- `NanaTextProxy` 将自身的 `tintColor` 固定为透明（`.clear`）以隐藏 UIKit 原生文本代理插入符，由 NanaUI 自绘唯一光标，避免双光标叠加；同时 `caretRect(for:)` 与 `selectionRects(for:)` 仍返回真实编辑器光标与选区位置供放大镜、编辑菜单及输入法候选使用。
 - `selectionRects` 只按单行计算。
 
 ## 构建

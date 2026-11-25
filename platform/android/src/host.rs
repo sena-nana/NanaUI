@@ -31,9 +31,13 @@ use nana_ui::runtime::FrameworkError;
 use nana_ui_platform::{SharedClipboardHost, TextInputContext, default_shared_clipboard};
 use raw_window_handle::{AndroidNdkWindowHandle, DisplayHandle, RawWindowHandle, WindowHandle};
 
+use crate::choreographer::ChoreographerDriver;
 use crate::shell::{SystemInsets, primary_rect, scale_factor_from_density_dpi};
 use crate::slot_ax::SlotAccessibility;
-use crate::slot_ime::{SlotEditorInfo, SlotImeBuffer, ime_events_from_buffer_delta};
+use crate::slot_ime::{
+    SlotCursorAnchorInfo, SlotEditorInfo, SlotImeBuffer, build_cursor_anchor_info,
+    ime_events_from_buffer_delta,
+};
 use crate::slot_input::{
     SlotInputGate, SlotKeyDispatch, SlotKeyMods, SlotLogicalKey, SlotTouchKind,
     android_keycode_is_modifier, host_swallows_for_input_connection,
@@ -180,6 +184,7 @@ struct Host {
     ime_shown: bool,
     ime_buffer: SlotImeBuffer,
     editor_info: Option<SlotEditorInfo>,
+    cursor_anchor: Option<SlotCursorAnchorInfo>,
 }
 
 impl Host {
@@ -195,6 +200,7 @@ impl Host {
             ime_shown: false,
             ime_buffer: SlotImeBuffer::default(),
             editor_info: None,
+            cursor_anchor: None,
         }
     }
 
@@ -306,6 +312,7 @@ impl Host {
         self.ime_shown = false;
         self.ime_buffer = SlotImeBuffer::default();
         self.editor_info = None;
+        self.cursor_anchor = None;
         log::info!("nana-android-host: surface destroyed, document kept");
     }
 
@@ -397,8 +404,15 @@ impl Host {
                 set_text_input_state(app, &buffer);
                 self.ime_buffer = buffer;
             }
+            if let Some(anchor) = self.build_current_cursor_anchor()
+                && self.cursor_anchor.as_ref() != Some(&anchor)
+            {
+                update_cursor_anchor_info(app, &anchor);
+                self.cursor_anchor = Some(anchor);
+            }
         } else {
             self.editor_info = None;
+            self.cursor_anchor = None;
         }
         match (focused, self.ime_shown) {
             (true, false) => {
@@ -409,9 +423,29 @@ impl Host {
                 app.hide_soft_input(false);
                 self.ime_shown = false;
                 self.ime_buffer = SlotImeBuffer::default();
+                self.cursor_anchor = None;
             }
             _ => {}
         }
+    }
+
+    fn build_current_cursor_anchor(&mut self) -> Option<SlotCursorAnchorInfo> {
+        let document = self.document.as_mut()?;
+        let snapshot = document.runtime.text_input()?;
+        let bounds = document.runtime.text_input_bounds()?;
+        let caret = document
+            .runtime
+            .text_caret_rect(snapshot.selection.1)
+            .unwrap_or(bounds);
+        let scale = document.runtime.viewport().scale;
+        Some(build_cursor_anchor_info(
+            &snapshot.text,
+            snapshot.selection,
+            snapshot.marked,
+            (caret.x, caret.y, caret.width, caret.height),
+            (bounds.x, bounds.y, bounds.width, bounds.height),
+            scale,
+        ))
     }
 
     fn handle_motion(&mut self, action: MotionAction, x: f32, y: f32, pointer_id: i32) -> bool {
@@ -536,6 +570,7 @@ pub fn run(app: AndroidApp, host_app: Box<dyn AndroidHostApp>) -> Result<(), Str
     let waker = app.create_waker();
     let task_waker = waker.clone();
     nana_mobile_host::set_task_wake(move || task_waker.wake());
+    let choreographer = ChoreographerDriver::new(waker.clone());
     let shell = Shell {
         app: app.clone(),
         waker,
@@ -546,9 +581,17 @@ pub fn run(app: AndroidApp, host_app: Box<dyn AndroidHostApp>) -> Result<(), Str
     while running {
         let now = Instant::now();
         let timeout = match host.demand().resolve(now) {
-            FrameDemand::Now => Some(Duration::ZERO),
+            FrameDemand::Now if choreographer.is_frame_ready() => Some(Duration::ZERO),
+            FrameDemand::Now => {
+                choreographer.request_vsync();
+                // Bounded guard in case an Activity stops delivering choreographer ticks.
+                Some(Duration::from_millis(50))
+            }
             FrameDemand::At(deadline) => Some(deadline.saturating_duration_since(now)),
-            FrameDemand::Idle => None,
+            FrameDemand::Idle => {
+                choreographer.disarm();
+                None
+            }
         };
         app.poll_events(timeout, |event| {
             let PollEvent::Main(main) = event else {
@@ -558,10 +601,16 @@ pub fn run(app: AndroidApp, host_app: Box<dyn AndroidHostApp>) -> Result<(), Str
                 MainEvent::InitWindow { .. } => {
                     if let Err(error) = host.on_window_ready(&app) {
                         log::error!("nana-android-host: window ready failed: {error}");
+                    } else {
+                        choreographer.mark_immediate_ready();
                     }
                 }
-                MainEvent::TerminateWindow { .. } => host.on_window_destroyed(),
+                MainEvent::TerminateWindow { .. } => {
+                    choreographer.disarm();
+                    host.on_window_destroyed();
+                }
                 MainEvent::Destroy => {
+                    choreographer.disarm();
                     host.document = None;
                     running = false;
                 }
@@ -573,15 +622,22 @@ pub fn run(app: AndroidApp, host_app: Box<dyn AndroidHostApp>) -> Result<(), Str
                     if let Some(document) = host.document.as_mut() {
                         document.runtime.request_present();
                     }
+                    if matches!(main, MainEvent::RedrawNeeded { .. }) {
+                        choreographer.mark_immediate_ready();
+                    }
                 }
                 MainEvent::Resume { .. } => host.lifecycle(Lifecycle::Resumed),
                 MainEvent::Pause => {
                     // Android dismisses the IME itself; the next focus
                     // re-shows it.
                     host.ime_shown = false;
+                    choreographer.disarm();
                     host.lifecycle(Lifecycle::Paused);
                 }
-                MainEvent::Stop => host.ime_shown = false,
+                MainEvent::Stop => {
+                    host.ime_shown = false;
+                    choreographer.disarm();
+                }
                 _ => {}
             }
         });
@@ -591,13 +647,29 @@ pub fn run(app: AndroidApp, host_app: Box<dyn AndroidHostApp>) -> Result<(), Str
                 let handled = match event {
                     InputEvent::MotionEvent(motion) => {
                         let action = motion.action();
-                        let pointer = motion.pointer_at_index(motion.pointer_index());
-                        let handled = host.handle_motion(
-                            action,
-                            pointer.x(),
-                            pointer.y(),
-                            pointer.pointer_id(),
-                        );
+                        let handled = match action {
+                            MotionAction::Move | MotionAction::Cancel => {
+                                let mut any = false;
+                                for pointer in motion.pointers() {
+                                    any |= host.handle_motion(
+                                        action,
+                                        pointer.x(),
+                                        pointer.y(),
+                                        pointer.pointer_id(),
+                                    );
+                                }
+                                any
+                            }
+                            _ => {
+                                let pointer = motion.pointer_at_index(motion.pointer_index());
+                                host.handle_motion(
+                                    action,
+                                    pointer.x(),
+                                    pointer.y(),
+                                    pointer.pointer_id(),
+                                )
+                            }
+                        };
                         // Re-ask on every tap on the focused field: Back may
                         // have dismissed the IME since focus last changed.
                         if handled
@@ -633,7 +705,17 @@ pub fn run(app: AndroidApp, host_app: Box<dyn AndroidHostApp>) -> Result<(), Str
             }) {}
         }
         host.drain_accessibility_actions();
-        host.frame(Instant::now());
+        let after_input = Instant::now();
+        let post_demand = host.demand().resolve(after_input);
+        if post_demand == FrameDemand::Now {
+            if choreographer.take_frame_ready() {
+                host.frame(after_input);
+            } else {
+                choreographer.request_vsync();
+            }
+        } else {
+            choreographer.disarm();
+        }
         host.sync_soft_input(&app);
     }
     Ok(())
@@ -663,6 +745,120 @@ fn apply_editor_info(app: &AndroidApp, info: SlotEditorInfo) {
     };
     let options = ImeOptions::from_bits_truncate(info.ime_options);
     app.set_ime_editor_info(input_type, action, options);
+}
+
+fn update_cursor_anchor_info(app: &AndroidApp, anchor: &SlotCursorAnchorInfo) {
+    use accesskit_android::jni::objects::{JObject, JValue};
+
+    with_activity(app, "updateCursorAnchorInfo", |env, activity| {
+        let imm_service = env.new_string("input_method")?;
+        let imm = env
+            .call_method(
+                activity,
+                "getSystemService",
+                "(Ljava/lang/String;)Ljava/lang/Object;",
+                &[JValue::Object(&imm_service)],
+            )?
+            .l()?;
+        if imm.is_null() {
+            return Ok(());
+        }
+        let window = env
+            .call_method(activity, "getWindow", "()Landroid/view/Window;", &[])?
+            .l()?;
+        let current_focus = env
+            .call_method(&window, "getCurrentFocus", "()Landroid/view/View;", &[])?
+            .l()?;
+        let view = if !current_focus.is_null() {
+            current_focus
+        } else {
+            env.call_method(&window, "getDecorView", "()Landroid/view/View;", &[])?
+                .l()?
+        };
+        if view.is_null() {
+            return Ok(());
+        }
+
+        let loc_arr = env.new_int_array(2)?;
+        let loc_obj: JObject = loc_arr.into();
+        env.call_method(
+            &view,
+            "getLocationInWindow",
+            "([I)V",
+            &[JValue::Object(&loc_obj)],
+        )?;
+        let mut loc = [0i32; 2];
+        let loc_arr_ref: &accesskit_android::jni::objects::JIntArray = (&loc_obj).into();
+        env.get_int_array_region(loc_arr_ref, 0, &mut loc)?;
+
+        let matrix = env.new_object("android/graphics/Matrix", "()V", &[])?;
+        env.call_method(
+            &matrix,
+            "setTranslate",
+            "(FF)V",
+            &[JValue::Float(loc[0] as f32), JValue::Float(loc[1] as f32)],
+        )?;
+
+        let builder = env.new_object(
+            "android/view/inputmethod/CursorAnchorInfo$Builder",
+            "()V",
+            &[],
+        )?;
+        env.call_method(
+            &builder,
+            "setMatrix",
+            "(Landroid/graphics/Matrix;)Landroid/view/inputmethod/CursorAnchorInfo$Builder;",
+            &[JValue::Object(&matrix)],
+        )?;
+        env.call_method(
+            &builder,
+            "setSelectionRange",
+            "(II)Landroid/view/inputmethod/CursorAnchorInfo$Builder;",
+            &[
+                JValue::Int(anchor.selection_start),
+                JValue::Int(anchor.selection_end),
+            ],
+        )?;
+        if let (Some(start), Some(text)) =
+            (anchor.composing_start, anchor.composing_text.as_deref())
+        {
+            let jtext = env.new_string(text)?;
+            env.call_method(
+                &builder,
+                "setComposingText",
+                "(ILjava/lang/CharSequence;)Landroid/view/inputmethod/CursorAnchorInfo$Builder;",
+                &[JValue::Int(start), JValue::Object(&jtext)],
+            )?;
+        }
+        const FLAG_HAS_VISIBLE_REGION: i32 = 1;
+        env.call_method(
+            &builder,
+            "setInsertionMarkerLocation",
+            "(FFFFI)Landroid/view/inputmethod/CursorAnchorInfo$Builder;",
+            &[
+                JValue::Float(anchor.insertion_marker_x),
+                JValue::Float(anchor.insertion_marker_y),
+                JValue::Float(anchor.insertion_marker_bottom),
+                JValue::Float(anchor.insertion_marker_bottom),
+                JValue::Int(FLAG_HAS_VISIBLE_REGION),
+            ],
+        )?;
+        let info = env
+            .call_method(
+                &builder,
+                "build",
+                "()Landroid/view/inputmethod/CursorAnchorInfo;",
+                &[],
+            )?
+            .l()?;
+        env.call_method(
+            &imm,
+            "updateCursorAnchorInfo",
+            "(Landroid/view/View;Landroid/view/inputmethod/CursorAnchorInfo;)V",
+            &[JValue::Object(&view), JValue::Object(&info)],
+        )?;
+        Ok(())
+    });
 }
 
 /// Run `read` against the Activity on this thread's JNI env; `None` (and a

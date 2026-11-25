@@ -28,13 +28,11 @@ The manifest's `configChanges` contains `uiMode|fontScale|density`; these change
 
 The host loop decides how to wait from `FrameDemand`:
 
-- When frames are needed, every round produces a frame, rate-limited by the Fifo swapchain at vsync.
+- When frames are needed (`FrameDemand::Now`), an `AChoreographer_postFrameCallback` hosted on a dedicated `ALooper` thread paces frames to display hardware vsync and wakes the main loop via `AndroidAppWaker` (avoiding `ALooper_pollOnce` `ALOOPER_POLL_CALLBACK` error logs in `android-activity`'s main-thread loop), paired with the Fifo swapchain.
 - With a deadline, `poll_events` sleeps until the deadline.
-- When idle, `poll_events(None)` blocks until there is input, a lifecycle event, or a view task woken through `AndroidAppWaker`.
+- When idle, Choreographer callbacks are disarmed and `poll_events(None)` blocks until there is input, a lifecycle event, or a view task woken through `AndroidAppWaker`.
 
-The 16 ms polling and the 500 ms heartbeat frame are gone.
-
-The original plan was to align to vsync with `AChoreographer_postFrameCallback64`. But when `poll_events` in android-activity 0.6 meets the callback result returned by `ALooper_pollOnce`, it records one error and ignores it, printing an error log every frame, so the current swapchain rate limiting took its place. The latency optimization of aligning to the vsync start point is left for later.
+The 16 ms polling and the 500 ms heartbeat frame are gone, and in-slot multi-touch (`MotionAction::Move`/`Cancel` across all active `pointers()`) preserves concurrent `PointerId` routing into `MobileRuntime`.
 
 `TerminateWindow` drops only the surface; the document, the state and the Device are all kept. The next `InitWindow` attaches a new surface with the same Device.
 
@@ -74,7 +72,7 @@ After installing the APK on a device, check each of the following behaviours. On
 | **Background and restore** | After going to the background and back, the text in the search field, the switches and the counter are all still there | Device or emulator |
 | **No frames when idle** | Frames stop after interaction stops (the frame count in `adb shell dumpsys gfxinfo` stops growing) | Device |
 | **Light/dark mode and font size** | Follows the system dark mode and system font size | Device |
-| **CJK IME candidates** | Pinyin/stroke candidates are written correctly into the Runtime `TextInput` after selection (the host does not provide `CursorAnchorInfo` yet, so the candidate bar stays at the top of the keyboard) | **Must use a device IME**; `adb shell input keyevent` is not a substitute |
+| **CJK IME candidates** | Pinyin/stroke candidates are written correctly into the Runtime `TextInput`, and the host reports caret, selection, and composing span coordinates via `InputMethodManager.updateCursorAnchorInfo` | **Must use a device IME**; `adb shell input keyevent` is not a substitute |
 | **System clipboard interop** | Copy and paste inside `TextInput` interoperate with the system `ClipboardManager` | Device |
 | **TalkBack screen reader interaction** | `Button` activation counts, `Switch` state toggling, `TextInput` focus and entry into editing | **A real person must perform TalkBack gestures on a device** (`adb`-injected taps bypass accessibility touch exploration) |
 | **Touch scrolling** | The grid flings with `ScrollPhysics::Android`, stops at the edge, and does not overshoot | Device |

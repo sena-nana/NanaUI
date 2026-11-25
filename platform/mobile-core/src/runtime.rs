@@ -150,8 +150,8 @@ pub struct MobileRuntime {
     /// The root paints no background ([`Self::set_background_passthrough`]).
     passthrough: bool,
     root: Entity<List>,
-    /// The touch the document follows; other fingers are ignored.
-    primary_touch: Option<u64>,
+    /// Active touch pointer ids in arrival order; index 0 is the primary touch.
+    active_touches: Vec<u64>,
     ime_enabled: bool,
     /// Something changed that the last presented frame does not show.
     needs_present: bool,
@@ -192,7 +192,7 @@ impl MobileRuntime {
             theme: None,
             passthrough: false,
             root,
-            primary_touch: None,
+            active_touches: Vec::new(),
             ime_enabled: false,
             needs_present: true,
         };
@@ -359,8 +359,9 @@ impl MobileRuntime {
         Ok(changed)
     }
 
-    /// Route one sample of the primary touch, in physical px. Returns
-    /// `false` for a sample the document does not follow (a second finger).
+    /// Route one touch sample, in physical px, preserving concurrent multi-touch
+    /// `pointer_id` streams through `nana-ui-input`. Returns `false` for
+    /// duplicate `Down` or `Move`/`Up`/`Cancel` of an unknown touch.
     pub fn push_touch(
         &mut self,
         phase: TouchPhase,
@@ -383,20 +384,33 @@ impl MobileRuntime {
         pointer_id: u64,
         at: Instant,
     ) -> Result<bool, FrameworkError> {
-        match (phase, self.primary_touch) {
-            (TouchPhase::Down, None) => self.primary_touch = Some(pointer_id),
-            (TouchPhase::Down, Some(_)) => return Ok(false),
-            (_, Some(primary)) if primary == pointer_id => {
-                if matches!(phase, TouchPhase::Up | TouchPhase::Cancel) {
-                    self.primary_touch = None;
+        let (was_empty, is_primary) = match phase {
+            TouchPhase::Down => {
+                if self.active_touches.contains(&pointer_id) {
+                    return Ok(false);
                 }
+                let empty = self.active_touches.is_empty();
+                self.active_touches.push(pointer_id);
+                (empty, empty)
             }
-            _ => return Ok(false),
-        }
+            TouchPhase::Move => {
+                let Some(idx) = self.active_touches.iter().position(|&id| id == pointer_id) else {
+                    return Ok(false);
+                };
+                (false, idx == 0)
+            }
+            TouchPhase::Up | TouchPhase::Cancel => {
+                let Some(idx) = self.active_touches.iter().position(|&id| id == pointer_id) else {
+                    return Ok(false);
+                };
+                self.active_touches.remove(idx);
+                (false, idx == 0)
+            }
+        };
         let [x, y] = self.viewport.logical_point(physical_x, physical_y);
-        if phase == TouchPhase::Down && !self.focused_editor_contains(x, y) {
-            // A tap elsewhere commits the preedit while the editor still has
-            // focus; the world drops a blurred node's composition.
+        if was_empty && !self.focused_editor_contains(x, y) {
+            // A primary tap elsewhere commits the preedit while the editor still
+            // has focus; the world drops a blurred node's composition.
             self.commit_ime_on_blur(at)?;
         }
         let (phase, buttons) = match phase {
@@ -421,7 +435,7 @@ impl MobileRuntime {
                 tilt_x: 0,
                 tilt_y: 0,
                 twist: 0,
-                is_primary: true,
+                is_primary,
                 activation_click: false,
                 modifiers: InputModifiers::default(),
             }),

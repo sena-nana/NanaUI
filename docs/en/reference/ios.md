@@ -51,9 +51,9 @@ When an editor gains focus, the host notifies the shell through a callback. The 
 
 UIKit counts in UTF-16 offsets; the proxy converts to and from UTF-8 byte offsets. Callbacks run inside the host's input routing and cannot call back into the host synchronously, so the shell always dispatches them to the main queue first.
 
-Known limitations:
+Known behavior and limitations:
 
-- `UITextInteraction` draws its own caret and selection highlight while the NanaUI editor's caret is also drawn, so two carets appear. The prototype does not handle this.
+- `NanaTextProxy` fixes its `tintColor` to `.clear` so UIKit's native `UITextInteraction` caret stays transparent while NanaUI paints the single editor caret, preventing duplicate carets while `caretRect(for:)` and `selectionRects(for:)` continue reporting the real editor rects for the loupe, edit menu, and IME candidates.
 - `selectionRects` is computed for a single line only.
 
 ## Building

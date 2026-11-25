@@ -109,20 +109,22 @@ pub fn pointer_in_slot(slot: PhysicalRect, physical_x: f32, physical_y: f32) -> 
     physical_x >= x0 && physical_x < x1 && physical_y >= y0 && physical_y < y1
 }
 
-/// Routes GameActivity input to the NanaUI control-slot only.
+/// Routes GameActivity input to the NanaUI control-slot while permitting
+/// concurrent multi-touch pointers inside the slot.
 ///
-/// Pointer events outside the slot stay `Unhandled` for the system.
+/// Pointer events starting outside the slot stay `Unhandled` for the system.
 /// Keyboard events are accepted only while the slot holds keyboard focus (last
-/// Down was inside the slot); a Down outside clears that focus **when no
-/// pointer gesture is captured**.
+/// primary Down was inside the slot); a primary Down outside clears that focus
+/// **when no pointer gesture is captured**.
 ///
-/// While a pointer is captured, additional Down samples (second finger / outside
-/// tap) are ignored, and only that pointer id’s Move/Up/Cancel reach Runtime
-/// (a secondary finger Up must not end the first press).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// While pointers are captured, additional Down samples inside the slot are
+/// captured concurrently for multi-touch gestures (pinch/pan), while Down
+/// outside the slot stays ignored and uncaptured fingers cannot end captured
+/// presses.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SlotInputGate {
-    /// Android `MotionEvent` pointer id for the active in-slot gesture.
-    pub captured_pointer_id: Option<i32>,
+    /// Active Android `MotionEvent` pointer ids captured inside the slot.
+    pub captured_pointer_ids: Vec<i32>,
     /// Slot owns keyboard until the next Down outside the slot.
     pub keyboard_focused: bool,
 }
@@ -142,27 +144,40 @@ impl SlotInputGate {
             .unwrap_or(false);
         match kind {
             SlotTouchKind::Down => {
-                if self.captured_pointer_id.is_some() {
-                    // Ignore secondary Down until the captured gesture ends.
+                if self.captured_pointer_ids.contains(&pointer_id) {
                     return false;
                 }
-                self.captured_pointer_id = in_slot.then_some(pointer_id);
-                // Down outside clears keyboard focus so keys are not swallowed.
-                self.keyboard_focused = in_slot;
-                in_slot
+                if self.captured_pointer_ids.is_empty() {
+                    if in_slot {
+                        self.captured_pointer_ids.push(pointer_id);
+                    }
+                    // Primary Down outside clears keyboard focus so keys are not swallowed.
+                    self.keyboard_focused = in_slot;
+                    in_slot
+                } else if in_slot {
+                    self.captured_pointer_ids.push(pointer_id);
+                    true
+                } else {
+                    false
+                }
             }
-            SlotTouchKind::Move => match self.captured_pointer_id {
-                // Captured drag continues outside; only that pointer id.
-                Some(id) => id == pointer_id,
-                // Otherwise only hover inside (any pointer).
-                None => in_slot,
-            },
-            SlotTouchKind::Up | SlotTouchKind::Cancel => {
-                if self.captured_pointer_id != Some(pointer_id) {
-                    // Secondary / unmatched Up must not release the capture.
-                    return false;
+            SlotTouchKind::Move => {
+                if self.captured_pointer_ids.is_empty() {
+                    in_slot
+                } else {
+                    self.captured_pointer_ids.contains(&pointer_id)
                 }
-                self.captured_pointer_id = None;
+            }
+            SlotTouchKind::Up | SlotTouchKind::Cancel => {
+                let Some(pos) = self
+                    .captured_pointer_ids
+                    .iter()
+                    .position(|&id| id == pointer_id)
+                else {
+                    // Secondary outside / unmatched Up must not release captured touches.
+                    return false;
+                };
+                self.captured_pointer_ids.remove(pos);
                 true
             }
         }
@@ -445,7 +460,7 @@ mod tests {
         let mut gate = SlotInputGate::default();
         let slot = Some(test_slot());
         assert!(!gate.accept_pointer(slot, SlotTouchKind::Down, 5.0, 50.0, 0));
-        assert!(gate.captured_pointer_id.is_none());
+        assert!(gate.captured_pointer_ids.is_empty());
         assert!(!gate.keyboard_focused);
         assert!(!gate.accept_key());
         assert!(!gate.accept_pointer(slot, SlotTouchKind::Move, 5.0, 50.0, 0));
@@ -457,13 +472,12 @@ mod tests {
         let mut gate = SlotInputGate::default();
         let slot = Some(test_slot());
         assert!(gate.accept_pointer(slot, SlotTouchKind::Down, 20.0, 120.0, 0));
-        assert!(gate.captured_pointer_id.is_some());
-        assert_eq!(gate.captured_pointer_id, Some(0));
+        assert_eq!(gate.captured_pointer_ids, vec![0]);
         assert!(gate.keyboard_focused);
         assert!(gate.accept_key());
         assert!(gate.accept_pointer(slot, SlotTouchKind::Move, 1.0, 1.0, 0));
         assert!(gate.accept_pointer(slot, SlotTouchKind::Up, 1.0, 1.0, 0));
-        assert!(gate.captured_pointer_id.is_none());
+        assert!(gate.captured_pointer_ids.is_empty());
         assert!(gate.accept_key());
     }
 
@@ -480,36 +494,40 @@ mod tests {
     }
 
     #[test]
-    fn gate_ignores_second_down_while_captured() {
+    fn gate_captures_second_finger_inside_slot_and_rejects_outside_down() {
         let mut gate = SlotInputGate::default();
         let slot = Some(test_slot());
         assert!(gate.accept_pointer(slot, SlotTouchKind::Down, 20.0, 120.0, 0));
-        assert!(gate.captured_pointer_id.is_some());
+        assert_eq!(gate.captured_pointer_ids, vec![0]);
         assert!(gate.keyboard_focused);
-        assert!(!gate.accept_pointer(slot, SlotTouchKind::Down, 1.0, 1.0, 1));
-        assert!(gate.captured_pointer_id.is_some());
-        assert_eq!(gate.captured_pointer_id, Some(0));
-        assert!(gate.keyboard_focused);
+        // Outside secondary down is rejected and preserves focus + pointer 0.
+        assert!(!gate.accept_pointer(slot, SlotTouchKind::Down, 1.0, 1.0, 9));
+        assert_eq!(gate.captured_pointer_ids, vec![0]);
+        // Second finger inside the slot is accepted concurrently.
+        assert!(gate.accept_pointer(slot, SlotTouchKind::Down, 40.0, 140.0, 1));
+        assert_eq!(gate.captured_pointer_ids, vec![0, 1]);
         assert!(gate.accept_pointer(slot, SlotTouchKind::Move, 1.0, 1.0, 0));
+        assert!(gate.accept_pointer(slot, SlotTouchKind::Move, 1.0, 1.0, 1));
+        assert!(gate.accept_pointer(slot, SlotTouchKind::Up, 1.0, 1.0, 1));
+        assert_eq!(gate.captured_pointer_ids, vec![0]);
         assert!(gate.accept_pointer(slot, SlotTouchKind::Up, 1.0, 1.0, 0));
-        assert!(gate.captured_pointer_id.is_none());
+        assert!(gate.captured_pointer_ids.is_empty());
         assert!(gate.accept_key());
     }
 
     #[test]
-    fn gate_ignores_secondary_pointer_up_while_captured() {
+    fn gate_ignores_uncaptured_pointer_up_while_captured() {
         let mut gate = SlotInputGate::default();
         let slot = Some(test_slot());
         assert!(gate.accept_pointer(slot, SlotTouchKind::Down, 20.0, 120.0, 7));
-        assert_eq!(gate.captured_pointer_id, Some(7));
+        assert_eq!(gate.captured_pointer_ids, vec![7]);
         assert!(!gate.accept_pointer(slot, SlotTouchKind::Up, 50.0, 50.0, 8));
         assert!(!gate.accept_pointer(slot, SlotTouchKind::Cancel, 50.0, 50.0, 8));
-        assert!(gate.captured_pointer_id.is_some());
-        assert_eq!(gate.captured_pointer_id, Some(7));
+        assert_eq!(gate.captured_pointer_ids, vec![7]);
         assert!(!gate.accept_pointer(slot, SlotTouchKind::Move, 1.0, 1.0, 8));
         assert!(gate.accept_pointer(slot, SlotTouchKind::Move, 1.0, 1.0, 7));
         assert!(gate.accept_pointer(slot, SlotTouchKind::Up, 1.0, 1.0, 7));
-        assert!(gate.captured_pointer_id.is_none());
+        assert!(gate.captured_pointer_ids.is_empty());
     }
 
     #[test]
@@ -524,7 +542,7 @@ mod tests {
         let mut gate = SlotInputGate::default();
         let slot = Some(test_slot());
         assert!(gate.accept_pointer(slot, SlotTouchKind::Move, 20.0, 120.0, 0));
-        assert!(gate.captured_pointer_id.is_none());
+        assert!(gate.captured_pointer_ids.is_empty());
         assert!(!gate.keyboard_focused);
     }
 

@@ -28,13 +28,11 @@ Android（`platform/android`）是仓库内的**实验性 ARM64 宿主路径**�
 
 宿主循环按 `FrameDemand` 决定怎么等：
 
-- 需要出帧时，每一轮都出帧，由 Fifo 交换链按 vsync 限速。
+- 需要出帧（`FrameDemand::Now`）时，由专用 `ALooper` 线程持有的 `AChoreographer_postFrameCallback` 对齐显示器硬件 vsync 相位并通过 `AndroidAppWaker` 唤醒主循环呈递帧（避免向 `android-activity` 的主线程 `ALooper_pollOnce` 注册回调触发每帧错误日志）；并由 Fifo 交换链配合限速。
 - 有截止时间时，`poll_events` 睡到截止时间。
-- 空闲时，`poll_events(None)` 一直阻塞，直到有输入、生命周期事件，或视图任务经 `AndroidAppWaker` 唤醒。
+- 空闲时，`disarm()` 取消 Choreographer 回调并由 `poll_events(None)` 阻塞等待，直到有输入、生命周期事件，或视图任务经 `AndroidAppWaker` 唤醒。
 
-不再有 16 ms 轮询和 500 ms 心跳帧。
-
-原计划用 `AChoreographer_postFrameCallback64` 对齐 vsync。但 android-activity 0.6 的 `poll_events` 碰到 `ALooper_pollOnce` 返回的回调结果时，只记一条错误就忽略，每帧都会刷一条错误日志，所以改成现在这种交换链限速的方式。对齐 vsync 起点的延迟优化留到以后。
+不再有 16 ms 轮询和 500 ms 心跳帧；槽内多指触摸（`MotionAction::Move`/`Cancel` 遍历全部活动指针）也会并发保留各自的 `PointerId` 路由给 `MobileRuntime`。
 
 `TerminateWindow` 只丢掉 surface，文档、状态和 Device 都保留；下一次 `InitWindow` 用同一个 Device 接上新的 surface。
 
@@ -74,7 +72,7 @@ Android（`platform/android`）是仓库内的**实验性 ARM64 宿主路径**�
 | **后台与恢复** | 切到后台再回来，搜索框里的文字、开关和计数都还在 | 真机或模拟器 |
 | **静止不出帧** | 停止操作后不再出帧（`adb shell dumpsys gfxinfo` 的帧数不再增长） | 真机 |
 | **深浅色与字号** | 跟随系统深色模式与系统字号 | 真机 |
-| **CJK 输入法候选** | 拼音/笔画候选词选定后正确写入 Runtime `TextInput`（宿主暂未提供 `CursorAnchorInfo`，候选条停留在键盘顶端） | **必须使用真机输入法**，不得用 `adb shell input keyevent` 替代 |
+| **CJK 输入法候选** | 拼音/笔画候选词选定后正确写入 Runtime `TextInput`，且宿主通过 `InputMethodManager.updateCursorAnchorInfo` 上报物理窗口坐标下的光标、选区与组字区间 | **必须使用真机输入法**，不得用 `adb shell input keyevent` 替代 |
 | **系统剪贴板互通** | `TextInput` 内复制/粘贴与系统 `ClipboardManager` 互通 | 真机 |
 | **TalkBack 读屏交互** | `Button` 激活计数、`Switch` 状态切换、`TextInput` 聚焦并进入编辑 | **必须由真人在真机上做 TalkBack 手势**（`adb` 注入的 tap 会绕过无障碍触摸浏览） |
 | **触摸滚动** | 网格按 `ScrollPhysics::Android` 甩动，到边缘停住，不越界 | 真机 |

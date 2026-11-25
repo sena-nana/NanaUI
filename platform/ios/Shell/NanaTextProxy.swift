@@ -24,6 +24,15 @@ final class NanaTextProxy: UIView, UITextInput {
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .clear
+        // NanaUI renders its own text caret; keep UIKit's UITextInteraction
+        // cursor and tint transparent so the two carets never double-draw,
+        // while `caretRect(for:)` continues returning the real anchor frame.
+        super.tintColor = .clear
+    }
+
+    override var tintColor: UIColor! {
+        get { .clear }
+        set {}
     }
 
     @available(*, unavailable)

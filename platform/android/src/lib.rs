@@ -13,6 +13,8 @@
 
 #![cfg_attr(target_os = "android", allow(clippy::unnecessary_wraps))]
 
+#[cfg_attr(all(not(target_os = "android"), not(test)), allow(dead_code))]
+mod choreographer;
 #[cfg(target_os = "android")]
 mod host;
 #[cfg(all(target_os = "android", feature = "probe"))]
