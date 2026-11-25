@@ -1245,6 +1245,7 @@ fn plugin_pointer_hooks_hear_every_button_modifiers_and_clicks() {
 }
 
 #[test]
+#[cfg(feature = "property-grid")]
 fn property_grid_places_controls_drags_its_column_folds_and_disables() {
     use crate::view::widget;
     use crate::{
@@ -1434,6 +1435,7 @@ fn property_grid_places_controls_drags_its_column_folds_and_disables() {
 }
 
 #[test]
+#[cfg(feature = "timeline")]
 fn timeline_editor_scrubs_selects_drags_keys_and_handles_and_zooms() {
     use crate::view::widget;
     use crate::{
@@ -1621,6 +1623,7 @@ fn timeline_editor_scrubs_selects_drags_keys_and_handles_and_zooms() {
 }
 
 #[test]
+#[cfg(feature = "timeline")]
 fn timeline_editor_selects_moves_trims_and_deletes_clips() {
     use crate::view::widget;
     use crate::{
@@ -1792,6 +1795,7 @@ fn timeline_editor_selects_moves_trims_and_deletes_clips() {
 }
 
 #[test]
+#[cfg(feature = "timeline")]
 fn timeline_editor_clips_that_are_not_editable_only_select() {
     use crate::view::widget;
     use crate::{
@@ -2176,6 +2180,7 @@ fn tree_view_selects_toggles_drags_and_renames() {
 }
 
 #[test]
+#[cfg(feature = "area-layout")]
 fn area_layout_names_its_areas_with_the_application_labels() {
     use crate::view::widget;
     use crate::{AreaAxis, AreaLayout, AreaLayoutModel};
@@ -2225,6 +2230,7 @@ fn area_layout_names_its_areas_with_the_application_labels() {
 }
 
 #[test]
+#[cfg(feature = "area-layout")]
 fn area_layout_chrome_paints_every_frame_and_header() {
     use crate::area_layout::{AreaBox, AreaPart};
     use crate::view::widget;
@@ -2289,6 +2295,7 @@ fn area_layout_chrome_paints_every_frame_and_header() {
 }
 
 #[test]
+#[cfg(feature = "area-layout")]
 fn area_layout_places_editor_contents_and_switches_them_from_the_header() {
     use crate::view::widget;
     use crate::{
@@ -2475,6 +2482,7 @@ fn area_layout_places_editor_contents_and_switches_them_from_the_header() {
 }
 
 /// `id`'s header node in `layout`.
+#[cfg(feature = "area-layout")]
 fn area_header(context: &AppContext, layout: Entity<crate::AreaLayout>, id: &str) -> StableNodeId {
     context
         .assembled_slot::<crate::area_layout::AreaParts>(layout.stable_id())
@@ -2491,6 +2499,7 @@ fn area_header(context: &AppContext, layout: Entity<crate::AreaLayout>, id: &str
 }
 
 #[test]
+#[cfg(feature = "area-layout")]
 fn area_layout_resizes_splits_joins_maximizes_and_keeps_contents() {
     use crate::view::widget;
     use crate::{AreaAxis, AreaChange, AreaLayout, AreaLayoutChanged, AreaLayoutModel};

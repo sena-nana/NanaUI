@@ -163,7 +163,7 @@ There is exactly one `ActionDescriptor`, defined in Runtime (`nana_ui::runtime`;
 | `image-codecs-extra` | Opt-in JPEG / GIF / WebP decoding in `image`; when disabled, PNG stays available and excluded formats emit `resource.image_codec_unavailable` |
 | `svg` | Opt-in SVG images: SVG documents in `url()` textures and `Image`, and a host icon wrapped with an SVG and no shapes. Icons are drawn from their own geometry and do not need it. When disabled, an SVG image is treated as unreadable with `resource.image_codec_unavailable`, and `usvg`, `resvg`, and `tiny-skia` (about 0.8 MiB) are not linked. Effective only with `gpu` |
 | `snippet-transforms` | Opt-in regular-expression transforms in snippets (`${1/(.*)/${1:/upcase}/}`). When disabled, a snippet still parses, expands and links its placeholders, transforms return values unchanged with a one-shot `runtime.snippet.transform_unavailable` event, and `fancy-regex` (about 0.7 MiB) is not linked |
-| `calendar` / `charts` / `controls` / `diff-view` / `dock` / `graph-canvas` / `image-viewer` / `qr-code` / `rich-text` / `terminal` | Enables the matching runtime/scene `cfg` and re-exports that family (`dock` also carries the host adapters `nana_ui::dock` and `runtime_dock_window_update`). When disabled, the family is not compiled. Historical no-op aliases (`overlays`, `selects`, etc.) have been removed; use `components` / `full` |
+| `area-layout` / `calendar` / `charts` / `controls` / `diff-view` / `dock` / `graph-canvas` / `image-viewer` / `paint-script` / `property-grid` / `qr-code` / `rich-text` / `terminal` / `timeline` | Enables the matching optional component family and re-exports it (`calendar`, `charts`, `controls`, `graph-canvas`, `image-viewer`, `rich-text` forward to both `nana-ui-runtime` and `nana-ui-scene`; `area-layout`, `diff-view`, `dock`, `paint-script`, `property-grid`, `qr-code`, `terminal`, `timeline` gate runtime-only clusters, with `dock` also carrying the host adapters `nana_ui::dock` and `runtime_dock_window_update`). When disabled, the family is not compiled. Historical no-op aliases (`overlays`, `selects`, etc.) have been removed; use `components` / `full` |
 | `syntax-highlighting` | The `"highlight"` presenter for `TextArea` |
 | `no-default-app-icon` | The application always registers its own icon: the default icon marker is not linked, and windows without an icon keep the platform default. Enabled only by applications |
 | `accesskit-tree` | Exports the TreeUpdate projection of `AccessTreeProjector` for hosts that wire their own platform adapter (such as Android `accesskit_android`); implied by `hosted` |
@@ -448,7 +448,7 @@ The node's transform, clipping, opacity, stacking order, and compositor animatio
 A node with a painter forms its own stacking context. The node's own `overflow` clip applies only to child
 nodes. It does not clip the painted shadow.
 
-Consumers that cannot use a Rust trait use `PaintScript`: a JSON command list. It covers all of `cx`'s
+Consumers that cannot use a Rust trait use `PaintScript` (behind Cargo feature `paint-script`, included in `components`; `PaintPath::from_svg` remains always available): a JSON command list. It covers all of `cx`'s
 drawing commands (except `measure_text`, which needs to read back a result, and custom hit logic; for hit testing you can give
 a path). Lengths can be written relative to the node size as `"50%"` or `"100% - 12"`. Colors are semantic
 role names, theme mixes, or typed paint; when calling Runtime

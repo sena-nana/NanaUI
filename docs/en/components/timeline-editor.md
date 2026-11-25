@@ -4,6 +4,8 @@
 
 > `Timeline` in animation (the action description) is something else. This component is `TimelineEditor`, and its data and event types start with `Timeline`.
 
+This type is behind the Cargo feature `timeline` (included in `components`).
+
 ## Basic usage
 
 ```rust

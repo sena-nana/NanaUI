@@ -2,6 +2,8 @@
 
 `AreaLayout` 把一块矩形递归切成互不重叠的区域。三维和动画软件常用这种布局。每个区域显示一种编辑器，内容和头部都由应用提供。它没有模板标签，用 `widget(AreaLayout::new(模型))` 放进视图。
 
+这个类型在 Cargo feature `area-layout` 后面（`components` 包含它）。
+
 ## 基本用法
 
 ```rust

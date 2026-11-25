@@ -7,9 +7,10 @@
 
 use nana_ui_core::SplitAxis;
 use nana_ui_runtime::{
-    AppContext, Area, AreaAxis, AreaLayout, AreaLayoutModel, AreaNode, DocumentId, LayoutBox,
-    LayoutViewport, MAX_SPLIT_DEPTH, PaneTree, PaneTreeNode,
+    AppContext, DocumentId, LayoutViewport, MAX_SPLIT_DEPTH, PaneTree, PaneTreeNode,
 };
+#[cfg(feature = "area-layout")]
+use nana_ui_runtime::{Area, AreaAxis, AreaLayout, AreaLayoutModel, AreaNode, LayoutBox};
 #[cfg(feature = "dock")]
 use nana_ui_runtime::{Dock, DockAxis, DockNode, DockWorkspace};
 
@@ -46,6 +47,7 @@ fn deep_panes(depth: usize) -> PaneTreeNode {
 }
 
 /// An area layout `depth` splits deep, written as the struct it is.
+#[cfg(feature = "area-layout")]
 fn deep_areas(depth: usize) -> AreaLayoutModel {
     let mut root = AreaNode::Area { id: "leaf".into() };
     let mut areas = vec![Area {
@@ -113,6 +115,7 @@ fn a_dock_as_deep_as_allowed_clones_compares_persists_and_drops() {
 }
 
 #[test]
+#[cfg(feature = "area-layout")]
 fn an_area_layout_as_deep_as_allowed_places_persists_and_drops() {
     on_a_small_stack(|| {
         let mut model = AreaLayoutModel::single("a0", "editor");
@@ -240,6 +243,7 @@ fn a_pane_tree_an_application_built_too_deep_keeps_its_first_panes() {
 }
 
 #[test]
+#[cfg(feature = "area-layout")]
 fn an_area_layout_an_application_built_too_deep_keeps_its_first_areas() {
     on_a_small_stack(|| {
         let mut model = deep_areas(APPLICATION_DEPTH);

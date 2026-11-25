@@ -34,7 +34,7 @@ let view = cx.mount_view_root(document, counter).unwrap();
 No features are enabled by default (`default = []`).
 
 - `icu` (opt-in): formats numbers, dates, and plurals with ICU4X and compiled CLDR data; when disabled, `PlainFormatter` is used.
-- `calendar`, `charts`, `controls`, `diff-view`, `dock`, `graph-canvas`, `image-viewer`, `qr-code`, `rich-text`, `terminal`: optional control families; `components` enables all of them. `dock` is `Dock` / `DockPanel` / `DockWorkspace`; `Workspace` and `SplitPane` belong to the Shell and are always compiled. `rich-text` includes Markdown, Mermaid diagrams, and math formulas.
+- `area-layout`, `calendar`, `charts`, `controls`, `diff-view`, `dock`, `graph-canvas`, `image-viewer`, `paint-script`, `property-grid`, `qr-code`, `rich-text`, `terminal`, `timeline`: optional control families; `components` enables all of them. `dock` is `Dock` / `DockPanel` / `DockWorkspace`; `Workspace` and `SplitPane` belong to the Shell and are always compiled. `rich-text` includes Markdown, Mermaid diagrams, and math formulas.
 - `snippet-transforms` (opt-in): regular-expression transforms in snippets; when disabled, transforms return the input unchanged without linking `fancy-regex` and emit `runtime.snippet.transform_unavailable`.
 - `syntax-highlighting`: syntax highlighting for code blocks.
 - `view-macro`: `view!` template macro.

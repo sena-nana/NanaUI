@@ -31,6 +31,7 @@ def missing_type(name, dependencies=()):
 # One row per feature in nana-ui's `components`; `table_problems` keeps the two
 # lists equal, so a new family cannot ship without an isolation check.
 FAMILIES = {
+    "area-layout": missing_type("AreaLayout"),
     "calendar": missing_type("CalendarHeatmap"),
     "charts": missing_type("Chart", ("nana-ui-charts",)),
     "controls": missing_type("ReorderList"),
@@ -39,6 +40,8 @@ FAMILIES = {
     "dock": missing_type("DockWorkspace"),
     "graph-canvas": missing_type("GraphCanvas"),
     "image-viewer": missing_type("ImageViewer"),
+    "paint-script": missing_type("PaintScript"),
+    "property-grid": missing_type("PropertyGrid"),
     # `QrCodeCanvas` paints a module matrix in every build; only the encoder is optional.
     "qr-code": Family(
         'pub fn probe() { let _ = nana_ui::runtime::QrCode::encode("x", 1.0); }',
@@ -48,6 +51,7 @@ FAMILIES = {
     ),
     "rich-text": missing_type("NativeMarkdown", ("pulldown-cmark", "nana-ui-diagram")),
     "terminal": missing_type("TerminalView"),
+    "timeline": missing_type("TimelineEditor"),
 }
 # Optional dependencies of features outside `components` that a bare
 # `nana-ui` must not link either.

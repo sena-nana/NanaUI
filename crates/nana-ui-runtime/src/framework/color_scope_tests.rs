@@ -1877,68 +1877,75 @@ fn live_opacity_tokens_disabled_updates_icon_button_and_property_grid() {
     context.append_child(root, scope).unwrap();
     context.append_child(scope, scoped_btn).unwrap();
 
-    let sections = || {
-        vec![crate::PropertySection::new(
-            "s",
-            "Section",
-            [
-                crate::PropertyRow::new("x", "X"),
-                crate::PropertyRow::new("y", "Y").disabled(Some("locked")),
-            ],
-        )]
-    };
-    context
-        .mount_view(root.stable_id(), move || {
-            crate::view::widget(crate::PropertyGrid::new(sections())).children((
-                crate::view::widget(crate::ScrubField::new(1.0)).key("x"),
-                crate::view::widget(crate::ScrubField::new(2.0)).key("y"),
-            ))
-        })
-        .unwrap();
-    let root_grid = Entity::<crate::PropertyGrid>::from_stable_id(
+    #[cfg(feature = "property-grid")]
+    let (root_grid, scoped_grid) = {
+        let sections = || {
+            vec![crate::PropertySection::new(
+                "s",
+                "Section",
+                [
+                    crate::PropertyRow::new("x", "X"),
+                    crate::PropertyRow::new("y", "Y").disabled(Some("locked")),
+                ],
+            )]
+        };
         context
-            .world()
-            .node(root.stable_id())
-            .unwrap()
-            .children
-            .last()
-            .copied()
-            .unwrap(),
-    );
+            .mount_view(root.stable_id(), move || {
+                crate::view::widget(crate::PropertyGrid::new(sections())).children((
+                    crate::view::widget(crate::ScrubField::new(1.0)).key("x"),
+                    crate::view::widget(crate::ScrubField::new(2.0)).key("y"),
+                ))
+            })
+            .unwrap();
+        let root_grid = Entity::<crate::PropertyGrid>::from_stable_id(
+            context
+                .world()
+                .node(root.stable_id())
+                .unwrap()
+                .children
+                .last()
+                .copied()
+                .unwrap(),
+        );
 
-    context
-        .mount_view(scope.stable_id(), move || {
-            crate::view::widget(crate::PropertyGrid::new(sections())).children((
-                crate::view::widget(crate::ScrubField::new(1.0)).key("x"),
-                crate::view::widget(crate::ScrubField::new(2.0)).key("y"),
-            ))
-        })
-        .unwrap();
-    let scoped_grid = Entity::<crate::PropertyGrid>::from_stable_id(
         context
-            .world()
-            .node(scope.stable_id())
-            .unwrap()
-            .children
-            .last()
-            .copied()
-            .unwrap(),
-    );
+            .mount_view(scope.stable_id(), move || {
+                crate::view::widget(crate::PropertyGrid::new(sections())).children((
+                    crate::view::widget(crate::ScrubField::new(1.0)).key("x"),
+                    crate::view::widget(crate::ScrubField::new(2.0)).key("y"),
+                ))
+            })
+            .unwrap();
+        let scoped_grid = Entity::<crate::PropertyGrid>::from_stable_id(
+            context
+                .world()
+                .node(scope.stable_id())
+                .unwrap()
+                .children
+                .last()
+                .copied()
+                .unwrap(),
+        );
+        (root_grid, scoped_grid)
+    };
 
     layout(&mut context, doc);
 
-    let root_disabled_slot = context
-        .assembled_slot::<crate::property_grid::GridParts>(root_grid.stable_id())
-        .unwrap()
-        .sections[0]
-        .rows[1]
-        .slot;
-    let scoped_disabled_slot = context
-        .assembled_slot::<crate::property_grid::GridParts>(scoped_grid.stable_id())
-        .unwrap()
-        .sections[0]
-        .rows[1]
-        .slot;
+    #[cfg(feature = "property-grid")]
+    let (root_disabled_slot, scoped_disabled_slot) = (
+        context
+            .assembled_slot::<crate::property_grid::GridParts>(root_grid.stable_id())
+            .unwrap()
+            .sections[0]
+            .rows[1]
+            .slot,
+        context
+            .assembled_slot::<crate::property_grid::GridParts>(scoped_grid.stable_id())
+            .unwrap()
+            .sections[0]
+            .rows[1]
+            .slot,
+    );
 
     assert_eq!(
         context
@@ -1948,6 +1955,7 @@ fn live_opacity_tokens_disabled_updates_icon_button_and_property_grid() {
             .opacity,
         Some(0.5)
     );
+    #[cfg(feature = "property-grid")]
     assert_eq!(
         context
             .world()
@@ -1964,6 +1972,7 @@ fn live_opacity_tokens_disabled_updates_icon_button_and_property_grid() {
             .opacity,
         Some(0.25)
     );
+    #[cfg(feature = "property-grid")]
     assert_eq!(
         context
             .world()
@@ -1995,6 +2004,7 @@ fn live_opacity_tokens_disabled_updates_icon_button_and_property_grid() {
             .opacity,
         Some(0.35)
     );
+    #[cfg(feature = "property-grid")]
     assert_eq!(
         context
             .world()
@@ -2011,6 +2021,7 @@ fn live_opacity_tokens_disabled_updates_icon_button_and_property_grid() {
             .opacity,
         Some(0.25)
     );
+    #[cfg(feature = "property-grid")]
     assert_eq!(
         context
             .world()
@@ -2045,6 +2056,7 @@ fn live_opacity_tokens_disabled_updates_icon_button_and_property_grid() {
             .opacity,
         Some(0.15)
     );
+    #[cfg(feature = "property-grid")]
     assert_eq!(
         context
             .world()

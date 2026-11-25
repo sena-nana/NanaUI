@@ -160,7 +160,7 @@ Android、XR 与 accessibility provider 的设备验收。
 | `image-codecs-extra` | 打开 `image` 的 JPEG / GIF / WebP 解码；关闭时仅保留 PNG，遇到对应格式并发出 `resource.image_codec_unavailable` |
 | `svg` | SVG 图片：`url()` 纹理和 `Image` 里的 SVG 文档，以及宿主包的只有 SVG、没有 shapes 的图标。图标按自己的几何绘制，不需要它。关闭后 SVG 图片按无法读取的文件处理并发出 `resource.image_codec_unavailable`，`usvg`、`resvg`、`tiny-skia`（约 0.8 MiB）不链接。只在 `gpu` 开启时生效 |
 | `snippet-transforms` | snippet 里的正则变换（`${1/(.*)/${1:/upcase}/}`）。关闭后 snippet 照常解析、展开、联动占位符，变换原样返回并在首次触发时发出 `runtime.snippet.transform_unavailable`；正则引擎（约 0.7 MiB）不链接 |
-| `calendar` / `charts` / `controls` / `diff-view` / `dock` / `graph-canvas` / `image-viewer` / `qr-code` / `rich-text` / `terminal` | 打开对应 runtime/scene `cfg` 并再导出该族（`dock` 还带上宿主适配 `nana_ui::dock` 与 `runtime_dock_window_update`）。未启用则该族不参与编译。历史 no-op 别名（`overlays`、`selects` 等）已删除，改用 `components` / `full` |
+| `area-layout` / `calendar` / `charts` / `controls` / `diff-view` / `dock` / `graph-canvas` / `image-viewer` / `paint-script` / `property-grid` / `qr-code` / `rich-text` / `terminal` / `timeline` | 按需打开对应可选组件族并再导出该族（`calendar`、`charts`、`controls`、`graph-canvas`、`image-viewer`、`rich-text` 同时转发到 `nana-ui-scene`；`dock` 同时带上宿主适配 `nana_ui::dock` 与 `runtime_dock_window_update`）。未启用则该族不参与编译。历史 no-op 别名（`overlays`、`selects` 等）已删除，改用 `components` / `full` |
 | `syntax-highlighting` | `TextArea` 的 `"highlight"` presenter |
 | `no-default-app-icon` | 应用总是注册自己的图标：不链接默认图标标记，没有图标的窗口沿用平台默认。只由应用打开 |
 | `accesskit-tree` | `AccessTreeProjector` 的 TreeUpdate 投影导出，给自接平台适配器的宿主（如 Android `accesskit_android`）；`hosted` 已隐含 |
@@ -446,7 +446,7 @@ painter。组件重写节点样式也不会把它冲掉。适合给内建组件�
 挂了 painter 的节点自身构成层叠上下文。节点自己的 `overflow` 裁剪只作用于子
 节点。不裁自绘的阴影。
 
-拿不到 Rust trait 的消费方用 `PaintScript`：一份 JSON 命令列表。覆盖 `cx` 的
+拿不到 Rust trait 的消费方用 `PaintScript`（在 Cargo feature `paint-script` 后面，`components` 包含它；`PaintPath::from_svg` 始终可用）：一份 JSON 命令列表。覆盖 `cx` 的
 全部绘制命令（需要读回结果的 `measure_text` 和自定义命中逻辑除外。命中可以给
 一条路径）。长度可以写成相对节点尺寸的 `"50%"`、`"100% - 12"`。颜色写语义
 角色名、主题混色或 typed paint；调用 Runtime

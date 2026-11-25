@@ -54,6 +54,7 @@ bundled-fonts = ["nana-ui-core/bundled-fonts"]
 # `cfg(feature = …)` component module or pulls a runtime feature. No-op aliases
 # were removed — enable `components` / `full` instead.
 components = [
+    "area-layout",
     "calendar",
     "charts",
     "controls",
@@ -61,10 +62,15 @@ components = [
     "dock",
     "graph-canvas",
     "image-viewer",
+    "paint-script",
+    "property-grid",
     "qr-code",
     "rich-text",
     "terminal",
+    "timeline",
 ]
+# `AreaLayout` / `AreaLayoutModel`.
+area-layout = ["nana-ui-runtime/area-layout"]
 calendar = ["nana-ui-runtime/calendar", "nana-ui-scene/calendar"]
 charts = ["dep:nana-ui-charts", "nana-ui-runtime/charts", "nana-ui-scene/charts"]
 controls = ["nana-ui-runtime/controls", "nana-ui-scene/controls"]
@@ -73,8 +79,14 @@ diff-view = ["nana-ui-runtime/diff-view"]
 # `Dock` / `DockPanel` / `DockWorkspace`, and their host adapters:
 # `nana_ui::dock::DockController` and `runtime_dock_window_update`.
 dock = ["nana-ui-runtime/dock"]
+# `PaintScript`.
+paint-script = ["nana-ui-runtime/paint-script"]
+# `PropertyGrid`.
+property-grid = ["nana-ui-runtime/property-grid"]
 # `TerminalView`.
 terminal = ["nana-ui-runtime/terminal"]
+# `TimelineEditor`.
+timeline = ["nana-ui-runtime/timeline"]
 syntax-highlighting = [
     "nana-ui-runtime/syntax-highlighting",
 ]

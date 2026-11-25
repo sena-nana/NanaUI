@@ -46,7 +46,7 @@ cargo run -p nana-ui --example application-counter --features hosted,bundled-fon
 - `runtime-wgsl`（可选）：打开运行时 WGSL 编译（`naga` / `wgpu` WGSL 回退；`full` 包含此项）。关闭时仅加载预编译着色器归档（macOS 14+ / iOS 17+ 为 `stages.msl.zz`，其余平台为压缩 Naga IR）。
 - `full`：桌面全量集合，打开 `bundled-fonts`、`components`、`hosted`、`http-fetch`、`icu`、`image-codecs-extra`、`runtime-wgsl`、`snippet-transforms`、`svg`、`syntax-highlighting` 和 `wgpu-backends`。
 - `bundled-fonts`：注册内置的 Noto Sans SC 并设为界面默认字体（约 4.2 MiB）。不开则界面文字与 SVG 文字都用系统字体；缺中日韩字体的 Linux 上会显示不出中文。
-- `components`：打开 `calendar`、`charts`、`controls`、`diff-view`、`dock`、`graph-canvas`、`image-viewer`、`qr-code`、`rich-text` 与 `terminal`。`dock` 同时带上宿主适配 `nana_ui::dock` 与 `runtime_dock_window_update`。
+- `components`：打开 `area-layout`、`calendar`、`charts`、`controls`、`diff-view`、`dock`、`graph-canvas`、`image-viewer`、`paint-script`、`property-grid`、`qr-code`、`rich-text`、`terminal` 与 `timeline`。`dock` 同时带上宿主适配 `nana_ui::dock` 与 `runtime_dock_window_update`。
 - `syntax-highlighting`：代码块语法高亮。
 - `view-macro`：`view!`、`css!` 和 `stylesheet!` 宏。
 - `icons-tabler`：完整的 Tabler 图标目录（`nana_ui::icons_tabler`）。

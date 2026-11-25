@@ -47,6 +47,7 @@ To minimize baseline binary size and avoid pulling optional cross-crate dependen
 | `image-codecs-extra` | `nana-ui` | Off (in `full`) | Enables JPEG / GIF / WebP decoding in `image` | Retains core formats such as PNG; unsupported formats emit `resource.image_codec_unavailable` |
 | `svg` | `nana-ui` | Off (in `full`) | CPU-side SVG image rasterization (`nana-svg-raster`) | SVG images are treated as undecodable and emit `resource.image_codec_unavailable`; built-in vector icons do not depend on it |
 | `fetch` | `nana-ui-platform` | Off (`default = ["clipboard"]`) | `NativeFetchHost` | Compiles only the `FetchHost` trait contract |
+| `components` (and per-family features) | `nana-ui` / `runtime` / `scene` | Off (in `full`) | Opt-in component families: `area-layout`, `calendar`, `charts`, `controls`, `diff-view`, `dock`, `graph-canvas`, `image-viewer`, `paint-script`, `property-grid`, `qr-code`, `rich-text`, `terminal`, `timeline` | Disabled families are compiled out and omitted from `nana_ui::runtime` exports |
 | `full` | `nana-ui` | Off | Convenience desktop bundle (includes the features above plus `bundled-fonts`, `components`, `syntax-highlighting`, `wgpu-backends`, etc.) | Suitable for out-of-the-box desktop apps |
 
 To keep the previous full-featured desktop configuration in an application's `Cargo.toml`:

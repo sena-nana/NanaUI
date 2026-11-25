@@ -2,6 +2,8 @@
 
 `PropertyGrid` is the dense two-column panel you find in professional tool inspectors: rows are grouped into collapsible sections, with a label on the left of each row and the application's control on the right. The whole grid shares one label column width, which can be dragged. It has no template tag; put it in a view with `widget(PropertyGrid::new(sections))`.
 
+This type is behind the Cargo feature `property-grid` (included in `components`).
+
 ## Basic usage
 
 ```rust

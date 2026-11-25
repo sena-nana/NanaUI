@@ -312,6 +312,11 @@ jobs:
       - name: Check legal feature combinations
         shell: bash
         run: |
+          cargo check -p nana-ui-runtime --all-targets --no-default-features --locked
+          cargo check -p nana-ui-runtime --all-targets --features components,icu,snippet-transforms,syntax-highlighting,reactive-trace --locked
+          cargo check -p nana-ui-runtime --lib --features components,icu,snippet-transforms,syntax-highlighting,view-macro,reactive-trace --locked
+          cargo check -p nana-ui-scene --lib --features components,icu --locked
+          cargo check -p nana-ui --example application-counter --no-default-features --features hosted,bundled-fonts --locked
           cargo check -p nana-ui --all-targets --all-features --locked
           # Issue #226: the pack mount without the hosted window stack.
           cargo check -p nana-ui --all-targets --features packaged-resources --locked

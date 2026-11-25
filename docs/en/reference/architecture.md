@@ -124,15 +124,30 @@ Rust declarative views (`nana_ui::runtime` builders and `view!`) and the `.vue` 
 
 `nana-ui` sets `default = []` (no features are enabled by default): opening a desktop window requires explicitly enabling `hosted` (which implies `gpu` and pulls only the platform's primary graphics backend); enable `wgpu-backends` if you need all standard cross-platform backends, or enable `full`. It never creates a second host or GPU owner.
 
-Control family features (`calendar`, `charts`, `controls`, `diff-view`, `dock`, `graph-canvas`, `image-viewer`, `rich-text`, `terminal`) control conditional compilation of `nana-ui-runtime` and `nana-ui-scene` together and determine `ComponentSupport::compiled`. Disabled control families and their dedicated dependencies are not compiled, and `nana_ui::runtime` exports only the controls actually compiled into the current build (for the full table, see [Application API](application-api.md)). `component-gallery` is a separate example crate; its category navigation and demo state are not part of the public API of `nana-ui`.
+Control family features fall into two groups and jointly determine `ComponentSupport::compiled` (for the full table, see [Application API](application-api.md)):
 
-Control families are split by measured compile cost, at the granularity of capability islands; basic controls get no features of their own. `Workspace`, `SplitPane` and the Shell are always compiled: `assemble_desktop_shell` creates its own `Workspace`, so splitting it out would split the Shell. `BrowserView` is a 67-line anchor declaration, and a family of its own would gain nothing. `TerminalView`'s input routing (keyboard, pointer, paste, IME) is reached only through routed calls that take a `StableNodeId`; the router does not name the type, so input dispatch needs no conditional compilation when `terminal` is off.
+- Shared across `nana-ui-runtime` and `nana-ui-scene`: `calendar`, `charts`, `controls`, `graph-canvas`, `image-viewer`, `rich-text`.
+- `nana-ui-runtime`-only (plus matching facade re-exports): `area-layout`, `diff-view`, `dock` (also gating the host adapters `nana_ui::dock` and `runtime_dock_window_update`), `paint-script` (`PaintPath::from_svg` remains unconditionally available), `property-grid`, `qr-code`, `terminal`, `timeline`.
 
-Measured on 2026-11-23 (macOS Apple Silicon, `dev` profile, `CARGO_INCREMENTAL=0`, `sccache` off, dependencies already built; each run `touch`es and rebuilds only the `nana-ui-runtime` unit; the two configurations alternate for 5 rounds each and the minimum is read; load 3.3–4.7):
+Disabled control families and their dedicated dependencies are not compiled, and `nana_ui::runtime` exports only the controls compiled into the current build; `components` enables all 14 families. `component-gallery` is a separate example crate; its category navigation and demo state are not part of the public API of `nana-ui`.
 
-| `nana-ui-runtime` unit | `diff-view` + `dock` + `terminal` | all three off | change |
-| --- | --- | --- | --- |
-| `cargo build` | 11.58 s | 11.01 s | −4.9% |
-| `cargo check` | 5.73 s | 5.52 s | −3.7% |
+Control families are split by measured compile cost and coupling boundaries at the granularity of capability islands; basic controls get no features of their own. `Workspace`, `SplitPane`, and the Shell are always compiled: `assemble_desktop_shell` creates its own `Workspace`, so splitting it out would split the Shell. `BrowserView` is a 67-line anchor declaration, and a family of its own would gain nothing. `TerminalView`'s input routing (keyboard, pointer, paste, IME) and `TimelineEditor`'s delete-key action are reached only through `StableNodeId`-parameterized routed calls or type-erased capability callbacks; the router does not name the concrete component types, so input dispatch needs no conditional compilation when `terminal` or `timeline` is off.
 
-Every control family (`components`) against none: `cargo build` 12.40 s against 11.26 s (−9.2%, 4 rounds). The remaining ~11 s is layout, the world, the framework and the basic controls that every application uses; going lower needs a crate split, not more features. When re-measuring, pass `--features` to cargo as two separate arguments (zsh does not split words) and make sure `RUSTC_WRAPPER` is empty: `sccache` hits otherwise bring a rebuild under 2 s.
+Measurement 1 (2026-11-25, macOS Apple Silicon, `dev` profile, `CARGO_INCREMENTAL=0`, `sccache` off, dependencies already built; each run touches `crates/nana-ui-runtime/src/lib.rs` and rebuilds only the `nana-ui-runtime` unit; alternating across 3 rounds, reading the minimum):
+
+| `nana-ui-runtime` unit | All off (`--no-default-features`) | 7 runtime-only families | `components` (all 14 families) | Off vs `components` |
+| --- | --- | --- | --- | --- |
+| `cargo build` | 13.63 s | 13.50 s | 17.08 s | −20.2% |
+| `cargo check` | 7.03 s | 6.88 s | 7.71 s | −8.8% |
+
+> Note: the 7 runtime-only families (`area-layout`, `diff-view`, `dock`, `paint-script`, `property-grid`, `terminal`, `timeline`) total ~11k lines compared to the ~170k-line baseline, so their individual delta sits within single-unit CPU scheduling variance; `components` additionally pulls in `nana-ui-charts`, `nana-ui-diagram`, `pulldown-cmark`, `ratex-*`, `qrcode`, and the `rich-text` / `calendar` / `image-viewer` / `graph-canvas` / `controls` modules (~20% total difference).
+
+Measurement 2 (2026-11-25, same host, `cargo build -p nana-ui --example application-counter --no-default-features --timings --locked`, each into a clean isolated target directory with `CARGO_INCREMENTAL=0` and `sccache` off; system 1-min load average during builds was 18–30 so wall-clock timings include parallel scheduling variance, while unit counts and target sizes are deterministic):
+
+| Desktop app profile (`application-counter`) | Clean units | Target size | Clean wall-clock | `nana-ui-runtime` unit | Warm incremental rebuild (4 units) |
+| --- | --- | --- | --- | --- | --- |
+| Minimal desktop (`hosted,bundled-fonts`) | 272 | 1.5 GiB | 64.05 s | 18.58 s | 21.95 s (`runtime` 15.84 s) |
+| Desktop + components (`hosted,bundled-fonts,components`) | 340 | 1.8 GiB | 53.73 s | 21.15 s | 77.74 s (`runtime` 64.89 s) |
+| Full (`full`) | 399 | 2.0 GiB | 71.16 s | 21.79 s | 53.77 s (`runtime` 42.82 s) |
+
+Compared to `full` (399 units), the minimal desktop profile eliminates 127 compiled units (−31.8%), omitting `nana-ui-diagram`, `nana-ui-charts`, `pulldown-cmark`, `ratex-*`, `qrcode`, `usvg`/`resvg`/`tiny-skia`, `icu_datetime`/`icu_calendar`, `two-face`/`syntect`, `fancy-regex`, and the gated component families; compared to `hosted,bundled-fonts,components` (340 units), it eliminates 68 compiled units (−20.0%). When re-measuring, pass `--features` to cargo as two separate arguments (zsh does not split words) and make sure `RUSTC_WRAPPER` is empty: `sccache` hits otherwise bring a rebuild under 2 s.

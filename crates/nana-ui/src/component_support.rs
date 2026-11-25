@@ -120,9 +120,9 @@ component_catalog! {
     HOSTED_TEXTAREA => { id: "hosted-textarea", name: "HostedTextarea", family: Control, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Ime, Accessibility] },
     RANGE_FIELD => { id: "range-field", name: "RangeField", family: Control, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     SCRUB_FIELD => { id: "scrub-field", name: "ScrubField", family: Control, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Ime, Accessibility] },
-    TIMELINE_EDITOR => { id: "timeline-editor", name: "TimelineEditor", family: Data, feature: None, compiled: true, capabilities: [Render, Pointer, Accessibility, Persistence] },
-    PROPERTY_GRID => { id: "property-grid", name: "PropertyGrid", family: Data, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Accessibility, Persistence] },
-    AREA_LAYOUT => { id: "area-layout", name: "AreaLayout", family: Workspace, feature: None, compiled: true, capabilities: [Render, Pointer, Accessibility, Persistence] },
+    TIMELINE_EDITOR => { id: "timeline-editor", name: "TimelineEditor", family: Data, feature: Some("timeline"), compiled: cfg!(feature = "timeline"), capabilities: [Render, Pointer, Accessibility, Persistence] },
+    PROPERTY_GRID => { id: "property-grid", name: "PropertyGrid", family: Data, feature: Some("property-grid"), compiled: cfg!(feature = "property-grid"), capabilities: [Render, Pointer, Keyboard, Accessibility, Persistence] },
+    AREA_LAYOUT => { id: "area-layout", name: "AreaLayout", family: Workspace, feature: Some("area-layout"), compiled: cfg!(feature = "area-layout"), capabilities: [Render, Pointer, Accessibility, Persistence] },
     APP_MENU_BAR => { id: "app-menu-bar", name: "AppMenuBar", family: Navigation, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Accessibility, Overlay] },
     SELECT => { id: "select", name: "Select", family: Control, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility, Overlay] },
     SEGMENTED_CONTROL => { id: "segmented-control", name: "SegmentedControl", family: Control, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
@@ -324,6 +324,10 @@ mod tests {
             component_ids::PANE_TREE,
             component_ids::APP_SHELL,
             component_ids::APP_TITLE_BAR,
+            component_ids::SCRUB_FIELD,
+            component_ids::TIMELINE_EDITOR,
+            component_ids::PROPERTY_GRID,
+            component_ids::AREA_LAYOUT,
         ] {
             let support = component_support(id).expect("qualified component is cataloged");
 
@@ -550,5 +554,21 @@ mod tests {
         let gpu = component_support(component_ids::GPU_VIEW).unwrap();
         assert_eq!(gpu.required_feature, Some("gpu"));
         assert_eq!(gpu.compiled, cfg!(feature = "gpu"));
+
+        let area_layout = component_support(component_ids::AREA_LAYOUT).unwrap();
+        assert_eq!(area_layout.required_feature, Some("area-layout"));
+        assert_eq!(area_layout.compiled, cfg!(feature = "area-layout"));
+
+        let dock = component_support(component_ids::DOCK).unwrap();
+        assert_eq!(dock.required_feature, Some("dock"));
+        assert_eq!(dock.compiled, cfg!(feature = "dock"));
+
+        let property_grid = component_support(component_ids::PROPERTY_GRID).unwrap();
+        assert_eq!(property_grid.required_feature, Some("property-grid"));
+        assert_eq!(property_grid.compiled, cfg!(feature = "property-grid"));
+
+        let timeline = component_support(component_ids::TIMELINE_EDITOR).unwrap();
+        assert_eq!(timeline.required_feature, Some("timeline"));
+        assert_eq!(timeline.compiled, cfg!(feature = "timeline"));
     }
 }

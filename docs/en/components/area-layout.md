@@ -2,6 +2,8 @@
 
 `AreaLayout` recursively splits a rectangle into non-overlapping areas. 3D and animation software often uses this kind of layout. Each area shows one editor, and the application provides both its content and its header. It has no template tag; put it into a view with `widget(AreaLayout::new(model))`.
 
+This type is behind the Cargo feature `area-layout` (included in `components`).
+
 ## Basic usage
 
 ```rust

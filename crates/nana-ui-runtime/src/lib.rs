@@ -11,6 +11,7 @@
 
 mod animation;
 mod app_menu_bar;
+#[cfg(feature = "area-layout")]
 mod area_layout;
 mod avatar;
 mod bars;
@@ -28,7 +29,9 @@ pub mod component_descriptors;
 mod component_registry;
 mod components;
 mod custom_paint;
+#[cfg(feature = "paint-script")]
 mod paint_script;
+#[cfg(feature = "property-grid")]
 mod property_grid;
 mod range_field;
 mod scrub_field;
@@ -36,6 +39,7 @@ mod theme_intent;
 /// The BCP 47 tag [`MutationQueue::set_language`] and
 /// [`UiWorld::set_default_language`] take.
 pub use nana_text::font::LanguageTag;
+#[cfg(feature = "paint-script")]
 pub use paint_script::PaintScript;
 mod data_table;
 mod date_picker;
@@ -167,6 +171,7 @@ mod text_node;
 pub mod text_shape_stats;
 mod text_width;
 mod thumbnail;
+#[cfg(feature = "timeline")]
 mod timeline;
 mod toast;
 mod toast_stack;
@@ -197,6 +202,7 @@ pub use animation::{
     toast_timeout_animation, track_completion_deadline, workspace_animation,
 };
 pub use app_menu_bar::{AppMenuBar, MenuBarActivated, ShortcutNotation, menu_shortcut_label};
+#[cfg(feature = "area-layout")]
 pub use area_layout::{
     Area, AreaAxis, AreaChange, AreaChrome, AreaEditorSelect, AreaGeometry, AreaLayout,
     AreaLayoutChanged, AreaLayoutError, AreaLayoutModel, AreaNode, AreaSplitter,
@@ -433,6 +439,7 @@ pub use presentation::{
 pub use presentation::{HighlightPresentation, SyntectHighlighter};
 pub use presentation_clock::PresentationPlayback;
 pub use profiler::{FrameProfile, FrameProfiler, StageStatus, StageTiming};
+#[cfg(feature = "property-grid")]
 pub use property_grid::{
     PropertyGrid, PropertyLabelWidthChanged, PropertyRow, PropertySection, PropertySectionToggled,
 };
@@ -502,6 +509,7 @@ pub use thumbnail::{
     DEFAULT_ASPECT as THUMBNAIL_DEFAULT_ASPECT, Thumbnail, ThumbnailPick, ThumbnailPoint,
     ThumbnailState,
 };
+#[cfg(feature = "timeline")]
 pub use timeline::{
     TIMELINE_ROW, TIMELINE_RULER, TimelineClip, TimelineClipEdge, TimelineClipSelectionChanged,
     TimelineClipTone, TimelineClipTrimmed, TimelineClipsDeleteRequested, TimelineClipsMoved,

@@ -4,6 +4,8 @@
 
 > 动画里的 `Timeline`（动作描述）是另一样东西；这个组件叫 `TimelineEditor`，它的数据和事件类型以 `Timeline` 开头。
 
+这个类型在 Cargo feature `timeline` 后面（`components` 包含它）。
+
 ## 基本用法
 
 ```rust

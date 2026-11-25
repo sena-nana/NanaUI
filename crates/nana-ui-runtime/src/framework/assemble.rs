@@ -377,6 +377,7 @@ impl AppContext {
     }
 
     /// Every keyed child of `parent`, with its key, in no particular order.
+    #[cfg(any(feature = "area-layout", feature = "property-grid"))]
     pub(crate) fn assembled_children(
         &self,
         parent: StableNodeId,

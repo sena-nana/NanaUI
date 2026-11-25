@@ -47,6 +47,7 @@
 | `image-codecs-extra` | `nana-ui` | 关（含于 `full`） | 开启 `image` 的 JPEG / GIF / WebP 解码 | 仅保留 PNG 等基础格式，遇其余格式时发出 `resource.image_codec_unavailable` |
 | `svg` | `nana-ui` | 关（含于 `full`） | CPU 端 SVG 图片光栅化（`nana-svg-raster`） | SVG 图片按不可解码处理并发出 `resource.image_codec_unavailable`；内置矢量图标不依赖它 |
 | `fetch` | `nana-ui-platform` | 关（`default = ["clipboard"]`） | `NativeFetchHost` | 只编译 `FetchHost` 合同类型 |
+| `components`（及各独立组件族） | `nana-ui` / `runtime` / `scene` | 关（含于 `full`） | 按需启用 `area-layout`、`calendar`、`charts`、`controls`、`diff-view`、`dock`、`graph-canvas`、`image-viewer`、`paint-script`、`property-grid`、`qr-code`、`rich-text`、`terminal`、`timeline` | 未启用的组件族不参与编译，也不再由 `nana_ui::runtime` 导出 |
 | `full` | `nana-ui` | 关 | 桌面全量集合（含上述特性与 `bundled-fonts`、`components`、`syntax-highlighting`、`wgpu-backends` 等） | 适合开箱即用的桌面应用 |
 
 如果应用希望保留以前的“全功能桌面配置”，在 `Cargo.toml` 中直接使用：

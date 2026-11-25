@@ -46,7 +46,7 @@ No features are enabled by default (`default = []`). Desktop applications typica
 - `runtime-wgsl`: opt-in runtime WGSL compilation (`naga` / `wgpu` WGSL fallback; implied by `full`). Without it, `gpu` loads precompiled shader archives (`stages.msl.zz` on macOS 14+ / iOS 17+ and compressed Naga IR elsewhere).
 - `full`: convenience desktop bundle enabling `bundled-fonts`, `components`, `hosted`, `http-fetch`, `icu`, `image-codecs-extra`, `runtime-wgsl`, `snippet-transforms`, `svg`, `syntax-highlighting`, and `wgpu-backends`.
 - `bundled-fonts`: embeds and registers Noto Sans SC as the default UI font (about 4.2 MiB); without it, text falls back to system fonts.
-- `components`: enables `calendar`, `charts`, `controls`, `diff-view`, `dock`, `graph-canvas`, `image-viewer`, `qr-code`, `rich-text`, and `terminal`. `dock` also carries the host adapters `nana_ui::dock` and `runtime_dock_window_update`.
+- `components`: enables `area-layout`, `calendar`, `charts`, `controls`, `diff-view`, `dock`, `graph-canvas`, `image-viewer`, `paint-script`, `property-grid`, `qr-code`, `rich-text`, `terminal`, and `timeline`. `dock` also carries the host adapters `nana_ui::dock` and `runtime_dock_window_update`.
 - `syntax-highlighting`: syntax highlighting for code blocks.
 - `view-macro`: `view!`, `css!`, and `stylesheet!` macros.
 - `icons-tabler`: full Tabler icon catalog (`nana_ui::icons_tabler`).

@@ -888,6 +888,313 @@ impl PaintPath {
             .filter(|(_, radii)| radii.iter().all(|r| (r - radii[0]).abs() < 1e-4))
             .map(|(rect, radii)| (rect, radii[0]))
     }
+
+    /// 按 SVG path 数据（`M L H V C S Q T A Z`，大小写均可）建路径，弧转成
+    /// 三次曲线；数据不合法时返回原因。
+    pub fn from_svg(data: &str) -> Result<Self, String> {
+        let mut tokens = SvgTokens::new(data);
+        let mut path = Self::new();
+        let mut current = [0.0f32; 2];
+        let mut start = [0.0f32; 2];
+        // The last control point, for S and T reflections.
+        let mut last_cubic: Option<[f32; 2]> = None;
+        let mut last_quad: Option<[f32; 2]> = None;
+        let mut command = None;
+        while let Some(next) = tokens.next_command_or_number()? {
+            let letter = match next {
+                SvgToken::Command(letter) => {
+                    command = Some(letter);
+                    letter
+                }
+                SvgToken::Number => {
+                    tokens.unread();
+                    match command {
+                        // Coordinates after a moveto are implicit linetos.
+                        Some('M') => 'L',
+                        Some('m') => 'l',
+                        Some('Z' | 'z') => return Err("number after closepath".into()),
+                        Some(letter) => letter,
+                        None => return Err("path data starts with a number".into()),
+                    }
+                }
+            };
+            let relative = letter.is_ascii_lowercase();
+            let base = if relative { current } else { [0.0, 0.0] };
+            let read_point = |tokens: &mut SvgTokens| -> Result<[f32; 2], String> {
+                Ok([tokens.number()? + base[0], tokens.number()? + base[1]])
+            };
+            match letter.to_ascii_uppercase() {
+                'M' => {
+                    let p = read_point(&mut tokens)?;
+                    path.move_to(p[0], p[1]);
+                    current = p;
+                    start = p;
+                    last_cubic = None;
+                    last_quad = None;
+                }
+                'L' => {
+                    let p = read_point(&mut tokens)?;
+                    path.line_to(p[0], p[1]);
+                    current = p;
+                    last_cubic = None;
+                    last_quad = None;
+                }
+                'H' => {
+                    let x = tokens.number()? + if relative { current[0] } else { 0.0 };
+                    current = [x, current[1]];
+                    path.line_to(current[0], current[1]);
+                    last_cubic = None;
+                    last_quad = None;
+                }
+                'V' => {
+                    let y = tokens.number()? + if relative { current[1] } else { 0.0 };
+                    current = [current[0], y];
+                    path.line_to(current[0], current[1]);
+                    last_cubic = None;
+                    last_quad = None;
+                }
+                'C' | 'S' => {
+                    let c1 = if letter.eq_ignore_ascii_case(&'S') {
+                        last_cubic.map_or(current, |c| {
+                            [2.0 * current[0] - c[0], 2.0 * current[1] - c[1]]
+                        })
+                    } else {
+                        read_point(&mut tokens)?
+                    };
+                    let c2 = read_point(&mut tokens)?;
+                    let p = read_point(&mut tokens)?;
+                    path.cubic_to(c1[0], c1[1], c2[0], c2[1], p[0], p[1]);
+                    current = p;
+                    last_cubic = Some(c2);
+                    last_quad = None;
+                }
+                'Q' | 'T' => {
+                    let c = if letter.eq_ignore_ascii_case(&'T') {
+                        last_quad.map_or(current, |c| {
+                            [2.0 * current[0] - c[0], 2.0 * current[1] - c[1]]
+                        })
+                    } else {
+                        read_point(&mut tokens)?
+                    };
+                    let p = read_point(&mut tokens)?;
+                    path.quad_to(c[0], c[1], p[0], p[1]);
+                    current = p;
+                    last_quad = Some(c);
+                    last_cubic = None;
+                }
+                'A' => {
+                    let rx = tokens.number()?.abs();
+                    let ry = tokens.number()?.abs();
+                    let rotation = tokens.number()?.to_radians();
+                    let large = tokens.flag()?;
+                    let sweep = tokens.flag()?;
+                    let p = read_point(&mut tokens)?;
+                    for cubic in svg_arc(current, p, rx, ry, rotation, large, sweep) {
+                        path.cubic_to(cubic[0], cubic[1], cubic[2], cubic[3], cubic[4], cubic[5]);
+                    }
+                    current = p;
+                    last_cubic = None;
+                    last_quad = None;
+                }
+                'Z' => {
+                    path.close();
+                    current = start;
+                    last_cubic = None;
+                    last_quad = None;
+                }
+                other => return Err(format!("unknown path command `{other}`")),
+            }
+        }
+        Ok(path)
+    }
+}
+
+enum SvgToken {
+    Command(char),
+    /// A number where a command letter could have been: the previous
+    /// command repeats. Read again as a coordinate after `unread`.
+    Number,
+}
+
+struct SvgTokens<'a> {
+    text: &'a [u8],
+    at: usize,
+    last: usize,
+}
+
+impl<'a> SvgTokens<'a> {
+    fn new(text: &'a str) -> Self {
+        Self {
+            text: text.as_bytes(),
+            at: 0,
+            last: 0,
+        }
+    }
+
+    fn skip_separators(&mut self) {
+        while self.at < self.text.len()
+            && (self.text[self.at].is_ascii_whitespace() || self.text[self.at] == b',')
+        {
+            self.at += 1;
+        }
+    }
+
+    fn next_command_or_number(&mut self) -> Result<Option<SvgToken>, String> {
+        self.skip_separators();
+        self.last = self.at;
+        let Some(&byte) = self.text.get(self.at) else {
+            return Ok(None);
+        };
+        if byte.is_ascii_alphabetic() && byte != b'e' && byte != b'E' {
+            self.at += 1;
+            return Ok(Some(SvgToken::Command(byte as char)));
+        }
+        self.number().map(|_| Some(SvgToken::Number))
+    }
+
+    fn unread(&mut self) {
+        self.at = self.last;
+    }
+
+    fn number(&mut self) -> Result<f32, String> {
+        self.skip_separators();
+        let begin = self.at;
+        let mut end = self.at;
+        let bytes = self.text;
+        if matches!(bytes.get(end), Some(b'+' | b'-')) {
+            end += 1;
+        }
+        let mut seen_dot = false;
+        while let Some(&byte) = bytes.get(end) {
+            if byte.is_ascii_digit() {
+                end += 1;
+            } else if byte == b'.' && !seen_dot {
+                seen_dot = true;
+                end += 1;
+            } else if (byte == b'e' || byte == b'E')
+                && bytes
+                    .get(end + 1)
+                    .is_some_and(|next| next.is_ascii_digit() || *next == b'-' || *next == b'+')
+            {
+                end += 2;
+                while bytes.get(end).is_some_and(u8::is_ascii_digit) {
+                    end += 1;
+                }
+                break;
+            } else {
+                break;
+            }
+        }
+        let text = std::str::from_utf8(&bytes[begin..end]).unwrap_or_default();
+        let value = text
+            .parse::<f32>()
+            .ok()
+            .filter(|value| value.is_finite())
+            .ok_or_else(|| format!("expected a finite number at byte {begin}"))?;
+        self.at = end;
+        Ok(value)
+    }
+
+    /// An arc flag: a single `0` or `1`, which may run into the next number.
+    fn flag(&mut self) -> Result<bool, String> {
+        self.skip_separators();
+        match self.text.get(self.at) {
+            Some(b'0') => {
+                self.at += 1;
+                Ok(false)
+            }
+            Some(b'1') => {
+                self.at += 1;
+                Ok(true)
+            }
+            _ => Err(format!("expected an arc flag at byte {}", self.at)),
+        }
+    }
+}
+
+/// An SVG elliptical arc from `from` to `to`, as cubic segments
+/// `[c1x, c1y, c2x, c2y, x, y]` (SVG 1.1 appendix F.6).
+fn svg_arc(
+    from: [f32; 2],
+    to: [f32; 2],
+    mut rx: f32,
+    mut ry: f32,
+    rotation: f32,
+    large: bool,
+    sweep: bool,
+) -> Vec<[f32; 6]> {
+    if rx < 1e-6 || ry < 1e-6 || (from[0] - to[0]).abs() + (from[1] - to[1]).abs() < 1e-6 {
+        return vec![[from[0], from[1], to[0], to[1], to[0], to[1]]];
+    }
+    let (sin, cos) = rotation.sin_cos();
+    let dx = (from[0] - to[0]) / 2.0;
+    let dy = (from[1] - to[1]) / 2.0;
+    let x1 = cos * dx + sin * dy;
+    let y1 = -sin * dx + cos * dy;
+    let lambda = (x1 * x1) / (rx * rx) + (y1 * y1) / (ry * ry);
+    if lambda > 1.0 {
+        let scale = lambda.sqrt();
+        rx *= scale;
+        ry *= scale;
+    }
+    let numerator = (rx * rx * ry * ry - rx * rx * y1 * y1 - ry * ry * x1 * x1).max(0.0);
+    let denominator = rx * rx * y1 * y1 + ry * ry * x1 * x1;
+    let mut k = (numerator / denominator.max(1e-12)).sqrt();
+    if large == sweep {
+        k = -k;
+    }
+    let cx1 = k * rx * y1 / ry;
+    let cy1 = -k * ry * x1 / rx;
+    let cx = cos * cx1 - sin * cy1 + (from[0] + to[0]) / 2.0;
+    let cy = sin * cx1 + cos * cy1 + (from[1] + to[1]) / 2.0;
+    let angle = |ux: f32, uy: f32, vx: f32, vy: f32| {
+        let dot = ux * vx + uy * vy;
+        let len = ((ux * ux + uy * uy) * (vx * vx + vy * vy)).sqrt();
+        let mut a = (dot / len.max(1e-12)).clamp(-1.0, 1.0).acos();
+        if ux * vy - uy * vx < 0.0 {
+            a = -a;
+        }
+        a
+    };
+    let start = angle(1.0, 0.0, (x1 - cx1) / rx, (y1 - cy1) / ry);
+    let mut delta = angle(
+        (x1 - cx1) / rx,
+        (y1 - cy1) / ry,
+        (-x1 - cx1) / rx,
+        (-y1 - cy1) / ry,
+    );
+    if !sweep && delta > 0.0 {
+        delta -= std::f32::consts::TAU;
+    } else if sweep && delta < 0.0 {
+        delta += std::f32::consts::TAU;
+    }
+    let count = (delta.abs() / std::f32::consts::FRAC_PI_2).ceil().max(1.0) as usize;
+    let step = delta / count as f32;
+    let k = 4.0 / 3.0 * (step / 4.0).tan();
+    let map = |x: f32, y: f32| {
+        [
+            cos * rx * x - sin * ry * y + cx,
+            sin * rx * x + cos * ry * y + cy,
+        ]
+    };
+    let mut out = Vec::with_capacity(count);
+    let mut a = start;
+    for _ in 0..count {
+        let b = a + step;
+        let (s0, c0) = a.sin_cos();
+        let (s1, c1) = b.sin_cos();
+        let p1 = map(c0 - k * s0, s0 + k * c0);
+        let p2 = map(c1 + k * s1, s1 - k * c1);
+        let p3 = map(c1, s1);
+        out.push([p1[0], p1[1], p2[0], p2[1], p3[0], p3[1]]);
+        a = b;
+    }
+    // Land exactly on the endpoint.
+    if let Some(last) = out.last_mut() {
+        last[4] = to[0];
+        last[5] = to[1];
+    }
+    out
 }
 
 fn fit_radii(rect: LayoutBox, radii: [f32; 4]) -> [f32; 4] {

@@ -2,6 +2,8 @@
 
 `PropertyGrid` 是专业工具检查器里那种两列密集面板：行分在可折叠的组里，每行左边是标签，右边是应用的控件。整个网格共用一个标签列宽，可以拖动。它没有模板标签，用 `widget(PropertyGrid::new(组))` 放进视图。
 
+这个类型在 Cargo feature `property-grid` 后面（`components` 包含它）。
+
 ## 基本用法
 
 ```rust

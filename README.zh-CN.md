@@ -301,7 +301,7 @@ cargo build --profile dist
 | `gpu` | `SceneWgpuPainter`、`HostTexture`、`FrameExchange` 与无窗口输出（仅主后端与预编译着色器归档） |
 | `bundled-fonts` | 内置 Noto Sans SC 作为默认 UI 字体（约 4.2 MiB）；不开则回落到系统字体 |
 | `view-macro` | 编译期 `view!`、`css!` 与 `stylesheet!` 宏 |
-| `components` | 开启 `calendar`、`charts`、`controls`、`diff-view`、`dock`、`graph-canvas`、`image-viewer`、`qr-code`、`rich-text` 与 `terminal` |
+| `components` | 开启 `area-layout`、`calendar`、`charts`、`controls`、`diff-view`、`dock`、`graph-canvas`、`image-viewer`、`paint-script`、`property-grid`、`qr-code`、`rich-text`、`terminal` 与 `timeline` |
 | `wgpu-backends` | 在启用 `gpu` 时同时编入全部跨平台标准 WGPU 后端（`dx12`、`vulkan`、`gles`、`metal`） |
 | `runtime-wgsl` | 运行时 WGSL 编译（`naga` / `wgpu` WGSL 回退），供自定义用户 `MaterialProgram` 使用 |
 | `wgpu-interop` | 逃生口：暴露 `GpuContext` 与 `FrameContext` 背后的原始 WGPU 对象 |

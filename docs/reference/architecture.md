@@ -124,15 +124,30 @@ Rust 声明式视图（`nana_ui::runtime` 构建器与 `view!`）和 `.vue` 方�
 
 `nana-ui` 默认不开启任何 feature（`default = []`）：打开桌面窗口必须显式启用 `hosted`（隐含 `gpu` 并仅拉起当前平台主图形后端）；需要全部跨平台标准后端时加 `wgpu-backends`，或直接启用 `full`。它绝不会创建第二套宿主或 GPU 所有者。
 
-控件族 feature（`calendar`、`charts`、`controls`、`diff-view`、`dock`、`graph-canvas`、`image-viewer`、`rich-text`、`terminal`）同步控制 `nana-ui-runtime` 与 `nana-ui-scene` 的条件编译，并决定 `ComponentSupport::compiled`。未启用的控件族及其专属依赖不参与编译，`nana_ui::runtime` 仅导出当前构建实际编入的控件（完整对照表见 [应用 API](application-api.md)）。`component-gallery` 是独立的示例 crate，其分类导航与演示状态不属于 `nana-ui` 的公共 API。
+控件族 feature 分为两类，并共同决定 `ComponentSupport::compiled`（完整对照表见 [应用 API](application-api.md)）：
 
-控件族按实测编译成本划分，粒度停在能力岛，不为基础控件拆 feature。`Workspace`、`SplitPane` 与 Shell 始终编入：`assemble_desktop_shell` 自己创建 `Workspace`，拆开等于拆 Shell。`BrowserView` 只是 67 行的锚点声明，单独成族没有收益。`TerminalView` 的输入路由（键盘、指针、粘贴、IME）只通过按 `StableNodeId` 传参的路由调用到达，路由器不点名类型，所以关掉 `terminal` 时输入分发代码不需要条件编译。
+- 同步控制 `nana-ui-runtime` 与 `nana-ui-scene`：`calendar`、`charts`、`controls`、`graph-canvas`、`image-viewer`、`rich-text`。
+- 仅控制 `nana-ui-runtime`（及对应门面导出）：`area-layout`、`diff-view`、`dock`（同时带上门面宿主适配 `nana_ui::dock` 与 `runtime_dock_window_update`）、`paint-script`（`PaintPath::from_svg` 仍始终可用）、`property-grid`、`qr-code`、`terminal`、`timeline`。
 
-实测（2026-11-23，macOS Apple Silicon，`dev` 配置，`CARGO_INCREMENTAL=0`、关闭 `sccache`，依赖已就绪，每次 `touch` 后只重编 `nana-ui-runtime` 这一个单元；两种组合交替各 5 轮、读最小值，负载 3.3–4.7）：
+未启用的控件族及其专属依赖不参与编译，`nana_ui::runtime` 仅导出当前构建实际编入的控件；`components` 一次启用以上 14 族。`component-gallery` 是独立的示例 crate，其分类导航与演示状态不属于 `nana-ui` 的公共 API。
 
-| `nana-ui-runtime` 单元 | `diff-view` + `dock` + `terminal` | 三者都关 | 差 |
-| --- | --- | --- | --- |
-| `cargo build` | 11.58 s | 11.01 s | −4.9% |
-| `cargo check` | 5.73 s | 5.52 s | −3.7% |
+控件族按实测编译成本与耦合边界划分，粒度停在能力岛，不为基础控件拆 feature。`Workspace`、`SplitPane` 与 Shell 始终编入：`assemble_desktop_shell` 自己创建 `Workspace`，拆开等于拆 Shell。`BrowserView` 只是 67 行的锚点声明，单独成族没有收益。`TerminalView` 的输入路由（键盘、指针、粘贴、IME）和 `TimelineEditor` 的删除按键只通过按 `StableNodeId` 传参或擦除后的能力回调到达，路由器不点名具体组件类型，关掉 `terminal` / `timeline` 时输入分发代码不需要条件编译。
 
-全部控件族（`components`）对比都关：`cargo build` 12.40 s 对 11.26 s（−9.2%，4 轮）。剩下约 11 s 是布局、世界、框架与基础控件这些每个应用都用的部分，再往下降要靠拆 crate，feature 拆不出来。复测时 `--features` 要作为两个独立参数传给 cargo（zsh 不做单词切分），并确认 `RUSTC_WRAPPER` 为空，否则 `sccache` 命中会把重编时间压到 2 s 以内。
+实测 1（2026-11-25，macOS Apple Silicon，`dev` 配置，`CARGO_INCREMENTAL=0`、关闭 `sccache`，依赖已就绪，每次 `touch crates/nana-ui-runtime/src/lib.rs` 后只重编 `nana-ui-runtime` 这一个单元；三组交替 3 轮、读最小值）：
+
+| `nana-ui-runtime` 单元 | 全关（`--no-default-features`） | 7 个仅 runtime 族全开 | `components`（14 族全开） | 全关相对 `components` |
+| --- | --- | --- | --- | --- |
+| `cargo build` | 13.63 s | 13.50 s | 17.08 s | −20.2% |
+| `cargo check` | 7.03 s | 6.88 s | 7.71 s | −8.8% |
+
+> 说明：7 个仅 runtime 族（`area-layout`、`diff-view`、`dock`、`paint-script`、`property-grid`、`terminal`、`timeline`）共约 1.1 万行代码，与基线（约 17 万行）相比仅占单单元重编耗时的小部分，且受机器瞬时负载波动影响；而 `components` 同时拉入 `nana-ui-charts`、`nana-ui-diagram`、`pulldown-cmark`、`ratex-*`、`qrcode` 等可选依赖及 `rich-text` / `calendar` / `image-viewer` / `graph-canvas` / `controls` 代码，整体差值稳定在 ~20%。
+
+实测 2（2026-11-25，同机 `cargo build -p nana-ui --example application-counter --no-default-features --timings --locked`，各自使用全新独立 `target` 目录，`CARGO_INCREMENTAL=0`、关闭 `sccache`；全量构建期间系统 1 分钟 load 为 18–30，wall-clock 含并行调度波动，编译单元数与目标体积为确定值）：
+
+| 桌面应用配置（`application-counter`） | 全量编译单元数 | 产物目录体积 | 全量 `wall-clock` | `nana-ui-runtime` 单元 | 改动 `runtime` 后增量重编（4 单元） |
+| --- | --- | --- | --- | --- | --- |
+| 最小桌面（`hosted,bundled-fonts`） | 272 | 1.5 GiB | 64.05 s | 18.58 s | 21.95 s（`runtime` 15.84 s） |
+| 桌面 + 全部组件（`hosted,bundled-fonts,components`） | 340 | 1.8 GiB | 53.73 s | 21.15 s | 77.74 s（`runtime` 64.89 s） |
+| 桌面全量（`full`） | 399 | 2.0 GiB | 71.16 s | 21.79 s | 53.77 s（`runtime` 42.82 s） |
+
+相对 `full`（399 单元），最小桌面配置省去了 127 个编译单元（−31.8%），包括 `nana-ui-diagram`、`nana-ui-charts`、`pulldown-cmark`、`ratex-*`、`qrcode`、`usvg`/`resvg`/`tiny-skia`、`icu_datetime`/`icu_calendar`、`two-face`/`syntect`、`fancy-regex` 等可选依赖图；相对 `hosted,bundled-fonts,components`（340 单元）省去了 68 个编译单元（−20.0%）。复测时 `--features` 要作为两个独立参数传给 cargo（zsh 不做单词切分），并确认 `RUSTC_WRAPPER` 为空，否则 `sccache` 命中会把重编时间压到 2 s 以内。
