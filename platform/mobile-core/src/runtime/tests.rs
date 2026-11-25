@@ -183,6 +183,8 @@ fn a_tap_activates_and_the_frame_after_it_settles() {
 #[test]
 fn concurrent_multi_touch_pointers_route_distinct_ids() {
     let mut fixture = fixture();
+    let doc = fixture.runtime.document().document();
+    let scale = fixture.runtime.viewport().scale;
     let (x, y) = fixture.centre(fixture.button.stable_id());
     assert!(
         fixture
@@ -201,21 +203,42 @@ fn concurrent_multi_touch_pointers_route_distinct_ids() {
     assert!(
         fixture
             .runtime
-            .push_touch(TouchPhase::Down, x + 20.0, y + 10.0, 2)
+            .push_touch(TouchPhase::Down, x + 21.0, y + 12.0, 2)
+            .unwrap()
+    );
+    {
+        let ctx = fixture.runtime.document().context();
+        assert_eq!(ctx.pointer_position(doc, 1), Some((x / scale, y / scale)));
+        assert_eq!(
+            ctx.pointer_position(doc, 2),
+            Some(((x + 21.0) / scale, (y + 12.0) / scale))
+        );
+        assert!(ctx.world().pointer_press(doc, 1).is_some());
+        assert!(ctx.world().pointer_press(doc, 2).is_none());
+    }
+    assert!(
+        fixture
+            .runtime
+            .push_touch(TouchPhase::Move, x + 24.0, y + 15.0, 2)
             .unwrap()
     );
     assert!(
         fixture
             .runtime
-            .push_touch(TouchPhase::Move, x + 24.0, y + 14.0, 2)
+            .push_touch(TouchPhase::Move, x + 3.0, y + 3.0, 1)
             .unwrap()
     );
-    assert!(
-        fixture
-            .runtime
-            .push_touch(TouchPhase::Move, x + 2.0, y + 2.0, 1)
-            .unwrap()
-    );
+    {
+        let ctx = fixture.runtime.document().context();
+        assert_eq!(
+            ctx.pointer_position(doc, 1),
+            Some(((x + 3.0) / scale, (y + 3.0) / scale))
+        );
+        assert_eq!(
+            ctx.pointer_position(doc, 2),
+            Some(((x + 24.0) / scale, (y + 15.0) / scale))
+        );
+    }
     // Lifting pointer 2 ends only pointer 2; unknown pointer 99 is ignored.
     assert!(
         !fixture
@@ -226,11 +249,87 @@ fn concurrent_multi_touch_pointers_route_distinct_ids() {
     assert!(
         fixture
             .runtime
-            .push_touch(TouchPhase::Up, x + 24.0, y + 14.0, 2)
+            .push_touch(TouchPhase::Up, x + 24.0, y + 15.0, 2)
             .unwrap()
     );
+    assert_eq!(*fixture.presses.lock().unwrap(), 0);
     assert!(fixture.runtime.push_touch(TouchPhase::Up, x, y, 1).unwrap());
     assert_eq!(*fixture.presses.lock().unwrap(), 1);
+}
+
+#[test]
+fn primary_finger_releasing_first_keeps_secondary_non_primary() {
+    let mut fixture = fixture();
+    let doc = fixture.runtime.document().document();
+    let scale = fixture.runtime.viewport().scale;
+    let (x, y) = fixture.centre(fixture.button.stable_id());
+
+    assert!(
+        fixture
+            .runtime
+            .push_touch(TouchPhase::Down, x, y, 10)
+            .unwrap()
+    );
+    assert!(
+        fixture
+            .runtime
+            .push_touch(TouchPhase::Down, x, y, 20)
+            .unwrap()
+    );
+    {
+        let ctx = fixture.runtime.document().context();
+        assert_eq!(ctx.pointer_position(doc, 1), Some((x / scale, y / scale)));
+        assert_eq!(ctx.pointer_position(doc, 2), Some((x / scale, y / scale)));
+        assert!(ctx.world().pointer_press(doc, 1).is_some());
+        assert!(ctx.world().pointer_press(doc, 2).is_none());
+    }
+
+    // Lifting primary finger 10 activates once and clears primary capture;
+    // remaining finger 20 must stay non-primary across subsequent Move and Up.
+    assert!(
+        fixture
+            .runtime
+            .push_touch(TouchPhase::Up, x, y, 10)
+            .unwrap()
+    );
+    assert_eq!(*fixture.presses.lock().unwrap(), 1);
+
+    assert!(
+        fixture
+            .runtime
+            .push_touch(TouchPhase::Move, x + 3.0, y + 3.0, 20)
+            .unwrap()
+    );
+    {
+        let ctx = fixture.runtime.document().context();
+        assert_eq!(
+            ctx.pointer_position(doc, 2),
+            Some(((x + 3.0) / scale, (y + 3.0) / scale))
+        );
+        assert!(ctx.world().pointer_press(doc, 2).is_none());
+    }
+    assert!(
+        fixture
+            .runtime
+            .push_touch(TouchPhase::Up, x + 3.0, y + 3.0, 20)
+            .unwrap()
+    );
+    assert_eq!(*fixture.presses.lock().unwrap(), 1);
+
+    // Once all contacts end, the next touch starts cleanly as primary again.
+    assert!(
+        fixture
+            .runtime
+            .push_touch(TouchPhase::Down, x, y, 30)
+            .unwrap()
+    );
+    assert!(
+        fixture
+            .runtime
+            .push_touch(TouchPhase::Up, x, y, 30)
+            .unwrap()
+    );
+    assert_eq!(*fixture.presses.lock().unwrap(), 2);
 }
 
 #[test]

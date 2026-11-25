@@ -150,8 +150,10 @@ pub struct MobileRuntime {
     /// The root paints no background ([`Self::set_background_passthrough`]).
     passthrough: bool,
     root: Entity<List>,
-    /// Active touch pointer ids in arrival order; index 0 is the primary touch.
+    /// Active touch pointer ids; `primary_touch` stays immutable across each
+    /// contact's `Down`..`Move`..`Up`/`Cancel` lifetime.
     active_touches: Vec<u64>,
+    primary_touch: Option<u64>,
     ime_enabled: bool,
     /// Something changed that the last presented frame does not show.
     needs_present: bool,
@@ -193,6 +195,7 @@ impl MobileRuntime {
             passthrough: false,
             root,
             active_touches: Vec::new(),
+            primary_touch: None,
             ime_enabled: false,
             needs_present: true,
         };
@@ -390,21 +393,28 @@ impl MobileRuntime {
                     return Ok(false);
                 }
                 let empty = self.active_touches.is_empty();
+                if empty {
+                    self.primary_touch = Some(pointer_id);
+                }
                 self.active_touches.push(pointer_id);
                 (empty, empty)
             }
             TouchPhase::Move => {
-                let Some(idx) = self.active_touches.iter().position(|&id| id == pointer_id) else {
+                if !self.active_touches.contains(&pointer_id) {
                     return Ok(false);
-                };
-                (false, idx == 0)
+                }
+                (false, self.primary_touch == Some(pointer_id))
             }
             TouchPhase::Up | TouchPhase::Cancel => {
                 let Some(idx) = self.active_touches.iter().position(|&id| id == pointer_id) else {
                     return Ok(false);
                 };
                 self.active_touches.remove(idx);
-                (false, idx == 0)
+                let is_primary = self.primary_touch == Some(pointer_id);
+                if is_primary {
+                    self.primary_touch = None;
+                }
+                (false, is_primary)
             }
         };
         let [x, y] = self.viewport.logical_point(physical_x, physical_y);

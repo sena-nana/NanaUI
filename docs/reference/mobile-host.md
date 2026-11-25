@@ -65,7 +65,7 @@ nana-ui（只开 gpu，不开 hosted）
 
 ## 输入
 
-`push_touch` 保留每个触点的 `PointerId` 并通过 `nana-ui-input` 并发路由至文档（第一个活跃触点标记 `is_primary = true`，后续并发触点标记 `is_primary = false`，以支持原生双指捏合缩放与双指平移；重复 `Down` 或未知触点的事件返回 `false`）。触摸拖动滚动、甩动和回弹由 runtime 完成（见 [runtime-scene.md](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/runtime-scene.md#触摸滚动与-scrollphysics)）。`set_scroll_physics` 选择物理档位：iOS 宿主用 `Ios`，Android 宿主用 `Android`。甩动和回弹走动画 deadline，所以进行期间 `frame_demand` 返回 `At`，停下后回到 `Idle`。`push_composition` 接平台文本系统的组字事件。主指点击编辑器以外的位置时，先提交未完成的组字，再移动焦点。
+`push_touch` 保留每个触点的 `PointerId` 并通过 `nana-ui-input` 并发路由至文档（当尚无活跃触点时落下的第一指标记 `is_primary = true`，且每个触点从 `Down` 到 `Up`/`Cancel` 的整个生命周期保持自身的 `is_primary` 不变；其余并发触点标记 `is_primary = false`，以支持原生双指捏合缩放与双指平移；重复 `Down` 或未知触点的事件返回 `false`）。触摸拖动滚动、甩动和回弹由 runtime 完成（见 [runtime-scene.md](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/runtime-scene.md#触摸滚动与-scrollphysics)）。`set_scroll_physics` 选择物理档位：iOS 宿主用 `Ios`，Android 宿主用 `Android`。甩动和回弹走动画 deadline，所以进行期间 `frame_demand` 返回 `At`，停下后回到 `Idle`。`push_composition` 接平台文本系统的组字事件。主指点击编辑器以外的位置时，先提交未完成的组字，再移动焦点。
 
 ## 测量页
 
