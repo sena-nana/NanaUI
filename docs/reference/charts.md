@@ -50,10 +50,10 @@ cargo test -j 8 -p nana-ui --lib --features full -- --ignored regenerate_precomp
 
 ## 缩放
 
-`DataZoom` 按屏幕上的方位指定坐标轴，和 ECharts 的 `xAxisIndex` / `yAxisIndex` 一致：`.x_axis(i)`（默认 0）或 `.y_axis(i)`，`target()` 返回 `(ZoomAxis, index)`。横向柱状图上 x 轴是数值轴、y 轴是类目轴。
+`DataZoom` 按屏幕上的方位指定坐标轴，和 ECharts 的 `xAxisIndex` / `yAxisIndex` 一致：`.x_axis(i)`（默认 0）或 `.y_axis(i)`，`target()` 返回 `(ZoomAxis, index)`。横向柱状图上 x 轴是数值轴、y 轴是类目轴；热力图等二维网格上两个方向都可以是类目轴。
 
 - 窗口是百分比。同一坐标轴上的所有条目共用一个窗口：布局读第一个条目的窗口，运行时移动窗口时把该轴上每个条目都设成同一个值，并为每个变化的条目发一次 `ChartEvent::DataZoom`。
-- 基轴（类目、时间或沿着前进的数值轴）的百分比相对全部数据范围；类目 `i` 的中心在 `(i + 0.5) / 总数`。数值轴的百分比相对它在**全部数据**上取整后的刻度范围，与 x 窗口无关，所以框选时两个方向可以各自换算。数值轴有缩放条目时不再按 x 窗口自适应；窗口不是 0–100 时两端精确等于窗口，不再取整。对数轴不做数值缩放。
+- 类目/基轴（类目、时间或沿着前进的数值轴）的百分比相对全部数据范围；类目 `i` 的中心在 `(i + 0.5) / 总数`。y 轴为类目轴时（如 `HeatmapSeries`）同样按总类目数切片。数值轴的百分比相对它在**全部数据**上取整后的刻度范围，与 x 窗口无关，所以框选时两个方向可以各自换算。数值轴有缩放条目时不再按 x 窗口自适应；窗口不是 0–100 时两端精确等于窗口，不再取整。对数轴不做数值缩放。
 - `ChartLayout::zoom_axes` 给出每个显示中的可缩放轴的像素到百分比映射（`ZoomAxisLayout::percent_at` / `per_px`），滚轮、拖动平移和框选都只用它换算，不重新布局。
 - `DataZoomKind::Slider`：x 轴的滑轨在绘图区下方（`ChartLayout::slider`，基轴时带第一条系列的预览），y 轴的滑轨在右侧（`ChartLayout::y_slider`，窗口从底部向上增长）。
 - `DataZoomKind::Inside`：滚轮以指针为中心缩放每个开了 `zoom_on_wheel` 的轴；拖动平移每个开了 `move_on_drag` 的轴。
@@ -61,19 +61,19 @@ cargo test -j 8 -p nana-ui --lib --features full -- --ignored regenerate_precomp
 
 ## 标线与标域
 
-`LineSeries`、`BarSeries`、`ScatterSeries` 可带 `mark_line(MarkLine)` 和 `mark_area(MarkArea)`，画在该系列的坐标轴上，默认用系列颜色。
+`LineSeries`、`BarSeries`、`ScatterSeries`、`CandlestickSeries`、`BoxplotSeries`、`HeatmapSeries` 可带 `mark_line(MarkLine)` 和 `mark_area(MarkArea)`，画在该系列的坐标轴上，默认用系列颜色。
 
 | 条目 | 位置 |
 | --- | --- |
 | `MarkLineItem::x(v)` / `::y(v)` | 竖线 / 横线；类目轴上 `v` 是类目下标 |
-| `MarkLineItem::min()` / `max()` / `average()` / `stat(MarkStat::Median)` | 系列数值（去掉 NaN）的统计值，横跨绘图区，落在数值轴上 |
-| `MarkLineItem::segment([x, y], [x, y])` | 两点之间的线段 |
+| `MarkLineItem::min()` / `max()` / `average()` / `stat(MarkStat::Median)` | 系列数值（去掉 NaN）的统计值，横跨绘图区，落在数值轴上；K 线按 `low` / `high` / `close`，箱线按 `min` / `max` / `median` |
+| `MarkLineItem::segment([x, y], [x, y])` | 两点之间的线段，随绘图区裁剪 |
 | `MarkAreaItem::y(a, b)` / `::x(a, b)` / `::rect(..)` | 横向带 / 纵向带 / 矩形；缺的方向占满绘图区 |
 
-- 画法：标域在所有系列之下（网格线之后），标线在所有系列之上；都裁到绘图区。标线默认 1px 虚线。柱状图（类目带有间隙）上的标域把首尾类目整格包进去，折线的类目点上则在两点之间。
-- 数值轴范围包含标线和标域的固定值（`x` / `y` / 线段端点 / 带的边界），阈值在数据之外也看得见；统计值本来就在数据范围内。
+- 画法：标域在所有系列之下（网格线之后），标线在所有系列之上；都裁到绘图区。标线默认 1px 虚线。柱状图、K 线、箱线和热力图（类目带有间隙）上的标域把首尾类目整格包进去，折线的类目点上则在两点之间。
+- 坐标轴范围包含标线和标域的固定值（`x` / `y` / 线段端点 / 带的边界），阈值在数据之外也看得见；统计值本来就在数据范围内。
 - 标签：标线在末端写名字，没有名字写数值（可用 `formatter`）；标域在左上角写名字，放不下就不写。
-- 命中：指针在标线 4px 以内时标线优先，提示的标题是系列名，一行是名字和数值；然后是数据本身；指针不在任何数据项上时，所在的标域给出提示。轴触发时，提示在系列各行之后追加指针所在的、有名字的标域。悬停标线让它加宽，悬停标域让它加深，都在着色器里按动效时钟过渡。
+- 命中：指针在标线 4px 以内时标线优先，提示的标题是系列名，一行是名字和数值；然后是数据本身（K 线默认展开为 `O/C/L/H` 四行、箱线默认展开为 `min/Q1/median/Q3/max` 五行，可通过 `value_labels` 覆盖）；指针不在任何数据项上时，所在的标域给出提示。轴触发时，提示在系列各行之后追加指针所在的、有名字的标域。悬停标线让它加宽，悬停标域让它加深，都在着色器里按动效时钟过渡。
 - 过渡：标线按 `(series, MARK_LINE_INDEX + k)` 与上一份布局匹配，阈值改动时从原来的位置移过去；标域按 `(series, MARK_AREA_INDEX + k)` 匹配。
 
 ## 测试
@@ -90,4 +90,4 @@ cargo test -p nana-ui-runtime --features charts --lib charts
 cargo test -p nana-ui --features hosted,gpu,charts --lib -- scene_paint::wgsl scene_paint::msl_precompiled scene_paint::naga_ir chart --test-threads=1
 ```
 
-第一条覆盖布局、标线标域的位置与命中、数值轴缩放和过渡匹配；第二条覆盖框选、双击恢复、y 轴滚轮与滑轨；第三条校验着色器、预编译产物和 GPU 绘制。
+第一条覆盖布局、K 线 / 箱线 / 热力图几何与多行提示、标线标域的位置与命中、数值轴与类目 y 轴缩放和过渡匹配；第二条覆盖框选、双击恢复、markLine/markArea 提示与 y 轴滚轮滑轨；第三条校验着色器、预编译产物以及 markLine 悬停加宽、markArea 绘制顺序与悬停加深、K 线/箱线/热力图的 GPU 绘制。

@@ -1,6 +1,6 @@
 # Chart
 
-`Chart` 画图表：折线、面积、柱状、饼和环、玫瑰、散点、雷达、仪表盘。你给一份 `ChartOption`，结构和 ECharts 的 `option` 对应（`grid`、`x_axis`、`y_axis`、`series`、`tooltip`、`legend`、`data_zoom`），值是 Rust 类型。数据、名称和数值格式由你提供，几何、动画和交互由控件管。
+`Chart` 画图表：折线、面积、柱状、饼和环、玫瑰、散点、雷达、仪表盘、K 线、箱线与热力图。你给一份 `ChartOption`，结构和 ECharts 的 `option` 对应（`grid`、`x_axis`、`y_axis`、`series`、`tooltip`、`legend`、`data_zoom`），值是 Rust 类型。数据、名称和数值格式由你提供，几何、动画和交互由控件管。
 
 这个类型在 Cargo feature `charts` 后面。`components` 会打开它。控件表里没有 `<Chart>`：option 是类型化的数据，只走 Rust。
 
@@ -54,6 +54,9 @@ widget(Chart::new(option).label("本周访问"))
 | `ScatterSeries` | 散点 | `[x, y]` 点。`.sizes(..)` 逐点大小。上万个点也是一次绘制 |
 | `RadarSeries` | 雷达 | 需要 `ChartOption::radar(RadarCoord)` 给指标 |
 | `GaugeSeries` | 仪表盘 | `.range(..)`、`.angles(..)`、进度弧、刻度和指针 |
+| `CandlestickSeries` | K 线 | `Ohlc`（开/收/低/高），默认按涨跌取主题 `success`/`danger`，支持 `.up_color(..)`、`.down_color(..)`、`.value_labels(..)` |
+| `BoxplotSeries` | 箱线 | `BoxWhisker`（最小/Q1/中位/Q3/最大），绘制须线、四分位箱与中位线，支持横纵向与 `.value_labels(..)` |
+| `HeatmapSeries` | 热力图 | `HeatmapCell`（`[x, y, value]`），按 `.range(..)` 与 `.colors(..)` 插值着色，支持格内数值标签与 x/y 双向类目缩放 |
 
 数据列用 `SeriesData`：一组值按类目下标对应（`[f64; N]`、`Vec<f64>`），或者 `[x, y]` 点对（`Vec<[f64; 2]>`）用于数值轴和时间轴。`NaN` 是缺口，折线在缺口处断开（`.connect_nulls(true)` 连上）。
 
@@ -90,7 +93,7 @@ let option = ChartOption::new()
 
 ## 标线和标域
 
-折线、柱状和散点系列可以带 `mark_line(MarkLine)` 和 `mark_area(MarkArea)`：告警阈值、平均线、正常区间、事故时间段。标域画在系列下面，标线画在上面，默认用系列颜色，标线是 1px 虚线。
+折线、柱状、散点、K 线、箱线和热力图系列可以带 `mark_line(MarkLine)` 和 `mark_area(MarkArea)`：告警阈值、平均线、正常区间、事故时间段。标域画在系列下面，标线画在上面，默认用系列颜色，标线是 1px 虚线。
 
 ```rust
 use nana_ui::runtime::chart::{

@@ -41,6 +41,9 @@ fn focus_of(spec: &ChartSpec, series: u32) -> u32 {
         Some(Series::Line(line)) => line.focus,
         Some(Series::Bar(bar)) => bar.focus,
         Some(Series::Scatter(scatter)) => scatter.focus,
+        Some(Series::Candlestick(candle)) => candle.focus,
+        Some(Series::Boxplot(boxplot)) => boxplot.focus,
+        Some(Series::Heatmap(heatmap)) => heatmap.focus,
         _ => EmphasisFocus::None,
     };
     if focus == EmphasisFocus::Series {
@@ -1137,5 +1140,117 @@ mod tests {
         assert_ne!(first.marks.revision, next.marks.revision);
         let motion = next.marks.transition.expect("an update moves");
         assert!(!motion.reveal);
+    }
+
+    #[test]
+    fn hovering_mark_line_and_mark_area_updates_emphasis_and_tooltip() {
+        use nana_ui_charts::{MARK_LINE_INDEX, MarkArea, MarkAreaItem, MarkLine, MarkLineItem};
+        let option = ChartOption::new()
+            .animation(Animation::disabled())
+            .x_axis(Axis::category(["Mon", "Tue", "Wed", "Thu", "Fri"]))
+            .y_axis(Axis::value().max(nana_ui_charts::AxisBound::Value(100.0)))
+            .series(
+                LineSeries::new("cpu", [20.0, 20.0, 20.0, 20.0, 20.0])
+                    .mark_line(MarkLine::new([MarkLineItem::y(80.0).name("alert")]))
+                    .mark_area(MarkArea::new([MarkAreaItem::y(40.0, 60.0).name("normal")])),
+            );
+        let (mut context, document, chart, _) = chart_in(option);
+        let layout = layout_of(&context, chart);
+        let plot = layout.plot.unwrap();
+        let line_hit = layout
+            .hit
+            .marks
+            .iter()
+            .find(|m| &*m.name == "alert")
+            .unwrap();
+        let nana_ui_charts::hit::MarkRegion::Line { a, b } = line_hit.region else {
+            panic!()
+        };
+        let lx = (a[0] + b[0]) * 0.5;
+        let ly = (a[1] + b[1]) * 0.5;
+        let mut input = HeadlessInput::bind(&mut context, document);
+        input
+            .pointer(&mut context, PointerPhase::Move, lx, ly)
+            .unwrap();
+        let hover = context.read(chart, |chart| chart.hover).unwrap();
+        assert_eq!(hover.current, [0, MARK_LINE_INDEX]);
+        let tooltip_id = context.component_lifecycle.chart_tooltips[&chart.stable_id()];
+        let tooltip = Entity::<ChartTooltip>::from_stable_id(tooltip_id);
+        let content = context.read(tooltip, |t| Arc::clone(&t.content)).unwrap();
+        assert_eq!(&*content.title, "cpu");
+        assert_eq!(&*content.rows[0].name, "alert");
+        assert_eq!(&*content.rows[0].value, "80");
+
+        // Moving inside the mark area (away from the mark line) appends its row to the axis tooltip.
+        let area_hit = layout
+            .hit
+            .marks
+            .iter()
+            .find(|m| &*m.name == "normal")
+            .unwrap();
+        let nana_ui_charts::hit::MarkRegion::Area(rect) = area_hit.region else {
+            panic!()
+        };
+        let ax = plot[0] + (plot[2] - plot[0]) * 0.5;
+        let ay = (rect[1] + rect[3]) * 0.5;
+        input
+            .pointer(&mut context, PointerPhase::Move, ax, ay)
+            .unwrap();
+        let hover = context.read(chart, |chart| chart.hover).unwrap();
+        assert_eq!(hover.current[0], nana_ui_charts::hit::ANY_SERIES);
+        let content = context.read(tooltip, |t| Arc::clone(&t.content)).unwrap();
+        assert!(content.rows.iter().any(|r| &*r.name == "normal"));
+    }
+
+    #[test]
+    fn single_axis_box_select_spans_cross_axis_and_tiny_drag_emits_click() {
+        let option = weekly().data_zoom(DataZoom::select());
+        let (mut context, document, chart, events) = chart_in(option);
+        let plot = layout_of(&context, chart).plot.unwrap();
+        let (w, h) = (plot[2] - plot[0], plot[3] - plot[1]);
+        let mut input = HeadlessInput::bind(&mut context, document);
+        // Tiny <8px drag inside the plot acts as a click and does not zoom.
+        let cx = plot[0] + w * 0.5;
+        let cy = plot[1] + h * 0.5;
+        input
+            .pointer(&mut context, PointerPhase::Move, cx, cy)
+            .unwrap();
+        input
+            .pointer(&mut context, PointerPhase::Down, cx, cy)
+            .unwrap();
+        input
+            .pointer(&mut context, PointerPhase::Move, cx + 2.0, cy + 2.0)
+            .unwrap();
+        input
+            .pointer(&mut context, PointerPhase::Up, cx + 2.0, cy + 2.0)
+            .unwrap();
+        assert_eq!(windows(&context, chart), vec![(0.0, 100.0)]);
+        assert!(matches!(
+            events.lock().unwrap().as_slice(),
+            [ChartEvent::Click { .. }]
+        ));
+
+        // Dragging horizontally with only x select_on_drag spans the full plot height.
+        let from = (plot[0] + w * 0.25, plot[1] + h * 0.4);
+        let to = (plot[0] + w * 0.75, plot[1] + h * 0.6);
+        input
+            .pointer(&mut context, PointerPhase::Down, from.0, from.1)
+            .unwrap();
+        input
+            .pointer(&mut context, PointerPhase::Move, to.0, to.1)
+            .unwrap();
+        let selection = context
+            .read(chart, |chart| chart.selection)
+            .unwrap()
+            .unwrap();
+        assert!((selection[1] - plot[1]).abs() < 1e-3);
+        assert!((selection[3] - plot[3]).abs() < 1e-3);
+        input
+            .pointer(&mut context, PointerPhase::Up, to.0, to.1)
+            .unwrap();
+        let [x_win] = windows(&context, chart)[..] else {
+            panic!()
+        };
+        assert!(x_win.1 - x_win.0 < 80.0 && x_win.0 > 10.0, "{x_win:?}");
     }
 }

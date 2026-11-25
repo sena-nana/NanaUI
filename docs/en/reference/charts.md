@@ -50,10 +50,10 @@ cargo test -j 8 -p nana-ui --lib --features full -- --ignored regenerate_precomp
 
 ## Zoom
 
-A `DataZoom` names its axis by where it sits on screen, as ECharts' `xAxisIndex` / `yAxisIndex` do: `.x_axis(i)` (0 by default) or `.y_axis(i)`, and `target()` returns `(ZoomAxis, index)`. On a horizontal bar chart the x axis is the value axis and the y axis the categories.
+A `DataZoom` names its axis by where it sits on screen, as ECharts' `xAxisIndex` / `yAxisIndex` do: `.x_axis(i)` (0 by default) or `.y_axis(i)`, and `target()` returns `(ZoomAxis, index)`. On a horizontal bar chart the x axis is the value axis and the y axis the categories; on a heatmap both axes can be category axes.
 
 - Windows are percent. Every entry on one axis shares a window: layout reads the first entry's, and when the runtime moves a window it sets every entry on that axis to it and emits one `ChartEvent::DataZoom` for each entry that changed.
-- On the base axis (categories, time, or the value axis series advance along) percent is of the full data extent; category `i` is centred at `(i + 0.5) / count`. On a value axis percent is of the nice-rounded scale over **all** the data, independent of the x window, so a selection box converts on each side on its own. A value axis with a zoom entry no longer fits itself to the x window; with a window other than 0–100 its ends are exactly the window's, not rounded. Log axes do not zoom on their values.
+- On a category/base axis (categories, time, or the value axis series advance along) percent is of the full data extent; category `i` is centred at `(i + 0.5) / count`. A category y axis (such as `HeatmapSeries`) slices its categories by the same rule. On a value axis percent is of the nice-rounded scale over **all** the data, independent of the x window, so a selection box converts on each side on its own. A value axis with a zoom entry no longer fits itself to the x window; with a window other than 0–100 its ends are exactly the window's, not rounded. Log axes do not zoom on their values.
 - `ChartLayout::zoom_axes` maps px to percent for every zoomable axis shown (`ZoomAxisLayout::percent_at` / `per_px`); the wheel, drag panning and box selection convert only through it, with no relayout.
 - `DataZoomKind::Slider`: an x axis' track sits under the plot (`ChartLayout::slider`, previewing the first series when it is the base axis), a y axis' to the right of it (`ChartLayout::y_slider`, its window growing up from the bottom).
 - `DataZoomKind::Inside`: the wheel zooms every axis with `zoom_on_wheel` around the pointer; dragging pans every axis with `move_on_drag`.
@@ -61,19 +61,19 @@ A `DataZoom` names its axis by where it sits on screen, as ECharts' `xAxisIndex`
 
 ## Mark lines and mark areas
 
-`LineSeries`, `BarSeries` and `ScatterSeries` take `mark_line(MarkLine)` and `mark_area(MarkArea)`, drawn on that series' axes and in its color by default.
+`LineSeries`, `BarSeries`, `ScatterSeries`, `CandlestickSeries`, `BoxplotSeries` and `HeatmapSeries` take `mark_line(MarkLine)` and `mark_area(MarkArea)`, drawn on that series' axes and in its color by default.
 
 | Item | Where |
 | --- | --- |
 | `MarkLineItem::x(v)` / `::y(v)` | A vertical / horizontal line; on a category axis `v` is a category index |
-| `MarkLineItem::min()` / `max()` / `average()` / `stat(MarkStat::Median)` | A statistic of the series' values (NaN left out), across the plot on the value axis |
-| `MarkLineItem::segment([x, y], [x, y])` | A segment between two points |
+| `MarkLineItem::min()` / `max()` / `average()` / `stat(MarkStat::Median)` | A statistic of the series' values (NaN left out), across the plot on the value axis (`low`/`high`/`close` for candlestick, `min`/`max`/`median` for boxplot) |
+| `MarkLineItem::segment([x, y], [x, y])` | A segment between two points, clipped to the plot |
 | `MarkAreaItem::y(a, b)` / `::x(a, b)` / `::rect(..)` | A horizontal band / vertical band / rectangle; a missing side spans the plot |
 
-- Drawing: mark areas go under every series (after the grid lines), mark lines over every series; both are cut to the plot. Mark lines default to 1px dashes. On bars (categories with a gap) a mark area covers its first and last categories whole; on a line's category points it runs between them.
-- The value axis' range includes the fixed values of mark lines and areas (`x` / `y` / segment ends / band edges), so a threshold beyond the data stays in view; statistics are inside the data range anyway.
+- Drawing: mark areas go under every series (after the grid lines), mark lines over every series; both are cut to the plot. Mark lines default to 1px dashes. On bars, candlesticks, boxplots and heatmaps (categories with a gap) a mark area covers its first and last categories whole; on a line's category points it runs between them.
+- Axis ranges include the fixed values of mark lines and areas (`x` / `y` / segment ends / band edges), so a threshold beyond the data stays in view; statistics are inside the data range anyway.
 - Labels: a mark line writes its name at its end, else its value (through `formatter` when given); a mark area writes its name in its top-left corner, and nothing when it does not fit.
-- Hit testing: within 4px of a mark line the line wins, with the series name as the tooltip title and one row of its name and value; then the data itself; when the pointer is over no data item, the mark area under it answers. With the axis trigger the tooltip appends the named mark areas the pointer is in after the series rows. Hovering a mark line widens it and hovering a mark area deepens it, both eased in the shader on the motion clock.
+- Hit testing: within 4px of a mark line the line wins, with the series name as the tooltip title and one row of its name and value; then the data itself (candlesticks expand to `O/C/L/H` rows and boxplots to `min/Q1/median/Q3/max` by default, overridable via `value_labels`); when the pointer is over no data item, the mark area under it answers. With the axis trigger the tooltip appends the named mark areas the pointer is in after the series rows. Hovering a mark line widens it and hovering a mark area deepens it, both eased in the shader on the motion clock.
 - Transitions: mark lines are matched to the previous layout by `(series, MARK_LINE_INDEX + k)`, so a changed threshold moves from where it was; mark areas by `(series, MARK_AREA_INDEX + k)`.
 
 ## Tests
@@ -90,4 +90,4 @@ cargo test -p nana-ui-runtime --features charts --lib charts
 cargo test -p nana-ui --features hosted,gpu,charts --lib -- scene_paint::wgsl scene_paint::msl_precompiled scene_paint::naga_ir chart --test-threads=1
 ```
 
-The first covers layout, the placement and hit testing of mark lines and areas, value-axis zoom and transition matching; the second box selection, double-click restore, the y-axis wheel and slider; the third validates the shader, the precompiled artifacts and GPU drawing.
+The first covers layout, candlestick/boxplot/heatmap geometry and multi-row tooltips, the placement and hit testing of mark lines and areas, value-axis and category y-axis zoom, and transition matching; the second box selection, double-click restore, markLine/markArea tooltips, and the y-axis wheel and slider; the third validates the shader, the precompiled artifacts, and GPU drawing (including markLine hover widening, markArea draw order/deepening, and the new series).

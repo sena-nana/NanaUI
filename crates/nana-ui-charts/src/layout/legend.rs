@@ -47,6 +47,17 @@ pub(super) fn layout(
                 }
             }
             Series::Gauge(_) => {}
+            Series::Candlestick(candle) => {
+                let color = candle.up_color.map_or(theme.positive, |c| theme.resolve(c));
+                entries.push((candle.name.clone(), color));
+            }
+            Series::Heatmap(heatmap) => {
+                let color = heatmap
+                    .colors
+                    .last()
+                    .map_or_else(|| theme.series_color(index), |c| theme.resolve(*c));
+                entries.push((heatmap.name.clone(), color));
+            }
             series => {
                 let color = series
                     .explicit_color()

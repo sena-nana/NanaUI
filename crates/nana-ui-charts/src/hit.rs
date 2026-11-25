@@ -121,6 +121,9 @@ pub struct ItemHit {
     pub row: Option<Arc<str>>,
     pub value: f64,
     pub color: [f32; 4],
+    /// Multi-row details (e.g. OHLC or five-number summary) when no custom
+    /// tooltip formatter is installed.
+    pub details: Vec<(Arc<str>, f64)>,
 }
 
 /// Where a mark line or mark area answers the pointer.
@@ -554,12 +557,29 @@ impl ChartLayout {
             value: item.value,
             color: item.color,
         };
+        let tooltip = (option.tooltip.show != Some(false)).then(|| {
+            if option.tooltip.formatter.is_none() && !item.details.is_empty() {
+                TooltipContent {
+                    title,
+                    rows: item
+                        .details
+                        .iter()
+                        .map(|(label, value)| TooltipRow {
+                            color: Some(item.color),
+                            name: label.clone(),
+                            value: format_value(option, *value),
+                        })
+                        .collect(),
+                }
+            } else {
+                formatted(option, title, std::slice::from_ref(&entry))
+            }
+        });
         Some(ChartHover {
             series: item.series,
             index: item.index,
             pointer: None,
-            tooltip: (option.tooltip.show != Some(false))
-                .then(|| formatted(option, title, std::slice::from_ref(&entry))),
+            tooltip,
         })
     }
 

@@ -191,7 +191,12 @@ impl ChartOption {
                 Series::Bar(bar) => bar.item_colors.iter().for_each(|c| add(Some(*c))),
                 Series::Pie(pie) => pie.data.iter().for_each(|item| add(item.color)),
                 Series::Radar(radar) => radar.data.iter().for_each(|item| add(item.color)),
-                Series::Scatter(_) | Series::Gauge(_) => {}
+                Series::Candlestick(candle) => {
+                    add(candle.up_color);
+                    add(candle.down_color);
+                }
+                Series::Heatmap(heatmap) => heatmap.colors.iter().for_each(|c| add(Some(*c))),
+                Series::Scatter(_) | Series::Gauge(_) | Series::Boxplot(_) => {}
             }
             let (line, area) = series.marks();
             if let Some(line) = line {
@@ -1692,6 +1697,331 @@ impl GaugeSeries {
     }
 }
 
+/// One candlestick entry (`[open, close, low, high]`, matching ECharts).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Ohlc {
+    pub open: f64,
+    pub close: f64,
+    pub low: f64,
+    pub high: f64,
+}
+
+impl Ohlc {
+    pub fn new(open: f64, close: f64, low: f64, high: f64) -> Self {
+        Self {
+            open,
+            close,
+            low,
+            high,
+        }
+    }
+}
+
+impl From<[f64; 4]> for Ohlc {
+    fn from([open, close, low, high]: [f64; 4]) -> Self {
+        Self::new(open, close, low, high)
+    }
+}
+
+/// OHLC candlestick series (ECharts `candlestick`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CandlestickSeries {
+    pub name: Arc<str>,
+    pub data: Arc<[Ohlc]>,
+    pub x_axis_index: usize,
+    pub y_axis_index: usize,
+    pub up_color: Option<ChartColor>,
+    pub down_color: Option<ChartColor>,
+    pub bar_width: Option<Length>,
+    pub bar_max_width: Option<f32>,
+    /// Tooltip row labels for `[open, close, low, high]`.
+    pub value_labels: Option<[Arc<str>; 4]>,
+    pub focus: EmphasisFocus,
+    pub mark_line: Option<MarkLine>,
+    pub mark_area: Option<MarkArea>,
+}
+
+impl CandlestickSeries {
+    pub fn new(name: impl Into<Arc<str>>, data: impl IntoIterator<Item = impl Into<Ohlc>>) -> Self {
+        Self {
+            name: name.into(),
+            data: data.into_iter().map(Into::into).collect(),
+            x_axis_index: 0,
+            y_axis_index: 0,
+            up_color: None,
+            down_color: None,
+            bar_width: None,
+            bar_max_width: None,
+            value_labels: None,
+            focus: EmphasisFocus::None,
+            mark_line: None,
+            mark_area: None,
+        }
+    }
+
+    pub fn up_color(mut self, color: ChartColor) -> Self {
+        self.up_color = Some(color);
+        self
+    }
+
+    pub fn down_color(mut self, color: ChartColor) -> Self {
+        self.down_color = Some(color);
+        self
+    }
+
+    pub fn bar_width(mut self, width: Length) -> Self {
+        self.bar_width = Some(width);
+        self
+    }
+
+    pub fn bar_max_width(mut self, width: f32) -> Self {
+        self.bar_max_width = Some(width);
+        self
+    }
+
+    pub fn value_labels(mut self, labels: [impl Into<Arc<str>>; 4]) -> Self {
+        let [o, c, l, h] = labels;
+        self.value_labels = Some([o.into(), c.into(), l.into(), h.into()]);
+        self
+    }
+
+    pub fn y_axis_index(mut self, index: usize) -> Self {
+        self.y_axis_index = index;
+        self
+    }
+
+    pub fn focus(mut self, focus: EmphasisFocus) -> Self {
+        self.focus = focus;
+        self
+    }
+
+    pub fn mark_line(mut self, mark: MarkLine) -> Self {
+        self.mark_line = Some(mark);
+        self
+    }
+
+    pub fn mark_area(mut self, mark: MarkArea) -> Self {
+        self.mark_area = Some(mark);
+        self
+    }
+}
+
+/// One box-and-whisker five-number summary (`[min, q1, median, q3, max]`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BoxWhisker {
+    pub min: f64,
+    pub q1: f64,
+    pub median: f64,
+    pub q3: f64,
+    pub max: f64,
+}
+
+impl BoxWhisker {
+    pub fn new(min: f64, q1: f64, median: f64, q3: f64, max: f64) -> Self {
+        Self {
+            min,
+            q1,
+            median,
+            q3,
+            max,
+        }
+    }
+}
+
+impl From<[f64; 5]> for BoxWhisker {
+    fn from([min, q1, median, q3, max]: [f64; 5]) -> Self {
+        Self::new(min, q1, median, q3, max)
+    }
+}
+
+/// Box-and-whisker distribution series (ECharts `boxplot`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct BoxplotSeries {
+    pub name: Arc<str>,
+    pub data: Arc<[BoxWhisker]>,
+    pub color: Option<ChartColor>,
+    pub x_axis_index: usize,
+    pub y_axis_index: usize,
+    pub box_width: Option<Length>,
+    pub box_max_width: Option<f32>,
+    /// Tooltip row labels for `[min, q1, median, q3, max]`.
+    pub value_labels: Option<[Arc<str>; 5]>,
+    pub focus: EmphasisFocus,
+    pub mark_line: Option<MarkLine>,
+    pub mark_area: Option<MarkArea>,
+}
+
+impl BoxplotSeries {
+    pub fn new(
+        name: impl Into<Arc<str>>,
+        data: impl IntoIterator<Item = impl Into<BoxWhisker>>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            data: data.into_iter().map(Into::into).collect(),
+            color: None,
+            x_axis_index: 0,
+            y_axis_index: 0,
+            box_width: None,
+            box_max_width: None,
+            value_labels: None,
+            focus: EmphasisFocus::None,
+            mark_line: None,
+            mark_area: None,
+        }
+    }
+
+    pub fn color(mut self, color: ChartColor) -> Self {
+        self.color = Some(color);
+        self
+    }
+
+    pub fn box_width(mut self, width: Length) -> Self {
+        self.box_width = Some(width);
+        self
+    }
+
+    pub fn box_max_width(mut self, width: f32) -> Self {
+        self.box_max_width = Some(width);
+        self
+    }
+
+    pub fn value_labels(mut self, labels: [impl Into<Arc<str>>; 5]) -> Self {
+        let [min, q1, med, q3, max] = labels;
+        self.value_labels = Some([min.into(), q1.into(), med.into(), q3.into(), max.into()]);
+        self
+    }
+
+    pub fn y_axis_index(mut self, index: usize) -> Self {
+        self.y_axis_index = index;
+        self
+    }
+
+    pub fn focus(mut self, focus: EmphasisFocus) -> Self {
+        self.focus = focus;
+        self
+    }
+
+    pub fn mark_line(mut self, mark: MarkLine) -> Self {
+        self.mark_line = Some(mark);
+        self
+    }
+
+    pub fn mark_area(mut self, mark: MarkArea) -> Self {
+        self.mark_area = Some(mark);
+        self
+    }
+}
+
+/// One cell of a [`HeatmapSeries`] (`[x, y, value]`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HeatmapCell {
+    pub x: f64,
+    pub y: f64,
+    pub value: f64,
+}
+
+impl HeatmapCell {
+    pub fn new(x: f64, y: f64, value: f64) -> Self {
+        Self { x, y, value }
+    }
+}
+
+impl From<[f64; 3]> for HeatmapCell {
+    fn from([x, y, value]: [f64; 3]) -> Self {
+        Self::new(x, y, value)
+    }
+}
+
+/// 2D matrix heatmap series (ECharts `heatmap` + visualMap range).
+#[derive(Debug, Clone, PartialEq)]
+pub struct HeatmapSeries {
+    pub name: Arc<str>,
+    pub data: Arc<[HeatmapCell]>,
+    pub x_axis_index: usize,
+    pub y_axis_index: usize,
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+    /// Color ramp stops; empty uses a theme-derived ramp.
+    pub colors: Vec<ChartColor>,
+    /// Gap between adjacent cells, px.
+    pub gap: f32,
+    pub border_radius: f32,
+    pub label: MarkLabel,
+    pub focus: EmphasisFocus,
+    pub mark_line: Option<MarkLine>,
+    pub mark_area: Option<MarkArea>,
+}
+
+impl HeatmapSeries {
+    pub fn new(
+        name: impl Into<Arc<str>>,
+        data: impl IntoIterator<Item = impl Into<HeatmapCell>>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            data: data.into_iter().map(Into::into).collect(),
+            x_axis_index: 0,
+            y_axis_index: 0,
+            min: None,
+            max: None,
+            colors: Vec::new(),
+            gap: 1.0,
+            border_radius: 2.0,
+            label: MarkLabel::default(),
+            focus: EmphasisFocus::None,
+            mark_line: None,
+            mark_area: None,
+        }
+    }
+
+    pub fn range(mut self, min: f64, max: f64) -> Self {
+        self.min = Some(min);
+        self.max = Some(max);
+        self
+    }
+
+    pub fn colors(mut self, colors: impl IntoIterator<Item = ChartColor>) -> Self {
+        self.colors = colors.into_iter().collect();
+        self
+    }
+
+    pub fn gap(mut self, gap: f32) -> Self {
+        self.gap = gap.max(0.0);
+        self
+    }
+
+    pub fn border_radius(mut self, radius: f32) -> Self {
+        self.border_radius = radius.max(0.0);
+        self
+    }
+
+    pub fn label(mut self, label: MarkLabel) -> Self {
+        self.label = label;
+        self
+    }
+
+    pub fn y_axis_index(mut self, index: usize) -> Self {
+        self.y_axis_index = index;
+        self
+    }
+
+    pub fn focus(mut self, focus: EmphasisFocus) -> Self {
+        self.focus = focus;
+        self
+    }
+
+    pub fn mark_line(mut self, mark: MarkLine) -> Self {
+        self.mark_line = Some(mark);
+        self
+    }
+
+    pub fn mark_area(mut self, mark: MarkArea) -> Self {
+        self.mark_area = Some(mark);
+        self
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Series {
     Line(LineSeries),
@@ -1700,6 +2030,9 @@ pub enum Series {
     Scatter(ScatterSeries),
     Radar(RadarSeries),
     Gauge(GaugeSeries),
+    Candlestick(CandlestickSeries),
+    Boxplot(BoxplotSeries),
+    Heatmap(HeatmapSeries),
 }
 
 impl Series {
@@ -1711,11 +2044,22 @@ impl Series {
             Self::Scatter(series) => &series.name,
             Self::Radar(series) => &series.name,
             Self::Gauge(series) => &series.name,
+            Self::Candlestick(series) => &series.name,
+            Self::Boxplot(series) => &series.name,
+            Self::Heatmap(series) => &series.name,
         }
     }
 
     pub fn is_cartesian(&self) -> bool {
-        matches!(self, Self::Line(_) | Self::Bar(_) | Self::Scatter(_))
+        matches!(
+            self,
+            Self::Line(_)
+                | Self::Bar(_)
+                | Self::Scatter(_)
+                | Self::Candlestick(_)
+                | Self::Boxplot(_)
+                | Self::Heatmap(_)
+        )
     }
 
     /// The series' mark line and mark area (cartesian series only).
@@ -1724,6 +2068,9 @@ impl Series {
             Self::Line(series) => (series.mark_line.as_ref(), series.mark_area.as_ref()),
             Self::Bar(series) => (series.mark_line.as_ref(), series.mark_area.as_ref()),
             Self::Scatter(series) => (series.mark_line.as_ref(), series.mark_area.as_ref()),
+            Self::Candlestick(series) => (series.mark_line.as_ref(), series.mark_area.as_ref()),
+            Self::Boxplot(series) => (series.mark_line.as_ref(), series.mark_area.as_ref()),
+            Self::Heatmap(series) => (series.mark_line.as_ref(), series.mark_area.as_ref()),
             Self::Pie(_) | Self::Radar(_) | Self::Gauge(_) => (None, None),
         }
     }
@@ -1734,8 +2081,27 @@ impl Series {
             Self::Bar(series) => series.color,
             Self::Scatter(series) => series.color,
             Self::Gauge(series) => series.color,
-            Self::Pie(_) | Self::Radar(_) => None,
+            Self::Boxplot(series) => series.color,
+            Self::Pie(_) | Self::Radar(_) | Self::Candlestick(_) | Self::Heatmap(_) => None,
         }
+    }
+}
+
+impl From<CandlestickSeries> for Series {
+    fn from(series: CandlestickSeries) -> Self {
+        Self::Candlestick(series)
+    }
+}
+
+impl From<BoxplotSeries> for Series {
+    fn from(series: BoxplotSeries) -> Self {
+        Self::Boxplot(series)
+    }
+}
+
+impl From<HeatmapSeries> for Series {
+    fn from(series: HeatmapSeries) -> Self {
+        Self::Heatmap(series)
     }
 }
 

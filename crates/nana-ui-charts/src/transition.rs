@@ -30,6 +30,9 @@ fn largest_series(option: &ChartOption) -> usize {
             Series::Pie(pie) => pie.data.len(),
             Series::Radar(radar) => radar.data.len(),
             Series::Gauge(_) => 1,
+            Series::Candlestick(candle) => candle.data.len(),
+            Series::Boxplot(boxplot) => boxplot.data.len(),
+            Series::Heatmap(heatmap) => heatmap.data.len(),
         })
         .max()
         .unwrap_or(0)

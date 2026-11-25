@@ -25,6 +25,12 @@ pub struct ChartTheme {
     pub pointer: [f32; 4],
     /// Text drawn on a series color (inside pie labels).
     pub on_series: [f32; 4],
+    /// Semantic positive / rising color (e.g. bullish candlestick).
+    pub positive: [f32; 4],
+    /// Semantic negative / falling color (e.g. bearish candlestick).
+    pub negative: [f32; 4],
+    /// Semantic warning / high-end ramp color.
+    pub warning: [f32; 4],
     /// Series colors, in order.
     pub palette: Vec<[f32; 4]>,
     pub font_size: f32,
@@ -75,6 +81,9 @@ impl ChartTheme {
             band: mix(surface, text, 0.05),
             pointer: mix(surface, palette.muted.as_rgba_array(), 0.7),
             on_series: palette.accent_text.as_rgba_array(),
+            positive: palette.success.as_rgba_array(),
+            negative: palette.danger.as_rgba_array(),
+            warning: palette.warning.as_rgba_array(),
             palette: palette.series_palette().to_vec(),
             font_size: type_scale::META,
             font_weight: type_scale::REGULAR,

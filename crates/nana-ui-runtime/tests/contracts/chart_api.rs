@@ -1,7 +1,8 @@
 //! The chart surface an application builds from: the examples in
 //! `docs/components/chart.md`, compiled.
 use nana_ui_runtime::chart::{
-    Animation, AreaStyle, Axis, BarSeries, ChartOption, DataZoom, GaugeSeries, Legend, LineSeries,
+    Animation, AreaStyle, Axis, BarSeries, BoxplotSeries, CandlestickSeries, ChartOption, DataZoom,
+    GaugeSeries, HeatmapSeries, Legend, LineSeries, MarkArea, MarkAreaItem, MarkLine, MarkLineItem,
     PieItem, PieSeries, RadarCoord, RadarIndicator, RadarItem, RadarSeries, ScatterSeries,
 };
 use nana_ui_runtime::view::widget;
@@ -24,7 +25,37 @@ fn the_documented_charts_build_and_mount() {
     let options = [
         weekly()
             .data_zoom(DataZoom::inside())
-            .data_zoom(DataZoom::slider()),
+            .data_zoom(DataZoom::slider())
+            .data_zoom(DataZoom::select().y_axis(0)),
+        ChartOption::new()
+            .x_axis(Axis::category(["Mon", "Tue", "Wed"]))
+            .y_axis(Axis::value())
+            .series(
+                LineSeries::new("CPU", [32.0, 71.0, 40.0])
+                    .mark_line(MarkLine::new([
+                        MarkLineItem::y(90.0).name("告警"),
+                        MarkLineItem::average(),
+                    ]))
+                    .mark_area(MarkArea::new([MarkAreaItem::y(30.0, 60.0).name("正常")])),
+            ),
+        ChartOption::new()
+            .x_axis(Axis::category(["D1", "D2"]))
+            .y_axis(Axis::value().scale(true))
+            .series(CandlestickSeries::new(
+                "K线",
+                [[10.0, 14.0, 9.0, 15.0], [14.0, 12.0, 11.0, 16.0]],
+            )),
+        ChartOption::new()
+            .x_axis(Axis::category(["A", "B"]))
+            .y_axis(Axis::value())
+            .series(BoxplotSeries::new("延迟", [[10.0, 20.0, 30.0, 40.0, 50.0]])),
+        ChartOption::new()
+            .x_axis(Axis::category(["X0", "X1"]))
+            .y_axis(Axis::category(["Y0", "Y1"]))
+            .series(HeatmapSeries::new(
+                "热力",
+                [[0.0, 0.0, 1.0], [1.0, 1.0, 5.0]],
+            )),
         ChartOption::new().series(
             PieSeries::new("占比", [PieItem::new("甲", 3.0), PieItem::new("乙", 1.0)])
                 .ring(0.5, 0.8)

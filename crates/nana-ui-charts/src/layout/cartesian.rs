@@ -17,8 +17,9 @@ use crate::marks::{
     SHAPE_EMPHASIS_GROW, SHAPE_REVEAL, ShapeKind, SymbolShape, draw_flags,
 };
 use crate::option::{
-    Axis, AxisBound, AxisKind, AxisPosition, BarSeries, DataZoomKind, Length, LineSeries, LineType,
-    MarkLineKind, MarkStat, Sampling, ScatterSeries, Series, SeriesData, Symbol, ZoomAxis,
+    Axis, AxisBound, AxisKind, AxisPosition, BarSeries, BoxplotSeries, CandlestickSeries,
+    DataZoomKind, HeatmapSeries, Length, LineSeries, LineType, MarkLineKind, MarkStat, Sampling,
+    ScatterSeries, Series, SeriesData, Symbol, ZoomAxis,
 };
 use crate::scale::{self, LinearTicks, TimeTick};
 use crate::smooth::{self, Along};
@@ -189,9 +190,29 @@ fn value_axis_index(series: &Series, base_x: bool) -> usize {
         Series::Line(line) => (line.x_axis_index, line.y_axis_index),
         Series::Bar(bar) => (bar.x_axis_index, bar.y_axis_index),
         Series::Scatter(scatter) => (scatter.x_axis_index, scatter.y_axis_index),
+        Series::Candlestick(candle) => (candle.x_axis_index, candle.y_axis_index),
+        Series::Boxplot(boxplot) => (boxplot.x_axis_index, boxplot.y_axis_index),
+        Series::Heatmap(heatmap) => (heatmap.x_axis_index, heatmap.y_axis_index),
         _ => (0, 0),
     };
     if base_x { y } else { x }
+}
+
+fn series_category_len(series: &Series) -> usize {
+    match series {
+        Series::Line(line) if matches!(line.data, SeriesData::Values(_)) => line.data.len(),
+        Series::Bar(bar) if matches!(bar.data, SeriesData::Values(_)) => bar.data.len(),
+        Series::Candlestick(candle) => candle.data.len(),
+        Series::Boxplot(boxplot) => boxplot.data.len(),
+        Series::Heatmap(heatmap) => heatmap
+            .data
+            .iter()
+            .filter(|cell| cell.x.is_finite() && cell.x >= 0.0)
+            .map(|cell| cell.x.floor() as usize + 1)
+            .max()
+            .unwrap_or(0),
+        _ => 0,
+    }
 }
 
 /// Axis label text for a value.
@@ -298,6 +319,9 @@ pub(super) fn layout(
             .clone()
             .unwrap_or_else(|| default_axis(&placed, true))
     };
+    let has_heatmap = placed
+        .iter()
+        .any(|placed| matches!(placed.series, Series::Heatmap(_)));
     let value_axes: Vec<Axis> = {
         let list = if base_x {
             &option.y_axis
@@ -305,36 +329,16 @@ pub(super) fn layout(
             &option.x_axis
         };
         if list.is_empty() {
-            vec![Axis::value()]
+            if has_heatmap {
+                vec![Axis::category(Vec::<Arc<str>>::new())]
+            } else {
+                vec![Axis::value()]
+            }
         } else {
             list.clone()
         }
     };
 
-    // The base axis' full extent, then the zoom window over it.
-    let category_count = placed
-        .iter()
-        .filter_map(|placed| series_data(placed.series))
-        .filter(|data| matches!(data, SeriesData::Values(_)))
-        .map(SeriesData::len)
-        .max()
-        .unwrap_or(0)
-        .max(base_axis.data.len());
-    let mut base_lo = f64::INFINITY;
-    let mut base_hi = f64::NEG_INFINITY;
-    for placed in &placed {
-        let Some(data) = series_data(placed.series) else {
-            continue;
-        };
-        for index in 0..data.len() {
-            if let Some((x, _)) = data.get(index)
-                && x.is_finite()
-            {
-                base_lo = base_lo.min(x);
-                base_hi = base_hi.max(x);
-            }
-        }
-    }
     // Zoom entries name an axis by its side; the base axis is the x axis
     // unless the chart is horizontal. The first entry on an axis holds its
     // window (the runtime keeps every entry on it the same).
@@ -343,6 +347,57 @@ pub(super) fn layout(
     } else {
         (ZoomAxis::Y, ZoomAxis::X)
     };
+    // The base axis' full extent, then the zoom window over it.
+    let category_count = placed
+        .iter()
+        .map(|placed| series_category_len(placed.series))
+        .max()
+        .unwrap_or(0)
+        .max(base_axis.data.len());
+    let mut base_lo = f64::INFINITY;
+    let mut base_hi = f64::NEG_INFINITY;
+    for placed in &placed {
+        match placed.series {
+            Series::Candlestick(candle) => {
+                if !candle.data.is_empty() {
+                    base_lo = base_lo.min(0.0);
+                    base_hi = base_hi.max((candle.data.len() - 1) as f64);
+                }
+            }
+            Series::Boxplot(boxplot) => {
+                if !boxplot.data.is_empty() {
+                    base_lo = base_lo.min(0.0);
+                    base_hi = base_hi.max((boxplot.data.len() - 1) as f64);
+                }
+            }
+            Series::Heatmap(heatmap) => {
+                for cell in heatmap.data.iter() {
+                    if cell.x.is_finite() {
+                        base_lo = base_lo.min(cell.x);
+                        base_hi = base_hi.max(cell.x);
+                    }
+                }
+            }
+            _ => {
+                if let Some(data) = series_data(placed.series) {
+                    for index in 0..data.len() {
+                        if let Some((x, _)) = data.get(index)
+                            && x.is_finite()
+                        {
+                            base_lo = base_lo.min(x);
+                            base_hi = base_hi.max(x);
+                        }
+                    }
+                }
+            }
+        }
+        if base_axis.kind == AxisKind::Value {
+            for value in mark_values(placed.series, base_side) {
+                base_lo = base_lo.min(value);
+                base_hi = base_hi.max(value);
+            }
+        }
+    }
     let zoom_on = |side: ZoomAxis, index: usize| -> Option<(f64, f64)> {
         let entry = option
             .data_zoom
@@ -362,9 +417,12 @@ pub(super) fn layout(
 
     let is_category = base_axis.kind == AxisKind::Category;
     let wants_gap = base_axis.boundary_gap.unwrap_or_else(|| {
-        placed
-            .iter()
-            .any(|placed| matches!(placed.series, Series::Bar(_)))
+        placed.iter().any(|placed| {
+            matches!(
+                placed.series,
+                Series::Bar(_) | Series::Candlestick(_) | Series::Boxplot(_) | Series::Heatmap(_)
+            )
+        })
     });
     let (window_first, window_count) = if is_category {
         let total = category_count.max(1);
@@ -437,26 +495,63 @@ pub(super) fn layout(
     };
     for (slot, placed_series) in placed.iter().enumerate() {
         let axis = value_axis_index(placed_series.series, base_x).min(value_axes.len() - 1);
-        let Some(data) = series_data(placed_series.series) else {
-            continue;
-        };
-        let bars = matches!(placed_series.series, Series::Bar(_));
-        let stacked_series = stacked.contains_key(&slot);
-        for index in 0..data.len() {
-            let Some((x, base, top)) = value_at(slot, index) else {
-                continue;
-            };
-            let both = bars || stacked_series;
-            grow(&mut full_extents[axis], top);
-            if both {
-                grow(&mut full_extents[axis], base);
+        match placed_series.series {
+            Series::Candlestick(candle) => {
+                for (index, ohlc) in candle.data.iter().enumerate() {
+                    for value in [ohlc.low, ohlc.high, ohlc.open, ohlc.close] {
+                        if value.is_finite() {
+                            grow(&mut full_extents[axis], value);
+                            if in_window(index as f64) {
+                                grow(&mut extents[axis], value);
+                            }
+                        }
+                    }
+                }
             }
-            if !in_window(x) {
-                continue;
+            Series::Boxplot(boxplot) => {
+                for (index, bw) in boxplot.data.iter().enumerate() {
+                    for value in [bw.min, bw.q1, bw.median, bw.q3, bw.max] {
+                        if value.is_finite() {
+                            grow(&mut full_extents[axis], value);
+                            if in_window(index as f64) {
+                                grow(&mut extents[axis], value);
+                            }
+                        }
+                    }
+                }
             }
-            grow(&mut extents[axis], top);
-            if both {
-                grow(&mut extents[axis], base);
+            Series::Heatmap(heatmap) => {
+                for cell in heatmap.data.iter() {
+                    if cell.y.is_finite() {
+                        grow(&mut full_extents[axis], cell.y);
+                        if in_window(cell.x) {
+                            grow(&mut extents[axis], cell.y);
+                        }
+                    }
+                }
+            }
+            _ => {
+                if let Some(data) = series_data(placed_series.series) {
+                    let bars = matches!(placed_series.series, Series::Bar(_));
+                    let stacked_series = stacked.contains_key(&slot);
+                    for index in 0..data.len() {
+                        let Some((x, base, top)) = value_at(slot, index) else {
+                            continue;
+                        };
+                        let both = bars || stacked_series;
+                        grow(&mut full_extents[axis], top);
+                        if both {
+                            grow(&mut full_extents[axis], base);
+                        }
+                        if !in_window(x) {
+                            continue;
+                        }
+                        grow(&mut extents[axis], top);
+                        if both {
+                            grow(&mut extents[axis], base);
+                        }
+                    }
+                }
             }
         }
         // A threshold or band at a fixed value stays in view.
@@ -466,16 +561,58 @@ pub(super) fn layout(
         }
     }
 
+    let value_category_totals: Vec<usize> = value_axes
+        .iter()
+        .enumerate()
+        .map(|(index, axis)| {
+            if axis.kind != AxisKind::Category {
+                return 0;
+            }
+            let data_max = placed
+                .iter()
+                .filter(|placed| value_axis_index(placed.series, base_x) == index)
+                .filter_map(|placed| match placed.series {
+                    Series::Heatmap(heatmap) => heatmap
+                        .data
+                        .iter()
+                        .filter(|cell| cell.y.is_finite() && cell.y >= 0.0)
+                        .map(|cell| cell.y.floor() as usize + 1)
+                        .max(),
+                    _ => None,
+                })
+                .max()
+                .unwrap_or(0);
+            axis.data.len().max(data_max).max(1)
+        })
+        .collect();
+    let category_slice = |total: usize, (s, e): (f64, f64)| -> (usize, usize) {
+        let total = total.max(1);
+        let first = ((s / 100.0) * total as f64).floor() as usize;
+        let last = (((e / 100.0) * total as f64).ceil() as usize).clamp(first + 1, total);
+        let first = first.min(total - 1);
+        (first, last - first)
+    };
     let value_scales: Vec<Scale> = value_axes
         .iter()
         .enumerate()
-        .map(|(index, axis)| match zoom_on(value_side, index) {
-            Some(window) if axis.kind == AxisKind::Value => {
-                let (lo, hi) = full_extents[index];
-                zoomed_value_scale(axis, lo, hi, window)
-            }
-            _ => value_scale(axis, extents[index].0, extents[index].1),
-        })
+        .map(
+            |(index, axis)| match (axis.kind, zoom_on(value_side, index)) {
+                (AxisKind::Category, zoom) => {
+                    let (first, count) =
+                        category_slice(value_category_totals[index], zoom.unwrap_or((0.0, 100.0)));
+                    Scale::Band {
+                        first,
+                        count: count.max(1),
+                        gap: axis.boundary_gap.unwrap_or(true),
+                    }
+                }
+                (AxisKind::Value, Some(window)) => {
+                    let (lo, hi) = full_extents[index];
+                    zoomed_value_scale(axis, lo, hi, window)
+                }
+                _ => value_scale(axis, extents[index].0, extents[index].1),
+            },
+        )
         .collect();
     let base_scale = if is_category {
         Scale::Band {
@@ -683,7 +820,7 @@ pub(super) fn layout(
     // Split lines of the first value axis, across the plot.
     if let (Some(axis), Some(map)) = (value_axes.first(), value_maps.first())
         && axis.show
-        && axis.split_line.unwrap_or(true)
+        && axis.split_line.unwrap_or(axis.kind != AxisKind::Category)
     {
         for tick in axis_ticks(axis, map, &axis.data) {
             let at = crisp(map.px(tick.value));
@@ -709,6 +846,7 @@ pub(super) fn layout(
         input,
         placed: &placed,
         base_axis: &base_axis,
+        value_axes: &value_axes,
         base_map: &base_map,
         value_maps: &value_maps,
         base_x,
@@ -717,9 +855,29 @@ pub(super) fn layout(
     // Mark areas lie under every series.
     marks.areas(builder, texts, hit);
 
-    // Bar backgrounds and the axis-pointer band go under the series; the
-    // series follow; the base axis line goes on top of the bars' feet.
-    let bars = layout_bars(
+    // Heatmaps, bars, candlesticks, boxplots, then lines and scatter.
+    let mut axis_series = Vec::new();
+    for placed_series in &placed {
+        if let Series::Heatmap(heatmap) = placed_series.series {
+            let value_index =
+                value_axis_index(placed_series.series, base_x).min(value_maps.len() - 1);
+            layout_heatmap(
+                input,
+                heatmap,
+                placed_series,
+                &base_axis,
+                &value_axes[value_index],
+                &base_map,
+                &value_maps[value_index],
+                base_x,
+                plot,
+                builder,
+                texts,
+                hit,
+            );
+        }
+    }
+    axis_series.extend(layout_bars(
         input,
         &placed,
         &stacked,
@@ -730,17 +888,41 @@ pub(super) fn layout(
         builder,
         texts,
         hit,
-    );
-    let mut axis_series: Vec<AxisSeries> = bars;
-    for (slot, placed_series) in placed.iter().enumerate() {
+    ));
+    for placed_series in &placed {
         let value_map =
             &value_maps[value_axis_index(placed_series.series, base_x).min(value_maps.len() - 1)];
         match placed_series.series {
+            Series::Candlestick(candle) => axis_series.push(layout_candlestick(
+                input,
+                candle,
+                placed_series,
+                &base_map,
+                value_map,
+                base_x,
+                plot,
+                builder,
+                hit,
+            )),
+            Series::Boxplot(boxplot) => axis_series.push(layout_boxplot(
+                input,
+                boxplot,
+                placed_series,
+                &base_map,
+                value_map,
+                base_x,
+                plot,
+                builder,
+                hit,
+            )),
             Series::Line(line) => axis_series.push(layout_line(
                 input,
                 line,
                 placed_series,
-                slot,
+                placed
+                    .iter()
+                    .position(|p| p.index == placed_series.index)
+                    .unwrap_or(0),
                 &value_at,
                 &stacked,
                 &base_map,
@@ -893,7 +1075,7 @@ pub(super) fn layout(
             AxisPosition::Top => plot[1],
             AxisPosition::Bottom => plot[3],
         };
-        if axis.axis_line && !axis.split_line.unwrap_or(true) {
+        if axis.axis_line && !axis.split_line.unwrap_or(axis.kind != AxisKind::Category) {
             let line = crisp(at);
             if base_x {
                 guide(builder, [line, plot[1]], [line, plot[3]], theme.axis);
@@ -1049,17 +1231,38 @@ pub(super) fn layout(
             });
         }
     }
-    for (index, (axis, map)) in value_axes.iter().zip(&value_maps).enumerate() {
-        if axis.kind == AxisKind::Value
-            && let Some((start, end)) = zoom_on(value_side, index)
-        {
-            zoom_axes.push(ZoomAxisLayout {
-                axis: value_side,
-                index,
-                vertical: base_x,
-                px: [map.start, map.end],
-                percent: [start, end],
-            });
+    for (index, ((axis, map), scale)) in value_axes
+        .iter()
+        .zip(&value_maps)
+        .zip(&value_scales)
+        .enumerate()
+    {
+        if !zoomable(value_side, index) {
+            continue;
+        }
+        match (axis.kind, scale) {
+            (AxisKind::Category, Scale::Band { first, .. }) => {
+                let total = value_category_totals[index].max(1) as f64;
+                let first = *first as f64;
+                zoom_axes.push(ZoomAxisLayout {
+                    axis: value_side,
+                    index,
+                    vertical: base_x,
+                    px: [map.px(first), map.px(first + 1.0)],
+                    percent: [(first + 0.5) / total * 100.0, (first + 1.5) / total * 100.0],
+                });
+            }
+            (AxisKind::Value, _) if zoom_on(value_side, index).is_some() => {
+                let (start, end) = zoom_on(value_side, index).unwrap();
+                zoom_axes.push(ZoomAxisLayout {
+                    axis: value_side,
+                    index,
+                    vertical: base_x,
+                    px: [map.start, map.end],
+                    percent: [start, end],
+                });
+            }
+            _ => {}
         }
     }
 
@@ -1158,12 +1361,62 @@ fn mark_values(series: &Series, value_side: ZoomAxis) -> Vec<f64> {
 
 /// A statistic of a series' values (NaN gaps left out).
 fn series_stat(series: &Series, stat: MarkStat) -> Option<f64> {
-    let data = series_data(series)?;
-    let mut values: Vec<f64> = (0..data.len())
-        .filter_map(|index| data.get(index))
-        .map(|(_, value)| value)
-        .filter(|value| value.is_finite())
-        .collect();
+    let mut values: Vec<f64> = match series {
+        Series::Candlestick(candle) => match stat {
+            MarkStat::Min => candle
+                .data
+                .iter()
+                .map(|item| item.low)
+                .filter(|v| v.is_finite())
+                .collect(),
+            MarkStat::Max => candle
+                .data
+                .iter()
+                .map(|item| item.high)
+                .filter(|v| v.is_finite())
+                .collect(),
+            MarkStat::Average | MarkStat::Median => candle
+                .data
+                .iter()
+                .map(|item| item.close)
+                .filter(|v| v.is_finite())
+                .collect(),
+        },
+        Series::Boxplot(boxplot) => match stat {
+            MarkStat::Min => boxplot
+                .data
+                .iter()
+                .map(|item| item.min)
+                .filter(|v| v.is_finite())
+                .collect(),
+            MarkStat::Max => boxplot
+                .data
+                .iter()
+                .map(|item| item.max)
+                .filter(|v| v.is_finite())
+                .collect(),
+            MarkStat::Average | MarkStat::Median => boxplot
+                .data
+                .iter()
+                .map(|item| item.median)
+                .filter(|v| v.is_finite())
+                .collect(),
+        },
+        Series::Heatmap(heatmap) => heatmap
+            .data
+            .iter()
+            .map(|cell| cell.value)
+            .filter(|v| v.is_finite())
+            .collect(),
+        _ => {
+            let data = series_data(series)?;
+            (0..data.len())
+                .filter_map(|index| data.get(index))
+                .map(|(_, value)| value)
+                .filter(|value| value.is_finite())
+                .collect()
+        }
+    };
     if values.is_empty() {
         return None;
     }
@@ -1183,11 +1436,80 @@ fn series_stat(series: &Series, stat: MarkStat) -> Option<f64> {
     })
 }
 
+/// Clips a segment to `rect` via Liang-Barsky, returning `None` when it
+/// lies entirely outside.
+fn clip_segment_to_rect(a: [f32; 2], b: [f32; 2], rect: [f32; 4]) -> Option<[[f32; 2]; 2]> {
+    let dx = b[0] - a[0];
+    let dy = b[1] - a[1];
+    let mut t0 = 0.0_f32;
+    let mut t1 = 1.0_f32;
+    for (p, q) in [
+        (-dx, a[0] - rect[0]),
+        (dx, rect[2] - a[0]),
+        (-dy, a[1] - rect[1]),
+        (dy, rect[3] - a[1]),
+    ] {
+        if p.abs() <= f32::EPSILON {
+            if q < 0.0 {
+                return None;
+            }
+        } else {
+            let r = q / p;
+            if p < 0.0 {
+                if r > t1 {
+                    return None;
+                }
+                t0 = t0.max(r);
+            } else {
+                if r < t0 {
+                    return None;
+                }
+                t1 = t1.min(r);
+            }
+        }
+    }
+    Some([
+        [a[0] + dx * t0, a[1] + dy * t0],
+        [a[0] + dx * t1, a[1] + dy * t1],
+    ])
+}
+
+fn axis_value_text(
+    axis: &Axis,
+    value: f64,
+    option: &crate::option::ChartOption,
+    formatter: Option<&crate::option::ValueFormatter>,
+) -> Arc<str> {
+    if axis.kind == AxisKind::Category {
+        let index = value.round();
+        if index >= 0.0
+            && let Some(name) = axis.data.get(index as usize)
+        {
+            return name.clone();
+        }
+    }
+    if axis.kind == AxisKind::Time {
+        return time_label(
+            axis,
+            TimeTick {
+                value: value.round() as i64,
+                unit: crate::option::TimeUnit::Second,
+                boundary: false,
+            },
+        );
+    }
+    match formatter {
+        Some(formatter) => formatter.format(value),
+        None => crate::hit::format_value(option, value),
+    }
+}
+
 /// What mark lines and areas are placed against.
 struct MarkContext<'a> {
     input: &'a LayoutInput<'a>,
     placed: &'a [Placed<'a>],
     base_axis: &'a Axis,
+    value_axes: &'a [Axis],
     base_map: &'a AxisMap,
     value_maps: &'a [AxisMap],
     base_x: bool,
@@ -1210,34 +1532,18 @@ impl MarkContext<'_> {
     /// time, or a number.
     fn value_text(
         &self,
+        series: &Series,
         on_x: bool,
         value: f64,
         formatter: Option<&crate::option::ValueFormatter>,
     ) -> Arc<str> {
         let on_base = on_x == self.base_x;
-        let option = self.input.option;
-        if on_base && self.base_axis.kind == AxisKind::Category {
-            let index = value.round();
-            if index >= 0.0
-                && let Some(name) = self.base_axis.data.get(index as usize)
-            {
-                return name.clone();
-            }
-        }
-        if on_base && self.base_axis.kind == AxisKind::Time {
-            return time_label(
-                self.base_axis,
-                TimeTick {
-                    value: value.round() as i64,
-                    unit: crate::option::TimeUnit::Second,
-                    boundary: false,
-                },
-            );
-        }
-        match formatter {
-            Some(formatter) => formatter.format(value),
-            None => crate::hit::format_value(option, value),
-        }
+        let axis = if on_base {
+            self.base_axis
+        } else {
+            &self.value_axes[value_axis_index(series, self.base_x).min(self.value_axes.len() - 1)]
+        };
+        axis_value_text(axis, value, self.input.option, formatter)
     }
 
     fn areas(&self, builder: &mut MarkBuilder, texts: &mut Vec<ChartText>, hit: &mut HitModel) {
@@ -1328,8 +1634,8 @@ impl MarkContext<'_> {
                 let range = |on_x: bool, [a, b]: [f64; 2]| -> Arc<str> {
                     format!(
                         "{} – {}",
-                        self.value_text(on_x, a.min(b), None),
-                        self.value_text(on_x, a.max(b), None)
+                        self.value_text(placed.series, on_x, a.min(b), None),
+                        self.value_text(placed.series, on_x, a.max(b), None)
                     )
                     .into()
                 };
@@ -1397,18 +1703,19 @@ impl MarkContext<'_> {
                     MarkLineKind::Segment(a, b) => {
                         let a_px = [x_map.px(a[0]), y_map.px(a[1])];
                         let b_px = [x_map.px(b[0]), y_map.px(b[1])];
-                        // A segment reads as its end's value.
-                        let (value, on_x) = if self.base_x {
-                            (b[1], false)
+                        if !a_px.iter().chain(&b_px).all(|v| v.is_finite()) {
+                            None
                         } else {
-                            (b[0], true)
-                        };
-                        (a_px.iter().chain(&b_px).all(|v| v.is_finite())).then_some((
-                            [a_px, b_px],
-                            value,
-                            on_x,
-                            false,
-                        ))
+                            clip_segment_to_rect(a_px, b_px, plot).map(|ends| {
+                                // A segment reads as its end's value.
+                                let (value, on_x) = if self.base_x {
+                                    (b[1], false)
+                                } else {
+                                    (b[0], true)
+                                };
+                                (ends, value, on_x, false)
+                            })
+                        }
                     }
                 };
                 let Some((ends, value, on_x, is_vertical)) = placed_line else {
@@ -1432,7 +1739,7 @@ impl MarkContext<'_> {
                     index,
                     if is_vertical { Along::Y } else { Along::X },
                 );
-                let value_text = self.value_text(on_x, value, formatter);
+                let value_text = self.value_text(placed.series, on_x, value, formatter);
                 let name = item.name.clone().unwrap_or_else(|| Arc::from(""));
                 if line.label {
                     let text = if name.is_empty() {
@@ -2015,6 +2322,7 @@ fn layout_bars(
                 row: None,
                 value: y,
                 color,
+                details: Vec::new(),
             });
             points.push(AxisPoint {
                 base: center,
@@ -2178,8 +2486,550 @@ fn layout_scatter(
             row: None,
             value,
             color: placed.color,
+            details: Vec::new(),
         });
     }
+}
+
+fn mix_color(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
+    [
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+        a[3] + (b[3] - a[3]) * t,
+    ]
+}
+
+fn continuous_cell_span(coords: impl Iterator<Item = f32>, plot_span: f32) -> f32 {
+    let mut sorted: Vec<f32> = coords.filter(|v| v.is_finite()).collect();
+    sorted.compact_sort_by(f32::total_cmp);
+    sorted
+        .windows(2)
+        .map(|w| w[1] - w[0])
+        .filter(|d| *d > 0.5)
+        .fold(f32::INFINITY, f32::min)
+        .min(plot_span.abs() * 0.25)
+        .max(2.0)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn layout_candlestick(
+    input: &LayoutInput<'_>,
+    candle: &CandlestickSeries,
+    placed: &Placed<'_>,
+    base_map: &AxisMap,
+    value_map: &AxisMap,
+    base_x: bool,
+    plot: [f32; 4],
+    builder: &mut MarkBuilder,
+    hit: &mut HitModel,
+) -> AxisSeries {
+    let theme = input.theme;
+    let series = placed.index as u32;
+    let up_color = candle.up_color.map_or(theme.positive, |c| theme.resolve(c));
+    let down_color = candle
+        .down_color
+        .map_or(theme.negative, |c| theme.resolve(c));
+    let band = if base_map.band() > 0.0 {
+        base_map.band()
+    } else {
+        continuous_cell_span(
+            (0..candle.data.len()).map(|i| base_map.px(i as f64)),
+            if base_x {
+                plot[2] - plot[0]
+            } else {
+                plot[3] - plot[1]
+            },
+        )
+    };
+    let mut width = candle
+        .bar_width
+        .map(|w| w.resolve(band))
+        .unwrap_or(band * 0.6);
+    if let Some(max) = candle.bar_max_width {
+        width = width.min(max);
+    }
+    let width = width.max(2.0);
+    let animate = candle.data.len() <= input.option.animation.threshold;
+    let labels = candle.value_labels.clone().unwrap_or_else(|| {
+        [
+            Arc::from("O"),
+            Arc::from("C"),
+            Arc::from("L"),
+            Arc::from("H"),
+        ]
+    });
+    let up_style = builder.style(fill_style(up_color, up_color));
+    let down_style = builder.style(fill_style(down_color, down_color));
+    let (plot_lo, plot_hi) = if base_x {
+        (plot[0], plot[2])
+    } else {
+        (plot[1], plot[3])
+    };
+    let rect_of = |a_lo: f32, a_hi: f32, v_lo: f32, v_hi: f32| {
+        if base_x {
+            [a_lo, v_lo, a_hi, v_hi]
+        } else {
+            [v_lo, a_lo, v_hi, a_hi]
+        }
+    };
+    let mut points = Vec::new();
+    for (index, ohlc) in candle.data.iter().enumerate() {
+        if ![ohlc.open, ohlc.close, ohlc.low, ohlc.high]
+            .into_iter()
+            .all(f64::is_finite)
+        {
+            continue;
+        }
+        let center = base_map.px(index as f64);
+        let (lo_edge, hi_edge) = (center - width * 0.5, center + width * 0.5);
+        if hi_edge < plot_lo || lo_edge > plot_hi {
+            continue;
+        }
+        let open_px = value_map.px(ohlc.open);
+        let close_px = value_map.px(ohlc.close);
+        let low_px = value_map.px(ohlc.low);
+        let high_px = value_map.px(ohlc.high);
+        let mid_px = (open_px + close_px) * 0.5;
+        let (body_lo, body_hi) = if (close_px - open_px).abs() < 1.0 {
+            (mid_px - 0.5, mid_px + 0.5)
+        } else {
+            (open_px.min(close_px), open_px.max(close_px))
+        };
+        let wick_lo = low_px.min(high_px).min(body_lo);
+        let wick_hi = low_px.max(high_px).max(body_hi);
+        let rising = ohlc.close >= ohlc.open;
+        let (style, color) = if rising {
+            (up_style, up_color)
+        } else {
+            (down_style, down_color)
+        };
+        let key = DrawKey {
+            series,
+            part: DrawPart::Shapes,
+            run: 0,
+        };
+        let flags = SHAPE_CLIP_TO_PLOT | SHAPE_EMPHASIS_GROW;
+        let mut wick = GpuShape::new(ShapeKind::Rect, flags, style, series, index as u32);
+        wick.to = rect_of(center - 0.75, center + 0.75, wick_lo, wick_hi);
+        wick.from = if animate {
+            rect_of(center - 0.75, center + 0.75, mid_px, mid_px)
+        } else {
+            wick.to
+        };
+        builder.shape(wick, key, 0);
+
+        let mut body = GpuShape::new(ShapeKind::Rect, flags, style, series, index as u32);
+        body.to = rect_of(lo_edge, hi_edge, body_lo, body_hi);
+        body.from = if animate {
+            rect_of(lo_edge, hi_edge, mid_px, mid_px)
+        } else {
+            body.to
+        };
+        builder.shape(body, key, 0);
+
+        let half_hit = (width * 0.5).max(3.0);
+        hit.items.push(ItemHit {
+            region: ItemRegion::Rect(rect_of(
+                center - half_hit,
+                center + half_hit,
+                wick_lo,
+                wick_hi,
+            )),
+            series,
+            index: index as u32,
+            title: None,
+            row: None,
+            value: ohlc.close,
+            color,
+            details: vec![
+                (labels[0].clone(), ohlc.open),
+                (labels[1].clone(), ohlc.close),
+                (labels[2].clone(), ohlc.low),
+                (labels[3].clone(), ohlc.high),
+            ],
+        });
+        points.push(AxisPoint {
+            base: center,
+            cross: close_px,
+            index: index as u32,
+            key: index as f64,
+            value: ohlc.close,
+        });
+    }
+    builder.close_shapes();
+    AxisSeries {
+        series,
+        name: candle.name.clone(),
+        color: up_color,
+        points,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn layout_boxplot(
+    input: &LayoutInput<'_>,
+    boxplot: &BoxplotSeries,
+    placed: &Placed<'_>,
+    base_map: &AxisMap,
+    value_map: &AxisMap,
+    base_x: bool,
+    plot: [f32; 4],
+    builder: &mut MarkBuilder,
+    hit: &mut HitModel,
+) -> AxisSeries {
+    let series = placed.index as u32;
+    let color = placed.color;
+    let fill_style_id = builder.style(fill_style(with_alpha(color, 0.22), with_alpha(color, 0.22)));
+    let stroke_style_id = builder.style(fill_style(color, color));
+    let band = if base_map.band() > 0.0 {
+        base_map.band()
+    } else {
+        continuous_cell_span(
+            (0..boxplot.data.len()).map(|i| base_map.px(i as f64)),
+            if base_x {
+                plot[2] - plot[0]
+            } else {
+                plot[3] - plot[1]
+            },
+        )
+    };
+    let mut width = boxplot
+        .box_width
+        .map(|w| w.resolve(band))
+        .unwrap_or(band * 0.55);
+    if let Some(max) = boxplot.box_max_width {
+        width = width.min(max);
+    }
+    let width = width.max(4.0);
+    let animate = boxplot.data.len() <= input.option.animation.threshold;
+    let labels = boxplot.value_labels.clone().unwrap_or_else(|| {
+        [
+            Arc::from("min"),
+            Arc::from("Q1"),
+            Arc::from("median"),
+            Arc::from("Q3"),
+            Arc::from("max"),
+        ]
+    });
+    let (plot_lo, plot_hi) = if base_x {
+        (plot[0], plot[2])
+    } else {
+        (plot[1], plot[3])
+    };
+    let rect_of = |a_lo: f32, a_hi: f32, v_lo: f32, v_hi: f32| {
+        if base_x {
+            [a_lo, v_lo, a_hi, v_hi]
+        } else {
+            [v_lo, a_lo, v_hi, a_hi]
+        }
+    };
+    let key = DrawKey {
+        series,
+        part: DrawPart::Shapes,
+        run: 0,
+    };
+    let flags = SHAPE_CLIP_TO_PLOT | SHAPE_EMPHASIS_GROW;
+    let mut points = Vec::new();
+    for (index, bw) in boxplot.data.iter().enumerate() {
+        if ![bw.min, bw.q1, bw.median, bw.q3, bw.max]
+            .into_iter()
+            .all(f64::is_finite)
+        {
+            continue;
+        }
+        let center = base_map.px(index as f64);
+        let (lo_edge, hi_edge) = (center - width * 0.5, center + width * 0.5);
+        if hi_edge < plot_lo || lo_edge > plot_hi {
+            continue;
+        }
+        let min_px = value_map.px(bw.min);
+        let q1_px = value_map.px(bw.q1);
+        let med_px = value_map.px(bw.median);
+        let q3_px = value_map.px(bw.q3);
+        let max_px = value_map.px(bw.max);
+        let (iqr_lo, iqr_hi) = if (q3_px - q1_px).abs() < 2.0 {
+            (med_px - 1.0, med_px + 1.0)
+        } else {
+            (q1_px.min(q3_px), q1_px.max(q3_px))
+        };
+        let whisker_lo = min_px.min(max_px).min(iqr_lo);
+        let whisker_hi = min_px.max(max_px).max(iqr_hi);
+        let mut emit = |a_lo: f32, a_hi: f32, v_lo: f32, v_hi: f32, style: u32| {
+            if v_hi <= v_lo || a_hi <= a_lo {
+                return;
+            }
+            let mut shape = GpuShape::new(ShapeKind::Rect, flags, style, series, index as u32);
+            shape.to = rect_of(a_lo, a_hi, v_lo, v_hi);
+            shape.from = if animate {
+                rect_of(a_lo, a_hi, med_px, med_px)
+            } else {
+                shape.to
+            };
+            builder.shape(shape, key, 0);
+        };
+        // Whisker stems and caps.
+        let cap_half = (width * 0.25).max(1.5);
+        emit(
+            center - 0.75,
+            center + 0.75,
+            whisker_lo,
+            iqr_lo,
+            stroke_style_id,
+        );
+        emit(
+            center - 0.75,
+            center + 0.75,
+            iqr_hi,
+            whisker_hi,
+            stroke_style_id,
+        );
+        emit(
+            center - cap_half,
+            center + cap_half,
+            whisker_lo - 0.75,
+            whisker_lo + 0.75,
+            stroke_style_id,
+        );
+        emit(
+            center - cap_half,
+            center + cap_half,
+            whisker_hi - 0.75,
+            whisker_hi + 0.75,
+            stroke_style_id,
+        );
+        // IQR box fill and outline.
+        emit(lo_edge, hi_edge, iqr_lo, iqr_hi, fill_style_id);
+        let stroke_w = 1.5_f32
+            .min((hi_edge - lo_edge) * 0.25)
+            .min((iqr_hi - iqr_lo) * 0.25);
+        emit(lo_edge, hi_edge, iqr_lo, iqr_lo + stroke_w, stroke_style_id);
+        emit(lo_edge, hi_edge, iqr_hi - stroke_w, iqr_hi, stroke_style_id);
+        emit(lo_edge, lo_edge + stroke_w, iqr_lo, iqr_hi, stroke_style_id);
+        emit(hi_edge - stroke_w, hi_edge, iqr_lo, iqr_hi, stroke_style_id);
+        // Median bar.
+        emit(
+            lo_edge,
+            hi_edge,
+            med_px - 1.0,
+            med_px + 1.0,
+            stroke_style_id,
+        );
+
+        hit.items.push(ItemHit {
+            region: ItemRegion::Rect(rect_of(lo_edge, hi_edge, whisker_lo, whisker_hi)),
+            series,
+            index: index as u32,
+            title: None,
+            row: None,
+            value: bw.median,
+            color,
+            details: vec![
+                (labels[0].clone(), bw.min),
+                (labels[1].clone(), bw.q1),
+                (labels[2].clone(), bw.median),
+                (labels[3].clone(), bw.q3),
+                (labels[4].clone(), bw.max),
+            ],
+        });
+        points.push(AxisPoint {
+            base: center,
+            cross: med_px,
+            index: index as u32,
+            key: index as f64,
+            value: bw.median,
+        });
+    }
+    builder.close_shapes();
+    AxisSeries {
+        series,
+        name: boxplot.name.clone(),
+        color,
+        points,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn layout_heatmap(
+    input: &LayoutInput<'_>,
+    heatmap: &HeatmapSeries,
+    placed: &Placed<'_>,
+    base_axis: &Axis,
+    cross_axis: &Axis,
+    base_map: &AxisMap,
+    cross_map: &AxisMap,
+    base_x: bool,
+    plot: [f32; 4],
+    builder: &mut MarkBuilder,
+    texts: &mut Vec<ChartText>,
+    hit: &mut HitModel,
+) {
+    let theme = input.theme;
+    let series = placed.index as u32;
+    let (x_axis, y_axis) = if base_x {
+        (base_axis, cross_axis)
+    } else {
+        (cross_axis, base_axis)
+    };
+    let (x_map, y_map) = if base_x {
+        (base_map, cross_map)
+    } else {
+        (cross_map, base_map)
+    };
+    let mut data_min = f64::INFINITY;
+    let mut data_max = f64::NEG_INFINITY;
+    for cell in heatmap.data.iter() {
+        if cell.value.is_finite() {
+            data_min = data_min.min(cell.value);
+            data_max = data_max.max(cell.value);
+        }
+    }
+    let min = heatmap
+        .min
+        .unwrap_or(if data_min.is_finite() { data_min } else { 0.0 });
+    let max = heatmap
+        .max
+        .unwrap_or(if data_max.is_finite() { data_max } else { 1.0 });
+    let span = max - min;
+    let stops: Vec<[f32; 4]> = if heatmap.colors.is_empty() {
+        let accent = placed.color;
+        vec![
+            mix_color(theme.surface, accent, 0.15),
+            accent,
+            theme.warning,
+        ]
+    } else {
+        heatmap.colors.iter().map(|c| theme.resolve(*c)).collect()
+    };
+    let ramp = |t: f32| -> [f32; 4] {
+        if stops.len() == 1 {
+            return stops[0];
+        }
+        let scaled = t.clamp(0.0, 1.0) * (stops.len() - 1) as f32;
+        let idx = (scaled.floor() as usize).min(stops.len() - 2);
+        mix_color(stops[idx], stops[idx + 1], scaled - idx as f32)
+    };
+    let cell_w = if x_map.band() > 0.0 {
+        x_map.band()
+    } else {
+        continuous_cell_span(
+            heatmap
+                .data
+                .iter()
+                .map(|c| x_map.px(if base_x { c.x } else { c.y })),
+            plot[2] - plot[0],
+        )
+    };
+    let cell_h = if y_map.band() > 0.0 {
+        y_map.band()
+    } else {
+        continuous_cell_span(
+            heatmap
+                .data
+                .iter()
+                .map(|c| y_map.px(if base_x { c.y } else { c.x })),
+            plot[3] - plot[1],
+        )
+    };
+    let inset = heatmap.gap * 0.5;
+    let animate = heatmap.data.len() <= input.option.animation.threshold;
+    let key = DrawKey {
+        series,
+        part: DrawPart::Shapes,
+        run: 0,
+    };
+    let flags = SHAPE_CLIP_TO_PLOT | SHAPE_EMPHASIS_GROW;
+    for (index, cell) in heatmap.data.iter().enumerate() {
+        if !cell.x.is_finite() || !cell.y.is_finite() || !cell.value.is_finite() {
+            continue;
+        }
+        let (x_val, y_val) = if base_x {
+            (cell.x, cell.y)
+        } else {
+            (cell.y, cell.x)
+        };
+        let cx = x_map.px(x_val);
+        let cy = y_map.px(y_val);
+        let (x0, x1) = (cx - cell_w * 0.5 + inset, cx + cell_w * 0.5 - inset);
+        let (y0, y1) = (cy - cell_h * 0.5 + inset, cy + cell_h * 0.5 - inset);
+        if x1 <= plot[0] || x0 >= plot[2] || y1 <= plot[1] || y0 >= plot[3] || x1 <= x0 || y1 <= y0
+        {
+            continue;
+        }
+        let t = if span.abs() <= f64::EPSILON {
+            0.5
+        } else {
+            ((cell.value - min) / span).clamp(0.0, 1.0) as f32
+        };
+        let fill = ramp(t);
+        let style = builder.style(fill_style(fill, fill));
+        let mut shape = GpuShape::new(ShapeKind::Rect, flags, style, series, index as u32);
+        shape.to = [x0, y0, x1, y1];
+        shape.from = if animate { [cx, cy, cx, cy] } else { shape.to };
+        shape.extra = [heatmap.border_radius; 4];
+        builder.shape(shape, key, 0);
+
+        if heatmap.label.show {
+            let text: Arc<str> = match &heatmap.label.formatter {
+                Some(formatter) => formatter.format(cell.value),
+                None => scale::format_number(
+                    cell.value,
+                    if cell.value.fract() == 0.0 { 1.0 } else { 0.01 },
+                )
+                .into(),
+            };
+            let rect = text_rect(
+                input.measure,
+                &text,
+                theme.font_size,
+                [cx, cy],
+                TextAlign::Center,
+                TextAlign::Center,
+            );
+            let clipped = [
+                x0.max(plot[0]),
+                y0.max(plot[1]),
+                x1.min(plot[2]),
+                y1.min(plot[3]),
+            ];
+            if rect[0] >= clipped[0]
+                && rect[2] <= clipped[2]
+                && rect[1] >= clipped[1]
+                && rect[3] <= clipped[3]
+            {
+                let lum = 0.2126 * fill[0] + 0.7152 * fill[1] + 0.0722 * fill[2];
+                texts.push(ChartText {
+                    rect,
+                    text,
+                    color: if lum < 0.45 {
+                        theme.on_series
+                    } else {
+                        theme.text
+                    },
+                    size: theme.font_size,
+                    weight: None,
+                });
+            }
+        }
+        let x_name = axis_value_text(x_axis, x_val, input.option, None);
+        let y_name = axis_value_text(y_axis, y_val, input.option, None);
+        hit.items.push(ItemHit {
+            region: ItemRegion::Rect([
+                x0.max(plot[0]),
+                y0.max(plot[1]),
+                x1.min(plot[2]),
+                y1.min(plot[3]),
+            ]),
+            series,
+            index: index as u32,
+            title: Some(format!("{x_name} / {y_name}").into()),
+            row: Some(heatmap.name.clone()),
+            value: cell.value,
+            color: fill,
+            details: Vec::new(),
+        });
+    }
+    builder.close_shapes();
 }
 
 /// The slider: its track, a faint preview of the first series, the window

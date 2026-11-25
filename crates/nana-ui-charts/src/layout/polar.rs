@@ -203,6 +203,7 @@ fn layout_pie(
             row: Some(name.clone()),
             value: *value,
             color: *color,
+            details: Vec::new(),
         });
         let mid = (a0 + a1) * 0.5;
         match pie.label {
@@ -619,6 +620,7 @@ fn layout_radar(
                     row: Some(coord.indicators[i].name.clone()),
                     value: item.values.get(i).copied().unwrap_or(f64::NAN),
                     color,
+                    details: Vec::new(),
                 });
             }
             builder.close_shapes();
@@ -696,6 +698,7 @@ fn layout_gauge(
         row: Some(gauge.name.clone()),
         value: gauge.value,
         color,
+        details: Vec::new(),
     });
     // Ticks and labels inside the track.
     let splits = gauge.split_number.max(1);

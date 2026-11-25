@@ -4004,6 +4004,234 @@ mod chart_gpu {
             "{again:?} after {first:?}"
         );
     }
+
+    fn mount_styled_chart(
+        option: ChartOption,
+    ) -> (
+        AppContext,
+        DocumentId,
+        nana_ui_runtime::Entity<nana_ui_runtime::Chart>,
+        Arc<ChartLayout>,
+    ) {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let mut style = NodeStyle::default();
+        let lay = Arc::make_mut(&mut style.layout);
+        lay.width = Some(LengthSpec::Px(SIZE));
+        lay.height = Some(LengthSpec::Px(SIZE));
+        let chart = context
+            .create_component(document, nana_ui_runtime::Chart::new(option).style(style))
+            .unwrap();
+        context
+            .layout_document(document, nana_ui_runtime::LayoutViewport::new(SIZE, SIZE))
+            .unwrap();
+        context.rebuild_hit_test(document);
+        let work = context.take_system_work();
+        context.resolve_styles(&work.style).unwrap();
+        context
+            .shape_text(&work.text, &mut crate::NanaTextShaper::default())
+            .unwrap();
+        let layout = context
+            .world()
+            .chart_layout(chart.stable_id())
+            .expect("chart geometry");
+        (context, document, chart, layout)
+    }
+
+    fn paint_chart_at(
+        context: &AppContext,
+        chart_id: StableNodeId,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        painter: &mut SceneWgpuPainter,
+        now: std::time::Duration,
+    ) -> Vec<u8> {
+        let mut scene = UiScene::new();
+        scene.apply_delta(context.world().extract_nodes(&[chart_id]), []);
+        scene.apply_presentation(context.world().presentation_store(), now, None);
+        paint_scene_rgba(
+            device,
+            queue,
+            painter,
+            &scene,
+            [SIZE, SIZE],
+            [SIZE as u32, SIZE as u32],
+            1.0,
+        )
+    }
+
+    #[test]
+    fn mark_line_draws_over_series_and_widens_on_hover() {
+        use nana_ui_charts::hit::MarkRegion;
+        let option = bare().series(
+            LineSeries::new("s", vec![[0.0, 0.2], [1.0, 0.2]])
+                .color(ChartColor::Rgba([0.0, 0.0, 0.0, 0.0]))
+                .width(0.0)
+                .symbol(Symbol::None, 0.0)
+                .mark_line(
+                    MarkLine::new([MarkLineItem::y(0.5)])
+                        .color(white(1.0))
+                        .width(1.0)
+                        .line_type(LineType::Solid)
+                        .label(false),
+                ),
+        );
+        let (mut context, document, chart, layout) = mount_styled_chart(option);
+        let MarkRegion::Line { a, b } = layout.hit.marks[0].region else {
+            panic!("expected mark line hit");
+        };
+        let (mid_x, mid_y) = ((a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5);
+        let col = mid_x as u32;
+        let (device, queue) = test_device();
+        let mut painter = SceneWgpuPainter::for_test(wgpu::TextureFormat::Rgba8Unorm);
+
+        let unhovered = paint_chart_at(
+            &context,
+            chart.stable_id(),
+            &device,
+            &queue,
+            &mut painter,
+            std::time::Duration::from_secs(1),
+        );
+        let base_coverage: f32 = (0..SIZE as u32)
+            .map(|y| pixel(&unhovered, SIZE as u32, col, y)[0] as f32 / 255.0)
+            .sum();
+        assert!(
+            (base_coverage - 1.0).abs() < 0.6,
+            "1px mark line coverage {base_coverage}"
+        );
+
+        let mut input = nana_ui_runtime::HeadlessInput::bind(&mut context, document);
+        input
+            .pointer(
+                &mut context,
+                nana_ui_input::PointerPhase::Move,
+                mid_x,
+                mid_y,
+            )
+            .unwrap();
+        let hovered = paint_chart_at(
+            &context,
+            chart.stable_id(),
+            &device,
+            &queue,
+            &mut painter,
+            std::time::Duration::from_secs(1),
+        );
+        let hover_coverage: f32 = (0..SIZE as u32)
+            .map(|y| pixel(&hovered, SIZE as u32, col, y)[0] as f32 / 255.0)
+            .sum();
+        assert!(
+            hover_coverage > base_coverage + 1.4,
+            "hovered mark line should thicken by ~2px: base={base_coverage}, hover={hover_coverage}"
+        );
+    }
+
+    #[test]
+    fn mark_area_draws_under_series_and_deepens_on_hover() {
+        use nana_ui_charts::hit::MarkRegion;
+        let option = bare().series(
+            LineSeries::new("s", vec![[0.0, 0.5], [1.0, 0.5]])
+                .color(ChartColor::Rgba([0.0, 0.0, 1.0, 1.0]))
+                .width(6.0)
+                .symbol(Symbol::None, 0.0)
+                .mark_area(
+                    MarkArea::new([MarkAreaItem::y(0.2, 0.8)])
+                        .color(ChartColor::Rgba([1.0, 0.0, 0.0, 1.0]))
+                        .opacity(0.25)
+                        .label(false),
+                ),
+        );
+        let (mut context, document, chart, layout) = mount_styled_chart(option);
+        let MarkRegion::Area(rect) = layout.hit.marks[0].region else {
+            panic!("expected mark area hit");
+        };
+        let cx = ((rect[0] + rect[2]) * 0.5) as u32;
+        let line_y = ((rect[1] + rect[3]) * 0.5) as u32;
+        let area_only_y = (rect[1] + 8.0) as u32;
+        let (device, queue) = test_device();
+        let mut painter = SceneWgpuPainter::for_test(wgpu::TextureFormat::Rgba8Unorm);
+
+        let before = paint_chart_at(
+            &context,
+            chart.stable_id(),
+            &device,
+            &queue,
+            &mut painter,
+            std::time::Duration::from_secs(1),
+        );
+        // The solid blue series draws over the red mark area.
+        let on_line = pixel(&before, SIZE as u32, cx, line_y);
+        assert!(on_line[2] > 240 && on_line[0] < 10, "{on_line:?}");
+        let area_before = pixel(&before, SIZE as u32, cx, area_only_y)[0];
+        assert!(area_before > 30 && area_before < 120, "{area_before}");
+
+        let mut input = nana_ui_runtime::HeadlessInput::bind(&mut context, document);
+        input
+            .pointer(
+                &mut context,
+                nana_ui_input::PointerPhase::Move,
+                cx as f32,
+                area_only_y as f32,
+            )
+            .unwrap();
+        let after = paint_chart_at(
+            &context,
+            chart.stable_id(),
+            &device,
+            &queue,
+            &mut painter,
+            std::time::Duration::from_secs(1),
+        );
+        let area_after = pixel(&after, SIZE as u32, cx, area_only_y)[0];
+        assert!(
+            area_after > area_before + 30,
+            "hovered mark area should deepen: before={area_before}, after={area_after}"
+        );
+    }
+
+    #[test]
+    fn candlestick_boxplot_and_heatmap_draw_on_gpu() {
+        let candlestick = ChartOption::new()
+            .tooltip(Tooltip::hidden())
+            .x_axis(Axis::category(["a", "b"]).show(false))
+            .y_axis(Axis::value().show(false).split_line(false))
+            .series(
+                CandlestickSeries::new("k", [[10.0, 80.0, 5.0, 90.0], [80.0, 20.0, 15.0, 85.0]])
+                    .up_color(ChartColor::Rgba([0.0, 1.0, 0.0, 1.0]))
+                    .down_color(ChartColor::Rgba([1.0, 0.0, 0.0, 1.0])),
+            );
+        let (pixels, _) = paint(candlestick, [0.0, 0.0], 1.0);
+        assert!(pixels.chunks(4).any(|p| p[1] > 200 && p[0] < 20));
+        assert!(pixels.chunks(4).any(|p| p[0] > 200 && p[1] < 20));
+
+        let boxplot = ChartOption::new()
+            .tooltip(Tooltip::hidden())
+            .x_axis(Axis::category(["a"]).show(false))
+            .y_axis(Axis::value().show(false).split_line(false))
+            .series(
+                BoxplotSeries::new("b", [[10.0, 30.0, 50.0, 70.0, 90.0]])
+                    .color(ChartColor::Rgba([0.2, 0.6, 1.0, 1.0])),
+            );
+        let (pixels, _) = paint(boxplot, [0.0, 0.0], 1.0);
+        assert!(pixels.chunks(4).any(|p| p[2] > 200));
+
+        let heatmap = ChartOption::new()
+            .tooltip(Tooltip::hidden())
+            .x_axis(Axis::category(["x0", "x1"]).show(false))
+            .y_axis(Axis::category(["y0", "y1"]).show(false))
+            .series(
+                HeatmapSeries::new("h", [[0.0, 0.0, 0.0], [1.0, 1.0, 100.0]])
+                    .range(0.0, 100.0)
+                    .colors([
+                        ChartColor::Rgba([0.0, 0.0, 1.0, 1.0]),
+                        ChartColor::Rgba([1.0, 0.0, 0.0, 1.0]),
+                    ]),
+            );
+        let (pixels, _) = paint(heatmap, [0.0, 0.0], 1.0);
+        assert!(pixels.chunks(4).any(|p| p[2] > 200 && p[0] < 20));
+        assert!(pixels.chunks(4).any(|p| p[0] > 200 && p[2] < 20));
+    }
 }
 
 #[test]

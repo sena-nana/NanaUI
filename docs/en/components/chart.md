@@ -1,6 +1,6 @@
 # Chart
 
-`Chart` draws charts: line, area, bar, pie and donut, rose, scatter, radar and gauge. You give it a `ChartOption` whose structure matches ECharts' `option` (`grid`, `x_axis`, `y_axis`, `series`, `tooltip`, `legend`, `data_zoom`), with Rust types as values. You provide the data, names and number formats; the control handles geometry, animation and interaction.
+`Chart` draws charts: line, area, bar, pie and donut, rose, scatter, radar, gauge, candlestick, boxplot and heatmap. You give it a `ChartOption` whose structure matches ECharts' `option` (`grid`, `x_axis`, `y_axis`, `series`, `tooltip`, `legend`, `data_zoom`), with Rust types as values. You provide the data, names and number formats; the control handles geometry, animation and interaction.
 
 This type is behind the Cargo feature `charts`. `components` turns it on. There is no `<Chart>` in the control table: the option is typed data and goes through Rust only.
 
@@ -54,6 +54,9 @@ The width fills the parent by default and the height defaults to 300px. If you s
 | `ScatterSeries` | Scatter | `[x, y]` points. `.sizes(..)` sets per-point size. Even tens of thousands of points are one draw |
 | `RadarSeries` | Radar | Needs `ChartOption::radar(RadarCoord)` to supply the indicators |
 | `GaugeSeries` | Gauge | `.range(..)`, `.angles(..)`, progress arc, ticks and pointer |
+| `CandlestickSeries` | Candlestick | `Ohlc` (`[open, close, low, high]`), defaults to theme `success`/`danger`, supports `.up_color(..)`, `.down_color(..)`, `.value_labels(..)` |
+| `BoxplotSeries` | Boxplot | `BoxWhisker` (`[min, q1, median, q3, max]`), draws whiskers, IQR box and median bar, vertical or horizontal, `.value_labels(..)` |
+| `HeatmapSeries` | Heatmap | `HeatmapCell` (`[x, y, value]`), interpolated across `.range(..)` and `.colors(..)`, optional cell labels and category zoom on both x and y |
 
 Data columns use `SeriesData`: a set of values matched to category indices (`[f64; N]`, `Vec<f64>`), or `[x, y]` point pairs (`Vec<[f64; 2]>`) for value and time axes. `NaN` is a gap; lines break at gaps (`.connect_nulls(true)` joins them).
 
@@ -90,7 +93,7 @@ let option = ChartOption::new()
 
 ## Mark lines and mark areas
 
-Line, bar and scatter series can carry `mark_line(MarkLine)` and `mark_area(MarkArea)`: alert thresholds, average lines, normal ranges, incident windows. Mark areas are drawn under the series and mark lines over them, in the series color by default; mark lines are 1px dashes.
+Line, bar, scatter, candlestick, boxplot and heatmap series can carry `mark_line(MarkLine)` and `mark_area(MarkArea)`: alert thresholds, average lines, normal ranges, incident windows. Mark areas are drawn under the series and mark lines over them, in the series color by default; mark lines are 1px dashes.
 
 ```rust
 use nana_ui::runtime::chart::{

@@ -3,7 +3,7 @@ use std::time::Duration;
 use nana_ui_core::SemanticPalette;
 
 use super::*;
-use crate::hit::{ANY_SERIES, PointerGeometry};
+use crate::hit::{ANY_SERIES, ItemRegion, PointerGeometry};
 use crate::marks::{MarkPass, ShapeKind};
 use crate::option::*;
 
@@ -572,4 +572,256 @@ fn a_moved_threshold_starts_from_where_it_was() {
         assert!((new.from[1] - old.to[1]).abs() < 1e-3);
     }
     assert!(new[0].to[1] > old[0].to[1]);
+}
+
+#[test]
+fn candlestick_lays_out_wicks_bodies_stats_and_ohlc_tooltip() {
+    let option = ChartOption::new()
+        .x_axis(Axis::category(["D1", "D2", "D3"]))
+        .y_axis(Axis::value().scale(true))
+        .series(
+            CandlestickSeries::new(
+                "price",
+                [
+                    [100.0, 120.0, 95.0, 125.0],
+                    [120.0, 105.0, 100.0, 122.0],
+                    [110.0, 110.0, 104.0, 118.0],
+                ],
+            )
+            .mark_line(MarkLine::new([
+                MarkLineItem::average().name("avg"),
+                MarkLineItem::max().name("peak"),
+            ])),
+        );
+    let layout = lay(&option, &ChartViewState::default());
+    let rects: Vec<_> = layout
+        .marks
+        .shapes
+        .iter()
+        .filter(|s| s.kind() == ShapeKind::Rect as u32 && s.meta[2] == 0)
+        .collect();
+    // 3 candles × (1 wick + 1 body) = 6 rects.
+    assert_eq!(rects.len(), 6);
+    // Doji body has non-zero height.
+    assert!(rects[5].to[3] - rects[5].to[1] >= 1.0);
+    // Rising candle uses positive color, falling uses negative.
+    assert_ne!(
+        layout.marks.styles[rects[1].meta[1] as usize].fill,
+        layout.marks.styles[rects[3].meta[1] as usize].fill
+    );
+    // Mark line average + max are placed.
+    assert_eq!(mark_draws(&layout).len(), 2);
+    // Hovering a candle produces 4 OHLC rows.
+    let ItemRegion::Rect(hit_rect) = layout.hit.items[0].region else {
+        panic!("expected rect hit");
+    };
+    let hover = layout
+        .hover_at(
+            &option,
+            [
+                (hit_rect[0] + hit_rect[2]) * 0.5,
+                (hit_rect[1] + hit_rect[3]) * 0.5,
+            ],
+        )
+        .unwrap();
+    let tip = hover.tooltip.unwrap();
+    assert_eq!(&*tip.title, "D1");
+    assert_eq!(tip.rows.len(), 4);
+    assert_eq!(&*tip.rows[0].name, "O");
+    assert_eq!(&*tip.rows[0].value, "100");
+    assert_eq!(&*tip.rows[3].name, "H");
+    assert_eq!(&*tip.rows[3].value, "125");
+
+    // Transition matches shapes on update.
+    let mut first = layout;
+    crate::transition::settle(&mut first);
+    let updated_opt = ChartOption::new()
+        .x_axis(Axis::category(["D1", "D2", "D3"]))
+        .y_axis(Axis::value().scale(true))
+        .series(CandlestickSeries::new(
+            "price",
+            [
+                [105.0, 128.0, 98.0, 130.0],
+                [120.0, 105.0, 100.0, 122.0],
+                [110.0, 110.0, 104.0, 118.0],
+            ],
+        ));
+    let mut next = lay(&updated_opt, &ChartViewState::default());
+    crate::transition::begin(
+        &mut next,
+        Some(&first),
+        &updated_opt,
+        Duration::from_secs(1),
+    );
+    assert!(next.marks.transition.is_some());
+    let first_body = first
+        .marks
+        .shapes
+        .iter()
+        .find(|s| s.kind() == ShapeKind::Rect as u32 && s.meta[2] == 0 && s.meta[3] == 0)
+        .unwrap();
+    let next_body = next
+        .marks
+        .shapes
+        .iter()
+        .find(|s| s.kind() == ShapeKind::Rect as u32 && s.meta[2] == 0 && s.meta[3] == 0)
+        .unwrap();
+    assert_eq!(next_body.from, first_body.to);
+}
+
+#[test]
+fn boxplot_lays_out_whiskers_iqr_median_and_tooltip() {
+    let option = ChartOption::new()
+        .x_axis(Axis::category(["A", "B"]))
+        .y_axis(Axis::value())
+        .series(BoxplotSeries::new(
+            "latency",
+            [
+                [10.0, 20.0, 35.0, 50.0, 75.0],
+                [15.0, 25.0, 30.0, 45.0, 60.0],
+            ],
+        ));
+    let layout = lay(&option, &ChartViewState::default());
+    // 2 boxes × 10 rects (2 stems, 2 caps, 1 fill, 4 borders, 1 median) = 20 rects.
+    let shapes: Vec<_> = layout
+        .marks
+        .shapes
+        .iter()
+        .filter(|s| s.kind() == ShapeKind::Rect as u32 && s.meta[2] == 0)
+        .collect();
+    assert_eq!(shapes.len(), 20);
+    let ItemRegion::Rect(hit_rect) = layout.hit.items[1].region else {
+        panic!("expected rect hit");
+    };
+    let hover = layout
+        .hover_at(
+            &option,
+            [
+                (hit_rect[0] + hit_rect[2]) * 0.5,
+                (hit_rect[1] + hit_rect[3]) * 0.5,
+            ],
+        )
+        .unwrap();
+    let tip = hover.tooltip.unwrap();
+    assert_eq!(&*tip.title, "B");
+    assert_eq!(tip.rows.len(), 5);
+    assert_eq!(&*tip.rows[2].name, "median");
+    assert_eq!(&*tip.rows[2].value, "30");
+
+    // Horizontal boxplot (y category, x value) keeps valid boxes.
+    let horiz = ChartOption::new()
+        .x_axis(Axis::value())
+        .y_axis(Axis::category(["A", "B"]))
+        .series(BoxplotSeries::new(
+            "latency",
+            [
+                [10.0, 20.0, 35.0, 50.0, 75.0],
+                [15.0, 25.0, 30.0, 45.0, 60.0],
+            ],
+        ));
+    let h_layout = lay(&horiz, &ChartViewState::default());
+    assert_eq!(h_layout.hit.items.len(), 2);
+}
+
+#[test]
+fn heatmap_lays_out_category_grid_color_ramp_and_y_zoom() {
+    let option = ChartOption::new()
+        .x_axis(Axis::category(["Mon", "Tue", "Wed"]))
+        .y_axis(Axis::category(["00:00", "08:00", "16:00", "20:00"]))
+        .data_zoom(DataZoom::inside().y_axis(0).range(50.0, 100.0))
+        .series(
+            HeatmapSeries::new(
+                "load",
+                [
+                    [0.0, 0.0, 10.0],
+                    [1.0, 1.0, 20.0],
+                    [0.0, 2.0, 40.0],
+                    [2.0, 3.0, 90.0],
+                ],
+            )
+            .range(0.0, 100.0)
+            .colors([
+                ChartColor::Rgba([0.0, 0.0, 1.0, 1.0]),
+                ChartColor::Rgba([1.0, 0.0, 0.0, 1.0]),
+            ])
+            .label(MarkLabel {
+                show: true,
+                formatter: None,
+            }),
+        );
+    let layout = lay(&option, &ChartViewState::default());
+    // Y window 50..100 shows rows 2 and 3 only.
+    assert!(layout.texts.iter().any(|t| &*t.text == "16:00"));
+    assert!(layout.texts.iter().any(|t| &*t.text == "20:00"));
+    assert!(!layout.texts.iter().any(|t| &*t.text == "00:00"));
+    assert_eq!(layout.hit.items.len(), 2);
+    // Category y-axis exposes a ZoomAxisLayout for wheel/pan/box-select.
+    let y_zoom = layout
+        .zoom_axes
+        .iter()
+        .find(|axis| axis.axis == ZoomAxis::Y)
+        .expect("y category zoom axis");
+    assert!(y_zoom.vertical);
+    let plot = layout.plot.unwrap();
+    // Bottom band center (row 2 of 4) is at 62.5%; top band center (row 3) at 87.5%.
+    let y_mid_row2 = plot[3] - (plot[3] - plot[1]) * 0.25;
+    assert!((y_zoom.percent_at(y_mid_row2) - 62.5).abs() < 1e-3);
+    // Color ramp interpolates from blue to red.
+    let c0 = layout.hit.items[0].color;
+    let c1 = layout.hit.items[1].color;
+    assert!(c1[0] > c0[0] && c0[2] > c1[2], "{c0:?} vs {c1:?}");
+    // In-cell labels are emitted and tooltip title joins x / y categories.
+    assert!(layout.texts.iter().any(|t| &*t.text == "90"));
+    let ItemRegion::Rect(cell_rect) = layout.hit.items[1].region else {
+        panic!("expected rect hit");
+    };
+    let hover = layout
+        .hover_at(
+            &option,
+            [
+                (cell_rect[0] + cell_rect[2]) * 0.5,
+                (cell_rect[1] + cell_rect[3]) * 0.5,
+            ],
+        )
+        .unwrap();
+    let tip = hover.tooltip.unwrap();
+    assert_eq!(&*tip.title, "Wed / 20:00");
+    assert_eq!(&*tip.rows[0].value, "90");
+}
+
+#[test]
+fn segment_mark_line_clips_to_plot_and_value_x_mark_widens_base_axis() {
+    let option = ChartOption::new()
+        .x_axis(Axis::value())
+        .y_axis(Axis::value())
+        .data_zoom(DataZoom::inside().range(20.0, 80.0))
+        .series(
+            ScatterSeries::new("pts", vec![[0.0, 0.0], [10.0, 10.0]]).mark_line(MarkLine::new([
+                MarkLineItem::x(15.0).name("far-x"),
+                MarkLineItem::segment([-5.0, 5.0], [20.0, 5.0]).name("diag"),
+            ])),
+        );
+    let layout = lay(&option, &ChartViewState::default());
+    let plot = layout.plot.unwrap();
+    // Base axis expanded to include x = 15.0 before windowing 20..80 (3..12),
+    // so label "12" appears on the x axis.
+    assert!(
+        layout.texts.iter().any(|t| &*t.text == "12"),
+        "expected zoomed x max 12, got {:?}",
+        layout.texts.iter().map(|t| &*t.text).collect::<Vec<_>>()
+    );
+    // The segment hit line is clipped to [plot[0], plot[2]].
+    let seg = layout
+        .hit
+        .marks
+        .iter()
+        .find(|m| &*m.name == "diag")
+        .expect("segment mark hit");
+    let crate::hit::MarkRegion::Line { a, b } = seg.region else {
+        panic!("{seg:?}");
+    };
+    assert!(
+        a[0] >= plot[0] - 0.5 && b[0] <= plot[2] + 0.5,
+        "{a:?}..{b:?} vs {plot:?}"
+    );
 }
