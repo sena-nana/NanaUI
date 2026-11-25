@@ -103,6 +103,22 @@ impl<'a> NodeMotion<'a> {
             started: false,
         }
     }
+
+    /// Cross-node shared-element hero morph claiming any pending `First`
+    /// snapshot for `key` while keeping logical layout at `Last`.
+    pub fn shared_element(
+        self,
+        key: impl Into<nana_ui_core::SharedElementKey>,
+    ) -> SharedElementBuilder<'a> {
+        SharedElementBuilder {
+            queue: self.queue,
+            target: self.id,
+            now: self.now,
+            key: key.into(),
+            transition: nana_ui_core::SharedElementTransition::default(),
+            started: false,
+        }
+    }
 }
 
 /// `node.transition().opacity(1.0).transform(t).duration(d).ease(e)`.
@@ -499,6 +515,70 @@ impl FlipBuilder<'_> {
 }
 
 impl Drop for FlipBuilder<'_> {
+    fn drop(&mut self) {
+        self.commit();
+    }
+}
+
+/// `node.shared_element(key).duration(d).ease(e).layout_size()`.
+pub struct SharedElementBuilder<'a> {
+    queue: &'a mut MutationQueue,
+    target: StableNodeId,
+    now: Duration,
+    key: nana_ui_core::SharedElementKey,
+    transition: nana_ui_core::SharedElementTransition,
+    started: bool,
+}
+
+impl SharedElementBuilder<'_> {
+    pub fn duration(mut self, duration: Duration) -> Self {
+        self.transition = nana_ui_core::SharedElementTransition {
+            duration,
+            ..self.transition
+        };
+        self
+    }
+
+    pub fn ease(mut self, easing: Easing) -> Self {
+        self.transition = self.transition.ease(easing);
+        self
+    }
+
+    pub fn size_mode(mut self, mode: nana_ui_core::SharedElementSizeMode) -> Self {
+        self.transition = self.transition.size_mode(mode);
+        self
+    }
+
+    /// Animate `Width`/`Height` through the Layout-class overlay (`never` scale).
+    pub fn layout_size(self) -> Self {
+        self.size_mode(nana_ui_core::SharedElementSizeMode::LayoutSize)
+    }
+
+    /// Animate presentation clip progress on the compositor without reflow.
+    pub fn clip_presentation(self) -> Self {
+        self.size_mode(nana_ui_core::SharedElementSizeMode::ClipPresentation)
+    }
+
+    pub fn cross_fade(mut self, enabled: bool) -> Self {
+        self.transition = self.transition.cross_fade(enabled);
+        self
+    }
+
+    pub fn start(mut self) {
+        self.commit();
+    }
+
+    fn commit(&mut self) {
+        if self.started {
+            return;
+        }
+        self.started = true;
+        self.queue
+            .claim_shared_element(self.target, self.key.clone(), self.transition, self.now);
+    }
+}
+
+impl Drop for SharedElementBuilder<'_> {
     fn drop(&mut self) {
         self.commit();
     }

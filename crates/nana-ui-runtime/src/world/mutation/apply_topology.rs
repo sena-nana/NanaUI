@@ -174,6 +174,7 @@ impl UiWorld {
             }
             UiMutation::Detach { id } => {
                 let old_parent = self.parent_id(*id);
+                self.capture_shared_elements_in_subtree(*id);
                 self.record_topology_invalidation(*id);
                 self.clear_layout_results_subtree(*id);
                 if self.unlink_from_parent(*id) {
@@ -188,6 +189,7 @@ impl UiWorld {
             }
             UiMutation::ParkSubtree { root } => {
                 let old_parent = self.parent_id(*root);
+                self.capture_shared_elements_in_subtree(*root);
                 self.record_topology_invalidation(*root);
                 self.clear_layout_results_subtree(*root);
                 self.unlink_from_parent(*root);
@@ -199,6 +201,7 @@ impl UiWorld {
                 self.sync_active_focus_traps();
             }
             UiMutation::DespawnSubtree { root } => {
+                self.capture_shared_elements_in_subtree(*root);
                 self.record_topology_invalidation(*root);
                 let root_snapshot = self.node(*root).expect("validated root must exist");
                 if let Some(parent) = root_snapshot.parent {
@@ -215,6 +218,7 @@ impl UiWorld {
                     let snapshot = self.node(id).expect("validated subtree must exist");
                     stack.extend(snapshot.children.iter().rev().copied());
                     self.forget_visual_presence(id);
+                    self.forget_shared_element_node(id);
                     self.scroll
                         .content_bounds
                         .get_mut()
@@ -1073,6 +1077,20 @@ impl UiWorld {
             }
             UiMutation::ResumeAnimation { id } => {
                 self.resume_animation(*id);
+            }
+            UiMutation::SetSharedElement { target, key } => {
+                self.register_shared_element_node(*target, key.as_deref().cloned());
+            }
+            UiMutation::CaptureSharedElement { target, key } => {
+                let _ = self.capture_shared_element_snapshot(*target, key.clone());
+            }
+            UiMutation::ClaimSharedElement { target, claim } => {
+                self.motion.pending_shared_element_claims.push((
+                    *target,
+                    claim.key.clone(),
+                    claim.transition,
+                    claim.now,
+                ));
             }
             UiMutation::RequestFocus { document, target } => {
                 if let Some(target) = target {

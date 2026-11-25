@@ -4,6 +4,10 @@
 //! is an explicit strategy ([`FlipRect`]), not a per-widget override
 //! that rewrites width as scale.
 
+use std::{borrow::Cow, fmt, sync::Arc, time::Duration};
+
+use super::{Easing, OVERLAY_FADE};
+
 /// Where a property's animation may run. Classification is a framework
 /// contract: compositor-safe tracks must not be implemented as per-frame
 /// `UiWorld` property writes.
@@ -222,6 +226,118 @@ pub fn invert_flip_translate(first: FlipRect, last: FlipRect) -> crate::PaintTra
     }
 }
 
+/// Explicit cross-node shared-element / hero transition key (`<TransitionGroup>`).
+///
+/// Reuses the shared [`FlipRect`] + `MotionDescriptor` IR instead of creating a
+/// second timeline or rewriting size mismatches into non-uniform scale.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SharedElementKey(Arc<str>);
+
+impl SharedElementKey {
+    pub fn new(key: impl AsRef<str>) -> Self {
+        Self(Arc::from(key.as_ref()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for SharedElementKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl From<&str> for SharedElementKey {
+    fn from(value: &str) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<String> for SharedElementKey {
+    fn from(value: String) -> Self {
+        Self(Arc::from(value))
+    }
+}
+
+impl From<Cow<'static, str>> for SharedElementKey {
+    fn from(value: Cow<'static, str>) -> Self {
+        Self::new(value.as_ref())
+    }
+}
+
+/// How a cross-node shared-element hero morph reconciles size differences
+/// between `First` and `Last` without turning `width`/`height` into scale.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum SharedElementSizeMode {
+    /// Compositor translation invert (`invert_flip_translate`) only; `Last`
+    /// logical dimensions stand immediately.
+    #[default]
+    TranslateOnly,
+    /// Compositor translation invert paired with `Layout`-class `Width` and
+    /// `Height` tracks (`PresentationLengthOverlay`) — never `Transform` scale.
+    LayoutSize,
+    /// Compositor translation invert paired with compositor `Clip`
+    /// presentation progress (`0.0 -> 1.0`) while keeping logical layout `Last`.
+    ClipPresentation,
+    /// Compositor translation invert paired with compositor `Opacity`
+    /// cross-fade (`0.0 -> target_opacity`) while keeping logical layout `Last`.
+    CrossFade,
+}
+
+/// Policy for a cross-node shared-element hero transition.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SharedElementTransition {
+    pub duration: Duration,
+    /// `None` uses the installed theme's standard easing.
+    pub easing: Option<Easing>,
+    pub size_mode: SharedElementSizeMode,
+    /// Optional opacity cross-fade alongside translation/size/clip morphing.
+    pub cross_fade: bool,
+}
+
+impl Default for SharedElementTransition {
+    fn default() -> Self {
+        Self::new(OVERLAY_FADE)
+    }
+}
+
+impl SharedElementTransition {
+    pub const fn new(duration: Duration) -> Self {
+        Self {
+            duration,
+            easing: None,
+            size_mode: SharedElementSizeMode::TranslateOnly,
+            cross_fade: false,
+        }
+    }
+
+    pub const fn ease(mut self, easing: Easing) -> Self {
+        self.easing = Some(easing);
+        self
+    }
+
+    pub const fn size_mode(mut self, size_mode: SharedElementSizeMode) -> Self {
+        self.size_mode = size_mode;
+        self
+    }
+
+    pub const fn cross_fade(mut self, cross_fade: bool) -> Self {
+        self.cross_fade = cross_fade;
+        self
+    }
+}
+
+/// Captured `First` presentation state from a leaving/unmounting source node.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SharedElementSnapshot {
+    pub source: u64,
+    pub first: FlipRect,
+    pub opacity: f32,
+    pub captured_at: Duration,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,5 +418,27 @@ mod tests {
         assert_eq!(invert.d, 1.0);
         assert_eq!(invert.e, 0.0);
         assert!(first.size_differs(last));
+    }
+
+    #[test]
+    fn shared_element_policy_preserves_no_scale_flip_contract() {
+        let key_a: SharedElementKey = "hero:card".into();
+        let key_b = SharedElementKey::new(String::from("hero:card"));
+        assert_eq!(key_a, key_b);
+        let policy = SharedElementTransition::new(Duration::from_millis(240))
+            .ease(Easing::EaseOutCubic)
+            .size_mode(SharedElementSizeMode::LayoutSize)
+            .cross_fade(true);
+        assert_eq!(policy.size_mode, SharedElementSizeMode::LayoutSize);
+        assert!(policy.cross_fade);
+
+        let first = FlipRect::new(16.0, 32.0, 48.0, 24.0);
+        let last = FlipRect::new(120.0, 64.0, 180.0, 96.0);
+        let invert = first.invert_translate(last);
+        assert_eq!(
+            (invert.a, invert.b, invert.c, invert.d),
+            (1.0, 0.0, 0.0, 1.0)
+        );
+        assert_eq!((invert.e, invert.f), (-104.0, -32.0));
     }
 }

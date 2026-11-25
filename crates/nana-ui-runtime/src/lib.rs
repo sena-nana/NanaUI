@@ -199,7 +199,8 @@ pub use animation::{
     evaluate_descriptor, evaluate_progress, evaluate_track, evaluate_track_at,
     invert_flip_translate, is_font_variation_settings, layout_flip_hold_spec,
     layout_flip_play_spec, layout_flip_spec, loading_animation, retarget_track,
-    toast_timeout_animation, track_completion_deadline, workspace_animation,
+    shared_element_morph_specs, toast_timeout_animation, track_completion_deadline,
+    workspace_animation,
 };
 pub use app_menu_bar::{AppMenuBar, MenuBarActivated, ShortcutNotation, menu_shortcut_label};
 #[cfg(feature = "area-layout")]
@@ -364,7 +365,8 @@ pub use menus::{
     AnchoredMenuDismissed, ContextMenu, ContextMenuEvent, ContextMenuItem, resolve_anchored_origin,
 };
 pub use motion_api::{
-    FlipBuilder, FoldBuilder, NodeMotion, SpringBuilder, TimelineBuilder, TransitionBuilder,
+    FlipBuilder, FoldBuilder, NodeMotion, SharedElementBuilder, SpringBuilder, TimelineBuilder,
+    TransitionBuilder,
 };
 pub use mutation::{MutationQueue, UiMutation};
 /// The chart model: options, layout and the GPU mark contract.
@@ -392,7 +394,8 @@ pub use nana_ui_core::{
     LengthSpec, LineBreakSpec, LineHeightSpec, NativeHitTestClass, OutputWorkObservation,
     OverflowSpec, OverlayMount, PaintTransform, PhysicalEdge, PointerEventsSpec, PopoverAlignment,
     PopoverPlacement, PositionSpec, RadiusTier, ScopeGeneration, SemanticColorMix,
-    SemanticColorRole, ShapeRecipe, ShapeRole, SplitPaneModel, SplitPaneMutation, StatusTone,
+    SemanticColorRole, ShapeRecipe, ShapeRole, SharedElementKey, SharedElementSizeMode,
+    SharedElementSnapshot, SharedElementTransition, SplitPaneModel, SplitPaneMutation, StatusTone,
     SwitchControlPosition, SystemCursor, TITLE_BAR_HEIGHT, TabDragGroup, TabDragLease, TabDragRect,
     TabDragSurface, TabDropIndicator, TabStripPaint, TableCursor, TableNavigation, TextAlignSpec,
     TextShadowSpec, ThemeAppearance, ThemeCategoryGenerations, ThemeDependencyMask, ThemeId,

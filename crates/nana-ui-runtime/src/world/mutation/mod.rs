@@ -157,6 +157,9 @@ impl UiWorld {
                     | UiMutation::ReverseAnimation { .. }
                     | UiMutation::PauseAnimation { .. }
                     | UiMutation::ResumeAnimation { .. }
+                    | UiMutation::SetSharedElement { .. }
+                    | UiMutation::CaptureSharedElement { .. }
+                    | UiMutation::ClaimSharedElement { .. }
             ) {
                 focus_nav_dirty = true;
             }
@@ -208,6 +211,7 @@ impl UiWorld {
         }
         self.reframe_layouts();
         self.place_document_layouts();
+        self.resolve_pending_shared_element_claims();
         self.flush_scroll_content();
         self.remeasure_scroll_containers();
         for (id, offset) in std::mem::take(&mut self.scroll.requested) {

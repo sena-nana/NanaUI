@@ -222,9 +222,21 @@ impl UiWorld {
     ) {
         if sample.finished {
             self.motion.animations.remove(&id);
-            if !fill_forwards && !is_layout_length(sample.property) {
+            let is_shared_element_length = matches!(
+                crate::animation::component_animation_kind(sample.id, sample.target),
+                Some(
+                    crate::component_animation_kinds::SHARED_ELEMENT_WIDTH
+                        | crate::component_animation_kinds::SHARED_ELEMENT_HEIGHT
+                )
+            );
+            if (!fill_forwards && !is_layout_length(sample.property)) || is_shared_element_length {
                 self.unbind_presentation(id.track_id());
             }
+            self.fire_shared_element_callbacks(
+                sample.id,
+                sample.target,
+                AnimationEventKind::Finished,
+            );
             events.push(AnimationEvent {
                 id: sample.id,
                 target: sample.target,
@@ -560,6 +572,11 @@ impl UiWorld {
             .animation_deadlines
             .remove(&(animation.next_deadline, id));
         self.unbind_presentation(id.track_id());
+        self.fire_shared_element_callbacks(
+            id,
+            animation.spec.target,
+            AnimationEventKind::Cancelled,
+        );
         self.motion.pending_animation_events.push(AnimationEvent {
             id,
             target: animation.spec.target,
@@ -584,6 +601,7 @@ impl UiWorld {
         } else {
             self.unbind_presentation(id.track_id());
         }
+        self.fire_shared_element_callbacks(id, spec.target, AnimationEventKind::Finished);
         self.motion.pending_animation_events.push(AnimationEvent {
             id,
             target: spec.target,
@@ -1001,6 +1019,7 @@ impl UiWorld {
             self.motion
                 .animation_deadlines
                 .remove(&(deadline, animation_id));
+            self.fire_shared_element_callbacks(animation_id, id, AnimationEventKind::Cancelled);
             self.motion.pending_animation_events.push(AnimationEvent {
                 id: animation_id,
                 target: id,

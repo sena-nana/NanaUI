@@ -95,7 +95,8 @@ pub use node::{
     LayoutNodeInspection,
 };
 pub(crate) use node::{
-    FragmentBinding, NodePatch, SlotItem, StructuralBinding, ViewParts, ViewState,
+    FragmentBinding, NodePatch, SharedElementCompleteFn, SlotItem, StructuralBinding, ViewParts,
+    ViewState,
 };
 #[doc(hidden)]
 pub use prop::Fixed;

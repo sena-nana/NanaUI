@@ -1521,3 +1521,247 @@ fn backface_visibility_hidden_refuses_hits_when_rotated_past_90_deg() {
         "back-facing card and its flattened child must not hit: {back:?}"
     );
 }
+
+#[test]
+fn shared_element_handoff_keeps_last_layout_tracks_hit_test_a11y_and_fires_completion_deadline() {
+    let mut world = UiWorld::new();
+    let doc = document(1);
+    let key = nana_ui_core::SharedElementKey::new("hero-card");
+    let policy =
+        nana_ui_core::SharedElementTransition::new(Duration::from_millis(100)).ease(Easing::Linear);
+
+    let mut q1 = MutationQueue::new();
+    q1.create(
+        node(1),
+        doc,
+        NodeKind::Element {
+            tag: "thumb".into(),
+        },
+    );
+    q1.write_layout(node(1), box_at(20.0, 20.0, 40.0, 40.0));
+    q1.set_style(node(1), NodeStyle::default());
+    q1.register_shared_element(node(1), key.clone(), policy);
+    world.commit(q1).unwrap();
+
+    // Unmount source node A while mounting target node B at Last (160, 20, 40, 40).
+    let mut q2 = MutationQueue::new();
+    q2.despawn_subtree(node(1));
+    q2.create(
+        node(2),
+        doc,
+        NodeKind::Element {
+            tag: "button".into(),
+        },
+    );
+    q2.write_layout(node(2), box_at(160.0, 20.0, 40.0, 40.0));
+    q2.set_style(node(2), NodeStyle::default());
+    q2.set_interaction(
+        node(2),
+        InteractionState {
+            pointer_events: true,
+            focusable: true,
+        },
+    );
+    q2.set_accessibility(
+        node(2),
+        AccessibilityState {
+            role: AccessibilityRole::Button,
+            ..AccessibilityState::default()
+        },
+    );
+    q2.claim_shared_element(node(2), key.clone(), policy, Duration::ZERO);
+    world.commit(q2).unwrap();
+
+    let completed = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let completed_sink = Arc::clone(&completed);
+    world.on_shared_element_complete(node(2), move |target, kind| {
+        completed_sink.lock().unwrap().push((target, kind));
+    });
+
+    // Authoritative logical layout stays Last without transform mutation.
+    assert_eq!(world.layout_box(node(2)).unwrap().x, 160.0);
+    assert_eq!(
+        world
+            .node_style(node(2))
+            .unwrap()
+            .layout
+            .transforms
+            .transform,
+        None
+    );
+
+    // Compositor transform starts at invert(First - Last) without scale, and #87
+    // schedules only the completion deadline (100ms).
+    let initial_frame = world.advance_animations(Duration::ZERO);
+    assert_eq!(
+        initial_frame.next_deadline,
+        Some(Duration::from_millis(100))
+    );
+    world.rebuild_hit_test(doc);
+    assert_eq!(
+        world.hit_test(doc, 35.0, 35.0),
+        Some(node(2)),
+        "hit-test at t=0 follows First origin via presentation invert"
+    );
+    assert_eq!(world.hit_test(doc, 175.0, 35.0), None);
+    let a11y_start = world.project_accessibility_nodes(&[node(2)]);
+    assert!((a11y_start[0].bounds.x - 20.0).abs() < 1e-3);
+
+    // Mid-flight at 50ms: compositor track scans zero CPU deadlines while HitIndex
+    // and AccessKit sample live presentation geometry at x=90.
+    let mid_frame = world.advance_animations(Duration::from_millis(50));
+    assert!(mid_frame.samples.is_empty());
+    assert_eq!(mid_frame.animation_deadlines_scanned, 0);
+    assert!(completed.lock().unwrap().is_empty());
+    world.rebuild_hit_test(doc);
+    assert_eq!(world.hit_test(doc, 105.0, 35.0), Some(node(2)));
+    let a11y_mid = world.project_accessibility_nodes(&[node(2)]);
+    assert!((a11y_mid[0].bounds.x - 90.0).abs() < 1e-3);
+    assert_eq!(world.layout_box(node(2)).unwrap().x, 160.0);
+
+    // #87 completion deadline at 100ms fires event + callback and lands at Last.
+    let end_frame = world.advance_animations(Duration::from_millis(100));
+    assert_eq!(
+        end_frame.events,
+        vec![crate::AnimationEvent {
+            id: crate::component_animation_id(crate::component_animation_kinds::FLIP, node(2))
+                .unwrap(),
+            target: node(2),
+            kind: crate::AnimationEventKind::Finished,
+        }]
+    );
+    assert_eq!(
+        *completed.lock().unwrap(),
+        vec![(node(2), crate::AnimationEventKind::Finished)]
+    );
+    world.rebuild_hit_test(doc);
+    assert_eq!(world.hit_test(doc, 175.0, 35.0), Some(node(2)));
+    let a11y_end = world.project_accessibility_nodes(&[node(2)]);
+    assert!((a11y_end[0].bounds.x - 160.0).abs() < 1e-3);
+}
+
+#[test]
+fn shared_element_size_modes_morph_without_width_to_scale() {
+    let mut world = UiWorld::new();
+    let doc = document(1);
+
+    let last_style = NodeStyle {
+        layout: Arc::new(LayoutStyle {
+            width: Some(nana_ui_core::LengthSpec::Px(120.0)),
+            height: Some(nana_ui_core::LengthSpec::Px(60.0)),
+            ..LayoutStyle::default()
+        }),
+        ..NodeStyle::default()
+    };
+
+    // 1) LayoutSize: Layout-class Width/Height animate while Transform keeps a=1, d=1.
+    let layout_policy = nana_ui_core::SharedElementTransition::new(Duration::from_millis(100))
+        .ease(Easing::Linear)
+        .size_mode(nana_ui_core::SharedElementSizeMode::LayoutSize);
+    let mut q1 = MutationQueue::new();
+    q1.create(node(1), doc, NodeKind::Element { tag: "a".into() });
+    q1.write_layout(node(1), box_at(10.0, 10.0, 40.0, 20.0));
+    q1.set_style(node(1), NodeStyle::default());
+    q1.register_shared_element(node(1), "hero-size", layout_policy);
+    world.commit(q1).unwrap();
+
+    let mut q2 = MutationQueue::new();
+    q2.despawn_subtree(node(1));
+    q2.create(node(2), doc, NodeKind::Element { tag: "b".into() });
+    q2.write_layout(node(2), box_at(90.0, 30.0, 120.0, 60.0));
+    q2.set_style(node(2), last_style.clone());
+    q2.claim_shared_element(node(2), "hero-size", layout_policy, Duration::ZERO);
+    world.commit(q2).unwrap();
+
+    world.advance_animations(Duration::from_millis(50));
+    match world.presentation_applied_value(
+        node(2),
+        AnimatableProperty::Transform,
+        Duration::from_millis(50),
+    ) {
+        Some(MotionValue::Transform(t)) => {
+            assert_eq!((t.a, t.b, t.c, t.d), (1.0, 0.0, 0.0, 1.0));
+            assert!((t.e + 40.0).abs() < 1e-3, "got {}", t.e);
+            assert!((t.f + 10.0).abs() < 1e-3, "got {}", t.f);
+        }
+        other => panic!("expected translate-only Transform, got {other:?}"),
+    }
+    let width_mid = match world.layout_style(node(2)).unwrap().width {
+        Some(nana_ui_core::LengthSpec::Px(px)) => px,
+        other => panic!("expected interpolated px width, got {other:?}"),
+    };
+    let height_mid = match world.layout_style(node(2)).unwrap().height {
+        Some(nana_ui_core::LengthSpec::Px(px)) => px,
+        other => panic!("expected interpolated px height, got {other:?}"),
+    };
+    assert!((width_mid - 80.0).abs() < 1e-3, "got {width_mid}");
+    assert!((height_mid - 40.0).abs() < 1e-3, "got {height_mid}");
+    assert_eq!(
+        world.node_style(node(2)).unwrap().layout.width,
+        Some(nana_ui_core::LengthSpec::Px(120.0)),
+        "logical width must stay Last"
+    );
+    world.advance_animations(Duration::from_millis(100));
+    assert_eq!(
+        world.layout_style(node(2)).unwrap().width,
+        Some(nana_ui_core::LengthSpec::Px(120.0))
+    );
+
+    // 2) ClipPresentation & CrossFade: zero scale mutation and expected compositor tracks.
+    let clip_policy = nana_ui_core::SharedElementTransition::new(Duration::from_millis(100))
+        .ease(Easing::Linear)
+        .size_mode(nana_ui_core::SharedElementSizeMode::ClipPresentation)
+        .cross_fade(true);
+    let mut q3 = MutationQueue::new();
+    q3.create(node(3), doc, NodeKind::Element { tag: "c".into() });
+    q3.write_layout(node(3), box_at(0.0, 0.0, 30.0, 30.0));
+    q3.set_style(node(3), NodeStyle::default());
+    q3.register_shared_element(node(3), "hero-clip", clip_policy);
+    world.commit(q3).unwrap();
+
+    let mut q4 = MutationQueue::new();
+    q4.despawn_subtree(node(3));
+    q4.create(node(4), doc, NodeKind::Element { tag: "d".into() });
+    q4.write_layout(node(4), box_at(100.0, 0.0, 120.0, 60.0));
+    q4.set_style(node(4), last_style);
+    q4.claim_shared_element(
+        node(4),
+        "hero-clip",
+        clip_policy,
+        Duration::from_millis(100),
+    );
+    world.commit(q4).unwrap();
+
+    world.advance_animations(Duration::from_millis(150));
+    match world.presentation_applied_value(
+        node(4),
+        AnimatableProperty::Clip,
+        Duration::from_millis(150),
+    ) {
+        Some(MotionValue::Scalar(p)) => assert!((p - 0.5).abs() < 1e-3, "got {p}"),
+        other => panic!("expected Clip presentation track, got {other:?}"),
+    }
+    match world.presentation_applied_value(
+        node(4),
+        AnimatableProperty::Opacity,
+        Duration::from_millis(150),
+    ) {
+        Some(MotionValue::Scalar(o)) => assert!((o - 0.5).abs() < 1e-3, "got {o}"),
+        other => panic!("expected CrossFade opacity track, got {other:?}"),
+    }
+    match world.presentation_applied_value(
+        node(4),
+        AnimatableProperty::Transform,
+        Duration::from_millis(150),
+    ) {
+        Some(MotionValue::Transform(t)) => {
+            assert_eq!(
+                (t.a, t.d),
+                (1.0, 1.0),
+                "never encode width mismatch as scale"
+            );
+            assert!((t.e + 50.0).abs() < 1e-3, "got {}", t.e);
+        }
+        other => panic!("expected translate-only Transform, got {other:?}"),
+    }
+}

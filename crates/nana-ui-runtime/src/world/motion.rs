@@ -954,6 +954,229 @@ impl UiWorld {
     }
 }
 
+impl UiWorld {
+    /// Captures a node's live presentation [`FlipRect`] (`component_layout_box`
+    /// shifted by any active transform presentation overlay so interrupted
+    /// morphs continue seamlessly from their shown origin).
+    pub fn live_flip_rect(&self, target: StableNodeId) -> Option<nana_ui_core::FlipRect> {
+        let layout = self.component_layout_box(target)?;
+        let now = self.motion.animation_now;
+        let [dx, dy] =
+            match self.presentation_pair(target, crate::AnimatableProperty::Transform, now) {
+                Some(nana_ui_core::motion::PresentationPair {
+                    logical: crate::MotionValue::Transform(logical),
+                    presentation: crate::MotionValue::Transform(shown),
+                }) => [shown.e - logical.e, shown.f - logical.f],
+                _ => [0.0, 0.0],
+            };
+        Some(nana_ui_core::FlipRect::new(
+            layout.x + dx,
+            layout.y + dy,
+            layout.width,
+            layout.height,
+        ))
+    }
+
+    pub fn shared_element_snapshot(
+        &self,
+        document: DocumentId,
+        key: &nana_ui_core::SharedElementKey,
+    ) -> Option<nana_ui_core::SharedElementSnapshot> {
+        self.motion
+            .shared_element_snapshots
+            .get(&(document, key.clone()))
+            .copied()
+    }
+
+    /// Registers a completion callback for `target`'s shared-element hero
+    /// transition (invoked when its `#87` completion deadline finishes or is
+    /// cancelled). If no shared-element transform track is active on `target`,
+    /// the callback fires immediately with [`crate::AnimationEventKind::Finished`].
+    pub fn on_shared_element_complete(
+        &mut self,
+        target: StableNodeId,
+        callback: impl FnOnce(StableNodeId, crate::AnimationEventKind) + Send + 'static,
+    ) {
+        let Some(id) =
+            crate::component_animation_id(crate::component_animation_kinds::FLIP, target)
+        else {
+            callback(target, crate::AnimationEventKind::Finished);
+            return;
+        };
+        if !self.motion.animations.contains_key(&id) {
+            callback(target, crate::AnimationEventKind::Finished);
+            return;
+        }
+        self.motion
+            .shared_element_callbacks
+            .entry(id)
+            .or_default()
+            .push(Box::new(callback));
+    }
+
+    pub(super) fn register_shared_element_node(
+        &mut self,
+        target: StableNodeId,
+        key: Option<(
+            nana_ui_core::SharedElementKey,
+            nana_ui_core::SharedElementTransition,
+        )>,
+    ) {
+        match key {
+            Some(entry) => {
+                self.motion.shared_element_nodes.insert(target, entry);
+            }
+            None => {
+                self.motion.shared_element_nodes.remove(&target);
+            }
+        }
+    }
+
+    pub(super) fn capture_shared_element_snapshot(
+        &mut self,
+        target: StableNodeId,
+        key_override: Option<nana_ui_core::SharedElementKey>,
+    ) -> Option<nana_ui_core::SharedElementSnapshot> {
+        let key = key_override.or_else(|| {
+            self.motion
+                .shared_element_nodes
+                .get(&target)
+                .map(|(k, _)| k.clone())
+        })?;
+        let document = self.document_of(target)?;
+        let first = self.live_flip_rect(target)?;
+        let now = self.motion.animation_now;
+        let opacity = match self.presentation_applied_value(
+            target,
+            crate::AnimatableProperty::Opacity,
+            now,
+        ) {
+            Some(crate::MotionValue::Scalar(v)) => v.clamp(0.0, 1.0),
+            _ => self
+                .node_style(target)
+                .and_then(|style| style.layout.opacity)
+                .unwrap_or(1.0)
+                .clamp(0.0, 1.0),
+        };
+        let snapshot = nana_ui_core::SharedElementSnapshot {
+            source: target.get(),
+            first,
+            opacity,
+            captured_at: now,
+        };
+        self.motion
+            .shared_element_snapshots
+            .insert((document, key), snapshot);
+        Some(snapshot)
+    }
+
+    pub(crate) fn shared_element_entry(
+        &self,
+        target: StableNodeId,
+    ) -> Option<(
+        nana_ui_core::SharedElementKey,
+        nana_ui_core::SharedElementTransition,
+    )> {
+        self.motion.shared_element_nodes.get(&target).cloned()
+    }
+
+    pub(crate) fn capture_shared_elements_in_subtree(&mut self, root: StableNodeId) {
+        if self.motion.shared_element_nodes.is_empty() {
+            return;
+        }
+        let mut stack = vec![root];
+        while let Some(id) = stack.pop() {
+            if self.motion.shared_element_nodes.contains_key(&id) {
+                let _ = self.capture_shared_element_snapshot(id, None);
+            }
+            if let Some(record) = self.nodes.get(id) {
+                stack.extend(record.hierarchy.children.iter().rev().copied());
+            }
+        }
+    }
+
+    pub(super) fn forget_shared_element_node(&mut self, id: StableNodeId) {
+        self.motion.shared_element_nodes.remove(&id);
+    }
+
+    pub(super) fn resolve_pending_shared_element_claims(&mut self) {
+        if self.motion.pending_shared_element_claims.is_empty() {
+            return;
+        }
+        let pending = std::mem::take(&mut self.motion.pending_shared_element_claims);
+        for (target, key, transition, now) in pending {
+            if self.contains(target) {
+                let _ = self.claim_shared_element(target, key, transition, now);
+            }
+        }
+    }
+
+    pub(super) fn claim_shared_element(
+        &mut self,
+        target: StableNodeId,
+        key: nana_ui_core::SharedElementKey,
+        transition: nana_ui_core::SharedElementTransition,
+        now: Duration,
+    ) -> bool {
+        self.motion
+            .shared_element_nodes
+            .insert(target, (key.clone(), transition));
+        let Some(document) = self.document_of(target) else {
+            return false;
+        };
+        let Some(snapshot) = self
+            .motion
+            .shared_element_snapshots
+            .remove(&(document, key))
+        else {
+            return false;
+        };
+        if self.motion.reduced_motion || transition.duration.is_zero() {
+            return false;
+        }
+        let Some(last) = self.live_flip_rect(target) else {
+            return false;
+        };
+        let default_easing = self
+            .node_theme(target)
+            .motion()
+            .easing(nana_ui_core::EasingRole::Standard);
+        let target_opacity = self
+            .node_style(target)
+            .and_then(|style| style.layout.opacity)
+            .unwrap_or(1.0);
+        let specs = crate::animation::shared_element_morph_specs(
+            target,
+            snapshot.first,
+            last,
+            transition,
+            now,
+            default_easing,
+            target_opacity,
+        );
+        if specs.is_empty() {
+            return false;
+        }
+        for spec in specs {
+            self.install_animation(spec);
+        }
+        true
+    }
+
+    pub(super) fn fire_shared_element_callbacks(
+        &mut self,
+        id: crate::AnimationId,
+        target: StableNodeId,
+        kind: crate::AnimationEventKind,
+    ) {
+        if let Some(callbacks) = self.motion.shared_element_callbacks.remove(&id) {
+            for callback in callbacks {
+                callback(target, kind);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -627,6 +627,7 @@ impl AppContext {
             self.refresh_select_menu_rooms(document)?;
             self.announce_size_changes(document)?;
             self.play_pending_flips(document);
+            self.play_pending_shared_elements(document);
             self.play_layout_moves(document);
             // A toast stack's new toasts were measured by this pass: what
             // shows follows from their heights.

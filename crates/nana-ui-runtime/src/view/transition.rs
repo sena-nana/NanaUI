@@ -215,6 +215,9 @@ pub struct Transition {
     pub(crate) leave: Option<Presence>,
     /// `None` easing: the theme's standard easing.
     pub(crate) moves: Option<(Duration, Option<Easing>)>,
+    /// Default shared-element morph policy for matching `El::shared_element`
+    /// heroes inside this `<Transition>` / `<TransitionGroup>`.
+    pub(crate) shared: Option<nana_ui_core::SharedElementTransition>,
 }
 
 impl Transition {
@@ -230,6 +233,7 @@ impl Transition {
             enter: Some(half),
             leave: Some(half),
             moves: None,
+            shared: None,
         }
     }
 
@@ -240,6 +244,7 @@ impl Transition {
             enter: Some(half),
             leave: Some(half),
             moves: None,
+            shared: None,
         }
     }
 
@@ -250,7 +255,14 @@ impl Transition {
             enter: Some(half),
             leave: Some(half),
             moves: None,
+            shared: None,
         }
+    }
+
+    /// Shared-element hero transition policy for matching `El::shared_element`
+    /// descendants across branches or `<TransitionGroup>` items.
+    pub fn hero(policy: nana_ui_core::SharedElementTransition) -> Self {
+        Self::new().shared(policy)
     }
 
     pub fn enter(mut self, enter: Presence) -> Self {
@@ -282,6 +294,13 @@ impl Transition {
         self
     }
 
+    /// Default policy for cross-node `El::shared_element` hero morphs inside
+    /// this transition.
+    pub fn shared(mut self, policy: nana_ui_core::SharedElementTransition) -> Self {
+        self.shared = Some(policy);
+        self
+    }
+
     /// The easing of every half set so far and of moves.
     pub fn ease(mut self, easing: Easing) -> Self {
         for half in [&mut self.enter, &mut self.leave].into_iter().flatten() {
@@ -289,6 +308,9 @@ impl Transition {
         }
         if let Some((_, move_easing)) = &mut self.moves {
             *move_easing = Some(easing);
+        }
+        if let Some(shared) = &mut self.shared {
+            *shared = shared.ease(easing);
         }
         self
     }

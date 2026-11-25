@@ -86,6 +86,14 @@ pub mod component_animation_kinds {
     pub const HOVER_FOREGROUND: u64 = 20;
     /// Hover border color transition when border color changes without a first-class border property.
     pub const HOVER_BORDER: u64 = 21;
+    /// Cross-node shared-element presentation clip progress (`0.0 -> 1.0`).
+    pub const SHARED_ELEMENT_CLIP: u64 = 22;
+    /// Cross-node shared-element opacity cross-fade.
+    pub const SHARED_ELEMENT_OPACITY: u64 = 23;
+    /// Cross-node shared-element `Layout`-class width morph (never scale).
+    pub const SHARED_ELEMENT_WIDTH: u64 = 24;
+    /// Cross-node shared-element `Layout`-class height morph (never scale).
+    pub const SHARED_ELEMENT_HEIGHT: u64 = 25;
 }
 
 /// Derives the animation ID for one component-owned timeline from the
@@ -108,7 +116,7 @@ pub(crate) fn is_component_animation(id: AnimationId, target: StableNodeId) -> b
 
 /// Returns the [`component_animation_kinds`] tag for `id` on `target`, if any.
 pub(crate) fn component_animation_kind(id: AnimationId, target: StableNodeId) -> Option<u64> {
-    (component_animation_kinds::SKELETON..=component_animation_kinds::HOVER_BORDER)
+    (component_animation_kinds::SKELETON..=component_animation_kinds::SHARED_ELEMENT_HEIGHT)
         .find(|&kind| component_animation_id(kind, target) == Some(id))
 }
 
@@ -245,6 +253,110 @@ pub fn layout_flip_spec(
         duration,
         easing,
     )
+}
+
+/// Compile a cross-node shared-element morph onto the shared Motion IR without
+/// ever converting width/height changes into non-uniform scale.
+pub fn shared_element_morph_specs(
+    target: StableNodeId,
+    first: FlipRect,
+    last: FlipRect,
+    transition: nana_ui_core::SharedElementTransition,
+    now: Duration,
+    default_easing: Easing,
+    target_opacity: f32,
+) -> Vec<AnimationSpec> {
+    if transition.duration.is_zero() {
+        return Vec::new();
+    }
+    let easing = transition.easing.unwrap_or(default_easing);
+    let mut specs = Vec::with_capacity(4);
+    let backwards = AnimationPlayback {
+        iteration_count: AnimationIteration::ONCE,
+        direction: AnimationDirection::Normal,
+        fill_mode: AnimationFillMode::Backwards,
+        play_state: AnimationPlayState::Running,
+        paused_at: None,
+    };
+    let build_track = |kind, property, from, to| -> Option<AnimationSpec> {
+        let id = component_animation_id(kind, target)?;
+        Some(
+            AnimationSpec::new(
+                id,
+                target,
+                now,
+                transition.duration,
+                Duration::from_millis(16),
+                easing,
+            )
+            .with_playback(backwards)
+            .with_property(property)
+            .with_range(from, MotionTo::Value(to))
+            .with_interrupt(MotionInterrupt::Replace),
+        )
+    };
+    if let Some(spec) = build_track(
+        component_animation_kinds::FLIP,
+        AnimatableProperty::Transform,
+        MotionValue::Transform(invert_flip_translate(first, last)),
+        MotionValue::Transform(nana_ui_core::PaintTransform::default()),
+    ) {
+        specs.push(spec);
+    }
+    match transition.size_mode {
+        nana_ui_core::SharedElementSizeMode::TranslateOnly
+        | nana_ui_core::SharedElementSizeMode::CrossFade => {}
+        nana_ui_core::SharedElementSizeMode::LayoutSize => {
+            for (kind, property, from, to) in [
+                (
+                    component_animation_kinds::SHARED_ELEMENT_WIDTH,
+                    AnimatableProperty::Width,
+                    first.width,
+                    last.width,
+                ),
+                (
+                    component_animation_kinds::SHARED_ELEMENT_HEIGHT,
+                    AnimatableProperty::Height,
+                    first.height,
+                    last.height,
+                ),
+            ] {
+                if (from - to).abs() > 1e-4
+                    && let Some(spec) = build_track(
+                        kind,
+                        property,
+                        MotionValue::Scalar(from),
+                        MotionValue::Scalar(to),
+                    )
+                {
+                    specs.push(spec);
+                }
+            }
+        }
+        nana_ui_core::SharedElementSizeMode::ClipPresentation => {
+            if let Some(spec) = build_track(
+                component_animation_kinds::SHARED_ELEMENT_CLIP,
+                AnimatableProperty::Clip,
+                MotionValue::Scalar(0.0),
+                MotionValue::Scalar(1.0),
+            ) {
+                specs.push(spec);
+            }
+        }
+    }
+    let want_cross_fade = transition.cross_fade
+        || transition.size_mode == nana_ui_core::SharedElementSizeMode::CrossFade;
+    if want_cross_fade
+        && let Some(spec) = build_track(
+            component_animation_kinds::SHARED_ELEMENT_OPACITY,
+            AnimatableProperty::Opacity,
+            MotionValue::Scalar(0.0),
+            MotionValue::Scalar(target_opacity.clamp(0.0, 1.0)),
+        )
+    {
+        specs.push(spec);
+    }
+    specs
 }
 
 /// Backend-neutral animation timing. This is the Motion IR timing subset:

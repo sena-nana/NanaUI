@@ -552,6 +552,11 @@ impl<'a> ValidationPlan<'a> {
                         return Err(UiWorldError::MissingAnimation(*id));
                     }
                 }
+                UiMutation::SetSharedElement { target, .. }
+                | UiMutation::CaptureSharedElement { target, .. }
+                | UiMutation::ClaimSharedElement { target, .. } => {
+                    self.node(*target)?;
+                }
                 UiMutation::RequestFocus { document, target } => {
                     if let Some(target) = target {
                         let node = self.node(*target)?;

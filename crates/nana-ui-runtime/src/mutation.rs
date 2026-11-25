@@ -8,6 +8,13 @@ use crate::{
 use nana_ui_core::ThemeAppearance;
 use std::{sync::Arc, time::Duration};
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct SharedElementClaim {
+    pub key: nana_ui_core::SharedElementKey,
+    pub transition: nana_ui_core::SharedElementTransition,
+    pub now: Duration,
+}
+
 /// One retained-tree mutation. Mutations are validated as a batch before the
 /// authoritative world changes.
 #[derive(Debug, Clone, PartialEq)]
@@ -276,6 +283,23 @@ pub enum UiMutation {
     ResumeAnimation {
         id: AnimationId,
     },
+    SetSharedElement {
+        target: StableNodeId,
+        key: Option<
+            Box<(
+                nana_ui_core::SharedElementKey,
+                nana_ui_core::SharedElementTransition,
+            )>,
+        >,
+    },
+    CaptureSharedElement {
+        target: StableNodeId,
+        key: Option<nana_ui_core::SharedElementKey>,
+    },
+    ClaimSharedElement {
+        target: StableNodeId,
+        claim: Box<SharedElementClaim>,
+    },
     RequestFocus {
         document: DocumentId,
         target: Option<StableNodeId>,
@@ -482,7 +506,10 @@ impl BatchCapabilities {
             | UiMutation::FinishAnimation { .. }
             | UiMutation::ReverseAnimation { .. }
             | UiMutation::PauseAnimation { .. }
-            | UiMutation::ResumeAnimation { .. } => Self::ANIMATION,
+            | UiMutation::ResumeAnimation { .. }
+            | UiMutation::SetSharedElement { .. }
+            | UiMutation::CaptureSharedElement { .. }
+            | UiMutation::ClaimSharedElement { .. } => Self::ANIMATION,
             UiMutation::RequestFocus { .. }
             | UiMutation::RestoreFocusWithin { .. }
             | UiMutation::SetFocusPolicy { .. }
@@ -1205,6 +1232,59 @@ impl MutationQueue {
         self.record(
             BatchCapabilities::ANIMATION,
             UiMutation::ResumeAnimation { id },
+        );
+    }
+
+    pub fn register_shared_element(
+        &mut self,
+        target: StableNodeId,
+        key: impl Into<nana_ui_core::SharedElementKey>,
+        transition: nana_ui_core::SharedElementTransition,
+    ) {
+        self.record(
+            BatchCapabilities::ANIMATION,
+            UiMutation::SetSharedElement {
+                target,
+                key: Some(Box::new((key.into(), transition))),
+            },
+        );
+    }
+
+    pub fn clear_shared_element(&mut self, target: StableNodeId) {
+        self.record(
+            BatchCapabilities::ANIMATION,
+            UiMutation::SetSharedElement { target, key: None },
+        );
+    }
+
+    pub fn capture_shared_element(
+        &mut self,
+        target: StableNodeId,
+        key: Option<nana_ui_core::SharedElementKey>,
+    ) {
+        self.record(
+            BatchCapabilities::ANIMATION,
+            UiMutation::CaptureSharedElement { target, key },
+        );
+    }
+
+    pub fn claim_shared_element(
+        &mut self,
+        target: StableNodeId,
+        key: impl Into<nana_ui_core::SharedElementKey>,
+        transition: nana_ui_core::SharedElementTransition,
+        now: Duration,
+    ) {
+        self.record(
+            BatchCapabilities::ANIMATION,
+            UiMutation::ClaimSharedElement {
+                target,
+                claim: Box::new(SharedElementClaim {
+                    key: key.into(),
+                    transition,
+                    now,
+                }),
+            },
         );
     }
 

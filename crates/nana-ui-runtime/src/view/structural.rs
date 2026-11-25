@@ -176,6 +176,7 @@ fn remove(
         if !cx.world().contains(root) {
             continue;
         }
+        cx.capture_shared_elements_in_subtree(root);
         if let Some(transition) = transition
             && let Some(leave) = &transition.leave
             && cx.begin_leave(root, leave, transition.moves)?
@@ -853,6 +854,13 @@ impl<K: Eq + Hash + Clone + Send + 'static> FragmentBinding for EachBinding<K> {
         if let Some(enter) = transition.and_then(|transition| transition.enter) {
             cx.begin_enter(&entered, &enter)?;
         }
+        if let Some(policy) = transition.and_then(|transition| transition.shared) {
+            for (_, built) in &self.rows {
+                let mut nodes = Vec::new();
+                cx.flatten_all_live_nodes(&built.items, &mut nodes);
+                cx.apply_shared_element_default_policy(&nodes, policy);
+            }
+        }
         if let Some(moves) = moves {
             for (root, first) in firsts {
                 cx.flip_after_layout(root, first, moves);
@@ -1251,6 +1259,11 @@ impl<K: Clone + PartialEq + Send + 'static> SwitchBinding<K> {
         };
         let mut all_nodes = Vec::new();
         cx.flatten_all_live_nodes(&branch.items, &mut all_nodes);
+        for &node in &all_nodes {
+            if cx.world().contains(node) {
+                cx.capture_shared_elements_in_subtree(node);
+            }
+        }
         let mut mutations = MutationQueue::new();
         if let Some(document) = cx.world().node(host).map(|node| node.document)
             && cx.world().focused(document).is_some_and(|focused| {
@@ -1326,6 +1339,9 @@ impl<K: Clone + PartialEq + Send + 'static> FragmentBinding for SwitchBinding<K>
                 if let Some(holder) = self.holder {
                     cx.retarget_slot_items(&branch.items, holder, host);
                 }
+                let mut restored_nodes = Vec::new();
+                cx.flatten_all_live_nodes(&branch.items, &mut restored_nodes);
+                cx.queue_restored_shared_elements(&restored_nodes);
                 Some(branch)
             }
             None if self.render.exists(&shown) => {
@@ -1362,6 +1378,11 @@ impl<K: Clone + PartialEq + Send + 'static> FragmentBinding for SwitchBinding<K>
         cx.splice_fragment_children(frag, &ordered)?;
         if let Some(enter) = transition.and_then(|transition| transition.enter) {
             cx.begin_enter(&roots, &enter)?;
+        }
+        if let Some(policy) = transition.and_then(|transition| transition.shared) {
+            let mut branch_nodes = Vec::new();
+            cx.flatten_all_live_nodes(&items, &mut branch_nodes);
+            cx.apply_shared_element_default_policy(&branch_nodes, policy);
         }
         Ok(())
     }

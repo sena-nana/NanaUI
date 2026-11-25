@@ -67,7 +67,8 @@ pub use playback::{
 };
 pub use presentation::{MotionLayer, PresentationOverlay, PresentationStore};
 pub use property::{
-    AnimatableProperty, AnimationClass, FlipRect, classify_animatable_property,
+    AnimatableProperty, AnimationClass, FlipRect, SharedElementKey, SharedElementSizeMode,
+    SharedElementSnapshot, SharedElementTransition, classify_animatable_property,
     invert_flip_translate, is_font_variation_settings,
 };
 

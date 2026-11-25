@@ -8045,4 +8045,163 @@ mod issue420_boxless_fragments {
             Some("Updated")
         );
     }
+
+    #[test]
+    fn when_and_transition_group_shared_element_morphs_across_nodes_without_scale() {
+        use std::sync::{Arc, Mutex};
+        use std::time::Duration;
+
+        let (mut cx, document, parent) = setup();
+        let start = Duration::from_secs(5);
+        cx.advance_animations(start);
+
+        let show_detail = signal(false);
+        let completed = Arc::new(Mutex::new(Vec::new()));
+        let completed_cb = Arc::clone(&completed);
+        let thumb_ref = node_ref();
+        let detail_ref = node_ref();
+
+        let policy = crate::SharedElementTransition::new(Duration::from_millis(160))
+            .ease(crate::Easing::Linear)
+            .size_mode(crate::SharedElementSizeMode::LayoutSize)
+            .cross_fade(true);
+
+        cx.mount_view(parent, move || {
+            when(show_detail, move || {
+                widget(Stack::column(0.0).with_layout(|l| {
+                    l.margin_left = Some(LengthSpec::Px(120.0));
+                    l.margin_top = Some(LengthSpec::Px(40.0));
+                    l.width = Some(LengthSpec::Px(180.0));
+                    l.height = Some(LengthSpec::Px(90.0));
+                }))
+                .node_ref(detail_ref)
+                .shared_element("hero-preview")
+                .on_shared_element_complete({
+                    let completed_cb = Arc::clone(&completed_cb);
+                    move |target, kind| completed_cb.lock().unwrap().push((target, kind))
+                })
+            })
+            .otherwise(move || {
+                widget(Stack::column(0.0).with_layout(|l| {
+                    l.margin_left = Some(LengthSpec::Px(20.0));
+                    l.margin_top = Some(LengthSpec::Px(10.0));
+                    l.width = Some(LengthSpec::Px(60.0));
+                    l.height = Some(LengthSpec::Px(30.0));
+                }))
+                .node_ref(thumb_ref)
+                .shared_element("hero-preview")
+            })
+            .transition(Transition::hero(policy))
+        })
+        .unwrap();
+
+        let viewport = LayoutViewport::new(400.0, 300.0);
+        cx.layout_document(document, viewport).unwrap();
+        let thumb_id = thumb_ref.get_untracked().unwrap();
+        assert_eq!(cx.world().layout_box(thumb_id).unwrap().x, 20.0);
+
+        show_detail.set(true);
+        cx.flush_reactive().unwrap();
+        cx.layout_document(document, viewport).unwrap();
+
+        assert!(
+            !cx.world().contains(thumb_id),
+            "unmounted source branch A is gone while its First snapshot hands off to B"
+        );
+        let detail_id = detail_ref.get_untracked().unwrap();
+        let detail_box = cx.world().layout_box(detail_id).unwrap();
+        assert_eq!(detail_box.x, 120.0);
+        assert_eq!(detail_box.y, 40.0);
+
+        // At start+80ms (halfway): translate-only invert (-50, -15), Layout width=120,
+        // no width->scale, opacity=0.5.
+        let mid = start + Duration::from_millis(80);
+        cx.advance_animations(mid);
+        match cx.world().presentation_applied_value(
+            detail_id,
+            crate::AnimatableProperty::Transform,
+            mid,
+        ) {
+            Some(crate::MotionValue::Transform(t)) => {
+                assert_eq!((t.a, t.d), (1.0, 1.0));
+                assert!((t.e + 50.0).abs() < 1e-3, "got {}", t.e);
+                assert!((t.f + 15.0).abs() < 1e-3, "got {}", t.f);
+            }
+            other => panic!("expected shared-element transform invert, got {other:?}"),
+        }
+        match cx.world().layout_style(detail_id).unwrap().width {
+            Some(LengthSpec::Px(w)) => assert!((w - 120.0).abs() < 1e-3, "got {w}"),
+            other => panic!("expected Layout-class morphed width, got {other:?}"),
+        }
+        assert!(completed.lock().unwrap().is_empty());
+
+        let end = start + Duration::from_millis(160);
+        cx.advance_animations(end);
+        assert_eq!(
+            *completed.lock().unwrap(),
+            vec![(detail_id, crate::AnimationEventKind::Finished)]
+        );
+    }
+
+    #[test]
+    fn transition_group_each_shared_element_morphs_between_removed_and_fresh_row() {
+        use std::time::Duration;
+
+        let (mut cx, document, parent) = setup();
+        let start = Duration::from_secs(2);
+        cx.advance_animations(start);
+
+        let items = signal(vec![("a", 0.0f32, 40.0f32)]);
+        let refs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let refs_cb = std::sync::Arc::clone(&refs);
+        let policy = crate::SharedElementTransition::new(Duration::from_millis(200))
+            .ease(crate::Easing::Linear);
+
+        cx.mount_view(parent, move || {
+            each(
+                items,
+                |(id, _, _)| *id,
+                move |(_id, top, h)| {
+                    let r = node_ref();
+                    refs_cb.lock().unwrap().push(r);
+                    widget(Stack::column(0.0).with_layout(move |l| {
+                        l.margin_top = Some(LengthSpec::Px(top));
+                        l.width = Some(LengthSpec::Px(80.0));
+                        l.height = Some(LengthSpec::Px(h));
+                    }))
+                    .node_ref(r)
+                    .shared_element("row-hero")
+                },
+            )
+            .transition(Transition::hero(policy))
+        })
+        .unwrap();
+
+        let viewport = LayoutViewport::new(320.0, 240.0);
+        cx.layout_document(document, viewport).unwrap();
+        let first_id = refs.lock().unwrap()[0].get_untracked().unwrap();
+        assert_eq!(cx.world().layout_box(first_id).unwrap().y, 0.0);
+
+        // Replace row "a" with row "b" at y=100 while sharing key "row-hero".
+        items.set(vec![("b", 100.0f32, 40.0f32)]);
+        cx.flush_reactive().unwrap();
+        cx.layout_document(document, viewport).unwrap();
+
+        let second_id = refs.lock().unwrap()[1].get_untracked().unwrap();
+        assert_ne!(first_id, second_id);
+        assert_eq!(cx.world().layout_box(second_id).unwrap().y, 100.0);
+        let mid = start + Duration::from_millis(100);
+        cx.advance_animations(mid);
+        match cx.world().presentation_applied_value(
+            second_id,
+            crate::AnimatableProperty::Transform,
+            mid,
+        ) {
+            Some(crate::MotionValue::Transform(t)) => {
+                assert_eq!((t.a, t.d), (1.0, 1.0));
+                assert!((t.f + 50.0).abs() < 1e-3, "got {}", t.f);
+            }
+            other => panic!("expected TransitionGroup shared-element invert, got {other:?}"),
+        }
+    }
 }

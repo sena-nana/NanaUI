@@ -68,6 +68,13 @@ struct PendingFlip {
     easing: Easing,
 }
 
+struct PendingSharedElement {
+    node: StableNodeId,
+    key: nana_ui_core::SharedElementKey,
+    transition: Option<nana_ui_core::SharedElementTransition>,
+    on_complete: Option<crate::view::SharedElementCompleteFn>,
+}
+
 #[derive(Clone)]
 struct RunningKeyframeTrack {
     id: AnimationId,
@@ -95,6 +102,9 @@ pub(crate) struct ReactiveHost {
     leaving: HashMap<StableNodeId, Leaving, crate::BuildIdHasher>,
     /// Rows to slide from where they were once layout has placed them.
     flips: Vec<PendingFlip>,
+    /// Entering/restored hero nodes waiting for post-layout `Last` boxes to claim
+    /// matching `First` shared-element snapshots.
+    shared_elements: Vec<PendingSharedElement>,
     /// Properties of a node that animate when its bindings change them.
     implicit: HashMap<StableNodeId, Box<[crate::view::Implicit]>, crate::BuildIdHasher>,
     /// Nodes that slide when a layout pass moves them within their parent.
@@ -130,6 +140,7 @@ impl Default for ReactiveHost {
             flushing: false,
             leaving: HashMap::default(),
             flips: Vec::new(),
+            shared_elements: Vec::new(),
             implicit: HashMap::default(),
             layout_moves: HashMap::default(),
             interactive_styles: HashMap::default(),
@@ -536,6 +547,27 @@ impl AppContext {
                         placed: None,
                     },
                 );
+            }
+        }
+        if !parts.shared_elements.is_empty() {
+            let mut reg = MutationQueue::new();
+            for decl in parts.shared_elements {
+                if self.world.contains(decl.id) {
+                    reg.register_shared_element(
+                        decl.id,
+                        decl.key.clone(),
+                        decl.transition.unwrap_or_default(),
+                    );
+                    self.reactive.shared_elements.push(PendingSharedElement {
+                        node: decl.id,
+                        key: decl.key,
+                        transition: decl.transition,
+                        on_complete: decl.on_complete,
+                    });
+                }
+            }
+            if !reg.is_empty() {
+                let _ = self.commit_mutations(reg);
             }
         }
         let mut mounted_interactive = Vec::with_capacity(parts.interactive.len());
@@ -1508,6 +1540,7 @@ impl AppContext {
             host.leaving.remove(id);
             host.implicit.remove(id);
             host.layout_moves.remove(id);
+            host.shared_elements.retain(|entry| entry.node != *id);
             host.interactive_styles.remove(id);
             host.active_interactive_nodes.remove(id);
             host.selected_interactive_nodes.remove(id);
@@ -2345,6 +2378,73 @@ impl AppContext {
         self.reactive.flips = kept;
         if !mutations.is_empty() && self.commit_mutations(mutations).is_err() {
             nana_diagnostics::metric!(nana_diagnostics::framework::runtime::FLUSH_FAILED);
+        }
+    }
+
+    pub(crate) fn capture_shared_elements_in_subtree(&mut self, root: StableNodeId) {
+        self.world.capture_shared_elements_in_subtree(root);
+    }
+
+    pub(crate) fn queue_restored_shared_elements(&mut self, nodes: &[StableNodeId]) {
+        for &id in nodes {
+            if let Some((key, transition)) = self.world.shared_element_entry(id) {
+                self.reactive.shared_elements.push(PendingSharedElement {
+                    node: id,
+                    key,
+                    transition: Some(transition),
+                    on_complete: None,
+                });
+            }
+        }
+    }
+
+    pub(crate) fn apply_shared_element_default_policy(
+        &mut self,
+        nodes: &[StableNodeId],
+        policy: nana_ui_core::SharedElementTransition,
+    ) {
+        for entry in &mut self.reactive.shared_elements {
+            if entry.transition.is_none() && nodes.contains(&entry.node) {
+                entry.transition = Some(policy);
+            }
+        }
+    }
+
+    /// After a layout pass of `document`: claim any pending shared-element `First`
+    /// snapshots for entering/restored hero nodes in `document`, keeping their
+    /// logical layout at `Last`.
+    pub(crate) fn play_pending_shared_elements(&mut self, document: DocumentId) {
+        if self.reactive.shared_elements.is_empty() {
+            return;
+        }
+        let now = self.component_lifecycle.now;
+        let pending = std::mem::take(&mut self.reactive.shared_elements);
+        let mut kept = Vec::new();
+        let mut mutations = MutationQueue::new();
+        let mut callbacks = Vec::new();
+        for entry in pending {
+            let Some(node) = self.world.node(entry.node) else {
+                if let Some(cb) = entry.on_complete {
+                    cb(entry.node, crate::AnimationEventKind::Cancelled);
+                }
+                continue;
+            };
+            if node.document != document {
+                kept.push(entry);
+                continue;
+            }
+            let transition = entry.transition.unwrap_or_default();
+            mutations.claim_shared_element(entry.node, entry.key, transition, now);
+            if let Some(cb) = entry.on_complete {
+                callbacks.push((entry.node, cb));
+            }
+        }
+        self.reactive.shared_elements = kept;
+        if !mutations.is_empty() && self.commit_mutations(mutations).is_err() {
+            nana_diagnostics::metric!(nana_diagnostics::framework::runtime::FLUSH_FAILED);
+        }
+        for (target, cb) in callbacks {
+            self.world.on_shared_element_complete(target, cb);
         }
     }
 

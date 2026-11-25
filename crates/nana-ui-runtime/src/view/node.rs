@@ -370,6 +370,16 @@ pub struct InspectedField {
     pub source_bound_at: Option<SourceLocation>,
 }
 
+pub(crate) type SharedElementCompleteFn =
+    Box<dyn FnOnce(StableNodeId, crate::AnimationEventKind) + Send>;
+
+pub(crate) struct SharedElementDecl {
+    pub(crate) id: StableNodeId,
+    pub(crate) key: nana_ui_core::SharedElementKey,
+    pub(crate) transition: Option<nana_ui_core::SharedElementTransition>,
+    pub(crate) on_complete: Option<SharedElementCompleteFn>,
+}
+
 /// What a build leaves for the [`AppContext`] to own once it commits.
 #[derive(Default)]
 pub(crate) struct ViewParts {
@@ -387,6 +397,8 @@ pub(crate) struct ViewParts {
     pub(crate) implicit: Vec<(StableNodeId, Box<[super::Implicit]>)>,
     /// Nodes that slide when layout moves them ([`El::moves`]).
     pub(crate) moves: Vec<(StableNodeId, std::time::Duration)>,
+    /// Nodes participating in cross-node shared-element hero morphs.
+    pub(crate) shared_elements: Vec<SharedElementDecl>,
     pub(crate) interactive: Vec<(StableNodeId, super::style::InteractiveStyleBinding)>,
     pub(crate) motion: Vec<(StableNodeId, super::style::MotionBinding)>,
     /// Composites to assemble once built (their `slot_assembler`, or their
@@ -1108,6 +1120,12 @@ impl<C: 'static> IntoProp<Option<StableNodeId>> for EntityRef<C> {
     }
 }
 
+struct SharedElementBinding {
+    key: Option<nana_ui_core::SharedElementKey>,
+    transition: Option<nana_ui_core::SharedElementTransition>,
+    on_complete: Option<SharedElementCompleteFn>,
+}
+
 /// One component node with its constant fields, bindings, event handlers
 /// and children.
 pub struct El<C: ComponentView, K = ()> {
@@ -1135,6 +1153,8 @@ pub struct El<C: ComponentView, K = ()> {
     implicit: Vec<super::Implicit>,
     /// Slide when layout moves the node ([`El::moves`]).
     moves: Option<std::time::Duration>,
+    /// Cross-node shared-element hero key & policy ([`El::shared_element`]).
+    shared_element: Option<Box<SharedElementBinding>>,
     slots: Vec<Slot<C>>,
     classes: Option<super::style::Classes<C>>,
     /// Boxed, so an element is the same size whatever it holds: a static
@@ -1162,6 +1182,7 @@ pub fn widget<C: ComponentView>(component: C) -> El<C> {
         events: Vec::new(),
         implicit: Vec::new(),
         moves: None,
+        shared_element: None,
         slots: Vec::new(),
         classes: None,
         children: Box::new(()),
@@ -1429,6 +1450,7 @@ impl<C: ComponentView, K> El<C, K> {
             events: self.events,
             implicit: self.implicit,
             moves: self.moves,
+            shared_element: self.shared_element,
             slots: self.slots,
             classes: self.classes,
             children: Box::new(children),
@@ -1492,6 +1514,45 @@ impl<C: ComponentView, K> El<C, K> {
         self.moves = Some(duration);
         self
     }
+
+    fn shared_element_mut(&mut self) -> &mut SharedElementBinding {
+        self.shared_element.get_or_insert_with(|| {
+            Box::new(SharedElementBinding {
+                key: None,
+                transition: None,
+                on_complete: None,
+            })
+        })
+    }
+
+    /// Participate in cross-node shared-element hero transitions under `key`.
+    pub fn shared_element(mut self, key: impl Into<nana_ui_core::SharedElementKey>) -> Self {
+        self.shared_element_mut().key = Some(key.into());
+        self
+    }
+
+    /// Participate in cross-node shared-element hero transitions with an
+    /// explicit [`SharedElementTransition`](nana_ui_core::SharedElementTransition).
+    pub fn shared_element_with(
+        mut self,
+        key: impl Into<nana_ui_core::SharedElementKey>,
+        transition: nana_ui_core::SharedElementTransition,
+    ) -> Self {
+        let entry = self.shared_element_mut();
+        entry.key = Some(key.into());
+        entry.transition = Some(transition);
+        self
+    }
+
+    /// Invoked when this element's incoming shared-element hero transition
+    /// finishes on its `#87` completion deadline or is cancelled.
+    pub fn on_shared_element_complete(
+        mut self,
+        callback: impl FnOnce(StableNodeId, crate::AnimationEventKind) + Send + 'static,
+    ) -> Self {
+        self.shared_element_mut().on_complete = Some(Box::new(callback));
+        self
+    }
 }
 
 impl<C: ComponentView, K> El<C, K> {
@@ -1510,6 +1571,7 @@ impl<C: ComponentView, K> El<C, K> {
             events,
             implicit,
             moves,
+            shared_element,
             slots,
             classes,
             children,
@@ -1528,6 +1590,7 @@ impl<C: ComponentView, K> El<C, K> {
             events,
             implicit,
             moves,
+            shared_element,
             slots,
             classes,
             children: Box::new(()),
@@ -1559,6 +1622,7 @@ impl<C: ComponentView> El<C> {
             events,
             mut implicit,
             moves,
+            shared_element,
             slots,
             classes,
             children: _,
@@ -1651,6 +1715,16 @@ impl<C: ComponentView> El<C> {
         }
         if let Some(duration) = moves {
             vb.st.parts.moves.push((id, duration));
+        }
+        if let Some(shared) = shared_element
+            && let Some(key) = shared.key
+        {
+            vb.st.parts.shared_elements.push(SharedElementDecl {
+                id,
+                key,
+                transition: shared.transition,
+                on_complete: shared.on_complete,
+            });
         }
         for install in events {
             match install {

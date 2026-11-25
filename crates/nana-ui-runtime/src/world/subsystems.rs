@@ -189,6 +189,25 @@ pub(in crate::world) struct WorldMotion {
     pub(in crate::world) animation_deadlines: BTreeSet<(Duration, AnimationId)>,
     pub(in crate::world) presentation_transform_documents_cache:
         RefCell<Option<(u64, u64, HashSet<DocumentId>)>>,
+    pub(in crate::world) shared_element_nodes: HashMap<
+        StableNodeId,
+        (
+            nana_ui_core::SharedElementKey,
+            nana_ui_core::SharedElementTransition,
+        ),
+        BuildIdHasher,
+    >,
+    pub(in crate::world) shared_element_snapshots:
+        HashMap<(DocumentId, nana_ui_core::SharedElementKey), nana_ui_core::SharedElementSnapshot>,
+    pub(in crate::world) pending_shared_element_claims: Vec<(
+        StableNodeId,
+        nana_ui_core::SharedElementKey,
+        nana_ui_core::SharedElementTransition,
+        Duration,
+    )>,
+    #[allow(clippy::type_complexity)]
+    pub(in crate::world) shared_element_callbacks:
+        HashMap<AnimationId, Vec<Box<dyn FnOnce(StableNodeId, crate::AnimationEventKind) + Send>>>,
 }
 
 impl Default for WorldMotion {
@@ -214,6 +233,10 @@ impl Default for WorldMotion {
             hover_transitions: HashMap::default(),
             animation_deadlines: BTreeSet::new(),
             presentation_transform_documents_cache: RefCell::new(None),
+            shared_element_nodes: HashMap::default(),
+            shared_element_snapshots: HashMap::new(),
+            pending_shared_element_claims: Vec::new(),
+            shared_element_callbacks: HashMap::new(),
         }
     }
 }
