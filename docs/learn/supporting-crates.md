@@ -67,7 +67,7 @@ title: 外围支撑 crate 一览
 ### 6. `nana-ui-dev` 与 `nana-ui-devtools`：开发期热重载与无头验证
 
 - **`nana-ui-dev`（`crates/nana-ui-dev/src/lib.rs`，87 行）**：封装路径级静默防抖器 `Debouncer`（`watch.rs:25`）以及两档重载请求 `ReloadRequest { Full, Template }`（`lib.rs:46`）。第 `:22` 行的 `#[cfg(not(debug_assertions))] compile_error!(...)` 从编译期杜绝它进入发布包（详见 [开发期热重载合同](/reference/hot-reload)）。
-- **`nana-ui-devtools`（`crates/nana-ui-devtools/src/lib.rs`）**：提供按 feature 逐层递进的无头自动化会话（`offscreen` ⊂ `runtime-agent`，见 `lib.rs` 头部与 `agent/mod.rs`）：纯 Rust 的 `RuntimeAgentSession` 通过标准输入输出 JSON 协议执行指针点击、键盘输入、无障碍树导出与离屏 PNG 截图比对。`headless-host` 在 `runtime-agent` 之上加 `HeadlessHost<P>`：用 `nana_ui::headless::HeadlessRuntime` 按原生宿主的钩子顺序跑整个 `RuntimeProgram`（含它开的辅助窗口），再画出、回读各窗口。**全仓唯一的 GPU → CPU 像素回读严格限制在 `offscreen` 模块内**，产品 `run_runtime` 呈现路径绝不调用它。独立的 `inspect-overlay` feature（只依赖 Runtime）提供 `inspect::InspectOverlay`：开发期宿主每帧在布局之后调用 `update`，拿到悬停节点的盒模型矩形与尺寸标签、最近一次布局重算的节点高亮（`AppContext::last_layout_scope`，不消耗该集合）和绑定/布局原因文字，自己画在产品帧之上；关闭时 `update` 零分配、不做命中测试、不产生任何绘制数据。
+- **`nana-ui-devtools`（`crates/nana-ui-devtools/src/lib.rs`）**：提供按 feature 逐层递进的无头自动化会话（`offscreen` ⊂ `runtime-agent`，见 `lib.rs` 头部与 `agent/mod.rs`）：纯 Rust 的 `RuntimeAgentSession` 通过标准输入输出 JSON 协议执行指针点击、键盘输入、无障碍树导出与离屏 PNG 截图比对。`headless-host` 在 `runtime-agent` 之上加 `HeadlessHost<P>`：用 `nana_ui::headless::HeadlessRuntime` 按原生宿主的钩子顺序跑整个 `RuntimeProgram`（含它开的辅助窗口），再画出、回读各窗口。**全仓唯一的 GPU → CPU 像素回读严格限制在 `offscreen` 模块内**，产品 `run_runtime` 呈现路径绝不调用它。独立的 `inspect-overlay` feature（只依赖 Runtime，可单独搭配 `reactive-trace` 而不拉入 `offscreen`/GPU）提供 `inspect::InspectOverlay`：开发期宿主每帧在 `RuntimeDocument::flush`（保留 `AppContext::last_layout_scope`）之后调用 `update`，拿到悬停节点的盒模型矩形与尺寸标签、最近一次布局重算的节点高亮和绑定/布局原因文字，自己画在产品帧之上；关闭时 `update` 零分配、不做命中测试、不产生任何绘制数据。
 
 ## 仓库周边生态全景
 

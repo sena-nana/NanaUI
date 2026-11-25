@@ -168,10 +168,12 @@ impl RuntimeDocument {
                 // shapes that already match their unchanged boxes. A shape
                 // that moves layout relays out, and that pass's scope is
                 // shaped in turn: text that a relayout widened (a row that
-                // stacked) wraps at its new width in this frame.
-                let mut shape_scope = context.take_last_layout_scope();
+                // stacked) wraps at its new width in this frame. Using
+                // `shape_text_for_last_layout_scope` keeps `last_layout_scope`
+                // readable after `flush()` for development overlays without
+                // cloning it.
                 for _ in 0..POST_LAYOUT_SHAPE_PASSES {
-                    if !context.shape_text_for_layout_scoped(&shape_scope, shaper)? {
+                    if !context.shape_text_for_last_layout_scope(shaper)? {
                         break;
                     }
                     // Shaping re-dirtied layout (a wrap that changed a text's
@@ -185,7 +187,6 @@ impl RuntimeDocument {
                         break;
                     }
                     context.layout_document_with_frontier(document, viewport, &seeds)?;
-                    shape_scope = context.take_last_layout_scope();
                 }
                 force_layout = false;
             }

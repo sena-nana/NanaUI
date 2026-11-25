@@ -15,7 +15,7 @@ With no features on, this crate is empty. Each feature includes the one before i
 - `offscreen`: offscreen painting and CPU readback, reading and writing PNG.
 - `runtime-agent`: adds the JSON protocol, `RuntimeAgentSession`, and the command line on top of `offscreen`.
 - `headless-host`: adds `HeadlessHost` on top of `runtime-agent`, running a whole `RuntimeProgram` in the native host's hook order (with deterministic `HeadlessRuntime` manual clock/quiescence, target resolution, hit testing, scene probe, view inspection, unpremultiplied PNG export, and pixel diff).
-- `reactive-trace`: view inspection results include the reason for each node's most recent change.
+- `reactive-trace`: adds the reason for each node's most recent change to `runtime-agent` view inspection and `inspect-overlay` signal traces (pairs with `inspect-overlay` without pulling in `offscreen` or GPU crates).
 
 Apart from that chain, `inspect-overlay` (runtime only, no GPU) gives a development host a live inspection overlay: `inspect::InspectOverlay` turns a document into draw data for the node under the pointer (margin, border, padding and content boxes with a size label), the nodes the latest layout pass recomputed (layout cache misses; a node without the highlight reused its cached layout), and the hovered node's bindings and layout cause, plus the signal writes that last patched it with `reactive-trace`. The host paints the rectangles and labels over its own frame; nothing is added to the retained tree or the scene. While the overlay is off, `update` returns at its first check: no allocation, no hit test, nothing to draw.
 
@@ -30,7 +30,7 @@ cargo run -p nana-ui-devtools --features runtime-agent --bin nana-runtime-agent 
 
 ```bash
 cargo test -p nana-ui-devtools --features runtime-agent
-cargo test -p nana-ui-devtools --features inspect-overlay --lib inspect
+cargo test -p nana-ui-devtools --features inspect-overlay,reactive-trace --lib inspect
 ```
 
 Without a working GPU adapter, pixel tests return early. Other checks are in [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml).

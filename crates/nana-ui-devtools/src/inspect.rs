@@ -548,4 +548,138 @@ mod tests {
         assert_eq!(frame.quads.len(), 2);
         assert!(frame.labels.is_empty());
     }
+
+    #[test]
+    fn flush_preserves_relayout_scope_for_inspect_overlay() {
+        use nana_ui::runtime::RuntimeDocument;
+        use nana_ui::runtime::view::signal;
+
+        let width_signal = std::cell::Cell::new(None);
+        let document_id = DocumentId::new(1).unwrap();
+        let mut document = RuntimeDocument::new(document_id);
+        document
+            .context_mut()
+            .mount_view_root(document_id, || {
+                let a_width = signal(100.0f32);
+                width_signal.set(Some(a_width));
+                let inner_a =
+                    widget(Stack::column(0.0).hittable()).bind(move |stack: &mut Stack| {
+                        let w = a_width.get();
+                        *stack = Stack::column(0.0).hittable().with_layout(|layout| {
+                            layout.width = Some(LengthSpec::Px(w));
+                            layout.height = Some(LengthSpec::Px(40.0));
+                        });
+                    });
+                let panel_a = widget(Stack::column(0.0).with_layout(|layout| {
+                    layout.width = Some(LengthSpec::Px(200.0));
+                    layout.height = Some(LengthSpec::Px(80.0));
+                }))
+                .children(inner_a);
+                let inner_b = widget(Stack::column(0.0).hittable().with_layout(|layout| {
+                    layout.width = Some(LengthSpec::Px(120.0));
+                    layout.height = Some(LengthSpec::Px(60.0));
+                }));
+                let panel_b = widget(Stack::column(0.0).with_layout(|layout| {
+                    layout.width = Some(LengthSpec::Px(200.0));
+                    layout.height = Some(LengthSpec::Px(80.0));
+                }))
+                .children(inner_b);
+                widget(Stack::column(0.0)).children((panel_a, panel_b))
+            })
+            .unwrap();
+
+        let viewport = LayoutViewport::new(400.0, 300.0);
+        document.flush(viewport, &mut MeasureTextShaper).unwrap();
+
+        let mut overlay = InspectOverlay::new();
+        overlay.set_enabled(true);
+        let frame = overlay.update(document.context(), document_id);
+        assert_eq!(frame.relaid_out, 5);
+        let relayout_count = frame
+            .quads
+            .iter()
+            .filter(|quad| quad.role == QuadRole::Relayout)
+            .count();
+        assert_eq!(relayout_count, 5);
+
+        // An idle flush with no edits does not wipe the last layout scope.
+        let idle = document.flush(viewport, &mut MeasureTextShaper).unwrap();
+        assert!(idle.is_idle());
+        let frame = overlay.update(document.context(), document_id);
+        assert_eq!(frame.relaid_out, 5);
+
+        // Mutating inner_a inside fixed-size panel_a leaves panel_b and
+        // inner_b on their cached layout.
+        width_signal.get().unwrap().set(150.0);
+        document.flush(viewport, &mut MeasureTextShaper).unwrap();
+        let frame = overlay.update(document.context(), document_id);
+        assert!(frame.relaid_out > 0 && frame.relaid_out < 5, "{frame:?}");
+        assert!(
+            frame.quads.iter().any(
+                |quad| quad.role == QuadRole::Relayout && (quad.rect.width - 150.0).abs() < 0.1
+            ),
+            "expected resized inner_a in relayout quads: {:?}",
+            frame.quads
+        );
+        assert!(
+            !frame.quads.iter().any(
+                |quad| quad.role == QuadRole::Relayout && (quad.rect.width - 120.0).abs() < 0.1
+            ),
+            "expected untouched inner_b to reuse cached layout: {:?}",
+            frame.quads
+        );
+    }
+
+    #[cfg(feature = "reactive-trace")]
+    #[test]
+    fn reactive_trace_reports_signal_writes_in_overlay() {
+        use nana_ui::runtime::RuntimeDocument;
+        use nana_ui::runtime::view::signal;
+
+        let width_signal = std::cell::Cell::new(None);
+        let document_id = DocumentId::new(1).unwrap();
+        let mut document = RuntimeDocument::new(document_id);
+        document
+            .context_mut()
+            .mount_view_root(document_id, || {
+                let a_width = signal(100.0f32);
+                width_signal.set(Some(a_width));
+                let box_a = widget(Stack::column(0.0).hittable()).bind(move |stack: &mut Stack| {
+                    let w = a_width.get();
+                    *stack = Stack::column(0.0).hittable().with_layout(|layout| {
+                        layout.width = Some(LengthSpec::Px(w));
+                        layout.height = Some(LengthSpec::Px(40.0));
+                    });
+                });
+                widget(Stack::column(0.0)).children(box_a)
+            })
+            .unwrap();
+
+        let viewport = LayoutViewport::new(400.0, 300.0);
+        document.flush(viewport, &mut MeasureTextShaper).unwrap();
+        width_signal.get().unwrap().set(160.0);
+        document.flush(viewport, &mut MeasureTextShaper).unwrap();
+
+        let mut overlay = InspectOverlay::new();
+        overlay.set_enabled(true);
+        overlay.set_pointer(Some((20.0, 20.0)));
+        let frame = overlay.update(document.context(), document_id);
+        assert!(frame.hovered.is_some());
+        assert!(
+            frame
+                .labels
+                .iter()
+                .any(|label| label.text.contains("written ")),
+            "expected signal write trace in labels: {:?}",
+            frame.labels
+        );
+        assert!(
+            frame
+                .labels
+                .iter()
+                .any(|label| label.text.contains("signal ")),
+            "expected signal creation location in labels: {:?}",
+            frame.labels
+        );
+    }
 }

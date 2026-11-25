@@ -159,6 +159,19 @@ impl AppContext {
         Ok(())
     }
 
+    fn finish_text_shape(
+        &mut self,
+        started: Option<Instant>,
+        result: Result<bool, FrameworkError>,
+    ) -> Result<bool, FrameworkError> {
+        self.record_stage(FrameStage::TextShape, started);
+        let reshaped = result?;
+        let reprojected =
+            self.reproject_text_backend_views()? | self.refresh_shaped_text_area_layouts()?;
+        self.announce_text_clamps()?;
+        Ok(reprojected || reshaped)
+    }
+
     pub fn shape_text_for_layout(
         &mut self,
         document: DocumentId,
@@ -169,12 +182,7 @@ impl AppContext {
             .world
             .shape_text_for_layout(document, shaper)
             .map_err(FrameworkError::from);
-        self.record_stage(FrameStage::TextShape, started);
-        let reshaped = result?;
-        let reprojected =
-            self.reproject_text_backend_views()? | self.refresh_shaped_text_area_layouts()?;
-        self.announce_text_clamps()?;
-        Ok(reprojected || reshaped)
+        self.finish_text_shape(started, result)
     }
 
     /// [`Self::shape_text_for_layout`] restricted to `ids` (the last layout
@@ -189,12 +197,21 @@ impl AppContext {
             .world
             .shape_text_for_layout_scoped(ids, shaper)
             .map_err(FrameworkError::from);
-        self.record_stage(FrameStage::TextShape, started);
-        let reshaped = result?;
-        let reprojected =
-            self.reproject_text_backend_views()? | self.refresh_shaped_text_area_layouts()?;
-        self.announce_text_clamps()?;
-        Ok(reprojected || reshaped)
+        self.finish_text_shape(started, result)
+    }
+
+    /// [`Self::shape_text_for_layout`] restricted to [`Self::last_layout_scope`],
+    /// without draining that scope.
+    pub fn shape_text_for_last_layout_scope(
+        &mut self,
+        shaper: &mut impl crate::TextShaper,
+    ) -> Result<bool, FrameworkError> {
+        let started = self.stage_clock();
+        let result = self
+            .world
+            .shape_text_for_layout_scoped(&self.layout.last_layout_scope, shaper)
+            .map_err(FrameworkError::from);
+        self.finish_text_shape(started, result)
     }
 
     /// Compute and atomically publish canonical Runtime layout for one window.
@@ -256,8 +273,10 @@ impl AppContext {
     }
 
     /// Nodes recomputed by the most recent layout pass, without draining
-    /// them: a laid-out node outside it kept its cached layout. Empty once
-    /// [`Self::take_last_layout_scope`] has read the pass.
+    /// them: a laid-out node outside it kept its cached layout.
+    /// `RuntimeDocument::flush` preserves this set across post-layout shaping;
+    /// it is emptied only if a caller explicitly calls
+    /// [`Self::take_last_layout_scope`], or replaced by the next layout pass.
     pub fn last_layout_scope(&self) -> &[StableNodeId] {
         &self.layout.last_layout_scope
     }
