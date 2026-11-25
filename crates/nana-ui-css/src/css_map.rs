@@ -2952,6 +2952,11 @@ impl LayoutStyleCss for LayoutStyle {
                     self.cursor = Some(cursor);
                 }
             }
+            "hit-test" => {
+                if let Some(hit_test) = parse_hit_test_behavior(val) {
+                    self.hit_test = Some(hit_test);
+                }
+            }
             "user-select" | "-webkit-user-select" => {
                 if let Some(user_select) = parse_user_select_spec(val) {
                     self.user_select = Some(user_select);
@@ -5590,6 +5595,34 @@ fn parse_user_select_spec(input: &str) -> Option<UserSelectSpec> {
         "all" => UserSelectSpec::All,
         "contain" => UserSelectSpec::Contain,
         "none" => UserSelectSpec::None,
+        _ => return None,
+    })
+}
+
+fn parse_hit_test_behavior(input: &str) -> Option<nana_ui_core::HitTestBehavior> {
+    use nana_ui_core::{HitTestBehavior, WindowResizeEdge};
+
+    Some(match input.trim().to_ascii_lowercase().as_str() {
+        "auto" => HitTestBehavior::Auto,
+        "client" => HitTestBehavior::Client,
+        "passthrough" | "pass-through" => HitTestBehavior::PassThrough,
+        "drag" => HitTestBehavior::Drag,
+        "resize-north" | "resize-n" => HitTestBehavior::Resize(WindowResizeEdge::North),
+        "resize-south" | "resize-s" => HitTestBehavior::Resize(WindowResizeEdge::South),
+        "resize-east" | "resize-e" => HitTestBehavior::Resize(WindowResizeEdge::East),
+        "resize-west" | "resize-w" => HitTestBehavior::Resize(WindowResizeEdge::West),
+        "resize-north-east" | "resize-northeast" | "resize-ne" => {
+            HitTestBehavior::Resize(WindowResizeEdge::NorthEast)
+        }
+        "resize-north-west" | "resize-northwest" | "resize-nw" => {
+            HitTestBehavior::Resize(WindowResizeEdge::NorthWest)
+        }
+        "resize-south-east" | "resize-southeast" | "resize-se" => {
+            HitTestBehavior::Resize(WindowResizeEdge::SouthEast)
+        }
+        "resize-south-west" | "resize-southwest" | "resize-sw" => {
+            HitTestBehavior::Resize(WindowResizeEdge::SouthWest)
+        }
         _ => return None,
     })
 }
@@ -8306,6 +8339,61 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         );
         assert!(!layout.omits_box());
         assert!(layout.is_paint_visible());
+    }
+
+    #[test]
+    fn hit_test_css_property_parses_all_variants_and_rejects_unknown() {
+        use nana_ui_core::{HitTestBehavior, WindowResizeEdge};
+
+        let mut layout = LayoutStyle::default();
+        for (css, expected) in [
+            ("hit-test: auto", HitTestBehavior::Auto),
+            ("hit-test: client", HitTestBehavior::Client),
+            ("hit-test: passthrough", HitTestBehavior::PassThrough),
+            ("hit-test: pass-through", HitTestBehavior::PassThrough),
+            ("hit-test: drag", HitTestBehavior::Drag),
+            (
+                "hit-test: resize-north",
+                HitTestBehavior::Resize(WindowResizeEdge::North),
+            ),
+            (
+                "hit-test: resize-south",
+                HitTestBehavior::Resize(WindowResizeEdge::South),
+            ),
+            (
+                "hit-test: resize-east",
+                HitTestBehavior::Resize(WindowResizeEdge::East),
+            ),
+            (
+                "hit-test: resize-west",
+                HitTestBehavior::Resize(WindowResizeEdge::West),
+            ),
+            (
+                "hit-test: resize-north-east",
+                HitTestBehavior::Resize(WindowResizeEdge::NorthEast),
+            ),
+            (
+                "hit-test: resize-nw",
+                HitTestBehavior::Resize(WindowResizeEdge::NorthWest),
+            ),
+            (
+                "hit-test: resize-southeast",
+                HitTestBehavior::Resize(WindowResizeEdge::SouthEast),
+            ),
+            (
+                "hit-test: resize-sw",
+                HitTestBehavior::Resize(WindowResizeEdge::SouthWest),
+            ),
+        ] {
+            layout.apply_css_text(css, None, None);
+            assert_eq!(layout.hit_test, Some(expected), "failed on `{css}`");
+        }
+        // Unknown keyword fails closed without overwriting previous valid value.
+        layout.apply_css_text("hit-test: bogus", None, None);
+        assert_eq!(
+            layout.hit_test,
+            Some(HitTestBehavior::Resize(WindowResizeEdge::SouthWest))
+        );
     }
 
     #[test]

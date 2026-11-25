@@ -5,7 +5,8 @@ use std::sync::Arc;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::Graphics::Gdi::{
-    CreateBitmap, CreateCompatibleBitmap, DeleteObject, GetDC, ReleaseDC, SetBitmapBits,
+    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateBitmap, CreateDIBSection, DIB_RGB_COLORS,
+    DeleteObject, GetDC, ReleaseDC,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateIconIndirect, DestroyCursor, HCURSOR, ICONINFO, SetCursor,
@@ -56,19 +57,43 @@ pub(super) fn create_cursor(bitmap: &CursorBitmap) -> Result<WindowsCursorHandle
     let w = i32::from(bitmap.width);
     let h = i32::from(bitmap.height);
     unsafe {
+        let mut bmi = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: w,
+                biHeight: -h,
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB,
+                biSizeImage: 0,
+                biXPelsPerMeter: 0,
+                biYPelsPerMeter: 0,
+                biClrUsed: 0,
+                biClrImportant: 0,
+            },
+            bmiColors: [std::mem::zeroed()],
+        };
         let hdc_screen = GetDC(ptr::null_mut());
         if hdc_screen.is_null() {
             return Err("GetDC failed while creating custom cursor".into());
         }
-        let hbm_color = CreateCompatibleBitmap(hdc_screen, w, h);
+        let mut bits: *mut c_void = ptr::null_mut();
+        let hbm_color = CreateDIBSection(
+            hdc_screen,
+            &raw const bmi,
+            DIB_RGB_COLORS,
+            &raw mut bits,
+            ptr::null_mut(),
+            0,
+        );
         ReleaseDC(ptr::null_mut(), hdc_screen);
-        if hbm_color.is_null() {
-            return Err("CreateCompatibleBitmap failed for custom cursor".into());
+        if hbm_color.is_null() || bits.is_null() {
+            if !hbm_color.is_null() {
+                DeleteObject(hbm_color);
+            }
+            return Err("CreateDIBSection failed for custom cursor".into());
         }
-        if SetBitmapBits(hbm_color, bgra.len() as u32, bgra.as_ptr() as *const c_void) == 0 {
-            DeleteObject(hbm_color);
-            return Err("SetBitmapBits failed for custom cursor".into());
-        }
+        ptr::copy_nonoverlapping(bgra.as_ptr(), bits.cast::<u8>(), bgra.len());
         let mask_stride = ((w + 15) >> 4) << 1;
         let mask_bits = vec![0xffu8; (mask_stride * h) as usize];
         let hbm_mask = CreateBitmap(w, h, 1, 1, mask_bits.as_ptr() as *const c_void);

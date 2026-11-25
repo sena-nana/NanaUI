@@ -85,8 +85,14 @@ pub(crate) fn rasterize_svg_rgba(
     #[cfg(feature = "svg")]
     {
         let _ = cache_key;
-        let raster = nana_svg_raster::rasterize_document(bytes, width, height)?;
-        Some(raster.rgba.to_vec())
+        let raster = nana_svg_raster::rasterize_document_capped(bytes, width.max(height))?;
+        if raster.width == width && raster.height == height {
+            return Some(raster.rgba.to_vec());
+        }
+        let img = image::RgbaImage::from_raw(raster.width, raster.height, raster.rgba.to_vec())?;
+        let resized =
+            image::imageops::resize(&img, width, height, image::imageops::FilterType::Triangle);
+        Some(resized.into_raw())
     }
     #[cfg(not(feature = "svg"))]
     {

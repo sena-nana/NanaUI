@@ -16775,3 +16775,133 @@ fn partial_damage_incremental_paint_matches_full_frame_with_ui_overlays() {
 
     assert_eq!(partial_pixels, ref_pixels);
 }
+
+#[test]
+fn url_texture_cache_recovers_after_device_generation_change_without_refetch() {
+    use nana_ui_core::{BackgroundImage, BackgroundImageFit, ImageSampling};
+    use nana_ui_platform::{FetchError, FetchHost, FetchPolicy, FetchRequest, FetchResponse};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+
+    const URL: &str = "https://url-cache-recovery.invalid/tile.png";
+
+    #[derive(Debug)]
+    struct CountingPngHost {
+        policy: FetchPolicy,
+        png: Vec<u8>,
+        fetches: AtomicUsize,
+    }
+
+    impl FetchHost for CountingPngHost {
+        fn fetch(&self, request: FetchRequest) -> Result<FetchResponse, FetchError> {
+            assert_eq!(request.url, URL);
+            self.fetches.fetch_add(1, Ordering::SeqCst);
+            Ok(FetchResponse {
+                url: request.url,
+                status: 200,
+                status_text: "OK".into(),
+                headers: vec![("Content-Type".into(), "image/png".into())],
+                body: self.png.clone(),
+                redirected: false,
+            })
+        }
+
+        fn policy(&self) -> &FetchPolicy {
+            &self.policy
+        }
+    }
+
+    let img = image::RgbaImage::from_pixel(4, 4, image::Rgba([0, 220, 40, 255]));
+    let mut png = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut png, image::ImageFormat::Png).unwrap();
+    let fetch_host = Arc::new(CountingPngHost {
+        policy: FetchPolicy::default()
+            .with_allowed_origin("https://url-cache-recovery.invalid")
+            .unwrap(),
+        png: png.into_inner(),
+        fetches: AtomicUsize::new(0),
+    });
+
+    let mut cx = AppContext::new();
+    let doc = DocumentId::new(1).unwrap();
+    let root = cx
+        .create_component(
+            doc,
+            nana_ui_runtime::Stack::fill_column(0.0).with_layout(|layout| {
+                layout.width = Some(LengthSpec::Px(32.0));
+                layout.height = Some(LengthSpec::Px(32.0));
+                layout.paint.background_layers = vec![
+                    BackgroundImage::url_with_fit(URL, BackgroundImageFit::Stretch)
+                        .with_sampling(ImageSampling::Resample),
+                ];
+            }),
+        )
+        .unwrap();
+    let viewport = nana_ui_runtime::LayoutViewport::new(32.0, 32.0);
+    cx.resolve_styles(&[root.stable_id()]).unwrap();
+    cx.layout_document(doc, viewport).unwrap();
+    let mut scene = UiScene::new();
+    scene.apply_delta(cx.world().extract_document(doc), []);
+
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let gpu_format = nana_gpu::GpuTextureFormat::RGBA8_UNORM;
+    let paint_viewport = ScenePaintViewport {
+        logical_size: [32.0, 32.0],
+        physical_size: [32, 32],
+        scale_factor: 1.0,
+        scene_origin: [0.0, 0.0],
+        target_origin: [0.0, 0.0],
+        clear_color: [0.0, 0.0, 0.0, 1.0],
+        clear: true,
+    };
+
+    let paint_until_settled = |gpu: &GpuContext, painter: &mut SceneWgpuPainter| -> Vec<u8> {
+        let device = __framework::device(gpu);
+        let queue = __framework::queue(gpu);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let (tex, view) = test_copy_target(device, format, 32, 32);
+            let mut enc = device.create_command_encoder(&Default::default());
+            painter
+                .paint_encoder(&scene, &mut enc, &view, paint_viewport, None, None)
+                .unwrap();
+            let pixels = readback_rgba(device, queue, enc, &tex, 32, 32);
+            if painter.resource_counters().url_textures == 1 {
+                return pixels;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "URL texture never settled into cache"
+            );
+            painter.refresh_image_resources();
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    };
+
+    let gpu1 = crate::test_gpu::context();
+    let mut painter1 = SceneWgpuPainter::new(&gpu1, gpu_format);
+    painter1.set_resource_fetch_host(Some(fetch_host.clone()));
+    let before = paint_until_settled(&gpu1, &mut painter1);
+    assert_eq!(fetch_host.fetches.load(Ordering::SeqCst), 1);
+    let retained_cache = painter1.take_url_cache();
+    drop(painter1);
+
+    let gpu2 = __framework::adopt(
+        __framework::adapter(&gpu1).clone(),
+        __framework::device(&gpu1).clone(),
+        __framework::queue(&gpu1).clone(),
+    );
+    assert_ne!(gpu1.generation(), gpu2.generation());
+    let mut painter2 = SceneWgpuPainter::new(&gpu2, gpu_format);
+    painter2.set_resource_fetch_host(Some(fetch_host.clone()));
+    painter2.restore_url_cache(retained_cache);
+    let after = paint_until_settled(&gpu2, &mut painter2);
+
+    assert_eq!(painter2.resource_counters().url_textures, 1);
+    assert_eq!(
+        fetch_host.fetches.load(Ordering::SeqCst),
+        1,
+        "device-generation recovery must reuse preserved source bytes without re-fetching"
+    );
+    assert_eq!(before, after);
+}

@@ -92,7 +92,9 @@ impl BackendState {
             };
         }
 
-        if mode == MousePassthroughMode::Off && snapshot.rects.len() == 1 && !self.pointer_captured
+        if mode == MousePassthroughMode::Off
+            && !self.pointer_captured
+            && is_full_window_client(snapshot)
         {
             // Normal opaque single-client window: reset ShapeInput to default window bounds.
             unsafe {
@@ -153,7 +155,9 @@ impl BackendState {
             };
         };
 
-        if mode == MousePassthroughMode::Off && snapshot.rects.len() == 1 && !self.pointer_captured
+        if mode == MousePassthroughMode::Off
+            && !self.pointer_captured
+            && is_full_window_client(snapshot)
         {
             // Opcode 5 on wl_surface = set_input_region(?object). Null clears to full surface.
             let mut arg = wayland_sys::common::wl_argument {
@@ -485,4 +489,69 @@ fn bind_wl_compositor(
         display,
         compositor,
     })
+}
+
+fn is_full_window_client(snapshot: &InputRegionSnapshot) -> bool {
+    if snapshot.rects.len() != 1 {
+        return false;
+    }
+    let rect = &snapshot.rects[0];
+    rect.class == NativeHitTestClass::Client
+        && snapshot.logical_size.0 > 0.0
+        && snapshot.logical_size.1 > 0.0
+        && rect.x <= 0.0
+        && rect.y <= 0.0
+        && rect.x + rect.width >= snapshot.logical_size.0 - 0.5
+        && rect.y + rect.height >= snapshot.logical_size.1 - 0.5
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_full_window_client;
+    use nana_ui_platform::{InputRegionRect, InputRegionSnapshot, NativeHitTestClass};
+
+    #[test]
+    fn full_window_short_circuit_requires_full_bounds_client_rect() {
+        let full_client = InputRegionSnapshot {
+            revision: 1,
+            rects: vec![InputRegionRect {
+                x: 0.0,
+                y: 0.0,
+                width: 400.0,
+                height: 300.0,
+                class: NativeHitTestClass::Client,
+            }],
+            logical_size: (400.0, 300.0),
+            scale_factor: 1.0,
+            capped: false,
+            source_rect_count: 1,
+        };
+        assert!(is_full_window_client(&full_client));
+
+        // A PassThrough root with one smaller Client pill has rects.len() == 1
+        // and must NOT reset OS ShapeInput / wl_region to the whole window.
+        let smaller_pill = InputRegionSnapshot {
+            rects: vec![InputRegionRect {
+                x: 100.0,
+                y: 80.0,
+                width: 200.0,
+                height: 80.0,
+                class: NativeHitTestClass::Client,
+            }],
+            ..full_client.clone()
+        };
+        assert!(!is_full_window_client(&smaller_pill));
+
+        let full_drag = InputRegionSnapshot {
+            rects: vec![InputRegionRect {
+                x: 0.0,
+                y: 0.0,
+                width: 400.0,
+                height: 300.0,
+                class: NativeHitTestClass::Drag,
+            }],
+            ..full_client
+        };
+        assert!(!is_full_window_client(&full_drag));
+    }
 }
