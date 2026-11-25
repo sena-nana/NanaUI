@@ -38,7 +38,7 @@ struct TextRun {
     // Word offset of this run's per-glyph presentation in `text_glyph_fx`;
     // zero when it presents none.
     fx: u32,
-    pad1: f32,
+    motion_opacity_id: u32,
 }
 
 // The transform and clip a run paints under. Deduplicated: a shell's labels
@@ -56,10 +56,12 @@ struct TextPresentation {
     // `clip-path: polygon(...)` vertices, two per vec4.
     polygon: array<vec4<f32>, 4>,
     polygon_count: u32,
-    pad0: u32,
+    motion_transform_id: u32,
     // Whole physical px of the translation a translated run's origin is
     // relative to, so a whole-pixel scroll rewrites this row and no run.
     translate: vec2<f32>,
+    motion_origin: vec2<f32>,
+    pad_motion: vec2<u32>,
 }
 
 // Sampling is bilinear rather than nearest: the quad no longer lands on the
@@ -304,6 +306,15 @@ fn atlas_uv(texel: vec2<u32>, content: u32) -> vec2<f32> {
     return vec2<f32>(texel) / vec2<f32>(dim);
 }
 
+fn text_composed_presentation(presentation: TextPresentation) -> MotionAffine {
+    return motion_compose_projective(
+        presentation.affine,
+        presentation.project,
+        presentation.motion_origin,
+        motion_evaluate(presentation.motion_transform_id),
+    );
+}
+
 // A glyph corner in physical paint space.
 //
 // The same homography `Quad` applies, in logical space, per corner. A pure
@@ -323,9 +334,12 @@ fn text_world_position(run: TextRun, local: vec2<f32>) -> vec2<f32> {
     }
     let scale = presentation.clip_inv_ef.w;
     let p = paint / run.raster;
-    let xp = presentation.affine.x * p.x + presentation.affine.z * p.y + presentation.project.x;
-    let yp = presentation.affine.y * p.x + presentation.affine.w * p.y + presentation.project.y;
-    let w = presentation.project.z * p.x + presentation.project.w * p.y + 1.0;
+    let composed = text_composed_presentation(presentation);
+    let a = composed.abcd;
+    let e = composed.ef;
+    let xp = a.x * p.x + a.z * p.y + e.x;
+    let yp = a.y * p.x + a.w * p.y + e.y;
+    let w = e.z * p.x + e.w * p.y + 1.0;
     var projected = vec2<f32>(xp, yp);
     if abs(w) >= 1e-8 {
         projected = projected / w;
@@ -339,8 +353,9 @@ fn text_world_position(run: TextRun, local: vec2<f32>) -> vec2<f32> {
 // out there read the glyph's transparent gutter.
 fn text_edge_grow(run: TextRun, local: vec2<f32>) -> vec2<f32> {
     let presentation = text_presentations[run.presentation];
-    let a = presentation.affine;
-    let e = presentation.project;
+    let composed = text_composed_presentation(presentation);
+    let a = composed.abcd;
+    let e = composed.ef;
     let p = (local + run.origin) / run.raster;
     let w = e.z * p.x + e.w * p.y + 1.0;
     let world = vec2(a.x * p.x + a.z * p.y + e.x, a.y * p.x + a.w * p.y + e.y)
@@ -359,7 +374,8 @@ fn text_clip_w(run: TextRun, local: vec2<f32>) -> f32 {
     if (run.flags & RUN_PROJECT) == 0u {
         return 1.0;
     }
-    let e = text_presentations[run.presentation].project;
+    let composed = text_composed_presentation(text_presentations[run.presentation]);
+    let e = composed.ef;
     let p = (local + run.origin) / run.raster;
     let w = e.z * p.x + e.w * p.y + 1.0;
     return select(1.0, w, w > 1.0e-6);

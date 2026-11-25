@@ -2252,6 +2252,8 @@ fn translucent_parent_composites_overlapping_children_as_a_group() {
             inset_shadow: None,
             edge_fade: None,
             motion_streak: [0.0, 0.0],
+            filter_motion_id: 0,
+            opacity_motion_id: 0,
         }]
     );
     let viewport = ScenePaintViewport {
@@ -11769,17 +11771,17 @@ fn text_follows_ancestor_compositor_opacity_overlay() {
     let draw = scene.draw_primitive(text.id).expect("text draw");
     let encode =
         scene.compositor_paint_encode(draw.node, &draw.kind, draw.transform, draw.paint_opacity);
-    assert!(
-        (encode.opacity - draw.paint_opacity).abs() < 1e-5,
-        "Text encode must keep CPU overlay"
+    let group = &scene.opacity_groups(draw.node)[0];
+    assert_eq!(
+        encode.motion_ids,
+        (0, 0),
+        "grouped Text defers parent fade to its ancestor group"
     );
     assert!(
-        (draw.paint_opacity * scene.opacity_groups(draw.node)[0].opacity - layer.opacity).abs()
-            < 0.05,
-        "text opacity {} times its group must track presentation {}",
-        draw.paint_opacity,
-        layer.opacity
+        (encode.opacity - 1.0).abs() < 1e-5 && (group.opacity - 1.0).abs() < 1e-5,
+        "grouped Text and its GPU-faded group keep rest opacity 1.0"
     );
+    assert_ne!(group.opacity_motion_id, 0);
 
     let (device, queue) = test_device();
     let mut painter = SceneWgpuPainter::for_test(wgpu::TextureFormat::Rgba8Unorm);
@@ -16904,4 +16906,365 @@ fn url_texture_cache_recovers_after_device_generation_change_without_refetch() {
         "device-generation recovery must reuse preserved source bytes without re-fetching"
     );
     assert_eq!(before, after);
+}
+
+#[test]
+fn gpu_motion_text_icon_path_and_host_texture_evaluate_on_gpu() {
+    use std::time::Duration;
+
+    use nana_ui_core::{
+        Easing, PaintTransform,
+        motion::{AnimatableProperty, MotionTo, MotionValue},
+    };
+    use nana_ui_runtime::{
+        AnimationId, AnimationSpec, PaintOp, PaintPath, PaintRecording, ResolvedPaint, UiWorld,
+        scene_contract::{WidgetGlyph, WidgetIcon, WidgetPaintOp, WidgetPaintOutput},
+    };
+
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+
+    let text_node = StableNodeId::new(1).unwrap();
+    let icon_node = StableNodeId::new(2).unwrap();
+    let path_node = StableNodeId::new(3).unwrap();
+    let host_node = StableNodeId::new(4).unwrap();
+    let doc = DocumentId::new(1).unwrap();
+
+    let mut world = UiWorld::new();
+    let mut queue_mut = MutationQueue::new();
+    for (idx, node) in [text_node, icon_node, path_node, host_node]
+        .into_iter()
+        .enumerate()
+    {
+        queue_mut.create(node, doc, NodeKind::Document);
+        queue_mut.start_animation(
+            AnimationSpec::new(
+                AnimationId::new((idx * 2 + 1) as u64).unwrap(),
+                node,
+                Duration::ZERO,
+                Duration::from_millis(400),
+                Duration::from_millis(16),
+                Easing::Linear,
+            )
+            .with_property(AnimatableProperty::Transform)
+            .with_range(
+                MotionValue::Transform(PaintTransform::IDENTITY),
+                MotionTo::Value(MotionValue::Transform(PaintTransform {
+                    e: 40.0,
+                    ..PaintTransform::IDENTITY
+                })),
+            ),
+        );
+        queue_mut.start_animation(
+            AnimationSpec::new(
+                AnimationId::new((idx * 2 + 2) as u64).unwrap(),
+                node,
+                Duration::ZERO,
+                Duration::from_millis(400),
+                Duration::from_millis(16),
+                Easing::Linear,
+            )
+            .with_property(AnimatableProperty::Opacity)
+            .with_range(
+                MotionValue::Scalar(0.0),
+                MotionTo::Value(MotionValue::Scalar(1.0)),
+            ),
+        );
+    }
+    world.commit(queue_mut).unwrap();
+    world.advance_animations(Duration::ZERO);
+
+    let mut extracted = world.extract_nodes(&[text_node, icon_node, path_node, host_node]);
+    extracted[0].text = Some(nana_ui_runtime::TextContent { value: "Hi".into() });
+    extracted[0].style = Arc::new(ComputedStyle::with(|s| {
+        s.color = Some([1.0, 1.0, 1.0, 1.0]);
+        s.font_size = 16.0;
+    }));
+    extracted[0].layout = LayoutBox {
+        x: 4.0,
+        y: 2.0,
+        width: 24.0,
+        height: 20.0,
+    };
+
+    let mut icon_paint = WidgetPaintOutput::new();
+    icon_paint.suppresses_in_flow_descendants = true;
+    icon_paint.push(
+        1,
+        WidgetPaintOp::Icon(WidgetIcon {
+            bounds: LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 16.0,
+                height: 16.0,
+            },
+            glyph: WidgetGlyph::Icon(nana_ui_core::Icon::Search),
+            color: Some([1.0, 1.0, 1.0, 1.0]),
+            paint_color: None,
+            align_to_adjacent_text: true,
+        }),
+    );
+    extracted[1].layout = LayoutBox {
+        x: 4.0,
+        y: 24.0,
+        width: 16.0,
+        height: 16.0,
+    };
+    extracted[1].widget_paint = Some(Arc::new(icon_paint));
+
+    let mut tri = PaintPath::new();
+    tri.move_to(0.0, 0.0)
+        .line_to(14.0, 0.0)
+        .line_to(0.0, 14.0)
+        .close();
+    extracted[2].layout = LayoutBox {
+        x: 4.0,
+        y: 44.0,
+        width: 16.0,
+        height: 16.0,
+    };
+    extracted[2].custom_paint = Some(Arc::new(PaintRecording {
+        behind_children: vec![PaintOp::FillPath {
+            path: Arc::new(tri),
+            paint: ResolvedPaint::Solid([0.2, 0.9, 0.3, 1.0]),
+        }],
+        over_children: Vec::new(),
+    }));
+
+    extracted[3].layout = LayoutBox {
+        x: 2.0,
+        y: 2.0,
+        width: 14.0,
+        height: 14.0,
+    };
+    extracted[3].custom_render = Some(CustomRenderNode::new("nana.host-texture", "motion-slot", 1));
+
+    let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("motion-host-tex"),
+        size: wgpu::Extent3d {
+            width: 14,
+            height: 14,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let host_pixels = vec![240u8, 40, 200, 255].repeat(14 * 14);
+    queue.write_texture(
+        tex.as_image_copy(),
+        &host_pixels,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(14 * 4),
+            rows_per_image: Some(14),
+        },
+        wgpu::Extent3d {
+            width: 14,
+            height: 14,
+            depth_or_array_layers: 1,
+        },
+    );
+    let host_tex = crate::HostTexture::new(&crate::test_gpu::wrap_view(
+        &tex.create_view(&Default::default()),
+    ));
+    let registry = HostTextureRegistry::new();
+    registry.register(
+        "motion-slot",
+        host_tex,
+        14,
+        14,
+        crate::HostTextureAlphaMode::Premultiplied,
+    );
+
+    let mut scene = UiScene::new();
+    scene.apply_delta(extracted, []);
+    scene.apply_presentation(
+        world.presentation_store(),
+        Duration::from_millis(200),
+        Some(world.motion_descriptors()),
+    );
+
+    let mut checked = 0usize;
+    for primitive in scene.primitives() {
+        let draw = scene.draw_primitive(primitive.id).unwrap();
+        if draw.kind.evaluates_compositor_motion_on_gpu() {
+            let encode = scene.compositor_paint_encode(
+                draw.node,
+                &draw.kind,
+                draw.transform,
+                draw.paint_opacity,
+            );
+            assert_ne!(
+                encode.motion_ids.0, 0,
+                "expected GPU transform id for {:?}",
+                draw.node
+            );
+            assert_ne!(
+                encode.motion_ids.1, 0,
+                "expected GPU opacity id for {:?}",
+                draw.node
+            );
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 4);
+
+    let viewport = ScenePaintViewport {
+        logical_size: [96.0, 64.0],
+        physical_size: [96, 64],
+        scale_factor: 1.0,
+        scene_origin: [0.0, 0.0],
+        target_origin: [0.0, 0.0],
+        clear_color: [0.0, 0.0, 0.0, 1.0],
+        clear: true,
+    };
+    let mut painter = SceneWgpuPainter::for_test(format);
+    let (target_tex, target_view) = test_copy_target(&device, format, 96, 64);
+    let mut enc = device.create_command_encoder(&Default::default());
+    painter
+        .paint_encoder(
+            &scene,
+            &mut enc,
+            &target_view,
+            viewport,
+            Some(&registry),
+            None,
+        )
+        .unwrap();
+    let out = readback_rgba(&device, &queue, enc, &target_tex, 96, 64);
+
+    let region_max_rgb = |x0: u32, y0: u32, x1: u32, y1: u32| -> u8 {
+        let mut best = 0u8;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let px = pixel(&out, 96, x, y);
+                best = best.max(px[0]).max(px[1]).max(px[2]);
+            }
+        }
+        best
+    };
+
+    assert_eq!(
+        region_max_rgb(2, 2, 16, 60),
+        0,
+        "rest regions must remain unpainted once GPU transform moves to +20px"
+    );
+    assert!(
+        region_max_rgb(22, 2, 36, 16) > 20,
+        "HostTexture/Text at +20px must render with mid-run GPU opacity"
+    );
+    assert!(
+        region_max_rgb(24, 24, 40, 40) > 20,
+        "Icon at +20px must render with mid-run GPU opacity"
+    );
+    assert!(
+        region_max_rgb(24, 44, 38, 58) > 20,
+        "Path at +20px must render with mid-run GPU opacity"
+    );
+}
+
+#[test]
+fn gpu_motion_isolation_group_evaluates_filter_and_opacity_on_gpu() {
+    use std::time::Duration;
+
+    use nana_ui_core::{
+        Easing,
+        motion::{AnimatableProperty, FilterValue, MotionTo, MotionValue},
+    };
+    use nana_ui_runtime::{AnimationId, AnimationSpec, UiWorld};
+
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+
+    let node = StableNodeId::new(1).unwrap();
+    let mut world = UiWorld::new();
+    let mut queue_mut = MutationQueue::new();
+    queue_mut.create(node, DocumentId::new(1).unwrap(), NodeKind::Document);
+    let mut blur_filter = FilterValue::IDENTITY;
+    blur_filter.0[6] = 8.0;
+    queue_mut.start_animation(
+        AnimationSpec::new(
+            AnimationId::new(1).unwrap(),
+            node,
+            Duration::ZERO,
+            Duration::from_millis(400),
+            Duration::from_millis(16),
+            Easing::Linear,
+        )
+        .with_property(AnimatableProperty::Filter)
+        .with_range(
+            MotionValue::Filter(FilterValue::IDENTITY),
+            MotionTo::Value(MotionValue::Filter(blur_filter)),
+        ),
+    );
+    queue_mut.start_animation(
+        AnimationSpec::new(
+            AnimationId::new(2).unwrap(),
+            node,
+            Duration::ZERO,
+            Duration::from_millis(400),
+            Duration::from_millis(16),
+            Easing::Linear,
+        )
+        .with_property(AnimatableProperty::Opacity)
+        .with_range(
+            MotionValue::Scalar(0.2),
+            MotionTo::Value(MotionValue::Scalar(1.0)),
+        ),
+    );
+    world.commit(queue_mut).unwrap();
+    world.advance_animations(Duration::ZERO);
+    let mut extracted = world.extract_nodes(&[node]);
+    extracted[0].layout = LayoutBox {
+        x: 16.0,
+        y: 16.0,
+        width: 32.0,
+        height: 32.0,
+    };
+    extracted[0].widget_paint =
+        colored_quad_node(1, 16.0, 16.0, 32.0, 32.0, [1.0, 1.0, 1.0, 1.0]).widget_paint;
+    let mut scene = UiScene::new();
+    scene.apply_delta(extracted, []);
+    scene.apply_presentation(
+        world.presentation_store(),
+        Duration::from_millis(200),
+        Some(world.motion_descriptors()),
+    );
+    let groups = scene.opacity_groups(node);
+    assert_eq!(groups.len(), 1);
+    assert_ne!(groups[0].filter_motion_id, 0);
+    assert_ne!(groups[0].opacity_motion_id, 0);
+
+    let viewport = ScenePaintViewport {
+        logical_size: [64.0, 64.0],
+        physical_size: [64, 64],
+        scale_factor: 1.0,
+        scene_origin: [0.0, 0.0],
+        target_origin: [0.0, 0.0],
+        clear_color: [0.0, 0.0, 0.0, 1.0],
+        clear: true,
+    };
+    let mut painter = SceneWgpuPainter::for_test(format);
+    let (tex, view) = test_copy_target(&device, format, 64, 64);
+    let mut enc = device.create_command_encoder(&Default::default());
+    painter
+        .paint_encoder(&scene, &mut enc, &view, viewport, None, None)
+        .unwrap();
+    let pixels = readback_rgba(&device, &queue, enc, &tex, 64, 64);
+    let halo = pixel(&pixels, 64, 13, 32);
+    let center = pixel(&pixels, 64, 32, 32);
+    assert!(
+        halo[0] > 5,
+        "GPU filter blur at t=200ms (radius ~4px) must soften outside rest quad, got {:?}",
+        halo
+    );
+    assert!(
+        center[0] > 80 && center[0] < 200,
+        "GPU group opacity at t=200ms (~0.6) must attenuate center pixel, got {:?}",
+        center
+    );
 }

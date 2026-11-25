@@ -72,7 +72,7 @@ fn dest_blit_layout_key() -> u64 {
 }
 
 fn dest_group_layout_key() -> u64 {
-    ResourceTable::new(vec![
+    let group = ResourceTable::new(vec![
         LogicalBinding::new(
             0,
             LogicalBindingType::SampledTexture,
@@ -87,12 +87,13 @@ fn dest_group_layout_key() -> u64 {
         .min_size(GROUP_UNIFORM_SIZE),
     ])
     .expect("dest group table")
-    .layout_key()
+    .layout_key();
+    group ^ super::motion::motion_layout_key().rotate_left(19)
 }
 
 const GROUP_UNIFORM_STRIDE: u64 = 256;
 const GROUP_UNIFORM_SLOTS: u64 = 64;
-const GROUP_UNIFORM_SIZE: u64 = 208;
+const GROUP_UNIFORM_SIZE: u64 = 224;
 const PRESENTATION_UNIFORM_SIZE: u64 = 16;
 
 #[derive(Debug, Clone, Copy)]
@@ -117,6 +118,11 @@ pub(super) struct GroupSlot {
     /// Taps either side of the centre the element blur samples per axis:
     /// 2 (a 5×5 kernel) up to the 16 px cap, more past it (Issue #314).
     pub filter_blur_taps: f32,
+    pub filter_motion_id: u32,
+    pub opacity_motion_id: u32,
+    pub dest_scale: f32,
+    pub max_filter_blur: f32,
+    pub filter_opacity: f32,
 }
 
 impl GroupSlot {
@@ -124,7 +130,8 @@ impl GroupSlot {
     /// or drop shadow spreads them, and a colour filter is not relied on to
     /// leave a transparent pixel transparent.
     pub fn spreads(&self) -> bool {
-        self.filter_blur > 0.5
+        self.filter_motion_id != 0
+            || self.filter_blur > 0.5
             || self.motion_streak != [0.0, 0.0]
             || self.drop_shadow_color[3] > 0.001
             || self.filter != [1.0, 1.0, 1.0]
@@ -154,6 +161,11 @@ impl GroupSlot {
             edge_fade: [0.0; 4],
             motion_streak: [0.0, 0.0],
             filter_blur_taps: 2.0,
+            filter_motion_id: 0,
+            opacity_motion_id: 0,
+            dest_scale: 1.0,
+            max_filter_blur: nana_ui_core::ColorFilter::MAX_BLUR_RADIUS,
+            filter_opacity: 1.0,
         }
     }
 
@@ -223,6 +235,11 @@ fn pack_group_slot(slot: &GroupSlot, corner_exponent: f32) -> [u8; GROUP_UNIFORM
     bytes[192..196].copy_from_slice(&slot.motion_streak[0].to_le_bytes());
     bytes[196..200].copy_from_slice(&slot.motion_streak[1].to_le_bytes());
     bytes[200..204].copy_from_slice(&slot.filter_blur_taps.to_le_bytes());
+    bytes[204..208].copy_from_slice(&slot.filter_motion_id.to_le_bytes());
+    bytes[208..212].copy_from_slice(&slot.opacity_motion_id.to_le_bytes());
+    bytes[212..216].copy_from_slice(&slot.dest_scale.to_le_bytes());
+    bytes[216..220].copy_from_slice(&slot.max_filter_blur.to_le_bytes());
+    bytes[220..224].copy_from_slice(&slot.filter_opacity.to_le_bytes());
     bytes
 }
 
@@ -396,14 +413,16 @@ fn try_reading_blend_pipeline(
         "nana-ui.scene.group.blend.shader",
         [
             super::wgsl::COLOR,
+            super::wgsl::MOTION,
             super::wgsl::LAYER,
             super::wgsl::LAYER_BLEND,
         ]
     );
+    let motion_layout = super::motion::motion_bind_layout_for_policy(device, Some(policy));
     let group_blend_pipeline_layout =
         device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("nana-ui.scene.group.blend.pipeline"),
-            bind_group_layouts: &[Some(&group_blend_layout)],
+            bind_group_layouts: &[Some(&group_blend_layout), Some(&motion_layout)],
             immediate_size: 0,
         });
     let group_pipeline_blend = try_cached_dest_pipeline(
@@ -640,6 +659,7 @@ pub(super) struct DestTarget {
     group_uniform_idle_frames: u32,
     slot_blend: Vec<u32>,
     policy: nana_gpu::GpuDeviceState,
+    dummy_motion: wgpu::BindGroup,
     /// Kept only while per-glyph presentation plays; see [`PrefixSplit`].
     prefix: Option<PrefixSnapshot>,
 }
@@ -879,12 +899,13 @@ impl DestPipelines {
         let group_bind_layout = nana_gpu::__framework::resource_layout(&group_logical).clone();
         let group_shader = super::wgsl::program_joined!(
             "nana-ui.scene.group.shader",
-            [super::wgsl::COLOR, super::wgsl::LAYER]
+            [super::wgsl::COLOR, super::wgsl::MOTION, super::wgsl::LAYER]
         );
+        let motion_layout = super::motion::motion_bind_layout_for_policy(device, Some(policy));
         let group_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("nana-ui.scene.group.pipeline"),
-                bind_group_layouts: &[Some(&group_bind_layout)],
+                bind_group_layouts: &[Some(&group_bind_layout), Some(&motion_layout)],
                 immediate_size: 0,
             });
         let make_group = |material: u64, blend: wgpu::BlendState, label: &'static str| {
@@ -1215,6 +1236,9 @@ impl DestTarget {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         }));
+        let motion_layout = super::motion::motion_bind_layout_for_policy(device, Some(policy));
+        let dummy_motion =
+            super::motion::dummy_motion_bind_group(device, &motion_layout, "nana-ui.scene.group");
         Ok(Self {
             width,
             height,
@@ -1249,6 +1273,7 @@ impl DestTarget {
             group_uniform_idle_frames: 0,
             slot_blend: Vec::new(),
             policy: policy.clone(),
+            dummy_motion,
             prefix: None,
         })
     }
@@ -1732,6 +1757,7 @@ impl DestTarget {
         pass: &mut wgpu::RenderPass<'_>,
         layer: usize,
         slot: u32,
+        motion: Option<&wgpu::BindGroup>,
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
         let max_slot = self.group_uniform_slots.saturating_sub(1) as u32;
@@ -1763,6 +1789,7 @@ impl DestTarget {
                 pass.set_bind_group(0, &group.bind_group, &[offset]);
             }
         }
+        pass.set_bind_group(1, motion.unwrap_or(&self.dummy_motion), &[]);
         pass.draw(0..3, 0..1);
         if let Some(work) = gpu_work {
             work.record_draw_batch();

@@ -164,6 +164,8 @@ impl HostTexturePipeline {
         bounds: LogicalRect,
         affine: [f32; 6],
         persp: [f32; 2],
+        motion_ids: (u32, u32),
+        motion_origin: [f32; 2],
         clip: PhysicalRect,
         opacity: f32,
         corner_radii: [f32; 4],
@@ -180,13 +182,15 @@ impl HostTexturePipeline {
     ) -> PreparedHostTexture {
         let slot_name = binding.slot.clone();
         let binding_size = [binding.width, binding.height];
-        let opaque_full_alpha =
-            binding.alpha_mode == HostTextureAlphaMode::Opaque && opacity >= 1.0 - 1.0e-6;
+        let opaque_full_alpha = motion_ids.1 == 0
+            && binding.alpha_mode == HostTextureAlphaMode::Opaque
+            && opacity >= 1.0 - 1.0e-6;
         let primitive = GpuTexturePrimitive::from_scene(
             node,
             slot,
             HostTextureLayer::from_binding(binding)
                 .with_opacity(opacity)
+                .with_motion(motion_ids, motion_origin)
                 .with_corner_radii(corner_radii)
                 .with_clip(crate::geometry::LogicalRect::new(
                     rounded_clip.x,
@@ -229,31 +233,37 @@ impl HostTexturePipeline {
             physical_extent(world.width, scale_factor),
             physical_extent(world.height, scale_factor),
         ];
-        let clip = physical_scissor(world, scale_factor, physical_size)
-            .map(|world| intersect_physical(world, clip))
-            .unwrap_or(PhysicalRect {
-                x: 0,
-                y: 0,
-                width: 0,
-                height: 0,
-            });
-        let simple = is_simple_host_texture(
-            bounds,
-            affine,
-            persp,
-            clip,
-            corner_radii,
-            rounded_clip,
-            &fragment_clip,
-            scale_factor,
-            mask.as_ref(),
-            checkerboard,
-            zoom,
-            sampling,
-            binding_size,
-            painted,
-        );
-        let aligned_dest_px = (affine[1].abs() <= 1.0e-6
+        let clip = if motion_ids.0 != 0 {
+            clip
+        } else {
+            physical_scissor(world, scale_factor, physical_size)
+                .map(|world| intersect_physical(world, clip))
+                .unwrap_or(PhysicalRect {
+                    x: 0,
+                    y: 0,
+                    width: 0,
+                    height: 0,
+                })
+        };
+        let simple = motion_ids == (0, 0)
+            && is_simple_host_texture(
+                bounds,
+                affine,
+                persp,
+                clip,
+                corner_radii,
+                rounded_clip,
+                &fragment_clip,
+                scale_factor,
+                mask.as_ref(),
+                checkerboard,
+                zoom,
+                sampling,
+                binding_size,
+                painted,
+            );
+        let aligned_dest_px = (motion_ids.0 == 0
+            && affine[1].abs() <= 1.0e-6
             && affine[2].abs() <= 1.0e-6
             && affine[0] > 0.0
             && affine[3] > 0.0
@@ -288,11 +298,21 @@ impl HostTexturePipeline {
         prepared: &PreparedHostTexture,
         pass: &mut wgpu::RenderPass<'_>,
         dest_size: [u32; 2],
+        motion: Option<&wgpu::BindGroup>,
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
-        self.draw_clipped(target, prepared, pass, dest_size, prepared.clip, gpu_work);
+        self.draw_clipped(
+            target,
+            prepared,
+            pass,
+            dest_size,
+            prepared.clip,
+            motion,
+            gpu_work,
+        );
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn draw_clipped(
         &self,
         target: &crate::gpu_texture::GpuTextureTarget,
@@ -300,6 +320,7 @@ impl HostTexturePipeline {
         pass: &mut wgpu::RenderPass<'_>,
         dest_size: [u32; 2],
         scissor: PhysicalRect,
+        motion: Option<&wgpu::BindGroup>,
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
         let mode = if prepared.simple {
@@ -314,6 +335,7 @@ impl HostTexturePipeline {
             intersect_physical(prepared.clip, scissor),
             dest_size,
             mode,
+            motion,
             gpu_work,
         );
     }
@@ -324,11 +346,21 @@ impl HostTexturePipeline {
         prepared: &PreparedHostTexture,
         pass: &mut wgpu::RenderPass<'_>,
         dest_size: [u32; 2],
+        motion: Option<&wgpu::BindGroup>,
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
-        self.draw_replace_clipped(target, prepared, pass, dest_size, prepared.clip, gpu_work);
+        self.draw_replace_clipped(
+            target,
+            prepared,
+            pass,
+            dest_size,
+            prepared.clip,
+            motion,
+            gpu_work,
+        );
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn draw_replace_clipped(
         &self,
         target: &crate::gpu_texture::GpuTextureTarget,
@@ -336,6 +368,7 @@ impl HostTexturePipeline {
         pass: &mut wgpu::RenderPass<'_>,
         dest_size: [u32; 2],
         scissor: PhysicalRect,
+        motion: Option<&wgpu::BindGroup>,
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
         prepared.primitive.draw_in_pass_with_mode(
@@ -345,6 +378,7 @@ impl HostTexturePipeline {
             intersect_physical(prepared.clip, scissor),
             dest_size,
             HostTextureDrawMode::SimpleReplace,
+            motion,
             gpu_work,
         );
     }

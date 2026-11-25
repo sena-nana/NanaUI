@@ -996,8 +996,24 @@ impl UiScene {
                         ..candidate.layout
                     };
                     let mut group = dest_group(&self.nodes, id, candidate, placed);
-                    group.opacity = self.resolved_local_opacity(candidate);
                     let presents = !super::is_triggered_menu(candidate);
+                    let filter_motion_id = if presents {
+                        self.gpu_motion_id_for(id, 6)
+                    } else {
+                        0
+                    };
+                    let opacity_motion_id = if presents {
+                        self.gpu_motion_id_for(id, 1)
+                    } else {
+                        0
+                    };
+                    group.filter_motion_id = filter_motion_id;
+                    group.opacity_motion_id = opacity_motion_id;
+                    group.opacity = if opacity_motion_id != 0 {
+                        1.0
+                    } else {
+                        self.resolved_local_opacity(candidate)
+                    };
                     if let Some(filter) = self.compositor.effect(id).filter(|_| presents) {
                         group.filter = filter;
                     }

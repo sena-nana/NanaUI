@@ -1115,10 +1115,10 @@ impl UiScene {
         (paint_opacity / layer_op).clamp(0.0, 1.0)
     }
 
-    /// Encode compositor motion for one primitive. Only kinds that run
-    /// shader `evaluate()` strip the overlay and receive GPU ids. Others
-    /// keep CPU presentation so Text / Icon / Mesh / HostTexture stay faded
-    /// and transformed with the layer.
+    /// Encode compositor motion for one primitive. Primitives whose shader runs
+    /// `motion.wgsl` `evaluate()` strip the overlay and receive GPU ids; others
+    /// (such as masked paths, custom host renderers, or painter layer ops) keep
+    /// CPU presentation.
     pub fn compositor_paint_encode(
         &self,
         node: StableNodeId,
@@ -1211,6 +1211,61 @@ impl UiScene {
                 motion_ids: (0, 0),
             }
         }
+    }
+
+    pub fn max_filter_blur_cap(&self, node: StableNodeId) -> f32 {
+        ColorFilter::blur_cap(
+            self.nodes
+                .get(&node)
+                .is_some_and(|n| n.source_style.layout.paint.wide_filter_blur),
+        )
+    }
+
+    pub fn gpu_filter_motion_extent_pad(&self, filter_motion_id: u32, cap: f32) -> f32 {
+        let Some(index) = filter_motion_id.checked_sub(1) else {
+            return 0.0;
+        };
+        let Some(desc) = self.compositor.gpu.descriptors.get(index as usize) else {
+            return 0.0;
+        };
+        if !desc.is_live() {
+            return 0.0;
+        }
+        let value_pad = |v: &nana_ui_core::MotionGpuValue| -> f32 {
+            if v.kind != nana_ui_core::MOTION_GPU_KIND_FILTER {
+                return 0.0;
+            }
+            let blur = if v.extra[2].is_finite() {
+                v.extra[2].clamp(0.0, cap)
+            } else {
+                0.0
+            };
+            let shadow_blur = if v.extra2[1].is_finite() {
+                v.extra2[1].clamp(0.0, cap)
+            } else {
+                0.0
+            };
+            let ox = if v.extra[3].is_finite() {
+                v.extra[3].abs()
+            } else {
+                0.0
+            };
+            let oy = if v.extra2[0].is_finite() {
+                v.extra2[0].abs()
+            } else {
+                0.0
+            };
+            blur.max(ox.max(oy) + shadow_blur)
+        };
+        let mut pad = value_pad(&desc.from).max(value_pad(&desc.to));
+        let start = desc.keyframe_start as usize;
+        let end = start.saturating_add(desc.keyframe_count as usize);
+        if let Some(kfs) = self.compositor.gpu.keyframes.get(start..end) {
+            for kf in kfs {
+                pad = pad.max(value_pad(&kf.value));
+            }
+        }
+        pad
     }
 
     pub(super) fn gpu_motion_id_for(&self, node: StableNodeId, property: u32) -> u32 {
@@ -2528,7 +2583,7 @@ mod tests {
                     saw_text = true;
                     assert!(
                         (encode.opacity - draw.paint_opacity).abs() < 1e-5,
-                        "Text must keep CPU overlay {}, got {}",
+                        "Text grouped under ancestor opacity keeps opacity {}, got {}",
                         draw.paint_opacity,
                         encode.opacity
                     );
@@ -2539,9 +2594,15 @@ mod tests {
                         draw.paint_opacity,
                         layer.opacity
                     );
+                    let group = &scene.opacity_groups(draw.node)[0];
                     assert!(
-                        (scene.opacity_groups(draw.node)[0].opacity - layer.opacity).abs() < 1e-5,
-                        "the group owns the text fade"
+                        group.opacity_motion_id != 0,
+                        "the group must own the text fade on GPU"
+                    );
+                    assert!(
+                        (group.opacity - 1.0).abs() < 1e-5,
+                        "GPU-animated opacity group keeps rest opacity 1.0, got {}",
+                        group.opacity
                     );
                 }
                 crate::ScenePrimitiveKind::Quad { .. } => {
@@ -2621,6 +2682,7 @@ mod tests {
             Some(world.motion_descriptors()),
         );
         let layer = scene.compositor_layer(node).expect("promoted");
+        assert!(layer.opacity > 0.2 && layer.opacity < 0.8);
         let mut saw_path = false;
         for primitive in scene.primitives() {
             let draw = scene.draw_primitive(primitive.id).expect("draw");
@@ -2632,13 +2694,18 @@ mod tests {
             );
             if let crate::ScenePrimitiveKind::Path { .. } = &draw.kind {
                 saw_path = true;
-                assert_eq!(encode.motion_ids, (0, 0), "a mesh keeps CPU presentation");
+                assert_eq!(
+                    encode.motion_ids,
+                    (0, 0),
+                    "a painted path inside a promoted opacity group defers fade to the group"
+                );
+                let group = &scene.opacity_groups(node)[0];
+                assert_ne!(group.opacity_motion_id, 0);
                 assert!(
-                    (encode.opacity * scene.opacity_groups(node)[0].opacity - layer.opacity).abs()
-                        < 1e-5,
-                    "painted {} must follow its group animation at {}",
+                    (encode.opacity - 1.0).abs() < 1e-5 && (group.opacity - 1.0).abs() < 1e-5,
+                    "group fade runs on GPU (encode {}, group {})",
                     encode.opacity,
-                    layer.opacity
+                    group.opacity
                 );
             }
         }

@@ -308,14 +308,28 @@ impl UiWorld {
                     component_updates.push(sample.target);
                 }
             }
-            crate::component_animation_kinds::HOVER => {
-                if let Some(transition) = self.motion.hover_transitions.get_mut(&sample.target) {
-                    transition.progress = sample.progress;
+            crate::component_animation_kinds::HOVER
+            | crate::component_animation_kinds::HOVER_FOREGROUND => {
+                if sample.finished && !self.has_active_hover_track(sample.target) {
+                    self.motion.hover_transitions.remove(&sample.target);
+                }
+            }
+            crate::component_animation_kinds::HOVER_BORDER => {
+                if let Some(transition) = self.motion.hover_transitions.get_mut(&sample.target)
+                    && let Some((_, progress)) = &mut transition.border
+                {
+                    *progress = sample.progress;
                 }
                 self.mark_hover_paint(sample.target);
                 self.account_animation_dirty(DirtyMask::STYLE | DirtyMask::RENDER);
                 if sample.finished {
-                    self.motion.hover_transitions.remove(&sample.target);
+                    if let Some(transition) = self.motion.hover_transitions.get_mut(&sample.target)
+                    {
+                        transition.border = None;
+                    }
+                    if !self.has_active_hover_track(sample.target) {
+                        self.motion.hover_transitions.remove(&sample.target);
+                    }
                 }
                 component_updates.push(sample.target);
             }
@@ -800,7 +814,7 @@ impl UiWorld {
         }
     }
 
-    fn unbind_presentation(&mut self, id: nana_ui_core::motion::MotionTrackId) {
+    pub(super) fn unbind_presentation(&mut self, id: nana_ui_core::motion::MotionTrackId) {
         if let Some(overlay) = self.motion.presentation.remove(id)
             && let Some(target) = StableNodeId::new(overlay.track.target.get())
         {

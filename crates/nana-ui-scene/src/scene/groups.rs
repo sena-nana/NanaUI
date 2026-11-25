@@ -19,6 +19,12 @@ pub struct OpacityGroup {
     /// logical pixels on the page: where its content was at the start of the
     /// exposure, relative to now (Issue #323). Zero draws none.
     pub motion_streak: [f32; 2],
+    /// Live GPU Motion descriptor slot id (`index + 1`) for animated `filter`,
+    /// or `0` when evaluated statically/CPU.
+    pub filter_motion_id: u32,
+    /// Live GPU Motion descriptor slot id (`index + 1`) for animated group
+    /// `opacity`, or `0` when static/CPU.
+    pub opacity_motion_id: u32,
 }
 
 impl OpacityGroup {
@@ -27,6 +33,8 @@ impl OpacityGroup {
     pub fn is_identity(&self) -> bool {
         self.opacity == 1.0
             && self.filter.is_identity()
+            && self.filter_motion_id == 0
+            && self.opacity_motion_id == 0
             && self.mix_blend.is_normal()
             && self.inset_shadow.is_none()
             && self.edge_fade.is_none_or(|fade| !fade.is_visible())
@@ -123,7 +131,7 @@ impl UiScene {
         base: &[OpacityGroup],
         mut own: OpacityGroup,
     ) -> OpacityGroup {
-        if own.filter.is_identity() {
+        if own.filter.is_identity() && own.filter_motion_id == 0 {
             return own;
         }
         let depth = filtering_groups(base);
@@ -131,6 +139,7 @@ impl UiScene {
             return own;
         }
         own.filter = ColorFilter::default();
+        own.filter_motion_id = 0;
         self.report_filter_depth(own.node, depth);
         own
     }
@@ -200,12 +209,22 @@ impl UiScene {
         // A triggered menu's presented filter, like its fade, is
         // its hanging surface's: the trigger keeps its own paint.
         let filter = self.compositor.effect(id).unwrap_or_default();
-        if (fade - 1.0).abs() < 1e-6 && filter.is_identity() {
+        let filter_motion_id = self.gpu_motion_id_for(id, 6);
+        let opacity_motion_id = self.gpu_motion_id_for(id, 1);
+        if (fade - 1.0).abs() < 1e-6
+            && filter.is_identity()
+            && filter_motion_id == 0
+            && opacity_motion_id == 0
+        {
             return None;
         }
         Some(OpacityGroup {
             node: id,
-            opacity: fade,
+            opacity: if opacity_motion_id != 0 {
+                local_opacity(menu)
+            } else {
+                fade
+            },
             filter: filter.with_blur_cap(ColorFilter::blur_cap(
                 menu.source_style.layout.paint.wide_filter_blur,
             )),
@@ -213,6 +232,8 @@ impl UiScene {
             inset_shadow: None,
             edge_fade: None,
             motion_streak: [0.0, 0.0],
+            filter_motion_id,
+            opacity_motion_id,
         })
     }
 
@@ -226,7 +247,7 @@ impl UiScene {
 pub(super) fn filtering_groups(groups: &[OpacityGroup]) -> usize {
     groups
         .iter()
-        .filter(|group| !group.filter.is_identity())
+        .filter(|group| !group.filter.is_identity() || group.filter_motion_id != 0)
         .count()
 }
 
@@ -505,6 +526,8 @@ pub(super) fn dest_group(
         inset_shadow: inset_shadow_overlay(candidate, placed),
         edge_fade: edge_fade_mask(candidate, placed),
         motion_streak: [0.0, 0.0],
+        filter_motion_id: 0,
+        opacity_motion_id: 0,
     }
 }
 

@@ -334,7 +334,7 @@ impl QuadPipeline {
         });
         let dummy_kf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("nana-ui.scene.quad.motion.keyframes"),
-            size: 80,
+            size: nana_ui_core::MOTION_GPU_KEYFRAME_SIZE as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });

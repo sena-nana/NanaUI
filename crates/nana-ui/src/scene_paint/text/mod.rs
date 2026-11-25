@@ -108,7 +108,7 @@ pub(super) const UNTRACKED_REVISION: u64 = u64::MAX;
 
 /// What a presentation row is derived from: the paint transform, its
 /// perspective, the fragment clip and the device scale.
-type PresentationInputs = ([f32; 6], [f32; 2], clip::FragmentClip, u32);
+type PresentationInputs = ([f32; 6], [f32; 2], clip::FragmentClip, u32, u32, [u32; 2]);
 
 /// Frames between retirement sweeps, and how long an entry survives without
 /// being drawn. A tab switch that flips back and forth must not pay for
@@ -179,6 +179,7 @@ struct RunPresentation {
     /// fx table; zero for none.
     fx: u32,
     transitions: [u64; 2],
+    motion_opacity_id: u32,
 }
 
 /// One text draw command's head, or one run folded into an earlier one.
@@ -234,7 +235,7 @@ pub(super) struct TextPipelineTarget {
     /// offset of zero means none; and what the GPU holds.
     fx: Vec<u32>,
     uploaded_fx: Vec<u32>,
-    presentation_index: HashMap<[u32; 40], u32>,
+    presentation_index: HashMap<[u32; 44], u32>,
     /// The presentation the label before this one asked for, by the values it
     /// was derived from. See [`TextPipeline::presentation_index`].
     last_presentation: Option<(PresentationInputs, u32)>,
@@ -550,6 +551,8 @@ pub(super) struct TextPipeline {
     /// to use their compatibility sRGB colors; only the run row changes.
     linear_color_override: Option<[f32; 4]>,
     paint_color_override: Option<nana_ui_core::PaintColor>,
+    motion_ids: [u32; 2],
+    motion_origin: [f32; 2],
 }
 
 impl TextPipeline {
@@ -663,7 +666,14 @@ impl TextPipeline {
             closed: TargetCounters::default(),
             linear_color_override: None,
             paint_color_override: None,
+            motion_ids: [0, 0],
+            motion_origin: [0.0, 0.0],
         })
+    }
+
+    pub(super) fn set_motion(&mut self, motion_ids: (u32, u32), motion_origin: [f32; 2]) {
+        self.motion_ids = [motion_ids.0, motion_ids.1];
+        self.motion_origin = motion_origin;
     }
 
     pub(super) fn new_target(&self, device: &wgpu::Device) -> TextPipelineTarget {
@@ -827,6 +837,8 @@ impl TextPipeline {
         target.index_staging.clear();
         target.frame_gpu_allocations = 0;
         target.physical_size = physical_size;
+        self.motion_ids = [0, 0];
+        self.motion_origin = [0.0, 0.0];
         // Entries a shell stopped drawing — a closed panel, a scrolled-away
         // row — keep their block and their claim on the glyphs in it. Retiring
         // them on a schedule rather than on every frame keeps a tab switch
@@ -1082,7 +1094,7 @@ impl TextPipeline {
         // in steps — see [`raster_step`] — so the scale an entry is compared
         // at is the raster one. A translation never scales, and costs no
         // lookup to find that out.
-        let translation = clip::is_translation_projective(affine, persp);
+        let translation = clip::is_translation_projective(affine, persp) && self.motion_ids[0] == 0;
         let step = if translation {
             0
         } else {
@@ -1260,9 +1272,10 @@ impl TextPipeline {
         // scrolled viewport folds its offset into `affine`, and comparing the
         // two spaces directly would cull exactly the text that scrolled into
         // view.
-        let reachable = transformed_ink(ink, affine, persp)
-            .intersection(clip)
-            .is_some();
+        let reachable = self.motion_ids[0] != 0
+            || transformed_ink(ink, affine, persp)
+                .intersection(clip)
+                .is_some();
         target.counters.nodes_considered += 1;
         if !reachable {
             target.counters.nodes_culled += 1;
@@ -1288,6 +1301,7 @@ impl TextPipeline {
                     raster: 1.0,
                     fx: 0,
                     transitions: [0; 2],
+                    motion_opacity_id: 0,
                 },
                 next: NO_RUN,
                 last: index as u32,
@@ -1395,7 +1409,15 @@ impl TextPipeline {
         }
         // After the entry, so a paragraph that resolves to nothing does not
         // leave a row in the table nobody names.
-        let presentation = Self::presentation_index(target, affine, persp, fragment_clip, scale);
+        let presentation = Self::presentation_index(
+            target,
+            affine,
+            persp,
+            fragment_clip,
+            scale,
+            self.motion_ids[0],
+            self.motion_origin,
+        );
         let run = &mut target.runs[index];
         run.entry = entry;
         let fx = glyph_presentation.as_deref().map_or(0, |presentation| {
@@ -1427,6 +1449,7 @@ impl TextPipeline {
                     p.transitions.exit.as_ref().map_or(0, |t| t.material.key()),
                 ]
             }),
+            motion_opacity_id: self.motion_ids[1],
         };
         run.next = NO_RUN;
         run.last = index as u32;
@@ -1444,13 +1467,22 @@ impl TextPipeline {
         persp: [f32; 2],
         fragment_clip: clip::FragmentClip,
         scale: f32,
+        motion_transform_id: u32,
+        motion_origin: [f32; 2],
     ) -> u32 {
         // A shell's labels nearly all share one transform and one clip. Ask
         // that question of the four values the row is derived from, not of the
         // row: building it is a clip inversion and a hundred and sixty bytes,
         // and hashing it is forty words, to find out they are the ones the
         // label before this one already had.
-        let inputs = (affine, persp, fragment_clip, scale.to_bits());
+        let inputs = (
+            affine,
+            persp,
+            fragment_clip,
+            scale.to_bits(),
+            motion_transform_id,
+            [motion_origin[0].to_bits(), motion_origin[1].to_bits()],
+        );
         if let Some((held, index)) = target.last_presentation
             && held == inputs
         {
@@ -1461,6 +1493,8 @@ impl TextPipeline {
             persp,
             &fragment_clip.for_physical_pixels(scale),
             scale,
+            motion_transform_id,
+            motion_origin,
         );
         let bits = row.to_bits();
         if let Some(last) = target.presentations.last()
@@ -2567,6 +2601,7 @@ impl TextPipeline {
         pass: &mut wgpu::RenderPass<'_>,
         prepared: &PreparedText,
         scissor: PhysicalRect,
+        motion: Option<&wgpu::BindGroup>,
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
         let Some(run) = target
@@ -2590,7 +2625,7 @@ impl TextPipeline {
                 continue;
             };
             self.gpu
-                .draw_segment(pass, &target.gpu, segment, bind_group, dual_source);
+                .draw_segment(pass, &target.gpu, segment, bind_group, motion, dual_source);
             drawn += 1;
             slots += u64::from(segment.count);
         }
@@ -2712,6 +2747,7 @@ impl RunPresentation {
             self.opacity,
             self.raster,
             self.fx,
+            self.motion_opacity_id,
         )
     }
 }

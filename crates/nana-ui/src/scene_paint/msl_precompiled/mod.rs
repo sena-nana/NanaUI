@@ -758,10 +758,11 @@ pub(in crate::scene_paint) mod tests {
                 program.slug
             );
             let inherited_unused: &[&str] = match program.slug {
-                // `quad` includes `wgsl::MOTION` for helper functions; `motion` owns `motion_eval_*`.
-                "quad" => &["motion_eval_vs", "motion_eval_fs"],
-                // `group_blend` includes `wgsl::LAYER` for shared structs/vs; `group` owns `fs_main`.
-                "group_blend" => &["fs_main"],
+                // Programs that include `wgsl::MOTION` for helper functions; `motion` owns `motion_eval_*`.
+                "quad" | "mesh" | "group" | "icon" | "text" | "text_dual_source"
+                | "host_texture" => &["motion_eval_vs", "motion_eval_fs"],
+                // `group_blend` includes `wgsl::MOTION` and `wgsl::LAYER` for shared structs/vs; `group` owns `fs_main`.
+                "group_blend" => &["motion_eval_vs", "motion_eval_fs", "fs_main"],
                 _ => &[],
             };
             for &unused in inherited_unused {

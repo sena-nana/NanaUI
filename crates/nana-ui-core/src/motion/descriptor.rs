@@ -98,18 +98,27 @@ fn compositor_codec(
     registry: &MotionCodecRegistry,
     shader_codec: Option<MotionCodecId>,
 ) -> Result<MotionCodecId, MotionDescriptorError> {
+    if let Some(id) = shader_codec {
+        let info = registry
+            .get(id)
+            .ok_or(MotionDescriptorError::UnregisteredCodec)?;
+        match property {
+            AnimatableProperty::ShaderParameter => {
+                if info.id.get() < MotionCodecId::CUSTOM_START {
+                    return Err(MotionDescriptorError::UnregisteredCodec);
+                }
+                return Ok(id);
+            }
+            AnimatableProperty::Color if id == MotionCodecId::COLOR => return Ok(id),
+            AnimatableProperty::Background if id == MotionCodecId::BACKGROUND => return Ok(id),
+            _ => {}
+        }
+    }
     if property.animation_class() != AnimationClass::Compositor {
         return Err(MotionDescriptorError::NotCompositor);
     }
     if property == AnimatableProperty::ShaderParameter {
-        let id = shader_codec.ok_or(MotionDescriptorError::UnregisteredCodec)?;
-        let info = registry
-            .get(id)
-            .ok_or(MotionDescriptorError::UnregisteredCodec)?;
-        if info.id.get() < MotionCodecId::CUSTOM_START {
-            return Err(MotionDescriptorError::UnregisteredCodec);
-        }
-        return Ok(id);
+        return Err(MotionDescriptorError::UnregisteredCodec);
     }
     registry
         .get(MotionCodecId::for_property(property).ok_or(MotionDescriptorError::NotCompositor)?)
@@ -122,7 +131,15 @@ pub fn compile_motion_descriptor(
     registry: &MotionCodecRegistry,
     shader_codec: Option<MotionCodecId>,
 ) -> Result<CompiledMotion, MotionDescriptorError> {
-    if track.execution_class() != AnimationClass::Compositor {
+    let explicit_compositor_color = matches!(
+        (track.property, shader_codec),
+        (AnimatableProperty::Color, Some(MotionCodecId::COLOR))
+            | (
+                AnimatableProperty::Background,
+                Some(MotionCodecId::BACKGROUND)
+            )
+    );
+    if track.execution_class() != AnimationClass::Compositor && !explicit_compositor_color {
         return Err(MotionDescriptorError::NotCompositor);
     }
     if !track.is_valid() {
@@ -853,5 +870,65 @@ mod tests {
         let vacated = after[handle.index() as usize];
         assert!(!vacated.is_live());
         assert_ne!(vacated.generation, handle.generation());
+    }
+
+    #[test]
+    fn filter_and_explicit_color_tracks_compile_with_parity() {
+        use crate::motion::FilterValue;
+        let registry = MotionCodecRegistry::builtin();
+        let from_filter = FilterValue::IDENTITY;
+        let mut to_channels = FilterValue::IDENTITY.0;
+        to_channels[0] = 1.4;
+        to_channels[6] = 12.0;
+        to_channels[10] = 0.2;
+        to_channels[13] = 0.75;
+        let to_filter = FilterValue(to_channels);
+        let filter_track = MotionTrack::transition(
+            MotionTrackId::new(11).unwrap(),
+            MotionTargetId::new(2).unwrap(),
+            AnimatableProperty::Filter,
+            MotionValue::Filter(from_filter),
+            MotionValue::Filter(to_filter),
+            MotionTiming::new(
+                Duration::ZERO,
+                Duration::from_millis(100),
+                Duration::from_millis(16),
+            ),
+            MotionCurve::Easing(Easing::Linear),
+            AnimationPlayback::default(),
+        );
+        let compiled_filter =
+            compile_motion_descriptor(&filter_track, &registry, None).expect("filter codec");
+        assert_eq!(compiled_filter.descriptor.codec, MotionCodecId::FILTER);
+        let mut store = MotionDescriptorStore::new();
+        let handle = store.bind(&filter_track).expect("bind filter");
+        let mid_gpu = store
+            .evaluate(handle, Duration::from_millis(50))
+            .expect("mid");
+        let mid_cpu = eval_track(&filter_track, Duration::from_millis(50));
+        assert_same_sample(&mid_gpu, &mid_cpu);
+
+        let bg_track = MotionTrack::transition(
+            MotionTrackId::new(12).unwrap(),
+            MotionTargetId::new(2).unwrap(),
+            AnimatableProperty::Background,
+            MotionValue::Color([0.2, 0.4, 0.6, 1.0]),
+            MotionValue::Color([0.8, 0.2, 0.1, 0.5]),
+            MotionTiming::new(
+                Duration::ZERO,
+                Duration::from_millis(100),
+                Duration::from_millis(16),
+            ),
+            MotionCurve::Easing(Easing::Linear),
+            AnimationPlayback::default(),
+        );
+        assert!(
+            compile_motion_descriptor(&bg_track, &registry, None).is_err(),
+            "CSS background-color stays Paint without explicit compositor codec"
+        );
+        let compiled_bg =
+            compile_motion_descriptor(&bg_track, &registry, Some(MotionCodecId::BACKGROUND))
+                .expect("explicit compositor background codec");
+        assert_eq!(compiled_bg.descriptor.codec, MotionCodecId::BACKGROUND);
     }
 }

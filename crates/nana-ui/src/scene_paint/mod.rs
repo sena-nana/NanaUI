@@ -19,7 +19,7 @@ mod image_resample;
 pub(crate) mod image_url;
 mod material;
 mod mesh;
-mod motion;
+pub(crate) mod motion;
 #[cfg(target_vendor = "apple")]
 mod msl_precompiled;
 #[cfg(any(test, not(target_vendor = "apple")))]
@@ -1988,6 +1988,11 @@ impl SceneWgpuPainter {
                 target_res
                     .quads
                     .set_motion(encode.motion_ids, encode.transform_origin);
+                target_res
+                    .meshes
+                    .set_motion(encode.motion_ids, encode.transform_origin);
+                core.text
+                    .set_motion(encode.motion_ids, encode.transform_origin);
                 // A layer never outlives the node that opened it.
                 if scratch
                     .painter_layers
@@ -2018,7 +2023,7 @@ impl SceneWgpuPainter {
                     scratch
                         .group_stack
                         .iter()
-                        .filter(|group| !group.filter.is_identity())
+                        .filter(|group| !group.filter.is_identity() || group.filter_motion_id != 0)
                         .count(),
                 );
                 // Both ends of a painter layer reach here whatever they
@@ -2511,6 +2516,8 @@ impl SceneWgpuPainter {
                             bounds,
                             affine,
                             persp,
+                            encode.motion_ids,
+                            encode.transform_origin,
                             scale,
                             *icon,
                             color.unwrap_or(BLACK),
@@ -2542,6 +2549,8 @@ impl SceneWgpuPainter {
                                 item_bounds,
                                 affine,
                                 persp,
+                                encode.motion_ids,
+                                encode.transform_origin,
                                 scale,
                                 *icon,
                                 nana_ui_core::PaintColor::srgb(
@@ -2816,6 +2825,8 @@ impl SceneWgpuPainter {
                                 LogicalRect::from_xywh(dest.x, dest.y, dest.width, dest.height),
                                 affine,
                                 persp,
+                                encode.motion_ids,
+                                encode.transform_origin,
                                 scissor,
                                 opacity,
                                 *corner_radius,
@@ -3272,6 +3283,7 @@ impl SceneWgpuPainter {
                     &target_res.text,
                     &core.icons,
                     &target_res.icons,
+                    core.motion.bind_group(),
                     target,
                     encoder,
                     active_batch.commands,
@@ -3352,6 +3364,7 @@ impl SceneWgpuPainter {
                     &target_res.text,
                     &core.icons,
                     &target_res.icons,
+                    core.motion.bind_group(),
                     dest.color_view(),
                     encoder,
                     active_batch.commands,
@@ -3386,6 +3399,7 @@ impl SceneWgpuPainter {
                     &target_res.text,
                     &core.icons,
                     &target_res.icons,
+                    core.motion.bind_group(),
                     dest.color_view(),
                     encoder,
                     active_batch.commands,
@@ -3662,6 +3676,8 @@ fn sync_opacity_groups(
             open.node == want.node
                 && open.opacity == want.opacity
                 && open.filter == want.filter
+                && open.filter_motion_id == want.filter_motion_id
+                && open.opacity_motion_id == want.opacity_motion_id
                 && open.edge_fade == want.edge_fade
                 && open.motion_streak == want.motion_streak
         })
@@ -3692,8 +3708,13 @@ fn dest_group_slot(
 ) -> GroupSlot {
     let filter = group.filter;
     let [streak_x, streak_y] = group.motion_streak;
-    // A streak reaches back along its own length; the clip grows to keep it.
-    let pad = filter.dest_extent_pad().max(streak_x.hypot(streak_y));
+    let max_filter_blur = scene.max_filter_blur_cap(group.node);
+    // A streak reaches back along its own length; an animated GPU filter can
+    // blur/shadow up to its track's extreme extent; the clip grows to keep both.
+    let pad = filter
+        .dest_extent_pad()
+        .max(scene.gpu_filter_motion_extent_pad(group.filter_motion_id, max_filter_blur))
+        .max(streak_x.hypot(streak_y));
     let clip = if pad > 0.0 {
         scene
             .draw_node_bounds(group.node)
@@ -3722,25 +3743,34 @@ fn dest_group_slot(
     } else {
         filter.blur_radius
     };
+    let physical = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
     let mut slot = GroupSlot::dest(
-        group.opacity * filter.opacity,
+        group.opacity,
         [filter.brightness, filter.saturate, filter.contrast],
         filter.hue_rotate_deg,
         physical_blur,
         group.mix_blend.gpu_index(),
         clip,
     );
+    slot.filter_motion_id = group.filter_motion_id;
+    slot.opacity_motion_id = group.opacity_motion_id;
+    slot.dest_scale = physical;
+    slot.max_filter_blur = max_filter_blur;
+    slot.filter_opacity = if group.filter_motion_id != 0 {
+        1.0
+    } else {
+        filter.opacity
+    };
     slot.filter_invert = filter.invert;
     slot.filter_blur_taps = dest::element_blur_taps(
         filter
             .blur_radius
             .max(filter.drop_shadow.map_or(0.0, |shadow| shadow.blur_radius)),
     );
-    let physical = if scale.is_finite() && scale > 0.0 {
-        scale
-    } else {
-        1.0
-    };
     slot.motion_streak = [streak_x * physical, streak_y * physical];
     if let Some(shadow) = filter.drop_shadow {
         let (ox, oy, blur) = if scale.is_finite() && scale > 0.0 {
@@ -4314,6 +4344,7 @@ fn encode_msaa_geometry_commands<'a>(
                     range,
                     *scissor,
                     sample_count,
+                    Some(motion),
                     Some(gpu_work),
                 );
             }
@@ -4324,6 +4355,7 @@ fn encode_msaa_geometry_commands<'a>(
                     range,
                     *scissor,
                     sample_count,
+                    Some(motion),
                     Some(gpu_work),
                 );
             }
@@ -4367,6 +4399,7 @@ fn encode_glyph_pass_on_view(
     text_target: &text::TextPipelineTarget,
     icons: &IconPipeline,
     icon_target: &icon::IconPipelineTarget,
+    motion: &wgpu::BindGroup,
     root_view: &wgpu::TextureView,
     encoder: &mut wgpu::CommandEncoder,
     commands: &[DrawCommand],
@@ -4386,7 +4419,14 @@ fn encode_glyph_pass_on_view(
     for command in commands {
         match command {
             DrawCommand::Text { prepared, scissor } => {
-                text.draw(text_target, &mut pass, prepared, *scissor, Some(gpu_work));
+                text.draw(
+                    text_target,
+                    &mut pass,
+                    prepared,
+                    *scissor,
+                    Some(motion),
+                    Some(gpu_work),
+                );
             }
             DrawCommand::Icon {
                 first,
@@ -4399,6 +4439,7 @@ fn encode_glyph_pass_on_view(
                     *first,
                     *count,
                     *scissor,
+                    Some(motion),
                     Some(gpu_work),
                 );
             }
@@ -4538,6 +4579,7 @@ fn encode_ordered(
                     &mut pass,
                     frame.layer,
                     frame.slot,
+                    Some(pipelines.motion),
                     Some(pipelines.gpu_work),
                 );
                 drop(pass);
@@ -4632,6 +4674,7 @@ fn encode_ordered(
                             &mut pass,
                             dest_physical,
                             dmg,
+                            Some(pipelines.motion),
                             Some(pipelines.gpu_work),
                         );
                     } else {
@@ -4640,6 +4683,7 @@ fn encode_ordered(
                             prepared,
                             &mut pass,
                             dest_physical,
+                            Some(pipelines.motion),
                             Some(pipelines.gpu_work),
                         );
                     }
@@ -4677,6 +4721,7 @@ fn encode_ordered(
                                     range,
                                     clipped,
                                     SAMPLE_COUNT,
+                                    Some(pipelines.motion),
                                     Some(pipelines.gpu_work),
                                 );
                             }
@@ -4690,6 +4735,7 @@ fn encode_ordered(
                                     range,
                                     clipped,
                                     SAMPLE_COUNT,
+                                    Some(pipelines.motion),
                                     Some(pipelines.gpu_work),
                                 );
                             }
@@ -4730,6 +4776,7 @@ fn encode_ordered(
                                     range,
                                     clipped,
                                     *mode,
+                                    Some(pipelines.motion),
                                     Some(pipelines.gpu_work),
                                 );
                             }
@@ -4742,6 +4789,7 @@ fn encode_ordered(
                                     &mut pass,
                                     prepared,
                                     clipped,
+                                    Some(pipelines.motion),
                                     Some(pipelines.gpu_work),
                                 );
                             }
@@ -4759,6 +4807,7 @@ fn encode_ordered(
                                     *first,
                                     *count,
                                     clipped,
+                                    Some(pipelines.motion),
                                     Some(pipelines.gpu_work),
                                 );
                             }
@@ -4771,6 +4820,7 @@ fn encode_ordered(
                                     &mut pass,
                                     dest_physical,
                                     dmg,
+                                    Some(pipelines.motion),
                                     Some(pipelines.gpu_work),
                                 );
                             } else {
@@ -4779,6 +4829,7 @@ fn encode_ordered(
                                     prepared,
                                     &mut pass,
                                     dest_physical,
+                                    Some(pipelines.motion),
                                     Some(pipelines.gpu_work),
                                 );
                             }

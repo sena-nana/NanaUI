@@ -509,6 +509,62 @@ pub(super) fn motion_bind_layout_with_policy(
     })
 }
 
+pub(crate) fn motion_layout_key() -> u64 {
+    let stages = &[
+        nana_gpu::ShaderStage::Vertex,
+        nana_gpu::ShaderStage::Fragment,
+    ];
+    nana_gpu::ResourceTable::new(vec![
+        nana_gpu::LogicalBinding::new(
+            0,
+            nana_gpu::LogicalBindingType::StorageBuffer { read_only: true },
+            stages,
+        ),
+        nana_gpu::LogicalBinding::new(
+            1,
+            nana_gpu::LogicalBindingType::StorageBuffer { read_only: true },
+            stages,
+        ),
+        nana_gpu::LogicalBinding::new(2, nana_gpu::LogicalBindingType::UniformBuffer, stages)
+            .min_size(MOTION_GPU_TIME_SIZE as u64),
+    ])
+    .expect("motion logical table is valid")
+    .layout_key()
+}
+
+pub(crate) fn motion_bind_layout_for_policy(
+    device: &wgpu::Device,
+    policy: Option<&nana_gpu::GpuDeviceState>,
+) -> wgpu::BindGroupLayout {
+    motion_bind_layout_with_policy(device, policy)
+}
+
+pub(crate) fn dummy_motion_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    label_prefix: &str,
+) -> wgpu::BindGroup {
+    let descriptors = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(&format!("{label_prefix}.descriptors")),
+        size: MOTION_GPU_DESCRIPTOR_SIZE as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let keyframes = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(&format!("{label_prefix}.keyframes")),
+        size: MOTION_GPU_KEYFRAME_SIZE as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let time = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(&format!("{label_prefix}.time")),
+        size: MOTION_GPU_TIME_SIZE as u64,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    motion_bind_group(device, layout, &descriptors, &keyframes, &time)
+}
+
 fn motion_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,

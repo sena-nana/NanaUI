@@ -33,6 +33,8 @@ struct SolidInstanceInput {
     @location(5) packed_caps: f32,
     @location(6) affine_abcd: vec4<f32>,
     @location(7) affine_ef: vec2<f32>,
+    @location(8) motion_origin: vec2<f32>,
+    @location(9) motion_ids: vec2<u32>,
 }
 
 struct SolidVertexOutput {
@@ -170,6 +172,17 @@ fn solid_vs_main(
     input: SolidInstanceInput,
 ) -> SolidVertexOutput {
     var out: SolidVertexOutput;
+    let composed = motion_compose_projective(
+        input.affine_abcd,
+        vec4<f32>(input.affine_ef, 0.0, 0.0),
+        input.motion_origin,
+        motion_evaluate(input.motion_ids.x),
+    );
+    let motion_opacity = clamp(
+        motion_sample_scalar(motion_evaluate(input.motion_ids.y), 1.0),
+        0.0,
+        1.0,
+    );
     let packed = input.packed_caps;
     let cap0 = unpack_cap0(packed);
     let cap1 = unpack_cap1(packed);
@@ -180,11 +193,11 @@ fn solid_vs_main(
         input.radii.y,
         cap0,
         cap1,
-        local_aa_fringe(input.affine_abcd),
+        local_aa_fringe(composed.abcd),
         unit_corner(vertex_index),
     );
-    let world = local_to_world(input.affine_abcd, input.affine_ef, local);
-    out.color = premultiply(input.color);
+    let world = local_to_world(composed.abcd, composed.ef.xy, local);
+    out.color = premultiply(input.color) * motion_opacity;
     out.position = globals.transform * vec4<f32>(world, 0.0, 1.0);
     out.world_pos = world;
     out.clip_index = input.clip_index;
@@ -193,8 +206,8 @@ fn solid_vs_main(
     out.p0 = input.p0;
     out.p1 = input.p1;
     out.radii_caps = vec4<f32>(input.radii, cap0, cap1);
-    out.affine_abcd = input.affine_abcd;
-    out.affine_ef = input.affine_ef;
+    out.affine_abcd = composed.abcd;
+    out.affine_ef = composed.ef.xy;
     return out;
 }
 

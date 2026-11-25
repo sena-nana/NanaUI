@@ -82,6 +82,10 @@ pub mod component_animation_kinds {
     pub const REORDER_SHIFT: u64 = 18;
     /// A settings row's attention flash, on the tint it paints under itself.
     pub const ATTENTION: u64 = 19;
+    /// Hover foreground color transition ([`AnimatableProperty::Color`]).
+    pub const HOVER_FOREGROUND: u64 = 20;
+    /// Hover border color transition when border color changes without a first-class border property.
+    pub const HOVER_BORDER: u64 = 21;
 }
 
 /// Derives the animation ID for one component-owned timeline from the
@@ -104,7 +108,7 @@ pub(crate) fn is_component_animation(id: AnimationId, target: StableNodeId) -> b
 
 /// Returns the [`component_animation_kinds`] tag for `id` on `target`, if any.
 pub(crate) fn component_animation_kind(id: AnimationId, target: StableNodeId) -> Option<u64> {
-    (component_animation_kinds::SKELETON..=component_animation_kinds::ATTENTION)
+    (component_animation_kinds::SKELETON..=component_animation_kinds::HOVER_BORDER)
         .find(|&kind| component_animation_id(kind, target) == Some(id))
 }
 

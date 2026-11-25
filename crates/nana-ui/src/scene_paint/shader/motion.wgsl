@@ -5,6 +5,7 @@ const MOTION_KIND_SCALAR: u32 = 0u;
 const MOTION_KIND_COLOR: u32 = 1u;
 const MOTION_KIND_TRANSFORM: u32 = 2u;
 const MOTION_KIND_DISCRETE: u32 = 3u;
+const MOTION_KIND_FILTER: u32 = 4u;
 
 const MOTION_CURVE_EASING: u32 = 0u;
 const MOTION_CURVE_STEPS: u32 = 1u;
@@ -26,6 +27,8 @@ struct MotionGpuValue {
     _pad: vec2<u32>,
     channels: vec4<f32>,
     extra: vec4<f32>,
+    extra2: vec4<f32>,
+    extra3: vec4<f32>,
 }
 
 struct MotionGpuDescriptor {
@@ -297,6 +300,8 @@ fn motion_lerp_value(from_v: MotionGpuValue, to_v: MotionGpuValue, t: f32) -> Mo
     out.discrete = select(from_v.discrete, to_v.discrete, u >= 1.0);
     out.channels = from_v.channels + (to_v.channels - from_v.channels) * u;
     out.extra = from_v.extra + (to_v.extra - from_v.extra) * u;
+    out.extra2 = from_v.extra2 + (to_v.extra2 - from_v.extra2) * u;
+    out.extra3 = from_v.extra3 + (to_v.extra3 - from_v.extra3) * u;
     if (from_v.kind == MOTION_KIND_COLOR) {
         out.channels = clamp(out.channels, vec4<f32>(0.0), vec4<f32>(1.0));
         out.extra = clamp(out.extra, vec4<f32>(0.0), vec4<f32>(1.0));
@@ -308,10 +313,8 @@ fn motion_zero_velocity(value: MotionGpuValue) -> MotionGpuValue {
     var out = value;
     out.channels = vec4<f32>(0.0);
     out.extra = vec4<f32>(0.0);
-    if (value.kind == MOTION_KIND_TRANSFORM) {
-        out.channels = vec4<f32>(0.0);
-        out.extra = vec4<f32>(0.0);
-    }
+    out.extra2 = vec4<f32>(0.0);
+    out.extra3 = vec4<f32>(0.0);
     return out;
 }
 
@@ -533,6 +536,13 @@ fn motion_max_abs(value: MotionGpuValue) -> f32 {
         let m0 = max(max(abs(value.channels.x), abs(value.channels.y)), max(abs(value.channels.z), abs(value.channels.w)));
         return max(m0, max(abs(value.extra.x), abs(value.extra.y)));
     }
+    if (value.kind == MOTION_KIND_FILTER) {
+        let m0 = max(max(abs(value.channels.x), abs(value.channels.y)), max(abs(value.channels.z), abs(value.channels.w)));
+        let m1 = max(max(abs(value.extra.x), abs(value.extra.y)), max(abs(value.extra.z), abs(value.extra.w)));
+        let m2 = max(max(abs(value.extra2.x), abs(value.extra2.y)), max(abs(value.extra2.z), abs(value.extra2.w)));
+        let m3 = max(abs(value.extra3.x), abs(value.extra3.y));
+        return max(max(m0, m1), max(m2, m3));
+    }
     return 0.0;
 }
 
@@ -540,12 +550,53 @@ fn motion_sub(a: MotionGpuValue, b: MotionGpuValue) -> MotionGpuValue {
     var out = a;
     out.channels = a.channels - b.channels;
     out.extra = a.extra - b.extra;
+    out.extra2 = a.extra2 - b.extra2;
+    out.extra3 = a.extra3 - b.extra3;
     return out;
 }
 
 fn motion_is_settled(value: MotionGpuValue, rest: MotionGpuValue, velocity: MotionGpuValue) -> bool {
     return motion_max_abs(motion_sub(value, rest)) <= MOTION_SETTLE_POS
         && motion_max_abs(velocity) <= MOTION_SETTLE_VEL;
+}
+
+struct MotionPhysicsVec4 {
+    pos: vec4<f32>,
+    vel: vec4<f32>,
+}
+
+fn motion_physics_vec4(
+    from_v: vec4<f32>,
+    rest: vec4<f32>,
+    vel: vec4<f32>,
+    spring: vec4<f32>,
+    t: f32,
+    decay: bool,
+) -> MotionPhysicsVec4 {
+    let ch0 = select(
+        motion_spring_channel(from_v.x, rest.x, vel.x, spring, t),
+        motion_decay_channel(from_v.x, vel.x, spring.w, t),
+        decay,
+    );
+    let ch1 = select(
+        motion_spring_channel(from_v.y, rest.y, vel.y, spring, t),
+        motion_decay_channel(from_v.y, vel.y, spring.w, t),
+        decay,
+    );
+    let ch2 = select(
+        motion_spring_channel(from_v.z, rest.z, vel.z, spring, t),
+        motion_decay_channel(from_v.z, vel.z, spring.w, t),
+        decay,
+    );
+    let ch3 = select(
+        motion_spring_channel(from_v.w, rest.w, vel.w, spring, t),
+        motion_decay_channel(from_v.w, vel.w, spring.w, t),
+        decay,
+    );
+    return MotionPhysicsVec4(
+        vec4(ch0.x, ch1.x, ch2.x, ch3.x),
+        vec4(ch0.y, ch1.y, ch2.y, ch3.y),
+    );
 }
 
 struct MotionPhysicsState {
@@ -635,6 +686,21 @@ fn motion_physics_state(
         vout.extra = vec4(e.y, f.y, 0.0, 0.0);
         return MotionPhysicsState(pos, vout);
     }
+    if (from_v.kind == MOTION_KIND_FILTER) {
+        let s0 = motion_physics_vec4(from_v.channels, rest.channels, vel.channels, desc.spring, t, decay);
+        let s1 = motion_physics_vec4(from_v.extra, rest.extra, vel.extra, desc.spring, t, decay);
+        let s2 = motion_physics_vec4(from_v.extra2, rest.extra2, vel.extra2, desc.spring, t, decay);
+        let s3 = motion_physics_vec4(from_v.extra3, rest.extra3, vel.extra3, desc.spring, t, decay);
+        pos.channels = s0.pos;
+        pos.extra = s1.pos;
+        pos.extra2 = s2.pos;
+        pos.extra3 = vec4(s3.pos.x, s3.pos.y, 0.0, 0.0);
+        vout.channels = s0.vel;
+        vout.extra = s1.vel;
+        vout.extra2 = s2.vel;
+        vout.extra3 = vec4(s3.vel.x, s3.vel.y, 0.0, 0.0);
+        return MotionPhysicsState(pos, vout);
+    }
     if (t <= 0.0) {
         return MotionPhysicsState(from_v, vel);
     }
@@ -698,7 +764,15 @@ fn motion_descriptor_at(index: u32) -> MotionGpuDescriptor {
 
 fn motion_evaluate_id(motion_id: u32, expected_generation: u32) -> MotionGpuSample {
     var sample: MotionGpuSample;
-    sample.value = MotionGpuValue(MOTION_KIND_SCALAR, 0u, vec2<u32>(0u), vec4<f32>(1.0, 0.0, 0.0, 0.0), vec4<f32>(0.0));
+    sample.value = MotionGpuValue(
+        MOTION_KIND_SCALAR,
+        0u,
+        vec2<u32>(0u),
+        vec4<f32>(1.0, 0.0, 0.0, 0.0),
+        vec4<f32>(0.0),
+        vec4<f32>(0.0),
+        vec4<f32>(0.0),
+    );
     sample.progress = 1.0;
     sample.applies = 0u;
     sample.finished = 1u;
@@ -735,6 +809,13 @@ fn motion_sample_scalar(sample: MotionGpuSample, fallback: f32) -> f32 {
         return sample.value.channels.x;
     }
     return fallback;
+}
+
+fn motion_sample_color(sample: MotionGpuSample, fallback: vec4<f32>) -> vec4<f32> {
+    if (sample.applies == 0u || sample.value.kind != MOTION_KIND_COLOR) {
+        return fallback;
+    }
+    return clamp(sample.value.channels, vec4<f32>(0.0), vec4<f32>(1.0));
 }
 
 fn motion_sample_affine(sample: MotionGpuSample) -> vec4<f32> {
@@ -814,5 +895,14 @@ fn motion_eval_fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     if (pos.x < 1.0) {
         return sample.value.channels;
     }
-    return vec4<f32>(sample.value.extra.xy, sample.progress, f32(sample.applies));
+    if (pos.x < 2.0) {
+        return vec4<f32>(sample.value.extra.xy, sample.progress, f32(sample.applies));
+    }
+    if (pos.x < 3.0) {
+        return sample.value.extra;
+    }
+    if (pos.x < 4.0) {
+        return sample.value.extra2;
+    }
+    return sample.value.extra3;
 }

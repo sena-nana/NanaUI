@@ -148,7 +148,7 @@ impl TextPipeline {
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
         self.inner
-            .draw(&self.target, pass, prepared, scissor, gpu_work);
+            .draw(&self.target, pass, prepared, scissor, None, gpu_work);
     }
 
     fn can_merge_runs(&self, previous: &PreparedText, next: &PreparedText) -> bool {
@@ -1927,6 +1927,7 @@ fn hand_built_run(pipeline: &mut TextPipeline, handles: &[atlas::GlyphAtlasEntry
                 raster: 1.0,
                 fx: 0,
                 transitions: [0; 2],
+                motion_opacity_id: 0,
             },
             next: NO_RUN,
             last: index as u32,
@@ -4918,6 +4919,6 @@ fn a_retained_glyph_carries_linear_authoring_color() {
     assert_eq!(std::mem::size_of::<super::pipeline::TextRunGpu>(), 48);
     assert_eq!(
         std::mem::size_of::<super::pipeline::TextPresentationGpu>(),
-        160
+        176
     );
 }

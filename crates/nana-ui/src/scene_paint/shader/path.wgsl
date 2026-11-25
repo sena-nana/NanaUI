@@ -54,6 +54,8 @@ struct PathInstanceInput {
     @location(9) gradient: u32,
     // The node's `mask-image`, a gradient of the palette, or `NO_GRADIENT`.
     @location(10) mask: u32,
+    @location(11) motion_origin: vec2<f32>,
+    @location(12) motion_ids: vec2<u32>,
 }
 
 struct PathVertexOutput {
@@ -125,18 +127,29 @@ fn path_screen_extrude(m: vec4<f32>, extrude: vec2<f32>) -> vec2<f32> {
 @vertex
 fn path_vs_main(input: PathVertexInput, instance: PathInstanceInput) -> PathVertexOutput {
     var out: PathVertexOutput;
-    let m = instance.abcd;
+    let composed = motion_compose_projective(
+        instance.abcd,
+        vec4<f32>(instance.ef_origin.xy, 0.0, 0.0),
+        instance.motion_origin,
+        motion_evaluate(instance.motion_ids.x),
+    );
+    let m = composed.abcd;
     let local = input.position + instance.ef_origin.zw;
     let scene = vec2<f32>(
-        m.x * local.x + m.z * local.y + instance.ef_origin.x,
-        m.y * local.x + m.w * local.y + instance.ef_origin.y,
+        m.x * local.x + m.z * local.y + composed.ef.x,
+        m.y * local.x + m.w * local.y + composed.ef.y,
     );
     let extrude = path_screen_extrude(m, input.extrude);
     let world = scene + extrude * 0.5 / max(globals.viewport_scale, 1e-4);
+    let motion_opacity = clamp(
+        motion_sample_scalar(motion_evaluate(instance.motion_ids.y), 1.0),
+        0.0,
+        1.0,
+    );
     out.fringe = select(0.0, 1.0, any(extrude != vec2<f32>(0.0)));
     out.position = globals.transform * vec4<f32>(world, 0.0, 1.0);
     out.world_pos = world;
-    out.color = vec4<f32>(input.color.rgb, input.color.a * instance.opacity);
+    out.color = vec4<f32>(input.color.rgb, input.color.a * instance.opacity * motion_opacity);
     out.coverage = input.coverage;
     out.clip_index = instance.clip_index;
     out.pixel_scale = globals.viewport_scale;

@@ -35,6 +35,11 @@ struct LayerUniforms {
     // Element blur taps either side of the centre (`element_blur_taps`):
     // 2 up to the 16 px cap, more for a group that opted into 64 px.
     filter_blur_taps: f32,
+    filter_motion_id: u32,
+    opacity_motion_id: u32,
+    dest_scale: f32,
+    max_filter_blur: f32,
+    filter_opacity: f32,
 }
 
 @group(0) @binding(2)
@@ -58,13 +63,28 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOutput {
     return output;
 }
 
+fn layer_srgb_channel_to_linear(u: f32) -> f32 {
+    if (u < 0.04045) {
+        return u / 12.92;
+    }
+    return pow((u + 0.055) / 1.055, 2.4);
+}
+
+fn layer_srgb_to_linear3(c: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(
+        layer_srgb_channel_to_linear(c.x),
+        layer_srgb_channel_to_linear(c.y),
+        layer_srgb_channel_to_linear(c.z),
+    );
+}
+
 // A gaussian of standard deviation `radius / 2` reaching out to `radius`,
 // sampled `n` taps either side of the centre per axis. With `n == 2` it is
 // the 5×5 kernel the 16 px cap was tuned for.
-fn element_filter_blur(uv: vec2<f32>, radius: f32) -> vec4<f32> {
+fn element_filter_blur(uv: vec2<f32>, radius: f32, blur_taps: f32) -> vec4<f32> {
     let dims = vec2<f32>(textureDimensions(source));
     let texel = 1.0 / max(dims, vec2<f32>(1.0));
-    let n = clamp(i32(layer.filter_blur_taps), 2, 8);
+    let n = clamp(i32(blur_taps), 2, 8);
     let nf = f32(n);
     let step = radius / nf;
     let falloff = 2.0 / (nf * nf);
@@ -83,9 +103,9 @@ fn element_filter_blur(uv: vec2<f32>, radius: f32) -> vec4<f32> {
 }
 
 // The group's content at `uv`, blurred when its filter blurs.
-fn element_sample(uv: vec2<f32>) -> vec4<f32> {
-    if (layer.filter_blur > 0.5) {
-        return element_filter_blur(uv, layer.filter_blur);
+fn element_sample(uv: vec2<f32>, filter_blur: f32, blur_taps: f32) -> vec4<f32> {
+    if (filter_blur > 0.5) {
+        return element_filter_blur(uv, filter_blur, blur_taps);
     }
     return textureSample(source, source_sampler, uv);
 }
@@ -93,23 +113,23 @@ fn element_sample(uv: vec2<f32>) -> vec4<f32> {
 // What an open shutter exposes at `uv`: the content that passed over it
 // during the exposure, averaged along the streak (Issue #323). Content now
 // at `uv - k * streak` stood at `uv` a fraction `k` of the exposure ago.
-fn shutter_sample(uv: vec2<f32>) -> vec4<f32> {
+fn shutter_sample(uv: vec2<f32>, filter_blur: f32, blur_taps: f32) -> vec4<f32> {
     let streak = layer.motion_streak;
     let length_px = length(streak);
     if (length_px < 0.5) {
-        return element_sample(uv);
+        return element_sample(uv, filter_blur, blur_taps);
     }
     let dims = vec2<f32>(textureDimensions(source));
     let streak_uv = streak / max(dims, vec2<f32>(1.0));
     // About one tap per 2 dest pixels, fewer when each tap is itself a blur.
     var taps = clamp(i32(ceil(length_px * 0.5)), 2, 32);
-    if (layer.filter_blur > 0.5) {
+    if (filter_blur > 0.5) {
         taps = min(taps, 8);
     }
     let samples = taps + 1;
     var acc = vec4<f32>(0.0);
     for (var i = 0; i < samples; i = i + 1) {
-        acc += element_sample(uv - streak_uv * (f32(i) / f32(taps)));
+        acc += element_sample(uv - streak_uv * (f32(i) / f32(taps)), filter_blur, blur_taps);
     }
     return acc / f32(samples);
 }
@@ -140,33 +160,83 @@ fn layer_source(input: VertexOutput) -> vec4<f32> {
     if clip_cover <= 0.0 {
         discard;
     }
-    var sampled = shutter_sample(input.uv);
-    if (layer.drop_shadow_color.a > 0.001) {
+    var fb = layer.filter_b;
+    var fs = layer.filter_s;
+    var fc = layer.filter_c;
+    var fhue = layer.filter_hue;
+    var finv = layer.filter_invert;
+    var fblur = layer.filter_blur;
+    var fshadow_offset = layer.drop_shadow_offset;
+    var fshadow_blur = layer.drop_shadow_blur;
+    var fshadow_color = layer.drop_shadow_color;
+    var fblur_taps = layer.filter_blur_taps;
+    var fopacity = layer.filter_opacity;
+    if (layer.filter_motion_id != 0u) {
+        let fsamp = motion_evaluate(layer.filter_motion_id);
+        if (fsamp.applies != 0u && fsamp.value.kind == MOTION_KIND_FILTER) {
+            let c = fsamp.value.channels;
+            let e = fsamp.value.extra;
+            let e2 = fsamp.value.extra2;
+            let e3 = fsamp.value.extra3;
+            let scale = max(layer.dest_scale, 0.0001);
+            let max_blur = max(layer.max_filter_blur, 0.0);
+            fb = max(c.x, 0.0);
+            fs = max(c.y, 0.0);
+            fc = max(c.z, 0.0);
+            fhue = c.w;
+            finv = clamp(e.x, 0.0, 1.0);
+            fopacity = clamp(e.y, 0.0, 1.0);
+            let logical_blur = clamp(e.z, 0.0, max_blur);
+            let logical_shadow_blur = clamp(e2.y, 0.0, max_blur);
+            fblur = logical_blur * scale;
+            fshadow_offset = vec2<f32>(e.w, e2.x) * scale;
+            fshadow_blur = logical_shadow_blur * scale;
+            let shadow_a = clamp(e3.y, 0.0, 1.0);
+            if (shadow_a > 1.0e-5) {
+                fshadow_color = vec4<f32>(
+                    layer_srgb_to_linear3(clamp(vec3<f32>(e2.z, e2.w, e3.x), vec3<f32>(0.0), vec3<f32>(1.0))),
+                    shadow_a,
+                );
+            } else {
+                fshadow_color = vec4<f32>(0.0);
+            }
+            let max_logical = max(logical_blur, logical_shadow_blur);
+            fblur_taps = select(2.0, clamp(ceil(max_logical / 8.0), 2.0, 8.0), max_logical > 16.0);
+        }
+    }
+    var group_opacity = layer.opacity;
+    if (layer.opacity_motion_id != 0u) {
+        group_opacity = clamp(motion_sample_scalar(motion_evaluate(layer.opacity_motion_id), group_opacity), 0.0, 1.0);
+    }
+    let total_opacity = group_opacity * fopacity;
+
+    var sampled = shutter_sample(input.uv, fblur, fblur_taps);
+    if (fshadow_color.a > 0.001) {
         let dims = vec2<f32>(textureDimensions(source));
-        let offset_uv = layer.drop_shadow_offset / max(dims, vec2<f32>(1.0));
+        let offset_uv = fshadow_offset / max(dims, vec2<f32>(1.0));
         let shadow_uv = input.uv - offset_uv;
         var shadow_sample = textureSample(source, source_sampler, shadow_uv);
-        if (layer.drop_shadow_blur > 0.5) {
-            shadow_sample = element_filter_blur(shadow_uv, layer.drop_shadow_blur);
+        if (fshadow_blur > 0.5) {
+            shadow_sample = element_filter_blur(shadow_uv, fshadow_blur, fblur_taps);
         }
-        let shadow_a = shadow_sample.a * layer.drop_shadow_color.a;
-        let shadow = vec4<f32>(layer.drop_shadow_color.rgb * shadow_a, shadow_a);
+        let shadow_a = shadow_sample.a * fshadow_color.a;
+        let shadow = vec4<f32>(fshadow_color.rgb * shadow_a, shadow_a);
         sampled = sampled + shadow * (1.0 - sampled.a);
     }
-    sampled = sampled * layer.opacity;
-    if (layer.filter_b != 1.0
-        || layer.filter_s != 1.0
-        || layer.filter_c != 1.0
-        || abs(layer.filter_hue) > 0.0001
-        || layer.filter_invert > 0.0001)
+    sampled = sampled * total_opacity;
+    if (fb != 1.0
+        || fs != 1.0
+        || fc != 1.0
+        || abs(fhue) > 0.0001
+        || finv > 0.0001)
     {
         sampled = apply_color_filter_channels(
             sampled,
-            layer.filter_b,
-            layer.filter_s,
-            layer.filter_c,
-            layer.filter_hue,
-            layer.filter_invert,
+            fb,
+            fs,
+            fc,
+            fhue,
+            finv,
             1.0,
         );
     }

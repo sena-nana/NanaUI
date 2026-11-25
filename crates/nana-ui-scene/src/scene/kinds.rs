@@ -210,13 +210,22 @@ pub struct NodeMask {
 }
 
 impl ScenePrimitiveKind {
-    /// Only Quad pipelines bind `motion.wgsl` `evaluate()`. Text / Icon /
-    /// Mesh / HostTexture still consume CPU compositor presentation.
+    /// True when this primitive evaluates node compositor transforms/opacity
+    /// directly via `motion.wgsl` `evaluate()` in its shader.
     pub fn evaluates_compositor_motion_on_gpu(&self) -> bool {
-        matches!(
-            self,
-            Self::Quad { .. } | Self::QuadBatch { .. } | Self::QuadColorBatch { .. }
-        )
+        match self {
+            Self::Quad { .. }
+            | Self::QuadBatch { .. }
+            | Self::QuadColorBatch { .. }
+            | Self::Text { .. }
+            | Self::Icon { .. }
+            | Self::IconBatch { .. }
+            | Self::Spinner { .. }
+            | Self::Stroke { .. } => true,
+            Self::Custom { node, .. } => node.renderer.as_ref() == "nana.host-texture",
+            Self::Path { node_mask, .. } => node_mask.is_none(),
+            Self::LayerBegin { .. } | Self::LayerEnd { .. } => false,
+        }
     }
 
     /// Returns `true` when this primitive carries wide-gamut or HDR authoring

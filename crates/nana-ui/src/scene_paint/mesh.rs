@@ -27,6 +27,7 @@ pub(super) fn precompiled_inputs() -> (String, u64) {
     (
         super::wgsl::joined(&[
             super::wgsl::TRIANGLE,
+            super::wgsl::MOTION,
             super::wgsl::TRIANGLE_SOLID,
             super::wgsl::PATH,
             super::wgsl::COLOR,
@@ -52,6 +53,7 @@ fn mesh_layout_key() -> u64 {
     ])
     .expect("mesh table")
     .layout_key()
+        ^ super::motion::motion_layout_key().rotate_left(19)
 }
 
 pub(super) struct StrokeStyle<'a> {
@@ -77,9 +79,11 @@ struct MeshInstance {
     clip_index: u32,
     packed_caps: f32,
     affine: [f32; 6],
+    motion_origin: [f32; 2],
+    motion_ids: [u32; 2],
 }
 
-const _: () = assert!(std::mem::size_of::<MeshInstance>() == 72);
+const _: () = assert!(std::mem::size_of::<MeshInstance>() == 88);
 
 /// GPU clip record. Matches `GpuClip` in `triangle_solid.wgsl`.
 #[repr(C)]
@@ -151,6 +155,8 @@ impl MeshInstance {
             clip_index: 0,
             packed_caps: pack_caps(start_cap, end_cap),
             affine: super::clip::IDENTITY_AFFINE,
+            motion_origin: [0.0, 0.0],
+            motion_ids: [0, 0],
         }
     }
 }
@@ -216,9 +222,11 @@ struct GpuPathInstance {
     /// The node's `mask-image` as a gradient of the palette, evaluated at the
     /// fragment through the gradient's `space`; `NO_GRADIENT` for none.
     mask: u32,
+    motion_origin: [f32; 2],
+    motion_ids: [u32; 2],
 }
 
-const _: () = assert!(std::mem::size_of::<GpuPathInstance>() == 48);
+const _: () = assert!(std::mem::size_of::<GpuPathInstance>() == 64);
 
 impl GpuPathInstance {
     /// Bitwise, so equal draws share an instance (and can merge) whatever
@@ -1168,6 +1176,7 @@ pub(super) struct MeshPipeline {
     tint_pipeline: wgpu::RenderPipeline,
     keep_pipeline: wgpu::RenderPipeline,
     bind_layout: wgpu::BindGroupLayout,
+    dummy_motion: wgpu::BindGroup,
 }
 
 impl MeshPipeline {
@@ -1196,6 +1205,7 @@ impl MeshPipeline {
             "nana-ui.scene.triangle.solid.shader",
             [
                 super::wgsl::TRIANGLE,
+                super::wgsl::MOTION,
                 super::wgsl::TRIANGLE_SOLID,
                 super::wgsl::PATH,
                 super::wgsl::COLOR,
@@ -1264,9 +1274,15 @@ impl MeshPipeline {
                 ],
             })
         };
+        let motion_layout = super::motion::motion_bind_layout_for_policy(device, policy);
+        let dummy_motion = super::motion::dummy_motion_bind_group(
+            device,
+            &motion_layout,
+            "nana-ui.scene.mesh.dummy_motion",
+        );
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("nana-ui.scene.triangle.solid.pipeline"),
-            bind_group_layouts: &[Some(&bind_layout)],
+            bind_group_layouts: &[Some(&bind_layout), Some(&motion_layout)],
             immediate_size: 0,
         });
         let pipeline = try_cached_mesh_pipeline(policy, device, &shader, &layout, format, 1, 1)?;
@@ -1363,6 +1379,7 @@ impl MeshPipeline {
             tint_pipeline,
             keep_pipeline,
             bind_layout,
+            dummy_motion,
         })
     }
 
@@ -1406,17 +1423,26 @@ impl MeshPipeline {
             uploaded_clips: Vec::new(),
             clip_intern: HashMap::new(),
             corner_exponent: 2.0,
+            motion_ids: [0, 0],
+            motion_origin: [0.0, 0.0],
         }
     }
 
-    fn bind_path_buffers(&self, target: &MeshPipelineTarget, pass: &mut wgpu::RenderPass<'_>) {
+    fn bind_path_buffers(
+        &self,
+        target: &MeshPipelineTarget,
+        pass: &mut wgpu::RenderPass<'_>,
+        motion: Option<&wgpu::BindGroup>,
+    ) {
         pass.set_bind_group(0, &target.bind_group, &[]);
+        pass.set_bind_group(1, motion.unwrap_or(&self.dummy_motion), &[]);
         pass.set_vertex_buffer(0, target.paths.vertices.slice(..));
         pass.set_vertex_buffer(1, target.paths.instances.slice(..));
         pass.set_index_buffer(target.paths.indices.slice(..), wgpu::IndexFormat::Uint32);
     }
 
     /// Apply a painter layer's mask to the open group.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn draw_mask(
         &self,
         target: &MeshPipelineTarget,
@@ -1424,6 +1450,7 @@ impl MeshPipeline {
         range: &PathRange,
         scissor: PhysicalRect,
         mode: nana_ui_scene::LayerMaskMode,
+        motion: Option<&wgpu::BindGroup>,
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
         if range.index_count == 0 {
@@ -1434,7 +1461,7 @@ impl MeshPipeline {
             nana_ui_scene::LayerMaskMode::Tint => &self.tint_pipeline,
             nana_ui_scene::LayerMaskMode::Keep => &self.keep_pipeline,
         });
-        self.bind_path_buffers(target, pass);
+        self.bind_path_buffers(target, pass, motion);
         pass.set_scissor_rect(scissor.x, scissor.y, scissor.width, scissor.height);
         pass.draw_indexed(
             range.first_index..range.first_index + range.index_count,
@@ -1447,6 +1474,7 @@ impl MeshPipeline {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn draw_path(
         &self,
         target: &MeshPipelineTarget,
@@ -1454,6 +1482,7 @@ impl MeshPipeline {
         range: &PathRange,
         scissor: PhysicalRect,
         sample_count: u32,
+        motion: Option<&wgpu::BindGroup>,
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
         if range.index_count == 0 {
@@ -1464,7 +1493,7 @@ impl MeshPipeline {
         } else {
             &self.path_pipeline
         });
-        self.bind_path_buffers(target, pass);
+        self.bind_path_buffers(target, pass, motion);
         pass.set_scissor_rect(scissor.x, scissor.y, scissor.width, scissor.height);
         pass.draw_indexed(
             range.first_index..range.first_index + range.index_count,
@@ -1609,6 +1638,7 @@ impl MeshPipeline {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn draw(
         &self,
         target: &MeshPipelineTarget,
@@ -1616,6 +1646,7 @@ impl MeshPipeline {
         range: &MeshRange,
         scissor: PhysicalRect,
         sample_count: u32,
+        motion: Option<&wgpu::BindGroup>,
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
         if range.instance_count == 0 {
@@ -1627,6 +1658,7 @@ impl MeshPipeline {
             &self.pipeline
         });
         pass.set_bind_group(0, &target.bind_group, &[]);
+        pass.set_bind_group(1, motion.unwrap_or(&self.dummy_motion), &[]);
         pass.set_vertex_buffer(0, target.instances.slice(..));
         pass.set_scissor_rect(scissor.x, scissor.y, scissor.width, scissor.height);
         pass.draw(
@@ -1799,6 +1831,8 @@ fn build_path_pipeline_desc(
                         8 => Uint32,
                         9 => Uint32,
                         10 => Uint32,
+                        11 => Float32x2,
+                        12 => Uint32x2,
                     ),
                 }),
             ],
@@ -1863,6 +1897,8 @@ fn build_mesh_pipeline_desc(
                     5 => Float32,
                     6 => Float32x4,
                     7 => Float32x2,
+                    8 => Float32x2,
+                    9 => Uint32x2,
                 ),
             })],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -2360,6 +2396,21 @@ fn apply_affine_to_instances(instances: &mut [MeshInstance], start: usize, affin
     }
 }
 
+fn stamp_motion_to_instances(
+    instances: &mut [MeshInstance],
+    start: usize,
+    motion_ids: [u32; 2],
+    motion_origin: [f32; 2],
+) {
+    if motion_ids == [0, 0] {
+        return;
+    }
+    for instance in &mut instances[start..] {
+        instance.motion_ids = motion_ids;
+        instance.motion_origin = motion_origin;
+    }
+}
+
 fn clips_bit_eq(a: &[GpuClip], b: &[GpuClip]) -> bool {
     a.len() == b.len()
         && bytemuck::cast_slice::<GpuClip, u8>(a) == bytemuck::cast_slice::<GpuClip, u8>(b)
@@ -2595,7 +2646,7 @@ mod tests {
             pack_caps(StrokeCap::Round, StrokeCap::Round)
         );
         assert_eq!(instances[0].affine, IDENTITY_AFFINE);
-        assert_eq!(std::mem::size_of::<MeshInstance>(), 72);
+        assert_eq!(std::mem::size_of::<MeshInstance>(), 88);
         let pad = 2.0 + STROKE_AA_FRINGE;
         let corner = covering_corner(
             instances[0].p0,
@@ -3980,6 +4031,8 @@ pub(super) struct MeshPipelineTarget {
     uploaded_clips: Vec<GpuClip>,
     /// The scene's corner curve exponent, set each frame before upload.
     corner_exponent: f32,
+    motion_ids: [u32; 2],
+    motion_origin: [f32; 2],
 }
 
 impl MeshPipelineTarget {
@@ -3989,10 +4042,17 @@ impl MeshPipelineTarget {
         self.corner_exponent = exponent;
     }
 
+    pub(super) fn set_motion(&mut self, motion_ids: (u32, u32), motion_origin: [f32; 2]) {
+        self.motion_ids = [motion_ids.0, motion_ids.1];
+        self.motion_origin = motion_origin;
+    }
+
     pub(super) fn begin_frame(&mut self) {
         self.pending_instances.clear();
         self.pending_clips.clear();
         self.clip_intern.clear();
+        self.motion_ids = [0, 0];
+        self.motion_origin = [0.0, 0.0];
         self.paths.begin_frame();
     }
 
@@ -4014,7 +4074,7 @@ impl MeshPipelineTarget {
         fragment_clip: FragmentClip,
         node_mask: Option<&Arc<nana_ui_scene::NodeMask>>,
     ) -> Option<PathRange> {
-        if mesh.indices.is_empty() || opacity <= 0.0 {
+        if mesh.indices.is_empty() || (opacity <= 0.0 && self.motion_ids[1] == 0) {
             return None;
         }
         let clip_index = intern_clip(
@@ -4061,6 +4121,8 @@ impl MeshPipelineTarget {
                 clip_index,
                 gradient,
                 mask,
+                motion_origin: [0.0, 0.0],
+                motion_ids: [0, 0],
             });
             let (first_index, index_count) = self.paths.resident(&moved);
             return Some(PathRange {
@@ -4076,6 +4138,8 @@ impl MeshPipelineTarget {
             clip_index,
             gradient,
             mask,
+            motion_origin: self.motion_origin,
+            motion_ids: self.motion_ids,
         });
         let (first_index, index_count) = self.paths.resident(mesh);
         Some(PathRange {
@@ -4149,6 +4213,12 @@ impl MeshPipelineTarget {
             start as usize,
             fragment_clip,
         );
+        stamp_motion_to_instances(
+            &mut self.pending_instances,
+            start as usize,
+            self.motion_ids,
+            self.motion_origin,
+        );
         let instance_count = self.pending_instances.len() as u32 - start;
         (instance_count > 0).then_some(MeshRange {
             first_instance: start,
@@ -4210,6 +4280,12 @@ impl MeshPipelineTarget {
             &mut self.clip_intern,
             start as usize,
             fragment_clip,
+        );
+        stamp_motion_to_instances(
+            &mut self.pending_instances,
+            start as usize,
+            self.motion_ids,
+            self.motion_origin,
         );
         let instance_count = self.pending_instances.len() as u32 - start;
         (instance_count > 0).then_some(MeshRange {

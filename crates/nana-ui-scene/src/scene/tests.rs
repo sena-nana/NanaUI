@@ -1761,6 +1761,8 @@ fn ancestor_clip_transform_and_opacity_are_composed() {
             inset_shadow: None,
             edge_fade: None,
             motion_streak: [0.0, 0.0],
+            filter_motion_id: 0,
+            opacity_motion_id: 0,
         }]
     );
     assert_eq!(custom.clips.len(), 1);
@@ -9071,6 +9073,8 @@ fn css_filter_group_omits_leaf_shader_on_parent_quad() {
             inset_shadow: None,
             edge_fade: None,
             motion_streak: [0.0, 0.0],
+            filter_motion_id: 0,
+            opacity_motion_id: 0,
         }]
     );
 }
@@ -9107,6 +9111,8 @@ fn css_mix_blend_and_element_blur_isolate_dest_groups() {
             inset_shadow: None,
             edge_fade: None,
             motion_streak: [0.0, 0.0],
+            filter_motion_id: 0,
+            opacity_motion_id: 0,
         }]
     );
 

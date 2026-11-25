@@ -2083,6 +2083,53 @@ mod tests {
         assert_eq!(lowest, 0.0, "reached zero and went no further");
     }
 
+    #[test]
+    fn hover_reports_first_class_color_properties_and_retargets() {
+        let mut cx = AppContext::new();
+        let doc = DocumentId::new(1).unwrap();
+        let button = cx.create_component(doc, Button::new("Hover")).unwrap();
+        tick(&mut cx, 0);
+        let id = button.stable_id();
+        cx.set_pointer_hover_at(doc, 1, Some(id), Duration::ZERO)
+            .unwrap();
+        tick(&mut cx, 30);
+        let entries = cx.world().inspect_motion();
+        let bg_entry = entries
+            .iter()
+            .find(|entry| {
+                entry.node == id.get() && entry.property == crate::AnimatableProperty::Background
+            })
+            .expect("hover background track in inspect_motion");
+        assert!(
+            bg_entry.format_summary().contains("background"),
+            "unexpected inspector summary: {}",
+            bg_entry.format_summary()
+        );
+        assert!(
+            !entries
+                .iter()
+                .any(|entry| entry.property == crate::AnimatableProperty::Progress),
+            "hover color transitions must not use Progress tracks: {entries:?}"
+        );
+        let mid_bg = cx.world().computed_style(id).unwrap().background;
+        cx.set_pointer_hover_at(doc, 1, None, Duration::from_millis(30))
+            .unwrap();
+        let work = cx.take_system_work();
+        cx.resolve_styles(&work.style).unwrap();
+        assert_eq!(cx.world().computed_style(id).unwrap().background, mid_bg);
+        let entries_after = cx.world().inspect_motion();
+        let retargeted = entries_after
+            .iter()
+            .find(|entry| {
+                entry.node == id.get() && entry.property == crate::AnimatableProperty::Background
+            })
+            .expect("retargeted hover background track");
+        assert!(matches!(
+            retargeted.presentation,
+            Some(crate::MotionValue::Color(c)) if Some(c) == mid_bg
+        ));
+    }
+
     fn tick_world(world: &mut UiWorld, ms: u64) {
         world.advance_animations(Duration::from_millis(ms));
         let work = world.take_system_work();

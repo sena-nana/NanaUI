@@ -53,15 +53,16 @@ Runtime 按节点的脏标记（`DirtyMask`）确定性地生成各阶段工作�
 
 逻辑值存放在 `UiWorld`，瞬态呈现值存放在 `PresentationStore`（通过 `UiWorld::presentation_pair` 或 `applied_value()` 查询，严禁每帧把 `transform` 或 `opacity` 写回 `UiWorld`）：
 
-透明度动画作用于完整节点的合成结果。有子节点、自定义 painter 或复合控件绘制的节点，先将自身与子内容画进同一个 dest 隔离组，再应用一次当前呈现透明度；不能分别淡化卡面、文字与控件，否则重叠区域会叠加 alpha。分组从首帧开始生效，不等待 compositor layer 提升，覆盖退场、反向与终点 hold；组内仍保留子节点自己的透明度。组承担的透明度不再传入 CPU 图元或 Quad 的 GPU motion id，模态 scrim 仍在卡片自身分组之外独立淡化，触发型菜单的触发器也不进入自身浮层的分组（见下节）。只有分组成员变化时更新保留绘制顺序和图元；时间采样不触发 Runtime 抽取、布局或几何重建。纯透明度为 1 的组可省略离屏合成。
+透明度动画作用于完整节点的合成结果。有子节点、自定义 painter 或复合控件绘制的节点，先将自身与子内容画进同一个 dest 隔离组，再在合成着色器按呈现时间通过 `opacity_motion_id`（以及 `filter_motion_id`）直接在 GPU 对隔离组求值，或回退到组静态不透明度；不能分别淡化卡面、文字与控件，否则重叠区域会叠加 alpha。分组从首帧开始生效，不等待 compositor layer 提升，覆盖退场、反向与终点 hold；组内仍保留子节点自己的透明度。组承担的透明度不再传入单个图元的 GPU motion id 或 CPU 透明度，模态 scrim 仍在卡片自身分组之外独立淡化，触发型菜单的触发器也不进入自身浮层的分组（见下节）。只有分组成员变化时更新保留绘制顺序和图元；时间采样不触发 Runtime 抽取、布局或几何重建。纯透明度为 1 且无活跃滤镜/透明度轨道的组可省略离屏合成。
 
 | 属性 | 默认分类 | 执行路径 | 回退与性能边界 |
 | --- | --- | --- | --- |
-| `transform` / `opacity` | `Compositor` | 呈现 overlay；Quad（含 `QuadBatch` / `QuadColorBatch`）剥离 overlay 走 GPU `evaluate()`；Text / Icon / Mesh / HostTexture 走 CPU overlay | 稳态不写 `UiWorld`；仅 Quad 走 GPU 求值，避免剥离了 overlay 却无法在着色器还原 |
+| `transform` / `opacity` | `Compositor` | 呈现 overlay；Quad（含 `QuadBatch` / `QuadColorBatch`）、Text、Icon（含 `IconBatch`）、Spinner、Stroke、HostTexture（`nana.host-texture`）与无遮罩 `Path` 网格均剥离 overlay 并走 GPU `evaluate()`；隔离组自身透明度经 `opacity_motion_id` 在合成 pass 直接 GPU 求值 | 稳态不写 `UiWorld`；含节点 `node_mask` 的 `Path` 与自定义渲染器保留 CPU overlay |
 | `clip` / `clip-path` | `Compositor` | 呈现 overlay（`compositor_gpu_motion_ids` 当前仅绑定 transform / opacity） | 稳态不写 `UiWorld`；裁剪呈现走 CPU overlay |
 | `shader-parameter` | `Compositor` | 呈现 overlay（需注册类型化编解码器） | 无默认 Quad GPU 路径；图表动画走专用呈现时钟（见下节） |
-| `filter` | `Compositor` | 呈现 overlay；场景在文档 `now` 采样整份 `ColorFilter`，写入该节点隔离组的 uniform（见下文“隔离组效果”） | 稳态不写 `UiWorld`，不脏布局和文字 |
-| `color` / `background` / `blur` / `shadow` | `Paint` | CPU 插值（按 `frame_interval` 稀疏采样） | 每次采样可能标脏 paint / extract。文字色、背景色和控件自己的 `box-shadow` 留在这里，按钮 hover 不改道 |
+| `filter` | `Compositor` | 呈现 overlay；14 通道 `MotionValue::Filter` 编入 `MotionDescriptor` 共享 slab，隔离组在合成着色器按 `filter_motion_id` 于 GPU 直接求值（`motion_evaluate()`）（见下文“隔离组效果”） | 稳态不写 `UiWorld`，仅时间推进无需重写组 uniform、不脏布局和文字；超出安全条件时回退 CPU `OpacityGroup::filter` |
+| `color` / `background` | `Paint`（显式轨道带一等 `MotionValue::Color`） | 逻辑与呈现分离的一等 `AnimatableProperty::{Color, Background}`（`TransitionBuilder::{color, background}`、按钮 hover 迁移至此）；默认仍归 `Paint` 稀疏采样，支持在需要时显式接入 `MotionCodecId::{COLOR, BACKGROUND}` | 默认由 Runtime 稀疏采样写入样式层，消除旧版假 `Progress` 轨道分叉；颜色通道按范围钳制，可选接着色器直求值 |
+| `blur` / `shadow` | `Paint` | CPU 插值（按 `frame_interval` 稀疏采样） | 每次采样可能标脏 paint / extract。控件自己的 `box-shadow` 留在这里 |
 | `width` / `height` / `padding` / `margin` | `Layout` | CPU 布局求值，采样写入 px 并标脏 `LAYOUT` | 子树测量与命中均使用真实几何，严禁用 `scale` 伪造 |
 | `font-size` / `font-axis` | `Layout` | 非合成器路径（触发文本整形与排版） | [#85](https://github.com/sena-nana/NanaUI/issues/85) 不强制走 GPU |
 | `display` | `Discrete` | `snap_discrete`（结束前保持起点，结束时切到终点） | 不做连续插值 |

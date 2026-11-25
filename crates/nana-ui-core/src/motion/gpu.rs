@@ -9,21 +9,22 @@ use std::time::Duration;
 use super::{
     descriptor::{MOTION_DESCRIPTOR_VERSION, MotionDescriptor},
     easing::Easing,
-    ir::{Keyframe, MotionCurve, MotionValue, StepJump},
+    ir::{FilterValue, Keyframe, MotionCurve, MotionValue, StepJump},
     playback::{AnimationDirection, AnimationFillMode, AnimationIteration, AnimationPlayState},
     property::AnimatableProperty,
 };
 use crate::PaintTransform;
 
-pub const MOTION_GPU_VALUE_SIZE: usize = 48;
-pub const MOTION_GPU_DESCRIPTOR_SIZE: usize = 288;
-pub const MOTION_GPU_KEYFRAME_SIZE: usize = 80;
+pub const MOTION_GPU_VALUE_SIZE: usize = 80;
+pub const MOTION_GPU_DESCRIPTOR_SIZE: usize = 384;
+pub const MOTION_GPU_KEYFRAME_SIZE: usize = 112;
 pub const MOTION_GPU_TIME_SIZE: usize = 16;
 
 pub const MOTION_GPU_KIND_SCALAR: u32 = 0;
 pub const MOTION_GPU_KIND_COLOR: u32 = 1;
 pub const MOTION_GPU_KIND_TRANSFORM: u32 = 2;
 pub const MOTION_GPU_KIND_DISCRETE: u32 = 3;
+pub const MOTION_GPU_KIND_FILTER: u32 = 4;
 
 pub const MOTION_GPU_CURVE_EASING: u32 = 0;
 pub const MOTION_GPU_CURVE_STEPS: u32 = 1;
@@ -37,7 +38,7 @@ pub const MOTION_GPU_EASING_BEZIER: u32 = 3;
 
 pub const MOTION_GPU_FLAG_LIVE: u32 = 1;
 
-/// One interpolable value. `channels`/`extra` follow [`MotionValue`].
+/// One interpolable value. `channels`/`extra`/`extra2`/`extra3` follow [`MotionValue`].
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MotionGpuValue {
@@ -46,6 +47,8 @@ pub struct MotionGpuValue {
     pub _pad: [u32; 2],
     pub channels: [f32; 4],
     pub extra: [f32; 4],
+    pub extra2: [f32; 4],
+    pub extra3: [f32; 4],
 }
 
 impl MotionGpuValue {
@@ -56,6 +59,8 @@ impl MotionGpuValue {
             _pad: [0; 2],
             channels: [0.0; 4],
             extra: [0.0; 4],
+            extra2: [0.0; 4],
+            extra3: [0.0; 4],
         }
     }
 }
@@ -216,6 +221,8 @@ pub fn pack_value(value: MotionValue) -> MotionGpuValue {
             _pad: [0; 2],
             channels: [v, 0.0, 0.0, 0.0],
             extra: [0.0; 4],
+            extra2: [0.0; 4],
+            extra3: [0.0; 4],
         },
         MotionValue::Color(c) => MotionGpuValue {
             kind: MOTION_GPU_KIND_COLOR,
@@ -223,6 +230,8 @@ pub fn pack_value(value: MotionValue) -> MotionGpuValue {
             _pad: [0; 2],
             channels: c,
             extra: [0.0; 4],
+            extra2: [0.0; 4],
+            extra3: [0.0; 4],
         },
         MotionValue::Transform(p) => MotionGpuValue {
             kind: MOTION_GPU_KIND_TRANSFORM,
@@ -230,16 +239,17 @@ pub fn pack_value(value: MotionValue) -> MotionGpuValue {
             _pad: [0; 2],
             channels: [p.a, p.b, p.c, p.d],
             extra: [p.e, p.f, 0.0, 0.0],
+            extra2: [0.0; 4],
+            extra3: [0.0; 4],
         },
-        // No GPU codec evaluates a filter: the scene samples it on the CPU
-        // and hands the dest group its uniform (Issue #312). Never packed by
-        // a compiled descriptor; a stray one reads as an inert scalar.
-        MotionValue::Filter(_) => MotionGpuValue {
-            kind: MOTION_GPU_KIND_SCALAR,
+        MotionValue::Filter(f) => MotionGpuValue {
+            kind: MOTION_GPU_KIND_FILTER,
             discrete: 0,
             _pad: [0; 2],
-            channels: [0.0; 4],
-            extra: [0.0; 4],
+            channels: [f.0[0], f.0[1], f.0[2], f.0[3]],
+            extra: [f.0[4], f.0[5], f.0[6], f.0[7]],
+            extra2: [f.0[8], f.0[9], f.0[10], f.0[11]],
+            extra3: [f.0[12], f.0[13], 0.0, 0.0],
         },
         MotionValue::Discrete(tag) => MotionGpuValue {
             kind: MOTION_GPU_KIND_DISCRETE,
@@ -247,6 +257,8 @@ pub fn pack_value(value: MotionValue) -> MotionGpuValue {
             _pad: [0; 2],
             channels: [0.0; 4],
             extra: [0.0; 4],
+            extra2: [0.0; 4],
+            extra3: [0.0; 4],
         },
     }
 }
@@ -262,6 +274,22 @@ pub fn unpack_value(value: MotionGpuValue) -> MotionValue {
             e: value.extra[0],
             f: value.extra[1],
         }),
+        MOTION_GPU_KIND_FILTER => MotionValue::Filter(FilterValue([
+            value.channels[0],
+            value.channels[1],
+            value.channels[2],
+            value.channels[3],
+            value.extra[0],
+            value.extra[1],
+            value.extra[2],
+            value.extra[3],
+            value.extra2[0],
+            value.extra2[1],
+            value.extra2[2],
+            value.extra2[3],
+            value.extra3[0],
+            value.extra3[1],
+        ])),
         MOTION_GPU_KIND_DISCRETE => MotionValue::Discrete(value.discrete),
         _ => MotionValue::Scalar(value.channels[0]),
     }
@@ -512,6 +540,17 @@ mod tests {
         let color = pack_value(MotionValue::Color([0.1, 0.2, 0.3, 1.0]));
         match unpack_value(color) {
             MotionValue::Color(c) => assert!((c[1] - 0.2).abs() < 1e-6),
+            other => panic!("{other:?}"),
+        }
+        let filter = FilterValue([
+            1.2, 0.9, 1.1, 45.0, 0.25, 0.85, 6.0, 3.0, 4.0, 8.0, 0.1, 0.2, 0.3, 0.75,
+        ]);
+        match unpack_value(pack_value(MotionValue::Filter(filter))) {
+            MotionValue::Filter(got) => {
+                for (a, b) in got.0.iter().zip(filter.0.iter()) {
+                    assert!((a - b).abs() < 1e-6);
+                }
+            }
             other => panic!("{other:?}"),
         }
     }

@@ -42,7 +42,7 @@ fn icon_layout_key() -> u64 {
     ])
     .expect("icon atlas table")
     .layout_key();
-    uniforms ^ atlas.rotate_left(17)
+    uniforms ^ atlas.rotate_left(17) ^ super::motion::motion_layout_key().rotate_left(29)
 }
 /// Transparent border around every cell. The sampler clamps at the texture
 /// border, not at the cell, and a quad can sample up to half a texel outside
@@ -98,6 +98,10 @@ struct VsIn {
     @location(4) clip_inv_abcd: vec4<f32>,
     @location(5) clip_inv_ef: vec3<f32>,
     @location(6) cell: vec4<f32>,
+    @location(7) motion_abcd: vec4<f32>,
+    @location(8) motion_ef: vec2<f32>,
+    @location(9) motion_origin: vec4<f32>,
+    @location(10) motion_ids: vec2<u32>,
 }
 
 struct VsOut {
@@ -118,10 +122,27 @@ struct VsOut {
 @vertex
 fn vs_main(input: VsIn) -> VsOut {
     var out: VsOut;
-    out.position = globals.transform * vec4<f32>(input.position, 0.0, 1.0);
+    var world_px = input.position;
+    if (input.motion_origin.w > 0.5) {
+        let composed = motion_compose_projective(
+            input.motion_abcd,
+            vec4<f32>(input.motion_ef, 0.0, 0.0),
+            input.motion_origin.xy,
+            motion_evaluate(input.motion_ids.x),
+        );
+        let wx = composed.abcd.x * input.position.x + composed.abcd.z * input.position.y + composed.ef.x;
+        let wy = composed.abcd.y * input.position.x + composed.abcd.w * input.position.y + composed.ef.y;
+        world_px = vec2<f32>(wx, wy) * input.motion_origin.z;
+    }
+    let motion_opacity = clamp(
+        motion_sample_scalar(motion_evaluate(input.motion_ids.y), 1.0),
+        0.0,
+        1.0,
+    );
+    out.position = globals.transform * vec4<f32>(world_px, 0.0, 1.0);
     out.uv = input.uv;
-    out.color = input.color;
-    out.world_pos = input.position;
+    out.color = vec4<f32>(input.color.rgb, input.color.a * motion_opacity);
+    out.world_pos = world_px;
     out.clip_rect = input.clip_rect;
     out.clip_inv_abcd = input.clip_inv_abcd;
     out.clip_inv_ef = input.clip_inv_ef;
@@ -201,6 +222,10 @@ struct IconVertex {
     clip_inv_abcd: [f32; 4],
     clip_inv_ef: [f32; 3],
     cell: [f32; 4],
+    motion_abcd: [f32; 4],
+    motion_ef: [f32; 2],
+    motion_origin: [f32; 4],
+    motion_ids: [u32; 2],
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -254,12 +279,14 @@ pub(super) struct IconPipeline {
     pipeline: wgpu::RenderPipeline,
     uniform_layout: wgpu::BindGroupLayout,
     atlas_layout: wgpu::BindGroupLayout,
+    motion_layout: wgpu::BindGroupLayout,
+    dummy_motion: wgpu::BindGroup,
     sampler: wgpu::Sampler,
 }
 
 #[cfg(test)]
 pub(super) fn icon_shader() -> String {
-    [super::wgsl::COLOR, ICON_STAGES].concat()
+    [super::wgsl::COLOR, super::wgsl::MOTION_G2, ICON_STAGES].concat()
 }
 
 /// The icon program for targets of `format`: the only part of
@@ -270,15 +297,20 @@ fn try_icon_pipeline(
     policy: Option<&nana_gpu::GpuDeviceState>,
     uniform_layout: &wgpu::BindGroupLayout,
     atlas_layout: &wgpu::BindGroupLayout,
+    motion_layout: &wgpu::BindGroupLayout,
 ) -> Result<wgpu::RenderPipeline, super::validate::ScenePaintError> {
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("nana-ui.scene.icon.pipeline"),
-        bind_group_layouts: &[Some(uniform_layout), Some(atlas_layout)],
+        bind_group_layouts: &[
+            Some(uniform_layout),
+            Some(atlas_layout),
+            Some(motion_layout),
+        ],
         immediate_size: 0,
     });
     let shader = super::wgsl::program_concat!(
         "nana-ui.scene.icon.shader",
-        [super::wgsl::COLOR, ICON_STAGES]
+        [super::wgsl::COLOR, super::wgsl::MOTION_G2, ICON_STAGES]
     );
     shader.try_cached_pipeline(
         policy,
@@ -316,6 +348,10 @@ fn try_icon_pipeline(
                             4 => Float32x4,
                             5 => Float32x3,
                             6 => Float32x4,
+                            7 => Float32x4,
+                            8 => Float32x2,
+                            9 => Float32x4,
+                            10 => Uint32x2,
                         ),
                     })],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -357,6 +393,7 @@ impl IconPipeline {
             policy,
             &self.uniform_layout,
             &self.atlas_layout,
+            &self.motion_layout,
         )
     }
 
@@ -451,11 +488,26 @@ impl IconPipeline {
             mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
-        let pipeline = try_icon_pipeline(device, format, policy, &uniform_layout, &atlas_layout)?;
+        let motion_layout = super::motion::motion_bind_layout_for_policy(device, policy);
+        let dummy_motion = super::motion::dummy_motion_bind_group(
+            device,
+            &motion_layout,
+            "nana-ui.scene.icon.dummy_motion",
+        );
+        let pipeline = try_icon_pipeline(
+            device,
+            format,
+            policy,
+            &uniform_layout,
+            &atlas_layout,
+            &motion_layout,
+        )?;
         Ok(Self {
             pipeline,
             uniform_layout,
             atlas_layout,
+            motion_layout,
+            dummy_motion,
             sampler,
         })
     }
@@ -529,6 +581,8 @@ impl IconPipeline {
             bounds,
             affine,
             persp,
+            (0, 0),
+            [0.0; 2],
             scale,
             icon,
             color,
@@ -547,6 +601,8 @@ impl IconPipeline {
         bounds: LogicalRect,
         affine: [f32; 6],
         persp: [f32; 2],
+        motion_ids: (u32, u32),
+        motion_origin: [f32; 2],
         scale: f32,
         icon: Icon,
         color: nana_ui_core::PaintColor,
@@ -576,7 +632,29 @@ impl IconPipeline {
         color[3] *= opacity;
         let clip = fragment_clip.for_physical_pixels(scale);
         let first_vertex = target.pending_vertices.len() as u32;
-        let [tl, tr, bl, br] = icon_quad(bounds, affine, persp, scale);
+        let (quad_corners, motion_abcd, motion_ef, vertex_motion_origin) = if motion_ids.0 != 0 {
+            let x = bounds.x + (bounds.width - extent) * 0.5;
+            let y = bounds.y + (bounds.height - extent) * 0.5;
+            (
+                [
+                    [x, y],
+                    [x + extent, y],
+                    [x, y + extent],
+                    [x + extent, y + extent],
+                ],
+                [affine[0], affine[1], affine[2], affine[3]],
+                [affine[4], affine[5]],
+                [motion_origin[0], motion_origin[1], scale, 1.0],
+            )
+        } else {
+            (
+                icon_quad(bounds, affine, persp, scale),
+                [1.0, 0.0, 0.0, 1.0],
+                [0.0, 0.0],
+                [0.0, 0.0, scale, 0.0],
+            )
+        };
+        let [tl, tr, bl, br] = quad_corners;
         let positions = [tl, tr, bl, tr, br, bl];
         for (position, corner) in positions.into_iter().zip(CORNER_UV) {
             target.pending_vertices.push(IconVertex {
@@ -587,6 +665,10 @@ impl IconPipeline {
                 clip_rect: clip.rect,
                 clip_inv_abcd: clip.inv_abcd,
                 clip_inv_ef: [clip.inv_ef[0], clip.inv_ef[1], clip.corner_radius],
+                motion_abcd,
+                motion_ef,
+                motion_origin: vertex_motion_origin,
+                motion_ids: [motion_ids.0, motion_ids.1],
             });
         }
         let index = target.frame_slots.len();
@@ -767,6 +849,7 @@ impl IconPipeline {
 
     /// Draw one run of adjacent slots as a single call, whatever glyphs it
     /// holds: they all sample the same atlas and the same bind group.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn draw(
         &self,
         target: &IconPipelineTarget,
@@ -774,6 +857,7 @@ impl IconPipeline {
         first: usize,
         count: usize,
         scissor: PhysicalRect,
+        motion: Option<&wgpu::BindGroup>,
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
         let (Some(head), Some(last)) = (
@@ -793,6 +877,7 @@ impl IconPipeline {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &target.uniform_bind_group, &[]);
         pass.set_bind_group(1, &atlas.bind_group, &[]);
+        pass.set_bind_group(2, motion.unwrap_or(&self.dummy_motion), &[]);
         pass.set_vertex_buffer(0, target.vertices.slice(..));
         pass.draw(head.first_vertex..end, 0..1);
         if let Some(work) = gpu_work {

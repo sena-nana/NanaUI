@@ -83,7 +83,47 @@ pub(super) const CHART: &str = stripped!(include_str!("shader/chart.wgsl"));
 pub(super) const COLOR: &str = stripped!(include_str!("shader/color.wgsl"));
 pub(super) const LAYER: &str = stripped!(include_str!("shader/layer.wgsl"));
 pub(super) const LAYER_BLEND: &str = stripped!(include_str!("shader/layer_blend.wgsl"));
-pub(super) const MOTION: &str = stripped!(include_str!("shader/motion.wgsl"));
+pub(crate) const MOTION: &str = stripped!(include_str!("shader/motion.wgsl"));
+
+const fn replace_motion_group_digit<const N: usize>(src: &[u8], digit: u8) -> [u8; N] {
+    let mut out = [0u8; N];
+    let pat = b"@group(1)";
+    let mut i = 0;
+    while i < N {
+        let mut matched = i + pat.len() <= N;
+        if matched {
+            let mut j = 0;
+            while j < pat.len() {
+                if src[i + j] != pat[j] {
+                    matched = false;
+                    break;
+                }
+                j += 1;
+            }
+        }
+        if matched {
+            let mut j = 0;
+            while j < pat.len() {
+                out[i + j] = if j == 7 { digit } else { pat[j] };
+                j += 1;
+            }
+            i += pat.len();
+        } else {
+            out[i] = src[i];
+            i += 1;
+        }
+    }
+    out
+}
+
+const MOTION_LEN: usize = MOTION.len();
+#[allow(long_running_const_eval)]
+const MOTION_G2_BYTES: [u8; MOTION_LEN] =
+    replace_motion_group_digit::<MOTION_LEN>(MOTION.as_bytes(), b'2');
+pub(super) const MOTION_G2: &str = match ::core::str::from_utf8(&MOTION_G2_BYTES) {
+    Ok(s) => s,
+    Err(_) => panic!("MOTION_G2 UTF-8"),
+};
 pub(super) const PATH: &str = stripped!(include_str!("shader/path.wgsl"));
 pub(super) const QUAD: &str = stripped!(include_str!("shader/quad.wgsl"));
 pub(super) const QUAD_PAINT: &str = stripped!(include_str!("shader/quad_paint.wgsl"));
@@ -696,7 +736,7 @@ impl Program {
 
     /// The program [`joined`] from `files`.
     #[cfg(any(test, feature = "runtime-wgsl", target_os = "windows"))]
-    pub(super) fn joined(label: &'static str, files: &[&str]) -> Self {
+    pub(crate) fn joined(label: &'static str, files: &[&str]) -> Self {
         Self::new(label, joined(files))
     }
 

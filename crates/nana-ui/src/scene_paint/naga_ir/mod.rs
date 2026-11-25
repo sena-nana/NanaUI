@@ -65,6 +65,7 @@ pub(in crate::scene_paint) mod tests {
                 label: "nana-ui.scene.triangle.solid.shader",
                 source: super::super::wgsl::joined(&[
                     super::super::wgsl::TRIANGLE,
+                    super::super::wgsl::MOTION,
                     super::super::wgsl::TRIANGLE_SOLID,
                     super::super::wgsl::PATH,
                     super::super::wgsl::COLOR,
@@ -85,6 +86,7 @@ pub(in crate::scene_paint) mod tests {
                 label: "nana-ui.scene.group.blend.shader",
                 source: super::super::wgsl::joined(&[
                     super::super::wgsl::COLOR,
+                    super::super::wgsl::MOTION,
                     super::super::wgsl::LAYER,
                     super::super::wgsl::LAYER_BLEND,
                 ]),
@@ -95,6 +97,7 @@ pub(in crate::scene_paint) mod tests {
                 label: "nana-ui.scene.group.shader",
                 source: super::super::wgsl::joined(&[
                     super::super::wgsl::COLOR,
+                    super::super::wgsl::MOTION,
                     super::super::wgsl::LAYER,
                 ]),
                 cfg_gate: None,
@@ -160,7 +163,10 @@ pub(in crate::scene_paint) mod tests {
             BuiltinProgram {
                 slug: "host_texture",
                 label: "nana-ui host texture shader",
-                source: crate::gpu_texture::SOURCE.to_owned(),
+                source: super::super::wgsl::joined(&[
+                    super::super::wgsl::MOTION,
+                    crate::gpu_texture::SOURCE,
+                ]),
                 cfg_gate: None,
             },
             BuiltinProgram {

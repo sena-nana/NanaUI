@@ -1093,7 +1093,7 @@ impl UiWorld {
         }
     }
 
-    pub(super) fn palette_paint_colors(
+    pub(super) fn logical_palette_paint_colors(
         &self,
         id: StableNodeId,
         inherited_color: Option<[f32; 4]>,
@@ -1138,19 +1138,30 @@ impl UiWorld {
             .or_else(|| layout.resolved_border_color())
             .or_else(|| paint.border_mix.map(|mix| self.theme_mix(model, mix)))
             .or_else(|| paint.border.map(|role| self.theme_color(model, role)));
-        let (mut color, mut background, border_color) =
-            if let Some(transition) = self.motion.hover_transitions.get(&id) {
-                let [c, bg, bc] = std::array::from_fn(|i| {
-                    interpolate_color(
-                        transition.from[i],
-                        [color, background, border_color][i],
-                        transition.progress,
-                    )
-                });
-                (c, bg, bc)
-            } else {
-                (color, background, border_color)
-            };
+        (foreground, color, background, border_color)
+    }
+
+    pub(super) fn palette_paint_colors(
+        &self,
+        id: StableNodeId,
+        inherited_color: Option<[f32; 4]>,
+        model: StyleModelRef,
+    ) -> (
+        SemanticColorRole,
+        Option<[f32; 4]>,
+        Option<[f32; 4]>,
+        Option<[f32; 4]>,
+    ) {
+        let (foreground, mut color, mut background, mut border_color) =
+            self.logical_palette_paint_colors(id, inherited_color, model);
+        if let Some((from, progress)) = self
+            .motion
+            .hover_transitions
+            .get(&id)
+            .and_then(|transition| transition.border)
+        {
+            border_color = interpolate_color(from, border_color, progress);
+        }
         if let Some(overlay_fg) =
             self.presentation_color_overlay(id, crate::AnimatableProperty::Color)
         {
@@ -1159,7 +1170,16 @@ impl UiWorld {
         if let Some(overlay_bg) =
             self.presentation_color_overlay(id, crate::AnimatableProperty::Background)
         {
-            background = Some(overlay_bg);
+            let suppress_transparent = self
+                .motion
+                .hover_transitions
+                .get(&id)
+                .is_some_and(|transition| transition.bg_has_none && overlay_bg[3] <= 1e-5);
+            background = if suppress_transparent {
+                None
+            } else {
+                Some(overlay_bg)
+            };
         }
         (foreground, color, background, border_color)
     }
@@ -2001,13 +2021,26 @@ impl UiWorld {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub(super) struct HoverTransition {
-    pub from: [Option<[f32; 4]>; 3],
-    /// Motion IR sample progress. Style interpolation reads this; it does not
-    /// sample `animation_now` on its own clock.
-    pub progress: f32,
+    pub border: Option<(Option<[f32; 4]>, f32)>,
+    pub bg_has_none: bool,
     pub inherits_color: bool,
+}
+
+fn hover_color_endpoints(
+    from: Option<[f32; 4]>,
+    to: Option<[f32; 4]>,
+) -> Option<([f32; 4], [f32; 4])> {
+    if from == to {
+        return None;
+    }
+    match (from, to) {
+        (Some(a), Some(b)) => Some((a, b)),
+        (Some(a), None) => Some((a, [a[0], a[1], a[2], 0.0])),
+        (None, Some(b)) => Some(([b[0], b[1], b[2], 0.0], b)),
+        (None, None) => None,
+    }
 }
 
 fn interpolate_color(
@@ -2048,29 +2081,92 @@ impl UiWorld {
         [color, background, border]
     }
 
+    pub(super) fn logical_hover_paint(&self, id: StableNodeId) -> [Option<[f32; 4]>; 3] {
+        let inherited = self
+            .record(id)
+            .hierarchy
+            .parent
+            .and_then(|parent| self.record(parent).resolved.0.color);
+        let (_, color, background, border) =
+            self.logical_palette_paint_colors(id, inherited, self.node_style_model(id));
+        [color, background, border]
+    }
+
+    pub(super) fn has_active_hover_track(&self, target: StableNodeId) -> bool {
+        [
+            crate::component_animation_kinds::HOVER,
+            crate::component_animation_kinds::HOVER_FOREGROUND,
+            crate::component_animation_kinds::HOVER_BORDER,
+        ]
+        .into_iter()
+        .any(|kind| {
+            crate::component_animation_id(kind, target)
+                .is_some_and(|id| self.motion.animations.contains_key(&id))
+        })
+    }
+
+    fn cancel_hover_kind(&mut self, kind: u64, target: StableNodeId) {
+        if let Some(id) = crate::component_animation_id(kind, target) {
+            if let Some(animation) = self.motion.animations.remove(&id) {
+                self.motion
+                    .animation_deadlines
+                    .remove(&(animation.next_deadline, id));
+            }
+            self.unbind_presentation(id.track_id());
+        }
+    }
+
     pub(super) fn transition_hover(&mut self, id: StableNodeId, from: [Option<[f32; 4]>; 3]) {
         if self.motion.hover_transitions.contains_key(&id) {
             self.mark_hover_paint(id);
         }
-        self.cancel_hover_transition(id);
-        let to = self.hover_paint(id);
-        if from != to {
-            self.motion.hover_transitions.insert(
+        let to = self.logical_hover_paint(id);
+        if from == to {
+            self.cancel_hover_transition(id);
+            return;
+        }
+        let node_theme = self.node_theme(id);
+        let hover_duration = node_theme.duration(nana_ui_core::MotionRole::HoverColor);
+        let hover_easing = node_theme
+            .motion()
+            .easing(nana_ui_core::EasingRole::Standard);
+        let mut active = false;
+        if let Some((from_c, to_c)) = hover_color_endpoints(from[0], to[0]) {
+            self.start_component_track(
                 id,
-                HoverTransition {
-                    from,
-                    progress: 0.0,
-                    inherits_color: from[0] != to[0],
-                },
+                crate::component_animation_kinds::HOVER_FOREGROUND,
+                hover_duration,
+                hover_easing,
+                crate::AnimatableProperty::Color,
+                crate::MotionValue::Color(from_c),
+                crate::MotionValue::Color(to_c),
+                crate::MotionInterrupt::Retarget,
+                None,
             );
-            let node_theme = self.node_theme(id);
-            let hover_duration = node_theme.duration(nana_ui_core::MotionRole::HoverColor);
-            let hover_easing = node_theme
-                .motion()
-                .easing(nana_ui_core::EasingRole::Standard);
+            active = true;
+        } else {
+            self.cancel_hover_kind(crate::component_animation_kinds::HOVER_FOREGROUND, id);
+        }
+        if let Some((from_bg, to_bg)) = hover_color_endpoints(from[1], to[1]) {
             self.start_component_track(
                 id,
                 crate::component_animation_kinds::HOVER,
+                hover_duration,
+                hover_easing,
+                crate::AnimatableProperty::Background,
+                crate::MotionValue::Color(from_bg),
+                crate::MotionValue::Color(to_bg),
+                crate::MotionInterrupt::Retarget,
+                None,
+            );
+            active = true;
+        } else {
+            self.cancel_hover_kind(crate::component_animation_kinds::HOVER, id);
+        }
+        let border = if from[2] != to[2] {
+            self.start_component_track(
+                id,
+                crate::component_animation_kinds::HOVER_BORDER,
                 hover_duration,
                 hover_easing,
                 crate::AnimatableProperty::Progress,
@@ -2079,7 +2175,24 @@ impl UiWorld {
                 crate::MotionInterrupt::Retarget,
                 None,
             );
+            active = true;
+            Some((from[2], 0.0))
+        } else {
+            self.cancel_hover_kind(crate::component_animation_kinds::HOVER_BORDER, id);
+            None
+        };
+        if active {
+            self.motion.hover_transitions.insert(
+                id,
+                HoverTransition {
+                    border,
+                    bg_has_none: from[1].is_none() || to[1].is_none(),
+                    inherits_color: from[0] != to[0],
+                },
+            );
             self.mark_hover_paint(id);
+        } else {
+            self.motion.hover_transitions.remove(&id);
         }
     }
 }
@@ -2101,13 +2214,12 @@ impl UiWorld {
 
     pub(super) fn cancel_hover_transition(&mut self, target: StableNodeId) {
         self.motion.hover_transitions.remove(&target);
-        if let Some(id) =
-            crate::component_animation_id(crate::component_animation_kinds::HOVER, target)
-            && let Some(animation) = self.motion.animations.remove(&id)
-        {
-            self.motion
-                .animation_deadlines
-                .remove(&(animation.next_deadline, id));
+        for kind in [
+            crate::component_animation_kinds::HOVER,
+            crate::component_animation_kinds::HOVER_FOREGROUND,
+            crate::component_animation_kinds::HOVER_BORDER,
+        ] {
+            self.cancel_hover_kind(kind, target);
         }
     }
 }

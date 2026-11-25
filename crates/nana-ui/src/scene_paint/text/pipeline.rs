@@ -185,7 +185,12 @@ fn vs_main(vertex: VsIn) -> VsOut {
             color = vec4<f32>(srgb_to_linear3(look.color.rgb), color.a);
         }
     }
-    color.a = color.a * run.opacity;
+    let motion_opacity = clamp(
+        motion_sample_scalar(motion_evaluate(run.motion_opacity_id), 1.0),
+        0.0,
+        1.0,
+    );
+    color.a = color.a * run.opacity * motion_opacity;
 
     let world = text_world_position(run, local);
     let clip_w = text_clip_w(run, local);
@@ -344,6 +349,7 @@ pub(in crate::scene_paint) fn text_shader(dual_source: bool) -> String {
     [
         prelude,
         super::super::wgsl::COLOR,
+        super::super::wgsl::MOTION_G2,
         super::super::wgsl::TEXT_ATLAS,
         TEXT_STAGES,
         fragment,
@@ -360,6 +366,7 @@ fn text_program(dual_source: bool, precompiled: bool) -> super::super::wgsl::Pro
             [
                 "enable dual_source_blending;\n",
                 super::super::wgsl::COLOR,
+                super::super::wgsl::MOTION_G2,
                 super::super::wgsl::TEXT_ATLAS,
                 TEXT_STAGES,
                 TEXT_FRAGMENT_DUAL_SOURCE,
@@ -371,6 +378,7 @@ fn text_program(dual_source: bool, precompiled: bool) -> super::super::wgsl::Pro
             [
                 "",
                 super::super::wgsl::COLOR,
+                super::super::wgsl::MOTION_G2,
                 super::super::wgsl::TEXT_ATLAS,
                 TEXT_STAGES,
                 TEXT_FRAGMENT,
@@ -511,10 +519,10 @@ pub(super) struct TextRunGpu {
     /// Word offset of the run's per-glyph presentation in the fx table; zero
     /// for none.
     pub fx: u32,
-    pad: f32,
+    pub motion_opacity_id: u32,
 }
 
-/// The transform and clip a run paints under. 160 bytes, deduplicated.
+/// The transform and clip a run paints under. 176 bytes, deduplicated.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub(super) struct TextPresentationGpu {
@@ -525,11 +533,13 @@ pub(super) struct TextPresentationGpu {
     clip_inv_ef: [f32; 4],
     polygon: [[f32; 4]; 4],
     polygon_count: u32,
-    pad: u32,
+    motion_transform_id: u32,
     /// The whole-pixel part of a translation, in physical px. A translated
     /// run's origin is kept relative to it, so a scroll that lands on whole
     /// pixels rewrites this one shared row instead of every run under it.
     translate: [f32; 2],
+    motion_origin: [f32; 2],
+    _pad_motion: [u32; 2],
 }
 
 /// What the precompiled text stages must have been compiled from: the
@@ -596,7 +606,7 @@ fn text_layout_key() -> u64 {
     ])
     .expect("text atlas table")
     .layout_key();
-    globals ^ atlas.rotate_left(17)
+    globals ^ atlas.rotate_left(17) ^ super::super::motion::motion_layout_key().rotate_left(29)
 }
 
 /// One draw: a contiguous span of the index table whose instances sample one
@@ -666,6 +676,9 @@ pub(super) struct TextGpu {
     layout: wgpu::PipelineLayout,
     format: wgpu::TextureFormat,
     globals_layout: wgpu::BindGroupLayout,
+    #[cfg_attr(not(feature = "runtime-wgsl"), allow(dead_code))]
+    motion_layout: wgpu::BindGroupLayout,
+    dummy_motion: wgpu::BindGroup,
     /// The platform's text parameters, read once when the painter is made.
     contrast: TextContrast,
     policy: Option<nana_gpu::GpuDeviceState>,
@@ -776,9 +789,19 @@ impl TextGpu {
                 ],
             })
         };
+        let motion_layout = super::super::motion::motion_bind_layout_for_policy(device, policy);
+        let dummy_motion = super::super::motion::dummy_motion_bind_group(
+            device,
+            &motion_layout,
+            "nana-ui.scene.text.dummy_motion",
+        );
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("nana-ui.scene.text.pipeline"),
-            bind_group_layouts: &[Some(&globals_layout), Some(atlas_layout)],
+            bind_group_layouts: &[
+                Some(&globals_layout),
+                Some(atlas_layout),
+                Some(&motion_layout),
+            ],
             immediate_size: 0,
         });
         let pipeline = try_cached_text_pipeline(
@@ -813,6 +836,8 @@ impl TextGpu {
             layout,
             format,
             globals_layout,
+            motion_layout,
+            dummy_motion,
             contrast: TextContrast::system(),
             policy: policy.cloned(),
             instance_slots: u32::try_from(instance_bytes / INSTANCE_BYTES).unwrap_or(u32::MAX),
@@ -925,6 +950,7 @@ impl TextGpu {
                 let layouts = [
                     self.globals_layout.clone(),
                     atlas.layout().clone(),
+                    self.motion_layout.clone(),
                     self.material_device.text_layout.clone(),
                 ];
                 let (worker, format, owned) = (device.clone(), self.format, sources.clone());
@@ -933,7 +959,7 @@ impl TextGpu {
                     let native=text_shader(dual);
                     let mut source=native.replace("if duration > 0.0 {", "if duration > 0.0 && text_glyph_fx[fx+12u]==0u {");
                     for (i,m) in owned.iter().enumerate() {
-                        source.push_str(&super::super::material::program_source_at(m, ["nm_text_","nm_enter_","nm_exit_"][i],2,i as u32*4)?);
+                        source.push_str(&super::super::material::program_source_at(m, ["nm_text_","nm_enter_","nm_exit_"][i],3,i as u32*4)?);
                     }
                     source=source.replace("out.color = input.color.rgb;", "let nm = nm_text_material(nm_text_MaterialInput(input.material_position,input.glyph_uv,input.glyph_size,input.glyph_uv,vec4<f32>(input.color.rgb,1.),1.,input.text_position,vec2<f32>(1.))); out.color = nm.rgb;")
                         .replace("input.color.a * corrected * clip_cover", "input.color.a * clamp(nm.a,0.,1.) * corrected * clip_cover")
@@ -961,8 +987,8 @@ fn shade(input:VsOut)->TextShade {
     return result;
 }
 "#);
-                    let [globals, atlas, materials] = &layouts;
-                    let layout=device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:Some("text color and transition materials"),bind_group_layouts:&[Some(globals),Some(atlas),Some(materials)],immediate_size:0});
+                    let [globals, atlas, motion, materials] = &layouts;
+                    let layout=device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:Some("text color and transition materials"),bind_group_layouts:&[Some(globals),Some(atlas),Some(motion),Some(materials)],immediate_size:0});
                     let blend=if dual {let c=wgpu::BlendComponent{src_factor:wgpu::BlendFactor::Src1,dst_factor:wgpu::BlendFactor::OneMinusSrc1,operation:wgpu::BlendOperation::Add};wgpu::BlendState{color:c,alpha:c}}else{wgpu::BlendState::ALPHA_BLENDING};
                     let program =
                         super::super::wgsl::Program::material("nana-ui.scene.text.shader", source);
@@ -1379,12 +1405,14 @@ fn shade(input:VsOut)->TextShade {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn draw_segment(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         target: &TextTargetGpu,
         segment: &DrawSegment,
         bind_group: &wgpu::BindGroup,
+        motion: Option<&wgpu::BindGroup>,
         dual_source: bool,
     ) {
         if segment.count == 0 {
@@ -1401,7 +1429,7 @@ fn shade(input:VsOut)->TextShade {
         });
         if let Some((pipeline, binding)) = custom {
             pass.set_pipeline(pipeline);
-            pass.set_bind_group(2, binding, &[]);
+            pass.set_bind_group(3, binding, &[]);
         } else {
             let pipeline = if dual_source {
                 self.dual_source.as_ref().unwrap_or(&self.pipeline)
@@ -1415,6 +1443,7 @@ fn shade(input:VsOut)->TextShade {
         };
         pass.set_bind_group(0, globals, &[]);
         pass.set_bind_group(1, bind_group, &[]);
+        pass.set_bind_group(2, motion.unwrap_or(&self.dummy_motion), &[]);
         pass.set_vertex_buffer(0, target.indices.slice(..));
         pass.draw(0..4, segment.first..segment.first + segment.count);
     }
@@ -1969,9 +1998,10 @@ impl TextRunGpu {
         opacity: 0.0,
         raster: 1.0,
         fx: 0,
-        pad: 0.0,
+        motion_opacity_id: 0,
     };
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         origin: [f32; 2],
         presentation: u32,
@@ -1980,6 +2010,7 @@ impl TextRunGpu {
         opacity: f32,
         raster: f32,
         fx: u32,
+        motion_opacity_id: u32,
     ) -> Self {
         Self {
             origin,
@@ -1989,7 +2020,7 @@ impl TextRunGpu {
             opacity,
             raster,
             fx,
-            pad: 0.0,
+            motion_opacity_id,
         }
     }
 }
@@ -2000,6 +2031,8 @@ impl TextPresentationGpu {
         persp: [f32; 2],
         clip: &clip::FragmentClip,
         scale: f32,
+        motion_transform_id: u32,
+        motion_origin: [f32; 2],
     ) -> Self {
         let mut polygon = [[0.0f32; 4]; 4];
         for (index, slot) in polygon.iter_mut().enumerate() {
@@ -2015,14 +2048,16 @@ impl TextPresentationGpu {
             clip_inv_ef: [clip.inv_ef[0], clip.inv_ef[1], clip.corner_radius, scale],
             polygon,
             polygon_count: u32::from(clip.polygon_count),
-            pad: 0,
+            motion_transform_id,
             translate: whole_translation(affine, scale),
+            motion_origin,
+            _pad_motion: [0, 0],
         }
     }
 
     /// Bit pattern, so two runs that present identically share one row.
-    pub(super) fn to_bits(self) -> [u32; 40] {
-        let mut bits = [0u32; 40];
+    pub(super) fn to_bits(self) -> [u32; 44] {
+        let mut bits = [0u32; 44];
         let floats: [f32; 36] = bytemuck::cast([
             self.affine,
             self.project,
@@ -2038,8 +2073,11 @@ impl TextPresentationGpu {
             *slot = value.to_bits();
         }
         bits[36] = self.polygon_count;
-        bits[37] = self.translate[0].to_bits();
-        bits[38] = self.translate[1].to_bits();
+        bits[37] = self.motion_transform_id;
+        bits[38] = self.translate[0].to_bits();
+        bits[39] = self.translate[1].to_bits();
+        bits[40] = self.motion_origin[0].to_bits();
+        bits[41] = self.motion_origin[1].to_bits();
         bits
     }
 }

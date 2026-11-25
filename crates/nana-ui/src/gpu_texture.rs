@@ -58,6 +58,10 @@ struct LayerUniform {
     corners: vec4<f32>,
     // target clear colour (premultiplied) for clear-fused replace draws
     clear_premul: vec4<f32>,
+    // motion_ids (transform_id, opacity_id, 0, 0)
+    motion_meta: vec4<u32>,
+    // motion transform-origin (x, y, 0, 0)
+    motion_origin: vec4<f32>,
 }
 
 @group(0) @binding(2)
@@ -129,19 +133,19 @@ fn box_cover(local: vec2<f32>, lo: vec2<f32>, size: vec2<f32>, radii: vec4<f32>,
     return clamp(0.5 - rounded_box_distance(p, size * 0.5, radii, dx, dy, layer.params.y), 0.0, 1.0);
 }
 
-fn to_world(local: vec2<f32>) -> vec2<f32> {
-    let xp = layer.affine.x * local.x + layer.affine.z * local.y + layer.origin.x;
-    let yp = layer.affine.y * local.x + layer.affine.w * local.y + layer.origin.y;
-    let w = layer.persp.x * local.x + layer.persp.y * local.y + 1.0;
+fn to_world_m(local: vec2<f32>, abcd: vec4<f32>, ef: vec4<f32>) -> vec2<f32> {
+    let xp = abcd.x * local.x + abcd.z * local.y + ef.x;
+    let yp = abcd.y * local.x + abcd.w * local.y + ef.y;
+    let w = ef.z * local.x + ef.w * local.y + 1.0;
     return select(vec2<f32>(xp, yp), vec2<f32>(xp, yp) / w, abs(w) >= 1e-8);
 }
 
 // `edge_grow` of `quad_solid.wgsl`, in logical px and from zero.
-fn edge_grow(p: vec2<f32>) -> vec2<f32> {
-    let world = to_world(p);
-    let w = abs(layer.persp.x * p.x + layer.persp.y * p.y + 1.0);
-    let along_x = vec2(layer.affine.x - world.x * layer.persp.x, layer.affine.y - world.y * layer.persp.x);
-    let along_y = vec2(layer.affine.z - world.x * layer.persp.y, layer.affine.w - world.y * layer.persp.y);
+fn edge_grow_m(p: vec2<f32>, abcd: vec4<f32>, ef: vec4<f32>) -> vec2<f32> {
+    let world = to_world_m(p, abcd, ef);
+    let w = abs(ef.z * p.x + ef.w * p.y + 1.0);
+    let along_x = vec2(abcd.x - world.x * ef.z, abcd.y - world.y * ef.z);
+    let along_y = vec2(abcd.z - world.x * ef.w, abcd.w - world.y * ef.w);
     let det = abs(along_x.x * along_y.y - along_x.y * along_y.x);
     let grow = 0.5 * w * vec2(length(along_y), length(along_x))
         / (max(layer.source.y, 0.0001) * max(det, 1.0e-6));
@@ -158,21 +162,27 @@ fn vertex_main(@builtin(vertex_index) index: u32) -> VertexOutput {
         vec2<f32>(1.0, 1.0),
         vec2<f32>(0.0, 1.0),
     );
+    let composed = motion_compose_projective(
+        layer.affine,
+        vec4<f32>(layer.origin.xy, layer.persp.xy),
+        layer.motion_origin.xy,
+        motion_evaluate(layer.motion_meta.x),
+    );
     let unit = units[index];
     let size = layer.params.zw;
     let corner = layer.origin.zw + unit * size;
     // Grown for the edge ramp's outer half; `fragment_main` masks the fringe.
-    let grow = select(vec2(0.0), edge_grow(corner), all(size > vec2(0.0)));
+    let grow = select(vec2(0.0), edge_grow_m(corner, composed.abcd, composed.ef), all(size > vec2(0.0)));
     let outward = unit * 2.0 - 1.0;
     let local = corner + outward * grow;
     let uv = unit + outward * grow / max(size, vec2(1.0e-4));
-    let world = to_world(local);
+    let world = to_world_m(local, composed.abcd, composed.ef);
     let physical = world * layer.source.y;
     let dest = vec2<f32>(max(layer.source.z, 1.0), max(layer.source.w, 1.0));
     var output: VertexOutput;
     // The homography's `w` as the clip-space w, so `uv` and `local` are
     // interpolated perspective-correctly rather than affinely per triangle.
-    let w = layer.persp.x * local.x + layer.persp.y * local.y + 1.0;
+    let w = composed.ef.z * local.x + composed.ef.w * local.y + 1.0;
     let clip_w = select(1.0, w, w > 1.0e-6);
     output.position = vec4<f32>(
         2.0 * physical.x / dest.x - 1.0,
@@ -405,7 +415,15 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let box_pos = select(layer.origin.zw, layer.clip.xy, has_clip);
     let box_size = select(layer.params.zw, layer.clip.zw, has_clip);
     let mask_uv = (input.local - box_pos) / max(box_size, vec2(0.0001));
-    var color = vec4<f32>(sampled.rgb, source_alpha) * layer.params.x * mask_alpha(mask_uv);
+    let motion_opacity = clamp(
+        motion_sample_scalar(motion_evaluate(layer.motion_meta.y), 1.0),
+        0.0,
+        1.0,
+    );
+    var color = vec4<f32>(sampled.rgb, source_alpha)
+        * layer.params.x
+        * motion_opacity
+        * mask_alpha(mask_uv);
     if (layer.editor.x > 0.5) {
         // 棋盘底：把纹理（含透明区域）合成在不透明棋盘上。
         let cell = max(layer.editor.z, 2.0);
@@ -1308,6 +1326,8 @@ pub(crate) struct HostTextureLayer {
     sampling: nana_ui_core::ImageSampling,
     /// The scene's corner curve exponent, for the rounded box and clip.
     corner_exponent: f32,
+    motion_ids: [u32; 2],
+    motion_origin: [f32; 2],
 }
 
 impl HostTextureLayer {
@@ -1331,7 +1351,19 @@ impl HostTextureLayer {
             mask: None,
             sampling: nana_ui_core::ImageSampling::Resample,
             corner_exponent: 2.0,
+            motion_ids: [0, 0],
+            motion_origin: [0.0, 0.0],
         }
+    }
+
+    pub(crate) const fn with_motion(
+        mut self,
+        motion_ids: (u32, u32),
+        motion_origin: [f32; 2],
+    ) -> Self {
+        self.motion_ids = [motion_ids.0, motion_ids.1];
+        self.motion_origin = motion_origin;
+        self
     }
 
     pub fn with_opacity(mut self, opacity: f32) -> Self {
@@ -1461,10 +1493,14 @@ impl GpuTexturePrimitive {
         // `layer.clip` is pre-affine (same space as dest / the sibling Quad).
         // The pass scissor is paint-space; scrolling would otherwise place
         // this rect below the target and the draw would scissor to nothing.
-        let clip = self
-            .layer
-            .clip
-            .map(|clip| clip_pixels(texture.id, clip, affine, persp, scale_factor));
+        // Skip the rest-space scissor when GPU transform motion moves the layer.
+        let clip = (self.layer.motion_ids[0] == 0)
+            .then(|| {
+                self.layer
+                    .clip
+                    .map(|clip| clip_pixels(texture.id, clip, affine, persp, scale_factor))
+            })
+            .flatten();
         let mask_url = match self.layer.mask.as_ref() {
             Some(nana_ui_core::MaskImage::Url(url))
                 if url_cache
@@ -1611,6 +1647,7 @@ impl GpuTexturePrimitive {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw_in_pass_with_mode(
         &self,
         pipeline: &GpuTexturePipeline,
@@ -1619,6 +1656,7 @@ impl GpuTexturePrimitive {
         clip_bounds: PhysicalRect,
         dest_size: [u32; 2],
         mode: HostTextureDrawMode,
+        motion: Option<&wgpu::BindGroup>,
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
         let key = TextureKey::new(self.presentation, self.layer.texture.id());
@@ -1637,11 +1675,13 @@ impl GpuTexturePrimitive {
             HostTextureDrawMode::SimpleReplace => &pipeline.simple_replace_pipeline,
         };
         encode_host_texture(
+            pipeline,
             render_pipeline,
             texture,
             pass,
             layer_bounds,
             dest_size,
+            motion,
             gpu_work,
         );
     }
@@ -1654,12 +1694,15 @@ pub(crate) enum HostTextureDrawMode {
     SimpleReplace,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn encode_host_texture(
+    pipeline: &GpuTexturePipeline,
     render_pipeline: &wgpu::RenderPipeline,
     texture: &PreparedTexture,
     pass: &mut wgpu::RenderPass<'_>,
     bounds: PhysicalRect,
     dest_size: [u32; 2],
+    motion: Option<&wgpu::BindGroup>,
     gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
 ) {
     let viewport = texture.viewport;
@@ -1675,6 +1718,7 @@ fn encode_host_texture(
     pass.set_scissor_rect(bounds.x, bounds.y, bounds.width, bounds.height);
     pass.set_pipeline(render_pipeline);
     pass.set_bind_group(0, &texture.bind_group, &[]);
+    pass.set_bind_group(1, motion.unwrap_or(&pipeline.dummy_motion), &[]);
     pass.draw(0..6, 0..1);
     pass.set_viewport(
         0.0,
@@ -1700,6 +1744,7 @@ pub struct GpuTexturePipeline {
     /// Trilinear, for nodes that ask for `ImageSampling::Mipmap`.
     mip_sampler: wgpu::Sampler,
     mask_fallback: wgpu::TextureView,
+    dummy_motion: wgpu::BindGroup,
 }
 
 impl GpuTexturePipeline {
@@ -1738,7 +1783,10 @@ impl GpuTexturePipeline {
         policy: Option<&nana_gpu::GpuDeviceState>,
         gpu: Option<&GpuContext>,
     ) -> Result<Self, crate::scene_paint::ScenePaintError> {
-        let shader = crate::scene_paint::wgsl::program!("nana-ui host texture shader", SOURCE);
+        let shader = crate::scene_paint::wgsl::program_joined!(
+            "nana-ui host texture shader",
+            [crate::scene_paint::wgsl::MOTION, SOURCE]
+        );
         let logical_layout = gpu.map(|gpu| {
             let table = ResourceTable::new(
                 [
@@ -1812,15 +1860,18 @@ impl GpuTexturePipeline {
                     ],
                 })
             });
+        let motion_layout =
+            crate::scene_paint::motion::motion_bind_layout_for_policy(device, policy);
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("nana-ui host texture pipeline layout"),
-            bind_group_layouts: &[Some(&bind_group_layout)],
+            bind_group_layouts: &[Some(&bind_group_layout), Some(&motion_layout)],
             immediate_size: 0,
         });
         let layout_key = logical_layout
             .as_ref()
             .map(|layout| layout.key())
-            .unwrap_or(7);
+            .unwrap_or(7)
+            ^ crate::scene_paint::motion::motion_layout_key().rotate_left(19);
         let build_pipeline = |label: &'static str,
                               vs_entry: &'static str,
                               fs_entry: &'static str,
@@ -1917,6 +1968,11 @@ impl GpuTexturePipeline {
         });
 
         let mask_fallback = white_mask_fallback(device, queue);
+        let dummy_motion = crate::scene_paint::motion::dummy_motion_bind_group(
+            device,
+            &motion_layout,
+            "nana-ui.host_texture.dummy_motion",
+        );
 
         Ok(Self {
             pipeline,
@@ -1926,6 +1982,7 @@ impl GpuTexturePipeline {
             sampler,
             mip_sampler,
             mask_fallback,
+            dummy_motion,
         })
     }
 
@@ -2011,9 +2068,11 @@ struct LayerUniform {
     editor: [f32; 4],
     corners: [f32; 4],
     clear_premul: [f32; 4],
+    motion_meta: [u32; 4],
+    motion_origin: [f32; 4],
 }
 
-const _: () = assert!(std::mem::size_of::<LayerUniform>() == 288);
+const _: () = assert!(std::mem::size_of::<LayerUniform>() == 320);
 
 #[allow(clippy::too_many_arguments)]
 fn make_layer_uniform(
@@ -2076,6 +2135,8 @@ fn make_layer_uniform(
         ],
         corners: layer.corner_radii,
         clear_premul,
+        motion_meta: [layer.motion_ids[0], layer.motion_ids[1], 0, 0],
+        motion_origin: [layer.motion_origin[0], layer.motion_origin[1], 0.0, 0.0],
     }
 }
 

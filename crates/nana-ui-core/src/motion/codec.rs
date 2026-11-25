@@ -14,6 +14,9 @@ impl MotionCodecId {
     pub const OPACITY: Self = Self(1);
     pub const TRANSFORM: Self = Self(2);
     pub const CLIP: Self = Self(3);
+    pub const FILTER: Self = Self(4);
+    pub const COLOR: Self = Self(5);
+    pub const BACKGROUND: Self = Self(6);
     /// First id available to [`MotionCodecRegistry::register`].
     pub const CUSTOM_START: u16 = 256;
 
@@ -26,17 +29,19 @@ impl MotionCodecId {
     }
 
     /// Built-in codec for a compositor property. `ShaderParameter` has none
-    /// until a registry entry is supplied.
+    /// until a registry entry is supplied. `Color` and `Background` remain
+    /// `AnimationClass::Paint` by default and map via
+    /// [`Self::for_compositor_property`] when explicitly compositor-bound.
     pub fn for_property(property: AnimatableProperty) -> Option<Self> {
         match property {
             AnimatableProperty::Opacity => Some(Self::OPACITY),
             AnimatableProperty::Transform => Some(Self::TRANSFORM),
             AnimatableProperty::Clip => Some(Self::CLIP),
+            AnimatableProperty::Filter => Some(Self::FILTER),
             AnimatableProperty::ShaderParameter
             | AnimatableProperty::Color
             | AnimatableProperty::Background
             | AnimatableProperty::Blur
-            | AnimatableProperty::Filter
             | AnimatableProperty::Shadow
             | AnimatableProperty::Width
             | AnimatableProperty::Height
@@ -48,6 +53,16 @@ impl MotionCodecId {
             | AnimatableProperty::Progress => None,
         }
     }
+
+    /// Built-in codec for a property evaluated on the GPU motion slab,
+    /// including compositor-bound `Color` and `Background` tracks.
+    pub fn for_compositor_property(property: AnimatableProperty) -> Option<Self> {
+        match property {
+            AnimatableProperty::Color => Some(Self::COLOR),
+            AnimatableProperty::Background => Some(Self::BACKGROUND),
+            other => Self::for_property(other),
+        }
+    }
 }
 
 /// Channel layout a codec interpolates. Not a free-form byte blob.
@@ -56,6 +71,7 @@ pub enum MotionValueKind {
     Scalar,
     Color,
     Transform,
+    Filter,
     Discrete,
 }
 
@@ -107,6 +123,21 @@ impl MotionCodecRegistry {
                 name: "clip",
                 value_kind: MotionValueKind::Scalar,
             }),
+            MotionCodecId::FILTER => Some(MotionCodecInfo {
+                id,
+                name: "filter",
+                value_kind: MotionValueKind::Filter,
+            }),
+            MotionCodecId::COLOR => Some(MotionCodecInfo {
+                id,
+                name: "color",
+                value_kind: MotionValueKind::Color,
+            }),
+            MotionCodecId::BACKGROUND => Some(MotionCodecInfo {
+                id,
+                name: "background-color",
+                value_kind: MotionValueKind::Color,
+            }),
             other => self.custom.get(&other).copied(),
         }
     }
@@ -140,7 +171,10 @@ impl MotionCodecRegistry {
     }
 
     fn builtin_name(&self, name: &str) -> bool {
-        matches!(name, "opacity" | "transform" | "clip")
+        matches!(
+            name,
+            "opacity" | "transform" | "clip" | "filter" | "color" | "background-color"
+        )
     }
 }
 

@@ -34,6 +34,8 @@ impl<'a> NodeMotion<'a> {
             now: self.now,
             opacity: None,
             transform: None,
+            color: None,
+            background: None,
             width: None,
             height: None,
             font_axes: Vec::new(),
@@ -110,6 +112,8 @@ pub struct TransitionBuilder<'a> {
     now: Duration,
     opacity: Option<f32>,
     transform: Option<PaintTransform>,
+    color: Option<[f32; 4]>,
+    background: Option<[f32; 4]>,
     width: Option<f32>,
     height: Option<f32>,
     font_axes: Vec<([u8; 4], f32)>,
@@ -127,6 +131,16 @@ impl TransitionBuilder<'_> {
 
     pub fn transform(mut self, value: PaintTransform) -> Self {
         self.transform = Some(value);
+        self
+    }
+
+    pub fn color(mut self, rgba: [f32; 4]) -> Self {
+        self.color = Some(rgba);
+        self
+    }
+
+    pub fn background(mut self, rgba: [f32; 4]) -> Self {
+        self.background = Some(rgba);
         self
     }
 
@@ -208,6 +222,26 @@ impl TransitionBuilder<'_> {
                 self.target,
                 AnimatableProperty::Transform,
                 MotionValue::Transform(transform),
+                timing,
+                curve,
+                playback,
+            ));
+        }
+        if let Some(color) = self.color {
+            self.queue.start_animation(user_spec(
+                self.target,
+                AnimatableProperty::Color,
+                MotionValue::Color(color),
+                timing,
+                curve,
+                playback,
+            ));
+        }
+        if let Some(background) = self.background {
+            self.queue.start_animation(user_spec(
+                self.target,
+                AnimatableProperty::Background,
+                MotionValue::Color(background),
                 timing,
                 curve,
                 playback,
