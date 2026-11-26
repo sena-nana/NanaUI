@@ -35,7 +35,9 @@ pub use shell::{
 #[cfg(target_os = "android")]
 pub use android_activity;
 #[cfg(target_os = "android")]
-pub use host::{AndroidHostApp, Haptic, Lifecycle, Shell};
+pub use host::{
+    AndroidHostApp, Haptic, Lifecycle, MobileApp, MobileShell, MobileShellBackend, Shell,
+};
 #[cfg(target_os = "android")]
 pub use nana_mobile_host::{FrameDemand, MobileRenderer, MobileRuntime};
 #[cfg(target_os = "android")]

@@ -14,7 +14,6 @@
 //! What the window shows is an [`AndroidHostApp`]: the probe page in this
 //! crate's own APK, or an app crate's view through [`crate::export_android_app!`].
 
-use std::any::Any;
 use std::time::{Duration, Instant};
 
 use android_activity::input::{
@@ -23,11 +22,13 @@ use android_activity::input::{
 };
 use android_activity::ndk::configuration::UiModeNight;
 use android_activity::{AndroidApp, AndroidAppWaker, InputStatus, MainEvent, PollEvent};
+pub use nana_mobile_host::MobileApp as AndroidHostApp;
+pub use nana_mobile_host::MobileShell as Shell;
 use nana_mobile_host::{
     FrameDemand, MobileAppearance, MobilePlatform, MobileRenderer, MobileRuntime, MobileViewport,
     SafeArea, ScrollPhysics, SurfaceOptions, TouchPhase,
 };
-use nana_ui::runtime::FrameworkError;
+pub use nana_mobile_host::{Haptic, Lifecycle, MobileApp, MobileShell, MobileShellBackend};
 use nana_ui_platform::{SharedClipboardHost, TextInputContext, default_shared_clipboard};
 use raw_window_handle::{AndroidNdkWindowHandle, DisplayHandle, RawWindowHandle, WindowHandle};
 
@@ -44,69 +45,40 @@ use crate::slot_input::{
     logical_key_from_android_keycode, slot_key_to_dispatch,
 };
 
-/// Whether the activity is in front: an app pauses what only the visible
-/// window needs (a camera, a discovery socket) while it is not.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Lifecycle {
-    Resumed,
-    Paused,
-}
-
-/// Feedback played through the window's `View.performHapticFeedback`, the
-/// same five styles as the iOS host's `Haptic`.
-#[repr(i32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Haptic {
-    /// A light impact: a button press.
-    Light = 0,
-    /// A medium impact.
-    Medium = 1,
-    /// A selection tick: a value stepping.
-    Selection = 2,
-    /// A success notification.
-    Success = 3,
-    /// A warning notification.
-    Warning = 4,
-}
-
-impl Haptic {
-    /// The `HapticFeedbackConstants` value on this SDK level: `CONFIRM` and
-    /// `REJECT` exist from API 30.
-    fn constant(self, sdk: i32) -> i32 {
-        const LONG_PRESS: i32 = 0;
-        const VIRTUAL_KEY: i32 = 1;
-        const CLOCK_TICK: i32 = 4;
-        const CONTEXT_CLICK: i32 = 6;
-        const CONFIRM: i32 = 16;
-        const REJECT: i32 = 17;
-        match self {
-            Self::Light => VIRTUAL_KEY,
-            Self::Medium => CONTEXT_CLICK,
-            Self::Selection => CLOCK_TICK,
-            Self::Success if sdk >= 30 => CONFIRM,
-            Self::Success => VIRTUAL_KEY,
-            Self::Warning if sdk >= 30 => REJECT,
-            Self::Warning => LONG_PRESS,
-        }
+/// The `HapticFeedbackConstants` value on this SDK level: `CONFIRM` and
+/// `REJECT` exist from API 30.
+fn haptic_constant(style: Haptic, sdk: i32) -> i32 {
+    const LONG_PRESS: i32 = 0;
+    const VIRTUAL_KEY: i32 = 1;
+    const CLOCK_TICK: i32 = 4;
+    const CONTEXT_CLICK: i32 = 6;
+    const CONFIRM: i32 = 16;
+    const REJECT: i32 = 17;
+    match style {
+        Haptic::Light => VIRTUAL_KEY,
+        Haptic::Medium => CONTEXT_CLICK,
+        Haptic::Selection => CLOCK_TICK,
+        Haptic::Success if sdk >= 30 => CONFIRM,
+        Haptic::Success => VIRTUAL_KEY,
+        Haptic::Warning if sdk >= 30 => REJECT,
+        Haptic::Warning => LONG_PRESS,
     }
 }
 
-/// What an app reaches the host through, from any thread.
+/// Android implementation of [`MobileShellBackend`], safe to call from any
+/// thread.
 #[derive(Clone)]
-pub struct Shell {
+struct AndroidShell {
     app: AndroidApp,
     waker: AndroidAppWaker,
 }
 
-impl Shell {
-    /// Ask the loop for a pass: state the document reads changed off the
-    /// loop's thread.
-    pub fn wake(&self) {
+impl MobileShellBackend for AndroidShell {
+    fn wake(&self) {
         self.waker.wake();
     }
 
-    /// Play `style` on the window's decor view.
-    pub fn haptic(&self, style: Haptic) {
+    fn haptic(&self, style: Haptic) {
         use accesskit_android::jni::objects::JValue;
 
         with_activity(&self.app, "haptic", |env, activity| {
@@ -123,33 +95,151 @@ impl Shell {
                 &decor,
                 "performHapticFeedback",
                 "(I)Z",
-                &[JValue::Int(style.constant(sdk))],
+                &[JValue::Int(haptic_constant(style, sdk))],
             )?;
             Ok(())
         });
     }
 
-    /// The activity, for an app's own JNI calls into its Java side.
-    pub fn android_app(&self) -> &AndroidApp {
-        &self.app
-    }
-}
+    fn set_keep_screen_awake(&self, keep_awake: bool) {
+        use accesskit_android::jni::objects::JValue;
 
-/// The application the window shows: it mounts its view once, when the
-/// first window arrives, and may prepare host textures or other per-frame
-/// state before each pass. The loop's thread only.
-pub trait AndroidHostApp: Any {
-    fn mount(&mut self, runtime: &mut MobileRuntime, shell: Shell) -> Result<(), FrameworkError>;
-
-    /// Runs on every pass of the loop before the frame demand is resolved.
-    fn before_frame(&mut self, _runtime: &mut MobileRuntime, _renderer: &mut MobileRenderer) {}
-
-    /// A pass the app needs besides the document's (a deadline of its own).
-    fn demand(&self) -> FrameDemand {
-        FrameDemand::Idle
+        with_activity(&self.app, "setKeepScreenAwake", |env, activity| {
+            env.call_method(
+                activity,
+                "nanaSetKeepScreenAwake",
+                "(Z)V",
+                &[JValue::Bool(u8::from(keep_awake))],
+            )?;
+            Ok(())
+        });
     }
 
-    fn lifecycle(&mut self, _runtime: &mut MobileRuntime, _event: Lifecycle) {}
+    fn set_system_bars_hidden(&self, hidden: bool) {
+        use accesskit_android::jni::objects::JValue;
+
+        with_activity(&self.app, "setSystemBarsHidden", |env, activity| {
+            env.call_method(
+                activity,
+                "nanaSetSystemBarsHidden",
+                "(Z)V",
+                &[JValue::Bool(u8::from(hidden))],
+            )?;
+            Ok(())
+        });
+    }
+
+    fn open_app_settings(&self) {
+        use accesskit_android::jni::objects::{JObject, JValue};
+
+        with_activity(&self.app, "openAppSettings", |env, activity| {
+            let package = env
+                .call_method(activity, "getPackageName", "()Ljava/lang/String;", &[])?
+                .l()?;
+            let scheme = env.new_string("package")?;
+            let null_fragment = JObject::null();
+            let uri = env
+                .call_static_method(
+                    "android/net/Uri",
+                    "fromParts",
+                    "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Landroid/net/Uri;",
+                    &[
+                        JValue::Object(&scheme),
+                        JValue::Object(&package),
+                        JValue::Object(&null_fragment),
+                    ],
+                )?
+                .l()?;
+            let action = env.new_string("android.settings.APPLICATION_DETAILS_SETTINGS")?;
+            let intent = env.new_object(
+                "android/content/Intent",
+                "(Ljava/lang/String;Landroid/net/Uri;)V",
+                &[JValue::Object(&action), JValue::Object(&uri)],
+            )?;
+            const FLAG_ACTIVITY_NEW_TASK: i32 = 0x1000_0000;
+            env.call_method(
+                &intent,
+                "addFlags",
+                "(I)Landroid/content/Intent;",
+                &[JValue::Int(FLAG_ACTIVITY_NEW_TASK)],
+            )?;
+            env.call_method(
+                activity,
+                "startActivity",
+                "(Landroid/content/Intent;)V",
+                &[JValue::Object(&intent)],
+            )?;
+            Ok(())
+        });
+    }
+
+    fn preferred_languages(&self) -> Vec<String> {
+        use accesskit_android::jni::objects::{JString, JValue};
+
+        with_activity(&self.app, "preferredLanguages", |env, activity| {
+            let resources = env
+                .call_method(
+                    activity,
+                    "getResources",
+                    "()Landroid/content/res/Resources;",
+                    &[],
+                )?
+                .l()?;
+            let configuration = env
+                .call_method(
+                    &resources,
+                    "getConfiguration",
+                    "()Landroid/content/res/Configuration;",
+                    &[],
+                )?
+                .l()?;
+            let locales = env
+                .call_method(
+                    &configuration,
+                    "getLocales",
+                    "()Landroid/os/LocaleList;",
+                    &[],
+                )?
+                .l()?;
+            if locales.is_null() {
+                return Ok(Vec::new());
+            }
+            let count = env.call_method(&locales, "size", "()I", &[])?.i()?;
+            let mut tags = Vec::with_capacity(count.max(0) as usize);
+            for index in 0..count.max(0) {
+                let tag: Option<String> = env.with_local_frame(
+                    8,
+                    |env| -> accesskit_android::jni::errors::Result<Option<String>> {
+                        let locale = env
+                            .call_method(
+                                &locales,
+                                "get",
+                                "(I)Ljava/util/Locale;",
+                                &[JValue::Int(index)],
+                            )?
+                            .l()?;
+                        if locale.is_null() {
+                            return Ok(None);
+                        }
+                        let jtag = env
+                            .call_method(&locale, "toLanguageTag", "()Ljava/lang/String;", &[])?
+                            .l()?;
+                        if jtag.is_null() {
+                            return Ok(None);
+                        }
+                        let jstr = JString::from(jtag);
+                        let tag: String = env.get_string(&jstr)?.into();
+                        Ok((!tag.is_empty()).then_some(tag))
+                    },
+                )?;
+                if let Some(tag) = tag {
+                    tags.push(tag);
+                }
+            }
+            Ok(tags)
+        })
+        .unwrap_or_default()
+    }
 }
 
 struct AndroidPlatform;
@@ -225,6 +315,14 @@ impl Host {
         MobileAppearance {
             dark: app.config().ui_mode_night() == UiModeNight::Yes,
             text_scale: font_scale(app),
+            reduced_motion: reduced_motion(app),
+        }
+    }
+
+    fn refresh_appearance(&mut self, app: &AndroidApp) {
+        let appearance = Self::appearance(app);
+        if let Some(document) = self.document.as_mut() {
+            document.runtime.set_appearance(appearance);
         }
     }
 
@@ -461,6 +559,9 @@ impl Host {
         let Some(document) = self.document.as_mut() else {
             return false;
         };
+        let now = Instant::now();
+        document.runtime.note_touch_activity(now);
+        self.app.on_touch_activity(&mut document.runtime, phase);
         let primary = primary_rect(document.runtime.viewport().physical_size, self.insets);
         // Only samples in Primary (or a captured drag) are Handled; the
         // status and navigation bars stay with the system.
@@ -472,7 +573,7 @@ impl Host {
         }
         document
             .runtime
-            .push_touch(phase, x, y, pointer_id.max(0) as u64)
+            .push_touch_at(phase, x, y, pointer_id.max(0) as u64, now)
             .unwrap_or(false)
     }
 
@@ -571,10 +672,10 @@ pub fn run(app: AndroidApp, host_app: Box<dyn AndroidHostApp>) -> Result<(), Str
     let task_waker = waker.clone();
     nana_mobile_host::set_task_wake(move || task_waker.wake());
     let choreographer = ChoreographerDriver::new(waker.clone());
-    let shell = Shell {
+    let shell = MobileShell::new(AndroidShell {
         app: app.clone(),
         waker,
-    };
+    });
     let mut host = Host::new(host_app, shell);
     let mut running = true;
 
@@ -626,7 +727,10 @@ pub fn run(app: AndroidApp, host_app: Box<dyn AndroidHostApp>) -> Result<(), Str
                         choreographer.mark_immediate_ready();
                     }
                 }
-                MainEvent::Resume { .. } => host.lifecycle(Lifecycle::Resumed),
+                MainEvent::Resume { .. } => {
+                    host.refresh_appearance(&app);
+                    host.lifecycle(Lifecycle::Resumed);
+                }
                 MainEvent::Pause => {
                     // Android dismisses the IME itself; the next focus
                     // re-shows it.
@@ -994,4 +1098,39 @@ fn font_scale(app: &AndroidApp) -> f32 {
     })
     .filter(|scale| scale.is_finite() && *scale > 0.0)
     .unwrap_or(1.0)
+}
+
+/// Whether system animations are disabled
+/// (`Settings.Global.ANIMATOR_DURATION_SCALE == 0`).
+fn reduced_motion(app: &AndroidApp) -> bool {
+    use accesskit_android::jni::objects::JValue;
+
+    with_activity(app, "reduced motion", |env, activity| {
+        let resolver = env
+            .call_method(
+                activity,
+                "getContentResolver",
+                "()Landroid/content/ContentResolver;",
+                &[],
+            )?
+            .l()?;
+        if resolver.is_null() {
+            return Ok(false);
+        }
+        let key = env.new_string("animator_duration_scale")?;
+        let scale = env
+            .call_static_method(
+                "android/provider/Settings$Global",
+                "getFloat",
+                "(Landroid/content/ContentResolver;Ljava/lang/String;F)F",
+                &[
+                    JValue::Object(&resolver),
+                    JValue::Object(&key),
+                    JValue::Float(1.0),
+                ],
+            )?
+            .f()?;
+        Ok(scale == 0.0)
+    })
+    .unwrap_or(false)
 }

@@ -3,7 +3,9 @@
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
-use nana_ui::runtime::view::{Mount, entity_ref, widget, with_refs};
+use nana_ui::runtime::view::{
+    Mount, Signal, entity_ref, provide, signal, use_context, widget, with_refs,
+};
 use nana_ui::runtime::{
     AccessibilityAction, AccessibilityActionRequest, AppContext, DocumentId, Entity,
     FrameworkError, LayoutViewport, List, RuntimeDocument, ScrollPhysics, TextSelection,
@@ -36,13 +38,16 @@ pub trait MobilePlatform {
     fn clipboard(&self) -> SharedClipboardHost;
 }
 
-/// The system appearance the shell reads (`UITraitCollection`, Android
-/// `Configuration`).
+/// The system appearance the shell reads (`UITraitCollection` /
+/// `UIAccessibility`, Android `Configuration` / `Settings.Global`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MobileAppearance {
     pub dark: bool,
     /// The system text size: Dynamic Type or `fontScale`, 1.0 standard.
     pub text_scale: f32,
+    /// Whether the user enabled Reduce Motion / disabled animator duration
+    /// scale in system accessibility settings.
+    pub reduced_motion: bool,
 }
 
 impl Default for MobileAppearance {
@@ -50,8 +55,21 @@ impl Default for MobileAppearance {
         Self {
             dark: false,
             text_scale: 1.0,
+            reduced_motion: false,
         }
     }
+}
+
+/// Read the reactive [`MobileViewport`] signal provided by
+/// [`MobileRuntime::mount`] during a view build.
+pub fn use_mobile_viewport() -> Option<Signal<MobileViewport>> {
+    use_context::<Signal<MobileViewport>>()
+}
+
+/// Read the reactive [`MobileAppearance`] signal provided by
+/// [`MobileRuntime::mount`] during a view build.
+pub fn use_mobile_appearance() -> Option<Signal<MobileAppearance>> {
+    use_context::<Signal<MobileAppearance>>()
 }
 
 /// The application's design system, installed with
@@ -144,8 +162,10 @@ pub struct MobileRuntime {
     services: Services,
     clock: RuntimeAnimationClock,
     viewport: MobileViewport,
+    viewport_signal: Signal<MobileViewport>,
     appearance: MobileAppearance,
-    applied: Option<(ThemeAppearance, f32)>,
+    appearance_signal: Signal<MobileAppearance>,
+    applied: Option<(ThemeAppearance, f32, bool)>,
     theme: Option<InstalledTheme>,
     /// The root paints no background ([`Self::set_background_passthrough`]).
     passthrough: bool,
@@ -154,6 +174,8 @@ pub struct MobileRuntime {
     /// contact's `Down`..`Move`..`Up`/`Cancel` lifetime.
     active_touches: Vec<u64>,
     primary_touch: Option<u64>,
+    /// Timestamp of the last observed touch activity (non-consuming).
+    last_touch_at: Option<Instant>,
     ime_enabled: bool,
     /// Something changed that the last presented frame does not show.
     needs_present: bool,
@@ -171,13 +193,24 @@ impl MobileRuntime {
             .context_mut()
             .bind_input_source(SOURCE, EndpointGeneration(1), document_id)
             .expect("a fresh mobile document binds its source");
+        let mut viewport_signal = None;
+        let mut appearance_signal = None;
         let (_, root) = document.context_mut().mount_view_root(document_id, || {
             let root = entity_ref();
+            let vp = signal(viewport);
+            let app = signal(appearance);
+            provide(vp);
+            provide(app);
+            viewport_signal = Some(vp);
+            appearance_signal = Some(app);
             with_refs(
                 widget(root_host()).key("mobile-root").entity_ref(root),
                 root,
             )
         })?;
+        let viewport_signal = viewport_signal.expect("viewport signal initialized during mount");
+        let appearance_signal =
+            appearance_signal.expect("appearance signal initialized during mount");
         let clipboard = platform.clipboard();
         let mut runtime = Self {
             document,
@@ -189,13 +222,16 @@ impl MobileRuntime {
             },
             clock: RuntimeAnimationClock::now(),
             viewport,
+            viewport_signal,
             appearance,
+            appearance_signal,
             applied: None,
             theme: None,
             passthrough: false,
             root,
             active_touches: Vec::new(),
             primary_touch: None,
+            last_touch_at: None,
             ime_enabled: false,
             needs_present: true,
         };
@@ -205,13 +241,21 @@ impl MobileRuntime {
     }
 
     /// Mount the application's view inside the root; what it returns is the
-    /// view's refs.
+    /// view's refs. Provides the reactive [`MobileViewport`] and
+    /// [`MobileAppearance`] signals so views can read them via
+    /// [`use_mobile_viewport`] and [`use_mobile_appearance`].
     pub fn mount<M: Mount>(
         &mut self,
         view: impl FnOnce() -> M,
     ) -> Result<M::Output, FrameworkError> {
         let root = self.root.stable_id();
-        let output = self.document.context_mut().mount_view(root, view)?;
+        let viewport_signal = self.viewport_signal;
+        let appearance_signal = self.appearance_signal;
+        let output = self.document.context_mut().mount_view(root, move || {
+            provide(viewport_signal);
+            provide(appearance_signal);
+            view()
+        })?;
         self.needs_present = true;
         self.flush()?;
         Ok(output)
@@ -221,12 +265,40 @@ impl MobileRuntime {
         self.viewport
     }
 
+    /// Reactive handle to the current viewport (size, scale, safe area).
+    pub fn viewport_signal(&self) -> Signal<MobileViewport> {
+        self.viewport_signal
+    }
+
+    pub fn appearance(&self) -> MobileAppearance {
+        self.appearance
+    }
+
+    /// Reactive handle to the current system appearance (dark mode, text
+    /// scale, reduced motion).
+    pub fn appearance_signal(&self) -> Signal<MobileAppearance> {
+        self.appearance_signal
+    }
+
+    /// Timestamp of the last observed touch activity, regardless of whether a
+    /// widget consumed the touch.
+    pub fn last_touch_at(&self) -> Option<Instant> {
+        self.last_touch_at
+    }
+
+    /// Record touch activity at `at` without routing or consuming input (for
+    /// example touches observed on native overlays above the surface).
+    pub fn note_touch_activity(&mut self, at: Instant) {
+        self.last_touch_at = Some(at);
+    }
+
     pub fn set_viewport(&mut self, viewport: MobileViewport) -> Result<(), FrameworkError> {
         if viewport == self.viewport {
             return Ok(());
         }
         let padding_changed = viewport.logical_safe_area() != self.viewport.logical_safe_area();
         self.viewport = viewport;
+        self.viewport_signal.try_update(|slot| *slot = viewport);
         self.needs_present = true;
         if padding_changed {
             self.pad_root()?;
@@ -237,6 +309,7 @@ impl MobileRuntime {
     pub fn set_appearance(&mut self, appearance: MobileAppearance) {
         if appearance != self.appearance {
             self.appearance = appearance;
+            self.appearance_signal.try_update(|slot| *slot = appearance);
             self.needs_present = true;
         }
     }
@@ -387,6 +460,7 @@ impl MobileRuntime {
         pointer_id: u64,
         at: Instant,
     ) -> Result<bool, FrameworkError> {
+        self.note_touch_activity(at);
         let (was_empty, is_primary) = match phase {
             TouchPhase::Down => {
                 if self.active_touches.contains(&pointer_id) {
@@ -623,7 +697,11 @@ impl MobileRuntime {
 
     fn apply_appearance(&mut self) -> Result<(), FrameworkError> {
         let theme = theme_appearance(self.appearance);
-        let wanted = (theme, self.appearance.text_scale);
+        let wanted = (
+            theme,
+            self.appearance.text_scale,
+            self.appearance.reduced_motion,
+        );
         if self.applied == Some(wanted) {
             return Ok(());
         }
@@ -632,6 +710,7 @@ impl MobileRuntime {
         let context = self.document.context_mut();
         context.set_theme_tokens(compiled)?;
         context.set_document_text_scale(document, Some(wanted.1));
+        context.set_system_reduced_motion(wanted.2);
         self.applied = Some(wanted);
         Ok(())
     }

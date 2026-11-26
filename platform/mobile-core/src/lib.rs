@@ -18,14 +18,17 @@
 //! NanaUI draws the pixels. Native views are layered whole above or below
 //! the NanaUI surface, never placed inside its layout.
 
+mod app;
 mod render;
 mod runtime;
 mod schedule;
 mod viewport;
 
+pub use app::{Haptic, Lifecycle, MobileApp, MobileShell, MobileShellBackend};
 pub use render::{MobileRenderer, SurfaceOptions};
 pub use runtime::{
     MobileAppearance, MobilePlatform, MobileRuntime, MobileTheme, TextInputSnapshot, TouchPhase,
+    use_mobile_appearance, use_mobile_viewport,
 };
 pub use schedule::FrameDemand;
 pub use viewport::{MobileViewport, SafeArea};

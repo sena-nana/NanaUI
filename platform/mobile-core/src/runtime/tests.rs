@@ -398,6 +398,7 @@ fn an_appearance_change_presents_once() {
     fixture.runtime.set_appearance(MobileAppearance {
         dark: true,
         text_scale: 1.0,
+        reduced_motion: false,
     });
     assert_eq!(fixture.runtime.frame_demand(), FrameDemand::Now);
     assert!(fixture.runtime.prepare_frame(Instant::now()).unwrap());
@@ -528,4 +529,167 @@ fn an_installed_theme_replaces_the_built_in_one() {
     // Passthrough still wins over the page's role.
     fixture.runtime.set_background_passthrough(true).unwrap();
     assert_eq!(background(&fixture.runtime), None);
+}
+
+#[test]
+fn appearance_getter_and_reduced_motion_sync_to_context() {
+    let mut fixture = fixture();
+    assert_eq!(fixture.runtime.appearance(), MobileAppearance::default());
+    assert!(!fixture.runtime.document().context().reduced_motion());
+
+    let next = MobileAppearance {
+        dark: true,
+        text_scale: 1.25,
+        reduced_motion: true,
+    };
+    fixture.runtime.set_appearance(next);
+    assert_eq!(fixture.runtime.appearance(), next);
+    assert_eq!(fixture.runtime.frame_demand(), FrameDemand::Now);
+    fixture.settle();
+    assert!(fixture.runtime.document().context().reduced_motion());
+
+    fixture.runtime.set_appearance(MobileAppearance {
+        reduced_motion: false,
+        ..next
+    });
+    fixture.settle();
+    assert!(!fixture.runtime.document().context().reduced_motion());
+}
+
+#[test]
+fn reactive_viewport_and_appearance_signals_update_on_changes() {
+    let viewport = MobileViewport::new((1179, 2556), 3.0, SAFE);
+    let mut runtime = MobileRuntime::new(
+        viewport,
+        MobileAppearance::default(),
+        Box::new(TestPlatform(Arc::new(Mutex::new(Recorded::default())))),
+    )
+    .expect("mobile runtime");
+
+    let mut vp_sig = None;
+    let mut app_sig = None;
+    runtime
+        .mount(|| {
+            vp_sig = use_mobile_viewport();
+            app_sig = use_mobile_appearance();
+            widget(List::new()).key("root")
+        })
+        .expect("mount");
+    let vp_sig = vp_sig.expect("viewport signal provided");
+    let app_sig = app_sig.expect("appearance signal provided");
+
+    assert_eq!(vp_sig.get_untracked(), viewport);
+    assert_eq!(vp_sig, runtime.viewport_signal());
+    assert_eq!(app_sig.get_untracked(), MobileAppearance::default());
+    assert_eq!(app_sig, runtime.appearance_signal());
+
+    let next_vp = MobileViewport::new((2556, 1179), 3.0, SafeArea::default());
+    runtime.set_viewport(next_vp).unwrap();
+    assert_eq!(vp_sig.get_untracked(), next_vp);
+
+    let next_app = MobileAppearance {
+        dark: true,
+        text_scale: 1.1,
+        reduced_motion: true,
+    };
+    runtime.set_appearance(next_app);
+    assert_eq!(app_sig.get_untracked(), next_app);
+}
+
+#[test]
+fn last_touch_at_records_touch_activity_without_consuming() {
+    let mut fixture = fixture();
+    assert_eq!(fixture.runtime.last_touch_at(), None);
+
+    let t1 = Instant::now();
+    // Touch outside any interactive widget still records activity.
+    assert!(
+        fixture
+            .runtime
+            .push_touch_at(TouchPhase::Down, 1.0, 1.0, 42, t1)
+            .unwrap()
+    );
+    assert_eq!(fixture.runtime.last_touch_at(), Some(t1));
+
+    let t2 = t1 + std::time::Duration::from_millis(25);
+    fixture.runtime.note_touch_activity(t2);
+    assert_eq!(fixture.runtime.last_touch_at(), Some(t2));
+}
+
+#[test]
+fn mobile_shell_routes_utilities_and_defaults_safely() {
+    use crate::{Haptic, Lifecycle, MobileApp, MobileShell, MobileShellBackend};
+
+    let noop = MobileShell::noop();
+    noop.wake();
+    noop.haptic(Haptic::Light);
+    noop.set_keep_screen_awake(true);
+    noop.set_system_bars_hidden(true);
+    noop.open_app_settings();
+    assert!(noop.preferred_languages().is_empty());
+
+    #[derive(Default)]
+    struct Log {
+        wakes: usize,
+        haptics: Vec<Haptic>,
+        keep_awake: Vec<bool>,
+        bars_hidden: Vec<bool>,
+        opened_settings: usize,
+    }
+
+    struct MockBackend(Arc<Mutex<Log>>);
+
+    impl MobileShellBackend for MockBackend {
+        fn wake(&self) {
+            self.0.lock().unwrap().wakes += 1;
+        }
+        fn haptic(&self, style: Haptic) {
+            self.0.lock().unwrap().haptics.push(style);
+        }
+        fn set_keep_screen_awake(&self, keep_awake: bool) {
+            self.0.lock().unwrap().keep_awake.push(keep_awake);
+        }
+        fn set_system_bars_hidden(&self, hidden: bool) {
+            self.0.lock().unwrap().bars_hidden.push(hidden);
+        }
+        fn open_app_settings(&self) {
+            self.0.lock().unwrap().opened_settings += 1;
+        }
+        fn preferred_languages(&self) -> Vec<String> {
+            vec!["zh-Hans".into(), "en-US".into()]
+        }
+    }
+
+    let log = Arc::new(Mutex::new(Log::default()));
+    let shell = MobileShell::new(MockBackend(Arc::clone(&log)));
+    shell.wake();
+    shell.haptic(Haptic::Success);
+    shell.set_keep_screen_awake(true);
+    shell.set_system_bars_hidden(true);
+    shell.open_app_settings();
+    assert_eq!(shell.preferred_languages(), vec!["zh-Hans", "en-US"]);
+
+    let log = log.lock().unwrap();
+    assert_eq!(log.wakes, 1);
+    assert_eq!(log.haptics, vec![Haptic::Success]);
+    assert_eq!(log.keep_awake, vec![true]);
+    assert_eq!(log.bars_hidden, vec![true]);
+    assert_eq!(log.opened_settings, 1);
+
+    struct MinimalApp;
+    impl MobileApp for MinimalApp {
+        fn mount(
+            &mut self,
+            _runtime: &mut MobileRuntime,
+            _shell: MobileShell,
+        ) -> Result<(), FrameworkError> {
+            Ok(())
+        }
+    }
+
+    let mut fixture = fixture();
+    let mut app = MinimalApp;
+    assert_eq!(app.demand(), FrameDemand::Idle);
+    app.lifecycle(&mut fixture.runtime, Lifecycle::Paused);
+    app.on_touch_activity(&mut fixture.runtime, TouchPhase::Down);
 }

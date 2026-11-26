@@ -19,13 +19,16 @@
 #![cfg(target_vendor = "apple")]
 
 use std::any::Any;
-use std::ffi::c_void;
+use std::ffi::{c_char, c_void};
 use std::time::Instant;
 
+pub use nana_mobile_host::MobileApp as IosApp;
+pub use nana_mobile_host::MobileShell as Shell;
 use nana_mobile_host::{
     FrameDemand, MobileAppearance, MobilePlatform, MobileRenderer, MobileRuntime, MobileViewport,
     SafeArea, ScrollPhysics, SurfaceOptions, TouchPhase,
 };
+pub use nana_mobile_host::{Haptic, Lifecycle, MobileApp, MobileShell, MobileShellBackend};
 pub use nana_ui::runtime::FrameworkError;
 use nana_ui::runtime::{AccessibilityAction, StableNodeId};
 use nana_ui::{AccessibilityActionRequest, AccessibilityNode, AccessibilityRole};
@@ -71,14 +74,24 @@ pub struct NanaIosCallbacks {
     pub text_input: Option<extern "C" fn(*mut c_void, bool, NanaRect)>,
     /// One `NANA_HAPTIC_*` style.
     pub haptic: Option<extern "C" fn(*mut c_void, i32)>,
+    /// Optional: keep the screen awake (`UIApplication.isIdleTimerDisabled`).
+    pub set_keep_screen_awake: Option<extern "C" fn(*mut c_void, bool)>,
+    /// Optional: hide or show status bar and home indicator.
+    pub set_system_bars_hidden: Option<extern "C" fn(*mut c_void, bool)>,
+    /// Optional: open the system Settings page for this application.
+    pub open_app_settings: Option<extern "C" fn(*mut c_void)>,
+    /// Optional: copy `'\n'`-separated BCP-47 preferred language tags into
+    /// `buffer` when it fits and return the byte length, or `-1`.
+    pub preferred_languages: Option<extern "C" fn(*mut c_void, *mut c_char, usize) -> i64>,
 }
 
 /// The callbacks with their context, callable from the task waker's thread.
 #[derive(Clone, Copy)]
 struct Callbacks(NanaIosCallbacks);
 
-// SAFETY: the Swift shell's callbacks only dispatch onto the main queue, and
-// its context object outlives the host.
+// SAFETY: the Swift shell's callbacks only dispatch onto the main queue (or
+// read thread-safe Foundation locale state), and its context object outlives
+// the host.
 unsafe impl Send for Callbacks {}
 unsafe impl Sync for Callbacks {}
 
@@ -94,47 +107,77 @@ impl Callbacks {
             haptic(self.0.context, style as i32);
         }
     }
-}
 
-/// Feedback the shell plays through its `UIFeedbackGenerator`s.
-#[repr(i32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Haptic {
-    /// A light impact: a button press.
-    Light = 0,
-    /// A medium impact.
-    Medium = 1,
-    /// A selection tick: a value stepping.
-    Selection = 2,
-    /// A success notification.
-    Success = 3,
-    /// A warning notification.
-    Warning = 4,
-}
-
-/// What an app reaches the shell through, from any thread.
-#[derive(Clone, Copy)]
-pub struct Shell(Callbacks);
-
-impl Shell {
-    pub fn haptic(&self, style: Haptic) {
-        self.0.haptic(style);
+    fn set_keep_screen_awake(self, keep_awake: bool) {
+        if let Some(callback) = self.0.set_keep_screen_awake {
+            callback(self.0.context, keep_awake);
+        }
     }
 
-    /// Ask the shell for a frame: state the document reads changed off the
-    /// main thread.
-    pub fn wake(&self) {
-        self.0.wake();
+    fn set_system_bars_hidden(self, hidden: bool) {
+        if let Some(callback) = self.0.set_system_bars_hidden {
+            callback(self.0.context, hidden);
+        }
+    }
+
+    fn open_app_settings(self) {
+        if let Some(callback) = self.0.open_app_settings {
+            callback(self.0.context);
+        }
+    }
+
+    fn preferred_languages(self) -> Vec<String> {
+        let Some(callback) = self.0.preferred_languages else {
+            return Vec::new();
+        };
+        let len = callback(self.0.context, std::ptr::null_mut(), 0);
+        if len <= 0 {
+            return Vec::new();
+        }
+        let mut buffer = vec![0u8; len as usize];
+        let written = callback(
+            self.0.context,
+            buffer.as_mut_ptr().cast::<c_char>(),
+            buffer.len(),
+        );
+        if written <= 0 || (written as usize) > buffer.len() {
+            return Vec::new();
+        }
+        buffer.truncate(written as usize);
+        let Ok(text) = String::from_utf8(buffer) else {
+            return Vec::new();
+        };
+        text.split('\n')
+            .filter(|tag| !tag.is_empty())
+            .map(str::to_owned)
+            .collect()
     }
 }
 
-/// The application a host shows: it mounts its view once, and may prepare
-/// host textures or other per-frame state before each frame.
-pub trait IosApp: Any {
-    fn mount(&mut self, runtime: &mut MobileRuntime, shell: Shell) -> Result<(), FrameworkError>;
+impl MobileShellBackend for Callbacks {
+    fn wake(&self) {
+        (*self).wake();
+    }
 
-    /// Runs on the main thread before each frame is prepared.
-    fn before_frame(&mut self, _runtime: &mut MobileRuntime, _renderer: &mut MobileRenderer) {}
+    fn haptic(&self, style: Haptic) {
+        (*self).haptic(style);
+    }
+
+    fn set_keep_screen_awake(&self, keep_awake: bool) {
+        (*self).set_keep_screen_awake(keep_awake);
+    }
+
+    fn set_system_bars_hidden(&self, hidden: bool) {
+        (*self).set_system_bars_hidden(hidden);
+    }
+
+    fn open_app_settings(&self) {
+        (*self).open_app_settings();
+    }
+
+    fn preferred_languages(&self) -> Vec<String> {
+        (*self).preferred_languages()
+    }
 }
 
 struct Platform {
@@ -216,12 +259,11 @@ impl NanaIosHost {
     }
 
     fn demand(&self) -> FrameDemand {
-        let demand = self.runtime.frame_demand();
+        let mut demand = self.runtime.frame_demand().merge(self.app.demand());
         if self.renderer.host_textures_changed() {
-            demand.merge(FrameDemand::Now)
-        } else {
-            demand
+            demand = demand.merge(FrameDemand::Now);
         }
+        demand
     }
 }
 
@@ -230,7 +272,7 @@ fn layer_target(layer: *mut c_void) -> wgpu::SurfaceTargetUnsafe {
 }
 
 /// Export `nana_ios_host_new`, building the host around `$app` (an
-/// expression of a type implementing [`IosApp`]). Use it once, in the crate
+/// expression of a type implementing [`MobileApp`]). Use it once, in the crate
 /// that builds the staticlib.
 #[macro_export]
 macro_rules! export_ios_app {
@@ -249,6 +291,7 @@ macro_rules! export_ios_app {
             safe_area: $crate::NanaSafeArea,
             dark: bool,
             text_scale: f32,
+            reduced_motion: bool,
             transparent: bool,
             callbacks: $crate::NanaIosCallbacks,
         ) -> *mut $crate::NanaIosHost {
@@ -262,6 +305,7 @@ macro_rules! export_ios_app {
                     safe_area,
                     dark,
                     text_scale,
+                    reduced_motion,
                     transparent,
                     callbacks,
                     ::std::boxed::Box::new($app),
@@ -286,14 +330,19 @@ pub unsafe fn create(
     safe_area: NanaSafeArea,
     dark: bool,
     text_scale: f32,
+    reduced_motion: bool,
     transparent: bool,
     callbacks: NanaIosCallbacks,
-    mut app: Box<dyn IosApp>,
+    mut app: Box<dyn MobileApp>,
 ) -> *mut NanaIosHost {
     let callbacks = Callbacks(callbacks);
     nana_mobile_host::set_task_wake(move || callbacks.wake());
     let viewport = MobileViewport::new((width, height), scale, safe_area.into());
-    let appearance = MobileAppearance { dark, text_scale };
+    let appearance = MobileAppearance {
+        dark,
+        text_scale,
+        reduced_motion,
+    };
     let platform = Box::new(Platform {
         callbacks,
         clipboard: shared_clipboard(MemoryClipboard::default()),
@@ -305,7 +354,10 @@ pub unsafe fn create(
     if transparent && runtime.set_background_passthrough(true).is_err() {
         return std::ptr::null_mut();
     }
-    if app.mount(&mut runtime, Shell(callbacks)).is_err() {
+    if app
+        .mount(&mut runtime, MobileShell::new(callbacks))
+        .is_err()
+    {
         return std::ptr::null_mut();
     }
     // SAFETY: forwarded from the caller.
@@ -381,11 +433,31 @@ pub unsafe extern "C" fn nana_ios_host_set_appearance(
     host: *mut NanaIosHost,
     dark: bool,
     text_scale: f32,
+    reduced_motion: bool,
 ) {
     // SAFETY: forwarded from the caller.
     if let Some(host) = unsafe { self::host(host) } {
-        host.runtime
-            .set_appearance(MobileAppearance { dark, text_scale });
+        host.runtime.set_appearance(MobileAppearance {
+            dark,
+            text_scale,
+            reduced_motion,
+        });
+    }
+}
+
+/// # Safety
+///
+/// See [`host`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nana_ios_host_set_lifecycle(host: *mut NanaIosHost, event: i32) {
+    // SAFETY: forwarded from the caller.
+    if let Some(host) = unsafe { self::host(host) } {
+        let event = match event {
+            1 => Lifecycle::Resumed,
+            _ => Lifecycle::Paused,
+        };
+        host.app.lifecycle(&mut host.runtime, event);
+        host.runtime.request_present();
     }
 }
 
@@ -444,6 +516,15 @@ pub unsafe extern "C" fn nana_ios_host_detach(host: *mut NanaIosHost) {
     }
 }
 
+fn decode_touch_phase(phase: i32) -> TouchPhase {
+    match phase {
+        0 => TouchPhase::Down,
+        1 => TouchPhase::Move,
+        2 => TouchPhase::Up,
+        _ => TouchPhase::Cancel,
+    }
+}
+
 /// # Safety
 ///
 /// See [`host`].
@@ -459,13 +540,31 @@ pub unsafe extern "C" fn nana_ios_host_touch(
     let Some(host) = (unsafe { self::host(host) }) else {
         return false;
     };
-    let phase = match phase {
-        0 => TouchPhase::Down,
-        1 => TouchPhase::Move,
-        2 => TouchPhase::Up,
-        _ => TouchPhase::Cancel,
+    let phase = decode_touch_phase(phase);
+    let now = Instant::now();
+    host.runtime.note_touch_activity(now);
+    host.app.on_touch_activity(&mut host.runtime, phase);
+    host.runtime
+        .push_touch_at(phase, x, y, id, now)
+        .unwrap_or(false)
+}
+
+/// Record non-consuming touch activity without routing a touch sample into
+/// the document (for example touches intercepted by native overlays above the
+/// surface).
+///
+/// # Safety
+///
+/// See [`host`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nana_ios_host_notify_touch_activity(host: *mut NanaIosHost, phase: i32) {
+    // SAFETY: forwarded from the caller.
+    let Some(host) = (unsafe { self::host(host) }) else {
+        return;
     };
-    host.runtime.push_touch(phase, x, y, id).unwrap_or(false)
+    let phase = decode_touch_phase(phase);
+    host.runtime.note_touch_activity(Instant::now());
+    host.app.on_touch_activity(&mut host.runtime, phase);
 }
 
 fn write_demand(demand: FrameDemand, now: Instant, seconds: *mut f64) -> i32 {

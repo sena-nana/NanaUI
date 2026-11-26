@@ -15,6 +15,7 @@ final class NanaView: UIView {
     private var deadline: Timer?
     private var attached = true
     private let transparent: Bool
+    private var preferredRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
     let textProxy = NanaTextProxy()
     /// Runs after each tick: an app lays native layers out to the page here.
     var afterTick: (() -> Void)?
@@ -23,6 +24,13 @@ final class NanaView: UIView {
     var onTick: ((CADisplayLink, CFTimeInterval) -> Void)?
     /// The document went idle and the display link paused.
     var onIdle: (() -> Void)?
+    /// Non-consuming touch activity observer (one `NANA_TOUCH_*` phase).
+    var onTouchActivity: ((Int32) -> Void)?
+    /// Latest value requested by `MobileShell::set_system_bars_hidden`.
+    private(set) var prefersSystemBarsHidden = false
+    /// Invoked on the main queue when `prefersSystemBarsHidden` changes so the
+    /// owning `UIViewController` can refresh status bar / home indicator state.
+    var onSystemBarsHiddenChanged: ((Bool) -> Void)?
     private var accessibilityCount = 0
 
     private var metalLayer: CAMetalLayer { layer as! CAMetalLayer }
@@ -41,6 +49,7 @@ final class NanaView: UIView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
     deinit {
+        NotificationCenter.default.removeObserver(self)
         link?.invalidate()
         if let host { nana_ios_host_free(host) }
     }
@@ -69,6 +78,8 @@ final class NanaView: UIView {
         Float(UIFontMetrics(forTextStyle: .body).scaledValue(for: 17, compatibleWith: traitCollection) / 17)
     }
 
+    private var reducedMotion: Bool { UIAccessibility.isReduceMotionEnabled }
+
     // MARK: Lifecycle
 
     override func didMoveToWindow() {
@@ -85,27 +96,45 @@ final class NanaView: UIView {
             context: Unmanaged.passUnretained(self).toOpaque(),
             wake: nanaWake,
             text_input: nanaTextInput,
-            haptic: nanaHaptic)
+            haptic: nanaHaptic,
+            set_keep_screen_awake: nanaSetKeepScreenAwake,
+            set_system_bars_hidden: nanaSetSystemBarsHidden,
+            open_app_settings: nanaOpenAppSettings,
+            preferred_languages: nanaPreferredLanguages)
         host = nana_ios_host_new(
             Unmanaged.passUnretained(metalLayer).toOpaque(), width, height,
-            Float(contentScaleFactor), safeArea, dark, textScale, transparent, callbacks)
+            Float(contentScaleFactor), safeArea, dark, textScale, reducedMotion, transparent,
+            callbacks)
         guard host != nil else {
             shellLog.error("nana_ios_host_new failed")
             return
         }
         let link = CADisplayLink(target: DisplayLinkTarget(self), selector: #selector(DisplayLinkTarget.tick(_:)))
-        link.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
+        link.preferredFrameRateRange = preferredRange
         link.add(to: .main, forMode: .common)
         self.link = link
         registerForTraitChanges([UITraitUserInterfaceStyle.self, UITraitPreferredContentSizeCategory.self]) {
             (view: NanaView, _: UITraitCollection) in
-            guard let host = view.host else { return }
-            nana_ios_host_set_appearance(host, view.dark, view.textScale)
-            view.requestFrame()
+            view.syncAppearance()
         }
         let center = NotificationCenter.default
+        center.addObserver(
+            self, selector: #selector(syncAppearance),
+            name: UIAccessibility.reduceMotionStatusDidChangeNotification, object: nil)
         center.addObserver(self, selector: #selector(suspend), name: UIScene.didEnterBackgroundNotification, object: nil)
         center.addObserver(self, selector: #selector(resume), name: UIScene.willEnterForegroundNotification, object: nil)
+    }
+
+    @objc private func syncAppearance() {
+        guard let host else { return }
+        nana_ios_host_set_appearance(host, dark, textScale, reducedMotion)
+        requestFrame()
+    }
+
+    fileprivate func updateSystemBarsHidden(_ hidden: Bool) {
+        guard prefersSystemBarsHidden != hidden else { return }
+        prefersSystemBarsHidden = hidden
+        onSystemBarsHiddenChanged?(hidden)
     }
 
     /// Background: no GPU work, drop the surface, keep the document.
@@ -113,6 +142,7 @@ final class NanaView: UIView {
         guard let host, attached else { return }
         link?.isPaused = true
         deadline?.invalidate()
+        nana_ios_host_set_lifecycle(host, Int32(NANA_LIFECYCLE_PAUSED))
         nana_ios_host_detach(host)
         attached = false
     }
@@ -121,6 +151,22 @@ final class NanaView: UIView {
         guard let host, !attached else { return }
         let (width, height) = drawableSize
         attached = nana_ios_host_attach(host, Unmanaged.passUnretained(metalLayer).toOpaque(), width, height)
+        nana_ios_host_set_lifecycle(host, Int32(NANA_LIFECYCLE_RESUMED))
+        requestFrame()
+    }
+
+    /// Cap or raise the ProMotion display-link frame rate range.
+    func setPreferredFrameRateRange(_ range: CAFrameRateRange) {
+        preferredRange = range
+        link?.preferredFrameRateRange = range
+    }
+
+    /// Report non-consuming touch activity observed outside the NanaUI surface
+    /// (for example on a native overlay view layered above this view).
+    func notifyTouchActivity(phase: Int32 = Int32(NANA_TOUCH_DOWN)) {
+        onTouchActivity?(phase)
+        guard let host else { return }
+        nana_ios_host_notify_touch_activity(host, phase)
         requestFrame()
     }
 
@@ -204,6 +250,7 @@ final class NanaView: UIView {
 
     private func send(_ touches: Set<UITouch>, _ event: UIEvent?, phase: Int) {
         guard let host else { return }
+        onTouchActivity?(Int32(phase))
         let scale = contentScaleFactor
         for touch in touches {
             let samples = phase == NANA_TOUCH_MOVE ? (event?.coalescedTouches(for: touch) ?? [touch]) : [touch]
@@ -283,6 +330,42 @@ private let nanaHaptic: @convention(c) (UnsafeMutableRawPointer?, Int32) -> Void
         }
     }
 }
+
+private let nanaSetKeepScreenAwake: @convention(c) (UnsafeMutableRawPointer?, Bool) -> Void = {
+    _, keepAwake in
+    DispatchQueue.main.async {
+        UIApplication.shared.isIdleTimerDisabled = keepAwake
+    }
+}
+
+private let nanaSetSystemBarsHidden: @convention(c) (UnsafeMutableRawPointer?, Bool) -> Void = {
+    context, hidden in
+    guard let view = view(context) else { return }
+    DispatchQueue.main.async { view.updateSystemBarsHidden(hidden) }
+}
+
+private let nanaOpenAppSettings: @convention(c) (UnsafeMutableRawPointer?) -> Void = { _ in
+    DispatchQueue.main.async {
+        if let url = URL(string: UIApplication.openSettingsURLString) {
+            UIApplication.shared.open(url)
+        }
+    }
+}
+
+private let nanaPreferredLanguages:
+    @convention(c) (UnsafeMutableRawPointer?, UnsafeMutablePointer<CChar>?, Int) -> Int64 = {
+        _, buffer, capacity in
+        let joined = Locale.preferredLanguages.joined(separator: "\n")
+        let utf8 = Array(joined.utf8)
+        if let buffer, utf8.count <= capacity {
+            utf8.withUnsafeBytes { bytes in
+                if let base = bytes.baseAddress {
+                    UnsafeMutableRawPointer(buffer).copyMemory(from: base, byteCount: utf8.count)
+                }
+            }
+        }
+        return Int64(utf8.count)
+    }
 
 /// One node of the host's accessibility snapshot.
 private final class NanaAccessibilityElement: UIAccessibilityElement {

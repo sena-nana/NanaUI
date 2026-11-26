@@ -35,7 +35,21 @@ typedef struct {
     void (*text_input)(void *context, bool active, NanaRect caret);
     // Play one NANA_HAPTIC_* feedback.
     void (*haptic)(void *context, int32_t style);
+    // Optional (nullable): keep the screen awake (UIApplication.isIdleTimerDisabled).
+    void (*set_keep_screen_awake)(void *context, bool keep_awake);
+    // Optional (nullable): hide or show status bar and home indicator.
+    void (*set_system_bars_hidden)(void *context, bool hidden);
+    // Optional (nullable): open the system Settings page for this app.
+    void (*open_app_settings)(void *context);
+    // Optional (nullable): copy '\n'-separated BCP-47 preferred language tags
+    // into `buffer` when it fits and return the byte length, or -1.
+    int64_t (*preferred_languages)(void *context, char *buffer, size_t capacity);
 } NanaIosCallbacks;
+
+enum {
+    NANA_LIFECYCLE_PAUSED = 0,
+    NANA_LIFECYCLE_RESUMED = 1,
+};
 
 enum {
     NANA_HAPTIC_LIGHT = 0,
@@ -63,12 +77,14 @@ enum {
 // `transparent` composites with premultiplied alpha over a native layer.
 NanaIosHost *nana_ios_host_new(void *layer, uint32_t width, uint32_t height, float scale,
                                NanaSafeArea safe_area, bool dark, float text_scale,
-                               bool transparent, NanaIosCallbacks callbacks);
+                               bool reduced_motion, bool transparent, NanaIosCallbacks callbacks);
 void nana_ios_host_free(NanaIosHost *host);
 
 void nana_ios_host_resize(NanaIosHost *host, uint32_t width, uint32_t height, float scale,
                           NanaSafeArea safe_area);
-void nana_ios_host_set_appearance(NanaIosHost *host, bool dark, float text_scale);
+void nana_ios_host_set_appearance(NanaIosHost *host, bool dark, float text_scale,
+                                  bool reduced_motion);
+void nana_ios_host_set_lifecycle(NanaIosHost *host, int32_t event);
 // The page background for the current appearance (sRGB RGBA, 0..1). A
 // transparent host paints none: the shell paints it under its native layers.
 bool nana_ios_host_background(NanaIosHost *host, float rgba[4]);
@@ -76,6 +92,9 @@ bool nana_ios_host_attach(NanaIosHost *host, void *layer, uint32_t width, uint32
 void nana_ios_host_detach(NanaIosHost *host);
 
 bool nana_ios_host_touch(NanaIosHost *host, int32_t phase, float x, float y, uint64_t id);
+// Non-consuming touch activity notification (e.g. touches on native overlays
+// layered above the NanaUI surface).
+void nana_ios_host_notify_touch_activity(NanaIosHost *host, int32_t phase);
 
 // One display-link tick: lay out and present if anything changed. Returns
 // the demand after it; for NANA_FRAME_AT, `*seconds` is the delay.
