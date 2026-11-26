@@ -327,6 +327,247 @@ impl AppContext {
         })
     }
 
+    /// Export a transferable [`CrossWindowDragHandoff`](crate::drag_overlay::CrossWindowDragHandoff)
+    /// snapshot for the active internal drag in `document`, enabling a multi-window
+    /// host to continue hovering and dropping across sibling windows/documents.
+    pub fn export_active_drag_handoff(
+        &self,
+        document: DocumentId,
+        screen_position: (f32, f32),
+    ) -> Option<crate::drag_overlay::CrossWindowDragHandoff> {
+        let drag = self.input.active_internal_drag.as_ref()?;
+        if drag.document != document || !drag.transfer.lifetime().is_alive() {
+            return None;
+        }
+        Some(crate::drag_overlay::CrossWindowDragHandoff {
+            session: drag.session,
+            source_document: drag.document,
+            source_node: drag.source,
+            kind: drag.kind.clone(),
+            transfer: drag.transfer.clone(),
+            allowed_effects: drag.allowed_effects,
+            origin: drag.origin,
+            screen_position,
+            target_document: Some(drag.document),
+            target_node: drag.hovered_target.map(|(id, _)| id),
+            negotiated_effect: drag.hovered_target.map(|(_, effect)| effect),
+        })
+    }
+
+    /// Hover a cross-window drag handoff at `(x, y)` inside `target_document`,
+    /// emitting `DragDropEvent::Left` / `Entered` / `Moved` as the negotiated
+    /// drop target changes.
+    pub fn update_external_drag_handoff(
+        &mut self,
+        target_document: DocumentId,
+        handoff: &mut crate::drag_overlay::CrossWindowDragHandoff,
+        x: f32,
+        y: f32,
+        modifiers: InputModifiers,
+    ) -> Result<Option<(StableNodeId, DropEffect)>, FrameworkError> {
+        if !handoff.is_alive() {
+            let _ =
+                self.cancel_external_drag_handoff(handoff, DragCancelReason::SourceDestroyed)?;
+            return Ok(None);
+        }
+        let requested = proposed_drop_effect(modifiers);
+        let next_hover = self.drop_target_for_transfer(
+            target_document,
+            x,
+            y,
+            &handoff.kind,
+            &handoff.transfer,
+            handoff.allowed_effects,
+            requested,
+        );
+        let prev_id = handoff.target_node;
+        let next_id = next_hover.map(|(id, _)| id);
+        if prev_id != next_id
+            && let Some(old_id) = prev_id
+            && self.world.contains(old_id)
+        {
+            self.emit_drag_drop_event(
+                old_id,
+                DragDropEvent::Left {
+                    session: handoff.session,
+                },
+            )?;
+        }
+        if let Some((target_id, effect)) = next_hover {
+            let payload = if prev_id != Some(target_id) {
+                DragDropEvent::Entered {
+                    session: handoff.session,
+                    kind: handoff.kind.clone(),
+                    transfer: handoff.transfer.clone(),
+                    effect,
+                    x,
+                    y,
+                    modifiers,
+                }
+            } else {
+                DragDropEvent::Moved {
+                    session: handoff.session,
+                    kind: handoff.kind.clone(),
+                    transfer: handoff.transfer.clone(),
+                    effect,
+                    x,
+                    y,
+                    modifiers,
+                }
+            };
+            self.emit_drag_drop_event(target_id, payload)?;
+        }
+        handoff.target_document = Some(target_document);
+        handoff.target_node = next_id;
+        handoff.negotiated_effect = next_hover.map(|(_, effect)| effect);
+        self.world.set_drop_hover(next_hover);
+        if self.world.contains(handoff.source_node) {
+            self.emit_drag_source_event(
+                handoff.source_node,
+                DragSourceEvent::Updated {
+                    session: handoff.session,
+                    target: next_id,
+                    effect: handoff.negotiated_effect,
+                    x,
+                    y,
+                },
+            )?;
+        }
+        Ok(next_hover)
+    }
+
+    /// Complete a cross-window drag handoff at `(x, y)` inside `target_document`.
+    ///
+    /// Emits `DragDropEvent::Dropped` on the negotiated target and
+    /// `DragSourceEvent::Finished` on the originating source, releasing any
+    /// active internal drag session cleanly.
+    pub fn complete_external_drag_handoff(
+        &mut self,
+        target_document: DocumentId,
+        handoff: &mut crate::drag_overlay::CrossWindowDragHandoff,
+        x: f32,
+        y: f32,
+        modifiers: InputModifiers,
+    ) -> Result<Option<(StableNodeId, DropEffect)>, FrameworkError> {
+        if !handoff.is_alive() {
+            let _ =
+                self.cancel_external_drag_handoff(handoff, DragCancelReason::SourceDestroyed)?;
+            return Ok(None);
+        }
+        let requested = proposed_drop_effect(modifiers);
+        let final_target = self.drop_target_for_transfer(
+            target_document,
+            x,
+            y,
+            &handoff.kind,
+            &handoff.transfer,
+            handoff.allowed_effects,
+            requested,
+        );
+        let prev_id = handoff.target_node.take();
+        handoff.negotiated_effect = None;
+        if let Some(active) = self
+            .input
+            .active_internal_drag
+            .take()
+            .filter(|drag| drag.session == handoff.session)
+        {
+            self.release_drag_capture(&active)?;
+        }
+        self.world.set_drop_hover(None);
+        if let Some(old_id) = prev_id
+            && final_target.map(|(id, _)| id) != Some(old_id)
+            && self.world.contains(old_id)
+        {
+            self.emit_drag_drop_event(
+                old_id,
+                DragDropEvent::Left {
+                    session: handoff.session,
+                },
+            )?;
+        }
+        if let Some((target_id, effect)) = final_target {
+            self.emit_drag_drop_event(
+                target_id,
+                DragDropEvent::Dropped {
+                    session: handoff.session,
+                    kind: handoff.kind.clone(),
+                    transfer: handoff.transfer.clone(),
+                    effect,
+                    x,
+                    y,
+                    modifiers,
+                },
+            )?;
+            if self.world.contains(handoff.source_node) {
+                self.emit_drag_source_event(
+                    handoff.source_node,
+                    DragSourceEvent::Finished {
+                        session: handoff.session,
+                        target: target_id,
+                        effect,
+                    },
+                )?;
+            }
+            Ok(Some((target_id, effect)))
+        } else {
+            handoff.transfer.lifetime().cancel();
+            if self.world.contains(handoff.source_node) {
+                self.emit_drag_source_event(
+                    handoff.source_node,
+                    DragSourceEvent::Cancelled {
+                        session: handoff.session,
+                        reason: DragCancelReason::NoTarget,
+                    },
+                )?;
+            }
+            Ok(None)
+        }
+    }
+
+    /// Cancel an in-flight cross-window drag handoff cleanly.
+    pub fn cancel_external_drag_handoff(
+        &mut self,
+        handoff: &mut crate::drag_overlay::CrossWindowDragHandoff,
+        reason: DragCancelReason,
+    ) -> Result<bool, FrameworkError> {
+        let mut had_state = false;
+        if let Some(old_id) = handoff.target_node.take() {
+            had_state = true;
+            if self.world.contains(old_id) {
+                self.emit_drag_drop_event(
+                    old_id,
+                    DragDropEvent::Left {
+                        session: handoff.session,
+                    },
+                )?;
+            }
+        }
+        handoff.negotiated_effect = None;
+        if let Some(active) = self
+            .input
+            .active_internal_drag
+            .take()
+            .filter(|drag| drag.session == handoff.session)
+        {
+            had_state = true;
+            self.release_drag_capture(&active)?;
+        }
+        self.world.set_drop_hover(None);
+        handoff.transfer.lifetime().cancel();
+        if self.world.contains(handoff.source_node) {
+            had_state = true;
+            self.emit_drag_source_event(
+                handoff.source_node,
+                DragSourceEvent::Cancelled {
+                    session: handoff.session,
+                    reason,
+                },
+            )?;
+        }
+        Ok(had_state)
+    }
+
     pub(crate) fn next_drag_session_id(&mut self) -> DragSessionId {
         let id = self.input.next_drag_session;
         self.input.next_drag_session = id.wrapping_add(1).max(1);
@@ -1458,5 +1699,108 @@ mod tests {
             .unwrap();
         assert_eq!(file_events.lock().unwrap().len(), 2);
         assert_eq!(drag_events.lock().unwrap().as_slice(), ["enter", "drop"]);
+    }
+
+    #[test]
+    fn cross_window_drag_handoff_hovers_and_drops_in_second_document() {
+        let doc_a = DocumentId::new(10).unwrap();
+        let doc_b = DocumentId::new(20).unwrap();
+        let mut context = AppContext::new();
+
+        let source = context.create_component(doc_a, Stack::column(0.0)).unwrap();
+        let target = context
+            .create_component(
+                doc_b,
+                Stack::column(0.0).style(crate::NodeStyle {
+                    layout: Arc::new(nana_ui_core::LayoutStyle {
+                        width: Some(nana_ui_core::LengthSpec::Px(120.0)),
+                        height: Some(nana_ui_core::LengthSpec::Px(80.0)),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        context
+            .set_drop_target(
+                target,
+                DropAccepts::new([DropKind::custom("card")])
+                    .effects(DropEffects::MOVE | DropEffects::COPY),
+            )
+            .unwrap();
+        context
+            .layout_document(doc_a, crate::LayoutViewport::new(300.0, 200.0))
+            .unwrap();
+        context
+            .layout_document(doc_b, crate::LayoutViewport::new(300.0, 200.0))
+            .unwrap();
+
+        let target_log = Arc::new(std::sync::Mutex::new(Vec::<&'static str>::new()));
+        let t_log = Arc::clone(&target_log);
+        context
+            .on(target, move |_, ev: &DragDropEvent, _| match ev {
+                DragDropEvent::Entered { .. } => t_log.lock().unwrap().push("enter"),
+                DragDropEvent::Moved { .. } => t_log.lock().unwrap().push("move"),
+                DragDropEvent::Left { .. } => t_log.lock().unwrap().push("leave"),
+                DragDropEvent::Dropped { .. } => t_log.lock().unwrap().push("drop"),
+            })
+            .unwrap();
+
+        let source_log = Arc::new(std::sync::Mutex::new(Vec::<&'static str>::new()));
+        let s_log = Arc::clone(&source_log);
+        context
+            .on(source, move |_, ev: &DragSourceEvent, _| match ev {
+                DragSourceEvent::Started { .. } => s_log.lock().unwrap().push("start"),
+                DragSourceEvent::Updated { .. } => s_log.lock().unwrap().push("update"),
+                DragSourceEvent::Finished { .. } => s_log.lock().unwrap().push("finish"),
+                DragSourceEvent::Cancelled { .. } => s_log.lock().unwrap().push("cancel"),
+            })
+            .unwrap();
+
+        let mut transfer = DataTransfer::internal();
+        transfer.set_text("card-7").unwrap();
+        let session = context
+            .begin_internal_drag(
+                doc_a,
+                source.stable_id(),
+                DropKind::custom("card"),
+                transfer,
+                DropEffects::MOVE,
+                (10.0, 10.0),
+                None,
+            )
+            .unwrap();
+        let mut handoff = context
+            .export_active_drag_handoff(doc_a, (500.0, 300.0))
+            .expect("active drag exports handoff");
+        assert_eq!(handoff.session, session);
+
+        let hovered = context
+            .update_external_drag_handoff(
+                doc_b,
+                &mut handoff,
+                40.0,
+                40.0,
+                InputModifiers::default(),
+            )
+            .unwrap();
+        assert_eq!(hovered, Some((target.stable_id(), DropEffect::Move)));
+
+        let dropped = context
+            .complete_external_drag_handoff(
+                doc_b,
+                &mut handoff,
+                40.0,
+                40.0,
+                InputModifiers::default(),
+            )
+            .unwrap();
+        assert_eq!(dropped, Some((target.stable_id(), DropEffect::Move)));
+        assert!(context.active_drag_session(doc_a).is_none());
+        assert_eq!(target_log.lock().unwrap().as_slice(), ["enter", "drop"]);
+        assert_eq!(
+            source_log.lock().unwrap().as_slice(),
+            ["start", "update", "finish"]
+        );
     }
 }

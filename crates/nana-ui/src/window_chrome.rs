@@ -154,9 +154,27 @@ pub struct TitleBarDragTracker {
     pressed: bool,
     control: Option<WindowChromeAction>,
     drag_bar: Option<nana_ui_runtime::StableNodeId>,
+    /// Extra outer hit margin (logical px) around a mounted drag-enabled
+    /// [`AppTitleBar`] where blank chrome presses still initiate a window drag
+    /// (for floating/inset chrome bars inside a frameless window).
+    outer_drag_margin: f32,
 }
 
 impl TitleBarDragTracker {
+    /// Configure an outer safe-zone drag margin (logical px) around any
+    /// mounted drag-enabled [`AppTitleBar`]. Presses inside that margin that
+    /// do not land on interactive controls or native window controls still
+    /// initiate window drags.
+    pub fn outer_drag_margin(mut self, margin: f32) -> Self {
+        self.outer_drag_margin = normalize_inset(margin);
+        self
+    }
+
+    /// Update the outer safe-zone drag margin (logical px).
+    pub fn set_outer_drag_margin(&mut self, margin: f32) {
+        self.outer_drag_margin = normalize_inset(margin);
+    }
+
     pub fn events(
         &mut self,
         context: &AppContext,
@@ -201,7 +219,13 @@ impl TitleBarDragTracker {
                 y,
                 ..
             } if *button == nana_ui_input::PRIMARY_MOUSE_BUTTON => {
-                let hit = title_bar_pointer_hit(context, document, *x, *y);
+                let hit = title_bar_pointer_hit_with_margin(
+                    context,
+                    document,
+                    *x,
+                    *y,
+                    self.outer_drag_margin,
+                );
                 if *activation_click && matches!(hit, TitleBarHit::Control(_)) {
                     return;
                 }
@@ -297,8 +321,20 @@ fn title_bar_pointer_hit(
     x: f32,
     y: f32,
 ) -> TitleBarHit {
-    let mut current = context.pointer_target(document, x, y);
+    title_bar_pointer_hit_with_margin(context, document, x, y, 0.0)
+}
+
+fn title_bar_pointer_hit_with_margin(
+    context: &AppContext,
+    document: DocumentId,
+    x: f32,
+    y: f32,
+    outer_margin: f32,
+) -> TitleBarHit {
+    let target = context.pointer_target(document, x, y);
+    let mut current = target;
     let mut control = None;
+    let mut blocked_by_control = false;
     while let Some(id) = current {
         if control.is_none() {
             control = window_control_action(context, id);
@@ -313,13 +349,42 @@ fn title_bar_pointer_hit(
                 TitleBarHit::None
             };
         }
-        // Native buttons keep their own clicks; the bar must not drag there.
+        // Interactive controls and native window buttons keep their own clicks.
         if (is_title_bar_control(context, id) || is_native_window_controls(context, id))
             && control.is_none()
         {
-            return TitleBarHit::None;
+            blocked_by_control = true;
+            break;
         }
         current = context.world().node(id).and_then(|node| node.parent);
+    }
+    if blocked_by_control || outer_margin <= 0.0 {
+        return TitleBarHit::None;
+    }
+    // Outer safe-zone drag: when a mounted drag-enabled `AppTitleBar` is inset
+    // from the window edge, allow presses inside `outer_margin` around the bar
+    // (that did not hit any interactive or native control) to start a drag.
+    let world = context.world();
+    for id in world.document_order(document) {
+        if !is_app_title_bar(context, id) || !title_bar_drag_enabled(context, id) {
+            continue;
+        }
+        let Some(bounds) = world
+            .node_viewport_bounds(id)
+            .or_else(|| world.layout_box(id))
+        else {
+            continue;
+        };
+        if bounds.width <= 0.0 || bounds.height <= 0.0 {
+            continue;
+        }
+        let min_x = bounds.x - outer_margin;
+        let min_y = bounds.y - outer_margin;
+        let max_x = bounds.x + bounds.width + outer_margin;
+        let max_y = bounds.y + bounds.height + outer_margin;
+        if x >= min_x && x <= max_x && y >= min_y && y <= max_y {
+            return TitleBarHit::Drag(id);
+        }
     }
     TitleBarHit::None
 }
@@ -470,14 +535,41 @@ fn is_title_bar_controls(context: &AppContext, id: nana_ui_runtime::StableNodeId
 }
 
 fn is_title_bar_control(context: &AppContext, id: nana_ui_runtime::StableNodeId) -> bool {
-    context.world().accessibility(id).is_some_and(|state| {
-        // Editable text keeps press-drag for caret and selection; a window
-        // drag from inside an embedded input would break both.
+    let world = context.world();
+    if world.accessibility(id).is_some_and(|state| {
+        // Interactive controls inside a title bar (buttons, text inputs,
+        // menus, tabs, toggles, sliders, comboboxes, popups) keep their own
+        // pointer gestures; initiating a window drag from inside them would
+        // steal clicks, selections, or menu openings.
         matches!(
             state.role,
-            AccessibilityRole::Button | AccessibilityRole::TextInput
-        )
-    })
+            AccessibilityRole::Button
+                | AccessibilityRole::TextInput
+                | AccessibilityRole::Checkbox
+                | AccessibilityRole::Switch
+                | AccessibilityRole::Slider
+                | AccessibilityRole::ComboBox
+                | AccessibilityRole::ListItem
+                | AccessibilityRole::ListBox
+                | AccessibilityRole::ListBoxOption
+                | AccessibilityRole::TreeItem
+                | AccessibilityRole::Tab
+                | AccessibilityRole::Radio
+                | AccessibilityRole::Menu
+                | AccessibilityRole::MenuItem
+        ) || state.has_popup
+    }) {
+        return true;
+    }
+    world.focus_policy(id).allows_pointer()
+}
+
+fn normalize_inset(value: f32) -> f32 {
+    if value.is_finite() {
+        value.max(0.0)
+    } else {
+        0.0
+    }
 }
 
 fn distance(from: LogicalPoint, to: LogicalPoint) -> f32 {
@@ -1164,5 +1256,106 @@ mod tests {
             close_box.x + close_box.width / 2.0,
             close_box.y + close_box.height / 2.0
         ));
+    }
+
+    #[test]
+    fn title_bar_excludes_menu_and_interactive_roles_from_drag() {
+        use super::title_bar_drag_hit;
+        use nana_ui_runtime::{AccessibilityRole, AccessibilityState, NodeStyle, Stack};
+
+        let (mut context, document, bar, _) = title_bar_document();
+        let menu = context
+            .create_component(
+                document,
+                Stack::row(0.0).hittable().style(NodeStyle {
+                    layout: std::sync::Arc::new(nana_ui_core::LayoutStyle {
+                        width: Some(nana_ui_core::LengthSpec::Px(64.0)),
+                        height: Some(nana_ui_core::LengthSpec::Px(24.0)),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        context
+            .update_component(bar, |bar, _| {
+                bar.trailing = Some(menu.stable_id());
+            })
+            .unwrap();
+        context.assemble_app_title_bar(bar).unwrap();
+        context
+            .layout_document(document, nana_ui_runtime::LayoutViewport::new(800.0, 400.0))
+            .unwrap();
+        context.rebuild_hit_test(document);
+
+        let mut queue = nana_ui_runtime::MutationQueue::new();
+        queue.set_accessibility(
+            menu.stable_id(),
+            AccessibilityState {
+                role: AccessibilityRole::Menu,
+                ..Default::default()
+            },
+        );
+        context.commit_mutations(queue).unwrap();
+        let menu_box = context.world().layout_box(menu.stable_id()).unwrap();
+        assert!(
+            !title_bar_drag_hit(
+                &context,
+                document,
+                menu_box.x + menu_box.width / 2.0,
+                menu_box.y + menu_box.height / 2.0
+            ),
+            "menu role inside title bar must not initiate a window drag"
+        );
+    }
+
+    #[test]
+    fn outer_drag_margin_allows_safe_zone_drag_around_inset_title_bar() {
+        use super::{TitleBarDragTracker, WindowChromeEvent};
+        use nana_ui_core::{LayoutStyle, LengthSpec, PositionSpec};
+        use nana_ui_runtime::{AppContext, AppTitleBar, DocumentId, LayoutViewport, NodeStyle};
+
+        let document = DocumentId::new(19).unwrap();
+        let mut context = AppContext::new();
+        let root = context
+            .create_component(document, nana_ui_runtime::Stack::fill_column(0.0))
+            .unwrap();
+        let bar = context
+            .create_detached_component(
+                document,
+                AppTitleBar::new("Inset").style(NodeStyle {
+                    layout: std::sync::Arc::new(LayoutStyle {
+                        position: PositionSpec::Absolute,
+                        offset_left: Some(LengthSpec::Px(12.0)),
+                        offset_top: Some(LengthSpec::Px(10.0)),
+                        width: Some(LengthSpec::Px(400.0)),
+                        height: Some(LengthSpec::Px(32.0)),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        context.append_child(root, bar).unwrap();
+        context
+            .layout_document(document, LayoutViewport::new(800.0, 400.0))
+            .unwrap();
+        context.rebuild_hit_test(document);
+
+        // At y=4 (6px above the inset bar), default tracker ignores press.
+        let mut strict = TitleBarDragTracker::default();
+        assert!(
+            strict
+                .events(&context, document, &pointer_down(100.0, 4.0))
+                .is_empty()
+        );
+
+        // With a 12px outer safe-zone drag margin, press in the top inset initiates drag.
+        let mut safe_zone = TitleBarDragTracker::default().outer_drag_margin(12.0);
+        let events = safe_zone.events(&context, document, &pointer_down(100.0, 4.0));
+        assert!(
+            events.contains(&WindowChromeEvent::PointerPressed),
+            "expected outer safe-zone press to arm drag, got {events:?}"
+        );
     }
 }

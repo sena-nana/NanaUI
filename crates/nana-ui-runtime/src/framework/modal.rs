@@ -87,6 +87,10 @@ impl AppContext {
             self.sync_modal_open(Entity::<crate::ConfirmDialog>::from_stable_id(id))
         } else if self.view_is::<crate::Drawer>(id) {
             self.sync_modal_open(Entity::<crate::Drawer>::from_stable_id(id))
+        } else if self.view_is::<crate::overlay_surfaces::ModalBackdrop>(id) {
+            self.sync_modal_open(
+                Entity::<crate::overlay_surfaces::ModalBackdrop>::from_stable_id(id),
+            )
         } else {
             Ok(())
         }
@@ -126,6 +130,8 @@ impl AppContext {
             note::<crate::ConfirmDialog>(self, id, open)
         } else if self.view_is::<crate::Drawer>(id) {
             note::<crate::Drawer>(self, id, open)
+        } else if self.view_is::<crate::overlay_surfaces::ModalBackdrop>(id) {
+            note::<crate::overlay_surfaces::ModalBackdrop>(self, id, open)
         } else {
             Ok(())
         }
@@ -691,5 +697,132 @@ impl AppContext {
                 mutations.request_focus(node.document, restore);
             }
         }
+    }
+
+    /// Focus the last keyboard-focusable descendant inside `root`.
+    pub fn focus_last_in(
+        &mut self,
+        document: DocumentId,
+        root: StableNodeId,
+    ) -> Result<bool, FrameworkError> {
+        let last = self
+            .sequential_focus_candidates(document)
+            .into_iter()
+            .rev()
+            .find(|id| self.world.is_descendant_or_self(*id, root));
+        let Some(target) = last else {
+            return Ok(false);
+        };
+        self.focus_node(document, target)
+    }
+
+    /// Activate a programmatic [`crate::focus::FocusScope`] rooted at any node,
+    /// independent of [`crate::Dialog`] or [`crate::OverlayHost`].
+    ///
+    /// When `scope.trap` is `true`, directional focus is confined to
+    /// `scope.root`, the root is registered as a focus scope, and if current
+    /// focus lies outside `scope.root`, focus moves to its first focusable
+    /// descendant (or `scope.root` itself when focusable). Returns the
+    /// previously focused node so callers can pass it back to
+    /// [`Self::exit_focus_scope`].
+    pub fn enter_focus_scope(
+        &mut self,
+        document: DocumentId,
+        scope: crate::focus::FocusScope,
+    ) -> Result<Option<StableNodeId>, FrameworkError> {
+        if !self.world.contains(scope.root) {
+            return Err(FrameworkError::MissingView(scope.root));
+        }
+        let previous = self.world.focused(document);
+        let _ = self.world.register_focus_scope(scope.root);
+        if scope.trap {
+            let mut queue = MutationQueue::new();
+            queue
+                .set_directional_focus(scope.root, Some(crate::DirectionalFocusScope::contained()));
+            self.commit_mutations(queue)?;
+        }
+        if scope.trap {
+            let inside = previous
+                .is_some_and(|focused| self.world.is_descendant_or_self(focused, scope.root));
+            if !inside
+                && !self.focus_first_in(document, scope.root)?
+                && self.world.focus_policy(scope.root).allows_programmatic()
+            {
+                let _ = self.focus_node(document, scope.root)?;
+            }
+        }
+        Ok(previous)
+    }
+
+    /// Release a programmatic [`crate::focus::FocusScope`] previously entered via
+    /// [`Self::enter_focus_scope`], removing directional containment and
+    /// optionally restoring `restore` when `scope.restore_focus` is enabled.
+    pub fn exit_focus_scope(
+        &mut self,
+        document: DocumentId,
+        scope: crate::focus::FocusScope,
+        restore: Option<StableNodeId>,
+    ) -> Result<(), FrameworkError> {
+        if self.world.contains(scope.root) {
+            self.world.unregister_focus_scope(scope.root);
+            if scope.trap {
+                let mut queue = MutationQueue::new();
+                queue.set_directional_focus(scope.root, None);
+                self.commit_mutations(queue)?;
+            }
+        }
+        if scope.restore_focus
+            && let Some(target) = restore
+            && self.world.contains(target)
+            && self.world.is_mounted(target)
+            && self.world.focus_policy(target).allows_programmatic()
+        {
+            let _ = self.focus_node(document, target)?;
+        }
+        Ok(())
+    }
+
+    /// Navigate sequential (`Tab` / `Shift+Tab`) focus within `scope`.
+    ///
+    /// When `scope.trap` is `true`, traversal is restricted strictly to
+    /// focusable descendants of `scope.root` and wraps cleanly at both ends
+    /// without escaping into the rest of the document. When `scope.trap` is
+    /// `false`, delegates to [`Self::navigate_sequential_focus`].
+    pub fn navigate_focus_scope(
+        &mut self,
+        document: DocumentId,
+        scope: crate::focus::FocusScope,
+        reverse: bool,
+    ) -> Result<bool, FrameworkError> {
+        if !scope.trap {
+            return self.navigate_sequential_focus(document, reverse);
+        }
+        if !self.world.contains(scope.root) || !self.world.is_mounted(scope.root) {
+            return Ok(false);
+        }
+        let candidates: Vec<StableNodeId> = self
+            .sequential_focus_candidates(document)
+            .into_iter()
+            .filter(|id| self.world.is_descendant_or_self(*id, scope.root))
+            .collect();
+        if candidates.is_empty() {
+            return Ok(false);
+        }
+        let next = self
+            .world
+            .focused(document)
+            .and_then(|current| candidates.iter().position(|id| *id == current))
+            .map(|index| {
+                if reverse {
+                    (index + candidates.len() - 1) % candidates.len()
+                } else {
+                    (index + 1) % candidates.len()
+                }
+            })
+            .unwrap_or_else(|| if reverse { candidates.len() - 1 } else { 0 });
+        if self.world.focused(document) != Some(candidates[next]) {
+            self.focus_node(document, candidates[next])?;
+        }
+        Ok(true)
     }
 }

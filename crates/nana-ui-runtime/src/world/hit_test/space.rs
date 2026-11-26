@@ -492,6 +492,14 @@ impl UiWorld {
         self.presentation_input_bounds(target)
     }
 
+    /// Viewport-space bounding box of `target`, including ancestor scroll
+    /// offsets, sticky offsets, and presentation/compositor transforms.
+    ///
+    /// Returns `None` when `target` is unmounted or has not been laid out.
+    pub fn node_viewport_bounds(&self, target: StableNodeId) -> Option<LayoutBox> {
+        self.viewport_layout_box(target)
+    }
+
     /// Map a window point into this node's untransformed layout coordinates.
     /// Uses the current hit projection when it exists, otherwise the same
     /// ancestor scroll/transform walk as [`Self::viewport_layout_box`].
@@ -552,5 +560,65 @@ impl UiWorld {
         }
         let result = index.own_to_window(target, (a * x + c * y + e) / w, (b * x + d * y + f) / w);
         (result.0.is_finite() && result.1.is_finite()).then_some(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{AppContext, DocumentId, LayoutViewport, NodeStyle, Stack};
+    use nana_ui_core::{LayoutStyle, LengthSpec, OverflowSpec, PositionSpec};
+    use std::sync::Arc;
+
+    #[test]
+    fn node_viewport_bounds_accounts_for_ancestor_scroll() {
+        let doc = DocumentId::new(1).unwrap();
+        let mut cx = AppContext::new();
+        let scroller = cx
+            .create_component(
+                doc,
+                Stack::column(0.0).style(NodeStyle {
+                    layout: Arc::new(LayoutStyle {
+                        width: Some(LengthSpec::Px(200.0)),
+                        height: Some(LengthSpec::Px(100.0)),
+                        overflow_y: OverflowSpec::Scroll,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        let item = cx
+            .create_component(
+                doc,
+                Stack::column(0.0).style(NodeStyle {
+                    layout: Arc::new(LayoutStyle {
+                        position: PositionSpec::Relative,
+                        width: Some(LengthSpec::Px(120.0)),
+                        height: Some(LengthSpec::Px(240.0)),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        cx.append_child(scroller, item).unwrap();
+        cx.layout_document(doc, LayoutViewport::new(400.0, 300.0))
+            .unwrap();
+
+        let before = cx.world().node_viewport_bounds(item.stable_id()).unwrap();
+        assert_eq!(before.y, 0.0);
+        assert_eq!(before.width, 120.0);
+        assert_eq!(before.height, 240.0);
+
+        let mut queue = crate::MutationQueue::new();
+        queue.set_scroll_offset(
+            scroller.stable_id(),
+            crate::ScrollOffset { x: 0.0, y: 40.0 },
+        );
+        cx.commit_mutations(queue).unwrap();
+
+        let after = cx.world().node_viewport_bounds(item.stable_id()).unwrap();
+        assert_eq!(after.y, -40.0);
+        assert_eq!(after.width, 120.0);
     }
 }

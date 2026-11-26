@@ -47,6 +47,7 @@ mod date_picker;
 mod diff_view;
 #[cfg(feature = "dock")]
 mod dock;
+pub mod drag_overlay;
 mod dropdown;
 mod dynamic_form;
 mod feedback;
@@ -89,6 +90,7 @@ pub use sticky::{StickyAncestor, StickyBoxes, StickyDependencies, sticky_transla
 mod browser_view;
 pub mod fold;
 mod menus;
+pub mod modifier_hold;
 mod motion_api;
 mod mutation;
 mod native_content;
@@ -153,6 +155,7 @@ mod shell;
 mod sidebar;
 mod snippet;
 mod split_pane;
+pub mod spotlight;
 pub use snippet::{
     SnippetExpansion, SnippetPlaceholder, SnippetTransform, expand_text_snippet,
     expand_text_snippet_with_variables,
@@ -288,6 +291,11 @@ pub use dock::{
     MAX_SPLIT_RATIO, MIN_SPLIT_RATIO, clamp_ratio, dock_nudge_split_ratio,
     dock_split_child_lengths, dock_split_ratio_from_pointer, dock_surface_window_key,
 };
+pub use drag_overlay::{
+    CrossWindowDragHandoff, CursorFollower, CursorFollowerPlacement, DragOverlay,
+    DragSourcePresentation, DropZone, DropZoneConfig, DropZoneDecision, DropZoneRegistry,
+    PendingDrop,
+};
 pub use dropdown::{Dropdown, DropdownOption};
 pub use dynamic_form::{DynamicForm, DynamicFormEvent, DynamicFormField, DynamicFormOption};
 pub use feedback::{
@@ -297,7 +305,7 @@ pub use feedback::{
 };
 pub use file_tab::{FileTab, FileTabEvent};
 pub use find_replace::{FindReplaceBar, FindReplaceEvent, TextSearchBar};
-pub use focus::{DirectionalFocusScope, FocusCounters, FocusNeighbors, FocusPolicy};
+pub use focus::{DirectionalFocusScope, FocusCounters, FocusNeighbors, FocusPolicy, FocusScope};
 pub use form_surfaces::{FormField, FormFieldVisual, InteractiveCard};
 pub use framework::MountedView;
 pub(crate) use framework::UiBuilder;
@@ -368,6 +376,9 @@ pub use menus::{
     ActionMenuItem, ActionMenuItemGeometry, ActionMenuItemVisual, AnchoredActionMenu,
     AnchoredMenuDismissed, ContextMenu, ContextMenuEvent, ContextMenuItem, resolve_anchored_origin,
 };
+pub use modifier_hold::{
+    ModifierHoldConfig, ModifierHoldState, ModifierHoldTracker, ModifierHoldTransition, ModifierKey,
+};
 pub use motion_api::{
     FlipBuilder, FoldBuilder, NodeMotion, SharedElementBuilder, SpringBuilder, TimelineBuilder,
     TransitionBuilder,
@@ -425,9 +436,9 @@ pub use nana_ui_core::{
 };
 pub use nana_ui_input::{FocusDirection, NavigationInput, NavigationIntent, NavigationSource};
 pub use overlay_surfaces::{
-    ConfirmDialog, ConfirmIntent, ConfirmSlots, Drawer, ModalBehavior, ModalFrameGeometry,
-    ModalFrameVisual, ModalInitialFocus, ModalSlots, ModalSurface, ModalSurfaceKind,
-    ModalSurfaceSections,
+    ConfirmDialog, ConfirmIntent, ConfirmSlots, Drawer, ModalBackdrop, ModalBackdropVisual,
+    ModalBehavior, ModalFrameGeometry, ModalFrameVisual, ModalInitialFocus, ModalSlots,
+    ModalSurface, ModalSurfaceKind, ModalSurfaceSections,
 };
 pub use overlay_visibility::{
     OVERLAY_IDLE, OverlayLocks, OverlayVisibility, OverlayVisibilityChanged,
@@ -444,7 +455,9 @@ pub use popover::{
     Popover, PopoverClosed, PopoverToggled, TOP_LAYER_Z_INDEX, resolve_anchored_surface,
     resolve_popover_origin,
 };
-pub use presence::{PresenceLifecycle, PresencePhase, PresenceSettled};
+pub use presence::{
+    PresenceGroup, PresenceHiddenMode, PresenceLifecycle, PresencePhase, PresenceSettled,
+};
 pub use presentation::{
     HIGHLIGHT_PRESENTER, HighlightRequest, TextPresentation, TextPresenter, TextPresenterFn,
     TextSpan,
@@ -503,6 +516,10 @@ pub use sidebar::{
     sidebar_top_bar_tool_button,
 };
 pub use split_pane::SplitPane;
+pub use spotlight::{
+    AnchoredCallout, CalloutPlacement, CalloutPlatePainter, CalloutSide, SpotlightHole,
+    SpotlightHoleShape, SpotlightScrim,
+};
 pub use tabs::{TabOption, Tabs, TabsEvent};
 #[cfg(feature = "terminal")]
 pub use terminal::{

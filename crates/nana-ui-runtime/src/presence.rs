@@ -59,6 +59,18 @@ pub enum PresenceSettled {
     Hidden,
 }
 
+/// How [`PresenceLifecycle`] hides a node once its leave transition settles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PresenceHiddenMode {
+    /// Sets `paint.visibility = Hidden` once settled hidden while keeping the
+    /// node's layout slot reserved.
+    #[default]
+    VisibilityHidden,
+    /// Sets `layout.hidden = true` once settled hidden (removing the node from
+    /// layout flow) and clears `layout.hidden = false` before revealing.
+    LayoutHidden,
+}
+
 type StyleWriter = fn(
     &mut AppContext,
     StableNodeId,
@@ -74,6 +86,7 @@ pub struct PresenceLifecycle {
     outstanding: u32,
     /// Whether the node was inert of its own before it first concealed.
     inert: Option<bool>,
+    hidden_mode: PresenceHiddenMode,
     write: StyleWriter,
 }
 
@@ -106,8 +119,25 @@ impl PresenceLifecycle {
             phase: PresencePhase::Shown,
             outstanding: 0,
             inert: None,
+            hidden_mode: PresenceHiddenMode::VisibilityHidden,
             write: write_style::<C>,
         }
+    }
+
+    /// Configure how the node is hidden once a leave transition settles.
+    pub fn hidden_mode(mut self, mode: PresenceHiddenMode) -> Self {
+        self.hidden_mode = mode;
+        self
+    }
+
+    /// Change how the node is hidden once a leave transition settles.
+    pub fn set_hidden_mode(&mut self, mode: PresenceHiddenMode) {
+        self.hidden_mode = mode;
+    }
+
+    /// Current hidden mode for settled-hidden state.
+    pub fn current_hidden_mode(&self) -> PresenceHiddenMode {
+        self.hidden_mode
     }
 
     pub fn node(&self) -> StableNodeId {
@@ -145,6 +175,17 @@ impl PresenceLifecycle {
         }
         self.start(cx, shown, now, false)?;
         Ok(true)
+    }
+
+    /// Replay the enter transition from its enter-from pose (even when the
+    /// node is already [`PresencePhase::Shown`], e.g. after swapping content
+    /// in place).
+    pub fn enter_from_gone(
+        &mut self,
+        cx: &mut AppContext,
+        now: Duration,
+    ) -> Result<(), FrameworkError> {
+        self.start_enter_from_gone(cx, now)
     }
 
     /// Land at `shown` with no animation (a node that mounts hidden, a jump
@@ -206,16 +247,24 @@ impl PresenceLifecycle {
     }
 
     /// After [`Self::animation_events`] reported [`PresenceSettled::Hidden`]:
-    /// take the node out of paint, hit testing and accessibility. Called for
-    /// you by [`Self::apply_events`].
+    /// take the node out of paint, hit testing and accessibility (and layout
+    /// flow when [`PresenceHiddenMode::LayoutHidden`] is configured). Called
+    /// for you by [`Self::apply_events`].
     fn set_painted(&self, cx: &mut AppContext, painted: bool) -> Result<(), FrameworkError> {
+        if !painted {
+            self.drop_focus(cx)?;
+        }
         let visibility = Some(if painted {
             VisibilitySpec::Visible
         } else {
             VisibilitySpec::Hidden
         });
+        let hidden_mode = self.hidden_mode;
         (self.write)(cx, self.node, &mut |layout| {
             layout.paint.visibility = visibility;
+            if hidden_mode == PresenceHiddenMode::LayoutHidden {
+                layout.hidden = !painted;
+            }
         })
     }
 
@@ -239,6 +288,25 @@ impl PresenceLifecycle {
         shown: bool,
         now: Duration,
         at_once: bool,
+    ) -> Result<(), FrameworkError> {
+        self.start_inner(cx, shown, now, at_once, false)
+    }
+
+    fn start_enter_from_gone(
+        &mut self,
+        cx: &mut AppContext,
+        now: Duration,
+    ) -> Result<(), FrameworkError> {
+        self.start_inner(cx, true, now, false, true)
+    }
+
+    fn start_inner(
+        &mut self,
+        cx: &mut AppContext,
+        shown: bool,
+        now: Duration,
+        at_once: bool,
+        force_enter_from: bool,
     ) -> Result<(), FrameworkError> {
         if !cx.world().contains(self.node) {
             return Err(FrameworkError::MissingView(self.node));
@@ -321,9 +389,10 @@ impl PresenceLifecycle {
         }
 
         let mut queue = MutationQueue::new();
-        // A reveal from rest starts where the enter half says; anything else
-        // (a reversal mid-way, a conceal) starts from what is shown.
-        let enter_from = (shown && self.phase == PresencePhase::Hidden)
+        // A reveal from rest (or an explicit `enter_from_gone` replay) starts
+        // where the enter half says; anything else (a reversal mid-way, a
+        // conceal) starts from what is shown.
+        let enter_from = (shown && (force_enter_from || self.phase == PresencePhase::Hidden))
             .then_some(self.transition.enter)
             .flatten();
         let mut run = |property: AnimatableProperty, from: Option<MotionValue>, to: MotionValue| {
@@ -393,6 +462,143 @@ impl PresenceLifecycle {
             cx.clear_focus(document)?;
         }
         Ok(())
+    }
+}
+
+/// Coordinates a keyed batch of [`PresenceLifecycle`] instances so multi-slot
+/// chrome (side drawers, stacked cards, toolbars) can forward animation events,
+/// query aggregate visibility, and settle every entry together.
+pub struct PresenceGroup<K = usize> {
+    entries: Vec<(K, PresenceLifecycle)>,
+}
+
+impl<K> Default for PresenceGroup<K> {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+}
+
+impl<K: Eq> PresenceGroup<K> {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Insert or replace the [`PresenceLifecycle`] associated with `key`.
+    pub fn insert(&mut self, key: K, lifecycle: PresenceLifecycle) -> Option<PresenceLifecycle> {
+        if let Some((_, existing)) = self.entries.iter_mut().find(|(k, _)| *k == key) {
+            return Some(std::mem::replace(existing, lifecycle));
+        }
+        self.entries.push((key, lifecycle));
+        None
+    }
+
+    pub fn remove(&mut self, key: &K) -> Option<PresenceLifecycle> {
+        let index = self.entries.iter().position(|(k, _)| k == key)?;
+        Some(self.entries.swap_remove(index).1)
+    }
+
+    pub fn get(&self, key: &K) -> Option<&PresenceLifecycle> {
+        self.entries.iter().find(|(k, _)| k == key).map(|(_, v)| v)
+    }
+
+    pub fn get_mut(&mut self, key: &K) -> Option<&mut PresenceLifecycle> {
+        self.entries
+            .iter_mut()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v)
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Reveal or conceal the entry for `key`. Returns `Ok(false)` if `key` is
+    /// absent or already targeting `shown`.
+    pub fn set_shown(
+        &mut self,
+        key: &K,
+        cx: &mut AppContext,
+        shown: bool,
+        now: Duration,
+    ) -> Result<bool, FrameworkError> {
+        let Some(entry) = self.get_mut(key) else {
+            return Ok(false);
+        };
+        entry.set_shown(cx, shown, now)
+    }
+
+    /// Replay the enter transition from gone for `key`. Returns `Ok(false)` if
+    /// `key` is absent.
+    pub fn enter_from_gone(
+        &mut self,
+        key: &K,
+        cx: &mut AppContext,
+        now: Duration,
+    ) -> Result<bool, FrameworkError> {
+        let Some(entry) = self.get_mut(key) else {
+            return Ok(false);
+        };
+        entry.enter_from_gone(cx, now)?;
+        Ok(true)
+    }
+
+    /// Forward frame animation events to every entry and collect all newly
+    /// settled `(key, PresenceSettled)` pairs.
+    pub fn apply_events(
+        &mut self,
+        cx: &mut AppContext,
+        events: &[AnimationEvent],
+    ) -> Result<Vec<(K, PresenceSettled)>, FrameworkError>
+    where
+        K: Clone,
+    {
+        let mut settled = Vec::new();
+        for (key, entry) in &mut self.entries {
+            if let Some(state) = entry.apply_events(cx, events)? {
+                settled.push((key.clone(), state));
+            }
+        }
+        Ok(settled)
+    }
+
+    /// Settle every in-flight entry immediately.
+    pub fn settle_all(
+        &mut self,
+        cx: &mut AppContext,
+    ) -> Result<Vec<(K, PresenceSettled)>, FrameworkError>
+    where
+        K: Clone,
+    {
+        let mut settled = Vec::new();
+        for (key, entry) in &mut self.entries {
+            if let Some(state) = entry.settle(cx)? {
+                settled.push((key.clone(), state));
+            }
+        }
+        Ok(settled)
+    }
+
+    /// True if any entry is currently shown or revealing.
+    pub fn any_shown(&self) -> bool {
+        self.entries.iter().any(|(_, entry)| entry.shown())
+    }
+
+    /// True if every entry is settled hidden (vacuously true when empty).
+    pub fn all_settled_hidden(&self) -> bool {
+        self.entries
+            .iter()
+            .all(|(_, entry)| entry.settled() == Some(PresenceSettled::Hidden))
+    }
+
+    /// Iterate over `(key, lifecycle)` pairs.
+    pub fn iter(&self) -> impl Iterator<Item = (&K, &PresenceLifecycle)> {
+        self.entries.iter().map(|(k, v)| (k, v))
     }
 }
 
@@ -609,5 +815,93 @@ mod tests {
             run(&mut cx, &mut presence, ms(100)),
             vec![(ms(100), PresenceSettled::Hidden)]
         );
+    }
+
+    #[test]
+    fn layout_hidden_mode_toggles_layout_hidden_and_releases_focus() {
+        let (mut cx, document, card, button) = card_with_button();
+        cx.advance_animations(ms(0));
+        cx.focus_node(document, button.stable_id()).unwrap();
+        let mut presence =
+            PresenceLifecycle::new(card, slide()).hidden_mode(PresenceHiddenMode::LayoutHidden);
+
+        assert!(presence.set_shown(&mut cx, false, ms(0)).unwrap());
+        assert!(
+            !layout(&cx, card.stable_id()).hidden,
+            "stays in layout while concealing"
+        );
+        assert_eq!(cx.world().focused(document), None);
+
+        let settled = run(&mut cx, &mut presence, ms(500));
+        assert_eq!(settled, vec![(ms(100), PresenceSettled::Hidden)]);
+        assert!(
+            layout(&cx, card.stable_id()).hidden,
+            "removed from layout once settled hidden"
+        );
+
+        assert!(presence.set_shown(&mut cx, true, ms(500)).unwrap());
+        assert!(
+            !layout(&cx, card.stable_id()).hidden,
+            "layout.hidden cleared before reveal starts"
+        );
+        assert_eq!(
+            layout(&cx, card.stable_id()).paint.visibility,
+            Some(VisibilitySpec::Visible)
+        );
+        let settled = run(&mut cx, &mut presence, ms(1000));
+        assert_eq!(settled, vec![(ms(700), PresenceSettled::Shown)]);
+    }
+
+    #[test]
+    fn enter_from_gone_replays_enter_transition_while_already_shown() {
+        let (mut cx, _, card, _) = card_with_button();
+        cx.advance_animations(ms(100));
+        let mut presence = PresenceLifecycle::new(card, slide());
+        assert_eq!(presence.phase(), PresencePhase::Shown);
+
+        presence.enter_from_gone(&mut cx, ms(100)).unwrap();
+        assert_eq!(presence.phase(), PresencePhase::Revealing);
+        assert_eq!(opacity(&cx, card.stable_id(), ms(100)), 0.0);
+
+        let settled = run(&mut cx, &mut presence, ms(500));
+        assert_eq!(settled, vec![(ms(300), PresenceSettled::Shown)]);
+        assert_eq!(opacity(&cx, card.stable_id(), ms(300)), 1.0);
+    }
+
+    #[test]
+    fn presence_group_coordinates_multiple_slots() {
+        let (mut cx, document, card_a, _) = card_with_button();
+        let card_b = cx.create_component(document, Stack::column(0.0)).unwrap();
+        cx.advance_animations(ms(0));
+
+        let mut group = PresenceGroup::new();
+        group.insert("a", PresenceLifecycle::new(card_a, slide()));
+        group.insert(
+            "b",
+            PresenceLifecycle::new(card_b, slide()).hidden_mode(PresenceHiddenMode::LayoutHidden),
+        );
+        assert!(group.any_shown());
+        assert!(!group.all_settled_hidden());
+
+        group.set_shown(&"a", &mut cx, false, ms(0)).unwrap();
+        group.set_shown(&"b", &mut cx, false, ms(0)).unwrap();
+        assert!(!group.any_shown());
+
+        let mut settled = Vec::new();
+        while let Some(due) = cx.next_animation_deadline() {
+            let at = due.max(cx.world().animation_now());
+            let frame = cx.advance_animations(at);
+            settled.extend(group.apply_events(&mut cx, &frame.events).unwrap());
+        }
+        assert_eq!(
+            settled,
+            vec![
+                ("a", PresenceSettled::Hidden),
+                ("b", PresenceSettled::Hidden)
+            ]
+        );
+        assert!(group.all_settled_hidden());
+        assert!(!layout(&cx, card_a.stable_id()).hidden);
+        assert!(layout(&cx, card_b.stable_id()).hidden);
     }
 }

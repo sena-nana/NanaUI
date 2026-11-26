@@ -3677,7 +3677,18 @@ fn finish_sequential_delta<'w, 's>(
     let Some(size) = finish_planned_size(id, plan, nodes, |chrome| match seq.direction {
         FlexDirection::Column => (plan.default_cross, main + chrome.height),
         FlexDirection::Row if plan.parent_direction.is_none() => {
-            (plan.available.width, plan.default_cross)
+            let stretches_auto_width = !plan.style.width.is_some_and(LengthSpec::is_content_sized)
+                && !plan.style.display.is_some_and(|display| {
+                    matches!(
+                        display,
+                        DisplaySpec::InlineFlex | DisplaySpec::InlineGrid | DisplaySpec::Inline
+                    )
+                });
+            if stretches_auto_width {
+                (plan.available.width, plan.default_cross)
+            } else {
+                (main + chrome.width, plan.default_cross)
+            }
         }
         FlexDirection::Row => (main + chrome.width, plan.default_cross),
     })?
@@ -4311,4 +4322,142 @@ fn finish_grid_delta<'w, 's>(
     Ok(FrameOutcome::Done(finish_plan_reused(
         &common, size, true, cache,
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::view::StyledComponent as _;
+    use crate::{AppContext, DocumentId, LayoutViewport, NodeStyle, Stack};
+    use nana_ui_core::{AlignSpec, FlexDirection, LayoutStyle, LengthSpec, PositionSpec};
+    use std::sync::Arc;
+
+    #[test]
+    fn out_of_flow_horizontal_row_with_shrink_width_stays_content_sized_on_incremental_relayout() {
+        let doc = DocumentId::new(1).unwrap();
+        let mut cx = AppContext::new();
+        let root = cx.create_component(doc, Stack::fill_column(0.0)).unwrap();
+        let row = cx
+            .create_detached_component(
+                doc,
+                Stack::row(8.0).style(NodeStyle {
+                    layout: Arc::new(LayoutStyle {
+                        position: PositionSpec::Absolute,
+                        direction: Some(FlexDirection::Row),
+                        width: Some(LengthSpec::Shrink),
+                        gap: Some(LengthSpec::Px(8.0)),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        let a = cx
+            .create_detached_component(
+                doc,
+                Stack::column(0.0).style(NodeStyle {
+                    layout: Arc::new(LayoutStyle {
+                        width: Some(LengthSpec::Px(60.0)),
+                        height: Some(LengthSpec::Px(28.0)),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        let b = cx
+            .create_detached_component(
+                doc,
+                Stack::column(0.0).style(NodeStyle {
+                    layout: Arc::new(LayoutStyle {
+                        width: Some(LengthSpec::Px(40.0)),
+                        height: Some(LengthSpec::Px(28.0)),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        cx.append_child(root, row).unwrap();
+        cx.append_child(row, a).unwrap();
+        cx.append_child(row, b).unwrap();
+
+        cx.layout_document(doc, LayoutViewport::new(800.0, 400.0))
+            .unwrap();
+        let initial = cx.world().layout_box(row.stable_id()).unwrap();
+        assert_eq!(initial.width, 108.0);
+
+        // Mutate child `b` width to trigger incremental sequential delta measure.
+        cx.update_component(b, |stack, _| {
+            Arc::make_mut(&mut stack.node_style_mut().layout).width = Some(LengthSpec::Px(70.0));
+        })
+        .unwrap();
+        cx.layout_document(doc, LayoutViewport::new(800.0, 400.0))
+            .unwrap();
+        let updated = cx.world().layout_box(row.stable_id()).unwrap();
+        assert_eq!(
+            updated.width, 138.0,
+            "out-of-flow shrink Row must stay content-sized on incremental re-layout instead of stretching to 800px"
+        );
+    }
+
+    #[test]
+    fn horizontal_flex_stretch_stretches_auto_height_children_and_fill_descendants() {
+        let doc = DocumentId::new(2).unwrap();
+        let mut cx = AppContext::new();
+        let row = cx
+            .create_component(
+                doc,
+                Stack::row(0.0).style(NodeStyle {
+                    layout: Arc::new(LayoutStyle {
+                        direction: Some(FlexDirection::Row),
+                        align_items: AlignSpec::Stretch,
+                        width: Some(LengthSpec::Px(300.0)),
+                        height: Some(LengthSpec::Px(120.0)),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        let col = cx
+            .create_detached_component(
+                doc,
+                Stack::column(0.0).style(NodeStyle {
+                    layout: Arc::new(LayoutStyle {
+                        direction: Some(FlexDirection::Column),
+                        width: Some(LengthSpec::Px(100.0)),
+                        height: None,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        let inner = cx
+            .create_detached_component(
+                doc,
+                Stack::column(0.0).style(NodeStyle {
+                    layout: Arc::new(LayoutStyle {
+                        width: Some(LengthSpec::Fill),
+                        height: Some(LengthSpec::Fill),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        cx.append_child(row, col).unwrap();
+        cx.append_child(col, inner).unwrap();
+
+        cx.layout_document(doc, LayoutViewport::new(400.0, 300.0))
+            .unwrap();
+        assert_eq!(
+            cx.world().layout_box(col.stable_id()).unwrap().height,
+            120.0
+        );
+        assert_eq!(
+            cx.world().layout_box(inner.stable_id()).unwrap().height,
+            120.0
+        );
+    }
 }

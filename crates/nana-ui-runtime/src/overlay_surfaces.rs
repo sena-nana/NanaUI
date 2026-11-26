@@ -257,7 +257,9 @@ impl ModalFrameVisual {
                     .footer_divider
                     .map(|role| style_model.color(role).as_rgba_array()),
             ),
-            scrim_color: theme.effects().modal_scrim.as_rgba_array(),
+            scrim_color: style_model
+                .color(nana_ui_core::SemanticColorRole::ModalScrim)
+                .as_rgba_array(),
             scrim_blur: theme.effects().modal_scrim_blur,
             surface_paint,
             scrim_opacity: world.scrim_presence(id),
@@ -1004,6 +1006,212 @@ impl ComponentView for Drawer {
             false,
             &self.slots,
             None,
+        );
+    }
+}
+
+/// Visual contract for a cardless/frameless [`ModalBackdrop`]: paints only the
+/// themed [`SemanticColorRole::ModalScrim`](nana_ui_core::SemanticColorRole::ModalScrim)
+/// backdrop without any dialog card quad, elevation shadow, or dividers.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModalBackdropVisual {
+    /// Whether to apply the theme's `modal_scrim_blur` backdrop filter.
+    pub blur: bool,
+    /// Optional opacity multiplier (`0.0..=1.0`, `None` = full theme scrim
+    /// alpha) composed with the modal's entrance/exit scrim presence.
+    pub opacity: Option<f32>,
+}
+
+impl Default for ModalBackdropVisual {
+    fn default() -> Self {
+        Self {
+            blur: true,
+            opacity: None,
+        }
+    }
+}
+
+impl crate::WidgetVisual for ModalBackdropVisual {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn dyn_eq(&self, other: &dyn std::any::Any) -> bool {
+        other.downcast_ref::<Self>() == Some(self)
+    }
+
+    fn theme_dependency_mask(&self) -> nana_ui_core::ThemeDependencyMask {
+        nana_ui_core::ThemeDependencyMask::COLOR_ANY
+            .union(nana_ui_core::ThemeDependencyMask::EFFECT)
+    }
+
+    fn paint(&self, ctx: &crate::WidgetPaintCtx<'_>) -> crate::WidgetPaintOutput {
+        let mut output = crate::WidgetPaintOutput::default();
+        let scrim_color = ctx
+            .style_model
+            .color(nana_ui_core::SemanticColorRole::ModalScrim)
+            .as_rgba_array();
+        let scale = self.opacity.unwrap_or(1.0);
+        let opacity = (ctx.world.scrim_presence(ctx.id) * scale).clamp(0.0, 1.0);
+        let backdrop_blur = if self.blur {
+            ctx.theme.effects().modal_scrim_blur
+        } else {
+            0.0
+        };
+        output.push_tagged(
+            crate::WidgetTaggedOp::new(
+                crate::MODAL_SCRIM_SLOT,
+                crate::WidgetPaintOp::Quad(crate::WidgetQuad {
+                    rect: ctx.bounds,
+                    fill: Some(scrim_color),
+                    backdrop_blur,
+                    ..Default::default()
+                }),
+            )
+            .with_opacity_multiplier(opacity),
+        );
+        output
+    }
+}
+
+/// Cardless / frameless modal backdrop surface using
+/// [`SemanticColorRole::ModalScrim`](nana_ui_core::SemanticColorRole::ModalScrim)
+/// without dialog card chrome.
+///
+/// Children are laid out directly inside the full-viewport backdrop with normal
+/// layout styling while the surface still participates in modal accessibility
+/// (`modal: true`) and [`ModalSurface`] lifecycle.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModalBackdrop {
+    /// Accessible label announced for this modal layer.
+    pub label: Arc<str>,
+    /// Open while in a tree under an [`crate::OverlayHost`].
+    pub open: bool,
+    /// Whether to apply the theme's modal scrim blur.
+    pub blur: bool,
+    /// Optional opacity multiplier (`0.0..=1.0`, `None` = full theme scrim alpha).
+    pub scrim_opacity: Option<f32>,
+    behavior: ModalBehavior,
+    slots: ModalSlots,
+    pub style: NodeStyle,
+}
+
+impl ModalBackdrop {
+    pub fn new(label: impl Into<Arc<str>>) -> Self {
+        Self {
+            label: label.into(),
+            open: false,
+            blur: true,
+            scrim_opacity: None,
+            behavior: ModalBehavior::default(),
+            slots: ModalSlots::default(),
+            style: modal_root_style(),
+        }
+    }
+
+    pub fn open(mut self, open: bool) -> Self {
+        self.open = open;
+        self
+    }
+
+    pub fn blur(mut self, blur: bool) -> Self {
+        self.blur = blur;
+        self
+    }
+
+    pub fn scrim_opacity(mut self, opacity: f32) -> Self {
+        self.scrim_opacity = opacity.is_finite().then_some(opacity.clamp(0.0, 1.0));
+        self
+    }
+
+    pub fn close_policy(mut self, close_policy: DialogClosePolicy) -> Self {
+        self.behavior.close_policy = close_policy;
+        self
+    }
+
+    pub fn initial_focus(mut self, initial_focus: ModalInitialFocus) -> Self {
+        self.behavior.initial_focus = initial_focus;
+        self
+    }
+
+    pub fn body(mut self, body: StableNodeId) -> Self {
+        self.slots.body = Some(body);
+        self
+    }
+
+    pub fn style(mut self, style: NodeStyle) -> Self {
+        self.style = style;
+        self
+    }
+
+    pub fn behavior(&self) -> ModalBehavior {
+        self.behavior
+    }
+}
+
+impl ModalSurface for ModalBackdrop {
+    fn slots(&self) -> &ModalSlots {
+        &self.slots
+    }
+
+    fn slots_mut(&mut self) -> &mut ModalSlots {
+        &mut self.slots
+    }
+
+    fn is_open(&self) -> bool {
+        self.open
+    }
+
+    fn set_open(&mut self, open: bool) {
+        self.open = open;
+    }
+}
+
+impl ComponentView for ModalBackdrop {
+    const TYPE_ID: Option<&'static str> = Some("nana.modal-backdrop");
+
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        lifecycle: Some(crate::AppContext::sync_modal_open::<Self>),
+        overlay: Some(&crate::view_components::MODAL_OVERLAY_BEHAVIOR),
+        ..crate::TypeBehavior::NONE
+    };
+
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
+
+    fn node_kind(&self) -> NodeKind {
+        NodeKind::Element {
+            tag: "modal-backdrop".into(),
+        }
+    }
+
+    fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        let visual = ModalBackdropVisual {
+            blur: self.blur,
+            opacity: self.scrim_opacity,
+        };
+        if world.widget_visual_as::<ModalBackdropVisual>(id) != Some(&visual) {
+            mutations.set_widget_visual(id, Some(visual));
+        }
+        project_common(
+            id,
+            world,
+            mutations,
+            &self.style,
+            InteractionState {
+                pointer_events: true,
+                focusable: true,
+            },
+            AccessibilityState {
+                role: AccessibilityRole::Dialog,
+                label: Some(Arc::clone(&self.label)),
+                modal: true,
+                ..Default::default()
+            },
         );
     }
 }
@@ -3698,5 +3906,54 @@ mod tests {
             None
         );
         assert_eq!(cx.world().focused(document), None);
+    }
+
+    #[test]
+    fn modal_backdrop_paints_only_scrim_without_dialog_card_chrome() {
+        use crate::WidgetVisual as _;
+        let mut cx = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let backdrop = cx
+            .create_component(document, ModalBackdrop::new("Tour backdrop").blur(false))
+            .unwrap();
+        cx.layout_document(document, crate::LayoutViewport::new(800.0, 600.0))
+            .unwrap();
+
+        let a11y = cx.world().accessibility(backdrop.stable_id()).unwrap();
+        assert!(a11y.modal);
+
+        let visual = cx
+            .world()
+            .widget_visual_as::<ModalBackdropVisual>(backdrop.stable_id())
+            .expect("backdrop attaches ModalBackdropVisual");
+        let theme = cx.world().node_theme(backdrop.stable_id());
+        let bounds = cx.world().layout_box(backdrop.stable_id()).unwrap();
+        let style = cx.world().computed_style(backdrop.stable_id()).unwrap();
+        let source_style = cx.world().node_style(backdrop.stable_id()).unwrap();
+        let output = visual.paint(&crate::WidgetPaintCtx {
+            id: backdrop.stable_id(),
+            world: cx.world(),
+            bounds,
+            content: bounds,
+            style: &style,
+            source_style: &source_style,
+            style_model: theme.style_model(),
+            theme,
+            chrome_radii: nana_ui_core::ChromeRadii::default(),
+        });
+        assert_eq!(output.ops.len(), 1, "only the scrim quad should be emitted");
+        assert_eq!(output.ops[0].slot, crate::MODAL_SCRIM_SLOT);
+        let expected_scrim = theme
+            .style_model()
+            .color(nana_ui_core::SemanticColorRole::ModalScrim)
+            .as_rgba_array();
+        match &output.ops[0].op {
+            crate::WidgetPaintOp::Quad(quad) => {
+                assert_eq!(quad.fill, Some(expected_scrim));
+                assert_eq!(quad.backdrop_blur, 0.0);
+                assert!(quad.elevation.is_none());
+            }
+            other => panic!("expected scrim quad, got {other:?}"),
+        }
     }
 }
