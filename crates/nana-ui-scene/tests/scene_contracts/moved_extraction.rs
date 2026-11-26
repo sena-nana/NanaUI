@@ -837,6 +837,93 @@ fn rows_moved_in_a_scrolled_column_paint_like_a_cold_scene() {
     }
 }
 
+/// The same rows move inside the scroll while an opacity animation keeps the
+/// compositor presenting. The rows were built before the scroll, so they are
+/// drawn rebased onto the scrolled projection, and every primitive draws
+/// where a cold scene puts it: through the scroll once, not twice.
+#[test]
+fn rows_moved_in_a_scrolled_column_while_presenting_paint_like_a_cold_scene() {
+    use std::time::Duration;
+
+    use nana_ui_core::OverflowSpec;
+    use nana_ui_runtime::{
+        AnimatableProperty, AnimationId, AnimationSpec, Easing, MotionTo, MotionValue, ScrollOffset,
+    };
+    let mut runtime = document();
+    let mut queue = MutationQueue::new();
+    let mut scroller = column_style(0.0);
+    let layout = Arc::make_mut(&mut scroller.layout);
+    layout.height = Some(LengthSpec::Px(90.0));
+    layout.overflow_y = OverflowSpec::Auto;
+    queue.set_style(id(COLUMN), scroller);
+    runtime.context_mut().commit_mutations(queue).unwrap();
+    flush(&mut runtime);
+    let mut queue = MutationQueue::new();
+    queue.set_scroll_offset(id(COLUMN), ScrollOffset { x: 0.0, y: 30.37 });
+    queue.start_animation(
+        AnimationSpec::new(
+            AnimationId::new(1).unwrap(),
+            chip_id(0),
+            Duration::ZERO,
+            Duration::from_secs(10),
+            Duration::from_millis(16),
+            Easing::Linear,
+        )
+        .with_property(AnimatableProperty::Opacity)
+        .with_range(
+            MotionValue::Scalar(1.0),
+            MotionTo::Value(MotionValue::Scalar(0.0)),
+        ),
+    );
+    runtime.context_mut().commit_mutations(queue).unwrap();
+    runtime.context_mut().advance_animations(Duration::ZERO);
+    flush(&mut runtime);
+    let mut height = 20.0;
+    for step in 0..4 {
+        height += 1.37;
+        let mut layout = (*row_style()).clone();
+        layout.height = Some(LengthSpec::Px(height));
+        let mut queue = MutationQueue::new();
+        queue.set_style(
+            row_id(0),
+            NodeStyle {
+                layout: Arc::new(layout),
+                ..NodeStyle::default()
+            },
+        );
+        runtime.context_mut().commit_mutations(queue).unwrap();
+        runtime
+            .context_mut()
+            .advance_animations(Duration::from_millis(16 * (step + 1)));
+        flush(&mut runtime);
+        let world = runtime.context().world();
+        let scene = runtime.scene();
+        let mut cold = UiScene::new();
+        cold.apply_delta(world.extract_document(DocumentId::new(1).unwrap()), []);
+        let ids: Vec<_> = scene.primitives().map(|primitive| primitive.id).collect();
+        let cold_ids: Vec<_> = cold.primitives().map(|primitive| primitive.id).collect();
+        assert_eq!(
+            ids, cold_ids,
+            "step {step}: other primitives than a cold scene"
+        );
+        for id in ids {
+            let (draw, cold_draw) = (
+                scene.draw_primitive(id).unwrap(),
+                cold.draw_primitive(id).unwrap(),
+            );
+            assert!(
+                near(
+                    drawn(draw.placed_bounds(), draw.transform),
+                    drawn(cold_draw.placed_bounds(), cold_draw.transform)
+                ),
+                "step {step}: {id:?} draws at {:?}, a cold scene at {:?}",
+                drawn(draw.placed_bounds(), draw.transform),
+                drawn(cold_draw.placed_bounds(), cold_draw.transform),
+            );
+        }
+    }
+}
+
 /// An open select below a row that grows by an uneven step, again and again,
 /// in a scroller that cuts the room its menu opens into. While its menu opens
 /// the same way, uncapped, its record is kept: the menu stands where it stood

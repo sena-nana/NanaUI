@@ -132,6 +132,12 @@ impl UiScene {
         for id in ids {
             cold.rebuild_node_primitives(id);
         }
+        // The rebuild rewrote every projection under the epochs the clone
+        // carried, so the projection tables it carried (each node's rebase
+        // from its old projection onto the current one) no longer describe
+        // it. A delta that rebuilds drops them the same way; without this a
+        // node built stale while the compositor presents is rebased twice.
+        cold.invalidate_derived_all();
         let under_move =
             |id: StableNodeId| roots.iter().any(|&root| self.node_descends_from(id, root));
         let rect_bits =
