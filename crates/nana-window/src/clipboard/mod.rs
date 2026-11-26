@@ -236,6 +236,7 @@ pub(crate) fn decode_png(bytes: &[u8], max_bytes: usize) -> Result<TransferImage
     TransferImage::new(frame.width, frame.height, buf)
 }
 
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
 pub(crate) fn custom_mime_to_uti(mime: &str) -> String {
     let mut out = String::with_capacity(CUSTOM_UTI_PREFIX.len() + mime.len() * 2);
     out.push_str(CUSTOM_UTI_PREFIX);
@@ -247,6 +248,7 @@ pub(crate) fn custom_mime_to_uti(mime: &str) -> String {
     out
 }
 
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
 pub(crate) fn uti_to_custom_mime(uti: &str) -> Option<DataFormat> {
     let hex = uti.strip_prefix(CUSTOM_UTI_PREFIX)?;
     if hex.is_empty() || !hex.len().is_multiple_of(2) {
@@ -263,6 +265,7 @@ pub(crate) fn uti_to_custom_mime(uti: &str) -> Option<DataFormat> {
     DataFormat::parse(mime).ok()
 }
 
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
 fn from_hex_digit(byte: u8) -> Option<u8> {
     match byte {
         b'0'..=b'9' => Some(byte - b'0'),

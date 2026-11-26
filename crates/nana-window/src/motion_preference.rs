@@ -61,6 +61,7 @@ pub fn set_accessibility_preference_waker(waker: impl Fn() + Send + Sync + 'stat
 
 /// Mark the preference changed; the platform observer calls it.
 #[cfg(any(target_os = "macos", target_os = "linux", test))]
+#[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
 pub(crate) fn mark_changed() {
     CHANGED.store(true, Ordering::Release);
 }

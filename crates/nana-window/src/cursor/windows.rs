@@ -57,7 +57,7 @@ pub(super) fn create_cursor(bitmap: &CursorBitmap) -> Result<WindowsCursorHandle
     let w = i32::from(bitmap.width);
     let h = i32::from(bitmap.height);
     unsafe {
-        let mut bmi = BITMAPINFO {
+        let bmi = BITMAPINFO {
             bmiHeader: BITMAPINFOHEADER {
                 biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
                 biWidth: w,
