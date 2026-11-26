@@ -994,6 +994,21 @@ pub trait RuntimeProgram: Sized + 'static {
         FrameDemand::OnDemand
     }
 
+    /// Whether `id` is kept presenting continuously by an external producer
+    /// (such as a background thread pushing frames through
+    /// [`crate::FrameExchange`] and [`crate::FrameBinding`]) while
+    /// [`Self::frame_demand`] stays [`FrameDemand::OnDemand`].
+    ///
+    /// Returning `true` lets the host apply its continuous-presentation
+    /// swapchain latency policy (for example DXGI maximum frame latency 2 on
+    /// DX12; see `docs/reference/gpu.md` §6) without starting a second
+    /// periodic timer in the event loop or running hidden GPU ticks. Keep this
+    /// steady for windows hosting a live viewport so transient pauses do not
+    /// reconfigure the swapchain.
+    fn continuous_presentation(&self, _id: WindowId) -> bool {
+        false
+    }
+
     /// The fastest cadence the host keeps presenting `id` at. Both the
     /// program's own [`FrameDemand::Continuous`] and the cadence the framework
     /// adds for presentation it animates on the GPU — compositor layers,

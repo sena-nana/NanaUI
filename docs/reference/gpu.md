@@ -160,7 +160,7 @@ Issue #186 的评估结论为 **NO-GO**：WGPU 仍是 NanaUI 的唯一正式图�
 - 阻塞状态下，延迟 2 完全去掉了 acquire 的等待（14 → 0.02 ms），presented → screen 也从整整一个刷新周期降到约半个。被点击的那一帧现在最多排在一帧之后，而不是先在 `acquire` 里等前一帧、再在 DWM 里等一次。p50 降约 23 ms，p90 降约 25 ms，长帧没有增加，吞吐也没有下降。它仍比 Vulkan 慢约 5 ms；Vulkan 在这里从不排队。
 - 不阻塞状态不会变差。`SetMaximumFrameLatency` 只是队列上限；在该状态下延迟 1 从未碰到上限（`acquire` 0.02 ms），上限放宽到 2 不改变任何行为。即便最坏情况，也受限于这次在有排队帧时测得的 10 ms。从不阻塞的 Vulkan 只变化了 −0.2 ms。
 - 代价：每个这类窗口多一个后缓冲（wgpu-hal 分配延迟 + 1 个），程序在持续与按需之间切换时 swapchain 重新配置一次。
-- 已实现：`hosted_context.rs` 的 `steady_frame_latency` 给实时缩放（同以前）以及程序自身 `frame_demand` 为 `Continuous` 的 DX12 surface 分配延迟 2；场景宿主每次重绘在 `resize_window` 里传入该状态。合成器动效和窗口输出不算在内，所以短动画不会触发 swapchain 重新配置。空闲、按需窗口以及其他后端保持延迟 1。Metal 没有测。
+- 已实现：`hosted_context.rs` 的 `steady_frame_latency` 给实时缩放（同以前）以及程序自身 `frame_demand` 为 `Continuous` 或 `continuous_presentation` 为 `true`（外部生产端按需驱动持续呈现）的 DX12 surface 分配延迟 2；场景宿主每次重绘在 `resize_window` 里传入该状态。使用 `continuous_presentation` 时，保持 `FrameDemand::OnDemand` 即可获得 DX12 延迟 2，不会在事件循环另起一套周期定时器，也不会触发隐藏窗口 GPU tick。合成器动效和窗口输出不算在内，所以短动画不会触发 swapchain 重新配置。空闲、按需窗口以及其他后端保持延迟 1。Metal 没有测。
 - 是什么让桌面进入阻塞状态仍然不清楚。本机的 PresentMon（FrameView SDK 自带的版本）需要提权才能跟踪，所以没有记录呈现模式（independent flip 还是合成）。前一天约三分之一的运行不阻塞；这一天 19 次里一次都没有。探针窗口始终是同一个 480 × 320 的窗口。
 
 命令（在仓库根目录执行，S 为临时目录）：
@@ -659,6 +659,7 @@ let mut binding = FrameBinding::new(
 ```
 
 - **GPU 内部复制与无锁交换**：`copy_from` 在纹理池内执行一次 `copy_texture_to_texture`（要求源纹理具备 `COPY_SRC`、单采样 2D、非深度格式）。若生产端直接渲染到池纹理上，可调用 `try_begin_write(width, height, format)` 借出 `WriteSlot`（带 `RENDER_TARGET | SAMPLED | COPY_SRC | COPY_DST`），在共享队列提交绘制后调用 `commit_write` / `commit_write_with_payload` 完成零拷贝发布（丢弃未提交的 `WriteSlot` 会立即归还槽位；尺寸格式不变时复用槽位纹理对象）。单扇消费窗口建议分配 `3` 个槽位（在途写/复制、正在显示、已替换待 present），每增加一扇共享消费窗口多加 `2` 个槽位。
+- **生产者事件唤醒与排空判断**：事件驱动的生产者线程可通过 `FrameExchange::set_producer_waker` 安装非阻塞唤醒回调（会在 GPU 拷贝/直写完成、消费端释放 `FrameLease` 以及归还槽位的 GPU 释放围栏完成时触发），并结合 `FrameExchange::has_pending_work` 判断是否仍有在途写/复制、未处理的归还租约或释放围栏；全部排空且无设备丢失即可回到无限期休眠，避免空闲高频轮询。
 - **租约顺序与 Epoch 过滤**：`prepare` 换上新帧后，旧帧一直保留到 `presented` 才归还，生产端需等采样它的那次 UI 提交完成后才会复用该槽位。应用可通过 `set_epoch` 推进场景代次（立即隐藏收件箱中的旧代次帧；在新代次帧尚未发布且 `accept` 仍允许旧帧时，`FrameBinding` 会保持已显示的画面而不闪回透明空白）。
 
 ### 按资源时间取帧（Issue #303）

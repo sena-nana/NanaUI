@@ -434,20 +434,44 @@ pub struct FrameExchangeStats {
     pub occupied_high_water: u8,
 }
 
+#[derive(Default)]
+struct ProducerWaker {
+    callback: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+}
+
+impl ProducerWaker {
+    fn set(&self, waker: Option<Arc<dyn Fn() + Send + Sync>>) {
+        *lock(&self.callback) = waker;
+    }
+
+    fn wake(&self) {
+        // Clone and release the lock before invoking so callbacks cannot deadlock.
+        let callback = lock(&self.callback).clone();
+        if let Some(callback) = callback {
+            callback();
+        }
+    }
+}
+
 struct SlotOwnership {
     slot: u8,
     /// Sequence holding the slot; 0 while free.
     sequence: AtomicU64,
     /// Sequence handed back by a dropped lease; 0 when none is waiting.
     returned: AtomicU64,
+    /// Sequence whose GPU release fence is currently in flight; 0 when none.
+    releasing: AtomicU64,
+    producer_waker: Arc<ProducerWaker>,
 }
 
 impl SlotOwnership {
-    fn new(slot: u8) -> Self {
+    fn new(slot: u8, producer_waker: Arc<ProducerWaker>) -> Self {
         Self {
             slot,
             sequence: AtomicU64::new(0),
             returned: AtomicU64::new(0),
+            releasing: AtomicU64::new(0),
+            producer_waker,
         }
     }
 
@@ -570,6 +594,7 @@ impl<E, M> Drop for FrameLease<E, M> {
         self.ownership
             .returned
             .store(self.token.sequence, Ordering::Release);
+        self.ownership.producer_waker.wake();
     }
 }
 
@@ -689,6 +714,7 @@ pub struct FrameExchange<E = u64, M = ()> {
     slots: Box<[Slot<E, M>]>,
     epoch: E,
     notify: Arc<dyn Fn() + Send + Sync>,
+    producer_waker: Arc<ProducerWaker>,
     sequence: u64,
     last_published: u64,
     stats: FrameExchangeStats,
@@ -715,6 +741,7 @@ impl<E: Copy + Eq + Send + Sync + 'static, M: Send + Sync + 'static> FrameExchan
         epoch: E,
         notify: Arc<dyn Fn() + Send + Sync>,
     ) -> Self {
+        let producer_waker = Arc::new(ProducerWaker::default());
         Self {
             shared: Arc::new(Shared {
                 exchange: NEXT_EXCHANGE.fetch_add(1, Ordering::Relaxed),
@@ -732,17 +759,43 @@ impl<E: Copy + Eq + Send + Sync + 'static, M: Send + Sync + 'static> FrameExchan
             gpu: gpu.clone(),
             slots: (0..capacity.get())
                 .map(|slot| Slot {
-                    ownership: Arc::new(SlotOwnership::new(slot)),
+                    ownership: Arc::new(SlotOwnership::new(slot, Arc::clone(&producer_waker))),
                     texture: None,
                     pending: None,
                 })
                 .collect(),
             epoch,
             notify,
+            producer_waker,
             sequence: 0,
             last_published: 0,
             stats: FrameExchangeStats::default(),
         }
+    }
+
+    /// Install or clear an optional producer wake callback.
+    ///
+    /// Runs on GPU copy/write completion, consumer [`FrameLease`] drop, and
+    /// returned-slot GPU release completion. Callbacks may fire from any thread
+    /// and must stay non-blocking.
+    pub fn set_producer_waker(&mut self, waker: Option<Arc<dyn Fn() + Send + Sync>>) {
+        self.producer_waker.set(waker);
+    }
+
+    /// Whether GPU copies/writes, returned consumer leases, or slot release
+    /// fences are still awaiting [`Self::poll`]/completion.
+    ///
+    /// Returns `false` once the device is lost so event-driven producer loops
+    /// can return to an idle sleep.
+    pub fn has_pending_work(&self) -> bool {
+        if self.gpu.is_lost() {
+            return false;
+        }
+        self.slots.iter().any(|slot| {
+            slot.pending.is_some()
+                || slot.ownership.returned.load(Ordering::Acquire) != 0
+                || slot.ownership.releasing.load(Ordering::Acquire) != 0
+        })
     }
 
     pub fn inbox(&self) -> FrameInbox<E, M> {
@@ -978,7 +1031,11 @@ impl<E: Copy + Eq + Send + Sync + 'static, M: Send + Sync + 'static> FrameExchan
         let _submission = frame.submit();
         let completed = Arc::new(AtomicBool::new(false));
         let completion = Arc::clone(&completed);
-        queue.on_submitted_work_done(move || completion.store(true, Ordering::Release));
+        let waker = Arc::clone(&self.producer_waker);
+        queue.on_submitted_work_done(move || {
+            completion.store(true, Ordering::Release);
+            waker.wake();
+        });
         slot.pending = Some(PendingCopy {
             token: FrameToken {
                 exchange: self.shared.exchange,
@@ -1150,8 +1207,11 @@ impl<E: Copy + Eq + Send + Sync + 'static, M: Send + Sync + 'static> FrameExchan
         write_slot.committed = true;
         let completed = Arc::new(AtomicBool::new(false));
         let completion = Arc::clone(&completed);
-        __framework::queue(&self.gpu)
-            .on_submitted_work_done(move || completion.store(true, Ordering::Release));
+        let waker = Arc::clone(&self.producer_waker);
+        __framework::queue(&self.gpu).on_submitted_work_done(move || {
+            completion.store(true, Ordering::Release);
+            waker.wake();
+        });
         let sequence = write_slot.sequence;
         let slot = &mut self.slots[write_slot.slot_index];
         slot.pending = Some(PendingCopy {
@@ -1182,11 +1242,20 @@ impl<E: Copy + Eq + Send + Sync + 'static, M: Send + Sync + 'static> FrameExchan
             if sequence == 0 {
                 continue;
             }
+            slot.ownership.releasing.store(sequence, Ordering::Release);
             let ownership = Arc::clone(&slot.ownership);
             // The consumer may have sampled this texture in a submission that
             // is still queued; the slot is reusable once that work completes.
-            __framework::queue(&self.gpu)
-                .on_submitted_work_done(move || ownership.release(sequence));
+            __framework::queue(&self.gpu).on_submitted_work_done(move || {
+                ownership.release(sequence);
+                let _ = ownership.releasing.compare_exchange(
+                    sequence,
+                    0,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                );
+                ownership.producer_waker.wake();
+            });
         }
         self.gpu.poll();
         let epoch = self.epoch;
@@ -1282,7 +1351,7 @@ mod tests {
 
     #[test]
     fn a_slot_is_held_by_one_sequence_until_that_sequence_releases_it() {
-        let slot = SlotOwnership::new(0);
+        let slot = SlotOwnership::new(0, Arc::default());
         assert!(!slot.reserve(0), "sequence 0 means free");
         assert!(slot.reserve(1));
         assert!(!slot.reserve(2));
@@ -2032,5 +2101,95 @@ mod tests {
         assert!(!exchange.poll());
         assert_eq!(exchange.stats().stale_epoch, 1);
         assert!(inbox.latest().is_none());
+    }
+
+    #[test]
+    fn producer_waker_fires_on_copy_completion_lease_drop_and_slot_release() {
+        use std::sync::atomic::AtomicUsize;
+
+        let gpu = test_gpu();
+        let mut exchange = FrameExchange::new(&gpu, DEFAULT_CAPACITY, 1u64, Arc::new(|| {}));
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&wakes);
+        exchange.set_producer_waker(Some(Arc::new(move || {
+            counted.fetch_add(1, Ordering::AcqRel);
+        })));
+        assert!(!exchange.has_pending_work());
+
+        let inbox = exchange.inbox();
+        let texture = source(&gpu, 4, 1, wgpu::TextureUsages::COPY_SRC);
+        assert_eq!(exchange.copy_from(&texture, 1), CopyOutcome::Submitted);
+        assert!(exchange.has_pending_work());
+
+        wait(&gpu);
+        let wakes_after_copy = wakes.load(Ordering::Acquire);
+        assert!(
+            wakes_after_copy >= 1,
+            "producer waker must fire when GPU copy completes"
+        );
+        assert!(exchange.poll());
+        assert!(!exchange.has_pending_work());
+
+        let lease = inbox.try_take_latest().expect("published frame");
+        assert!(!exchange.has_pending_work());
+
+        // Clear `shared.latest` so dropping `lease` returns the slot immediately.
+        exchange.set_epoch(2);
+        drop(lease);
+        assert!(exchange.has_pending_work());
+        let wakes_after_drop = wakes.load(Ordering::Acquire);
+        assert!(
+            wakes_after_drop > wakes_after_copy,
+            "producer waker must fire when a consumer lease is dropped"
+        );
+
+        let _ = exchange.poll();
+        wait(&gpu);
+        assert_eq!(exchange.stats().occupied, 0);
+        assert!(!exchange.has_pending_work());
+        assert!(
+            wakes.load(Ordering::Acquire) > wakes_after_drop,
+            "producer waker must fire when slot release work completes"
+        );
+
+        // Pending GPU release fences (`releasing != 0`) also keep `has_pending_work()` true.
+        exchange.slots[0]
+            .ownership
+            .releasing
+            .store(99, Ordering::Release);
+        assert!(exchange.has_pending_work());
+        exchange.slots[0]
+            .ownership
+            .releasing
+            .store(0, Ordering::Release);
+        assert!(!exchange.has_pending_work());
+    }
+
+    #[test]
+    fn producer_waker_fires_on_direct_write_commit_completion() {
+        use std::sync::atomic::AtomicUsize;
+
+        let gpu = test_gpu();
+        let mut exchange = FrameExchange::new(&gpu, DEFAULT_CAPACITY, 1u64, Arc::new(|| {}));
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&wakes);
+        exchange.set_producer_waker(Some(Arc::new(move || {
+            counted.fetch_add(1, Ordering::AcqRel);
+        })));
+
+        let slot = exchange
+            .try_begin_write(4, 4, GpuTextureFormat::RGBA8_UNORM)
+            .expect("free slot");
+        assert!(!exchange.has_pending_work());
+        assert_eq!(exchange.commit_write(slot, 1), CopyOutcome::Submitted);
+        assert!(exchange.has_pending_work());
+
+        wait(&gpu);
+        assert!(
+            wakes.load(Ordering::Acquire) >= 1,
+            "producer waker must fire when committed write completes"
+        );
+        assert!(exchange.poll());
+        assert!(!exchange.has_pending_work());
     }
 }
