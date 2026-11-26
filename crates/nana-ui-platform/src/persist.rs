@@ -686,6 +686,7 @@ mod tests {
             logical_size: (width, height),
             scale_factor: 1.0,
             maximized,
+            ..crate::WindowGeometry::default()
         }
     }
 

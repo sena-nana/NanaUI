@@ -374,6 +374,13 @@ impl<L: Launch> RuntimeProgram for Staged<L> {
         }
     }
 
+    fn window_background_for(&self, id: WindowId) -> Option<SemanticColor> {
+        match &self.stage {
+            Stage::Running(program) => program.window_background_for(id),
+            Stage::Launching(launch) => launch.window_background(),
+        }
+    }
+
     fn appearance_backdrop_opacity(&self) -> f32 {
         match &self.stage {
             Stage::Running(program) => program.appearance_backdrop_opacity(),

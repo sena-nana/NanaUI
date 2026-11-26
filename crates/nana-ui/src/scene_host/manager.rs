@@ -234,6 +234,36 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         self.geometry_of(id).content(self.content_zoom_of(id))
     }
 
+    pub(super) fn effective_minimum_size_of(&self, id: WindowId) -> (f64, f64) {
+        self.window_contexts.get(&id).map_or((1.0, 1.0), |host| {
+            nana_ui_platform::effective_minimum_size(
+                host.settings.minimum_size,
+                host.settings.min_content_size,
+                host.content_zoom,
+            )
+        })
+    }
+
+    /// Map a global logical screen point into `id`'s content logical
+    /// coordinates using the live window's client screen origin and content zoom.
+    pub(super) fn screen_to_content_point(
+        &self,
+        id: WindowId,
+        screen_position: [f32; 2],
+    ) -> Option<[f32; 2]> {
+        if !screen_position[0].is_finite() || !screen_position[1].is_finite() {
+            return None;
+        }
+        let window = self.window(id)?;
+        let zoom = self.content_zoom_of(id);
+        let origin = window_screen_origin(window.as_ref(), zoom)?;
+        let ratio = origin.client_ratio.max(1e-4);
+        let x = (screen_position[0] - origin.origin.0) / ratio;
+        let y = (screen_position[1] - origin.origin.1) / ratio;
+        let size = self.content_geometry_of(id).logical_size;
+        (x >= 0.0 && y >= 0.0 && x <= size.0 && y <= size.1).then_some([x, y])
+    }
+
     pub(super) fn output_geometry_of(&self, id: WindowId) -> WindowGeometry {
         self.window_contexts
             .get(&id)
@@ -652,6 +682,7 @@ pub(super) enum RoutedWindowCommand {
     SetShadow(WindowId),
     SetContentZoom(WindowId),
     SetSizeLimits(WindowId),
+    SetMinContentSize(WindowId),
     Ignore,
 }
 
@@ -710,6 +741,9 @@ pub(super) fn route_window_command(
         }
         WindowCommand::SetSizeLimits { id, .. } if known(*id) => {
             RoutedWindowCommand::SetSizeLimits(*id)
+        }
+        WindowCommand::SetMinContentSize { id, .. } if known(*id) => {
+            RoutedWindowCommand::SetMinContentSize(*id)
         }
         _ => RoutedWindowCommand::Ignore,
     }

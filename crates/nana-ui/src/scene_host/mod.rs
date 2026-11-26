@@ -176,6 +176,8 @@ struct WindowContext {
     skip_taskbar: bool,
     skip_taskbar_report: Option<Result<(), crate::WindowError>>,
     pointer_presence: presence::PointerPresence,
+    observed_passthrough_pointer: Option<(f32, f32)>,
+    surface_handoff: crate::presentation::SurfaceHandoff,
     monitor: Option<u128>,
     shadow: nana_window::shadow::WindowShadowState,
     shadow_body: Option<ShadowBody>,

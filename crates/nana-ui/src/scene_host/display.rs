@@ -323,6 +323,18 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 );
             }
             super::windows::place_native_controls(host);
+            host.geometry.chrome_controls_inset = nana_window::native_window_controls_inset(
+                window.as_ref(),
+                host.settings.system_caption,
+                mode.fullscreen.is_some(),
+            );
+        }
+        if self
+            .window_contexts
+            .get(&id)
+            .is_some_and(|host| host.surface_handoff.paints_opaque_clear())
+        {
+            let _ = self.sync_window_material(id);
         }
         let update = self
             .program
@@ -552,6 +564,7 @@ mod tests {
             logical_size: (400.0, 300.0),
             scale_factor: 1.0,
             maximized: false,
+            ..WindowGeometry::default()
         };
         let clamped = reclamp_window_position_for_displays(&offscreen, 1.0, &remaining).unwrap();
         assert_eq!(clamped, (1520.0, 100.0));

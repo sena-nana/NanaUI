@@ -1590,6 +1590,7 @@ mod tests {
             logical_size: logical,
             scale_factor: scale,
             maximized: false,
+            ..WindowGeometry::default()
         }
     }
 

@@ -283,6 +283,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             self.retry_surfaces(now);
         }
         let startup_latch = self.poll_startup_latch(event_loop);
+        self.complete_surface_handoffs(now);
         self.sample_passthrough_forward(event_loop);
         self.sync_reduced_motion(event_loop);
         self.sync_high_contrast(event_loop);
@@ -321,6 +322,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             frame_deadline,
             self.host_work_deadline,
             self.passthrough_forward_wakeup(),
+            self.surface_handoff_wakeup(),
             startup_latch,
         ]
         .into_iter()

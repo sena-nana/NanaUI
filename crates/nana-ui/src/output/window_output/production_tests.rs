@@ -14,6 +14,7 @@ fn geometry() -> WindowGeometry {
         logical_size: (64.0, 48.0),
         scale_factor: 1.0,
         maximized: false,
+        ..WindowGeometry::default()
     }
 }
 

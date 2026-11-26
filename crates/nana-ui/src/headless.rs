@@ -1093,6 +1093,24 @@ impl<P: RuntimeProgram> HeadlessRuntime<P> {
                         Err(WindowError::WindowClosed)
                     });
                 }
+                Request::ScreenToContentPoint(id, generation, screen_position, reply) => {
+                    reply.finish(if self.service.is_current(id, generation) {
+                        let mapped = self.windows.get(&id).and_then(|state| {
+                            let primary_scale = self
+                                .windows
+                                .get(&WindowId::PRIMARY)
+                                .map(|primary| primary.window.geometry.scale_factor);
+                            state.window.geometry.screen_to_content_point(
+                                screen_position,
+                                state.window.content_zoom,
+                                primary_scale,
+                            )
+                        });
+                        Ok(mapped)
+                    } else {
+                        Err(WindowError::WindowClosed)
+                    });
+                }
                 Request::Material(_, _, _, reply) => reply.finish(Err(WindowError::Unsupported(
                     "a headless window has no material".into(),
                 ))),
@@ -1403,6 +1421,7 @@ fn event_window(event: &WindowEvent) -> WindowId {
         | WindowEvent::ReducedTransparencyChanged { id, .. }
         | WindowEvent::TextScaleChanged { id, .. }
         | WindowEvent::PointerPresenceChanged { id, .. }
+        | WindowEvent::PassthroughPointerObserved { id, .. }
         | WindowEvent::CloseRequested { id }
         | WindowEvent::Closed { id }
         | WindowEvent::AppearanceChanged { id, .. }

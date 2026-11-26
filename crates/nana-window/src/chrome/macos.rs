@@ -251,6 +251,47 @@ pub(super) fn drag<W: HasWindowHandle + ?Sized>(window: &W) -> bool {
     true
 }
 
+/// Measures the live macOS traffic-light cluster inset in window logical
+/// points from the top-left corner. Returns zero while the window is in
+/// native Space fullscreen, has no standard buttons, or all buttons are hidden.
+pub(super) fn native_window_controls_inset<W: HasWindowHandle + ?Sized>(
+    window: &W,
+) -> nana_ui_platform::WindowChromeControlsInset {
+    use objc2_app_kit::{NSWindowButton, NSWindowStyleMask};
+
+    let Some(window) = appkit_window(window) else {
+        return nana_ui_platform::WindowChromeControlsInset::ZERO;
+    };
+    let mask = window.styleMask();
+    if mask.contains(NSWindowStyleMask::FullScreen)
+        || !mask.contains(NSWindowStyleMask::FullSizeContentView)
+    {
+        return nana_ui_platform::WindowChromeControlsInset::ZERO;
+    }
+    let (Some(close), Some(zoom)) = (
+        window.standardWindowButton(NSWindowButton::CloseButton),
+        window.standardWindowButton(NSWindowButton::ZoomButton),
+    ) else {
+        return nana_ui_platform::WindowChromeControlsInset::ZERO;
+    };
+    let miniaturize = window.standardWindowButton(NSWindowButton::MiniaturizeButton);
+    let any_visible = [Some(&close), miniaturize.as_ref(), Some(&zoom)]
+        .into_iter()
+        .flatten()
+        .any(|button| !button.isHidden() && button.alphaValue() > 0.0);
+    if !any_visible {
+        return nana_ui_platform::WindowChromeControlsInset::ZERO;
+    }
+    let close_in_window = close.convertRect_toView(close.bounds(), None);
+    let zoom_in_window = zoom.convertRect_toView(zoom.bounds(), None);
+    let left = close_in_window.origin.x.min(zoom_in_window.origin.x);
+    let right = (close_in_window.origin.x + close_in_window.size.width)
+        .max(zoom_in_window.origin.x + zoom_in_window.size.width);
+    let bottom_from_top =
+        window.frame().size.height - close_in_window.origin.y.min(zoom_in_window.origin.y);
+    super::macos_controls_inset_from_cluster(left, right, bottom_from_top)
+}
+
 pub(crate) fn appkit_window<W: HasWindowHandle + ?Sized>(
     window: &W,
 ) -> Option<objc2::rc::Retained<objc2_app_kit::NSWindow>> {

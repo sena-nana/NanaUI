@@ -303,8 +303,10 @@ pub use nana_ui_platform::{
 };
 #[cfg(feature = "hosted")]
 pub use nana_ui_platform::{
-    DisplayId, DisplayInfo, FullscreenMode, FullscreenRequest, MousePassthroughMode, WindowIcon,
-    WindowIconError, WindowModeState, clear_registered_application_icon, register_application_icon,
+    DisplayId, DisplayInfo, FullscreenMode, FullscreenRequest, MousePassthroughMode,
+    WindowChromeControlsInset, WindowIcon, WindowIconError, WindowModeState,
+    clear_registered_application_icon, effective_minimum_size, prefers_native_opaque_surface,
+    register_application_icon,
 };
 /// Fetch host boundary, re-exported so hosts can supply
 /// [`SceneWgpuPainter::set_resource_fetch_host`] without depending on

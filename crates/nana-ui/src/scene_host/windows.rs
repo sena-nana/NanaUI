@@ -243,6 +243,20 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                     self.set_size_limits(id, Some(minimum), Some(maximum));
                 }
             }
+            RoutedWindowCommand::SetMinContentSize(id) => {
+                let WindowCommand::SetMinContentSize { minimum, .. } = command else {
+                    return;
+                };
+                if minimum
+                    .into_iter()
+                    .all(|size| crate::window_service::validate_size(size).is_ok())
+                {
+                    if let Some(host) = self.window_contexts.get_mut(&id) {
+                        host.settings.min_content_size = minimum;
+                    }
+                    self.apply_effective_size_limits(id);
+                }
+            }
             RoutedWindowCommand::SetContentZoom(id) => {
                 let WindowCommand::SetContentZoom { zoom, .. } = command else {
                     return;
@@ -535,6 +549,9 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         if let Some(host) = self.window_contexts.get_mut(&id) {
             host.passthrough_mode = mode;
         }
+        if mode != MousePassthroughMode::Forward {
+            self.observe_passthrough_pointer(event_loop, id, None);
+        }
         self.sync_input_region(id);
         let native_handled = self.window_contexts.get(&id).is_some_and(|host| {
             matches!(
@@ -732,9 +749,14 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             }
             let Some(point) = self.sample_client_pointer(id) else {
                 self.observe_pointer_presence(event_loop, id, presence::PresenceSignal::Left);
+                self.observe_passthrough_pointer(event_loop, id, None);
                 continue;
             };
             self.observe_pointer_presence(event_loop, id, presence::PresenceSignal::Inside);
+            if !self.window_contexts.contains_key(&id) {
+                continue;
+            }
+            self.observe_passthrough_pointer(event_loop, id, Some(point));
             if !self.window_contexts.contains_key(&id) {
                 continue;
             }
@@ -746,6 +768,24 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 }
                 self.dispatch_forward_move(event_loop, id, point);
             }
+        }
+    }
+
+    fn observe_passthrough_pointer(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        id: WindowId,
+        next: Option<(f32, f32)>,
+    ) {
+        let changed = self.window_contexts.get_mut(&id).and_then(|host| {
+            passthrough_pointer_change(&mut host.observed_passthrough_pointer, next)
+        });
+        if let Some(position) = changed {
+            let update = self.program.window_event(
+                WindowEvent::PassthroughPointerObserved { id, position },
+                &self.context_for(id),
+            );
+            self.apply_update(event_loop, update, None);
         }
     }
 
@@ -892,6 +932,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         event_loop: &dyn ActiveEventLoop,
         id: WindowId,
     ) {
+        self.observe_passthrough_pointer(event_loop, id, None);
         if self.window_contexts.get(&id).is_some_and(|host| {
             host.passthrough_mode == MousePassthroughMode::Forward && !host.os_mouse_passthrough
         }) {
@@ -987,7 +1028,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let desktop = scene_desktop(event_loop, settings.constrain_to_work_area);
         let backdrop_opacity = self.program.appearance_backdrop_opacity_for(id);
         let material_mode = self.program.window_material_mode_for(id);
-        let window_background = self.program.window_background();
+        let window_background = self.program.window_background_for(id);
         let initial_theme = self.resolve_window_theme_with_settings(id, &settings);
         let initial_appearance = initial_theme.appearance();
         let mut composed_failed = false;
@@ -1083,7 +1124,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let accessibility = (settings.role != WindowRole::Underlay).then(|| {
             HostedAccessibility::new(Arc::clone(&window), true, window.scale_factor() as f32)
         });
-        let geometry = window_geometry(window.as_ref());
+        let geometry = window_geometry(window.as_ref(), settings.system_caption);
         #[cfg(target_os = "windows")]
         let modal_parent = settings.modal.then_some(settings.parent).flatten();
         let level = auxiliary_level(
@@ -1433,11 +1474,10 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             return;
         };
         let settings = &host.settings;
-        let minimum = settings
-            .content_aspect_ratio
-            .map_or(settings.minimum_size, |ratio| {
-                nana_ui_platform::aspect_minimum_size(settings.minimum_size, ratio)
-            });
+        let base_minimum = self.effective_minimum_size_of(id);
+        let minimum = settings.content_aspect_ratio.map_or(base_minimum, |ratio| {
+            nana_ui_platform::aspect_minimum_size(base_minimum, ratio)
+        });
         host.size_move
             .set_content_aspect_ratio(content_aspect_ratio(settings));
         host.surface.window().set_min_surface_size(Some(
@@ -1455,7 +1495,6 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         minimum: Option<Option<(f64, f64)>>,
         maximum: Option<Option<(f64, f64)>>,
     ) {
-        let geometry = self.geometry_of(id);
         let Some(host) = self.window_contexts.get_mut(&id) else {
             return;
         };
@@ -1465,12 +1504,22 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         if let Some(maximum) = maximum {
             host.maximum_size = maximum;
         }
+        self.apply_effective_size_limits(id);
+    }
+
+    /// Re-apply the window's effective minimum and maximum client size limits
+    /// (including zoom-scaled `min_content_size` and aspect ratio floor) and
+    /// clamp a windowed window into them.
+    pub(super) fn apply_effective_size_limits(&mut self, id: WindowId) {
+        let geometry = self.geometry_of(id);
+        let base_minimum = self.effective_minimum_size_of(id);
+        let Some(host) = self.window_contexts.get(&id) else {
+            return;
+        };
         let settings = &host.settings;
-        let minimum = settings
-            .content_aspect_ratio
-            .map_or(settings.minimum_size, |ratio| {
-                nana_ui_platform::aspect_minimum_size(settings.minimum_size, ratio)
-            });
+        let minimum = settings.content_aspect_ratio.map_or(base_minimum, |ratio| {
+            nana_ui_platform::aspect_minimum_size(base_minimum, ratio)
+        });
         let maximum = host
             .maximum_size
             .map(|maximum| (maximum.0.max(minimum.0), maximum.1.max(minimum.1)));
@@ -1505,6 +1554,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         id: WindowId,
     ) {
         let geometry = self.geometry_of(id);
+        let minimum = self.effective_minimum_size_of(id);
         let Some(host) = self.window_contexts.get_mut(&id) else {
             return;
         };
@@ -1519,7 +1569,6 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             return;
         }
         host.aspect_conform_pending = false;
-        let minimum = host.settings.minimum_size;
         let size = (
             f64::from(geometry.logical_size.0),
             f64::from(geometry.logical_size.1),
@@ -1632,13 +1681,50 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             .window_contexts
             .get(&id)
             .and_then(|host| host.material_override);
-        self.apply_window_material(id, material_override)
+        self.apply_window_material(id, material_override, true)
+    }
+
+    pub(super) fn note_surface_handoff_presented(&mut self, id: WindowId, now: Instant) {
+        if let Some(host) = self.window_contexts.get_mut(&id) {
+            host.surface_handoff.note_frame_presented(now);
+        }
+    }
+
+    pub(super) fn surface_handoff_wakeup(&self) -> Option<Instant> {
+        self.window_contexts
+            .values()
+            .filter_map(|host| host.surface_handoff.commit_deadline())
+            .min()
+    }
+
+    pub(super) fn complete_surface_handoffs(&mut self, now: Instant) {
+        if self.render_suspended {
+            return;
+        }
+        let ready: Vec<WindowId> = self
+            .window_contexts
+            .iter()
+            .filter(|(_, host)| {
+                host.surface_retry.is_none() && host.surface_handoff.ready_to_commit(now)
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in ready {
+            let material_override = self
+                .window_contexts
+                .get(&id)
+                .and_then(|host| host.material_override);
+            if let Err(error) = self.apply_window_material(id, material_override, false) {
+                self.suspend_surface(id, error);
+            }
+        }
     }
 
     fn apply_window_material(
         &mut self,
         id: WindowId,
         material_override: Option<nana_window::MaterialEffect>,
+        allow_staged_handoff: bool,
     ) -> Result<(), HostedGpuError> {
         let mode = self.program.window_material_mode_for(id);
         let desired = WindowAppearance {
@@ -1647,11 +1733,36 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             opacity: AppearanceSettings::clamp_backdrop_opacity(
                 self.program.appearance_backdrop_opacity_for(id),
             ),
-            background: self.program.window_background(),
+            background: self.program.window_background_for(id),
         };
         let Some(host) = self.window_contexts.get_mut(&id) else {
             return Ok(());
         };
+        if host.applied_appearance == Some(desired) && !host.surface_handoff.paints_opaque_clear() {
+            return Ok(());
+        }
+        let wants_transparent =
+            window_wants_transparent_surface(host.settings.transparent, desired.material);
+        let currently_transparent = host.presentation.effective().wants_transparent_surface();
+        if allow_staged_handoff {
+            let presented = host.presented.get();
+            let fullscreen = host.mode.and_then(|mode| mode.fullscreen);
+            match host.surface_handoff.plan(
+                currently_transparent,
+                wants_transparent,
+                presented,
+                fullscreen,
+            ) {
+                crate::presentation::SurfaceHandoffAction::ApplyNow => {}
+                crate::presentation::SurfaceHandoffAction::StageOpaque
+                | crate::presentation::SurfaceHandoffAction::DeferOpaqueInFullscreen => {
+                    self.request_redraw(id);
+                    return Ok(());
+                }
+            }
+        } else {
+            host.surface_handoff.finish();
+        }
         // A material change never re-negotiates the presentation target; it
         // carries the verdict this window already reached.
         let surface_target = host.presentation.resolved_target();
@@ -1667,10 +1778,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 desired.opacity,
                 desired.background,
             );
-            self.graphics.apply_surface_alpha_mode(
-                &mut host.surface,
-                window_wants_transparent_surface(host.settings.transparent, desired.material),
-            )?;
+            self.graphics
+                .apply_surface_alpha_mode(&mut host.surface, wants_transparent)?;
             let presentation = ResolvedWindowPresentation::resolve(
                 &host.settings,
                 requested,
@@ -1718,7 +1827,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         self.sync_auxiliaries_of(id);
         let previous = self.geometry_of(id);
         if let Some(host) = self.window_contexts.get_mut(&id) {
-            host.geometry = window_geometry(host.surface.window().as_ref());
+            host.geometry =
+                window_geometry(host.surface.window().as_ref(), host.settings.system_caption);
             if super::schedule::drawable_surface(host.geometry.physical_size) {
                 host.drawable_geometry = host.geometry;
             }
@@ -2505,9 +2615,13 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         }
         host.content_zoom = zoom;
         host.input_source.content_zoom = zoom;
+        let has_min_content_size = host.settings.min_content_size.is_some();
         // The pointer the Runtime holds is in the old units; it is mapped
         // again on the next move.
         place_native_controls(host);
+        if has_min_content_size {
+            self.apply_effective_size_limits(id);
+        }
         self.request_redraw(id);
     }
     pub(super) fn title_bar_chrome_action(
@@ -2637,6 +2751,13 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                             Err(crate::WindowError::WindowClosed)
                         });
                     }
+                    Request::ScreenToContentPoint(id, generation, screen_position, reply) => {
+                        reply.finish(if self.windows.is_current(id, generation) {
+                            Ok(self.screen_to_content_point(id, screen_position))
+                        } else {
+                            Err(crate::WindowError::WindowClosed)
+                        });
+                    }
                     Request::Material(id, generation, effect, reply) => {
                         if !self.windows.is_current(id, generation) {
                             reply.finish(Err(crate::WindowError::WindowClosed));
@@ -2650,7 +2771,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                             )));
                             return true;
                         }
-                        match self.apply_window_material(id, Some(effect)) {
+                        match self.apply_window_material(id, Some(effect), false) {
                             Ok(()) => {
                                 self.window_contexts.get_mut(&id).unwrap().material_override =
                                     Some(effect);
@@ -2981,6 +3102,26 @@ pub(super) struct WindowAppearance {
 
 /// Moves a window's native buttons onto the placeholder box last laid out
 /// for it. Without a box, or off macOS, nothing moves.
+/// Deduplicates Forward-passthrough pointer observations so stationary cursors
+/// do not emit repeated [`WindowEvent::PassthroughPointerObserved`] events.
+pub(super) fn passthrough_pointer_change(
+    previous: &mut Option<(f32, f32)>,
+    next: Option<(f32, f32)>,
+) -> Option<Option<(f32, f32)>> {
+    let next = next.filter(|(x, y)| x.is_finite() && y.is_finite());
+    let changed = match (*previous, next) {
+        (None, None) => false,
+        (Some((px, py)), Some((nx, ny))) => (px - nx).abs() >= 0.25 || (py - ny).abs() >= 0.25,
+        _ => true,
+    };
+    if changed {
+        *previous = next;
+        Some(next)
+    } else {
+        None
+    }
+}
+
 pub(super) fn place_native_controls(host: &WindowContext) {
     let Some(bounds) = host.native_controls_box.get() else {
         return;

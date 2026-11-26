@@ -9,6 +9,45 @@ impl WindowId {
     pub const PRIMARY: Self = Self(0);
 }
 
+/// Logical inset reserved for window-management controls (macOS traffic lights
+/// on the leading edge, Windows/Linux client caption buttons on the trailing
+/// edge) in logical points.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct WindowChromeControlsInset {
+    /// Reserved width on the leading (left) edge in logical points.
+    pub leading: f32,
+    /// Reserved width on the trailing (right) edge in logical points.
+    pub trailing: f32,
+    /// Reserved height of the controls band from the top edge in logical points.
+    pub top: f32,
+}
+
+impl WindowChromeControlsInset {
+    pub const ZERO: Self = Self {
+        leading: 0.0,
+        trailing: 0.0,
+        top: 0.0,
+    };
+
+    /// Scale this inset from display logical points into content logical
+    /// points under `content_zoom` (dividing by [`valid_content_zoom`]).
+    pub fn scaled(self, content_zoom: f32) -> Self {
+        let zoom = valid_content_zoom(content_zoom);
+        if zoom == 1.0 {
+            return self;
+        }
+        Self {
+            leading: self.leading / zoom,
+            trailing: self.trailing / zoom,
+            top: self.top / zoom,
+        }
+    }
+
+    pub const fn is_empty(self) -> bool {
+        self.leading <= 0.0 && self.trailing <= 0.0
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct WindowGeometry {
     pub physical_position: Option<(i32, i32)>,
@@ -17,6 +56,10 @@ pub struct WindowGeometry {
     pub logical_size: (f32, f32),
     pub scale_factor: f32,
     pub maximized: bool,
+    /// Logical area reserved for native or platform window-management controls
+    /// (macOS traffic lights, Windows/Linux caption buttons) in display logical
+    /// points; scaled into content coordinates by [`Self::content`].
+    pub chrome_controls_inset: WindowChromeControlsInset,
 }
 
 /// The content zoom a window accepts; see [`WindowCommand::SetContentZoom`].
@@ -51,8 +94,130 @@ impl WindowGeometry {
         Self {
             logical_size: (self.logical_size.0 / zoom, self.logical_size.1 / zoom),
             scale_factor: self.scale_factor * zoom,
+            chrome_controls_inset: self.chrome_controls_inset.scaled(zoom),
             ..self
         }
+    }
+
+    /// Logical area reserved for window-management controls (macOS traffic
+    /// lights on the leading edge, Windows/Linux caption buttons on the
+    /// trailing edge). Under [`Self::content`], the inset is scaled into
+    /// content logical coordinates.
+    pub const fn chrome_controls_inset(self) -> WindowChromeControlsInset {
+        self.chrome_controls_inset
+    }
+
+    /// Convert a global logical screen point (the space of
+    /// [`PointerInput::screen_x`](crate::PointerInput::screen_x) and
+    /// [`Self::logical_position`]) into this window's content logical
+    /// coordinates under `content_zoom`.
+    ///
+    /// `reference_scale` is the desktop reference scale used to map physical
+    /// pixels to global logical space on platforms with a single pixel grid
+    /// (the primary monitor's scale on Windows/Linux); when `None` (or on
+    /// macOS, where each display uses its own logical scale), this window's
+    /// `scale_factor` is used.
+    ///
+    /// Returns `None` when `logical_position` is unavailable, any input is
+    /// non-finite, or the point lies outside this window's content bounds.
+    pub fn screen_to_content_point(
+        self,
+        screen_position: [f32; 2],
+        content_zoom: f32,
+        reference_scale: Option<f32>,
+    ) -> Option<[f32; 2]> {
+        self.screen_to_content_point_for(
+            screen_position,
+            content_zoom,
+            reference_scale,
+            cfg!(target_os = "macos"),
+        )
+    }
+
+    /// Convert a point in this window's content logical coordinates under
+    /// `content_zoom` into the global logical screen space of
+    /// [`PointerInput::screen_x`](crate::PointerInput::screen_x).
+    pub fn content_to_screen_point(
+        self,
+        content_position: [f32; 2],
+        content_zoom: f32,
+        reference_scale: Option<f32>,
+    ) -> Option<[f32; 2]> {
+        self.content_to_screen_point_for(
+            content_position,
+            content_zoom,
+            reference_scale,
+            cfg!(target_os = "macos"),
+        )
+    }
+
+    fn client_to_screen_ratio(
+        self,
+        content_zoom: f32,
+        reference_scale: Option<f32>,
+        per_display_logical_origin: bool,
+    ) -> f32 {
+        let own_scale = if self.scale_factor.is_finite() && self.scale_factor > 0.0 {
+            self.scale_factor
+        } else {
+            1.0
+        };
+        let desktop_scale = if per_display_logical_origin {
+            own_scale
+        } else {
+            reference_scale
+                .filter(|scale| scale.is_finite() && *scale > 0.0)
+                .unwrap_or(own_scale)
+        };
+        let zoom = valid_content_zoom(content_zoom);
+        ((own_scale / desktop_scale) * zoom).max(1e-4)
+    }
+
+    fn screen_to_content_point_for(
+        self,
+        screen_position: [f32; 2],
+        content_zoom: f32,
+        reference_scale: Option<f32>,
+        per_display_logical_origin: bool,
+    ) -> Option<[f32; 2]> {
+        let (lx, ly) = self.logical_position?;
+        if !screen_position[0].is_finite()
+            || !screen_position[1].is_finite()
+            || !lx.is_finite()
+            || !ly.is_finite()
+        {
+            return None;
+        }
+        let ratio =
+            self.client_to_screen_ratio(content_zoom, reference_scale, per_display_logical_origin);
+        let x = (screen_position[0] - lx) / ratio;
+        let y = (screen_position[1] - ly) / ratio;
+        let content = self.content(content_zoom);
+        (x >= 0.0 && y >= 0.0 && x <= content.logical_size.0 && y <= content.logical_size.1)
+            .then_some([x, y])
+    }
+
+    fn content_to_screen_point_for(
+        self,
+        content_position: [f32; 2],
+        content_zoom: f32,
+        reference_scale: Option<f32>,
+        per_display_logical_origin: bool,
+    ) -> Option<[f32; 2]> {
+        let (lx, ly) = self.logical_position?;
+        if !content_position[0].is_finite()
+            || !content_position[1].is_finite()
+            || !lx.is_finite()
+            || !ly.is_finite()
+        {
+            return None;
+        }
+        let ratio =
+            self.client_to_screen_ratio(content_zoom, reference_scale, per_display_logical_origin);
+        Some([
+            lx + content_position[0] * ratio,
+            ly + content_position[1] * ratio,
+        ])
     }
 }
 
@@ -234,6 +399,16 @@ pub enum WindowEvent {
         id: WindowId,
         inside: bool,
     },
+    /// Observed pointer position in content logical coordinates while
+    /// [`MousePassthroughMode::Forward`] has native hit-testing passed through
+    /// (`position: Some((x, y))` when moving inside the client area, `None`
+    /// when leaving the client area, hiding the window, or disabling Forward
+    /// passthrough). Delivered only when the observed position changes, so
+    /// applications can react to hover without polling `pointer_position`.
+    PassthroughPointerObserved {
+        id: WindowId,
+        position: Option<(f32, f32)>,
+    },
     CloseRequested {
         id: WindowId,
     },
@@ -308,6 +483,46 @@ pub enum FullscreenMode {
     /// separate Space; on Windows filling the work area, so the taskbar stays
     /// above and usable; `Borderless` elsewhere.
     Simple,
+}
+
+impl FullscreenMode {
+    /// Whether entering or leaving this fullscreen mode switches the native
+    /// window surface immediately without an asynchronous Space transition.
+    ///
+    /// On macOS only [`Self::Simple`] switches immediately; native Space
+    /// fullscreen ([`Self::Borderless`]) animates across Spaces, during which
+    /// changing native surface opacity causes compositor artifacts. On Windows
+    /// and Linux both modes switch immediately.
+    pub const fn switches_surface_immediately(self) -> bool {
+        self.switches_surface_immediately_for(cfg!(target_os = "macos"))
+    }
+
+    const fn switches_surface_immediately_for(self, is_macos: bool) -> bool {
+        match self {
+            Self::Simple => true,
+            Self::Borderless => !is_macos,
+        }
+    }
+}
+
+/// Whether a window that dynamically alternates between transparent and opaque
+/// backgrounds should switch its native surface to opaque in `fullscreen`.
+///
+/// On Windows and Linux native opaque surfaces switch cleanly in every mode;
+/// on macOS only [`FullscreenMode::Simple`] switches immediately without
+/// altering rounded window corners or Space fullscreen animations.
+pub const fn prefers_native_opaque_surface(fullscreen: Option<FullscreenMode>) -> bool {
+    prefers_native_opaque_surface_for(fullscreen, cfg!(target_os = "macos"))
+}
+
+const fn prefers_native_opaque_surface_for(
+    fullscreen: Option<FullscreenMode>,
+    is_macos: bool,
+) -> bool {
+    match fullscreen {
+        Some(mode) => mode.switches_surface_immediately_for(is_macos),
+        None => !is_macos,
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -490,6 +705,11 @@ pub struct WindowDescriptor {
     pub title: String,
     pub initial_size: (f64, f64),
     pub minimum_size: (f64, f64),
+    /// Optional minimum client size expressed in content logical units. When
+    /// set, the host multiplies it by the window's active content zoom
+    /// ([`effective_minimum_size`]) whenever zoom changes, so zoomed tool and
+    /// editor windows keep the same minimum content room automatically.
+    pub min_content_size: Option<(f64, f64)>,
     /// Client width over client height the window keeps, or `None`. See
     /// [`WindowDescriptor::content_aspect_ratio`].
     pub content_aspect_ratio: Option<f32>,
@@ -628,6 +848,7 @@ impl WindowDescriptor {
             title: title.into(),
             initial_size: (1200.0, 800.0),
             minimum_size: (760.0, 520.0),
+            min_content_size: None,
             content_aspect_ratio: None,
             initial_position: None,
             maximized: false,
@@ -708,6 +929,13 @@ impl WindowDescriptor {
 
     pub fn minimum_size(mut self, width: f64, height: f64) -> Self {
         self.minimum_size = (width, height);
+        self
+    }
+
+    /// Set the minimum client size in content logical units, automatically
+    /// scaled by the window's content zoom ([`effective_minimum_size`]).
+    pub fn min_content_size(mut self, width: f64, height: f64) -> Self {
+        self.min_content_size = Some((width, height));
         self
     }
 
@@ -912,6 +1140,33 @@ pub enum WindowCommand {
         minimum: Option<(f64, f64)>,
         maximum: Option<(f64, f64)>,
     },
+    /// Change an open window's content-space minimum size (`None` clears it
+    /// and falls back to `minimum_size`). When `Some`, the host scales it by
+    /// the active content zoom and reapplies size limits whenever zoom changes.
+    SetMinContentSize {
+        id: WindowId,
+        minimum: Option<(f64, f64)>,
+    },
+}
+
+/// Effective minimum client size in display logical units for a window at
+/// `content_zoom`.
+///
+/// When `min_content_size` is `Some`, it is multiplied by
+/// [`valid_content_zoom`]`(content_zoom)` so the window always retains at least
+/// that much content-logical space. Otherwise `minimum_size` is returned as-is.
+pub fn effective_minimum_size(
+    minimum_size: (f64, f64),
+    min_content_size: Option<(f64, f64)>,
+    content_zoom: f32,
+) -> (f64, f64) {
+    match min_content_size {
+        Some((width, height)) => {
+            let zoom = f64::from(valid_content_zoom(content_zoom));
+            (width * zoom, height * zoom)
+        }
+        None => minimum_size,
+    }
 }
 
 /// `size` brought inside `minimum` and `maximum`, each edge on its own. A
@@ -1047,10 +1302,23 @@ mod tests {
             logical_size: (800.0, 600.0),
             scale_factor: 2.0,
             maximized: true,
+            chrome_controls_inset: WindowChromeControlsInset {
+                leading: 78.0,
+                trailing: 0.0,
+                top: 36.0,
+            },
         };
         let content = window.content(1.25);
         assert_eq!(content.scale_factor, 2.5);
         assert_eq!(content.logical_size, (640.0, 480.0));
+        assert_eq!(
+            content.chrome_controls_inset(),
+            WindowChromeControlsInset {
+                leading: 78.0 / 1.25,
+                trailing: 0.0,
+                top: 36.0 / 1.25,
+            }
+        );
         // The surface and the window's place on the desktop are unchanged.
         assert_eq!(content.physical_size, window.physical_size);
         assert_eq!(content.physical_position, window.physical_position);
@@ -1288,5 +1556,89 @@ mod tests {
         );
         let hdr = descriptor.presentation_policy(SurfacePresentationPolicy::Hdr);
         assert_eq!(hdr.presentation_policy, SurfacePresentationPolicy::Hdr);
+    }
+
+    #[test]
+    fn screen_to_content_point_handles_macos_and_multi_dpi_windows_with_zoom() {
+        let target = WindowGeometry {
+            physical_position: Some((300, 150)),
+            physical_size: (600, 450),
+            logical_position: Some((200.0, 100.0)),
+            logical_size: (400.0, 300.0),
+            scale_factor: 1.5,
+            maximized: false,
+            chrome_controls_inset: WindowChromeControlsInset::ZERO,
+        };
+        // macOS per-display logical space: ignores reference_scale, divides only by zoom.
+        let mac_pt = target
+            .screen_to_content_point_for([325.0, 225.0], 1.25, Some(2.0), true)
+            .expect("inside window");
+        assert!((mac_pt[0] - 100.0).abs() < 1e-4 && (mac_pt[1] - 100.0).abs() < 1e-4);
+        assert_eq!(
+            target.content_to_screen_point_for(mac_pt, 1.25, Some(2.0), true),
+            Some([325.0, 225.0])
+        );
+
+        // Windows/Linux shared desktop grid (primary scale = 2.0, target scale = 1.5):
+        // client_ratio = (1.5 / 2.0) * 1.25 = 0.9375.
+        let win_pt = target
+            .screen_to_content_point_for([293.75, 193.75], 1.25, Some(2.0), false)
+            .expect("inside window");
+        assert!((win_pt[0] - 100.0).abs() < 1e-4 && (win_pt[1] - 100.0).abs() < 1e-4);
+        let roundtrip = target
+            .content_to_screen_point_for(win_pt, 1.25, Some(2.0), false)
+            .unwrap();
+        assert!((roundtrip[0] - 293.75).abs() < 1e-4 && (roundtrip[1] - 193.75).abs() < 1e-4);
+
+        // Outside bounds or non-finite returns None.
+        assert_eq!(
+            target.screen_to_content_point_for([199.0, 150.0], 1.0, None, true),
+            None
+        );
+        assert_eq!(
+            target.screen_to_content_point_for([f32::NAN, 150.0], 1.0, None, true),
+            None
+        );
+    }
+
+    #[test]
+    fn effective_minimum_size_scales_min_content_size_by_zoom() {
+        assert_eq!(
+            effective_minimum_size((760.0, 520.0), None, 1.5),
+            (760.0, 520.0)
+        );
+        assert_eq!(
+            effective_minimum_size((760.0, 520.0), Some((400.0, 300.0)), 1.5),
+            (600.0, 450.0)
+        );
+        assert_eq!(
+            effective_minimum_size((760.0, 520.0), Some((400.0, 300.0)), f32::NAN),
+            (400.0, 300.0)
+        );
+        let desc = WindowDescriptor::new("Editor").min_content_size(420.0, 320.0);
+        assert_eq!(desc.min_content_size, Some((420.0, 320.0)));
+    }
+
+    #[test]
+    fn fullscreen_surface_handoff_rules_distinguish_macos_space_fullscreen() {
+        assert!(FullscreenMode::Simple.switches_surface_immediately_for(true));
+        assert!(!FullscreenMode::Borderless.switches_surface_immediately_for(true));
+        assert!(FullscreenMode::Simple.switches_surface_immediately_for(false));
+        assert!(FullscreenMode::Borderless.switches_surface_immediately_for(false));
+
+        assert!(!prefers_native_opaque_surface_for(None, true));
+        assert!(prefers_native_opaque_surface_for(
+            Some(FullscreenMode::Simple),
+            true
+        ));
+        assert!(!prefers_native_opaque_surface_for(
+            Some(FullscreenMode::Borderless),
+            true
+        ));
+        assert!(prefers_native_opaque_surface_for(None, false));
+        assert!(prefers_native_opaque_surface_for(
+            Some(FullscreenMode::Borderless),
+            false
+        ));
     }
 }

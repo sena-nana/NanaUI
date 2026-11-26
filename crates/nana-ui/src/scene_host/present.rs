@@ -384,9 +384,19 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             self.texture_subscriptions.remove(&id);
         }
         let theme = self.resolve_window_theme(id);
-        let window_background = self.program.window_background();
+        let window_background = self.program.window_background_for(id);
         let fetch_host = self.program.resource_fetch_host(id);
-        let viewport = scene_paint_viewport(&geometry, material, theme.as_ref(), window_background);
+        let clear_material = if self
+            .window_contexts
+            .get(&id)
+            .is_some_and(|host| host.surface_handoff.paints_opaque_clear())
+        {
+            MaterialOutcome::chosen_solid()
+        } else {
+            material
+        };
+        let viewport =
+            scene_paint_viewport(&geometry, clear_material, theme.as_ref(), window_background);
         let profile = profile.effective_for_frame(
             scene.as_ref(),
             viewport.clear_color,
@@ -610,6 +620,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             tracker.commit_presented(damage_plan, direct_presented, used_partial);
         }
         self.note_window_presented(id);
+        self.note_surface_handoff_presented(id, Instant::now());
         stage_clock.mark(&stage::PRESENTATION_PRESENT_NS);
         self.note_native_live_resize_presented(id);
         crate::host_diagnostics::frame_presented(frame_started, submit, gpu_work);

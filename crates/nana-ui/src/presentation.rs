@@ -21,8 +21,139 @@
 //! durably afterwards. Everything below that says "before the window exists"
 //! says it for this reason.
 
-use nana_ui_platform::{WindowDescriptor, WindowSurfacePreference};
+use nana_ui_platform::{FullscreenMode, WindowDescriptor, WindowSurfacePreference};
 use nana_window::{MaterialEffect, MaterialFallback, MaterialOutcome, NonClientRenderingStrategy};
+use std::time::{Duration, Instant};
+
+/// Overlap window after an opaque frame presents on a transparent surface
+/// before switching the native window surface to opaque. Without this brief
+/// overlap, a native surface change that lands ahead of the compositor's next
+/// swap can briefly show the desktop behind the window.
+pub(crate) const SURFACE_HANDOFF_OVERLAP: Duration = Duration::from_millis(100);
+
+/// Decision reached by [`SurfaceHandoff::plan`] when a live window transitions
+/// between transparent and opaque surfaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SurfaceHandoffAction {
+    /// Apply the requested material and native surface immediately.
+    ApplyNow,
+    /// Paint an opaque frame on the existing transparent surface first; once
+    /// that frame presents and [`SURFACE_HANDOFF_OVERLAP`] elapses, commit the
+    /// native opaque surface switch without flashing the desktop.
+    StageOpaque,
+    /// macOS Space fullscreen (`FullscreenMode::Borderless`) animates across
+    /// Spaces where changing native surface opacity flickers; keep the
+    /// transparent surface while painting the opaque background colour until
+    /// fullscreen settles or exits.
+    DeferOpaqueInFullscreen,
+}
+
+/// Host-owned state machine coordinating flicker-free transitions between
+/// transparent and opaque native window surfaces.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum SurfaceHandoff {
+    #[default]
+    Settled,
+    /// Opaque requested on a currently transparent presented window: paint
+    /// opaque clear colour on the existing transparent surface, wait for a
+    /// presented frame + [`SURFACE_HANDOFF_OVERLAP`], then commit the native
+    /// opaque surface.
+    StagingOpaque { presented_at: Option<Instant> },
+    /// Opaque requested while macOS Space fullscreen is active: paint opaque
+    /// clear colour onto the transparent surface and defer the native surface
+    /// change until leaving Space fullscreen.
+    DeferredOpaque,
+}
+
+impl SurfaceHandoff {
+    /// Whether the renderer should clear with the opaque window/theme colour
+    /// even though the native surface is still transparent during handoff.
+    pub(crate) const fn paints_opaque_clear(self) -> bool {
+        matches!(self, Self::StagingOpaque { .. } | Self::DeferredOpaque)
+    }
+
+    /// Plan a transition from `currently_transparent` to `wants_transparent`
+    /// for a window whose presentation state is `presented` and fullscreen mode
+    /// is `fullscreen`.
+    pub(crate) fn plan(
+        &mut self,
+        currently_transparent: bool,
+        wants_transparent: bool,
+        presented: bool,
+        fullscreen: Option<FullscreenMode>,
+    ) -> SurfaceHandoffAction {
+        self.plan_for(
+            currently_transparent,
+            wants_transparent,
+            presented,
+            fullscreen,
+            cfg!(target_os = "macos"),
+        )
+    }
+
+    pub(crate) fn plan_for(
+        &mut self,
+        currently_transparent: bool,
+        wants_transparent: bool,
+        presented: bool,
+        fullscreen: Option<FullscreenMode>,
+        is_macos: bool,
+    ) -> SurfaceHandoffAction {
+        // Reverting to transparent or switching before the window has ever been
+        // presented needs no opaque-frame staging.
+        if wants_transparent || !currently_transparent || !presented {
+            *self = Self::Settled;
+            return SurfaceHandoffAction::ApplyNow;
+        }
+        // macOS Space fullscreen (`Borderless`) runs a Space transition
+        // animation where toggling native surface opacity glitches.
+        if is_macos && fullscreen == Some(FullscreenMode::Borderless) {
+            *self = Self::DeferredOpaque;
+            return SurfaceHandoffAction::DeferOpaqueInFullscreen;
+        }
+        // Already staging an opaque frame: keep the existing presentation clock
+        // instead of resetting the handoff timer on every unrelated update.
+        if !matches!(self, Self::StagingOpaque { .. }) {
+            *self = Self::StagingOpaque { presented_at: None };
+        }
+        SurfaceHandoffAction::StageOpaque
+    }
+
+    /// Record that the host presented an opaque frame on the transparent
+    /// surface, starting the [`SURFACE_HANDOFF_OVERLAP`] settle timer.
+    pub(crate) fn note_frame_presented(&mut self, now: Instant) -> bool {
+        if let Self::StagingOpaque { presented_at } = self
+            && presented_at.is_none()
+        {
+            *presented_at = Some(now);
+            return true;
+        }
+        false
+    }
+
+    /// When a staged opaque handoff becomes ready to commit its native surface.
+    pub(crate) fn commit_deadline(self) -> Option<Instant> {
+        match self {
+            Self::StagingOpaque {
+                presented_at: Some(at),
+            } => Some(at + SURFACE_HANDOFF_OVERLAP),
+            _ => None,
+        }
+    }
+
+    /// True once the staged opaque frame has presented and the overlap window
+    /// has elapsed.
+    pub(crate) fn ready_to_commit(self, now: Instant) -> bool {
+        self.commit_deadline()
+            .is_some_and(|deadline| now >= deadline)
+    }
+
+    /// Clear any staged or deferred state once the native surface commits or
+    /// the request is cancelled.
+    pub(crate) fn finish(&mut self) {
+        *self = Self::Settled;
+    }
+}
 
 /// What a process needs from its GPU backend.
 ///
@@ -971,5 +1102,82 @@ mod tests {
             );
             assert_eq!(resolved.chrome(), None);
         }
+    }
+
+    #[test]
+    fn surface_handoff_stages_opaque_frame_and_commits_after_overlap() {
+        let mut handoff = SurfaceHandoff::default();
+        let t0 = Instant::now();
+
+        // Unpresented window switches immediately with no staging delay.
+        assert_eq!(
+            handoff.plan_for(true, false, false, None, false),
+            SurfaceHandoffAction::ApplyNow
+        );
+        assert!(!handoff.paints_opaque_clear());
+
+        // Live transparent window switching to solid stages an opaque frame first.
+        assert_eq!(
+            handoff.plan_for(true, false, true, None, false),
+            SurfaceHandoffAction::StageOpaque
+        );
+        assert!(handoff.paints_opaque_clear());
+        assert_eq!(handoff.commit_deadline(), None);
+        assert!(!handoff.ready_to_commit(t0));
+
+        // Once the opaque frame presents, the 100ms overlap deadline arms.
+        assert!(handoff.note_frame_presented(t0));
+        assert!(!handoff.note_frame_presented(t0 + Duration::from_millis(10)));
+        assert_eq!(
+            handoff.commit_deadline(),
+            Some(t0 + SURFACE_HANDOFF_OVERLAP)
+        );
+        assert!(!handoff.ready_to_commit(t0 + Duration::from_millis(50)));
+        assert!(handoff.ready_to_commit(t0 + SURFACE_HANDOFF_OVERLAP));
+
+        // Repeated planning while staging does not reset the armed timer.
+        assert_eq!(
+            handoff.plan_for(true, false, true, None, false),
+            SurfaceHandoffAction::StageOpaque
+        );
+        assert_eq!(
+            handoff.commit_deadline(),
+            Some(t0 + SURFACE_HANDOFF_OVERLAP)
+        );
+
+        // Reverting back to transparent mid-handoff cancels cleanly.
+        assert_eq!(
+            handoff.plan_for(true, true, true, None, false),
+            SurfaceHandoffAction::ApplyNow
+        );
+        assert!(!handoff.paints_opaque_clear());
+        assert_eq!(handoff.commit_deadline(), None);
+    }
+
+    #[test]
+    fn surface_handoff_defers_native_switch_in_macos_space_fullscreen_only() {
+        let mut handoff = SurfaceHandoff::default();
+
+        // macOS Space fullscreen (`Borderless`) keeps transparent surface with opaque clear.
+        assert_eq!(
+            handoff.plan_for(true, false, true, Some(FullscreenMode::Borderless), true),
+            SurfaceHandoffAction::DeferOpaqueInFullscreen
+        );
+        assert!(handoff.paints_opaque_clear());
+        assert_eq!(handoff.commit_deadline(), None);
+
+        // macOS Simple fullscreen switches via staged handoff.
+        assert_eq!(
+            handoff.plan_for(true, false, true, Some(FullscreenMode::Simple), true),
+            SurfaceHandoffAction::StageOpaque
+        );
+        assert!(handoff.paints_opaque_clear());
+
+        // Windows/Linux Borderless fullscreen also switches via staged handoff.
+        handoff.finish();
+        assert_eq!(
+            handoff.plan_for(true, false, true, Some(FullscreenMode::Borderless), false),
+            SurfaceHandoffAction::StageOpaque
+        );
     }
 }

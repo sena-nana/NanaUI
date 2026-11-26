@@ -795,6 +795,11 @@ pub trait RuntimeProgram: Sized + 'static {
         None
     }
 
+    /// Per-window opaque clear colour override. Defaults to [`Self::window_background`].
+    fn window_background_for(&self, _id: WindowId) -> Option<nana_ui_core::SemanticColor> {
+        self.window_background()
+    }
+
     fn appearance_backdrop_opacity(&self) -> f32 {
         nana_ui_core::AppearanceSettings::DEFAULT_BACKDROP_OPACITY
     }

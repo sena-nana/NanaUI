@@ -225,6 +225,8 @@ impl WindowSessionBuilder {
             skip_taskbar: matches!(skip_taskbar_report, Some(Ok(()))),
             skip_taskbar_report,
             pointer_presence: presence::PointerPresence::default(),
+            observed_passthrough_pointer: None,
+            surface_handoff: crate::presentation::SurfaceHandoff::default(),
             monitor,
             shadow: nana_window::shadow::WindowShadowState::default(),
             shadow_body: None,
@@ -590,7 +592,7 @@ pub(super) fn complete_startup<Program: RuntimeProgram>(
         let task_wake = Arc::clone(&host_work);
         nana_ui_runtime::view::set_task_wake(move || task_wake.wake());
     }
-    let geometry = window_geometry(window.as_ref());
+    let geometry = window_geometry(window.as_ref(), settings.system_caption);
     let reduced_motion = nana_window::system_reduced_motion().unwrap_or(false);
     let high_contrast = nana_window::system_high_contrast().unwrap_or(false);
     let reduced_transparency = nana_window::system_reduced_transparency().unwrap_or(false);
@@ -1079,6 +1081,11 @@ pub(super) fn scene_window_attributes(
             settings.minimum_size = minimum_within(settings.minimum_size, settings.initial_size);
         }
     }
+    let effective_min = nana_ui_platform::effective_minimum_size(
+        settings.minimum_size,
+        settings.min_content_size,
+        1.0,
+    );
     let mut attributes = winit::window::WindowAttributes::default()
         .with_title(settings.title.clone())
         .with_transparent(settings.transparent)
@@ -1090,8 +1097,8 @@ pub(super) fn scene_window_attributes(
             settings.initial_size.1,
         ))
         .with_min_surface_size(winit::dpi::LogicalSize::new(
-            settings.minimum_size.0,
-            settings.minimum_size.1,
+            effective_min.0,
+            effective_min.1,
         ))
         .with_maximized(settings.maximized);
     if let Some((x, y)) = settings.initial_position {
@@ -1329,7 +1336,10 @@ pub(super) fn window_level(always_on_top: bool) -> winit::window::WindowLevel {
     }
 }
 
-pub(super) fn window_geometry(window: &dyn winit::window::Window) -> WindowGeometry {
+pub(super) fn window_geometry(
+    window: &dyn winit::window::Window,
+    system_caption: bool,
+) -> WindowGeometry {
     let scale_factor = normalized_scale_factor(window.scale_factor() as f32);
     let physical_size = window.surface_size();
     let physical_position = window.outer_position().ok();
@@ -1347,6 +1357,11 @@ pub(super) fn window_geometry(window: &dyn winit::window::Window) -> WindowGeome
         ),
         scale_factor,
         maximized: geometry_maximized(window),
+        chrome_controls_inset: nana_window::native_window_controls_inset(
+            window,
+            system_caption,
+            covers_display(window),
+        ),
     }
 }
 

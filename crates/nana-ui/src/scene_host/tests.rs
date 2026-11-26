@@ -757,6 +757,51 @@ fn size_limit_commands_route_to_open_windows_only() {
         route_window_command(&command(WindowId(4)), &[WindowId::PRIMARY]),
         RoutedWindowCommand::Ignore
     );
+
+    let content_min = |id| WindowCommand::SetMinContentSize {
+        id,
+        minimum: Some((400.0, 300.0)),
+    };
+    assert_eq!(
+        route_window_command(&content_min(WindowId::PRIMARY), &[WindowId::PRIMARY]),
+        RoutedWindowCommand::SetMinContentSize(WindowId::PRIMARY)
+    );
+    assert_eq!(
+        route_window_command(&content_min(WindowId(4)), &[WindowId::PRIMARY]),
+        RoutedWindowCommand::Ignore
+    );
+}
+
+#[test]
+fn passthrough_pointer_observation_deduplicates_stationary_samples() {
+    let mut state = None;
+    assert_eq!(
+        super::windows::passthrough_pointer_change(&mut state, None),
+        None
+    );
+    assert_eq!(
+        super::windows::passthrough_pointer_change(&mut state, Some((10.0, 20.0))),
+        Some(Some((10.0, 20.0)))
+    );
+    // Sub-quarter-pixel jitter is suppressed.
+    assert_eq!(
+        super::windows::passthrough_pointer_change(&mut state, Some((10.1, 20.1))),
+        None
+    );
+    // Real movement emits the new coordinates.
+    assert_eq!(
+        super::windows::passthrough_pointer_change(&mut state, Some((12.0, 20.0))),
+        Some(Some((12.0, 20.0)))
+    );
+    // Leaving clears once and suppresses repeat leaves.
+    assert_eq!(
+        super::windows::passthrough_pointer_change(&mut state, None),
+        Some(None)
+    );
+    assert_eq!(
+        super::windows::passthrough_pointer_change(&mut state, None),
+        None
+    );
 }
 
 #[test]

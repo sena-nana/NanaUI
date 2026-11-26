@@ -223,6 +223,7 @@ pub(crate) enum Request {
     Displays(Reply<Vec<DisplayInfo>>),
     SurfaceInfo(WindowId, u64, Reply<WindowSurfaceInfo>),
     PointerPosition(WindowId, u64, Reply<Option<(f32, f32)>>),
+    ScreenToContentPoint(WindowId, u64, [f32; 2], Reply<Option<[f32; 2]>>),
     // Boxed, like `Control` below: each is several hundred bytes, and the
     // queue reserves room for a thousand of whichever request is largest
     // (400 KiB before, for a queue that rarely holds two).
@@ -240,6 +241,7 @@ impl Request {
             Self::Displays(reply) => reply.finish(Err(error)),
             Self::SurfaceInfo(_, _, reply) => reply.finish(Err(error)),
             Self::PointerPosition(_, _, reply) => reply.finish(Err(error)),
+            Self::ScreenToContentPoint(_, _, _, reply) => reply.finish(Err(error)),
             Self::Create(_, reply) => reply.finish(Err(error)),
             Self::Control(_, _, _, reply) => reply.finish(Err(error)),
             Self::Native(_, _, callback) => {
@@ -290,6 +292,29 @@ impl WindowService {
     pub fn displays(&self) -> WindowRequest<Vec<DisplayInfo>> {
         let (request, reply) = WindowRequest::pair(self.host_thread);
         self.submit(Request::Displays(reply));
+        request
+    }
+    /// Map a global logical screen point (the coordinate space of
+    /// [`PointerInput::screen_x`](nana_ui_platform::PointerInput::screen_x))
+    /// into `id`'s content logical coordinates, accounting for display scale,
+    /// platform origin rules, client surface offset, and content zoom. Returns
+    /// `Ok(None)` when the point lies outside `id`'s content area.
+    pub fn screen_to_content_point(
+        &self,
+        id: WindowId,
+        screen_position: [f32; 2],
+    ) -> WindowRequest<Option<[f32; 2]>> {
+        let (request, reply) = WindowRequest::pair(self.host_thread);
+        let Some(generation) = self.identities.lock().unwrap().1.get(&id).copied() else {
+            reply.finish(Err(WindowError::WindowClosed));
+            return request;
+        };
+        self.submit(Request::ScreenToContentPoint(
+            id,
+            generation,
+            screen_position,
+            reply,
+        ));
         request
     }
     pub(crate) fn register(&self, id: WindowId) {
@@ -350,6 +375,22 @@ impl WindowHandle {
         let (request, reply) = WindowRequest::pair(self.service.host_thread);
         self.service
             .submit(Request::PointerPosition(self.id, self.generation, reply));
+        request
+    }
+
+    /// Map a global logical screen point into this window's content logical
+    /// coordinates; see [`WindowService::screen_to_content_point`].
+    pub fn screen_to_content_point(
+        &self,
+        screen_position: [f32; 2],
+    ) -> WindowRequest<Option<[f32; 2]>> {
+        let (request, reply) = WindowRequest::pair(self.service.host_thread);
+        self.service.submit(Request::ScreenToContentPoint(
+            self.id,
+            self.generation,
+            screen_position,
+            reply,
+        ));
         request
     }
 
@@ -457,6 +498,16 @@ impl WindowHandle {
             maximum,
         }))
     }
+    /// Set or clear the minimum client size in content logical units. When
+    /// `Some`, the host automatically scales it by the active content zoom
+    /// whenever [`Self::set_content_zoom`] changes; see
+    /// `WindowDescriptor::min_content_size`.
+    pub fn set_min_content_size(&self, minimum: Option<(f64, f64)>) -> WindowRequest<()> {
+        self.control(Control::Command(WindowCommand::SetMinContentSize {
+            id: self.id,
+            minimum,
+        }))
+    }
     pub fn set_position(&self, position: (f32, f32)) -> WindowRequest<()> {
         self.control(Control::Command(WindowCommand::Move {
             id: self.id,
@@ -555,6 +606,9 @@ impl WindowHandle {
 pub(crate) fn validate_descriptor(descriptor: &WindowDescriptor) -> Result<(), WindowError> {
     validate_size(descriptor.initial_size)?;
     validate_size(descriptor.minimum_size)?;
+    if let Some(min_content) = descriptor.min_content_size {
+        validate_size(min_content)?;
+    }
     if let Some(key) = descriptor.persist_key.as_deref() {
         nana_ui_core::RestorationKey::new(key).map_err(|error| {
             WindowError::InvalidParameter(format!("persist_key is invalid: {error}"))
@@ -960,5 +1014,50 @@ mod tests {
         ] {
             assert_eq!(SurfacePresentMode::from_wgpu(raw), expected);
         }
+    }
+
+    #[test]
+    fn screen_to_content_point_and_min_content_size_queue_and_validate() {
+        let (service, rx) = WindowService::channel(Arc::new(|| {}));
+        let id = WindowId(21);
+        assert_eq!(
+            service
+                .screen_to_content_point(id, [100.0, 200.0])
+                .try_take(),
+            Some(Err(WindowError::WindowClosed))
+        );
+        assert!(matches!(
+            service
+                .create_window(WindowDescriptor::new("Bad").min_content_size(0.0, 200.0))
+                .try_take(),
+            Some(Err(WindowError::InvalidParameter(_)))
+        ));
+        service.register(id);
+        let mut query = service.screen_to_content_point(id, [320.0, 240.0]);
+        let Request::ScreenToContentPoint(queried, generation, pos, reply) = rx.try_recv().unwrap()
+        else {
+            panic!("screen-to-content query expected");
+        };
+        assert_eq!(queried, id);
+        assert!(service.is_current(id, generation));
+        assert_eq!(pos, [320.0, 240.0]);
+        reply.finish(Ok(Some([80.0, 40.0])));
+        assert_eq!(query.try_take(), Some(Ok(Some([80.0, 40.0]))));
+
+        let handle = service.handle(id);
+        let mut req = handle.set_min_content_size(Some((420.0, 320.0)));
+        let Request::Control(target, _, control, reply) = rx.try_recv().unwrap() else {
+            panic!("control expected");
+        };
+        assert_eq!(target, id);
+        assert!(matches!(
+            *control,
+            Control::Command(WindowCommand::SetMinContentSize {
+                id: WindowId(21),
+                minimum: Some((420.0, 320.0)),
+            })
+        ));
+        reply.finish(Ok(()));
+        assert_eq!(req.try_take(), Some(Ok(())));
     }
 }

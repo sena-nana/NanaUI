@@ -434,7 +434,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let host_textures = self.program.host_textures(id);
         let gpu_renderers = self.program.scene_gpu_renderers(id);
         let theme = self.resolve_window_theme(id);
-        let window_background = self.program.window_background();
+        let window_background = self.program.window_background_for(id);
         let material = self.material_of(id);
         let clear_color =
             scene_paint_viewport(&geometry, material, theme.as_ref(), window_background)

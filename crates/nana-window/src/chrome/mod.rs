@@ -335,6 +335,62 @@ pub fn set_native_window_controls_visible<W: HasWindowHandle + ?Sized>(
     }
 }
 
+/// Logical inset reserved for native or client window-management controls
+/// (macOS traffic lights on the leading edge, Windows/Linux client caption
+/// buttons on the trailing edge).
+///
+/// Returns zero when the OS owns a non-client system caption (`system_caption`)
+/// or when the window is in fullscreen with its controls hidden.
+pub fn native_window_controls_inset<W: HasWindowHandle + ?Sized>(
+    window: &W,
+    system_caption: bool,
+    fullscreen: bool,
+) -> nana_ui_platform::WindowChromeControlsInset {
+    if system_caption || fullscreen {
+        return nana_ui_platform::WindowChromeControlsInset::ZERO;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos::native_window_controls_inset(window)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+        client_caption_controls_inset()
+    }
+}
+
+/// Computes the leading macOS traffic-light reservation from the measured
+/// button cluster bounds in top-left window logical points.
+#[cfg_attr(not(any(test, target_os = "macos")), allow(dead_code))]
+pub(super) fn macos_controls_inset_from_cluster(
+    left: f64,
+    right: f64,
+    bottom_from_top: f64,
+) -> nana_ui_platform::WindowChromeControlsInset {
+    if !left.is_finite() || !right.is_finite() || !bottom_from_top.is_finite() || right <= 0.0 {
+        return nana_ui_platform::WindowChromeControlsInset::ZERO;
+    }
+    let trailing_pad = left.max(0.0).clamp(8.0, 16.0);
+    let leading = (right + trailing_pad).max(0.0) as f32;
+    let top = (bottom_from_top.max(0.0) as f32 + 6.0).max(nana_ui_core::TITLE_BAR_HEIGHT);
+    nana_ui_platform::WindowChromeControlsInset {
+        leading,
+        trailing: 0.0,
+        top,
+    }
+}
+
+/// Reserved trailing area for NanaUI's client caption controls on Windows/Linux.
+#[cfg_attr(all(target_os = "macos", not(test)), allow(dead_code))]
+pub(super) const fn client_caption_controls_inset() -> nana_ui_platform::WindowChromeControlsInset {
+    nana_ui_platform::WindowChromeControlsInset {
+        leading: 0.0,
+        trailing: nana_ui_core::custom_window_controls_width(),
+        top: nana_ui_core::TITLE_BAR_HEIGHT,
+    }
+}
+
 fn set_drag_enabled<W: HasWindowHandle + ?Sized>(window: &W, enabled: bool) -> bool {
     #[cfg(target_os = "macos")]
     {
@@ -529,5 +585,37 @@ mod tests {
     fn hit_test_maps_frame_edges() {
         assert_eq!(hit_test_for_edge(FrameResizeEdge::West), 10);
         assert_eq!(hit_test_for_edge(FrameResizeEdge::SouthEast), 17);
+    }
+
+    #[test]
+    fn macos_controls_inset_reflects_cluster_position_and_handles_invalid_bounds() {
+        // Standard AppTitleBar placeholder (0..78): close at x=12, zoom right at x=66.
+        let standard = super::macos_controls_inset_from_cluster(12.0, 66.0, 24.0);
+        assert_eq!(standard.leading, 78.0);
+        assert_eq!(standard.trailing, 0.0);
+        assert_eq!(standard.top, nana_ui_core::TITLE_BAR_HEIGHT);
+
+        // Safe-area inset placement (+12px): close at x=24, zoom right at x=78 -> pad clamps to 16 -> 94.
+        let inset = super::macos_controls_inset_from_cluster(24.0, 78.0, 36.0);
+        assert_eq!(inset.leading, 94.0);
+        assert_eq!(inset.trailing, 0.0);
+        assert_eq!(inset.top, 42.0);
+
+        assert_eq!(
+            super::macos_controls_inset_from_cluster(f64::NAN, 66.0, 24.0),
+            nana_ui_platform::WindowChromeControlsInset::ZERO
+        );
+        assert_eq!(
+            super::macos_controls_inset_from_cluster(12.0, 0.0, 24.0),
+            nana_ui_platform::WindowChromeControlsInset::ZERO
+        );
+    }
+
+    #[test]
+    fn client_caption_inset_reserves_custom_controls_width_on_trailing_edge() {
+        let inset = super::client_caption_controls_inset();
+        assert_eq!(inset.leading, 0.0);
+        assert_eq!(inset.trailing, nana_ui_core::custom_window_controls_width());
+        assert_eq!(inset.top, nana_ui_core::TITLE_BAR_HEIGHT);
     }
 }

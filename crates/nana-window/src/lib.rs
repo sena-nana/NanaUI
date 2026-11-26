@@ -62,6 +62,7 @@ pub(crate) fn test_serial_lock() -> std::sync::MutexGuard<'static, ()> {
 pub use chrome::arm_frameless_guard;
 pub use chrome::drag_custom_title_bar;
 pub use chrome::native_live_resize_active;
+pub use chrome::native_window_controls_inset;
 #[cfg(target_os = "macos")]
 pub use chrome::native_window_maximized;
 pub use chrome::place_native_window_controls;
