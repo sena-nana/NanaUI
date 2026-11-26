@@ -829,7 +829,7 @@ pub fn linear_scrim_alpha(css_alpha: f32) -> f32 {
 }
 
 /// The modal scrim both built-in modes use: black at 0.45 in linear light.
-const MODAL_SCRIM: SemanticColor = SemanticColor::rgba(0.0, 0.0, 0.0, 0.45);
+pub(crate) const MODAL_SCRIM: SemanticColor = SemanticColor::rgba(0.0, 0.0, 0.0, 0.45);
 
 /// The media scrim both built-in modes use.
 ///

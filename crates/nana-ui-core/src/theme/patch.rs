@@ -1411,6 +1411,7 @@ impl ThemePatch {
                 match role {
                     SemanticColorRole::Titlebar => out.tokens.titlebar = Some(color),
                     SemanticColorRole::OnMedia => out.effects.media_foreground = color,
+                    SemanticColorRole::ModalScrim => out.effects.modal_scrim = color,
                     other => {
                         let _ = out.tokens.palette.set(other, color);
                     }
@@ -1514,6 +1515,9 @@ impl ThemePatch {
             if let Some(on_media) = colors.get(SemanticColorRole::OnMedia) {
                 out.effects.media_foreground = on_media;
             }
+            if let Some(modal_scrim) = colors.get(SemanticColorRole::ModalScrim) {
+                out.effects.modal_scrim = modal_scrim;
+            }
         }
         if let Some(titlebar) = self.titlebar {
             out.style_model.titlebar = titlebar.unwrap_or(out.style_model.palette.surface);
@@ -1539,6 +1543,7 @@ impl ThemePatch {
         if let Some(effects) = &self.effects {
             out.effects = effects.apply(out.effects);
             out.style_model.on_media = out.effects.media_foreground;
+            out.style_model.modal_scrim = out.effects.modal_scrim;
         }
         if let Some(surfaces) = &self.surfaces {
             out.surfaces = surfaces.apply(out.surfaces);
@@ -1582,6 +1587,7 @@ impl ThemePatch {
                 out.recipes.set_menu(menu);
             }
         }
+        out.recipes.resolve_typography(out.typography);
         out.refresh_chrome_radii();
         out.identity.generation = out.identity.generation.next();
         validate_compiled_theme(&out)?;

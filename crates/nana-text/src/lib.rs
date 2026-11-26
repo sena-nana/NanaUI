@@ -79,7 +79,7 @@ pub use layout::{
     Layouter, LineBox, LineBreakCause, OutlineSink, OverflowFlags, PlacedEmphasis, PlacedObject,
     PlacedRuby, ShapedEmphasis, StaleLayout, TextLayout, TextLayoutStore, TextRect,
 };
-pub use metrics::{LineMetrics, RunMetrics};
+pub use metrics::{LineMetrics, RunMetrics, VisualVerticalMetrics};
 pub use shape::{GlyphFlags, RunDirection, RunOrientation, ScriptTag, ShapedGlyph, ShapedRun};
 pub use shared::{SharedText, TextStamp};
 pub use source::{

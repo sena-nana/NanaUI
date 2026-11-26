@@ -55,7 +55,7 @@ use std::sync::{Mutex, OnceLock};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::semantics::{ButtonKind, CardKind, ControlSize, StatusTone};
-use crate::theme::tokens::{AccentRamp, MEDIA_FOREGROUND, OpacityTokens, StateLayer};
+use crate::theme::tokens::{AccentRamp, MEDIA_FOREGROUND, MODAL_SCRIM, OpacityTokens, StateLayer};
 use crate::theme::{ThemeAppearance, ThemeMetrics, UI_BASE_TEXT_SIZE, UI_METRICS};
 
 /// Backend-neutral RGBA in 0..=1.
@@ -744,6 +744,9 @@ pub enum SemanticColorRole {
     /// Text and glyphs over media under the theme's media scrim, light in
     /// every mode. The theme's `EffectTokens::media_foreground`.
     OnMedia,
+    /// Modal backdrop scrim behind dialogs and overlays. The theme's
+    /// `EffectTokens::modal_scrim`.
+    ModalScrim,
     // ---- 代码 token 角色（语义 overlay 通道；默认值见 `SemanticPalette::get`，
     // Muted/Faint 系保守起步、逐主题可覆盖）----
     /// 函数名（声明与调用点）。
@@ -820,6 +823,7 @@ impl SemanticColorRole {
             "danger-soft-pressed" => Self::DangerSoftPressed,
             "titlebar" | "title-bar" => Self::Titlebar,
             "on-media" => Self::OnMedia,
+            "modal-scrim" => Self::ModalScrim,
             _ => return None,
         })
     }
@@ -1334,6 +1338,7 @@ impl SemanticPalette {
             // An effect token, not a palette field: the built-in value here,
             // the installed one through `StyleModelRef::color`.
             SemanticColorRole::OnMedia => MEDIA_FOREGROUND,
+            SemanticColorRole::ModalScrim => MODAL_SCRIM,
             // 代码 token 角色默认值：Keyword/Function/Type 与 syntect
             // 基础层已有视觉档位对齐，避免开启语义高亮后反而褪色；
             // Builtin 在 syntect 无对应档位（现状不着色），accent 属
@@ -1478,6 +1483,8 @@ pub struct StyleModelRef {
     pub titlebar: SemanticColor,
     /// [`SemanticColorRole::OnMedia`]: the theme's on-media foreground.
     pub on_media: SemanticColor,
+    /// [`SemanticColorRole::ModalScrim`]: the theme's modal backdrop scrim.
+    pub modal_scrim: SemanticColor,
     /// State-layer alphas for the derived soft roles. Small on purpose: this
     /// struct is the per-node read handle, and Issue #101 §1.5 measured what
     /// putting a large value on a read path costs.
@@ -1496,6 +1503,7 @@ impl StyleModelRef {
             metrics: UI_METRICS,
             titlebar: palette.surface,
             on_media: MEDIA_FOREGROUND,
+            modal_scrim: MODAL_SCRIM,
             palette,
             opacity: OpacityTokens::for_appearance(theme_mode),
         }
@@ -1514,6 +1522,7 @@ impl StyleModelRef {
             palette,
             titlebar,
             on_media: MEDIA_FOREGROUND,
+            modal_scrim: MODAL_SCRIM,
             opacity,
         }
     }
@@ -1524,10 +1533,17 @@ impl StyleModelRef {
         self
     }
 
+    /// The installed modal backdrop scrim ([`SemanticColorRole::ModalScrim`]).
+    pub const fn with_modal_scrim(mut self, modal_scrim: SemanticColor) -> Self {
+        self.modal_scrim = modal_scrim;
+        self
+    }
+
     pub const fn color(self, role: SemanticColorRole) -> SemanticColor {
         match role {
             SemanticColorRole::Titlebar => self.titlebar,
             SemanticColorRole::OnMedia => self.on_media,
+            SemanticColorRole::ModalScrim => self.modal_scrim,
             other => self.palette.get_in(other, self.opacity),
         }
     }
@@ -1540,6 +1556,7 @@ impl StyleModelRef {
             match role {
                 SemanticColorRole::Titlebar => self.titlebar = color,
                 SemanticColorRole::OnMedia => self.on_media = color,
+                SemanticColorRole::ModalScrim => self.modal_scrim = color,
                 other => {
                     self.palette.set(other, color);
                 }

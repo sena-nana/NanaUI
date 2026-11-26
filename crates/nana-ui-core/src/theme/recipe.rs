@@ -29,6 +29,7 @@ use super::dialog::DialogRecipe;
 use super::scrollbar::ScrollbarRecipe;
 use super::shape::ShapeRecipe;
 use super::toast::ToastRecipe;
+use super::tokens::{TextWeight, TypeRole, TypographyTokens};
 use crate::semantics::{ButtonKind, StatusTone};
 use crate::style_model::SemanticColorRole;
 use serde::{Deserialize, Serialize};
@@ -321,16 +322,74 @@ impl StatusRecipe {
 
 /// One run of a component's own copy, as a recipe states it: CSS
 /// `font-size` and `font-weight`. `weight: None` keeps the node's own.
+///
+/// Construct with [`Self::from_role`] (and optional [`Self::with_text_weight`]
+/// or [`Self::with_weight`]) so theme compilation resolves `size` and `weight`
+/// from the theme's [`TypographyTokens`] rather than duplicating pixel values.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecipeText {
     pub size: f32,
     pub weight: Option<u16>,
+    /// Optional semantic typography role resolved against [`TypographyTokens`]
+    /// at theme compilation time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<TypeRole>,
+    /// Optional semantic weight role resolved against [`TypographyTokens`] at
+    /// theme compilation time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_weight: Option<TextWeight>,
 }
 
 impl RecipeText {
     pub const fn new(size: f32, weight: Option<u16>) -> Self {
-        Self { size, weight }
+        Self {
+            size,
+            weight,
+            role: None,
+            text_weight: None,
+        }
+    }
+
+    /// Reference a [`TypeRole`] from the theme's [`TypographyTokens`].
+    ///
+    /// `size` starts at [`TypographyTokens::DEFAULT`] so uncompiled inspection
+    /// still sees a valid value, and theme compilation resolves it against the
+    /// theme's actual typography tokens.
+    pub const fn from_role(role: TypeRole) -> Self {
+        Self {
+            size: TypographyTokens::DEFAULT.size(role),
+            weight: None,
+            role: Some(role),
+            text_weight: None,
+        }
+    }
+
+    /// Set a literal CSS font weight (1–1000), clearing any semantic
+    /// [`TextWeight`] role.
+    pub const fn with_weight(mut self, weight: u16) -> Self {
+        self.weight = Some(weight);
+        self.text_weight = None;
+        self
+    }
+
+    /// Reference a [`TextWeight`] from the theme's [`TypographyTokens`].
+    pub const fn with_text_weight(mut self, weight: TextWeight) -> Self {
+        self.weight = Some(TypographyTokens::DEFAULT.weight(weight));
+        self.text_weight = Some(weight);
+        self
+    }
+
+    /// Resolve any semantic [`Self::role`] / [`Self::text_weight`] against
+    /// `typography`, leaving literal sizes and weights unchanged.
+    pub const fn resolve(mut self, typography: TypographyTokens) -> Self {
+        if let Some(role) = self.role {
+            self.size = typography.size(role);
+        }
+        if let Some(weight) = self.text_weight {
+            self.weight = Some(typography.weight(weight));
+        }
+        self
     }
 }
 
@@ -513,6 +572,14 @@ impl CompiledRecipes {
 
     pub(crate) fn set_toast(&mut self, toast: ToastRecipe) {
         self.toast = toast;
+    }
+
+    /// Re-resolve every role-backed [`RecipeText`] slot against `typography`.
+    pub(crate) fn resolve_typography(&mut self, typography: TypographyTokens) {
+        self.dialog.title = self.dialog.title.resolve(typography);
+        self.toast.title = self.toast.title.resolve(typography);
+        self.toast.description = self.toast.description.resolve(typography);
+        self.toast.progress.percent = self.toast.progress.percent.resolve(typography);
     }
 
     /// Which radius step each shaped component takes.

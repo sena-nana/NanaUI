@@ -800,7 +800,8 @@ impl ThemeDefinition {
             tokens.titlebar_color(),
             tokens.opacity,
         )
-        .with_on_media(self.effects.media_foreground);
+        .with_on_media(self.effects.media_foreground)
+        .with_modal_scrim(self.effects.modal_scrim);
         Ok(super::CompiledTheme::new(
             ThemeIdentity {
                 id: self.id.clone(),
@@ -883,7 +884,7 @@ impl ThemeDefinition {
                 theme: self.id.clone(),
             })?;
 
-        let dialog = self
+        let mut dialog = self
             .components
             .dialog
             .ok_or(ThemeCompileError::MissingRecipe {
@@ -891,6 +892,7 @@ impl ThemeDefinition {
                 component: ComponentRecipeId::Overlay,
                 slot: "dialog",
             })?;
+        dialog.title = dialog.title.resolve(self.typography);
         validate_dialog_recipe(&self.id, &dialog)?;
         let scrollbar = self
             .components
@@ -901,7 +903,7 @@ impl ThemeDefinition {
                 slot: "scrollbar",
             })?;
         validate_scrollbar_recipe(&self.id, &scrollbar)?;
-        let toast = self
+        let mut toast = self
             .components
             .toast
             .ok_or(ThemeCompileError::MissingRecipe {
@@ -909,6 +911,9 @@ impl ThemeDefinition {
                 component: ComponentRecipeId::Overlay,
                 slot: "toast",
             })?;
+        toast.title = toast.title.resolve(self.typography);
+        toast.description = toast.description.resolve(self.typography);
+        toast.progress.percent = toast.progress.percent.resolve(self.typography);
         validate_toast_recipe(&self.id, &toast)?;
         let shape = self
             .components
@@ -1701,6 +1706,84 @@ mod tests {
                 .color(SemanticColorRole::OnMedia),
             SemanticColor::rgb8(240, 236, 220)
         );
+    }
+
+    #[test]
+    fn the_modal_scrim_role_is_the_installed_modal_scrim() {
+        for definition in [ThemeDefinition::NANA_DARK, ThemeDefinition::NANA_LIGHT] {
+            let scrim = definition
+                .compile()
+                .expect("compiles")
+                .style_model()
+                .color(SemanticColorRole::ModalScrim);
+            assert_eq!(scrim, definition.effects.modal_scrim);
+        }
+        let mut custom = ThemeDefinition::NANA_DARK;
+        let expected = SemanticColor::rgba(0.05, 0.08, 0.12, 0.65);
+        custom.effects.modal_scrim = expected;
+        let compiled = custom.compile().expect("compiles");
+        assert_eq!(
+            compiled.style_model().color(SemanticColorRole::ModalScrim),
+            expected
+        );
+        assert_eq!(
+            SemanticColorRole::from_css_token_name("--nana-modal-scrim"),
+            Some(SemanticColorRole::ModalScrim)
+        );
+    }
+
+    #[test]
+    fn recipe_text_from_role_resolves_against_theme_typography() {
+        use super::super::{DialogRecipe, RecipeText, TextWeight, TypeRole};
+        use crate::theme::patch::{ThemePatch, TypographyPatch};
+
+        let mut def = ThemeDefinition::NANA_DARK;
+        def.typography.card_title = 17.0;
+        def.typography.bold = 750;
+        def = def.with_dialog(DialogRecipe {
+            title: RecipeText::from_role(TypeRole::CardTitle).with_text_weight(TextWeight::Bold),
+            ..DialogRecipe::DEFAULT
+        });
+        let compiled = def.compile().expect("compiles");
+        assert_eq!(compiled.recipes().dialog().title.size, 17.0);
+        assert_eq!(compiled.recipes().dialog().title.weight, Some(750));
+        assert_eq!(
+            compiled.recipes().dialog().title.role,
+            Some(TypeRole::CardTitle)
+        );
+
+        let patched = ThemePatch {
+            typography: Some(TypographyPatch {
+                card_title: Some(19.0),
+                bold: Some(800),
+                ..TypographyPatch::default()
+            }),
+            ..ThemePatch::default()
+        }
+        .apply_to_compiled(&compiled)
+        .expect("patch compiles");
+        assert_eq!(patched.recipes().dialog().title.size, 19.0);
+        assert_eq!(patched.recipes().dialog().title.weight, Some(800));
+    }
+
+    #[test]
+    fn paint_style_elevation_overlays_and_converts_shadow_token() {
+        use crate::{BoxShadowSpec, ElevationRole, LayoutStyle};
+
+        let base = LayoutStyle::default();
+        let mut over = LayoutStyle::default();
+        over.paint.elevation = Some(ElevationRole::Surface);
+        assert!(over.paint.has_advanced_paint());
+        assert!(over.paint.has_dynamic_theme());
+
+        let merged = base.overlaid(&over);
+        assert_eq!(merged.paint.elevation, Some(ElevationRole::Surface));
+
+        let token = EffectTokens::DARK.shadow(ElevationRole::Surface);
+        let spec = BoxShadowSpec::from_shadow(token);
+        assert_eq!(spec.offset_y, token.offset_y);
+        assert_eq!(spec.blur_radius, token.blur_radius);
+        assert_eq!(spec.spread_radius, token.spread_radius);
     }
 
     /// Issue #102 acceptance: NanaLight / NanaDark migrate **completely**, and

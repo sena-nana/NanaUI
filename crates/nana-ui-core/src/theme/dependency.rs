@@ -334,6 +334,7 @@ impl ThemeCategoryGenerations {
             || old_sm.theme_appearance != new_sm.theme_appearance
             || old_sm.titlebar != new_sm.titlebar
             || old_sm.on_media != new_sm.on_media
+            || old_sm.modal_scrim != new_sm.modal_scrim
             || old_sm.opacity.warning_soft != new_sm.opacity.warning_soft
             || old_sm.opacity.warning_soft_hover != new_sm.opacity.warning_soft_hover
             || old_sm.opacity.warning_soft_pressed != new_sm.opacity.warning_soft_pressed

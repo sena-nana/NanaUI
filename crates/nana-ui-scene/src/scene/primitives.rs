@@ -238,6 +238,11 @@ impl UiScene {
                             .paint
                             .primary_box_shadow()
                             .map(ComponentElevation::from_box_shadow)
+                            .or_else(|| {
+                                style.paint.elevation.map(|role| {
+                                    ComponentElevation::from_shadow(self.effects.shadow(role))
+                                })
+                            })
                             .or_else(|| widget_root.and_then(|rs| rs.fallback_elevation)),
                         surface: {
                             let mut surface = quad_surface_from_style(

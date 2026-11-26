@@ -203,6 +203,9 @@ pub struct UiScene {
     /// The installed theme's focus ring, read when primitives are built. See
     /// [`UiScene::focus_ring`].
     focus_ring: nana_ui_core::FocusRingMetrics,
+    /// The installed theme's effect tokens (elevation shadow ramp), read when
+    /// primitives resolve [`PaintStyle::elevation`](nana_ui_core::PaintStyle::elevation).
+    effects: nana_ui_core::EffectTokens,
 }
 
 impl Default for UiScene {
@@ -239,6 +242,7 @@ impl Default for UiScene {
             instance: next_scene_instance(),
             corner_shape: nana_ui_core::CornerShape::Round,
             focus_ring: nana_ui_core::FOCUS_RING_METRICS,
+            effects: nana_ui_core::EffectTokens::DARK,
         }
     }
 }
@@ -277,6 +281,7 @@ impl Clone for UiScene {
             instance: next_scene_instance(),
             corner_shape: self.corner_shape,
             focus_ring: self.focus_ring,
+            effects: self.effects,
         }
     }
 }
@@ -347,6 +352,21 @@ impl UiScene {
     pub fn set_focus_ring(&mut self, ring: nana_ui_core::FocusRingMetrics) {
         if self.focus_ring != ring {
             self.focus_ring = ring;
+            self.instance = next_scene_instance();
+        }
+    }
+
+    /// The installed theme's effect tokens (elevation shadow ramp).
+    pub const fn effects(&self) -> nana_ui_core::EffectTokens {
+        self.effects
+    }
+
+    /// Set the effect tokens used to resolve
+    /// [`PaintStyle::elevation`](nana_ui_core::PaintStyle::elevation) on quad
+    /// primitives. A change is a new [`Self::instance_id`].
+    pub fn set_effects(&mut self, effects: nana_ui_core::EffectTokens) {
+        if self.effects != effects {
+            self.effects = effects;
             self.instance = next_scene_instance();
         }
     }

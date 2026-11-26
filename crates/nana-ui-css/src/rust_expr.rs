@@ -942,6 +942,7 @@ impl EmitRust for SemanticColorRole {
             Self::DangerSoftPressed => "DangerSoftPressed",
             Self::Titlebar => "Titlebar",
             Self::OnMedia => "OnMedia",
+            Self::ModalScrim => "ModalScrim",
             Self::Function => "Function",
             Self::Builtin => "Builtin",
             Self::Type => "Type",
@@ -953,6 +954,19 @@ impl EmitRust for SemanticColorRole {
             Self::Keyword => "Keyword",
         };
         let _ = write!(out, "{m}::SemanticColorRole::{variant}");
+    }
+}
+
+impl EmitRust for nana_ui_core::ElevationRole {
+    fn emit_rust(&self, m: &str, out: &mut String) {
+        let variant = match self {
+            Self::Surface => "Surface",
+            Self::Overlay => "Overlay",
+            Self::Menu => "Menu",
+            Self::Dropdown => "Dropdown",
+            Self::MenuBar => "MenuBar",
+        };
+        let _ = write!(out, "{m}::ElevationRole::{variant}");
     }
 }
 
@@ -1941,6 +1955,7 @@ pub(crate) fn emit_patch_stmt(layout: &LayoutStyle, path: &str, m: &str, out: &m
             "clip_path" => emit_set(&setter, &layout.paint.clip_path, m, out),
             "filter" => emit_set(&setter, &layout.paint.filter, m, out),
             "backdrop_filter" => emit_set(&setter, &layout.paint.backdrop_filter, m, out),
+            "elevation" => emit_set(&setter, &layout.paint.elevation, m, out),
             "outline.width" => emit_set(&setter, &layout.paint.outline.width, m, out),
             "outline.style" => emit_set(&setter, &layout.paint.outline.style, m, out),
             _ => panic!("unknown LayoutStyle leaf path: {path}"),

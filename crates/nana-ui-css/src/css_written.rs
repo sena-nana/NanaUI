@@ -502,6 +502,7 @@ fn reference() -> &'static (LayoutStyle, LayoutStyle) {
         // Rust-only, like the edge fade: no CSS property writes them.
         layout.paint.wide_filter_blur = true;
         layout.paint.motion_shutter = 0.5;
+        layout.paint.elevation = Some(nana_ui_core::ElevationRole::Surface);
         // Applying anything ends by resolving logical edges; start from a
         // layout that is already resolved, so that alone changes nothing.
         layout.resolve_logical_box_edges();

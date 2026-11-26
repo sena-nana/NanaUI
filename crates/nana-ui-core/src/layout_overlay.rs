@@ -376,7 +376,7 @@ overlay! {
 overlay! {
     PaintStyle {
         background_material, border_material, text_material, visibility,
-        border_radii, box_shadows, scrollbar, scroll_edge_fade,
+        border_radii, box_shadows, elevation, scrollbar, scroll_edge_fade,
         text_shadows, text_stroke, paint_order_stroke_first, mix_blend,
         wide_filter_blur, motion_shutter, unsupported_border_image, border_image, background_layers,
         background_size_list, background_size_lengths, background_position_list,

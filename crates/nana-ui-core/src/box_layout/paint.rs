@@ -185,6 +185,27 @@ pub struct BoxShadowSpec {
     pub inset: bool,
 }
 
+impl BoxShadowSpec {
+    /// Convert a theme [`ShadowToken`](crate::ShadowToken) into a concrete
+    /// [`BoxShadowSpec`] in sRGB.
+    pub const fn from_shadow(shadow: crate::ShadowToken) -> Self {
+        Self {
+            offset_x: shadow.offset_x,
+            offset_y: shadow.offset_y,
+            blur_radius: shadow.blur_radius,
+            spread_radius: shadow.spread_radius,
+            color: PaintColor::srgb(shadow.color.as_rgba_array()),
+            inset: shadow.inset,
+        }
+    }
+}
+
+impl From<crate::ShadowToken> for BoxShadowSpec {
+    fn from(shadow: crate::ShadowToken) -> Self {
+        Self::from_shadow(shadow)
+    }
+}
+
 /// Mask mode used by custom paint [`PaintContext::push_mask`] layers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum MaskKind {
@@ -1829,6 +1850,10 @@ pub struct PaintStyle {
     /// `box-shadow` layers in CSS order (first is top-most). Capped at
     /// [`MAX_BOX_SHADOWS`].
     pub box_shadows: Vec<BoxShadowSpec>,
+    /// Theme elevation step resolved from the installed theme's
+    /// [`EffectTokens`](crate::EffectTokens) when [`Self::box_shadows`] is
+    /// empty. Explicit `box_shadows` always take precedence.
+    pub elevation: Option<crate::ElevationRole>,
     /// `::-webkit-scrollbar` / `::-webkit-scrollbar-thumb` skin. Geometry still
     /// comes from [`crate::scrollbar_track`]; this only overrides thickness and
     /// the default `border_strong` / `muted` / `subtle` colors.
@@ -1927,6 +1952,7 @@ impl PaintStyle {
             || self.filter.is_some_and(|filter| !filter.is_identity())
             || self.backdrop_filter.is_some_and(BackdropFilter::is_active)
             || !self.box_shadows.is_empty()
+            || self.elevation.is_some()
             || self.outline.is_active()
             || !self.mix_blend.is_normal()
             || self.border_image.is_some()
@@ -1958,6 +1984,7 @@ impl PaintStyle {
         let bg_has_dynamic = |img: &BackgroundImage| matches!(img, BackgroundImage::Gradient(g) if gradient_has_dynamic(g));
 
         self.box_shadows.iter().any(|s| s.color.is_theme_dynamic())
+            || self.elevation.is_some()
             || self.text_shadows.iter().any(|s| s.color.is_theme_dynamic())
             || self
                 .text_stroke

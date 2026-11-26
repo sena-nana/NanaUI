@@ -34,6 +34,30 @@ pub struct RunMetrics {
     /// Font x-height in physical px (from OS/2 `sxHeight`, or `0.5 * ascent_px` fallback).
     #[serde(default)]
     pub x_height_px: f32,
+    /// Font cap-height in physical px (from OS/2 `sCapHeight`, or `0.7 * ascent_px` fallback).
+    #[serde(default)]
+    pub cap_height_px: f32,
+}
+
+/// Measured vertical ink bounds of a laid-out line compared against its line
+/// box centre, in layout coordinates (logical px, Y-down).
+///
+/// Useful for optically centring adjacent icons on a text heading's actual
+/// glyph ink without shifting the text baseline itself.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct VisualVerticalMetrics {
+    /// Topmost ink edge of the line's glyphs, in layout px from the layout origin.
+    pub ink_top_px: f32,
+    /// Bottommost ink edge of the line's glyphs, in layout px from the layout origin.
+    pub ink_bottom_px: f32,
+    /// Midpoint of the glyph ink (`(ink_top_px + ink_bottom_px) * 0.5`).
+    pub ink_center_y_px: f32,
+    /// Midpoint of the line box (`line.top_y_px + line.height_px * 0.5`).
+    pub line_center_y_px: f32,
+    /// Signed Y offset from the line box centre to the glyph ink centre
+    /// (`ink_center_y_px - line_center_y_px`; positive when ink sits lower
+    /// than the centred line box).
+    pub visual_center_offset_y_px: f32,
 }
 
 impl RunMetrics {

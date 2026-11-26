@@ -13111,3 +13111,60 @@ fn scene_extended_color_cache_tracks_wide_gamut_and_hdr_deltas() {
     scene.apply_delta([card], []);
     assert!(scene.has_extended_color());
 }
+
+#[test]
+fn paint_style_elevation_resolves_from_scene_effects_and_yields_to_box_shadow() {
+    let mut scene = UiScene::new();
+    let mut card = node(9910, None, &[]);
+    card.layout = LayoutBox {
+        x: 10.0,
+        y: 20.0,
+        width: 120.0,
+        height: 44.0,
+    };
+    let card_id = card.id;
+    // Elevation alone (no background, no border) must still emit a root quad with the resolved shadow.
+    Arc::make_mut(&mut card.source_style.layout).paint.elevation =
+        Some(nana_ui_core::ElevationRole::Overlay);
+    scene.apply_delta([card.clone()], []);
+
+    let dark_expected = ComponentElevation::from_shadow(
+        nana_ui_core::EffectTokens::DARK.shadow(nana_ui_core::ElevationRole::Overlay),
+    );
+    let quad_shadow = |scene: &UiScene| {
+        scene.primitives().find_map(|p| match &p.kind {
+            ScenePrimitiveKind::Quad { shadow, .. } if p.node == card_id => *shadow,
+            _ => None,
+        })
+    };
+    assert_eq!(quad_shadow(&scene), Some(dark_expected));
+
+    // Updating scene effects bumps instance_id and resolves new shadow tokens on re-extract.
+    let before_id = scene.instance_id();
+    scene.set_effects(nana_ui_core::EffectTokens::LIGHT);
+    assert_ne!(scene.instance_id(), before_id);
+    scene.apply_delta([card.clone()], []);
+    let light_expected = ComponentElevation::from_shadow(
+        nana_ui_core::EffectTokens::LIGHT.shadow(nana_ui_core::ElevationRole::Overlay),
+    );
+    assert_eq!(quad_shadow(&scene), Some(light_expected));
+
+    // Explicit BoxShadowSpec takes precedence over PaintStyle::elevation.
+    let explicit = nana_ui_core::BoxShadowSpec {
+        offset_x: 1.0,
+        offset_y: 2.0,
+        blur_radius: 6.0,
+        spread_radius: 0.0,
+        color: nana_ui_core::PaintColor::srgb([0.2, 0.3, 0.4, 0.5]),
+        inset: false,
+    };
+    Arc::make_mut(&mut card.source_style.layout)
+        .paint
+        .box_shadows
+        .push(explicit);
+    scene.apply_delta([card], []);
+    assert_eq!(
+        quad_shadow(&scene),
+        Some(ComponentElevation::from_box_shadow(explicit))
+    );
+}

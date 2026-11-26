@@ -135,6 +135,10 @@ pub fn read_metrics(
         metrics.ascent,
         metrics.descent.abs(),
     );
+    let cap_height = metrics
+        .cap_height
+        .filter(|height| height.is_finite() && *height > 0.0)
+        .unwrap_or(ascent_px * 0.7);
     Some(RunMetrics {
         ascent_px,
         descent_px,
@@ -144,6 +148,7 @@ pub fn read_metrics(
         strikeout_offset_px,
         strikeout_thickness_px,
         x_height_px: x_height,
+        cap_height_px: cap_height,
     })
 }
 
@@ -233,17 +238,104 @@ pub fn read_glyph_ink(
     size_px: f32,
     glyph_id: u32,
 ) -> Option<(f32, f32)> {
+    let rect = read_glyph_ink_box(data, index, coords, size_px, glyph_id)?;
+    Some((rect.x, rect.x + rect.width))
+}
+
+/// Full 2D ink bounding box of `glyph_id` at `size_px`, relative to its pen
+/// origin on the baseline in layout coordinates (logical px, Y-down).
+///
+/// Uses the font's `glyf` glyph metrics bounds when available and falls back
+/// to scanning outline control points for CFF/CFF2 faces. Returns `None` for
+/// empty/whitespace glyphs or when the face cannot supply finite bounds.
+pub fn read_glyph_ink_box(
+    data: &[u8],
+    index: u32,
+    coords: &[AxisCoord],
+    size_px: f32,
+    glyph_id: u32,
+) -> Option<crate::layout::TextRect> {
     let font = FontRef::from_index(data, index).ok()?;
     let location = font.axes().location(
         coords
             .iter()
             .map(|coord| (Tag::new(&coord.tag), coord.value)),
     );
-    let bounds = font
+    let gid = skrifa::GlyphId::new(glyph_id);
+    if let Some(bounds) = font
         .glyph_metrics(Size::new(size_px), &location)
-        .bounds(skrifa::GlyphId::new(glyph_id))?;
-    (bounds.x_min.is_finite() && bounds.x_max.is_finite() && bounds.x_max > bounds.x_min)
-        .then_some((bounds.x_min, bounds.x_max))
+        .bounds(gid)
+        && bounds.x_min.is_finite()
+        && bounds.x_max.is_finite()
+        && bounds.y_min.is_finite()
+        && bounds.y_max.is_finite()
+        && bounds.x_max > bounds.x_min
+        && bounds.y_max > bounds.y_min
+    {
+        return Some(crate::layout::TextRect::new(
+            bounds.x_min,
+            -bounds.y_max,
+            bounds.x_max - bounds.x_min,
+            bounds.y_max - bounds.y_min,
+        ));
+    }
+
+    // Fallback for CFF/CFF2 faces that do not store precomputed glyph bboxes.
+    struct BoundsPen {
+        x_min: f32,
+        y_min: f32,
+        x_max: f32,
+        y_max: f32,
+        has_points: bool,
+    }
+    impl BoundsPen {
+        fn include(&mut self, x: f32, y: f32) {
+            if x.is_finite() && y.is_finite() {
+                self.x_min = self.x_min.min(x);
+                self.y_min = self.y_min.min(y);
+                self.x_max = self.x_max.max(x);
+                self.y_max = self.y_max.max(y);
+                self.has_points = true;
+            }
+        }
+    }
+    impl skrifa::outline::OutlinePen for BoundsPen {
+        fn move_to(&mut self, x: f32, y: f32) {
+            self.include(x, y);
+        }
+        fn line_to(&mut self, x: f32, y: f32) {
+            self.include(x, y);
+        }
+        fn quad_to(&mut self, cx0: f32, cy0: f32, x: f32, y: f32) {
+            self.include(cx0, cy0);
+            self.include(x, y);
+        }
+        fn curve_to(&mut self, cx0: f32, cy0: f32, cx1: f32, cy1: f32, x: f32, y: f32) {
+            self.include(cx0, cy0);
+            self.include(cx1, cy1);
+            self.include(x, y);
+        }
+        fn close(&mut self) {}
+    }
+
+    let outline = font.outline_glyphs().get(gid)?;
+    let mut pen = BoundsPen {
+        x_min: f32::INFINITY,
+        y_min: f32::INFINITY,
+        x_max: f32::NEG_INFINITY,
+        y_max: f32::NEG_INFINITY,
+        has_points: false,
+    };
+    let settings = skrifa::outline::DrawSettings::unhinted(Size::new(size_px), &location);
+    outline.draw(settings, &mut pen).ok()?;
+    (pen.has_points && pen.x_max > pen.x_min && pen.y_max > pen.y_min).then_some(
+        crate::layout::TextRect::new(
+            pen.x_min,
+            -pen.y_max,
+            pen.x_max - pen.x_min,
+            pen.y_max - pen.y_min,
+        ),
+    )
 }
 
 /// Every codepoint the face's best cmap maps to a glyph it can draw,

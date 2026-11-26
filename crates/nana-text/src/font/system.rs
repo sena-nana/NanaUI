@@ -807,6 +807,27 @@ impl FontSystem {
         self.record(font).map(|face| face.describe())
     }
 
+    /// Sorted, deduplicated primary family names across all live faces,
+    /// excluding hidden dot-prefixed platform UI families (such as macOS
+    /// `.AppleSystemUIFont`) and empty names.
+    pub fn family_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .faces
+            .live()
+            .filter_map(|face| face.meta.families.first())
+            .map(|family| family.as_ref())
+            .filter(|family| !family.is_empty() && !family.starts_with('.'))
+            .map(ToOwned::to_owned)
+            .collect();
+        names.sort_unstable_by(|a, b| {
+            a.to_lowercase()
+                .cmp(&b.to_lowercase())
+                .then_with(|| a.cmp(b))
+        });
+        names.dedup_by(|a, b| a.to_lowercase() == b.to_lowercase());
+        names
+    }
+
     /// The face's bytes, detached from the registry's lifetime.
     pub fn face_data(&self, font: FontId) -> Option<FontData> {
         let face = self.record(font)?;
@@ -1186,6 +1207,26 @@ impl FontSystem {
                 )
             })
             .unwrap_or_default()
+    }
+
+    /// Full 2D ink bounding box of `glyph_id` at `instance` and `size_px`,
+    /// relative to its pen origin on the baseline in layout coordinates
+    /// (logical px, Y-down).
+    pub fn glyph_ink_bounds(
+        &self,
+        instance: &super::FontInstanceKey,
+        size_px: f32,
+        glyph_id: u32,
+    ) -> Option<crate::layout::TextRect> {
+        let face = self.record(instance.font)?;
+        let blob = face.blob()?;
+        face::read_glyph_ink_box(
+            (*blob).as_ref(),
+            face.meta.index,
+            &instance.coords,
+            size_px,
+            glyph_id,
+        )
     }
 
     /// The left and right edges of a glyph's ink at an instance and a size,

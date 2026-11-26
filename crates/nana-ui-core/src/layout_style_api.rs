@@ -83,6 +83,7 @@ impl PaintStyle {
     set_opt! {
         visibility: VisibilitySpec,
         border_radii: [LengthSpec; 4],
+        elevation: crate::ElevationRole,
         border_image: BorderImageSpec,
         content_image: BackgroundImage,
         skipped_replaced: String,
