@@ -184,7 +184,8 @@ pub struct HostedGpuSurface {
     /// Present-mode support is fixed per surface and adapter, so it is
     /// resolved at surface creation instead of re-queried every live frame.
     live_present_mode: wgpu::PresentMode,
-    /// The window's program keeps redrawing (`FrameDemand::Continuous`).
+    /// The window's program keeps presenting continuously (`FrameDemand::Continuous`
+    /// or `RuntimeProgram::continuous_presentation`).
     /// On DX12 such a surface runs at DXGI maximum frame latency 2; see
     /// [`steady_frame_latency`].
     continuous_redraw: bool,

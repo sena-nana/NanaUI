@@ -178,3 +178,25 @@ fn independent_underlays_use_the_same_input_turn_for_macos_movement() {
         false
     ));
 }
+
+#[test]
+fn uses_continuous_swapchain_latency_honors_continuous_demand_or_external_presentation() {
+    use std::num::NonZeroU32;
+
+    assert!(!uses_continuous_swapchain_latency(
+        crate::FrameDemand::OnDemand,
+        false
+    ));
+    assert!(uses_continuous_swapchain_latency(
+        crate::FrameDemand::OnDemand,
+        true
+    ));
+    assert!(uses_continuous_swapchain_latency(
+        crate::FrameDemand::Continuous(NonZeroU32::new(60).unwrap()),
+        false
+    ));
+    assert!(uses_continuous_swapchain_latency(
+        crate::FrameDemand::At(Instant::now()),
+        true
+    ));
+}
