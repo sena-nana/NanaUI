@@ -557,8 +557,13 @@ impl AppContext {
                         // Alt: a tenth of the pace.
                         let pace = if fine { 0.1 } else { 1.0 };
                         let per_pixel = span / f64::from(track.width) * pace;
-                        (anchor_value + f64::from(x - anchor_x) * per_pixel)
-                            .clamp(range.minimum, range.maximum)
+                        let proportional = (anchor_value + f64::from(x - anchor_x) * per_pixel)
+                            .clamp(range.minimum, range.maximum);
+                        if fine {
+                            proportional
+                        } else {
+                            range.snap_to_marker(track.width, proportional)
+                        }
                     }
                     None => range.value_at(track.x, track.width, x),
                 };

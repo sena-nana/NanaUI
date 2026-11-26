@@ -46,6 +46,10 @@ enum Container {
     Own(Box<ScrollView>),
     /// An ancestor's, known once it is built.
     Within(NodeRef),
+    /// Automatically resolve the nearest enclosing [`ScrollView`] via
+    /// [`super::scroll_context::nearest_scroll_context`] or the retained
+    /// ancestor chain.
+    WithinNearest,
 }
 
 /// [`EachVirtual::grid`]: columns at least `min_width` wide, `gap` apart
@@ -130,6 +134,8 @@ pub struct EachVirtual<T, K, S, KF, RF> {
     key_fn: KF,
     row_fn: RF,
     row_height: f32,
+    row_gap: f32,
+    row_gap_theme: Option<nana_ui_core::SpacingStep>,
     measured: bool,
     overscan: f32,
     container: Container,
@@ -165,6 +171,8 @@ where
         key_fn: key,
         row_fn: row,
         row_height: row_height.max(1.0),
+        row_gap: f32::default(),
+        row_gap_theme: None,
         measured: false,
         overscan: row_height.max(1.0) * 4.0,
         container: Container::Own(Box::new(ScrollView::new(ScrollAxes::Vertical))),
@@ -236,6 +244,33 @@ impl<T, K, S, KF, RF> EachVirtual<T, K, S, KF, RF> {
     /// and follows it as content above the list grows or shrinks.
     pub fn within(mut self, scroll: NodeRef) -> Self {
         self.container = Container::Within(scroll);
+        self
+    }
+
+    /// Scroll with the nearest enclosing [`ScrollView`] automatically, reading
+    /// [`super::scroll_context::nearest_scroll_context`] when present or
+    /// walking the retained ancestor chain otherwise.
+    pub fn within_nearest_scroll(mut self) -> Self {
+        self.container = Container::WithinNearest;
+        self
+    }
+
+    /// Vertical gap between consecutive rows in a plain list, in logical
+    /// pixels. Included in each row's virtualized extent so scrolling and
+    /// anchoring remain exact.
+    pub fn gap(mut self, gap: f32) -> Self {
+        self.row_gap = gap.max(f32::default());
+        self.row_gap_theme = None;
+        self
+    }
+
+    /// Vertical gap between consecutive rows in a plain list, resolved from
+    /// the installed theme's spacing scale.
+    pub fn gap_step(mut self, step: nana_ui_core::SpacingStep) -> Self {
+        self.row_gap = nana_ui_core::SpacingTokens::DEFAULT
+            .resolve(step)
+            .max(f32::default());
+        self.row_gap_theme = Some(step);
         self
     }
 
@@ -606,9 +641,14 @@ struct EachVirtualBinding<T: 'static, K: 'static, RF> {
     moved: Signal<u64>,
     /// The ancestor to scroll with; the ScrollView it names is `scroll`.
     within: Option<NodeRef>,
+    /// Whether to resolve the nearest enclosing [`ScrollView`] automatically
+    /// from the retained ancestor chain when `within` is `None`.
+    within_nearest: bool,
     scroll: Option<Entity<ScrollView>>,
     list: Entity<List>,
     grid: Option<Grid>,
+    row_gap: f32,
+    row_gap_theme: Option<nana_ui_core::SpacingStep>,
     theme: Option<Computed<ThemeGeometry>>,
     state: VirtualListItems<Unit<K>, Stack>,
     /// The binding's own geometry; published to `shared` after each sync.
@@ -677,10 +717,25 @@ where
         &mut self,
         cx: &mut AppContext,
     ) -> Result<Option<Entity<ScrollView>>, FrameworkError> {
-        let Some(within) = self.within else {
+        let named = if let Some(within) = self.within {
+            within.get_untracked().filter(|id| cx.world().contains(*id))
+        } else if self.within_nearest {
+            let mut ancestor = cx.world().parent_id(self.list.stable_id());
+            let mut found = None;
+            while let Some(id) = ancestor {
+                if cx
+                    .read(Entity::<ScrollView>::from_stable_id(id), |_| ())
+                    .is_ok()
+                {
+                    found = Some(id);
+                    break;
+                }
+                ancestor = cx.world().parent_id(id);
+            }
+            found
+        } else {
             return Ok(self.scroll);
         };
-        let named = within.get_untracked().filter(|id| cx.world().contains(*id));
         if named == self.scroll.map(|scroll| scroll.stable_id()) {
             return Ok(self.scroll);
         }
@@ -765,6 +820,20 @@ where
                 );
                 self.version += 1;
             }
+        } else if self.grid.is_none()
+            && let (Some(step), Some(theme)) = (self.row_gap_theme, self.theme)
+        {
+            let gap = theme.get().spacing.resolve(step).max(0.0);
+            if gap != self.row_gap {
+                let difference = gap - self.row_gap;
+                self.row_gap = gap;
+                self.geometry.layout = VirtualListLayout::new(
+                    (0..self.geometry.units.units.len())
+                        .map(|at| (self.geometry.layout.extent(at..at + 1) + difference).max(1.0))
+                        .collect::<Vec<_>>(),
+                );
+                self.version += 1;
+            }
         }
         let Some(scroll) = self.scroll(cx)? else {
             // Unmount already-mounted items if the surrounding scroll area
@@ -832,7 +901,7 @@ where
                 }
                 // Units that stay keep the extent they were placed or
                 // measured at.
-                let estimate = self.row_height + self.grid.map_or(0.0, |grid| grid.gap);
+                let estimate = self.row_height + self.grid.map_or(self.row_gap, |grid| grid.gap);
                 let extents = units
                     .iter()
                     .map(|(unit, _)| {
@@ -885,7 +954,13 @@ where
             .as_ref()
             .and_then(|request| geometry.target(request));
         let units = &geometry.units;
-        let (row_fn, scope, grid) = (&self.row_fn, self.scope, self.grid);
+        let (row_fn, scope, grid, row_gap, row_gap_theme) = (
+            &self.row_fn,
+            self.scope,
+            self.grid,
+            self.row_gap,
+            self.row_gap_theme,
+        );
         let columns = units.columns;
         let key_at = |at: usize| units.units[at].clone();
         let index_of = |unit: &Unit<K>| units.index.get(unit).copied();
@@ -898,6 +973,15 @@ where
                         Some(nana_ui_core::ThemeToken::Space(step).into());
                 }
             }),
+            None if row_gap > 0.0 || row_gap_theme.is_some() => {
+                Stack::column(0.0).with_layout(|layout| {
+                    layout.padding_bottom = Some(LengthSpec::Px(row_gap));
+                    if let Some(step) = row_gap_theme {
+                        layout.theme.padding_bottom =
+                            Some(nana_ui_core::ThemeToken::Space(step).into());
+                    }
+                })
+            }
             None => Stack::column(0.0),
         };
         let items = &items.items;
@@ -984,7 +1068,7 @@ where
         // Readers get copies of the units and the layout made only when they
         // changed: a scroll that measures nothing copies neither.
         self.publish_geometry(again);
-        if self.within.is_some() || self.grid.is_some() || self.measured {
+        if self.within.is_some() || self.within_nearest || self.grid.is_some() || self.measured {
             // Content above the list, the list's own width, or the height a
             // measured row lays out at -- rows mounted now, or a row whose
             // content grew -- can change with no scroll or viewport change:
@@ -1274,7 +1358,7 @@ where
         // their text to it and grid columns divide it.
         let mut list = List::new().multiselectable(self.multiselectable);
         std::sync::Arc::make_mut(&mut list.style.layout).width = Some(LengthSpec::Percent(100.0));
-        let (scroll, list, within) = match self.container {
+        let (scroll, list, within, within_nearest) = match self.container {
             Container::Own(scroll) => {
                 let Some(scroll) = container(*scroll, self.key, self.style, self.site).place(vb)
                 else {
@@ -1287,13 +1371,21 @@ where
                 if self.measured || self.grid.is_some() {
                     vb.ui.on(scroll, move |_, _: &ScrollLaidOut, _| bump());
                 }
-                (Some(scroll), list, None)
+                (Some(scroll), list, None, false)
             }
             Container::Within(within) => {
                 let Some(list) = container(list, self.key, self.style, self.site).place(vb) else {
                     return;
                 };
-                (None, list, Some(within))
+                (None, list, Some(within), false)
+            }
+            Container::WithinNearest => {
+                let Some(list) = container(list, self.key, self.style, self.site).place(vb) else {
+                    return;
+                };
+                let ctx_ref =
+                    super::scroll_context::nearest_scroll_context().map(|ctx| ctx.node_ref());
+                (None, list, ctx_ref, ctx_ref.is_none())
             }
         };
         let id = list.stable_id();
@@ -1353,15 +1445,19 @@ where
             scope: reactive::current_scope(),
             moved,
             within,
+            within_nearest,
             scroll,
             list,
             grid: self.grid,
-            theme: (self.measured || self.grid.is_some_and(|grid| grid.gap_theme.is_some())).then(
-                || {
-                    let theme = super::theme_signal();
-                    reactive::computed(move || theme.with(|theme| ThemeGeometry::read(theme)))
-                },
-            ),
+            row_gap: self.row_gap,
+            row_gap_theme: self.row_gap_theme,
+            theme: (self.measured
+                || self.grid.is_some_and(|grid| grid.gap_theme.is_some())
+                || self.row_gap_theme.is_some())
+            .then(|| {
+                let theme = super::theme_signal();
+                reactive::computed(move || theme.with(|theme| ThemeGeometry::read(theme)))
+            }),
             state: if self.measured {
                 VirtualListItems::measured()
             } else {
@@ -1378,10 +1474,10 @@ where
         // Subscribe now; the first window follows the first layout, whose
         // viewport event moves it. An ancestor's events are only heard once
         // a sync has found it, so ask for that first sync.
-        let within = binding.within.is_some();
+        let within_ancestor = binding.within.is_some() || binding.within_nearest;
         reactive::run_tracked(effect, || binding.read());
         vb.st.parts.structural.push((id, effect, Box::new(binding)));
-        if within {
+        if within_ancestor {
             bump();
         }
     }

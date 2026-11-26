@@ -1027,6 +1027,9 @@ pub enum ValueEmphasis {
 pub struct LabeledValue {
     pub label: Arc<str>,
     pub value: Arc<str>,
+    /// Optional secondary hint rendered below the label/value line and exposed
+    /// as assistive description.
+    pub hint: Option<Arc<str>>,
     /// Treat the value as a read-only path, with middle elision and full tooltip.
     pub value_is_path: bool,
     pub emphasis: ValueEmphasis,
@@ -1041,12 +1044,21 @@ impl LabeledValue {
         Self {
             label: label.into(),
             value: value.into(),
+            hint: None,
             value_is_path: false,
             emphasis: ValueEmphasis::Strong,
             compact: true,
             action: None,
             style: NodeStyle::default(),
         }
+    }
+
+    /// Attach a muted explanatory hint below the label/value line (empty
+    /// clears it).
+    pub fn hint(mut self, hint: impl Into<Arc<str>>) -> Self {
+        let hint = hint.into();
+        self.hint = (!hint.is_empty()).then_some(hint);
+        self
     }
 
     pub fn path_value(mut self, path: impl Into<Arc<str>>) -> Self {
@@ -1121,16 +1133,30 @@ impl ComponentView for LabeledValue {
             ValueEmphasis::Normal => 500,
             ValueEmphasis::Strong => 600,
         };
+        let mut style = self.effective_style();
+        if self.hint.is_some() {
+            let theme = world.node_theme(id);
+            let typography = theme.typography();
+            let spacing = theme.spacing();
+            let layout = Arc::make_mut(&mut style.layout);
+            let base = match layout.min_height {
+                Some(LengthSpec::Px(px)) => px,
+                _ => f32::default(),
+            };
+            let hint_band = typography.line + spacing.xxs;
+            layout.min_height = Some(LengthSpec::Px(base + hint_band));
+        }
         let pointer_events = self.value_is_path && !self.value.is_empty();
         project_widget_visual(
             id,
             world,
             mutations,
             "",
-            self.effective_style(),
+            style,
             LabeledValueVisual {
                 label: Arc::clone(&self.label),
                 value: Arc::clone(&self.value),
+                hint: self.hint.clone(),
                 value_is_path: self.value_is_path,
                 value_role,
                 value_weight,
@@ -1141,6 +1167,7 @@ impl ComponentView for LabeledValue {
             AccessibilityState {
                 role: AccessibilityRole::Generic,
                 label: Some(Arc::clone(&self.label)),
+                description: self.hint.clone(),
                 value: Some(Arc::clone(&self.value)),
                 ..AccessibilityState::default()
             },
@@ -1153,6 +1180,7 @@ impl ComponentView for LabeledValue {
 pub struct LabeledValueVisual {
     pub label: Arc<str>,
     pub value: Arc<str>,
+    pub hint: Option<Arc<str>>,
     pub value_is_path: bool,
     pub value_role: SemanticColorRole,
     pub value_weight: u16,
@@ -1184,12 +1212,14 @@ impl WidgetVisual for LabeledValueVisual {
                 (
                     &self.label,
                     &self.value,
+                    &self.hint,
                     self.value_weight,
                     self.compact,
                     self.action,
                 ) != (
                     &old.label,
                     &old.value,
+                    &old.hint,
                     old.value_weight,
                     old.compact,
                     old.action,
@@ -1241,8 +1271,21 @@ impl WidgetVisual for LabeledValueVisual {
         let measure = world.chrome_text_measure(id);
         let label_size = typography.hint;
         let value_size = typography.meta;
-        Some(crate::layout_engine::parts::paired_text_parts(
-            area,
+        let hint_band = if self.hint.is_some() {
+            typography.line + spacing.xxs
+        } else {
+            f32::default()
+        };
+        let top_area = if self.hint.is_some() {
+            LayoutBox {
+                height: (area.height - hint_band).max(typography.line),
+                ..area
+            }
+        } else {
+            area
+        };
+        let mut parts = crate::layout_engine::parts::paired_text_parts(
+            top_area,
             crate::layout_engine::Size::new(
                 if self.label.is_empty() {
                     0.0
@@ -1258,7 +1301,23 @@ impl WidgetVisual for LabeledValueVisual {
             gap,
             spacing.xxxl,
             reverse,
-        ))
+        );
+        if self.hint.is_some() {
+            let hint_box = LayoutBox {
+                x: area.x,
+                y: top_area.y + top_area.height + spacing.xxs,
+                width: area.width,
+                height: typography
+                    .line
+                    .min((area.height - top_area.height).max(f32::default())),
+            };
+            parts = crate::layout_engine::parts::content_parts([
+                parts.first().copied().flatten(),
+                parts.get(1).copied().flatten(),
+                Some(crate::LayoutPart::new(LayoutPartKind::Hint, hint_box)),
+            ]);
+        }
+        Some(parts)
     }
 
     fn paint(&self, ctx: &WidgetPaintCtx<'_>) -> WidgetPaintOutput {
@@ -1322,6 +1381,30 @@ impl WidgetVisual for LabeledValueVisual {
                 true,
             )),
         );
+        if let Some(hint) = self.hint.as_ref()
+            && let Some(hint_bounds) =
+                crate::layout_engine::parts::part_bounds(&parts, LayoutPartKind::Hint)
+        {
+            out.push(
+                4,
+                WidgetPaintOp::Text(widget_text_region(
+                    &ComponentTextRegion {
+                        bounds: hint_bounds,
+                        content: TextValue::from(Arc::clone(hint)),
+                        color: Some(
+                            ctx.style_model
+                                .color(SemanticColorRole::Faint)
+                                .as_rgba_array(),
+                        ),
+                        font_size: ctx.theme.typography().hint,
+                        font_weight: None,
+                    },
+                    ctx,
+                    TextHorizontalAlignment::Start,
+                    true,
+                )),
+            );
+        }
         out
     }
 }
@@ -3025,6 +3108,7 @@ mod tests {
             Some(&LabeledValueVisual {
                 label: Arc::from("Revision"),
                 value: Arc::from("42"),
+                hint: None,
                 value_is_path: false,
                 value_role: SemanticColorRole::Text,
                 value_weight: 500,
@@ -3918,5 +4002,29 @@ mod tests {
             }),
         );
         assert!(context.commit_mutations(broken).is_err());
+    }
+
+    #[test]
+    fn labeled_value_hint_projects_description_and_hint_part() {
+        let document = crate::DocumentId::new(1).unwrap();
+        let mut context = crate::AppContext::new();
+        let entity = context
+            .create_component(
+                document,
+                LabeledValue::new("Device", "iPhone 15").hint("Connected over LAN"),
+            )
+            .unwrap();
+        context
+            .layout_document(document, crate::LayoutViewport::new(300.0, 120.0))
+            .unwrap();
+        let id = entity.stable_id();
+        let a11y = context.world().accessibility(id).unwrap();
+        assert_eq!(a11y.description.as_deref(), Some("Connected over LAN"));
+        assert!(
+            context
+                .world()
+                .content_part_box(id, LayoutPartKind::Hint)
+                .is_some()
+        );
     }
 }

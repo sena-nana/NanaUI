@@ -58,6 +58,7 @@ pub mod settings_row {
     pub struct notice_tone;
     pub struct divided;
     pub struct stacked;
+    pub struct auto_stack;
     pub struct first_in_group;
     pub struct last_in_group;
     pub struct label_column;
@@ -101,10 +102,25 @@ row_fields! {
     notice_tone: nana_ui_core::ValidationIntent,
     divided: bool,
     stacked: bool,
+    auto_stack: bool,
     first_in_group: bool,
     last_in_group: bool,
     label_column: Option<f32>,
     label_colors: Option<Arc<nana_ui_core::ColorOverrides>>,
+}
+
+struct IndentField;
+
+impl FieldWrite<SettingsRow, u32> for IndentField {
+    const FIELD: &'static str = "SettingsRow.indent";
+
+    fn write(target: &mut SettingsRow, value: u32) {
+        target.indent = value.min(u32::from(u8::MAX)) as u8;
+    }
+
+    fn differs(target: &SettingsRow, value: &u32) -> bool {
+        u32::from(target.indent) != (*value).min(u32::from(u8::MAX))
+    }
 }
 
 impl<K> El<SettingsCollapsibleCard, K> {
@@ -132,6 +148,12 @@ impl<K> El<SettingsPage, K> {
 }
 
 impl<K> El<SettingsRow, K> {
+    /// Indent this row by `level` hierarchy steps (`SpacingStep::Xl` per step).
+    #[track_caller]
+    pub fn indent(self, level: u8) -> Self {
+        self.prop::<u32, IndentField>(u32::from(level))
+    }
+
     /// The row's control: built before the row, placed after its copy.
     pub fn control(self, view: impl IntoView) -> Self {
         self.slot(view, SettingsRow::control_child)
@@ -1328,6 +1350,49 @@ mod tests {
         settle(&mut cx);
         let (copy, control) = (layout(&cx, name_copy), layout(&cx, name));
         assert!(control.y >= copy.y + copy.height);
+    }
+
+    #[test]
+    fn settings_row_indent_and_content_aware_auto_stack() {
+        use crate::view::{IntoView, column};
+        let document = DocumentId::new(1).unwrap();
+        let mut cx = AppContext::new();
+        let view = cx
+            .mount_view_root(document, || {
+                column()
+                    .children((
+                        settings_row("Nested setting").indent(2).control(switch("")),
+                        widget(
+                            SettingsRow::new("A fairly long label that needs space")
+                                .auto_stack(true),
+                        )
+                        .control(switch("")),
+                    ))
+                    .into_any()
+            })
+            .unwrap();
+        cx.flush_reactive().unwrap();
+        lay_out(&mut cx, document, 480.0);
+
+        let rows = children(&cx, view.roots()[0]);
+        let indent_style = cx.world().node_style(rows[0]).unwrap();
+        let expected_indent =
+            nana_ui_core::SpacingTokens::DEFAULT.resolve(nana_ui_core::SpacingStep::Xl) * 2.0;
+        assert_eq!(
+            indent_style.layout.padding_left,
+            Some(nana_ui_core::LengthSpec::Px(expected_indent))
+        );
+        assert!(indent_style.layout.theme.padding_left.is_some());
+
+        // Narrow viewport triggers content-aware auto-stacking without explicit stack_below.
+        lay_out(&mut cx, document, 140.0);
+        cx.refresh_settings_row_layout(rows[1]).unwrap();
+        lay_out(&mut cx, document, 140.0);
+        let auto_style = cx.world().node_style(rows[1]).unwrap();
+        assert_eq!(
+            auto_style.layout.direction,
+            Some(crate::FlexDirection::Column)
+        );
     }
 
     const ROW_GAP: f32 = nana_ui_core::space::XS;

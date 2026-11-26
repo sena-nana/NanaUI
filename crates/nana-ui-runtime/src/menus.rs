@@ -230,6 +230,7 @@ impl crate::ComponentView for ActionMenuItem {
             hint: self.hint.clone(),
             icon: self.leading,
             image: self.leading_image.clone(),
+            mark: self.mark,
             danger: self.danger,
             active: self.active,
             disabled: self.disabled,
@@ -1038,10 +1039,24 @@ pub struct ActionMenuItemVisual {
     pub icon: Option<Icon>,
     /// A round picture in the icon's place; see [`ActionMenuItem::leading_image`].
     pub image: Option<TextureSlotName>,
+    /// Optional check/radio state projected visually with sibling alignment.
+    pub mark: crate::MenuItemMark,
     pub danger: bool,
     pub active: bool,
     pub disabled: bool,
     pub size: ControlSize,
+}
+
+impl crate::ActionMenu {
+    /// Configure a labelled dropdown trigger with a built-in chevron
+    /// (`Icon::ChevronDown`).
+    pub fn dropdown_trigger(mut self, label: impl Into<Arc<str>>) -> Self {
+        self.popover =
+            self.popover
+                .trigger_tool(Icon::ChevronDown, label, nana_ui_core::ButtonKind::Menu);
+        self.popover.compact_trigger = false;
+        self
+    }
 }
 
 /// Page-space or local geometry projected by [`ActionMenuItemVisual`].
@@ -1054,7 +1069,105 @@ pub struct ActionMenuItemGeometry {
     pub background: Option<[f32; 4]>,
 }
 
+/// Whether `id` or any sibling [`ActionMenuItem`] under the same parent
+/// reserves a leading check/radio column (items with `leading_image` place
+/// their mark on the trailing edge instead).
+fn sibling_reserves_check_column(
+    id: StableNodeId,
+    world: &UiWorld,
+    own: crate::MenuItemMark,
+    has_image: bool,
+) -> bool {
+    if !has_image && own.reserves_lane() {
+        return true;
+    }
+    let Some(parent) = world.parent_id(id) else {
+        return false;
+    };
+    let Some(node) = world.node(parent) else {
+        return false;
+    };
+    node.children.iter().any(|&sibling| {
+        world
+            .widget_visual_as::<ActionMenuItemVisual>(sibling)
+            .is_some_and(|visual| visual.image.is_none() && visual.mark.reserves_lane())
+    })
+}
+
 impl ActionMenuItemVisual {
+    fn check_column_reserve(&self, id: StableNodeId, world: &UiWorld) -> f32 {
+        if self.image.is_none()
+            && sibling_reserves_check_column(id, world, self.mark, self.image.is_some())
+        {
+            world.node_theme(id).typography().line
+        } else {
+            f32::default()
+        }
+    }
+
+    fn trailing_mark_reserve(&self, id: StableNodeId, world: &UiWorld) -> f32 {
+        if self.image.is_some() && self.mark.reserves_lane() {
+            let theme = world.node_theme(id);
+            self.size.text_size_in(theme.typography()) + theme.spacing().sm
+        } else {
+            f32::default()
+        }
+    }
+
+    /// Bounds and styled checkmark region for the row's active
+    /// [`crate::MenuItemMark`], if any.
+    ///
+    /// Placed in the shared leading check column for regular rows, or on the
+    /// trailing edge when [`Self::image`] occupies the leading lane.
+    pub fn mark_region(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+        bounds: LayoutBox,
+        palette: &SemanticPalette,
+        theme: &nana_ui_core::CompiledTheme,
+    ) -> Option<ComponentTextRegion> {
+        let _ = (id, world);
+        if self.mark.checked() != Some(true) {
+            return None;
+        }
+        let menu = theme.recipes().menu();
+        let select = theme.recipes().select();
+        let opacity = theme.style_model().opacity;
+        let color = palette
+            .get_in(
+                if self.disabled {
+                    menu.item_disabled_foreground
+                } else if self.danger {
+                    menu.item_danger_foreground
+                } else {
+                    menu.item_icon
+                },
+                opacity,
+            )
+            .as_rgba_array();
+        let glyph_size = self.size.text_size_in(theme.typography());
+        let padding_x = self.size.padding_x_in(theme.metrics());
+        let lane = theme.typography().line;
+        let x = if self.image.is_some() {
+            (bounds.x + bounds.width - padding_x - lane).max(bounds.x)
+        } else {
+            bounds.x + padding_x
+        };
+        Some(ComponentTextRegion {
+            bounds: LayoutBox {
+                x,
+                y: bounds.y,
+                width: lane,
+                height: bounds.height,
+            },
+            content: crate::TextValue::from("✓"),
+            color: Some(color),
+            font_size: glyph_size,
+            font_weight: Some(select.checkmark_weight),
+        })
+    }
+
     pub(crate) fn content_parts_for(
         &self,
         id: StableNodeId,
@@ -1062,6 +1175,14 @@ impl ActionMenuItemVisual {
         bounds: LayoutBox,
     ) -> crate::layout_engine::parts::ContentParts {
         let node_theme = world.node_theme(id);
+        let check_reserve = self.check_column_reserve(id, world);
+        let trailing_reserve = self.trailing_mark_reserve(id, world);
+        let inner = LayoutBox {
+            x: bounds.x + check_reserve,
+            y: bounds.y,
+            width: (bounds.width - check_reserve - trailing_reserve).max(f32::default()),
+            height: bounds.height,
+        };
         // A picture takes the icon's lane, a line box across.
         let leading = if self.image.is_some() {
             Some(row_image_size(self.size, node_theme.typography()))
@@ -1070,7 +1191,7 @@ impl ActionMenuItemVisual {
                 .map(|_| self.size.text_size_in(node_theme.typography()))
         };
         crate::layout_engine::parts::menu_content_parts(
-            bounds,
+            inner,
             self.size.padding_x_in(node_theme.metrics()),
             node_theme.spacing().md,
             leading,
@@ -1149,11 +1270,13 @@ impl crate::WidgetVisual for ActionMenuItemVisual {
             self.hint.as_deref(),
             self.icon.is_some(),
             self.image.is_some(),
+            self.mark.reserves_lane(),
             self.size,
         ) != (
             old.hint.as_deref(),
             old.icon.is_some(),
             old.image.is_some(),
+            old.mark.reserves_lane(),
             old.size,
         )
     }
@@ -1243,6 +1366,29 @@ impl crate::WidgetVisual for ActionMenuItemVisual {
                     horizontal_alignment: crate::TextHorizontalAlignment::End,
                     vertical_alignment: TextVerticalAlignment::Center,
                     ellipsis: true,
+                    ..Default::default()
+                }),
+            );
+        }
+        if let Some(mark) = self.mark_region(
+            ctx.id,
+            ctx.world,
+            ctx.bounds,
+            &ctx.style_model.palette,
+            ctx.theme,
+        ) {
+            let mark_paint = mark.color.and_then(|color| ctx.matching_text_paint(color));
+            out.push(
+                7,
+                crate::WidgetPaintOp::Text(crate::WidgetText {
+                    bounds: mark.bounds,
+                    content: mark.content,
+                    color: mark.color,
+                    paint_color: mark_paint,
+                    font_size: mark.font_size,
+                    font_weight: mark.font_weight,
+                    horizontal_alignment: crate::TextHorizontalAlignment::Center,
+                    vertical_alignment: TextVerticalAlignment::Center,
                     ..Default::default()
                 }),
             );
@@ -2783,5 +2929,99 @@ mod tests {
             lane,
             bounds.x + theme.spacing().xs + ControlSize::Small.padding_x_in(metrics)
         );
+    }
+
+    #[test]
+    fn action_menu_item_mark_aligns_siblings_and_places_trailing_mark_with_image() {
+        let (context, items) = laid_out_items(vec![
+            ActionMenuItem::new("Selected").radio(true),
+            ActionMenuItem::new("Unselected").radio(false),
+            ActionMenuItem::new("Plain"),
+            ActionMenuItem::new("Avatar")
+                .leading_image("thumb.alice")
+                .check(true),
+        ]);
+        // Radio/check siblings and plain sibling share the same label x because
+        // the parent reserves a shared check column.
+        let x0 = items[0].0.label.bounds.x;
+        let x1 = items[1].0.label.bounds.x;
+        let x2 = items[2].0.label.bounds.x;
+        assert!((x0 - x1).abs() < 0.5 && (x1 - x2).abs() < 0.5);
+
+        let root_children = context
+            .world()
+            .node(
+                context
+                    .world()
+                    .parent_id(
+                        context
+                            .world()
+                            .project_accessibility(DocumentId::new(1).unwrap())
+                            .iter()
+                            .find(|n| n.label.as_deref() == Some("Selected"))
+                            .unwrap()
+                            .id,
+                    )
+                    .unwrap(),
+            )
+            .unwrap()
+            .children
+            .clone();
+        let theme = context.world().theme();
+        let palette = &context.world().style_model().palette;
+
+        // Radio(true) draws leading check icon; Radio(false) draws none.
+        let v0 = context
+            .world()
+            .widget_visual_as::<ActionMenuItemVisual>(root_children[0])
+            .unwrap();
+        let m0 = v0
+            .mark_region(
+                root_children[0],
+                context.world(),
+                items[0].1,
+                palette,
+                theme,
+            )
+            .expect("selected radio mark");
+        assert_eq!(m0.content.as_str(), "✓");
+        assert!(m0.bounds.x < items[0].0.label.bounds.x);
+
+        let v1 = context
+            .world()
+            .widget_visual_as::<ActionMenuItemVisual>(root_children[1])
+            .unwrap();
+        assert!(
+            v1.mark_region(
+                root_children[1],
+                context.world(),
+                items[1].1,
+                palette,
+                theme
+            )
+            .is_none()
+        );
+
+        // Item with leading_image places its active check mark on the trailing edge.
+        let v3 = context
+            .world()
+            .widget_visual_as::<ActionMenuItemVisual>(root_children[3])
+            .unwrap();
+        let m3 = v3
+            .mark_region(
+                root_children[3],
+                context.world(),
+                items[3].1,
+                palette,
+                theme,
+            )
+            .expect("trailing check mark");
+        assert!(m3.bounds.x > items[3].0.label.bounds.x);
+
+        // ActionMenu::dropdown_trigger configures a labelled chevron trigger.
+        let menu = crate::ActionMenu::new().dropdown_trigger("Devices");
+        assert_eq!(menu.popover.trigger.as_ref(), "Devices");
+        assert_eq!(menu.popover.trigger_icon, Some(Icon::ChevronDown));
+        assert!(menu.popover.trigger_labelled);
     }
 }

@@ -87,6 +87,9 @@ pub struct RangeField {
     /// Typing a value: the assembled number field lies over the capsule and
     /// has the focus. Only a value thumb types.
     pub editing: bool,
+    /// When true, omit the default horizontal field padding so the track runs
+    /// flush with the control's box edges (unless caller style sets its own).
+    pub flush_track: bool,
     pub disabled: bool,
     pub invalid: bool,
     pub dragging: Option<RangeDragState>,
@@ -188,6 +191,7 @@ impl RangeField {
             show_bounds: false,
             default_value: None,
             editing: false,
+            flush_track: false,
             disabled: false,
             invalid: false,
             dragging: None,
@@ -300,6 +304,12 @@ impl RangeField {
         self.default_value = default_value.filter(|value| value.is_finite());
         self
     }
+    /// Omit the default horizontal field inset so the track runs flush with
+    /// the control's edges.
+    pub fn flush_track(mut self, flush: bool) -> Self {
+        self.flush_track = flush;
+        self
+    }
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
@@ -334,7 +344,33 @@ impl RangeField {
     }
     pub fn quantize(&self, value: f64) -> f64 {
         let steps = ((value.clamp(self.minimum, self.maximum) - self.minimum) / self.step).round();
-        (self.minimum + steps * self.step).clamp(self.minimum, self.maximum)
+        let quantized = (self.minimum + steps * self.step).clamp(self.minimum, self.maximum);
+        if quantized == 0.0 { 0.0 } else { quantized }
+    }
+
+    /// Snap `value` to the nearest in-range marker within [`RANGE_MARKER_SNAP_PX`]
+    /// along a track `track_width` logical pixels wide.
+    pub fn snap_to_marker(&self, track_width: f32, value: f64) -> f64 {
+        let span = self.maximum - self.minimum;
+        if !(span.is_finite() && span > 0.0 && track_width.is_finite() && track_width > 0.0) {
+            return value;
+        }
+        let mut best: Option<(f32, f64)> = None;
+        for marker in self.markers.iter() {
+            if !marker.value.is_finite()
+                || marker.value < self.minimum
+                || marker.value > self.maximum
+            {
+                continue;
+            }
+            let distance = (((marker.value - value) / span).abs() as f32) * track_width;
+            if distance <= RANGE_MARKER_SNAP_PX
+                && best.is_none_or(|(nearest, _)| distance < nearest)
+            {
+                best = Some((distance, marker.value));
+            }
+        }
+        best.map_or(value, |(_, snapped)| snapped)
     }
 
     /// The value a pointer at `x` selects. Within [`RANGE_MARKER_SNAP_PX`] of
@@ -347,26 +383,7 @@ impl RangeField {
             0.0
         };
         let proportional = self.minimum + f64::from(ratio) * span;
-        let mut best: Option<(f32, f64)> = None;
-        if span.is_finite() && span > 0.0 {
-            for marker in self.markers.iter() {
-                if !marker.value.is_finite()
-                    || marker.value < self.minimum
-                    || marker.value > self.maximum
-                {
-                    continue;
-                }
-                let marker_ratio = ((marker.value - self.minimum) / span) as f32;
-                let marker_x = track_x + track_width * marker_ratio;
-                let distance = (marker_x - x).abs();
-                if distance <= RANGE_MARKER_SNAP_PX
-                    && best.is_none_or(|(nearest, _)| distance < nearest)
-                {
-                    best = Some((distance, marker.value));
-                }
-            }
-        }
-        best.map_or(proportional, |(_, value)| value)
+        self.snap_to_marker(track_width, proportional)
     }
 
     /// Where the caution zone begins along the track, `0.0..1.0`; none
@@ -618,8 +635,10 @@ impl RangeField {
             ));
             layout.theme.min_height = None;
         }
-        if rail.is_none() && track_gradient.is_none() {
-            effective_style.control_padding_x = Some(nana_ui_core::ControlPadding::Field);
+        if rail.is_none() && track_gradient.is_none() && !self.flush_track {
+            effective_style
+                .control_padding_x
+                .get_or_insert(nana_ui_core::ControlPadding::Field);
         }
         if has_parts {
             // The containing block of the reset button and the number field,
@@ -1460,4 +1479,104 @@ fn contrast(a: [f32; 4], b: [f32; 4]) -> f32 {
     }
     let (a, b) = (luminance(a), luminance(b));
     (a.max(b) + 0.05) / (a.min(b) + 0.05)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+    use crate::{DocumentId, LayoutViewport, RangeInput};
+
+    #[test]
+    fn range_flush_track_and_caller_padding_are_respected() {
+        let document = DocumentId::new(1).unwrap();
+        let mut cx = AppContext::new();
+        let flush = cx
+            .create_component(
+                document,
+                RangeField::new(0.5, 0.0, 1.0, 0.1).flush_track(true),
+            )
+            .unwrap();
+        let custom_style = NodeStyle {
+            control_padding_x: Some(nana_ui_core::ControlPadding::Compact),
+            ..NodeStyle::default()
+        };
+        let custom = cx
+            .create_component(
+                document,
+                RangeField::new(0.5, 0.0, 1.0, 0.1).style(custom_style),
+            )
+            .unwrap();
+        let default_field = cx
+            .create_component(document, RangeField::new(0.5, 0.0, 1.0, 0.1))
+            .unwrap();
+
+        assert_eq!(
+            cx.world()
+                .node_style(flush.stable_id())
+                .unwrap()
+                .control_padding_x,
+            None
+        );
+        assert_eq!(
+            cx.world()
+                .node_style(custom.stable_id())
+                .unwrap()
+                .control_padding_x,
+            Some(nana_ui_core::ControlPadding::Compact)
+        );
+        assert_eq!(
+            cx.world()
+                .node_style(default_field.stable_id())
+                .unwrap()
+                .control_padding_x,
+            Some(nana_ui_core::ControlPadding::Field)
+        );
+    }
+
+    #[test]
+    fn relative_anchor_drag_snaps_to_marker_unless_fine_and_deduplicates_input() {
+        let document = DocumentId::new(1).unwrap();
+        let mut cx = AppContext::new();
+        let inputs: Arc<Mutex<Vec<f64>>> = Arc::new(Mutex::new(Vec::new()));
+        let inputs_cb = Arc::clone(&inputs);
+        let field = cx
+            .create_component(
+                document,
+                RangeField::new(0.0, 0.0, 100.0, 1.0)
+                    .value_thumb(true)
+                    .markers([RangeMarker::new(50.0, "Mid")]),
+            )
+            .unwrap();
+        cx.on(field, move |_, e: &RangeInput, _| {
+            inputs_cb.lock().unwrap().push(e.value);
+        })
+        .unwrap();
+        cx.layout_document(document, LayoutViewport::new(300.0, 80.0))
+            .unwrap();
+
+        let track = cx.world().range_geometry(field.stable_id()).unwrap().track;
+        let thumb_x = track.x;
+        // Start relative drag anchored at value 0.0.
+        cx.begin_range_drag(document, 1, field.stable_id(), thumb_x)
+            .unwrap();
+        // Drag to ~49% of track (within RANGE_MARKER_SNAP_PX of 50.0): snaps to 50.0 when !fine.
+        let near_mid = thumb_x + track.width * 0.49;
+        cx.update_range_drag_fine(document, 1, near_mid, false)
+            .unwrap();
+        assert_eq!(cx.read(field, |f| f.value).unwrap(), 50.0);
+        let count_after_snap = inputs.lock().unwrap().len();
+        // Repeated drag staying on same quantized marker emits zero duplicate RangeInput.
+        cx.update_range_drag_fine(document, 1, near_mid + 0.5, false)
+            .unwrap();
+        assert_eq!(inputs.lock().unwrap().len(), count_after_snap);
+
+        // Switching to fine mode disables marker snap so fine adjustments can leave the marker.
+        cx.update_range_drag_fine(document, 1, near_mid + 10.0, true)
+            .unwrap();
+        let fine_val = cx.read(field, |f| f.value).unwrap();
+        assert!(fine_val >= 50.0);
+        cx.end_range_drag(document, 1, false).unwrap();
+    }
 }

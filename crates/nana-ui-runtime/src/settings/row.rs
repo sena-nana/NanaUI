@@ -92,6 +92,12 @@ pub struct SettingsRow {
     /// Stack below this row's laid-out width in logical pixels. `stacked`
     /// remains an unconditional override; `None` preserves inline layout.
     pub stack_below: Option<f32>,
+    /// Stack automatically whenever the measured label, accessories, and
+    /// inline control width would exceed the row's available inner width.
+    pub auto_stack: bool,
+    /// Hierarchical indentation level (0 = flush; each step indents by the
+    /// theme's `SpacingStep::Xl` token).
+    pub indent: u8,
     pub divided: bool,
     pub loose: bool,
     pub first_in_group: bool,
@@ -130,7 +136,7 @@ pub struct SettingsRow {
     pub style: NodeStyle,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub(crate) struct SettingsRowAssembled {
     pub(crate) help_slot: Option<StableNodeId>,
     pub(crate) help_text_slot: Option<StableNodeId>,
@@ -146,6 +152,10 @@ pub(crate) struct SettingsRowAssembled {
     pub(crate) value_slot: Option<StableNodeId>,
     pub(crate) trailing_slot: Option<StableNodeId>,
     pub(crate) last_generates_box: Option<bool>,
+    /// Control width observed while laid out inline (used by `auto_stack` so
+    /// switching to a stretched stacked column cannot oscillate).
+    pub(crate) inline_control_width: Option<f32>,
+    pub(crate) last_auto_stacked: bool,
 }
 
 impl SettingsRow {
@@ -162,6 +172,8 @@ impl SettingsRow {
             help_open: false,
             stacked: false,
             stack_below: None,
+            auto_stack: false,
+            indent: 0,
             divided: false,
             loose: false,
             first_in_group: false,
@@ -268,6 +280,21 @@ impl SettingsRow {
         self
     }
 
+    /// Opt into content-aware auto-stacking: stack the control below the copy
+    /// whenever the measured label, accessories, and inline control no longer
+    /// fit on one line.
+    pub fn auto_stack(mut self, enabled: bool) -> Self {
+        self.auto_stack = enabled;
+        self
+    }
+
+    /// Indent this row by `level` hierarchy steps (`SpacingStep::Xl` per step)
+    /// for nested or dependent settings.
+    pub fn indent(mut self, level: u8) -> Self {
+        self.indent = level;
+        self
+    }
+
     /// Draw a hairline under this row, separating it from the next one. The
     /// last row of a group draws none: the group's own edge already ends it.
     pub fn divided(mut self, divided: bool) -> Self {
@@ -356,15 +383,123 @@ impl SettingsRow {
         }
     }
 
-    fn effective_stacked(&self, id: StableNodeId, world: &UiWorld) -> bool {
-        self.stacked
-            || self.stack_below.is_some_and(|threshold| {
-                threshold.is_finite()
-                    && threshold > 0.0
-                    && world
-                        .component_layout_box(id)
-                        .is_some_and(|bounds| bounds.width < threshold)
+    fn effective_stacked(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+        assembled: Option<&SettingsRowAssembled>,
+    ) -> bool {
+        if self.stacked {
+            return true;
+        }
+        let Some(bounds) = world.component_layout_box(id) else {
+            return false;
+        };
+        if self.stack_below.is_some_and(|threshold| {
+            threshold.is_finite() && threshold > 0.0 && bounds.width < threshold
+        }) {
+            return true;
+        }
+        if self.auto_stack {
+            return self.content_exceeds_inline_width(id, world, bounds.width, assembled);
+        }
+        false
+    }
+
+    /// Content-aware check for [`Self::auto_stack`]: compares the required
+    /// single-line width (measured label + label accessories + gap + control's
+    /// inline width + trailing width) against the row's available inner width.
+    fn content_exceeds_inline_width(
+        &self,
+        id: StableNodeId,
+        world: &UiWorld,
+        row_width: f32,
+        assembled: Option<&SettingsRowAssembled>,
+    ) -> bool {
+        let theme = world.node_theme(id);
+        let spacing = theme.spacing();
+        let typography = theme.typography();
+        let padding_x = world
+            .node_style(id)
+            .map(|style| {
+                let edges = style.layout.resolved_padding();
+                edges.left + edges.right
             })
+            .unwrap_or_default();
+        let available = (row_width - padding_x).max(f32::default());
+        let label_width = if let Some(col) = self.label_column {
+            col
+        } else if self.label.is_empty() {
+            f32::default()
+        } else {
+            world.chrome_text_measure(id).width(
+                &self.label,
+                typography.body,
+                Some(typography.medium),
+            )
+        };
+        let slot_width = |slot: Option<StableNodeId>| {
+            slot.and_then(|node| world.component_layout_box(node))
+                .map_or(f32::default(), |b| b.width)
+        };
+        let mut copy_width = label_width;
+        if let Some(mark_w) = self
+            .label_mark
+            .and_then(|node| world.component_layout_box(node))
+            .map(|b| b.width)
+            .filter(|w| *w > f32::default())
+        {
+            copy_width += spacing.xs + mark_w;
+        }
+        if let Some(acc_w) = self
+            .label_accessory
+            .and_then(|node| world.component_layout_box(node))
+            .map(|b| b.width)
+            .filter(|w| *w > f32::default())
+        {
+            copy_width += spacing.xs + acc_w;
+        }
+        if let Some(help_w) = assembled
+            .and_then(|s| s.help_slot)
+            .and_then(|node| world.component_layout_box(node))
+            .map(|b| b.width)
+            .filter(|w| *w > f32::default())
+        {
+            copy_width += spacing.xs + help_w;
+        }
+        let control_width = self
+            .control
+            .and_then(|node| {
+                world
+                    .node_style(node)
+                    .and_then(|style| match style.layout.width {
+                        Some(LengthSpec::Px(w)) if w > f32::default() => Some(w),
+                        _ => match style.layout.min_width {
+                            Some(LengthSpec::Px(w)) if w > f32::default() => Some(w),
+                            _ => None,
+                        },
+                    })
+            })
+            .or_else(|| assembled.and_then(|s| s.inline_control_width))
+            .unwrap_or_else(|| slot_width(self.control));
+        let trailing_width = slot_width(self.trailing);
+        let gap = if control_width > f32::default() && copy_width > f32::default() {
+            self.gap(false)
+        } else {
+            f32::default()
+        };
+        let trailing_gap = if trailing_width > f32::default() {
+            spacing.xxs
+        } else {
+            f32::default()
+        };
+        let required = copy_width + gap + control_width + trailing_gap + trailing_width;
+        let hysteresis = if assembled.is_some_and(|s| s.last_auto_stacked) {
+            spacing.md
+        } else {
+            f32::default()
+        };
+        required + hysteresis > available
     }
 
     fn effective_style(&self, stacked: bool, main_slot: Option<StableNodeId>) -> NodeStyle {
@@ -447,6 +582,23 @@ impl SettingsRow {
                     middle_px
                 }));
             }
+        }
+        if self.indent > 0
+            && layout.padding.is_none()
+            && layout.theme.padding.is_none()
+            && layout.padding_left.is_none()
+            && layout.theme.padding_left.is_none()
+        {
+            let scale = f32::from(self.indent);
+            layout.padding_left = Some(LengthSpec::Px(
+                nana_ui_core::SpacingTokens::DEFAULT.resolve(nana_ui_core::SpacingStep::Xl) * scale,
+            ));
+            layout.theme.padding_left = Some(
+                nana_ui_core::ThemeExpr::from(nana_ui_core::ThemeToken::Space(
+                    nana_ui_core::SpacingStep::Xl,
+                ))
+                .scaled(scale),
+            );
         }
         // Only the bottom edge, and the top one under other content, are
         // named; the others fall back to the unset uniform width, which is
@@ -598,7 +750,7 @@ impl SettingsRow {
         if world.widget_visual_ref(id).is_some() {
             mutations.set_widget_visual_handle(id, None);
         }
-        let stacked = self.effective_stacked(id, world);
+        let stacked = self.effective_stacked(id, world, assembled);
         project_common(
             id,
             world,
@@ -1587,18 +1739,51 @@ impl AppContext {
     ) -> Result<(), FrameworkError> {
         let row = Entity::<SettingsRow>::from_stable_id(id);
         let line_node = self.settings_row_line_node(id);
-        let needs_projection = self
+        let is_currently_row = self
+            .world()
+            .node_style(line_node)
+            .is_some_and(|style| style.layout.direction == Some(FlexDirection::Row));
+        let control_box_width = self
+            .read(row, |row| row.control)
+            .ok()
+            .flatten()
+            .and_then(|ctrl| self.world().component_layout_box(ctrl))
+            .map(|b| b.width)
+            .filter(|w| *w > f32::default());
+        let mut assembled = self
+            .assembled_slot::<SettingsRowAssembled>(id)
+            .copied()
+            .unwrap_or_default();
+        let mut assembled_dirty = false;
+        if is_currently_row
+            && let Some(w) = control_box_width
+            && assembled.inline_control_width != Some(w)
+        {
+            assembled.inline_control_width = Some(w);
+            assembled_dirty = true;
+        }
+        let (stacked, needs_projection) = self
             .read(row, |row| {
-                let direction = if row.effective_stacked(id, self.world()) {
+                let stacked = row.effective_stacked(id, self.world(), Some(&assembled));
+                let direction = if stacked {
                     FlexDirection::Column
                 } else {
                     FlexDirection::Row
                 };
-                self.world()
+                let needs = self
+                    .world()
                     .node_style(line_node)
-                    .is_some_and(|style| style.layout.direction != Some(direction))
+                    .is_some_and(|style| style.layout.direction != Some(direction));
+                (stacked, needs)
             })
-            .unwrap_or(false);
+            .unwrap_or((false, false));
+        if assembled.last_auto_stacked != stacked {
+            assembled.last_auto_stacked = stacked;
+            assembled_dirty = true;
+        }
+        if assembled_dirty {
+            self.set_assembled_slot(id, assembled);
+        }
         if needs_projection {
             self.reproject_component(row)?;
         }
@@ -1966,6 +2151,8 @@ impl AppContext {
                     value_slot: value_box,
                     trailing_slot: trailing_box,
                     last_generates_box: existing_assembled.last_generates_box,
+                    inline_control_width: existing_assembled.inline_control_width,
+                    last_auto_stacked: existing_assembled.last_auto_stacked,
                 },
             );
             if label_slot != Some(next_label_slot) || hint_slot != Some(next_hint_slot) {

@@ -22,13 +22,18 @@
 pub mod __component {
     pub use super::component::{Set, Unset};
 }
+pub mod capsule_bar;
 mod component;
 mod composites;
 mod controls;
+pub mod disclosure;
 mod each_virtual;
 mod error;
+pub mod floating_pane;
+pub mod hold_pad;
 mod hot;
 mod inline;
+pub mod inline_edit;
 mod labelled;
 pub use inline::{Inline, InlineContentTarget, InlinePieces, inline, inline_pieces};
 mod marks;
@@ -38,6 +43,8 @@ mod prop;
 pub(crate) mod reactive;
 mod relations;
 mod resource;
+pub mod scroll_context;
+pub mod search_input;
 mod selection;
 mod settings;
 mod shell;
@@ -48,12 +55,17 @@ mod style;
 mod task;
 mod teleport;
 mod theme;
+pub mod tooltip_glyph;
 #[cfg(feature = "reactive-trace")]
 pub(crate) mod trace;
 mod transition;
 pub use theme::theme_signal;
 
 pub use crate::VirtualAlignment;
+pub use capsule_bar::{
+    CapsuleBar, CapsuleItem, CapsuleOrientation, ExpandingTabBar, WorkbenchSlots, capsule_bar,
+    expanding_tab_bar, next_capsule_selection, workbench_slots,
+};
 #[doc(hidden)]
 pub use controls::__arg;
 pub use controls::{
@@ -64,16 +76,24 @@ pub use controls::{
     switch, t, tabs, text, text_area, text_input, texture, theme_scope, thumbnail, tree_view,
 };
 pub(crate) use controls::{edit_control, inspect_control};
+pub use disclosure::{
+    Collapse, DisclosureToggle, InlineExpansion, collapse, disclosure_toggle, inline_expansion,
+};
 pub use each_virtual::{
     EachVirtual, VirtualItem, VirtualListRef, VirtualSelectionRequest, each_virtual,
     virtual_list_ref,
 };
 pub use error::{ErrorBoundary, error_boundary, report_error};
+pub use floating_pane::{FloatingPane, FloatingPaneRect, ResizeCorner, floating_pane};
+pub use hold_pad::{HoldPad, PressChange, hold_pad};
 #[doc(hidden)]
 pub use hot::{__hot_register, __hot_text};
 pub use hot::{
     HotReloadError, HotSheetAxis, HotSheetQuery, HotStylePatch, HotStyleRule, HotStyleSheet,
     apply_hot_literals, apply_hot_styles,
+};
+pub use inline_edit::{
+    EditableText, InlineEdit, InlineEditAction, editable_text, inline_edit, resolve_inline_edit,
 };
 pub use marks::{
     COMPACT_TARGET, CONTENT_INSET, Callout, GroupBlock, GroupRow, HeadingRow, HeadingTools,
@@ -111,6 +131,11 @@ pub use reactive::{
     on_mount, provide, reactive_stats, signal, untrack, use_context, watch_effect,
 };
 pub use resource::{Resource, Suspense, resource, suspense};
+pub use scroll_context::{
+    NearestScrollContext, ScrollContextScope, nearest_scroll_context, provide_scroll_context,
+    scroll_context,
+};
+pub use search_input::{SearchInput, search_input};
 pub use selection::{segmented, segmented_option};
 pub use settings::settings_row;
 #[doc(hidden)]
@@ -131,6 +156,7 @@ pub use task::{
     Task, has_woken_tasks, poll_tasks, set_task_wake, spawn_blocking, spawn_local, task_count,
 };
 pub use teleport::{Teleport, teleport};
+pub use tooltip_glyph::{TooltipGlyph, help_glyph, tooltip_glyph};
 #[cfg(feature = "reactive-trace")]
 pub use trace::{Cause, WhyUpdated};
 #[doc(hidden)]
