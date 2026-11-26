@@ -69,10 +69,10 @@ fn hidden_scroller_clips_visible_editors_and_scrolls_their_hit_targets() {
             width: Some(LengthSpec::Px(160.0)),
             height: Some(LengthSpec::Px(32.0)),
             flex_shrink: Some(0.0),
-            color: Some([1.0, 1.0, 1.0, 1.0]),
-            background: Some([0.1, 0.1, 0.1, 1.0]),
             ..Default::default()
         };
+        layout.paint_colors.color = Some(nana_ui_core::PaintColor::srgb([1.0, 1.0, 1.0, 1.0]));
+        layout.paint_colors.background = Some(nana_ui_core::PaintColor::srgb([0.1, 0.1, 0.1, 1.0]));
         layout.paint.visibility = Some(VisibilitySpec::Visible);
         let editor = cx
             .create_component(
@@ -149,9 +149,9 @@ fn visible_editor_in_hidden_container_moves_with_its_hit_target() {
     let mut editor_layout = LayoutStyle {
         width: Some(LengthSpec::Px(140.0)),
         height: Some(LengthSpec::Px(32.0)),
-        color: Some([0.1, 0.1, 0.1, 1.0]),
         ..Default::default()
     };
+    editor_layout.paint_colors.color = Some(nana_ui_core::PaintColor::srgb([0.1, 0.1, 0.1, 1.0]));
     editor_layout.paint.visibility = Some(VisibilitySpec::Visible);
     let editor = cx
         .create_component(

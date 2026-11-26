@@ -284,7 +284,8 @@ mod probe {
             self.document
                 .context_mut()
                 .update_component(self.root, |stack, _| {
-                    stack.layout_mut().background = Some(color);
+                    stack.layout_mut().paint_colors.background =
+                        Some(nana_ui_core::PaintColor::srgb(color));
                 })?;
             let mut state = self.state.lock().unwrap();
             if let Some(index) = state.current {
