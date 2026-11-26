@@ -6,11 +6,13 @@
 use accesskit::{ActionHandler, ActivationHandler, TreeUpdate};
 use std::{
     cell::{Cell, RefCell},
-    ffi::c_void,
-    mem::transmute,
+    rc::Rc,
 };
 use windows::{
-    Win32::{Foundation::*, UI::WindowsAndMessaging::*},
+    Win32::{
+        Foundation::*,
+        UI::{Accessibility::*, Shell::*, WindowsAndMessaging::*},
+    },
     core::*,
 };
 
@@ -20,14 +22,9 @@ fn win32_error() -> ! {
     panic!("{}", Error::from_thread())
 }
 
-// Work around a difference between the SetWindowLongPtrW API definition
-// in windows-rs on 32-bit and 64-bit Windows.
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-type LongPtr = isize;
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-type LongPtr = i32;
-
-const PROP_NAME: PCWSTR = w!("AccessKitAdapter");
+/// Paired with `subclass_proc`, this uniquely identifies AccessKit's ComCtl32
+/// window subclass registration on an `HWND`.
+const SUBCLASS_ID: usize = 0x4143_4B54;
 
 struct SubclassState {
     adapter: Adapter,
@@ -37,40 +34,71 @@ struct SubclassState {
 struct SubclassImpl {
     hwnd: HWND,
     state: RefCell<SubclassState>,
-    prev_wnd_proc: WNDPROC,
+    installed: Cell<bool>,
     window_destroyed: Cell<bool>,
 }
 
-extern "system" fn wnd_proc(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    let handle = unsafe { GetPropW(window, PROP_NAME) };
-    let impl_ptr = handle.0 as *const SubclassImpl;
-    assert!(!impl_ptr.is_null());
-    let r#impl = unsafe { &*impl_ptr };
-    match message {
-        WM_GETOBJECT => {
-            let mut state = r#impl.state.borrow_mut();
-            let state_mut = &mut *state;
-            if let Some(result) = state_mut.adapter.handle_wm_getobject(
-                wparam,
-                lparam,
-                &mut *state_mut.activation_handler,
-            ) {
-                drop(state);
-                return result.into();
+unsafe extern "system" fn subclass_proc(
+    window: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    id: usize,
+    ref_data: usize,
+) -> LRESULT {
+    let ptr = ref_data as *const SubclassImpl;
+    if ptr.is_null() {
+        return unsafe { DefSubclassProc(window, message, wparam, lparam) };
+    }
+    // SAFETY: `ref_data` is the `Rc::into_raw` retained by the subclass until
+    // it is removed in `WM_NCDESTROY` or `uninstall`. Hold a local `Rc` across
+    // message handling and `DefSubclassProc` so reentrant adapter drop or
+    // window destruction cannot free `SubclassImpl` while this frame runs.
+    let r#impl = unsafe {
+        Rc::increment_strong_count(ptr);
+        Rc::from_raw(ptr)
+    };
+
+    if message == WM_NCDESTROY {
+        r#impl.window_destroyed.set(true);
+        if r#impl.installed.replace(false) {
+            let removed =
+                unsafe { RemoveWindowSubclass(window, Some(subclass_proc), id) }.as_bool();
+            if removed {
+                // SAFETY: Ownership of the subclass's `Rc` reference ends here.
+                unsafe { drop(Rc::from_raw(ptr)) };
             }
         }
-        WM_SETFOCUS | WM_EXITMENULOOP | WM_EXITSIZEMOVE => {
-            r#impl.update_window_focus_state(true);
-        }
-        WM_KILLFOCUS | WM_ENTERMENULOOP | WM_ENTERSIZEMOVE => {
-            r#impl.update_window_focus_state(false);
-        }
-        WM_NCDESTROY => {
-            r#impl.window_destroyed.set(true);
-        }
-        _ => (),
+        r#impl.disconnect_uia();
+        return unsafe { DefSubclassProc(window, message, wparam, lparam) };
     }
-    unsafe { CallWindowProcW(r#impl.prev_wnd_proc, window, message, wparam, lparam) }
+
+    if !r#impl.window_destroyed.get() && r#impl.installed.get() {
+        match message {
+            WM_GETOBJECT => {
+                if let Ok(mut state) = r#impl.state.try_borrow_mut() {
+                    let state_mut = &mut *state;
+                    if let Some(result) = state_mut.adapter.handle_wm_getobject(
+                        wparam,
+                        lparam,
+                        &mut *state_mut.activation_handler,
+                    ) {
+                        drop(state);
+                        return result.into();
+                    }
+                }
+            }
+            WM_SETFOCUS | WM_EXITMENULOOP | WM_EXITSIZEMOVE => {
+                r#impl.update_window_focus_state(true);
+            }
+            WM_KILLFOCUS | WM_ENTERMENULOOP | WM_ENTERSIZEMOVE => {
+                r#impl.update_window_focus_state(false);
+            }
+            _ => (),
+        }
+    }
+
+    unsafe { DefSubclassProc(window, message, wparam, lparam) }
 }
 
 impl SubclassImpl {
@@ -78,66 +106,80 @@ impl SubclassImpl {
         hwnd: HWND,
         activation_handler: impl 'static + ActivationHandler,
         action_handler: impl 'static + ActionHandler + Send,
-    ) -> Box<Self> {
+    ) -> Rc<Self> {
         let adapter = Adapter::new(hwnd, false, action_handler);
         let state = RefCell::new(SubclassState {
             adapter,
             activation_handler: Box::new(activation_handler),
         });
-        Box::new(Self {
+        Rc::new(Self {
             hwnd,
             state,
-            prev_wnd_proc: None,
+            installed: Cell::new(false),
             window_destroyed: Cell::new(false),
         })
     }
 
-    fn install(&mut self) {
-        if !unsafe { GetPropW(self.hwnd, PROP_NAME) }.0.is_null() {
+    fn install(this: &Rc<Self>) {
+        if unsafe { GetWindowSubclass(this.hwnd, Some(subclass_proc), SUBCLASS_ID, None) }.as_bool()
+        {
             panic!(
                 "subclassing adapter already instantiated on window {:?}",
-                self.hwnd.0
+                this.hwnd.0
             );
         }
-        unsafe {
-            SetPropW(
-                self.hwnd,
-                PROP_NAME,
-                Some(HANDLE(self as *const SubclassImpl as _)),
-            )
-        }
-        .unwrap();
-        let result =
-            unsafe { SetWindowLongPtrW(self.hwnd, GWLP_WNDPROC, wnd_proc as *const c_void as _) };
-        if result == 0 {
+        let raw = Rc::into_raw(Rc::clone(this));
+        if !unsafe { SetWindowSubclass(this.hwnd, Some(subclass_proc), SUBCLASS_ID, raw as usize) }
+            .as_bool()
+        {
+            // SAFETY: Subclass registration failed; reclaim the leaked reference.
+            unsafe { drop(Rc::from_raw(raw)) };
             win32_error();
         }
-        self.prev_wnd_proc = unsafe { transmute::<LongPtr, WNDPROC>(result) };
+        this.installed.set(true);
     }
 
     fn update_window_focus_state(&self, is_focused: bool) {
-        let mut state = self.state.borrow_mut();
-        if let Some(events) = state.adapter.update_window_focus_state(is_focused) {
-            drop(state);
-            events.raise();
+        if let Ok(mut state) = self.state.try_borrow_mut() {
+            if let Some(events) = state.adapter.update_window_focus_state(is_focused) {
+                drop(state);
+                events.raise();
+            }
         }
     }
 
-    fn uninstall(&self) {
-        if self.window_destroyed.get() {
+    fn disconnect_uia(&self) {
+        let maybe_nodes = match self.state.try_borrow_mut() {
+            Ok(mut state) => state.adapter.disconnect_providers(),
+            Err(_) => Some(Vec::new()),
+        };
+        let Some(nodes) = maybe_nodes else {
+            return;
+        };
+        for node in nodes {
+            let el: IRawElementProviderSimple = node.into_interface();
+            let _ = unsafe { UiaDisconnectProvider(&el) };
+        }
+        unsafe {
+            UiaReturnRawElementProvider(self.hwnd, WPARAM(0), LPARAM(0), None);
+        }
+    }
+
+    fn uninstall(this: &Rc<Self>) {
+        if !this.installed.replace(false) {
             return;
         }
-        let result = unsafe {
-            SetWindowLongPtrW(
-                self.hwnd,
-                GWLP_WNDPROC,
-                transmute::<WNDPROC, LongPtr>(self.prev_wnd_proc),
-            )
-        };
-        if result == 0 {
-            win32_error();
+        if !this.window_destroyed.get() {
+            let removed =
+                unsafe { RemoveWindowSubclass(this.hwnd, Some(subclass_proc), SUBCLASS_ID) }
+                    .as_bool();
+            if removed {
+                // SAFETY: `SetWindowSubclass` retained one strong reference created
+                // via `Rc::into_raw`.
+                unsafe { Rc::decrement_strong_count(Rc::as_ptr(this)) };
+            }
+            this.disconnect_uia();
         }
-        unsafe { RemovePropW(self.hwnd, PROP_NAME) }.unwrap();
     }
 }
 
@@ -145,7 +187,7 @@ impl SubclassImpl {
 /// that provides no other way of adding custom message handlers.
 ///
 /// [Win32 subclassing]: https://docs.microsoft.com/en-us/windows/win32/controls/subclassing-overview
-pub struct SubclassingAdapter(Box<SubclassImpl>);
+pub struct SubclassingAdapter(Rc<SubclassImpl>);
 
 impl SubclassingAdapter {
     /// Creates a new Windows platform adapter using window subclassing.
@@ -170,8 +212,8 @@ impl SubclassingAdapter {
             );
         }
 
-        let mut r#impl = SubclassImpl::new(hwnd, activation_handler, action_handler);
-        r#impl.install();
+        let r#impl = SubclassImpl::new(hwnd, activation_handler, action_handler);
+        SubclassImpl::install(&r#impl);
         Self(r#impl)
     }
 
@@ -199,6 +241,6 @@ impl SubclassingAdapter {
 
 impl Drop for SubclassingAdapter {
     fn drop(&mut self) {
-        self.0.uninstall();
+        SubclassImpl::uninstall(&self.0);
     }
 }

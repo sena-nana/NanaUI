@@ -11,8 +11,8 @@
 #![allow(non_upper_case_globals)]
 
 use accesskit::{
-    Action, ActionData, ActionRequest, AriaCurrent, HasPopup, Live, NodeId, Orientation, Point,
-    Role, ScrollUnit, SortDirection, Toggled, TreeId,
+    Action, ActionData, ActionRequest, AriaCurrent, HasPopup, Invalid, Live, NodeId, Orientation,
+    Point, Role, ScrollUnit, SortDirection, Toggled, TreeId,
 };
 use accesskit_consumer::{FilterResult, FullNodeId, NodeRef, Tree, TreeState};
 use std::{
@@ -510,6 +510,60 @@ impl NodeWrapper<'_> {
         .map(|s| StrWrapper::new(s, self.string_buffer))
     }
 
+    fn landmark_type(&self) -> Option<UIA_LANDMARKTYPE_ID> {
+        match self.node.role() {
+            Role::Main => Some(UIA_MainLandmarkTypeId),
+            Role::Navigation => Some(UIA_NavigationLandmarkTypeId),
+            Role::Search => Some(UIA_SearchLandmarkTypeId),
+            Role::Form => Some(UIA_FormLandmarkTypeId),
+            Role::Banner
+            | Role::Header
+            | Role::ContentInfo
+            | Role::Footer
+            | Role::Complementary
+            | Role::Region => Some(UIA_CustomLandmarkTypeId),
+            _ => None,
+        }
+    }
+
+    fn localized_landmark_type(&mut self) -> Option<StrWrapper<'_>> {
+        // Standard UIA landmark types (`Main`, `Navigation`, `Search`, `Form`)
+        // have OS-localized names provided by UIA itself; custom landmark types
+        // supply a `LocalizedLandmarkType` string per Core-AAM / UIA.
+        match self.node.role() {
+            Role::Banner | Role::Header => Some("banner"),
+            Role::ContentInfo | Role::Footer => Some("content information"),
+            Role::Complementary => Some("complementary"),
+            Role::Region => Some("region"),
+            _ => None,
+        }
+        .map(|s| StrWrapper::new(s, self.string_buffer))
+    }
+
+    fn name_may_have_changed(&self, old: &NodeWrapper) -> bool {
+        let new_from_value = self.node.label_comes_from_value();
+        let old_from_value = old.node.label_comes_from_value();
+        if new_from_value != old_from_value {
+            return true;
+        }
+        if new_from_value {
+            match (self.node.data().value(), old.node.data().value()) {
+                (Some(new_val), Some(old_val)) => new_val != old_val,
+                (None, None) => self.node.supports_text_ranges() || old.node.supports_text_ranges(),
+                _ => true,
+            }
+        } else {
+            match (self.node.data().label(), old.node.data().label()) {
+                (Some(new_label), Some(old_label)) => new_label != old_label,
+                (None, None) => {
+                    self.node.labelled_by().next().is_some()
+                        || old.node.labelled_by().next().is_some()
+                }
+                _ => true,
+            }
+        }
+    }
+
     pub(crate) fn name(&mut self) -> Option<WideString<'_>> {
         let mut result = WideString::new(self.string_buffer);
         if self.node.label_comes_from_value() {
@@ -521,12 +575,11 @@ impl NodeWrapper<'_> {
         .then_some(result)
     }
 
-    fn description(&mut self) -> Option<WideString<'_>> {
-        self.node.description().map(|s| {
-            let mut result = WideString::new(self.string_buffer);
-            result.write_str(&s).unwrap();
-            result
-        })
+    fn description(&mut self) -> Option<StrWrapper<'_>> {
+        self.node
+            .data()
+            .description()
+            .map(|s| StrWrapper::new(s, self.string_buffer))
     }
 
     fn culture(&self) -> Option<LocaleName<'_>> {
@@ -541,6 +594,25 @@ impl NodeWrapper<'_> {
 
     fn is_content_element(&self) -> bool {
         filter(self.node) == FilterResult::Include
+    }
+
+    fn is_data_valid_for_form(&self) -> bool {
+        self.node.data().invalid().is_none()
+    }
+
+    fn aria_properties_may_have_changed(&self, old: &NodeWrapper) -> bool {
+        self.node.is_live_atomic() != old.node.is_live_atomic()
+            || self.node.braille_label() != old.node.braille_label()
+            || self.node.braille_role_description() != old.node.braille_role_description()
+            || self.node.is_busy() != old.node.is_busy()
+            || self.node.column_index_text() != old.node.column_index_text()
+            || self.node.aria_current() != old.node.aria_current()
+            || self.node.has_popup() != old.node.has_popup()
+            || self.node.data().invalid() != old.node.data().invalid()
+            || self.node.level() != old.node.level()
+            || self.node.is_multiline() != old.node.is_multiline()
+            || self.node.row_index_text() != old.node.row_index_text()
+            || self.node.sort_direction() != old.node.sort_direction()
     }
 
     fn aria_properties(&mut self) -> Option<WideString<'_>> {
@@ -606,7 +678,20 @@ impl NodeWrapper<'_> {
                 .unwrap();
         }
 
-        if let Some(level) = self.node.level() {
+        if let Some(invalid) = self.node.data().invalid() {
+            properties
+                .write_property(
+                    "invalid",
+                    match invalid {
+                        Invalid::True => "true",
+                        Invalid::Grammar => "grammar",
+                        Invalid::Spelling => "spelling",
+                    },
+                )
+                .unwrap();
+        }
+
+        if let Some(level) = self.node.level().and_then(|level| level.checked_add(1)) {
             properties.write_usize_property("level", level).unwrap();
         }
 
@@ -687,7 +772,7 @@ impl NodeWrapper<'_> {
     }
 
     fn toggle_state(&self) -> ToggleState {
-        match self.node.toggled().unwrap() {
+        match self.node.toggled().unwrap_or(Toggled::False) {
             Toggled::False => ToggleState_Off,
             Toggled::True => ToggleState_On,
             Toggled::Mixed => ToggleState_Indeterminate,
@@ -725,7 +810,7 @@ impl NodeWrapper<'_> {
     }
 
     fn numeric_value(&self) -> f64 {
-        self.node.numeric_value().unwrap()
+        self.node.numeric_value().unwrap_or(0.0)
     }
 
     fn min_numeric_value(&self) -> f64 {
@@ -1331,15 +1416,18 @@ impl IRawElementProviderFragment_Impl for PlatformNode_Impl {
 
     fn BoundingRectangle(&self) -> Result<UiaRect> {
         self.resolve_with_context(|node, context| {
-            let rect = node.bounding_box().map_or(UiaRect::default(), |rect| {
-                let client_top_left = context.client_top_left();
-                UiaRect {
-                    left: rect.x0 + client_top_left.x,
-                    top: rect.y0 + client_top_left.y,
-                    width: rect.width(),
-                    height: rect.height(),
+            let rect = match node.bounding_box() {
+                Some(rect) => {
+                    let client_top_left = context.client_top_left()?;
+                    UiaRect {
+                        left: rect.x0 + client_top_left.x,
+                        top: rect.y0 + client_top_left.y,
+                        width: rect.width(),
+                        height: rect.height(),
+                    }
                 }
-            });
+                None => UiaRect::default(),
+            };
             Ok(rect)
         })
     }
@@ -1370,7 +1458,7 @@ impl IRawElementProviderFragment_Impl for PlatformNode_Impl {
 impl IRawElementProviderFragmentRoot_Impl for PlatformNode_Impl {
     fn ElementProviderFromPoint(&self, x: f64, y: f64) -> Result<IRawElementProviderFragment> {
         self.resolve_with_context(|node, context| {
-            let client_top_left = context.client_top_left();
+            let client_top_left = context.client_top_left()?;
             let point = Point::new(x - client_top_left.x, y - client_top_left.y);
             let point = node.transform().inverse() * point;
             node.node_at_point(point, &filter).map_or_else(
@@ -1403,13 +1491,19 @@ impl IRawElementProviderFragmentRoot_Impl for PlatformNode_Impl {
 }
 
 macro_rules! properties {
-    ($(($id:ident, $m:ident)),+) => {
+    (
+        $(($id:ident, $m:ident)),+
+        $(; guarded: $(($gid:ident, $gm:ident, $gchanged:ident)),+ $(,)?)?
+    ) => {
         impl NodeWrapper<'_> {
             fn get_property_value(&mut self, property_id: UIA_PROPERTY_ID) -> Variant {
                 match property_id {
                     $($id => {
                         self.$m().into()
                     })*
+                    $($($gid => {
+                        self.$gm().into()
+                    })*)?
                     _ => Variant::empty()
                 }
             }
@@ -1433,27 +1527,47 @@ macro_rules! properties {
                         );
                     }
                 })*
-
-                let mut old_controls = old.node.controls().filter(|controlled| filter(controlled) == FilterResult::Include);
-                let mut new_controls = self.node.controls().filter(|controlled| filter(controlled) == FilterResult::Include);
-                let mut are_equal = true;
-                let mut controls: Vec<IUnknown> = Vec::new();
-                loop {
-                    let old_controlled = old_controls.next();
-                    let new_controlled = new_controls.next();
-                    match (old_controlled, new_controlled) {
-                        (Some(a), Some(b)) => {
-                            are_equal = are_equal && a.id() == b.id();
-                            controls.push(context.get_or_create_platform_node(b.id()).into_interface::<IRawElementProviderSimple>().into());
+                $($({
+                    if self.$gchanged(old) {
+                        let old_value = old.$gm();
+                        let new_value = self.$gm();
+                        if old_value != new_value {
+                            enqueue_property_change(
+                                queue,
+                                element,
+                                $gid,
+                                old_value.into(),
+                                new_value.into(),
+                            );
                         }
-                        (None, None) => break,
-                        _ => are_equal = false,
                     }
-                }
-                if !are_equal {
+                })*)?
+
+                let controls_changed = !old
+                    .node
+                    .controls()
+                    .filter(|controlled| filter(controlled) == FilterResult::Include)
+                    .map(|controlled| controlled.id())
+                    .eq(self
+                        .node
+                        .controls()
+                        .filter(|controlled| filter(controlled) == FilterResult::Include)
+                        .map(|controlled| controlled.id()));
+                if controls_changed {
+                    let controls: Vec<IUnknown> = self
+                        .node
+                        .controls()
+                        .filter(|controlled| filter(controlled) == FilterResult::Include)
+                        .map(|controlled| {
+                            context
+                                .get_or_create_platform_node(controlled.id())
+                                .into_interface::<IRawElementProviderSimple>()
+                                .into()
+                        })
+                        .collect();
                     enqueue_property_change(
                         queue,
-                        &element,
+                        element,
                         UIA_ControllerForPropertyId,
                         Variant::empty(),
                         controls.into(),
@@ -1517,6 +1631,9 @@ macro_rules! patterns {
                     let mut buffer = StringBuffer::acquire();
                     #[allow(unused_mut)]
                     let mut wrapper = NodeWrapper { node: &node, string_buffer: &mut buffer };
+                    if !wrapper.$is_supported() {
+                        return Err(not_supported());
+                    }
                     Ok(wrapper.$getter().into())
                 })
             })*
@@ -1529,12 +1646,14 @@ properties! {
     (UIA_ControlTypePropertyId, control_type),
     (UIA_LocalizedControlTypePropertyId, localized_control_type),
     (UIA_AriaRolePropertyId, aria_role),
-    (UIA_NamePropertyId, name),
+    (UIA_LandmarkTypePropertyId, landmark_type),
+    (UIA_LocalizedLandmarkTypePropertyId, localized_landmark_type),
     (UIA_FullDescriptionPropertyId, description),
     (UIA_CulturePropertyId, culture),
     (UIA_HelpTextPropertyId, placeholder),
     (UIA_IsContentElementPropertyId, is_content_element),
     (UIA_IsControlElementPropertyId, is_content_element),
+    (UIA_IsDataValidForFormPropertyId, is_data_valid_for_form),
     (UIA_IsEnabledPropertyId, is_enabled),
     (UIA_IsKeyboardFocusablePropertyId, is_focusable),
     (UIA_HasKeyboardFocusPropertyId, is_focused),
@@ -1547,8 +1666,10 @@ properties! {
     (UIA_LevelPropertyId, level),
     (UIA_PositionInSetPropertyId, position_in_set),
     (UIA_SizeOfSetPropertyId, size_of_set),
-    (UIA_AriaPropertiesPropertyId, aria_properties),
-    (UIA_IsDialogPropertyId, is_dialog)
+    (UIA_IsDialogPropertyId, is_dialog);
+    guarded:
+    (UIA_NamePropertyId, name, name_may_have_changed),
+    (UIA_AriaPropertiesPropertyId, aria_properties, aria_properties_may_have_changed)
 }
 
 patterns! {
@@ -1569,10 +1690,8 @@ patterns! {
         (UIA_ValueIsReadOnlyPropertyId, IsReadOnly, is_read_only, BOOL)
     ), (
         fn SetValue(&self, value: &PCWSTR) -> Result<()> {
-            self.do_action(|| {
-                let value = unsafe { value.to_string() }.unwrap();
-                (Action::SetValue, Some(ActionData::Value(value.into())))
-            })
+            let value = unsafe { value.to_string() }.map_err(|_| invalid_arg())?;
+            self.do_action(|| (Action::SetValue, Some(ActionData::Value(value.into()))))
         }
     )),
     (UIA_RangeValuePatternId, IRangeValueProvider, IRangeValueProvider_Impl, is_range_value_pattern_supported, (
@@ -1694,7 +1813,7 @@ patterns! {
 
         fn RangeFromPoint(&self, point: &UiaPoint) -> Result<ITextRangeProvider> {
             self.resolve_with_context_for_text_pattern(|node, context| {
-                let client_top_left = context.client_top_left();
+                let client_top_left = context.client_top_left()?;
                 let point = Point::new(point.x - client_top_left.x, point.y - client_top_left.y);
                 let point = node.transform().inverse() * point;
                 let pos = node.text_position_at_point(point);
@@ -1973,4 +2092,365 @@ fn set_scroll_percent_converts_to_scroll_offset() {
     );
     assert!(offset_for_scroll_percent(Some(0.0), Some(0.0), Some(10.0), 140.0).is_err());
     assert!(offset_for_scroll_percent(None, None, None, 10.0).is_err());
+}
+
+#[cfg(test)]
+fn aria_properties_string(node: &NodeRef<'_>) -> Option<String> {
+    let mut buffer = StringBuffer::acquire();
+    let mut wrapper = NodeWrapper {
+        node,
+        string_buffer: &mut buffer,
+    };
+    wrapper
+        .aria_properties()
+        .map(|ws| String::from_utf16_lossy(ws.as_slice()))
+}
+
+#[cfg(test)]
+fn property_change_ids(events: &[QueuedEvent]) -> Vec<UIA_PROPERTY_ID> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            QueuedEvent::PropertyChanged { property_id, .. } => Some(*property_id),
+            QueuedEvent::Simple { .. } => None,
+        })
+        .collect()
+}
+
+#[test]
+fn aria_invalid_maps_to_data_valid_for_form_and_aria_properties() {
+    use accesskit::Node;
+
+    let child_id = NodeId(1);
+
+    let tree = single_child_tree(child_id, Node::new(Role::TextInput));
+    let node = child_node(&tree, child_id);
+    let mut buffer = StringBuffer::acquire();
+    let wrapper = NodeWrapper {
+        node: &node,
+        string_buffer: &mut buffer,
+    };
+    assert!(wrapper.is_data_valid_for_form());
+    assert_eq!(aria_properties_string(&node), None);
+
+    for (invalid, expected) in [
+        (Invalid::True, "invalid=true"),
+        (Invalid::Grammar, "invalid=grammar"),
+        (Invalid::Spelling, "invalid=spelling"),
+    ] {
+        let mut invalid_node = Node::new(Role::TextInput);
+        invalid_node.set_invalid(invalid);
+        let tree = single_child_tree(child_id, invalid_node);
+        let node = child_node(&tree, child_id);
+        let mut buffer = StringBuffer::acquire();
+        let wrapper = NodeWrapper {
+            node: &node,
+            string_buffer: &mut buffer,
+        };
+        assert!(!wrapper.is_data_valid_for_form());
+        assert_eq!(aria_properties_string(&node).as_deref(), Some(expected));
+    }
+}
+
+#[test]
+fn landmark_roles_map_to_uia_landmark_type_and_localized_landmark_type() {
+    use accesskit::Node;
+
+    let child_id = NodeId(1);
+
+    for (role, expected_type, expected_localized) in [
+        (Role::Main, Some(UIA_MainLandmarkTypeId), None),
+        (Role::Navigation, Some(UIA_NavigationLandmarkTypeId), None),
+        (Role::Search, Some(UIA_SearchLandmarkTypeId), None),
+        (Role::Form, Some(UIA_FormLandmarkTypeId), None),
+        (Role::Banner, Some(UIA_CustomLandmarkTypeId), Some("banner")),
+        (Role::Header, Some(UIA_CustomLandmarkTypeId), Some("banner")),
+        (
+            Role::ContentInfo,
+            Some(UIA_CustomLandmarkTypeId),
+            Some("content information"),
+        ),
+        (
+            Role::Footer,
+            Some(UIA_CustomLandmarkTypeId),
+            Some("content information"),
+        ),
+        (
+            Role::Complementary,
+            Some(UIA_CustomLandmarkTypeId),
+            Some("complementary"),
+        ),
+        (Role::Region, Some(UIA_CustomLandmarkTypeId), Some("region")),
+        (Role::Group, None, None),
+        (Role::Button, None, None),
+        (Role::Pane, None, None),
+        (Role::Window, None, None),
+    ] {
+        let tree = single_child_tree(child_id, Node::new(role));
+        let node = child_node(&tree, child_id);
+        let mut buffer = StringBuffer::acquire();
+        let mut wrapper = NodeWrapper {
+            node: &node,
+            string_buffer: &mut buffer,
+        };
+        assert_eq!(wrapper.landmark_type(), expected_type, "role = {role:?}");
+        match expected_localized {
+            Some(expected) => assert!(
+                localized_eq(wrapper.localized_landmark_type(), expected),
+                "role = {role:?}"
+            ),
+            None => assert!(
+                wrapper.localized_landmark_type().is_none(),
+                "role = {role:?}"
+            ),
+        }
+    }
+}
+
+#[test]
+fn aria_properties_level_is_one_based_matching_uia_level_property() {
+    use accesskit::Node;
+
+    let child_id = NodeId(1);
+    for (zero_based, expected_one_based, expected_aria) in
+        [(0usize, 1i32, "level=1"), (2usize, 3i32, "level=3")]
+    {
+        let mut heading = Node::new(Role::Heading);
+        heading.set_level(zero_based);
+        let tree = single_child_tree(child_id, heading);
+        let node = child_node(&tree, child_id);
+        let mut buffer = StringBuffer::acquire();
+        let wrapper = NodeWrapper {
+            node: &node,
+            string_buffer: &mut buffer,
+        };
+        assert_eq!(wrapper.level(), Some(expected_one_based));
+        assert_eq!(
+            aria_properties_string(&node).as_deref(),
+            Some(expected_aria)
+        );
+    }
+}
+
+#[test]
+fn controls_diff_skips_platform_node_creation_when_unchanged_and_emits_on_change() {
+    use crate::{
+        context::{ActionHandlerWrapper, Context},
+        window_handle::WindowHandle,
+    };
+    use accesskit::{ActionHandler, Node, TreeInfo, TreeUpdate};
+
+    struct NullActionHandler;
+    impl ActionHandler for NullActionHandler {
+        fn do_action(&mut self, _request: ActionRequest) {}
+    }
+
+    let make_tree = |controls: Vec<NodeId>| {
+        let mut root = Node::new(Role::Window);
+        root.set_children(vec![NodeId(1), NodeId(2), NodeId(3)]);
+        let mut controller = Node::new(Role::Button);
+        controller.set_controls(controls);
+        Tree::new(
+            TreeUpdate {
+                nodes: vec![
+                    (NodeId(0), root),
+                    (NodeId(1), controller),
+                    (NodeId(2), Node::new(Role::Region)),
+                    (NodeId(3), Node::new(Role::Region)),
+                ],
+                tree: Some(TreeInfo::new(NodeId(0))),
+                tree_id: TreeId::ROOT,
+                focus: NodeId(0),
+            },
+            true,
+        )
+    };
+
+    let old_tree = make_tree(vec![NodeId(2)]);
+    let same_tree = make_tree(vec![NodeId(2)]);
+    let changed_tree = make_tree(vec![NodeId(2), NodeId(3)]);
+
+    let context = Context::new(
+        WindowHandle(HWND(std::ptr::null_mut())),
+        make_tree(vec![NodeId(2)]),
+        Arc::new(ActionHandlerWrapper::new(NullActionHandler)),
+        false,
+    );
+    let controller_full_id = child_node(&same_tree, NodeId(1)).id();
+    let element: IRawElementProviderSimple =
+        PlatformNode::new(&context, controller_full_id).into_interface();
+
+    // Unchanged controls must neither queue an event nor allocate/cache PlatformNodes.
+    let mut queue = Vec::new();
+    let old_node = child_node(&old_tree, NodeId(1));
+    let same_node = child_node(&same_tree, NodeId(1));
+    let mut old_buf = StringBuffer::acquire();
+    let mut new_buf = StringBuffer::acquire();
+    let mut old_wrapper = NodeWrapper {
+        node: &old_node,
+        string_buffer: &mut old_buf,
+    };
+    let mut new_wrapper = NodeWrapper {
+        node: &same_node,
+        string_buffer: &mut new_buf,
+    };
+    new_wrapper.enqueue_property_changes(&mut queue, &context, &element, &mut old_wrapper);
+    assert!(queue.is_empty());
+    assert_eq!(context.platform_node_count(), 0);
+
+    // Changed controls (length increased from 1 to 2) must queue UIA_ControllerForPropertyId
+    // and materialize PlatformNodes for the controlled targets.
+    let changed_node = child_node(&changed_tree, NodeId(1));
+    let mut changed_buf = StringBuffer::acquire();
+    let mut changed_wrapper = NodeWrapper {
+        node: &changed_node,
+        string_buffer: &mut changed_buf,
+    };
+    changed_wrapper.enqueue_property_changes(&mut queue, &context, &element, &mut old_wrapper);
+    assert!(property_change_ids(&queue).contains(&UIA_ControllerForPropertyId));
+    assert_eq!(context.platform_node_count(), 2);
+}
+
+#[test]
+fn guarded_properties_and_invalid_emit_expected_property_changes() {
+    use crate::{
+        context::{ActionHandlerWrapper, Context},
+        window_handle::WindowHandle,
+    };
+    use accesskit::{ActionHandler, Node, TreeInfo, TreeUpdate};
+
+    struct NullActionHandler;
+    impl ActionHandler for NullActionHandler {
+        fn do_action(&mut self, _request: ActionRequest) {}
+    }
+
+    let mut old_input = Node::new(Role::TextInput);
+    old_input.set_label("Email");
+    old_input.set_description("Enter your email");
+    let old_tree = single_child_tree(NodeId(1), old_input);
+
+    let mut new_input = Node::new(Role::TextInput);
+    new_input.set_label("Email");
+    new_input.set_description("Enter your email");
+    new_input.set_invalid(Invalid::True);
+    let new_tree = single_child_tree(NodeId(1), new_input);
+
+    let context = Context::new(
+        WindowHandle(HWND(std::ptr::null_mut())),
+        single_child_tree(NodeId(1), Node::new(Role::TextInput)),
+        Arc::new(ActionHandlerWrapper::new(NullActionHandler)),
+        false,
+    );
+    let node_id = child_node(&new_tree, NodeId(1)).id();
+    let element: IRawElementProviderSimple = PlatformNode::new(&context, node_id).into_interface();
+
+    let old_node = child_node(&old_tree, NodeId(1));
+    let new_node = child_node(&new_tree, NodeId(1));
+    let mut old_buf = StringBuffer::acquire();
+    let mut new_buf = StringBuffer::acquire();
+    let mut old_wrapper = NodeWrapper {
+        node: &old_node,
+        string_buffer: &mut old_buf,
+    };
+    let mut new_wrapper = NodeWrapper {
+        node: &new_node,
+        string_buffer: &mut new_buf,
+    };
+    let mut queue = Vec::new();
+    new_wrapper.enqueue_property_changes(&mut queue, &context, &element, &mut old_wrapper);
+    let props = property_change_ids(&queue);
+    assert!(props.contains(&UIA_IsDataValidForFormPropertyId));
+    assert!(props.contains(&UIA_AriaPropertiesPropertyId));
+    assert!(!props.contains(&UIA_NamePropertyId));
+    assert!(!props.contains(&UIA_FullDescriptionPropertyId));
+
+    // Also verify indirect `labelled_by` name changes are still detected through the guard.
+    let make_labelled_by_tree = |label_text: &str| {
+        let mut root = Node::new(Role::Window);
+        root.set_children(vec![NodeId(1), NodeId(2)]);
+        let mut target = Node::new(Role::Button);
+        target.set_labelled_by(vec![NodeId(2)]);
+        let mut label = Node::new(Role::Label);
+        label.set_value(label_text);
+        Tree::new(
+            TreeUpdate {
+                nodes: vec![(NodeId(0), root), (NodeId(1), target), (NodeId(2), label)],
+                tree: Some(TreeInfo::new(NodeId(0))),
+                tree_id: TreeId::ROOT,
+                focus: NodeId(0),
+            },
+            true,
+        )
+    };
+    let t1 = make_labelled_by_tree("Old name");
+    let t2 = make_labelled_by_tree("New name");
+    let n1 = child_node(&t1, NodeId(1));
+    let n2 = child_node(&t2, NodeId(1));
+    let mut b1 = StringBuffer::acquire();
+    let mut b2 = StringBuffer::acquire();
+    let mut w1 = NodeWrapper {
+        node: &n1,
+        string_buffer: &mut b1,
+    };
+    let mut w2 = NodeWrapper {
+        node: &n2,
+        string_buffer: &mut b2,
+    };
+    let mut q2 = Vec::new();
+    w2.enqueue_property_changes(&mut q2, &context, &element, &mut w1);
+    assert!(property_change_ids(&q2).contains(&UIA_NamePropertyId));
+
+    // Also verify descendant-derived names (Button labelled by child Label) are detected.
+    let make_descendant_label_tree = |label_text: Option<&str>| {
+        let mut root = Node::new(Role::Window);
+        root.set_children(vec![NodeId(1)]);
+        let mut button = Node::new(Role::Button);
+        let mut nodes = vec![(NodeId(0), root)];
+        if let Some(text) = label_text {
+            button.set_children(vec![NodeId(2)]);
+            let mut label = Node::new(Role::Label);
+            label.set_value(text);
+            nodes.push((NodeId(1), button));
+            nodes.push((NodeId(2), label));
+        } else {
+            nodes.push((NodeId(1), button));
+        }
+        Tree::new(
+            TreeUpdate {
+                nodes,
+                tree: Some(TreeInfo::new(NodeId(0))),
+                tree_id: TreeId::ROOT,
+                focus: NodeId(0),
+            },
+            true,
+        )
+    };
+    let dt1 = make_descendant_label_tree(Some("Save"));
+    let dt2 = make_descendant_label_tree(Some("Saved"));
+    let dt3 = make_descendant_label_tree(None);
+    let dn1 = child_node(&dt1, NodeId(1));
+    let dn2 = child_node(&dt2, NodeId(1));
+    let dn3 = child_node(&dt3, NodeId(1));
+    let mut db1 = StringBuffer::acquire();
+    let mut db2 = StringBuffer::acquire();
+    let mut db3 = StringBuffer::acquire();
+    let mut dw1 = NodeWrapper {
+        node: &dn1,
+        string_buffer: &mut db1,
+    };
+    let mut dw2 = NodeWrapper {
+        node: &dn2,
+        string_buffer: &mut db2,
+    };
+    let mut dw3 = NodeWrapper {
+        node: &dn3,
+        string_buffer: &mut db3,
+    };
+    let mut dq1 = Vec::new();
+    dw2.enqueue_property_changes(&mut dq1, &context, &element, &mut dw1);
+    assert!(property_change_ids(&dq1).contains(&UIA_NamePropertyId));
+
+    let mut dq2 = Vec::new();
+    dw3.enqueue_property_changes(&mut dq2, &context, &element, &mut dw2);
+    assert!(property_change_ids(&dq2).contains(&UIA_NamePropertyId));
 }

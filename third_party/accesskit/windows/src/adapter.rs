@@ -10,9 +10,12 @@ use accesskit_consumer::{FilterResult, FullNodeId, NodeRef, Tree, TreeChangeHand
 use hashbrown::{HashMap, HashSet};
 use std::fmt::{Debug, Formatter};
 use std::sync::{Arc, atomic::Ordering};
-use windows::Win32::{
-    Foundation::*,
-    UI::{Accessibility::*, WindowsAndMessaging::*},
+use windows::{
+    Win32::{
+        Foundation::*,
+        UI::{Accessibility::*, WindowsAndMessaging::*},
+    },
+    core::ComObject,
 };
 
 use crate::{
@@ -32,20 +35,55 @@ fn focus_event(context: &Arc<Context>, node_id: FullNodeId) -> QueuedEvent {
     }
 }
 
+fn clients_are_listening() -> bool {
+    unsafe { UiaClientsAreListening() }.as_bool()
+}
+
+fn opened_closed_events(node: &NodeRef) -> Option<(UIA_EVENT_ID, UIA_EVENT_ID)> {
+    if node.is_dialog() {
+        Some((
+            UIA_Window_WindowOpenedEventId,
+            UIA_Window_WindowClosedEventId,
+        ))
+    } else {
+        match node.role() {
+            Role::Menu | Role::MenuListPopup => {
+                Some((UIA_MenuOpenedEventId, UIA_MenuClosedEventId))
+            }
+            Role::Tooltip => Some((UIA_ToolTipOpenedEventId, UIA_ToolTipClosedEventId)),
+            _ => None,
+        }
+    }
+}
+
 struct AdapterChangeHandler<'a> {
     context: &'a Arc<Context>,
+    emit_events: bool,
     queue: Vec<QueuedEvent>,
+    text_changed_events: Vec<QueuedEvent>,
     text_changed: HashSet<FullNodeId>,
     selection_changed: HashMap<FullNodeId, SelectionChanges>,
 }
 
 impl<'a> AdapterChangeHandler<'a> {
-    fn new(context: &'a Arc<Context>) -> Self {
+    fn new(context: &'a Arc<Context>, emit_events: bool) -> Self {
         Self {
             context,
+            emit_events,
             queue: Vec::new(),
+            text_changed_events: Vec::new(),
             text_changed: HashSet::new(),
             selection_changed: HashMap::new(),
+        }
+    }
+
+    fn finish(mut self) -> Vec<QueuedEvent> {
+        if self.text_changed_events.is_empty() {
+            self.queue
+        } else {
+            self.text_changed_events.reserve(self.queue.len());
+            self.text_changed_events.append(&mut self.queue);
+            self.text_changed_events
         }
     }
 }
@@ -56,22 +94,18 @@ impl AdapterChangeHandler<'_> {
             return;
         }
         let id = node.id();
-        if self.text_changed.contains(&id) {
+        if !self.text_changed.insert(id) {
             return;
         }
-        let platform_node = self.context.get_or_create_platform_node(node.id());
+        let platform_node = self.context.get_or_create_platform_node(id);
         let element: IRawElementProviderSimple = platform_node.into_interface();
         // Text change events must come before selection change
         // events. It doesn't matter if text change events come
         // before other events.
-        self.queue.insert(
-            0,
-            QueuedEvent::Simple {
-                element,
-                event_id: UIA_Text_TextChangedEventId,
-            },
-        );
-        self.text_changed.insert(id);
+        self.text_changed_events.push(QueuedEvent::Simple {
+            element,
+            event_id: UIA_Text_TextChangedEventId,
+        });
     }
 
     fn insert_text_change_if_needed(&mut self, node: &NodeRef) {
@@ -123,6 +157,9 @@ impl AdapterChangeHandler<'_> {
     }
 
     fn enqueue_selection_changes(&mut self, tree: &Tree) {
+        if !self.emit_events || self.selection_changed.is_empty() {
+            return;
+        }
         let tree_state = tree.state();
         for (id, changes) in self.selection_changed.iter() {
             let Some(node) = tree_state.node_by_id(*id) else {
@@ -236,6 +273,9 @@ struct SelectionChanges {
 
 impl TreeChangeHandler for AdapterChangeHandler<'_> {
     fn node_added(&mut self, node: &NodeRef) {
+        if !self.emit_events {
+            return;
+        }
         self.insert_text_change_if_needed(node);
         if filter(node) != FilterResult::Include {
             return;
@@ -245,15 +285,15 @@ impl TreeChangeHandler for AdapterChangeHandler<'_> {
             node,
             string_buffer: &mut buffer,
         };
-        if node.is_dialog() {
+        if let Some((opened_event_id, _)) = opened_closed_events(node) {
             let platform_node = self.context.get_or_create_platform_node(node.id());
             let element: IRawElementProviderSimple = platform_node.into_interface();
             self.queue.push(QueuedEvent::Simple {
                 element,
-                event_id: UIA_Window_WindowOpenedEventId,
+                event_id: opened_event_id,
             });
         }
-        if wrapper.name().is_some() && node.live() != Live::Off {
+        if node.live() != Live::Off && wrapper.name().is_some() {
             let platform_node = self.context.get_or_create_platform_node(node.id());
             let element: IRawElementProviderSimple = platform_node.into_interface();
             self.queue.push(QueuedEvent::Simple {
@@ -267,18 +307,21 @@ impl TreeChangeHandler for AdapterChangeHandler<'_> {
     }
 
     fn node_updated(&mut self, old_node: &NodeRef, new_node: &NodeRef) {
+        if !self.emit_events {
+            return;
+        }
         if old_node.raw_value() != new_node.raw_value() {
             self.insert_text_change_if_needed(new_node);
         }
         let old_node_was_filtered_out = filter(old_node) != FilterResult::Include;
         if filter(new_node) != FilterResult::Include {
             if !old_node_was_filtered_out {
-                if old_node.is_dialog() {
+                if let Some((_, closed_event_id)) = opened_closed_events(old_node) {
                     let platform_node = self.context.get_or_create_platform_node(old_node.id());
                     let element: IRawElementProviderSimple = platform_node.into_interface();
                     self.queue.push(QueuedEvent::Simple {
                         element,
-                        event_id: UIA_Window_WindowClosedEventId,
+                        event_id: closed_event_id,
                     });
                 }
                 let mut old_buffer = StringBuffer::acquire();
@@ -310,25 +353,36 @@ impl TreeChangeHandler for AdapterChangeHandler<'_> {
             &element,
             &mut old_wrapper,
         );
-        let new_name = new_wrapper.name();
-        if new_name.is_some()
-            && new_node.live() != Live::Off
-            && (new_node.live() != old_node.live()
-                || old_node_was_filtered_out
-                || new_name != old_wrapper.name())
-        {
-            self.queue.push(QueuedEvent::Simple {
-                element,
-                event_id: UIA_LiveRegionChangedEventId,
-            });
+        if new_node.live() != Live::Off {
+            let new_name = new_wrapper.name();
+            if new_name.is_some()
+                && (new_node.live() != old_node.live()
+                    || old_node_was_filtered_out
+                    || new_name != old_wrapper.name())
+            {
+                self.queue.push(QueuedEvent::Simple {
+                    element: element.clone(),
+                    event_id: UIA_LiveRegionChangedEventId,
+                });
+            }
         }
-        if old_node_was_filtered_out && new_node.is_dialog() {
-            let platform_node = self.context.get_or_create_platform_node(new_node.id());
-            let element: IRawElementProviderSimple = platform_node.into_interface();
-            self.queue.push(QueuedEvent::Simple {
-                element,
-                event_id: UIA_Window_WindowOpenedEventId,
-            });
+        let old_events = (!old_node_was_filtered_out)
+            .then(|| opened_closed_events(old_node))
+            .flatten();
+        let new_events = opened_closed_events(new_node);
+        if old_events != new_events {
+            if let Some((_, closed_event_id)) = old_events {
+                self.queue.push(QueuedEvent::Simple {
+                    element: element.clone(),
+                    event_id: closed_event_id,
+                });
+            }
+            if let Some((opened_event_id, _)) = new_events {
+                self.queue.push(QueuedEvent::Simple {
+                    element: element.clone(),
+                    event_id: opened_event_id,
+                });
+            }
         }
         if new_wrapper.is_selection_item_pattern_supported()
             && (new_wrapper.is_selected() != old_wrapper.is_selected()
@@ -339,23 +393,29 @@ impl TreeChangeHandler for AdapterChangeHandler<'_> {
     }
 
     fn focus_moved(&mut self, _old_node: Option<&NodeRef>, new_node: Option<&NodeRef>) {
+        if !self.emit_events {
+            return;
+        }
         if let Some(new_node) = new_node {
             self.queue.push(focus_event(self.context, new_node.id()));
         }
     }
 
     fn node_removed(&mut self, node: &NodeRef) {
-        self.insert_text_change_if_needed(node);
         self.context.remove_platform_node(node.id());
+        if !self.emit_events {
+            return;
+        }
+        self.insert_text_change_if_needed(node);
         if filter(node) != FilterResult::Include {
             return;
         }
-        if node.is_dialog() {
+        if let Some((_, closed_event_id)) = opened_closed_events(node) {
             let platform_node = PlatformNode::new(self.context, node.id());
             let element: IRawElementProviderSimple = platform_node.into_interface();
             self.queue.push(QueuedEvent::Simple {
                 element,
-                event_id: UIA_Window_WindowClosedEventId,
+                event_id: closed_event_id,
             });
         }
         let mut buffer = StringBuffer::acquire();
@@ -464,27 +524,43 @@ impl Adapter {
         &mut self,
         update_factory: impl FnOnce() -> TreeUpdate,
     ) -> Option<QueuedEvents> {
+        if matches!(self.state, State::Inactive { .. }) {
+            return None;
+        }
+        self.update_if_active_with_listening(update_factory, clients_are_listening())
+    }
+
+    fn update_if_active_with_listening(
+        &mut self,
+        update_factory: impl FnOnce() -> TreeUpdate,
+        emit_events: bool,
+    ) -> Option<QueuedEvents> {
         match &self.state {
             State::Inactive { .. } => None,
             State::Placeholder(context) => {
                 let is_window_focused = context.read_tree().state().is_host_focused();
                 let tree = Tree::new(update_factory(), is_window_focused);
                 *context.tree.write().unwrap() = tree;
+                context.clear_platform_nodes();
                 context.is_placeholder.store(false, Ordering::SeqCst);
-                let result = context
-                    .read_tree()
-                    .state()
-                    .focus()
-                    .map(|node| QueuedEvents(vec![focus_event(context, node.id())]));
+                let result = if emit_events {
+                    context
+                        .read_tree()
+                        .state()
+                        .focus()
+                        .map(|node| QueuedEvents(vec![focus_event(context, node.id())]))
+                } else {
+                    None
+                };
                 self.state = State::Active(Arc::clone(context));
                 result
             }
             State::Active(context) => {
-                let mut handler = AdapterChangeHandler::new(context);
+                let mut handler = AdapterChangeHandler::new(context, emit_events);
                 let mut tree = context.tree.write().unwrap();
                 tree.update_and_process_changes(update_factory(), &mut handler);
                 handler.enqueue_selection_changes(&tree);
-                Some(QueuedEvents(handler.queue))
+                Some(QueuedEvents(handler.finish()))
             }
         }
     }
@@ -505,17 +581,20 @@ impl Adapter {
                 *is_window_focused = is_focused;
                 None
             }
-            State::Placeholder(context) => {
-                let mut handler = AdapterChangeHandler::new(context);
+            State::Placeholder(context) | State::Active(context) => {
+                let mut handler = AdapterChangeHandler::new(context, clients_are_listening());
                 let mut tree = context.tree.write().unwrap();
                 tree.update_host_focus_state_and_process_changes(is_focused, &mut handler);
-                Some(QueuedEvents(handler.queue))
+                Some(QueuedEvents(handler.finish()))
             }
-            State::Active(context) => {
-                let mut handler = AdapterChangeHandler::new(context);
-                let mut tree = context.tree.write().unwrap();
-                tree.update_host_focus_state_and_process_changes(is_focused, &mut handler);
-                Some(QueuedEvents(handler.queue))
+        }
+    }
+
+    pub(crate) fn disconnect_providers(&mut self) -> Option<Vec<ComObject<PlatformNode>>> {
+        match &self.state {
+            State::Inactive { .. } => None,
+            State::Placeholder(context) | State::Active(context) => {
+                Some(context.take_platform_nodes())
             }
         }
     }
@@ -644,7 +723,7 @@ impl QueuedEvents {
         for event in self.0 {
             match event {
                 QueuedEvent::Simple { element, event_id } => {
-                    unsafe { UiaRaiseAutomationEvent(&element, event_id) }.unwrap();
+                    let _ = unsafe { UiaRaiseAutomationEvent(&element, event_id) };
                 }
                 QueuedEvent::PropertyChanged {
                     element,
@@ -652,15 +731,14 @@ impl QueuedEvents {
                     old_value,
                     new_value,
                 } => {
-                    unsafe {
+                    let _ = unsafe {
                         UiaRaiseAutomationPropertyChangedEvent(
                             &element,
                             property_id,
                             &old_value,
                             &new_value,
                         )
-                    }
-                    .unwrap();
+                    };
                 }
             }
         }
@@ -671,3 +749,327 @@ impl QueuedEvents {
 // so implement Send even though windows-rs doesn't implement it for all
 // contained types. This is safe because we're not using COM threading.
 unsafe impl Send for QueuedEvents {}
+
+#[cfg(test)]
+mod unit_tests {
+    use super::*;
+    use accesskit::{ActionRequest, TextPosition, TextSelection};
+
+    struct NullActionHandler;
+
+    impl ActionHandler for NullActionHandler {
+        fn do_action(&mut self, _request: ActionRequest) {}
+    }
+
+    fn make_context(initial: TreeUpdate, is_placeholder: bool) -> Arc<Context> {
+        let tree = Tree::new(initial, true);
+        Context::new(
+            WindowHandle(HWND(std::ptr::null_mut())),
+            tree,
+            Arc::new(ActionHandlerWrapper::new(NullActionHandler)),
+            is_placeholder,
+        )
+    }
+
+    fn apply_update(
+        context: &Arc<Context>,
+        update: TreeUpdate,
+        emit_events: bool,
+    ) -> Vec<QueuedEvent> {
+        let mut handler = AdapterChangeHandler::new(context, emit_events);
+        let mut tree = context.tree.write().unwrap();
+        tree.update_and_process_changes(update, &mut handler);
+        handler.enqueue_selection_changes(&tree);
+        handler.finish()
+    }
+
+    fn simple_event_ids(events: &[QueuedEvent]) -> Vec<UIA_EVENT_ID> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                QueuedEvent::Simple { event_id, .. } => Some(*event_id),
+                QueuedEvent::PropertyChanged { .. } => None,
+            })
+            .collect()
+    }
+
+    fn root_update(children: Vec<NodeId>, extra_nodes: Vec<(NodeId, Node)>) -> TreeUpdate {
+        let mut root = Node::new(Role::Window);
+        root.set_children(children);
+        let mut nodes = vec![(NodeId(0), root)];
+        nodes.extend(extra_nodes);
+        TreeUpdate {
+            nodes,
+            tree: Some(TreeInfo::new(NodeId(0))),
+            tree_id: TreeId::ROOT,
+            focus: NodeId(0),
+        }
+    }
+
+    #[test]
+    fn menu_and_tooltip_opened_closed_events_follow_lifecycle() {
+        let context = make_context(root_update(vec![], vec![]), false);
+
+        // Add visible Menu, MenuListPopup, and Tooltip.
+        let events = apply_update(
+            &context,
+            TreeUpdate {
+                nodes: vec![
+                    {
+                        let mut root = Node::new(Role::Window);
+                        root.set_children(vec![NodeId(1), NodeId(2), NodeId(3)]);
+                        (NodeId(0), root)
+                    },
+                    (NodeId(1), Node::new(Role::Menu)),
+                    (NodeId(2), Node::new(Role::MenuListPopup)),
+                    (NodeId(3), Node::new(Role::Tooltip)),
+                ],
+                tree: None,
+                tree_id: TreeId::ROOT,
+                focus: NodeId(0),
+            },
+            true,
+        );
+        let ids = simple_event_ids(&events);
+        assert_eq!(
+            ids.iter()
+                .filter(|id| **id == UIA_MenuOpenedEventId)
+                .count(),
+            2
+        );
+        assert_eq!(
+            ids.iter()
+                .filter(|id| **id == UIA_ToolTipOpenedEventId)
+                .count(),
+            1
+        );
+
+        // Hide Menu and Tooltip -> Closed events.
+        let mut hidden_menu = Node::new(Role::Menu);
+        hidden_menu.set_hidden();
+        let mut hidden_tooltip = Node::new(Role::Tooltip);
+        hidden_tooltip.set_hidden();
+        let events = apply_update(
+            &context,
+            TreeUpdate {
+                nodes: vec![(NodeId(1), hidden_menu), (NodeId(3), hidden_tooltip)],
+                tree: None,
+                tree_id: TreeId::ROOT,
+                focus: NodeId(0),
+            },
+            true,
+        );
+        let ids = simple_event_ids(&events);
+        assert!(ids.contains(&UIA_MenuClosedEventId));
+        assert!(ids.contains(&UIA_ToolTipClosedEventId));
+
+        // Unhide Menu and Tooltip -> Opened events.
+        let events = apply_update(
+            &context,
+            TreeUpdate {
+                nodes: vec![
+                    (NodeId(1), Node::new(Role::Menu)),
+                    (NodeId(3), Node::new(Role::Tooltip)),
+                ],
+                tree: None,
+                tree_id: TreeId::ROOT,
+                focus: NodeId(0),
+            },
+            true,
+        );
+        let ids = simple_event_ids(&events);
+        assert!(ids.contains(&UIA_MenuOpenedEventId));
+        assert!(ids.contains(&UIA_ToolTipOpenedEventId));
+
+        // Remove all three -> Closed events.
+        let events = apply_update(
+            &context,
+            TreeUpdate {
+                nodes: vec![(NodeId(0), Node::new(Role::Window))],
+                tree: None,
+                tree_id: TreeId::ROOT,
+                focus: NodeId(0),
+            },
+            true,
+        );
+        let ids = simple_event_ids(&events);
+        assert_eq!(
+            ids.iter()
+                .filter(|id| **id == UIA_MenuClosedEventId)
+                .count(),
+            2
+        );
+        assert_eq!(
+            ids.iter()
+                .filter(|id| **id == UIA_ToolTipClosedEventId)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn text_changed_events_precede_selection_and_property_events() {
+        let mut text_input = Node::new(Role::TextInput);
+        text_input.set_children(vec![NodeId(2)]);
+        text_input.set_value("hello");
+        text_input.set_text_selection(TextSelection {
+            anchor: TextPosition {
+                node: NodeId(2),
+                character_index: 0,
+            },
+            focus: TextPosition {
+                node: NodeId(2),
+                character_index: 0,
+            },
+        });
+        let mut text_run = Node::new(Role::TextRun);
+        text_run.set_value("hello");
+        text_run.set_character_lengths([1, 1, 1, 1, 1]);
+
+        let context = make_context(
+            root_update(
+                vec![NodeId(1)],
+                vec![(NodeId(1), text_input), (NodeId(2), text_run)],
+            ),
+            false,
+        );
+
+        let mut updated_input = Node::new(Role::TextInput);
+        updated_input.set_children(vec![NodeId(2)]);
+        updated_input.set_value("world!");
+        updated_input.set_text_selection(TextSelection {
+            anchor: TextPosition {
+                node: NodeId(2),
+                character_index: 6,
+            },
+            focus: TextPosition {
+                node: NodeId(2),
+                character_index: 6,
+            },
+        });
+        let mut updated_run = Node::new(Role::TextRun);
+        updated_run.set_value("world!");
+        updated_run.set_character_lengths([1, 1, 1, 1, 1, 1]);
+
+        let events = apply_update(
+            &context,
+            TreeUpdate {
+                nodes: vec![(NodeId(1), updated_input), (NodeId(2), updated_run)],
+                tree: None,
+                tree_id: TreeId::ROOT,
+                focus: NodeId(0),
+            },
+            true,
+        );
+
+        let text_changed_pos = events
+            .iter()
+            .position(|e| {
+                matches!(
+                    e,
+                    QueuedEvent::Simple {
+                        event_id,
+                        ..
+                    } if *event_id == UIA_Text_TextChangedEventId
+                )
+            })
+            .expect("expected UIA_Text_TextChangedEventId");
+        let selection_changed_pos = events
+            .iter()
+            .position(|e| {
+                matches!(
+                    e,
+                    QueuedEvent::Simple {
+                        event_id,
+                        ..
+                    } if *event_id == UIA_Text_TextSelectionChangedEventId
+                )
+            })
+            .expect("expected UIA_Text_TextSelectionChangedEventId");
+        assert!(text_changed_pos < selection_changed_pos);
+    }
+
+    #[test]
+    fn no_listeners_skips_events_but_updates_tree_and_prunes_platform_nodes() {
+        let mut button = Node::new(Role::Button);
+        button.set_label("Initial");
+        let context = make_context(
+            root_update(vec![NodeId(1)], vec![(NodeId(1), button)]),
+            false,
+        );
+
+        // Cache a PlatformNode for button NodeId(1).
+        let button_full_id = context
+            .read_tree()
+            .state()
+            .node_by_tree_local_id(NodeId(1), TreeId::ROOT)
+            .unwrap()
+            .id();
+        let _cached = context.get_or_create_platform_node(button_full_id);
+        assert_eq!(context.platform_node_count(), 1);
+
+        // Update label with emit_events = false: tree updates, no events, no new platform nodes.
+        let mut updated_button = Node::new(Role::Button);
+        updated_button.set_label("Updated");
+        let events = apply_update(
+            &context,
+            TreeUpdate {
+                nodes: vec![(NodeId(1), updated_button)],
+                tree: None,
+                tree_id: TreeId::ROOT,
+                focus: NodeId(0),
+            },
+            false,
+        );
+        assert!(events.is_empty());
+        assert_eq!(
+            context
+                .read_tree()
+                .state()
+                .node_by_tree_local_id(NodeId(1), TreeId::ROOT)
+                .unwrap()
+                .data()
+                .label(),
+            Some("Updated")
+        );
+        assert_eq!(context.platform_node_count(), 1);
+
+        // Remove button with emit_events = false: removed node is still evicted from platform_nodes.
+        let events = apply_update(
+            &context,
+            TreeUpdate {
+                nodes: vec![(NodeId(0), Node::new(Role::Window))],
+                tree: None,
+                tree_id: TreeId::ROOT,
+                focus: NodeId(0),
+            },
+            false,
+        );
+        assert!(events.is_empty());
+        assert_eq!(context.platform_node_count(), 0);
+    }
+
+    #[test]
+    fn placeholder_to_active_clears_stale_platform_nodes() {
+        let placeholder_update = TreeUpdate {
+            nodes: vec![(PLACEHOLDER_ROOT_ID, Node::new(Role::Window))],
+            tree: Some(TreeInfo::new(PLACEHOLDER_ROOT_ID)),
+            tree_id: TreeId::ROOT,
+            focus: PLACEHOLDER_ROOT_ID,
+        };
+        let context = make_context(placeholder_update, true);
+        let placeholder_root_id = context.read_tree().state().root_id();
+        let _stale = context.get_or_create_platform_node(placeholder_root_id);
+        assert_eq!(context.platform_node_count(), 1);
+
+        let mut adapter = Adapter {
+            state: State::Placeholder(Arc::clone(&context)),
+        };
+        let real_update = root_update(vec![NodeId(1)], vec![(NodeId(1), Node::new(Role::Button))]);
+        let events = adapter.update_if_active_with_listening(|| real_update, false);
+        assert!(events.is_none());
+        assert!(!context.is_placeholder.load(Ordering::SeqCst));
+        assert_eq!(context.platform_node_count(), 0);
+        assert!(matches!(adapter.state, State::Active(_)));
+    }
+}

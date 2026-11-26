@@ -77,6 +77,11 @@ impl<'a> WideString<'a> {
         buffer.clear();
         Self(buffer)
     }
+
+    #[cfg(test)]
+    pub(crate) fn as_slice(&self) -> &[u16] {
+        self.0
+    }
 }
 
 impl Write for WideString<'_> {
@@ -217,6 +222,12 @@ impl From<UIA_CONTROLTYPE_ID> for Variant {
     }
 }
 
+impl From<UIA_LANDMARKTYPE_ID> for Variant {
+    fn from(value: UIA_LANDMARKTYPE_ID) -> Self {
+        Self(value.0.into())
+    }
+}
+
 impl From<OrientationType> for Variant {
     fn from(value: OrientationType) -> Self {
         Self(value.0.into())
@@ -272,9 +283,9 @@ impl<T: Into<Variant> + std::fmt::Debug + PartialEq> From<TextRangePropertyValue
     fn from(value: TextRangePropertyValue<T>) -> Self {
         match value {
             TextRangePropertyValue::Single(value) => value.into(),
-            TextRangePropertyValue::Mixed => unsafe { UiaGetReservedMixedAttributeValue() }
-                .unwrap()
-                .into(),
+            TextRangePropertyValue::Mixed => {
+                unsafe { UiaGetReservedMixedAttributeValue() }.ok().into()
+            }
         }
     }
 }
@@ -373,12 +384,12 @@ pub(crate) fn not_supported() -> Error {
     HRESULT(UIA_E_NOTSUPPORTED as _).into()
 }
 
-pub(crate) fn client_top_left(hwnd: WindowHandle) -> Point {
+pub(crate) fn client_top_left(hwnd: WindowHandle) -> Result<Point> {
     let mut result = POINT::default();
-    // If ClientToScreen fails, that means the window is gone.
-    // That's an unexpected condition, so we should fail loudly.
-    unsafe { ClientToScreen(hwnd.0, &mut result) }.unwrap();
-    Point::new(result.x.into(), result.y.into())
+    if !unsafe { ClientToScreen(hwnd.0, &mut result) }.as_bool() {
+        return Err(element_not_available());
+    }
+    Ok(Point::new(result.x.into(), result.y.into()))
 }
 
 pub(crate) fn window_title(hwnd: WindowHandle, buffer: &mut Vec<u16>) -> Option<BSTR> {
@@ -459,7 +470,14 @@ impl<W: Write> AriaProperties<W> {
     }
 
     pub(crate) fn write_usize_property(&mut self, name: &str, value: usize) -> fmt::Result {
-        self.write_property(name, &value.to_string())
+        if self.need_separator {
+            self.inner.write_char(';')?;
+        }
+        self.inner.write_str(name)?;
+        self.inner.write_char('=')?;
+        write!(self.inner, "{value}")?;
+        self.need_separator = true;
+        Ok(())
     }
 
     pub(crate) fn has_properties(&self) -> bool {

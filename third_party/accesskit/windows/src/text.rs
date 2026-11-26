@@ -282,12 +282,12 @@ impl PlatformRange {
 
     fn do_action<F>(&self, f: F) -> Result<()>
     where
-        for<'a> F: FnOnce(Range<'a>, &Tree) -> ActionRequest,
+        for<'a> F: FnOnce(Range<'a>, &Tree) -> Result<ActionRequest>,
     {
         let context = self.upgrade_context()?;
         let tree = context.read_tree();
         let range = self.upgrade_for_read(tree.state())?;
-        let request = f(range, &tree);
+        let request = f(range, &tree)?;
         drop(tree);
         context.do_action(request);
         Ok(())
@@ -357,7 +357,7 @@ impl ITextRangeProvider_Impl for PlatformRange_Impl {
             }
             let pos = position_from_endpoint(&range, endpoint)?;
             let other_pos = position_from_endpoint(&other_range, other_endpoint)?;
-            let result = pos.partial_cmp(&other_pos).unwrap();
+            let result = pos.partial_cmp(&other_pos).ok_or_else(invalid_arg)?;
             Ok(result as i32)
         })
     }
@@ -485,7 +485,7 @@ impl ITextRangeProvider_Impl for PlatformRange_Impl {
             .into()),
             // TODO: implement more attributes
             _ => {
-                let value = unsafe { UiaGetReservedNotSupportedValue() }.unwrap();
+                let value = unsafe { UiaGetReservedNotSupportedValue() }?;
                 Ok(value.into())
             }
         })
@@ -497,7 +497,7 @@ impl ITextRangeProvider_Impl for PlatformRange_Impl {
             if rects.is_empty() {
                 return Ok(std::ptr::null_mut());
             }
-            let client_top_left = context.client_top_left();
+            let client_top_left = context.client_top_left()?;
             let mut result = Vec::<f64>::with_capacity(rects.len() * 4);
             for rect in rects {
                 result.push(rect.x0 + client_top_left.x);
@@ -593,13 +593,16 @@ impl ITextRangeProvider_Impl for PlatformRange_Impl {
 
     fn Select(&self) -> Result<()> {
         self.do_action(|range, tree| {
-            let (target_node, target_tree) = tree.state().locate_node(range.node().id()).unwrap();
-            ActionRequest {
+            let (target_node, target_tree) = tree
+                .state()
+                .locate_node(range.node().id())
+                .ok_or_else(element_not_available)?;
+            Ok(ActionRequest {
                 action: Action::SetTextSelection,
                 target_tree,
                 target_node,
                 data: Some(ActionData::SetTextSelection(range.to_text_selection())),
-            }
+            })
         })
     }
 
@@ -623,8 +626,8 @@ impl ITextRangeProvider_Impl for PlatformRange_Impl {
             let (target_node, target_tree) = tree
                 .state()
                 .locate_node(position.inner_node().id())
-                .unwrap();
-            ActionRequest {
+                .ok_or_else(element_not_available)?;
+            Ok(ActionRequest {
                 action: Action::ScrollIntoView,
                 target_tree,
                 target_node,
@@ -633,7 +636,7 @@ impl ITextRangeProvider_Impl for PlatformRange_Impl {
                 } else {
                     ScrollHint::BottomEdge
                 })),
-            }
+            })
         })
     }
 

@@ -8,7 +8,7 @@ use accesskit_consumer::{FullNodeId, Tree};
 use hashbrown::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, atomic::AtomicBool};
-use windows::core::ComObject;
+use windows::core::{ComObject, Result};
 
 use crate::{node::PlatformNode, util::*, window_handle::WindowHandle};
 
@@ -69,7 +69,7 @@ impl Context {
         self.tree.read().unwrap()
     }
 
-    pub(crate) fn client_top_left(&self) -> Point {
+    pub(crate) fn client_top_left(&self) -> Result<Point> {
         client_top_left(self.hwnd)
     }
 
@@ -94,5 +94,23 @@ impl Context {
     pub(crate) fn remove_platform_node(&self, id: FullNodeId) {
         let mut platform_nodes = self.platform_nodes.lock().unwrap();
         platform_nodes.remove(&id);
+    }
+
+    pub(crate) fn clear_platform_nodes(&self) {
+        self.platform_nodes.lock().unwrap().clear();
+    }
+
+    pub(crate) fn take_platform_nodes(&self) -> Vec<ComObject<PlatformNode>> {
+        self.platform_nodes
+            .lock()
+            .unwrap()
+            .drain()
+            .map(|(_, node)| node)
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn platform_node_count(&self) -> usize {
+        self.platform_nodes.lock().unwrap().len()
     }
 }
