@@ -1,7 +1,33 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::hash::{BuildHasherDefault, Hasher};
 
 #[cfg(all(feature = "hosted", not(target_os = "android")))]
 use std::collections::VecDeque;
+
+#[derive(Default)]
+struct IdHasher(u64);
+
+impl Hasher for IdHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.0 = (self.0.rotate_left(5) ^ u64::from(byte)).wrapping_mul(0x517c_c1b7_2722_0a95);
+        }
+    }
+
+    #[inline]
+    fn write_u64(&mut self, value: u64) {
+        self.0 = (self.0.rotate_left(5) ^ value).wrapping_mul(0x517c_c1b7_2722_0a95);
+    }
+}
+
+type FastHashMap<K, V> = HashMap<K, V, BuildHasherDefault<IdHasher>>;
+type FastHashSet<K> = HashSet<K, BuildHasherDefault<IdHasher>>;
 
 use accesskit::ActionData;
 use accesskit::{
@@ -43,11 +69,13 @@ use std::sync::{
 /// tombstones. The cache lets one runtime transaction become one coherent
 /// platform update without leaking AccessKit into `nana-ui-runtime`.
 pub(crate) struct AccessibilityProjector {
-    nodes: BTreeMap<StableNodeId, AccessibilityNode>,
-    text_runs: BTreeMap<StableNodeId, NodeId>,
+    nodes: FastHashMap<StableNodeId, AccessibilityNode>,
+    text_runs: FastHashMap<StableNodeId, NodeId>,
+    text_runs_by_run_id: FastHashMap<NodeId, StableNodeId>,
     next_text_run_id: u64,
-    roots: Vec<StableNodeId>,
+    roots: BTreeSet<StableNodeId>,
     focused: BTreeSet<StableNodeId>,
+    tree_links_exact: bool,
     interactive: bool,
     scale_factor: f32,
     generation: Option<u64>,
@@ -87,15 +115,21 @@ impl AccessibilityProjector {
         generation: Option<u64>,
         window_root: bool,
     ) -> Self {
-        let nodes = nodes.into_iter().map(|node| (node.id, node)).collect();
-        let roots = runtime_roots(&nodes);
-        let focused = focused_nodes(&nodes);
+        let mut node_map = FastHashMap::with_capacity_and_hasher(nodes.len(), Default::default());
+        for node in nodes {
+            node_map.insert(node.id, node);
+        }
+        let roots = runtime_roots(&node_map);
+        let focused = focused_nodes(&node_map);
+        let tree_links_exact = check_tree_links_exact(&node_map, &roots);
         let mut projector = Self {
-            nodes,
-            text_runs: BTreeMap::new(),
+            nodes: node_map,
+            text_runs: FastHashMap::default(),
+            text_runs_by_run_id: FastHashMap::default(),
             next_text_run_id: u64::MAX,
             roots,
             focused,
+            tree_links_exact,
             interactive,
             scale_factor: scale_factor.max(0.01),
             generation,
@@ -140,17 +174,103 @@ impl AccessibilityProjector {
         self.synchronize(nodes, scale_factor)
     }
 
+    fn apply_property_only(&mut self, updated: Vec<AccessibilityNode>) -> TreeUpdate {
+        if updated.len() == 1 {
+            let node = updated.into_iter().next().expect("single updated node");
+            if node.focused {
+                self.focused.insert(node.id);
+            } else {
+                self.focused.remove(&node.id);
+            }
+            let id = node.id;
+            let is_text_input = node.role == AccessibilityRole::TextInput;
+            let slot = self.nodes.get_mut(&id).expect("existing semantic node");
+            *slot = node;
+            let mut out = Vec::with_capacity(if is_text_input { 2 } else { 1 });
+            let text_run_id = is_text_input
+                .then(|| self.text_runs.get(&id).copied())
+                .flatten();
+            project_node_into(
+                slot,
+                text_run_id,
+                self.interactive,
+                self.scale_factor,
+                &mut out,
+            );
+            return TreeUpdate {
+                nodes: out,
+                tree: None,
+                tree_id: TreeId::ROOT,
+                focus: self.focused_node_id(),
+            };
+        }
+
+        let mut seen = FastHashSet::with_capacity_and_hasher(updated.len(), Default::default());
+        let mut unique_ids = Vec::with_capacity(updated.len());
+        for node in updated {
+            if node.focused {
+                self.focused.insert(node.id);
+            } else {
+                self.focused.remove(&node.id);
+            }
+            let id = node.id;
+            if seen.insert(id) {
+                unique_ids.push(id);
+            }
+            *self.nodes.get_mut(&id).expect("existing semantic node") = node;
+        }
+        let mut out = Vec::with_capacity(unique_ids.len());
+        for id in unique_ids {
+            if let Some(node) = self.nodes.get(&id) {
+                self.project_entries_into(node, &mut out);
+            }
+        }
+        TreeUpdate {
+            nodes: out,
+            tree: None,
+            tree_id: TreeId::ROOT,
+            focus: self.focused_node_id(),
+        }
+    }
+
     pub(crate) fn apply(&mut self, delta: AccessibilityDelta) -> TreeUpdate {
-        let incoming = delta
-            .updated
-            .into_iter()
-            .map(|node| (node.id, node))
-            .collect::<BTreeMap<_, _>>();
-        let removed = delta
-            .removed
-            .into_iter()
-            .filter(|id| !incoming.contains_key(id))
-            .collect::<BTreeSet<_>>();
+        if delta.removed.is_empty() {
+            if delta.updated.is_empty() {
+                return TreeUpdate {
+                    nodes: Vec::new(),
+                    tree: None,
+                    tree_id: TreeId::ROOT,
+                    focus: self.focused_node_id(),
+                };
+            }
+            let property_only = delta.updated.iter().all(|node| {
+                self.nodes.get(&node.id).is_some_and(|previous| {
+                    previous.parent == node.parent
+                        && previous.children == node.children
+                        && (previous.role == AccessibilityRole::TextInput)
+                            == (node.role == AccessibilityRole::TextInput)
+                })
+            });
+            if property_only {
+                return self.apply_property_only(delta.updated);
+            }
+        }
+
+        let mut incoming =
+            FastHashMap::with_capacity_and_hasher(delta.updated.len(), Default::default());
+        for node in delta.updated {
+            incoming.insert(node.id, node);
+        }
+        let mut removed = FastHashSet::default();
+        if !delta.removed.is_empty() {
+            removed.reserve(delta.removed.len());
+            for id in delta.removed {
+                if !incoming.contains_key(&id) {
+                    removed.insert(id);
+                }
+            }
+        }
+
         let structure_changed = !removed.is_empty()
             || incoming.values().any(|node| {
                 self.nodes.get(&node.id).is_none_or(|previous| {
@@ -164,116 +284,431 @@ impl AccessibilityProjector {
                         != (node.role == AccessibilityRole::TextInput)
                 })
             });
-        let previous_text_runs = text_roles_changed.then(|| self.text_runs.clone());
-        let mut changed = incoming.keys().copied().collect::<BTreeSet<_>>();
-        changed.extend(
-            removed
-                .iter()
-                .filter_map(|id| self.nodes.get(id).and_then(|node| node.parent)),
-        );
 
-        for id in &removed {
-            if let Some(parent_id) = self.nodes.get(id).and_then(|node| node.parent)
-                && let Some(parent) = self.nodes.get_mut(&parent_id)
-            {
-                parent.children.retain(|child| child != id);
-            }
-            self.nodes.remove(id);
-            self.focused.remove(id);
-            changed.remove(id);
-        }
-
-        for node in incoming.into_values() {
-            let old_parent = self.nodes.get(&node.id).and_then(|previous| {
-                (previous.parent != node.parent)
-                    .then_some(previous.parent)
-                    .flatten()
-            });
-            if let Some(old_parent) = old_parent {
-                if let Some(parent) = self.nodes.get_mut(&old_parent) {
-                    parent.children.retain(|child| *child != node.id);
-                }
-                changed.insert(old_parent);
-            }
-            if structure_changed
-                && let Some(parent_id) = node.parent
-                && let Some(parent) = self.nodes.get_mut(&parent_id)
-                && !parent.children.contains(&node.id)
-            {
-                parent.children.push(node.id);
-                changed.insert(parent_id);
-            }
-            if node.focused {
-                self.focused.insert(node.id);
-            } else {
-                self.focused.remove(&node.id);
-            }
-            self.nodes.insert(node.id, node);
-        }
-
-        if structure_changed {
-            self.drop_unreachable(&mut changed);
-        }
-        if text_roles_changed {
-            self.reconcile_text_runs();
-        }
-        if structure_changed {
-            let roots = runtime_roots(&self.nodes);
-            if roots != self.roots {
-                self.roots = roots;
-                return self.full_update();
-            }
-        }
-        if let Some(previous_text_runs) = previous_text_runs {
-            changed.extend(
-                previous_text_runs
+        let previous_roots = structure_changed.then(|| self.roots.clone());
+        let incoming_ids: FastHashSet<StableNodeId> = incoming.keys().copied().collect();
+        let incoming_old_parents: FastHashMap<StableNodeId, Option<StableNodeId>> =
+            if structure_changed {
+                incoming_ids
                     .iter()
-                    .chain(self.text_runs.iter())
-                    .filter_map(|(id, _)| {
-                        (previous_text_runs.get(id) != self.text_runs.get(id)).then_some(*id)
-                    }),
-            );
+                    .filter_map(|&id| self.nodes.get(&id).map(|node| (id, node.parent)))
+                    .collect()
+            } else {
+                FastHashMap::default()
+            };
+        let mut changed = FastHashSet::with_capacity_and_hasher(
+            incoming.len() + removed.len() + 2,
+            Default::default(),
+        );
+        changed.extend(incoming_ids.iter().copied());
+
+        let mut unlinked_from_parent: FastHashMap<StableNodeId, Vec<StableNodeId>> =
+            FastHashMap::default();
+        let mut dropped_edges: Vec<(StableNodeId, StableNodeId)> = Vec::new();
+        let mut added_edges: FastHashSet<(StableNodeId, StableNodeId)> = FastHashSet::default();
+        let mut candidates: FastHashSet<StableNodeId> = FastHashSet::default();
+        let mut reparented_or_new: Vec<(
+            StableNodeId,
+            Option<StableNodeId>,
+            Option<StableNodeId>,
+            bool,
+        )> = Vec::new();
+
+        for &id in &removed {
+            if let Some(old_node) = self.nodes.remove(&id) {
+                self.focused.remove(&id);
+                self.roots.remove(&id);
+                self.release_text_run(id);
+                changed.remove(&id);
+                if let Some(parent_id) = old_node.parent
+                    && !removed.contains(&parent_id)
+                {
+                    changed.insert(parent_id);
+                    unlinked_from_parent.entry(parent_id).or_default().push(id);
+                }
+                for child_id in old_node.children {
+                    if !removed.contains(&child_id) {
+                        dropped_edges.push((id, child_id));
+                        candidates.insert(child_id);
+                    }
+                }
+            }
         }
-        changed.retain(|id| self.nodes.contains_key(id));
+
+        for (id, node) in incoming {
+            let (was_new, old_parent) = match self.nodes.get(&id) {
+                Some(previous) => {
+                    let old_parent = previous.parent;
+                    if structure_changed && previous.children != node.children {
+                        let (dropped, added, has_duplicates) =
+                            diff_children(&previous.children, &node.children);
+                        if has_duplicates {
+                            self.tree_links_exact = false;
+                        }
+                        let mut dropped_local = FastHashSet::default();
+                        for child_id in dropped {
+                            dropped_local.insert(child_id);
+                            if !removed.contains(&child_id) {
+                                dropped_edges.push((id, child_id));
+                                candidates.insert(child_id);
+                            }
+                        }
+                        for child_id in added {
+                            if !added_edges.insert((id, child_id)) {
+                                self.tree_links_exact = false;
+                            } else if self.tree_links_exact && !dropped_local.contains(&child_id) {
+                                let child_old_parent =
+                                    if let Some(&old) = incoming_old_parents.get(&child_id) {
+                                        old
+                                    } else if incoming_ids.contains(&child_id) {
+                                        None
+                                    } else {
+                                        self.nodes.get(&child_id).and_then(|node| node.parent)
+                                    };
+                                if child_old_parent == Some(id) {
+                                    // `child_id` was already a child of `id` in the unchanged prefix/suffix,
+                                    // meaning `node.children` contains a duplicate entry.
+                                    self.tree_links_exact = false;
+                                }
+                            }
+                        }
+                    }
+                    (false, old_parent)
+                }
+                None => {
+                    if structure_changed {
+                        for &child_id in &node.children {
+                            if !added_edges.insert((id, child_id)) {
+                                self.tree_links_exact = false;
+                            }
+                        }
+                    }
+                    (true, None)
+                }
+            };
+
+            if was_new {
+                if node.parent.is_none() {
+                    self.roots.insert(id);
+                }
+            } else if old_parent.is_none() && node.parent.is_some() {
+                self.roots.remove(&id);
+                candidates.insert(id);
+            } else if old_parent.is_some() && node.parent.is_none() {
+                self.roots.insert(id);
+            }
+
+            if structure_changed && (was_new || old_parent != node.parent) {
+                reparented_or_new.push((id, old_parent, node.parent, was_new));
+                if node.parent.is_some() {
+                    candidates.insert(id);
+                }
+                if let Some(old_p) = old_parent
+                    && !removed.contains(&old_p)
+                {
+                    changed.insert(old_p);
+                    if !incoming_ids.contains(&old_p) {
+                        unlinked_from_parent.entry(old_p).or_default().push(id);
+                    }
+                }
+            }
+
+            if node.focused {
+                self.focused.insert(id);
+            } else {
+                self.focused.remove(&id);
+            }
+            self.nodes.insert(id, node);
+        }
+
+        if structure_changed {
+            for (parent_id, to_unlink) in unlinked_from_parent {
+                if let Some(parent) = self.nodes.get_mut(&parent_id) {
+                    let before = parent.children.len();
+                    if to_unlink.len() == 1 {
+                        let target = to_unlink[0];
+                        parent.children.retain(|child| *child != target);
+                    } else {
+                        let unlink_set: FastHashSet<_> = to_unlink.into_iter().collect();
+                        parent.children.retain(|child| !unlink_set.contains(child));
+                    }
+                    if parent.children.len() != before {
+                        changed.insert(parent_id);
+                    }
+                }
+            }
+
+            for &(child_id, old_parent, new_parent, was_new) in &reparented_or_new {
+                if let Some(old_p) = old_parent
+                    && Some(old_p) != new_parent
+                    && incoming_ids.contains(&old_p)
+                    && !dropped_edges.contains(&(old_p, child_id))
+                    && let Some(parent) = self.nodes.get_mut(&old_p)
+                {
+                    let before = parent.children.len();
+                    parent.children.retain(|child| *child != child_id);
+                    if parent.children.len() != before {
+                        changed.insert(old_p);
+                        dropped_edges.push((old_p, child_id));
+                    }
+                }
+                if let Some(parent_id) = new_parent
+                    && !incoming_ids.contains(&parent_id)
+                    && let Some(parent) = self.nodes.get_mut(&parent_id)
+                {
+                    let already_present = if was_new && self.tree_links_exact {
+                        false
+                    } else {
+                        parent.children.contains(&child_id)
+                    };
+                    if !already_present {
+                        parent.children.push(child_id);
+                        changed.insert(parent_id);
+                        added_edges.insert((parent_id, child_id));
+                    }
+                }
+            }
+
+            // Strip dangling children referenced by added edges and verify tree link exactness.
+            let mut dangling_by_parent: FastHashMap<StableNodeId, Vec<StableNodeId>> =
+                FastHashMap::default();
+            for &(parent_id, child_id) in &added_edges {
+                match self.nodes.get(&child_id) {
+                    None => {
+                        dangling_by_parent
+                            .entry(parent_id)
+                            .or_default()
+                            .push(child_id);
+                    }
+                    Some(child) if child.parent != Some(parent_id) => {
+                        self.tree_links_exact = false;
+                    }
+                    Some(_) => {}
+                }
+            }
+            for (parent_id, dangling) in dangling_by_parent {
+                if let Some(parent) = self.nodes.get_mut(&parent_id) {
+                    let before = parent.children.len();
+                    if dangling.len() == 1 {
+                        let target = dangling[0];
+                        parent.children.retain(|child| *child != target);
+                    } else {
+                        let dangling_set: FastHashSet<_> = dangling.into_iter().collect();
+                        parent
+                            .children
+                            .retain(|child| !dangling_set.contains(child));
+                    }
+                    if parent.children.len() != before {
+                        changed.insert(parent_id);
+                    }
+                }
+            }
+
+            if self.tree_links_exact {
+                self.drop_unreachable_local(
+                    &candidates,
+                    &dropped_edges,
+                    &reparented_or_new,
+                    &incoming_ids,
+                    &added_edges,
+                    &mut changed,
+                );
+            } else {
+                self.drop_unreachable_global(&mut changed);
+            }
+        }
+
+        if text_roles_changed {
+            self.reconcile_text_runs_incremental(&incoming_ids, &mut changed);
+        }
+
+        if let Some(previous_roots) = previous_roots
+            && self.roots != previous_roots
+        {
+            return self.full_update();
+        }
 
         // Updating a parent removes stale AccessKit subtrees. Do not also ship
         // unreachable descendants: AccessKit would keep their children with a
         // dangling parent_and_index.
+        let mut out = Vec::with_capacity(changed.len() + 2);
+        for id in changed {
+            if let Some(node) = self.nodes.get(&id) {
+                self.project_entries_into(node, &mut out);
+            }
+        }
         TreeUpdate {
-            nodes: changed
-                .into_iter()
-                .filter_map(|id| self.nodes.get(&id))
-                .flat_map(|node| self.project_entries(node))
-                .collect(),
+            nodes: out,
             tree: None,
             tree_id: TreeId::ROOT,
             focus: self.focused_node_id(),
         }
     }
 
-    fn drop_unreachable(&mut self, changed: &mut BTreeSet<StableNodeId>) {
+    fn is_reachable_local(
+        &self,
+        start: StableNodeId,
+        broken_parent_link: &FastHashSet<StableNodeId>,
+        known_reachable: &mut FastHashSet<StableNodeId>,
+        known_unreachable: &mut FastHashSet<StableNodeId>,
+        walk_path: &mut Vec<StableNodeId>,
+        walk_set: &mut FastHashSet<StableNodeId>,
+    ) -> bool {
+        walk_path.clear();
+        walk_set.clear();
+        let mut cur = start;
+        let reachable = loop {
+            if known_reachable.contains(&cur) {
+                break true;
+            }
+            if known_unreachable.contains(&cur) {
+                break false;
+            }
+            let in_cycle = if walk_path.len() < 16 {
+                walk_path.contains(&cur)
+            } else {
+                walk_set.contains(&cur)
+            };
+            if in_cycle {
+                break false;
+            }
+            let Some(node) = self.nodes.get(&cur) else {
+                break false;
+            };
+            match node.parent {
+                None => break true,
+                Some(parent) => {
+                    if broken_parent_link.contains(&cur) {
+                        break false;
+                    }
+                    if walk_path.len() == 16 {
+                        walk_set.extend(walk_path.iter().copied());
+                    }
+                    if walk_path.len() >= 16 {
+                        walk_set.insert(cur);
+                    }
+                    walk_path.push(cur);
+                    cur = parent;
+                }
+            }
+        };
+        if reachable {
+            known_reachable.extend(walk_path.iter().copied());
+        } else {
+            known_unreachable.extend(walk_path.iter().copied());
+        }
+        reachable
+    }
+
+    fn drop_unreachable_local(
+        &mut self,
+        candidates: &FastHashSet<StableNodeId>,
+        dropped_edges: &[(StableNodeId, StableNodeId)],
+        reparented_or_new: &[(
+            StableNodeId,
+            Option<StableNodeId>,
+            Option<StableNodeId>,
+            bool,
+        )],
+        incoming_ids: &FastHashSet<StableNodeId>,
+        added_edges: &FastHashSet<(StableNodeId, StableNodeId)>,
+        changed: &mut FastHashSet<StableNodeId>,
+    ) {
+        if candidates.is_empty() {
+            return;
+        }
+        let mut broken_parent_link = FastHashSet::default();
+        for &(old_parent, child_id) in dropped_edges {
+            if self
+                .nodes
+                .get(&child_id)
+                .is_some_and(|child| child.parent == Some(old_parent))
+            {
+                broken_parent_link.insert(child_id);
+            }
+        }
+        for &(child_id, _old_parent, new_parent, _was_new) in reparented_or_new {
+            if let Some(parent_id) = new_parent
+                && (!self.nodes.contains_key(&parent_id)
+                    || (incoming_ids.contains(&parent_id)
+                        && !added_edges.contains(&(parent_id, child_id))))
+            {
+                broken_parent_link.insert(child_id);
+            }
+        }
+
+        let mut known_reachable = FastHashSet::default();
+        let mut known_unreachable = FastHashSet::default();
+        let mut prune_stack = Vec::new();
+        let mut walk_path = Vec::new();
+        let mut walk_set = FastHashSet::default();
+        for &cand in candidates {
+            if !self.nodes.contains_key(&cand) {
+                continue;
+            }
+            if !self.is_reachable_local(
+                cand,
+                &broken_parent_link,
+                &mut known_reachable,
+                &mut known_unreachable,
+                &mut walk_path,
+                &mut walk_set,
+            ) {
+                prune_stack.push(cand);
+            }
+        }
+        while let Some(id) = prune_stack.pop() {
+            let Some(pruned) = self.nodes.remove(&id) else {
+                continue;
+            };
+            self.focused.remove(&id);
+            self.roots.remove(&id);
+            self.release_text_run(id);
+            changed.remove(&id);
+            for child_id in pruned.children {
+                if self
+                    .nodes
+                    .get(&child_id)
+                    .is_some_and(|child| child.parent == Some(id))
+                {
+                    prune_stack.push(child_id);
+                }
+            }
+        }
+    }
+
+    fn drop_unreachable_global(&mut self, changed: &mut FastHashSet<StableNodeId>) {
         #[cfg(test)]
         self.global_reconciliations
             .set(self.global_reconciliations.get() + 1);
-        let mut keep = BTreeSet::new();
-        let mut stack = runtime_roots(&self.nodes);
+        let mut keep = FastHashSet::with_capacity_and_hasher(self.nodes.len(), Default::default());
+        let mut stack: Vec<StableNodeId> = self.roots.iter().copied().collect();
         while let Some(id) = stack.pop() {
             if !keep.insert(id) {
                 continue;
             }
             if let Some(node) = self.nodes.get(&id) {
-                stack.extend(
-                    node.children
-                        .iter()
-                        .copied()
-                        .filter(|child| self.nodes.contains_key(child)),
-                );
+                for &child in &node.children {
+                    if self.nodes.contains_key(&child) {
+                        stack.push(child);
+                    }
+                }
             }
         }
         if keep.len() != self.nodes.len() {
-            self.nodes.retain(|id, _| keep.contains(id));
-            self.focused.retain(|id| keep.contains(id));
-            changed.retain(|id| keep.contains(id));
+            let mut pruned = Vec::with_capacity(self.nodes.len() - keep.len());
+            for &id in self.nodes.keys() {
+                if !keep.contains(&id) {
+                    pruned.push(id);
+                }
+            }
+            for id in pruned {
+                self.nodes.remove(&id);
+                self.focused.remove(&id);
+                self.roots.remove(&id);
+                self.release_text_run(id);
+                changed.remove(&id);
+            }
         }
         for node in self.nodes.values_mut() {
             let before = node.children.len();
@@ -282,6 +717,7 @@ impl AccessibilityProjector {
                 changed.insert(node.id);
             }
         }
+        self.tree_links_exact = check_tree_links_exact(&self.nodes, &self.roots);
     }
 
     fn synchronize(
@@ -289,30 +725,37 @@ impl AccessibilityProjector {
         nodes: Vec<AccessibilityNode>,
         scale_factor: f32,
     ) -> Option<TreeUpdate> {
-        let next = nodes
-            .into_iter()
-            .map(|node| (node.id, node))
-            .collect::<BTreeMap<_, _>>();
-        let roots = runtime_roots(&next);
+        let mut next = FastHashMap::with_capacity_and_hasher(nodes.len(), Default::default());
+        let mut roots = BTreeSet::new();
+        for node in nodes {
+            let id = node.id;
+            let is_root = node.parent.is_none();
+            if is_root {
+                roots.insert(id);
+            } else {
+                roots.remove(&id);
+            }
+            next.insert(id, node);
+        }
         let scale_factor = scale_factor.max(0.01);
         if (scale_factor - self.scale_factor).abs() > f32::EPSILON || roots != self.roots {
             self.nodes = next;
             self.focused = focused_nodes(&self.nodes);
             self.scale_factor = scale_factor;
             self.roots = roots;
+            self.tree_links_exact = check_tree_links_exact(&self.nodes, &self.roots);
             self.reconcile_text_runs();
             return Some(self.full_update());
         }
-        let updated = next
-            .values()
-            .filter(|node| self.nodes.get(&node.id) != Some(*node))
-            .cloned()
-            .collect::<Vec<_>>();
         let removed = self
             .nodes
             .keys()
             .filter(|id| !next.contains_key(id))
             .copied()
+            .collect::<Vec<_>>();
+        let updated = next
+            .into_values()
+            .filter(|node| self.nodes.get(&node.id) != Some(node))
             .collect::<Vec<_>>();
         if updated.is_empty() && removed.is_empty() {
             return None;
@@ -327,18 +770,22 @@ impl AccessibilityProjector {
     pub(crate) fn full_update(&self) -> TreeUpdate {
         #[cfg(test)]
         self.full_updates.set(self.full_updates.get() + 1);
-        let mut nodes = self
-            .nodes
-            .values()
-            .flat_map(|node| self.project_entries(node))
-            .collect::<Vec<_>>();
-        if self.window_root || self.roots.len() != 1 {
+        let has_synthetic_root = self.window_root || self.roots.len() != 1;
+        let mut nodes = Vec::with_capacity(
+            self.nodes.len() + self.text_runs.len() + usize::from(has_synthetic_root),
+        );
+        for node in self.nodes.values() {
+            self.project_entries_into(node, &mut nodes);
+        }
+        if has_synthetic_root {
             let mut root = Node::new(if self.window_root {
                 Role::Window
             } else {
                 Role::GenericContainer
             });
-            root.set_children(self.roots.iter().copied().map(node_id).collect::<Vec<_>>());
+            if !self.roots.is_empty() {
+                root.set_children(self.roots.iter().copied().map(node_id).collect::<Vec<_>>());
+            }
             nodes.push((FOREST_ROOT_ID, root));
         }
         TreeUpdate {
@@ -351,7 +798,7 @@ impl AccessibilityProjector {
 
     fn tree_root_id(&self) -> NodeId {
         if !self.window_root && self.roots.len() == 1 {
-            node_id(self.roots[0])
+            node_id(*self.roots.first().expect("single root"))
         } else {
             FOREST_ROOT_ID
         }
@@ -384,50 +831,102 @@ impl AccessibilityProjector {
         })
     }
 
+    fn allocate_text_run(&mut self, id: StableNodeId) -> NodeId {
+        loop {
+            let candidate = self.next_text_run_id;
+            self.next_text_run_id = candidate.wrapping_sub(1);
+            if candidate == 0 {
+                continue;
+            }
+            let run_id = NodeId(candidate);
+            let collides_with_node =
+                StableNodeId::new(candidate).is_some_and(|stable| self.nodes.contains_key(&stable));
+            if !collides_with_node && !self.text_runs_by_run_id.contains_key(&run_id) {
+                self.text_runs.insert(id, run_id);
+                self.text_runs_by_run_id.insert(run_id, id);
+                return run_id;
+            }
+        }
+    }
+
+    fn release_text_run(&mut self, id: StableNodeId) -> Option<NodeId> {
+        let run_id = self.text_runs.remove(&id)?;
+        self.text_runs_by_run_id.remove(&run_id);
+        Some(run_id)
+    }
+
+    fn reconcile_text_runs_incremental(
+        &mut self,
+        incoming_ids: &FastHashSet<StableNodeId>,
+        changed: &mut FastHashSet<StableNodeId>,
+    ) {
+        let mut needs_text_run = Vec::new();
+        for &id in incoming_ids {
+            let Some(is_text_input) = self
+                .nodes
+                .get(&id)
+                .map(|node| node.role == AccessibilityRole::TextInput)
+            else {
+                continue;
+            };
+            if !is_text_input {
+                self.release_text_run(id);
+            }
+            if let Some(owner_id) = self.text_runs_by_run_id.remove(&node_id(id)) {
+                self.text_runs.remove(&owner_id);
+                needs_text_run.push(owner_id);
+            }
+            if is_text_input && !self.text_runs.contains_key(&id) {
+                needs_text_run.push(id);
+            }
+        }
+        for id in needs_text_run {
+            if self
+                .nodes
+                .get(&id)
+                .is_some_and(|node| node.role == AccessibilityRole::TextInput)
+                && !self.text_runs.contains_key(&id)
+            {
+                self.allocate_text_run(id);
+                changed.insert(id);
+            }
+        }
+    }
+
     fn reconcile_text_runs(&mut self) {
         #[cfg(test)]
         self.global_reconciliations
             .set(self.global_reconciliations.get() + 1);
-        let occupied = self
-            .nodes
-            .keys()
-            .map(|id| NodeId(id.get()))
-            .collect::<BTreeSet<_>>();
         self.text_runs.retain(|id, text_run| {
-            self.nodes
+            let valid = self
+                .nodes
                 .get(id)
                 .is_some_and(|node| node.role == AccessibilityRole::TextInput)
-                && !occupied.contains(text_run)
+                && StableNodeId::new(text_run.0)
+                    .is_none_or(|stable| !self.nodes.contains_key(&stable));
+            if !valid {
+                self.text_runs_by_run_id.remove(text_run);
+            }
+            valid
         });
-        let mut used = occupied;
-        used.extend(self.text_runs.values().copied());
-        let inputs = self
+        let missing = self
             .nodes
             .values()
-            .filter(|node| node.role == AccessibilityRole::TextInput)
+            .filter(|node| {
+                node.role == AccessibilityRole::TextInput && !self.text_runs.contains_key(&node.id)
+            })
             .map(|node| node.id)
             .collect::<Vec<_>>();
-        for id in inputs {
-            if self.text_runs.contains_key(&id) {
-                continue;
-            }
-            while self.next_text_run_id == 0 || used.contains(&NodeId(self.next_text_run_id)) {
-                self.next_text_run_id = self.next_text_run_id.wrapping_sub(1);
-            }
-            let text_run = NodeId(self.next_text_run_id);
-            self.next_text_run_id = self.next_text_run_id.wrapping_sub(1);
-            used.insert(text_run);
-            self.text_runs.insert(id, text_run);
+        for id in missing {
+            self.allocate_text_run(id);
         }
     }
 
-    fn project_entries(&self, node: &AccessibilityNode) -> Vec<(NodeId, Node)> {
-        project_node(
-            node,
-            self.text_runs.get(&node.id).copied(),
-            self.interactive,
-            self.scale_factor,
-        )
+    fn project_entries_into(&self, node: &AccessibilityNode, out: &mut Vec<(NodeId, Node)>) {
+        let text_run_id = (node.role == AccessibilityRole::TextInput)
+            .then(|| self.text_runs.get(&node.id).copied())
+            .flatten();
+        project_node_into(node, text_run_id, self.interactive, self.scale_factor, out);
     }
 
     pub(crate) fn project_action_request(
@@ -572,7 +1071,7 @@ impl AccessibilityProjector {
 
 const FOREST_ROOT_ID: NodeId = NodeId(0);
 
-fn focused_nodes(nodes: &BTreeMap<StableNodeId, AccessibilityNode>) -> BTreeSet<StableNodeId> {
+fn focused_nodes(nodes: &FastHashMap<StableNodeId, AccessibilityNode>) -> BTreeSet<StableNodeId> {
     nodes
         .values()
         .filter(|node| node.focused)
@@ -580,12 +1079,96 @@ fn focused_nodes(nodes: &BTreeMap<StableNodeId, AccessibilityNode>) -> BTreeSet<
         .collect()
 }
 
-fn runtime_roots(nodes: &BTreeMap<StableNodeId, AccessibilityNode>) -> Vec<StableNodeId> {
+fn runtime_roots(nodes: &FastHashMap<StableNodeId, AccessibilityNode>) -> BTreeSet<StableNodeId> {
     nodes
         .values()
         .filter(|node| node.parent.is_none())
         .map(|node| node.id)
         .collect()
+}
+
+fn check_tree_links_exact(
+    nodes: &FastHashMap<StableNodeId, AccessibilityNode>,
+    roots: &BTreeSet<StableNodeId>,
+) -> bool {
+    let mut visited = FastHashSet::with_capacity_and_hasher(nodes.len(), Default::default());
+    let mut stack = Vec::with_capacity(roots.len().max(16));
+    for &root_id in roots {
+        if !visited.insert(root_id) {
+            return false;
+        }
+        stack.push(root_id);
+    }
+    while let Some(id) = stack.pop() {
+        let Some(node) = nodes.get(&id) else {
+            return false;
+        };
+        for &child_id in &node.children {
+            let Some(child) = nodes.get(&child_id) else {
+                return false;
+            };
+            if child.parent != Some(id) || !visited.insert(child_id) {
+                return false;
+            }
+            stack.push(child_id);
+        }
+    }
+    visited.len() == nodes.len()
+}
+
+fn diff_children(
+    prev: &[StableNodeId],
+    next: &[StableNodeId],
+) -> (Vec<StableNodeId>, Vec<StableNodeId>, bool) {
+    let prefix = prev
+        .iter()
+        .zip(next.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let prev_rem = &prev[prefix..];
+    let next_rem = &next[prefix..];
+    let suffix = prev_rem
+        .iter()
+        .rev()
+        .zip(next_rem.iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let prev_mid = &prev_rem[..prev_rem.len() - suffix];
+    let next_mid = &next_rem[..next_rem.len() - suffix];
+    if prev_mid.is_empty() {
+        return (Vec::new(), next_mid.to_vec(), false);
+    }
+    if next_mid.is_empty() {
+        return (prev_mid.to_vec(), Vec::new(), false);
+    }
+    if prev_mid.len() <= 8 && next_mid.len() <= 8 {
+        let dropped = prev_mid
+            .iter()
+            .copied()
+            .filter(|id| !next_mid.contains(id))
+            .collect::<Vec<_>>();
+        let added = next_mid
+            .iter()
+            .copied()
+            .filter(|id| !prev_mid.contains(id))
+            .collect::<Vec<_>>();
+        let has_duplicates = next_mid.len() != prev_mid.len() - dropped.len() + added.len();
+        return (dropped, added, has_duplicates);
+    }
+    let next_set: FastHashSet<_> = next_mid.iter().copied().collect();
+    let prev_set: FastHashSet<_> = prev_mid.iter().copied().collect();
+    let dropped = prev_mid
+        .iter()
+        .copied()
+        .filter(|id| !next_set.contains(id))
+        .collect::<Vec<_>>();
+    let added = next_mid
+        .iter()
+        .copied()
+        .filter(|id| !prev_set.contains(id))
+        .collect::<Vec<_>>();
+    let has_duplicates = next_set.len() != next_mid.len();
+    (dropped, added, has_duplicates)
 }
 
 #[cfg(all(feature = "hosted", not(target_os = "android")))]
@@ -655,6 +1238,7 @@ impl CurrentTree {
 #[cfg(all(feature = "hosted", not(target_os = "android")))]
 struct QueuedActions {
     requests: Arc<Mutex<VecDeque<ActionRequest>>>,
+    has_pending: Arc<AtomicBool>,
     window: Arc<dyn winit::window::Window>,
 }
 
@@ -679,6 +1263,7 @@ impl ActionHandler for QueuedActions {
         if let Ok(mut requests) = self.requests.lock()
             && enqueue_accessibility_action(&mut requests, request)
         {
+            self.has_pending.store(true, Ordering::Release);
             self.window.request_redraw();
         }
     }
@@ -944,6 +1529,7 @@ pub(crate) struct HostedAccessibility {
     adapter: Option<()>,
     current_tree: CurrentTree,
     requests: Arc<Mutex<VecDeque<ActionRequest>>>,
+    has_pending_actions: Arc<AtomicBool>,
 }
 
 #[cfg(all(feature = "hosted", not(target_os = "android")))]
@@ -961,8 +1547,10 @@ impl HostedAccessibility {
         let current_tree =
             CurrentTree::unpublished(interactive, scale_factor, Some(Arc::clone(&window)));
         let requests = Arc::new(Mutex::new(VecDeque::new()));
+        let has_pending_actions = Arc::new(AtomicBool::new(false));
         let actions = QueuedActions {
             requests: Arc::clone(&requests),
+            has_pending: Arc::clone(&has_pending_actions),
             window: Arc::clone(&window),
         };
         let adapter = native_adapter(&window, current_tree.clone(), actions);
@@ -970,6 +1558,7 @@ impl HostedAccessibility {
             adapter,
             current_tree,
             requests,
+            has_pending_actions,
         }
     }
 
@@ -977,12 +1566,15 @@ impl HostedAccessibility {
         self.current_tree.activated.load(Ordering::Acquire)
     }
 
-    pub(crate) fn retained_generation(&self) -> Option<u64> {
-        self.current_tree
+    pub(crate) fn sync_state(&self, scale_factor: f32) -> (bool, Option<u64>) {
+        let projector = self
+            .current_tree
             .projector
             .lock()
-            .expect("accessibility projector")
-            .generation
+            .expect("accessibility projector");
+        let scale_factor_changed =
+            (projector.scale_factor - scale_factor.max(0.01)).abs() > f32::EPSILON;
+        (scale_factor_changed, projector.generation)
     }
 
     pub(crate) fn process_event(
@@ -1025,18 +1617,6 @@ impl HostedAccessibility {
         }
     }
 
-    pub(crate) fn scale_factor_changed(&self, scale_factor: f32) -> bool {
-        (self
-            .current_tree
-            .projector
-            .lock()
-            .expect("accessibility projector")
-            .scale_factor
-            - scale_factor.max(0.01))
-        .abs()
-            > f32::EPSILON
-    }
-
     pub(crate) fn synchronize(&mut self, update: AccessibilityUpdate, scale_factor: f32) {
         // Drop the projector lock before entering native UIA/AccessKit code:
         // raising events can synchronously request a fresh activation tree.
@@ -1046,12 +1626,19 @@ impl HostedAccessibility {
     }
 
     pub(crate) fn take_actions(&self) -> Vec<nana_ui_runtime::AccessibilityActionRequest> {
+        if !self.has_pending_actions.load(Ordering::Acquire) {
+            return Vec::new();
+        }
         let requests = {
             let Ok(mut requests) = self.requests.lock() else {
                 return Vec::new();
             };
+            self.has_pending_actions.store(false, Ordering::Release);
             std::mem::take(&mut *requests)
         };
+        if requests.is_empty() {
+            return Vec::new();
+        }
         let projector = self
             .current_tree
             .projector
@@ -1064,21 +1651,34 @@ impl HostedAccessibility {
     }
 }
 
+#[cfg(test)]
 fn project_node(
     node: &AccessibilityNode,
     text_run_id: Option<NodeId>,
     interactive: bool,
     scale_factor: f32,
 ) -> Vec<(NodeId, Node)> {
+    let mut out = Vec::with_capacity(if text_run_id.is_some() { 2 } else { 1 });
+    project_node_into(node, text_run_id, interactive, scale_factor, &mut out);
+    out
+}
+
+fn project_node_into(
+    node: &AccessibilityNode,
+    text_run_id: Option<NodeId>,
+    interactive: bool,
+    scale_factor: f32,
+    out: &mut Vec<(NodeId, Node)>,
+) {
     // An inert node keeps its place and what it says, and offers nothing.
     let interactive = interactive && !node.inert;
     let mut projected = Node::new(projected_role(node));
     // AccessKit Label nodes expose their text through value (including the
     // native UIA Name property), unlike controls whose accessible name is label.
     if node.role != AccessibilityRole::Text
-        && let Some(label) = &node.label
+        && let Some(label) = node.label.as_deref()
     {
-        projected.set_label(label.to_string());
+        projected.set_label(label);
     }
     let value: Option<&str> = if node.role == AccessibilityRole::Text {
         node.label.as_deref().or(node.value.as_deref())
@@ -1086,22 +1686,23 @@ fn project_node(
         node.value.as_deref()
     };
     if let Some(value) = value {
-        projected.set_value(value.to_string());
+        projected.set_value(value);
     }
-    if let Some(description) = &node.description {
-        projected.set_description(description.to_string());
+    if let Some(description) = node.description.as_deref() {
+        projected.set_description(description);
     }
-    if let Some(role_description) = &node.role_description {
-        projected.set_role_description(role_description.to_string());
+    if let Some(role_description) = node.role_description.as_deref() {
+        projected.set_role_description(role_description);
     }
-    let mut children = node
-        .children
-        .iter()
-        .copied()
-        .map(node_id)
-        .collect::<Vec<_>>();
-    children.extend(text_run_id);
-    projected.set_children(children);
+    if !node.children.is_empty() || text_run_id.is_some() {
+        let mut children =
+            Vec::with_capacity(node.children.len() + usize::from(text_run_id.is_some()));
+        children.extend(node.children.iter().copied().map(node_id));
+        if let Some(text_run_id) = text_run_id {
+            children.push(text_run_id);
+        }
+        projected.set_children(children);
+    }
     // Runtime bounds are relative to the parent's children's space: the
     // offset, after the node's own turn when it has one, then the move by
     // its scroll, is this node's transform, so its children's offsets start
@@ -1286,21 +1887,24 @@ fn project_node(
         }
     }
 
-    let mut entries = vec![(node_id(node.id), projected)];
+    out.push((node_id(node.id), projected));
     if let Some(text_run_id) = text_run_id {
         let value = node.value.as_deref().unwrap_or_default();
         let mut text_run = Node::new(Role::TextRun);
-        text_run.set_value(value.to_string());
+        text_run.set_value(value);
         text_run.set_text_direction(text_direction(node.writing));
-        text_run.set_character_lengths(
-            value
-                .chars()
-                .map(|character| character.len_utf8() as u8)
-                .collect::<Vec<_>>(),
-        );
-        entries.push((text_run_id, text_run));
+        let lengths = if value.is_ascii() {
+            vec![1u8; value.len()]
+        } else {
+            let mut lengths = Vec::with_capacity(value.len());
+            for character in value.chars() {
+                lengths.push(character.len_utf8() as u8);
+            }
+            lengths
+        };
+        text_run.set_character_lengths(lengths);
+        out.push((text_run_id, text_run));
     }
-    entries
 }
 
 /// Which way a text run reads, from its inline-start edge: a vertical column
@@ -1429,17 +2033,25 @@ fn byte_to_character_index(value: &str, byte_offset: usize) -> Option<usize> {
     if byte_offset > value.len() || !value.is_char_boundary(byte_offset) {
         return None;
     }
-    Some(value[..byte_offset].chars().count())
+    let prefix = &value[..byte_offset];
+    if prefix.is_ascii() {
+        return Some(byte_offset);
+    }
+    Some(prefix.chars().count())
 }
 
 fn character_index_to_byte(value: &str, character_index: usize) -> Option<usize> {
-    if character_index == value.chars().count() {
-        return Some(value.len());
+    if value.is_ascii() {
+        return (character_index <= value.len()).then_some(character_index);
     }
-    value
-        .char_indices()
-        .nth(character_index)
-        .map(|(index, _)| index)
+    let mut count = 0usize;
+    for (byte_index, _) in value.char_indices() {
+        if count == character_index {
+            return Some(byte_index);
+        }
+        count += 1;
+    }
+    (character_index == count).then_some(value.len())
 }
 
 const fn node_id(id: StableNodeId) -> NodeId {
@@ -3671,5 +4283,417 @@ mod tests {
         assert_eq!(projected(3).is_selected(), Some(true));
         assert!(projected(4).is_multiselectable());
         assert_eq!(projected(5).is_selected(), Some(true));
+    }
+
+    #[test]
+    fn incremental_text_runs_handle_collision_role_flip_and_unreachable_collider_without_global_scan()
+     {
+        let root = node(1, None, &[2]);
+        let mut input = node(2, Some(1), &[]);
+        input.role = AccessibilityRole::TextInput;
+        input.value = Some("hello".into());
+        let (mut projector, _) =
+            AccessibilityProjector::new(vec![root.clone(), input.clone()], true, 1.0);
+        assert_eq!(projector.global_reconciliations.get(), 1);
+        let first_run = projector.text_runs[&StableNodeId::new(2).unwrap()];
+        assert_eq!(first_run, NodeId(u64::MAX));
+        assert_eq!(
+            projector.text_runs_by_run_id.get(&first_run).copied(),
+            Some(StableNodeId::new(2).unwrap())
+        );
+
+        // An unreachable node whose ID collides with `first_run` is pruned and must not disturb `first_run`.
+        let update = projector
+            .apply_delta(AccessibilityDelta {
+                generation: 1,
+                updated: vec![node(u64::MAX, Some(999), &[])],
+                removed: vec![],
+            })
+            .unwrap();
+        assert!(update.tree.is_none());
+        assert_eq!(
+            projector.text_runs[&StableNodeId::new(2).unwrap()],
+            first_run
+        );
+        assert!(
+            !projector
+                .nodes
+                .contains_key(&StableNodeId::new(u64::MAX).unwrap())
+        );
+        assert_eq!(projector.global_reconciliations.get(), 1);
+
+        // A reachable node with ID `u64::MAX` collides and rekeys node 2's text run incrementally.
+        let update = projector
+            .apply_delta(AccessibilityDelta {
+                generation: 2,
+                updated: vec![node(u64::MAX, Some(1), &[])],
+                removed: vec![],
+            })
+            .unwrap();
+        assert!(update.tree.is_none());
+        let second_run = projector.text_runs[&StableNodeId::new(2).unwrap()];
+        assert_ne!(second_run, first_run);
+        assert_ne!(second_run, NodeId(u64::MAX));
+        assert_eq!(projector.text_runs.len(), 1);
+        assert_eq!(projector.text_runs_by_run_id.len(), 1);
+        assert_eq!(
+            projector.text_runs_by_run_id.get(&second_run).copied(),
+            Some(StableNodeId::new(2).unwrap())
+        );
+        let projected_input = &update
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == NodeId(2))
+            .expect("rekeyed input must be emitted")
+            .1;
+        assert!(projected_input.children().contains(&second_run));
+        assert!(!projected_input.children().contains(&first_run));
+        assert_eq!(projector.global_reconciliations.get(), 1);
+
+        // Role flip away from TextInput releases both maps; removing a TextInput subtree releases it too.
+        let mut flipped = input.clone();
+        flipped.role = AccessibilityRole::Generic;
+        let update = projector
+            .apply_delta(AccessibilityDelta {
+                generation: 3,
+                updated: vec![flipped],
+                removed: vec![],
+            })
+            .unwrap();
+        assert!(update.tree.is_none());
+        assert!(projector.text_runs.is_empty());
+        assert!(projector.text_runs_by_run_id.is_empty());
+        assert_eq!(projector.global_reconciliations.get(), 1);
+
+        let update = projector
+            .apply_delta(AccessibilityDelta {
+                generation: 4,
+                updated: vec![input],
+                removed: vec![],
+            })
+            .unwrap();
+        assert!(update.tree.is_none());
+        let third_run = projector.text_runs[&StableNodeId::new(2).unwrap()];
+        assert_ne!(third_run, second_run);
+        assert_eq!(projector.text_runs_by_run_id.len(), 1);
+        assert_eq!(projector.global_reconciliations.get(), 1);
+
+        let update = projector
+            .apply_delta(AccessibilityDelta {
+                generation: 5,
+                updated: vec![],
+                removed: vec![StableNodeId::new(2).unwrap()],
+            })
+            .unwrap();
+        assert!(update.tree.is_none());
+        assert!(projector.text_runs.is_empty());
+        assert!(projector.text_runs_by_run_id.is_empty());
+        assert_eq!(projector.global_reconciliations.get(), 1);
+    }
+
+    #[test]
+    fn incremental_roots_track_promotion_demotion_and_multi_root_forest_order() {
+        let root = node(5, None, &[2]);
+        let child = node(2, Some(5), &[]);
+        let (mut projector, initial) = AccessibilityProjector::new(vec![root, child], false, 1.0);
+        assert_eq!(initial.tree.unwrap().root, NodeId(5));
+        assert_eq!(projector.global_reconciliations.get(), 1);
+
+        // Promote child 2 to a second root; forest root lists roots in ascending StableNodeId order.
+        let promoted = projector
+            .apply_delta(AccessibilityDelta {
+                generation: 1,
+                updated: vec![node(5, None, &[]), node(2, None, &[])],
+                removed: vec![],
+            })
+            .unwrap();
+        assert_eq!(promoted.tree.unwrap().root, FOREST_ROOT_ID);
+        let forest = &promoted
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == FOREST_ROOT_ID)
+            .unwrap()
+            .1;
+        assert_eq!(forest.children(), [NodeId(2), NodeId(5)]);
+        assert_eq!(projector.global_reconciliations.get(), 1);
+
+        // Demote root 5 under root 2: back to single root 2.
+        let demoted = projector
+            .apply_delta(AccessibilityDelta {
+                generation: 2,
+                updated: vec![node(2, None, &[5]), node(5, Some(2), &[])],
+                removed: vec![],
+            })
+            .unwrap();
+        assert_eq!(demoted.tree.unwrap().root, NodeId(2));
+        assert!(demoted.nodes.iter().all(|(id, _)| *id != FOREST_ROOT_ID));
+        assert_eq!(projector.global_reconciliations.get(), 1);
+    }
+
+    #[test]
+    fn localized_pruning_drops_detached_subtrees_cycles_and_self_loops_without_global_scan() {
+        let root = node(1, None, &[2, 6]);
+        let branch = node(2, Some(1), &[3]);
+        let mut nested_input = node(3, Some(2), &[4]);
+        nested_input.role = AccessibilityRole::TextInput;
+        nested_input.focused = true;
+        let leaf = node(4, Some(3), &[]);
+        let survivor = node(6, Some(1), &[]);
+        let (mut projector, _) = AccessibilityProjector::new(
+            vec![root, branch, nested_input, leaf, survivor],
+            true,
+            1.0,
+        );
+        assert_eq!(projector.global_reconciliations.get(), 1);
+
+        // Unlinking branch 2 from root 1 drops 2, 3 (and its text_run + focus), and 4 locally.
+        let update = projector
+            .apply_delta(AccessibilityDelta {
+                generation: 1,
+                updated: vec![node(1, None, &[6])],
+                removed: vec![],
+            })
+            .unwrap();
+        assert!(update.tree.is_none());
+        assert_eq!(projector.nodes.len(), 2);
+        assert!(projector.text_runs.is_empty());
+        assert!(projector.text_runs_by_run_id.is_empty());
+        assert!(projector.focused.is_empty());
+        assert_eq!(projector.global_reconciliations.get(), 1);
+
+        // Reattach a 2-node branch (10 -> 11), then detach them into a cycle (10 <-> 11).
+        let _ = projector
+            .apply_delta(AccessibilityDelta {
+                generation: 2,
+                updated: vec![
+                    node(1, None, &[6, 10]),
+                    node(10, Some(1), &[11]),
+                    node(11, Some(10), &[]),
+                ],
+                removed: vec![],
+            })
+            .unwrap();
+        assert_eq!(projector.nodes.len(), 4);
+        assert_eq!(projector.global_reconciliations.get(), 1);
+
+        let update = projector
+            .apply_delta(AccessibilityDelta {
+                generation: 3,
+                updated: vec![
+                    node(1, None, &[6]),
+                    node(10, Some(11), &[11]),
+                    node(11, Some(10), &[10]),
+                ],
+                removed: vec![],
+            })
+            .unwrap();
+        assert!(update.tree.is_none());
+        assert!(
+            !projector
+                .nodes
+                .contains_key(&StableNodeId::new(10).unwrap())
+        );
+        assert!(
+            !projector
+                .nodes
+                .contains_key(&StableNodeId::new(11).unwrap())
+        );
+        assert_eq!(projector.nodes.len(), 2);
+        assert_eq!(projector.global_reconciliations.get(), 1);
+
+        // Self-loop and orphan subtree with missing parent are both pruned locally.
+        let update = projector
+            .apply_delta(AccessibilityDelta {
+                generation: 4,
+                updated: vec![
+                    node(20, Some(20), &[20]),
+                    node(21, Some(999), &[22]),
+                    node(22, Some(21), &[]),
+                ],
+                removed: vec![],
+            })
+            .unwrap();
+        assert!(update.tree.is_none());
+        assert_eq!(projector.nodes.len(), 2);
+        assert_eq!(projector.global_reconciliations.get(), 1);
+
+        // Reparenting a child onto a cached surviving parent without the surviving parent in delta.
+        let _ = projector
+            .apply_delta(AccessibilityDelta {
+                generation: 5,
+                updated: vec![
+                    node(1, None, &[6, 30]),
+                    node(30, Some(1), &[31]),
+                    node(31, Some(30), &[]),
+                ],
+                removed: vec![],
+            })
+            .unwrap();
+        let update = projector
+            .apply_delta(AccessibilityDelta {
+                generation: 6,
+                updated: vec![node(31, Some(6), &[])],
+                removed: vec![StableNodeId::new(30).unwrap()],
+            })
+            .unwrap();
+        assert!(update.tree.is_none());
+        assert!(
+            projector
+                .nodes
+                .contains_key(&StableNodeId::new(31).unwrap())
+        );
+        assert_eq!(
+            projector.nodes[&StableNodeId::new(6).unwrap()].children,
+            vec![StableNodeId::new(31).unwrap()]
+        );
+        assert_eq!(projector.global_reconciliations.get(), 1);
+    }
+
+    #[test]
+    fn non_tree_mismatched_parent_links_fall_back_safely_to_exact_reachability() {
+        let root = node(1, None, &[2, 3]);
+        let a = node(2, Some(1), &[4]);
+        let b = node(3, Some(1), &[]);
+        let shared = node(4, Some(2), &[]);
+        let (mut projector, _) = AccessibilityProjector::new(vec![root, a, b, shared], false, 1.0);
+        assert!(projector.tree_links_exact);
+
+        // Node 3 lists 4 even though 4.parent is still Some(2), while 2 is removed.
+        // Forward reachability from root 1 still reaches 4 via 3 -> 4!
+        let update = projector
+            .apply_delta(AccessibilityDelta {
+                generation: 1,
+                updated: vec![node(3, Some(1), &[4])],
+                removed: vec![StableNodeId::new(2).unwrap()],
+            })
+            .unwrap();
+        assert!(update.tree.is_none());
+        assert!(projector.nodes.contains_key(&StableNodeId::new(4).unwrap()));
+        assert_eq!(
+            projector.nodes[&StableNodeId::new(3).unwrap()].children,
+            vec![StableNodeId::new(4).unwrap()]
+        );
+        assert!(projector.global_reconciliations.get() >= 2);
+    }
+
+    #[test]
+    fn repeated_parent_and_new_child_inserts_stay_local_regardless_of_hash_order() {
+        let root = node(1, None, &[2]);
+        let child = node(2, Some(1), &[]);
+        let (mut projector, _) = AccessibilityProjector::new(vec![root, child], true, 1.0);
+        assert_eq!(projector.global_reconciliations.get(), 1);
+        for offset in 0..32u64 {
+            let new_id = 100 + offset;
+            let update = projector
+                .apply_delta(AccessibilityDelta {
+                    generation: offset * 2 + 1,
+                    updated: vec![node(1, None, &[2, new_id]), node(new_id, Some(1), &[])],
+                    removed: vec![],
+                })
+                .unwrap();
+            assert!(update.tree.is_none());
+            assert!(projector.tree_links_exact);
+            let update = projector
+                .apply_delta(AccessibilityDelta {
+                    generation: offset * 2 + 2,
+                    updated: vec![],
+                    removed: vec![StableNodeId::new(new_id).unwrap()],
+                })
+                .unwrap();
+            assert!(update.tree.is_none());
+            assert!(projector.tree_links_exact);
+        }
+        assert_eq!(projector.global_reconciliations.get(), 1);
+    }
+
+    #[test]
+    fn removed_child_is_stripped_even_when_parent_is_in_updated_with_stale_children() {
+        let root = node(1, None, &[2, 3]);
+        let first = node(2, Some(1), &[]);
+        let second = node(3, Some(1), &[]);
+        let (mut projector, _) = AccessibilityProjector::new(vec![root, first, second], true, 1.0);
+        assert_eq!(projector.global_reconciliations.get(), 1);
+
+        // Case 1: parent is in `updated` (e.g. label changed) with unchanged `children = [2, 3]`,
+        // while child 2 is in `removed`.
+        let mut parent_prop_update = node(1, None, &[2, 3]);
+        parent_prop_update.label = Some("Renamed".into());
+        let update = projector
+            .apply_delta(AccessibilityDelta {
+                generation: 1,
+                updated: vec![parent_prop_update],
+                removed: vec![StableNodeId::new(2).unwrap()],
+            })
+            .unwrap();
+        assert!(update.tree.is_none());
+        let projected_root = &update
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == NodeId(1))
+            .expect("root emitted")
+            .1;
+        assert_eq!(projected_root.children(), [NodeId(3)].as_slice());
+        assert_eq!(projected_root.label(), Some("Renamed"));
+        assert_eq!(
+            projector.nodes[&StableNodeId::new(1).unwrap()].children,
+            vec![StableNodeId::new(3).unwrap()]
+        );
+        assert!(projector.tree_links_exact);
+        assert_eq!(projector.global_reconciliations.get(), 1);
+
+        // Case 2: parent adds sibling 4 in `updated` while still listing removed child 3 in its prefix.
+        let update = projector
+            .apply_delta(AccessibilityDelta {
+                generation: 2,
+                updated: vec![node(1, None, &[3, 4]), node(4, Some(1), &[])],
+                removed: vec![StableNodeId::new(3).unwrap()],
+            })
+            .unwrap();
+        assert!(update.tree.is_none());
+        let projected_root = &update
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == NodeId(1))
+            .expect("root emitted")
+            .1;
+        assert_eq!(projected_root.children(), [NodeId(4)].as_slice());
+        assert_eq!(
+            projector.nodes[&StableNodeId::new(1).unwrap()].children,
+            vec![StableNodeId::new(4).unwrap()]
+        );
+        assert!(projector.tree_links_exact);
+        assert_eq!(projector.global_reconciliations.get(), 1);
+    }
+
+    #[test]
+    fn text_index_conversion_handles_ascii_and_multibyte_boundaries() {
+        assert_eq!(byte_to_character_index("", 0), Some(0));
+        assert_eq!(byte_to_character_index("", 1), None);
+        assert_eq!(character_index_to_byte("", 0), Some(0));
+        assert_eq!(character_index_to_byte("", 1), None);
+
+        assert_eq!(byte_to_character_index("hello", 0), Some(0));
+        assert_eq!(byte_to_character_index("hello", 3), Some(3));
+        assert_eq!(byte_to_character_index("hello", 5), Some(5));
+        assert_eq!(byte_to_character_index("hello", 6), None);
+        assert_eq!(character_index_to_byte("hello", 0), Some(0));
+        assert_eq!(character_index_to_byte("hello", 3), Some(3));
+        assert_eq!(character_index_to_byte("hello", 5), Some(5));
+        assert_eq!(character_index_to_byte("hello", 6), None);
+
+        let mixed = "a你🦀z";
+        assert_eq!(byte_to_character_index(mixed, 0), Some(0));
+        assert_eq!(byte_to_character_index(mixed, 1), Some(1));
+        assert_eq!(byte_to_character_index(mixed, 2), None); // inside '你'
+        assert_eq!(byte_to_character_index(mixed, 4), Some(2));
+        assert_eq!(byte_to_character_index(mixed, 8), Some(3));
+        assert_eq!(byte_to_character_index(mixed, 9), Some(4));
+        assert_eq!(byte_to_character_index(mixed, 10), None);
+        assert_eq!(character_index_to_byte(mixed, 0), Some(0));
+        assert_eq!(character_index_to_byte(mixed, 1), Some(1));
+        assert_eq!(character_index_to_byte(mixed, 2), Some(4));
+        assert_eq!(character_index_to_byte(mixed, 3), Some(8));
+        assert_eq!(character_index_to_byte(mixed, 4), Some(9));
+        assert_eq!(character_index_to_byte(mixed, 5), None);
     }
 }

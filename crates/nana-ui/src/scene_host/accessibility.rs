@@ -254,34 +254,31 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     #[cfg(not(target_os = "android"))]
     pub(super) fn synchronize_accessibility(&mut self, id: WindowId) {
         let scale_factor = self.scale_factor(id);
-        let has_adapter = self
-            .window_contexts
-            .get(&id)
-            .is_some_and(|host| host.accessibility.is_some());
-        if !has_adapter {
-            return;
-        }
-        if !self.is_accessibility_activated(id) {
-            if let Some(pending) = self.accessibility_pending_mut(id) {
-                let _ = pending.take_for_publication();
+        let Some((scale_factor_changed, projector_generation, pending, resnapshot)) = ({
+            let Some(host) = self.window_contexts.get_mut(&id) else {
+                return;
+            };
+            let Some(accessibility) = host.accessibility.as_ref() else {
+                return;
+            };
+            if !accessibility.is_activated() {
+                let _ = host.accessibility_pending.take_for_publication();
+                None
+            } else {
+                let (scale_factor_changed, projector_generation) =
+                    accessibility.sync_state(scale_factor);
+                let (pending, resnapshot) = host.accessibility_pending.take_for_publication();
+                Some((
+                    scale_factor_changed,
+                    projector_generation,
+                    pending,
+                    resnapshot,
+                ))
             }
+        }) else {
             let _ = self.program.take_accessibility_update(id);
             return;
-        }
-        let scale_factor_changed = self
-            .window_contexts
-            .get(&id)
-            .and_then(|host| host.accessibility.as_ref())
-            .is_some_and(|accessibility| accessibility.scale_factor_changed(scale_factor));
-        let projector_generation = self
-            .window_contexts
-            .get(&id)
-            .and_then(|host| host.accessibility.as_ref())
-            .and_then(HostedAccessibility::retained_generation);
-        let Some(pending) = self.accessibility_pending_mut(id) else {
-            return;
         };
-        let (pending, resnapshot) = pending.take_for_publication();
         let program = self.program.take_accessibility_update(id);
         let world_generation = accessibility_world_generation(&mut self.program, id);
         let Some(update) = next_accessibility_update(
