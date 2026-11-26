@@ -7,14 +7,14 @@ use nana_ui_platform::{
     DataFormat, DataTransfer, HostServiceError, TransferCachePolicy, TransferError, TransferImage,
     TransferOrigin, TransferProvider, format_uri_list, path_to_file_uri,
 };
-use windows_sys::Win32::Foundation::{GLOBAL_HANDLE, HGLOBAL};
+use windows_sys::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL};
 use windows_sys::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData,
     GetClipboardFormatNameW, GetClipboardSequenceNumber, OpenClipboard, RegisterClipboardFormatW,
     SetClipboardData,
 };
 use windows_sys::Win32::System::Memory::{
-    GMEM_MOVEABLE, GMEM_ZEROINIT, GlobalAlloc, GlobalFree, GlobalLock, GlobalSize, GlobalUnlock,
+    GMEM_MOVEABLE, GMEM_ZEROINIT, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock,
 };
 use windows_sys::Win32::System::Ole::{CF_HDROP, CF_UNICODETEXT};
 use windows_sys::Win32::UI::Shell::DragQueryFileW;
@@ -135,7 +135,7 @@ unsafe fn write_hglobal_bytes(format_id: u32, bytes: &[u8]) -> Result<(), HostSe
         GlobalUnlock(hglobal);
     }
     // SAFETY: After SetClipboardData succeeds, the system owns `hglobal`.
-    let res = unsafe { SetClipboardData(format_id, hglobal as GLOBAL_HANDLE) };
+    let res = unsafe { SetClipboardData(format_id, hglobal as HANDLE) };
     if res.is_null() {
         unsafe {
             GlobalFree(hglobal);
