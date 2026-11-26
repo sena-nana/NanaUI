@@ -33,62 +33,100 @@ class CrateSpec:
     layer: int
 
 
-FORK_CRATES: tuple[CrateSpec, ...] = (
-    CrateSpec("nana-naga-types", "30.0.1-nana.1", ROOT / "third_party/wgpu/naga-types/Cargo.toml", True, 0),
-    CrateSpec("nana-naga", "30.0.1-nana.1", ROOT / "third_party/wgpu/naga/Cargo.toml", True, 1),
-    CrateSpec("nana-wgpu-types", "30.0.1-nana.1", ROOT / "third_party/wgpu/wgpu-types/Cargo.toml", True, 1),
-    CrateSpec("nana-wgpu-naga-bridge", "30.0.1-nana.1", ROOT / "third_party/wgpu/wgpu-naga-bridge/Cargo.toml", True, 2),
-    CrateSpec("nana-wgpu-hal", "30.0.1-nana.1", ROOT / "third_party/wgpu/wgpu-hal/Cargo.toml", True, 3),
-    CrateSpec("nana-wgpu-core-deps-apple", "30.0.1-nana.1", ROOT / "third_party/wgpu/wgpu-core-deps-apple/Cargo.toml", True, 4),
-    CrateSpec("nana-wgpu-core-deps-emscripten", "30.0.1-nana.1", ROOT / "third_party/wgpu/wgpu-core-deps-emscripten/Cargo.toml", True, 4),
-    CrateSpec("nana-wgpu-core-deps-windows-linux-android", "30.0.1-nana.1", ROOT / "third_party/wgpu/wgpu-core-deps-windows-linux-android/Cargo.toml", True, 4),
-    CrateSpec("nana-wgpu-core", "30.0.1-nana.1", ROOT / "third_party/wgpu/wgpu-core/Cargo.toml", True, 5),
-    CrateSpec("nana-wgpu", "30.0.1-nana.1", ROOT / "third_party/wgpu/wgpu/Cargo.toml", True, 6),
-    CrateSpec("nana-accesskit-windows", "0.35.1-nana.1", ROOT / "third_party/accesskit/windows/Cargo.toml", True, 0),
-)
+def read_workspace_version(root: Path = ROOT) -> str:
+    root_manifest = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))
+    version = root_manifest.get("workspace", {}).get("package", {}).get("version")
+    if not isinstance(version, str) or not version:
+        raise RuntimeError("Cargo.toml is missing [workspace.package].version")
+    return version
 
-NANA_VERSION = "0.1.0-alpha.1"
 
-NANA_CRATES: tuple[CrateSpec, ...] = (
-    # Layer 0
-    CrateSpec("nana-diagnostics", NANA_VERSION, ROOT / "crates/nana-diagnostics/Cargo.toml", False, 10),
-    CrateSpec("nana-package", NANA_VERSION, ROOT / "crates/nana-package/Cargo.toml", False, 10),
-    CrateSpec("nana-svg-raster", NANA_VERSION, ROOT / "crates/nana-svg-raster/Cargo.toml", False, 10),
-    CrateSpec("nana-ui-view-schema", NANA_VERSION, ROOT / "crates/nana-ui-view-schema/Cargo.toml", False, 10),
-    # Layer 1
-    CrateSpec("nana-gpu", NANA_VERSION, ROOT / "crates/nana-gpu/Cargo.toml", False, 11),
-    CrateSpec("nana-ui-core", NANA_VERSION, ROOT / "crates/nana-ui-core/Cargo.toml", False, 11),
-    # Layer 2
-    CrateSpec("nana-frame-exchange", NANA_VERSION, ROOT / "crates/nana-frame-exchange/Cargo.toml", False, 12),
-    CrateSpec("nana-icons-tabler", NANA_VERSION, ROOT / "crates/nana-icons-tabler/Cargo.toml", True, 12),
-    CrateSpec("nana-text", NANA_VERSION, ROOT / "crates/nana-text/Cargo.toml", False, 12),
-    CrateSpec("nana-ui-charts", NANA_VERSION, ROOT / "crates/nana-ui-charts/Cargo.toml", False, 12),
-    CrateSpec("nana-ui-css", NANA_VERSION, ROOT / "crates/nana-ui-css/Cargo.toml", False, 12),
-    CrateSpec("nana-ui-input", NANA_VERSION, ROOT / "crates/nana-ui-input/Cargo.toml", False, 12),
-    # Layer 3
-    CrateSpec("nana-ui-diagram", NANA_VERSION, ROOT / "crates/nana-ui-diagram/Cargo.toml", False, 13),
-    CrateSpec("nana-ui-platform", NANA_VERSION, ROOT / "crates/nana-ui-platform/Cargo.toml", False, 13),
-    CrateSpec("nana-ui-view-codegen", NANA_VERSION, ROOT / "crates/nana-ui-view-codegen/Cargo.toml", False, 13),
-    # Layer 4
-    CrateSpec("nana-app-icon", NANA_VERSION, ROOT / "crates/nana-app-icon/Cargo.toml", False, 14),
-    CrateSpec("nana-ui-sfc", NANA_VERSION, ROOT / "crates/nana-ui-sfc/Cargo.toml", False, 14),
-    CrateSpec("nana-ui-view-macros", NANA_VERSION, ROOT / "crates/nana-ui-view-macros/Cargo.toml", False, 14),
-    CrateSpec("nana-window", NANA_VERSION, ROOT / "crates/nana-window/Cargo.toml", False, 14),
-    # Layer 5
-    CrateSpec("nana-packager", NANA_VERSION, ROOT / "crates/nana-packager/Cargo.toml", False, 15),
-    CrateSpec("nana-ui-runtime", NANA_VERSION, ROOT / "crates/nana-ui-runtime/Cargo.toml", False, 15),
-    # Layer 6
-    CrateSpec("nana-ui-scene", NANA_VERSION, ROOT / "crates/nana-ui-scene/Cargo.toml", False, 16),
-    # Layer 7
-    CrateSpec("nana-ui", NANA_VERSION, ROOT / "crates/nana-ui/Cargo.toml", False, 17),
-    # Layer 8
-    CrateSpec("nana-ui-devtools", NANA_VERSION, ROOT / "crates/nana-ui-devtools/Cargo.toml", False, 18),
-    CrateSpec("nana-ui-viewport3d", NANA_VERSION, ROOT / "crates/nana-ui-viewport3d/Cargo.toml", False, 18),
-    # Layer 9
-    CrateSpec("nana-ui-dev", NANA_VERSION, ROOT / "crates/nana-ui-dev/Cargo.toml", False, 19),
-)
+def resolve_crate_version(manifest_path: Path, ws_version: str) -> str:
+    manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+    ver = manifest.get("package", {}).get("version")
+    if isinstance(ver, str) and ver:
+        return ver
+    if isinstance(ver, dict) and ver.get("workspace") is True:
+        return ws_version
+    raise RuntimeError(f"{manifest_path} is missing package.version")
 
+
+def _spec(name: str, manifest_rel: str, standalone: bool, layer: int, ws_version: str) -> CrateSpec:
+    manifest = ROOT / manifest_rel
+    return CrateSpec(
+        name=name,
+        version=resolve_crate_version(manifest, ws_version),
+        manifest=manifest,
+        standalone=standalone,
+        layer=layer,
+    )
+
+
+def load_crates() -> tuple[tuple[CrateSpec, ...], tuple[CrateSpec, ...]]:
+    ws_version = read_workspace_version()
+    fork_crates = (
+        _spec("nana-naga-types", "third_party/wgpu/naga-types/Cargo.toml", True, 0, ws_version),
+        _spec("nana-naga", "third_party/wgpu/naga/Cargo.toml", True, 1, ws_version),
+        _spec("nana-wgpu-types", "third_party/wgpu/wgpu-types/Cargo.toml", True, 1, ws_version),
+        _spec("nana-wgpu-naga-bridge", "third_party/wgpu/wgpu-naga-bridge/Cargo.toml", True, 2, ws_version),
+        _spec("nana-wgpu-hal", "third_party/wgpu/wgpu-hal/Cargo.toml", True, 3, ws_version),
+        _spec("nana-wgpu-core-deps-apple", "third_party/wgpu/wgpu-core-deps-apple/Cargo.toml", True, 4, ws_version),
+        _spec("nana-wgpu-core-deps-emscripten", "third_party/wgpu/wgpu-core-deps-emscripten/Cargo.toml", True, 4, ws_version),
+        _spec(
+            "nana-wgpu-core-deps-windows-linux-android",
+            "third_party/wgpu/wgpu-core-deps-windows-linux-android/Cargo.toml",
+            True,
+            4,
+            ws_version,
+        ),
+        _spec("nana-wgpu-core", "third_party/wgpu/wgpu-core/Cargo.toml", True, 5, ws_version),
+        _spec("nana-wgpu", "third_party/wgpu/wgpu/Cargo.toml", True, 6, ws_version),
+        _spec("nana-accesskit-windows", "third_party/accesskit/windows/Cargo.toml", True, 0, ws_version),
+    )
+    nana_crates = (
+        # Layer 10 (workspace layer 0)
+        _spec("nana-diagnostics", "crates/nana-diagnostics/Cargo.toml", False, 10, ws_version),
+        _spec("nana-package", "crates/nana-package/Cargo.toml", False, 10, ws_version),
+        _spec("nana-svg-raster", "crates/nana-svg-raster/Cargo.toml", False, 10, ws_version),
+        _spec("nana-ui-view-schema", "crates/nana-ui-view-schema/Cargo.toml", False, 10, ws_version),
+        # Layer 11 (workspace layer 1)
+        _spec("nana-gpu", "crates/nana-gpu/Cargo.toml", False, 11, ws_version),
+        _spec("nana-ui-core", "crates/nana-ui-core/Cargo.toml", False, 11, ws_version),
+        # Layer 12 (workspace layer 2)
+        _spec("nana-frame-exchange", "crates/nana-frame-exchange/Cargo.toml", False, 12, ws_version),
+        _spec("nana-icons-tabler", "crates/nana-icons-tabler/Cargo.toml", True, 12, ws_version),
+        _spec("nana-text", "crates/nana-text/Cargo.toml", False, 12, ws_version),
+        _spec("nana-ui-charts", "crates/nana-ui-charts/Cargo.toml", False, 12, ws_version),
+        _spec("nana-ui-css", "crates/nana-ui-css/Cargo.toml", False, 12, ws_version),
+        _spec("nana-ui-input", "crates/nana-ui-input/Cargo.toml", False, 12, ws_version),
+        # Layer 13 (workspace layer 3)
+        _spec("nana-ui-diagram", "crates/nana-ui-diagram/Cargo.toml", False, 13, ws_version),
+        _spec("nana-ui-platform", "crates/nana-ui-platform/Cargo.toml", False, 13, ws_version),
+        _spec("nana-ui-view-codegen", "crates/nana-ui-view-codegen/Cargo.toml", False, 13, ws_version),
+        # Layer 14 (workspace layer 4)
+        _spec("nana-app-icon", "crates/nana-app-icon/Cargo.toml", False, 14, ws_version),
+        _spec("nana-ui-sfc", "crates/nana-ui-sfc/Cargo.toml", False, 14, ws_version),
+        _spec("nana-ui-view-macros", "crates/nana-ui-view-macros/Cargo.toml", False, 14, ws_version),
+        _spec("nana-window", "crates/nana-window/Cargo.toml", False, 14, ws_version),
+        # Layer 15 (workspace layer 5)
+        _spec("nana-packager", "crates/nana-packager/Cargo.toml", False, 15, ws_version),
+        _spec("nana-ui-runtime", "crates/nana-ui-runtime/Cargo.toml", False, 15, ws_version),
+        # Layer 16 (workspace layer 6)
+        _spec("nana-ui-scene", "crates/nana-ui-scene/Cargo.toml", False, 16, ws_version),
+        # Layer 17 (workspace layer 7)
+        _spec("nana-ui", "crates/nana-ui/Cargo.toml", False, 17, ws_version),
+        # Layer 18 (workspace layer 8)
+        _spec("nana-ui-devtools", "crates/nana-ui-devtools/Cargo.toml", False, 18, ws_version),
+        _spec("nana-ui-viewport3d", "crates/nana-ui-viewport3d/Cargo.toml", False, 18, ws_version),
+        # Layer 19 (workspace layer 9)
+        _spec("nana-ui-dev", "crates/nana-ui-dev/Cargo.toml", False, 19, ws_version),
+    )
+    return fork_crates, nana_crates
+
+
+FORK_CRATES, NANA_CRATES = load_crates()
 ALL_CRATES: tuple[CrateSpec, ...] = FORK_CRATES + NANA_CRATES
+CRATE_NAMES: frozenset[str] = frozenset(crate.name for crate in ALL_CRATES)
 
 LEAF_VERIFY_CRATES = {
     "nana-naga-types",
@@ -321,6 +359,22 @@ def parse_retry_after_seconds(stderr: str) -> int:
     return 60
 
 
+def verify_tag(tag: str, root: Path = ROOT) -> tuple[bool, str]:
+    normalized = tag[1:] if tag.startswith("v") else tag
+    ws_version = read_workspace_version(root)
+    if normalized != ws_version:
+        return (
+            False,
+            f"tag `{tag}` (version `{normalized}`) does not match [workspace.package].version `{ws_version}`",
+        )
+    return True, f"Tag `{tag}` matches [workspace.package].version `{ws_version}`."
+
+
+def is_transient_index_lag(output: str) -> bool:
+    match = re.search(r"no matching package named `([^`]+)` found", output)
+    return bool(match and match.group(1) in CRATE_NAMES)
+
+
 def run_publish(allow_dirty: bool, wait_rate_limit: bool) -> int:
     if not has_cargo_auth():
         print(
@@ -360,6 +414,7 @@ def run_publish(allow_dirty: bool, wait_rate_limit: bool) -> int:
         if crate.name == "nana-accesskit-windows" and sys.platform != "win32":
             cmd.append("--no-verify")
 
+        index_retries = 0
         while True:
             print(f"[{idx:2}/{len(ALL_CRATES)}] Publishing {crate.name} {crate.version}...", flush=True)
             res = subprocess.run(cmd, cwd=ROOT, text=True, capture_output=True)
@@ -381,6 +436,14 @@ def run_publish(allow_dirty: bool, wait_rate_limit: bool) -> int:
                     file=sys.stderr,
                 )
                 return 3
+            if is_transient_index_lag(combined) and index_retries < 5:
+                index_retries += 1
+                print(
+                    f"    Waiting 15s for crates.io sparse index propagation (retry {index_retries}/5)...",
+                    flush=True,
+                )
+                time.sleep(15)
+                continue
             print(combined, file=sys.stderr)
             return 1
 
@@ -390,16 +453,30 @@ def run_publish(allow_dirty: bool, wait_rate_limit: bool) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--check", action="store_true", help="Package all 37 crates locally and verify tarballs")
-    mode.add_argument("--publish", action="store_true", help="Publish all 37 crates to crates.io in topological order")
+    parser.add_argument("--check", action="store_true", help="Package all 37 crates locally and verify tarballs")
+    parser.add_argument("--publish", action="store_true", help="Publish all 37 crates to crates.io in topological order")
+    parser.add_argument("--verify-tag", metavar="TAG", help="Verify git tag matches [workspace.package].version")
     parser.add_argument("--allow-dirty", action="store_true", help="Pass --allow-dirty to cargo publish")
     parser.add_argument("--wait-rate-limit", action="store_true", help="Sleep and retry on crates.io HTTP 429")
     args = parser.parse_args()
 
+    if not (args.check or args.publish or args.verify_tag):
+        parser.error("specify at least one of --check, --publish, or --verify-tag")
+    if args.check and args.publish:
+        parser.error("--check and --publish are mutually exclusive")
+
+    if args.verify_tag:
+        ok, msg = verify_tag(args.verify_tag)
+        if not ok:
+            print(msg, file=sys.stderr)
+            return 1
+        print(msg)
+
     if args.check:
         return run_check()
-    return run_publish(allow_dirty=args.allow_dirty, wait_rate_limit=args.wait_rate_limit)
+    if args.publish:
+        return run_publish(allow_dirty=args.allow_dirty, wait_rate_limit=args.wait_rate_limit)
+    return 0
 
 
 if __name__ == "__main__":
