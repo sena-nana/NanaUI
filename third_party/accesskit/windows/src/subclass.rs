@@ -26,6 +26,18 @@ fn win32_error() -> ! {
 /// window subclass registration on an `HWND`.
 const SUBCLASS_ID: usize = 0x4143_4B54;
 
+/// Window property marking an `HWND` that carries AccessKit's subclass.
+///
+/// Guards against a second adapter on the same window. `GetWindowSubclass`
+/// would answer that too, but the system's ComCtl32 5.x exports it by ordinal
+/// only: importing it by name keeps every process without a Common Controls
+/// 6 manifest from starting. The user32 property calls are always there.
+const SUBCLASS_PROP: PCWSTR = w!("AccessKitSubclassingAdapter");
+
+fn clear_marker(window: HWND) {
+    let _ = unsafe { RemovePropW(window, SUBCLASS_PROP) };
+}
+
 struct SubclassState {
     adapter: Adapter,
     activation_handler: Box<dyn ActivationHandler>,
@@ -62,6 +74,7 @@ unsafe extern "system" fn subclass_proc(
     if message == WM_NCDESTROY {
         r#impl.window_destroyed.set(true);
         if r#impl.installed.replace(false) {
+            clear_marker(window);
             let removed =
                 unsafe { RemoveWindowSubclass(window, Some(subclass_proc), id) }.as_bool();
             if removed {
@@ -121,8 +134,7 @@ impl SubclassImpl {
     }
 
     fn install(this: &Rc<Self>) {
-        if unsafe { GetWindowSubclass(this.hwnd, Some(subclass_proc), SUBCLASS_ID, None) }.as_bool()
-        {
+        if !unsafe { GetPropW(this.hwnd, SUBCLASS_PROP) }.is_invalid() {
             panic!(
                 "subclassing adapter already instantiated on window {:?}",
                 this.hwnd.0
@@ -136,6 +148,9 @@ impl SubclassImpl {
             unsafe { drop(Rc::from_raw(raw)) };
             win32_error();
         }
+        // The marker is only a guard: failing to set it leaves the subclass
+        // working, so it is not worth unwinding the registration for.
+        let _ = unsafe { SetPropW(this.hwnd, SUBCLASS_PROP, Some(HANDLE(1 as _))) };
         this.installed.set(true);
     }
 
@@ -170,6 +185,7 @@ impl SubclassImpl {
             return;
         }
         if !this.window_destroyed.get() {
+            clear_marker(this.hwnd);
             let removed =
                 unsafe { RemoveWindowSubclass(this.hwnd, Some(subclass_proc), SUBCLASS_ID) }
                     .as_bool();
