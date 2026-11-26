@@ -263,17 +263,22 @@ pub fn set_tray_attention(attention: TrayAttention) -> bool {
 /// menu's entries (`-` for a separator).
 ///
 /// A verification entry, like `installed_menu_bar`. `None` when no tray is
-/// shown or the platform cannot be asked.
+/// shown or the platform cannot be asked. On Windows the shell only confirms
+/// it still places the icon; the tooltip and titles are what was installed.
 pub fn installed_tray() -> Option<(String, Vec<String>)> {
     #[cfg(target_os = "macos")]
     {
         macos::installed()
     }
+    #[cfg(target_os = "windows")]
+    {
+        windows::installed()
+    }
     #[cfg(target_os = "linux")]
     {
         linux::installed()
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
         None
     }
@@ -445,7 +450,7 @@ pub(crate) fn rgba_to_sni_argb32(rgba: &[u8]) -> Vec<u8> {
 
 /// Formats readable summaries of [`crate::MenuEntry`] items (`-` for separators)
 /// for [`installed_tray`] verification on backends that store a structured model.
-#[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
 pub(crate) fn summarize_menu_entries(entries: &[crate::MenuEntry]) -> Vec<String> {
     entries
         .iter()

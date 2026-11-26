@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
+use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Registry::{
     HKEY_CURRENT_USER, KEY_READ, RRF_RT_REG_DWORD, RegCloseKey, RegGetValueW, RegOpenKeyExW,
@@ -8,7 +8,7 @@ use windows_sys::Win32::System::Registry::{
 use windows_sys::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi};
 use windows_sys::Win32::UI::Shell::{
     NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
-    Shell_NotifyIconW,
+    NOTIFYICONIDENTIFIER, Shell_NotifyIconGetRect, Shell_NotifyIconW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateIcon, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyMenu,
@@ -18,7 +18,10 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WM_NULL, WM_RBUTTONUP, WM_SETTINGCHANGE, WNDCLASSW,
 };
 
-use super::{Tray, TrayAttention, decode_png_rgba, resize_rgba_square, select_tray_icon_bytes};
+use super::{
+    Tray, TrayAttention, decode_png_rgba, resize_rgba_square, select_tray_icon_bytes,
+    summarize_menu_entries,
+};
 use crate::win32::wide;
 
 /// What the shell posts to the tray's window; `lparam` is the mouse message.
@@ -90,6 +93,35 @@ pub(super) fn set_attention(attention: TrayAttention) -> bool {
         };
         state.tray.attention = attention;
         notify_icon(state, NIM_MODIFY)
+    })
+}
+
+/// The tray while the shell still places its icon: the shell cannot report
+/// the tooltip or menu back, so those come from what was installed, gated on
+/// `Shell_NotifyIconGetRect` finding the icon.
+pub(super) fn installed() -> Option<(String, Vec<String>)> {
+    STATE.with(|slot| {
+        let slot = slot.try_borrow().ok()?;
+        let state = slot.as_ref()?;
+        // SAFETY: plain data; zero is its empty value.
+        let mut identifier: NOTIFYICONIDENTIFIER = unsafe { std::mem::zeroed() };
+        identifier.cbSize = std::mem::size_of::<NOTIFYICONIDENTIFIER>() as u32;
+        identifier.hWnd = state.hwnd;
+        identifier.uID = TRAY_ID;
+        let mut rect = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        // SAFETY: both pointers are valid for the call.
+        let held = unsafe { Shell_NotifyIconGetRect(&identifier, &mut rect) } == 0;
+        held.then(|| {
+            (
+                state.tray.tooltip.clone(),
+                summarize_menu_entries(&state.tray.menu),
+            )
+        })
     })
 }
 

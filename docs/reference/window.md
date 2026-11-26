@@ -318,7 +318,7 @@ IME：焦点进可编辑字段时 `Window::request_ime_update(Enable)` 一次（
 | Linux | `StatusNotifierItem` | `org.kde.StatusNotifierItem` + `com.canonical.dbusmenu`（`zbus`）。启动时探测会话总线及 `org.kde.StatusNotifierWatcher`（500 ms 超时）；缺失 watcher 时返回 `TraySupport::Unavailable` 并记录原因，不挂起或 panic |
 | 其它 | `Unavailable` | 什么都不装。把这些命令留在窗口里 |
 
-`installed_tray()` 读回平台实际持有的提示与菜单条目（macOS、Linux），`crates/nana-window/examples/tray-probe.rs` 用它做真机验收。
+`installed_tray()` 读回平台实际持有的提示与菜单条目（macOS、Linux；Windows 由 `Shell_NotifyIconGetRect` 确认 Shell 仍放置该图标，条目为已安装的内容），`crates/nana-window/examples/tray-probe.rs` 用它做真机验收，在 Windows 上还会驱动双击激活、`TaskbarCreated` 重新添加与主题 / DPI 图标刷新。`notification-probe` 对照 Windows 通知历史检查 toast，`cursor-probe` 从 `GetCursorInfo` 读回自定义光标的尺寸与热点。
 
 ## 桌面通知
 
@@ -664,7 +664,7 @@ let _ = cx.window().set_content_zoom(zoom);
 `WindowService::create_window` 在完整就绪并发送 `WindowEvent::Ready` 后完成凭据。创建失败通过凭据返回错误。窗口若在处理 `Ready` 时被应用关闭。凭据返回 `WindowClosed`。服务从 `1 << 63` 起分配窗口 ID。并跳过仍存活的程序自选 ID（例如 Dock 浮动窗口的哈希 ID）。宿主批次适配器另通过 `OpenFailed { id, error }` 通知失败。撤销创建中状态。`SetMousePassthrough { id, enabled }` 关闭整窗原生命中测试（Windows `WS_EX_TRANSPARENT`）。overlay 收不到指针。也无法按命中自己收回。`SetMousePassthroughForward { id, enabled }` 是宿主持有的 Forward 模式，并与显式交互/chrome 区域雕刻统一在同一份命中测试权威下（#159）：宿主通过 `WindowInteractionRegionBuilder` 直接从 `UiWorld`、`HitIndex`、自绘标题栏 `Drag` 槽位与可缩放窗边增量派生 `InputRegionSnapshot`（不读取 GPU 帧缓冲像素，也不绑定 `WindowVisualShape` 视觉裁剪）：
 
 - **组件与样式声明**：元素可通过 `El::hit_test(HitTestBehavior)`、`.vue` / `view!` `hit_test` 属性或 CSS `hit-test: auto | client | passthrough | drag | resize-<edge>`（仅在声明节点的 `box_visible` + `visible` + `pointer-events` 非 `none` 且未受滚动裁剪时生效；前层 `Client` 控件/弹出浮层永远优先于后层 `Drag` / 窗边 `Resize`）。
-- **平台执行与 `#49` 统一回退**：`WindowHandle::interaction()`（`WindowInteraction`）提供 `capabilities()`、`outcome()`、`snapshot()` 与模式切换。Windows 在 `WM_NCHITTEST` 中直接返回 `HTCLIENT` / `HTCAPTION` / `HT*` 边框值而不触碰 `SetWindowRgn`；Linux X11 使用 XFixes `ShapeInput`、Wayland 使用 `wl_region` (`wl_surface.set_input_region`) 原生雕刻输入孔洞（`InputRegionOutcome::NativeApplied`，无需 8ms 轮询）；macOS 与无原生输入区域后端返回 `InputRegionOutcome::ForwardFallback`，保留 `#49` 宿主持有 `Forward` 8ms 采样路径并在收回命中时查询同一份 `InputRegionSnapshot`。在内容或边框上开始的按住/拖拽手势、`LiveFrameMove` 与 `LiveFrameResize` 通过 `set_pointer_captured` 保持命中捕获直至手势结束（跨越透明缝隙或离开客户区不中断）。诊断指标记入 `window.interaction.*`（ID 19–28）；边界回归探针见 `cargo run -p nana-ui --example window-input-region-probe --features hosted,bundled-fonts`。
+- **平台执行与 `#49` 统一回退**：`WindowHandle::interaction()`（`WindowInteraction`）提供 `capabilities()`、`outcome()`、`snapshot()` 与模式切换。Windows 在 `WM_NCHITTEST` 中直接返回 `HTCLIENT` / `HTCAPTION` / `HT*` 边框值而不触碰 `SetWindowRgn`；`HTTRANSPARENT` 只会落到同一线程的窗口，因此 Windows 不报告原生输入区域，`Forward` 返回 `ForwardFallback`，并把空洞保持为 `HTCLIENT`，让宿主看到指针离开交互 UI 后恢复 `WS_EX_TRANSPARENT`；Linux X11 使用 XFixes `ShapeInput`、Wayland 使用 `wl_region` (`wl_surface.set_input_region`) 原生雕刻输入孔洞（`InputRegionOutcome::NativeApplied`，无需 8ms 轮询）；macOS 与无原生输入区域后端返回 `InputRegionOutcome::ForwardFallback`，保留 `#49` 宿主持有 `Forward` 8ms 采样路径并在收回命中时查询同一份 `InputRegionSnapshot`。在内容或边框上开始的按住/拖拽手势、`LiveFrameMove` 与 `LiveFrameResize` 通过 `set_pointer_captured` 保持命中捕获直至手势结束（跨越透明缝隙或离开客户区不中断）。诊断指标记入 `window.interaction.*`（ID 19–28）；边界回归探针见 `cargo run -p nana-ui --example window-input-region-probe --features hosted,bundled-fonts`。
 
 `WindowHandle::set_mouse_passthrough_mode` 对应 `MousePassthroughMode::{Off, Passthrough, Forward}`。每次命中测试变化都回报 `MousePassthroughChanged { id, enabled, result }`（`enabled` 为当前 OS 穿透是否开启。未知窗口也回报失败）。应用收到成功确认后才显示锁定状态。并保留另一窗口的解除穿透入口。异形窗 / per-pixel alpha 视觉外形裁剪走 `WindowVisualShape`（阴影同步）而非原生输入区域。
 
