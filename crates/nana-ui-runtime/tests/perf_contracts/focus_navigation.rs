@@ -244,6 +244,12 @@ fn directional_2d_grid_navigates_rows_columns_and_staggered_items() {
         .unwrap();
     f.layout();
 
+    // With nothing focused an arrow is not claimed: it stays the
+    // application's shortcut, and focus enters the scope by Tab or click.
+    f.cx.clear_focus(f.doc).unwrap();
+    assert!(!f.key("ArrowRight").handled);
+    assert_eq!(f.focused(), None);
+
     f.cx.focus_node(f.doc, grid[0].stable_id()).unwrap();
     assert!(f.key("ArrowRight").handled);
     assert_eq!(f.focused(), Some(grid[1].stable_id()));

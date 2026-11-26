@@ -263,23 +263,25 @@ impl AppContext {
             return Ok(false);
         }
         if !has_explicit {
-            // Check whether current focus (or any node in this document when
-            // unfocused) sits inside a declared DirectionalFocusScope.
-            let in_scope = match self.world.focused(document) {
-                Some(focused) => {
-                    let mut cursor = Some(focused);
-                    let mut found = false;
-                    while let Some(id) = cursor {
-                        if self.world.directional_focus_scope(id).is_some() {
-                            found = true;
-                            break;
-                        }
-                        cursor = self.world.parent_id(id);
-                    }
-                    found
-                }
-                None => true,
+            // Arrows move focus only from a node inside a declared
+            // DirectionalFocusScope. With nothing focused the key stays the
+            // application's: scopes live in a world-wide registry (including
+            // pages kept mounted but not shown), so "some scope exists" says
+            // nothing about where the user is, and claiming the key would
+            // swallow arrow shortcuts. Tab, a click or a gamepad move enters
+            // the scope first.
+            let Some(focused) = self.world.focused(document) else {
+                return Ok(false);
             };
+            let mut cursor = Some(focused);
+            let mut in_scope = false;
+            while let Some(id) = cursor {
+                if self.world.directional_focus_scope(id).is_some() {
+                    in_scope = true;
+                    break;
+                }
+                cursor = self.world.parent_id(id);
+            }
             if !in_scope {
                 return Ok(false);
             }
