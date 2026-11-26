@@ -1,4 +1,3 @@
-use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 
 use nana_ui_platform::{
@@ -169,7 +168,10 @@ pub(super) fn probe_capabilities<W: HasWindowHandle + HasDisplayHandle + ?Sized>
 ) -> WindowInteractionCapabilities {
     let has_hwnd = crate::win32::hwnd(window).is_some();
     WindowInteractionCapabilities {
-        input_region: has_hwnd,
+        // `HTTRANSPARENT` only falls through to windows of the same thread, so
+        // Windows has no native cross-process input shape: `Forward` uses the
+        // host's `WS_EX_TRANSPARENT` toggling (`ForwardFallback`).
+        input_region: false,
         non_client_chrome: has_hwnd,
         passthrough_forward: has_hwnd,
     }

@@ -314,15 +314,35 @@ fn build_snapshot(
             source_rect_count += 1;
             if candidate.is_full_root || candidate.class == NativeHitTestClass::Drag {
                 drag_and_back.push((candidate.rect, candidate.class));
+            } else if candidate.class == NativeHitTestClass::PassThrough {
+                // A hole carves what is behind it in both passes: the client
+                // controls, and the drag regions in their own z-order (never a
+                // drag region in front of it, nor the window's resize edges).
+                front_controls.push((candidate.rect, candidate.class));
+                drag_and_back.push((candidate.rect, candidate.class));
             } else {
                 front_controls.push((candidate.rect, candidate.class));
             }
         }
     }
 
+    // Client controls win over resize edges and drag regions wherever they
+    // show; holes only carve them in the first pass, so a hole never reaches
+    // past them into a drag region painted in front of it.
+    let clients = resolve_front_to_back(&front_controls);
     let mut pipeline: Vec<(RegionBox, NativeHitTestClass)> =
-        Vec::with_capacity(front_controls.len() + drag_and_back.len() + 10);
-    pipeline.extend(front_controls);
+        Vec::with_capacity(clients.len() + drag_and_back.len() + 10);
+    pipeline.extend(clients.iter().map(|rect| {
+        (
+            RegionBox {
+                x0: rect.x,
+                y0: rect.y,
+                x1: rect.x + rect.width,
+                y1: rect.y + rect.height,
+            },
+            rect.class,
+        )
+    }));
     if config.resize_border_thickness.is_finite() && config.resize_border_thickness > 0.0 {
         append_resize_border_strips(viewport, config.resize_border_thickness, &mut pipeline);
         source_rect_count += 8;
@@ -976,6 +996,77 @@ mod tests {
         assert_eq!(snap.classify(150.0, 20.0), NativeHitTestClass::Client);
         assert_eq!(snap.classify(370.0, 20.0), NativeHitTestClass::Client);
         assert_eq!(snap.classify(200.0, 200.0), NativeHitTestClass::PassThrough);
+    }
+
+    #[test]
+    fn pass_through_root_keeps_drag_children_and_resize_edges() {
+        let mut world = UiWorld::new();
+        let d = doc();
+        let (root, bar, close, pill) = (nid(1), nid(2), nid(3), nid(4));
+        let mut q = MutationQueue::new();
+
+        let mut root_style = NodeStyle::default();
+        Arc::make_mut(&mut root_style.layout).hit_test = Some(HitTestBehavior::PassThrough);
+        add_box(
+            &mut q,
+            d,
+            root,
+            None,
+            rect_box(0.0, 0.0, 520.0, 360.0),
+            false,
+            root_style,
+        );
+
+        let mut bar_style = NodeStyle::default();
+        Arc::make_mut(&mut bar_style.layout).hit_test = Some(HitTestBehavior::Drag);
+        add_box(
+            &mut q,
+            d,
+            bar,
+            Some(root),
+            rect_box(0.0, 0.0, 520.0, 40.0),
+            false,
+            bar_style,
+        );
+
+        let mut client_style = NodeStyle::default();
+        Arc::make_mut(&mut client_style.layout).hit_test = Some(HitTestBehavior::Client);
+        add_box(
+            &mut q,
+            d,
+            close,
+            Some(bar),
+            rect_box(480.0, 0.0, 40.0, 40.0),
+            false,
+            client_style.clone(),
+        );
+        add_box(
+            &mut q,
+            d,
+            pill,
+            Some(root),
+            rect_box(140.0, 120.0, 220.0, 80.0),
+            false,
+            client_style,
+        );
+
+        world.commit(q).unwrap();
+        sync_world(&mut world, d);
+
+        let mut builder = WindowInteractionRegionBuilder::default();
+        let snap = builder
+            .update(&world, d, forward_cfg(520.0, 360.0, 6.0))
+            .expect("initial snapshot");
+
+        // The root's hole sits behind its children and the window edges.
+        assert_eq!(snap.classify(200.0, 20.0), NativeHitTestClass::Drag);
+        assert_eq!(snap.classify(516.0, 20.0), NativeHitTestClass::Client);
+        assert_eq!(
+            snap.classify(2.0, 220.0),
+            NativeHitTestClass::Resize(WindowResizeEdge::West)
+        );
+        assert_eq!(snap.classify(200.0, 150.0), NativeHitTestClass::Client);
+        assert_eq!(snap.classify(40.0, 220.0), NativeHitTestClass::PassThrough);
     }
 
     #[test]

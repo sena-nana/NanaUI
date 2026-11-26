@@ -561,7 +561,68 @@ fn win32_nchittest(
             nana_diagnostics::metric!(
                 nana_diagnostics::framework::window::INTERACTION_HIT_TEST_PASSTHROUGH
             );
-            Some(HTTRANSPARENT as LRESULT)
+            // `HTTRANSPARENT` only reaches windows of this thread, and turns the
+            // move into `WM_NCMOUSEMOVE`, which the host never sees. In `Forward`
+            // the host must see the pointer over a hole to hand the window back
+            // to the desktop (`WS_EX_TRANSPARENT`), so the hole stays client.
+            if state.mode() == nana_ui_platform::MousePassthroughMode::Forward {
+                Some(HTCLIENT as LRESULT)
+            } else {
+                Some(HTTRANSPARENT as LRESULT)
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ptr;
+
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DestroyWindow, SPI_SETWORKAREA, SendMessageW, WM_DISPLAYCHANGE,
+        WM_SETTINGCHANGE, WS_OVERLAPPEDWINDOW,
+    };
+
+    use super::Win32WindowHooks;
+    use crate::display_topology::take_display_topology_change;
+
+    #[test]
+    fn display_and_work_area_changes_mark_the_display_topology() {
+        let _serial = crate::test_serial_lock();
+        // SAFETY: STATIC is a system window class; all pointers are valid for this call.
+        let hwnd = unsafe {
+            CreateWindowExW(
+                0,
+                crate::win32::wide("STATIC").as_ptr(),
+                ptr::null(),
+                WS_OVERLAPPEDWINDOW,
+                0,
+                0,
+                64,
+                64,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null(),
+            )
+        };
+        assert!(!hwnd.is_null());
+        let hooks = Win32WindowHooks::install_or_get(hwnd).expect("hook the fixture window");
+        let _ = take_display_topology_change();
+
+        // SAFETY: none of these carry a pointer payload; the window is ours.
+        unsafe { SendMessageW(hwnd, WM_DISPLAYCHANGE, 32, (1080 << 16) | 1920) };
+        assert!(take_display_topology_change(), "WM_DISPLAYCHANGE");
+
+        unsafe { SendMessageW(hwnd, WM_SETTINGCHANGE, SPI_SETWORKAREA as usize, 0) };
+        assert!(take_display_topology_change(), "SPI_SETWORKAREA");
+
+        // Other setting changes leave the topology alone.
+        unsafe { SendMessageW(hwnd, WM_SETTINGCHANGE, 0x0057, 0) };
+        assert!(!take_display_topology_change(), "unrelated setting");
+
+        drop(hooks);
+        // SAFETY: the fixture's own window, on its creating thread.
+        unsafe { DestroyWindow(hwnd) };
     }
 }

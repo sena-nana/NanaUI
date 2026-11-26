@@ -14,7 +14,9 @@
 //!      surfaces into `InputRegionSnapshot`.
 //!
 //! Prints one JSON line per fixture and exits within `MAX_TICKS` (12 s wall
-//! clock cap). Run manually on an awake desktop:
+//! clock cap). Pass `--hold <seconds>` (at most 8) to keep the window up after
+//! the fixtures so an external process can hit-test the live native window.
+//! Run manually on an awake desktop:
 //!
 //! ```text
 //! cargo run -p nana-ui --example window-input-region-probe --features hosted,bundled-fonts
@@ -67,6 +69,19 @@ struct Probe {
     pending_snap: Option<WindowRequest<InputRegionSnapshot>>,
     last_revision: u64,
     settle_static_checks: u32,
+    hold_ticks: u32,
+    done_at: u32,
+}
+
+/// Ticks to keep the window up after the fixtures, from `--hold <seconds>`.
+fn hold_ticks() -> u32 {
+    let mut arguments = std::env::args().skip(1);
+    let seconds = match (arguments.next().as_deref(), arguments.next()) {
+        (Some("--hold"), Some(value)) => value.parse::<f32>().unwrap_or(0.0),
+        _ => 0.0,
+    };
+    let seconds = seconds.clamp(0.0, 8.0);
+    (seconds * 1000.0 / TICK.as_millis() as f32).ceil() as u32
 }
 
 fn report(value: serde_json::Value) {
@@ -158,6 +173,8 @@ impl Probe {
             pending_snap: None,
             last_revision: 0,
             settle_static_checks: 0,
+            hold_ticks: hold_ticks(),
+            done_at: 0,
         }
     }
 
@@ -322,7 +339,14 @@ impl Probe {
                     serde_json::json!({ "hidden_hit": format!("{hidden_hit:?}") }),
                 );
                 self.phase = Phase::Done;
-                RuntimeProgramUpdate::exit()
+                self.done_at = self.ticks;
+                if self.hold_ticks == 0 {
+                    return RuntimeProgramUpdate::exit();
+                }
+                RuntimeProgramUpdate::default()
+            }
+            Phase::Done if self.ticks < self.done_at + self.hold_ticks => {
+                RuntimeProgramUpdate::default()
             }
             Phase::Done => RuntimeProgramUpdate::exit(),
         }
@@ -374,6 +398,10 @@ impl RuntimeProgram for Probe {
                 false,
                 serde_json::json!({ "phase": format!("{:?}", self.phase) }),
             );
+            return RuntimeProgramUpdate::exit();
+        }
+        if self.ticks >= MAX_TICKS {
+            // The tick thread stops here; a hold never outlives the cap.
             return RuntimeProgramUpdate::exit();
         }
         self.advance(context)
