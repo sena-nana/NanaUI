@@ -15,7 +15,6 @@ Run them from the repository root. `nana-ui` examples need the features they dec
 | Task workbench (`#[derive(Store)]` + undo/redo + virtual list + validation + `ActionRegistry`) | `cargo run -p task-workbench` | `examples/task-workbench` |
 | Live GPU content (`GpuView`) | `cargo run -p nana-ui --example gpu-view-demo --features hosted,bundled-fonts` | `crates/nana-ui/examples/gpu-view-demo.rs` |
 | Live WGSL shader viewport | `cargo run -p nana-ui --example hosted-gpu-demo --features hosted,bundled-fonts,wgpu-interop,runtime-wgsl` | `crates/nana-ui/examples/hosted-gpu-demo.rs` |
-| Mixing an egui panel in the tree | `cargo run -p nana-ui --example egui-in-nanaui --features hosted,bundled-fonts,wgpu-interop` | `crates/nana-ui/examples/egui-in-nanaui.rs` |
 | Multiple windows | `cargo run -p nana-ui --example window-chrome-multi-window --features hosted,bundled-fonts` | `crates/nana-ui/examples/window-chrome-multi-window.rs` |
 
 ## Next steps

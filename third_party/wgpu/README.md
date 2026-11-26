@@ -9,35 +9,10 @@ These are the published sources of wgpu 30.0.1 and the crates it is built from
 IR to each backend (shader and pipeline caches, backend output) without giving
 up wgpu's validation and resource tracking.
 
-Package names and versions stay upstream's, and the crates depend on each
-other by path, so:
+Package names are prefixed with `nana-` (`nana-wgpu`, `nana-wgpu-core`, `nana-wgpu-hal`, `nana-wgpu-types`, `nana-wgpu-naga-bridge`, `nana-wgpu-core-deps-*`, `nana-naga`, `nana-naga-types`) with version `30.0.1-nana.1` and `[lib] name` kept unchanged (`wgpu`, `naga`, etc.), and the crates depend on each other by path + version so they publish cleanly to crates.io without `[patch.crates-io]`:
 
-- **Every graph holds this one wgpu.** `scripts/check-engine-boundary.py`
-  rejects a wgpu or naga crate from anywhere else.
-- **An application that only uses NanaUI needs nothing.** A git dependency on
-  this repository brings the fork; reach wgpu through `nana_gpu::wgpu`
-  (feature `wgpu-interop`) instead of depending on `wgpu` directly.
-- **An application that also uses a crate built on crates.io wgpu** (egui-wgpu,
-  glyphon, ...) patches crates.io onto this repository, at the same rev as its
-  NanaUI dependencies:
-
-  ```toml
-  [patch.crates-io]
-  naga = { git = "https://github.com/sena-nana/NanaUI.git", rev = "<rev>" }
-  naga-types = { git = "https://github.com/sena-nana/NanaUI.git", rev = "<rev>" }
-  wgpu = { git = "https://github.com/sena-nana/NanaUI.git", rev = "<rev>" }
-  wgpu-core = { git = "https://github.com/sena-nana/NanaUI.git", rev = "<rev>" }
-  wgpu-core-deps-apple = { git = "https://github.com/sena-nana/NanaUI.git", rev = "<rev>" }
-  wgpu-core-deps-emscripten = { git = "https://github.com/sena-nana/NanaUI.git", rev = "<rev>" }
-  wgpu-core-deps-windows-linux-android = { git = "https://github.com/sena-nana/NanaUI.git", rev = "<rev>" }
-  wgpu-hal = { git = "https://github.com/sena-nana/NanaUI.git", rev = "<rev>" }
-  wgpu-naga-bridge = { git = "https://github.com/sena-nana/NanaUI.git", rev = "<rev>" }
-  wgpu-types = { git = "https://github.com/sena-nana/NanaUI.git", rev = "<rev>" }
-  ```
-
-  Those crates then build against the fork; they compile as long as the fork
-  has not changed an API they use. NanaUI's own workspace does the same with
-  paths for its egui example.
+- **Every graph holds this one wgpu.** `scripts/check-engine-boundary.py` rejects upstream unprefixed `wgpu`/`naga` crates and any fork copy outside `third_party/wgpu`.
+- **An application that only uses NanaUI needs nothing.** Depending on `nana-ui` (from crates.io or git) brings `nana-wgpu` along without `[patch.crates-io]`; reach wgpu through `nana_gpu::wgpu` (feature `wgpu-interop`) instead of depending on upstream `wgpu`.
 
 ## Changing the fork
 

@@ -1,13 +1,18 @@
 [package]
 name = "nana-ui-sfc"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.98"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 description = "Compiles .vue view files with Rust scripts into nana-ui-runtime declarative views, from a build script"
-license = "MIT OR Apache-2.0"
+license.workspace = true
 
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["gui", "vue", "templates", "codegen", "nanaui"]
+categories = ["gui", "development-tools"]
 [dependencies]
-nana-ui-view-codegen = { path = "../nana-ui-view-codegen" }
+nana-ui-view-codegen.workspace = true
 prettyplease = "0.2"
 # Spans of parsed text carry line and column, so errors point into the file.
 proc-macro2 = { version = "1", features = ["span-locations"] }

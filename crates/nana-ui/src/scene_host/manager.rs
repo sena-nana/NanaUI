@@ -414,20 +414,26 @@ pub(super) fn next_accessibility_update(
 
 pub(super) fn drag_scene_window(
     window: &dyn winit::window::Window,
-) -> Result<(), winit::error::RequestError> {
+) -> Result<(), crate::WindowError> {
     if covers_display(window) {
-        return Err(winit::error::RequestError::Ignored);
+        return Err(crate::WindowError::OperationFailed(
+            "cannot drag fullscreen window".into(),
+        ));
     }
     if nana_window::drag_custom_title_bar(window) {
         return Ok(());
     }
     #[cfg(target_os = "macos")]
     {
-        Err(winit::error::RequestError::Ignored)
+        Err(crate::WindowError::OperationFailed(
+            "custom title-bar drag did not handle window move".into(),
+        ))
     }
     #[cfg(not(target_os = "macos"))]
     {
-        window.drag_window()
+        window
+            .drag_window()
+            .map_err(super::windows::window_request_error)
     }
 }
 

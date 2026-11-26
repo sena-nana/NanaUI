@@ -191,7 +191,7 @@ fn check_field(
 /// 生成 WebView 参照用 HTML（`data-id` + inline style + box-sizing:border-box）。
 fn bundled_font_file_url() -> String {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../crates/nana-ui/assets/fonts/NotoSansSC-Variable.ttf");
+        .join("../../crates/nana-ui-core/assets/fonts/NotoSansSC-Variable.ttf");
     let resolved = std::fs::canonicalize(&path).unwrap_or(path);
     let normalized = resolved.to_string_lossy().replace('\\', "/");
     if normalized.starts_with('/') {

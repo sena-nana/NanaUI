@@ -1,0 +1,51 @@
+[package]
+name = "nana-accesskit-windows"
+version = "0.35.1-nana.1"
+authors = ["The AccessKit contributors", "NanaUI contributors"]
+license = "MIT OR Apache-2.0"
+description = "NanaUI fork of accesskit_windows 0.35.1 with upstream PR #816 (localized Switch & ScrollPattern)"
+categories = ["gui"]
+keywords = ["gui", "ui", "accessibility"]
+repository = "https://github.com/sena-nana/NanaUI"
+homepage = "https://github.com/sena-nana/NanaUI"
+readme = "README.md"
+edition = "2024"
+rust-version = "1.87"
+
+[package.metadata.docs.rs]
+default-target = "x86_64-pc-windows-msvc"
+targets = []
+
+[lib]
+name = "accesskit_windows"
+path = "src/lib.rs"
+
+[dependencies]
+accesskit = "0.25.2"
+accesskit_consumer = "0.39.2"
+hashbrown = { version = "0.17", default-features = false, features = ["default-hasher"] }
+static_assertions = "1.1.0"
+windows-core = "0.62.0"
+
+[dependencies.windows]
+version = "0.62.0"
+features = [
+    "Win32_Foundation",
+    "Win32_Globalization",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Com",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Ole",
+    "Win32_System_Variant",
+    "Win32_UI_Accessibility",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+]
+
+[dev-dependencies]
+parking_lot = "0.12.4"
+raw-window-handle = "0.6.2"
+scopeguard = "1.1.0"
+winit = "0.30"
+
+[workspace]

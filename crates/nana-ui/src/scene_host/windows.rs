@@ -1962,14 +1962,16 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         &mut self,
         event_loop: &dyn ActiveEventLoop,
         id: WindowId,
-    ) -> Result<(), winit::error::RequestError> {
+    ) -> Result<(), crate::WindowError> {
         let Some(window) = self.window(id).cloned() else {
             return Ok(());
         };
         // A fullscreen window has nowhere to move to, whether the host or the
         // platform would drive the gesture.
         if covers_display(window.as_ref()) {
-            return Err(winit::error::RequestError::Ignored);
+            return Err(crate::WindowError::OperationFailed(
+                "cannot move fullscreen window".into(),
+            ));
         }
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         if let Some(button) = held_mouse_button(self.input_of(id).buttons())
@@ -1987,7 +1989,9 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             return if self.start_frame_move(id, button) {
                 Ok(())
             } else {
-                Err(winit::error::RequestError::Ignored)
+                Err(crate::WindowError::OperationFailed(
+                    "host-managed window move ignored".into(),
+                ))
             };
         }
         drag_scene_window(window.as_ref())?;
@@ -2861,7 +2865,9 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             Control::Redraw => window.request_redraw(),
             Control::Resize(edge) => {
                 if covers_display(window.as_ref()) {
-                    return Err(window_request_error(winit::error::RequestError::Ignored));
+                    return Err(crate::WindowError::OperationFailed(
+                        "cannot resize fullscreen window".into(),
+                    ));
                 }
                 if !resize_custom_frame(window.as_ref(), frame_resize_edge(edge)) {
                     window
@@ -2887,8 +2893,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 }
             }
             Control::Command(WindowCommand::Drag(_)) => {
-                self.begin_window_move(event_loop, id)
-                    .map_err(window_request_error)?;
+                self.begin_window_move(event_loop, id)?;
             }
             Control::Command(WindowCommand::SetMousePassthrough { enabled, .. }) => {
                 self.set_mouse_passthrough_mode(
@@ -3047,7 +3052,7 @@ pub(super) fn descriptor_skip_taskbar(
         .then(|| native_skip_taskbar(window, true))
 }
 
-fn window_request_error(error: winit::error::RequestError) -> crate::WindowError {
+pub(super) fn window_request_error(error: winit::error::RequestError) -> crate::WindowError {
     match error {
         winit::error::RequestError::NotSupported(_) => {
             crate::WindowError::Unsupported(error.to_string())

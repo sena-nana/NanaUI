@@ -84,7 +84,7 @@ fn locked_wgpu() -> String {
         .expect("the workspace lock file");
     let mut lines = lock.lines();
     while let Some(line) = lines.next() {
-        if line.trim() == "name = \"wgpu\"" {
+        if line.trim() == "name = \"nana-wgpu\"" {
             let version = lines.next().expect("a version line");
             return version
                 .trim()

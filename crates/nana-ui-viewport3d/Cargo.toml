@@ -1,11 +1,16 @@
 [package]
 name = "nana-ui-viewport3d"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.98"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 description = "Optional lightweight 3D preview viewport for NanaUI (orbit camera, glTF, basic lighting, HostTexture output)"
-license = "MIT OR Apache-2.0"
+license.workspace = true
 
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["gui", "3d", "viewport", "wgpu", "nanaui"]
+categories = ["graphics", "rendering", "gui"]
 [lib]
 name = "nana_ui_viewport3d"
 path = "src/lib.rs"

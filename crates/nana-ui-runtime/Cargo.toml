@@ -1,11 +1,16 @@
 [package]
 name = "nana-ui-runtime"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.98"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 description = "Backend-neutral retained runtime for NanaUI"
-license = "MIT OR Apache-2.0"
+license.workspace = true
 
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["gui", "ui", "layout", "retained-mode", "nanaui"]
+categories = ["gui"]
 [features]
 # `AreaLayout` / `AreaLayoutModel`: recursively splittable area grid with headers.
 area-layout = []
@@ -69,7 +74,7 @@ hashbrown = "0.17.1"
 # Fixed-seed hashing for cache identities (the intrinsic cache's environment).
 foldhash = "0.2.0"
 i_overlay.workspace = true
-nana-ui-view-schema = { path = "../nana-ui-view-schema" }
+nana-ui-view-schema.workspace = true
 nana-ui-core.workspace = true
 nana-ui-charts = { workspace = true, optional = true }
 nana-diagnostics.workspace = true
@@ -79,7 +84,7 @@ nana-ui-input.workspace = true
 # Issue #95: the retained text node resolves through `nana-text`'s engine and
 # keeps its layouts behind `nana-text` handles.
 nana-text.workspace = true
-nana-ui-view-macros = { path = "../nana-ui-view-macros", optional = true }
+nana-ui-view-macros = { workspace = true, optional = true }
 nana-ui-diagram = { workspace = true, optional = true }
 ratex-parser = { version = "=0.1.14", optional = true }
 ratex-layout = { version = "=0.1.14", optional = true }

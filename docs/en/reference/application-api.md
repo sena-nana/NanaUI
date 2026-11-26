@@ -151,7 +151,7 @@ There is exactly one `ActionDescriptor`, defined in Runtime (`nana_ui::runtime`;
 
 | feature | Effect |
 | --- | --- |
-| `hosted` | `run_runtime`, winit 0.31-line (workspace git pin, not crates.io 0.31.0), AccessKit; implies `gpu` |
+| `hosted` | `run_runtime`, winit `0.31.0-beta.4` (crates.io), AccessKit; implies `gpu` |
 | `gpu` | `SceneWgpuPainter`, `HostTexture`, `GpuTextureView`, `GpuView` (platform primary backend only) |
 | `wgpu-backends` | Enables all standard cross-platform WGPU backends (`dx12`, `vulkan`, `gles`, `metal`) when `gpu` is enabled; included in `full` |
 | `runtime-wgsl` | Runtime WGSL shader compilation fallback (`naga` / `wgpu` WGSL); when disabled, loads precompiled pipelines only and emits `gpu.shader.build_failed` if built-in stages are missing or rejected, and `gpu.material.rejected` for custom WGSL `MaterialProgram`s |

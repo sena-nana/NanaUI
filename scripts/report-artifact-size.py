@@ -18,7 +18,7 @@ import struct
 import subprocess
 import sys
 
-FONT_GLOB = "crates/nana-ui/assets/fonts/*.ttf"
+FONT_GLOB = "crates/nana-ui-core/assets/fonts/*.ttf"
 # Rust only emits this when debug-assertions are on.
 DEBUG_MARKER = b"attempt to add with overflow"
 

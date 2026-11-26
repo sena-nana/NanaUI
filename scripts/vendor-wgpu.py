@@ -89,14 +89,54 @@ def fetch(name: str, version: str, into: Path) -> None:
 
 
 def rewrite_manifest(manifest: Path, version: str) -> None:
+    nana_version = f"{version}-nana.1"
+    orig_name = manifest.parent.name
     lines = manifest.read_text(encoding="utf-8").splitlines()
     out: list[str] = [
-        f"# Vendored by scripts/vendor-wgpu.py from crates.io {manifest.parent.name} {version};",
-        "# NanaUI's fork. Dependencies on the other vendored crates use their paths.",
+        f"# Vendored by scripts/vendor-wgpu.py from crates.io {orig_name} {version};",
+        "# NanaUI's fork (published as nana-*). Dependencies on the other vendored crates use their paths + versions.",
     ]
     i = 0
+    in_pkg = False
+    saw_homepage = False
     while i < len(lines):
         line = lines[i]
+        if line.strip() == "[package]":
+            in_pkg = True
+            out.append(line)
+            i += 1
+            continue
+        if line.startswith("[") and line.strip() != "[package]":
+            if in_pkg and not saw_homepage:
+                out.append('homepage = "https://github.com/sena-nana/NanaUI"')
+                saw_homepage = True
+            in_pkg = False
+
+        if in_pkg:
+            if line.startswith("name = "):
+                out.append(f'name = "nana-{orig_name}"')
+                i += 1
+                continue
+            if line.startswith("version = "):
+                out.append(f'version = "{nana_version}"')
+                i += 1
+                continue
+            if line.startswith("repository = "):
+                out.append('repository = "https://github.com/sena-nana/NanaUI"')
+                i += 1
+                continue
+            if line.startswith("homepage = "):
+                out.append('homepage = "https://github.com/sena-nana/NanaUI"')
+                saw_homepage = True
+                i += 1
+                continue
+            if line.startswith("description = "):
+                m = re.match(r'^description\s*=\s*"(.*)"\s*$', line)
+                if m and f"(NanaUI fork of wgpu {version})" not in m.group(1):
+                    out.append(f'description = "{m.group(1)} (NanaUI fork of wgpu {version})"')
+                    i += 1
+                    continue
+
         header = DEPENDENCY_TABLE.match(line)
         if not header:
             out.append(line)
@@ -113,7 +153,21 @@ def rewrite_manifest(manifest: Path, version: str) -> None:
             if explicit:
                 package = explicit.group("name")
         if package in CRATES:
-            block.insert(1, f'path = "../{package}"')
+            new_block = [block[0]]
+            has_pkg = False
+            for entry in block[1:]:
+                s = entry.strip()
+                if s.startswith("package ="):
+                    new_block.append(f'package = "nana-{package}"')
+                    has_pkg = True
+                elif s.startswith("version ="):
+                    new_block.append(f'version = "{nana_version}"')
+                else:
+                    new_block.append(entry)
+            if not has_pkg:
+                new_block.insert(1, f'package = "nana-{package}"')
+            new_block.insert(2, f'path = "../{package}"')
+            block = new_block
         out.extend(block)
     out.extend(STANDALONE_WORKSPACE)
     manifest.write_text("\n".join(out) + "\n", encoding="utf-8", newline="\n")

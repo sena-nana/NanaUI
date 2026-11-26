@@ -4,7 +4,7 @@ use super::{Family, Stage};
 
 /// The wgpu, and the DXC, the stages were compiled with: the checks read them.
 #[allow(dead_code)]
-pub(super) const WGPU: &str = "30.0.1";
+pub(super) const WGPU: &str = "30.0.1-nana.1";
 #[allow(dead_code)]
 pub(super) const DXC: &str = "1.8 (4792, 23992152)";
 

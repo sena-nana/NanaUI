@@ -142,7 +142,7 @@ mod span_color_tests {
             .register_file(
                 concat!(
                     env!("CARGO_MANIFEST_DIR"),
-                    "/assets/fonts/NotoSansSC-Variable.ttf"
+                    "/../nana-ui-core/assets/fonts/NotoSansSC-Variable.ttf"
                 ),
                 &nana_text::font::FaceDescriptor::default(),
             )

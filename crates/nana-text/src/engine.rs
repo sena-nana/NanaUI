@@ -671,7 +671,7 @@ mod outline_tests {
             .register_file(
                 concat!(
                     env!("CARGO_MANIFEST_DIR"),
-                    "/../nana-ui/assets/fonts/NotoSansSC-Variable.ttf"
+                    "/../nana-ui-core/assets/fonts/NotoSansSC-Variable.ttf"
                 ),
                 &FaceDescriptor::default(),
             )

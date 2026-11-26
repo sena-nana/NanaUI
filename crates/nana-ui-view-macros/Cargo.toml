@@ -1,16 +1,21 @@
 [package]
 name = "nana-ui-view-macros"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.98"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 description = "The view! template macro and #[derive(Store)] for nana-ui-runtime's declarative views"
-license = "MIT OR Apache-2.0"
+license.workspace = true
 
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["gui", "proc-macro", "templates", "nanaui"]
+categories = ["gui", "development-tools"]
 [lib]
 proc-macro = true
 
 [dependencies]
-nana-ui-view-codegen = { path = "../nana-ui-view-codegen" }
+nana-ui-view-codegen.workspace = true
 proc-macro-crate = "3"
 proc-macro2 = { version = "1", features = ["span-locations"] }
 quote = "1"

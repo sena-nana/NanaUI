@@ -21,7 +21,7 @@ use nana_ui_core::TextWrapBreak;
 let mut fonts = FontSystem::with_policy(FallbackPolicy::empty());
 fonts
     .register_file(
-        "crates/nana-ui/assets/fonts/NotoSansSC-Variable.ttf",
+        "crates/nana-ui-core/assets/fonts/NotoSansSC-Variable.ttf",
         &FaceDescriptor::default(),
     )
     .unwrap();

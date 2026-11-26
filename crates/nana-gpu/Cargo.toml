@@ -1,11 +1,16 @@
 [package]
 name = "nana-gpu"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.98"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 description = "NanaUI's backend-neutral GPU contract: GpuContext, FrameContext and textures, implemented on WGPU"
-license = "MIT OR Apache-2.0"
+license.workspace = true
 
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["gpu", "wgpu", "rendering", "graphics", "nanaui"]
+categories = ["graphics", "rendering"]
 [features]
 default = []
 # Explicit escape hatch to the WGPU objects behind the contract: `GpuContext::wgpu()`,

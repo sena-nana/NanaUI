@@ -1,16 +1,21 @@
 [package]
 name = "nana-ui-view-codegen"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.98"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 description = "Template element tree to nana-ui-runtime view calls, shared by view! and the .vue dialect compiler"
-license = "MIT OR Apache-2.0"
+license.workspace = true
 
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["gui", "codegen", "templates", "nanaui"]
+categories = ["gui", "development-tools"]
 [dependencies]
 # Styles are parsed and matched with the one CSS engine.
 nana-ui-css.workspace = true
 nana-ui-core.workspace = true
-nana-ui-view-schema = { path = "../nana-ui-view-schema" }
+nana-ui-view-schema.workspace = true
 proc-macro2 = { version = "1", features = ["span-locations"] }
 quote = "1"
 syn = { version = "2", features = ["full"] }

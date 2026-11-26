@@ -3,7 +3,7 @@
 use super::MslStage;
 
 #[cfg(test)]
-pub(super) const WGPU: &str = "30.0.1";
+pub(super) const WGPU: &str = "30.0.1-nana.1";
 
 #[cfg(test)]
 pub(super) const FORK_MSL_HASH: u64 = 0x9a29327006d4f951;

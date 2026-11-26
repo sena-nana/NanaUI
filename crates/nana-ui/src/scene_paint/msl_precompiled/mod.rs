@@ -569,7 +569,7 @@ pub(in crate::scene_paint) mod tests {
                 .expect("workspace Cargo.lock");
         let mut lines = lock.lines();
         while let Some(line) = lines.next() {
-            if line.trim() == "name = \"wgpu\"" {
+            if line.trim() == "name = \"nana-wgpu\"" {
                 let version = lines.next().expect("wgpu version line");
                 return version
                     .trim()

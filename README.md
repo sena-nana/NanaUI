@@ -33,7 +33,7 @@
 </p>
 
 > [!WARNING]
-> NanaUI is in early development. It is not published on crates.io yet, and the API will keep changing.
+> NanaUI is in early development (`0.1.0-alpha.1` pre-release preparation for crates.io), and the API will keep changing.
 
 ## Why NanaUI
 
@@ -138,19 +138,9 @@ let count = signal(0);
 
 For complete runnable programs, see [`application-counter`](crates/nana-ui/examples/application-counter.rs), [`reactive-counter`](crates/nana-ui/examples/reactive-counter.rs) and [`examples/reactive-sfc`](examples/reactive-sfc).
 
-## Mixing live GPU & other UI frameworks
+## Mixing live GPU & other renderers
 
-Because GPU content is an ordinary node in the tree, whatever another renderer or UI toolkit draws can become a `HostTexture` or `GpuView` node in NanaUI — laid out, clipped and ordered with surrounding NanaUI controls on the same WGPU device and frame submission.
-
-<p align="center">
-  <img src="docs/assets/readme/egui-in-nanaui.png" alt="NanaUI controls on the left and an egui GpuView panel on the right in one window" width="72%">
-</p>
-
-[`egui-in-nanaui`](crates/nana-ui/examples/egui-in-nanaui.rs) mounts an egui panel on the right as a `GpuView` node alongside NanaUI controls on the left, with both sides reading and writing the same state and sharing one WGPU pass:
-
-```bash
-cargo run -p nana-ui --example egui-in-nanaui --features hosted,bundled-fonts,wgpu-interop
-```
+Because GPU content is an ordinary node in the tree, whatever another renderer draws can become a `HostTexture` or `GpuView` node in NanaUI — laid out, clipped and ordered with surrounding NanaUI controls on the same WGPU device and frame submission.
 
 For a live custom WGPU shader viewport mixed into the same UI tree, run:
 

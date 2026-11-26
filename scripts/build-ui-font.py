@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rebuild the bundled UI face, `crates/nana-ui/assets/fonts/NotoSansSC-Variable.ttf`.
+"""Rebuild the bundled UI face, `crates/nana-ui-core/assets/fonts/NotoSansSC-Variable.ttf`.
 
 NanaUI ships one Noto Sans SC file: the upstream variable font with its `wght`
 axis narrowed to 400..700 (default 400, the Regular instance), subsetted to the
@@ -44,7 +44,7 @@ DATA_DIR = ROOT / "scripts" / "ui-font"
 BASE_CODEPOINTS = DATA_DIR / "base-codepoints.txt"
 UI_TEXT_CODEPOINTS = DATA_DIR / "ui-text-codepoints.txt"
 FRAMEWORK_STRINGS = ROOT / "crates" / "nana-ui-core" / "src" / "framework_strings.rs"
-OUT_DIR = ROOT / "crates" / "nana-ui" / "assets" / "fonts"
+OUT_DIR = ROOT / "crates" / "nana-ui-core" / "assets" / "fonts"
 OUT_FONT = OUT_DIR / "NotoSansSC-Variable.ttf"
 OUT_LICENSE = OUT_DIR / "OFL.txt"
 OUT_MANIFEST = OUT_DIR / "README.md"

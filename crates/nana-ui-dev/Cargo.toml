@@ -1,12 +1,16 @@
 [package]
 name = "nana-ui-dev"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.98"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 description = "Development-only hot reload support for NanaUI applications"
-license = "MIT OR Apache-2.0"
-publish = false
+license.workspace = true
 
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["gui", "hot-reload", "devtools", "nanaui"]
+categories = ["development-tools", "gui"]
 [lib]
 name = "nana_ui_dev"
 path = "src/lib.rs"

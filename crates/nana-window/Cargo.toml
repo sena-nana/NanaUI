@@ -1,11 +1,16 @@
 [package]
 name = "nana-window"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.98"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 description = "Native window material boundary for Nana applications"
-license = "MIT OR Apache-2.0"
+license.workspace = true
 
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["gui", "window", "vibrancy", "native", "nanaui"]
+categories = ["gui"]
 [dependencies]
 nana-diagnostics.workspace = true
 nana-ui-core.workspace = true

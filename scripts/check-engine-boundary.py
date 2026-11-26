@@ -112,10 +112,23 @@ NANA_TEXT_PRIVATE_BACKENDS = {
     "png": "raster/outline.rs",
 }
 
-# NanaUI's wgpu fork (`third_party/wgpu`, upstream names kept): every copy of
-# these crates in the graph must be the vendored one, so there is one wgpu.
+# NanaUI's wgpu fork (`third_party/wgpu`, published as `nana-*`): every copy of
+# these crates in the graph must be the vendored one, and upstream unprefixed
+# wgpu/naga crates must not appear alongside them.
 FORKED_WGPU_DIR = ROOT / "third_party" / "wgpu"
 FORKED_WGPU_PACKAGES = {
+    "nana-naga",
+    "nana-naga-types",
+    "nana-wgpu",
+    "nana-wgpu-core",
+    "nana-wgpu-core-deps-apple",
+    "nana-wgpu-core-deps-emscripten",
+    "nana-wgpu-core-deps-windows-linux-android",
+    "nana-wgpu-hal",
+    "nana-wgpu-naga-bridge",
+    "nana-wgpu-types",
+}
+UPSTREAM_WGPU_PACKAGES = {
     "naga",
     "naga-types",
     "wgpu",
@@ -136,6 +149,9 @@ GPU_BACKEND_PACKAGES = {
     "iced-wgpu",
     "iced-winit",
     "metal",
+    "nana-wgpu",
+    "nana-wgpu-core",
+    "nana-wgpu-hal",
     "objc2-metal",
     "vulkano",
     "wgpu",
@@ -185,6 +201,11 @@ def check_dependency_graph(data: dict) -> list[str]:
     workspace = set(data["workspace_members"])
     graph = {n["id"]: [d["pkg"] for d in n["deps"] if any(k["kind"] != "dev" for k in d["dep_kinds"])] for n in data["resolve"]["nodes"]}
     for package in packages.values():
+        if package["name"] in UPSTREAM_WGPU_PACKAGES:
+            failures.append(
+                f"{package['name']} {package['version']} is upstream wgpu/naga; NanaUI uses its renamed nana-* fork in third_party/wgpu: {package.get('source') or package['manifest_path']}"
+            )
+            continue
         if package["name"] not in FORKED_WGPU_PACKAGES:
             continue
         manifest = Path(package["manifest_path"]).resolve()

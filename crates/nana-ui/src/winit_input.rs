@@ -409,11 +409,19 @@ impl WinitInputAdapter {
                 if !self.drag.accepts_serial(*transfer, *serial) {
                     return None;
                 }
-                match value.try_as_file_paths() {
-                    Ok(paths) => {
-                        let modifiers = self.drag_modifiers();
-                        self.drag
-                            .ingest_paths(*transfer, paths, self.pointer.cursor, modifiers)
+                match value.try_as_uris() {
+                    Ok(uris) => {
+                        let paths: Vec<std::path::PathBuf> = uris
+                            .iter()
+                            .filter_map(|uri| nana_ui_platform::file_uri_to_path(uri))
+                            .collect();
+                        if paths.is_empty() && !uris.is_empty() {
+                            self.drag.abandon_drop(*transfer)
+                        } else {
+                            let modifiers = self.drag_modifiers();
+                            self.drag
+                                .ingest_paths(*transfer, paths, self.pointer.cursor, modifiers)
+                        }
                     }
                     Err(error)
                         if matches!(
@@ -611,7 +619,6 @@ pub(crate) fn platform_composition(ime: &winit::event::Ime) -> CompositionInput 
             before_bytes: *before_bytes,
             after_bytes: *after_bytes,
         },
-        _ => CompositionInput::Disabled,
     }
 }
 
@@ -1169,6 +1176,7 @@ mod tests {
                 device_id: None,
                 delta: MouseScrollDelta::LineDelta(1.0, -2.0),
                 phase: TouchPhase::Moved,
+                source: winit::event::ScrollSource::Unknown,
             },
             2.0,
             None,
@@ -1193,6 +1201,7 @@ mod tests {
                 device_id: None,
                 delta: MouseScrollDelta::PixelDelta(PhysicalPosition::new(8.0, -4.0)),
                 phase: TouchPhase::Moved,
+                source: winit::event::ScrollSource::Unknown,
             },
             2.0,
             None,

@@ -33,7 +33,7 @@
 </p>
 
 > [!WARNING]
-> NanaUI 仍在早期开发中，还没有发布到 crates.io，API 会持续变化。
+> NanaUI 仍在早期开发中（正在准备 `0.1.0-alpha.1` 预发布到 crates.io），API 会持续变化。
 
 ## 为什么做 NanaUI
 
@@ -138,19 +138,9 @@ let count = signal(0);
 
 完整可运行的程序见 [`application-counter`](crates/nana-ui/examples/application-counter.rs)、[`reactive-counter`](crates/nana-ui/examples/reactive-counter.rs) 和 [`examples/reactive-sfc`](examples/reactive-sfc)。
 
-## 混合实时 GPU 画面与其他 UI 框架
+## 混合实时 GPU 画面与自定义渲染器
 
-因为 GPU 内容是树上的普通节点，其他渲染器或 UI 框架画出来的内容也可以作为 `HostTexture` 或 `GpuView` 节点放进 NanaUI——和周围的 NanaUI 控件一起排版、裁剪与排序，共用同一个 WGPU 设备和同一次提交。
-
-<p align="center">
-  <img src="docs/assets/readme/egui-in-nanaui.png" alt="左侧为 NanaUI 控件、右侧为嵌入的 egui GpuView 面板" width="72%">
-</p>
-
-[`egui-in-nanaui`](crates/nana-ui/examples/egui-in-nanaui.rs) 把右侧的 egui 面板挂成 `GpuView` 节点，与左侧 NanaUI 控件并排放在同一个窗口里，读写同一份状态并共用同一次 WGPU 渲染通道：
-
-```bash
-cargo run -p nana-ui --example egui-in-nanaui --features hosted,bundled-fonts,wgpu-interop
-```
+因为 GPU 内容是树上的普通节点，其他渲染器画出来的内容也可以作为 `HostTexture` 或 `GpuView` 节点放进 NanaUI——和周围的 NanaUI 控件一起排版、裁剪与排序，共用同一个 WGPU 设备和同一次提交。
 
 如需运行自定义 WGPU 着色器视口或离屏 3D 视口与界面控件同窗混排示例：
 

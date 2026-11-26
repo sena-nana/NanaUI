@@ -1,11 +1,16 @@
 [package]
 name = "nana-ui-devtools"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.98"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 description = "NanaUI headless Agent snapshot session and offscreen diagnostics"
-license = "MIT OR Apache-2.0"
+license.workspace = true
 
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["gui", "devtools", "headless", "testing", "nanaui"]
+categories = ["development-tools", "gui"]
 [lints]
 
 [lib]

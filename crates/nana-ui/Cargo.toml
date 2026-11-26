@@ -1,11 +1,16 @@
 [package]
 name = "nana-ui"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.98"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 description = "Rust-native UI foundation for the Nana application family"
-license = "MIT OR Apache-2.0"
+license.workspace = true
 
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["gui", "ui", "retained-mode", "wgpu", "nanaui"]
+categories = ["gui", "rendering"]
 [lints]
 
 [lib]
@@ -193,12 +198,7 @@ pollster = { workspace = true }
 wgpu = { workspace = true, features = ["wgsl", "naga-ir"] }
 naga = { workspace = true, features = ["wgsl-in", "wgsl-out", "deserialize", "serialize"] }
 flate2 = "1.1"
-# `egui-in-nanaui` mixes an egui panel into the tree. egui-wgpu 0.37 is on
-# the same WGPU major and builds against the fork through the workspace
-# `[patch.crates-io]`; default features off so it picks no backends.
-egui = { version = "0.37", default-features = false, features = ["default_fonts"] }
-egui-wgpu = { version = "0.37", default-features = false }
-log = "0.4"
+log = { version = "0.4", features = ["std"] }
 
 # `window-output-probe` reads its native output on a D3D11 device;
 # `stack-sampler` and `input-latency-probe` are Windows measurement tools.
@@ -242,10 +242,6 @@ required-features = ["gpu", "runtime-wgsl"]
 [[example]]
 name = "hosted-gpu-demo"
 required-features = ["hosted", "bundled-fonts", "wgpu-interop", "runtime-wgsl"]
-
-[[example]]
-name = "egui-in-nanaui"
-required-features = ["hosted", "bundled-fonts", "wgpu-interop"]
 
 [[example]]
 name = "gpu-view-demo"

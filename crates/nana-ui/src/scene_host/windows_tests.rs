@@ -99,9 +99,13 @@ fn input_generation_advances_without_zero_wrap() {
 }
 
 #[test]
-fn ignored_request_is_an_operation_failure_not_a_missing_capability() {
+fn os_request_error_is_an_operation_failure_not_a_missing_capability() {
     assert!(matches!(
-        window_request_error(winit::error::RequestError::Ignored),
+        window_request_error(winit::error::RequestError::Os(winit::error::OsError::new(
+            line!(),
+            file!(),
+            std::io::Error::other("fixture failure"),
+        ))),
         crate::WindowError::OperationFailed(_)
     ));
     assert!(matches!(

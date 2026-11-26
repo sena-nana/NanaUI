@@ -32,7 +32,8 @@ class EngineBoundaryTests(unittest.TestCase):
     def manifest_of(self, name, registry):
         crate = name.split("@")[0]
         if crate in boundary.FORKED_WGPU_PACKAGES and name not in registry:
-            return boundary.FORKED_WGPU_DIR / crate / "Cargo.toml"
+            dir_name = crate.removeprefix("nana-")
+            return boundary.FORKED_WGPU_DIR / dir_name / "Cargo.toml"
         if name in registry:
             return Path.home() / ".cargo" / "registry" / "src" / "index.crates.io-1949cf8c6b5b557f" / f"{crate}-1.0.0" / "Cargo.toml"
         return boundary.ROOT / "crates" / crate / "Cargo.toml"
@@ -43,28 +44,28 @@ class EngineBoundaryTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, root, True)
         return root
     def test_transitive_backend_dependency_is_rejected(self):
-        failures = boundary.check_dependency_graph(self.graph({"nana-ui-runtime": ["helper"], "helper": ["wgpu"]}))
-        self.assertTrue(any("nana-ui-runtime -> helper -> wgpu" in failure for failure in failures))
+        failures = boundary.check_dependency_graph(self.graph({"nana-ui-runtime": ["helper"], "helper": ["nana-wgpu"]}))
+        self.assertTrue(any("nana-ui-runtime -> helper -> nana-wgpu" in failure for failure in failures))
     def test_dev_only_dependency_is_not_a_product_edge(self):
-        data = self.graph({"nana-ui-runtime": ["wgpu"]})
+        data = self.graph({"nana-ui-runtime": ["nana-wgpu"]})
         next(node for node in data["resolve"]["nodes"] if node["id"] == "nana-ui-runtime")["deps"][0]["dep_kinds"][0]["kind"] = "dev"
         self.assertEqual(boundary.check_dependency_graph(data), [])
     def test_the_vendored_wgpu_fork_is_accepted(self):
-        data = self.graph({"host": ["wgpu", "naga"]}, root="host")
+        data = self.graph({"host": ["nana-wgpu", "nana-naga"]}, root="host")
         self.assertEqual(boundary.check_dependency_graph(data), [])
     def test_a_registry_wgpu_beside_the_fork_is_rejected(self):
         data = self.graph(
-            {"host": ["wgpu@30", "egui-wgpu"], "egui-wgpu": ["wgpu@29"]},
-            {"wgpu@29": "29.0.0", "wgpu@30": "30.0.1"},
+            {"host": ["nana-wgpu@30", "egui-wgpu"], "egui-wgpu": ["wgpu@29"]},
+            {"wgpu@29": "29.0.0", "nana-wgpu@30": "30.0.1-nana.1"},
             root="host",
             registry={"wgpu@29"},
         )
         failures = boundary.check_dependency_graph(data)
         self.assertEqual(len(failures), 1)
-        self.assertIn("wgpu 29.0.0 is not NanaUI's fork in third_party/wgpu", failures[0])
+        self.assertIn("wgpu 29.0.0 is upstream wgpu/naga", failures[0])
     def test_a_registry_naga_is_rejected(self):
         data = self.graph({"host": ["naga"]}, root="host", registry={"naga"})
-        self.assertTrue(any(failure.startswith("naga 1.0.0 is not NanaUI's fork") for failure in boundary.check_dependency_graph(data)))
+        self.assertTrue(any(failure.startswith("naga 1.0.0 is upstream wgpu/naga") for failure in boundary.check_dependency_graph(data)))
     def test_nana_text_must_not_have_a_product_edge_to_the_engine_it_replaces(self):
         failures = boundary.check_dependency_graph(
             self.graph({"nana-text": ["helper"], "helper": ["cosmic-text"]}, root="nana-text")

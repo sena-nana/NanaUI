@@ -4,27 +4,10 @@
 
 这里是 wgpu 30.0.1 及其组成 crate（`wgpu`、`wgpu-core`、`wgpu-core-deps-*`、`wgpu-hal`、`wgpu-types`、`wgpu-naga-bridge`、`naga`、`naga-types`）发布出来的源码，由 `scripts/vendor-wgpu.py` 放进来。NanaUI 在这里修改它们：把从 naga IR 到各后端的这一段（着色器与管线缓存、后端输出）握在自己手里，同时保留 wgpu 的校验与资源追踪。
 
-包名和版本沿用上游，各 crate 之间按路径互相依赖，因此：
+发布到 crates.io 时各包名加上 `nana-` 前缀（`nana-wgpu`、`nana-wgpu-core`、`nana-wgpu-hal`、`nana-wgpu-types`、`nana-wgpu-naga-bridge`、`nana-wgpu-core-deps-*`、`nana-naga`、`nana-naga-types`），版本为 `30.0.1-nana.1`，`[lib] name` 仍保持 `wgpu`、`naga` 等不变，内部以路径 + 版本号互相依赖，从而无需 `[patch.crates-io]` 即可直接发布与使用：
 
-- **每个依赖图里只有这一份 wgpu。** `scripts/check-engine-boundary.py` 会拒绝来自别处的 wgpu 或 naga crate。
-- **只用 NanaUI 的应用什么都不用做。** 以 git 依赖本仓库就会带上 fork；通过 `nana_gpu::wgpu`（feature `wgpu-interop`）使用 wgpu，不要直接依赖 `wgpu`。
-- **还用到基于 crates.io wgpu 的库**（egui-wgpu、glyphon 等）的应用，要把 crates.io 指到本仓库，rev 与它的 NanaUI 依赖相同：
-
-  ```toml
-  [patch.crates-io]
-  naga = { git = "https://github.com/sena-nana/NanaUI.git", rev = "<rev>" }
-  naga-types = { git = "https://github.com/sena-nana/NanaUI.git", rev = "<rev>" }
-  wgpu = { git = "https://github.com/sena-nana/NanaUI.git", rev = "<rev>" }
-  wgpu-core = { git = "https://github.com/sena-nana/NanaUI.git", rev = "<rev>" }
-  wgpu-core-deps-apple = { git = "https://github.com/sena-nana/NanaUI.git", rev = "<rev>" }
-  wgpu-core-deps-emscripten = { git = "https://github.com/sena-nana/NanaUI.git", rev = "<rev>" }
-  wgpu-core-deps-windows-linux-android = { git = "https://github.com/sena-nana/NanaUI.git", rev = "<rev>" }
-  wgpu-hal = { git = "https://github.com/sena-nana/NanaUI.git", rev = "<rev>" }
-  wgpu-naga-bridge = { git = "https://github.com/sena-nana/NanaUI.git", rev = "<rev>" }
-  wgpu-types = { git = "https://github.com/sena-nana/NanaUI.git", rev = "<rev>" }
-  ```
-
-  这些库随后就基于 fork 编译；只要 fork 没改到它们用的接口，就能通过。NanaUI 自己的工作区也用路径这样处理它的 egui 示例。
+- **每个依赖图里只有这一份 wgpu。** `scripts/check-engine-boundary.py` 会拒绝未加前缀的上游 `wgpu`/`naga` 以及 `third_party/wgpu` 之外的副本。
+- **只用 NanaUI 的应用什么都不用做。** 通过 crates.io 或 git 依赖 `nana-ui` 就会自动带上 `nana-wgpu`，无需 `[patch.crates-io]`；通过 `nana_gpu::wgpu`（feature `wgpu-interop`）使用 wgpu，不要直接依赖上游 `wgpu`。
 
 ## 修改 fork
 

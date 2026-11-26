@@ -148,7 +148,7 @@ Android、XR 与 accessibility provider 的设备验收。
 
 | feature | 作用 |
 | --- | --- |
-| `hosted` | `run_runtime`、winit 0.31-line（workspace git pin，非 crates.io 0.31.0）、AccessKit；隐含 `gpu` |
+| `hosted` | `run_runtime`、winit `0.31.0-beta.4`（crates.io）、AccessKit；隐含 `gpu` |
 | `gpu` | `SceneWgpuPainter`、`HostTexture`、`GpuTextureView`、`GpuView`（仅含平台主图形后端） |
 | `wgpu-backends` | 在启用 `gpu` 时打开跨平台全部标准 WGPU 后端（`dx12`、`vulkan`、`gles`、`metal`）；含于 `full` |
 | `runtime-wgsl` | 启用运行时 WGSL 编译回退（`naga` / `wgpu` WGSL）；关闭时仅加载预编译管线并在内置阶段缺失/失败时发出 `gpu.shader.build_failed`，自定义 WGSL `MaterialProgram` 发出 `gpu.material.rejected` |

@@ -1,17 +1,21 @@
 [package]
 name = "nana-packager"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.98"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 description = "Build-side Nana packager: pack plans, .nrpack building, platform layouts, Steam output and final-artifact validation"
-license = "MIT OR Apache-2.0"
-publish = false
+license.workspace = true
 
 # Build tool only. Nothing that ships in an application may depend on this
 # crate (`scripts/check-package-boundary.py`). It never runs cargo: it takes
 # an already built executable, so the dist pipeline (Issue #158) stays the
 # single build authority and calls this as one step.
 
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["packaging", "bundler", "cli", "nanaui"]
+categories = ["development-tools"]
 [lib]
 name = "nana_packager"
 path = "src/lib.rs"

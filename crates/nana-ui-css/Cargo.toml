@@ -1,11 +1,16 @@
 [package]
 name = "nana-ui-css"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.98"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 description = "NanaUI's CSS subset: stylesheet parse, cascade and the mapping onto the Style Model, run at build time by the .vue compiler, view! and css!"
-license = "MIT OR Apache-2.0"
+license.workspace = true
 
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["css", "stylesheet", "cascade", "gui", "nanaui"]
+categories = ["gui"]
 [lib]
 name = "nana_ui_css"
 path = "src/lib.rs"

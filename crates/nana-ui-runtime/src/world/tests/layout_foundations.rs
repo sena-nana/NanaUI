@@ -5946,7 +5946,7 @@ mod aspect_ratio_sizing {
     fn ui_face() -> String {
         concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../nana-ui/assets/fonts/NotoSansSC-Variable.ttf"
+            "/../nana-ui-core/assets/fonts/NotoSansSC-Variable.ttf"
         )
         .into()
     }

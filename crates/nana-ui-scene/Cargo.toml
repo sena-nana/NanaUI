@@ -1,11 +1,16 @@
 [package]
 name = "nana-ui-scene"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.98"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 description = "Backend-neutral retained scene and render graph for NanaUI"
-license = "MIT OR Apache-2.0"
+license.workspace = true
 
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["gui", "scene", "rendering", "retained-mode", "nanaui"]
+categories = ["gui", "rendering"]
 [features]
 calendar = ["nana-ui-runtime/calendar"]
 charts = ["nana-ui-runtime/charts"]

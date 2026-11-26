@@ -1,11 +1,16 @@
 [package]
 name = "nana-ui-diagram"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.98"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 description = "Native Mermaid diagrams for NanaUI: parsing, layout and a theme-neutral vector display list"
-license = "MIT OR Apache-2.0"
+license.workspace = true
 
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["mermaid", "diagram", "visualization", "gui", "nanaui"]
+categories = ["visualization", "gui"]
 [lib]
 name = "nana_ui_diagram"
 path = "src/lib.rs"
