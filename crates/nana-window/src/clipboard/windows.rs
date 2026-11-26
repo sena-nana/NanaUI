@@ -16,7 +16,7 @@ use windows_sys::Win32::System::DataExchange::{
 use windows_sys::Win32::System::Memory::{
     GMEM_MOVEABLE, GMEM_ZEROINIT, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock,
 };
-use windows_sys::Win32::System::Ole::{CF_HDROP, CF_UNICODETEXT};
+use windows_sys::Win32::System::Ole::{CF_DIB, CF_HDROP, CF_UNICODETEXT};
 use windows_sys::Win32::UI::Shell::DragQueryFileW;
 
 use super::{
@@ -368,11 +368,34 @@ fn attach_lazy(
     );
 }
 
+/// Packs an image as a packed DIB: `BITMAPINFOHEADER` followed by bottom-up
+/// 32bpp BGRA rows. Alpha is kept in the fourth byte for consumers that honor it.
+fn encode_dib(image: &TransferImage) -> Vec<u8> {
+    const HEADER_LEN: u32 = 40;
+    let width = image.width as usize;
+    let row_bytes = width * 4;
+    let mut out = Vec::with_capacity(HEADER_LEN as usize + row_bytes * image.height as usize);
+    out.extend_from_slice(&HEADER_LEN.to_le_bytes());
+    out.extend_from_slice(&(image.width as i32).to_le_bytes());
+    out.extend_from_slice(&(image.height as i32).to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes()); // planes
+    out.extend_from_slice(&32u16.to_le_bytes()); // bit count
+    out.extend_from_slice(&0u32.to_le_bytes()); // BI_RGB
+    out.extend_from_slice(&((row_bytes * image.height as usize) as u32).to_le_bytes());
+    out.extend_from_slice(&[0; 16]); // resolution and palette fields
+    for row in image.rgba.chunks_exact(row_bytes.max(1)).rev() {
+        for [r, g, b, a] in row.as_chunks::<4>().0 {
+            out.extend_from_slice(&[*b, *g, *r, *a]);
+        }
+    }
+    out
+}
+
 pub(super) fn write_transfer(transfer: &DataTransfer) -> Result<(), HostServiceError> {
     // Materialize and validate everything before emptying the OS clipboard so a
     // failed/cancelled lazy provider never discards existing user clipboard data.
     let mut staged: Vec<(u32, Vec<u8>)> = Vec::new();
-    let mut has_png = false;
+    let mut png_source: Option<Arc<[u8]>> = None;
     let mut rgba_source: Option<Arc<[u8]>> = None;
 
     for format in transfer.formats() {
@@ -400,7 +423,7 @@ pub(super) fn write_transfer(transfer: &DataTransfer) -> Result<(), HostServiceE
                 staged.push((register_format("text/uri-list")?, bytes.to_vec()));
             }
             DataFormat::ImagePng => {
-                has_png = true;
+                png_source = Some(Arc::clone(&bytes));
                 staged.push((register_format("PNG")?, bytes.to_vec()));
             }
             DataFormat::ImageRgba8 => {
@@ -422,10 +445,28 @@ pub(super) fn write_transfer(transfer: &DataTransfer) -> Result<(), HostServiceE
         }
     }
 
-    if !has_png && let Some(rgba) = rgba_source {
-        let image = TransferImage::from_rgba8_bytes(&rgba).map_err(|_| HostServiceError::Failed)?;
-        let png = encode_png(&image).map_err(|_| HostServiceError::Failed)?;
-        staged.push((register_format("PNG")?, png));
+    // "PNG" only reaches apps that look for it; CF_DIB is the format every
+    // Windows image consumer (Paint, Office, chat clients) understands, and the
+    // system synthesizes CF_DIBV5 and CF_BITMAP from it on demand.
+    let image = match (&png_source, &rgba_source) {
+        (_, Some(rgba)) => {
+            Some(TransferImage::from_rgba8_bytes(rgba).map_err(|_| HostServiceError::Failed)?)
+        }
+        // A PNG whose pixels exceed the transfer limit still goes out as PNG,
+        // just without the bitmap twin.
+        (Some(png), None) => match decode_png(png, transfer.max_bytes()) {
+            Ok(image) => Some(image),
+            Err(TransferError::PayloadTooLarge { .. }) => None,
+            Err(_) => return Err(HostServiceError::Failed),
+        },
+        (None, None) => None,
+    };
+    if let Some(image) = image {
+        if png_source.is_none() {
+            let png = encode_png(&image).map_err(|_| HostServiceError::Failed)?;
+            staged.push((register_format("PNG")?, png));
+        }
+        staged.push((CF_DIB as u32, encode_dib(&image)));
     }
 
     if staged.is_empty() {
@@ -440,4 +481,29 @@ pub(super) fn write_transfer(transfer: &DataTransfer) -> Result<(), HostServiceE
         unsafe { write_hglobal_bytes(*format_id, bytes)? };
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dib_is_bottom_up_bgra_behind_a_bitmapinfoheader() {
+        let image = TransferImage::new(
+            2,
+            2,
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16].as_slice(),
+        )
+        .unwrap();
+        let dib = encode_dib(&image);
+        assert_eq!(dib.len(), 40 + 16);
+        assert_eq!(&dib[0..4], &40u32.to_le_bytes());
+        assert_eq!(&dib[4..12], &[2, 0, 0, 0, 2, 0, 0, 0]);
+        assert_eq!(&dib[14..16], &32u16.to_le_bytes());
+        // Bottom row first, channels swapped to BGRA.
+        assert_eq!(
+            &dib[40..],
+            &[11, 10, 9, 12, 15, 14, 13, 16, 3, 2, 1, 4, 7, 6, 5, 8]
+        );
+    }
 }
