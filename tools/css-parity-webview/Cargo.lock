@@ -1053,6 +1053,48 @@ dependencies = [
 ]
 
 [[package]]
+name = "i_float"
+version = "5.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ecaff1ce29bcacd72cdf581ba6fce636ef4c4e0b2da7e7846dd0137d98141e2"
+dependencies = [
+ "libm",
+]
+
+[[package]]
+name = "i_key_sort"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "14269ee362009550495e20650ff3c2bca14a8147fe251e216760381ffed90b6f"
+
+[[package]]
+name = "i_overlay"
+version = "9.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e19f30f6631721dcdfdd424da135bde0ffb0f6aca1036947eff2137527f5e926"
+dependencies = [
+ "i_float",
+ "i_key_sort",
+ "i_shape",
+ "i_tree",
+]
+
+[[package]]
+name = "i_shape"
+version = "5.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fa1878f91ef7921feaf1b2346253ebc5e661878b22d5715195c1d5dcf0f20ae5"
+dependencies = [
+ "i_float",
+]
+
+[[package]]
+name = "i_tree"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "048af31de955890c62a8506fec511335a5089e91e1c516537add16f96c507d84"
+
+[[package]]
 name = "icu_calendar"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1552,14 +1594,15 @@ dependencies = [
 
 [[package]]
 name = "nana-diagnostics"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
+ "libc",
  "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "nana-text"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "fontdb",
  "harfrust",
@@ -1575,11 +1618,12 @@ dependencies = [
 
 [[package]]
 name = "nana-ui"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "nana-diagnostics",
  "nana-text",
  "nana-ui-core",
+ "nana-ui-input",
  "nana-ui-platform",
  "nana-ui-runtime",
  "nana-ui-scene",
@@ -1590,7 +1634,7 @@ dependencies = [
 
 [[package]]
 name = "nana-ui-core"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "nana-diagnostics",
  "serde",
@@ -1599,14 +1643,14 @@ dependencies = [
 
 [[package]]
 name = "nana-ui-css"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "nana-ui-core",
 ]
 
 [[package]]
 name = "nana-ui-input"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "nana-diagnostics",
  "nana-ui-core",
@@ -1614,7 +1658,7 @@ dependencies = [
 
 [[package]]
 name = "nana-ui-platform"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "arboard",
  "jni",
@@ -1631,12 +1675,12 @@ dependencies = [
 
 [[package]]
 name = "nana-ui-runtime"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "fixed_decimal",
  "foldhash",
- "futures-core",
  "hashbrown",
+ "i_overlay",
  "icu_calendar",
  "icu_datetime",
  "icu_decimal",
@@ -1659,8 +1703,9 @@ dependencies = [
 
 [[package]]
 name = "nana-ui-scene"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
+ "i_overlay",
  "lyon_tessellation",
  "nana-diagnostics",
  "nana-ui-core",
@@ -1670,7 +1715,7 @@ dependencies = [
 
 [[package]]
 name = "nana-ui-view-schema"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 
 [[package]]
 name = "ndk"

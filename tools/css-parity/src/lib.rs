@@ -264,7 +264,15 @@ JSON.stringify(Array.from(document.querySelectorAll('[data-id]')).map((el) => {
 "#;
 
 pub fn parse_webview_boxes(json: &str) -> Result<Vec<ExpectedBox>, String> {
-    serde_json::from_str(json).map_err(|e| e.to_string())
+    // WKWebView hands back the string the script returns; WebView2 hands back
+    // that result JSON-encoded, so the array arrives as a JSON string.
+    match serde_json::from_str::<Vec<ExpectedBox>>(json) {
+        Ok(boxes) => Ok(boxes),
+        Err(error) => match serde_json::from_str::<String>(json) {
+            Ok(inner) => serde_json::from_str(&inner).map_err(|e| e.to_string()),
+            Err(_) => Err(error.to_string()),
+        },
+    }
 }
 
 pub fn compare_maps(
@@ -326,6 +334,19 @@ pub fn format_report(report: &CompareReport) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn webview_boxes_parse_raw_and_json_encoded_results() {
+        let raw = r#"[{"id":"root","x":0,"y":0,"w":200,"h":120}]"#;
+        let encoded = serde_json::to_string(raw).unwrap();
+        for input in [raw, encoded.as_str()] {
+            let boxes = super::parse_webview_boxes(input).unwrap();
+            assert_eq!(boxes.len(), 1);
+            assert_eq!(boxes[0].id, "root");
+            assert_eq!(boxes[0].w, 200.0);
+        }
+        assert!(super::parse_webview_boxes("{}").is_err());
+    }
 
     #[test]
     fn fixture_to_html_embeds_bundled_font_and_escapes_node_text() {
