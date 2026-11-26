@@ -8,6 +8,7 @@
 //! [`cli`] drives a `&mut dyn AgentSession`, which is also how a consuming
 //! product joins with its own session and its own document.
 
+pub mod a11y_validation;
 pub mod cli;
 pub mod fixtures;
 pub mod pixels;
@@ -15,6 +16,11 @@ pub mod protocol;
 pub mod runtime;
 pub(crate) mod scene_probe;
 pub mod session;
+
+pub use a11y_validation::{
+    AccessibilityViolation, AccessibilityViolationKind, CHECKED_ROLES, INTERACTIVE_NAMED_ROLES,
+    SELECTED_ROLES, format_accessibility_violations, validate_accessibility_tree,
+};
 
 pub use protocol::{
     A11yFilter, AgentCommand, AgentReply, AppliedDump, CauseDump, DiagnosticDump, DynamicDump,

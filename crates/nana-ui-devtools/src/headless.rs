@@ -35,16 +35,100 @@ use crate::agent::{
     document_scene_probe, document_set_field, document_theme_inspect, document_theme_invalidation,
     filter_accessibility_nodes, node_center_in, resolve_target_in,
 };
+pub use crate::agent::{
+    AccessibilityViolation, AccessibilityViolationKind, format_accessibility_violations,
+    validate_accessibility_tree,
+};
 use crate::offscreen::{FORMAT, Size, read_png, readback, write_painter_png};
 
 /// How long a screenshot waits for the images its scene shows to decode.
 const IMAGE_DEADLINE: Duration = Duration::from_secs(35);
+
+/// Monotonic clock floor tracker so returning from manual simulated time to
+/// system wall time never moves time backward.
+#[derive(Debug, Clone)]
+struct MonotonicClockBridge {
+    manual_requested: bool,
+    clock_floor: Option<Instant>,
+    last_wall_sample: Instant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClockSyncAction {
+    /// Leave the underlying runtime clock untouched.
+    Keep,
+    /// Wall time has caught up to (or passed) the floor; restore system clock.
+    RestoreSystem,
+    /// Wall time is still behind the floor; keep manual clock at `target`.
+    PinAt(Instant),
+}
+
+impl MonotonicClockBridge {
+    fn new(now: Instant) -> Self {
+        Self {
+            manual_requested: false,
+            clock_floor: None,
+            last_wall_sample: now,
+        }
+    }
+
+    fn record_floor(&mut self, observed: Instant) {
+        self.clock_floor = Some(
+            self.clock_floor
+                .map_or(observed, |floor| floor.max(observed)),
+        );
+    }
+
+    fn sync(&mut self, wall: Instant) -> ClockSyncAction {
+        let dt = wall.saturating_duration_since(self.last_wall_sample);
+        self.last_wall_sample = wall;
+        if self.manual_requested {
+            return ClockSyncAction::Keep;
+        }
+        let Some(floor) = self.clock_floor else {
+            return ClockSyncAction::Keep;
+        };
+        let next = floor + dt;
+        if wall >= next {
+            self.clock_floor = None;
+            ClockSyncAction::RestoreSystem
+        } else {
+            self.clock_floor = Some(next);
+            ClockSyncAction::PinAt(next)
+        }
+    }
+
+    fn request_manual(&mut self, wall: Instant, runtime_now: Instant) -> Instant {
+        let target = match self.sync(wall) {
+            ClockSyncAction::PinAt(pinned) => pinned.max(runtime_now),
+            ClockSyncAction::Keep | ClockSyncAction::RestoreSystem => self
+                .clock_floor
+                .map_or(runtime_now, |floor| floor.max(runtime_now)),
+        };
+        self.manual_requested = true;
+        self.record_floor(target);
+        target
+    }
+
+    fn request_system(&mut self, wall: Instant, runtime_now: Instant) -> ClockSyncAction {
+        self.record_floor(runtime_now);
+        self.manual_requested = false;
+        self.last_wall_sample = wall;
+        self.sync(wall)
+    }
+
+    fn effective_now(&self, runtime_now: Instant) -> Instant {
+        self.clock_floor
+            .map_or(runtime_now, |floor| floor.max(runtime_now))
+    }
+}
 
 /// [`HeadlessRuntime`] with pixels.
 pub struct HeadlessHost<P: RuntimeProgram> {
     runtime: HeadlessRuntime<P>,
     painter: SceneWgpuPainter,
     theme_registry: nana_ui_core::ThemeRegistry,
+    clock_bridge: MonotonicClockBridge,
 }
 
 impl<P: RuntimeProgram> Deref for HeadlessHost<P> {
@@ -72,15 +156,109 @@ impl<P: RuntimeProgram> HeadlessHost<P> {
         let painter = SceneWgpuPainter::try_new(&gpu, FORMAT)
             .map_err(|error| AgentError(error.to_string()))?;
         let runtime = HeadlessRuntime::new(gpu, primary, geometry, options).map_err(AgentError)?;
+        let initial_now = runtime.now_instant();
         Ok(Self {
             runtime,
             painter,
             theme_registry: nana_ui_core::ThemeRegistry::default(),
+            clock_bridge: MonotonicClockBridge::new(initial_now),
         })
     }
 
     pub fn runtime(&mut self) -> &mut HeadlessRuntime<P> {
         &mut self.runtime
+    }
+
+    fn apply_clock_sync(&mut self, action: ClockSyncAction) {
+        match action {
+            ClockSyncAction::Keep => {}
+            ClockSyncAction::RestoreSystem => self.runtime.use_system_clock(),
+            ClockSyncAction::PinAt(target) => {
+                let current = self.runtime.use_manual_clock();
+                let delta = target.saturating_duration_since(current);
+                let advanced = self.runtime.advance_clock(delta);
+                self.clock_bridge.record_floor(advanced);
+            }
+        }
+    }
+
+    fn sync_clock(&mut self) {
+        let action = self.clock_bridge.sync(Instant::now());
+        self.apply_clock_sync(action);
+        self.clock_bridge.record_floor(self.runtime.now_instant());
+    }
+
+    /// Pin this host's clock to simulated time so subsequent turns no longer
+    /// advance with wall time unless [`Self::advance_clock`] is called.
+    pub fn use_manual_clock(&mut self) -> Instant {
+        let target = self
+            .clock_bridge
+            .request_manual(Instant::now(), self.runtime.now_instant());
+        let current = self.runtime.use_manual_clock();
+        let delta = target.saturating_duration_since(current);
+        let pinned = self.runtime.advance_clock(delta);
+        self.clock_bridge.record_floor(pinned);
+        pinned
+    }
+
+    /// Return this host to the system wall clock without ever moving time
+    /// backward.
+    ///
+    /// If simulated time was previously advanced ahead of `Instant::now()`,
+    /// the host keeps advancing smoothly by wall-clock deltas from that floor
+    /// until system wall time catches up.
+    pub fn use_system_clock(&mut self) {
+        let action = self
+            .clock_bridge
+            .request_system(Instant::now(), self.runtime.now_instant());
+        self.apply_clock_sync(action);
+    }
+
+    /// Whether the host is currently driven by a caller-requested manual clock.
+    pub fn is_manual_clock(&self) -> bool {
+        self.clock_bridge.manual_requested
+    }
+
+    /// Current monotonic timestamp seen by host turns, input, and presentation.
+    pub fn now_instant(&self) -> Instant {
+        self.clock_bridge.effective_now(self.runtime.now_instant())
+    }
+
+    /// Advance the simulated clock by `delta`, switching to manual clock mode
+    /// if needed.
+    pub fn advance_clock(&mut self, delta: Duration) -> Instant {
+        let _ = self.use_manual_clock();
+        let next = self.runtime.advance_clock(delta);
+        self.clock_bridge.record_floor(next);
+        next
+    }
+
+    /// Execute one host turn while keeping the clock monotonic.
+    pub fn turn(&mut self) -> HeadlessTurn {
+        self.sync_clock();
+        let turn = self.runtime.turn();
+        self.clock_bridge.record_floor(self.runtime.now_instant());
+        turn
+    }
+
+    /// Advance the simulated clock by `delta` and execute one host turn.
+    pub fn step(&mut self, delta: Duration) -> HeadlessTurn {
+        self.advance_clock(delta);
+        self.turn()
+    }
+
+    /// Run turns until queued messages, layout flushes, and active animations
+    /// settle, preserving the caller's system-clock mode and monotonic floor
+    /// even when `step` temporarily advances simulated time ahead of wall time.
+    pub fn turn_until_quiescent(&mut self, step: Duration, max_steps: usize) -> HeadlessQuiesce {
+        self.sync_clock();
+        let was_manual = self.clock_bridge.manual_requested;
+        let report = self.runtime.turn_until_quiescent(step, max_steps);
+        self.clock_bridge.record_floor(self.runtime.now_instant());
+        if !was_manual {
+            self.use_system_clock();
+        }
+        report
     }
 
     /// `id`'s accessibility tree as an agent sees it.
@@ -90,6 +268,18 @@ impl<P: RuntimeProgram> HeadlessHost<P> {
             .ok()
             .flatten()
             .unwrap_or_default()
+    }
+
+    /// Fetch `id`'s accessibility tree and validate it against the generic
+    /// NanaUI accessibility contract.
+    pub fn validate_accessibility(
+        &self,
+        id: WindowId,
+    ) -> Result<Vec<AccessibilityDumpNode>, AgentError> {
+        let nodes = self.accessibility(id);
+        validate_accessibility_tree(&nodes)
+            .map_err(|violations| AgentError(format_accessibility_violations(&violations)))?;
+        Ok(nodes)
     }
 
     /// `id`'s accessibility nodes filtered by `filter`. The boolean marks
@@ -202,6 +392,13 @@ impl<P: RuntimeProgram> HeadlessHost<P> {
         Ok(result)
     }
 
+    /// Present `id` once more, keeping the host clock monotonic.
+    pub fn present(&mut self, id: WindowId) {
+        self.sync_clock();
+        self.runtime.present(id);
+        self.clock_bridge.record_floor(self.runtime.now_instant());
+    }
+
     /// Present `id` once more, then paint it over `clear` and read it back,
     /// waiting for the images it shows to decode. Image sizes the paint
     /// learned go to the document for its next frame, as after a native one.
@@ -211,7 +408,7 @@ impl<P: RuntimeProgram> HeadlessHost<P> {
         clear: [f32; 4],
     ) -> Result<(Size<u32>, Vec<u8>), AgentError> {
         let error = |error: &dyn std::fmt::Display| AgentError(error.to_string());
-        self.runtime.present(id);
+        self.present(id);
         // Painted as the native host paints it: in the window's content
         // geometry, so a content zoom shows.
         let window = self
@@ -485,8 +682,70 @@ impl<P: RuntimeProgram> HeadlessHost<P> {
         payload: InputPayload,
         text: Option<&str>,
     ) -> Result<(), AgentError> {
+        self.sync_clock();
         self.runtime
             .input(id, payload, text)
             .map_err(|error| AgentError(error.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use super::{ClockSyncAction, MonotonicClockBridge};
+
+    #[test]
+    fn use_system_clock_never_moves_backward_after_manual_advance() {
+        let t0 = Instant::now();
+        let mut bridge = MonotonicClockBridge::new(t0);
+
+        // Pin manual clock at t0 and advance simulated time 10s ahead of wall time.
+        let pinned = bridge.request_manual(t0, t0);
+        assert_eq!(pinned, t0);
+        let simulated = t0 + Duration::from_secs(10);
+        bridge.record_floor(simulated);
+
+        // Switch back to system clock 50ms later in wall time: must stay pinned
+        // at simulated (t0 + 10s) instead of jumping back to t0 + 0.05s.
+        let wall1 = t0 + Duration::from_millis(50);
+        let action1 = bridge.request_system(wall1, simulated);
+        assert_eq!(action1, ClockSyncAction::PinAt(simulated));
+        assert!(!bridge.manual_requested);
+        assert!(bridge.effective_now(wall1) >= simulated);
+
+        // Another 25ms of wall time elapses: advances smoothly without going backward.
+        let wall2 = wall1 + Duration::from_millis(25);
+        let action2 = bridge.sync(wall2);
+        assert_eq!(
+            action2,
+            ClockSyncAction::PinAt(t0 + Duration::from_millis(10_025))
+        );
+
+        // Re-entering manual clock starts at least at the bridged timestamp.
+        let wall3 = wall2 + Duration::from_millis(25);
+        let re_pinned = bridge.request_manual(wall3, t0 + Duration::from_millis(10_025));
+        assert_eq!(re_pinned, t0 + Duration::from_millis(10_050));
+        assert!(bridge.manual_requested);
+    }
+
+    #[test]
+    fn system_clock_restores_once_wall_time_reaches_floor() {
+        let t0 = Instant::now();
+        let mut bridge = MonotonicClockBridge::new(t0);
+        let _ = bridge.request_manual(t0, t0);
+        // Small simulated advance (10ms) already overtaken by wall time (50ms).
+        let simulated = t0 + Duration::from_millis(10);
+        bridge.record_floor(simulated);
+        let wall1 = t0 + Duration::from_millis(50);
+        assert_eq!(
+            bridge.request_system(wall1, simulated),
+            ClockSyncAction::RestoreSystem
+        );
+        assert_eq!(bridge.clock_floor, None);
+        assert_eq!(
+            bridge.sync(wall1 + Duration::from_millis(5)),
+            ClockSyncAction::Keep
+        );
     }
 }

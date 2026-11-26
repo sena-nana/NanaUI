@@ -506,7 +506,13 @@ pub(crate) fn run(shared: Arc<Shared>) {
             shared.shutdown.store(true, Ordering::Release);
         }
         let shutting_down = shared.shutdown.load(Ordering::Acquire);
-        let requests = std::mem::take(&mut *lock(&shared.requests));
+        let mut requests = std::mem::take(&mut *lock(&shared.requests));
+        if let Some(reason) = shared.nonblocking_snapshot.take() {
+            requests.push(Request::Snapshot {
+                reason: reason.to_owned(),
+                reply: None,
+            });
+        }
         let now = Instant::now();
         let mut snapshots = Vec::new();
         let mut durable = shutting_down;

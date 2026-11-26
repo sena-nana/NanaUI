@@ -62,12 +62,12 @@ pub use export::{ExportOptions, to_json_lines, to_text};
 pub use files::Sink;
 pub use marker::UncleanExit;
 pub use metric::{HISTOGRAM_BUCKETS, HistogramCells, HistogramSample, Metric, MetricValue};
-pub use package::{PackageOptions, export_package_from};
+pub use package::{PackageFilter, PackageOptions, export_package_from};
 pub use record::{Field, FieldValue};
 pub use runtime::{
     __private, AlreadyInstalled, Diagnostics, DiagnosticsGuard, DiagnosticsStats, enabled,
-    fault_with_snapshot, global, install, metrics_enabled, register_thread, set_session_info,
-    snapshot,
+    fault_with_snapshot, global, install, metrics_enabled, register_thread,
+    request_snapshot_nonblocking, set_session_info, snapshot,
 };
 pub use schema::{
     Domain, EventDescriptor, FieldDescriptor, FieldKind, MAX_FIELDS, MetricDescriptor, MetricKind,

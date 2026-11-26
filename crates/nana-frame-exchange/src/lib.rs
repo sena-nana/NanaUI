@@ -362,6 +362,26 @@ impl FrameDamageRect {
 
 const DAMAGE_HISTORY_CAPACITY: usize = 32;
 
+static NEXT_SLOT_TEXTURE_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Opaque, engine-boundary-safe identifier for a pool slot's backing texture.
+///
+/// Stable across frames that reuse the same backing texture without
+/// reallocation, and changes whenever the slot acquires a different backing
+/// texture (for example after resize, format change, or path switch).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SlotTextureId(u64);
+
+impl SlotTextureId {
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+fn next_slot_texture_id() -> SlotTextureId {
+    SlotTextureId(NEXT_SLOT_TEXTURE_ID.fetch_add(1, Ordering::Relaxed))
+}
+
 /// A free pool slot reserved for direct producer rendering.
 ///
 /// The producer renders directly into [`Self::texture`] (or [`Self::wgpu_texture`]
@@ -374,6 +394,8 @@ pub struct WriteSlot {
     slot_index: usize,
     sequence: u64,
     texture: GpuTexture,
+    texture_id: SlotTextureId,
+    last_committed_sequence: Option<u64>,
     ownership: Arc<SlotOwnership>,
     texture_reused: bool,
     committed: bool,
@@ -394,6 +416,24 @@ impl WriteSlot {
 
     pub fn slot(&self) -> u8 {
         self.ownership.slot
+    }
+
+    /// Monotonic sequence reserved for this in-progress write.
+    pub fn sequence(&self) -> u64 {
+        self.sequence
+    }
+
+    /// Opaque identifier of this slot's current backing texture.
+    pub fn texture_id(&self) -> SlotTextureId {
+        self.texture_id
+    }
+
+    /// Sequence number of the last frame committed into this slot's reused
+    /// backing texture within the current epoch, or `None` if the texture is
+    /// newly allocated, the epoch changed, or a prior write was dropped
+    /// uncommitted.
+    pub fn last_committed_sequence(&self) -> Option<u64> {
+        self.last_committed_sequence
     }
 
     /// Whether this slot kept its previous backing texture (same size and
@@ -703,6 +743,8 @@ struct PendingCopy<E, M> {
 struct Slot<E, M> {
     ownership: Arc<SlotOwnership>,
     texture: Option<GpuTexture>,
+    texture_id: Option<SlotTextureId>,
+    last_committed_sequence: Option<u64>,
     pending: Option<PendingCopy<E, M>>,
 }
 
@@ -761,6 +803,8 @@ impl<E: Copy + Eq + Send + Sync + 'static, M: Send + Sync + 'static> FrameExchan
                 .map(|slot| Slot {
                     ownership: Arc::new(SlotOwnership::new(slot, Arc::clone(&producer_waker))),
                     texture: None,
+                    texture_id: None,
+                    last_committed_sequence: None,
                     pending: None,
                 })
                 .collect(),
@@ -813,6 +857,9 @@ impl<E: Copy + Eq + Send + Sync + 'static, M: Send + Sync + 'static> FrameExchan
         self.epoch = epoch;
         *lock(&self.shared.epoch) = epoch;
         lock(&self.shared.damage_history).clear();
+        for slot in self.slots.iter_mut() {
+            slot.last_committed_sequence = None;
+        }
         let had_frame = lock(&self.shared.latest).take().is_some();
         if had_frame {
             self.wake();
@@ -825,6 +872,55 @@ impl<E: Copy + Eq + Send + Sync + 'static, M: Send + Sync + 'static> FrameExchan
             history.pop_front();
         }
         history.push_back((sequence, damage));
+    }
+
+    /// Sequence number of the latest frame submitted in the active epoch, or
+    /// `None` if no frame has been submitted since construction or the last
+    /// epoch change.
+    pub fn latest_committed_sequence(&self) -> Option<u64> {
+        lock(&self.shared.damage_history)
+            .back()
+            .map(|(seq, _)| *seq)
+    }
+
+    /// Union of per-frame damage rectangles across all submitted frames
+    /// strictly after `after_sequence` up to the latest committed frame in the
+    /// active epoch.
+    ///
+    /// Mirrors [`FrameInbox::damage_since`] for producer-side buffer-age
+    /// partial redraws:
+    /// - Returns `Some(FrameDamageRect::EMPTY)` when `after_sequence` is
+    ///   already the latest committed frame.
+    /// - Returns `None` when `after_sequence` is `0`, has fallen out of the
+    ///   bounded damage history, the epoch reset, or any intermediate frame
+    ///   declared full-frame (`None`) damage.
+    pub fn damage_since(&self, after_sequence: u64) -> Option<FrameDamageRect> {
+        if after_sequence == 0 {
+            return None;
+        }
+        let history = lock(&self.shared.damage_history);
+        let start = history.iter().position(|(seq, _)| *seq == after_sequence)?;
+        let mut union = FrameDamageRect::EMPTY;
+        for (_, damage) in history.iter().skip(start + 1) {
+            let rect = (*damage)?;
+            union = union.union(rect);
+        }
+        Some(union)
+    }
+
+    /// Accumulated damage applied since `slot`'s reused backing texture was
+    /// last committed in the active epoch.
+    ///
+    /// Returns `None` when `slot` does not belong to this exchange, uses a
+    /// newly allocated backing texture, was previously dropped uncommitted, or
+    /// requires a full redraw (epoch reset, history overflow, or intermediate
+    /// full-frame damage).
+    pub fn write_slot_damage(&self, slot: &WriteSlot) -> Option<FrameDamageRect> {
+        if slot.exchange != self.shared.exchange || !slot.texture_reused {
+            return None;
+        }
+        let prev = slot.last_committed_sequence?;
+        self.damage_since(prev)
     }
 
     /// Copy `source` into a free slot on the shared device. Returns without
@@ -986,6 +1082,8 @@ impl<E: Copy + Eq + Send + Sync + 'static, M: Send + Sync + 'static> FrameExchan
         // and reacquire by the complete resource key. This makes resize and
         // steady-size exchange copies use the same bounded pool as renderers.
         let usage = GpuTextureUsages::SAMPLED | GpuTextureUsages::COPY_DST;
+        slot.texture_id = None;
+        slot.last_committed_sequence = None;
         if let Some(old) = slot.texture.take() {
             let old_key = TransientResourceKey::new(
                 self.gpu.generation(),
@@ -1015,7 +1113,10 @@ impl<E: Copy + Eq + Send + Sync + 'static, M: Send + Sync + 'static> FrameExchan
                 usage,
             })
         }) {
-            Ok(texture) => slot.texture = Some(texture),
+            Ok(texture) => {
+                slot.texture = Some(texture);
+                slot.texture_id = Some(next_slot_texture_id());
+            }
             Err(_) => {
                 slot.ownership.release(sequence);
                 return CopyOutcome::IncompatibleSource;
@@ -1036,6 +1137,7 @@ impl<E: Copy + Eq + Send + Sync + 'static, M: Send + Sync + 'static> FrameExchan
             completion.store(true, Ordering::Release);
             waker.wake();
         });
+        slot.last_committed_sequence = Some(sequence);
         slot.pending = Some(PendingCopy {
             token: FrameToken {
                 exchange: self.shared.exchange,
@@ -1098,6 +1200,8 @@ impl<E: Copy + Eq + Send + Sync + 'static, M: Send + Sync + 'static> FrameExchan
                 && existing.usage() == usage
         });
         if !reuse_existing {
+            slot.texture_id = None;
+            slot.last_committed_sequence = None;
             if let Some(old) = slot.texture.take() {
                 let old_key = TransientResourceKey::new(
                     self.gpu.generation(),
@@ -1127,7 +1231,10 @@ impl<E: Copy + Eq + Send + Sync + 'static, M: Send + Sync + 'static> FrameExchan
                     usage,
                 })
             }) {
-                Ok(texture) => slot.texture = Some(texture),
+                Ok(texture) => {
+                    slot.texture = Some(texture);
+                    slot.texture_id = Some(next_slot_texture_id());
+                }
                 Err(_) => {
                     slot.ownership.release(sequence);
                     return Err(WriteAcquireError::IncompatibleFormat);
@@ -1139,6 +1246,15 @@ impl<E: Copy + Eq + Send + Sync + 'static, M: Send + Sync + 'static> FrameExchan
             .as_ref()
             .expect("write slot texture must be allocated")
             .clone();
+        let texture_id = *slot.texture_id.get_or_insert_with(next_slot_texture_id);
+        // Take the slot's last committed sequence on checkout so dropping an
+        // uncommitted `WriteSlot` fails closed (forcing a full redraw on the
+        // next acquisition of that slot).
+        let last_committed_sequence = if reuse_existing {
+            slot.last_committed_sequence.take()
+        } else {
+            None
+        };
         let ownership = Arc::clone(&slot.ownership);
         self.stats.occupied_high_water = self.stats.occupied_high_water.max(self.occupied());
         Ok(WriteSlot {
@@ -1146,6 +1262,8 @@ impl<E: Copy + Eq + Send + Sync + 'static, M: Send + Sync + 'static> FrameExchan
             slot_index: index,
             sequence,
             texture,
+            texture_id,
+            last_committed_sequence,
             ownership,
             texture_reused: reuse_existing,
             committed: false,
@@ -1214,6 +1332,7 @@ impl<E: Copy + Eq + Send + Sync + 'static, M: Send + Sync + 'static> FrameExchan
         });
         let sequence = write_slot.sequence;
         let slot = &mut self.slots[write_slot.slot_index];
+        slot.last_committed_sequence = Some(sequence);
         slot.pending = Some(PendingCopy {
             token: FrameToken {
                 exchange: self.shared.exchange,
@@ -2191,5 +2310,211 @@ mod tests {
         );
         assert!(exchange.poll());
         assert!(!exchange.has_pending_work());
+    }
+
+    #[test]
+    fn write_slot_texture_id_and_last_committed_sequence_track_reuse_and_reallocation() {
+        let gpu = test_gpu();
+        let mut exchange =
+            FrameExchange::new(&gpu, NonZeroU8::new(1).unwrap(), 1u64, Arc::new(|| {}));
+        let inbox = exchange.inbox();
+
+        // First allocation: fresh texture_id, no prior committed sequence.
+        let slot1 = exchange
+            .try_begin_write(16, 16, GpuTextureFormat::RGBA8_UNORM)
+            .expect("first slot");
+        let id1 = slot1.texture_id();
+        let seq1 = slot1.sequence();
+        assert!(!slot1.texture_reused());
+        assert_eq!(slot1.last_committed_sequence(), None);
+        assert_eq!(exchange.write_slot_damage(&slot1), None);
+        assert_eq!(
+            exchange.commit_write_with_payload_and_damage(
+                slot1,
+                1,
+                FrameColorMetadata::unknown(),
+                (),
+                None,
+            ),
+            CopyOutcome::Submitted
+        );
+        wait(&gpu);
+        assert!(exchange.poll());
+        // Release the latest lease by advancing epoch after reading, or hold none.
+        assert_eq!(exchange.latest_committed_sequence(), Some(seq1));
+        assert!(inbox.latest().is_some());
+
+        // Clear latest without changing epoch? With capacity=1, consumer doesn't
+        // hold a lease, only `shared.latest` holds it. Use capacity=2 for steady reuse.
+        let mut exchange =
+            FrameExchange::new(&gpu, NonZeroU8::new(2).unwrap(), 1u64, Arc::new(|| {}));
+        let slot_a1 = exchange
+            .try_begin_write(16, 16, GpuTextureFormat::RGBA8_UNORM)
+            .expect("slot a1");
+        let id_a = slot_a1.texture_id();
+        let seq_a1 = slot_a1.sequence();
+        assert_eq!(slot_a1.last_committed_sequence(), None);
+        assert_eq!(
+            exchange.commit_write_with_payload_and_damage(
+                slot_a1,
+                1,
+                FrameColorMetadata::unknown(),
+                (),
+                None,
+            ),
+            CopyOutcome::Submitted
+        );
+        wait(&gpu);
+        assert!(exchange.poll());
+
+        let r2 = FrameDamageRect::new(2, 3, 4, 5);
+        let slot_b1 = exchange
+            .try_begin_write(16, 16, GpuTextureFormat::RGBA8_UNORM)
+            .expect("slot b1");
+        let id_b = slot_b1.texture_id();
+        assert_ne!(id_a, id_b);
+        assert_eq!(slot_b1.last_committed_sequence(), None);
+        assert_eq!(
+            exchange.commit_write_with_payload_and_damage(
+                slot_b1,
+                1,
+                FrameColorMetadata::unknown(),
+                (),
+                Some(r2),
+            ),
+            CopyOutcome::Submitted
+        );
+        wait(&gpu);
+        assert!(exchange.poll());
+        // Polling again releases slot A whose lease was superseded in `shared.latest`.
+        wait(&gpu);
+        let _ = exchange.poll();
+
+        // Slot A is reused: same texture_id, last_committed_sequence == Some(seq_a1).
+        let slot_a2 = exchange
+            .try_begin_write(16, 16, GpuTextureFormat::RGBA8_UNORM)
+            .expect("slot a2");
+        assert!(slot_a2.texture_reused());
+        assert_eq!(slot_a2.texture_id(), id_a);
+        assert_eq!(slot_a2.last_committed_sequence(), Some(seq_a1));
+        assert_eq!(exchange.write_slot_damage(&slot_a2), Some(r2));
+
+        // Dropping slot_a2 uncommitted fails closed on the next acquisition of slot A.
+        drop(slot_a2);
+        let slot_a3 = exchange
+            .try_begin_write(16, 16, GpuTextureFormat::RGBA8_UNORM)
+            .expect("slot a3");
+        assert!(slot_a3.texture_reused());
+        assert_eq!(slot_a3.texture_id(), id_a);
+        assert_eq!(slot_a3.last_committed_sequence(), None);
+        assert_eq!(exchange.write_slot_damage(&slot_a3), None);
+
+        // Resizing reallocates the backing texture with a new texture_id.
+        drop(slot_a3);
+        let slot_resized = exchange
+            .try_begin_write(32, 16, GpuTextureFormat::RGBA8_UNORM)
+            .expect("slot resized");
+        assert!(!slot_resized.texture_reused());
+        assert_ne!(slot_resized.texture_id(), id_a);
+        assert_ne!(slot_resized.texture_id(), id1);
+        assert_eq!(slot_resized.last_committed_sequence(), None);
+    }
+
+    #[test]
+    fn producer_damage_since_and_write_slot_damage_track_buffer_age() {
+        let gpu = test_gpu();
+        let mut exchange =
+            FrameExchange::new(&gpu, NonZeroU8::new(3).unwrap(), 1u64, Arc::new(|| {}));
+        assert_eq!(exchange.latest_committed_sequence(), None);
+        assert_eq!(exchange.damage_since(0), None);
+        assert_eq!(exchange.damage_since(1), None);
+
+        // Frame 1 (slot 0): full frame.
+        let s1 = exchange
+            .try_begin_write(32, 32, GpuTextureFormat::RGBA8_UNORM)
+            .expect("s1");
+        let seq1 = s1.sequence();
+        assert_eq!(
+            exchange.commit_write_with_payload_and_damage(
+                s1,
+                1,
+                FrameColorMetadata::unknown(),
+                (),
+                None,
+            ),
+            CopyOutcome::Submitted
+        );
+        // Zero frames after seq1 -> empty damage union.
+        assert_eq!(exchange.damage_since(seq1), Some(FrameDamageRect::EMPTY));
+
+        // Frame 2 (slot 1): partial rect r2.
+        let r2 = FrameDamageRect::new(0, 0, 8, 8);
+        let s2 = exchange
+            .try_begin_write(32, 32, GpuTextureFormat::RGBA8_UNORM)
+            .expect("s2");
+        let seq2 = s2.sequence();
+        assert_eq!(
+            exchange.commit_write_with_payload_and_damage(
+                s2,
+                1,
+                FrameColorMetadata::unknown(),
+                (),
+                Some(r2),
+            ),
+            CopyOutcome::Submitted
+        );
+        assert_eq!(exchange.damage_since(seq1), Some(r2));
+        assert_eq!(exchange.damage_since(seq2), Some(FrameDamageRect::EMPTY));
+
+        // Frame 3 (slot 2): partial rect r3.
+        let r3 = FrameDamageRect::new(16, 12, 8, 10);
+        let s3 = exchange
+            .try_begin_write(32, 32, GpuTextureFormat::RGBA8_UNORM)
+            .expect("s3");
+        let seq3 = s3.sequence();
+        assert_eq!(
+            exchange.commit_write_with_payload_and_damage(
+                s3,
+                1,
+                FrameColorMetadata::unknown(),
+                (),
+                Some(r3),
+            ),
+            CopyOutcome::Submitted
+        );
+        assert_eq!(exchange.damage_since(seq1), Some(r2.union(r3)));
+        assert_eq!(exchange.damage_since(seq2), Some(r3));
+        assert_eq!(exchange.damage_since(seq3), Some(FrameDamageRect::EMPTY));
+
+        // Publish and release slots 0 and 1.
+        wait(&gpu);
+        assert!(exchange.poll());
+        wait(&gpu);
+        let _ = exchange.poll();
+
+        // Reacquire slot 0: buffer age spans frames 2 and 3.
+        let s4 = exchange
+            .try_begin_write(32, 32, GpuTextureFormat::RGBA8_UNORM)
+            .expect("s4");
+        assert_eq!(s4.last_committed_sequence(), Some(seq1));
+        assert_eq!(exchange.write_slot_damage(&s4), Some(r2.union(r3)));
+        // Commit s4 with full-frame damage (`None`): invalidates earlier slots.
+        assert_eq!(
+            exchange.commit_write_with_payload_and_damage(
+                s4,
+                1,
+                FrameColorMetadata::unknown(),
+                (),
+                None,
+            ),
+            CopyOutcome::Submitted
+        );
+        assert_eq!(exchange.damage_since(seq2), None);
+        assert_eq!(exchange.damage_since(seq3), None);
+
+        // Epoch change clears history and slot committed sequences.
+        exchange.set_epoch(2);
+        assert_eq!(exchange.latest_committed_sequence(), None);
+        assert_eq!(exchange.damage_since(seq3), None);
     }
 }

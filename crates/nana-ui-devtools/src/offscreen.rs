@@ -1235,16 +1235,22 @@ mod tests {
             .create_component(DocumentId::new(1).unwrap(), Stack::from_layout(layout))
             .unwrap();
         let mut overlay = RuntimeDocument::new(DocumentId::new(2).unwrap());
+        let mut overlay_layout = LayoutStyle {
+            width: Some(LengthSpec::Px(16.0)),
+            height: Some(LengthSpec::Px(16.0)),
+            ..Default::default()
+        };
+        overlay_layout.paint_colors.background = Some(nana_ui_core::PaintColor::srgb([
+            1.0,
+            0.0,
+            0.0,
+            if no_clear { 0.5 } else { 1.0 },
+        ]));
         overlay
             .context_mut()
             .create_component(
                 DocumentId::new(2).unwrap(),
-                Stack::from_layout(LayoutStyle {
-                    width: Some(LengthSpec::Px(16.0)),
-                    height: Some(LengthSpec::Px(16.0)),
-                    background: Some([1.0, 0.0, 0.0, if no_clear { 0.5 } else { 1.0 }]),
-                    ..Default::default()
-                }),
+                Stack::from_layout(overlay_layout),
             )
             .unwrap();
         let mut shaper = nana_ui::NanaTextShaper::default();

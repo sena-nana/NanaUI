@@ -4,7 +4,9 @@
 use std::cell::RefCell;
 use std::io;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{
+    AtomicBool, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering,
+};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::thread::JoinHandle;
@@ -61,6 +63,98 @@ pub(crate) struct Stats {
     pub(crate) retired_faults_dropped: AtomicU64,
 }
 
+const NB_SNAP_IDLE: u8 = 0;
+const NB_SNAP_WRITING: u8 = 1;
+const NB_SNAP_READY: u8 = 2;
+const NB_SNAP_READING: u8 = 3;
+
+/// Lock-free, allocation-free coalescing slot for non-blocking snapshot
+/// triggers from latency-critical threads.
+pub(crate) struct NonblockingSnapshotSlot {
+    state: AtomicU8,
+    reason_ptr: AtomicPtr<u8>,
+    reason_len: AtomicUsize,
+    /// Monotonic timestamp (`now_ns + 1`, `0` = never queued) of the last
+    /// accepted non-blocking snapshot request, for coalescing/throttling.
+    last_queued_ns: AtomicU64,
+}
+
+impl NonblockingSnapshotSlot {
+    fn new() -> Self {
+        Self {
+            state: AtomicU8::new(NB_SNAP_IDLE),
+            reason_ptr: AtomicPtr::new(std::ptr::null_mut()),
+            reason_len: AtomicUsize::new(0),
+            last_queued_ns: AtomicU64::new(0),
+        }
+    }
+
+    /// Try to enqueue `reason` without locking or allocating. Returns `false`
+    /// if a request is already pending or `min_interval` has not elapsed since
+    /// the last accepted non-blocking request.
+    fn try_enqueue(&self, now_ns: u64, reason: &'static str, min_interval: Duration) -> bool {
+        let min_ns = saturating_ns(min_interval);
+        let stamp = now_ns.saturating_add(1);
+        let prev = self.last_queued_ns.load(Ordering::Acquire);
+        if prev != 0 && stamp.saturating_sub(prev) < min_ns {
+            return false;
+        }
+        if self
+            .state
+            .compare_exchange(
+                NB_SNAP_IDLE,
+                NB_SNAP_WRITING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            return false;
+        }
+        let prev = self.last_queued_ns.load(Ordering::Acquire);
+        if prev != 0 && stamp.saturating_sub(prev) < min_ns {
+            self.state.store(NB_SNAP_IDLE, Ordering::Release);
+            return false;
+        }
+        self.last_queued_ns.store(stamp, Ordering::Release);
+        self.reason_ptr
+            .store(reason.as_ptr().cast_mut(), Ordering::Relaxed);
+        self.reason_len.store(reason.len(), Ordering::Relaxed);
+        self.state.store(NB_SNAP_READY, Ordering::Release);
+        true
+    }
+
+    /// Take the pending non-blocking snapshot reason, if any. Called by the
+    /// worker thread.
+    pub(crate) fn take(&self) -> Option<&'static str> {
+        if self
+            .state
+            .compare_exchange(
+                NB_SNAP_READY,
+                NB_SNAP_READING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            return None;
+        }
+        let ptr = self.reason_ptr.load(Ordering::Relaxed);
+        let len = self.reason_len.load(Ordering::Relaxed);
+        self.state.store(NB_SNAP_IDLE, Ordering::Release);
+        // SAFETY: `ptr` and `len` came from a valid `&'static str` stored while
+        // the producer held `NB_SNAP_WRITING` before its `Release` store of
+        // `NB_SNAP_READY`. Our `AcqRel` CAS synchronized with that store, and
+        // no producer can overwrite the fields while state is `NB_SNAP_READING`.
+        let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+        std::str::from_utf8(bytes).ok()
+    }
+
+    fn clear(&self) {
+        let _ = self.take();
+    }
+}
+
 pub(crate) struct Shared {
     id: u64,
     pub(crate) config: DiagnosticsConfig,
@@ -79,6 +173,8 @@ pub(crate) struct Shared {
     /// is the one consumer the SPSC rings allow.
     pub(crate) state: Mutex<WorkerState>,
     pub(crate) requests: Mutex<Vec<Request>>,
+    /// Lock-free single-slot trigger for hot-path non-blocking snapshots.
+    pub(crate) nonblocking_snapshot: NonblockingSnapshotSlot,
     worker: Mutex<Option<JoinHandle<()>>>,
     /// Set once when the worker starts; unparking a finished thread is
     /// harmless, so it is never cleared. Lock-free for the fault path.
@@ -310,9 +406,34 @@ impl Shared {
         true
     }
 
+    /// Lock-free, allocation-free non-blocking snapshot trigger with
+    /// coalescing and throttling. Safe on latency-critical / real-time paths.
+    pub(crate) fn request_snapshot_nonblocking(
+        &self,
+        reason: &'static str,
+        min_interval: Duration,
+    ) -> bool {
+        if !self.config.enabled
+            || self.shutdown.load(Ordering::Acquire)
+            || !self.worker_alive.load(Ordering::Acquire)
+        {
+            return false;
+        }
+        if self
+            .nonblocking_snapshot
+            .try_enqueue(self.now_ns(), reason, min_interval)
+        {
+            self.wake();
+            true
+        } else {
+            false
+        }
+    }
+
     /// Worker exit, however it happened: refuse and drop pending requests,
     /// release the producers and the history, and wake every waiter.
     pub(crate) fn worker_exited(&self) {
+        self.nonblocking_snapshot.clear();
         {
             let mut requests = lock(&self.requests);
             self.worker_alive.store(false, Ordering::Release);
@@ -429,6 +550,7 @@ impl Diagnostics {
             next_thread: AtomicU32::new(1),
             state: Mutex::new(state),
             requests: Mutex::new(Vec::new()),
+            nonblocking_snapshot: NonblockingSnapshotSlot::new(),
             worker: Mutex::new(None),
             worker_thread: OnceLock::new(),
             worker_alive: AtomicBool::new(false),
@@ -605,6 +727,22 @@ impl Diagnostics {
                 reply: None,
             });
         }
+    }
+
+    /// Lock-free, allocation-free snapshot trigger for latency-critical
+    /// threads (display, capture, audio).
+    ///
+    /// Returns `true` if a snapshot was queued for the worker, or `false` if
+    /// diagnostics are disabled, a non-blocking snapshot is already pending
+    /// (coalesced), or `min_interval` has not yet elapsed since the previous
+    /// accepted non-blocking request.
+    pub fn request_snapshot_nonblocking(
+        &self,
+        reason: &'static str,
+        min_interval: Duration,
+    ) -> bool {
+        self.shared
+            .request_snapshot_nonblocking(reason, min_interval)
     }
 
     /// Write a flight-recorder snapshot and wait for its path. For explicit
@@ -873,6 +1011,20 @@ pub fn snapshot(reason: &str) {
     }
 }
 
+/// See [`Diagnostics::request_snapshot_nonblocking`].
+///
+/// Lock-free and allocation-free: does not touch the request mutex or bump the
+/// global `Arc` reference count.
+pub fn request_snapshot_nonblocking(reason: &'static str, min_interval: Duration) -> bool {
+    let raw = GLOBAL.load(Ordering::Acquire);
+    // SAFETY: GLOBAL only ever holds a pointer from `Arc::into_raw` whose
+    // reference is never released, so the allocation is alive.
+    match unsafe { raw.as_ref() } {
+        Some(shared) => shared.request_snapshot_nonblocking(reason, min_interval),
+        None => false,
+    }
+}
+
 #[doc(hidden)]
 pub mod __private {
     use super::*;
@@ -885,5 +1037,95 @@ pub mod __private {
     #[cold]
     pub fn fault(event: &'static EventDescriptor, fields: &[Field], message: Option<Box<str>>) {
         with_global(|shared| shared.fault(event, fields, message));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{Duration, Instant};
+
+    use super::{Diagnostics, NonblockingSnapshotSlot};
+    use crate::{DiagnosticsConfig, DiagnosticsPaths, SessionMetadata};
+
+    static NEXT_TEST_DIR: AtomicU64 = AtomicU64::new(1);
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let id = NEXT_TEST_DIR.fetch_add(1, Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("nana-diag-rt-{name}-{}-{id}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    #[test]
+    fn nonblocking_snapshot_slot_coalesces_and_throttles() {
+        let slot = NonblockingSnapshotSlot::new();
+        let interval = Duration::from_secs(5);
+
+        assert!(slot.try_enqueue(0, "first", interval));
+        // Second enqueue while pending coalesces even with zero interval.
+        assert!(!slot.try_enqueue(10_000_000_000, "second", Duration::ZERO));
+        assert_eq!(slot.take(), Some("first"));
+        assert_eq!(slot.take(), None);
+
+        // Throttled within min_interval.
+        assert!(!slot.try_enqueue(1_000_000_000, "too-soon", interval));
+        // Allowed once min_interval elapses.
+        assert!(slot.try_enqueue(5_000_000_000, "after-window", interval));
+        assert_eq!(slot.take(), Some("after-window"));
+    }
+
+    #[test]
+    fn request_snapshot_nonblocking_writes_snapshot_and_respects_throttle() {
+        let root = temp_dir("nb-snap");
+        let crash = root.join("crash");
+        let diag = Diagnostics::start(
+            DiagnosticsConfig {
+                poll_interval: Duration::from_millis(10),
+                ..DiagnosticsConfig::default()
+            },
+            SessionMetadata::new("dev.rt.nb", "RtNb", "1.0.0"),
+            DiagnosticsPaths {
+                logs: None,
+                crash: Some(crash.clone()),
+            },
+        );
+
+        assert!(diag.request_snapshot_nonblocking("frame-stall", Duration::from_secs(60)));
+        // Immediate repeat is coalesced/throttled.
+        assert!(!diag.request_snapshot_nonblocking("frame-stall", Duration::from_secs(60)));
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while diag.stats().snapshots_written == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(diag.stats().snapshots_written, 1);
+
+        // Still inside the 60s throttle window after worker drained it.
+        assert!(!diag.request_snapshot_nonblocking("frame-stall", Duration::from_secs(60)));
+        // Zero interval bypasses throttle and queues another snapshot.
+        assert!(diag.request_snapshot_nonblocking("follow-up", Duration::ZERO));
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while diag.stats().snapshots_written < 2 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(diag.stats().snapshots_written, 2);
+
+        let files: Vec<String> = fs::read_dir(&crash)
+            .expect("read crash dir")
+            .filter_map(Result::ok)
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter(|name| name.ends_with(".nlog"))
+            .collect();
+        assert!(files.iter().any(|n| n.contains("frame-stall")));
+        assert!(files.iter().any(|n| n.contains("follow-up")));
+
+        diag.shutdown();
+        let _ = fs::remove_dir_all(&root);
     }
 }
