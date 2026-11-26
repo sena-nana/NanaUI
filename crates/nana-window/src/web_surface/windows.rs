@@ -1258,7 +1258,10 @@ mod tests {
         while frames.load(Ordering::Relaxed) == 0 && start.elapsed() < Duration::from_secs(5) {
             std::thread::sleep(Duration::from_millis(25));
         }
-        assert!(frames.load(Ordering::Relaxed) > 0, "expected captured frames");
+        assert!(
+            frames.load(Ordering::Relaxed) > 0,
+            "expected captured frames"
+        );
         drop(first);
         std::thread::sleep(Duration::from_millis(200));
 
