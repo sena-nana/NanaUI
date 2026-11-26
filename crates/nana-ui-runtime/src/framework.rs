@@ -559,6 +559,7 @@ type ProgramMessage = Box<dyn Any + Send>;
 /// its observer's assembler ([`ViewContext::reassemble`]).
 type ErasedEventHandler = Box<
     dyn FnMut(
+            DocumentId,
             StableNodeId,
             &mut dyn Any,
             &dyn Any,
@@ -810,6 +811,7 @@ impl ExtensionRegistrar {
 }
 
 pub struct ViewContext<'a, V: View> {
+    document: DocumentId,
     entity: Entity<V>,
     mutations: &'a mut MutationQueue,
     events: &'a mut VecDeque<BoxedEvent>,
@@ -825,6 +827,15 @@ impl<V: View> ViewContext<'_, V> {
     /// update already reassembles its own component and this does nothing.
     pub fn reassemble(&mut self) {
         self.reassemble = true;
+    }
+
+    pub const fn document(&self) -> DocumentId {
+        self.document
+    }
+
+    /// Clear focus in this view's document (e.g., on Enter submit).
+    pub fn blur(&mut self) {
+        self.mutations.request_focus(self.document, None);
     }
 
     pub const fn entity(&self) -> Entity<V> {
@@ -1247,6 +1258,7 @@ struct LifecycleHub {
 /// Owns typed view state while [`UiWorld`] remains the retained UI authority.
 pub struct AppContext {
     pub(crate) theme_signals: Vec<crate::view::Signal<Arc<nana_ui_core::CompiledTheme>>>,
+    pub(crate) i18n_signals: Vec<crate::view::Signal<Arc<crate::i18n::LocalizedResolver>>>,
     /// Boxed: the world is about 15 KiB, four fifths of the context, and
     /// held inline every move of a context (construction, `RuntimeDocument`)
     /// copied it through a frame over the 16 KiB stack budget. One pointer
@@ -1570,6 +1582,7 @@ impl AppContext {
         #[allow(unused_mut)]
         let mut context = Self {
             theme_signals: Vec::new(),
+            i18n_signals: Vec::new(),
             world: Box::new(world),
             store: ComponentStore::default(),
             layout: LayoutDriver::default(),
@@ -1622,17 +1635,63 @@ impl AppContext {
     /// [`crate::UiWorld::set_message_catalog`].
     pub fn set_message_catalog(&mut self, catalog: Option<Arc<dyn crate::MessageCatalog>>) {
         self.world.set_message_catalog(catalog);
+        self.notify_i18n_signals();
+    }
+
+    /// Incrementally update `changed` messages in the active catalog; see
+    /// [`crate::UiWorld::update_message_catalog`].
+    pub fn update_message_catalog(
+        &mut self,
+        catalog: Arc<dyn crate::MessageCatalog>,
+        changed: &[crate::MessageId],
+    ) {
+        self.world.update_message_catalog(catalog, changed);
+        self.notify_i18n_signals();
+    }
+
+    /// Install the locale formatter; see [`crate::UiWorld::set_locale_formatter`].
+    pub fn set_locale_formatter(&mut self, formatter: Arc<dyn crate::LocaleFormatter>) {
+        self.world.set_locale_formatter(formatter);
+        self.notify_i18n_signals();
+    }
+
+    /// Set the final fallback locale; see [`crate::UiWorld::set_fallback_locale`].
+    pub fn set_fallback_locale(&mut self, locale: Option<nana_text::font::LanguageTag>) {
+        self.world.set_fallback_locale(locale);
+        self.notify_i18n_signals();
+    }
+
+    /// Set the missing-message policy; see [`crate::UiWorld::set_missing_message`].
+    pub fn set_missing_message(&mut self, policy: crate::MissingMessage) {
+        self.world.set_missing_message(policy);
+        self.notify_i18n_signals();
     }
 
     /// Switch the application's locale. Every window without its own takes
     /// it in one transaction: the next frame shows all of it or none of it.
     pub fn set_default_locale(&mut self, locale: Option<crate::Locale>) {
         self.world.set_default_locale(locale);
+        self.notify_i18n_signals();
     }
 
     /// Switch one window's locale; other windows are not visited.
     pub fn set_document_locale(&mut self, document: DocumentId, locale: Option<crate::Locale>) {
         self.world.set_document_locale(document, locale);
+        self.notify_i18n_signals();
+    }
+
+    fn notify_i18n_signals(&mut self) {
+        if self.i18n_signals.is_empty() {
+            return;
+        }
+        let resolver = self.world.localized_resolver();
+        self.i18n_signals.retain(|signal| {
+            if signal.defined_at().is_none() {
+                return false;
+            }
+            signal.set_if_changed(Arc::clone(&resolver));
+            true
+        });
     }
 
     /// Whether view-layer motion is reduced: implicit property transitions
@@ -4506,6 +4565,10 @@ impl AppContext {
                 }
             }
         };
+        let document = self
+            .world
+            .document_of(entity.id)
+            .ok_or(FrameworkError::MissingView(entity.id))?;
         let mut staged = component.clone();
         let mut mutations = MutationQueue::new();
         let mut events = VecDeque::new();
@@ -4513,6 +4576,7 @@ impl AppContext {
         update(
             &mut staged,
             &mut ViewContext {
+                document,
                 entity,
                 mutations: &mut mutations,
                 events: &mut events,
@@ -4526,6 +4590,7 @@ impl AppContext {
         staged.announce_change(
             component,
             &mut ViewContext {
+                document,
                 entity,
                 mutations: &mut mutations,
                 events: &mut events,
@@ -4785,12 +4850,17 @@ impl AppContext {
         let view = boxed
             .downcast_mut::<V>()
             .expect("view type was checked before update");
+        let document = self
+            .world
+            .document_of(entity.id)
+            .ok_or(FrameworkError::MissingView(entity.id))?;
         let mut mutations = MutationQueue::new();
         let mut events = VecDeque::new();
         let mut program_messages = std::mem::take(&mut self.lifecycle.program_messages);
         let result = update(
             view,
             &mut ViewContext {
+                document,
                 entity,
                 mutations: &mut mutations,
                 events: &mut events,

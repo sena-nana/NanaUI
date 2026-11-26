@@ -402,18 +402,25 @@ impl RuntimeDocument {
             // built, so it is in place before this delta; a theme install
             // re-extracts every node, so every ring follows in this frame.
             let focus_ring = self.context.world().theme_metrics().focus_ring;
+            let effects = self.context.world().theme().effects();
             let retained = Arc::make_mut(&mut self.scene);
             retained.set_focus_ring(focus_ring);
+            retained.set_effects(effects);
             let scene = retained.apply_delta_with_moves(extracted, moved, render_removed);
             self.context
                 .time_stage_duration(FrameStage::Extract, started.elapsed());
             scene
         };
-        // The installed theme shapes every corner the scene paints. A theme
-        // install marks every node for render, so this lands with that delta.
+        // The installed theme shapes every corner and elevation shadow the
+        // scene paints. A theme install marks every node for render, so this
+        // lands with that delta.
         let corner_shape = self.context.world().theme_metrics().corner_shape;
         if self.scene.corner_shape() != corner_shape {
             Arc::make_mut(&mut self.scene).set_corner_shape(corner_shape);
+        }
+        let effects = self.context.world().theme().effects();
+        if self.scene.effects() != effects {
+            Arc::make_mut(&mut self.scene).set_effects(effects);
         }
         {
             let world = self.context.world();

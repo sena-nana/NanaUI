@@ -194,6 +194,9 @@ impl AppContext {
             cx.emit(crate::TextSubmitted {
                 value: input.state.value.to_string(),
             });
+            if input.blur_on_submit {
+                cx.blur();
+            }
         })?;
         if self.world.focused(document) != Some(entity.id) {
             self.sync_interactive_style_nodes(&[
@@ -202,6 +205,36 @@ impl AppContext {
                 self.world.focus_visible(document),
             ]);
         }
+        Ok(true)
+    }
+
+    /// Focus `entity` in place and select all of its committed text when it
+    /// resides in a live, non-hidden, non-inert subtree.
+    pub fn focus_and_select_text_input(
+        &mut self,
+        entity: Entity<TextInput>,
+    ) -> Result<bool, FrameworkError> {
+        let Some(document) = self.world.document_of(entity.id) else {
+            return Ok(false);
+        };
+        if !self.world.is_mounted(entity.id) {
+            return Ok(false);
+        }
+        // Skip hidden or inert subtrees (e.g., cached/offscreen views).
+        let mut cursor = Some(entity.id);
+        while let Some(node_id) = cursor {
+            if let Some(style) = self.world.node_style(node_id) {
+                if style.layout.hidden || style.layout.inert {
+                    return Ok(false);
+                }
+            }
+            cursor = self.world.parent_id(node_id);
+        }
+        if !self.read(entity, EditableText::accepts_input)? {
+            return Ok(false);
+        }
+        self.focus_node_in_place(document, entity.id)?;
+        let _ = self.select_all_focused_text(document)?;
         Ok(true)
     }
 

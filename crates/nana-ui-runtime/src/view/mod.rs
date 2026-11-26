@@ -59,9 +59,9 @@ pub use controls::__arg;
 pub use controls::{
     Px, StyledComponent, action_menu, action_menu_item, avatar, button, checkbox, chip,
     color_field, column, curve, divider, empty_state, fields, icon, icon_button, labeled_value,
-    list_item, localized, number_input, progress, range_span, row, select, size_field, slider,
-    spinner, status_badge, switch, t, tabs, text, text_area, text_input, texture, theme_scope,
-    thumbnail, tree_view,
+    list_item, locale_resolver, localized, localized_arc, localized_opt, localized_string,
+    number_input, progress, range_span, row, select, size_field, slider, spinner, status_badge,
+    switch, t, tabs, text, text_area, text_input, texture, theme_scope, thumbnail, tree_view,
 };
 pub(crate) use controls::{edit_control, inspect_control};
 pub use each_virtual::{
@@ -100,7 +100,10 @@ pub(crate) use node::{
 };
 #[doc(hidden)]
 pub use prop::Fixed;
-pub use prop::{FieldWrite, IntoProp, PropSource, Writable};
+pub use prop::{
+    FieldWrite, InteractiveIdle, IntoProp, NonEmpty, NonEmptyString, PropSource, WhileIdle,
+    Writable,
+};
 #[doc(hidden)]
 pub use reactive::{__checked, Dep};
 pub use reactive::{

@@ -45,7 +45,8 @@ impl ErasedOn {
             size_emit: (TypeId::of::<E>() == TypeId::of::<SizeChanged>())
                 .then_some(emit_size::<V> as SizeEmitFn),
             callback: Box::new(
-                move |observer: StableNodeId,
+                move |document: DocumentId,
+                      observer: StableNodeId,
                       view: &mut dyn Any,
                       event: &dyn Any,
                       mutations: &mut MutationQueue,
@@ -59,6 +60,7 @@ impl ErasedOn {
                         .downcast_ref::<E>()
                         .expect("handler is indexed by event type");
                     let mut cx = ViewContext {
+                        document,
                         entity: Entity::from_stable_id(observer),
                         mutations,
                         events,
@@ -593,7 +595,11 @@ impl AppContext {
             };
             for handler in &mut handlers {
                 if handler.observer == id {
+                    let Some(document) = self.world.document_of(id) else {
+                        continue;
+                    };
                     (handler.callback)(
+                        document,
                         id,
                         view,
                         event.as_ref(),
@@ -604,6 +610,9 @@ impl AppContext {
                     );
                     continue;
                 }
+                let Some(observer_doc) = self.world.document_of(handler.observer) else {
+                    continue;
+                };
                 let (mut observer, before_stack) = match self.store.views.remove(&handler.observer)
                 {
                     Some(observer) => (observer, None),
@@ -616,6 +625,7 @@ impl AppContext {
                     },
                 };
                 let asked = (handler.callback)(
+                    observer_doc,
                     handler.observer,
                     observer.as_mut(),
                     event.as_ref(),

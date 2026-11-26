@@ -35,6 +35,11 @@ pub struct TextInput {
     pub read_only: bool,
     pub secure: bool,
     pub invalid: bool,
+    /// Clear focus from this field when Enter submits (`TextSubmitted`).
+    pub blur_on_submit: bool,
+    /// Focus this field in place and select all text when it is mounted into
+    /// a visible subtree (used by inline-edit / rename fields).
+    pub focus_and_select_on_mount: bool,
     pub style: NodeStyle,
     pub highlight: Option<HighlightRequest>,
     pub(crate) style_override: bool,
@@ -55,6 +60,8 @@ impl TextInput {
             read_only: false,
             secure: false,
             invalid: false,
+            blur_on_submit: false,
+            focus_and_select_on_mount: false,
             style: text_field_style(false),
             highlight: None,
             style_override: false,
@@ -143,6 +150,19 @@ impl TextInput {
 
     pub fn invalid(mut self, invalid: bool) -> Self {
         self.invalid = invalid;
+        self
+    }
+
+    /// Clear focus from this field after Enter emits [`TextSubmitted`].
+    pub fn blur_on_submit(mut self, blur: bool) -> Self {
+        self.blur_on_submit = blur;
+        self
+    }
+
+    /// Focus this field in place and select all its text once mounted into a
+    /// visible subtree.
+    pub fn focus_and_select_on_mount(mut self, enabled: bool) -> Self {
+        self.focus_and_select_on_mount = enabled;
         self
     }
 

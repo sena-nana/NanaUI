@@ -559,6 +559,13 @@ impl Stack {
         self
     }
 
+    /// Theme elevation shadow (`ElevationRole::Surface` / `Overlay`) drawn on
+    /// this stack's quad without a custom box-shadow painter.
+    pub fn elevation(mut self, role: nana_ui_core::ElevationRole) -> Self {
+        self.style_mut().set_elevation(Some(role));
+        self
+    }
+
     /// 边框（CSS `border`）：语义色角色与宽度一次写全。边框占布局空间，
     /// 改宽度会挪动内容；见 [`NodeStyle::border`]。
     pub fn border(mut self, role: nana_ui_core::SemanticColorRole, width: f32) -> Self {

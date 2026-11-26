@@ -6,12 +6,15 @@ use std::any::Any;
 use std::sync::Arc;
 
 use super::node::IntoView;
-use super::node::{El, widget};
+use super::node::{El, node_ref, widget};
 use super::prop::{FieldWrite, IntoProp, Writable};
+pub use super::prop::{InteractiveIdle, NonEmpty, NonEmptyString, WhileIdle};
+use super::reactive::{Signal, on_mount, signal};
 use crate::{
-    ActionMenu, ActionMenuItem, ColorChanged, ColorField, ColorSubmitted, InlineContent,
-    ListItemRole, SizeField, SizeFieldChanged, SizeFieldSubmitted, SizePreset, TabsEvent,
-    TextSelection, ThumbnailState, TreeNode, TreeSelection, TreeSelectionRequested, TreeView,
+    ActionMenu, ActionMenuItem, ColorChanged, ColorField, ColorSubmitted, HoverCard,
+    IconButtonTooltip, InlineContent, ListItemRole, MenuItemMark, SegmentedControl, SizeField,
+    SizeFieldChanged, SizeFieldSubmitted, SizePreset, TabsEvent, TextSelection, ThumbnailState,
+    TreeNode, TreeSelection, TreeSelectionRequested, TreeView,
 };
 use crate::{
     Activate, AppContext, Avatar, Button, Card, Checkbox, Chip, CurveChanged, CurveField,
@@ -28,7 +31,10 @@ use crate::{
     SettingsGroup, SidebarRow, Skeleton, StatusBar, Tabs, ToolGroup, Toolbar, Tooltip,
     ValidationMessage, Video,
 };
-use nana_ui_core::{ButtonKind, Icon, RadiusTier, SemanticColorRole, StatusTone};
+use nana_ui_core::{
+    ButtonKind, ElevationRole, FlexDirection, Icon, LengthSpec, PaintTransform, RadiusTier,
+    SemanticColorRole, StatusTone,
+};
 
 /// Components whose [`NodeStyle`] the view layer may write (visibility).
 pub trait StyledComponent {
@@ -102,6 +108,230 @@ style_roles! {
     Background: background: Option<SemanticColorRole>, "Fill by theme role.";
     Border: border: Option<SemanticColorRole>, "Border colour by theme role; the width is the layout's.";
     Radius: radius: Option<RadiusTier>, "Corner radius by theme step.";
+}
+
+/// Theme elevation shadow role on [`nana_ui_core::PaintStyle::elevation`].
+pub struct Elevation;
+
+impl<C: StyledComponent> FieldWrite<C, Option<ElevationRole>> for Elevation {
+    const FIELD: &'static str = "style.layout.paint.elevation";
+
+    fn write(target: &mut C, value: Option<ElevationRole>) {
+        target.node_style_mut().set_elevation(value);
+    }
+
+    fn differs(target: &C, value: &Option<ElevationRole>) -> bool {
+        target.node_style().elevation_role() != *value
+    }
+}
+
+/// Node opacity (`style.layout.opacity`).
+pub struct Opacity;
+
+impl<C: StyledComponent> FieldWrite<C, f32> for Opacity {
+    const FIELD: &'static str = "style.layout.opacity";
+
+    fn write(target: &mut C, value: f32) {
+        let style = target.node_style_mut();
+        if style.layout.opacity != Some(value) {
+            Arc::make_mut(&mut style.layout).opacity = Some(value);
+        }
+    }
+
+    fn differs(target: &C, value: &f32) -> bool {
+        target.node_style().layout.opacity != Some(*value)
+    }
+}
+
+/// Node paint transform (`style.layout.transforms.transform`).
+pub struct Transform;
+
+impl<C: StyledComponent> FieldWrite<C, Option<PaintTransform>> for Transform {
+    const FIELD: &'static str = "style.layout.transforms.transform";
+
+    fn write(target: &mut C, value: Option<PaintTransform>) {
+        let style = target.node_style_mut();
+        if style.layout.transforms.transform != value {
+            Arc::make_mut(&mut style.layout).transforms.transform = value;
+        }
+    }
+
+    fn differs(target: &C, value: &Option<PaintTransform>) -> bool {
+        target.node_style().layout.transforms.transform != *value
+    }
+}
+
+/// Direct paint fill color (`style.layout.paint_colors.background`).
+pub struct Fill;
+
+impl<C: StyledComponent> FieldWrite<C, Option<nana_ui_core::style_model::PaintColor>> for Fill {
+    const FIELD: &'static str = "style.layout.paint_colors.background";
+
+    fn write(target: &mut C, value: Option<nana_ui_core::style_model::PaintColor>) {
+        let style = target.node_style_mut();
+        if style.layout.paint_colors.background != value {
+            Arc::make_mut(&mut style.layout).paint_colors.background = value;
+        }
+    }
+
+    fn differs(target: &C, value: &Option<nana_ui_core::style_model::PaintColor>) -> bool {
+        target.node_style().layout.paint_colors.background != *value
+    }
+}
+
+/// Direct paint text/glyph ink color (`style.layout.paint_colors.color`).
+pub struct Ink;
+
+impl<C: StyledComponent> FieldWrite<C, Option<nana_ui_core::style_model::PaintColor>> for Ink {
+    const FIELD: &'static str = "style.layout.paint_colors.color";
+
+    fn write(target: &mut C, value: Option<nana_ui_core::style_model::PaintColor>) {
+        let style = target.node_style_mut();
+        if style.layout.paint_colors.color != value {
+            Arc::make_mut(&mut style.layout).paint_colors.color = value;
+        }
+    }
+
+    fn differs(target: &C, value: &Option<nana_ui_core::style_model::PaintColor>) -> bool {
+        target.node_style().layout.paint_colors.color != *value
+    }
+}
+
+/// Direct paint border color (`style.layout.paint_colors.border`).
+pub struct Edge;
+
+impl<C: StyledComponent> FieldWrite<C, Option<nana_ui_core::style_model::PaintColor>> for Edge {
+    const FIELD: &'static str = "style.layout.paint_colors.border";
+
+    fn write(target: &mut C, value: Option<nana_ui_core::style_model::PaintColor>) {
+        let style = target.node_style_mut();
+        if style.layout.paint_colors.border != value {
+            Arc::make_mut(&mut style.layout).paint_colors.border = value;
+        }
+    }
+
+    fn differs(target: &C, value: &Option<nana_ui_core::style_model::PaintColor>) -> bool {
+        target.node_style().layout.paint_colors.border != *value
+    }
+}
+
+macro_rules! layout_field_writers {
+    ($($writer:ident: $field:ident: $ty:ty;)*) => {$(
+        pub struct $writer;
+
+        impl<C: StyledComponent> FieldWrite<C, $ty> for $writer {
+            const FIELD: &'static str = concat!("style.layout.", stringify!($field));
+
+            fn write(target: &mut C, value: $ty) {
+                let style = target.node_style_mut();
+                if style.layout.$field != value {
+                    Arc::make_mut(&mut style.layout).$field = value;
+                }
+            }
+
+            fn differs(target: &C, value: &$ty) -> bool {
+                target.node_style().layout.$field != *value
+            }
+        }
+    )*};
+}
+
+layout_field_writers! {
+    LayoutDirection: direction: Option<FlexDirection>;
+    LayoutWidth: width: Option<LengthSpec>;
+    LayoutHeight: height: Option<LengthSpec>;
+    LayoutMaxWidth: max_width: Option<LengthSpec>;
+    LayoutMinHeight: min_height: Option<LengthSpec>;
+    LayoutFlexGrow: flex_grow: Option<f32>;
+}
+
+impl<C: StyledComponent + crate::ComponentView, K> El<C, K> {
+    /// Theme elevation shadow role (`ElevationRole::Surface` / `Overlay`).
+    #[track_caller]
+    pub fn elevation(self, value: impl IntoProp<Option<ElevationRole>>) -> Self {
+        self.prop::<Option<ElevationRole>, Elevation>(value)
+    }
+
+    /// Reactive node opacity (`style.layout.opacity`).
+    #[track_caller]
+    pub fn paint_opacity(self, value: impl IntoProp<f32>) -> Self {
+        self.prop::<f32, Opacity>(value)
+    }
+
+    /// Reactive paint transform (`style.layout.transforms.transform`).
+    #[track_caller]
+    pub fn transform(self, value: impl IntoProp<Option<PaintTransform>>) -> Self {
+        self.prop::<Option<PaintTransform>, Transform>(value)
+    }
+
+    /// Reactive background paint color (`style.layout.paint_colors.background`).
+    #[track_caller]
+    pub fn paint_fill(
+        self,
+        value: impl IntoProp<Option<nana_ui_core::style_model::PaintColor>>,
+    ) -> Self {
+        self.prop::<Option<nana_ui_core::style_model::PaintColor>, Fill>(value)
+    }
+
+    /// Reactive foreground/ink paint color (`style.layout.paint_colors.color`).
+    #[track_caller]
+    pub fn paint_ink(
+        self,
+        value: impl IntoProp<Option<nana_ui_core::style_model::PaintColor>>,
+    ) -> Self {
+        self.prop::<Option<nana_ui_core::style_model::PaintColor>, Ink>(value)
+    }
+
+    /// Reactive border paint color (`style.layout.paint_colors.border`).
+    #[track_caller]
+    pub fn paint_edge(
+        self,
+        value: impl IntoProp<Option<nana_ui_core::style_model::PaintColor>>,
+    ) -> Self {
+        self.prop::<Option<nana_ui_core::style_model::PaintColor>, Edge>(value)
+    }
+}
+
+/// Reactive snapshot of the world's active localization catalog, formatter,
+/// fallback chain, and default locale. Updated automatically whenever
+/// [`AppContext::set_message_catalog`], [`AppContext::set_default_locale`],
+/// [`AppContext::set_document_locale`], or related i18n setters run.
+pub fn locale_resolver() -> Signal<Arc<crate::i18n::LocalizedResolver>> {
+    let value = signal(Arc::new(crate::i18n::LocalizedResolver::default()));
+    on_mount(move |cx| {
+        value.set_if_changed(cx.world().localized_resolver());
+        cx.i18n_signals.push(value);
+    });
+    value
+}
+
+/// Turn a reactive [`crate::LocalizedText`] producer into a `String` prop
+/// closure that re-evaluates whenever either its arguments or the world's
+/// locale/catalog change.
+pub fn localized_string(
+    f: impl Fn() -> crate::LocalizedText + Send + 'static,
+) -> impl Fn() -> String + Send + 'static {
+    let resolver = locale_resolver();
+    move || resolver.get().resolve(&f())
+}
+
+/// [`localized_string`] producing `Arc<str>`.
+pub fn localized_arc(
+    f: impl Fn() -> crate::LocalizedText + Send + 'static,
+) -> impl Fn() -> Arc<str> + Send + 'static {
+    let resolver = locale_resolver();
+    move || Arc::<str>::from(resolver.get().resolve(&f()))
+}
+
+/// [`localized_string`] producing `Option<Arc<str>>` (`None` when empty).
+pub fn localized_opt(
+    f: impl Fn() -> crate::LocalizedText + Send + 'static,
+) -> impl Fn() -> Option<Arc<str>> + Send + 'static {
+    let resolver = locale_resolver();
+    move || {
+        let text = resolver.get().resolve(&f());
+        (!text.is_empty()).then(|| Arc::from(text))
+    }
 }
 
 /// [`NodeStyle::color_overrides`]: what [`El::theme_colors`] binds. An empty
@@ -352,18 +582,22 @@ macro_rules! controls {
         $target.state.value != *$value
     };
     (@write assign $target:ident, $value:ident, $field:ident) => {{
-        if $target.assign($value) {
+        if $target.state.value == $target.formatted_value() && $target.assign($value) {
             $target.state.selection = TextSelection::caret($target.state.value.len());
         }
     }};
     (@differs assign $target:ident, $value:ident, $field:ident) => {
-        $target.$field() != *$value
+        $target.state.value == $target.formatted_value() && $target.$field() != *$value
     };
-    (@write clamp $target:ident, $value:ident, $field:ident) => {
-        $target.$field = clamp_to_range($target.minimum, $target.maximum, $value)
-    };
+    (@write clamp $target:ident, $value:ident, $field:ident) => {{
+        if $target.dragging.is_none() && !$target.editing {
+            $target.$field = $target.quantize(clamp_to_range($target.minimum, $target.maximum, $value));
+        }
+    }};
     (@differs clamp $target:ident, $value:ident, $field:ident) => {
-        $target.$field != clamp_to_range($target.minimum, $target.maximum, *$value)
+        $target.dragging.is_none()
+            && !$target.editing
+            && $target.$field != $target.quantize(clamp_to_range($target.minimum, $target.maximum, *$value))
     };
     (@write span_low $target:ident, $value:ident, $field:ident) => {
         $target.assign(RangeSpanThumb::Low, $value)
@@ -385,12 +619,44 @@ macro_rules! controls {
         next.set_span($value.0, $value.1);
         ($target.low, $target.high) != (next.low, next.high)
     }};
-    (@write curve $target:ident, $value:ident, $field:ident) => {
-        $target.set_values($value)
-    };
+    (@write curve $target:ident, $value:ident, $field:ident) => {{
+        if $target.dragging.is_none() {
+            $target.set_values($value);
+        }
+    }};
     (@differs curve $target:ident, $value:ident, $field:ident) => {
-        $target.values != $target.quantized($value)
+        $target.dragging.is_none() && $target.values != $target.quantized($value)
     };
+    (@write color_value $target:ident, $value:ident, $field:ident) => {{
+        if !$target.opened {
+            *$target = $target.clone().$field($value);
+        }
+    }};
+    (@differs color_value $target:ident, $value:ident, $field:ident) => {
+        !$target.opened && $target.$field != *$value
+    };
+    (@write tooltip_text $target:ident, $value:ident, $field:ident) => {{
+        let next = $value.filter(|text| !text.is_empty());
+        match next {
+            Some(label) => {
+                if let Some(existing) = &mut $target.$field {
+                    existing.label = label;
+                } else {
+                    $target.$field = Some(IconButtonTooltip {
+                        label,
+                        config: Default::default(),
+                    });
+                }
+            }
+            None => {
+                $target.$field = None;
+            }
+        }
+    }};
+    (@differs tooltip_text $target:ident, $value:ident, $field:ident) => {{
+        let next = $value.as_deref().filter(|text| !text.is_empty());
+        $target.$field.as_ref().map(|t| t.label.as_ref()) != next
+    }};
     (@write builder $target:ident, $value:ident, $field:ident) => {
         *$target = $target.clone().$field($value)
     };
@@ -767,8 +1033,51 @@ impl<K> El<EmptyState, K> {
 ///   field bound from the `String` a store holds.
 pub mod fields {
     pub use super::generated::*;
-    pub use super::{Blank, FromOptionalString, FromString, HiddenWhenEmpty};
-    pub use super::{Localized, Visible};
+    pub use super::{
+        Background, Blank, Border, Edge, Elevation, Fill, Foreground, FromOptionalString,
+        FromString, GuardedText, GuardedTextArea, HiddenWhenEmpty, Ink, InteractiveIdle, Localized,
+        NonEmpty, NonEmptyString, Opacity, Radius, Transform, Visible, WhileIdle,
+    };
+
+    /// Responsive layout [`FieldWrite`](crate::view::FieldWrite)s for any
+    /// [`StyledComponent`](super::StyledComponent).
+    pub mod layout {
+        pub use super::super::{
+            LayoutDirection as direction, LayoutFlexGrow as flex_grow, LayoutHeight as height,
+            LayoutMaxWidth as max_width, LayoutMinHeight as min_height, LayoutWidth as width,
+        };
+    }
+
+    /// [`crate::IconButton`] extra writers beyond the control table.
+    pub struct IconLabelAndTooltip;
+
+    /// [`crate::SegmentedControl`] fields.
+    #[allow(non_camel_case_types)]
+    pub mod segmented_control {
+        /// Accessible label for a segmented control.
+        pub struct label;
+    }
+
+    /// [`crate::Toolbar`] fields.
+    #[allow(non_camel_case_types)]
+    pub mod toolbar {
+        /// Accessible label for a toolbar.
+        pub struct label;
+    }
+
+    /// [`crate::ScrollView`] fields.
+    #[allow(non_camel_case_types)]
+    pub mod scroll_view {
+        /// Accessible label for a scroll view.
+        pub struct label;
+    }
+
+    /// [`crate::HoverCard`] fields.
+    #[allow(non_camel_case_types)]
+    pub mod hover_card {
+        /// Trigger label / spoken name for a hover card.
+        pub struct trigger;
+    }
 
     /// [`crate::ActionMenu`] fields (not a template tag: its items are its
     /// children).
@@ -788,6 +1097,8 @@ pub mod fields {
     #[cfg(feature = "controls")]
     #[allow(non_camel_case_types)]
     pub mod reorder_list {
+        /// `ReorderList` field `label`.
+        pub struct label;
         /// `ReorderList` field `items`.
         pub struct items;
         /// `ReorderList` field `drop_zone`.
@@ -798,6 +1109,227 @@ pub mod fields {
         pub struct accepts_root;
         /// `ReorderList` field `reorder`.
         pub struct reorder;
+    }
+}
+
+impl InteractiveIdle for RangeField {
+    fn is_idle(&self) -> bool {
+        self.dragging.is_none() && !self.editing
+    }
+}
+
+impl InteractiveIdle for RangeSpanField {
+    fn is_idle(&self) -> bool {
+        self.dragging.is_none()
+    }
+}
+
+impl InteractiveIdle for CurveField {
+    fn is_idle(&self) -> bool {
+        self.dragging.is_none()
+    }
+}
+
+impl InteractiveIdle for ColorField {
+    fn is_idle(&self) -> bool {
+        !self.opened
+    }
+}
+
+impl InteractiveIdle for NumberInput {
+    fn is_idle(&self) -> bool {
+        self.state.value == self.formatted_value()
+    }
+}
+
+/// Dirty-guarded value writer for [`TextInput`]: takes `(value, dirty)` and
+/// skips external writes while `dirty` is `true` on an interactive field.
+pub struct GuardedText;
+
+impl FieldWrite<TextInput, (String, bool)> for GuardedText {
+    const FIELD: &'static str = "TextInput.value";
+
+    fn write(target: &mut TextInput, (value, dirty): (String, bool)) {
+        if dirty && !target.disabled && !target.read_only {
+            return;
+        }
+        if target.state.value != value {
+            target.state = crate::TextInputState::new(value);
+        }
+    }
+
+    fn differs(target: &TextInput, (value, dirty): &(String, bool)) -> bool {
+        if *dirty && !target.disabled && !target.read_only {
+            return false;
+        }
+        target.state.value.as_str() != value.as_str()
+    }
+}
+
+/// Dirty-guarded value writer for [`TextArea`]: takes `(value, dirty)` and
+/// skips external writes while `dirty` is `true` on an interactive field.
+pub struct GuardedTextArea;
+
+impl FieldWrite<TextArea, (String, bool)> for GuardedTextArea {
+    const FIELD: &'static str = "TextArea.value";
+
+    fn write(target: &mut TextArea, (value, dirty): (String, bool)) {
+        if dirty && !target.disabled && !target.read_only {
+            return;
+        }
+        if target.state.value != value {
+            target.state = crate::TextInputState::new(value);
+        }
+    }
+
+    fn differs(target: &TextArea, (value, dirty): &(String, bool)) -> bool {
+        if *dirty && !target.disabled && !target.read_only {
+            return false;
+        }
+        target.state.value.as_str() != value.as_str()
+    }
+}
+
+impl FieldWrite<IconButton, Arc<str>> for fields::IconLabelAndTooltip {
+    const FIELD: &'static str = "IconButton.label_and_tooltip";
+
+    fn write(target: &mut IconButton, value: Arc<str>) {
+        if let Some(tooltip) = &mut target.tooltip {
+            tooltip.label = Arc::clone(&value);
+        }
+        target.label = value;
+    }
+
+    fn differs(target: &IconButton, value: &Arc<str>) -> bool {
+        target.label != *value
+            || target
+                .tooltip
+                .as_ref()
+                .is_some_and(|tooltip| tooltip.label != *value)
+    }
+}
+
+impl<K> El<IconButton, K> {
+    /// Bind both [`IconButton::label`] and, when present, its tooltip text to
+    /// the same source (updating both together on locale switches).
+    #[track_caller]
+    pub fn label_and_tooltip(self, value: impl IntoProp<Arc<str>>) -> Self {
+        self.prop::<Arc<str>, fields::IconLabelAndTooltip>(value)
+    }
+}
+
+impl<K> El<TextInput, K> {
+    /// Focus this text input in place and select all text once mounted into a
+    /// visible subtree (shorthand for setting `focus_and_select_on_mount(true)`
+    /// and wiring `on_mount`).
+    #[track_caller]
+    pub fn auto_focus_select(self) -> Self {
+        let input_ref = node_ref();
+        on_mount(move |cx| {
+            if let Some(id) = input_ref.get_untracked() {
+                let _ = cx.focus_and_select_text_input(Entity::from_stable_id(id));
+            }
+        });
+        self.focus_and_select_on_mount(true).node_ref(input_ref)
+    }
+}
+
+impl FieldWrite<SegmentedControl, Option<Arc<str>>> for fields::segmented_control::label {
+    const FIELD: &'static str = "SegmentedControl.label";
+
+    fn write(target: &mut SegmentedControl, value: Option<Arc<str>>) {
+        target.label = value;
+    }
+
+    fn differs(target: &SegmentedControl, value: &Option<Arc<str>>) -> bool {
+        target.label != *value
+    }
+}
+
+impl<K> El<SegmentedControl, K> {
+    #[track_caller]
+    pub fn label(self, value: impl IntoProp<Option<Arc<str>>>) -> Self {
+        self.prop::<Option<Arc<str>>, fields::segmented_control::label>(value)
+    }
+}
+
+impl FieldWrite<Toolbar, Option<Arc<str>>> for fields::toolbar::label {
+    const FIELD: &'static str = "Toolbar.label";
+
+    fn write(target: &mut Toolbar, value: Option<Arc<str>>) {
+        target.label = value;
+    }
+
+    fn differs(target: &Toolbar, value: &Option<Arc<str>>) -> bool {
+        target.label != *value
+    }
+}
+
+impl<K> El<Toolbar, K> {
+    #[track_caller]
+    pub fn label(self, value: impl IntoProp<Option<Arc<str>>>) -> Self {
+        self.prop::<Option<Arc<str>>, fields::toolbar::label>(value)
+    }
+}
+
+impl FieldWrite<ScrollView, Option<Arc<str>>> for fields::scroll_view::label {
+    const FIELD: &'static str = "ScrollView.label";
+
+    fn write(target: &mut ScrollView, value: Option<Arc<str>>) {
+        target.label = value;
+    }
+
+    fn differs(target: &ScrollView, value: &Option<Arc<str>>) -> bool {
+        target.label != *value
+    }
+}
+
+impl<K> El<ScrollView, K> {
+    #[track_caller]
+    pub fn label(self, value: impl IntoProp<Option<Arc<str>>>) -> Self {
+        self.prop::<Option<Arc<str>>, fields::scroll_view::label>(value)
+    }
+}
+
+impl FieldWrite<HoverCard, Arc<str>> for fields::hover_card::trigger {
+    const FIELD: &'static str = "HoverCard.trigger";
+
+    fn write(target: &mut HoverCard, value: Arc<str>) {
+        target.trigger = value;
+    }
+
+    fn differs(target: &HoverCard, value: &Arc<str>) -> bool {
+        target.trigger != *value
+    }
+}
+
+impl<K> El<HoverCard, K> {
+    #[track_caller]
+    pub fn trigger(self, value: impl IntoProp<Arc<str>>) -> Self {
+        self.prop::<Arc<str>, fields::hover_card::trigger>(value)
+    }
+}
+
+#[cfg(feature = "controls")]
+impl FieldWrite<crate::ReorderList, Option<Arc<str>>> for fields::reorder_list::label {
+    const FIELD: &'static str = "ReorderList.label";
+
+    fn write(target: &mut crate::ReorderList, label: Option<Arc<str>>) {
+        if target.label != label {
+            target.label = label;
+        }
+    }
+
+    fn differs(target: &crate::ReorderList, label: &Option<Arc<str>>) -> bool {
+        target.label != *label
+    }
+}
+
+#[cfg(feature = "controls")]
+impl<K> El<crate::ReorderList, K> {
+    #[track_caller]
+    pub fn label(self, value: impl IntoProp<Option<Arc<str>>>) -> Self {
+        self.prop::<Option<Arc<str>>, fields::reorder_list::label>(value)
     }
 }
 
@@ -1192,6 +1724,7 @@ edited_in_code!(
     StatusTone,
     ButtonKind,
     ListItemRole,
+    MenuItemMark,
     RangeSpanOrientation,
     [f32; 4],
     [f64; 2],
@@ -1241,6 +1774,10 @@ pub(crate) fn inspect_control(
         (@read span_high $control:ident, $field:ident) => { &$control.high };
         (@read span $control:ident, $field:ident) => { &($control.low, $control.high) };
         (@read curve $control:ident, $field:ident) => { &$control.values };
+        (@read color_value $control:ident, $field:ident) => { &$control.$field };
+        (@read tooltip_text $control:ident, $field:ident) => {
+            $control.$field.as_ref().map(|t| &t.label)
+        };
         (@read builder $control:ident, $field:ident) => { &$control.$field };
         (@read tab $control:ident, $field:ident) => { &$control.selected };
         (@read resource $control:ident, $field:ident) => { &$control.resource };
@@ -1384,5 +1921,208 @@ impl<K> El<TextArea, K> {
     /// A real action inside the field's bottom trailing corner.
     pub fn trailing_action(self, view: impl IntoView) -> Self {
         self.child_slot(view, TextArea::trailing_action)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::i18n::{FluentCatalog, Locale, LocalizedText};
+    use crate::view::node_ref;
+    use crate::{DocumentId, LayoutViewport, RangeDragState, TextSubmitted};
+    use nana_ui_core::{ElevationRole, PaintTransform};
+
+    #[test]
+    fn elevation_and_styled_component_writers_update_node_style() {
+        let mut stack = Stack::column(0.0).elevation(ElevationRole::Overlay);
+        assert_eq!(
+            stack.node_style().elevation_role(),
+            Some(ElevationRole::Overlay)
+        );
+
+        Elevation::write(&mut stack, Some(ElevationRole::Surface));
+        assert_eq!(
+            stack.node_style().elevation_role(),
+            Some(ElevationRole::Surface)
+        );
+
+        Opacity::write(&mut stack, 0.5);
+        assert_eq!(stack.node_style().layout.opacity, Some(0.5));
+
+        let tx = PaintTransform {
+            e: 4.0,
+            f: -2.0,
+            ..PaintTransform::IDENTITY
+        };
+        Transform::write(&mut stack, Some(tx));
+        assert_eq!(stack.node_style().layout.transforms.transform, Some(tx));
+
+        let color = nana_ui_core::style_model::PaintColor::Srgb {
+            rgba: [0.2, 0.4, 0.6, 1.0],
+        };
+        Fill::write(&mut stack, Some(color));
+        assert_eq!(
+            stack.node_style().layout.paint_colors.background,
+            Some(color)
+        );
+
+        fields::layout::direction::write(&mut stack, Some(FlexDirection::Row));
+        assert_eq!(
+            stack.node_style().layout.direction,
+            Some(FlexDirection::Row)
+        );
+        fields::layout::max_width::write(&mut stack, Some(LengthSpec::Px(320.0)));
+        assert_eq!(
+            stack.node_style().layout.max_width,
+            Some(LengthSpec::Px(320.0))
+        );
+    }
+
+    #[test]
+    fn interactive_value_bindings_skip_writes_during_live_interaction_and_quantize() {
+        // RangeField: quantize on idle, skip while dragging or inline-editing.
+        let mut range = RangeField::new(0.0, 0.0, 1.0, 0.25);
+        fields::slider::value::write(&mut range, 0.26);
+        assert_eq!(range.value, 0.25);
+        range.dragging = Some(RangeDragState::new(1, 0.25));
+        assert!(!range.is_idle());
+        assert!(!fields::slider::value::differs(&range, &0.75));
+        fields::slider::value::write(&mut range, 0.75);
+        assert_eq!(range.value, 0.25);
+
+        // ColorField: skip while HSV picker popover is open.
+        let mut color = ColorField::new([0.1, 0.2, 0.3, 1.0]);
+        color.opened = true;
+        assert!(!color.is_idle());
+        assert!(!fields::color_field::value::differs(
+            &color,
+            &[0.9, 0.8, 0.7, 1.0]
+        ));
+        fields::color_field::value::write(&mut color, [0.9, 0.8, 0.7, 1.0]);
+        assert_eq!(color.value, [0.1, 0.2, 0.3, 1.0]);
+
+        // NumberInput: skip while user holds an uncommitted draft.
+        let mut number = NumberInput::new(10.0);
+        number.state.replace_value("12.".to_owned());
+        assert!(!number.is_idle());
+        assert!(!fields::number_input::value::differs(&number, &50.0));
+        fields::number_input::value::write(&mut number, 50.0);
+        assert_eq!(number.state.value, "12.");
+
+        // CurveField: skip while dragging.
+        let mut curve = CurveField::new(vec![0.0, 0.5, 1.0], 0.05);
+        curve.dragging = Some(crate::CurveDragState {
+            pointer_id: 1,
+            point: 1,
+            grab_offset: 0.0,
+            initial: vec![0.0, 0.5, 1.0],
+        });
+        assert!(!curve.is_idle());
+        fields::curve::values::write(&mut curve, vec![0.0, 0.9, 1.0]);
+        assert_eq!(curve.values, vec![0.0, 0.5, 1.0]);
+
+        // Generic WhileIdle<W> and NonEmpty<W>.
+        let mut idle_range = RangeField::new(0.0, 0.0, 1.0, 0.1);
+        NonEmpty::<fields::slider::unit>::write(&mut idle_range, Arc::from(""));
+        assert_eq!(idle_range.unit, None);
+        NonEmpty::<fields::slider::unit>::write(&mut idle_range, Arc::from("%"));
+        assert_eq!(idle_range.unit.as_deref(), Some("%"));
+        idle_range.editing = true;
+        WhileIdle::<fields::slider::disabled>::write(&mut idle_range, true);
+        assert!(!idle_range.disabled);
+    }
+
+    #[test]
+    fn control_level_localized_text_updates_on_locale_switch() {
+        let catalog = FluentCatalog::new()
+            .with_ftl("en-US", "save = Save\nsearch = Search items")
+            .unwrap()
+            .with_ftl("zh-CN", "save = 保存\nsearch = 搜索项目")
+            .unwrap();
+        let mut cx = AppContext::new();
+        let doc = DocumentId::new(1).unwrap();
+        cx.set_message_catalog(Some(Arc::new(catalog)));
+        cx.set_default_locale(Locale::parse("en-US"));
+
+        let btn_ref = node_ref();
+        let input_ref = node_ref();
+        cx.mount_view_root(doc, move || {
+            column().children((
+                button(LocalizedText::new("save")).node_ref(btn_ref),
+                text_input()
+                    .placeholder(LocalizedText::new("search"))
+                    .node_ref(input_ref),
+            ))
+        })
+        .unwrap();
+        cx.flush_reactive().unwrap();
+
+        let btn_id = btn_ref.get_untracked().unwrap();
+        let input_id = input_ref.get_untracked().unwrap();
+        assert_eq!(
+            cx.read(Entity::<Button>::from_stable_id(btn_id), |b| b
+                .label
+                .clone())
+                .unwrap(),
+            "Save"
+        );
+        assert_eq!(
+            cx.read(Entity::<TextInput>::from_stable_id(input_id), |t| t
+                .placeholder
+                .to_string())
+                .unwrap(),
+            "Search items"
+        );
+
+        cx.set_default_locale(Locale::parse("zh-CN"));
+        cx.flush_reactive().unwrap();
+        assert_eq!(
+            cx.read(Entity::<Button>::from_stable_id(btn_id), |b| b
+                .label
+                .clone())
+                .unwrap(),
+            "保存"
+        );
+        assert_eq!(
+            cx.read(Entity::<TextInput>::from_stable_id(input_id), |t| t
+                .placeholder
+                .to_string())
+                .unwrap(),
+            "搜索项目"
+        );
+    }
+
+    #[test]
+    fn view_context_blur_and_text_input_blur_on_submit_and_focus_on_mount() {
+        let mut cx = AppContext::new();
+        let doc = DocumentId::new(1).unwrap();
+        let input_ref = node_ref();
+        let seen_doc = Arc::new(std::sync::Mutex::new(None));
+        let seen_doc_cb = Arc::clone(&seen_doc);
+        cx.mount_view_root(doc, move || {
+            text_input()
+                .value("hello")
+                .blur_on_submit(true)
+                .auto_focus_select()
+                .node_ref(input_ref)
+                .on_cx(move |_: &mut TextInput, _: &TextSubmitted, vcx| {
+                    *seen_doc_cb.lock().unwrap() = Some(vcx.document());
+                })
+        })
+        .unwrap();
+        cx.layout_document(doc, LayoutViewport::new(320.0, 200.0))
+            .unwrap();
+        let input_id = input_ref.get_untracked().unwrap();
+        assert_eq!(cx.world().focused(doc), Some(input_id));
+        let sel = cx
+            .read(Entity::<TextInput>::from_stable_id(input_id), |t| {
+                t.state.selection
+            })
+            .unwrap();
+        assert_eq!(sel.range(), 0..5);
+
+        assert!(cx.submit_focused_text_input(doc).unwrap());
+        assert_eq!(*seen_doc.lock().unwrap(), Some(doc));
+        assert_eq!(cx.world().focused(doc), None);
     }
 }

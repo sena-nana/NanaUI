@@ -121,9 +121,10 @@ mod submenu_aim;
 #[cfg(feature = "icu")]
 pub use i18n::IcuFormatter;
 pub use i18n::{
-    DateStyle, FormatterCounts, Locale, LocaleFormatter, LocalizedText, MessageArg, MessageArgs,
-    MessageCatalog, MessageDateTime, MessageId, MessagePattern, MessagePatternError, MessageTable,
-    MissingMessage, NumberStyle, PlainFormatter, PluralCategory,
+    DateStyle, FluentCatalog, FluentParseError, FluentResource, FormatterCounts, Locale,
+    LocaleFormatter, LocalizedResolver, LocalizedText, MessageArg, MessageArgs, MessageCatalog,
+    MessageDateTime, MessageId, MessagePattern, MessagePatternError, MessageTable, MissingMessage,
+    NumberStyle, PlainFormatter, PluralCategory,
 };
 pub use responsive::{
     MAX_RESPONSIVE_BREAKPOINTS, ResponsiveAxis, ResponsiveContainer, ResponsiveRule, StyleVariant,
@@ -243,19 +244,20 @@ pub use components::{
     AccessibilityScrollDirection, AccessibilityScrollUnit, AccessibilityState, AccessibilityUpdate,
     ComputedStyle, CustomRenderNode, DocumentTextSelection, EventListeners, EventRoute, FontStrut,
     ImeComposition, ImeView, InheritedStyle, InheritedStyleExt, InteractionState, InteractionStyle,
-    LayoutBox, LayoutInput, LineLabel, MeasureTextShaper, ModalLayoutInput, MountState, NodeStyle,
-    RangeCaution, RangeValueThumb, ScrollMetrics, ScrollOffset, SelectMenuDrag, SelectMenuGeometry,
-    SelectMenuRoom, SelectMenuScroll, SelectOptionData, SelectOptionGeometry, SemanticPaint,
-    TextAffinity, TextAtomChip, TextAtomClosed, TextAtomSpan, TextCodeFold, TextColorSwatchSpan,
-    TextCompletion, TextCompletionEdit, TextCompletionPopup, TextCompletionRow,
-    TextCompletionSnapshot, TextContent, TextDiagnosticSeverity, TextDiagnosticSpan,
-    TextEditorRenderOptions, TextFoldGeometry, TextFoldGutter, TextGitGutterGeometry, TextGitMark,
-    TextGitMarkKind, TextHit, TextHorizontalAlignment, TextHover, TextHoverPopup, TextInlay,
-    TextInputCharacterCounter, TextInputGeometry, TextInputScroll, TextInputState, TextInputSuffix,
-    TextInputView, TextInputVisual, TextMatchMarker, TextMatchSpan, TextMetrics,
-    TextMinimapGeometry, TextSelection, TextShapeConstraints, TextShaper, TextShaping,
-    TextSignatureHelp, TextSignaturePopup, TextSnippet, TextStickyLineGeometry, TextValue,
-    TextVerticalAlignment, TextWhitespaceKind, TooltipVisual,
+    LayoutBox, LayoutInput, LineLabel, MeasureTextShaper, MenuItemMark, ModalLayoutInput,
+    MountState, NodeStyle, RangeCaution, RangeValueThumb, ScrollMetrics, ScrollOffset,
+    SelectMenuDrag, SelectMenuGeometry, SelectMenuRoom, SelectMenuScroll, SelectOptionData,
+    SelectOptionGeometry, SemanticPaint, TextAffinity, TextAtomChip, TextAtomClosed, TextAtomSpan,
+    TextCodeFold, TextColorSwatchSpan, TextCompletion, TextCompletionEdit, TextCompletionPopup,
+    TextCompletionRow, TextCompletionSnapshot, TextContent, TextDiagnosticSeverity,
+    TextDiagnosticSpan, TextEditorRenderOptions, TextFoldGeometry, TextFoldGutter,
+    TextGitGutterGeometry, TextGitMark, TextGitMarkKind, TextHit, TextHorizontalAlignment,
+    TextHover, TextHoverPopup, TextInlay, TextInputCharacterCounter, TextInputGeometry,
+    TextInputScroll, TextInputState, TextInputSuffix, TextInputView, TextInputVisual,
+    TextMatchMarker, TextMatchSpan, TextMetrics, TextMinimapGeometry, TextSelection,
+    TextShapeConstraints, TextShaper, TextShaping, TextSignatureHelp, TextSignaturePopup,
+    TextSnippet, TextStickyLineGeometry, TextValue, TextVerticalAlignment, TextWhitespaceKind,
+    TooltipVisual,
 };
 pub use curve_field::{
     CurveChanged, CurveDragState, CurveDragging, CurveField, CurveInput, CurvePoint,

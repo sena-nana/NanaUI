@@ -1600,6 +1600,31 @@ impl NodeStyle {
             && self.theme_patch.is_none()
     }
 
+    /// Resolve a theme elevation shadow (`ElevationRole::Surface` / `Overlay`) on
+    /// this node's quad without a custom box-shadow painter.
+    pub fn elevation(mut self, role: nana_ui_core::ElevationRole) -> Self {
+        self.set_elevation(Some(role));
+        self
+    }
+
+    /// Remove any theme elevation role on this node.
+    pub fn clear_elevation(mut self) -> Self {
+        self.set_elevation(None);
+        self
+    }
+
+    /// Set or clear the theme elevation role stored on `self.layout.paint.elevation`.
+    pub fn set_elevation(&mut self, role: Option<nana_ui_core::ElevationRole>) {
+        if self.layout.paint.elevation != role {
+            Arc::make_mut(&mut self.layout).paint.elevation = role;
+        }
+    }
+
+    /// The theme elevation role requested on this style, if any.
+    pub fn elevation_role(&self) -> Option<nana_ui_core::ElevationRole> {
+        self.layout.paint.elevation
+    }
+
     /// This style with what `over` sets written over it, the way an
     /// application's style overlays a component's recipe: each design step
     /// and colour `over` names replaces this one's, each interaction state's

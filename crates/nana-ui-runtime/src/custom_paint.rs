@@ -2992,6 +2992,11 @@ impl<'a> PaintContext<'a> {
         }
     }
 
+    /// The installed theme's modal backdrop scrim color (`SemanticColorRole::ModalScrim`).
+    pub fn modal_scrim(&self) -> [f32; 4] {
+        self.color(SemanticColorRole::ModalScrim)
+    }
+
     /// 按当前主题解析圆角档位。
     pub fn radius(&self, radius: impl Into<Radius>) -> f32 {
         match radius.into() {

@@ -1865,7 +1865,11 @@ impl UiWorld {
         {
             mask = mask.union(ThemeDependencyMask::for_color_role(role));
         }
-        if record.style.ring.is_some() || record.interaction.focusable {
+        if record.style.ring.is_some()
+            || record.style.layout.paint.elevation.is_some()
+            || record.resolved_layout.paint.elevation.is_some()
+            || record.interaction.focusable
+        {
             mask = mask.union(ThemeDependencyMask::EFFECT);
         }
         if !record.style.interaction.is_shared_default() {

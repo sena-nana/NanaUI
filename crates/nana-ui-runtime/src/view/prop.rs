@@ -30,6 +30,74 @@ pub trait FieldWrite<C, T> {
     }
 }
 
+/// Interactive controls that can report whether the user currently owns their
+/// transient state (an active pointer drag, an open color picker popover, or
+/// an uncommitted numeric text draft). Used by [`WhileIdle`].
+pub trait InteractiveIdle {
+    /// Returns `true` when external reactive updates may safely write into
+    /// this control without clobbering in-flight user interaction.
+    fn is_idle(&self) -> bool;
+}
+
+/// Wraps any [`FieldWrite`] so updates are skipped while the target control is
+/// actively being interacted with ([`InteractiveIdle::is_idle`] returns
+/// `false`). Useful for live-polled telemetry/store bindings.
+pub struct WhileIdle<W>(PhantomData<W>);
+
+impl<C, T, W> FieldWrite<C, T> for WhileIdle<W>
+where
+    C: InteractiveIdle,
+    W: FieldWrite<C, T>,
+{
+    const FIELD: &'static str = W::FIELD;
+
+    fn write(target: &mut C, value: T) {
+        if target.is_idle() {
+            W::write(target, value);
+        }
+    }
+
+    fn differs(target: &C, value: &T) -> bool {
+        target.is_idle() && W::differs(target, value)
+    }
+}
+
+/// Adapts an `Option<Arc<str>>` writer `W` to accept `Arc<str>`, mapping an
+/// empty string to `None` and non-empty strings to `Some(value)`.
+pub struct NonEmpty<W>(PhantomData<W>);
+
+impl<C, W: FieldWrite<C, Option<Arc<str>>>> FieldWrite<C, Arc<str>> for NonEmpty<W> {
+    const FIELD: &'static str = W::FIELD;
+
+    fn write(target: &mut C, value: Arc<str>) {
+        let mapped = (!value.is_empty()).then_some(value);
+        W::write(target, mapped);
+    }
+
+    fn differs(target: &C, value: &Arc<str>) -> bool {
+        let mapped = (!value.is_empty()).then(|| Arc::clone(value));
+        W::differs(target, &mapped)
+    }
+}
+
+/// Adapts an `Option<Arc<str>>` writer `W` to accept `String`, mapping an
+/// empty string to `None` and non-empty strings to `Some(Arc::from(value))`.
+pub struct NonEmptyString<W>(PhantomData<W>);
+
+impl<C, W: FieldWrite<C, Option<Arc<str>>>> FieldWrite<C, String> for NonEmptyString<W> {
+    const FIELD: &'static str = W::FIELD;
+
+    fn write(target: &mut C, value: String) {
+        let mapped = (!value.is_empty()).then(|| Arc::from(value));
+        W::write(target, mapped);
+    }
+
+    fn differs(target: &C, value: &String) -> bool {
+        let mapped = (!value.is_empty()).then(|| Arc::from(value.as_str()));
+        W::differs(target, &mapped)
+    }
+}
+
 /// A value, signal or closure that can drive a `T` field.
 pub trait IntoProp<T: 'static>: Sized {
     #[doc(hidden)]
@@ -301,6 +369,17 @@ const_props! {
     nana_ui_core::SemanticColorRole => Option<nana_ui_core::SemanticColorRole>, |v| Some(v);
     Option<nana_ui_core::SemanticColorRole> => Option<nana_ui_core::SemanticColorRole>, |v| v;
     nana_ui_core::RadiusTier => Option<nana_ui_core::RadiusTier>, |v| Some(v);
+    nana_ui_core::ElevationRole => Option<nana_ui_core::ElevationRole>, |v| Some(v);
+    Option<nana_ui_core::ElevationRole> => Option<nana_ui_core::ElevationRole>, |v| v;
+    nana_ui_core::PaintTransform => Option<nana_ui_core::PaintTransform>, |v| Some(v);
+    Option<nana_ui_core::PaintTransform> => Option<nana_ui_core::PaintTransform>, |v| v;
+    nana_ui_core::style_model::PaintColor => Option<nana_ui_core::style_model::PaintColor>, |v| Some(v);
+    Option<nana_ui_core::style_model::PaintColor> => Option<nana_ui_core::style_model::PaintColor>, |v| v;
+    nana_ui_core::FlexDirection => Option<nana_ui_core::FlexDirection>, |v| Some(v);
+    Option<nana_ui_core::FlexDirection> => Option<nana_ui_core::FlexDirection>, |v| v;
+    nana_ui_core::LengthSpec => Option<nana_ui_core::LengthSpec>, |v| Some(v);
+    Option<nana_ui_core::LengthSpec> => Option<nana_ui_core::LengthSpec>, |v| v;
+    crate::MenuItemMark => crate::MenuItemMark, |v| v;
     nana_ui_core::ColorOverrides => nana_ui_core::ColorOverrides, |v| v;
     nana_ui_core::ThemePatch => nana_ui_core::ThemePatch, |v| v;
     Option<nana_ui_core::RadiusTier> => Option<nana_ui_core::RadiusTier>, |v| v;
@@ -334,4 +413,75 @@ const_props! {
     Option<crate::Locale> => Option<crate::Locale>, |v| v;
     // A language tag: `.locale("ar")`. An empty one names no locale.
     &'static str => Option<crate::Locale>, |v| crate::Locale::parse(v);
+}
+
+/// Any `String` control prop (`Button::label`, `Checkbox::label`,
+/// `Switch::label`, `ListItem::label`, …) accepts [`crate::LocalizedText`]
+/// directly and updates automatically when the world's locale or catalog
+/// changes.
+impl IntoProp<String> for crate::LocalizedText {
+    fn bind_field<C: 'static, W: FieldWrite<C, String> + 'static>(
+        self,
+        target: &mut C,
+        bindings: &mut NodeBindings<C>,
+        site: &'static Location<'static>,
+    ) {
+        let resolver = super::controls::locale_resolver();
+        (move || resolver.get().resolve(&self)).bind_field::<C, W>(target, bindings, site);
+    }
+
+    fn into_source(self) -> PropSource<String> {
+        let resolver = super::controls::locale_resolver();
+        PropSource::Dyn(Box::new(move || resolver.get().resolve(&self)))
+    }
+}
+
+/// Any `Arc<str>` control prop (`TextInput::placeholder`, `IconButton::label`,
+/// `StatusBadge::label`, `EmptyState::title`, `ActionMenu::label`, …) accepts
+/// [`crate::LocalizedText`] directly and updates on locale or catalog switches.
+impl IntoProp<Arc<str>> for crate::LocalizedText {
+    fn bind_field<C: 'static, W: FieldWrite<C, Arc<str>> + 'static>(
+        self,
+        target: &mut C,
+        bindings: &mut NodeBindings<C>,
+        site: &'static Location<'static>,
+    ) {
+        let resolver = super::controls::locale_resolver();
+        (move || Arc::<str>::from(resolver.get().resolve(&self)))
+            .bind_field::<C, W>(target, bindings, site);
+    }
+
+    fn into_source(self) -> PropSource<Arc<str>> {
+        let resolver = super::controls::locale_resolver();
+        PropSource::Dyn(Box::new(move || {
+            Arc::<str>::from(resolver.get().resolve(&self))
+        }))
+    }
+}
+
+/// Any `Option<Arc<str>>` control prop (`Select::placeholder`,
+/// `Slider::label`, `SettingsRow::hint`, `TextInput::label`, …) accepts
+/// [`crate::LocalizedText`] directly and updates on locale or catalog switches.
+impl IntoProp<Option<Arc<str>>> for crate::LocalizedText {
+    fn bind_field<C: 'static, W: FieldWrite<C, Option<Arc<str>>> + 'static>(
+        self,
+        target: &mut C,
+        bindings: &mut NodeBindings<C>,
+        site: &'static Location<'static>,
+    ) {
+        let resolver = super::controls::locale_resolver();
+        (move || {
+            let text = resolver.get().resolve(&self);
+            (!text.is_empty()).then(|| Arc::from(text))
+        })
+        .bind_field::<C, W>(target, bindings, site);
+    }
+
+    fn into_source(self) -> PropSource<Option<Arc<str>>> {
+        let resolver = super::controls::locale_resolver();
+        PropSource::Dyn(Box::new(move || {
+            let text = resolver.get().resolve(&self);
+            (!text.is_empty()).then(|| Arc::from(text))
+        }))
+    }
 }

@@ -60,6 +60,7 @@ macro_rules! for_each_control {
                 content: InlineContent = inline,
                 label: String = set,
                 accessible_name: String = set,
+                icon: Option<Icon> = set,
                 disabled: bool = set,
                 loading: bool = set,
                 kind: ButtonKind = set,
@@ -69,6 +70,7 @@ macro_rules! for_each_control {
             Checkbox => checkbox(label: text) for Checkbox {
                 label: String = set,
                 checked: bool = set,
+                indeterminate: bool = set,
                 disabled: bool = set,
             }
             with { on_change: ToggleChanged }
@@ -128,6 +130,8 @@ macro_rules! for_each_control {
                 placeholder: Arc<str> = set,
                 disabled: bool = set,
                 invalid: bool = set,
+                blur_on_submit: bool = set,
+                focus_and_select_on_mount: bool = set,
             }
             with { on_input: TextChanged, on_submit: TextSubmitted }
             model value: String => TextChanged |event| event.value.to_string();
@@ -172,6 +176,7 @@ macro_rules! for_each_control {
                 label: String = set,
                 note: String = set,
                 detail: String = set,
+                tooltip: Option<Arc<str>> = tooltip_text,
                 selected: bool = set,
                 disabled: bool = set,
                 read_only: bool = set,
@@ -219,6 +224,7 @@ macro_rules! for_each_control {
             IconButton => icon_button(icon: expr, label: text) for IconButton {
                 icon: Icon = set,
                 label: Arc<str> = set,
+                tooltip: Option<Arc<str>> = tooltip_text,
                 compact: bool = set,
                 selected: bool = set,
                 disabled: bool = set,
@@ -275,7 +281,7 @@ macro_rules! for_each_control {
             }
             with { on_change: SizeFieldChanged, on_submit: SizeFieldSubmitted };
             ColorField => color_field() for ColorField {
-                value: [f32; 4] = builder,
+                value: [f32; 4] = color_value,
                 label: Option<Arc<str>> = set,
                 disabled: bool = set,
                 eyedropper: bool = set,
@@ -285,6 +291,8 @@ macro_rules! for_each_control {
                 content: InlineContent = inline,
                 label: Arc<str> = set,
                 accessible_name: Arc<str> = set,
+                hint: Option<Arc<str>> = set,
+                mark: MenuItemMark = set,
                 leading_image: Option<TextureSlotName> = set,
                 disabled: bool = set,
                 danger: bool = set,

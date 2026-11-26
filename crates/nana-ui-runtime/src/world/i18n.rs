@@ -78,6 +78,9 @@ pub(super) struct I18nIndex {
     /// Virtual lists: localized text resolved in the rows under one is a
     /// virtual row resolved.
     virtual_lists: HashSet<StableNodeId, BuildIdHasher>,
+    /// Monotonic revision bumped whenever catalog, formatter, fallback,
+    /// missing policy, or any locale changes.
+    revision: u64,
 }
 
 impl I18nIndex {
@@ -141,6 +144,7 @@ impl UiWorld {
         let shown = self.i18n_shown();
         self.overlays_a11y.i18n.catalog = catalog;
         self.overlays_a11y.i18n.catalog_generation += 1;
+        self.overlays_a11y.i18n.revision += 1;
         self.overlays_a11y.i18n.lookups.clear();
         self.resolve_every_localized();
         self.note_shown_since(shown);
@@ -158,6 +162,7 @@ impl UiWorld {
         let shown = self.i18n_shown();
         self.overlays_a11y.i18n.catalog = Some(catalog);
         self.overlays_a11y.i18n.catalog_generation += 1;
+        self.overlays_a11y.i18n.revision += 1;
         self.overlays_a11y
             .i18n
             .lookups
@@ -194,6 +199,7 @@ impl UiWorld {
     pub fn set_locale_formatter(&mut self, formatter: Arc<dyn LocaleFormatter>) {
         let shown = self.i18n_shown();
         self.overlays_a11y.i18n.formatter = Some(formatter);
+        self.overlays_a11y.i18n.revision += 1;
         self.resolve_every_localized();
         self.note_shown_since(shown);
     }
@@ -206,6 +212,7 @@ impl UiWorld {
         }
         let shown = self.i18n_shown();
         self.overlays_a11y.i18n.fallback = locale;
+        self.overlays_a11y.i18n.revision += 1;
         self.overlays_a11y.i18n.lookups.clear();
         self.resolve_every_localized();
         self.note_shown_since(shown);
@@ -218,6 +225,7 @@ impl UiWorld {
         }
         let shown = self.i18n_shown();
         self.overlays_a11y.i18n.missing = policy;
+        self.overlays_a11y.i18n.revision += 1;
         self.resolve_every_localized();
         self.note_shown_since(shown);
     }
@@ -230,6 +238,7 @@ impl UiWorld {
         let shown = self.i18n_shown();
         let before = self.overlays_a11y.i18n.application.clone();
         self.overlays_a11y.i18n.application = locale;
+        self.overlays_a11y.i18n.revision += 1;
         // Windows with localized text, and windows whose roots take its
         // direction.
         let mut documents: Vec<DocumentId> = self
@@ -265,8 +274,40 @@ impl UiWorld {
             Some(locale) => self.overlays_a11y.i18n.documents.insert(document, locale),
             None => self.overlays_a11y.i18n.documents.remove(&document),
         };
+        self.overlays_a11y.i18n.revision += 1;
         self.switch_locale(vec![(LocaleScope::Document(document), before)]);
         self.note_shown_since(shown);
+    }
+
+    /// Snapshot of the current localization state for reactive control
+    /// bindings (`LocalizedText` on `Button`, `Switch`, `TextInput`, …).
+    pub fn localized_resolver(&self) -> Arc<crate::i18n::LocalizedResolver> {
+        let i18n = &self.overlays_a11y.i18n;
+        Arc::new(crate::i18n::LocalizedResolver::new(
+            i18n.revision,
+            i18n.catalog.clone(),
+            i18n.formatter.clone().unwrap_or_else(default_formatter),
+            i18n.fallback.clone(),
+            i18n.missing,
+            i18n.application.clone(),
+        ))
+    }
+
+    /// Resolve `text` to a formatted string in `scope` without mutating any
+    /// node.
+    pub fn resolve_localized_string(&self, scope: LocaleScope, text: &LocalizedText) -> String {
+        self.localized_resolver()
+            .resolve_in(self.scope_locale(scope), text)
+    }
+
+    /// Resolve `text` to a formatted string in `id`'s active locale scope
+    /// (falling back to the application's default locale).
+    pub fn resolve_localized_for_node(&self, id: StableNodeId, text: &LocalizedText) -> String {
+        let locale = self
+            .locale_scope(id)
+            .and_then(|scope| self.scope_locale(scope))
+            .or(self.overlays_a11y.i18n.application.as_ref());
+        self.localized_resolver().resolve_in(locale, text)
     }
 
     /// What localization changed that a frame shows, counted since the last

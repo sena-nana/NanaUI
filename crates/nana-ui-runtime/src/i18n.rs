@@ -23,9 +23,11 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use nana_text::font::LanguageTag;
 use nana_ui_core::DirSpec;
 
+mod fluent;
 mod format;
 pub(crate) mod message;
 
+pub use fluent::{FluentCatalog, FluentParseError, FluentResource};
 #[cfg(feature = "icu")]
 pub use format::IcuFormatter;
 pub(crate) use format::default_formatter;
@@ -404,6 +406,127 @@ pub enum MissingMessage {
     Key,
     /// What the node showed before.
     KeepPrevious,
+}
+
+/// Immutable snapshot of the world's active catalog, formatter, fallback
+/// chain, and default locale, shared with reactive view bindings so controls
+/// (`Button`, `Switch`, `ListItem`, `TextInput`, `SettingsRow`, …) can resolve
+/// [`LocalizedText`] reactively on locale or catalog switches.
+#[derive(Clone)]
+pub struct LocalizedResolver {
+    generation: u64,
+    catalog: Option<Arc<dyn MessageCatalog>>,
+    formatter: Arc<dyn LocaleFormatter>,
+    fallback: Option<LanguageTag>,
+    missing: MissingMessage,
+    default_locale: Option<Locale>,
+}
+
+impl fmt::Debug for LocalizedResolver {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LocalizedResolver")
+            .field("generation", &self.generation)
+            .field("default_locale", &self.default_locale)
+            .field("fallback", &self.fallback)
+            .field("missing", &self.missing)
+            .finish()
+    }
+}
+
+impl PartialEq for LocalizedResolver {
+    fn eq(&self, other: &Self) -> bool {
+        self.generation == other.generation
+    }
+}
+
+impl Default for LocalizedResolver {
+    fn default() -> Self {
+        Self {
+            generation: 0,
+            catalog: None,
+            formatter: default_formatter(),
+            fallback: None,
+            missing: MissingMessage::Key,
+            default_locale: None,
+        }
+    }
+}
+
+impl LocalizedResolver {
+    pub(crate) fn new(
+        generation: u64,
+        catalog: Option<Arc<dyn MessageCatalog>>,
+        formatter: Arc<dyn LocaleFormatter>,
+        fallback: Option<LanguageTag>,
+        missing: MissingMessage,
+        default_locale: Option<Locale>,
+    ) -> Self {
+        Self {
+            generation,
+            catalog,
+            formatter,
+            fallback,
+            missing,
+            default_locale,
+        }
+    }
+
+    /// Monotonic revision bumped whenever the catalog, formatter, fallback, or
+    /// locale changes in the world.
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// The application's default locale in this snapshot, if any.
+    pub fn default_locale(&self) -> Option<&Locale> {
+        self.default_locale.as_ref()
+    }
+
+    /// Resolve `text` in the snapshot's default locale.
+    pub fn resolve(&self, text: &LocalizedText) -> String {
+        self.resolve_in(self.default_locale.as_ref(), text)
+    }
+
+    /// Resolve `text` in `locale` (falling back through its subtag chain and
+    /// `self.fallback`).
+    pub fn resolve_in(&self, locale: Option<&Locale>, text: &LocalizedText) -> String {
+        let Some(catalog) = self.catalog.as_ref() else {
+            return text.message.key().to_string();
+        };
+        let mut candidates: Vec<LanguageTag> = Vec::new();
+        if let Some(locale) = locale {
+            candidates.extend(fallback_chain(locale.messages()));
+        }
+        if let Some(fallback) = self.fallback.as_ref() {
+            for tag in fallback_chain(fallback) {
+                if !candidates.contains(&tag) {
+                    candidates.push(tag);
+                }
+            }
+        }
+        let format_tag = locale
+            .map(|l| l.formatting().clone())
+            .or_else(|| self.fallback.clone())
+            .or_else(|| LanguageTag::new("en"))
+            .expect("en is a valid language tag");
+        for tag in candidates {
+            if let Some(pattern) = catalog.pattern(&tag, text.message) {
+                let compiled = message::CompiledMessage::parse(&pattern)
+                    .unwrap_or_else(|_| message::CompiledMessage::literal(&pattern));
+                let mut out = String::new();
+                compiled.format(
+                    &format_tag,
+                    &text.args,
+                    self.formatter.as_ref(),
+                    &mut out,
+                    &mut Vec::new(),
+                );
+                return out;
+            }
+        }
+        text.message.key().to_string()
+    }
 }
 
 #[cfg(test)]
