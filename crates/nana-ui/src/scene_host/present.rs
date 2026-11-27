@@ -822,6 +822,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             match pollster::block_on(crate::HostedGpuShared::rebuild_for_surface(
                 surface,
                 choice.clone(),
+                self.gpu_backend_policy,
             )) {
                 Ok(graphics) => {
                     rebuilt = Some((id, graphics));

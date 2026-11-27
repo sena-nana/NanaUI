@@ -385,6 +385,7 @@ impl<Message: Send + 'static> PendingStartup<Message> {
         let settings = &self.settings;
         let startup_material_mode = self.startup_material_mode;
         let adapter = self.options.adapter.clone();
+        let backend_policy = self.policy;
         let pipeline_cache = self.options.pipeline_cache.clone();
         let proxy = self.channels.proxy.clone();
         let attempt = window_factory::create_window_with_surface_retry(
@@ -408,6 +409,7 @@ impl<Message: Send + 'static> PendingStartup<Message> {
                     surface_mode_for(target),
                     settings.presentation_policy,
                     adapter.clone(),
+                    backend_policy,
                 )
                 .map_err(|error| error.to_string())?;
                 let device = spawn_device_request(request, pipeline_cache.clone(), proxy.clone())?;

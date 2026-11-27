@@ -673,6 +673,8 @@ pub struct HostedGpuShared {
     /// The adapter the program asked for, asked for again by a replacement
     /// device.
     choice: GpuAdapterChoice,
+    /// The process's backend policy, which a replacement device follows too.
+    backend_policy: crate::GpuBackendPolicy,
     /// What was found and chosen when this device was created.
     selection: Arc<GpuAdapterSelection>,
 }
@@ -759,6 +761,7 @@ impl HostedGpuContext {
             mode,
             policy,
             GpuAdapterChoice::Automatic,
+            crate::GpuBackendPolicy::Plain,
         )?;
         pending.finish(request.acquire().await?)
     }
@@ -780,6 +783,7 @@ impl HostedGpuContext {
             required_features,
             &self.primary.target,
             self.shared.choice.clone(),
+            self.shared.backend_policy,
         )?
         .acquire()
         .await?;
@@ -882,6 +886,7 @@ impl HostedGpuShared {
             loss_handled: Arc::new(AtomicBool::new(false)),
             loss_reported: Arc::new(AtomicBool::new(false)),
             choice: GpuAdapterChoice::Automatic,
+            backend_policy: crate::GpuBackendPolicy::Plain,
             selection: Arc::new(selection),
         }
     }
@@ -891,6 +896,7 @@ impl HostedGpuShared {
     pub(crate) async fn rebuild_for_surface(
         surface: &mut HostedGpuSurface,
         choice: GpuAdapterChoice,
+        backend_policy: crate::GpuBackendPolicy,
     ) -> Result<Self, HostedGpuError> {
         let AcquiredDevice {
             shared,
@@ -901,6 +907,7 @@ impl HostedGpuShared {
             wgpu::Features::empty(),
             &surface.target,
             choice,
+            backend_policy,
         )?
         .acquire()
         .await?;
@@ -1180,6 +1187,7 @@ pub(crate) struct DeviceRequest {
     /// The backends `instance` was created for, to enumerate.
     backends: wgpu::Backends,
     choice: GpuAdapterChoice,
+    backend_policy: crate::GpuBackendPolicy,
 }
 
 /// A device and the surface it was chosen for, not yet configured.
@@ -1232,9 +1240,16 @@ impl PendingPrimarySurface {
         mode: HostedSurfaceMode,
         policy: SurfacePresentationPolicy,
         choice: GpuAdapterChoice,
+        backend_policy: crate::GpuBackendPolicy,
     ) -> Result<(Self, DeviceRequest), HostedGpuError> {
         let target = HostedSurfaceTarget::new(mode, window.clone())?;
-        let request = DeviceRequest::new(window.clone(), required_features, &target, choice)?;
+        let request = DeviceRequest::new(
+            window.clone(),
+            required_features,
+            &target,
+            choice,
+            backend_policy,
+        )?;
         Ok((
             Self {
                 window,
@@ -1270,6 +1285,7 @@ impl DeviceRequest {
         required_features: wgpu::Features,
         target: &HostedSurfaceTarget,
         choice: GpuAdapterChoice,
+        backend_policy: crate::GpuBackendPolicy,
     ) -> Result<Self, HostedGpuError> {
         #[allow(unused_mut)]
         let mut backends = wgpu::Backends::from_env().unwrap_or_default();
@@ -1290,6 +1306,7 @@ impl DeviceRequest {
             required_features,
             backends,
             choice,
+            backend_policy,
         })
     }
 
@@ -1302,12 +1319,17 @@ impl DeviceRequest {
             required_features,
             backends,
             choice,
+            backend_policy,
         } = self;
         let adapters = instance.enumerate_adapters(backends).await;
-        let compatible: Vec<wgpu::Adapter> = adapters
-            .into_iter()
-            .filter(|adapter| adapter.is_surface_supported(&surface))
-            .collect();
+        let compatible = on_preferred_backend(
+            adapters
+                .into_iter()
+                .filter(|adapter| adapter.is_surface_supported(&surface))
+                .collect(),
+            preferred_backend(backend_policy),
+            |adapter: &wgpu::Adapter| adapter.get_info().backend,
+        );
         let infos: Vec<GpuAdapterInfo> = compatible
             .iter()
             .map(|adapter| GpuAdapterInfo::from_wgpu(&adapter.get_info()))
@@ -1397,6 +1419,7 @@ impl DeviceRequest {
         let gpu = __framework::adopt_tracking_loss(adapter, device, queue);
         let mut shared = HostedGpuShared::adopt(instance, gpu);
         shared.choice = choice;
+        shared.backend_policy = backend_policy;
         shared.selection = Arc::new(GpuAdapterSelection {
             adapters: infos,
             active,
@@ -1408,6 +1431,29 @@ impl DeviceRequest {
             capabilities,
             format,
         })
+    }
+}
+
+/// The backend `policy` has adapter selection prefer. On Windows a
+/// composition-capable process runs on DX12, the backend DirectComposition
+/// visuals and native video input share, even before any window is composed.
+fn preferred_backend(policy: crate::GpuBackendPolicy) -> Option<wgpu::Backend> {
+    (cfg!(target_os = "windows") && policy.wants_composition()).then_some(wgpu::Backend::Dx12)
+}
+
+/// `adapters` narrowed to those on `preferred` when any of them is; all of
+/// them otherwise, so a machine without that backend still gets a device.
+fn on_preferred_backend<A>(
+    adapters: Vec<A>,
+    preferred: Option<wgpu::Backend>,
+    backend: impl Fn(&A) -> wgpu::Backend,
+) -> Vec<A> {
+    match preferred {
+        Some(preferred) if adapters.iter().any(|adapter| backend(adapter) == preferred) => adapters
+            .into_iter()
+            .filter(|adapter| backend(adapter) == preferred)
+            .collect(),
+        _ => adapters,
     }
 }
 
@@ -2319,6 +2365,39 @@ mod tests {
         // A process that never asked is offered nothing.
         let plain = GpuBootstrap::plain();
         assert!(!plain.composition_available());
+    }
+
+    /// A composition-capable process runs on DX12 whenever an adapter there
+    /// can present the window, even when the first enumerated one is Vulkan
+    /// and no window is composed; without such an adapter it keeps the rest.
+    #[test]
+    fn a_composition_capable_process_picks_its_adapter_from_dx12() {
+        use super::{on_preferred_backend, preferred_backend};
+        use crate::GpuBackendPolicy;
+        use wgpu::Backend::{Dx12, Vulkan};
+
+        let preferred = preferred_backend(GpuBackendPolicy::CompositionCapable);
+        assert_eq!(preferred, cfg!(target_os = "windows").then_some(Dx12));
+        assert_eq!(preferred_backend(GpuBackendPolicy::Plain), None);
+
+        let adapters = vec![
+            ("dgpu", Vulkan),
+            ("igpu", Vulkan),
+            ("dgpu", Dx12),
+            ("igpu", Dx12),
+        ];
+        let narrowed = on_preferred_backend(adapters.clone(), Some(Dx12), |a| a.1);
+        assert_eq!(narrowed, vec![("dgpu", Dx12), ("igpu", Dx12)]);
+        assert_eq!(
+            on_preferred_backend(adapters.clone(), None, |a| a.1),
+            adapters
+        );
+
+        let vulkan_only = vec![("dgpu", Vulkan)];
+        assert_eq!(
+            on_preferred_backend(vulkan_only.clone(), Some(Dx12), |a| a.1),
+            vulkan_only
+        );
     }
 
     #[test]
