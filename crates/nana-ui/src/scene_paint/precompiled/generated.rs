@@ -9,7 +9,7 @@ pub(super) const WGPU: &str = "30.0.1-nana.1";
 pub(super) const DXC: &str = "1.8 (4792, 23992152)";
 
 pub(in crate::scene_paint) const QUAD: Family = Family {
-    wgsl: 0xebc14811770bd826,
+    wgsl: 0x3197320f9b62b9b7,
     layout: 0x2cec81ab9701c664,
     stages: &[
         Stage {
@@ -26,8 +26,8 @@ pub(in crate::scene_paint) const QUAD: Family = Family {
 };
 
 pub(in crate::scene_paint) const MESH: Family = Family {
-    wgsl: 0xe2c31a130fb526d3,
-    layout: 0xb38f9f07724bd99f,
+    wgsl: 0x9d2c796425c99d05,
+    layout: 0x9a4b9b6fd888b993,
     stages: &[
         Stage {
             entry: "path_fs_main",
@@ -63,8 +63,8 @@ pub(in crate::scene_paint) const MESH: Family = Family {
 };
 
 pub(in crate::scene_paint) const TEXT: Family = Family {
-    wgsl: 0xcad88d0b4822a7f6,
-    layout: 0x695dc8be9d79aaeb,
+    wgsl: 0xf9305c814530b5a8,
+    layout: 0x450f13a7cbe74288,
     stages: &[
         Stage {
             entry: "fs_main",
@@ -80,8 +80,8 @@ pub(in crate::scene_paint) const TEXT: Family = Family {
 };
 
 pub(in crate::scene_paint) const TEXT_DUAL_SOURCE: Family = Family {
-    wgsl: 0x359491dcd7ba6395,
-    layout: 0x695dc8be9d79aaeb,
+    wgsl: 0x45430a1d179b5927,
+    layout: 0x450f13a7cbe74288,
     stages: &[
         Stage {
             entry: "fs_main",
@@ -92,6 +92,89 @@ pub(in crate::scene_paint) const TEXT_DUAL_SOURCE: Family = Family {
             entry: "vs_main",
             constants: &[],
             dxil: include_bytes!("text.vs_main.dxil"),
+        },
+    ],
+};
+
+pub(in crate::scene_paint) const GROUP: Family = Family {
+    wgsl: 0x2c6697d189c3528a,
+    layout: 0xa7a61981405c615b,
+    stages: &[
+        Stage {
+            entry: "fs_main",
+            constants: &[],
+            dxil: include_bytes!("group.fs_main.dxil"),
+        },
+        Stage {
+            entry: "vs_main",
+            constants: &[],
+            dxil: include_bytes!("group.vs_main.dxil"),
+        },
+    ],
+};
+
+pub(in crate::scene_paint) const GROUP_BLEND: Family = Family {
+    wgsl: 0xf3c37f7ddf555d9f,
+    layout: 0x91700efa3733085d,
+    stages: &[
+        Stage {
+            entry: "fs_blend",
+            constants: &[],
+            dxil: include_bytes!("group_blend.fs_blend.dxil"),
+        },
+        Stage {
+            entry: "vs_main",
+            constants: &[],
+            dxil: include_bytes!("group.vs_main.dxil"),
+        },
+    ],
+};
+
+pub(in crate::scene_paint) const ICON: Family = Family {
+    wgsl: 0x53297ca83577831c,
+    layout: 0x525820bf9f1c9830,
+    stages: &[
+        Stage {
+            entry: "fs_main",
+            constants: &[],
+            dxil: include_bytes!("icon.fs_main.dxil"),
+        },
+        Stage {
+            entry: "vs_main",
+            constants: &[],
+            dxil: include_bytes!("icon.vs_main.dxil"),
+        },
+    ],
+};
+
+pub(in crate::scene_paint) const HOST_TEXTURE: Family = Family {
+    wgsl: 0x5eb174218f76b197,
+    layout: 0xe89dcfa4272423d6,
+    stages: &[
+        Stage {
+            entry: "fragment_main",
+            constants: &[],
+            dxil: include_bytes!("host_texture.fragment_main.dxil"),
+        },
+        Stage {
+            entry: "fragment_simple_blend",
+            constants: &[],
+            dxil: include_bytes!("host_texture.fragment_simple_blend.dxil"),
+        },
+        Stage {
+            entry: "fragment_simple_replace",
+            constants: &[],
+            dxil: include_bytes!("host_texture.fragment_simple_replace.dxil"),
+        },
+        Stage {
+            entry: "vertex_main",
+            constants: &[],
+            dxil: include_bytes!("host_texture.vertex_main.dxil"),
+        },
+        Stage {
+            entry: "vertex_main_simple",
+            constants: &[],
+            dxil: include_bytes!("host_texture.vertex_main_simple.dxil"),
         },
     ],
 };

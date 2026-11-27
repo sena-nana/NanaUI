@@ -24,7 +24,9 @@ mod generated;
 pub(super) mod tests;
 
 #[cfg(any(test, target_os = "windows"))]
-pub(super) use generated::{MESH, QUAD, TEXT, TEXT_DUAL_SOURCE};
+pub(super) use generated::{
+    GROUP, GROUP_BLEND, HOST_TEXTURE, ICON, MESH, QUAD, TEXT, TEXT_DUAL_SOURCE,
+};
 
 /// One stage of a family, compiled for shader model 6.0, so any DX12 device
 /// with DXIL support runs it.
@@ -126,6 +128,15 @@ pub(crate) const fn fnv1a_concat(parts: &[&str]) -> u64 {
 pub(super) fn runs_on(gpu: &nana_gpu::GpuContext, device: &wgpu::Device) -> bool {
     cfg!(target_os = "windows")
         && gpu.capabilities().backend() == nana_gpu::GpuBackend::Dx12
+        && device
+            .features()
+            .contains(wgpu::Features::PASSTHROUGH_SHADERS)
+}
+
+/// [`runs_on`] for a family built where only the device is at hand.
+#[cfg(target_os = "windows")]
+pub(super) fn runs_on_device(device: &wgpu::Device) -> bool {
+    device.adapter_info().backend == wgpu::Backend::Dx12
         && device
             .features()
             .contains(wgpu::Features::PASSTHROUGH_SHADERS)

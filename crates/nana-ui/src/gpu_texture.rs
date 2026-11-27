@@ -1735,6 +1735,36 @@ fn encode_host_texture(
     }
 }
 
+/// The host texture bind group: source, sampler, layer uniform and mask.
+fn host_texture_table() -> ResourceTable {
+    ResourceTable::new(
+        [
+            LogicalBinding::new(0, LogicalBindingType::SampledTexture, HOST_TEXTURE_FRAGMENT),
+            LogicalBinding::new(1, LogicalBindingType::Sampler, HOST_TEXTURE_FRAGMENT),
+            LogicalBinding::new(
+                2,
+                LogicalBindingType::UniformBuffer,
+                HOST_TEXTURE_VERTEX_FRAGMENT,
+            )
+            .min_size(std::mem::size_of::<LayerUniform>() as u64),
+            LogicalBinding::new(3, LogicalBindingType::SampledTexture, HOST_TEXTURE_FRAGMENT),
+        ]
+        .to_vec(),
+    )
+    .expect("host texture binding layout is valid")
+}
+
+/// What the precompiled host texture stages must have been compiled from:
+/// the program and the layout key a painter's pipelines have.
+#[cfg(test)]
+pub(crate) fn precompiled_inputs() -> (String, u64) {
+    (
+        [crate::scene_paint::wgsl::MOTION, SOURCE].join("\n"),
+        host_texture_table().layout_key()
+            ^ crate::scene_paint::motion::motion_layout_key().rotate_left(19),
+    )
+}
+
 #[doc(hidden)]
 pub struct GpuTexturePipeline {
     pipeline: wgpu::RenderPipeline,
@@ -1790,30 +1820,7 @@ impl GpuTexturePipeline {
             [crate::scene_paint::wgsl::MOTION, SOURCE]
         );
         let logical_layout = gpu.map(|gpu| {
-            let table = ResourceTable::new(
-                [
-                    LogicalBinding::new(
-                        0,
-                        LogicalBindingType::SampledTexture,
-                        HOST_TEXTURE_FRAGMENT,
-                    ),
-                    LogicalBinding::new(1, LogicalBindingType::Sampler, HOST_TEXTURE_FRAGMENT),
-                    LogicalBinding::new(
-                        2,
-                        LogicalBindingType::UniformBuffer,
-                        HOST_TEXTURE_VERTEX_FRAGMENT,
-                    )
-                    .min_size(std::mem::size_of::<LayerUniform>() as u64),
-                    LogicalBinding::new(
-                        3,
-                        LogicalBindingType::SampledTexture,
-                        HOST_TEXTURE_FRAGMENT,
-                    ),
-                ]
-                .to_vec(),
-            )
-            .expect("host texture binding layout is valid");
-            gpu.create_resource_layout(&table)
+            gpu.create_resource_layout(&host_texture_table())
                 .expect("host texture logical layout matches this device")
         });
         let bind_group_layout = logical_layout
@@ -1874,6 +1881,8 @@ impl GpuTexturePipeline {
             .map(|layout| layout.key())
             .unwrap_or(7)
             ^ crate::scene_paint::motion::motion_layout_key().rotate_left(19);
+        #[cfg(target_os = "windows")]
+        let shader = crate::scene_paint::precompiled_host_texture(shader, device, layout_key);
         let build_pipeline = |label: &'static str,
                               vs_entry: &'static str,
                               fs_entry: &'static str,

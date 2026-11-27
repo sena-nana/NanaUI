@@ -10,11 +10,24 @@ fn families() -> Vec<(&'static str, &'static Family, String, u64)> {
     let (mesh, mesh_layout) = crate::scene_paint::mesh::precompiled_inputs();
     let (text, text_layout) = crate::scene_paint::text::precompiled_inputs(false);
     let (dual, dual_layout) = crate::scene_paint::text::precompiled_inputs(true);
+    let (group, group_layout) = crate::scene_paint::dest::precompiled_inputs(false);
+    let (blend, blend_layout) = crate::scene_paint::dest::precompiled_inputs(true);
+    let (icon, icon_layout) = crate::scene_paint::icon::precompiled_inputs();
+    let (host_texture, host_texture_layout) = crate::gpu_texture::precompiled_inputs();
     vec![
         ("quad", &QUAD, quad, quad_layout),
         ("mesh", &MESH, mesh, mesh_layout),
         ("text", &TEXT, text, text_layout),
         ("text_dual_source", &TEXT_DUAL_SOURCE, dual, dual_layout),
+        ("group", &GROUP, group, group_layout),
+        ("group_blend", &GROUP_BLEND, blend, blend_layout),
+        ("icon", &ICON, icon, icon_layout),
+        (
+            "host_texture",
+            &HOST_TEXTURE,
+            host_texture,
+            host_texture_layout,
+        ),
     ]
 }
 
@@ -58,6 +71,17 @@ fn every_stage_the_families_ask_for_is_precompiled() {
         (&TEXT, "fs_main", &[]),
         (&TEXT_DUAL_SOURCE, "vs_main", &[]),
         (&TEXT_DUAL_SOURCE, "fs_main", &[]),
+        (&GROUP, "vs_main", &[]),
+        (&GROUP, "fs_main", &[]),
+        (&GROUP_BLEND, "vs_main", &[]),
+        (&GROUP_BLEND, "fs_blend", &[]),
+        (&ICON, "vs_main", &[]),
+        (&ICON, "fs_main", &[]),
+        (&HOST_TEXTURE, "vertex_main", &[]),
+        (&HOST_TEXTURE, "fragment_main", &[]),
+        (&HOST_TEXTURE, "vertex_main_simple", &[]),
+        (&HOST_TEXTURE, "fragment_simple_blend", &[]),
+        (&HOST_TEXTURE, "fragment_simple_replace", &[]),
     ] {
         assert!(
             family.stage(entry, constants).is_some(),
@@ -419,6 +443,40 @@ mod regenerate {
         );
         text.prewarm_subpixel(device);
         drop(text);
+        // The group compositing the host builds at startup, and the group
+        // blend a frame with a backdrop-reading blend mode builds.
+        drop(
+            crate::scene_paint::dest::DestPipelines::try_new(
+                device,
+                format,
+                format,
+                crate::ScenePresentationProfile::sdr(nana_gpu::GpuTextureFormat::RGBA8_UNORM),
+                policy,
+            )
+            .expect("dest pipelines"),
+        );
+        drop(
+            crate::scene_paint::dest::try_reading_blend_pipeline(device, format, policy)
+                .expect("group blend pipeline"),
+        );
+        drop(
+            crate::scene_paint::icon::IconPipeline::try_new_with_policy(
+                device,
+                format,
+                Some(policy),
+            )
+            .expect("icon pipeline"),
+        );
+        drop(
+            crate::gpu_texture::GpuTexturePipeline::try_new_with_policy(
+                device,
+                queue,
+                format,
+                Some(policy),
+                Some(&gpu),
+            )
+            .expect("host texture pipeline"),
+        );
 
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src/scene_paint/precompiled");
         for entry in std::fs::read_dir(dir).unwrap() {

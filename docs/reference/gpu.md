@@ -77,7 +77,7 @@ Issue #186 的评估结论为 **NO-GO**：WGPU 仍是 NanaUI 的唯一正式图�
 未实现，只是取舍。随包附带一份种子缓存，让首次启动也是热的，从而去掉 `crates/nana-ui/src/scene_paint/precompiled/` 里 passthrough 的 DXIL？DX12 缓存条目的键是 naga 写出的 HLSL、入口点、目标 profile（阶段与 shader model）和编译选项（`InstanceFlags::DEBUG`、去调试信息的 workaround、设备是否开了 `SHADER_F16`/`SHADER_I16`）的哈希，整份字节又由校验键绑定到编译器（种类、版本、DXC 提交）。种子要在用户机器上命中，这些量就都得在构建时定下来：
 
 - **固定 shader model。** naga 本身支持 SM 6.0（`naga::back::hlsl::ShaderModel::V6_0`，预编译 DXIL 就是 `*_6_0`），不需要改 fork：wgpu 已有 `Dx12BackendOptions::force_shader_model`（`unsafe ForceShaderModelToken::with_shader_model`），wgpu-hal 取 `min(适配器上限, 指定值)`，指定 `V6_0` 后在每个能跑 DXIL 的适配器上都写 SM 6.0。代价在整台设备：需要更高 SM 的特性（`SHADER_F16` 要 6.2，网格着色器与光线查询要 6.5，64 位原子要 6.6）随之消失，应用经由 `shared_device_features` 请求的也一样；框架自己的管线不需要它们。这个指定只能在用 DXC 时设：FXC 没有上限，指定值会让它去编 SM 6.0，而 FXC 只到 5.1。另外调试与发布的选项不同，种子得按发布构建的标志生成。
-- **随包附带 `dxcompiler.dll`。** wgpu 只加载这一个文件（`Dx12Compiler::DynamicDxc { dxc_path }`）。DXC v1.8.2502 的 x64 `dxcompiler.dll` 是 17 986 592 字节（约 17.2 MiB），而预编译的 11 个 DXIL 阶段加生成代码一共约 195 KB。种子只对生成它的那个 DLL 构建命中，应用自带别的 DXC 版本时整份被校验键丢弃。
+- **随包附带 `dxcompiler.dll`。** wgpu 只加载这一个文件（`Dx12Compiler::DynamicDxc { dxc_path }`）。DXC v1.8.2502 的 x64 `dxcompiler.dll` 是 17 986 592 字节（约 17.2 MiB），而预编译的 21 个 DXIL 阶段加生成代码一共约 550 KB。种子只对生成它的那个 DLL 构建命中，应用自带别的 DXC 版本时整份被校验键丢弃。
 - **FXC 回退。** FXC 的身份是固定的 `fxc d3dcompiler_47`，shader model 恒为 5.1，所以 FXC 种子反而在任何 Windows 上都能命中，什么都不用附带。但缓存键的文件名 `dx12` 对两种编译器相同，一份存储只能放一种字节，另一种被校验键拒收后整份重编；要覆盖两者就得随包附带两份种子，按设备实际拿到的编译器挑一份。预编译 DXIL 则在两种编译器下都以 passthrough 载入。
 - **建议：保留预编译 DXIL，不做种子缓存，也不在框架层固定 shader model。** 预编译路径不依赖编译器、不需要 17 MB 的 DLL、不削减设备特性；运行期缓存已让第二次起的启动对其余管线（材质、图表、按需建的家族）也是热的。若以后确有首启需求，种子应作为应用层选项：已自带 DXC 的应用在自己的构建里用同一个 DLL、发布标志和 `force_shader_model = V6_0` 生成种子；或为不带 DXC 的应用只做一份 FXC 种子，覆盖预编译之外的框架家族——两者都先实测再定。
 

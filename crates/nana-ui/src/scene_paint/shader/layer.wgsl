@@ -78,6 +78,10 @@ fn layer_srgb_to_linear3(c: vec3<f32>) -> vec3<f32> {
     );
 }
 
+// Every read of `source` names level 0: it is a single-level offscreen
+// target, and implicit-derivative sampling inside these data-dependent loops
+// is rejected by D3D12's FXC compiler (X3570, then a compile error).
+
 // A gaussian of standard deviation `radius / 2` reaching out to `radius`,
 // sampled `n` taps either side of the centre per axis. With `n == 2` it is
 // the 5×5 kernel the 16 px cap was tuned for.
@@ -95,7 +99,7 @@ fn element_filter_blur(uv: vec2<f32>, radius: f32, blur_taps: f32) -> vec4<f32> 
         for (var column = 0; column < span; column = column + 1) {
             let d = vec2<f32>(f32(column - n), f32(row - n));
             let w = exp(-dot(d, d) * falloff);
-            acc += textureSample(source, source_sampler, uv + d * step * texel) * w;
+            acc += textureSampleLevel(source, source_sampler, uv + d * step * texel, 0.0) * w;
             wsum += w;
         }
     }
@@ -107,7 +111,7 @@ fn element_sample(uv: vec2<f32>, filter_blur: f32, blur_taps: f32) -> vec4<f32> 
     if (filter_blur > 0.5) {
         return element_filter_blur(uv, filter_blur, blur_taps);
     }
-    return textureSample(source, source_sampler, uv);
+    return textureSampleLevel(source, source_sampler, uv, 0.0);
 }
 
 // What an open shutter exposes at `uv`: the content that passed over it
@@ -148,7 +152,7 @@ fn shutter_shadow_blur_alpha(uv: vec2<f32>, radius: f32) -> f32 {
         for (var column = -2; column <= 2; column = column + 1) {
             let d = vec2<f32>(f32(column), f32(row));
             let w = exp(-dot(d, d) * 0.5);
-            acc += textureSample(source, source_sampler, uv + d * step * texel).a * w;
+            acc += textureSampleLevel(source, source_sampler, uv + d * step * texel, 0.0).a * w;
             wsum += w;
         }
     }
@@ -165,10 +169,11 @@ fn shutter_drop_shadow_alpha(shadow_uv: vec2<f32>, shadow_blur: f32) -> f32 {
         let samples = taps + 1;
         var acc = 0.0;
         for (var i = 0; i < samples; i = i + 1) {
-            acc += textureSample(
+            acc += textureSampleLevel(
                 source,
                 source_sampler,
                 shadow_uv - streak_uv * (f32(i) / f32(taps)),
+                0.0,
             ).a;
         }
         return acc / f32(samples);
@@ -268,7 +273,7 @@ fn layer_source(input: VertexOutput) -> vec4<f32> {
         } else if (fshadow_blur > 0.5) {
             shadow_alpha = element_filter_blur(shadow_uv, fshadow_blur, fblur_taps).a;
         } else {
-            shadow_alpha = textureSample(source, source_sampler, shadow_uv).a;
+            shadow_alpha = textureSampleLevel(source, source_sampler, shadow_uv, 0.0).a;
         }
         let shadow_a = shadow_alpha * fshadow_color.a;
         let shadow = vec4<f32>(fshadow_color.rgb * shadow_a, shadow_a);

@@ -91,6 +91,56 @@ fn dest_group_layout_key() -> u64 {
     group ^ super::motion::motion_layout_key().rotate_left(19)
 }
 
+/// The group-blend layout: the group's bindings plus the backdrop copy the
+/// blend reads at binding 3.
+fn dest_group_blend_layout_key() -> u64 {
+    let blend = ResourceTable::new(vec![
+        LogicalBinding::new(
+            0,
+            LogicalBindingType::SampledTexture,
+            &[ShaderStage::Fragment],
+        ),
+        LogicalBinding::new(1, LogicalBindingType::Sampler, &[ShaderStage::Fragment]),
+        LogicalBinding::new(
+            2,
+            LogicalBindingType::DynamicBufferSlice,
+            &[ShaderStage::Fragment],
+        )
+        .min_size(GROUP_UNIFORM_SIZE),
+        LogicalBinding::new(
+            3,
+            LogicalBindingType::SampledTexture,
+            &[ShaderStage::Fragment],
+        ),
+    ])
+    .expect("dest group blend table")
+    .layout_key();
+    blend ^ super::motion::motion_layout_key().rotate_left(19)
+}
+
+/// What the precompiled group stages must have been compiled from: the
+/// program and its resource layout key, for the group or, with `blend`, the
+/// group blend that reads the backdrop.
+#[cfg(test)]
+pub(super) fn precompiled_inputs(blend: bool) -> (String, u64) {
+    if blend {
+        (
+            super::wgsl::joined(&[
+                super::wgsl::COLOR,
+                super::wgsl::MOTION,
+                super::wgsl::LAYER,
+                super::wgsl::LAYER_BLEND,
+            ]),
+            dest_group_blend_layout_key(),
+        )
+    } else {
+        (
+            super::wgsl::joined(&[super::wgsl::COLOR, super::wgsl::MOTION, super::wgsl::LAYER]),
+            dest_group_layout_key(),
+        )
+    }
+}
+
 const GROUP_UNIFORM_STRIDE: u64 = 256;
 const GROUP_UNIFORM_SLOTS: u64 = 64;
 const GROUP_UNIFORM_SIZE: u64 = 224;
@@ -372,7 +422,7 @@ fn group_blend_bind_group(
 
 /// The pipeline for blend modes that read the backdrop, and its bind group
 /// layout. Built the first time a frame has such a group: most apps never do.
-fn try_reading_blend_pipeline(
+pub(super) fn try_reading_blend_pipeline(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
     policy: &nana_gpu::GpuDeviceState,
@@ -427,6 +477,12 @@ fn try_reading_blend_pipeline(
             super::wgsl::LAYER_BLEND,
         ]
     );
+    #[cfg(target_os = "windows")]
+    let group_blend_shader = group_blend_shader.precompiled(
+        &super::precompiled::GROUP_BLEND,
+        super::precompiled::runs_on_device(device),
+        dest_group_blend_layout_key,
+    );
     let motion_layout = super::motion::motion_bind_layout_for_policy(device, Some(policy));
     let group_blend_pipeline_layout =
         device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -440,7 +496,7 @@ fn try_reading_blend_pipeline(
         device,
         format,
         6,
-        dest_group_layout_key(),
+        dest_group_blend_layout_key(),
         "vs_main",
         "fs_blend",
         &[],
@@ -909,6 +965,12 @@ impl DestPipelines {
         let group_shader = super::wgsl::program_joined!(
             "nana-ui.scene.group.shader",
             [super::wgsl::COLOR, super::wgsl::MOTION, super::wgsl::LAYER]
+        );
+        #[cfg(target_os = "windows")]
+        let group_shader = group_shader.precompiled(
+            &super::precompiled::GROUP,
+            super::precompiled::runs_on_device(device),
+            dest_group_layout_key,
         );
         let motion_layout = super::motion::motion_bind_layout_for_policy(device, Some(policy));
         let group_pipeline_layout =

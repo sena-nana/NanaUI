@@ -13155,10 +13155,11 @@ fn path_fills_and_strokes_ramp_over_one_device_pixel_centred_on_their_edge() {
     // A fringe laid one pixel outside the outline, as it once was, puts the
     // ramp's midpoint half a pixel out and makes every shape half a pixel
     // fatter a side: a 1px stroke reads nearly 2px wide. Centred, each pixel
-    // near a filled ellipse's, a filled triangle's or a 1px stroke's edge is
+    // near a filled ellipse's, a filled triangle's or a 2px stroke's edge is
     // the one device pixel linear ramp over its distance to it, taken at
     // each of the frame's four MSAA samples (WebGPU's standard positions).
-    // (A circle or rectangle would be drawn as a quad.)
+    // (A circle or rectangle would be drawn as a quad, and a solid stroke
+    // up to 1.5px as an analytic capsule.)
     let paint =
         |draw: fn(&mut nana_ui_runtime::PaintContext<'_>)| paint_one_painter(PaintFn(draw), 64, 64);
     let ellipse = paint(|cx| {
@@ -13182,9 +13183,10 @@ fn path_fills_and_strokes_ramp_over_one_device_pixel_centred_on_their_edge() {
     let stroke = paint(|cx| {
         let mut path = nana_ui_runtime::PaintPath::new();
         path.move_to(8.0, 20.3).line_to(56.0, 20.3);
+        // Over 1.5 px: a thinner solid stroke is an analytic capsule, not a mesh.
         cx.stroke_path(
             &path,
-            nana_ui_runtime::StrokeStyle::new(1.0),
+            nana_ui_runtime::StrokeStyle::new(2.0),
             [1.0, 1.0, 1.0, 1.0],
         );
     });
@@ -13196,7 +13198,7 @@ fn path_fills_and_strokes_ramp_over_one_device_pixel_centred_on_their_edge() {
     };
     let corners = [[8.3, 56.6], [30.1, 6.2], [57.7, 50.4]];
     let triangle_edge = |x: f32, y: f32| convex_polygon_distance([x, y], &corners);
-    let stroke_edge = |_: f32, y: f32| (y - 20.3).abs() - 0.5;
+    let stroke_edge = |_: f32, y: f32| (y - 20.3).abs() - 1.0;
     // Near a corner the fringe's miter join is its own approximation, and
     // the stroke ends in caps.
     let everywhere = |_: f32, _: f32| true;
@@ -13207,7 +13209,7 @@ fn path_fills_and_strokes_ramp_over_one_device_pixel_centred_on_their_edge() {
     let cases: [(&str, &[u8], Edge, Keep); 3] = [
         ("filled ellipse", &ellipse, &ellipse_edge, &everywhere),
         ("filled triangle", &triangle, &triangle_edge, &off_corners),
-        ("1px stroke", &stroke, &stroke_edge, &off_ends),
+        ("2px stroke", &stroke, &stroke_edge, &off_ends),
     ];
     const SAMPLES: [[f32; 2]; 4] = [
         [0.375, 0.125],
@@ -13241,7 +13243,7 @@ fn path_fills_and_strokes_ramp_over_one_device_pixel_centred_on_their_edge() {
     }
 }
 
-/// An ellipse, a triangle, a 1px stroke and a gradient square turned by
+/// An ellipse, a triangle, a 2px stroke and a gradient square turned by
 /// the painter: fringes along curves, corners and both gradient kinds.
 fn retained_path_shapes(cx: &mut nana_ui_runtime::PaintContext<'_>) {
     let mut ellipse = nana_ui_runtime::PaintPath::new();
@@ -13261,9 +13263,10 @@ fn retained_path_shapes(cx: &mut nana_ui_runtime::PaintContext<'_>) {
     cx.fill_path(&triangle, [0.2, 0.9, 0.4, 0.6]);
     let mut line = nana_ui_runtime::PaintPath::new();
     line.move_to(8.0, 20.3).line_to(56.0, 31.7);
+    // Over 1.5 px, so the stroke is a mesh too rather than an analytic capsule.
     cx.stroke_path(
         &line,
-        nana_ui_runtime::StrokeStyle::new(1.0),
+        nana_ui_runtime::StrokeStyle::new(2.0),
         [1.0, 0.8, 0.1, 1.0],
     );
     cx.translate(44.0, 44.0);
@@ -14706,11 +14709,13 @@ fn a_painted_shadow_takes_its_nodes_mask_and_keeps_the_end_value_past_the_box() 
         );
     }
     // Where it is opaque, the glow is untouched — also past the node's right
-    // edge (x = 120), where the mask holds its last stop.
+    // edge (x = 120), where the mask holds its last stop. Unmasked, the
+    // rounded rectangle's shadow is the analytic quad; masked, it is the
+    // blurred mesh the path shader masks, which agree within a few percent.
     for (x, y) in [(108, 9), (119, 20), (121, 20), (120, 14)] {
         assert!(at(&plain, x, y) > 24, "unmasked glow at ({x}, {y})");
         assert!(
-            at(&masked, x, y).abs_diff(at(&plain, x, y)) <= 2,
+            at(&masked, x, y).abs_diff(at(&plain, x, y)) <= 2 + at(&plain, x, y) / 12,
             "({x}, {y}): masked {} vs plain {}",
             at(&masked, x, y),
             at(&plain, x, y)
@@ -15347,11 +15352,15 @@ mod precompiled_quads {
                     10.0,
                     60.0,
                     40.0,
-                    nana_ui_core::LayoutStyle {
-                        border_radius: Some(12.0),
-                        border_width: Some(3.0),
-                        border_color: Some([0.8, 0.1, 0.1, 1.0]),
-                        ..style(blue)
+                    {
+                        let mut layout = nana_ui_core::LayoutStyle {
+                            border_radius: Some(12.0),
+                            border_width: Some(3.0),
+                            ..style(blue)
+                        };
+                        layout.paint_colors.border =
+                            Some(nana_ui_core::PaintColor::srgb([0.8, 0.1, 0.1, 1.0]));
+                        layout
                     },
                     Some(blue),
                 ),
@@ -15377,11 +15386,15 @@ mod precompiled_quads {
                     65.0,
                     80.0,
                     40.0,
-                    nana_ui_core::LayoutStyle {
-                        border_width: Some(4.0),
-                        border_color: Some([0.1, 0.1, 0.1, 1.0]),
-                        border_style: Some(nana_ui_core::BorderStyle::Dashed),
-                        ..style(white)
+                    {
+                        let mut layout = nana_ui_core::LayoutStyle {
+                            border_width: Some(4.0),
+                            border_style: Some(nana_ui_core::BorderStyle::Dashed),
+                            ..style(white)
+                        };
+                        layout.paint_colors.border =
+                            Some(nana_ui_core::PaintColor::srgb([0.1, 0.1, 0.1, 1.0]));
+                        layout
                     },
                     Some(white),
                 ),
@@ -15427,6 +15440,31 @@ mod precompiled_quads {
             .paint_encoder(scene, &mut encoder, &view, viewport, None, None)
             .unwrap();
         readback_rgba(device, queue, encoder, &texture, 200, 120)
+    }
+
+    /// An opacity group, and a difference group that reads its backdrop:
+    /// the group and group blend families.
+    fn groups_scene() -> UiScene {
+        let mut blend = translucent_parent(10, &[11, 12], 100.0, 20.0, 80.0, 80.0, 0.8);
+        Arc::make_mut(&mut blend.source_style.layout).paint = nana_ui_core::PaintStyle {
+            mix_blend: nana_ui_core::MixBlendMode::Difference,
+            ..Default::default()
+        }
+        .into();
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            [
+                colored_quad_node(1, 0.0, 0.0, 200.0, 120.0, [0.2, 0.4, 0.8, 1.0]),
+                translucent_parent(2, &[3, 4], 10.0, 20.0, 80.0, 80.0, 0.5),
+                colored_quad_child(3, 2, 10.0, 20.0, 50.0, 50.0, [1.0, 0.0, 0.0, 1.0]),
+                colored_quad_child(4, 2, 40.0, 50.0, 50.0, 50.0, [0.0, 1.0, 0.0, 1.0]),
+                blend,
+                colored_quad_child(11, 10, 100.0, 20.0, 50.0, 50.0, [1.0, 0.9, 0.1, 1.0]),
+                colored_quad_child(12, 10, 130.0, 50.0, 50.0, 50.0, [0.1, 0.9, 0.9, 1.0]),
+            ],
+            [],
+        );
+        scene
     }
 
     /// A node painting filled and stroked paths: the mesh family.
@@ -15487,6 +15525,7 @@ mod precompiled_quads {
             ("quads", quads_scene()),
             ("paths", paths_scene()),
             ("label", label_scene("Precompiled text")),
+            ("groups", groups_scene()),
         ] {
             let before = loaded();
             let from_dxil = paint(&dx12(true), &scene);

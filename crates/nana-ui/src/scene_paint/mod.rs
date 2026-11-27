@@ -29,6 +29,21 @@ mod natural_sizes;
 // its freshness checks, which run wherever the tests do.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code, unused_imports))]
 mod precompiled;
+
+/// The host texture program, loading its precompiled stages on a device that
+/// runs them while they were compiled from it laid out as `layout`.
+#[cfg(target_os = "windows")]
+pub(crate) fn precompiled_host_texture(
+    program: wgsl::Program,
+    device: &wgpu::Device,
+    layout: u64,
+) -> wgsl::Program {
+    program.precompiled(
+        &precompiled::HOST_TEXTURE,
+        precompiled::runs_on_device(device),
+        || layout,
+    )
+}
 mod presentation_color;
 mod quad;
 mod text;

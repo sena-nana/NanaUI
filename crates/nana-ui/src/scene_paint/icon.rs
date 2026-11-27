@@ -289,6 +289,16 @@ pub(super) fn icon_shader() -> String {
     [super::wgsl::COLOR, super::wgsl::MOTION_G2, ICON_STAGES].concat()
 }
 
+/// What the precompiled icon stages must have been compiled from: the
+/// program and its resource layout key.
+#[cfg(test)]
+pub(super) fn precompiled_inputs() -> (String, u64) {
+    (
+        [super::wgsl::COLOR, super::wgsl::MOTION_G2, ICON_STAGES].concat(),
+        icon_layout_key(),
+    )
+}
+
 /// The icon program for targets of `format`: the only part of
 /// [`IconPipeline`] that depends on the working format.
 fn try_icon_pipeline(
@@ -311,6 +321,12 @@ fn try_icon_pipeline(
     let shader = super::wgsl::program_concat!(
         "nana-ui.scene.icon.shader",
         [super::wgsl::COLOR, super::wgsl::MOTION_G2, ICON_STAGES]
+    );
+    #[cfg(target_os = "windows")]
+    let shader = shader.precompiled(
+        &super::precompiled::ICON,
+        super::precompiled::runs_on_device(device),
+        icon_layout_key,
     );
     shader.try_cached_pipeline(
         policy,

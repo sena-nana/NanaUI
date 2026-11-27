@@ -1080,14 +1080,14 @@ mod tests {
             ),
             (
                 "mesh",
-                Program::joined("mesh", &[TRIANGLE, TRIANGLE_SOLID, PATH, COLOR]),
+                Program::joined("mesh", &[TRIANGLE, MOTION, TRIANGLE_SOLID, PATH, COLOR]),
             ),
             ("chart", Program::joined("chart", &[CHART, COLOR])),
             (
                 "group blend",
-                Program::joined("group blend", &[COLOR, LAYER, LAYER_BLEND]),
+                Program::joined("group blend", &[COLOR, MOTION, LAYER, LAYER_BLEND]),
             ),
-            ("group", Program::joined("group", &[COLOR, LAYER])),
+            ("group", Program::joined("group", &[COLOR, MOTION, LAYER])),
             ("blit", Program::new("blit", BLIT)),
             ("motion", Program::new("motion", MOTION)),
             (
@@ -1281,7 +1281,7 @@ mod tests {
     #[test]
     fn a_stage_keeps_only_the_constants_it_declares() {
         let (device, _queue) = crate::test_gpu::device();
-        let mesh = Program::joined("mesh", &[TRIANGLE, TRIANGLE_SOLID, PATH, COLOR]);
+        let mesh = Program::joined("mesh", &[TRIANGLE, MOTION, TRIANGLE_SOLID, PATH, COLOR]);
         let samples = [("PATH_SAMPLES", 4.0)];
         assert_eq!(
             mesh.try_stage(&device, "path_fs_main")
@@ -1373,7 +1373,9 @@ mod tests {
         ));
 
         // Pure-precompiled path (`allow_wgsl_fallback = false`): returns explicit error without panicking.
-        let err = probe
+        // A fresh program each time: the one above keeps the stages it fell back to.
+        let fresh_probe = || Program::new("wgsl fallback probe", missing_hash_src);
+        let err = fresh_probe()
             .try_pipeline_inner(false, &device, "vs_main", "fs_main", &[], &build)
             .unwrap_err();
         assert!(matches!(
@@ -1395,7 +1397,7 @@ mod tests {
             FORBID_WGSL_FALLBACK.store(true, std::sync::atomic::Ordering::SeqCst);
             let _forbid_guard = ForbidGuard;
             assert!(!wgsl_fallback_allowed());
-            let err = probe
+            let err = fresh_probe()
                 .try_pipeline(&device, "vs_main", "fs_main", &[], build)
                 .unwrap_err();
             assert!(matches!(
@@ -1419,7 +1421,7 @@ mod tests {
             super::super::msl_precompiled::set_force_missing_stage(true);
             let _missing_guard = MissingGuard;
 
-            let builtin = Program::joined("nana-ui.scene.group.shader", &[COLOR, LAYER]);
+            let builtin = Program::joined("nana-ui.scene.group.shader", &[COLOR, MOTION, LAYER]);
             let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("wgsl.fallback.group.layout"),
                 entries: &[
