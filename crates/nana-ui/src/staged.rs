@@ -91,6 +91,32 @@ pub trait Launch: Sized + 'static {
     }
 }
 
+/// What the host writes into a window's document when the window opens and
+/// otherwise only when it changes.
+struct HostReported {
+    reduced_motion: bool,
+    high_contrast: bool,
+    eyedropper: bool,
+}
+
+impl HostReported {
+    fn read(document: &RuntimeDocument) -> Self {
+        let context = document.context();
+        Self {
+            reduced_motion: context.system_reduced_motion(),
+            high_contrast: context.world().high_contrast(),
+            eyedropper: context.world().eyedropper_supported(),
+        }
+    }
+
+    fn apply(&self, document: &mut RuntimeDocument) {
+        let context = document.context_mut();
+        context.set_system_reduced_motion(self.reduced_motion);
+        context.set_high_contrast(self.high_contrast);
+        context.set_eyedropper_supported(self.eyedropper);
+    }
+}
+
 /// How often a takeover the host had no ticket for, or refused, is asked again.
 const TAKEOVER_RETRY: Duration = Duration::from_millis(50);
 
@@ -147,6 +173,12 @@ impl<L: Launch> Staged<L> {
     ) -> RuntimeProgramUpdate {
         if let Some(epoch) = self.animation_epoch {
             program.sync_animation_clock(epoch);
+        }
+        // The host reports these once per window document, and the primary
+        // window's went to the placeholder: hand them to the real one.
+        if let Stage::Launching(launch) = &self.stage {
+            let host = HostReported::read(launch.document());
+            let _ = program.with_document_mut(WindowId::PRIMARY, |document| host.apply(document));
         }
         let immediate = program.startup_takeover() == StartupTakeover::Immediate;
         self.stage = Stage::Running(program);
@@ -793,5 +825,41 @@ mod tests {
         // A detached host has no ticket: the takeover is asked again soon.
         let retry = staged.next_wakeup().expect("a takeover retry");
         assert!(retry > Instant::now() - Duration::from_secs(1));
+    }
+
+    /// What the host reported into the placeholder when the primary window
+    /// opened reaches the program's document, since the host will not
+    /// report it again until it changes.
+    #[test]
+    fn host_reported_preferences_reach_the_built_programs_document() {
+        let context = context();
+        let (mut staged, _) = Staged::<Booting>::initialize(&context).unwrap();
+        staged
+            .with_document_mut(WindowId::PRIMARY, |document| {
+                let context = document.context_mut();
+                context.set_system_reduced_motion(true);
+                context.set_high_contrast(true);
+                context.set_eyedropper_supported(true);
+            })
+            .unwrap();
+
+        staged.update(0, &context);
+        staged.update(0, &context);
+        assert_eq!(document_id(&staged), Some(1));
+
+        let (reduced, high_contrast, eyedropper) = staged
+            .with_document(WindowId::PRIMARY, |document| {
+                let context = document.context();
+                (
+                    context.system_reduced_motion(),
+                    context.world().high_contrast(),
+                    context.world().eyedropper_supported(),
+                )
+            })
+            .unwrap()
+            .unwrap();
+        assert!(reduced, "system reduce motion");
+        assert!(high_contrast, "high contrast");
+        assert!(eyedropper, "screen color picking");
     }
 }
