@@ -1801,6 +1801,12 @@ impl AppContext {
         self.apply_reduced_motion();
     }
 
+    /// The system preference last reported through
+    /// [`Self::set_system_reduced_motion`], whatever the application chose.
+    pub fn system_reduced_motion(&self) -> bool {
+        self.lifecycle.system_reduced_motion
+    }
+
     /// Hand the effective preference to the world and, when it moved, to
     /// the views that start or stop a timeline by it
     /// ([`ComponentView::wants_reduced_motion_reproject`]).
