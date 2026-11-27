@@ -17,6 +17,7 @@ pub mod drag;
 pub mod dynamic_layout;
 pub mod expansion;
 pub mod file_dialog;
+pub mod font_face;
 pub mod fonts;
 pub mod frame_stage;
 pub mod framework_strings;
@@ -30,6 +31,7 @@ mod layout_overlay;
 mod layout_style_api;
 pub mod layout_style_change;
 pub mod material;
+pub mod media_query;
 pub mod style_patch;
 pub use material::{
     MATERIAL_ABI, MaterialInstance, MaterialProgram, MaterialRef, MaterialTexture,
@@ -107,6 +109,10 @@ pub use expansion::ExpansionState;
 pub use file_dialog::{
     FileDialogError, FileDialogKind, FileDialogRequest, FileDialogResult, FileFilter,
 };
+pub use font_face::{
+    FontFaceRule, FontFaceSource, FontStyleSpec, MAX_FONT_FACE_BYTES, MAX_REGISTERED_FONT_BYTES,
+    font_registration_would_exceed_cap,
+};
 pub use frame_stage::FrameStage;
 pub use framework_strings::FrameworkStrings;
 pub use geometry::{
@@ -132,6 +138,11 @@ pub use layout_frontier::{
     LayoutInvalidationSource, LayoutMetricDelta,
 };
 pub use layout_style_change::{LayoutFieldSet, LayoutStyleChange};
+pub use media_query::{
+    MediaColorScheme, MediaComparison, MediaCondition, MediaContrast, MediaEnv, MediaFeature,
+    MediaHover, MediaOrientation, MediaPointer, MediaQuery, MediaQueryList, MediaReducedMotion,
+    MediaType, kleene_and, kleene_not, kleene_or,
+};
 pub use menu::{MenuConfirmation, MenuSelection};
 pub use menu_bar::{
     Menu, MenuBar, MenuEntry, MenuShortcut, push_menu_activation, take_menu_activations,
@@ -200,7 +211,8 @@ pub use style_model::{
     SemanticColorRole, SemanticPalette, StyleModelRef, ThemeColorPairRef, intern_theme_color_pair,
 };
 pub use style_patch::{
-    HotSheetAxis, HotSheetQuery, HotStylePatch, HotStyleRule, HotStyleSheet, StylePatch,
+    HotSheetAxis, HotSheetQuery, HotStylePatch, HotStyleRule, HotStyleSheet, STYLE_OP_COUNT,
+    StyleOp, StylePatch, sample_style_ops,
 };
 pub use tab_drag::{
     TabDragGroup, TabDragLease, TabDragRect, TabDragSurface, TabDropIndicator, TabStripPaint,
