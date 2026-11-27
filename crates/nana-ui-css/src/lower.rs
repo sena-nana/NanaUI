@@ -73,25 +73,23 @@ fn lower_media_type(mt: &SyntaxMediaType) -> CoreMediaType {
 /// Lower a parsed [`SyntaxMediaCondition`] into [`nana_ui_core::MediaCondition`].
 pub fn lower_media_condition(
     cond: &SyntaxMediaCondition,
-    diags: &mut Vec<CssDiag>,
+    _diags: &mut Vec<CssDiag>,
 ) -> CoreMediaCondition {
+    lower_media_condition_inner(cond)
+}
+
+fn lower_media_condition_inner(cond: &SyntaxMediaCondition) -> CoreMediaCondition {
     match cond {
         SyntaxMediaCondition::Feature(feat) => lower_media_feature(feat),
         SyntaxMediaCondition::Not(inner) => {
-            CoreMediaCondition::negate(lower_media_condition(inner, diags))
+            CoreMediaCondition::negate(lower_media_condition_inner(inner))
         }
-        SyntaxMediaCondition::And(items) => CoreMediaCondition::and(
-            items
-                .iter()
-                .map(|c| lower_media_condition(c, diags))
-                .collect(),
-        ),
-        SyntaxMediaCondition::Or(items) => CoreMediaCondition::or(
-            items
-                .iter()
-                .map(|c| lower_media_condition(c, diags))
-                .collect(),
-        ),
+        SyntaxMediaCondition::And(items) => {
+            CoreMediaCondition::and(items.iter().map(lower_media_condition_inner).collect())
+        }
+        SyntaxMediaCondition::Or(items) => {
+            CoreMediaCondition::or(items.iter().map(lower_media_condition_inner).collect())
+        }
         SyntaxMediaCondition::Unknown(_) => CoreMediaCondition::Unknown,
     }
 }

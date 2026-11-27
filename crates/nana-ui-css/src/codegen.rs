@@ -2027,18 +2027,13 @@ mod tests {
             match ch {
                 '"' => in_string = true,
                 '(' | '[' | '{' => stack.push(ch),
-                ')' => {
-                    if stack.pop() != Some('(') {
-                        return false;
-                    }
-                }
-                ']' => {
-                    if stack.pop() != Some('[') {
-                        return false;
-                    }
-                }
-                '}' => {
-                    if stack.pop() != Some('{') {
+                ')' | ']' | '}' => {
+                    let expected = match ch {
+                        ')' => '(',
+                        ']' => '[',
+                        _ => '{',
+                    };
+                    if stack.pop() != Some(expected) {
                         return false;
                     }
                 }

@@ -339,10 +339,8 @@ fn find_template_close(text: &str, body_start: usize) -> Option<(usize, usize)> 
     while i < bytes.len() {
         if bytes[i] == b'<' {
             if text[i..].starts_with("<!--") {
-                i = match text[i + 4..].find("-->") {
-                    Some(rel) => i + 4 + rel + 3,
-                    None => return None,
-                };
+                let rel = text[i + 4..].find("-->")?;
+                i = i + 4 + rel + 3;
                 continue;
             }
             if let Some(after_close) = match_closing_tag(text, i, "template") {
@@ -596,15 +594,14 @@ pub fn component(file: &str, text: &str) -> Result<Component, Error> {
     for blk in &blocks {
         match blk.tag {
             "style" => {
-                if let Some((_, lang)) = blk.attrs.iter().find(|(k, _)| k == "lang") {
-                    if !lang
+                if let Some((_, lang)) = blk.attrs.iter().find(|(k, _)| k == "lang")
+                    && !lang
                         .as_deref()
                         .is_some_and(|v| v.eq_ignore_ascii_case("css"))
-                    {
-                        return Err(
-                            src.error(blk.body_start, "`<style>` takes plain CSS (`lang=\"css\"`)")
-                        );
-                    }
+                {
+                    return Err(
+                        src.error(blk.body_start, "`<style>` takes plain CSS (`lang=\"css\"`)")
+                    );
                 }
                 if !combined_css.is_empty() {
                     combined_css.push('\n');
@@ -620,15 +617,11 @@ pub fn component(file: &str, text: &str) -> Result<Component, Error> {
                     column: pos.column,
                 });
             }
-            "script" => {
-                if script_block.is_none() {
-                    script_block = Some(blk);
-                }
+            "script" if script_block.is_none() => {
+                script_block = Some(blk);
             }
-            "template" => {
-                if template_block.is_none() {
-                    template_block = Some(blk);
-                }
+            "template" if template_block.is_none() => {
+                template_block = Some(blk);
             }
             _ => {}
         }

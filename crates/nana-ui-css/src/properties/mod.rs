@@ -187,7 +187,7 @@ pub fn compile_declarations(
                 // For grid track lists, unresolved `var(--x)` degrades to `auto`
                 // so track counts remain intact.
                 if is_grid_track_property(&prop) {
-                    expand_grid_vars_fallback(&decl.value, vars, diags)
+                    expand_grid_vars_fallback(&decl.value, vars)
                 } else {
                     continue;
                 }
@@ -395,15 +395,11 @@ fn normalize_prop_name(raw: &str) -> String {
 
 /// For grid track lists where one `var(--missing)` fails expansion, replace
 /// only unresolved `var(...)` nodes with `auto` while expanding resolvable ones.
-fn expand_grid_vars_fallback(
-    values: &[ComponentValue],
-    vars: &VarScope,
-    diags: &mut Vec<CssDiag>,
-) -> Vec<ComponentValue> {
+fn expand_grid_vars_fallback(values: &[ComponentValue], vars: &VarScope) -> Vec<ComponentValue> {
     let mut out = Vec::with_capacity(values.len());
     for cv in values {
         match cv {
-            ComponentValue::Function { name, span, args } if name.eq_ignore_ascii_case("var") => {
+            ComponentValue::Function { name, span, .. } if name.eq_ignore_ascii_case("var") => {
                 let mut local_diags = Vec::new();
                 match expand_vars(std::slice::from_ref(cv), vars, false, &mut local_diags) {
                     Ok(expanded) => out.extend(expanded),
@@ -417,14 +413,14 @@ fn expand_grid_vars_fallback(
                 out.push(ComponentValue::Function {
                     name: name.clone(),
                     span: *span,
-                    args: expand_grid_vars_fallback(args, vars, diags),
+                    args: expand_grid_vars_fallback(args, vars),
                 });
             }
             ComponentValue::SimpleBlock { kind, span, values } => {
                 out.push(ComponentValue::SimpleBlock {
                     kind: *kind,
                     span: *span,
-                    values: expand_grid_vars_fallback(values, vars, diags),
+                    values: expand_grid_vars_fallback(values, vars),
                 });
             }
             other => out.push(other.clone()),

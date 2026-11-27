@@ -89,7 +89,7 @@ impl StyleWarning {
 
     fn from_css_diag(diag: CssDiag) -> Self {
         Self {
-            at: StyleAt::Sheet(diag.span.start as usize..diag.span.end as usize),
+            at: StyleAt::Sheet(diag.span.start..diag.span.end),
             severity: match diag.severity {
                 DiagSeverity::Error => StyleSeverity::Error,
                 DiagSeverity::Warning => StyleSeverity::Warning,
@@ -730,10 +730,7 @@ fn extract_keyframe_props(ops: &[StyleOp]) -> Vec<(&'static str, CompiledKfValue
                 values.insert("Color", CompiledKfValue::Color(*c));
             }
             StyleOp::Filter(f) => {
-                values.insert(
-                    "Filter",
-                    CompiledKfValue::Filter(f.clone().unwrap_or_default()),
-                );
+                values.insert("Filter", CompiledKfValue::Filter(f.unwrap_or_default()));
             }
             StyleOp::Width(Some(LengthSpec::Px(px))) => {
                 values.insert("Width", CompiledKfValue::Scalar(*px));
@@ -907,10 +904,10 @@ fn query_as_condition(q: &MediaQuery) -> Option<(MediaType, Option<MediaConditio
     // In NanaUI's screen environment, `not all and (C)` / `not screen and (C)`
     // negates the condition; `not print` matches screen unconditionally.
     match q.media_type {
-        MediaType::All | MediaType::Screen => match &q.condition {
-            Some(c) => Some((MediaType::Screen, Some(MediaCondition::negate(c.clone())))),
-            None => None,
-        },
+        MediaType::All | MediaType::Screen => q
+            .condition
+            .as_ref()
+            .map(|c| (MediaType::Screen, Some(MediaCondition::negate(c.clone())))),
         MediaType::Print | MediaType::Other => Some((MediaType::Screen, None)),
     }
 }
@@ -1204,7 +1201,7 @@ pub(crate) fn parse_sheet(
     let mut warned_container_spans: BTreeSet<(usize, usize)> = BTreeSet::new();
 
     for rule in &parsed.rules {
-        let rule_range = rule.span.start as usize..rule.span.end as usize;
+        let rule_range = rule.span.start..rule.span.end;
 
         // Handle `@container` guard.
         let query_idx = match &rule.container {
@@ -1267,7 +1264,7 @@ pub(crate) fn parse_sheet(
                 }
                 SelectorCheck::DocumentRoot => {}
                 SelectorCheck::Unsupported(msg) => {
-                    let sel_range = sel.span.start as usize..sel.span.end as usize;
+                    let sel_range = sel.span.start..sel.span.end;
                     warnings.push(StyleWarning::sheet_warning(sel_range, msg));
                 }
             }
@@ -1313,10 +1310,8 @@ pub(crate) fn parse_sheet(
         // Group selectors by pseudo-element (`None` vs `Some(pe)`) so we compile
         // declarations once per distinct pseudo-element rather than duplicating
         // diagnostics across comma-separated selectors.
-        let mut by_pe: Vec<(
-            Option<PseudoElement>,
-            Vec<(&ComplexSelector, ClassifiedSelector)>,
-        )> = Vec::new();
+        type SelectorGroup<'a> = Vec<(&'a ComplexSelector, ClassifiedSelector)>;
+        let mut by_pe: Vec<(Option<PseudoElement>, SelectorGroup<'_>)> = Vec::new();
         for item in classified_selectors {
             let pe = item.1.pseudo_element.clone();
             if let Some((_, group)) = by_pe.iter_mut().find(|(k, _)| *k == pe) {
@@ -1875,6 +1870,7 @@ fn animation_item_tokens(
 // Template Tree Matching (Combinators, Ancestor Pseudos, Scoped Vars, Inline)
 // ============================================================================
 
+#[derive(Default)]
 struct AncestorFrame {
     fixed: Vec<String>,
     conditional: Vec<(String, Expr)>,
@@ -1886,21 +1882,9 @@ struct AncestorFrame {
     tracked_mask: u8,
 }
 
-impl Default for AncestorFrame {
-    fn default() -> Self {
-        Self {
-            fixed: Vec::new(),
-            conditional: Vec::new(),
-            can_track_interactive: false,
-            interactive_handle: None,
-            tracked_mask: 0,
-        }
-    }
-}
-
 #[derive(Clone)]
 enum MatchTerm {
-    Expr(Expr),
+    Expr(Box<Expr>),
     /// `(ancestor_frame_index, pseudo_mask)`
     AncestorPseudo(usize, u8),
 }
@@ -1982,7 +1966,12 @@ fn match_chain(chain: &[AncestorStep], ancestors: &[AncestorFrame]) -> Vec<Vec<M
             match_chain(rest_chain, rest_ancestors)
                 .into_iter()
                 .map(|mut clause| {
-                    clause.extend(parent_conds.iter().cloned().map(MatchTerm::Expr));
+                    clause.extend(
+                        parent_conds
+                            .iter()
+                            .cloned()
+                            .map(|e| MatchTerm::Expr(Box::new(e))),
+                    );
                     if step.pseudo != 0 {
                         clause.push(MatchTerm::AncestorPseudo(parent_idx, step.pseudo));
                     }
@@ -2005,7 +1994,12 @@ fn match_chain(chain: &[AncestorStep], ancestors: &[AncestorFrame]) -> Vec<Vec<M
                     continue;
                 };
                 for mut clause in match_chain(rest_chain, rest_ancestors) {
-                    clause.extend(anc_conds.iter().cloned().map(MatchTerm::Expr));
+                    clause.extend(
+                        anc_conds
+                            .iter()
+                            .cloned()
+                            .map(|e| MatchTerm::Expr(Box::new(e))),
+                    );
                     if step.pseudo != 0 {
                         clause.push(MatchTerm::AncestorPseudo(candidate_idx, step.pseudo));
                     }
@@ -2040,7 +2034,7 @@ fn class_condition_tokens(expr: &Expr) -> TokenStream {
 
 #[derive(Clone)]
 enum ResolvedTerm {
-    Expr(Expr),
+    Expr(Box<Expr>),
     AncestorPseudo(syn::Ident, u8),
 }
 
@@ -2440,7 +2434,12 @@ impl<'a> TemplateWalk<'a> {
                 let combined: Vec<Vec<MatchTerm>> = anc_dnf
                     .into_iter()
                     .map(|mut clause| {
-                        clause.extend(subj_conds.iter().cloned().map(MatchTerm::Expr));
+                        clause.extend(
+                            subj_conds
+                                .iter()
+                                .cloned()
+                                .map(|e| MatchTerm::Expr(Box::new(e))),
+                        );
                         clause
                     })
                     .collect();
@@ -2542,7 +2541,12 @@ impl<'a> TemplateWalk<'a> {
                 let combined: Vec<Vec<MatchTerm>> = anc_dnf
                     .into_iter()
                     .map(|mut clause| {
-                        clause.extend(subj_conds.iter().cloned().map(MatchTerm::Expr));
+                        clause.extend(
+                            subj_conds
+                                .iter()
+                                .cloned()
+                                .map(|e| MatchTerm::Expr(Box::new(e))),
+                        );
                         clause
                     })
                     .collect();

@@ -564,16 +564,12 @@ impl StyleSite {
         let default_env = MediaEnv::default();
         let env = env.unwrap_or(&default_env);
         let mut mask = 0u64;
-        let mut bit = 0u32;
-        for entry in self.rule_media {
-            if let Some(mq) = entry {
-                if bit >= 64 {
-                    return None;
-                }
-                if mq.matches(env) {
-                    mask |= 1u64 << bit;
-                }
-                bit += 1;
+        for (bit, mq) in self.rule_media.iter().flatten().enumerate() {
+            if bit >= 64 {
+                return None;
+            }
+            if mq.matches(env) {
+                mask |= 1u64 << bit;
             }
         }
         Some(mask)

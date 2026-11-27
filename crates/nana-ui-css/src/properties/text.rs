@@ -847,7 +847,7 @@ fn compile_vertical_align(values: &[ComponentValue], span: Span) -> Result<Vec<S
     let spec = parse_length_spec(trimmed)
         .ok_or_else(|| CssDiag::error(span, DiagCode::InvalidValue, "invalid `vertical-align`"))?;
     let va = match spec {
-        LengthSpec::Px(v) if v == 0.0 => VerticalAlignSpec::Baseline,
+        LengthSpec::Px(0.0) => VerticalAlignSpec::Baseline,
         other => VerticalAlignSpec::Offset(other),
     };
     Ok(vec![StyleOp::VerticalAlign(va)])

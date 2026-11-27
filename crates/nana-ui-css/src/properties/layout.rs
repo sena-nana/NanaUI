@@ -1193,7 +1193,7 @@ fn is_negative_literal(spec: LengthSpec) -> bool {
 // Alignment, Overflow, Positioning, Misc
 // ============================================================================
 
-fn strip_alignment_overflow_kw<'a>(items: &[&'a [ComponentValue]]) -> Vec<String> {
+fn strip_alignment_overflow_kw(items: &[&[ComponentValue]]) -> Vec<String> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < items.len() {
