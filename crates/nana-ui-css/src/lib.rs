@@ -34,6 +34,7 @@ pub mod css_written;
 mod rust_expr;
 pub mod shell_contract;
 pub mod style;
+pub mod syntax;
 
 pub use css_at_rule::{
     FontFaceRule, FontFaceSrc, ImportPrelude, LayerPrelude, MAX_FONT_FACE_BYTES, MAX_IMPORT_DEPTH,
