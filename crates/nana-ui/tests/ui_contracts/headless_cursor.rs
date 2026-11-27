@@ -121,3 +121,27 @@ fn headless_runtime_reports_the_cursor_under_the_pointer() {
         Some(CursorIcon::Custom(custom))
     );
 }
+
+/// The pointer rests; the program changes the node's cursor (a key picked up
+/// a tool, a drag ended). The next frame shows it, as a native host's does,
+/// without waiting for the pointer to move again.
+#[test]
+fn a_cursor_changed_under_a_resting_pointer_shows_on_the_next_frame() {
+    let mut host = HeadlessRuntime::<CursorProgram>::new(
+        gpu_context(),
+        WindowDescriptor::new("Cursor"),
+        headless_geometry((320.0, 240.0), 1.0),
+        HeadlessOptions::default(),
+    )
+    .expect("initialize headless runtime");
+    host.turn();
+    set_cursor(&mut host, CursorSpec::Grab);
+    hover(&mut host, 100.0);
+    assert_eq!(host.cursor(WindowId::PRIMARY), Some(CursorIcon::Grab));
+
+    // `set_cursor` ends with a turn: no pointer event in between.
+    set_cursor(&mut host, CursorSpec::None);
+    assert_eq!(host.cursor(WindowId::PRIMARY), Some(CursorIcon::Hidden));
+    set_cursor(&mut host, CursorSpec::Grabbing);
+    assert_eq!(host.cursor(WindowId::PRIMARY), Some(CursorIcon::Grabbing));
+}

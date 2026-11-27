@@ -682,6 +682,9 @@ impl<P: RuntimeProgram> HeadlessRuntime<P> {
                 return (None, None, did_queued);
             }
         };
+        // As a native host does after a frame: a cursor or caret that changed
+        // under a resting pointer reaches the window without another event.
+        self.refresh_input_effects(id);
         let mut update = self.program.window_frame_presented(id, &context);
         let bound = self.bind_after_present.remove(&id);
         if bound {
@@ -1062,6 +1065,27 @@ impl<P: RuntimeProgram> HeadlessRuntime<P> {
             context.set_eyedropper_supported(self.color_sampler.is_supported());
             context.set_high_contrast(options.high_contrast);
         });
+    }
+
+    /// Re-derive `id`'s cursor and text-input state from the frame just laid
+    /// out. Nothing to do before input first reached the window.
+    fn refresh_input_effects(&mut self, id: WindowId) {
+        let Some(mut input) = self
+            .windows
+            .get_mut(&id)
+            .and_then(|state| state.input.take())
+        else {
+            return;
+        };
+        let source = InputSourceId(id.0);
+        let _ = self.program.write_document(id, |document| {
+            document
+                .context_mut()
+                .refresh_input_effects(source, input.services_mut());
+        });
+        if let Some(state) = self.windows.get_mut(&id) {
+            state.input = Some(input);
+        }
     }
 
     fn bound_input(&mut self, id: WindowId) -> Result<HeadlessInput, FrameworkError> {
