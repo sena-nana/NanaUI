@@ -1447,7 +1447,10 @@ mod tests {
             classify(|s| s.line_height = Some(LineHeightSpec::Relative(2.0))),
             TextDirty::CONSTRAINT
         );
-        assert_eq!(classify(|s| s.cursor_specified = true), TextDirty::NONE);
+        assert_eq!(
+            classify(|s| s.cursor = Some(std::sync::Arc::new(nana_ui_core::CursorSpec::Pointer))),
+            TextDirty::NONE
+        );
     }
 
     #[test]

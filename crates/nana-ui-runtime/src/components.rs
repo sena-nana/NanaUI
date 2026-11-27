@@ -2004,12 +2004,12 @@ pub struct InheritedStyle {
     /// paints and animates but takes no pointer, focus or accessibility
     /// action. A descendant cannot turn it back off.
     pub inert: bool,
-    /// CSS `cursor` after inheritance (initial `default`).
-    pub cursor: nana_ui_core::CursorSpec,
-    /// Whether the cursor value comes from an authored declaration in this
-    /// node or one of its ancestors (distinguishes explicit `default` from
-    /// the initial value used by editable controls).
-    pub cursor_specified: bool,
+    /// CSS `cursor` after inheritance: the value declared by this node or its
+    /// nearest ancestor that declares one, `None` when none does (the initial
+    /// `default`, which editable controls replace with their own cursor).
+    /// Shared so the custom-cursor payload stays out of this struct; keyword
+    /// cursors come from [`shared_cursor`]'s interned set and never allocate.
+    pub cursor: Option<Arc<nana_ui_core::CursorSpec>>,
     /// CSS `user-select` after inheritance (initial `auto`).
     pub user_select: nana_ui_core::UserSelectSpec,
     /// The size text is set at: [`Self::font_size_base`] times
@@ -2047,6 +2047,54 @@ pub struct InheritedStyle {
     pub ext: nana_ui_core::shared::Shared<InheritedStyleExt>,
 }
 
+impl InheritedStyle {
+    /// The cursor this node shows: the inherited declaration, else `default`.
+    pub fn used_cursor(&self) -> &nana_ui_core::CursorSpec {
+        static DEFAULT: nana_ui_core::CursorSpec = nana_ui_core::CursorSpec::Default;
+        self.cursor.as_deref().unwrap_or(&DEFAULT)
+    }
+
+    /// Whether this node or an ancestor declares a `cursor` (distinguishes an
+    /// explicit `default` from the initial value used by editable controls).
+    pub fn cursor_specified(&self) -> bool {
+        self.cursor.is_some()
+    }
+}
+
+/// `spec` behind an `Arc`: keyword cursors share one interned `Arc` each, a
+/// custom cursor gets its own.
+pub(crate) fn shared_cursor(spec: &nana_ui_core::CursorSpec) -> Arc<nana_ui_core::CursorSpec> {
+    use nana_ui_core::{CursorSpec, SystemCursor as S};
+    const KEYWORDS: [S; 16] = [
+        S::Default,
+        S::Pointer,
+        S::Text,
+        S::Move,
+        S::Grab,
+        S::Grabbing,
+        S::NotAllowed,
+        S::Crosshair,
+        S::EwResize,
+        S::NsResize,
+        S::Help,
+        S::Wait,
+        S::Progress,
+        S::ZoomIn,
+        S::ZoomOut,
+        S::None,
+    ];
+    static INTERNED: LazyLock<[Arc<CursorSpec>; 16]> =
+        LazyLock::new(|| KEYWORDS.map(|cursor| Arc::new(CursorSpec::from(cursor))));
+    match spec.as_system() {
+        Some(system) => INTERNED
+            .iter()
+            .find(|interned| interned.as_system() == Some(system))
+            .cloned()
+            .unwrap_or_else(|| Arc::new(spec.clone())),
+        None => Arc::new(spec.clone()),
+    }
+}
+
 static INTERNED_DEFAULT_INHERITED: LazyLock<Arc<InheritedStyle>> =
     LazyLock::new(|| Arc::new(InheritedStyle::default()));
 
@@ -2065,8 +2113,7 @@ impl Default for InheritedStyle {
             visible: true,
             pointer_events: nana_ui_core::PointerEventsSpec::Auto,
             inert: false,
-            cursor: nana_ui_core::CursorSpec::Default,
-            cursor_specified: false,
+            cursor: None,
             user_select: nana_ui_core::UserSelectSpec::Auto,
             font_size: UI_BASE_TEXT_SIZE,
             font_weight: None,

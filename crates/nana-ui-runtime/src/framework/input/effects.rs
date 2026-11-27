@@ -170,7 +170,7 @@ impl AppContext {
         }
         let css = target
             .and_then(|node| self.world.computed_style(node))
-            .and_then(|style| style.cursor_specified.then_some(&style.cursor));
+            .and_then(|style| style.cursor.as_deref());
         match css {
             Some(spec) => cursor_icon_for(spec),
             None if target.is_some_and(|node| {

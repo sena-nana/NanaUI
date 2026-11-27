@@ -500,11 +500,10 @@ impl UiWorld {
             visible: box_visible && visibility != nana_ui_core::VisibilitySpec::Hidden,
             pointer_events,
             inert,
-            cursor: layout
-                .cursor
-                .clone()
-                .unwrap_or_else(|| inherited.cursor.clone()),
-            cursor_specified: layout.cursor.is_some() || inherited.cursor_specified,
+            cursor: match &layout.cursor {
+                Some(spec) => Some(crate::components::shared_cursor(spec)),
+                None => inherited.cursor.clone(),
+            },
             user_select: layout.user_select.unwrap_or(inherited.user_select),
             font_size: font_size_base * text_scale,
             font_weight,

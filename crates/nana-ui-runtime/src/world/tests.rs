@@ -1783,21 +1783,22 @@ fn cursor_inherits_and_explicit_child_value_wins() {
     world.resolve_styles(&work.style).unwrap();
 
     assert_eq!(
-        world.computed_style(node(1)).unwrap().cursor,
-        CursorSpec::Default
+        world.computed_style(node(1)).unwrap().used_cursor(),
+        &CursorSpec::Default
     );
     assert_eq!(
-        world.computed_style(node(2)).unwrap().cursor,
-        CursorSpec::Grab
+        world.computed_style(node(2)).unwrap().used_cursor(),
+        &CursorSpec::Grab
     );
-    assert!(world.computed_style(node(2)).unwrap().cursor_specified);
+    assert!(!world.computed_style(node(1)).unwrap().cursor_specified());
+    assert!(world.computed_style(node(2)).unwrap().cursor_specified());
     assert_eq!(
-        world.computed_style(node(3)).unwrap().cursor,
-        CursorSpec::Grab
+        world.computed_style(node(3)).unwrap().used_cursor(),
+        &CursorSpec::Grab
     );
     assert_eq!(
-        world.computed_style(node(4)).unwrap().cursor,
-        CursorSpec::Pointer
+        world.computed_style(node(4)).unwrap().used_cursor(),
+        &CursorSpec::Pointer
     );
 
     let mut update = NodeStyle::default();
@@ -1820,8 +1821,8 @@ fn cursor_inherits_and_explicit_child_value_wins() {
     );
     world.resolve_styles(&work.style).unwrap();
     assert_eq!(
-        world.computed_style(node(3)).unwrap().cursor,
-        CursorSpec::Move
+        world.computed_style(node(3)).unwrap().used_cursor(),
+        &CursorSpec::Move
     );
 }
 

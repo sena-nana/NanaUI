@@ -24,7 +24,7 @@ impl AppContext {
         if self
             .world
             .computed_style(node)
-            .is_some_and(|style| style.cursor_specified)
+            .is_some_and(|style| style.cursor_specified())
             || self
                 .world
                 .accessibility(node)
