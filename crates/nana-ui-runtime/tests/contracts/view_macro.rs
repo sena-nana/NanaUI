@@ -3606,7 +3606,14 @@ fn builtin_icon_and_inline_content_controls_match_hand_written_builders() {
         .unwrap();
     assert_eq!(dump(&cx_t, t.roots()[0]), dump(&cx_f, f.roots()[0]));
     let kids = &cx_t.world().node(t.roots()[0]).unwrap().children;
-    assert!(cx_t.world().inline_record(kids[1]).is_some());
+    assert!(
+        cx_t.world()
+            .inline_content(kids[1])
+            .is_some_and(|content| !content.atoms().is_empty())
+    );
     assert!(cx_t.world().rich_text(kids[2]).is_some());
-    assert!(cx_t.world().inline_record(kids[6]).is_none());
+    assert!(matches!(
+        cx_t.world().inline_content(kids[6]),
+        Some(nana_ui_runtime::InlineContent::PlainText(_))
+    ));
 }

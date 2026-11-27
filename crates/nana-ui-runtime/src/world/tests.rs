@@ -13447,3 +13447,56 @@ mod layout_foundations;
 mod localization;
 mod presentation_time;
 mod replaced_media;
+
+#[test]
+fn disabling_a_container_releases_focus_below_it_at_commit() {
+    let mut world = UiWorld::new();
+    let mut create = MutationQueue::new();
+    create.create(node(1), document(1), NodeKind::Document);
+    for id in 2..=4 {
+        create.create(
+            node(id),
+            document(1),
+            NodeKind::Element { tag: "div".into() },
+        );
+    }
+    create.insert(node(1), node(2), None);
+    create.insert(node(2), node(3), None);
+    create.insert(node(1), node(4), None);
+    for id in [3, 4] {
+        create.set_interaction(
+            node(id),
+            InteractionState {
+                pointer_events: true,
+                focusable: true,
+            },
+        );
+    }
+    create.request_focus(document(1), Some(node(3)));
+    world.commit(create).unwrap();
+    assert_eq!(world.focused(document(1)), Some(node(3)));
+
+    let disabled = AccessibilityState {
+        disabled: true,
+        ..AccessibilityState::default()
+    };
+    let mut disable = MutationQueue::new();
+    disable.set_accessibility(node(2), disabled.clone());
+    world.commit(disable).unwrap();
+    assert_eq!(
+        world.focused(document(1)),
+        None,
+        "a disabled container lets go of focus held below it in the same commit"
+    );
+
+    // The node's own disabled state does not drop its focus at commit: that is
+    // settled once styles resolve, from whether it is still focusable (a busy
+    // field stays focused).
+    let mut refocus = MutationQueue::new();
+    refocus.request_focus(document(1), Some(node(4)));
+    world.commit(refocus).unwrap();
+    let mut disable_self = MutationQueue::new();
+    disable_self.set_accessibility(node(4), disabled);
+    world.commit(disable_self).unwrap();
+    assert_eq!(world.focused(document(1)), Some(node(4)));
+}

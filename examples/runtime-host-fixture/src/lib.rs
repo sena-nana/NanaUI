@@ -520,6 +520,7 @@ mod tests {
                     logical_size: (720.0, 420.0),
                     scale_factor: 1.0,
                     maximized: false,
+                    chrome_controls_inset: nana_ui_platform::WindowChromeControlsInset::ZERO,
                 },
             })
             .expect("open tool");

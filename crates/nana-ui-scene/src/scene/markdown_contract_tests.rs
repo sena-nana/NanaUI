@@ -423,6 +423,18 @@ fn markdown_fenced_code_spans_and_gfm_alerts_extract_and_follow_theme() {
             },
         )))
         .unwrap();
+    // Start from the light theme explicitly: the default appearance is dark,
+    // and the switch below must change the colors.
+    let light = nana_ui_core::SemanticPalette::light();
+    runtime
+        .context_mut()
+        .set_style_tokens(
+            nana_ui_core::ThemeAppearance::Light,
+            nana_ui_core::UI_METRICS,
+            light,
+            light.surface,
+        )
+        .unwrap();
 
     let markdown = runtime
         .context_mut()
@@ -447,28 +459,27 @@ fn markdown_fenced_code_spans_and_gfm_alerts_extract_and_follow_theme() {
     assert!(runtime.scene().primitives().any(|p| matches!(
         &p.kind,
         ScenePrimitiveKind::Text { content, color, .. }
-            if p.node == id && content.as_ref() == "fn" && *color == light_keyword
+            if p.node == id && content.as_ref() == "fn" && *color == Some(light_keyword)
     )));
     assert!(runtime.scene().primitives().any(|p| matches!(
         &p.kind,
         ScenePrimitiveKind::Text { content, color, .. }
             if p.node == id
                 && content.as_ref() == note_title.as_ref()
-                && *color == nana_ui_core::PaintColor::Srgb { rgba: light_accent }
+                && *color == Some(nana_ui_core::PaintColor::Srgb { rgba: light_accent })
     )));
     assert!(runtime.scene().primitives().any(|p| matches!(
         &p.kind,
         ScenePrimitiveKind::Stroke { color, .. }
-            if p.node == id
-                && *color == nana_ui_core::PaintColor::Srgb { rgba: light_accent }
+            if p.node == id && *color == light_accent
     )));
     let mut expected_tint = light_accent;
     expected_tint[3] *= 0.08;
     assert!(runtime.scene().primitives().any(|p| matches!(
         &p.kind,
-        ScenePrimitiveKind::Quad { surface, .. }
+        ScenePrimitiveKind::Quad { background, .. }
             if p.node == id
-                && surface.background
+                && *background
                     == Some(nana_ui_core::PaintColor::Srgb {
                         rgba: expected_tint,
                     })
@@ -494,6 +505,6 @@ fn markdown_fenced_code_spans_and_gfm_alerts_extract_and_follow_theme() {
     assert!(runtime.scene().primitives().any(|p| matches!(
         &p.kind,
         ScenePrimitiveKind::Text { content, color, .. }
-            if p.node == id && content.as_ref() == "fn" && *color == dark_keyword
+            if p.node == id && content.as_ref() == "fn" && *color == Some(dark_keyword)
     )));
 }

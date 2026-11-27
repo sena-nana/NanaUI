@@ -910,6 +910,7 @@ fn dock_float_platform_moved_persists_without_move_command() {
             logical_size: (360.0, 280.0),
             scale_factor: 1.0,
             maximized: false,
+            chrome_controls_inset: nana_ui_platform::WindowChromeControlsInset::ZERO,
         },
     );
     let floating = app.state().dock.floating.first().expect("floated surface");
@@ -940,6 +941,7 @@ fn dock_float_platform_moved_persists_without_move_command() {
             logical_size: (400.0, 300.0),
             scale_factor: 1.0,
             maximized: false,
+            chrome_controls_inset: nana_ui_platform::WindowChromeControlsInset::ZERO,
         },
     );
     let floating = app.state().dock.floating.first().expect("floated surface");
@@ -962,6 +964,7 @@ fn dock_float_platform_moved_persists_without_move_command() {
             logical_size: (1024.0, 768.0),
             scale_factor: 1.0,
             maximized: false,
+            chrome_controls_inset: nana_ui_platform::WindowChromeControlsInset::ZERO,
         },
     });
     assert_eq!(
