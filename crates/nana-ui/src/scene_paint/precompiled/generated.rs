@@ -6,10 +6,10 @@ use super::{Family, Stage};
 #[allow(dead_code)]
 pub(super) const WGPU: &str = "30.0.1-nana.1";
 #[allow(dead_code)]
-pub(super) const DXC: &str = "1.8 (4792, 23992152)";
+pub(super) const DXC: &str = "1.9 (4950, b106a961)";
 
 pub(in crate::scene_paint) const QUAD: Family = Family {
-    wgsl: 0x3197320f9b62b9b7,
+    wgsl: 0x7b2097a98041e095,
     layout: 0x2cec81ab9701c664,
     stages: &[
         Stage {
@@ -26,7 +26,7 @@ pub(in crate::scene_paint) const QUAD: Family = Family {
 };
 
 pub(in crate::scene_paint) const MESH: Family = Family {
-    wgsl: 0x9d2c796425c99d05,
+    wgsl: 0x16c6131b1c249827,
     layout: 0x9a4b9b6fd888b993,
     stages: &[
         Stage {
@@ -63,7 +63,7 @@ pub(in crate::scene_paint) const MESH: Family = Family {
 };
 
 pub(in crate::scene_paint) const TEXT: Family = Family {
-    wgsl: 0xf9305c814530b5a8,
+    wgsl: 0x5898672f75e8f601,
     layout: 0x450f13a7cbe74288,
     stages: &[
         Stage {
@@ -80,7 +80,7 @@ pub(in crate::scene_paint) const TEXT: Family = Family {
 };
 
 pub(in crate::scene_paint) const TEXT_DUAL_SOURCE: Family = Family {
-    wgsl: 0x45430a1d179b5927,
+    wgsl: 0xedea6cf21c643434,
     layout: 0x450f13a7cbe74288,
     stages: &[
         Stage {
@@ -97,7 +97,7 @@ pub(in crate::scene_paint) const TEXT_DUAL_SOURCE: Family = Family {
 };
 
 pub(in crate::scene_paint) const GROUP: Family = Family {
-    wgsl: 0x2c6697d189c3528a,
+    wgsl: 0xc8e09591d946a644,
     layout: 0xa7a61981405c615b,
     stages: &[
         Stage {
@@ -114,7 +114,7 @@ pub(in crate::scene_paint) const GROUP: Family = Family {
 };
 
 pub(in crate::scene_paint) const GROUP_BLEND: Family = Family {
-    wgsl: 0xf3c37f7ddf555d9f,
+    wgsl: 0xdc626d114bb68c11,
     layout: 0x91700efa3733085d,
     stages: &[
         Stage {
@@ -131,7 +131,7 @@ pub(in crate::scene_paint) const GROUP_BLEND: Family = Family {
 };
 
 pub(in crate::scene_paint) const ICON: Family = Family {
-    wgsl: 0x53297ca83577831c,
+    wgsl: 0x236fe4f6b720d6d6,
     layout: 0x525820bf9f1c9830,
     stages: &[
         Stage {
@@ -148,7 +148,7 @@ pub(in crate::scene_paint) const ICON: Family = Family {
 };
 
 pub(in crate::scene_paint) const HOST_TEXTURE: Family = Family {
-    wgsl: 0x5eb174218f76b197,
+    wgsl: 0x884d0ec86cf5e851,
     layout: 0xe89dcfa4272423d6,
     stages: &[
         Stage {
