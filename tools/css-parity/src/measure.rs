@@ -77,6 +77,20 @@ impl MeasuredBox {
     }
 }
 
+/// The family the WebView page pins on `html, body` (`fixture_to_html`), so
+/// both sides measure the same face. Left unset, Nana resolves the platform's
+/// UI font, whose strut differs from the bundled face's and moves every
+/// atom aligned against the parent's font (`text-top`, `bottom`, `%`).
+pub const BUNDLED_FONT_FAMILY: &str = "Noto Sans SC";
+
+fn with_bundled_root_font(mut root: StyleLayoutNode) -> StyleLayoutNode {
+    let family = &mut root.style.text_ext.font_family;
+    if family.is_none() {
+        *family = Some(BUNDLED_FONT_FAMILY.into());
+    }
+    root
+}
+
 fn to_style_tree(node: &LayoutNode) -> StyleLayoutNode {
     StyleLayoutNode {
         id: node.id.clone(),
@@ -100,7 +114,7 @@ pub fn measure_layout(
             || {
                 RuntimeLayoutEngine
                     .layout_style_tree(
-                        &to_style_tree(root),
+                        &with_bundled_root_font(to_style_tree(root)),
                         LayoutViewport::new(vw, vh),
                         &mut nana_ui::NanaTextShaper::default(),
                     )
