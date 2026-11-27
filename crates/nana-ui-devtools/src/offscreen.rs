@@ -289,7 +289,10 @@ impl OffscreenSnapshots {
             let (raw_device, raw_queue) =
                 pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
                     label: Some("nana-ui snapshot device"),
-                    required_features: wgpu::Features::empty(),
+                    // The hosted device's precompiled stages: without them a
+                    // DX12 snapshot compiles every family with FXC and the
+                    // first paint can outlast the poll.
+                    required_features: __framework::precompiled_stage_features(&adapter),
                     required_limits: wgpu::Limits::default(),
                     memory_hints: wgpu::MemoryHints::MemoryUsage,
                     trace: wgpu::Trace::Off,

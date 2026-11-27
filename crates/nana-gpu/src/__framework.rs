@@ -36,6 +36,24 @@ pub fn adopt(adapter: wgpu::Adapter, device: wgpu::Device, queue: wgpu::Queue) -
     GpuContext::adopt(adapter, device, queue, false)
 }
 
+/// The features a framework device asks `adapter` for so NanaUI's pipeline
+/// families can load their precompiled stages: passthrough shaders on DX12
+/// (DXIL, `scene_paint::precompiled`) and Metal. Without them every family
+/// compiles its WGSL when its pipelines are created, which on DX12 without
+/// `dxcompiler.dll` (FXC) takes seconds per stage. Only NanaUI creates
+/// passthrough modules, from stages built into the binary; skin and
+/// application shaders stay WGSL.
+pub fn precompiled_stage_features(adapter: &wgpu::Adapter) -> wgpu::Features {
+    if matches!(
+        adapter.get_info().backend,
+        wgpu::Backend::Dx12 | wgpu::Backend::Metal
+    ) {
+        adapter.features() & wgpu::Features::PASSTHROUGH_SHADERS
+    } else {
+        wgpu::Features::empty()
+    }
+}
+
 pub fn adapter(gpu: &GpuContext) -> &wgpu::Adapter {
     &gpu.inner.adapter
 }
