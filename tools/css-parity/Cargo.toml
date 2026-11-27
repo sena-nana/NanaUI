@@ -23,6 +23,7 @@ nana-ui-core = { workspace = true, features = ["bundled-font-regular"] }
 nana-ui-css.workspace = true
 nana-ui-runtime = { workspace = true, features = ["icu"] }
 # The process-wide `nana-text` engine (NanaTextShaper) lives in `nana-ui`.
-nana-ui = { path = "../../crates/nana-ui", default-features = false, features = ["icu"] }
+# `bundled-fonts` for `use_hermetic_fonts`: the WebView page loads that same file.
+nana-ui = { path = "../../crates/nana-ui", default-features = false, features = ["icu", "bundled-fonts"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -83,6 +83,17 @@ impl MeasuredBox {
 /// atom aligned against the parent's font (`text-top`, `bottom`, `%`).
 pub const BUNDLED_FONT_FAMILY: &str = "Noto Sans SC";
 
+/// Measures with the bundled faces only, before the first shape. The page
+/// loads the bundled file through `@font-face`; a platform face of the same
+/// name (Windows 11 ships its own `Noto Sans SC` with a 1.0 / 0.2 em `hhea`
+/// against the bundled 1.16 / 0.288) would otherwise win on the Nana side.
+fn use_bundled_faces_only() {
+    static HERMETIC: std::sync::Once = std::sync::Once::new();
+    HERMETIC.call_once(|| {
+        nana_ui::use_hermetic_fonts();
+    });
+}
+
 fn with_bundled_root_font(mut root: StyleLayoutNode) -> StyleLayoutNode {
     let family = &mut root.style.text_ext.font_family;
     if family.is_none() {
@@ -106,6 +117,7 @@ pub fn measure_layout(
     viewport_w: f32,
     viewport_h: f32,
 ) -> Vec<(String, MeasuredBox)> {
+    use_bundled_faces_only();
     let vw = viewport_w.max(1.0);
     let vh = viewport_h.max(1.0);
     nana_ui_css::css_map::with_active_viewport(vw, vh, || {
