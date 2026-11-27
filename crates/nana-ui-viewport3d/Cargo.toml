@@ -28,7 +28,10 @@ hosted = ["nana-ui/hosted", "nana-ui/bundled-fonts", "nana-ui/view-macro"]
 
 [dependencies]
 nana-gpu = { workspace = true, features = ["wgpu-interop"] }
-nana-ui = { workspace = true, default-features = false, features = ["gpu", "wgpu-interop", "runtime-wgsl"] }
+# Not `workspace = true`: the workspace entry keeps nana-ui's default features
+# on for the other members, and cargo refuses `default-features = false` on an
+# inherited dependency whose workspace entry has them on.
+nana-ui = { version = "0.1.0-alpha.1", path = "../nana-ui", default-features = false, features = ["gpu", "wgpu-interop", "runtime-wgsl"] }
 glam = { workspace = true }
 bytemuck = { workspace = true }
 gltf = { workspace = true, optional = true }
