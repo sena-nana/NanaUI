@@ -110,7 +110,7 @@ IR 本体位于 `crates/nana-ui-core/src/motion/ir.rs`：`MotionTrackId`（`:18`
 
 以一张卡片的样式与动效为例，数据流按以下 4 步穿过本层合同：
 
-1. **入口写入**：Rust 组件 API 或 `nana-ui-css`（构建时 / 运行时）将样式声明写入 `LayoutStyle` 字段与 `ControlSemantics`。
+1. **入口写入**：Rust 组件 API 或构建期 `nana-ui-css`（经 `StyleOp` / `StylePatch`）将样式声明写入 `LayoutStyle` 字段与 `ControlSemantics`。
 2. **主题解析**：Runtime 安装主题得到 `CompiledTheme`；`StyleModelRef` 按节点暴露当前调色板、度量与外观。
 3. **布局与绘制消费**：`RuntimeLayoutEngine` 读取 `LayoutStyle` 与 `WorkspaceModel` 计算几何；绘制层读取 `PaintColorSlots` 与 `ContentFit`；Motion 轨道经 `evaluate_track` 求值，合成器安全轨道写入 `MotionDescriptor` 表，瞬态采样绝不写回基础样式。
 4. **文本汇入**：文本节点测量时，将 `LayoutStyle` 中的字号、语言与书写方向转化为 `nana-text` 的 `TextStyle` / `TextConstraints`。

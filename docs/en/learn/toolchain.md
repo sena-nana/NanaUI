@@ -34,8 +34,8 @@ Both compilation pipelines obey one hard rule: **the runtime receives compiled d
 | `for_each_control!` | `crates/nana-ui-view-schema/src/lib.rs:49` | Tags, constructors, field write policies and event tables of the 26 built-in declarative controls |
 | `Control` / `CONTROLS` | `crates/nana-ui-view-codegen/src/lib.rs:18` / `:53-77` | The static control metadata table produced by expanding `for_each_control!` |
 | `Node` / `Element` / `Attr` | `crates/nana-ui-view-codegen/src/lib.rs:333-405` | The intermediate representation of the template syntax tree |
-| `CompiledStyles` / `Rank` | `crates/nana-ui-view-codegen/src/style.rs:978` / `:49` | The build-time style output and the cascade priority triple `(important, specificity, source_order)` |
-| `StyleWarning` | `crates/nana-ui-view-codegen/src/style.rs:87` | A build-time warning for out-of-subset selectors and properties that cannot be compiled in (with exact line and column, never silently dropped) |
+| `CompiledStyles` / `CascadeKey` | `crates/nana-ui-view-codegen/src/style.rs` / `crates/nana-ui-css/src/cascade.rs` | Build-time style compilation output and full CSS Cascade Level 5 priority key (`@layer`, `!important`, `Specificity`, `source_order`) |
+| `CssDiag` / `DiagSeverity` | `crates/nana-ui-css/src/syntax/diag.rs` | Tiered build-time diagnostics: syntax/invalid-value/unsupported selector or at-rule => `Error` (compile error); safely-ignorable vendor-prefixed properties => `Warning` |
 | `Component` / `Compiler` | `crates/nana-ui-sfc/src/parse.rs:23` / `lib.rs:115` | The four main blocks parsed out of a `.vue` file (name / props / script / template / style) and the build compiler |
 
 ## Internals
@@ -60,8 +60,8 @@ Four procedural macros are defined in `crates/nana-ui-view-macros/src/lib.rs` an
 | --- | --- | --- |
 | `view!` | `view-macros/src/lib.rs:17` | Parses the `<Tag>` template tree and hands it to `view-codegen`, expanding it into view function calls such as `column` / `text` / `each` / `when` |
 | `#[derive(Store)]` | `view-macros/src/lib.rs:24` | Generates a `<Name>StoreFields` trait for the struct, giving every named field a path-tracking method |
-| `css!` | `view-macros/src/lib.rs:41` | Takes a single-element CSS declaration block and calls `nana-ui-css` at build time to parse it into a `StylePatch` for `.css(...)` |
-| `stylesheet!` | `view-macros/src/lib.rs:76` | Compiles `mod styles; .card { … }` into a module holding a static `Sheet` and `view::Class` constants of the same names |
+| `css!` | `view-macros/src/lib.rs` | Takes a single-element CSS declaration block (Rust-token CSS or raw string `css!(r#"..."#)`) and compiles it via `nana-ui-css` into a `StylePatch` for `.css(...)` |
+| `stylesheet!` | `view-macros/src/lib.rs` | Compiles `mod styles; .card { … }` (token or raw string form) into a module holding a static `Sheet` and `view::Class` constants of the same names |
 
 #### Single source of truth: `nana-ui-view-schema`
 
@@ -73,7 +73,12 @@ The `for_each_control!` macro at `crates/nana-ui-view-schema/src/lib.rs:49` defi
 
 #### Build-time style compilation: `view-codegen/src/style.rs`
 
-`crates/nana-ui-view-codegen/src/style.rs` offers three entry points: `compile_inline` (`css!`), `compile_styles` (`<style>`) and `compile_stylesheet` (`stylesheet!`). It calls `nana-ui-css` at compile time to parse stylesheets and compiles class selectors (such as `.card`, `.card.active`) into a `StylePatch` in cascade priority order `Rank`; compiles `transition` into the element's implicit transition animation; and compiles class rules inside `@container` blocks into data carrying a container axis and range buckets. For unsupported complex selectors, `:hover`, `@media` or unknown properties it always produces a `StyleWarning` with a source position, and never swallows them silently.
+`crates/nana-ui-view-codegen/src/style.rs` provides `compile_inline` (`css!` and `style="..."`), `compile_styles` (`<style>`), and `compile_stylesheet` (`stylesheet!`), building directly on `nana-ui-css`'s `StyleOp` pipeline at compile time:
+
+- Full CSS Cascade Level 5 `@layer` ordering (`CascadeKey`), `@media` (Kleene 3-valued logic via `Sheet::with_media` and `SheetMediaQuery`), `@container` (interval breakpoint buckets), `@supports`, `@keyframes` / `transition`, and `@font-face` (`Sheet::with_font_faces` wired to host font ingestion);
+- Class and compound selectors, static child (`>`) and descendant (` `) combinators, subject and ancestor interactive pseudo-classes (`:hover` / `:focus` / `:focus-visible` / `:active` / `:selected`, `.card:hover .icon` → `track_interactive_state` + `ancestor_pseudo`), paint-only pseudo-elements (`::placeholder`, `::selection`, `::-webkit-scrollbar*`), element-scoped static `--*` custom property inheritance (hierarchical `VarScope`), and inline `style="..."` in `.vue` and `view!` (Layer 2 `.inline_patch`);
+- Product builds emit zero-overhead pure-Rust `StylePatch(fn(&mut LayoutStyle))` function pointers via `emit_style_ops_rust` (calling `nana_ui_core::style_patch::set::*`, zero runtime JSON); dev hot reload produces `HotStylePatch::from_ops(ops)`;
+- Diagnostics are strictly tiered: syntax errors, invalid values, unknown properties, and unsupported selectors or at-rules are compile errors, while known safely-ignorable vendor-prefixed properties and unused classes emit warnings — never silently dropped.
 
 ### 2. Pipeline two: the `.vue` single-file component compiler (`nana-ui-sfc`)
 

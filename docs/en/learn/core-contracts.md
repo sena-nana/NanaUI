@@ -110,7 +110,7 @@ Putting the Style Model, themes, geometry, Workspace and Motion in layer 1 comes
 
 Taking a card's style and motion as an example, the data flow crosses this layer's contracts in 4 steps:
 
-1. **Entry-point write**: the Rust component API or `nana-ui-css` (build time / runtime) writes style declarations into `LayoutStyle` fields and `ControlSemantics`.
+1. **Entry-point write**: the Rust component API or build-time `nana-ui-css` (via `StyleOp` / `StylePatch`) writes style declarations into `LayoutStyle` fields and `ControlSemantics`.
 2. **Theme resolution**: Runtime installs a theme and gets a `CompiledTheme`; `StyleModelRef` exposes the current palette, metrics and appearance per node.
 3. **Layout and painting consumption**: `RuntimeLayoutEngine` reads `LayoutStyle` and `WorkspaceModel` to compute geometry; the painting layer reads `PaintColorSlots` and `ContentFit`; Motion tracks are evaluated through `evaluate_track`, compositor-safe tracks are written into the `MotionDescriptor` table, and transient samples are never written back into the base style.
 4. **Text joins in**: when a text node is measured, the font size, language and writing direction in `LayoutStyle` become `TextStyle` / `TextConstraints` for `nana-text`.

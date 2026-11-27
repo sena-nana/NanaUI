@@ -42,7 +42,7 @@
 | Markdown（`rich_text`） | 无 | 块是扁平的，`pulldown-cmark` 不递归，`layout_block` 只多一层 |
 | ICU 消息（`i18n::message`） | 16 层 | 解析错误，按原文显示 |
 | 绘制脚本的路径对象（`paint_script::parse_path`） | 无 | 循环展开；JSON 本身由 `serde_json` 限 128 层 |
-| CSS：`@media` / `@container` / `@supports` / `@layer` 块 | `MAX_NESTING` 32 | 跳过那一块，计入 `skipped_at_rules` |
+| CSS：`@media` / `@container` / `@supports` / `@layer` 及块/函数嵌套 | `MAX_NESTING` 32 | 截断嵌套并产出 `DiagCode::NestingLimitExceeded`（`DiagSeverity::Error`） |
 | CSS：容器查询与 `@supports` 条件的括号、`color-mix()` | `MAX_NESTING` 32 | 查询 `Invalid` / 条件未知 / 颜色无效 |
 | CSS：`calc()` 的括号与数学函数 | `MAX_CALC_DEPTH` 16 | 值无效 |
 | CSS：`var()` 引用链 | `MAX_VAR_DEPTH` 32 | 当作未解析：用回退值；自引用 `--a: var(--a)` 也在此终止 |

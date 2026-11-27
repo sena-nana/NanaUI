@@ -4,7 +4,7 @@ Rust 的第一路径用控件自己的布局。你不写 CSS。排行、列和�
 
 这篇只描述 `nana-ui-css` 能映射的那一部分网页 CSS。`.vue` 方言的 `<style>`、`view!`、`stylesheet!` 与 `css!` 在构建期用它。你用它排界面骨架。
 
-构建期编译的是 class 选择器（`.card`、`.card.active`）、其中的 `@container` 规则和 `transition`。其他选择器、`:hover` 等交互态、`@media`、`@keyframes` 以及 Style Model 没有字段的声明只给出构建警告，不进视图。下文写到的选择器和 at-rule 能力属于引擎本身，由 `nana-ui-css` 的单元测试覆盖。`tools/css-parity` 只用 inline `style` 和 class hints 对照浏览器校验盒模型，不跑样式表。
+构建期编译覆盖类与复合类选择器（`.card`、`.card.active`）、静态子代（`>`）与后代（` `）组合器、主体及祖先交互伪类（`:hover`、`:focus`、`:focus-visible`、`:active`、`:selected`、`.card:hover .icon`）、绘制级伪元素（`::placeholder`、`::selection`、`::-webkit-scrollbar*`）、元素级静态 `--*` 自定义属性、内联 `style="..."` 与 `css!`，以及 `@layer`、`@media`、`@container`、`@supports`、`@keyframes`/`animation`/`transition` 与 `@font-face`。诊断按严重级别分层：语法错误、非法属性值、未知属性与不支持的选择器或 `@` 规则直接报编译错误；已知可安全忽略的厂商前缀属性（如 `-moz-*`、`-ms-*`）报编译警告；非法声明绝不覆盖先前级联出的值。`tools/css-parity` 用 156 组夹具对照浏览器校验盒模型。
 
 它不是浏览器里的 CSS 引擎。没有完整的选择器世界。对不上，就改布局。不靠容差假装一致。
 
@@ -883,7 +883,7 @@ grid 的列是 inline 轴上的轨道。行是 block 轴上的轨道。这是 CS
 
 把 `subgrid` 当作轨道列表里的混合 token 来写（例如 `subgrid 80px`）会在构建期 CSS 编译器触发迁移告警，并在运行期记 [`GridTrackListUnsupported::Subgrid`](https://github.com/sena-nana/NanaUI/blob/main/crates/nana-ui-core/src/box_layout.rs)。
 
-直接构造 `LayoutStyle { display: Grid }`、不经 css_map 时，`align-items` 默认 `start`。手写测试依赖此项。Default 无法按 display 区分「未写」和显式 `start`。经 `display:grid` 解析，会写成 `stretch`。
+直接构造 `LayoutStyle { display: Grid }`、不经 `nana-ui-css` 属性解析时，`align-items` 默认 `start`。手写测试依赖此项。Default 无法按 display 区分「未写」和显式 `start`。经 `display:grid` 解析，会写成 `stretch`。
 
 NanaUI 采用纯 `Flex + Grid + Inline + Layers`（及模态槽位 `Overlay`）布局模型，不再保留独立的 `DisplaySpec::Block`、`FlowRoot`、`InlineBlock`、`Contents` 或 `float` / `clear`。默认未显式指定 `display` 且非横排的容器（`LayoutStyle::stacks_as_block()` 为真，即 `display` 未写且 `direction != Some(FlexDirection::Row)`）沿块轴排列并将 `child_align_items()` 解析为 `Stretch`，使常规列容器内的常规子项默认撑满可用宽；写了 `align_self`、明确尺寸（`Px` / 百分比 / `Fill` / `Shrink` / `fit-content` 等）、有自然尺寸的替换内容（图片等）和与容器正交书写模式的子项仍按各自尺寸收窄。显式写 `display: flex`、`grid` 或 `layers` 时直接遵循自身的 `align_items`（`Stack` 预设即 `Flex`）。
 
@@ -1137,47 +1137,33 @@ CSS `url()` 的帧仍走 4× MSAA。它和 HostTexture、backdrop 的 interleave
 
 自定义滚动条铬是 [`ScrollView`](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/components.md)。`overflow` 不另做一套 thumb 绘制。
 
-**选择器。** 视图里只有 class 和 class 复合选择器生效（`.card`、`.card.active`），其余选择器给构建警告。下面是引擎本身能解析和匹配的部分。匹配要的树信息（兄弟序号、是否为空、是否选中、焦点、`:has()` 的后代位集）都由调用引擎的一方给出，引擎不自己遍历树。
+**选择器与伪元素。** 视图构建期支持类与复合类选择器（`.card`、`.card.active`）、同一模板 `<style>` 内的静态子代（`>`）与后代（` `）类组合器、主体交互伪类（`:hover`、`:focus`、`:focus-visible`、`:active`、`:selected`）以及祖先交互选择器（如 `.card:hover .icon`、`.row:active .label`）。其中 `:focus-visible` 独立于 `:focus` 区分键盘可见焦点，祖先交互选择器在构建期降维为祖先的 `El::track_interactive_state` 与后代的 `El::ancestor_pseudo`，运行时不做 DOM 选择器遍历。
 
-引擎认得 type、class、id、属性选择器，以及组合符空格、`>`、`+`、`~`。
+绘制级伪元素 `::placeholder`、`::selection` 与 `::-webkit-scrollbar*`（`::-webkit-scrollbar` / `::-webkit-scrollbar-track` / `::-webkit-scrollbar-thumb`）在构建期直接降维为 `nana_ui_core::StyleOp`（`PlaceholderColor`、`PlaceholderOpacity`、`SelectionBackground`、`SelectionColor`、`Scrollbar`）写入 `LayoutStyle`，由输入框、文本选区与滚动条原生绘制。`::before` / `::after` 生成盒仍不支持（报编译错误）。
 
-还有 `:root`、`:first-child`、`:last-child`、`:only-child`、`:nth-child()`、`:nth-of-type()`、`:nth-last-child()`、`:first-of-type`、`:last-of-type`。它们按调用方给的兄弟序号和个数匹配。简单的 `:not()`、`:is()`、`:where()` 也可以。
+其余依赖动态树结构的选择器（如 `:first-child`、`:nth-child()`、兄弟组合器 `+`/`~`、`:empty`、`:has()`）在视图构建期报编译错误，不静默忽略。
 
-`:disabled` 和 `:not(:disabled)` 就是 `[disabled]` 的存在性匹配。
+**层叠与 4 层合成。** 样式表内部严格按 CSS Cascade Level 5 排序（`CascadeKey`）：先普通分层声明（按 `@layer` 首次声明升序），再普通未分层声明，再 `!important` 未分层声明，最后 `!important` 分层声明（按 `@layer` 声明逆序，先声明的层赢）；同层内再比特异度和源序。
 
-`:checked` 读调用方给的 `checked` 标志。哪些节点算选中，由调用方决定。`input:checked + label` 走已有的兄弟组合符。
+运行时 `El` / `NodeStyle` 执行严格的 4 层覆盖顺序，不受链式调用顺序影响：
+1. **Layer 0**：控件默认布局；
+2. **Layer 1**：样式表规则（`.class`、`.class_when`、交互伪类、`@container`、`@media`、`.ancestor_pseudo`）；
+3. **Layer 2**：作者内联覆盖（`.vue` 与 `view!` 的 `style="..."` 经 `.inline_patch`、`.css(css!{...})` 与静态 Rust 布局/绘制构建器）；
+4. **Layer 3**：响应式 Rust 属性绑定（信号/闭包）。
 
-`:empty` 和 `:not(:empty)` 读调用方给的 `is_empty`。引擎不自己数子节点和文字。
+`:hover`、`:focus`、`:focus-visible`、`:active`、`:selected` 编译为高 5 位伪类掩码（`PSEUDO_BIT_SHIFT = 59`，其余 59 位留给条件类），按状态位命中 `StyleSite` 缓存的共享 `Arc<LayoutStyle>`。
 
-廉价主体 `:has(.class|#id|type)`，含逗号 OR，读调用方算好的后代位集（`has_bits`、`has_args`）。参数去重后最多 64 个。引擎不自己扫子树。
+`transition`（含 `transition-delay`、`transition-duration`、`transition-timing-function`）在视图里编成元素的隐式动画，覆盖 `opacity`、`transform`、`filter`、`width`、`height`、`background`（含 `background-color`）与 `color`。
 
-廉价主体 `:focus-within` 读调用方给的 `focus_within` 标志。
+`@keyframes` 和 `animation` 编译为 `nana-ui-core::motion` 的 `#87 MotionTrack` 轨道并在运行时按当前主题求值（支持多停点、缓动/`steps()`、循环、`direction`、`fill-mode`、`animation-play-state` 与 `reduced_motion`）。
 
-`:focus-visible` 映射为 `:focus`。没有键盘和指针的区分。这是 fail-closed：未聚焦时不匹配。
-
-`::before`、`::after`、`::placeholder`、`::selection` 和 `::-moz-selection` 只解析和匹配，得到声明块，没有谁拿它生成盒子或画东西。
-
-占位文字和文档选区的颜色是 Style Model 的字段：`LayoutStyle::placeholder_color`、`placeholder_opacity`，以及 `selection_background`、`selection_color`。Runtime 的 TextInput 和文档选区照着画。
-
-带组合符的 `:has` 和 `:focus-within`，以及写在祖先上的，引擎不解析，计入 `skipped_selectors`。
-
-**层叠。** 样式表内部先 normal，再 `!important`。然后再比特异度和源序。视图编译 class 规则时用的也是这个顺序。
-
-视图里没有 prop 和 inline 这两层：class 规则按上面的顺序，写在元素构建出来的布局上。引擎自己的 `rebuild_layout_style` 还有这两层，顺序见下文「`@layer`」之后的几段。
-
-`:hover`、`:focus`、`:active` 进交互桶，`matched_interactive_rules` 按调用方给的状态挑规则。它们不当布局条件。视图里是构建警告。
-
-`transition` 在视图里编成元素的隐式动画。只认 `opacity`、`transform`、`width`、`height`、`background`（含 `background-color`），其他属性给构建警告。
-
-`@keyframes` 和 `animation` 只解析，不播放。视图里是构建警告。
-
-`font-variation-settings` 的过渡在视图里给构建警告。要按轴动画，用 Rust 的 `TransitionBuilder::font_axis`：每个轴一条 Layout-class track。
+`font-variation-settings` 的过渡不支持通过 CSS `transition` 声明；要按轴动画，用 Rust 的 `TransitionBuilder::font_axis`：每个轴一条 Layout-class track。
 
 各属性走哪一类动画（Compositor、Paint、Layout）、fallback 和性能含义见 [架构](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/architecture.md)。
 
 **增删节点时重算什么。** 什么都不重算。视图运行时不匹配选择器，增删一个子节点不会让兄弟、父节点或祖先重新级联。
 
-视图里的元素只按自己写的 class 组合（含 `class_when` 当前打开的那些）取样式。`:first-child`、`:nth-child()`、`+`、`~`、`:empty`、`:has()` 这类要看树结构的选择器，在视图里只给构建警告。
+视图里的元素按自己命中的类组合（含 `class_when` 与祖先交互态 `.ancestor_pseudo` 当前打开的那些）取样式。`:first-child`、`:nth-child()`、`+`、`~`、`:empty`、`:has()` 这类要看树结构的选择器在视图中不受支持并报编译错误。
 
 **挂载带样式的节点要多少。** `stylesheet!`、`view!` 和 `.vue` 的 `<style>` 在构建期编译成 `StylePatch`。运行期不解析 CSS，也不逐元素匹配选择器。一个元素的 class 组合第一次出现时，从样式表里挑出它能命中的规则，得到一个 `StyleSite`。之后同一组合、同一初始布局的元素，直接复用这处已经合成好的样式。
 
@@ -1226,23 +1212,15 @@ CSS `url()` 的帧仍走 4× MSAA。它和 HostTexture、backdrop 的 interleave
 
 循环和深度有上限，是 16。导入规则并进同一份 cascade。已经解析的导入按 canonical href 缓存。视口变化不重解析。
 
-**`@media`。** 子集是 `min/max/width`、`min/max/height`（px）、`orientation`、`prefers-color-scheme`，以及 `screen`、`all`、`print` 类型。
+**`@media`。** 支持 `all` / `screen` / `print` 媒体类型，以及 `width` / `height` / `aspect-ratio` / `resolution`（含 `min-` / `max-` 与 MQ4 区间语法）、`orientation`、`prefers-color-scheme`、`prefers-reduced-motion`、`prefers-contrast`、`hover`、`pointer` 媒体特性与 `and` / `or` / `not` 组合。
 
-条件匹配时，`ParsedStylesheet::flatten` 把规则并进 cascade。换视口或主题，用新的 `MediaEnvironment` 再 flatten 一次即可，不重扫 CSS 文本。视图里 `@media` 是构建警告。
+构建期由 `nana-ui-css` 降维为后端中立的 `nana_ui_core::MediaQueryList`，按 CSS Media Queries Level 4 强 Kleene 三值逻辑（`Some(true)` / `Some(false)` / `None`）求值，并通过 `Sheet::with_media` 与 `SheetMediaQuery` 挂入样式表；运行时通过 `media_env_signal()` 对当前 `MediaEnv`（视口宽高、缩放/分辨率、深浅色方案、减少动效、对比度、悬停与指针能力）响应式求值，换视口或切主题不重扫 CSS 文本。
 
-**`@font-face`。** 引擎只解析 `font-family`、`src`、`font-weight`（含 `200 700` 这种范围），不注册字体。视图里是构建警告。
+**`@font-face`。** 支持 `font-family`、`src`（`url(...)`、`local(...)` 及可选 `format(...)`）、`font-weight`（单值或 `200 700` 范围）与 `font-style`。构建期降维为 `nana_ui_core::FontFaceRule` 并经 `Sheet::with_font_faces`（附于根元素 `El::sheet(&SHEET)`）带入视图；宿主通过 [`ingest_font_face_rules`](https://github.com/sena-nana/NanaUI/blob/main/crates/nana-ui/src/font_face_ingest.rs) / `drain_world_font_faces` 从 jail 内本机文件、`nana://res/` 资源包或 `data:` 解码并注册进共享 `FontSystem`。
 
-要用自己的字体，在宿主里调 [`register_host_font_face`](https://github.com/sena-nana/NanaUI/blob/main/crates/nana-ui/src/nana_text.rs)：一个 family 加一段字重范围，登记成一个 face，写入共享的 `FontSystem`。和 `bundled-fonts` 是同一套库。要成组替换，用 `HostFontScope`。这不是 CSSOM 的 `FontFace`。
+手动注册字体仍可直接在宿主中调用 [`register_host_font_face`](https://github.com/sena-nana/NanaUI/blob/main/crates/nana-ui/src/nana_text.rs)（支持 `HostFontScope` 成组替换）或 [`ingest_host_font_faces`](https://github.com/sena-nana/NanaUI/blob/main/crates/nana-ui/src/font_face_ingest.rs)。单个字体文件的读取上限为 8 MiB（`MAX_FONT_FACE_BYTES`），所有注册字体的累计上限为 16 MiB（`MAX_REGISTERED_FONT_BYTES`）。
 
-宿主手里已经有解析好的 face，可以交给 [`ingest_host_font_faces`](https://github.com/sena-nana/NanaUI/blob/main/crates/nana-ui/src/font_face_ingest.rs)：`HostFontFaceSpec` 的 `weight` 和 `weight_end` 就是 `font-weight` 的范围，整段登记。它读 jail 内的本机文件、`nana://res/` 和 `data:`。CSS 引擎的 `css_at_rule::load_font_face_bytes` 只读文件和资源包，不认 `data:`，因为 `data:` 不是文件路径。内联字体由 ingest 自己解码。
-
-单个字体文件的读上限是 8MB。
-
-**`@supports`。** 它在解析期求值。匹配，就把内部规则并进同一份 cascade，所以视图里块内的 class 规则照样编译。
-
-谓词子集是引擎已有的。`display: flex|grid|block`，以及已经解析的其它 `display` 关键字。`color` 是 `parse_css_color` 能解析的值。`width` 是 `LengthSpec::parse` 能解析的值。可以加 `not`、`and`、`or`。
-
-未知谓词整块 fail-closed，计入 `skipped_at_rules`。例如 `selector()`、`lab()`、`display-p3`，以及未列入的属性。
+**`@supports`。** 在解析期依据引擎的 `is_supported_declaration` 求值。匹配，就把内部规则并进同一份 cascade，所以视图里块内的规则照样编译；未知或不支持的谓词 fail-closed，按三值逻辑不命中。
 
 **`@container`。** 引擎只把它编译成数据，不去量容器；容器尺寸由 Runtime 的响应式规则读（见上文「响应式规则（#265）」）。
 
@@ -1253,30 +1231,22 @@ prelude 是 `[名字] 条件`：
 
 每条查询编成一条轴上的半开区间。`max-width: 480px` 含 480，上界是 `480f32.next_up()`；`<` 不含边界。
 
-元素命中的 `@container` 规则把容器尺寸切成桶，最多 16 个断点。每个桶里成立的规则按 cascade 顺序（`!important`、特异度、源序）并入，得到这个桶的整份样式。它和基础样式不同的字段就是这个桶的变体，交给 Runtime 的规则：`ResponsiveContainer::Nearest { name }`，找最近的、名字相同、回答这条轴的容器。
+元素命中的 `@container` 规则把容器尺寸切成桶，最多 16 个断点（`MAX_CONTAINER_BREAKPOINTS`）。每个桶里成立的规则按 cascade 顺序（`@layer`、`!important`、特异度、源序）并入，得到这个桶的整份样式。它和基础样式不同的字段就是这个桶的变体，交给 Runtime 的规则：`ResponsiveContainer::Nearest { name }`，找最近的、名字相同、回答这条轴的容器。
 
 `container-type`（`normal`、`inline-size`、`size`）、`container-name` 和 `container` 简写写进 `LayoutStyle`。查询容器不做尺寸包含，尺寸仍随内容。
 
-下面这些一律 fail closed，计入 `skipped_at_rules`：
+下面这些不受单轴断点模型支持，在构建期报编译错误（fail closed）：
 - 其它单位，`aspect-ratio`、`orientation`、`style()`、`scroll-state()`；
 - 一条查询里有两条轴；
 - 逗号列表，只有名字，嵌套的 `@container`。
 
-一个元素命中的规则问到两个容器或两条轴，或者断点超过 16 个时，它的 `@container` 规则全部不生效。引擎计入 `container_queries`，视图里给构建警告。
+一个元素命中的规则问到两个容器或两条轴，或者断点超过 16 个时，它的 `@container` 规则全部不生效，构建期报错/警告并记入 `runtime.view.container_query_unsupported`。
 
-块里只有普通样式规则生效。`:hover`、伪元素、`transition`、`@keyframes`、`@font-face` 写在里面不生效。
+块里支持普通样式规则及主体交互伪类规则；`transition`、`@keyframes`、`@font-face` 不在 `@container` 内生效。
 
-**`@layer`。** `@layer name { }` 和匿名的 `@layer { }` 把内部规则按作者源序并进 cascade，并记下层名（`ParsedStylesheet.layer_names`）。
+**`@layer`。** 完整实现 CSS Cascade Level 5 层级优先级（`LayerRegistry` + `CascadeKey`）：支持前向声明 `@layer reset, base, theme;`、`@layer name { }` 与匿名 `@layer { }`。普通声明中未分层（unlayered）始终压过分层声明，分层之间按首次声明顺序后者赢；`!important` 声明中分层压过未分层，且层序反转（先声明的层赢）。
 
-**没有** cascade-layer 优先级。unlayered 并不压过 layered。`!important` 也不按层反转。
-
-`@import … layer()` 和 `supports()` 仍不加载。
-
-引擎的 `rebuild_layout_style` 先写样式表的普通声明、prop 和 inline 的普通声明，以及 `nana-*` class hints；再写样式表 important；最后是 prop 和 inline 的 important。所以样式表的 `width:80px !important` 不会被普通的 `width:200px` prop 盖掉。
-
-视图不走这条路，也不认 `nana-*` class hints：class 只按 `<style>` 里写的规则取样式。
-
-自定义属性会去掉 `!important`。和普通声明同一套 `split_important_flag`。所以 `--gap: 8px !important` 经 `var(--gap)` 得到 `8px`。不是带着标志，无法解析。
+自定义属性（`--*`）按 `VarScope` 在 Token 流上分层继承与展开（`:root` / `[data-theme]` → 祖先匹配规则与内联样式 → 元素自身规则与内联样式），`!important` 参与自定义属性的级联胜出判定而不进入展开值本身。
 
 ## 不要指望的
 
@@ -1293,18 +1263,16 @@ prelude 是 `[名字] 条件`：
 - `tan()`、`atan2()`、`sin()` 等其余 CSS math 函数。
 - 无法折成长度原子的、混单位嵌套的 `min`、`max`、`clamp`。
 - 长度互乘除。完整 `calc()` AST 仍只兑现 leftover flatten 失败的那个子集。
-- 把 `:hover` 或 `:focus` 当布局条件。
-- 带组合符的 `:has()`。
+- 带组合符的 `:has()` 及运行时动态兄弟/子序号选择器（`+`、`~`、`:nth-child()` 等）。
 - 未知的 `@supports` 谓词。
 - `@import … layer()` 和 `supports()`。
-- 完整的 cascade-layer 优先级。
 - `display: block` / `flow-root` / `inline-block` / `contents`，以及 CSS `float` / `clear`（核心模型为 `Flex + Grid + Inline + Layers`；需要流内并排容器时请用 `inline-flex` / `inline-grid`）。
 - 完整 IFC。行内原子现已支持 `vertical-align` 细分（`baseline`/`sub`/`super`/`text-top`/`text-bottom`/`middle`/`top`/`bottom` 及 `<length>`/`<percentage>`）与 `dominant-baseline`（`auto`/`central`/`alphabetic`/`ideographic`）竖排基线及后代推导（#395），但仍没有跨节点 inline 拆箱。`subgrid` 仍不推导后代首末行位置，继续按自身字体近似。
 - 轨道列表 token 形式的 `subgrid`。
 - 用 `position: fixed` 当 Dialog 或 Drawer。走 Nana 的浮层。
 - 自定义 `url()` 光标图。
 - 未知的 `user-select` 关键字。
-- 完整的 CSS Highlight API。选区只有 `selection_background` 和 `selection_color` 两个字段，CSS 的 `::selection` 在视图里是构建警告。
+- 完整的 CSS Highlight API（`::selection` 已端到端支持 `background` / `background-color` 与 `color` 两个选区字段，但不支持任意自定义 Highlight 名称）。
 - `::before`、`::after` 生成盒，`content`、`attr()`、计数器、`quotes`。
 - `-webkit-app-region` 和 `app-region`。任意盒不能当标题栏。拖窗只走 `AppTitleBar`，再到 `nana-window`。你写了也不会拖窗。
 - `overflow:auto` 的自定义滚动条铬。走 `ScrollView`。
@@ -1317,13 +1285,13 @@ prelude 是 `[名字] 条件`：
 
 Android 和 iOS **不是**产品布局目标。两个实验宿主（[移动宿主](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/mobile-host.md)）仍用同一份 `LayoutStyle`、Runtime 和 UiScene，没有第二套移动端布局引擎。见 [Android](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/android.md)、[iOS](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/ios.md)。 HarmonyOS / OpenHarmony 同样共用这份布局，只是编译档，见 [OHOS](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/ohos.md)。
 
-`:has`、`::before`、`::after`、`::placeholder`、`::selection` 只是引擎能解析和匹配，视图里都是构建警告，见上文「选择器」。
+`::placeholder`、`::selection` 与 `::-webkit-scrollbar*` 已直接编译进 Style Model 字段；`:has()` 与 `::before` / `::after` 生成盒不在视图支持集合内，构建期直接报错。
 
 `writing-mode: horizontal-tb | vertical-rl | vertical-lr` 已经接入逻辑边，也接入了 IFC 和 flex 行的 inline 轴。见上文「能用的」。
 
 主题色走控件和外观设置。不要用任意业务色去改框架 token。
 
-未知声明不进 Style Model。视图里会给构建警告。不要假设「写了就能在某处生效」。
+未知声明或非法值不进 Style Model，构建期直接报编译错误（仅已知可安全忽略的厂商前缀属性如 `-moz-*` / `-ms-*` 给警告），且绝不覆盖先前的级联值。不要假设「写了就能在某处生效」。
 
 ## 和 Rust 布局的关系
 

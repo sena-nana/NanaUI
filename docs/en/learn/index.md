@@ -42,7 +42,7 @@ There is exactly one product rendering path: `UiWorld → ExtractedNode → UiSc
 | Chapter | Core content |
 | --- | --- |
 | [Core Contracts: nana-ui-core](/learn/core-contracts) | Style Model (Tokens + Semantics + Layout), theme tokens, geometry, WorkspaceModel, Motion IR |
-| [CSS Engine: nana-ui-css](/learn/css-engine) | Hand-written lexing/parsing/selector matching/cascade, and its single point of consumption at build time |
+| [CSS Engine: nana-ui-css](/learn/css-engine) | Zero-dependency W3C CSS Syntax Level 3 parsing, CSS Cascade 5, direct `StyleOp` lowering, and pure-Rust `StylePatch` codegen |
 | [Text Engine: nana-text](/learn/text-engine) | The three-stage decoupled pipeline of font selection → OpenType shaping → retained text layout, and generational caches |
 
 ### Runtime internals

@@ -42,7 +42,7 @@ Rust / `.vue` 方言输入
 | 章节 | 核心内容 |
 | --- | --- |
 | [核心合同：nana-ui-core](/learn/core-contracts) | Style Model（Tokens + Semantics + Layout）、主题令牌、几何、WorkspaceModel、Motion IR |
-| [CSS 引擎：nana-ui-css](/learn/css-engine) | 手写词法/解析/选择器匹配/级联，以及构建期的唯一消费时机 |
+| [CSS 引擎：nana-ui-css](/learn/css-engine) | W3C CSS Syntax Level 3 零依赖解析、CSS Cascade 5、直接 `StyleOp` 降维与纯 Rust `StylePatch` 代码生成 |
 | [文本引擎：nana-text](/learn/text-engine) | 字体选择 → OpenType 整形 → 保留文本布局三段解耦管线与代际缓存 |
 
 ### Runtime 内部

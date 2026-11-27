@@ -54,7 +54,7 @@ A child component declares a view parameter such as `header: impl IntoView` and 
 
 `ref="name"` writes the node id into `let name = node_ref();` in the script. `on_mount(move |cx| …)` runs after the view enters the tree; use it to focus or read layout. A `key` on a component lands on its first root node. Tags not in this batch call the same-named `#[component]` Rust function under the `view!` rules, passing arguments by attribute name (see [Composing views](https://github.com/sena-nana/NanaUI/blob/main/docs/guide/essentials/view-functions.md)).
 
-`<style>`, with or without `scoped`, applies only to its own component and is compiled at build time. Templates still follow Rust ownership: when the same value is passed to a component and also used by an event closure, write `todo.clone()`.
+`<style>` is component-scoped by default whether or not `scoped` is written; use `<style global>` or a standalone `stylesheet!` for explicit global styles, all compiled at build time. Elements also support inline `style="..."` attributes (composed at Layer 2). Templates still follow Rust ownership: when the same value is passed to a component and also used by an event closure, write `todo.clone()`.
 
 The generated code is formatted and written to `$OUT_DIR/nana_views.rs`, along with `$OUT_DIR/nana_views.map.json` (token-aligned bidirectional spans), which `nana-sfc-remap` uses to map rustc JSON spans back to `.vue` and `nana-sfc-lsp` uses to bridge `rust-analyzer`. Each component's signals and the classification of each binding go into `$OUT_DIR/nana_views.deps.md`.
 

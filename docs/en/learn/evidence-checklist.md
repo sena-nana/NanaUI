@@ -33,7 +33,7 @@ rg "nana-ui-css" crates/nana-ui-core/Cargo.toml crates/nana-ui-runtime/Cargo.tom
 ### B1. CSS parsing and the cascade live only in `nana-ui-css`
 
 ```powershell
-cargo tree -p nana-ui-css --depth 1                          # css -> core + serde_json, no retained-tree dependency
+cargo tree -p nana-ui-css --depth 1                          # css -> core only, zero external deps, no retained-tree dependency
 rg -i "selector|cascade" crates/nana-ui-runtime/src -g '!tests'  # every hit is a comment/doc/ICU selectordinal
 rg "nana_ui_css" crates/*/src                                # only view-codegen (build time)
 ```

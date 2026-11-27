@@ -47,21 +47,25 @@ fn todos(empty: Signal<bool>) -> impl IntoView {
 
 一个元素的类必须来自同一张表。固定类、条件类和交互伪类上的 `transition`（支持 `transition-delay`）会在状态变化改变 `opacity`、`transform`、`filter`、`width`、`height`、`background` 或 `color` 时，沿着合成器轨道播到新值；`@keyframes` 和 `animation` 同样编译成 `#87 MotionTrack` 轨道并在运行时按当前主题求值。逻辑样式直接取新值。
 
-只给一个元素写几条声明，用 `css!`，并且放在别的布局属性之前：
+只给一个元素写几条声明，在模板（`.vue` 或 `view!`）中可直接写内联 `style="..."`，在函数写法中用 `.css(css! { ... })`：
 
 ```rust
 use nana_ui::runtime::view::{column, css};
 
 column().css(css! { padding: 12px; opacity: 0.8 })
+// 也支持原始字符串字面量，规避所有 Rust 词法限制：
+column().css(css!(r#"padding: 12px; font-size: 1.5em;"#))
 ```
 
-Rust 词法写不出的值放进双引号，例如 `font-size: "1.5em"`。构建时会去掉引号再拼接。
+`css!`、`stylesheet!` 与 `view!` 的 `<style>` 同时支持 Rust Token 写法与原始字符串字面量（`r#"..."#`）。在 Token 模式下，需要 CSS 字符串值的属性（如 `grid-template-areas`、`font-family`、`font-feature-settings`、`font-variation-settings`、`content` 以及 `url(...)` 与选择器）会自动保留双引号；其余属性里 Rust 词法写不出的值（如 `"1.5em"`、`"#9ecafe"`）仍可放进双引号转义。
+
+元素样式遵守严格的 4 层覆盖顺序，与链式调用顺序无关：**Layer 0**（控件默认布局）→ **Layer 1**（样式表规则：`.class` / `.class_when` / 交互伪类 / `@container` / `@media` / 祖先交互）→ **Layer 2**（内联 `style="..."` / `.css(css!{...})` / 静态 Rust 构建器）→ **Layer 3**（响应式 Rust 属性绑定）。
 
 ::: warning
 一个元素混用两张样式表的类，会在运行时断言失败。条件类和固定类写同一份 `stylesheet!`。
 :::
 
-构建时编入类选择器（`.todos`、`.todos.empty`）、宿主交互伪类（`:hover`、`:focus`、`:focus-visible`、`:active`）、`@keyframes` 与 `animation`，以及在模板 `<style>` 内针对同一模板静态元素的后代（` `）与直接子代（`>`）类组合器。`stylesheet!` 继续只编译无组合器的类选择器；祖先交互伪类（如 `.card:hover .title`）、兄弟组合器（`+`、`~`）、标签/id/属性选择器、`@media`、`@font-face`、伪元素以及不认识的属性会落在对应的那一段 CSS 上作为警告。不要假设「写进样式表就一定生效」。
+构建期端到端编译类与复合类选择器（`.todos`、`.todos.empty`）、主体交互伪类（`:hover`、`:focus`、`:focus-visible`、`:active`、`:selected`）、模板 `<style>` 内的静态子代（`>`）与后代（` `）组合器及祖先交互选择器（如 `.card:hover .title`）、绘制级伪元素（`::placeholder`、`::selection`、`::-webkit-scrollbar*`）、元素级静态 `--*` 自定义属性继承、内联 `style="..."`，以及 `@layer`、`@media`、`@container`、`@supports`、`@keyframes`/`animation`、`transition` 与 `@font-face`。语法错误、非法值、未知属性与不支持的选择器或 `@` 规则（如兄弟组合器 `+`/`~`、标签/id/属性选择器、`::before`/`::after` 生成盒）会直接报编译错误；已知可安全忽略的厂商前缀属性（如 `-moz-*`、`-ms-*`）报编译警告。不要假设「写进样式表就一定生效」。
 
 `@container` 块里的类规则也编进去，按容器的尺寸生效。容器用 `container-type` 和 `container-name` 声明：
 

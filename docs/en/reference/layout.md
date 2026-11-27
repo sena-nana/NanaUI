@@ -4,7 +4,7 @@ The primary Rust path uses each control's own layout. You do not write CSS. For 
 
 This page describes only the part of web CSS that `nana-ui-css` can map. The `.vue` dialect's `<style>`, `view!`, `stylesheet!`, and `css!` use it at build time. You use it to lay out the skeleton of an interface.
 
-What gets compiled at build time is class selectors (`.card`, `.card.active`), the `@container` rules inside them, and `transition`. Other selectors, interaction states such as `:hover`, `@media`, `@keyframes`, and declarations that have no Style Model field only produce build warnings and do not reach the view. The selector and at-rule capabilities described below belong to the engine itself and are covered by `nana-ui-css` unit tests. `tools/css-parity` checks the box model against a browser using only inline `style` and class hints; it does not run stylesheets.
+Build-time compilation covers class and compound class selectors (`.card`, `.card.active`), static child (`>`) and descendant (` `) combinators, subject and ancestor interactive pseudo-classes (`:hover`, `:focus`, `:focus-visible`, `:active`, `:selected`, `.card:hover .icon`), paint-only pseudo-elements (`::placeholder`, `::selection`, `::-webkit-scrollbar*`), element-scoped static `--*` custom properties, inline `style="..."` and `css!`, plus `@layer`, `@media`, `@container`, `@supports`, `@keyframes`/`animation`/`transition`, and `@font-face`. Diagnostics are tiered: syntax errors, invalid values, unknown properties, and unsupported selectors or at-rules are compile errors; known safely-ignorable vendor-prefixed properties (such as `-moz-*`, `-ms-*`) are compile warnings; invalid declarations never clobber prior cascaded values. `tools/css-parity` checks the box model against a browser across 156 fixtures.
 
 It is not a browser CSS engine. There is no full selector world. When it does not match, change the layout. Do not fake agreement with tolerances.
 
@@ -889,7 +889,7 @@ A whole-value `subgrid` (with optional `[line-name]` groups) inherits the resolv
 
 Mixing `subgrid` with explicit track tokens, such as `subgrid 80px`, emits a build-time CSS migration warning and records [`GridTrackListUnsupported::Subgrid`](https://github.com/sena-nana/NanaUI/blob/main/crates/nana-ui-core/src/box_layout.rs).
 
-When you build `LayoutStyle { display: Grid }` directly, without going through css_map, `align-items` defaults to `start`. Hand-written tests rely on this. `Default` cannot tell "not written" from an explicit `start` by display. Parsed through `display:grid`, it writes `stretch`.
+When you build `LayoutStyle { display: Grid }` directly, without going through `nana-ui-css` property lowering, `align-items` defaults to `start`. Hand-written tests rely on this. `Default` cannot tell "not written" from an explicit `start` by display. Parsed through `display:grid`, it writes `stretch`.
 
 NanaUI uses a pure `Flex + Grid + Inline + Layers` (plus modal `Overlay`) layout model; separate `DisplaySpec::Block`, `FlowRoot`, `InlineBlock`, `Contents`, and `float` / `clear` were removed. A default column container with unset `display` (`LayoutStyle::stacks_as_block()` is true when `display` is unset and `direction != Some(FlexDirection::Row)`) resolves `child_align_items()` to `Stretch` so in-flow children with `auto` width fill the containing block by default, while children naming `align_self`, non-`auto` widths (`Px`, percentage, `Fill`, `Shrink`, `fit-content`, etc.), replaced content with natural size, or orthogonal writing mode keep their own width. Explicit `display: flex`, `grid`, or `layers` containers follow their own `align_items` (all `Stack` presets are `Flex`).
 
@@ -1143,47 +1143,33 @@ The gates are in `world/tests/layout_foundations.rs`. The page is as tall as the
 
 A custom scrollbar is chrome, [`ScrollView`](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/components.md). `overflow` does not draw a second thumb.
 
-**Selectors.** In a view only class and compound class selectors take effect (`.card`, `.card.active`), and any other selector gives a build warning. What follows is the part the engine itself can parse and match. The tree information matching needs (sibling index, whether it is empty, whether it is selected, focus, the descendant bitset of `:has()`) is supplied by whoever calls the engine; the engine does not walk the tree itself.
+**Selectors and pseudo-elements.** Build-time view compilation supports class and compound class selectors (`.card`, `.card.active`), static child (`>`) and descendant (` `) class combinators within a template `<style>`, subject interactive pseudo-classes (`:hover`, `:focus`, `:focus-visible`, `:active`, `:selected`), and ancestor interactive selectors (such as `.card:hover .icon`, `.row:active .label`). `:focus-visible` is tracked distinctly from `:focus` for keyboard-visible focus, and ancestor interactive selectors lower at build time to `El::track_interactive_state` on the ancestor and `El::ancestor_pseudo` on the descendant, with zero runtime DOM selector traversal.
 
-The engine knows type, class, id, and attribute selectors, and the combinators space, `>`, `+`, `~`.
+Paint-only pseudo-elements `::placeholder`, `::selection`, and `::-webkit-scrollbar*` (`::-webkit-scrollbar`, `::-webkit-scrollbar-track`, `::-webkit-scrollbar-thumb`) lower directly at build time into `nana_ui_core::StyleOp` (`PlaceholderColor`, `PlaceholderOpacity`, `SelectionBackground`, `SelectionColor`, `Scrollbar`) on `LayoutStyle` and are rendered natively by text inputs, text selections, and scroll views. Box-generating `::before` / `::after` remain unsupported and produce compile errors.
 
-There are also `:root`, `:first-child`, `:last-child`, `:only-child`, `:nth-child()`, `:nth-of-type()`, `:nth-last-child()`, `:first-of-type`, `:last-of-type`. They match on the sibling index and count the caller supplies. Simple `:not()`, `:is()`, and `:where()` work too.
+Other tree-structure selectors (`:first-child`, `:nth-child()`, sibling combinators `+`/`~`, `:empty`, `:has()`) are unsupported in views and produce compile errors rather than being silently ignored.
 
-`:disabled` and `:not(:disabled)` are just the presence match of `[disabled]`.
+**Cascade and 4-layer composition.** Inside a stylesheet, rules follow full CSS Cascade Level 5 ordering (`CascadeKey`): normal layered declarations (ascending `@layer` declaration order), then normal unlayered declarations, then `!important` unlayered declarations, and finally `!important` layered declarations (reversed `@layer` order — earlier declared layer wins); ties break by specificity and source order.
 
-`:checked` reads the `checked` flag the caller supplies. Which nodes count as selected is up to the caller. `input:checked + label` goes through the existing sibling combinators.
+At runtime, `El` / `NodeStyle` enforces a strict 4-layer precedence independent of builder call order:
+1. **Layer 0**: control default layout;
+2. **Layer 1**: stylesheet rules (`.class`, `.class_when`, interactive pseudos, `@container`, `@media`, `.ancestor_pseudo`);
+3. **Layer 2**: author inline overrides (`style="..."` via `.inline_patch` in `.vue` and `view!`, `.css(css!{...})`, static Rust layout/paint builders);
+4. **Layer 3**: reactive Rust prop bindings (signals/closures).
 
-`:empty` and `:not(:empty)` read the `is_empty` the caller supplies. The engine does not count child nodes and text itself.
+`:hover`, `:focus`, `:focus-visible`, `:active`, and `:selected` compile into the top 5 interactive pseudo bits (`PSEUDO_BIT_SHIFT = 59`, leaving 59 bits for conditional classes) and resolve against `StyleSite`'s shared `Arc<LayoutStyle>` cache.
 
-A cheap subject `:has(.class|#id|type)`, with comma OR, reads the descendant bitsets the caller computed (`has_bits`, `has_args`). After de-duplication the arguments number at most 64. The engine does not scan the subtree itself.
+`transition` (including `transition-delay`, `transition-duration`, and `transition-timing-function`) compiles into the element's implicit compositor tracks for `opacity`, `transform`, `filter`, `width`, `height`, `background` (including `background-color`), and `color`.
 
-A cheap subject `:focus-within` reads the `focus_within` flag the caller supplies.
+`@keyframes` and `animation` compile into `#87 MotionTrack` tracks in `nana-ui-core::motion` and resolve theme colors live (supporting multi-stop timelines, easings/`steps()`, iterations, `direction`, `fill-mode`, `animation-play-state`, and `reduced_motion`).
 
-`:focus-visible` maps to `:focus`. There is no keyboard-versus-pointer distinction. This fails closed: it does not match when unfocused.
-
-`::before`, `::after`, `::placeholder`, `::selection`, and `::-moz-selection` are only parsed and matched to a declaration block; nothing generates boxes from them or paints with them.
-
-Placeholder text color and document selection colors are Style Model fields: `LayoutStyle::placeholder_color`, `placeholder_opacity`, and `selection_background`, `selection_color`. Runtime's TextInput and document selection paint from them.
-
-`:has` with a combinator, `:focus-within` written on an ancestor, and those written on ancestors are not parsed by the engine and count into `skipped_selectors`.
-
-**Cascade.** Inside a stylesheet, normal comes first, then `!important`. Then specificity and source order decide. Compiling class rules in a view uses the same order.
-
-A view has no prop or inline layers: class rules apply in the order above, written onto the layout the element builds. The engine's own `rebuild_layout_style` still has those two layers; the order is in the paragraphs after "`@layer`" below.
-
-`:hover`, `:focus`, and `:active` go into the interactive bucket, and `matched_interactive_rules` picks rules from the state the caller supplies. They are not treated as layout conditions. In a view they are a build warning.
-
-`transition` in a view compiles into the element's implicit animation. Only `opacity`, `transform`, `width`, `height`, and `background` (including `background-color`) are recognized; other properties give a build warning.
-
-`@keyframes` and `animation` are only parsed, not played. In a view they are a build warning.
-
-A `font-variation-settings` transition gives a build warning in a view. To animate by axis, use Rust's `TransitionBuilder::font_axis`: one Layout-class track per axis.
+Transitioning `font-variation-settings` is not supported via CSS `transition`; to animate by axis, use Rust's `TransitionBuilder::font_axis` (one Layout-class track per axis).
 
 Which animation class each property takes (Compositor, Paint, Layout), the fallbacks, and the performance meaning are in [Architecture](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/architecture.md).
 
 **What is recomputed when a node is added or removed.** Nothing. The view runtime does not match selectors, so adding or removing a child does not re-cascade siblings, parents, or ancestors.
 
-An element in a view takes styles only from the class combination it writes (including those `class_when` currently turns on). Tree-structure selectors such as `:first-child`, `:nth-child()`, `+`, `~`, `:empty`, and `:has()` only give a build warning in a view.
+An element in a view takes styles from its matched class combination (including active `class_when` and `.ancestor_pseudo` states). Tree-structure selectors such as `:first-child`, `:nth-child()`, `+`, `~`, `:empty`, and `:has()` are unsupported in views and fail with a compile error.
 
 **What mounting a styled node costs.** `stylesheet!`, `view!`, and a `.vue` `<style>` are compiled into a `StylePatch` at build time. At runtime no CSS is parsed and no element is matched against selectors. When an element's class combination first appears, the rules it can hit are picked out of the stylesheet, giving a `StyleSite`. After that, elements with the same combination and the same initial layout reuse this already composed style.
 
@@ -1232,23 +1218,15 @@ An `@import` written after ordinary rules is ignored per CSS. An `@import` insid
 
 Cycles and depth are capped at 16. Imported rules merge into the same cascade. An import already resolved is cached by canonical href. A viewport change does not re-parse it.
 
-**`@media`.** The subset is `min/max/width`, `min/max/height` (px), `orientation`, `prefers-color-scheme`, and the `screen`, `all`, and `print` types.
+**`@media`.** Supports `all`, `screen`, and `print` media types together with `width`, `height`, `aspect-ratio`, and `resolution` (including `min-` / `max-` and MQ4 range syntax), `orientation`, `prefers-color-scheme`, `prefers-reduced-motion`, `prefers-contrast`, `hover`, and `pointer`, combined with `and`, `or`, and `not`.
 
-When a condition matches, `ParsedStylesheet::flatten` merges the rules into the cascade. After a viewport or theme change, flatten again with a new `MediaEnvironment`; the CSS text is not rescanned. In a view `@media` is a build warning.
+At build time `nana-ui-css` lowers `@media` preludes into backend-neutral `nana_ui_core::MediaQueryList` values evaluated under CSS Media Queries Level 4 strong Kleene 3-valued logic (`Some(true)` / `Some(false)` / `None`), attached via `Sheet::with_media` and `SheetMediaQuery`. At runtime, `media_env_signal()` reacts to `MediaEnv` updates (viewport size, resolution, color scheme, reduced motion, contrast, hover/pointer) without ever rescanning CSS text.
 
-**`@font-face`.** The engine only parses `font-family`, `src`, and `font-weight` (including a range such as `200 700`); it does not register fonts. In a view it is a build warning.
+**`@font-face`.** Supports `font-family`, `src` (`url(...)`, `local(...)`, and optional `format(...)`), `font-weight` (single weight or range such as `200 700`), and `font-style`. At build time it lowers into `nana_ui_core::FontFaceRule` carried on `Sheet::with_font_faces` (attached to the root via `El::sheet(&SHEET)`); the host loads and registers faces into the shared `FontSystem` via [`ingest_font_face_rules`](https://github.com/sena-nana/NanaUI/blob/main/crates/nana-ui/src/font_face_ingest.rs) / `drain_world_font_faces` from local files inside the jail, `nana://res/` packages, or `data:` URLs.
 
-To use your own font, call [`register_host_font_face`](https://github.com/sena-nana/NanaUI/blob/main/crates/nana-ui/src/nana_text.rs) in the host: one family plus one weight range is registered as one face and written into the shared `FontSystem`. It uses the same library as `bundled-fonts`. To replace a whole group, use `HostFontScope`. This is not CSSOM's `FontFace`.
+Direct host registration also remains available via [`register_host_font_face`](https://github.com/sena-nana/NanaUI/blob/main/crates/nana-ui/src/nana_text.rs) (with `HostFontScope` for grouped replacement) or [`ingest_host_font_faces`](https://github.com/sena-nana/NanaUI/blob/main/crates/nana-ui/src/font_face_ingest.rs). The per-file cap is 8 MiB (`MAX_FONT_FACE_BYTES`) and the cumulative cap across registered faces is 16 MiB (`MAX_REGISTERED_FONT_BYTES`).
 
-When the host already has resolved faces, it can hand them to [`ingest_host_font_faces`](https://github.com/sena-nana/NanaUI/blob/main/crates/nana-ui/src/font_face_ingest.rs): `HostFontFaceSpec`'s `weight` and `weight_end` are the `font-weight` range, registered as one piece. It reads local files inside the jail, `nana://res/`, and `data:`. The CSS engine's `css_at_rule::load_font_face_bytes` reads only files and resource packs and does not recognize `data:`, because `data:` is not a file path. Inline fonts are decoded by ingest itself.
-
-The read cap for a single font file is 8 MB.
-
-**`@supports`.** It is evaluated at parse time. When it matches, the inner rules merge into the same cascade, so class rules inside the block still compile in a view.
-
-The predicate subset is the engine's existing one. `display: flex|grid|block`, and the other `display` keywords already parsed. `color` is a value `parse_css_color` can parse. `width` is a value `LengthSpec::parse` can parse. `not`, `and`, and `or` can be added.
-
-An unknown predicate fails the whole block closed and counts into `skipped_at_rules`. For example `selector()`, `lab()`, `display-p3`, and properties not on the list.
+**`@supports`.** Evaluated at parse time against the engine's `is_supported_declaration`. When a branch matches, its inner rules merge into the cascade and compile normally in views; unknown or unsupported predicates fail closed.
 
 **`@container`.** The engine only compiles it into data; it does not measure containers. Container sizes are read by Runtime's responsive rules (see "Responsive rules (#265)" above).
 
@@ -1259,30 +1237,22 @@ The prelude is `[name] condition`:
 
 Each query compiles into a half-open interval on one axis. `max-width: 480px` includes 480, with an upper bound of `480f32.next_up()`; `<` excludes the bound.
 
-The `@container` rules an element hits cut the container sizes into buckets, at most 16 breakpoints. The rules true in each bucket merge in cascade order (`!important`, specificity, source order), giving that bucket's whole style. The fields where it differs from the base style are that bucket's variant and are handed to Runtime's rules: `ResponsiveContainer::Nearest { name }`, which finds the nearest container with the same name that answers this axis.
+The `@container` rules an element hits cut the container sizes into buckets, at most 16 breakpoints (`MAX_CONTAINER_BREAKPOINTS`). The rules true in each bucket merge in cascade order (`@layer`, `!important`, specificity, source order), giving that bucket's whole style. The fields where it differs from the base style are that bucket's variant and are handed to Runtime's rules: `ResponsiveContainer::Nearest { name }`, which finds the nearest container with the same name that answers this axis.
 
 `container-type` (`normal`, `inline-size`, `size`), `container-name`, and the `container` shorthand write into `LayoutStyle`. A query container does no size containment; its size still follows its content.
 
-All of the following fail closed and count into `skipped_at_rules`:
+All of the following fail closed with a compile error:
 - other units, `aspect-ratio`, `orientation`, `style()`, `scroll-state()`;
 - two axes in one query;
 - a comma list, a name alone, a nested `@container`.
 
-When the rules an element hits ask about two containers or two axes, or there are more than 16 breakpoints, all of its `@container` rules stop taking effect. The engine counts them into `container_queries`, and in a view it gives a build warning.
+When the rules an element hits ask about two containers or two axes, or there are more than 16 breakpoints, all of its `@container` rules stop taking effect, reporting a build diagnostic and recording `runtime.view.container_query_unsupported`.
 
-Only ordinary style rules take effect inside the block. `:hover`, pseudo-elements, `transition`, `@keyframes`, and `@font-face` written inside it do not.
+Ordinary style rules and subject interactive pseudo-class rules work inside `@container`; `transition`, `@keyframes`, and `@font-face` inside `@container` are not applied.
 
-**`@layer`.** `@layer name { }` and the anonymous `@layer { }` merge their inner rules into the cascade in author source order and record the layer name (`ParsedStylesheet.layer_names`).
+**`@layer`.** Implements full CSS Cascade Level 5 layer precedence (`LayerRegistry` + `CascadeKey`): forward declarations `@layer reset, base, theme;`, `@layer name { }`, and anonymous `@layer { }`. Among normal declarations, unlayered beats layered and later-declared layers beat earlier ones; among `!important` declarations, layered beats unlayered and layer order reverses (earlier-declared layer wins).
 
-There is **no** cascade-layer precedence. Unlayered does not beat layered. `!important` is not reversed by layer either.
-
-`@import … layer()` and `supports()` still do not load.
-
-The engine's `rebuild_layout_style` first writes the stylesheet's normal declarations, the props' and inline normal declarations, and `nana-*` class hints; then the stylesheet's important declarations; finally the props' and inline important declarations. So a stylesheet's `width:80px !important` is not overridden by an ordinary `width:200px` prop.
-
-A view does not go down this path and does not recognize `nana-*` class hints: a class takes styles only from the rules written in `<style>`.
-
-A custom property drops `!important`. It uses the same `split_important_flag` as ordinary declarations. So `--gap: 8px !important` yields `8px` through `var(--gap)`. Not a value with the flag, which could not be parsed.
+Custom properties (`--*`) inherit and expand directly on the token stream through hierarchical `VarScope` (`:root` / `[data-theme]` → ancestor matched rules and inline styles → element's own rules and inline styles), with `!important` participating in custom-property cascade selection without leaking into the expanded value.
 
 ## What not to expect
 
@@ -1299,18 +1269,16 @@ Do not expect these:
 - The remaining CSS math functions such as `tan()`, `atan2()`, `sin()`.
 - Mixed-unit nested `min`, `max`, `clamp` that do not fold into a length atom.
 - Multiplying and dividing lengths. The full `calc()` AST still only resolves the subset where leftover flattening failed.
-- Treating `:hover` or `:focus` as a layout condition.
-- `:has()` with a combinator.
+- `:has()` with a combinator and dynamic sibling/child-index selectors (`+`, `~`, `:nth-child()`, etc.) in views.
 - An unknown `@supports` predicate.
 - `@import … layer()` and `supports()`.
-- Full cascade-layer precedence.
 - `display: block` / `flow-root` / `inline-block` / `contents`, and CSS `float` / `clear` (the core model is `Flex + Grid + Inline + Layers`; use `inline-flex` / `inline-grid` when you need an inline container box).
 - A full IFC. Inline atoms now support fine-grained `vertical-align` (`baseline`, `sub`, `super`, `text-top`, `text-bottom`, `middle`, `top`, `bottom`, and `<length>` / `<percentage>`) as well as vertical `dominant-baseline` (`auto`, `central`, `alphabetic`, `ideographic`) and descendant baseline derivation (#395), though inline unboxing across nodes is still not supported. `subgrid` still does not derive descendant first and last line positions and approximates from the box's own font.
 - `subgrid` as a track-list token.
 - Using `position: fixed` as a Dialog or Drawer. Use Nana's overlays.
 - A custom `url()` cursor image.
 - An unknown `user-select` keyword.
-- The full CSS Highlight API. A selection has only the two fields `selection_background` and `selection_color`, and CSS's `::selection` is a build warning in a view.
+- The full CSS Highlight API (`::selection` is wired end to end for `background` / `background-color` and `color`, but arbitrary named highlights are not supported).
 - `::before` and `::after` generating boxes, `content`, `attr()`, counters, and `quotes`.
 - `-webkit-app-region` and `app-region`. An arbitrary box cannot be the title bar. Window dragging only goes through `AppTitleBar` and then `nana-window`. Writing it does not make a drag.
 - Custom scrollbar chrome for `overflow:auto`. Use `ScrollView`.
@@ -1323,13 +1291,13 @@ A malformed `font-variation-settings` still fails closed. An axis the font does 
 
 Android and iOS are **not** product layout targets. The two experimental hosts ([Mobile host](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/mobile-host.md)) still use the same `LayoutStyle`, Runtime, and UiScene, with no second mobile layout engine. See [Android](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/android.md) and [iOS](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/ios.md). HarmonyOS / OpenHarmony share this same layout too and are only another compile target; see [OHOS](https://github.com/sena-nana/NanaUI/blob/main/docs/reference/ohos.md).
 
-`:has`, `::before`, `::after`, `::placeholder`, and `::selection` are only parsed and matched by the engine; in a view they are all build warnings. See "Selectors" above.
+`::placeholder`, `::selection`, and `::-webkit-scrollbar*` compile directly into Style Model fields; `:has()` and box-generating `::before` / `::after` are outside the view subset and fail with compile errors.
 
 `writing-mode: horizontal-tb | vertical-rl | vertical-lr` is wired into logical edges and into the inline axis of IFC and flex lines. See "What works" above.
 
 Theme colors go through controls and appearance settings. Do not change framework tokens with arbitrary business colors.
 
-An unknown declaration does not enter the Style Model. In a view it gives a build warning. Do not assume "writing it makes it take effect somewhere".
+An unknown declaration or invalid value does not enter the Style Model and fails with a compile error (only known safely-ignorable vendor-prefixed properties such as `-moz-*` / `-ms-*` emit warnings), never clobbering prior cascaded values. Do not assume "writing it makes it take effect somewhere".
 
 ## Relation to Rust layout
 

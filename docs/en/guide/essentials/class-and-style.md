@@ -47,21 +47,25 @@ The `<style>` in a template goes first and compiles into one `Sheet`. `class="to
 
 The classes of one element must come from the same table. A `transition` (including `transition-delay`) on fixed classes, conditional classes, or interactive pseudos plays along the compositor track to the new value when a state change updates `opacity`, `transform`, `filter`, `width`, `height`, `background`, or `color`. `@keyframes` and `animation` also compile to `#87 MotionTrack` tracks and resolve theme colors live. Logical styles take the new value directly.
 
-To write a few declarations for a single element, use `css!`, and put it before the other layout calls:
+To write a few declarations for a single element, use inline `style="..."` directly in `.vue` or `view!` templates, or `.css(css! { ... })` in function views:
 
 ```rust
 use nana_ui::runtime::view::{column, css};
 
 column().css(css! { padding: 12px; opacity: 0.8 })
+// Raw string literals are also supported, bypassing all Rust lexing limits:
+column().css(css!(r#"padding: 12px; font-size: 1.5em;"#))
 ```
 
-Values that Rust lexing cannot write go in double quotes, such as `font-size: "1.5em"`. Build time strips the quotes before splicing.
+`css!`, `stylesheet!`, and `<style>` inside `view!` accept both Rust-token CSS and raw string literals (`r#"..."#`). In token mode, string-expecting CSS properties (`grid-template-areas`, `font-family`, `font-feature-settings`, `font-variation-settings`, `content`, plus `url(...)` and selectors) preserve double quotes automatically; on other properties, values Rust cannot tokenize (such as `"1.5em"` or `"#9ecafe"`) still go in double quotes as an escape hatch.
+
+Element styles follow a strict 4-layer precedence regardless of builder call order: **Layer 0** (control defaults) → **Layer 1** (stylesheet rules: `.class` / `.class_when` / interactive pseudos / `@container` / `@media` / ancestor interactive) → **Layer 2** (inline `style="..."` / `.css(css!{...})` / static Rust builders) → **Layer 3** (reactive Rust prop bindings).
 
 ::: warning
 Mixing classes from two stylesheets on one element fails an assertion at runtime. Write conditional classes and fixed classes in the same `stylesheet!`.
 :::
 
-Build time cascades class selectors (such as `.todos` and `.todos.empty`), subject interactive pseudo-classes (`:hover`, `:focus`, `:focus-visible`, `:active`), `@keyframes` with `animation`, and—within a single template's `<style>`—static child (`>`) and descendant (` `) combinators of class compounds. `stylesheet!` continues to compile class selectors without combinators. Ancestor interactive pseudos (such as `.card:hover .title`), sibling combinators (`+`, `~`), tag/id/attribute selectors, `@media`, `@font-face`, pseudo-elements, and unknown properties are not compiled in and produce a warning on that piece of CSS. Do not assume "if it is in the stylesheet it will take effect".
+Build time compiles end to end: class and compound selectors (`.todos`, `.todos.empty`), subject interactive pseudo-classes (`:hover`, `:focus`, `:focus-visible`, `:active`, `:selected`), static child (`>`) and descendant (` `) combinators plus ancestor interactive selectors (such as `.card:hover .title`) within a template `<style>`, paint-only pseudo-elements (`::placeholder`, `::selection`, `::-webkit-scrollbar*`), element-scoped static `--*` custom property inheritance, inline `style="..."`, plus `@layer`, `@media`, `@container`, `@supports`, `@keyframes`/`animation`, `transition`, and `@font-face`. Syntax errors, invalid values, unknown properties, and unsupported selectors or at-rules (such as sibling combinators `+`/`~`, tag/id/attribute selectors, or box-generating `::before`/`::after`) fail with a compile error; known safely-ignorable vendor-prefixed properties (such as `-moz-*`, `-ms-*`) emit warnings. Do not assume "if it is in the stylesheet it will take effect".
 
 Class rules inside `@container` blocks are compiled in too and apply by container size. Declare the container with `container-type` and `container-name`:
 

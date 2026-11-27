@@ -25,7 +25,7 @@ title: 25 crate 覆盖矩阵
 
 | Crate | 一句话职责 | 归属主章 | 依赖方向 | 关键入口与源码锚点 | 只读核对命令 |
 | --- | --- | --- | --- | --- | --- |
-| **`nana-ui-css`** | 唯一 CSS 词法/解析/选择器匹配/级联引擎，产出 `LayoutStyle` 补丁 | [CSS 引擎](/learn/css-engine) | 入：`core`、`serde_json`；出：`view-codegen`（构建期） | `parse_stylesheet`（`css_cascade.rs:658`）、`rebuild_layout_style`（`:1606`） | `cargo tree -p nana-ui-css --depth 1` |
+| **`nana-ui-css`** | 唯一 CSS 词法/解析/级联与 `StyleOp` 代码生成引擎（零外部依赖） | [CSS 引擎](/learn/css-engine) | 入：仅 `core`；出：`view-codegen`（构建期） | `parse_stylesheet`（`cascade.rs`）、`compile_declarations`（`properties/mod.rs`）、`emit_style_ops_rust`（`codegen.rs`） | `cargo tree -p nana-ui-css --depth 1` |
 | **`nana-ui-input`** | 规范输入事件、有界端点、序列器与 `HostServices` 合同 | [输入链路](/learn/runtime-input) | 入：`core`、`diagnostics`；出：`runtime`（唯一路由消费方）、`platform`（再导出） | `CanonicalInputEvent`（`canonical.rs:44`）、`InputEndpoint`（`:410`）、`HostServices`（`host_services.rs:97`） | `cargo tree --workspace -i nana-ui-input --edges normal` |
 | **`nana-gpu`** | GPU 后端合同：`GpuContext` / `FrameContext` / `GpuTexture`、代际与提交顺序 | [GPU 与帧](/learn/gpu-frame) | 入：`diagnostics`；出：`nana-ui`、`devtools`、`frame-exchange`（经 `__framework`） | `GpuContext`（`context.rs:358`）、`FrameContext`（`frame.rs:38`） | `rg "pub struct GpuContext" crates/nana-gpu/src/context.rs` |
 | **`nana-frame-exchange`** | 跨线程有界最新帧交换，不拥有 UI 设备或提交权 | [GPU 与帧](/learn/gpu-frame) | 入：`gpu`（经 `__framework`）；出：`nana-ui`（`FrameBinding`） | `FrameExchange`（`lib.rs:493`）、`FrameLease`（`:370`） | `rg "copy_texture_to_texture" crates/nana-frame-exchange/src/lib.rs` |

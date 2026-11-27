@@ -33,7 +33,7 @@ rg "nana-ui-css" crates/nana-ui-core/Cargo.toml crates/nana-ui-runtime/Cargo.tom
 ### B1. CSS 解析与级联只在 `nana-ui-css`
 
 ```powershell
-cargo tree -p nana-ui-css --depth 1                          # css -> core + serde_json，无保留树依赖
+cargo tree -p nana-ui-css --depth 1                          # css -> 仅 core，零外部依赖，无保留树依赖
 rg -i "selector|cascade" crates/nana-ui-runtime/src -g '!tests'  # 命中均为注释/文档/ICU selectordinal
 rg "nana_ui_css" crates/*/src                                # 仅 view-codegen（构建期）
 ```

@@ -42,7 +42,7 @@ A node may sit at most at depth `MAX_TREE_DEPTH = 512` (`nana_ui_runtime::MAX_TR
 | Markdown (`rich_text`) | None | Blocks are flat, `pulldown-cmark` does not recurse, `layout_block` adds only one level |
 | ICU messages (`i18n::message`) | 16 levels | Parse error, shown as source text |
 | Paint script path objects (`paint_script::parse_path`) | None | Unrolled into a loop; the JSON itself is capped at 128 levels by `serde_json` |
-| CSS: `@media` / `@container` / `@supports` / `@layer` blocks | `MAX_NESTING` 32 | That block is skipped and counted in `skipped_at_rules` |
+| CSS: `@media` / `@container` / `@supports` / `@layer` and block/function nesting | `MAX_NESTING` 32 | Stops nesting and emits `DiagCode::NestingLimitExceeded` (`DiagSeverity::Error`) |
 | CSS: parentheses in container queries and `@supports` conditions, `color-mix()` | `MAX_NESTING` 32 | Query `Invalid` / condition unknown / color invalid |
 | CSS: parentheses and math functions in `calc()` | `MAX_CALC_DEPTH` 16 | Value invalid |
 | CSS: `var()` reference chains | `MAX_VAR_DEPTH` 32 | Treated as unresolved: the fallback value is used; a self-reference `--a: var(--a)` also stops here |

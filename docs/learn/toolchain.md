@@ -34,8 +34,8 @@ title: 作者工具链
 | `for_each_control!` | `crates/nana-ui-view-schema/src/lib.rs:49` | 26 个内置声明式控件的标签、构造函数、字段写入策略与事件表 |
 | `Control` / `CONTROLS` | `crates/nana-ui-view-codegen/src/lib.rs:18` / `:53-77` | 由 `for_each_control!` 展开的静态控件元数据表 |
 | `Node` / `Element` / `Attr` | `crates/nana-ui-view-codegen/src/lib.rs:333-405` | 模板语法树的中间表示 |
-| `CompiledStyles` / `Rank` | `crates/nana-ui-view-codegen/src/style.rs:978` / `:49` | 构建时样式编译产物与级联优先级三元组 `(important, specificity, source_order)` |
-| `StyleWarning` | `crates/nana-ui-view-codegen/src/style.rs:87` | 构建时无法编入的子集外选择器/属性警告（带精确行列位置，绝不静默丢弃） |
+| `CompiledStyles` / `CascadeKey` | `crates/nana-ui-view-codegen/src/style.rs` / `crates/nana-ui-css/src/cascade.rs` | 构建时样式编译产物与 CSS Cascade 5 级联优先级键（`@layer`、`!important`、`Specificity`、`source_order`） |
+| `CssDiag` / `DiagSeverity` | `crates/nana-ui-css/src/syntax/diag.rs` | 分级构建期诊断：语法/非法值/不支持的选择器或 `@` 规则报 `Error`（编译错误）；可安全忽略的厂商前缀属性等报 `Warning` |
 | `Component` / `Compiler` | `crates/nana-ui-sfc/src/parse.rs:23` / `lib.rs:115` | `.vue` 文件解析出的四大块（name / props / script / template / style）与构建编译器 |
 
 ## 内部结构
@@ -60,8 +60,8 @@ view! {
 | --- | --- | --- |
 | `view!` | `view-macros/src/lib.rs:17` | 解析 `<Tag>` 模板树并交给 `view-codegen`，展开为 `column` / `text` / `each` / `when` 等视图函数调用 |
 | `#[derive(Store)]` | `view-macros/src/lib.rs:24` | 为结构体生成 `<Name>StoreFields` trait，为每个具名字段提供路径追踪方法 |
-| `css!` | `view-macros/src/lib.rs:41` | 接收单元素 CSS 声明块，构建时调用 `nana-ui-css` 解析为 `StylePatch` 供 `.css(...)` 使用 |
-| `stylesheet!` | `view-macros/src/lib.rs:76` | 将 `mod styles; .card { … }` 编译为包含静态 `Sheet` 与同名 `view::Class` 常量的模块 |
+| `css!` | `view-macros/src/lib.rs` | 接收单元素 CSS 声明块（支持 Rust Token CSS 或原始字符串 `css!(r#"..."#)`），构建时经 `nana-ui-css` 编译为 `StylePatch` 供 `.css(...)` 使用 |
+| `stylesheet!` | `view-macros/src/lib.rs` | 将 `mod styles; .card { … }`（支持 Token 或原始字符串）编译为包含静态 `Sheet` 与同名 `view::Class` 常量的模块 |
 
 #### 单一事实来源：`nana-ui-view-schema`
 
@@ -73,7 +73,12 @@ view! {
 
 #### 构建时样式编译：`view-codegen/src/style.rs`
 
-`crates/nana-ui-view-codegen/src/style.rs` 提供 `compile_inline`（`css!`）、`compile_styles`（`<style>`）与 `compile_stylesheet`（`stylesheet!`）三个入口。它在编译期调用 `nana-ui-css` 解析样式表，将类选择器（如 `.card`、`.card.active`）按级联优先级 `Rank` 编译为 `StylePatch`；将 `transition` 编译为元素隐式过渡动画；将 `@container` 块内的类规则编译为带容器轴与区间桶的数据。对于不支持的复杂选择器、`:hover`、`@media` 或未知属性，统一生成带源码位置的 `StyleWarning`，绝不静默吞掉。
+`crates/nana-ui-view-codegen/src/style.rs` 提供 `compile_inline`（`css!` 与 `style="..."`）、`compile_styles`（`<style>`）与 `compile_stylesheet`（`stylesheet!`）入口，并在构建期直接构建于 `nana-ui-css` 的 `StyleOp` 管线之上：
+
+- 完整支持 CSS Cascade 5 `@layer` 优先级排序（`CascadeKey`）、`@media`（经 `Sheet::with_media` 与 `SheetMediaQuery` 按 Kleene 三值逻辑响应式求值）、`@container`（区间断点桶）、`@supports`、`@keyframes` / `transition`、`@font-face`（经 `Sheet::with_font_faces` 接入宿主字体注册）；
+- 支持类与复合类选择器、静态子代（`>`）与后代（` `）组合器、主体及祖先交互伪类（`:hover` / `:focus` / `:focus-visible` / `:active` / `:selected`、`.card:hover .icon` → `track_interactive_state` + `ancestor_pseudo`）、绘制级伪元素（`::placeholder`、`::selection`、`::-webkit-scrollbar*`）、元素级静态 `--*` 自定义属性继承（分层 `VarScope`）以及 `.vue` / `view!` 的内联 `style="..."`（Layer 2 `.inline_patch`）；
+- 产品构建通过 `emit_style_ops_rust` 生成零开销的纯 Rust `StylePatch(fn(&mut LayoutStyle))` 函数指针（调用 `nana_ui_core::style_patch::set::*`，零运行时 JSON）；开发期热重载产出 `HotStylePatch::from_ops(ops)`；
+- 诊断严格分级：语法错误、非法值、未知属性与不支持的选择器或 `@` 规则直接报编译错误，已知可安全忽略的厂商前缀属性或未使用类报编译警告，绝不静默丢弃。
 
 ### 2. 管线二：`.vue` 单文件组件编译器（`nana-ui-sfc`）
 

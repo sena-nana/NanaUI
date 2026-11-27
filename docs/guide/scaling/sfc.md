@@ -54,7 +54,7 @@ defineProps!(todo: Todo, on_remove: impl Fn() + Send + 'static);
 
 `ref="name"` 把节点 id 写进脚本里的 `let name = node_ref();`。`on_mount(move |cx| …)` 在视图进树之后执行，用来聚焦或读布局。组件上的 `key` 落在第一个根节点上。不在这一批里的标签，按 `view!` 的规则调用同名的 `#[component]` Rust 函数，按属性名传参（见 [组合视图](https://github.com/sena-nana/NanaUI/blob/main/docs/guide/essentials/view-functions.md)）。
 
-`<style>` 写不写 `scoped` 都只作用于本组件，在构建时编译。模板仍遵守 Rust 的所有权，同一个值既要传给组件又要被事件闭包使用时，写 `todo.clone()`。
+`<style>` 默认仅作用于本组件（无论是否书写 `scoped` 属性），如需显式声明全局样式可使用 `<style global>` 或独立的 `stylesheet!`，均在构建时编译；元素也支持内联 `style="..."` 属性（按 Layer 2 合成）。模板仍遵守 Rust 的所有权，同一个值既要传给组件又要被事件闭包使用时，写 `todo.clone()`。
 
 生成的代码排版后写进 `$OUT_DIR/nana_views.rs`，并生成包含 token 级双向映射的 `$OUT_DIR/nana_views.map.json`，供 `nana-sfc-remap` 把 rustc JSON span 回指 `.vue`，也供 `nana-sfc-lsp` 桥接 `rust-analyzer`。每个组件的信号和每条绑定的分类写进 `$OUT_DIR/nana_views.deps.md`。
 
