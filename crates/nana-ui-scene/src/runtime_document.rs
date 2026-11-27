@@ -664,6 +664,74 @@ mod tests {
         assert!(opacity.format_summary().contains("Layer: #1"));
     }
 
+    /// An infinite pulse inside a hidden subtree (a loaded page's skeletons
+    /// behind `v-show`) shows nothing at any later clock, so it asks for no
+    /// frames; showing the subtree again resumes them.
+    #[test]
+    fn motion_inside_a_hidden_subtree_asks_for_no_frames() {
+        let document_id = DocumentId::new(1).unwrap();
+        let mut runtime = RuntimeDocument::new(document_id);
+        let id = |raw| StableNodeId::new(raw).unwrap();
+        let styled = |hidden: bool| NodeStyle {
+            layout: Arc::new(LayoutStyle {
+                width: Some(LengthSpec::Px(200.0)),
+                height: Some(LengthSpec::Px(50.0)),
+                hidden,
+                ..LayoutStyle::default()
+            }),
+            ..NodeStyle::default()
+        };
+        let mut queue = MutationQueue::new();
+        queue.create(id(1), document_id, NodeKind::Document);
+        queue.create(id(2), document_id, NodeKind::Element { tag: "div".into() });
+        queue.create(id(3), document_id, NodeKind::Element { tag: "div".into() });
+        queue.insert(id(1), id(2), None);
+        queue.insert(id(2), id(3), None);
+        queue.set_style(id(2), styled(true));
+        queue.set_style(id(3), styled(false));
+        queue.start_animation_with_playback(
+            AnimationSpec::new(
+                AnimationId::new(1).unwrap(),
+                id(3),
+                Duration::ZERO,
+                Duration::from_millis(400),
+                Duration::from_millis(16),
+                Easing::Linear,
+            )
+            .with_property(AnimatableProperty::Opacity)
+            .with_range(
+                MotionValue::Scalar(1.0),
+                MotionTo::Value(MotionValue::Scalar(0.5)),
+            ),
+            nana_ui_runtime::AnimationPlayback {
+                iteration_count: nana_ui_runtime::AnimationIteration::INFINITE,
+                direction: nana_ui_core::AnimationDirection::Alternate,
+                fill_mode: nana_ui_runtime::AnimationFillMode::None,
+                play_state: nana_ui_runtime::AnimationPlayState::Running,
+                paused_at: None,
+            },
+        );
+        runtime.context_mut().commit_mutations(queue).unwrap();
+        for at in [0, 16, 32] {
+            runtime
+                .context_mut()
+                .advance_animations(Duration::from_millis(at));
+            runtime.flush_with(|_, _| Ok(())).expect("frame");
+        }
+        assert!(!runtime.compositor_needs_tick(), "hidden: nothing to show");
+
+        let mut queue = MutationQueue::new();
+        queue.set_style(id(2), styled(false));
+        runtime.context_mut().commit_mutations(queue).unwrap();
+        for at in [48, 64] {
+            runtime
+                .context_mut()
+                .advance_animations(Duration::from_millis(at));
+            runtime.flush_with(|_, _| Ok(())).expect("frame");
+        }
+        assert!(runtime.compositor_needs_tick(), "shown: the pulse runs");
+    }
+
     /// Issue #300: a paused document with a running compositor track asks
     /// for no frames (the host keeps it on demand), presents the time it
     /// holds, and its sibling document keeps its own clock.

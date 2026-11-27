@@ -443,14 +443,24 @@ impl UiScene {
         for node in self.compositor.phases.keys().copied() {
             candidates.insert(node);
         }
+        // Motion inside a subtree that generates no box (`hidden`,
+        // `display: none`, a closed overlay branch) shows nothing at any later
+        // clock, so it drives no frames, as a CSS animation under
+        // `display: none` does not run. Showing the subtree extracts it again
+        // and the motion drives frames from there.
+        let shown = |node: &StableNodeId| {
+            self.nodes
+                .get(node)
+                .filter(|extracted| extracted.style.box_visible)
+        };
         self.compositor.motion_live = store.overlays().any(|overlay| {
             overlay.track.property.animation_class() == AnimationClass::Compositor
                 && StableNodeId::new(overlay.track.target.get())
-                    .is_some_and(|node| self.nodes.contains_key(&node))
+                    .is_some_and(|node| shown(&node).is_some())
                 && track_changes_after(&overlay.track, now)
         }) || descriptors.is_some_and(|descriptors| {
             candidates.iter().any(|node| {
-                self.nodes.get(node).is_some_and(|extracted| {
+                shown(node).is_some_and(|extracted| {
                     extracted.compositor.bindings.iter().any(|track| {
                         store.get(*track).is_none()
                             && descriptors
