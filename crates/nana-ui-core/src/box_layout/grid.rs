@@ -340,6 +340,12 @@ pub enum GridTrack {
         max_px: Option<f32>,
     },
     Auto,
+    /// `fit-content(<length>)`: sized like `auto` from its items' content,
+    /// then clamped to `limit_px` (CSS Grid §7.2.4). Not flexible, and not
+    /// stretched by `align-content` / `justify-content: normal`.
+    FitContent {
+        limit_px: f32,
+    },
 }
 
 impl GridTrack {
@@ -359,6 +365,11 @@ impl GridTrack {
         }
     }
 
+    /// `auto` or `fit-content()`: sized from its items' content contributions.
+    pub fn is_content_sized(self) -> bool {
+        matches!(self, Self::Auto | Self::FitContent { .. })
+    }
+
     pub fn is_flexible(self) -> bool {
         // `auto` is content-sized (not a free-space fraction).
         matches!(self, Self::Fr(_) | Self::MinMax { .. })
@@ -369,7 +380,7 @@ impl GridTrack {
         match self {
             Self::Fr(f) => Some(f.max(0.0)),
             Self::MinMax { fr, .. } => Some(fr.max(0.0)),
-            Self::Auto | Self::Px(_) | Self::Percent(_) => None,
+            Self::Auto | Self::FitContent { .. } | Self::Px(_) | Self::Percent(_) => None,
         }
     }
 
@@ -399,7 +410,7 @@ impl GridTrack {
             Self::Px(px) => LengthSpec::Px(px),
             Self::Percent(p) => LengthSpec::Percent(p.clamp(0.0, 100.0)),
             Self::Fr(_) | Self::MinMax { .. } => LengthSpec::Fill,
-            Self::Auto => LengthSpec::Shrink,
+            Self::Auto | Self::FitContent { .. } => LengthSpec::Shrink,
         }
     }
 }
@@ -437,8 +448,11 @@ pub fn resolve_grid_track_sizes(
         if let Some(px) = track.as_fixed_against(content) {
             widths[i] = px.max(0.0);
             fixed_sum += widths[i];
-        } else if matches!(track, GridTrack::Auto) {
-            let px = auto_sizes.get(i).copied().unwrap_or(0.0).max(0.0);
+        } else if track.is_content_sized() {
+            let mut px = auto_sizes.get(i).copied().unwrap_or(0.0).max(0.0);
+            if let GridTrack::FitContent { limit_px } = track {
+                px = px.min(limit_px.max(0.0));
+            }
             widths[i] = px;
             fixed_sum += px;
         } else if let Some(weight) = track.fr_weight() {

@@ -85,7 +85,7 @@ pub fn catalog() -> &'static [(&'static str, bool, Option<&'static str>)] {
         ("T-B06", true, None), // % padding + % margin 同链推进兄弟
         ("T-B07", true, None), // column 轴 % margin（相对宽度）推进兄弟
         ("T-B08", true, None), // content-box：100+pad10 → border 120×60；推进 b@x120
-        ("T-B09", true, None), // border-box：100+pad10+bw5 → content 70×10；inner@15；b@x100
+        ("T-B09", true, None), // border-box：100+pad10+bw5 solid → content 70×10；inner@15；b@x100
         ("T-B10", true, None), // 负 margin + rem padding
         ("T-B11", true, None), // logical padding-block/inline → LTR physical
         ("T-B12", true, None), // logical margin-* → LTR physical
@@ -96,10 +96,10 @@ pub fn catalog() -> &'static [(&'static str, bool, Option<&'static str>)] {
         ("T-W02", true, None),  // wrap-reverse 行序；borrowed+owned 路径
         ("T-W03", true, None),  // wrap 双值 gap：行内 column-gap / 行间 row-gap
         ("T-W04", true, None),  // wrap 折行计入水平 margin
-        ("T-W05", true, None),  // wrap 行间 gap%（auto 高→回退宽）
+        ("T-W05", true, None),  // wrap 行间 gap%（高度不定 → 0）
         ("T-W06", true, None),  // wrap-reverse + 行间 gap%
         ("T-W07", true, None),  // column + flex-wrap 折列（measure）
-        ("T-W08", true, None),  // column + wrap-reverse 列序；cd@x0 / ab@x88
+        ("T-W08", true, None),  // column + wrap-reverse：交叉起止对调，ab@x120 / cd@x16
         ("T-W09", true, None),  // column-wrap + 垂直 margin 触发折列
         ("T-G01", true, None),  // grid-template-columns 220px 1fr → measure
         ("T-G02", true, None),  // var(...) + minmax(0,1fr) 轻量轨
@@ -118,7 +118,7 @@ pub fn catalog() -> &'static [(&'static str, bool, Option<&'static str>)] {
         ("T-G15", true, None),  // 2D 行轨：未定高子项拉伸到 80px / 第二行 120px
         ("T-G16", true, None),  // columns:none → rows-only
         ("T-G17", true, None),  // rows:none → columns-only
-        ("T-G18", true, None),  // 双边 none → 回退 Row
+        ("T-G18", true, None),  // 双边 none → 仍是二维网格，各占一行
         ("T-G19", true, None),  // grid 轨间隙 gap%
         ("T-G20", true, None),  // repeat(3,1fr) 固定次数
         ("T-G21", true, None),  // 轨 % + 1fr
@@ -133,7 +133,7 @@ pub fn catalog() -> &'static [(&'static str, bool, Option<&'static str>)] {
         ("T-G30", true, None),  // mixed 80px + auto-fit, third wraps
         ("T-G31", true, None),  // named grid lines start/mid/end
         ("T-G32", true, None),  // grid item 100% fills resolved cell
-        ("T-G33", true, None),  // nth named line foo 2 / foo
+        ("T-G33", true, None),  // foo 2 / foo：终点从起点数，在前则对调
         ("T-G34", true, None),  // auto-fill copies [mid] per expansion; mid 2
         ("T-G35", true, None),  // subgrid inherits parent column track sizes
         ("T-G36", true, None),  // auto row 按解析后的列宽量可折行内容
@@ -155,7 +155,7 @@ pub fn catalog() -> &'static [(&'static str, bool, Option<&'static str>)] {
         ("T-P15", true, None),  // fixed 脱流 + 视口 top/right
         ("T-P16", true, None),  // fixed % inset 相对视口
         ("T-P17", true, None),  // fixed left+right/top+bottom 视口拉伸
-        ("T-P18", true, None),  // sticky in-flow unstuck（无 overflow）
+        ("T-P18", true, None),  // sticky 无滚动容器时按视口贴住
         ("T-P19", true, None),  // sticky inside overflow:auto still unstuck at rest
         ("T-P20", true, None),  // fixed auto height + max-height% 相对视口，不压成 0
         ("T-P21", true, None),  // absolute aspect-ratio 跟随夹取后 / inset 给出的宽度

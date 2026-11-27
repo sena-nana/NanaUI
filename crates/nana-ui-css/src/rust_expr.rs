@@ -1150,6 +1150,11 @@ impl EmitRust for GridTrack {
             Self::Auto => {
                 let _ = write!(out, "{m}::GridTrack::Auto");
             }
+            Self::FitContent { limit_px } => {
+                let _ = write!(out, "{m}::GridTrack::FitContent{{limit_px:");
+                limit_px.emit_rust(m, out);
+                out.push('}');
+            }
         }
     }
 }

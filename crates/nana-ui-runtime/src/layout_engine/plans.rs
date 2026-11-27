@@ -761,9 +761,25 @@ pub(super) fn flex_line_local_style(style: &LayoutStyle) -> bool {
         && matches!(style.flex_wrap, FlexWrap::Wrap)
         && style.justify_content == JustifySpec::Start
         && style.align_items == AlignSpec::Start
-        && style.align_content == JustifySpec::Start
+        && lines_keep_their_cross_extent(style)
         && style.aspect_ratio.is_none()
         && !style.flex_reverse
+}
+
+/// Whether `align-content` leaves every line at its own cross extent: packed
+/// at the start, or stretched (the initial `normal`) in a row whose height
+/// follows its lines, which leaves no free space to share. A column's width
+/// can come from its parent's stretch, so only `start` keeps it local.
+fn lines_keep_their_cross_extent(style: &LayoutStyle) -> bool {
+    match style.align_content {
+        JustifySpec::Start => true,
+        JustifySpec::Stretch => {
+            style.direction.unwrap_or(FlexDirection::Row) == FlexDirection::Row
+                && style.height.is_none()
+                && style.min_height.is_none()
+        }
+        _ => false,
+    }
 }
 
 pub(super) fn child_blocks_flex_line_local(style: &LayoutStyle) -> bool {

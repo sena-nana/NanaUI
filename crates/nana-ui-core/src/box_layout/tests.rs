@@ -310,16 +310,17 @@ fn min_height_zero_with_fill_height_still_chains() {
 }
 
 #[test]
-fn row_cross_gap_percent_falls_back_when_height_indefinite() {
+fn row_cross_gap_percent_is_zero_when_height_indefinite() {
     let layout = LayoutStyle {
         gap: Some(LengthSpec::Percent(10.0)),
         ..LayoutStyle::default()
     };
-    // Auto-height wrap: content_h is 0 before shrink-to-fit — must not lock % to 0.
-    let indefinite = ParentBox::new(Some(200.0), Some(0.0));
+    // CSS Box Alignment §8.3: a % row-gap against an indefinite height is 0,
+    // never the width (T-W05).
+    let indefinite = ParentBox::new(Some(200.0), None);
     assert_eq!(
         layout.cross_gap_against(FlexDirection::Row, indefinite),
-        20.0
+        0.0
     );
     let definite = ParentBox::new(Some(200.0), Some(100.0));
     assert_eq!(layout.cross_gap_against(FlexDirection::Row, definite), 10.0);

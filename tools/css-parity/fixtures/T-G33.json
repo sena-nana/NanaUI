@@ -1,6 +1,6 @@
 {
   "id": "T-G33",
-  "title": "同名网格线 foo 2 / foo 取第二段 120px",
+  "title": "同名网格线 foo 2 / foo：终点从网格起点数，在起点前时对调",
   "status": "pass",
   "viewport": [200, 40],
   "tolerance_px": 2,
@@ -13,6 +13,6 @@
   },
   "expected": [
     { "id": "root", "x": 0, "y": 0, "w": 200, "h": 40 },
-    { "id": "cell", "x": 80, "y": 0, "w": 120, "h": 40 }
+    { "id": "cell", "x": 0, "y": 0, "w": 80, "h": 40 }
   ]
 }

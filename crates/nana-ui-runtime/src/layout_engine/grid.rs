@@ -245,37 +245,13 @@ pub(super) fn resolve_item_grid_placement(
         );
     }
     let col_start = resolve_named_line(&placement.column_start, container, true, None, col_names);
-    let col_end_after = match (
-        &col_start,
-        placement.column_start.as_name(),
-        placement.column_end.as_name(),
-    ) {
-        (GridLine::Index(s), Some(a), Some(b)) if a == b => Some(*s),
-        _ => None,
-    };
-    let col_end = resolve_named_line(
-        &placement.column_end,
-        container,
-        true,
-        col_end_after,
-        col_names,
-    );
+    // A named end line counts from the grid's start edge like the start
+    // line does; an end before the start swaps them (CSS Grid §8.3.1).
+    let col_end = resolve_named_line(&placement.column_end, container, true, None, col_names);
     let row_start = resolve_named_line(&placement.row_start, container, false, None, row_names);
-    let row_end_after = match (
-        &row_start,
-        placement.row_start.as_name(),
-        placement.row_end.as_name(),
-    ) {
-        (GridLine::Index(s), Some(a), Some(b)) if a == b => Some(*s),
-        _ => None,
-    };
-    let row_end = resolve_named_line(
-        &placement.row_end,
-        container,
-        false,
-        row_end_after,
-        row_names,
-    );
+    // A named end line counts from the grid's start edge like the start
+    // line does; an end before the start swaps them (CSS Grid §8.3.1).
+    let row_end = resolve_named_line(&placement.row_end, container, false, None, row_names);
     let (col_origin, col_span) = resolve_grid_axis(&col_start, &col_end, explicit_cols);
     let (row_origin, row_span) = resolve_grid_axis(&row_start, &row_end, explicit_rows);
     (col_origin, col_span, row_origin, row_span)
@@ -291,8 +267,13 @@ pub(super) fn resolve_grid_axis(
         (GridLine::Index(s), GridLine::Index(e)) => {
             let s = grid_line_boundary(*s, explicit);
             let e = grid_line_boundary(*e, explicit);
-            let span = if e > s { (e - s) as usize } else { 1 };
-            (Some(s), span)
+            // An end line before the start swaps them; the same line twice
+            // drops the end and spans one track (CSS Grid §8.3.1).
+            if e == s {
+                (Some(s), 1)
+            } else {
+                (Some(s.min(e)), s.abs_diff(e) as usize)
+            }
         }
         (GridLine::Index(s), GridLine::Span(n)) => {
             (Some(grid_line_boundary(*s, explicit)), span_of(*n))
@@ -513,6 +494,8 @@ pub(super) struct Grid2dPrepared {
     items: Vec<GridPlacedItem>,
     margins: Vec<nana_ui_core::PaddingSpec>,
     row_auto: Vec<f32>,
+    /// `align-content: normal | stretch`: auto rows share the leftover.
+    stretch_rows: bool,
     pub(super) queries: Vec<(usize, StableNodeId, Size)>,
 }
 
@@ -545,14 +528,14 @@ fn distribute_spanned_auto_tracks(
             continue;
         }
         let auto_count = (start..end)
-            .filter(|&index| matches!(tracks[index], GridTrack::Auto))
+            .filter(|&index| tracks[index].is_content_sized())
             .count();
         if auto_count == 0 {
             continue;
         }
         let share = extra / auto_count as f32;
         for index in start..end {
-            if matches!(tracks[index], GridTrack::Auto) {
+            if tracks[index].is_content_sized() {
                 current_sizes[index] += share;
                 auto_sizes[index] = current_sizes[index];
             }
@@ -576,7 +559,10 @@ pub(super) fn apply_grid_row_baseline_shim(
 ) -> Result<(), UiWorldError> {
     if !state.items.iter().enumerate().any(|(idx, item)| {
         item.row_span == 1
-            && matches!(state.row_tracks.get(item.row), Some(GridTrack::Auto))
+            && state
+                .row_tracks
+                .get(item.row)
+                .is_some_and(|track| track.is_content_sized())
             && nodes.style_ref(item.id).is_some_and(|child_style| {
                 child_style.resolved_align_self(style.align_items) == AlignSpec::Baseline
             })
@@ -591,7 +577,12 @@ pub(super) fn apply_grid_row_baseline_shim(
     let mut row_ascent: HashMap<usize, f32> = HashMap::new();
     let mut row_descent: HashMap<usize, f32> = HashMap::new();
     for (item_index, (item, margin)) in state.items.iter().zip(&state.margins).enumerate() {
-        if item.row_span != 1 || !matches!(state.row_tracks.get(item.row), Some(GridTrack::Auto)) {
+        if item.row_span != 1
+            || !state
+                .row_tracks
+                .get(item.row)
+                .is_some_and(|track| track.is_content_sized())
+        {
             continue;
         }
         let Some(child_style) = nodes.style(item.id) else {
@@ -691,14 +682,15 @@ pub(super) fn layout_grid_2d_finish(mut state: Grid2dPrepared, measured: &[Size]
         state.row_gap,
         &state.row_auto,
     );
-    // Leftover definite block extent goes to *empty* auto rows so
-    // `height:100%` / empty stretch have a cell, without inflating
-    // content-sized auto rows.
+    // Leftover definite block extent: `align-content: normal | stretch`
+    // shares it among the auto rows (CSS Grid §11.8); otherwise only empty
+    // auto rows take it, so `height:100%` / empty stretch still have a cell.
     distribute_auto_track_leftover(
         &state.row_tracks,
         &mut row_sizes,
         state.content_block,
         state.row_gap,
+        state.stretch_rows,
     );
     Grid2DLayout {
         col_sizes: state.col_sizes,
@@ -1121,15 +1113,24 @@ pub(super) fn layout_grid_2d_begin(
         &col_spanned,
     );
     let mut col_sizes = resolve_grid_track_sizes(&col_tracks, content_inline, col_gap, &col_auto);
-    distribute_auto_track_leftover(&col_tracks, &mut col_sizes, content_inline, col_gap);
+    distribute_auto_track_leftover(
+        &col_tracks,
+        &mut col_sizes,
+        content_inline,
+        col_gap,
+        style.justify_content == JustifySpec::Stretch,
+    );
     // Rows are sized once the columns are (CSS Grid §11.5): an auto row
     // holds its items as they lay out in their columns.
     let mut row_auto = vec![0.0f32; row_tracks.len()];
     let mut queries = Vec::new();
     for (item_index, (item, margin)) in items.iter().zip(&margins).enumerate() {
         let row_end = item.row.saturating_add(item.row_span).min(row_tracks.len());
-        let spans_auto_row =
-            (item.row..row_end).any(|row| matches!(row_tracks.get(row), Some(GridTrack::Auto)));
+        let spans_auto_row = (item.row..row_end).any(|row| {
+            row_tracks
+                .get(row)
+                .is_some_and(|track| track.is_content_sized())
+        });
         if !spans_auto_row {
             continue;
         }
@@ -1168,6 +1169,8 @@ pub(super) fn layout_grid_2d_begin(
         items,
         margins,
         row_auto,
+        stretch_rows: style.align_content == JustifySpec::Stretch
+            && block_size_is_definite(style, writing),
         queries,
     };
     if state.queries.is_empty() {
@@ -1177,11 +1180,27 @@ pub(super) fn layout_grid_2d_begin(
     }
 }
 
+/// Whether the grid's own block size is authored definite (a length, a
+/// percentage or `Fill`): only then is there leftover for its auto rows to
+/// stretch into. An auto block size follows the rows.
+fn block_size_is_definite(style: &LayoutStyle, writing: nana_ui_core::WritingContext) -> bool {
+    let spec = if writing.is_vertical() {
+        style.width
+    } else {
+        style.height
+    };
+    matches!(
+        spec,
+        Some(LengthSpec::Px(_) | LengthSpec::Percent(_) | LengthSpec::Fill)
+    )
+}
+
 pub(super) fn distribute_auto_track_leftover(
     tracks: &[GridTrack],
     sizes: &mut [f32],
     container: f32,
     gap: f32,
+    stretch: bool,
 ) {
     if container <= 0.5 || sizes.is_empty() || sizes.len() != tracks.len() {
         return;
@@ -1191,12 +1210,14 @@ pub(super) fn distribute_auto_track_leftover(
     if leftover <= 0.5 {
         return;
     }
-    // Only empty auto rows (no intrinsic). Content-sized auto rows stay
-    // tight so `align-items:start` items keep their packed y (T-G26).
+    // Stretching shares it among every `auto` track; otherwise only the
+    // empty ones (no content contribution) take it.
     let autos: Vec<usize> = tracks
         .iter()
         .enumerate()
-        .filter(|(index, track)| matches!(track, GridTrack::Auto) && sizes[*index] <= 0.5)
+        .filter(|(index, track)| {
+            matches!(track, GridTrack::Auto) && (stretch || sizes[*index] <= 0.5)
+        })
         .map(|(index, _)| index)
         .collect();
     if autos.is_empty() {
@@ -1629,7 +1650,7 @@ pub(super) fn auto_track_contributions_begin(
         FlexDirection::Row
     };
     let mut queries = Vec::new();
-    if !tracks.iter().any(|track| matches!(track, GridTrack::Auto)) {
+    if !tracks.iter().any(|track| track.is_content_sized()) {
         return AutoTracksPrepared {
             sizes,
             queries,
@@ -1638,7 +1659,7 @@ pub(super) fn auto_track_contributions_begin(
         };
     }
     for index in 0..n {
-        if !matches!(tracks[index], GridTrack::Auto) {
+        if !tracks[index].is_content_sized() {
             continue;
         }
         let child = children[index];

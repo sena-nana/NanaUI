@@ -2402,6 +2402,7 @@ fn finish_sequential_children<'w, 's>(
             state.common.writing,
             state.direction,
             cross_reversed,
+            matches!(state.wrap, FlexWrap::WrapReverse),
             child_edge_base,
             state.common.child_font_px,
             nodes,

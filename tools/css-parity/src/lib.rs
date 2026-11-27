@@ -257,7 +257,7 @@ fn html_escape(s: &str) -> String {
 
 /// JS snippet：读取全部 `[data-id]` 的 getBoundingClientRect。
 pub const WEBVIEW_MEASURE_JS: &str = r#"
-JSON.stringify(Array.from(document.querySelectorAll('[data-id]')).map((el) => {
+document.readyState !== 'complete' || document.fonts.status !== 'loaded' ? null : JSON.stringify(Array.from(document.querySelectorAll('[data-id]')).filter((el) => el.getClientRects().length > 0).map((el) => {
   const r = el.getBoundingClientRect();
   return { id: el.getAttribute('data-id'), x: r.x, y: r.y, w: r.width, h: r.height };
 }))

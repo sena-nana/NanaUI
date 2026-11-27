@@ -10,7 +10,7 @@
     "children": [
       {
         "id": "a",
-        "style": "display:flex;flex-direction:row;width:100px;height:40px;padding:10px;border-width:5px;box-sizing:border-box",
+        "style": "display:flex;flex-direction:row;width:100px;height:40px;padding:10px;border-width:5px;border-style:solid;box-sizing:border-box",
         "children": [
           { "id": "inner", "style": "width:100%;height:100%" }
         ]

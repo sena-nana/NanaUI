@@ -57,6 +57,6 @@ pub(super) fn establish_context(
         grid_2d: matches!(
             kind,
             FormattingContextKind::Grid | FormattingContextKind::Layers
-        ) && uses_2d_grid(style, flow, nodes),
+        ) && uses_2d_grid(style),
     }
 }

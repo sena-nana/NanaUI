@@ -102,6 +102,75 @@ fn with_bundled_root_font(mut root: StyleLayoutNode) -> StyleLayoutNode {
     root
 }
 
+/// Moves each sticky box, with its subtree, by the Runtime's sticky
+/// projection at scroll 0: what hit testing and paint show, and what the
+/// page's `getBoundingClientRect` reports. Layout boxes stay in flow.
+fn apply_sticky_projection(root: &LayoutNode, boxes: &mut [(String, MeasuredBox)]) {
+    fn walk<'a>(
+        node: &'a LayoutNode,
+        ancestors: &mut Vec<&'a LayoutNode>,
+        index: &std::collections::HashMap<String, usize>,
+        boxes: &mut [(String, MeasuredBox)],
+    ) {
+        if node.style.position == nana_ui_core::PositionSpec::Sticky
+            && let Some(&at) = index.get(&node.id)
+        {
+            let layout_box = |measured: MeasuredBox| nana_ui_runtime::LayoutBox {
+                x: measured.x,
+                y: measured.y,
+                width: measured.width,
+                height: measured.height,
+            };
+            let font = |style: &LayoutStyle| style.font_size.unwrap_or(16.0);
+            let chain = ancestors.iter().rev().filter_map(|ancestor| {
+                let measured = boxes[*index.get(&ancestor.id)?].1;
+                Some(nana_ui_runtime::StickyAncestor {
+                    style: &ancestor.style,
+                    bounds: layout_box(measured),
+                    boxes: None,
+                    scroll: nana_ui_runtime::ScrollOffset::default(),
+                    font_size: font(&ancestor.style),
+                    writing: nana_ui_core::WritingContext::default(),
+                })
+            });
+            let [dx, dy] = nana_ui_runtime::sticky_translation(
+                &node.style,
+                layout_box(boxes[at].1),
+                font(&node.style),
+                nana_ui_core::WritingContext::default(),
+                chain,
+            );
+            if dx != 0.0 || dy != 0.0 {
+                let mut moved = Vec::new();
+                collect_ids(node, &mut moved);
+                for id in moved {
+                    if let Some(&i) = index.get(id) {
+                        boxes[i].1.x += dx;
+                        boxes[i].1.y += dy;
+                    }
+                }
+            }
+        }
+        ancestors.push(node);
+        for child in &node.children {
+            walk(child, ancestors, index, boxes);
+        }
+        ancestors.pop();
+    }
+    fn collect_ids<'a>(node: &'a LayoutNode, out: &mut Vec<&'a str>) {
+        out.push(&node.id);
+        for child in &node.children {
+            collect_ids(child, out);
+        }
+    }
+    let index = boxes
+        .iter()
+        .enumerate()
+        .map(|(i, (id, _))| (id.clone(), i))
+        .collect();
+    walk(root, &mut Vec::new(), &index, boxes);
+}
+
 fn to_style_tree(node: &LayoutNode) -> StyleLayoutNode {
     StyleLayoutNode {
         id: node.id.clone(),
@@ -124,7 +193,7 @@ pub fn measure_layout(
         nana_ui_css::css_map::with_active_font_sizes(
             nana_ui_css::css_map::FontSizeContext::default(),
             || {
-                RuntimeLayoutEngine
+                let mut boxes: Vec<(String, MeasuredBox)> = RuntimeLayoutEngine
                     .layout_style_tree(
                         &with_bundled_root_font(to_style_tree(root)),
                         LayoutViewport::new(vw, vh),
@@ -137,7 +206,9 @@ pub fn measure_layout(
                             MeasuredBox::new(box_.x, box_.y, box_.width, box_.height),
                         )
                     })
-                    .collect()
+                    .collect();
+                apply_sticky_projection(root, &mut boxes);
+                boxes
             },
         )
     })

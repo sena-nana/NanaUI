@@ -623,7 +623,7 @@ impl Default for LayoutStyle {
             allow_shrink: false,
             align_items: AlignSpec::Start,
             align_self: None,
-            align_content: JustifySpec::Start,
+            align_content: JustifySpec::Stretch,
             justify_content: JustifySpec::Start,
             justify_items: None,
             justify_self: None,
@@ -961,7 +961,7 @@ impl LayoutStyle {
         match direction {
             FlexDirection::Row => self.resolved_column_gap_against_fonts(cb.width, fonts),
             FlexDirection::Column => {
-                self.resolved_row_gap_against_fonts(definite_length(cb.height).or(cb.width), fonts)
+                self.resolved_row_gap_against_fonts(definite_length(cb.height), fonts)
             }
         }
     }
@@ -972,7 +972,7 @@ impl LayoutStyle {
     }
 
     /// 交叉轴 gap，携带 CB 供 `%` 解析。
-    /// Row 的 row-gap `%`：定高优先，否则回退宽度（wrap 自动高常见路径）。
+    /// Row 的 row-gap `%` 按定高解析；高度不定时为 0（CSS Box Alignment §8.3，与 Chrome 一致）。
     pub fn cross_gap_against(&self, direction: FlexDirection, cb: ParentBox) -> f32 {
         self.cross_gap_against_fonts(direction, cb, FontSizeContext::default())
     }
@@ -986,7 +986,7 @@ impl LayoutStyle {
     ) -> f32 {
         match direction {
             FlexDirection::Row => {
-                self.resolved_row_gap_against_fonts(definite_length(cb.height).or(cb.width), fonts)
+                self.resolved_row_gap_against_fonts(definite_length(cb.height), fonts)
             }
             FlexDirection::Column => self.resolved_column_gap_against_fonts(cb.width, fonts),
         }

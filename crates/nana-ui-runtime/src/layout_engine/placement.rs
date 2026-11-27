@@ -2959,6 +2959,11 @@ pub(super) fn arrange_flow<'a>(
     let mut children = nodes.scratch.arranged(flow.len());
     let mut lines = nodes.scratch.lines();
     let wrap = if ifc { FlexWrap::Wrap } else { style.flex_wrap };
+    // `wrap-reverse` swaps cross-start and cross-end (CSS Flexbox §5.2): lines
+    // pack from the far side and `flex-start` items sit at it, which the
+    // flow-relative placement below gets by turning the cross axis on the
+    // page, as the measure pass does for its baselines.
+    let cross_reversed = cross_reversed ^ matches!(wrap, FlexWrap::WrapReverse);
     let wrapping = ifc
         || match direction {
             FlexDirection::Row => matches!(wrap, FlexWrap::Wrap | FlexWrap::WrapReverse),
@@ -3047,9 +3052,6 @@ pub(super) fn arrange_flow<'a>(
         slots.push(line_slot(indices));
         slots
     };
-    if matches!(wrap, FlexWrap::WrapReverse) {
-        line_slots.reverse();
-    }
     #[allow(clippy::type_complexity)]
     let mut packed: Vec<(
         Vec<StableNodeId>,
@@ -3246,6 +3248,7 @@ pub(super) fn arrange_flow<'a>(
                 writing,
                 direction,
                 cross_reversed,
+                matches!(wrap, FlexWrap::WrapReverse),
                 child_edge_base,
                 child_font_px,
                 nodes,
@@ -3275,7 +3278,13 @@ pub(super) fn arrange_flow<'a>(
             flex_line_ascent,
         ));
     }
-    let align_content = style.align_content;
+    // `align-content` distributes a flex container's lines; the line boxes of
+    // an inline formatting context stack from the block start.
+    let align_content = if ifc {
+        JustifySpec::Start
+    } else {
+        style.align_content
+    };
     let line_count = packed.len();
     let container_cross = cross_extent(content, direction);
     let (mut cross_cursor, extra_cross_gap) = if line_count > 1 {
@@ -3497,6 +3506,11 @@ pub(super) fn arrange_flow<'a>(
                     AlignSpec::Start | AlignSpec::Stretch => cross_cursor + cross_lead(margin),
                     AlignSpec::Baseline => {
                         let base = aligned_baseline.unwrap_or_default();
+                        let base = if matches!(wrap, FlexWrap::WrapReverse) {
+                            cross_extent(child_size, direction) - base
+                        } else {
+                            base
+                        };
                         if flex_line_ascent.is_some() {
                             cross_cursor + line_baseline - base
                         } else {

@@ -671,9 +671,30 @@ fn flex_first_baseline(
     scope: Option<&ScopeContext<'_>>,
 ) -> Result<Option<f32>, UiWorldError> {
     let main_is_inline = direction == writing.inline_flex_direction();
-    // Lines are arranged from the cross start of the page: placement packs
-    // a `wrap-reverse` flow's last line first.
-    let Some(line) = arranged.lines.iter().find(|line| !line.children.is_empty()) else {
+    // The first line is the one nearest the cross start of the page, which
+    // under `wrap-reverse` is the flow's last.
+    let page_cross_start = |line: &&super::placement::ArrangedLine| {
+        arranged.children[line.children.clone()]
+            .iter()
+            .map(|item| {
+                let (offset, size) = (
+                    (item.offset.x, item.offset.y),
+                    (item.size.width, item.size.height),
+                );
+                if main_is_inline {
+                    writing.block_origin_offset(offset, size, (content.width, content.height))
+                } else {
+                    writing.inline_start_coord(offset, size)
+                }
+            })
+            .fold(f32::INFINITY, f32::min)
+    };
+    let Some(line) = arranged
+        .lines
+        .iter()
+        .filter(|line| !line.children.is_empty())
+        .min_by(|a, b| page_cross_start(a).total_cmp(&page_cross_start(b)))
+    else {
         return Ok(None);
     };
     let items = &arranged.children[line.children.clone()];
@@ -865,6 +886,7 @@ pub(super) fn flex_baseline_line_metrics(
     writing: nana_ui_core::WritingContext,
     direction: FlexDirection,
     cross_reversed: bool,
+    far_baseline: bool,
     edge_base: f32,
     child_font_px: f32,
     nodes: &LayoutInputMap<'_>,
@@ -903,6 +925,13 @@ pub(super) fn flex_baseline_line_metrics(
                 .unwrap_or_else(|| nodes.baseline(child, fonts.element_px, size))
                 .max(child_style.resolved_border_width())
                 .min(item_cross.max(child_style.resolved_border_width()));
+            // Under `wrap-reverse` the line's cross-start is the item's far
+            // side, so its baseline is measured from there.
+            let baseline = if far_baseline {
+                item_cross - baseline
+            } else {
+                baseline
+            };
             max_ascent = max_ascent.max(lead + baseline);
             max_descent = max_descent.max((item_cross - baseline) + trail);
         } else {
@@ -1209,6 +1238,7 @@ pub(super) fn wrap_intrinsic_size(
                 writing,
                 direction,
                 cross_reversed,
+                matches!(wrap, FlexWrap::WrapReverse),
                 edge_base,
                 parent_font_px,
                 nodes,

@@ -53,32 +53,45 @@ fn measure_with_wry(case: &FixtureCase) -> Result<Vec<ExpectedBox>, String> {
         .build(&window)
         .map_err(|e| format!("skip: webview: {e}"))?;
 
-    let mut ticks = 0u32;
-    let _ = WEBVIEW_MEASURE_JS;
+    // The page may still be loading when the loop starts, and the script
+    // answers `null` until it is complete, so it is retried until a deadline.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut next_eval = std::time::Instant::now();
+    let pending = Arc::new(Mutex::new(false));
     event_loop.run_return(move |event, _, control_flow| {
         *control_flow = ControlFlow::Poll;
         match event {
             Event::NewEvents(StartCause::Init) | Event::MainEventsCleared => {
-                ticks = ticks.saturating_add(1);
-                if ticks == 10 {
+                let now = std::time::Instant::now();
+                {
+                    let mut g = result_ready.lock().unwrap();
+                    if matches!(g.as_ref(), Some(Ok(value)) if value == "null") {
+                        *g = None;
+                    }
+                    if g.is_some() {
+                        *control_flow = ControlFlow::Exit;
+                        return;
+                    }
+                }
+                if now >= deadline {
+                    *result_ready.lock().unwrap() =
+                        Some(Err("skip: webview measure timeout".into()));
+                    *control_flow = ControlFlow::Exit;
+                    return;
+                }
+                if now >= next_eval && !*pending.lock().unwrap() {
+                    next_eval = now + std::time::Duration::from_millis(50);
+                    *pending.lock().unwrap() = true;
                     let flag = result_set.clone();
+                    let done = pending.clone();
                     if let Err(e) =
                         webview.evaluate_script_with_callback(WEBVIEW_MEASURE_JS, move |value| {
                             *flag.lock().unwrap() = Some(Ok(value));
+                            *done.lock().unwrap() = false;
                         })
                     {
                         *result_set.lock().unwrap() = Some(Err(format!("eval: {e}")));
                     }
-                }
-                if ticks >= 10 && result_ready.lock().unwrap().is_some() {
-                    *control_flow = ControlFlow::Exit;
-                }
-                if ticks > 200 {
-                    let mut g = result_ready.lock().unwrap();
-                    if g.is_none() {
-                        *g = Some(Err("skip: webview measure timeout".into()));
-                    }
-                    *control_flow = ControlFlow::Exit;
                 }
             }
             Event::WindowEvent {

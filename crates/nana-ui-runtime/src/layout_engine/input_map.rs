@@ -1258,49 +1258,11 @@ pub(super) fn sort_by_order(ids: &mut [StableNodeId], nodes: &LayoutInputMap<'_>
     ids.sort_by_cached_key(|id| order_of(*id));
 }
 
-pub(super) fn uses_2d_grid(
-    style: &LayoutStyle,
-    flow: &[StableNodeId],
-    nodes: &LayoutInputMap<'_>,
-) -> bool {
-    if !style.display.is_some_and(DisplaySpec::is_grid_container) {
-        return false;
-    }
-    if style.display.is_some_and(DisplaySpec::is_layers) {
-        return true;
-    }
-    if !style.grid.is_shared_default() {
-        let grid = &*style.grid;
-        if grid.columns.is_some()
-            || grid.rows.is_some()
-            || grid.columns_subgrid
-            || grid.rows_subgrid
-            || grid.columns_unsupported.is_some()
-            || grid.rows_unsupported.is_some()
-            || grid.columns_repeat.is_some()
-            || grid.rows_repeat.is_some()
-            || grid.auto_flow.is_some()
-            || grid
-                .auto_columns
-                .as_ref()
-                .is_some_and(|tracks| !tracks.is_empty())
-            || grid
-                .auto_rows
-                .as_ref()
-                .is_some_and(|tracks| !tracks.is_empty())
-            || grid
-                .template_areas
-                .as_ref()
-                .is_some_and(|areas| !areas.cells.is_empty())
-        {
-            return true;
-        }
-    }
-    flow.iter().any(|id| {
-        nodes
-            .style(*id)
-            .is_some_and(|child| !child.grid.is_shared_default() && !child.grid.placement.is_auto())
-    })
+/// Every grid container lays out as a 2D grid (CSS Grid §7): with no
+/// template its items flow into implicit `auto` rows of one implicit column,
+/// never into a row as a flex container would place them.
+pub(super) fn uses_2d_grid(style: &LayoutStyle) -> bool {
+    style.display.is_some_and(DisplaySpec::is_grid_container)
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]

@@ -540,7 +540,7 @@ fit 只有一份数学：`ContentFit::fitted_size`（`nana-ui-core`）。fit 是
 
 `align-items: baseline` 的 flex 行按项目的首个基线对齐，替换内容取边框盒底边（CSS Align 在 flex / grid 里从边框盒合成基线）。行盒都在后代里的项目（`UiWorld::aligns_by_first_baseline` 且 `line_boxes_are_descendants_in`）取首个流内行盒所在的位置，和行内原子的基线是同一份推导（`inline::descendant_baselines`）：测量发布 intrinsic facts 前、placement 读行的基线前、flex 计划比对基线前都先 `prime_first_baselines`，`baseline_metrics` 的首个基线再读它；测试与 `layout-verify` 构建里没预备就读会直接报错。这样的项目也读内容（`atom_baseline_reads_content`），固定尺寸不再是度量边界，里面后代的字号、文字、上方盒子的高度变化会让这一行重新对齐；首行没动的变化不移动任何项目。门禁在 `world/tests/layout_foundations.rs` 的 D。grid 项目按基线对齐时，同一起始行里的这些项目共享一条基线：每个项目按自己的首个基线加上方 margin，对齐到这一行里最深的那个（`grid::arrange_grid_2d`，#394）。行的基线发布在 `LayoutResult` 的 TextLine 片段上。flex / grid 自身只消费基线；`Inline` 与原生段落里的原子同时按 `LayoutStyle::resolved_vertical_align()` 对齐。这不是 replaced 专有的规则。
 
-flex 容器的基线（CSS Flexbox §8.5，按 Chrome 152 实测，#394）从 `arrange_flow` 给出的项目位置读（`inline::flex_first_baseline`）：取画面上最上面的一行——placement 排 `wrap-reverse` 时先排末行，所以就是排好的第一行——行里有按 `align-self: baseline` 对齐的项目时取它们共享的基线，否则取这一行里最靠行内起点的项目的首个基线；纵向的 flex 取最靠行内起点的一列里最上面的项目。所以 `row-reverse` 取最左边的项目、`column-reverse` 取最上面的，不是流里的第一个。项目没有行盒时取它的边框盒底边。flex 容器的末基线就是首基线：以 flex 容器结尾的行内原子也按它的首基线对齐。一个盒子自己没有文字、流里也没有任何行盒时没有基线，按 CSS Align §9.1 取边框盒底边（`baseline_metrics`），不再用字体的近似 ascent。flex 容器的任何流内项目都可能是它取基线的那一个，所以这些项目也读内容（`atom_baseline_reads_content`），固定尺寸的项目里换字号也会让外面的行重新对齐。
+flex 容器的基线（CSS Flexbox §8.5，按 Chrome 152 实测，#394）从 `arrange_flow` 给出的项目位置读（`inline::flex_first_baseline`）：取画面上最上面的一行——`wrap-reverse` 把首行排到交叉轴末端，所以取的是交叉坐标最小的那一行，它的基线从项目远侧量——行里有按 `align-self: baseline` 对齐的项目时取它们共享的基线，否则取这一行里最靠行内起点的项目的首个基线；纵向的 flex 取最靠行内起点的一列里最上面的项目。所以 `row-reverse` 取最左边的项目、`column-reverse` 取最上面的，不是流里的第一个。项目没有行盒时取它的边框盒底边。flex 容器的末基线就是首基线：以 flex 容器结尾的行内原子也按它的首基线对齐。一个盒子自己没有文字、流里也没有任何行盒时没有基线，按 CSS Align §9.1 取边框盒底边（`baseline_metrics`），不再用字体的近似 ascent。flex 容器的任何流内项目都可能是它取基线的那一个，所以这些项目也读内容（`atom_baseline_reads_content`），固定尺寸的项目里换字号也会让外面的行重新对齐。
 grid 容器的基线（CSS Grid 2 §11.8，按 Chrome 实测）同样从项目的位置读（`grid::arrange_grid_2d`、`inline::grid_first_baseline`）：取有项目起始的第一行，行里有按基线对齐的项目时取它们共享的基线，否则取这一行里 grid 顺序的第一个项目（列号最小的，RTL 下在最右边，不看 DOM 顺序；跨行的项目算在它起始的那一行），没有行盒时取它的边框盒底边；末基线也就是首基线。grid 项目同样读内容。
 门禁在 `world/tests/layout_foundations.rs`（含竖排基线 #395 与基线扩展/跨度门禁 #409），Chrome 与对照测例是 css-parity `T-FX01`–`T-FX04`、`T-GB01`–`T-GB03`、`T-G37`、`T-WM01`。按基线对齐的 flex 行交叉尺寸按 `max_ascent + max_descent` 合并非基线项扩展（`inline::flex_baseline_line_metrics`），grid 轨道按 CSS Grid 2 §12.5 baseline shim 扩展单个 `auto` 行（`grid::apply_grid_row_baseline_shim`），跨行/跨列 `auto` 轨道按差额均分（`grid::distribute_spanned_auto_tracks`），且定宽 `inline-flex`（column）/`inline-grid` 内的自动宽度 `display: grid` 拉伸铺满容器内宽（`measure::parent_stretches_inline_auto_width`）。
 
@@ -789,7 +789,7 @@ CSS 路径只产出数据，不量容器（见下文「`@container`」）。
 
 ## 能用的
 
-**Flex。** 你可以用 `flex-direction`、`flex-wrap`、`gap`、`align-items`、`align-self`、`justify-content`。多行换行时还有 `align-content`。`stretch` 和 `normal` 把剩余的交叉空间均分给各行。还有 `order`、`flex-grow`、`flex-shrink`、`flex-basis`。侧栏加主区，用这一套就够。
+**Flex。** 你可以用 `flex-direction`、`flex-wrap`、`gap`、`align-items`、`align-self`、`justify-content`。多行换行时还有 `align-content`。默认的 `normal` 和 `stretch` 一样，把剩余的交叉空间均分给各行，和 CSS 一致（T-W05～T-W07、T-W09）；单行容器不受它影响。`wrap-reverse` 对调交叉轴的起止：首行贴交叉轴末端，`align-items: flex-start` 也贴那一侧（T-W06、T-W08）。行间 `row-gap` 写百分比时按容器的确定高度兑现；高度不定时为 0，不回退到宽度（CSS Box Alignment §8.3，T-W05）。还有 `order`、`flex-grow`、`flex-shrink`、`flex-basis`。侧栏加主区，用这一套就够。
 
 换行的行按项目**长大之前**的尺寸分行。这是 CSS 的 hypothetical main size。先取 `flex-basis`。没有，就取主轴尺寸。再没有，就取内容。并受 `min-*` 和 `max-*` 约束。分好行之后，才把行里剩下的空间按 `flex-grow` 分出去。
 
@@ -857,7 +857,9 @@ grid 的列是 inline 轴上的轨道。行是 block 轴上的轨道。这是 CS
 
 默认是 border-box。也认 content-box。
 
-**网格。** 你可以用 `grid-template-columns` 和 `rows`、`fr`、`minmax`、固定次数的 `repeat(N, …)`。布局时还会展开 `repeat(auto-fit | auto-fill)`。它可以和前后的固定轨混写。例如 `80px repeat(auto-fit, 1fr)`。auto-fit 按容器能放下的轨数展开。空轨会收起。
+**网格。** 你可以用 `grid-template-columns` 和 `rows`、`fr`、`minmax`、固定次数的 `repeat(N, …)`。布局时还会展开 `repeat(auto-fit | auto-fill)`。它可以和前后的固定轨混写。例如 `80px repeat(auto-fit, 1fr)`。auto-fit 按容器能放下的轨数展开。空轨会收起。`fit-content(<长度>)` 轨按内容定尺寸，最大不超过给的长度（T-G23）。
+
+写了 `display: grid` 但没写任何模板时仍是二维网格：项按顺序各占一条隐式行轨（T-G18）。
 
 还有 `grid-column`、`grid-row`、`span`、`grid-auto-flow` 的自动放置、`grid-auto-columns` 和 `rows` 隐式轨，以及网格项上的 `justify-items` 和 `justify-self`。
 
@@ -865,11 +867,11 @@ grid 的列是 inline 轴上的轨道。行是 block 轴上的轨道。这是 CS
 
 先定列，再定行（CSS Grid §11.5）。auto 行的高度取项**按它跨的列宽排开**之后的高度，不取列解析之前那次量测：那次 `100%` / `Fill` 的项按零宽量，能折行的芯片一行一个，`auto` 宽的项按整个容器宽量，芯片挤在一行。所以两列 197px 里的五个 60px 芯片折成三个加两个，行高 46，和浏览器一致（T-G36）。
 
-`grid-template-areas` 加上 `grid-area: header` 是命名区域。轨上还有 `[name]` 命名线。同名线可以用 `foo 2` 或 `2 foo` 取第 N 根。`foo / foo` 的终点取起点之后的下一根同名线。不是 CSS 那种对调。
+`grid-template-areas` 加上 `grid-area: header` 是命名区域。轨上还有 `[name]` 命名线。同名线可以用 `foo 2` 或 `2 foo` 取第 N 根。终点上的命名线和起点一样从网格起点数，所以 `foo 2 / foo` 的终点是第一根 `foo`；终点在起点之前时两者对调，和 CSS 一致（T-G33、T-G34）。
 
 `[start] 80px repeat(auto-fit, …)` 的前缀线名会保留。repeat 内的线名也会保留。`repeat(N, …)`、`auto-fit`、`auto-fill` 里的线名按展开次数复制。接缝处相邻的名字合并。因此 `mid 2` 相对展开后的几何取值。
 
-定高网格里，空的 auto 行（量测约等于 0）会吃掉剩余高度。有内容的 auto 行（T-G26）保持内容高，不会被拉伸。这不是 CSS `align-content: stretch` 作用在轨道上。
+块轴尺寸确定的网格里，`align-content` 默认的 `normal` 按 `stretch` 处理，和 CSS 一样把剩余高度均分给所有 auto 行，有内容的也一起拉伸（T-G26）。高度由内容决定的网格不拉伸。列方向上，`justify-content: stretch` 拉伸所有 auto 列；默认只让空的 auto 列吃掉剩余宽度。
 
 自动放置扫到 4096 格仍放不下时，项落在扫描区外。这不是宿主错误。
 
@@ -1062,6 +1064,8 @@ mask 在节点的布局盒上求值，只作用于节点自己画的东西，不
 四边的 `border-*-width` 和 `border-*-color` 参与布局，也参与 GPU stroke。
 
 `border-style: dashed | dotted` 在同一条 rounded-box SDF 环上按边做周期遮罩。不另开管线。`double`、groove、ridge、inset、outset 仍占 used width，但不描。
+
+没写 `border-style` 时，`border-width` 仍占 used width，按实线描。这与 CSS 不同：CSS 的 `border-style` 初始值是 `none`，只写宽度的边框 used width 为 0。内置组件在 Rust 里只写宽度、靠这条规则描边，CSS 规则又编译成不知道落在哪个元素上的补丁，所以这里不改。要和浏览器一致，就同时写 `border-style`，或用 `border` 简写（T-B09）。
 
 `background-image: url(...)` 与 `<img src>`、内联 `<svg>` 共用同一条 decode 加 URL 纹理缓存。支持 `data:image/png|jpeg|svg+xml`、`http://`、`https://`、`file://` 和相对路径。`.svg` 走已有的 `resvg`。最长边 2048，保持比例。不是第二套矢量引擎。
 

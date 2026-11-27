@@ -3972,15 +3972,15 @@ fn align_items_baseline_uses_shaped_ascent_not_approx_em() {
 }
 
 #[test]
-fn named_line_nth_uses_second_foo() {
-    let item = StyleLayoutNode {
+fn named_lines_count_from_the_grid_start_and_swap() {
+    let place = |end: GridLine| StyleLayoutNode {
         id: "cell".into(),
         style: LayoutStyle {
             height: Some(LengthSpec::Px(40.0)),
             grid: nana_ui_core::GridStyle {
                 placement: GridPlacement {
                     column_start: GridLine::NthName("foo".into(), 2),
-                    column_end: GridLine::Name("foo".into()),
+                    column_end: end,
                     ..GridPlacement::default()
                 }
                 .into(),
@@ -3992,7 +3992,7 @@ fn named_line_nth_uses_second_foo() {
         children: Vec::new(),
         text: None,
     };
-    let tree = StyleLayoutNode {
+    let tree = |end: GridLine| StyleLayoutNode {
         id: "root".into(),
         style: LayoutStyle {
             display: Some(DisplaySpec::Grid),
@@ -4010,13 +4010,22 @@ fn named_line_nth_uses_second_foo() {
             .into(),
             ..LayoutStyle::default()
         },
-        children: vec![item],
+        children: vec![place(end)],
         text: None,
     };
-    let boxes = box_map(&tree, 200.0, 40.0);
+    // `foo 2 / foo 3`: the second and third `foo` lines, the 120px track.
+    let boxes = box_map(&tree(GridLine::NthName("foo".into(), 3)), 200.0, 40.0);
     assert!(
         (boxes["cell"].x - 80.0).abs() < 0.5 && (boxes["cell"].width - 120.0).abs() < 0.5,
-        "foo 2 / next foo must be the 120px track, got {:?}",
+        "foo 2 / foo 3 must be the 120px track, got {:?}",
+        boxes["cell"]
+    );
+    // `foo 2 / foo`: the end counts from the grid start too (line 1), so the
+    // lines swap and the item spans the 80px track (CSS Grid §8.3.1).
+    let boxes = box_map(&tree(GridLine::Name("foo".into())), 200.0, 40.0);
+    assert!(
+        (boxes["cell"].x - 0.0).abs() < 0.5 && (boxes["cell"].width - 80.0).abs() < 0.5,
+        "foo 2 / foo must swap to the 80px track, got {:?}",
         boxes["cell"]
     );
 }
@@ -4030,7 +4039,7 @@ fn auto_fill_nth_named_line_uses_expanded_copies() {
             grid: nana_ui_core::GridStyle {
                 placement: GridPlacement {
                     column_start: GridLine::NthName("mid".into(), 2),
-                    column_end: GridLine::Name("mid".into()),
+                    column_end: GridLine::Span(1),
                     ..GridPlacement::default()
                 }
                 .into(),

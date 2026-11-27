@@ -4123,11 +4123,8 @@ fn parse_grid_track_list(raw: &str, percent_base: Option<f32>) -> GridTrackListP
             {
                 GridTrack::Auto
             } else if let Some(px) = parse_css_length_px(inner, percent_base) {
-                // ≈ minmax(auto, <arg>)：柔性轨 + 像素上限。
-                GridTrack::MinMax {
-                    min_px: 0.0,
-                    fr: 1.0,
-                    max_px: Some(px.max(0.0)),
+                GridTrack::FitContent {
+                    limit_px: px.max(0.0),
                 }
             } else {
                 return GridTrackListParse::Invalid;
@@ -7837,14 +7834,7 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         assert!((repo_widths[1] - 294.0).abs() < 0.01);
 
         let fit_fn = parse_grid_template_columns("fit-content(120px) 1fr", None).unwrap();
-        assert_eq!(
-            fit_fn[0],
-            GridTrack::MinMax {
-                min_px: 0.0,
-                fr: 1.0,
-                max_px: Some(120.0),
-            }
-        );
+        assert_eq!(fit_fn[0], GridTrack::FitContent { limit_px: 120.0 });
         assert_eq!(fit_fn[1], GridTrack::Fr(1.0));
 
         let pct = parse_grid_template_columns("25% 1fr", None).unwrap();

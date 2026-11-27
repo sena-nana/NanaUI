@@ -556,8 +556,8 @@ D in `world/tests/layout_foundations.rs`. When grid items align by baseline, tho
 first baseline plus top margin to the deepest one in the row (`grid::arrange_grid_2d`, #394). The line's baseline is published on the TextLine fragment of `LayoutResult`. Flex and grid align by baseline only, while IFC and native paragraphs resolve `LayoutStyle::resolved_vertical_align()`. This is not a rule specific to replaced content.
 
 A flex container's baseline (CSS Flexbox §8.5, per Chrome 152 measurements, #394) is read from the item positions given by `arrange_flow`
-(`inline::flex_first_baseline`): take the topmost line on screen (placement arranges the last line first for `wrap-reverse`,
-so it is the first arranged line); if the line has items aligned with `align-self: baseline`, take their shared baseline, otherwise take the first baseline of the item
+(`inline::flex_first_baseline`): take the topmost line on screen (`wrap-reverse` puts the first line at the cross end,
+so this is the line with the smallest cross coordinate, and its baseline is measured from the items' far side); if the line has items aligned with `align-self: baseline`, take their shared baseline, otherwise take the first baseline of the item
 closest to the inline start in that line; a column flex takes the topmost item in the column closest to the inline start. So `row-reverse`
 takes the leftmost item and `column-reverse` the topmost, not the first in flow. An item without line boxes takes the bottom of its border box.
 A flex container's last baseline is its first baseline: an inline atom ending with a flex container also aligns by its first baseline in Chrome.
@@ -795,7 +795,7 @@ Gates:
 
 ## What works
 
-**Flex.** You can use `flex-direction`, `flex-wrap`, `gap`, `align-items`, `align-self`, and `justify-content`. With wrapping there is also `align-content`. `stretch` and `normal` share the remaining cross space evenly among the lines. There is also `order`, `flex-grow`, `flex-shrink`, and `flex-basis`. A sidebar plus a main region needs nothing beyond this set.
+**Flex.** You can use `flex-direction`, `flex-wrap`, `gap`, `align-items`, `align-self`, and `justify-content`. With wrapping there is also `align-content`. The default `normal` acts like `stretch` and shares the remaining cross space evenly among the lines, as in CSS (T-W05–T-W07, T-W09); a single-line container is unaffected. `wrap-reverse` swaps cross start and cross end: the first line sits at the cross end, and `align-items: flex-start` aligns to that side too (T-W06, T-W08). A percentage `row-gap` between lines resolves against the container's definite height; when the height is indefinite it is 0 and does not fall back to the width (CSS Box Alignment §8.3, T-W05). There is also `order`, `flex-grow`, `flex-shrink`, and `flex-basis`. A sidebar plus a main region needs nothing beyond this set.
 
 Items are broken into lines by their size **before** they grow. That is CSS's hypothetical main size. It takes `flex-basis` first. If that is absent, the main-axis size. If that is absent too, the content. It is also constrained by `min-*` and `max-*`. Only after the lines are formed is the space left in a line distributed by `flex-grow`.
 
@@ -863,7 +863,9 @@ Still missing are `unicode-bidi` isolation and full bidirectional text.
 
 The default is border-box. content-box is recognized too.
 
-**Grid.** You can use `grid-template-columns` and `rows`, `fr`, `minmax`, and `repeat(N, …)` with a fixed count. At layout time `repeat(auto-fit | auto-fill)` is also expanded. It can be mixed with fixed tracks before and after it. For example `80px repeat(auto-fit, 1fr)`. auto-fit expands to as many tracks as the container fits. Empty tracks collapse.
+**Grid.** You can use `grid-template-columns` and `rows`, `fr`, `minmax`, and `repeat(N, …)` with a fixed count. At layout time `repeat(auto-fit | auto-fill)` is also expanded. It can be mixed with fixed tracks before and after it. For example `80px repeat(auto-fit, 1fr)`. auto-fit expands to as many tracks as the container fits. Empty tracks collapse. A `fit-content(<length>)` track is sized by its content, capped at the given length (T-G23).
+
+A `display: grid` container with no templates is still a two-dimensional grid: items take one implicit row track each, in order (T-G18).
 
 There is also `grid-column`, `grid-row`, `span`, automatic placement through `grid-auto-flow`, `grid-auto-columns` and `rows` for implicit tracks, and `justify-items` and `justify-self` on grid items.
 
@@ -871,11 +873,11 @@ After track resolution, a `width` or `height` percentage on an item, and `Fill`,
 
 Columns are sized first, then rows (CSS Grid §11.5). An auto row's height is the height of its items **laid out at the column widths they span**, not the measurement taken before columns were resolved: there, items with `100%` / `Fill` measured at zero width, a chip that can wrap took a line each, and an item with `auto` width measured at the whole container width, so the chips crowded onto one line. So five 60 px chips in two 197 px columns break into three plus two, with a row height of 46, matching a browser (T-G36).
 
-`grid-template-areas` plus `grid-area: header` gives named areas. There are also `[name]` named lines on tracks. For lines with the same name, `foo 2` or `2 foo` picks the Nth. In `foo / foo`, the end takes the next line with the same name after the start. It is not CSS's swap.
+`grid-template-areas` plus `grid-area: header` gives named areas. There are also `[name]` named lines on tracks. For lines with the same name, `foo 2` or `2 foo` picks the Nth. A named line at the end counts from the grid start like the start does, so the end of `foo 2 / foo` is the first `foo`; when the end comes before the start the two swap, as in CSS (T-G33, T-G34).
 
 The leading line name in `[start] 80px repeat(auto-fit, …)` is kept. Line names inside repeat are kept too. Names inside `repeat(N, …)`, `auto-fit`, and `auto-fill` are copied once per expansion. Adjacent names at a seam merge. So `mid 2` is resolved against the expanded geometry.
 
-In a fixed-height grid, an empty auto row (measuring about 0) eats the remaining height. An auto row with content (T-G26) keeps its content height and is not stretched. This is not CSS `align-content: stretch` acting on tracks.
+In a grid with a definite block size, the default `align-content: normal` acts as `stretch` and, as in CSS, shares the remaining height among all auto rows, including those with content (T-G26). A grid whose height comes from its content does not stretch. In the column direction, `justify-content: stretch` stretches all auto columns; by default only empty auto columns take the remaining width.
 
 When automatic placement has scanned 4096 cells and still does not fit, the item lands outside the scanned area. This is not a host error.
 
@@ -1068,6 +1070,8 @@ All 16 CSS `mix-blend-mode` keywords are completed when the isolation group comp
 The four sides' `border-*-width` and `border-*-color` take part in layout and in the GPU stroke.
 
 `border-style: dashed | dotted` applies a per-side periodic mask on the same rounded-box SDF ring. It does not open another pipeline. `double`, groove, ridge, inset, and outset still take their used width but are not stroked.
+
+Without a `border-style`, `border-width` still takes its used width and strokes as solid. This differs from CSS, where `border-style` starts as `none` and a width-only border has a used width of 0. Built-in components set only the width in Rust and rely on this rule to draw their borders, and CSS rules compile to patches that do not know which element they land on, so this stays. To match the browser, also write `border-style`, or use the `border` shorthand (T-B09).
 
 `background-image: url(...)` shares the same decode plus URL texture cache as `<img src>` and inline `<svg>`. It supports `data:image/png|jpeg|svg+xml`, `http://`, `https://`, `file://`, and relative paths. `.svg` goes through the existing `resvg`. The longest side is 2048, preserving the ratio. It is not a second vector engine.
 
