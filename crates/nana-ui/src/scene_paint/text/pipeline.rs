@@ -150,10 +150,15 @@ fn vs_main(vertex: VsIn) -> VsOut {
     var local = vec2<f32>(input.origin + vec2<i32>(offset));
     let base = vec2<u32>(input.uv & 0xffffu, (input.uv & 0xffff0000u) >> 16u);
     var texel = vec2<f32>(base + offset);
+    // One motion evaluation for the projected run's position, edge and w.
+    var composed: MotionAffine;
+    if (run.flags & RUN_PROJECT) != 0u {
+        composed = text_composed_presentation(text_presentations[run.presentation]);
+    }
     if (run.flags & RUN_PROJECT) != 0u && !solid {
         // Bitmap texels are raster px, so the quad and its atlas coordinates
         // grow alike.
-        let grown = (vec2<f32>(corner) * 2.0 - 1.0) * text_edge_grow(run, local);
+        let grown = (vec2<f32>(corner) * 2.0 - 1.0) * text_edge_grow(run, composed, local);
         local += grown;
         texel += grown;
     }
@@ -192,8 +197,8 @@ fn vs_main(vertex: VsIn) -> VsOut {
     );
     color.a = color.a * run.opacity * motion_opacity;
 
-    let world = text_world_position(run, local);
-    let clip_w = text_clip_w(run, local);
+    let world = text_world_position(run, composed, local);
+    let clip_w = text_clip_w(run, composed, local);
     var out: VsOut;
     out.position = globals.transform * vec4<f32>(world * clip_w, 0.0, clip_w);
     out.color = color;

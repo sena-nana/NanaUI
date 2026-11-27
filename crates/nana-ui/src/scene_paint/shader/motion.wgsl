@@ -456,73 +456,95 @@ fn motion_timed_progress(desc: MotionGpuDescriptor, now: MotionInstant) -> Motio
     return out;
 }
 
-fn motion_critically_damped(x0: f32, v0: f32, omega0: f32, t: f32) -> vec2<f32> {
-    let a = x0;
-    let b = v0 + omega0 * x0;
-    let exp = exp(-omega0 * t);
-    let x = (a + b * t) * exp;
-    let v = b * exp + (a + b * t) * (-omega0) * exp;
-    return vec2(x, v);
+// Spring and decay motion are linear in a channel's displacement `x0` and
+// velocity `v0`: x(t) = a * x0 + b * v0 and v(t) = c * x0 + d * v0, with
+// coefficients that depend only on the curve and `t`. They are computed once
+// and applied to every channel as vec4 arithmetic, so the shaders that
+// evaluate motion carry one solution rather than one per channel.
+struct MotionLinear {
+    a: f32,
+    b: f32,
+    c: f32,
+    d: f32,
 }
 
-fn motion_damped_harmonic(x0: f32, v0: f32, k: f32, c: f32, m: f32, t: f32) -> vec2<f32> {
+fn motion_critically_damped(omega0: f32, t: f32) -> MotionLinear {
+    let e = exp(-omega0 * t);
+    return MotionLinear((1.0 + omega0 * t) * e, t * e, -omega0 * omega0 * t * e, (1.0 - omega0 * t) * e);
+}
+
+fn motion_damped_harmonic(k: f32, c: f32, m: f32, t: f32) -> MotionLinear {
     if (t <= 0.0) {
-        return vec2(x0, v0);
+        return MotionLinear(1.0, 0.0, 0.0, 1.0);
     }
     if (!(k > 0.0 && m > 0.0 && k == k && m == m)) {
-        return vec2(0.0, 0.0);
+        return MotionLinear(0.0, 0.0, 0.0, 0.0);
     }
     let omega0 = sqrt(k / m);
     if (!(omega0 == omega0) || omega0 == 0.0) {
-        return vec2(0.0, 0.0);
+        return MotionLinear(0.0, 0.0, 0.0, 0.0);
     }
     let zeta = c / (2.0 * sqrt(k * m));
     if (!(zeta == zeta)) {
-        return vec2(0.0, 0.0);
+        return MotionLinear(0.0, 0.0, 0.0, 0.0);
     }
     if (zeta < 1.0 - 1e-5) {
         let omega_d = omega0 * sqrt(1.0 - zeta * zeta);
         if (omega_d == 0.0 || !(omega_d == omega_d)) {
-            return motion_critically_damped(x0, v0, omega0, t);
+            return motion_critically_damped(omega0, t);
         }
-        let a = x0;
-        let b = (v0 + zeta * omega0 * x0) / omega_d;
-        let e = exp(-zeta * omega0 * t);
+        let zo = zeta * omega0;
+        let e = exp(-zo * t);
         let angle = omega_d * t;
         let s = sin(angle);
         let co = cos(angle);
-        let x = e * (a * co + b * s);
-        let v = -zeta * omega0 * x + e * (-a * omega_d * s + b * omega_d * co);
-        return vec2(x, v);
+        // x = e * (x0 * co + (v0 + zo * x0) / omega_d * s)
+        let xa = e * (co + zo * s / omega_d);
+        let xb = e * s / omega_d;
+        // v = -zo * x + e * (-x0 * omega_d * s + (v0 + zo * x0) * co)
+        return MotionLinear(
+            xa,
+            xb,
+            -zo * xa + e * (zo * co - omega_d * s),
+            -zo * xb + e * co,
+        );
     }
     if (zeta > 1.0 + 1e-5) {
         let disc = sqrt(zeta * zeta - 1.0);
         let r1 = -omega0 * (zeta - disc);
         let r2 = -omega0 * (zeta + disc);
         if (abs(r1 - r2) <= 1e-7) {
-            return motion_critically_damped(x0, v0, omega0, t);
+            return motion_critically_damped(omega0, t);
         }
-        let a = (v0 - r2 * x0) / (r1 - r2);
-        let b = x0 - a;
         let e1 = exp(r1 * t);
         let e2 = exp(r2 * t);
-        return vec2(a * e1 + b * e2, a * r1 * e1 + b * r2 * e2);
+        let inv = 1.0 / (r1 - r2);
+        // x = p * e1 + (x0 - p) * e2 with p = (v0 - r2 * x0) / (r1 - r2)
+        let pa = -r2 * inv;
+        return MotionLinear(
+            pa * e1 + (1.0 - pa) * e2,
+            inv * (e1 - e2),
+            pa * r1 * e1 + (1.0 - pa) * r2 * e2,
+            inv * (r1 * e1 - r2 * e2),
+        );
     }
-    return motion_critically_damped(x0, v0, omega0, t);
+    return motion_critically_damped(omega0, t);
 }
 
-fn motion_spring_channel(x0: f32, rest: f32, v0: f32, params: vec4<f32>, t: f32) -> vec2<f32> {
-    let hv = motion_damped_harmonic(x0 - rest, v0, params.x, params.y, params.z, t);
-    return vec2(rest + hv.x, hv.y);
-}
-
-fn motion_decay_channel(x0: f32, v0: f32, tau: f32, t: f32) -> vec2<f32> {
+// A decay coasts from `x0`: x(t) = x0 + v0 * tau * (1 - exp(-t / tau)).
+fn motion_decay(tau: f32, t: f32) -> MotionLinear {
     if (tau <= 0.0 || !(tau == tau)) {
-        return vec2(x0, 0.0);
+        return MotionLinear(1.0, 0.0, 0.0, 0.0);
     }
-    let tt = max(t, 0.0);
-    let decay = exp(-tt / tau);
-    return vec2(x0 + v0 * tau * (1.0 - decay), v0 * decay);
+    let decay = exp(-max(t, 0.0) / tau);
+    return MotionLinear(1.0, tau * (1.0 - decay), 0.0, decay);
+}
+
+fn motion_linear(desc: MotionGpuDescriptor, t: f32, decay: bool) -> MotionLinear {
+    if (decay) {
+        return motion_decay(desc.spring.w, t);
+    }
+    return motion_damped_harmonic(desc.spring.x, desc.spring.y, desc.spring.z, t);
 }
 
 fn motion_max_abs(value: MotionGpuValue) -> f32 {
@@ -560,151 +582,72 @@ fn motion_is_settled(value: MotionGpuValue, rest: MotionGpuValue, velocity: Moti
         && motion_max_abs(velocity) <= MOTION_SETTLE_VEL;
 }
 
-struct MotionPhysicsVec4 {
+struct MotionPhysicsState {
+    pos: MotionGpuValue,
+    vel: MotionGpuValue,
+}
+
+struct MotionPhysicsLanes {
     pos: vec4<f32>,
     vel: vec4<f32>,
 }
 
-fn motion_physics_vec4(
-    from_v: vec4<f32>,
-    rest: vec4<f32>,
-    vel: vec4<f32>,
-    spring: vec4<f32>,
-    t: f32,
-    decay: bool,
-) -> MotionPhysicsVec4 {
-    let ch0 = select(
-        motion_spring_channel(from_v.x, rest.x, vel.x, spring, t),
-        motion_decay_channel(from_v.x, vel.x, spring.w, t),
-        decay,
-    );
-    let ch1 = select(
-        motion_spring_channel(from_v.y, rest.y, vel.y, spring, t),
-        motion_decay_channel(from_v.y, vel.y, spring.w, t),
-        decay,
-    );
-    let ch2 = select(
-        motion_spring_channel(from_v.z, rest.z, vel.z, spring, t),
-        motion_decay_channel(from_v.z, vel.z, spring.w, t),
-        decay,
-    );
-    let ch3 = select(
-        motion_spring_channel(from_v.w, rest.w, vel.w, spring, t),
-        motion_decay_channel(from_v.w, vel.w, spring.w, t),
-        decay,
-    );
-    return MotionPhysicsVec4(
-        vec4(ch0.x, ch1.x, ch2.x, ch3.x),
-        vec4(ch0.y, ch1.y, ch2.y, ch3.y),
-    );
-}
-
-struct MotionPhysicsState {
-    pos: MotionGpuValue,
-    vel: MotionGpuValue,
+// One vec4 of channels moved by `lin`: about `rest` for a spring, coasting
+// from `from_v` for a decay.
+fn motion_physics_lanes(from_v: vec4<f32>, rest: vec4<f32>, vel: vec4<f32>, lin: MotionLinear, decay: bool) -> MotionPhysicsLanes {
+    let origin = select(rest, from_v, decay);
+    let x0 = from_v - origin;
+    return MotionPhysicsLanes(origin + lin.a * x0 + lin.b * vel, lin.c * x0 + lin.d * vel);
 }
 
 fn motion_physics_state(
     from_v: MotionGpuValue,
     rest: MotionGpuValue,
     vel: MotionGpuValue,
-    desc: MotionGpuDescriptor,
+    lin: MotionLinear,
     t: f32,
     decay: bool,
 ) -> MotionPhysicsState {
+    let kind = from_v.kind;
+    if (kind != MOTION_KIND_SCALAR
+        && kind != MOTION_KIND_COLOR
+        && kind != MOTION_KIND_TRANSFORM
+        && kind != MOTION_KIND_FILTER)
+    {
+        if (t <= 0.0) {
+            return MotionPhysicsState(from_v, vel);
+        }
+        return MotionPhysicsState(rest, motion_zero_velocity(rest));
+    }
+    let l0 = motion_physics_lanes(from_v.channels, rest.channels, vel.channels, lin, decay);
+    let l1 = motion_physics_lanes(from_v.extra, rest.extra, vel.extra, lin, decay);
+    let l2 = motion_physics_lanes(from_v.extra2, rest.extra2, vel.extra2, lin, decay);
+    let l3 = motion_physics_lanes(from_v.extra3, rest.extra3, vel.extra3, lin, decay);
     var pos = from_v;
     var vout = vel;
-    if (from_v.kind == MOTION_KIND_SCALAR) {
-        let ch = select(
-            motion_spring_channel(from_v.channels.x, rest.channels.x, vel.channels.x, desc.spring, t),
-            motion_decay_channel(from_v.channels.x, vel.channels.x, desc.spring.w, t),
-            decay,
-        );
-        pos.channels.x = ch.x;
-        vout.channels.x = ch.y;
+    if (kind == MOTION_KIND_SCALAR) {
+        pos.channels.x = l0.pos.x;
+        vout.channels.x = l0.vel.x;
         return MotionPhysicsState(pos, vout);
     }
-    if (from_v.kind == MOTION_KIND_COLOR) {
-        let ch0 = select(
-            motion_spring_channel(from_v.channels.x, rest.channels.x, vel.channels.x, desc.spring, t),
-            motion_decay_channel(from_v.channels.x, vel.channels.x, desc.spring.w, t),
-            decay,
-        );
-        let ch1 = select(
-            motion_spring_channel(from_v.channels.y, rest.channels.y, vel.channels.y, desc.spring, t),
-            motion_decay_channel(from_v.channels.y, vel.channels.y, desc.spring.w, t),
-            decay,
-        );
-        let ch2 = select(
-            motion_spring_channel(from_v.channels.z, rest.channels.z, vel.channels.z, desc.spring, t),
-            motion_decay_channel(from_v.channels.z, vel.channels.z, desc.spring.w, t),
-            decay,
-        );
-        let ch3 = select(
-            motion_spring_channel(from_v.channels.w, rest.channels.w, vel.channels.w, desc.spring, t),
-            motion_decay_channel(from_v.channels.w, vel.channels.w, desc.spring.w, t),
-            decay,
-        );
-        pos.channels = vec4(ch0.x, ch1.x, ch2.x, ch3.x);
-        vout.channels = vec4(ch0.y, ch1.y, ch2.y, ch3.y);
+    pos.channels = l0.pos;
+    vout.channels = l0.vel;
+    if (kind == MOTION_KIND_COLOR) {
         return MotionPhysicsState(pos, vout);
     }
-    if (from_v.kind == MOTION_KIND_TRANSFORM) {
-        let a = select(
-            motion_spring_channel(from_v.channels.x, rest.channels.x, vel.channels.x, desc.spring, t),
-            motion_decay_channel(from_v.channels.x, vel.channels.x, desc.spring.w, t),
-            decay,
-        );
-        let b = select(
-            motion_spring_channel(from_v.channels.y, rest.channels.y, vel.channels.y, desc.spring, t),
-            motion_decay_channel(from_v.channels.y, vel.channels.y, desc.spring.w, t),
-            decay,
-        );
-        let c = select(
-            motion_spring_channel(from_v.channels.z, rest.channels.z, vel.channels.z, desc.spring, t),
-            motion_decay_channel(from_v.channels.z, vel.channels.z, desc.spring.w, t),
-            decay,
-        );
-        let d = select(
-            motion_spring_channel(from_v.channels.w, rest.channels.w, vel.channels.w, desc.spring, t),
-            motion_decay_channel(from_v.channels.w, vel.channels.w, desc.spring.w, t),
-            decay,
-        );
-        let e = select(
-            motion_spring_channel(from_v.extra.x, rest.extra.x, vel.extra.x, desc.spring, t),
-            motion_decay_channel(from_v.extra.x, vel.extra.x, desc.spring.w, t),
-            decay,
-        );
-        let f = select(
-            motion_spring_channel(from_v.extra.y, rest.extra.y, vel.extra.y, desc.spring, t),
-            motion_decay_channel(from_v.extra.y, vel.extra.y, desc.spring.w, t),
-            decay,
-        );
-        pos.channels = vec4(a.x, b.x, c.x, d.x);
-        pos.extra = vec4(e.x, f.x, 0.0, 0.0);
-        vout.channels = vec4(a.y, b.y, c.y, d.y);
-        vout.extra = vec4(e.y, f.y, 0.0, 0.0);
+    let xy = vec4<f32>(1.0, 1.0, 0.0, 0.0);
+    if (kind == MOTION_KIND_TRANSFORM) {
+        pos.extra = l1.pos * xy;
+        vout.extra = l1.vel * xy;
         return MotionPhysicsState(pos, vout);
     }
-    if (from_v.kind == MOTION_KIND_FILTER) {
-        let s0 = motion_physics_vec4(from_v.channels, rest.channels, vel.channels, desc.spring, t, decay);
-        let s1 = motion_physics_vec4(from_v.extra, rest.extra, vel.extra, desc.spring, t, decay);
-        let s2 = motion_physics_vec4(from_v.extra2, rest.extra2, vel.extra2, desc.spring, t, decay);
-        let s3 = motion_physics_vec4(from_v.extra3, rest.extra3, vel.extra3, desc.spring, t, decay);
-        pos.channels = s0.pos;
-        pos.extra = s1.pos;
-        pos.extra2 = s2.pos;
-        pos.extra3 = vec4(s3.pos.x, s3.pos.y, 0.0, 0.0);
-        vout.channels = s0.vel;
-        vout.extra = s1.vel;
-        vout.extra2 = s2.vel;
-        vout.extra3 = vec4(s3.vel.x, s3.vel.y, 0.0, 0.0);
-        return MotionPhysicsState(pos, vout);
-    }
-    if (t <= 0.0) {
-        return MotionPhysicsState(from_v, vel);
-    }
-    return MotionPhysicsState(rest, motion_zero_velocity(rest));
+    pos.extra = l1.pos;
+    pos.extra2 = l2.pos;
+    pos.extra3 = l3.pos * xy;
+    vout.extra = l1.vel;
+    vout.extra2 = l2.vel;
+    vout.extra3 = l3.vel * xy;
+    return MotionPhysicsState(pos, vout);
 }
 
 fn motion_evaluate_physics(desc: MotionGpuDescriptor, now: MotionInstant, decay: bool) -> MotionGpuSample {
@@ -724,9 +667,9 @@ fn motion_evaluate_physics(desc: MotionGpuDescriptor, now: MotionInstant, decay:
     // `progress` disagreeing with the CPU reference for the whole fling.
     var rest = desc.to_value;
     if (decay) {
-        rest = motion_physics_state(desc.from_value, desc.to_value, desc.velocity, desc, 1000.0, true).pos;
+        rest = motion_physics_state(desc.from_value, desc.to_value, desc.velocity, motion_decay(desc.spring.w, 1000.0), 1000.0, true).pos;
     }
-    let state = motion_physics_state(desc.from_value, rest, desc.velocity, desc, t, decay);
+    let state = motion_physics_state(desc.from_value, rest, desc.velocity, motion_linear(desc, t, decay), t, decay);
     let finished = motion_is_settled(state.pos, rest, state.vel);
     sample.value = state.pos;
     sample.progress = select(0.0, 1.0, finished);

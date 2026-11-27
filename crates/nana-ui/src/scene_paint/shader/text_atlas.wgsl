@@ -315,6 +315,9 @@ fn text_composed_presentation(presentation: TextPresentation) -> MotionAffine {
     );
 }
 
+// A projected run's presentation homography, evaluated once per vertex by
+// `vs_main` and handed to the helpers below; unused for other runs.
+//
 // A glyph corner in physical paint space.
 //
 // The same homography `Quad` applies, in logical space, per corner. A pure
@@ -326,7 +329,7 @@ fn text_composed_presentation(presentation: TextPresentation) -> MotionAffine {
 // A projected run's instances are in the run's raster px, which a magnified
 // entry makes finer than device px, so they are taken back to logical space
 // by the raster scale and out again by the device scale.
-fn text_world_position(run: TextRun, local: vec2<f32>) -> vec2<f32> {
+fn text_world_position(run: TextRun, composed: MotionAffine, local: vec2<f32>) -> vec2<f32> {
     let paint = local + run.origin;
     let presentation = text_presentations[run.presentation];
     if (run.flags & RUN_PROJECT) == 0u {
@@ -334,7 +337,6 @@ fn text_world_position(run: TextRun, local: vec2<f32>) -> vec2<f32> {
     }
     let scale = presentation.clip_inv_ef.w;
     let p = paint / run.raster;
-    let composed = text_composed_presentation(presentation);
     let a = composed.abcd;
     let e = composed.ef;
     let xp = a.x * p.x + a.z * p.y + e.x;
@@ -351,9 +353,8 @@ fn text_world_position(run: TextRun, local: vec2<f32>) -> vec2<f32> {
 // so the half device pixel its filtered edge spreads over is rasterized:
 // `edge_grow` in `quad_solid.wgsl`, taken to raster px at `local`. The taps
 // out there read the glyph's transparent gutter.
-fn text_edge_grow(run: TextRun, local: vec2<f32>) -> vec2<f32> {
+fn text_edge_grow(run: TextRun, composed: MotionAffine, local: vec2<f32>) -> vec2<f32> {
     let presentation = text_presentations[run.presentation];
-    let composed = text_composed_presentation(presentation);
     let a = composed.abcd;
     let e = composed.ef;
     let p = (local + run.origin) / run.raster;
@@ -370,11 +371,10 @@ fn text_edge_grow(run: TextRun, local: vec2<f32>) -> vec2<f32> {
 
 // The homography's `w` at `local`, as a projected glyph's clip-space w: its
 // atlas coordinates then interpolate perspective-correctly.
-fn text_clip_w(run: TextRun, local: vec2<f32>) -> f32 {
+fn text_clip_w(run: TextRun, composed: MotionAffine, local: vec2<f32>) -> f32 {
     if (run.flags & RUN_PROJECT) == 0u {
         return 1.0;
     }
-    let composed = text_composed_presentation(text_presentations[run.presentation]);
     let e = composed.ef;
     let p = (local + run.origin) / run.raster;
     let w = e.z * p.x + e.w * p.y + 1.0;

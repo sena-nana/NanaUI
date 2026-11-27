@@ -1,0 +1,37 @@
+# Recompiles the precompiled DXIL stages (`crates/nana-ui/src/scene_paint/precompiled`)
+# on Windows, for a shader edit made where there is no DX12 or DXC. Run it on
+# the branch holding the edit, download the `precompiled-dxil` artifact over
+# that directory, and commit it.
+name: Regenerate precompiled DXIL
+
+on:
+  workflow_dispatch:
+
+jobs:
+  regenerate:
+    runs-on: windows-latest
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      # The DXC the checked-in stages record (`precompiled::generated::DXC`).
+      DXC_RELEASE: v1.8.2505.1
+      DXC_ZIP: dxc_2025_07_14.zip
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Fetch DXC
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP $env:DXC_ZIP
+          Invoke-WebRequest "https://github.com/microsoft/DirectXShaderCompiler/releases/download/$env:DXC_RELEASE/$env:DXC_ZIP" -OutFile $zip
+          $dir = Join-Path $env:RUNNER_TEMP dxc
+          Expand-Archive $zip -DestinationPath $dir
+          "NANA_DXC_PATH=$(Join-Path $dir 'bin\x64\dxcompiler.dll')" >> $env:GITHUB_ENV
+      - name: Regenerate
+        run: cargo test -p nana-ui --lib --features gpu,hosted,full -- --ignored regenerate_precompiled_dxil --test-threads=1
+      - name: Check the stages are current
+        run: cargo test -p nana-ui --lib --features gpu,hosted,full precompiled -- --test-threads=1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: precompiled-dxil
+          path: crates/nana-ui/src/scene_paint/precompiled/
