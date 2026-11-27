@@ -961,9 +961,14 @@ impl UiWorld {
                 if accessibility.modal || self.input.active_focus_traps.contains(id) {
                     self.sync_focus_trap(*id);
                 }
+                // A disabled container lets go of focus held below it now. The
+                // node's own focus is settled after styles resolve, from its
+                // resolved focusability: a busy field stays focused, a disabled
+                // button loses it then.
                 if accessibility.disabled {
                     let document = self.record(*id).document;
                     if let Some(focused) = self.input.focused.get(&document).copied()
+                        && focused != *id
                         && self.is_descendant_or_self(focused, *id)
                         && !self.focus_policy(focused).allows_programmatic()
                     {
