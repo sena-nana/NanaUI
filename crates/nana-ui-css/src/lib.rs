@@ -1,90 +1,60 @@
-//! NanaUI's CSS subset, in one place.
+//! NanaUI's single CSS engine: stylesheet parsing, cascade, property lowering
+//! onto [`nana_ui_core::StyleOp`], and exhaustive Rust patch codegen.
 //!
-//! A stylesheet is ordinary CSS within the subset `docs/reference/layout.md` lists:
-//! selectors, the cascade, custom properties, `@media`, `@import`,
-//! `@font-face`, `@keyframes` and the interactive pseudo-classes, mapped onto
-//! the one Style Model ([`nana_ui_core::LayoutStyle`]). `@container` is
-//! compiled into data the runtime evaluates ([`css_container`]): this crate
-//! never measures a container. The `.vue` compiler (`nana-ui-sfc`), `view!`
-//! and `css!` parse and match at build time, so an L3 view carries its styles
-//! as data and parses nothing while it runs.
+//! Built strictly on [`syntax`] (CSS Syntax Level 3 tokenizer/parser, Selectors 4,
+//! Variables 1, Values 4, At-Rules) and [`nana_ui_core::StyleOp`], with zero
+//! external crate dependencies and zero thread-local state.
 //!
-//! CSS parsing stays out of `nana-ui-core`, `nana-ui-runtime`,
-//! `nana-ui-scene` and `nana-ui`.
-#![allow(clippy::field_reassign_with_default)]
+//! Build-time compilers (`nana-ui-view-codegen`, `nana-ui-sfc`, `css!`, `view!`)
+//! run this crate at compile time and emit pure Rust [`nana_ui_core`] data so
+//! CSS parsing never enters `nana-ui-core`, `nana-ui-runtime`, `nana-ui-scene`,
+//! or `nana-ui`.
+
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::type_complexity)]
 
-/// How deeply any one construct may nest: blocks inside at-rule blocks,
-/// parentheses in a condition, functions inside `calc()` or `color-mix()`.
-/// Real stylesheets stay in single digits; deeper input is hostile, and is
-/// skipped or rejected instead of recursing on the parser's stack.
-pub(crate) const MAX_NESTING: usize = 32;
-
-pub mod css_at_rule;
-pub mod css_cascade;
-pub mod css_container;
-pub mod css_font_face;
-pub mod css_interactive;
-pub mod css_map;
-pub mod css_motion;
-pub mod css_paint;
-pub mod css_paint_transform;
-pub mod css_written;
-mod rust_expr;
-pub mod shell_contract;
-pub mod style;
+pub mod cascade;
+pub mod codegen;
+pub mod lower;
+pub mod properties;
 pub mod syntax;
 
-pub use css_at_rule::{
-    FontFaceRule, FontFaceSrc, ImportPrelude, LayerPrelude, MAX_FONT_FACE_BYTES, MAX_IMPORT_DEPTH,
-    MAX_REGISTERED_FONT_BYTES, MAX_STYLESHEET_BYTES, MediaEnvironment, MediaFeature, MediaQuery,
-    MediaQueryList, MediaType, MemoryStylesheetLoader, PackagedStylesheetLoader,
-    ParseStylesheetOptions, StylesheetLoader, evaluate_media_query, evaluate_media_query_list,
-    evaluate_supports_condition, is_blocked_href, parse_import_prelude, parse_layer_prelude,
-    parse_media_query_list,
+#[cfg(test)]
+mod tests;
+
+pub use cascade::{
+    CascadeKey, CustomPropDecl, ParsedRule, ParsedSheet, parse_stylesheet,
+    parse_stylesheet_with_base,
 };
-pub use css_cascade::{
-    AnPlusB, AttrCase, AttrOperator, AttrSelector, Combinator, CompoundSelector, DeclarationEntry,
-    Selector, SimpleCompound, Specificity, StyleRule, StylesheetParseReport,
-    collect_document_custom_properties_from_rules, parse_stylesheet, parse_stylesheet_full,
-    parse_stylesheet_full_with_layers, parse_stylesheet_full_with_options,
-    parse_stylesheet_with_report,
+pub use codegen::{
+    emit_color_filter_rust, emit_font_face_rule_rust, emit_media_query_list_rust,
+    emit_media_query_rust, emit_paint_color_rust, emit_paint_transform_rust, emit_style_op_rust,
+    emit_style_ops_rust,
 };
-pub use css_container::{
+pub use lower::{
     ContainerAxis, ContainerInterval, ContainerPlan, ContainerPlanUnsupported, ContainerQuery,
-    ContainerQueryUnsupported, ContainerRule, MAX_CONTAINER_BREAKPOINTS, parse_container_prelude,
+    ContainerQueryUnsupported, MAX_CONTAINER_BREAKPOINTS, lower_container_query,
+    lower_font_face_rule, lower_media_condition, lower_media_query, lower_media_query_list,
     plan_container_queries,
 };
-pub use css_font_face::{
-    FontFaceSrcKind, FontFaceStyle, parse_font_face_at_rule, parse_font_face_rules,
+pub use properties::grid::{GridTrackListParse, parse_grid_track_list};
+pub use properties::motion::{
+    CompiledAnimation, CompiledTransition, css_ms_duration, parse_time_ms, parse_timing_function,
 };
-pub use css_interactive::{
-    GeneratedPseudo, GeneratedPseudoRule, InteractivePseudo, InteractivePseudoFlags,
-    InteractiveSelector, InteractiveStyleRule, KeyframeBlock, KeyframeSelector, KeyframesRule,
-    MediaRule, MotionDeclarations, MotionStyleRule, ParsedStylesheet, ScrollbarPseudo,
-    ScrollbarPseudoRule, keyframes_by_name, merge_parsed_stylesheet, partition_motion_entries,
+pub use properties::paint::{
+    parse_color_filter_values, parse_linear_gradient, parse_radial_gradient,
 };
-pub use css_map::{
-    AlignSpec, BoxSizing, CssLayoutParse, CssVarScope, DirSpec, DisplaySpec, FlexDirection,
-    FlexWrap, FontSizeContext, GridAutoFlow, GridTrack, GridTrackListParse,
-    GridTrackListUnsupported, JustifySpec, LayoutStyle, LayoutStyleCss, LengthSpec, LineHeightSpec,
-    OverflowSpec, PaddingSpec, ParentBox, PositionSpec, collect_document_css_custom_properties,
-    parse_box_edge_length, parse_css_dominant_baseline, parse_css_font_family,
-    parse_css_font_feature_settings, parse_css_font_kerning, parse_css_font_size,
-    parse_css_font_size_in, parse_css_font_variation_settings, parse_css_font_weight,
-    parse_css_hyphens, parse_css_length_px, parse_css_letter_spacing, parse_css_line_break,
-    parse_css_line_height, parse_css_word_break, parse_grid_template_columns,
-    parse_grid_track_list_result, parse_grid_track_list_result_in, parse_inset_length,
-    resolve_grid_column_widths, resolve_grid_track_sizes, resolve_paint_color,
-    resolve_paint_color_in, with_dynamic_light_dark,
+pub use properties::pseudo::merge_scrollbar_skin;
+pub use properties::transform::{ParsedTransform, parse_transform_values};
+pub use properties::{
+    CompileContext, CompiledDecls, CompiledInline, apply_css_text, apply_css_text_with,
+    apply_style_ops, compile_declarations, compile_inline_css, is_supported_declaration,
 };
-pub use css_motion::{ParsedAnimation, motion_curve_from_css_token, parse_animation_declarations};
-pub use css_written::{WrittenLayout, written_layout, written_layout_in};
-pub use rust_expr::{emit_color_filter_rust, emit_paint_color_rust};
-mod css_theme;
-pub use css_theme::parse_theme_expr;
-pub use style::{
-    CssPaintColor, is_non_token_css_color, map_css_color_for_tokens, parse_css_color,
-    parse_css_paint_color, resolve_css_paint_color, resolve_css_paint_color_in,
+pub use syntax::{
+    AnPlusB, AttrCase, AttrOperator, AttrSelector, BlockKind, ColorParseOptions, Combinator,
+    ComplexSelector, ComponentValue, CompoundSelector, CssDiag, Declaration, DiagCode,
+    DiagSeverity, KeyframeBlock, KeyframeStop, KeyframesRule, LayerOrder, LayerRegistry,
+    ParsedColor, PseudoClass, PseudoElement, SelectorList, Span, Specificity, TypeSelector,
+    VarCascadeKey, VarScope, expand_vars, parse_color, parse_color_str, parse_length_spec,
+    parse_theme_expr,
 };

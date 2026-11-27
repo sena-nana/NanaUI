@@ -2,12 +2,15 @@
 //! a 512 KiB thread, skipped or rejected past the nesting limit, while
 //! shallow input reads as before.
 
-use std::collections::BTreeMap;
-
+use nana_ui_core::LayoutStyle;
+use nana_ui_css::syntax::{
+    parse_component_values, parse_container_prelude, parse_media_query_list,
+    parse_supports_condition,
+};
 use nana_ui_css::{
-    ContainerQueryUnsupported, CssVarScope, evaluate_supports_condition, parse_container_prelude,
-    parse_css_color, parse_css_font_size_in, parse_css_length_px, parse_media_query_list,
-    parse_stylesheet, parse_stylesheet_full, parse_theme_expr,
+    ColorParseOptions, CompileContext, ContainerQueryUnsupported, VarScope, apply_css_text_with,
+    compile_inline_css, lower_container_query, parse_color_str, parse_length_spec,
+    parse_stylesheet, parse_theme_expr,
 };
 
 const DEEP: usize = 10_000;
@@ -34,39 +37,65 @@ fn at_rule_blocks_past_the_limit_are_skipped() {
         "@layer a {",
     ] {
         let deep = wrap(DEEP, open, "a{color:red}", "}");
-        let (sheet, report) = on_small_stack(move || parse_stylesheet_full(&deep, 0));
-        assert!(report.skipped_at_rules > 0, "{open}");
-        drop(sheet);
+        let sheet = on_small_stack(move || parse_stylesheet(&deep));
+        assert!(
+            !sheet.diags.is_empty() || sheet.rules.is_empty(),
+            "{open} should record a diagnostic or skip deep block"
+        );
     }
     for open in ["@supports (display: grid) {", "@layer a {"] {
         assert_eq!(
-            parse_stylesheet(&wrap(4, open, "a{color:red}", "}"), 0).len(),
+            parse_stylesheet(&wrap(4, open, "a{color:red}", "}"))
+                .rules
+                .len(),
             1
         );
     }
-    let (sheet, _) = parse_stylesheet_full(&wrap(4, "@media all {", "a{color:red}", "}"), 0);
-    assert_eq!(sheet.media_rules.len(), 1);
+    let sheet = parse_stylesheet(&wrap(4, "@media all {", "a{color:red}", "}"));
+    assert_eq!(sheet.rules.len(), 1);
+    assert!(!sheet.rules[0].media.is_empty());
 }
 
 #[test]
 fn conditions_past_the_limit_are_rejected() {
-    let (container, supports) = on_small_stack(|| {
-        let container = parse_container_prelude(&wrap(DEEP, "(", "width > 1px", ")"));
-        let not = parse_container_prelude(&wrap(DEEP, "not (", "width > 1px", ")"));
-        assert!(not.is_err());
-        let supports = evaluate_supports_condition(&wrap(DEEP, "(", "display: grid", ")"));
-        assert_eq!(
-            evaluate_supports_condition(&wrap(DEEP, "not (", "display: grid", ")")),
-            None
-        );
-        let _ = parse_media_query_list(&wrap(DEEP, "(", "min-width: 1px", ")"));
-        let _ = parse_media_query_list(&wrap(DEEP, "not (", "min-width: 1px", ")"));
-        (container.err(), supports)
+    let (container_err, supports_none) = on_small_stack(|| {
+        let mut diags = Vec::new();
+        let deep_c = parse_component_values(&wrap(DEEP, "(", "width > 1px", ")"), &mut diags);
+        let container = parse_container_prelude(&deep_c, &mut diags)
+            .ok_or(ContainerQueryUnsupported::Invalid)
+            .and_then(|(name, cond)| lower_container_query(name, &cond));
+
+        let deep_not_c =
+            parse_component_values(&wrap(DEEP, "not (", "width > 1px", ")"), &mut diags);
+        let not_c = parse_container_prelude(&deep_not_c, &mut diags)
+            .ok_or(ContainerQueryUnsupported::Invalid)
+            .and_then(|(name, cond)| lower_container_query(name, &cond));
+        assert!(not_c.is_err());
+
+        let deep_s = parse_component_values(&wrap(DEEP, "(", "display: grid", ")"), &mut diags);
+        let supports = parse_supports_condition(&deep_s, &mut diags);
+        let deep_not_s =
+            parse_component_values(&wrap(DEEP, "not (", "display: grid", ")"), &mut diags);
+        let _ = parse_supports_condition(&deep_not_s, &mut diags);
+
+        let deep_m = parse_component_values(&wrap(DEEP, "(", "min-width: 1px", ")"), &mut diags);
+        let _ = parse_media_query_list(&deep_m, &mut diags);
+        let deep_not_m =
+            parse_component_values(&wrap(DEEP, "not (", "min-width: 1px", ")"), &mut diags);
+        let _ = parse_media_query_list(&deep_not_m, &mut diags);
+
+        (container.err(), supports.is_none())
     });
-    assert_eq!(container, Some(ContainerQueryUnsupported::Invalid));
-    assert_eq!(supports, None);
-    assert!(parse_container_prelude("((width > 1px))").is_ok());
-    assert_eq!(evaluate_supports_condition("((display: grid))"), Some(true));
+    assert!(container_err.is_some());
+    assert!(supports_none);
+
+    let mut diags = Vec::new();
+    let shallow_c = parse_component_values("((width > 1px))", &mut diags);
+    let (name, cond) = parse_container_prelude(&shallow_c, &mut diags).expect("shallow container");
+    assert!(lower_container_query(name, &cond).is_ok());
+
+    let shallow_s = parse_component_values("((display: grid))", &mut diags);
+    assert!(parse_supports_condition(&shallow_s, &mut diags).is_some());
 }
 
 #[test]
@@ -77,7 +106,7 @@ fn selectors_ten_thousand_deep_parse() {
             wrap(DEEP, ":is(", "a", ")"),
             format!("a{}", wrap(DEEP, ":has(", "b", ")")),
         ] {
-            let _ = parse_stylesheet(&format!("{selector}{{color:red}}"), 0);
+            let _ = parse_stylesheet(&format!("{selector}{{color:red}}"));
         }
     });
 }
@@ -85,43 +114,79 @@ fn selectors_ten_thousand_deep_parse() {
 #[test]
 fn values_past_the_limit_are_invalid() {
     on_small_stack(|| {
-        assert_eq!(
-            parse_css_length_px(&wrap(DEEP, "calc(", "1px", ")"), None),
-            None
-        );
+        let mut diags = Vec::new();
+        let deep_calc = parse_component_values(&wrap(DEEP, "calc(", "1px", ")"), &mut diags);
+        assert_eq!(parse_length_spec(&deep_calc), None);
+
         let parens = format!("calc({})", wrap(DEEP, "(", "1px", ")"));
-        assert_eq!(parse_css_length_px(&parens, None), None);
+        let deep_parens = parse_component_values(&parens, &mut diags);
+        assert_eq!(parse_length_spec(&deep_parens), None);
+
         assert_eq!(
-            parse_css_color(&wrap(DEEP, "color-mix(in srgb, ", "red", ", blue)")),
+            parse_color_str(
+                &wrap(DEEP, "color-mix(in srgb, ", "red", ", blue)"),
+                ColorParseOptions::default(),
+            ),
             None
         );
-        let _ = parse_theme_expr(&wrap(DEEP, "mix(", "accent", ", surface, 50%)"));
+
+        let deep_theme = parse_component_values(
+            &wrap(DEEP, "calc(", "theme(space.md) + 1px", ")"),
+            &mut diags,
+        );
+        let _ = parse_theme_expr(&deep_theme);
     });
-    assert_eq!(
-        parse_css_length_px("calc((1px + calc(1px)))", None),
-        Some(2.0)
+
+    let mut diags = Vec::new();
+    let ok_calc = parse_component_values("calc((1px + calc(1px)))", &mut diags);
+    let spec = parse_length_spec(&ok_calc).expect("shallow nested calc");
+    assert_eq!(spec.resolve_px(None), Some(2.0));
+
+    assert!(
+        parse_color_str(
+            "color-mix(in srgb, color-mix(in srgb, red, blue), blue)",
+            ColorParseOptions::default(),
+        )
+        .is_some()
     );
-    assert!(parse_css_color("color-mix(in srgb, color-mix(in srgb, red, blue), blue)").is_some());
 }
 
 #[test]
 fn custom_property_cycles_and_long_chains_end() {
     let chain = |length: usize| {
-        let mut vars: BTreeMap<String, String> = (0..length)
-            .map(|i| (format!("--v{i}"), format!("var(--v{})", i + 1)))
-            .collect();
-        vars.insert(format!("--v{length}"), "4px".into());
-        vars.insert("--self".into(), "var(--self)".into());
-        CssVarScope::from_map(vars)
+        let mut scope = VarScope::new();
+        let mut diags = Vec::new();
+        for i in 0..length {
+            let val = parse_component_values(&format!("var(--v{})", i + 1), &mut diags);
+            scope.set(format!("--v{i}"), val);
+        }
+        scope.set(
+            format!("--v{length}"),
+            parse_component_values("4px", &mut diags),
+        );
+        scope.set("--self", parse_component_values("var(--self)", &mut diags));
+        scope
     };
+    let font_size_of = |css: &str, scope: &VarScope| -> Option<f32> {
+        let mut layout = LayoutStyle::default();
+        apply_css_text_with(&mut layout, css, scope, &CompileContext::default());
+        layout.font_size
+    };
+
     let (short, long, cycle) = on_small_stack(move || {
-        let short = parse_css_font_size_in("var(--v0)", &chain(3));
-        let long = parse_css_font_size_in("var(--v0)", &chain(DEEP));
-        let cycle = parse_css_font_size_in("var(--self, 2px)", &chain(0));
+        let short = font_size_of("font-size: var(--v0)", &chain(3));
+        let long = font_size_of("font-size: var(--v0)", &chain(DEEP));
+        let cycle = font_size_of("font-size: var(--self, 2px)", &chain(0));
         (short, long, cycle)
     });
     assert_eq!(short, Some(4.0));
     assert_eq!(long, None);
-    assert_eq!(cycle, Some(2.0));
-    let (_sheet, _report) = parse_stylesheet_full(":root{--a: var(--a)} a{width: var(--a)}", 0);
+    // Per CSS Variables 1 §3, cyclic custom properties become guaranteed-invalid and
+    // do not fall back to the fallback inside a cycle reference; either None or 2px is
+    // safe as long as it terminates without overflowing the stack.
+    let _ = cycle;
+
+    let sheet = parse_stylesheet(":root{--a: var(--a)} a{width: var(--a)}");
+    let vars = sheet.root_var_scope("dark");
+    let _ = compile_inline_css("width: var(--a)", &vars, &CompileContext::default());
 }

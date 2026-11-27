@@ -18,7 +18,7 @@
 /// Maximum nesting depth permitted across blocks (`{}`, `[]`, `()`), functions
 /// (`calc()`, `color-mix()`, `var()`, `:is()`), unary `+/-` chains, and boolean
 /// conditions in `@media` / `@container` / `@supports`.
-pub const MAX_NESTING: usize = 64;
+pub const MAX_NESTING: usize = 32;
 
 pub mod at_rule;
 pub mod diag;

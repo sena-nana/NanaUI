@@ -331,10 +331,19 @@ impl ExpandCtx<'_> {
 
         // Scope lookup first (allows explicit shadowing even of `--nana-*` if defined in scope).
         if let Some(bound) = self.scope.get(var_name) {
-            self.active.push(var_name.clone());
-            let result = self.expand_slice(bound, depth + 1);
-            self.active.pop();
-            return result;
+            let trimmed_bound = trim_ws(bound);
+            // CSS Variables Level 1: `initial` on a custom property is the
+            // guaranteed-invalid value, triggering fallback substitution.
+            let is_guaranteed_invalid = matches!(
+                trimmed_bound,
+                [cv] if cv.as_ident().is_some_and(|id| id.eq_ignore_ascii_case("initial"))
+            );
+            if !is_guaranteed_invalid {
+                self.active.push(var_name.clone());
+                let result = self.expand_slice(bound, depth + 1);
+                self.active.pop();
+                return result;
+            }
         }
 
         // Preserve unresolved `--nana-*` theme tokens when requested, while still

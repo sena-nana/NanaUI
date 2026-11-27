@@ -1,11 +1,8 @@
 //! Nana shell / controls **class → [`LayoutStyle`]** contract (non-neutral).
 //!
 //! Documented `nana-*` host classes and layout utilities (`gap-sm`, `flex-row`,
-//! …) live here. Neutral CSS declaration parse stays in [`crate::css_map`].
-//! Business / `lilia-*` BEM must not be harvested.
-//!
-//! [`LayoutStyleCss::apply_class_layout_hints`](crate::css_map::LayoutStyleCss)
-//! delegates here so cascade / measure call sites stay stable.
+//! …) live here for the CSS parity harness. Neutral CSS declaration parsing
+//! lives in `nana-ui-css`. Business / `lilia-*` BEM must not be harvested.
 
 use nana_ui_core::box_layout::{
     AlignSpec, DisplaySpec, FlexDirection, FlexWrap, GridTrack, JustifySpec, LayoutStyle,
@@ -16,7 +13,7 @@ use nana_ui_core::box_layout::{
 ///
 /// This is **not** the neutral CSS parser. Utility (`gap-sm`, `flex-row`) and
 /// documented host classes live here; business/`lilia-*` BEM must not be
-/// harvested. Neutral property parse stays in [`crate::css_map::LayoutStyleCss`].
+/// harvested. Neutral property parsing stays in `nana-ui-css`.
 pub fn apply_class_layout_hints(layout: &mut LayoutStyle, class_names: &[String]) {
     for name in class_names {
         match name.as_str() {

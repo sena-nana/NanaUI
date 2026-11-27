@@ -11,11 +11,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use measure::{LayoutNode, MeasuredBox, measure_layout};
-use nana_ui_css::css_map::{LayoutStyle, LayoutStyleCss};
+use nana_ui_core::LayoutStyle;
 use serde::{Deserialize, Serialize};
 
 pub mod cases;
 pub mod measure;
+pub mod shell_contract;
 
 /// 默认容差（逻辑像素）。
 pub const DEFAULT_TOLERANCE_PX: f32 = 2.0;
@@ -124,9 +125,9 @@ pub fn load_all_fixtures() -> Result<Vec<(PathBuf, FixtureCase)>, String> {
 pub fn fixture_to_layout_node(node: &FixtureNode) -> LayoutNode {
     let mut style = LayoutStyle::default();
     let classes: Vec<String> = node.class.clone();
-    style.apply_class_layout_hints(&classes);
+    shell_contract::apply_class_layout_hints(&mut style, &classes);
     // Percent resolved against parent during measure — do not bake with viewport here.
-    style.apply_css_text(&node.style, None, None);
+    nana_ui_css::apply_css_text(&mut style, &node.style);
     let children = node.children.iter().map(fixture_to_layout_node).collect();
     let mut layout_node = LayoutNode::with_children(node.id.clone(), style, children);
     layout_node.text = node.text.clone();

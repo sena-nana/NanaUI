@@ -14,10 +14,9 @@
 // Layout fixtures read as "default, then the properties under test".
 #![allow(clippy::field_reassign_with_default)]
 
-use nana_ui_core::DisplaySpec;
 #[cfg(test)]
-use nana_ui_css::css_map::AlignSpec;
-use nana_ui_css::css_map::{FlexDirection, GridTrack, LayoutStyle, LayoutStyleCss, LengthSpec};
+use nana_ui_core::AlignSpec;
+use nana_ui_core::{DisplaySpec, FlexDirection, GridTrack, LayoutStyle, LengthSpec};
 use nana_ui_runtime::{LayoutViewport, RuntimeLayoutEngine, StyleLayoutNode};
 
 /// 预绘制/css-parity 的 style-only 适配节点。
@@ -189,29 +188,22 @@ pub fn measure_layout(
     use_bundled_faces_only();
     let vw = viewport_w.max(1.0);
     let vh = viewport_h.max(1.0);
-    nana_ui_css::css_map::with_active_viewport(vw, vh, || {
-        nana_ui_css::css_map::with_active_font_sizes(
-            nana_ui_css::css_map::FontSizeContext::default(),
-            || {
-                let mut boxes: Vec<(String, MeasuredBox)> = RuntimeLayoutEngine
-                    .layout_style_tree(
-                        &with_bundled_root_font(to_style_tree(root)),
-                        LayoutViewport::new(vw, vh),
-                        &mut nana_ui::NanaTextShaper::default(),
-                    )
-                    .into_iter()
-                    .map(|(id, box_)| {
-                        (
-                            id,
-                            MeasuredBox::new(box_.x, box_.y, box_.width, box_.height),
-                        )
-                    })
-                    .collect();
-                apply_sticky_projection(root, &mut boxes);
-                boxes
-            },
+    let mut boxes: Vec<(String, MeasuredBox)> = RuntimeLayoutEngine
+        .layout_style_tree(
+            &with_bundled_root_font(to_style_tree(root)),
+            LayoutViewport::new(vw, vh),
+            &mut nana_ui::NanaTextShaper::default(),
         )
-    })
+        .into_iter()
+        .map(|(id, box_)| {
+            (
+                id,
+                MeasuredBox::new(box_.x, box_.y, box_.width, box_.height),
+            )
+        })
+        .collect();
+    apply_sticky_projection(root, &mut boxes);
+    boxes
 }
 
 /// Intrinsic main-axis size for one grid item under an `auto` track.
@@ -300,15 +292,19 @@ pub fn node_from_css(
 ) -> LayoutNode {
     let mut layout = LayoutStyle::default();
     let classes: Vec<String> = class_names.iter().map(|s| (*s).to_string()).collect();
-    layout.apply_class_layout_hints(&classes);
-    layout.apply_css_text(style, percent_w, percent_h);
+    crate::shell_contract::apply_class_layout_hints(&mut layout, &classes);
+    let ctx = nana_ui_css::CompileContext {
+        viewport: percent_w.zip(percent_h),
+        ..Default::default()
+    };
+    nana_ui_css::apply_css_text_with(&mut layout, style, &nana_ui_css::VarScope::new(), &ctx);
     LayoutNode::with_children(id, layout, children)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nana_ui_css::css_map::{DisplaySpec, VisibilitySpec, WhiteSpaceSpec};
+    use nana_ui_core::{DisplaySpec, VisibilitySpec, WhiteSpaceSpec};
     use std::collections::BTreeMap;
 
     fn map_of(root: &LayoutNode, w: f32, h: f32) -> BTreeMap<String, MeasuredBox> {
@@ -317,7 +313,7 @@ mod tests {
 
     fn style(css: &str) -> LayoutStyle {
         let mut style = LayoutStyle::default();
-        style.apply_css_text(css, None, None);
+        nana_ui_css::apply_css_text(&mut style, css);
         style
     }
 

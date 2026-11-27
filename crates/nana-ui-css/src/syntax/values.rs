@@ -1408,7 +1408,7 @@ fn parse_optional_hue(cv: &ComponentValue) -> Option<Option<f32>> {
     parse_hue_token_deg(cv).map(Some)
 }
 
-fn interpolate_paint_colors(
+pub(crate) fn interpolate_paint_colors(
     method: ColorInterpolationMethod,
     a: PaintColor,
     b: PaintColor,
