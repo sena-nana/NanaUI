@@ -9,6 +9,11 @@
 //! over that, the standard HSV square. The hue slider is a bare strip through
 //! the spectrum (`RangeField::track_gradient`). Both mark the value with a
 //! contrast ring.
+//!
+//! An inline field ([`ColorField::inline`]) shows the picker in place
+//! instead: a column of the pad, the eyedropper and hue row, and an entry row
+//! that is the text-field frame holding the well and the hex text. No
+//! popover is built and the well is display only.
 
 use std::sync::Arc;
 
@@ -84,6 +89,12 @@ pub struct ColorField {
     pub eyedropper: bool,
     pub eyedropper_button: Option<StableNodeId>,
     pub bottom_row: Option<StableNodeId>,
+    /// Show the picker in place, always visible, instead of behind the well's
+    /// popover: the pad, the eyedropper and hue row, and the framed well and
+    /// hex text under them. `opened` has no effect while inline.
+    pub inline: bool,
+    /// The inline field's framed row of well and hex text.
+    pub entry_row: Option<StableNodeId>,
     pub(crate) sampling: bool,
     pub style: NodeStyle,
     /// Focus is somewhere in the field (the hex text, the well): the frame
@@ -127,6 +138,8 @@ impl ColorField {
             eyedropper: true,
             eyedropper_button: None,
             bottom_row: None,
+            inline: false,
+            entry_row: None,
             sampling: false,
             style: field_style(ControlSize::Medium),
             focus_within: false,
@@ -162,7 +175,20 @@ impl ColorField {
     }
 
     pub fn opened(mut self, opened: bool) -> Self {
-        self.opened = opened && !self.disabled;
+        self.opened = opened && !self.disabled && !self.inline;
+        self
+    }
+
+    /// Show the picker in place, always visible, instead of behind the well:
+    /// a column of the saturation/value pad, the eyedropper and hue row, and
+    /// the framed well and hex text. The column fills its parent's width;
+    /// [`Self::style`] styles the framed row. No popover is built, so
+    /// `opened` has no effect while inline.
+    pub fn inline(mut self, inline: bool) -> Self {
+        self.inline = inline;
+        if inline {
+            self.opened = false;
+        }
         self
     }
 
@@ -184,6 +210,16 @@ impl ColorField {
     }
 
     fn effective_style(&self) -> NodeStyle {
+        if self.inline {
+            // The column holds the frame (the entry row) rather than being it.
+            return Stack::column(nana_ui_core::space::SM).node_style();
+        }
+        self.frame_style()
+    }
+
+    /// The text-field frame with its focus, invalid and disabled states: the
+    /// field itself, or an inline field's entry row.
+    fn frame_style(&self) -> NodeStyle {
         let mut style = self.style.clone();
         // The frame is the field's only box, so it paints the text field's
         // states for the parts inside it.
@@ -221,6 +257,9 @@ impl ComponentView for ColorField {
             self.opened = false;
             self.sampling = false;
         }
+        if self.inline {
+            self.opened = false;
+        }
     }
 
     fn share_layouts(
@@ -253,6 +292,7 @@ impl ComponentView for ColorField {
         next.hue_slider = self.hue_slider;
         next.eyedropper_button = self.eyedropper_button;
         next.bottom_row = self.bottom_row;
+        next.entry_row = self.entry_row;
         next.focus_within = self.focus_within;
         *self = next;
     }
@@ -356,12 +396,23 @@ impl AppContext {
             }
             None => (None, false),
         };
-        let picker = match snapshot.picker.filter(|id| self.world().contains(*id)) {
-            Some(id) => Entity::<Popover>::from_stable_id(id),
+        let live_picker = snapshot.picker.filter(|id| self.world().contains(*id));
+        let live_entry_row = snapshot.entry_row.filter(|id| self.world().contains(*id));
+        // An inline field has no popover; a popover field no entry row.
+        let (picker, picker_created) = match live_picker {
+            _ if snapshot.inline => (None, false),
+            Some(id) => (Some(Entity::<Popover>::from_stable_id(id)), false),
             None => {
                 let name = self.color_field_name(&snapshot);
-                self.create_detached_component(document, picker_popover(&snapshot, swatch, name))?
+                let popover = self
+                    .create_detached_component(document, picker_popover(&snapshot, swatch, name))?;
+                (Some(popover), true)
             }
+        };
+        let entry_row = match live_entry_row {
+            _ if !snapshot.inline => None,
+            Some(id) => Some(Entity::<Stack>::from_stable_id(id)),
+            None => Some(self.create_detached_component(document, entry_frame(&snapshot))?),
         };
 
         if eyedropper_created && let Some(button) = eyedropper {
@@ -379,17 +430,15 @@ impl AppContext {
         if created {
             self.on(field, |field, event: &FocusWithinChanged, cx| {
                 field.focus_within = event.focused;
-                if !event.focused {
+                // An inline field's frame is its entry row, which only an
+                // assembly restyles.
+                if !event.focused || field.inline {
                     cx.reassemble();
                 }
             })?;
-            // The well's press, Enter / Space on it, light dismiss and Escape
-            // all toggle the popover itself; mirror that so a later reassembly
-            // keeps it, and close it again at once on a disabled field.
-            self.observe(picker, field, |field, event: &PopoverToggled, cx| {
-                field.opened = event.open && !field.disabled;
-                cx.reassemble();
-            })?;
+            if let Some(picker) = picker.filter(|_| picker_created) {
+                self.observe_color_picker(picker, field)?;
+            }
             self.observe(hex, field, |field, event: &TextChanged, cx| {
                 if let Some(value) = parse_hex(&event.value) {
                     field.apply_rgb(value);
@@ -435,6 +484,9 @@ impl AppContext {
                 cx.reassemble();
                 cx.emit(ColorChanged { value: field.value });
             })?;
+        } else if let Some(picker) = picker.filter(|_| picker_created) {
+            // A field turned from inline back to a popover.
+            self.observe_color_picker(picker, field)?;
         }
 
         self.update_component(swatch, |well, _| {
@@ -473,22 +525,31 @@ impl AppContext {
                 button.tooltip_open = tooltip_open;
             })?;
         }
-        let name = self.color_field_name(&snapshot);
-        self.update_component(picker, |popover, _| {
-            *popover =
-                picker_popover(&snapshot, swatch, name).open(snapshot.opened && !snapshot.disabled);
-        })?;
+        if let Some(picker) = picker {
+            let name = self.color_field_name(&snapshot);
+            self.update_component(picker, |popover, _| {
+                *popover = picker_popover(&snapshot, swatch, name)
+                    .open(snapshot.opened && !snapshot.disabled);
+            })?;
+        }
+        if let Some(row) = entry_row {
+            self.update_component(row, |row, _| *row = entry_frame(&snapshot))?;
+        }
         let sampling_allowed = !snapshot.disabled && show_eyedropper;
         self.update_component(field, |field, _| {
             field.swatch = Some(swatch.stable_id());
             field.hex = Some(hex.stable_id());
-            field.picker = Some(picker.stable_id());
+            field.picker = picker.map(|picker| picker.stable_id());
+            field.entry_row = entry_row.map(|row| row.stable_id());
             field.pad = Some(pad.stable_id());
             field.hue_slider = Some(hue.stable_id());
             field.eyedropper_button = eyedropper.map(|b| b.stable_id());
             field.bottom_row = Some(bottom_row.stable_id());
             if !sampling_allowed {
                 field.sampling = false;
+            }
+            if field.inline {
+                field.opened = false;
             }
         })?;
 
@@ -500,12 +561,48 @@ impl AppContext {
         } else {
             self.reconcile_children(bottom_row.stable_id(), &[hue.stable_id()])?;
         }
-        self.reconcile_children(
-            picker.stable_id(),
-            &[swatch.stable_id(), pad.stable_id(), bottom_row.stable_id()],
-        )?;
-        self.append_children(field.stable_id(), &[picker.stable_id(), hex.stable_id()])?;
+        if let Some(row) = entry_row {
+            // Inline: the pad, the bottom row, then the framed well and hex.
+            // A popover left from before goes once it is emptied.
+            self.reconcile_children(row.stable_id(), &[swatch.stable_id(), hex.stable_id()])?;
+            self.reconcile_children(
+                field.stable_id(),
+                &[pad.stable_id(), bottom_row.stable_id(), row.stable_id()],
+            )?;
+            if let Some(old) = live_picker {
+                self.reconcile_children(old, &[])?;
+                self.remove_view(Entity::<Popover>::from_stable_id(old))?;
+            }
+        } else if let Some(picker) = picker {
+            self.reconcile_children(
+                picker.stable_id(),
+                &[swatch.stable_id(), pad.stable_id(), bottom_row.stable_id()],
+            )?;
+            if let Some(old) = live_entry_row {
+                // Back from inline: the entry row goes once it is emptied.
+                self.reconcile_children(field.stable_id(), &[picker.stable_id(), hex.stable_id()])?;
+                self.reconcile_children(old, &[])?;
+                self.remove_view(Entity::<Stack>::from_stable_id(old))?;
+            } else {
+                self.append_children(field.stable_id(), &[picker.stable_id(), hex.stable_id()])?;
+            }
+        }
         Ok(created)
+    }
+
+    /// Mirror the popover's own toggles (the well's press, Enter / Space on
+    /// it, light dismiss and Escape) onto the field so a later reassembly
+    /// keeps them, and close it again at once on a disabled field.
+    fn observe_color_picker(
+        &mut self,
+        picker: Entity<Popover>,
+        field: Entity<ColorField>,
+    ) -> Result<(), FrameworkError> {
+        self.observe(picker, field, |field, event: &PopoverToggled, cx| {
+            field.opened = event.open && !field.disabled && !field.inline;
+            cx.reassemble();
+        })?;
+        Ok(())
     }
 
     /// Completes an active screen color pick on `id`, updating RGB while keeping
@@ -589,6 +686,12 @@ fn field_style(size: ControlSize) -> NodeStyle {
     style.shape = Some(nana_ui_core::ShapeRole::Field);
     style.control_height = Some(nana_ui_core::ControlHeight::Min(size));
     style
+}
+
+/// An inline field's entry row: the text-field frame, with the field's
+/// states, around the well and the hex text.
+fn entry_frame(field: &ColorField) -> Stack {
+    Stack::row(0.0).style(field.frame_style())
 }
 
 /// The hex text takes the field's width beside the swatch, and gives it up
@@ -1716,5 +1819,331 @@ mod tests {
             border_for([0.2, 0.5, 0.8, 1.0]),
             Some(SemanticColorRole::Border)
         );
+    }
+
+    /// An inline field in a column of `width`, assembled and laid out.
+    fn inline_field(
+        context: &mut AppContext,
+        width: f32,
+        value: [f32; 4],
+    ) -> (DocumentId, Entity<ColorField>) {
+        let document = DocumentId::new(1).unwrap();
+        let root = context
+            .create_component(
+                document,
+                crate::Stack::column(0.0).width(nana_ui_core::LengthSpec::Px(width)),
+            )
+            .unwrap();
+        let field = context
+            .create_component(document, ColorField::new(value).inline(true))
+            .unwrap();
+        context.append_child(root, field).unwrap();
+        assert!(context.assemble_color_field(field).unwrap());
+        context
+            .layout_document(document, crate::LayoutViewport::new(400.0, 600.0))
+            .unwrap();
+        (document, field)
+    }
+
+    /// Inline, the picker is always there: the pad on top, the eyedropper
+    /// and hue row under it, then the framed well and hex. No popover.
+    #[test]
+    fn an_inline_field_stacks_pad_hue_row_and_framed_entry_without_a_popover() {
+        let mut context = AppContext::new();
+        context.set_eyedropper_supported(true);
+        let (_, field) = inline_field(&mut context, 280.0, [1.0, 0.0, 0.0, 1.0]);
+        let snapshot = context.read(field, Clone::clone).unwrap();
+        assert!(snapshot.inline && !snapshot.opened);
+        assert_eq!(snapshot.picker, None, "no popover inline");
+        let row = snapshot.entry_row.expect("entry row");
+        let (pad, bottom, swatch, hex) = (
+            snapshot.pad.unwrap(),
+            snapshot.bottom_row.unwrap(),
+            snapshot.swatch.unwrap(),
+            snapshot.hex.unwrap(),
+        );
+        let world = context.world();
+        assert_eq!(
+            world.node(field.stable_id()).unwrap().children,
+            vec![pad, bottom, row]
+        );
+        assert_eq!(world.node(row).unwrap().children, vec![swatch, hex]);
+        assert_eq!(
+            world.node(bottom).unwrap().children,
+            vec![
+                snapshot.eyedropper_button.unwrap(),
+                snapshot.hue_slider.unwrap()
+            ]
+        );
+
+        let frame = world.layout_box(field.stable_id()).unwrap();
+        let pad_box = world.layout_box(pad).unwrap();
+        let bottom_box = world.layout_box(bottom).unwrap();
+        let row_box = world.layout_box(row).unwrap();
+        let swatch_box = world.layout_box(swatch).unwrap();
+        let hex_box = world.layout_box(hex).unwrap();
+        assert!(
+            (frame.width - 280.0).abs() < 0.5,
+            "fills the width {frame:?}"
+        );
+        for item in [pad_box, bottom_box, row_box] {
+            assert!(
+                item.width > 0.0 && item.height > 0.0,
+                "shown in place {item:?}"
+            );
+            assert!(
+                (item.width - frame.width).abs() < 0.5,
+                "{item:?} in {frame:?}"
+            );
+        }
+        let gap = nana_ui_core::space::SM;
+        assert!((bottom_box.y - (pad_box.y + pad_box.height) - gap).abs() < 0.5);
+        assert!((row_box.y - (bottom_box.y + bottom_box.height) - gap).abs() < 0.5);
+        assert!(
+            (pad_box.height - xy_pad_height(ControlSize::Large) * 2.0).abs() < 0.5,
+            "{pad_box:?}"
+        );
+
+        // The entry row is the text-field frame, a control tall, with the
+        // well inset in it and the bare hex beside it; the column paints
+        // nothing of its own.
+        let metrics = world.theme_metrics();
+        assert!((row_box.height - ControlSize::Medium.height_in(metrics)).abs() < 0.5);
+        let edge = nana_ui_core::HAIRLINE + SWATCH_INSET;
+        assert!(
+            (swatch_box.x - row_box.x - edge).abs() < 0.5,
+            "{swatch_box:?}"
+        );
+        assert!(
+            (swatch_box.y - row_box.y - edge).abs() < 0.5,
+            "{swatch_box:?}"
+        );
+        assert!(hex_box.x >= swatch_box.x + swatch_box.width);
+        assert!(hex_box.x + hex_box.width <= row_box.x + row_box.width + 0.5);
+        let row_style = world.node_style(row).unwrap();
+        assert_eq!(
+            (row_style.background, row_style.border),
+            (
+                Some(SemanticColorRole::Background),
+                Some(SemanticColorRole::Border)
+            )
+        );
+        let field_style = world.node_style(field.stable_id()).unwrap();
+        assert_eq!((field_style.background, field_style.border), (None, None));
+        assert!(!snapshot.clone().opened(true).opened, "nothing to open");
+
+        // The eyedropper still samples, and the pick shows in place.
+        assert!(
+            context
+                .activate_node(snapshot.eyedropper_button.unwrap())
+                .unwrap()
+        );
+        assert_eq!(context.take_color_pick_requests(), vec![field.stable_id()]);
+        assert!(context.complete_color_pick(field.stable_id(), Some([0.0, 1.0, 0.0])));
+        assert_eq!(
+            context
+                .read(Entity::<TextInput>::from_stable_id(hex), |input| {
+                    input.state.value.to_string()
+                })
+                .unwrap(),
+            "#00ff00"
+        );
+        assert_eq!(
+            context.read(field, |field| field.entry_row).unwrap(),
+            Some(row),
+            "sampling keeps the inline layout"
+        );
+    }
+
+    #[test]
+    fn an_inline_frame_shows_focus_invalid_and_disabled_states() {
+        let mut context = AppContext::new();
+        let (document, field) = inline_field(&mut context, 240.0, [0.2, 0.4, 0.8, 1.0]);
+        let snapshot = context.read(field, Clone::clone).unwrap();
+        let row = snapshot.entry_row.unwrap();
+        let style = |context: &AppContext| context.world().node_style(row).unwrap().clone();
+        assert!(context.focus_node(document, snapshot.hex.unwrap()).unwrap());
+        assert_eq!(style(&context).border, Some(SemanticColorRole::FocusBorder));
+        assert!(context.clear_focus(document).unwrap());
+        assert_eq!(style(&context).border, Some(SemanticColorRole::Border));
+        context
+            .update_component(field, |field, _| field.invalid = true)
+            .unwrap();
+        assert_eq!(style(&context).border, Some(SemanticColorRole::Danger));
+        context
+            .update_component(field, |field, _| field.disabled = true)
+            .unwrap();
+        assert_eq!(style(&context).background, Some(SemanticColorRole::Subtle));
+    }
+
+    /// Dragging the inline pad and hue reports live and committed colours
+    /// and refreshes the well and hex in place.
+    #[test]
+    fn dragging_the_inline_pad_and_hue_reports_and_shows_the_color() {
+        let mut context = AppContext::new();
+        let (document, field) = inline_field(&mut context, 280.0, [1.0, 0.0, 0.0, 1.0]);
+        let snapshot = context.read(field, Clone::clone).unwrap();
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let input = std::sync::Arc::clone(&events);
+        context
+            .on(field, move |_, event: &ColorInput, _| {
+                input.lock().unwrap().push(("input", event.value));
+            })
+            .unwrap();
+        let changed = std::sync::Arc::clone(&events);
+        context
+            .on(field, move |_, event: &ColorChanged, _| {
+                changed.lock().unwrap().push(("changed", event.value));
+            })
+            .unwrap();
+        let shown = |context: &AppContext| {
+            let well = context
+                .world()
+                .node_style(snapshot.swatch.unwrap())
+                .unwrap()
+                .layout
+                .background_srgb();
+            let hex = context
+                .read(
+                    Entity::<TextInput>::from_stable_id(snapshot.hex.unwrap()),
+                    |input| input.state.value.to_string(),
+                )
+                .unwrap();
+            (well, hex)
+        };
+
+        // The middle of the square: half saturation, half value.
+        let pad = context.world().layout_box(snapshot.pad.unwrap()).unwrap();
+        let (x, y) = (pad.x + pad.width / 2.0, pad.y + pad.height / 2.0);
+        assert!(
+            context
+                .begin_xy_pad_drag(document, 1, snapshot.pad.unwrap(), x, y)
+                .unwrap()
+        );
+        assert!(context.end_xy_pad_drag(document, 1, false).unwrap());
+        let kinds: Vec<_> = events.lock().unwrap().iter().map(|(k, _)| *k).collect();
+        assert_eq!(kinds, ["input", "changed"]);
+        let value = context.read(field, |field| field.value).unwrap();
+        assert!(
+            (value[0] - 0.5).abs() < 0.02 && (value[1] - 0.25).abs() < 0.02,
+            "{value:?}"
+        );
+        assert_eq!(shown(&context), (Some(value), format_hex(value)));
+        assert!(!context.read(field, |field| field.opened).unwrap());
+
+        // A hue commit keeps saturation and value.
+        events.lock().unwrap().clear();
+        let hue = Entity::<RangeField>::from_stable_id(snapshot.hue_slider.unwrap());
+        assert!(context.set_range_value(hue, 240.0).unwrap());
+        let kinds: Vec<_> = events.lock().unwrap().iter().map(|(k, _)| *k).collect();
+        assert_eq!(kinds, ["input", "changed"]);
+        let value = context.read(field, |field| field.value).unwrap();
+        assert!(
+            value[2] > value[0] && value[2] > value[1],
+            "blue: {value:?}"
+        );
+        assert_eq!(shown(&context), (Some(value), format_hex(value)));
+        assert_eq!(
+            context
+                .world()
+                .node_style(snapshot.pad.unwrap())
+                .unwrap()
+                .layout
+                .background_srgb(),
+            Some(hsv_to_rgb(240.0, 1.0, 1.0, 1.0)),
+            "the square repaints in the new hue"
+        );
+    }
+
+    /// Turning an existing field inline drops its popover and puts the same
+    /// pad, hue row, well and hex in place; turning it back builds a working
+    /// popover again.
+    #[test]
+    fn toggling_inline_on_an_existing_field_reassembles_it() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let field = context
+            .create_component(document, ColorField::new([1.0, 0.0, 0.0, 1.0]))
+            .unwrap();
+        context.assemble_color_field(field).unwrap();
+        let before = context.read(field, Clone::clone).unwrap();
+        let old_picker = before.picker.unwrap();
+        assert!(context.activate_node(old_picker).unwrap());
+        assert!(context.read(field, |field| field.opened).unwrap());
+
+        context
+            .update_component(field, |field, _| field.inline = true)
+            .unwrap();
+        let inline = context.read(field, Clone::clone).unwrap();
+        assert!(!inline.opened, "inline has nothing to open");
+        assert_eq!(inline.picker, None);
+        assert!(!context.world().contains(old_picker), "the popover is gone");
+        assert!(!context.overlay_locks(document, field.stable_id()).menu_open);
+        let row = inline.entry_row.unwrap();
+        // The same children, moved.
+        assert_eq!(
+            (inline.swatch, inline.hex, inline.pad, inline.hue_slider),
+            (before.swatch, before.hex, before.pad, before.hue_slider)
+        );
+        assert_eq!(
+            context.world().node(field.stable_id()).unwrap().children,
+            vec![inline.pad.unwrap(), inline.bottom_row.unwrap(), row]
+        );
+        assert_eq!(
+            context.world().node(row).unwrap().children,
+            vec![inline.swatch.unwrap(), inline.hex.unwrap()]
+        );
+
+        context
+            .update_component(field, |field, _| field.inline = false)
+            .unwrap();
+        let back = context.read(field, Clone::clone).unwrap();
+        assert_eq!(back.entry_row, None);
+        assert!(!context.world().contains(row), "the entry row is gone");
+        let picker = back.picker.unwrap();
+        assert_eq!(
+            context.world().node(field.stable_id()).unwrap().children,
+            vec![picker, back.hex.unwrap()]
+        );
+        assert_eq!(
+            context.world().node(picker).unwrap().children,
+            vec![
+                back.swatch.unwrap(),
+                back.pad.unwrap(),
+                back.bottom_row.unwrap()
+            ]
+        );
+        assert!(context.activate_node(picker).unwrap());
+        assert!(
+            context.read(field, |field| field.opened).unwrap(),
+            "the new popover still opens the field"
+        );
+    }
+
+    /// A view sets the mode with the builder or the bound prop.
+    #[test]
+    fn a_view_field_turns_inline_through_its_builder_or_prop() {
+        use crate::view::{color_field, column, widget};
+        let document = crate::DocumentId::new(1).unwrap();
+        let mut context = AppContext::new();
+        let root = context
+            .create_component(document, crate::Stack::column(0.0))
+            .unwrap();
+        context
+            .mount_view(root.stable_id(), || {
+                column().children((
+                    widget(ColorField::new([0.2, 0.4, 0.8, 1.0]).inline(true)),
+                    color_field().value([0.2, 0.4, 0.8, 1.0]).inline(true),
+                ))
+            })
+            .unwrap();
+        let column = context.world().node(root.stable_id()).unwrap().children[0];
+        for id in context.world().node(column).unwrap().children {
+            let field = context
+                .read(Entity::<ColorField>::from_stable_id(id), Clone::clone)
+                .unwrap();
+            assert!(field.inline && field.picker.is_none() && field.entry_row.is_some());
+            assert_eq!(context.world().node(id).unwrap().children.len(), 3);
+        }
     }
 }

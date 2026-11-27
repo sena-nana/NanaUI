@@ -117,7 +117,7 @@ inactive overlay 与关闭菜单属于结构性隐藏。`ComputedStyle::box_visi
 
 `SizeField` 是共用一个外框的「宽 × 高 ▾」：两个不带步进按钮的 `NumberInput` 均分宽度，右端方形 `ActionMenu` 图标打开预设；提交单边或预设统一发 `SizeFieldChanged { value: [f64; 2] }`（`SizeChanged` 已用于布局事件），任一侧按回车同时发 `SizeFieldSubmitted { value: [f64; 2] }`（`on_submit`）。`range`／`step` 沿用数字字段规则，`SizePreset` 提供名称、宽高值和禁用状态，以宽高值作为条目身份。`value`、`presets` 和各部分可访问名称支持视图绑定；外部回写相同数值保留编辑草稿、选择和撤销，条目刷新保留菜单身份与焦点。禁用整个字段时关闭菜单并停用内部操作。
 
-`ColorField` 是色块 + hex。`assemble_color_field` 挂 HSV 选择器。提交发 `ColorChanged`。hex 按回车确认或恢复并发 `ColorSubmitted`（`on_submit`），失焦也会恢复无效 hex 草稿。拖动发 `ColorInput`。`PathField` 是路径 + 浏览按钮。浏览只发 `BrowseRequested`。由应用打开系统对话框。
+`ColorField` 是色块 + hex。`assemble_color_field` 挂 HSV 选择器；`.inline(true)` 把选择器直接摆在原地（方块、色相行、带外框的色块与 hex），不建弹出层。提交发 `ColorChanged`。hex 按回车确认或恢复并发 `ColorSubmitted`（`on_submit`），失焦也会恢复无效 hex 草稿。拖动发 `ColorInput`。`PathField` 是路径 + 浏览按钮。浏览只发 `BrowseRequested`。由应用打开系统对话框。
 
 ### FindReplaceBar
 

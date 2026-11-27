@@ -19,7 +19,19 @@ The picker paints the color it takes its value from. Saturation / value is a pic
 
 Whether the `ColorField` eyedropper is shown depends on the host platform and session screen-capture support checked via `color_sampler_support()`: when it returns `ColorSamplerSupport::Native`, the button is shown and active; when it returns `ColorSamplerSupport::Unsupported` (for example on Wayland sessions without Portal v2+ or platforms without screen picking), the button is hidden automatically. If a sampling session fails due to revoked permission or session termination, `ColorSamplerResult::Failed` reports the platform error while leaving the field's current color unchanged; see [Window management and native boundaries](../reference/window.md) for platform behavior and limits.
 
-The control table has no `<ColorField>`.
+The control table's `<ColorField>` (`view::color_field()`) binds `value`, `label`, `disabled`, `eyedropper` and `inline`; its events are `on_change` (`ColorChanged`) and `on_submit` (`ColorSubmitted`).
+
+## Inline picker
+
+`.inline(true)` shows the picker in place and always visible instead of behind the swatch's popover, for a card that is itself the editor. The field becomes a column (gap `space::SM`, filling its parent's width, with no frame of its own): the saturation / value square on top, the `[ eyedropper | hue ]` row under it, and at the bottom a row carrying the text field's frame with the swatch and the hex input inside. The frame's focus, `.invalid` and `.disabled` states are painted on that row as in popover mode, and `.style` applies to it too. Inline, no `Popover` is built, the swatch only shows the color, and `.opened` has no effect. The events are the same: dragging emits `ColorInput`, releasing and a hue commit emit `ColorChanged`, Enter in the hex emits `ColorSubmitted`, and the eyedropper still emits `ColorPickRequested` and is finished by `complete_color_pick`. Switching `inline` on an existing field reassembles it: the same square, hue bar, swatch and hex move to their new places, and the old popover or frame row is removed.
+
+```rust
+use nana_ui::runtime::view::{color_field, widget};
+use nana_ui::runtime::ColorField;
+
+widget(ColorField::new([0.29, 0.57, 0.85, 1.0]).inline(true));
+color_field().value([0.29, 0.57, 0.85, 1.0]).inline(true); // field: fields::color_field::inline
+```
 
 ## Basic usage
 
@@ -100,6 +112,7 @@ The default accessible name is "Color".
 | `.invalid` | — | The same as for field controls |
 | `.opened` | — | Opening and closing are written on the field's own `opened`. A click on the swatch toggles it. Forced closed while disabled |
 | `.eyedropper` | `bool` | Defaults to `true`; shows the screen eyedropper button to the left of the hue bar when the host supports screen color sampling, and hides automatically on unsupported platforms (such as iOS or Wayland without a portal) |
+| `.inline` | `bool` | Defaults to `false`; when `true` the picker is always shown in place (square, hue row, framed swatch and hex), no popover is built, and `.opened` has no effect. See "Inline picker" |
 
 ## Events
 

@@ -287,6 +287,7 @@ macro_rules! for_each_control {
                 label: Option<Arc<str>> = set,
                 disabled: bool = set,
                 eyedropper: bool = set,
+                inline: bool = set,
             }
             with { on_change: ColorChanged, on_submit: ColorSubmitted };
             ActionMenuItem => action_menu_item(label: text) for ActionMenuItem {

@@ -19,7 +19,19 @@
 
 `ColorField` 颜色吸管（eyedropper）的可用性取决于宿主平台与会话的屏幕读取权限，宿主通过 `color_sampler_support()` 查询：当返回 `ColorSamplerSupport::Native` 时，吸管可见并可调用；返回 `ColorSamplerSupport::Unsupported`（例如无 Portal v2+ 的 Wayland 或不支持屏幕采样的平台）时自动隐藏；若运行中因权限或会话原因失败，通过 `ColorSamplerResult::Failed` 返回错误，同时保持字段当前颜色值不变。各平台底层行为与限制见 [窗口管理与原生边界](../reference/window.md)。
 
-控件表里没有 `<ColorField>`。
+控件表里的 `<ColorField>`（`view::color_field()`）可以绑定 `value`、`label`、`disabled`、`eyedropper` 和 `inline`，事件是 `on_change`（`ColorChanged`）与 `on_submit`（`ColorSubmitted`）。
+
+## 内联选择器
+
+`.inline(true)` 把选择器直接摆在原地、一直可见，不再藏在色块的弹出层后面，适合本身就是编辑面板的卡片。字段变成一列（间距 `space::SM`，宽度占满父容器，自己不画框）：最上面是饱和度/明度方块，下面是 `[ 吸管 | 色相条 ]` 一行，最下面是带文本框外框的一行，里面是色块和 hex 输入。外框的焦点、`.invalid`、`.disabled` 状态和弹出模式一样，画在这一行上；`.style` 也作用于这一行。内联时不建 `Popover`，色块只显示颜色，`.opened` 不起作用。事件不变：拖动发 `ColorInput`，松手和色相提交发 `ColorChanged`，hex 回车发 `ColorSubmitted`，吸管照常发 `ColorPickRequested`、由 `complete_color_pick` 写回。已有字段切换 `inline` 会重新装配：同一组方块、色相条、色块和 hex 移到新位置，旧的弹出层或外框行随之移除。
+
+```rust
+use nana_ui::runtime::view::{color_field, widget};
+use nana_ui::runtime::ColorField;
+
+widget(ColorField::new([0.29, 0.57, 0.85, 1.0]).inline(true));
+color_field().value([0.29, 0.57, 0.85, 1.0]).inline(true); // 字段：fields::color_field::inline
+```
 
 ## 基本用法
 
@@ -100,6 +112,7 @@ hex 框的文本变化会写回 `value`。
 | `.invalid` | — | 跟字段控件一样 |
 | `.opened` | — | 开合写在字段自己的 `opened` 上。色块点一下翻转它。禁用时强制关上 |
 | `.eyedropper` | `bool` | 默认 `true`；宿主支持屏幕取色时在色相条左侧显示吸管按钮，在不支持的平台（如 iOS 或无 Portal 的 Wayland）自动隐藏 |
+| `.inline` | `bool` | 默认 `false`；为 `true` 时选择器一直显示在原地（方块、色相行、带外框的色块与 hex），不建弹出层，`.opened` 不起作用。见「内联选择器」 |
 
 ## 事件
 
