@@ -893,8 +893,26 @@ where
             {
                 // Items inserted or removed above the one at the top of the
                 // viewport keep it where it is (scroll anchoring), unless the
-                // list follows its end.
-                if request.is_none() && !follow_end && !kept.units.is_empty() {
+                // list follows its end. Only while the viewport's top is
+                // inside the list: a list starting at or below it (one card
+                // of many in a page) has nothing above the viewport to keep
+                // still. And not for a reorder of the same items: the
+                // viewport stays where it is, rather than following the item
+                // at its top to wherever that item was moved. (The same items
+                // in the same order regroup into another column count: that
+                // still keeps the reading position.)
+                let reordered = items.items.len() == kept.keys.len()
+                    && items
+                        .items
+                        .iter()
+                        .all(|(key, _)| kept.positions.contains_key(key))
+                    && items.items.iter().map(|(key, _)| key).ne(kept.keys.iter());
+                if request.is_none()
+                    && !follow_end
+                    && !kept.units.is_empty()
+                    && viewport.offset[1] > 0.0
+                    && !reordered
+                {
                     request = geometry
                         .first_visible(viewport.offset[1])
                         .map(|(key, inset)| Request::Keep(key, inset));

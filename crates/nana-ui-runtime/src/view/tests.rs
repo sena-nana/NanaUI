@@ -4370,6 +4370,99 @@ fn a_virtual_list_keeps_its_reading_position_when_items_are_inserted_above() {
     }
 }
 
+/// Reordering the items moves nothing: the viewport neither follows the
+/// item at its top to where it went nor, for a list starting below the top
+/// of a page's viewport, scrolls the page to bring the list's first row up
+/// (a row dragged above the first in one card of many).
+#[test]
+fn a_virtual_list_keeps_the_viewport_still_when_its_items_are_reordered() {
+    for measured in [false, true] {
+        // A list in a page, under a 100 px header.
+        let (mut cx, document, parent) = setup();
+        let items = std::cell::Cell::new(None);
+        let view = cx
+            .mount_view(parent, || {
+                let page = node_ref();
+                let data = signal(virtual_items(40));
+                items.set(Some(data));
+                let list = each_virtual(data, |row| row.id, 20.0, keyed_row)
+                    .within(page)
+                    .overscan(0.0);
+                let list = if measured { list.measured() } else { list };
+                widget(
+                    crate::ScrollView::new(crate::ScrollAxes::Vertical).with_layout(|l| {
+                        l.height = Some(LengthSpec::Px(300.0));
+                    }),
+                )
+                .node_ref(page)
+                .children(column().children((
+                    widget(
+                        Stack::column(0.0).with_layout(|l| l.height = Some(LengthSpec::Px(100.0))),
+                    ),
+                    list,
+                )))
+            })
+            .unwrap();
+        let page = view.roots()[0];
+        let viewport = LayoutViewport::new(320.0, 600.0);
+        settle(&mut cx, document, viewport);
+        for at in [0.0, 60.0] {
+            cx.scroll_to(
+                Entity::from_stable_id(page),
+                crate::ScrollOffset { x: 0.0, y: at },
+            )
+            .unwrap();
+            settle(&mut cx, document, viewport);
+            // The third row goes first, above the one that was.
+            items.get().unwrap().update(|data| {
+                let row = data.remove(2);
+                data.insert(0, row);
+            });
+            settle(&mut cx, document, viewport);
+            assert_eq!(
+                cx.world().scroll_offset(page).unwrap().y,
+                at,
+                "within, measured {measured}"
+            );
+        }
+
+        // A list of its own, scrolled into it: the item at the top moves
+        // to the end.
+        let (mut cx, document, parent) = setup();
+        let rows = virtual_list_ref::<u32>();
+        let list_ref = rows.clone();
+        let items = std::cell::Cell::new(None);
+        let view = cx
+            .mount_view(parent, || {
+                let data = signal(virtual_items(100));
+                items.set(Some(data));
+                let list = each_virtual(data, |row| row.id, 20.0, keyed_row)
+                    .overscan(0.0)
+                    .height(200.0)
+                    .list_ref(list_ref.clone());
+                if measured { list.measured() } else { list }
+            })
+            .unwrap();
+        let scroll = view.roots()[0];
+        settle(&mut cx, document, viewport);
+        rows.scroll_to_inset(&50, 7.0);
+        settle(&mut cx, document, viewport);
+        let offset = cx.world().scroll_offset(scroll).unwrap().y;
+        assert!(offset > 0.0);
+        items.get().unwrap().update(|data| {
+            let at = data.iter().position(|row| row.id == 50).unwrap();
+            let row = data.remove(at);
+            data.push(row);
+        });
+        settle(&mut cx, document, viewport);
+        assert_eq!(
+            cx.world().scroll_offset(scroll).unwrap().y,
+            offset,
+            "own, measured {measured}"
+        );
+    }
+}
+
 /// A list scrolling with an ancestor follows its ref to another scroll
 /// area when it moves there (a sidebar list moved between layouts), and
 /// lets go of the first.
