@@ -8,6 +8,8 @@ mod button_icon;
 mod chart_theme;
 mod checkbox_theme;
 mod chrome_text_measure;
+#[cfg(all(feature = "hosted", feature = "wgpu-interop"))]
+mod headless_cursor;
 mod icon_theme;
 mod inherited_theme;
 mod navigation_icon_theme;

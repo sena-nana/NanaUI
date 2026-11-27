@@ -458,6 +458,14 @@ impl<P: RuntimeProgram> HeadlessRuntime<P> {
         self.windows.iter().map(|(id, state)| (*id, &state.window))
     }
 
+    /// The cursor window `id` would show: what input routing last asked of
+    /// its host services (a node's CSS or custom cursor, a resize handle's,
+    /// a text beam). `None` before any input reached the window.
+    pub fn cursor(&self, id: WindowId) -> Option<nana_ui_platform::CursorIcon> {
+        let input = self.windows.get(&id)?.input.as_ref()?;
+        Some(input.services().cursor())
+    }
+
     /// The open window whose descriptor carried `tag`.
     pub fn window_by_tag(&self, tag: &str) -> Option<WindowId> {
         self.windows
