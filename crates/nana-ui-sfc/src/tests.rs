@@ -681,14 +681,13 @@ let done = signal(false);
   </Column>
 </template>
 <style scoped>
-.card { padding: 12px; opacity: 1; transition: opacity 150ms linear; }
+.card { padding: 12px; opacity: 1; transition: opacity 150ms linear; -webkit-font-smoothing: antialiased; }
 .card.done { opacity: 0.5; }
 .title { opacity: 0.9 !important; }
 .title { opacity: 0.2; }
 .card:hover { opacity: 0.7; }
 .card > .title { padding: 2px; }
 .card:hover .title { opacity: 0.3; }
-.card { frobnicate: 3; }
 </style>"#,
     )])
     .unwrap();
@@ -704,13 +703,27 @@ let done = signal(false);
     assert!(
         !out.warnings
             .iter()
-            .any(|warning| warning.contains("Card.vue: 15:") || warning.contains("Card.vue: 16:")),
-        "subject :hover and > combinator should compile cleanly: {:?}",
+            .any(|warning| warning.contains("Card.vue: 15:")
+                || warning.contains("Card.vue: 16:")
+                || warning.contains("Card.vue: 17:")),
+        "subject :hover, > combinator, and ancestor :hover should compile cleanly: {:?}",
         out.warnings
     );
-    at("Card.vue: 17:", ":hover");
-    at("Card.vue: 18:", "frobnicate");
+    at("Card.vue: 11:", "-webkit-font-smoothing");
     at("Card.vue: 7:", "ghost");
+    let code = squash(&out.code);
+    assert!(code.contains("track_interactive_state"), "{code}");
+    assert!(code.contains("ancestor_pseudo"), "{code}");
+
+    // Unknown CSS property surfaces as a compile error at its exact line.
+    let err = compile(&[(
+        "BadCss.vue",
+        "<template><Column class=\"card\" /></template>\n<style scoped>\n.card { frobnicate: 3; }\n</style>",
+    )])
+    .err()
+    .expect("unknown CSS property must be an error");
+    assert_eq!(err.line, 3, "{err}");
+    assert!(err.message.contains("frobnicate"), "{err}");
 }
 
 #[test]
@@ -738,7 +751,10 @@ let open = signal(false);
     assert!(out.warnings.is_empty(), "{:?}", out.warnings);
     let code = squash(&out.code);
     assert!(code.contains("ThemeRole"), "{code}");
-    assert!(code.contains("PaintColor::light_dark"), "{code}");
+    assert!(
+        code.contains("ThemePair") || code.contains("PaintColor::light_dark"),
+        "{code}"
+    );
     assert!(code.contains("Sheet::with_animations"), "{code}");
     assert!(code.contains("KeyframeAnimation"), "{code}");
     assert!(code.contains("pseudo:1u8"), "{code}");
@@ -760,7 +776,7 @@ fn container_rules_in_a_style_block_compile_with_their_query() {
 .card { container-type: inline-size; container-name: card; }
 .row { height: 20px; }
 @container card (max-width: 300px) { .row { height: 40px; } }
-@container (aspect-ratio > 1) { .row { opacity: 0.5; } }
+@container (aspect-ratio > 1 / 1) { .row { opacity: 0.5; } }
 </style>"#,
     )])
     .unwrap();
@@ -1075,4 +1091,61 @@ let open = signal(false);
         ".card > .title { flex-grow: 1; }",
     ));
     assert_ne!(combinator_added.shape, initial.shape);
+    assert!(
+        !initial.styles.rules[0].patch.ops.is_empty(),
+        "hot style rules must use typed StyleOp patches"
+    );
+}
+
+#[test]
+fn lift_slots_before_styles_and_robust_top_level_block_scanning() {
+    // 1. `<template #default>` must be lifted BEFORE `compile_styles` so `.parent > .child` matches!
+    // 2. Multiple `<style>` blocks, single-quoted `lang='css'`, `<style global>`,
+    //    inline `style="..."`, and `<style` strings inside `<script>` and `<template>`
+    //    must all scan and compile cleanly.
+    let out = compile(&[(
+        "Multi.vue",
+        r#"<script setup lang='rust'>
+let fake = "<style>.bogus { nope: 1; }</style>";
+let flag = signal(true);
+</script>
+<template>
+  <Column class="parent" style="margin: 4px;">
+    <template #default>
+      <Text class="child" class:is-active="flag">literal &lt;style&gt; {{ fake }}</Text>
+    </template>
+  </Column>
+</template>
+<style lang='css'>
+.parent > .child { padding: 10px; }
+</style>
+<style global>
+.child.is-active { opacity: 0.6; }
+</style>"#,
+    )])
+    .unwrap();
+    assert!(out.warnings.is_empty(), "{:?}", out.warnings);
+    let code = squash(&out.code);
+    assert!(code.contains("inline_patch"), "{code}");
+    assert!(
+        code.contains("padding") && code.contains("10f32") || code.contains("10.0f32"),
+        "direct child combinator through #default slot must compile: {code}"
+    );
+    assert!(code.contains("class_when"), "{code}");
+
+    // 3. Error in the SECOND `<style>` block reports exact line in that block!
+    let err = compile(&[(
+        "TwoStyles.vue",
+        "<template><Column class=\"a\" /></template>\n\
+         <style>\n\
+         .a { padding: 4px; }\n\
+         </style>\n\
+         <style scoped>\n\
+         .a { totally_invalid: 1; }\n\
+         </style>",
+    )])
+    .err()
+    .expect("error in second style block");
+    assert_eq!(err.line, 6, "{err}");
+    assert!(err.message.contains("totally_invalid"), "{err}");
 }

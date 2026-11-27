@@ -1,59 +1,47 @@
-//! A view's styles, compiled with the CSS engine while the application
-//! builds: the `.vue` compiler's `<style>`, `view!`'s `<style>`, and
-//! `css!`.
+//! A view's styles, compiled with `nana-ui-css` at build time: the `.vue`
+//! compiler's `<style>`, `view!`'s `<style>`, inline `style="..."`,
+//! `stylesheet!`, and `css!`.
 //!
-//! Rules whose selector is a class, a compound of classes (`.card`,
-//! `.card.active`), an optional subject interactive pseudo-class
-//! (`:hover`, `:focus`, `:focus-visible`, `:active`), or—within `<style>`—a
-//! static child (`>`) / descendant (` `) combinator of class compounds are
-//! matched against each element's `class="…"` and `class:name="condition"`
-//! here, in cascade order (`!important`, specificity, source order). Each
-//! rule becomes a patch: the Style Model fields its declarations write and
-//! their values, as `nana-ui-css` reports them ([`WrittenLayout`]),
-//! including a field written with the value the default layout has.
-//! Theme tokens (`var(--nana-*)`, semantic color names, `theme(…)`,
-//! `light-dark(…)`, `:root[data-theme="dark"]`, `color-mix(…)`) lower into
-//! theme-aware `PaintColor` values resolved at runtime against the live
-//! `StyleModelRef` and `ThemeScope`. `transition` (including `transition-delay`,
-//! conditional classes, and interactive pseudo states) becomes the element's
-//! implicit animations, and `@keyframes` + `animation` lower to `#87
-//! MotionTrack` definitions.
+//! Built directly on `nana_ui_css::{parse_stylesheet, compile_declarations,
+//! compile_inline_css, emit_style_op_rust, emit_media_query_list_rust,
+//! emit_font_face_rule_rust, VarScope, CascadeKey}` and `nana_ui_core::StyleOp`.
 //!
-//! Class rules inside an `@container` block compile the same way and carry
-//! the block's query as data: the container it reads, the axis, and the
-//! extents where it holds. The running view composes them per bucket of the
-//! container's size into a responsive rule; it measures nothing itself.
-//!
-//! Everything else in the sheet (other selectors, ancestor interactive pseudos,
-//! sibling combinators, combinators in `stylesheet!`, `@media`, `@font-face`,
-//! an `@container` query the engine does not evaluate, a `transition` or
-//! `animation` inside `@container`, a declaration the Style Model has no field
-//! for, and what the engine skips while parsing) is a warning, not silently
-//! dropped. Each warning points at what it is about: a range of the sheet's
-//! text, or the element or `class` attribute in the template.
+//! Features:
+//! - Full CSS Cascade 5 `@layer` ordering (`CascadeKey`: layer order +
+//!   `!important` reversal + specificity + source order)
+//! - Inline `style="..."` on `.vue` / `view!` elements -> `.inline_patch(&PATCH)`
+//!   (Layer 2)
+//! - Pseudo-elements (`::placeholder`, `::selection`, `::-webkit-scrollbar*`)
+//! - `@font-face` end-to-end (`Sheet::with_font_faces` + root `.sheet(&SHEET)`)
+//! - Element-scoped static `--*` custom properties via hierarchical `VarScope`
+//! - `@media` end-to-end (`Sheet::with_media` + `SheetMediaQuery`)
+//! - `@container` queries (`SheetQuery` + breakpoint planning)
+//! - Ancestor interactive selectors (`.card:hover .icon`, `.row:active .label`)
+//!   via `interactive_state()` + `.track_interactive_state` + `.ancestor_pseudo`
+//! - Tiered diagnostics (`DiagSeverity::Error` -> compile error,
+//!   `DiagSeverity::Warning` -> warning; zero silent drops)
+//! - Dev-only hot reload via `HotStylePatch::from_ops(ops)`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
+use std::sync::Arc;
 
 use crate::{Attr, AttrName, AttrValue, Element, Node};
 use nana_ui_core::{
     AnimationDirection, AnimationFillMode, AnimationIteration, AnimationPlayState, ColorFilter,
-    Easing, HotSheetAxis, HotSheetQuery, HotStylePatch, HotStyleRule, HotStyleSheet, LengthSpec,
-    MotionCurve, PaintColor, PaintTransform, StepJump,
-};
-use nana_ui_css::css_motion::{
-    ParsedAnimation, css_list_at, easing_from_css_keyword, first_timing_token,
-    motion_curve_from_css_token, parse_animation_declarations, parse_css_time_token,
-    parse_transition_shorthand, split_css_comma_list,
+    Easing, FontFaceRule, HotSheetAxis, HotSheetQuery, HotStylePatch, HotStyleRule, HotStyleSheet,
+    LengthSpec, MediaCondition, MediaQuery, MediaQueryList, MediaType, MotionCurve, PaintColor,
+    PaintTransform, ScrollbarSkin, StepJump, StyleOp,
 };
 use nana_ui_css::{
-    Combinator, CompoundSelector, ContainerAxis, ContainerPlanUnsupported, ContainerQuery,
-    ContainerQueryUnsupported, CssVarScope, DeclarationEntry, GridTrackListParse,
-    GridTrackListUnsupported, InteractivePseudo, InteractiveSelector, InteractiveStyleRule,
-    KeyframeSelector, KeyframesRule, MAX_CONTAINER_BREAKPOINTS, MotionDeclarations,
-    ParsedStylesheet, Selector, Specificity, StyleRule, WrittenLayout, emit_color_filter_rust,
-    emit_paint_color_rust, parse_container_prelude, parse_grid_track_list_result,
-    parse_stylesheet_full, plan_container_queries,
+    CascadeKey, Combinator, CompileContext, CompiledAnimation, CompiledTransition, ComplexSelector,
+    ComponentValue, CompoundSelector, ContainerAxis, ContainerPlanUnsupported, ContainerQuery,
+    ContainerQueryUnsupported, CssDiag, CustomPropDecl, Declaration, DiagCode, DiagSeverity,
+    KeyframesRule, LayerOrder, MAX_CONTAINER_BREAKPOINTS, ParsedSheet, PseudoClass, PseudoElement,
+    Specificity, TypeSelector, VarScope, compile_declarations, compile_inline_css,
+    emit_color_filter_rust, emit_font_face_rule_rust, emit_media_query_list_rust,
+    emit_paint_color_rust, emit_style_op_rust, merge_scrollbar_skin, parse_stylesheet,
+    parse_timing_function, plan_container_queries,
 };
 use proc_macro2::{Span, TokenStream};
 use quote::{ToTokens, format_ident, quote};
@@ -66,44 +54,128 @@ const PSEUDO_ACTIVE: u8 = 1 << 3;
 const PSEUDO_SELECTED: u8 = 1 << 4;
 const MAX_CONDITIONAL_CLASSES: usize = 59;
 
-fn pseudo_bit(pseudo: InteractivePseudo) -> u8 {
-    match pseudo {
-        InteractivePseudo::Hover => PSEUDO_HOVER,
-        InteractivePseudo::Focus => PSEUDO_FOCUS,
-        InteractivePseudo::FocusVisible => PSEUDO_FOCUS_VISIBLE,
-        InteractivePseudo::Active => PSEUDO_ACTIVE,
-        InteractivePseudo::Selected => PSEUDO_SELECTED,
+/// Diagnostic severity tier exposed to macro and SFC frontends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StyleSeverity {
+    Error,
+    Warning,
+}
+
+/// What a style diagnostic points at.
+#[derive(Debug, Clone)]
+pub enum StyleAt {
+    /// A byte range of the sheet's text (or `css!` declarations).
+    Sheet(Range<usize>),
+    /// An element of the template, or one of its attributes.
+    Template(Span),
+}
+
+/// One compile-time style diagnostic (error or warning).
+#[derive(Debug, Clone)]
+pub struct StyleWarning {
+    pub at: StyleAt,
+    pub severity: StyleSeverity,
+    pub message: String,
+}
+
+impl StyleWarning {
+    fn sheet_warning(range: Range<usize>, message: impl Into<String>) -> Self {
+        Self {
+            at: StyleAt::Sheet(range),
+            severity: StyleSeverity::Warning,
+            message: message.into(),
+        }
+    }
+
+    fn from_css_diag(diag: CssDiag) -> Self {
+        Self {
+            at: StyleAt::Sheet(diag.span.start as usize..diag.span.end as usize),
+            severity: match diag.severity {
+                DiagSeverity::Error => StyleSeverity::Error,
+                DiagSeverity::Warning => StyleSeverity::Warning,
+            },
+            message: diag.message,
+        }
+    }
+
+    fn from_template_css_diag(span: Span, diag: CssDiag) -> Self {
+        Self {
+            at: StyleAt::Template(span),
+            severity: match diag.severity {
+                DiagSeverity::Error => StyleSeverity::Error,
+                DiagSeverity::Warning => StyleSeverity::Warning,
+            },
+            message: diag.message,
+        }
     }
 }
 
-/// Where a rule stands in the cascade: later wins.
-type Rank = (bool, (u16, u16, u16), u32);
+/// What compiling a view's styles adds: statics to put before the view's
+/// code, warnings, and fatal CSS errors.
+pub struct CompiledStyles {
+    pub items: Vec<TokenStream>,
+    pub warnings: Vec<StyleWarning>,
+    pub errors: Vec<StyleWarning>,
+}
 
+/// What compiling a view's styles in hot mode adds, plus the pure-data
+/// [`HotStyleSheet`] and structural `style_shape` token stream.
+pub struct CompiledHotStyles {
+    pub items: Vec<TokenStream>,
+    pub warnings: Vec<StyleWarning>,
+    pub errors: Vec<StyleWarning>,
+    pub hot_sheet: HotStyleSheet,
+    pub style_shape: TokenStream,
+}
+
+/// Result of compiling `stylesheet! { mod name; ... }`.
+pub struct CompiledStylesheet {
+    pub tokens: TokenStream,
+    pub warnings: Vec<StyleWarning>,
+    pub errors: Vec<StyleWarning>,
+}
+
+/// Result of compiling `css! { ... }`.
+pub struct CompiledInlineStyle {
+    pub tokens: TokenStream,
+    pub warnings: Vec<StyleWarning>,
+    pub errors: Vec<StyleWarning>,
+}
+
+// ============================================================================
+// Internal IR
+// ============================================================================
+
+#[derive(Clone)]
 struct Rule {
     classes: Vec<String>,
     pseudo: u8,
-    rank: Rank,
-    /// Rust setter statements using the local `__nana_patch` module alias.
+    rank: CascadeKey,
+    /// Compiled `StyleOp`s (for `HotStylePatch::from_ops` and codegen).
+    ops: Vec<StyleOp>,
+    /// Rust setter statements targeting `__nana_patch`.
     patch: String,
-    /// Pure-data patch for dev-only `<style>` hot reload.
-    hot_patch: HotStylePatch,
-    /// The `@container` query guarding the rule, in [`Sheet::queries`].
+    /// Optional `@container` query index into `Sheet::queries`.
     query: Option<usize>,
+    /// Optional `@media` query index into `Sheet::media_queries`.
+    media: Option<usize>,
+    /// True if emitted from a `::-webkit-scrollbar*` pseudo-element rule.
+    is_scrollbar_pseudo: bool,
 }
 
 #[derive(Clone, Debug)]
 struct TransitionItem {
-    /// Names the `AnimatableProperty` variant.
     property: &'static str,
     duration_ms: f32,
     delay_ms: f32,
     easing: Easing,
 }
 
+#[derive(Clone)]
 struct TransitionRule {
     classes: Vec<String>,
     pseudo: u8,
-    rank: Rank,
+    rank: CascadeKey,
     items: Vec<TransitionItem>,
 }
 
@@ -136,18 +208,53 @@ struct CompiledAnimItem {
     play_state: AnimationPlayState,
 }
 
+#[derive(Clone)]
 struct AnimationRule {
     classes: Vec<String>,
     pseudo: u8,
-    rank: Rank,
+    rank: CascadeKey,
     items: Vec<CompiledAnimItem>,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+struct AncestorStep {
+    combinator: Combinator,
+    classes: Vec<String>,
+    pseudo: u8,
+}
+
+#[derive(Clone)]
 struct CombinatorTarget {
-    /// Outermost -> closest-to-subject, matching `Selector::ancestors`.
-    ancestors: Vec<(Combinator, Vec<String>)>,
+    /// Outermost -> closest-to-subject.
+    ancestors: Vec<AncestorStep>,
     subject: Vec<String>,
     synth_class: String,
+}
+
+/// Custom property rule attached to an element-level selector (non-`:root`).
+#[derive(Clone)]
+struct ScopedVarRule {
+    ancestors: Vec<AncestorStep>,
+    subject: Vec<String>,
+    layer: LayerOrder,
+    specificity: Specificity,
+    source_order: u32,
+    custom_props: Vec<CustomPropDecl>,
+}
+
+/// Rule whose declarations reference at least one element-scoped `--*` variable
+/// and is therefore specialized per element `VarScope` during the template walk.
+#[derive(Clone)]
+struct DeferredVarRule {
+    ancestors: Vec<AncestorStep>,
+    subject: Vec<String>,
+    subject_pseudo: u8,
+    pseudo_element: Option<PseudoElement>,
+    rank: CascadeKey,
+    declarations: Vec<Declaration>,
+    query: Option<usize>,
+    media: Option<usize>,
+    span: Range<usize>,
 }
 
 pub(crate) struct Sheet {
@@ -155,95 +262,211 @@ pub(crate) struct Sheet {
     transitions: Vec<TransitionRule>,
     animations: Vec<AnimationRule>,
     combinators: Vec<CombinatorTarget>,
+    scoped_var_rules: Vec<ScopedVarRule>,
+    deferred_var_rules: Vec<DeferredVarRule>,
     referenced_classes: BTreeSet<String>,
-    /// The distinct queries of the sheet's supported `@container` blocks.
     queries: Vec<ContainerQuery>,
+    media_queries: Vec<MediaQueryList>,
+    font_faces: Vec<FontFaceRule>,
+    root_light: Arc<VarScope>,
+    root_dark: Arc<VarScope>,
+    compiled_kf: CompiledKeyframesMap,
     pub(crate) warnings: Vec<StyleWarning>,
+    pub(crate) errors: Vec<StyleWarning>,
 }
 
-/// What a style warning is about.
-#[derive(Debug, Clone)]
-pub enum StyleAt {
-    /// A byte range of the sheet's text: a selector, an at-rule, a
-    /// declaration.
-    Sheet(Range<usize>),
-    /// An element of the template, or its `class` attribute.
-    Template(Span),
+// ============================================================================
+// Selector Classification
+// ============================================================================
+
+fn supported_pseudo_element(pe: &PseudoElement) -> bool {
+    matches!(
+        pe,
+        PseudoElement::Placeholder
+            | PseudoElement::Selection
+            | PseudoElement::WebkitScrollbar
+            | PseudoElement::WebkitScrollbarThumb
+            | PseudoElement::WebkitScrollbarTrack
+    )
 }
 
-#[derive(Debug, Clone)]
-pub struct StyleWarning {
-    pub at: StyleAt,
-    pub message: String,
+fn interactive_pseudo_bit(p: &PseudoClass) -> Option<u8> {
+    match p {
+        PseudoClass::Hover => Some(PSEUDO_HOVER),
+        PseudoClass::Focus => Some(PSEUDO_FOCUS),
+        PseudoClass::FocusVisible => Some(PSEUDO_FOCUS_VISIBLE),
+        PseudoClass::Active => Some(PSEUDO_ACTIVE),
+        PseudoClass::Selected => Some(PSEUDO_SELECTED),
+        _ => None,
+    }
 }
 
-fn class_only_compound(compound: &CompoundSelector, allow_interactive: bool) -> Option<&[String]> {
-    let classes_only = CompoundSelector {
-        classes: compound.classes.clone(),
-        interactive: if allow_interactive {
-            compound.interactive
+/// True if `sel` targets document root (`:root`, `html`, `body`, `*`,
+/// `:root[data-theme="..."]`) so custom-property-only rules don't warn.
+fn is_document_root_selector(sel: &ComplexSelector) -> bool {
+    if !sel.rest.is_empty() {
+        return false;
+    }
+    let comp = &sel.head;
+    if comp.pseudo_element.is_some()
+        || comp.id.is_some()
+        || !comp.extra_ids.is_empty()
+        || !comp.classes.is_empty()
+    {
+        return false;
+    }
+    if let Some(ts) = &comp.type_sel {
+        match ts {
+            TypeSelector::Universal => {}
+            TypeSelector::Tag(tag)
+                if tag.eq_ignore_ascii_case("html") || tag.eq_ignore_ascii_case("body") => {}
+            _ => return false,
+        }
+    }
+    if !comp.pseudos.iter().all(|p| matches!(p, PseudoClass::Root)) {
+        return false;
+    }
+    if !comp
+        .attrs
+        .iter()
+        .all(|a| a.name.eq_ignore_ascii_case("data-theme"))
+    {
+        return false;
+    }
+    !comp.is_empty()
+}
+
+struct ClassifiedSelector {
+    ancestors: Vec<AncestorStep>,
+    subject: Vec<String>,
+    subject_pseudo: u8,
+    pseudo_element: Option<PseudoElement>,
+}
+
+enum SelectorCheck {
+    Supported(ClassifiedSelector),
+    /// Handled as document-root custom property rule; skip silently.
+    DocumentRoot,
+    /// Unsupported by build-time class matcher; report warning with message.
+    Unsupported(String),
+}
+
+fn check_compound(
+    comp: &CompoundSelector,
+    is_subject: bool,
+) -> Result<(Vec<String>, u8, Option<PseudoElement>), String> {
+    if let Some(pe) = &comp.pseudo_element {
+        if !is_subject {
+            return Err("pseudo-elements are only supported on the subject selector".into());
+        }
+        if !supported_pseudo_element(pe) {
+            return Err(format!(
+                "pseudo-element `{pe:?}` is not supported in NanaUI's Style Model"
+            ));
+        }
+    }
+    if comp.type_sel.is_some()
+        || comp.id.is_some()
+        || !comp.extra_ids.is_empty()
+        || !comp.attrs.is_empty()
+        || comp.classes.is_empty()
+    {
+        return Err(
+            "only class selectors (`.name`, `.a.b`, `.a > .b`, `.a .b`) are matched at build time"
+                .into(),
+        );
+    }
+    let mut pseudo_mask = 0u8;
+    for p in &comp.pseudos {
+        if let Some(bit) = interactive_pseudo_bit(p) {
+            pseudo_mask |= bit;
         } else {
-            None
-        },
-        ..CompoundSelector::default()
-    };
-    (!compound.classes.is_empty() && *compound == classes_only)
-        .then_some(compound.classes.as_slice())
-}
-
-/// The classes of a class-only selector; `None` for any other.
-fn class_selector(selector: &Selector) -> Option<&[String]> {
-    if !selector.ancestors.is_empty() {
-        return None;
-    }
-    class_only_compound(&selector.subject, false)
-}
-
-fn static_combinator_selector(
-    selector: &Selector,
-) -> Option<(Vec<(Combinator, Vec<String>)>, Vec<String>)> {
-    if selector.ancestors.is_empty() {
-        return None;
-    }
-    let subject = class_only_compound(&selector.subject, false)?.to_vec();
-    let mut ancestors = Vec::with_capacity(selector.ancestors.len());
-    for (comb, compound) in &selector.ancestors {
-        if !matches!(comb, Combinator::Child | Combinator::Descendant) {
-            return None;
+            return Err(
+                "only `:hover`, `:focus`, `:focus-visible`, `:active`, and `:selected` \
+                 pseudo-classes are supported on class selectors"
+                    .into(),
+            );
         }
-        ancestors.push((*comb, class_only_compound(compound, false)?.to_vec()));
     }
-    Some((ancestors, subject))
+    Ok((
+        comp.classes.clone(),
+        pseudo_mask,
+        comp.pseudo_element.clone(),
+    ))
 }
 
-enum SelectorTarget {
-    Plain(Vec<String>, u8),
-    Combinator(Vec<(Combinator, Vec<String>)>, Vec<String>, u8),
-}
-
-fn interactive_selector_target(
-    selector: &InteractiveSelector,
+fn classify_selector(
+    sel: &ComplexSelector,
     allow_combinators: bool,
-) -> Option<SelectorTarget> {
-    if selector.interactive_at != selector.ancestors.len() {
-        return None;
+    custom_props_only: bool,
+) -> SelectorCheck {
+    if custom_props_only && is_document_root_selector(sel) {
+        return SelectorCheck::DocumentRoot;
     }
-    let subject = class_only_compound(&selector.subject, true)?.to_vec();
-    let pseudo = pseudo_bit(selector.pseudo);
-    if selector.ancestors.is_empty() {
-        return Some(SelectorTarget::Plain(subject, pseudo));
+    if sel.rest.is_empty() {
+        return match check_compound(&sel.head, true) {
+            Ok((subject, subject_pseudo, pseudo_element)) => {
+                SelectorCheck::Supported(ClassifiedSelector {
+                    ancestors: Vec::new(),
+                    subject,
+                    subject_pseudo,
+                    pseudo_element,
+                })
+            }
+            Err(msg) => SelectorCheck::Unsupported(msg),
+        };
     }
+
     if !allow_combinators {
-        return None;
+        return SelectorCheck::Unsupported(
+            "combinator selectors are only matched inside a template's `<style>`, not `stylesheet!`"
+                .into(),
+        );
     }
-    let mut ancestors = Vec::with_capacity(selector.ancestors.len());
-    for (comb, compound) in &selector.ancestors {
-        if !matches!(comb, Combinator::Child | Combinator::Descendant) {
-            return None;
-        }
-        ancestors.push((*comb, class_only_compound(compound, false)?.to_vec()));
+
+    if sel.has_sibling_combinator() {
+        return SelectorCheck::Unsupported(
+            "sibling combinators (`+`, `~`) are not supported; only child (`>`) and descendant \
+             (` `) combinators are matched"
+                .into(),
+        );
     }
-    Some(SelectorTarget::Combinator(ancestors, subject, pseudo))
+
+    // Build outermost -> closest-to-subject ancestor chain + subject.
+    // `sel.head` is outermost; `sel.rest[i]` is `(combinator_between_i_and_i+1, compound_i+1)`.
+    let mut all_compounds: Vec<&CompoundSelector> = Vec::with_capacity(sel.rest.len() + 1);
+    all_compounds.push(&sel.head);
+    let mut combinators: Vec<Combinator> = Vec::with_capacity(sel.rest.len());
+    for (comb, comp) in &sel.rest {
+        combinators.push(*comb);
+        all_compounds.push(comp);
+    }
+
+    let mut ancestors = Vec::with_capacity(combinators.len());
+    for (idx, comb) in combinators.into_iter().enumerate() {
+        let (classes, pseudo, _) = match check_compound(all_compounds[idx], false) {
+            Ok(v) => v,
+            Err(msg) => return SelectorCheck::Unsupported(msg),
+        };
+        ancestors.push(AncestorStep {
+            combinator: comb,
+            classes,
+            pseudo,
+        });
+    }
+
+    let (subject, subject_pseudo, pseudo_element) =
+        match check_compound(all_compounds.last().expect("non-empty"), true) {
+            Ok(v) => v,
+            Err(msg) => return SelectorCheck::Unsupported(msg),
+        };
+
+    SelectorCheck::Supported(ClassifiedSelector {
+        ancestors,
+        subject,
+        subject_pseudo,
+        pseudo_element,
+    })
 }
 
 fn normalize_class_list(mut classes: Vec<String>) -> Vec<String> {
@@ -255,16 +478,20 @@ fn normalize_class_list(mut classes: Vec<String>) -> Vec<String> {
 fn intern_combinator(
     combinators: &mut Vec<CombinatorTarget>,
     referenced: &mut BTreeSet<String>,
-    ancestors: Vec<(Combinator, Vec<String>)>,
+    ancestors: Vec<AncestorStep>,
     subject: Vec<String>,
 ) -> String {
-    let ancestors: Vec<(Combinator, Vec<String>)> = ancestors
+    let ancestors: Vec<AncestorStep> = ancestors
         .into_iter()
-        .map(|(comb, list)| {
-            for c in &list {
+        .map(|step| {
+            for c in &step.classes {
                 referenced.insert(c.clone());
             }
-            (comb, normalize_class_list(list))
+            AncestorStep {
+                combinator: step.combinator,
+                classes: normalize_class_list(step.classes),
+                pseudo: step.pseudo,
+            }
         })
         .collect();
     for c in &subject {
@@ -286,20 +513,133 @@ fn intern_combinator(
     synth_class
 }
 
-fn rank(important: bool, specificity: Specificity, order: u32) -> Rank {
-    (
-        important,
-        (
-            specificity.ids,
-            specificity.classes_attrs,
-            specificity.types,
-        ),
-        order,
-    )
+// ============================================================================
+// Dual Light/Dark Compilation & Variable Reference Tracking
+// ============================================================================
+
+fn collect_var_refs(values: &[ComponentValue], out: &mut BTreeSet<String>) {
+    for cv in values {
+        match cv {
+            ComponentValue::Function { name, args, .. } => {
+                if name.eq_ignore_ascii_case("var") {
+                    for arg in args {
+                        if let Some(id) = arg.as_ident()
+                            && id.starts_with("--")
+                        {
+                            out.insert(id.to_owned());
+                            break;
+                        }
+                    }
+                }
+                collect_var_refs(args, out);
+            }
+            ComponentValue::SimpleBlock { values, .. } => {
+                collect_var_refs(values, out);
+            }
+            ComponentValue::Token(_) => {}
+        }
+    }
 }
 
-/// The CSS properties an implicit animation can follow, as
-/// `AnimatableProperty` variants.
+fn decls_reference_any_var(decls: &[Declaration], names: &BTreeSet<String>) -> bool {
+    if names.is_empty() {
+        return false;
+    }
+    let mut refs = BTreeSet::new();
+    for d in decls {
+        collect_var_refs(&d.value, &mut refs);
+    }
+    refs.iter().any(|r| names.contains(r))
+}
+
+fn merge_paint_color(light: PaintColor, dark: PaintColor) -> PaintColor {
+    if light == dark {
+        light
+    } else {
+        PaintColor::light_dark(light, dark)
+    }
+}
+
+fn merge_dual_style_ops(light_ops: Vec<StyleOp>, dark_ops: Vec<StyleOp>) -> Vec<StyleOp> {
+    if light_ops == dark_ops || light_ops.len() != dark_ops.len() {
+        return light_ops;
+    }
+    light_ops
+        .into_iter()
+        .zip(dark_ops)
+        .map(|(l, d)| match (l, d) {
+            (StyleOp::Color(Some(lc)), StyleOp::Color(Some(dc))) => {
+                StyleOp::Color(Some(merge_paint_color(lc, dc)))
+            }
+            (StyleOp::Background(Some(lc)), StyleOp::Background(Some(dc))) => {
+                StyleOp::Background(Some(merge_paint_color(lc, dc)))
+            }
+            (StyleOp::BorderColor(Some(lc)), StyleOp::BorderColor(Some(dc))) => {
+                StyleOp::BorderColor(Some(merge_paint_color(lc, dc)))
+            }
+            (StyleOp::BorderTopColor(Some(lc)), StyleOp::BorderTopColor(Some(dc))) => {
+                StyleOp::BorderTopColor(Some(merge_paint_color(lc, dc)))
+            }
+            (StyleOp::BorderRightColor(Some(lc)), StyleOp::BorderRightColor(Some(dc))) => {
+                StyleOp::BorderRightColor(Some(merge_paint_color(lc, dc)))
+            }
+            (StyleOp::BorderBottomColor(Some(lc)), StyleOp::BorderBottomColor(Some(dc))) => {
+                StyleOp::BorderBottomColor(Some(merge_paint_color(lc, dc)))
+            }
+            (StyleOp::BorderLeftColor(Some(lc)), StyleOp::BorderLeftColor(Some(dc))) => {
+                StyleOp::BorderLeftColor(Some(merge_paint_color(lc, dc)))
+            }
+            (StyleOp::OutlineColor(Some(lc)), StyleOp::OutlineColor(Some(dc))) => {
+                StyleOp::OutlineColor(Some(merge_paint_color(lc, dc)))
+            }
+            (StyleOp::SelectionBackground(Some(lc)), StyleOp::SelectionBackground(Some(dc))) => {
+                StyleOp::SelectionBackground(Some(merge_paint_color(lc, dc)))
+            }
+            (StyleOp::SelectionColor(Some(lc)), StyleOp::SelectionColor(Some(dc))) => {
+                StyleOp::SelectionColor(Some(merge_paint_color(lc, dc)))
+            }
+            (other_l, _) => other_l,
+        })
+        .collect()
+}
+
+fn compile_decls_dual(
+    decls: &[Declaration],
+    vars_light: &VarScope,
+    vars_dark: &VarScope,
+    pseudo: Option<&PseudoElement>,
+    diags: &mut Vec<CssDiag>,
+) -> (
+    Vec<StyleOp>,
+    Vec<CompiledTransition>,
+    Vec<CompiledAnimation>,
+) {
+    let ctx = CompileContext::default();
+    let light = compile_declarations(decls, vars_light, pseudo, &ctx, diags);
+    // Compile against dark scope as well to support `:root[data-theme="dark"]`
+    // custom properties lowering into `PaintColor::light_dark(...)`.
+    let mut dark_diags = Vec::new();
+    let dark = compile_declarations(decls, vars_dark, pseudo, &ctx, &mut dark_diags);
+    let ops = merge_dual_style_ops(light.ops, dark.ops);
+    (ops, light.transitions, light.animations)
+}
+
+fn compile_inline_dual(
+    css: &str,
+    vars_light: &VarScope,
+    vars_dark: &VarScope,
+) -> (Vec<StyleOp>, Vec<CompiledTransition>, Vec<CssDiag>) {
+    let ctx = CompileContext::default();
+    let light = compile_inline_css(css, vars_light, &ctx);
+    let dark = compile_inline_css(css, vars_dark, &ctx);
+    let ops = merge_dual_style_ops(light.ops, dark.ops);
+    (ops, light.transitions, light.diags)
+}
+
+// ============================================================================
+// Motion & Keyframes
+// ============================================================================
+
 fn animatable(property: &str) -> &'static [&'static str] {
     match property.trim().to_ascii_lowercase().as_str() {
         "all" => &[
@@ -321,219 +661,136 @@ fn animatable(property: &str) -> &'static [&'static str] {
     }
 }
 
-fn transition_items(
-    motion: &MotionDeclarations,
-    warnings: &mut Vec<String>,
-) -> Vec<TransitionItem> {
-    let shorthand = motion
-        .transition
-        .as_deref()
-        .and_then(parse_transition_shorthand);
-    let pick = |longhand: &Option<String>, short: Option<&String>| {
-        longhand
-            .clone()
-            .or_else(|| short.cloned())
-            .unwrap_or_default()
-    };
-    let mut properties = pick(
-        &motion.transition_property,
-        shorthand.as_ref().map(|s| &s.property),
-    );
-    let durations_raw = pick(
-        &motion.transition_duration,
-        shorthand.as_ref().map(|s| &s.duration),
-    );
-    let delays_raw = pick(
-        &motion.transition_delay,
-        shorthand.as_ref().map(|s| &s.delay),
-    );
-    if properties.trim().is_empty()
-        && (motion.transition_duration.is_some() || motion.transition_delay.is_some())
-    {
-        properties = "all".into();
+fn easing_from_curve(curve: MotionCurve) -> Easing {
+    match curve {
+        MotionCurve::Easing(e) => e,
+        _ => Easing::Linear,
     }
-    let durations = split_css_comma_list(&durations_raw);
-    let delays = split_css_comma_list(&delays_raw);
-    let timings = split_css_comma_list(&pick(
-        &motion.transition_timing_function,
-        shorthand.as_ref().map(|s| &s.timing_function),
-    ));
+}
+
+fn transition_items_from_compiled(
+    compiled: &[CompiledTransition],
+    span: Range<usize>,
+    warnings: &mut Vec<StyleWarning>,
+) -> Vec<TransitionItem> {
     let mut items = Vec::new();
-    for (index, property) in split_css_comma_list(&properties).iter().enumerate() {
-        if property.trim().eq_ignore_ascii_case("none") {
-            continue;
-        }
-        let duration_ms = if durations.is_empty() {
-            0.0
-        } else {
-            parse_css_time_token(css_list_at(&durations, index)).unwrap_or(0.0)
-        };
-        let delay_ms = if delays.is_empty() {
-            0.0
-        } else {
-            parse_css_time_token(css_list_at(&delays, index)).unwrap_or(0.0)
-        };
-        if duration_ms <= 0.0 && delay_ms <= 0.0 {
-            continue;
-        }
-        let easing = if timings.is_empty() {
-            easing_from_css_keyword("ease")
-        } else {
-            easing_from_css_keyword(
-                &first_timing_token(css_list_at(&timings, index)).to_ascii_lowercase(),
-            )
-        };
-        let variants = animatable(property);
+    for tr in compiled {
+        let variants = animatable(&tr.property);
         if variants.is_empty() {
-            warnings.push(format!(
-                "`transition: {property}` is not animated: only opacity, transform, filter, \
-                 width, height, background and color are"
+            warnings.push(StyleWarning::sheet_warning(
+                span.clone(),
+                format!(
+                    "`transition: {}` is not animated: only opacity, transform, filter, \
+                     width, height, background and color are",
+                    tr.property
+                ),
             ));
+            continue;
         }
-        items.extend(variants.iter().map(|variant| TransitionItem {
-            property: variant,
-            duration_ms,
-            delay_ms,
-            easing,
-        }));
+        let easing = easing_from_curve(tr.curve);
+        for &variant in variants {
+            items.push(TransitionItem {
+                property: variant,
+                duration_ms: tr.duration_ms,
+                delay_ms: tr.delay_ms,
+                easing,
+            });
+        }
     }
     items
 }
 
-fn sheet_vars_dual(sheet: &ParsedStylesheet) -> (CssVarScope, CssVarScope) {
-    (
-        sheet.custom_properties_for("light"),
-        sheet.custom_properties_for("dark"),
-    )
-}
+type CompiledKeyframesMap = BTreeMap<String, BTreeMap<&'static str, Vec<CompiledKfStop>>>;
 
-fn compile_dual_written(
-    entries: &[&DeclarationEntry],
-    vars_light: &CssVarScope,
-    vars_dark: &CssVarScope,
-) -> WrittenLayout {
-    WrittenLayout::compile_dual(entries, vars_light, vars_dark)
-}
-
-fn patch_dual(
-    entries: &[&DeclarationEntry],
-    vars_light: &CssVarScope,
-    vars_dark: &CssVarScope,
-) -> String {
-    compile_dual_written(entries, vars_light, vars_dark).patch_rust_stmts("__nana_patch")
-}
-
-fn extract_keyframe_props(written: &WrittenLayout) -> Vec<(&'static str, CompiledKfValue)> {
-    let mut out = Vec::new();
-    let mut saw_bg = false;
-    let mut saw_color = false;
-    let layout = &written.layout;
-    for path in &written.written {
-        match path.as_str() {
-            "opacity" => {
-                if let Some(v) = layout.opacity {
-                    out.push(("Opacity", CompiledKfValue::Scalar(v)));
-                }
+fn extract_keyframe_props(ops: &[StyleOp]) -> Vec<(&'static str, CompiledKfValue)> {
+    let mut values: BTreeMap<&'static str, CompiledKfValue> = BTreeMap::new();
+    let mut has_3d_or_unsupported = false;
+    for op in ops {
+        match op {
+            StyleOp::Transform3d(Some(_)) | StyleOp::UnsupportedTransform(Some(_)) => {
+                has_3d_or_unsupported = true;
+                values.remove("Transform");
             }
-            "transforms.transform" => {
-                if layout.transforms.transform_3d.is_none()
-                    && layout.transforms.unsupported_transform.is_none()
-                {
-                    let t = layout.transforms.transform.unwrap_or_default();
-                    out.push(("Transform", CompiledKfValue::Transform(t)));
-                }
+            StyleOp::Opacity(Some(v)) => {
+                values.insert("Opacity", CompiledKfValue::Scalar(*v));
             }
-            "paint_colors.background" | "background" if !saw_bg => {
-                saw_bg = true;
-                let pc = layout
-                    .paint_colors
-                    .background
-                    .unwrap_or(PaintColor::srgb([0.0, 0.0, 0.0, 0.0]));
-                out.push(("Background", CompiledKfValue::Color(pc)));
+            StyleOp::Transform(t) if !has_3d_or_unsupported => {
+                values.insert(
+                    "Transform",
+                    CompiledKfValue::Transform(t.unwrap_or_default()),
+                );
             }
-            "paint_colors.color" | "color" if !saw_color => {
-                if let Some(pc) = layout.paint_colors.color {
-                    saw_color = true;
-                    out.push(("Color", CompiledKfValue::Color(pc)));
-                }
+            StyleOp::Background(bg) => {
+                values.insert(
+                    "Background",
+                    CompiledKfValue::Color(bg.unwrap_or(PaintColor::srgb([0.0, 0.0, 0.0, 0.0]))),
+                );
             }
-            // `filter: none` is the identity, so it interpolates with a filter.
-            "paint.filter" => {
-                let filter = layout.paint.filter.unwrap_or_default();
-                out.push(("Filter", CompiledKfValue::Filter(filter)));
+            StyleOp::Color(Some(c)) => {
+                values.insert("Color", CompiledKfValue::Color(*c));
             }
-            "width" => {
-                if let Some(LengthSpec::Px(px)) = layout.width {
-                    out.push(("Width", CompiledKfValue::Scalar(px)));
-                }
+            StyleOp::Filter(f) => {
+                values.insert(
+                    "Filter",
+                    CompiledKfValue::Filter(f.clone().unwrap_or_default()),
+                );
             }
-            "height" => {
-                if let Some(LengthSpec::Px(px)) = layout.height {
-                    out.push(("Height", CompiledKfValue::Scalar(px)));
-                }
+            StyleOp::Width(Some(LengthSpec::Px(px))) => {
+                values.insert("Width", CompiledKfValue::Scalar(*px));
             }
-            "padding" => {
-                if let Some(LengthSpec::Px(px)) = layout.padding {
-                    out.push(("Padding", CompiledKfValue::Scalar(px)));
-                }
+            StyleOp::Height(Some(LengthSpec::Px(px))) => {
+                values.insert("Height", CompiledKfValue::Scalar(*px));
             }
-            "margin" => {
-                if let Some(LengthSpec::Px(px)) = layout.margin {
-                    out.push(("Margin", CompiledKfValue::Scalar(px)));
-                }
+            StyleOp::Padding(Some(LengthSpec::Px(px))) => {
+                values.insert("Padding", CompiledKfValue::Scalar(*px));
+            }
+            StyleOp::Margin(Some(LengthSpec::Px(px))) => {
+                values.insert("Margin", CompiledKfValue::Scalar(*px));
             }
             _ => {}
         }
     }
-    out
+    values.into_iter().collect()
 }
-
-type CompiledKeyframesMap = BTreeMap<String, BTreeMap<&'static str, Vec<CompiledKfStop>>>;
 
 fn compile_keyframes_map(
     keyframes: &BTreeMap<String, KeyframesRule>,
-    vars_light: &CssVarScope,
-    vars_dark: &CssVarScope,
+    vars_light: &VarScope,
+    vars_dark: &VarScope,
+    diags: &mut Vec<CssDiag>,
 ) -> CompiledKeyframesMap {
     let mut compiled = CompiledKeyframesMap::new();
     for (name, rule) in keyframes {
-        let mut by_offset: BTreeMap<u32, (f32, Vec<&DeclarationEntry>)> = BTreeMap::new();
+        let mut by_offset: BTreeMap<u32, (f32, Vec<&Declaration>)> = BTreeMap::new();
         for block in &rule.blocks {
-            for sel in &block.selectors {
-                let offset = match sel {
-                    KeyframeSelector::From => 0.0,
-                    KeyframeSelector::To => 1.0,
-                    KeyframeSelector::Percent(pct) => (pct / 100.0).clamp(0.0, 1.0),
-                };
+            for stop in &block.stops {
+                let offset = stop.as_progress();
                 let key = (offset * 10_000.0).round() as u32;
                 let entry = by_offset.entry(key).or_insert_with(|| (offset, Vec::new()));
-                entry.1.extend(block.declaration_entries.iter());
+                entry.1.extend(block.declarations.iter());
             }
         }
         let mut tracks: BTreeMap<&'static str, Vec<CompiledKfStop>> = BTreeMap::new();
         for (offset, entries) in by_offset.into_values() {
             let mut stop_easing = None;
             let mut decls = Vec::new();
-            for entry in entries {
-                if entry.property.starts_with("--") {
+            for decl in entries {
+                if decl.name.starts_with("--") {
                     continue;
                 }
-                if entry
-                    .property
-                    .eq_ignore_ascii_case("animation-timing-function")
-                {
-                    if let MotionCurve::Easing(easing) = motion_curve_from_css_token(&entry.value) {
-                        stop_easing = Some(easing);
+                if decl.name.eq_ignore_ascii_case("animation-timing-function") {
+                    if let Some(MotionCurve::Easing(e)) = parse_timing_function(&decl.value) {
+                        stop_easing = Some(e);
                     }
                     continue;
                 }
-                decls.push(entry);
+                decls.push(decl.clone());
             }
             if decls.is_empty() {
                 continue;
             }
-            let written = compile_dual_written(&decls, vars_light, vars_dark);
-            for (property, value) in extract_keyframe_props(&written) {
+            let (ops, _, _) = compile_decls_dual(&decls, vars_light, vars_dark, None, diags);
+            for (property, value) in extract_keyframe_props(&ops) {
                 tracks.entry(property).or_default().push(CompiledKfStop {
                     offset,
                     value,
@@ -546,63 +803,17 @@ fn compile_keyframes_map(
     compiled
 }
 
-fn animation_items(
-    motion: &MotionDeclarations,
+fn animation_items_from_compiled(
+    compiled: &[CompiledAnimation],
     compiled_kf: &CompiledKeyframesMap,
-    warnings: &mut Vec<String>,
+    span: Range<usize>,
+    warnings: &mut Vec<StyleWarning>,
 ) -> Vec<CompiledAnimItem> {
-    let parsed = parse_animation_declarations(motion);
-    if !parsed.is_empty() {
-        let mut out = Vec::new();
-        for ParsedAnimation {
-            name,
-            duration_ms,
-            delay_ms,
-            curve,
-            iterations,
-            direction,
-            fill_mode,
-            play_state,
-        } in parsed
-        {
-            let Some(tracks) = compiled_kf.get(&name) else {
-                warnings.push(format!("`animation`: unknown `@keyframes` `{name}`"));
-                continue;
-            };
-            if tracks.is_empty() {
-                warnings.push(format!(
-                    "`animation: {name}`: `@keyframes {name}` sets no animatable property"
-                ));
-                continue;
-            }
-            for (property, stops) in tracks {
-                out.push(CompiledAnimItem {
-                    name: name.clone(),
-                    property,
-                    stops: stops.clone(),
-                    duration_ms,
-                    delay_ms,
-                    curve,
-                    iterations,
-                    direction,
-                    fill_mode,
-                    play_state,
-                });
-            }
-        }
-        return out;
-    }
-    if motion.animation.is_none()
-        && motion.animation_name.is_none()
-        && let Some(play_raw) = motion.animation_play_state.as_deref()
-    {
-        let play_state = match play_raw.trim().to_ascii_lowercase().as_str() {
-            "paused" => Some(AnimationPlayState::Paused),
-            "running" => Some(AnimationPlayState::Running),
-            _ => None,
-        };
-        if let Some(play_state) = play_state {
-            return vec![CompiledAnimItem {
+    let mut out = Vec::new();
+    for anim in compiled {
+        if anim.name.is_empty() {
+            // Standalone `animation-play-state: paused|running`.
+            out.push(CompiledAnimItem {
                 name: String::new(),
                 property: "Opacity",
                 stops: Vec::new(),
@@ -612,1071 +823,627 @@ fn animation_items(
                 iterations: AnimationIteration::ONCE,
                 direction: AnimationDirection::Normal,
                 fill_mode: AnimationFillMode::None,
-                play_state,
-            }];
+                play_state: anim.play_state,
+            });
+            continue;
         }
-    }
-    let is_explicit_none = motion
-        .animation
-        .as_deref()
-        .is_some_and(|v| v.trim().eq_ignore_ascii_case("none"))
-        || motion
-            .animation_name
-            .as_deref()
-            .is_some_and(|v| v.trim().eq_ignore_ascii_case("none"));
-    if is_explicit_none {
-        return vec![CompiledAnimItem {
-            name: "none".into(),
-            property: "Opacity",
-            stops: Vec::new(),
-            duration_ms: 0.0,
-            delay_ms: 0.0,
-            curve: MotionCurve::Easing(Easing::Linear),
-            iterations: AnimationIteration::ONCE,
-            direction: AnimationDirection::Normal,
-            fill_mode: AnimationFillMode::None,
-            play_state: AnimationPlayState::Running,
-        }];
-    }
-    Vec::new()
-}
-
-/// The class rules among `rules` as patches, one for a rule's normal and
-/// one for its `!important` declarations, guarded by `query` when they are
-/// an `@container` block's.
-fn compile_rules(
-    rules: &[StyleRule],
-    vars_light: &CssVarScope,
-    vars_dark: &CssVarScope,
-    query: Option<usize>,
-    allow_combinators: bool,
-    combinators: &mut Vec<CombinatorTarget>,
-    referenced: &mut BTreeSet<String>,
-    out: &mut Vec<Rule>,
-) {
-    for rule in rules {
-        let (normal, important): (Vec<&DeclarationEntry>, Vec<&DeclarationEntry>) = rule
-            .declaration_entries
-            .iter()
-            .filter(|entry| !entry.property.starts_with("--"))
-            .partition(|entry| !entry.important);
-        for (important, entries) in [(false, normal), (true, important)] {
-            if entries.is_empty() {
-                continue;
-            }
-            let written = compile_dual_written(&entries, vars_light, vars_dark);
-            let patch = written.patch_rust_stmts("__nana_patch");
-            if patch.is_empty() {
-                continue;
-            }
-            let hot_patch = HotStylePatch::new(written.layout, written.written);
-            for selector in &rule.selectors {
-                let classes = if let Some(classes) = class_selector(selector) {
-                    classes.to_vec()
-                } else if allow_combinators
-                    && let Some((ancestors, subject)) = static_combinator_selector(selector)
-                {
-                    vec![intern_combinator(
-                        combinators,
-                        referenced,
-                        ancestors,
-                        subject,
-                    )]
-                } else {
-                    continue;
-                };
-                out.push(Rule {
-                    classes,
-                    pseudo: 0,
-                    rank: rank(important, selector.specificity, rule.source_order),
-                    patch: patch.clone(),
-                    hot_patch: hot_patch.clone(),
-                    query,
-                });
-            }
+        if anim.name.eq_ignore_ascii_case("none") {
+            out.push(CompiledAnimItem {
+                name: "none".into(),
+                property: "Opacity",
+                stops: Vec::new(),
+                duration_ms: 0.0,
+                delay_ms: 0.0,
+                curve: MotionCurve::Easing(Easing::Linear),
+                iterations: AnimationIteration::ONCE,
+                direction: AnimationDirection::Normal,
+                fill_mode: AnimationFillMode::None,
+                play_state: AnimationPlayState::Running,
+            });
+            continue;
         }
-    }
-}
-
-fn compile_interactive_rules(
-    rules: &[InteractiveStyleRule],
-    vars_light: &CssVarScope,
-    vars_dark: &CssVarScope,
-    query: Option<usize>,
-    allow_combinators: bool,
-    combinators: &mut Vec<CombinatorTarget>,
-    referenced: &mut BTreeSet<String>,
-    out: &mut Vec<Rule>,
-) {
-    for rule in rules {
-        let Some(target) = interactive_selector_target(&rule.selector, allow_combinators) else {
+        let Some(tracks) = compiled_kf.get(&anim.name) else {
+            warnings.push(StyleWarning::sheet_warning(
+                span.clone(),
+                format!("`animation`: unknown `@keyframes` `{}`", anim.name),
+            ));
             continue;
         };
-        let (normal, important): (Vec<&DeclarationEntry>, Vec<&DeclarationEntry>) = rule
-            .declaration_entries
-            .iter()
-            .filter(|entry| !entry.property.starts_with("--"))
-            .partition(|entry| !entry.important);
-        for (important, entries) in [(false, normal), (true, important)] {
-            if entries.is_empty() {
-                continue;
-            }
-            let written = compile_dual_written(&entries, vars_light, vars_dark);
-            let patch = written.patch_rust_stmts("__nana_patch");
-            if patch.is_empty() {
-                continue;
-            }
-            let hot_patch = HotStylePatch::new(written.layout, written.written);
-            let (classes, pseudo) = match &target {
-                SelectorTarget::Plain(classes, pseudo) => (classes.clone(), *pseudo),
-                SelectorTarget::Combinator(ancestors, subject, pseudo) => (
-                    vec![intern_combinator(
-                        combinators,
-                        referenced,
-                        ancestors.clone(),
-                        subject.clone(),
-                    )],
-                    *pseudo,
+        if tracks.is_empty() {
+            warnings.push(StyleWarning::sheet_warning(
+                span.clone(),
+                format!(
+                    "`animation: {}`: `@keyframes {}` sets no animatable property",
+                    anim.name, anim.name
                 ),
-            };
-            out.push(Rule {
-                classes,
-                pseudo,
-                rank: rank(important, rule.selector.specificity, rule.source_order),
-                patch,
-                hot_patch,
-                query,
+            ));
+            continue;
+        }
+        for (&property, stops) in tracks {
+            out.push(CompiledAnimItem {
+                name: anim.name.clone(),
+                property,
+                stops: stops.clone(),
+                duration_ms: anim.duration_ms,
+                delay_ms: anim.delay_ms,
+                curve: anim.curve,
+                iterations: anim.iterations,
+                direction: anim.direction,
+                fill_mode: anim.fill_mode,
+                play_state: anim.play_state,
             });
+        }
+    }
+    out
+}
+
+// ============================================================================
+// Media Query Intersection (for nested `@media`)
+// ============================================================================
+
+fn intersect_media_lists(lists: &[MediaQueryList]) -> Option<MediaQueryList> {
+    if lists.is_empty() {
+        return None;
+    }
+    let mut acc = lists[0].clone();
+    for next in &lists[1..] {
+        let mut combined = Vec::new();
+        for a in &acc.queries {
+            for b in &next.queries {
+                if let Some(q) = intersect_media_queries(a, b) {
+                    combined.push(q);
+                }
+            }
+        }
+        acc = MediaQueryList { queries: combined };
+    }
+    Some(acc)
+}
+
+fn query_as_condition(q: &MediaQuery) -> Option<(MediaType, Option<MediaCondition>)> {
+    if !q.negated {
+        return Some((q.media_type, q.condition.clone()));
+    }
+    // In NanaUI's screen environment, `not all and (C)` / `not screen and (C)`
+    // negates the condition; `not print` matches screen unconditionally.
+    match q.media_type {
+        MediaType::All | MediaType::Screen => match &q.condition {
+            Some(c) => Some((MediaType::Screen, Some(MediaCondition::negate(c.clone())))),
+            None => None,
+        },
+        MediaType::Print | MediaType::Other => Some((MediaType::Screen, None)),
+    }
+}
+
+fn intersect_media_queries(a: &MediaQuery, b: &MediaQuery) -> Option<MediaQuery> {
+    let (ta, ca) = query_as_condition(a)?;
+    let (tb, cb) = query_as_condition(b)?;
+    let media_type = match (ta, tb) {
+        (MediaType::All, other) | (other, MediaType::All) => other,
+        (x, y) if x == y => x,
+        _ => return None,
+    };
+    let condition = match (ca, cb) {
+        (None, c) | (c, None) => c,
+        (Some(c1), Some(c2)) => Some(MediaCondition::and(vec![c1, c2])),
+    };
+    Some(MediaQuery::with_type(false, media_type, condition))
+}
+
+// ============================================================================
+// StyleOp -> Patch Rust Statements (with ScrollbarSkin merging)
+// ============================================================================
+
+fn emit_f32_lit(v: f32) -> String {
+    if v.is_nan() {
+        "f32::NAN".into()
+    } else if v.is_infinite() {
+        if v.is_sign_positive() {
+            "f32::INFINITY".into()
+        } else {
+            "f32::NEG_INFINITY".into()
+        }
+    } else {
+        format!("{v:?}_f32")
+    }
+}
+
+fn emit_rgba_lit(c: [f32; 4]) -> String {
+    format!(
+        "[{}, {}, {}, {}]",
+        emit_f32_lit(c[0]),
+        emit_f32_lit(c[1]),
+        emit_f32_lit(c[2]),
+        emit_f32_lit(c[3]),
+    )
+}
+
+fn emit_scrollbar_merge_rust(skin: &ScrollbarSkin, patch_root: &str, out: &mut String) {
+    out.push_str("{ let mut __nana_sb = __nana_layout.paint.scrollbar.unwrap_or_default();");
+    if let Some(v) = skin.thickness {
+        out.push_str(&format!(
+            " __nana_sb.thickness = ::core::option::Option::Some({});",
+            emit_f32_lit(v)
+        ));
+    }
+    if let Some(v) = skin.thumb_thickness {
+        out.push_str(&format!(
+            " __nana_sb.thumb_thickness = ::core::option::Option::Some({});",
+            emit_f32_lit(v)
+        ));
+    }
+    if let Some(v) = skin.thumb_active_thickness {
+        out.push_str(&format!(
+            " __nana_sb.thumb_active_thickness = ::core::option::Option::Some({});",
+            emit_f32_lit(v)
+        ));
+    }
+    if let Some(c) = skin.track_color {
+        out.push_str(&format!(
+            " __nana_sb.track_color = ::core::option::Option::Some({});",
+            emit_rgba_lit(c)
+        ));
+    }
+    if let Some(c) = skin.track_hot_color {
+        out.push_str(&format!(
+            " __nana_sb.track_hot_color = ::core::option::Option::Some({});",
+            emit_rgba_lit(c)
+        ));
+    }
+    if let Some(c) = skin.thumb_color {
+        out.push_str(&format!(
+            " __nana_sb.thumb_color = ::core::option::Option::Some({});",
+            emit_rgba_lit(c)
+        ));
+    }
+    if let Some(c) = skin.thumb_hot_color {
+        out.push_str(&format!(
+            " __nana_sb.thumb_hot_color = ::core::option::Option::Some({});",
+            emit_rgba_lit(c)
+        ));
+    }
+    if let Some(c) = skin.track_border_color {
+        out.push_str(&format!(
+            " __nana_sb.track_border_color = ::core::option::Option::Some({});",
+            emit_rgba_lit(c)
+        ));
+    }
+    if let Some(c) = skin.thumb_border_color {
+        out.push_str(&format!(
+            " __nana_sb.thumb_border_color = ::core::option::Option::Some({});",
+            emit_rgba_lit(c)
+        ));
+    }
+    if skin.over_media {
+        out.push_str(" __nana_sb.over_media = true;");
+    }
+    if let Some(v) = skin.room {
+        out.push_str(&format!(
+            " __nana_sb.room = ::core::option::Option::Some({});",
+            emit_f32_lit(v)
+        ));
+    }
+    out.push_str(&format!(
+        " {patch_root}::set::paint::scrollbar(__nana_layout, ::core::option::Option::Some(__nana_sb)); }}"
+    ));
+}
+
+fn emit_patch_stmts(ops: &[StyleOp], patch_root: &str, merge_scrollbar: bool) -> String {
+    let mut out = String::new();
+    for op in ops {
+        if merge_scrollbar && let StyleOp::Scrollbar(Some(skin)) = op {
+            emit_scrollbar_merge_rust(skin, patch_root, &mut out);
+        } else {
+            emit_style_op_rust(op, patch_root, &mut out);
+        }
+    }
+    out
+}
+
+// ============================================================================
+// Stylesheet Parsing & Rule Lowering
+// ============================================================================
+
+fn collect_inline_scoped_var_names(nodes: &[Node], out: &mut BTreeSet<String>) {
+    for node in nodes {
+        let Node::Element(element) = node else {
+            continue;
+        };
+        if element.module.is_empty() && element.name != "Span" && crate::is_builtin(&element.tag())
+        {
+            for attr in &element.attrs {
+                if let (
+                    AttrName::Plain(name),
+                    AttrValue::Lit(Expr::Lit(syn::ExprLit {
+                        lit: Lit::Str(text),
+                        ..
+                    })),
+                ) = (&attr.name, &attr.value)
+                    && name == "style"
+                {
+                    let compiled = compile_inline_css(
+                        &text.value(),
+                        &VarScope::new(),
+                        &CompileContext::default(),
+                    );
+                    for cp in compiled.custom_props {
+                        out.insert(cp.name);
+                    }
+                }
+            }
+        }
+        for attr in &element.attrs {
+            if let AttrValue::View(slot) = &attr.value {
+                collect_inline_scoped_var_names(slot, out);
+            }
+        }
+        collect_inline_scoped_var_names(&element.children, out);
+    }
+}
+
+fn expand_transitive_scoped_vars(
+    root_light: &VarScope,
+    root_dark: &VarScope,
+    scoped: &mut BTreeSet<String>,
+) {
+    if scoped.is_empty() {
+        return;
+    }
+    loop {
+        let before = scoped.len();
+        for scope in [root_light, root_dark] {
+            for (name, val) in scope.local_entries() {
+                if scoped.contains(name) {
+                    continue;
+                }
+                let mut refs = BTreeSet::new();
+                collect_var_refs(val, &mut refs);
+                if refs.iter().any(|r| scoped.contains(r)) {
+                    scoped.insert(name.to_owned());
+                }
+            }
+        }
+        if scoped.len() == before {
+            break;
+        }
+    }
+}
+
+fn push_diags(raw: Vec<CssDiag>, warnings: &mut Vec<StyleWarning>, errors: &mut Vec<StyleWarning>) {
+    for diag in raw {
+        let item = StyleWarning::from_css_diag(diag);
+        match item.severity {
+            StyleSeverity::Error => errors.push(item),
+            StyleSeverity::Warning => warnings.push(item),
+        }
+    }
+}
+
+fn push_template_diags(
+    span: Span,
+    raw: Vec<CssDiag>,
+    warnings: &mut Vec<StyleWarning>,
+    errors: &mut Vec<StyleWarning>,
+) {
+    for diag in raw {
+        let item = StyleWarning::from_template_css_diag(span, diag);
+        match item.severity {
+            StyleSeverity::Error => errors.push(item),
+            StyleSeverity::Warning => warnings.push(item),
         }
     }
 }
 
 #[cfg(test)]
 pub(crate) fn parse(css: &str) -> Sheet {
-    parse_sheet(css, true)
+    parse_sheet(css, true, BTreeSet::new())
 }
 
-pub(crate) fn parse_sheet(css: &str, allow_combinators: bool) -> Sheet {
-    let (sheet, _) = parse_stylesheet_full(css, 0);
-    let (vars_light, vars_dark) = sheet_vars_dual(&sheet);
-    let compiled_kf = compile_keyframes_map(&sheet.keyframes, &vars_light, &vars_dark);
-    let mut rules = Vec::new();
-    let mut combinators = Vec::new();
-    let mut referenced_classes = BTreeSet::new();
-    compile_rules(
-        &sheet.static_rules,
-        &vars_light,
-        &vars_dark,
-        None,
-        allow_combinators,
-        &mut combinators,
-        &mut referenced_classes,
-        &mut rules,
-    );
-    compile_interactive_rules(
-        &sheet.interactive_rules,
-        &vars_light,
-        &vars_dark,
-        None,
-        allow_combinators,
-        &mut combinators,
-        &mut referenced_classes,
-        &mut rules,
-    );
-    // `@container` blocks: their rules share the sheet's source order, so
-    // they rank among the others where they are written.
-    let mut queries: Vec<ContainerQuery> = Vec::new();
-    for block in &sheet.container_rules {
-        // An unsupported query holds nowhere; `check` says why.
-        let Ok(query) = &block.query else {
-            continue;
-        };
-        let index = match queries.iter().position(|known| known == query) {
-            Some(index) => index,
-            None => {
-                queries.push(query.clone());
-                queries.len() - 1
-            }
-        };
-        compile_rules(
-            &block.sheet.static_rules,
-            &vars_light,
-            &vars_dark,
-            Some(index),
-            allow_combinators,
-            &mut combinators,
-            &mut referenced_classes,
-            &mut rules,
-        );
-        compile_interactive_rules(
-            &block.sheet.interactive_rules,
-            &vars_light,
-            &vars_dark,
-            Some(index),
-            allow_combinators,
-            &mut combinators,
-            &mut referenced_classes,
-            &mut rules,
-        );
-    }
-    let mut transitions = Vec::new();
-    let mut animations = Vec::new();
-    for rule in &sheet.motion_rules {
-        let trans_items = transition_items(&rule.motion, &mut Vec::new());
-        let anim_items = animation_items(&rule.motion, &compiled_kf, &mut Vec::new());
-        if trans_items.is_empty() && anim_items.is_empty() {
-            continue;
-        }
-        for selector in &rule.selectors {
-            let classes = if let Some(classes) = class_selector(selector) {
-                classes.to_vec()
-            } else if allow_combinators
-                && let Some((ancestors, subject)) = static_combinator_selector(selector)
-            {
-                vec![intern_combinator(
-                    &mut combinators,
-                    &mut referenced_classes,
-                    ancestors,
-                    subject,
-                )]
-            } else {
+pub(crate) fn parse_sheet(
+    css: &str,
+    allow_combinators: bool,
+    extra_scoped_vars: BTreeSet<String>,
+) -> Sheet {
+    let parsed: ParsedSheet = parse_stylesheet(css);
+    let mut warnings = Vec::new();
+    let mut errors = Vec::new();
+    push_diags(parsed.diags.clone(), &mut warnings, &mut errors);
+
+    let root_light = parsed.root_var_scope("light");
+    let root_dark = parsed.root_var_scope("dark");
+
+    let mut kf_diags = Vec::new();
+    let compiled_kf =
+        compile_keyframes_map(&parsed.keyframes, &root_light, &root_dark, &mut kf_diags);
+    push_diags(kf_diags, &mut warnings, &mut errors);
+
+    // Collect element-scoped custom property names declared on non-root rules
+    // (plus any defined in inline `style="..."` attributes).
+    let mut scoped_var_names = extra_scoped_vars;
+    let mut scoped_var_rules: Vec<ScopedVarRule> = Vec::new();
+    if allow_combinators {
+        for rule in &parsed.rules {
+            if rule.custom_props.is_empty() || !rule.media.is_empty() || rule.container.is_some() {
                 continue;
-            };
-            let rule_rank = rank(false, selector.specificity, rule.source_order);
-            if !trans_items.is_empty() {
-                transitions.push(TransitionRule {
-                    classes: classes.clone(),
-                    pseudo: 0,
-                    rank: rule_rank,
-                    items: trans_items.clone(),
-                });
             }
-            if !anim_items.is_empty() {
-                animations.push(AnimationRule {
-                    classes,
-                    pseudo: 0,
-                    rank: rule_rank,
-                    items: anim_items.clone(),
-                });
+            for sel in &rule.selectors.0 {
+                if is_document_root_selector(sel) {
+                    continue;
+                }
+                if let SelectorCheck::Supported(classified) =
+                    classify_selector(sel, allow_combinators, true)
+                    && classified.subject_pseudo == 0
+                    && classified.pseudo_element.is_none()
+                    && classified.ancestors.iter().all(|a| a.pseudo == 0)
+                {
+                    for cp in &rule.custom_props {
+                        scoped_var_names.insert(cp.name.clone());
+                    }
+                    scoped_var_rules.push(ScopedVarRule {
+                        ancestors: classified.ancestors,
+                        subject: classified.subject,
+                        layer: rule.layer,
+                        specificity: sel.specificity(),
+                        source_order: rule.source_order,
+                        custom_props: rule.custom_props.clone(),
+                    });
+                }
+            }
+        }
+        expand_transitive_scoped_vars(&root_light, &root_dark, &mut scoped_var_names);
+    }
+
+    let mut rules: Vec<Rule> = Vec::new();
+    let mut transitions: Vec<TransitionRule> = Vec::new();
+    let mut animations: Vec<AnimationRule> = Vec::new();
+    let mut combinators: Vec<CombinatorTarget> = Vec::new();
+    let mut deferred_var_rules: Vec<DeferredVarRule> = Vec::new();
+    let mut referenced_classes: BTreeSet<String> = BTreeSet::new();
+    let mut queries: Vec<ContainerQuery> = Vec::new();
+    let mut media_queries: Vec<MediaQueryList> = Vec::new();
+    let mut warned_container_spans: BTreeSet<(usize, usize)> = BTreeSet::new();
+
+    for rule in &parsed.rules {
+        let rule_range = rule.span.start as usize..rule.span.end as usize;
+
+        // Handle `@container` guard.
+        let query_idx = match &rule.container {
+            None => None,
+            Some(Ok(q)) => {
+                let idx = match queries.iter().position(|known| known == q) {
+                    Some(i) => i,
+                    None => {
+                        queries.push(q.clone());
+                        queries.len() - 1
+                    }
+                };
+                Some(idx)
+            }
+            Some(Err(unsupported)) => {
+                if warned_container_spans.insert((rule.span.start, rule.span.end)) {
+                    warnings.push(StyleWarning::sheet_warning(
+                        rule_range.clone(),
+                        format!(
+                            "`@container` query uses {unsupported}, which is not evaluated; \
+                             its rules are ignored"
+                        ),
+                    ));
+                }
+                continue;
+            }
+        };
+
+        // Handle `@media` guard(s).
+        let media_idx = match intersect_media_lists(&rule.media) {
+            None => None,
+            Some(list) => {
+                let idx = match media_queries.iter().position(|known| known == &list) {
+                    Some(i) => i,
+                    None => {
+                        media_queries.push(list);
+                        media_queries.len() - 1
+                    }
+                };
+                Some(idx)
+            }
+        };
+
+        let custom_props_only = rule.declarations.is_empty() && !rule.custom_props.is_empty();
+
+        // Classify each selector in the rule's selector list.
+        let mut classified_selectors: Vec<(&ComplexSelector, ClassifiedSelector)> = Vec::new();
+        for sel in &rule.selectors.0 {
+            match classify_selector(sel, allow_combinators, custom_props_only) {
+                SelectorCheck::Supported(c) => {
+                    for cls in &c.subject {
+                        referenced_classes.insert(cls.clone());
+                    }
+                    for anc in &c.ancestors {
+                        for cls in &anc.classes {
+                            referenced_classes.insert(cls.clone());
+                        }
+                    }
+                    classified_selectors.push((sel, c));
+                }
+                SelectorCheck::DocumentRoot => {}
+                SelectorCheck::Unsupported(msg) => {
+                    let sel_range = sel.span.start as usize..sel.span.end as usize;
+                    warnings.push(StyleWarning::sheet_warning(sel_range, msg));
+                }
+            }
+        }
+
+        if classified_selectors.is_empty() || rule.declarations.is_empty() {
+            continue;
+        }
+
+        // Partition declarations into normal and `!important`.
+        let (normal, important): (Vec<Declaration>, Vec<Declaration>) = rule
+            .declarations
+            .iter()
+            .cloned()
+            .partition(|d| !d.important);
+
+        // Check if this rule uses any element-scoped custom properties.
+        let uses_scoped_vars =
+            allow_combinators && decls_reference_any_var(&rule.declarations, &scoped_var_names);
+
+        if uses_scoped_vars {
+            for (sel, classified) in classified_selectors {
+                for (is_important, decls) in [(false, &normal), (true, &important)] {
+                    if decls.is_empty() {
+                        continue;
+                    }
+                    deferred_var_rules.push(DeferredVarRule {
+                        ancestors: classified.ancestors.clone(),
+                        subject: classified.subject.clone(),
+                        subject_pseudo: classified.subject_pseudo,
+                        pseudo_element: classified.pseudo_element.clone(),
+                        rank: rule.cascade_key(sel, is_important),
+                        declarations: decls.clone(),
+                        query: query_idx,
+                        media: media_idx,
+                        span: rule_range.clone(),
+                    });
+                }
+            }
+            continue;
+        }
+
+        // Group selectors by pseudo-element (`None` vs `Some(pe)`) so we compile
+        // declarations once per distinct pseudo-element rather than duplicating
+        // diagnostics across comma-separated selectors.
+        let mut by_pe: Vec<(
+            Option<PseudoElement>,
+            Vec<(&ComplexSelector, ClassifiedSelector)>,
+        )> = Vec::new();
+        for item in classified_selectors {
+            let pe = item.1.pseudo_element.clone();
+            if let Some((_, group)) = by_pe.iter_mut().find(|(k, _)| *k == pe) {
+                group.push(item);
+            } else {
+                by_pe.push((pe, vec![item]));
+            }
+        }
+
+        for (pe, group) in by_pe {
+            let is_scrollbar_pseudo = matches!(
+                pe,
+                Some(
+                    PseudoElement::WebkitScrollbar
+                        | PseudoElement::WebkitScrollbarThumb
+                        | PseudoElement::WebkitScrollbarTrack
+                )
+            );
+            for (is_important, decls) in [(false, &normal), (true, &important)] {
+                if decls.is_empty() {
+                    continue;
+                }
+                let mut decl_diags = Vec::new();
+                let (ops, compiled_trans, compiled_anims) = compile_decls_dual(
+                    decls,
+                    &root_light,
+                    &root_dark,
+                    pe.as_ref(),
+                    &mut decl_diags,
+                );
+                push_diags(decl_diags, &mut warnings, &mut errors);
+
+                let trans_items = transition_items_from_compiled(
+                    &compiled_trans,
+                    rule_range.clone(),
+                    &mut warnings,
+                );
+                let anim_items = animation_items_from_compiled(
+                    &compiled_anims,
+                    &compiled_kf,
+                    rule_range.clone(),
+                    &mut warnings,
+                );
+
+                if query_idx.is_some() && !trans_items.is_empty() {
+                    warnings.push(StyleWarning::sheet_warning(
+                        rule_range.clone(),
+                        "`transition` inside `@container` is not supported and is ignored",
+                    ));
+                }
+                if query_idx.is_some() && !anim_items.is_empty() {
+                    warnings.push(StyleWarning::sheet_warning(
+                        rule_range.clone(),
+                        "`animation` inside `@container` is not supported and is ignored",
+                    ));
+                }
+
+                let patch = emit_patch_stmts(&ops, "__nana_patch", is_scrollbar_pseudo);
+
+                for (sel, classified) in &group {
+                    let classes = if classified.ancestors.is_empty() {
+                        classified.subject.clone()
+                    } else {
+                        vec![intern_combinator(
+                            &mut combinators,
+                            &mut referenced_classes,
+                            classified.ancestors.clone(),
+                            classified.subject.clone(),
+                        )]
+                    };
+                    let rank = rule.cascade_key(sel, is_important);
+                    if !patch.is_empty() {
+                        rules.push(Rule {
+                            classes: classes.clone(),
+                            pseudo: classified.subject_pseudo,
+                            rank,
+                            ops: ops.clone(),
+                            patch: patch.clone(),
+                            query: query_idx,
+                            media: media_idx,
+                            is_scrollbar_pseudo,
+                        });
+                    }
+                    if query_idx.is_none() && !trans_items.is_empty() {
+                        transitions.push(TransitionRule {
+                            classes: classes.clone(),
+                            pseudo: classified.subject_pseudo,
+                            rank,
+                            items: trans_items.clone(),
+                        });
+                    }
+                    if query_idx.is_none() && !anim_items.is_empty() {
+                        animations.push(AnimationRule {
+                            classes,
+                            pseudo: classified.subject_pseudo,
+                            rank,
+                            items: anim_items.clone(),
+                        });
+                    }
+                }
             }
         }
     }
-    for rule in &sheet.interactive_rules {
-        if rule.motion.is_empty() {
-            continue;
-        }
-        let trans_items = transition_items(&rule.motion, &mut Vec::new());
-        let anim_items = animation_items(&rule.motion, &compiled_kf, &mut Vec::new());
-        if trans_items.is_empty() && anim_items.is_empty() {
-            continue;
-        }
-        let Some(target) = interactive_selector_target(&rule.selector, allow_combinators) else {
-            continue;
-        };
-        let (classes, pseudo) = match target {
-            SelectorTarget::Plain(classes, pseudo) => (classes, pseudo),
-            SelectorTarget::Combinator(ancestors, subject, pseudo) => (
-                vec![intern_combinator(
-                    &mut combinators,
-                    &mut referenced_classes,
-                    ancestors,
-                    subject,
-                )],
-                pseudo,
-            ),
-        };
-        let rule_rank = rank(false, rule.selector.specificity, rule.source_order);
-        if !trans_items.is_empty() {
-            transitions.push(TransitionRule {
-                classes: classes.clone(),
-                pseudo,
-                rank: rule_rank,
-                items: trans_items,
-            });
-        }
-        if !anim_items.is_empty() {
-            animations.push(AnimationRule {
-                classes,
-                pseudo,
-                rank: rule_rank,
-                items: anim_items,
-            });
-        }
-    }
+
     Sheet {
         rules,
         transitions,
         animations,
         combinators,
+        scoped_var_rules,
+        deferred_var_rules,
         referenced_classes,
         queries,
-        warnings: check(
-            css,
-            &vars_light,
-            &vars_dark,
-            &compiled_kf,
-            allow_combinators,
-        ),
+        media_queries,
+        font_faces: parsed.font_faces,
+        root_light: Arc::new(root_light),
+        root_dark: Arc::new(root_dark),
+        compiled_kf,
+        warnings,
+        errors,
     }
 }
 
-/// One top-level block of a sheet, `prelude { body }` or `prelude;`, as
-/// byte ranges of the sheet: the prelude trimmed, and for a rule each
-/// `;`-separated segment of its body trimmed (empty ones included, as the
-/// parser counts them).
-struct Block {
-    range: Range<usize>,
-    prelude: Range<usize>,
-    segments: Vec<Range<usize>>,
-}
+// ============================================================================
+// Rust Token Codegen for Sheet, Queries, Media, Font-Faces, Motion
+// ============================================================================
 
-/// Skip a comment or a quoted string starting at `at`; the index after it,
-/// or `None` when `at` starts neither.
-fn skip_opaque(css: &[u8], at: usize) -> Option<usize> {
-    match css[at] {
-        b'/' if css.get(at + 1) == Some(&b'*') => Some(
-            css[at + 2..]
-                .windows(2)
-                .position(|pair| pair == b"*/")
-                .map_or(css.len(), |end| at + 2 + end + 2),
-        ),
-        quote @ (b'"' | b'\'') => {
-            let mut index = at + 1;
-            while index < css.len() && css[index] != quote {
-                index += if css[index] == b'\\' { 2 } else { 1 };
-            }
-            Some((index + 1).min(css.len()))
-        }
-        _ => None,
-    }
-}
-
-/// `range` without surrounding whitespace and leading comments.
-fn trim(css: &[u8], mut range: Range<usize>) -> Range<usize> {
-    loop {
-        while range.start < range.end && css[range.start].is_ascii_whitespace() {
-            range.start += 1;
-        }
-        if range.start + 1 < range.end && css[range.start] == b'/' && css[range.start + 1] == b'*' {
-            range.start = skip_opaque(css, range.start)
-                .unwrap_or(range.end)
-                .min(range.end);
-            continue;
-        }
-        break;
-    }
-    while range.end > range.start && css[range.end - 1].is_ascii_whitespace() {
-        range.end -= 1;
-    }
-    range
-}
-
-fn outline(css: &str) -> Vec<Block> {
-    let bytes = css.as_bytes();
-    let mut blocks = Vec::new();
-    let mut at = 0;
-    while at < bytes.len() {
-        let start = at;
-        let mut depth = 0usize;
-        // The prelude: up to `{` or `;` outside brackets.
-        let mut stop = None;
-        while at < bytes.len() {
-            if let Some(next) = skip_opaque(bytes, at) {
-                at = next;
-                continue;
-            }
-            match bytes[at] {
-                b'(' | b'[' => depth += 1,
-                b')' | b']' => depth = depth.saturating_sub(1),
-                b'{' | b';' if depth == 0 => {
-                    stop = Some(bytes[at]);
-                    break;
-                }
-                _ => {}
-            }
-            at += 1;
-        }
-        let prelude = trim(bytes, start..at);
-        if stop != Some(b'{') {
-            at = (at + 1).min(bytes.len());
-            if !prelude.is_empty() {
-                blocks.push(Block {
-                    range: prelude.clone(),
-                    prelude,
-                    segments: Vec::new(),
-                });
-            }
-            continue;
-        }
-        let body = at + 1;
-        at = body;
-        let mut braces = 1usize;
-        let mut parens = 0usize;
-        let mut segments = Vec::new();
-        let mut segment = body;
-        while at < bytes.len() {
-            if let Some(next) = skip_opaque(bytes, at) {
-                at = next;
-                continue;
-            }
-            match bytes[at] {
-                b'{' => braces += 1,
-                b'}' => {
-                    braces -= 1;
-                    if braces == 0 {
-                        break;
-                    }
-                }
-                b'(' | b'[' => parens += 1,
-                b')' | b']' => parens = parens.saturating_sub(1),
-                b';' if braces == 1 && parens == 0 => {
-                    segments.push(trim(bytes, segment..at));
-                    segment = at + 1;
-                }
-                _ => {}
-            }
-            at += 1;
-        }
-        let end = at.min(bytes.len());
-        let last = trim(bytes, segment..end);
-        if !last.is_empty() {
-            segments.push(last);
-        }
-        if bytes.get(prelude.start) == Some(&b'@') {
-            segments.clear();
-        }
-        at = (end + 1).min(bytes.len());
-        blocks.push(Block {
-            range: start..at,
-            prelude,
-            segments,
-        });
-    }
-    blocks
-}
-
-/// The property a declaration segment sets, lowercased.
-fn property_of(text: &str) -> String {
-    text.split(':')
-        .next()
-        .unwrap_or("")
-        .trim()
-        .to_ascii_lowercase()
-}
-
-/// Each block's warnings, found by parsing it alone and pointed at its
-/// prelude or the declaration they are about.
-fn check(
-    css: &str,
-    vars_light: &CssVarScope,
-    vars_dark: &CssVarScope,
-    compiled_kf: &CompiledKeyframesMap,
-    allow_combinators: bool,
-) -> Vec<StyleWarning> {
-    let mut warnings = Vec::new();
-    for block in outline(css) {
-        check_block(
-            css,
-            &block,
-            vars_light,
-            vars_dark,
-            compiled_kf,
-            false,
-            allow_combinators,
-            &mut warnings,
-        );
-    }
-    warnings
-}
-
-/// What follows `@name` at the start of `prelude`, when it starts so.
-fn at_rule<'a>(prelude: &'a str, name: &str) -> Option<&'a str> {
-    let rest = prelude.strip_prefix('@')?;
-    let after = rest.get(name.len()..)?;
-    (rest[..name.len()].eq_ignore_ascii_case(name)
-        && !after.starts_with(|c: char| c.is_alphanumeric() || c == '-' || c == '_'))
-    .then_some(after)
-}
-
-/// The text between an at-rule block's braces.
-fn body_of(css: &str, block: &Block) -> Range<usize> {
-    let open = css[block.prelude.end..block.range.end]
-        .find('{')
-        .map_or(block.range.end, |at| block.prelude.end + at + 1);
-    let close = if css[..block.range.end].ends_with('}') {
-        block.range.end - 1
-    } else {
-        block.range.end
-    };
-    open..close.max(open)
-}
-
-/// [`outline`] of `range` of `css`, its ranges in `css`.
-fn outline_within(css: &str, range: Range<usize>) -> Vec<Block> {
-    let shift = |inner: Range<usize>| inner.start + range.start..inner.end + range.start;
-    outline(&css[range.clone()])
-        .into_iter()
-        .map(|block| Block {
-            range: shift(block.range),
-            prelude: shift(block.prelude),
-            segments: block.segments.into_iter().map(shift).collect(),
-        })
-        .collect()
-}
-
-/// The `,`-separated selectors of a prelude, trimmed.
-fn selector_parts(css: &str, prelude: Range<usize>) -> Vec<Range<usize>> {
-    let bytes = css.as_bytes();
-    let mut parts = Vec::new();
-    let mut depth = 0usize;
-    let mut part = prelude.start;
-    let mut at = prelude.start;
-    while at < prelude.end {
-        if let Some(next) = skip_opaque(bytes, at) {
-            at = next;
-            continue;
-        }
-        match bytes[at] {
-            b'(' | b'[' => depth += 1,
-            b')' | b']' => depth = depth.saturating_sub(1),
-            b',' if depth == 0 => {
-                parts.push(trim(bytes, part..at));
-                part = at + 1;
-            }
-            _ => {}
-        }
-        at += 1;
-    }
-    parts.push(trim(bytes, part..prelude.end));
-    parts
-}
-
-/// What the engine skips while parsing `block`, as its report counts it:
-/// each selector it does not parse, and an at-rule it skips whole
-/// (`@import`, which a view never loads; an `@supports` whose condition
-/// does not hold; an unknown at-rule). An `@supports` or `@layer` that
-/// applies is checked inside.
-fn check_skipped(css: &str, block: &Block, warnings: &mut Vec<StyleWarning>) {
-    let prelude = &css[block.prelude.clone()];
-    if prelude.starts_with('@') {
-        if at_rule(prelude, "container").is_some() {
-            return;
-        }
-        let in_place =
-            at_rule(prelude, "supports").is_some() || at_rule(prelude, "layer").is_some();
-        let has_body = block.range != block.prelude;
-        // Its own prelude alone: what it holds is checked below.
-        let text = if in_place && has_body {
-            format!("{prelude} {{}}")
-        } else {
-            css[block.range.clone()].to_owned()
-        };
-        if parse_stylesheet_full(&text, 0).1.skipped_at_rules > 0 {
-            let keyword = prelude
-                .split(|c: char| c.is_whitespace() || c == '(' || c == '"' || c == '\'')
-                .next()
-                .unwrap_or(prelude);
-            let message = if at_rule(prelude, "import").is_some() {
-                format!("`@import` is not loaded for L3 views; `{prelude}` is ignored")
-            } else if at_rule(prelude, "supports").is_some() {
-                format!("the condition of `{prelude}` does not hold, so its rules are ignored")
-            } else {
-                format!("`{keyword}` is not compiled for L3 views; `{prelude}` is ignored")
-            };
-            warnings.push(StyleWarning {
-                at: StyleAt::Sheet(block.prelude.clone()),
-                message,
-            });
-        } else if in_place && has_body {
-            for inner in outline_within(css, body_of(css, block)) {
-                check_skipped(css, &inner, warnings);
-            }
-        }
-        return;
-    }
-    if parse_stylesheet_full(&css[block.range.clone()], 0)
-        .1
-        .skipped_selectors
-        == 0
-    {
-        return;
-    }
-    // The rule with one selector at a time finds those it skips.
-    let body = &css[block.prelude.end..block.range.end];
-    for part in selector_parts(css, block.prelude.clone()) {
-        let selector = &css[part.clone()];
-        if parse_stylesheet_full(&format!("{selector}{body}"), 0)
-            .1
-            .skipped_selectors
-            > 0
-        {
-            warnings.push(StyleWarning {
-                at: StyleAt::Sheet(part),
-                message: format!(
-                    "the selector `{selector}` is not one the CSS engine parses and is ignored"
-                ),
-            });
-        }
-    }
-}
-
-fn check_keyframes_block(
-    css: &str,
-    block: &Block,
-    vars_light: &CssVarScope,
-    vars_dark: &CssVarScope,
-    warnings: &mut Vec<StyleWarning>,
-) {
-    let body = body_of(css, block);
-    let inner_blocks = outline_within(css, body);
-    let (_, report) = parse_stylesheet_full(&css[block.range.clone()], 0);
-    if report.skipped_at_rules > 0 {
-        check_skipped(css, block, warnings);
-        return;
-    }
-    for inner in inner_blocks {
-        let sel_text = &css[inner.prelude.clone()];
-        let stop_body = &css[body_of(css, &inner)];
-        let probe = format!("@keyframes __k {{ {sel_text} {{ {stop_body} }} }}");
-        let (parsed, _) = parse_stylesheet_full(&probe, 0);
-        let Some(kf) = parsed.keyframes.get("__k") else {
-            warnings.push(StyleWarning {
-                at: StyleAt::Sheet(inner.prelude.clone()),
-                message: format!(
-                    "`{sel_text}` is not a valid `@keyframes` stop selector and is ignored"
-                ),
-            });
-            continue;
-        };
-        let Some(kb) = kf.blocks.first() else {
-            continue;
-        };
-        for entry in &kb.declaration_entries {
-            if entry.property.starts_with("--")
-                || entry
-                    .property
-                    .eq_ignore_ascii_case("animation-timing-function")
-            {
-                continue;
-            }
-            let written = compile_dual_written(&[entry], vars_light, vars_dark);
-            if extract_keyframe_props(&written).is_empty() {
-                let prop = entry.property.to_ascii_lowercase();
-                let at = inner
-                    .segments
-                    .get(entry.index as usize)
-                    .filter(|seg| property_of(&css[(*seg).clone()]) == prop)
-                    .or_else(|| {
-                        inner
-                            .segments
-                            .iter()
-                            .find(|seg| property_of(&css[(*seg).clone()]) == prop)
-                    })
-                    .cloned()
-                    .unwrap_or_else(|| inner.prelude.clone());
-                warnings.push(StyleWarning {
-                    at: StyleAt::Sheet(at),
-                    message: format!(
-                        "`{}` in `@keyframes` is not animated: only opacity, transform, filter, \
-                         width, height, padding, margin, color and background are",
-                        entry.text()
-                    ),
-                });
-            }
-        }
-    }
-}
-
-fn check_motion_declarations(
-    css: &str,
-    block: &Block,
-    prelude: &str,
-    motion: &MotionDeclarations,
-    compiled_kf: &CompiledKeyframesMap,
-    in_container: bool,
-    selector_ok: bool,
-    declaration: &dyn Fn(Option<u32>, &dyn Fn(&str) -> bool) -> Range<usize>,
-    warnings: &mut Vec<StyleWarning>,
-) {
-    let has_transition = motion.transition.is_some()
-        || motion.transition_property.is_some()
-        || motion.transition_duration.is_some()
-        || motion.transition_delay.is_some();
-    let has_animation = motion.animation.is_some()
-        || motion.animation_name.is_some()
-        || motion.animation_duration.is_some()
-        || motion.animation_delay.is_some()
-        || motion.animation_iteration_count.is_some()
-        || motion.animation_direction.is_some()
-        || motion.animation_fill_mode.is_some()
-        || motion.animation_play_state.is_some();
-    let _ = css;
-    if in_container {
-        if has_transition {
-            warnings.push(StyleWarning {
-                at: StyleAt::Sheet(declaration(None, &|p| p.starts_with("transition"))),
-                message: "a `transition` inside `@container` is not compiled and is ignored".into(),
-            });
-        }
-        if has_animation {
-            warnings.push(StyleWarning {
-                at: StyleAt::Sheet(declaration(None, &|p| p.starts_with("animation"))),
-                message: "an `animation` inside `@container` is not compiled and is ignored".into(),
-            });
-        }
-        return;
-    }
-    let mut trans_valid = false;
-    if has_transition {
-        let mut messages = Vec::new();
-        let items = transition_items(motion, &mut messages);
-        let at = declaration(None, &|p| p.starts_with("transition"));
-        for message in messages {
-            warnings.push(StyleWarning {
-                at: StyleAt::Sheet(at.clone()),
-                message,
-            });
-        }
-        trans_valid = !items.is_empty();
-    }
-    let mut anim_valid = false;
-    if has_animation {
-        let mut messages = Vec::new();
-        let items = animation_items(motion, compiled_kf, &mut messages);
-        let at = declaration(None, &|p| p.starts_with("animation"));
-        for message in messages {
-            warnings.push(StyleWarning {
-                at: StyleAt::Sheet(at.clone()),
-                message,
-            });
-        }
-        anim_valid = !items.is_empty();
-    }
-    if !selector_ok && trans_valid {
-        warnings.push(StyleWarning {
-            at: StyleAt::Sheet(block.prelude.clone()),
-            message: format!(
-                "the `transition` for `{prelude}` is ignored: L3 views compile class selectors only"
-            ),
-        });
-    }
-    if !selector_ok && anim_valid {
-        warnings.push(StyleWarning {
-            at: StyleAt::Sheet(block.prelude.clone()),
-            message: format!(
-                "the `animation` for `{prelude}` is ignored: L3 views compile class selectors only"
-            ),
-        });
-    }
-}
-
-/// One block's warnings; `in_container` when it is inside an `@container`
-/// block, whose class rules compile and whose other content does not.
-fn check_block(
-    css: &str,
-    block: &Block,
-    vars_light: &CssVarScope,
-    vars_dark: &CssVarScope,
-    compiled_kf: &CompiledKeyframesMap,
-    in_container: bool,
-    allow_combinators: bool,
-    warnings: &mut Vec<StyleWarning>,
-) {
-    let prelude = &css[block.prelude.clone()];
-    let before = warnings.len();
-    let mut warn = |range: Range<usize>, message: String| {
-        warnings.push(StyleWarning {
-            at: StyleAt::Sheet(range),
-            message,
-        })
-    };
-    if let Some(condition) = at_rule(prelude, "container") {
-        if in_container {
-            warn(
-                block.prelude.clone(),
-                format!(
-                    "`@container` inside another `@container` is not compiled; `{prelude}` is \
-                     ignored"
-                ),
-            );
-            return;
-        }
-        match parse_container_prelude(condition) {
-            Err(why) => warn(
-                block.prelude.clone(),
-                format!("`@container` with {why} is not compiled; `{prelude}` is ignored"),
-            ),
-            Ok(_) => {
-                for inner in outline_within(css, body_of(css, block)) {
-                    check_block(
-                        css,
-                        &inner,
-                        vars_light,
-                        vars_dark,
-                        compiled_kf,
-                        true,
-                        allow_combinators,
-                        warnings,
-                    );
-                }
-            }
-        }
-        return;
-    }
-    if in_container && prelude.starts_with('@') {
-        let keyword = prelude
-            .split(|c: char| c.is_whitespace() || c == '(')
-            .next()
-            .unwrap_or(prelude);
-        warn(
-            block.prelude.clone(),
-            format!("`{keyword}` inside `@container` is not compiled; `{prelude}` is ignored"),
-        );
-        return;
-    }
-    if at_rule(prelude, "keyframes").is_some() {
-        check_keyframes_block(css, block, vars_light, vars_dark, warnings);
-        return;
-    }
-    let (sheet, _) = parse_stylesheet_full(&css[block.range.clone()], 0);
-    let declaration = |index: Option<u32>, matches: &dyn Fn(&str) -> bool| {
-        index
-            .and_then(|index| block.segments.get(index as usize))
-            .filter(|segment| matches(&property_of(&css[(*segment).clone()])))
-            .or_else(|| {
-                block
-                    .segments
-                    .iter()
-                    .find(|segment| matches(&property_of(&css[(*segment).clone()])))
-            })
-            .cloned()
-            .unwrap_or_else(|| block.prelude.clone())
-    };
-    let skipped = [
-        (!sheet.media_rules.is_empty(), "`@media` blocks"),
-        (!sheet.font_faces.is_empty(), "`@font-face` rules"),
-        (
-            !sheet.generated_pseudo_rules.is_empty() || !sheet.scrollbar_pseudo_rules.is_empty(),
-            "pseudo-element rules",
-        ),
-    ];
-    for (skipped, what) in skipped {
-        if skipped {
-            warn(
-                block.prelude.clone(),
-                format!("{what} are not compiled for L3 views; `{prelude}` is ignored"),
-            );
-        }
-    }
-    for rule in &sheet.static_rules {
-        let entries: Vec<&DeclarationEntry> = rule
-            .declaration_entries
-            .iter()
-            .filter(|entry| !entry.property.starts_with("--"))
-            .collect();
-        if entries.is_empty() {
-            continue;
-        }
-        let selector_ok = |s: &Selector| {
-            class_selector(s).is_some()
-                || (allow_combinators && static_combinator_selector(s).is_some())
-        };
-        if rule.selectors.iter().any(|s| !selector_ok(s)) {
-            warn(
-                block.prelude.clone(),
-                format!(
-                    "the rule for `{prelude}` is ignored: L3 views compile class selectors \
-                     (`.a`, `.a.b`) only"
-                ),
-            );
-        }
-        for entry in entries {
-            let property = entry.property.to_ascii_lowercase();
-            if let Some(message) = unsupported_or_removed_css_warning(&property, entry) {
-                warn(declaration(Some(entry.index), &|p| p == property), message);
-            } else if patch_dual(&[entry], vars_light, vars_dark).is_empty() {
-                warn(
-                    declaration(Some(entry.index), &|p| p == property),
-                    format!(
-                        "`{}` sets nothing in the Style Model and is ignored",
-                        entry.text()
-                    ),
-                );
-            }
-        }
-    }
-    for rule in &sheet.interactive_rules {
-        let entries: Vec<&DeclarationEntry> = rule
-            .declaration_entries
-            .iter()
-            .filter(|entry| !entry.property.starts_with("--"))
-            .collect();
-        let supported = interactive_selector_target(&rule.selector, allow_combinators).is_some();
-        if !supported && !entries.is_empty() {
-            let why = if rule.selector.interactive_at != rule.selector.ancestors.len() {
-                "L3 views only compile `:hover` / `:focus` / `:focus-visible` / `:active` on the \
-                 subject element"
-            } else {
-                "L3 views compile class selectors only"
-            };
-            warnings.push(StyleWarning {
-                at: StyleAt::Sheet(block.prelude.clone()),
-                message: format!("the rule for `{prelude}` is ignored: {why}"),
-            });
-        }
-        for entry in entries {
-            let property = entry.property.to_ascii_lowercase();
-            if let Some(message) = unsupported_or_removed_css_warning(&property, entry) {
-                warnings.push(StyleWarning {
-                    at: StyleAt::Sheet(declaration(Some(entry.index), &|p| p == property)),
-                    message,
-                });
-            } else if patch_dual(&[entry], vars_light, vars_dark).is_empty() {
-                warnings.push(StyleWarning {
-                    at: StyleAt::Sheet(declaration(Some(entry.index), &|p| p == property)),
-                    message: format!(
-                        "`{}` sets nothing in the Style Model and is ignored",
-                        entry.text()
-                    ),
-                });
-            }
-        }
-        if !rule.motion.is_empty() {
-            check_motion_declarations(
-                css,
-                block,
-                prelude,
-                &rule.motion,
-                compiled_kf,
-                in_container,
-                supported,
-                &declaration,
-                warnings,
-            );
-        }
-    }
-    for rule in &sheet.motion_rules {
-        let selector_ok = rule.selectors.iter().all(|s| {
-            class_selector(s).is_some()
-                || (allow_combinators && static_combinator_selector(s).is_some())
-        });
-        check_motion_declarations(
-            css,
-            block,
-            prelude,
-            &rule.motion,
-            compiled_kf,
-            in_container,
-            selector_ok,
-            &declaration,
-            warnings,
-        );
-    }
-    // What the engine skips while parsing, unless the at-rule is already
-    // warned about as a whole.
-    if !prelude.starts_with('@')
-        || !warnings[before..]
-            .iter()
-            .any(|warning| matches!(&warning.at, StyleAt::Sheet(at) if *at == block.prelude))
-    {
-        check_skipped(css, block, warnings);
-    }
-    // `@container` or `@keyframes` inside another block that compiles
-    // (`@supports`, `@layer`): checked as if it stood alone.
-    if (!sheet.container_rules.is_empty() || !sheet.keyframes.is_empty())
-        && prelude.starts_with('@')
-    {
-        for inner in outline_within(css, body_of(css, block)) {
-            let inner_prelude = &css[inner.prelude.clone()];
-            if at_rule(inner_prelude, "container").is_some()
-                || at_rule(inner_prelude, "keyframes").is_some()
-            {
-                check_block(
-                    css,
-                    &inner,
-                    vars_light,
-                    vars_dark,
-                    compiled_kf,
-                    in_container,
-                    allow_combinators,
-                    warnings,
-                );
-            }
-        }
-    }
-}
-
-fn unsupported_or_removed_css_warning(property: &str, entry: &DeclarationEntry) -> Option<String> {
-    let trimmed = entry.value.trim();
-    let lower = trimmed.to_ascii_lowercase();
-    if matches!(
-        lower.as_str(),
-        "initial" | "inherit" | "unset" | "revert" | "revert-layer"
-    ) || lower.contains("var(")
-    {
-        return None;
-    }
-    match property {
-        "display" => match lower.as_str() {
-            "block" | "flow-root" => Some(format!(
-                "`{}`: legacy block display (`{lower}`) was removed; use `display: flex; \
-                 flex-direction: column` (or `grid` / `layers`) instead; it is ignored",
-                entry.text()
-            )),
-            "inline-block" => Some(format!(
-                "`{}`: `inline-block` was removed; use `display: inline-flex` or \
-                 `display: inline-grid` instead; it is ignored",
-                entry.text()
-            )),
-            "contents" => Some(format!(
-                "`{}`: `display: contents` is not supported in NanaUI's retained Style Model; \
-                 remove the wrapper or move layout styles onto its children; it is ignored",
-                entry.text()
-            )),
-            _ => None,
-        },
-        "float" | "clear" => Some(format!(
-            "`{}`: CSS floats (`float` / `clear`) were removed; use `display: flex` or \
-             `display: grid` instead; it is ignored",
-            entry.text()
-        )),
-        "grid-template-columns" | "grid-template-rows" if !lower.eq("none") => {
-            match parse_grid_track_list_result(trimmed, None) {
-                GridTrackListParse::Tracks(_)
-                | GridTrackListParse::RepeatAuto(_)
-                | GridTrackListParse::Subgrid => None,
-                GridTrackListParse::Unsupported(GridTrackListUnsupported::Subgrid) => {
-                    Some(format!(
-                        "`{}`: mixing `subgrid` with explicit tracks is not supported in \
-                         `{property}`; use standalone `subgrid` (with optional `[line-name]` \
-                         groups); it is ignored",
-                        entry.text()
-                    ))
-                }
-                GridTrackListParse::Unsupported(GridTrackListUnsupported::NestedRepeat) => {
-                    Some(format!(
-                        "`{}`: nested `repeat(...)` in `{property}` is not supported; it is ignored",
-                        entry.text()
-                    ))
-                }
-                GridTrackListParse::Unsupported(kind) => Some(format!(
-                    "`{}`: unsupported grid track syntax (`{kind:?}`) in `{property}`; it is \
-                     ignored",
-                    entry.text()
-                )),
-                GridTrackListParse::Invalid => Some(format!(
-                    "`{}`: `{property}` could not parse this track list and is ignored",
-                    entry.text()
-                )),
-            }
-        }
-        _ => None,
-    }
-}
-
-/// Emit a typed [`StylePatch`] closure body from compiled setter statements
-/// (`stmts`), binding the runtime crate's `view::__patch` module as
-/// `__nana_patch` without interpolating `$crate` through string parsing.
 fn patch_tokens(stmts: &str, runtime: &TokenStream) -> TokenStream {
     let stmts: TokenStream = stmts
         .parse()
@@ -1701,15 +1468,16 @@ fn easing_tokens(easing: Easing, runtime: &TokenStream) -> TokenStream {
     }
 }
 
-/// Blocks that build no node of their own to style. The others (`Block`,
-/// `Virtual`, `Transition`, `TransitionGroup`, `KeepAlive`) style the
-/// container of the list or chain they hold, and `Teleport` the anchor its
-/// content is built in.
 const BLOCKS: &[&str] = &["Suspense", "ErrorBoundary"];
+const STRUCTURAL_CONTAINERS: &[&str] = &[
+    "Block",
+    "Virtual",
+    "Transition",
+    "TransitionGroup",
+    "KeepAlive",
+    "Teleport",
+];
 
-/// A sheet's rules and transitions as the runtime's `view::Sheet`: patch
-/// statics, then the sheet, both in cascade order. `classes` numbers every
-/// class a rule or transition names.
 struct SheetItems {
     classes: Vec<String>,
     items: Vec<TokenStream>,
@@ -1726,13 +1494,10 @@ impl Sheet {
         }
     }
 
-    /// The statics of this sheet, `name` the sheet's.
     fn items(&self, name: &syn::Ident, runtime: &TokenStream) -> SheetItems {
         self.items_with_hot(name, runtime, Vec::new(), None)
     }
 
-    /// The statics of this sheet, `name` the sheet's, optionally seeded with
-    /// pre-collected template classes and hot-mode view metadata.
     fn items_with_hot(
         &self,
         name: &syn::Ident,
@@ -1743,13 +1508,18 @@ impl Sheet {
         let mut classes = initial_classes;
         let mut patches: BTreeMap<&str, usize> = BTreeMap::new();
         let mut queries: BTreeSet<usize> = BTreeSet::new();
+        let mut media_emitted: BTreeSet<usize> = BTreeSet::new();
         let mut items = Vec::new();
+
         let mut ordered: Vec<&Rule> = self.rules.iter().collect();
         ordered.sort_by_key(|rule| rule.rank);
-        let mut rules = Vec::new();
-        for rule in ordered {
+
+        let mut rules_tokens = Vec::new();
+        let mut rule_media_pairs: Vec<TokenStream> = Vec::new();
+
+        for (rule_idx, rule) in ordered.iter().enumerate() {
             let next = patches.len();
-            let index = *patches.entry(&rule.patch).or_insert(next);
+            let index = *patches.entry(rule.patch.as_str()).or_insert(next);
             let patch = format_ident!("{name}_PATCH_{index}");
             if index == next {
                 let apply = patch_tokens(&rule.patch, runtime);
@@ -1771,12 +1541,31 @@ impl Sheet {
                 }
                 None => quote!(::core::option::Option::None),
             };
+            if let Some(mq_idx) = rule.media {
+                let mq_ident = format_ident!("{name}_MEDIA_{mq_idx}");
+                if media_emitted.insert(mq_idx) {
+                    let expr_str =
+                        emit_media_query_list_rust(&self.media_queries[mq_idx], "__nana_patch");
+                    let expr: TokenStream = expr_str
+                        .parse()
+                        .expect("emitted MediaQueryList parses as Rust expr");
+                    items.push(quote! {
+                        static #mq_ident: #runtime::view::SheetMediaQuery =
+                            #runtime::view::SheetMediaQuery::new(|| {
+                                #[allow(unused_imports)]
+                                use #runtime::view::__patch as __nana_patch;
+                                #expr
+                            });
+                    });
+                }
+                rule_media_pairs.push(quote!((#rule_idx, &#mq_ident)));
+            }
             let needs = rule
                 .classes
                 .iter()
                 .map(|class| Self::class_index(&mut classes, class));
             let pseudo = rule.pseudo;
-            rules.push(quote! {
+            rules_tokens.push(quote! {
                 #runtime::view::SheetRule {
                     classes: &[#(#needs),*],
                     pseudo: #pseudo,
@@ -1785,10 +1574,11 @@ impl Sheet {
                 }
             });
         }
-        let mut ordered: Vec<&TransitionRule> = self.transitions.iter().collect();
-        ordered.sort_by_key(|rule| rule.rank);
+
+        let mut ordered_trans: Vec<&TransitionRule> = self.transitions.iter().collect();
+        ordered_trans.sort_by_key(|rule| rule.rank);
         let mut transitions = Vec::new();
-        for rule in ordered {
+        for rule in ordered_trans {
             let needs = rule
                 .classes
                 .iter()
@@ -1803,6 +1593,7 @@ impl Sheet {
                 }
             });
         }
+
         let mut ordered_anims: Vec<&AnimationRule> = self.animations.iter().collect();
         ordered_anims.sort_by_key(|rule| rule.rank);
         let mut animations = Vec::new();
@@ -1841,38 +1632,62 @@ impl Sheet {
                 }
             });
         }
-        if let Some(view_name) = hot_view {
-            items.push(quote! {
-                static #name: #runtime::view::Sheet = #runtime::view::Sheet::with_hot(
-                    &[#(#rules),*],
+
+        let mut sheet_expr = if let Some(view_name) = hot_view {
+            quote! {
+                #runtime::view::Sheet::with_hot(
+                    &[#(#rules_tokens),*],
                     &[#(#transitions),*],
                     &[#(#animations),*],
                     #view_name,
                     &[#(#classes),*],
-                );
-            });
+                )
+            }
         } else if animations.is_empty() {
-            items.push(quote! {
-                static #name: #runtime::view::Sheet =
-                    #runtime::view::Sheet::new(&[#(#rules),*], &[#(#transitions),*]);
-            });
+            quote! {
+                #runtime::view::Sheet::new(&[#(#rules_tokens),*], &[#(#transitions),*])
+            }
         } else {
-            items.push(quote! {
-                static #name: #runtime::view::Sheet = #runtime::view::Sheet::with_animations(
-                    &[#(#rules),*],
+            quote! {
+                #runtime::view::Sheet::with_animations(
+                    &[#(#rules_tokens),*],
                     &[#(#transitions),*],
                     &[#(#animations),*],
-                );
-            });
+                )
+            }
+        };
+
+        if !rule_media_pairs.is_empty() {
+            sheet_expr = quote!(#sheet_expr.with_media(&[#(#rule_media_pairs),*]));
         }
+
+        if !self.font_faces.is_empty() {
+            let face_exprs: Vec<TokenStream> = self
+                .font_faces
+                .iter()
+                .map(|ff| {
+                    emit_font_face_rule_rust(ff, "__nana_patch")
+                        .parse()
+                        .expect("emitted FontFaceRule parses as Rust expr")
+                })
+                .collect();
+            sheet_expr = quote! {
+                #sheet_expr.with_font_faces(|| {
+                    #[allow(unused_imports)]
+                    use #runtime::view::__patch as __nana_patch;
+                    ::std::vec![#(#face_exprs),*]
+                })
+            };
+        }
+
+        items.push(quote! {
+            static #name: #runtime::view::Sheet = #sheet_expr;
+        });
+
         SheetItems { classes, items }
     }
 }
 
-/// A compiled `@container` query as the runtime's `view::SheetQuery`. Each
-/// bound is written as its bits: `max-width: 480px` ends at
-/// `480f32.next_up()`, which a decimal literal need not round-trip, and an
-/// open end is an infinity, which has no literal.
 fn query_tokens(query: &ContainerQuery, runtime: &TokenStream) -> TokenStream {
     let name = match &query.name {
         Some(name) => quote!(::core::option::Option::Some(#name)),
@@ -2056,10 +1871,38 @@ fn animation_item_tokens(
     }
 }
 
-#[derive(Default)]
+// ============================================================================
+// Template Tree Matching (Combinators, Ancestor Pseudos, Scoped Vars, Inline)
+// ============================================================================
+
 struct AncestorFrame {
     fixed: Vec<String>,
     conditional: Vec<(String, Expr)>,
+    /// True if this ancestor is a real `El` that supports `.track_interactive_state`.
+    can_track_interactive: bool,
+    /// Allocated `__anc_N` handle if any descendant matches an interactive pseudo on this frame.
+    interactive_handle: Option<syn::Ident>,
+    /// Accumulated interactive pseudo mask observed on this ancestor.
+    tracked_mask: u8,
+}
+
+impl Default for AncestorFrame {
+    fn default() -> Self {
+        Self {
+            fixed: Vec::new(),
+            conditional: Vec::new(),
+            can_track_interactive: false,
+            interactive_handle: None,
+            tracked_mask: 0,
+        }
+    }
+}
+
+#[derive(Clone)]
+enum MatchTerm {
+    Expr(Expr),
+    /// `(ancestor_frame_index, pseudo_mask)`
+    AncestorPseudo(usize, u8),
 }
 
 fn match_compound(
@@ -2081,24 +1924,68 @@ fn match_compound(
     Some(exprs)
 }
 
-fn match_chain(chain: &[(Combinator, Vec<String>)], ancestors: &[AncestorFrame]) -> Vec<Vec<Expr>> {
+fn match_compound_fixed_only(required: &[String], fixed: &[String]) -> bool {
+    required
+        .iter()
+        .all(|class| fixed.iter().any(|known| known == class))
+}
+
+fn match_chain_fixed_only(chain: &[AncestorStep], ancestors: &[AncestorFrame]) -> bool {
+    if chain.is_empty() {
+        return true;
+    }
+    let (step, rest_chain) = (&chain[chain.len() - 1], &chain[..chain.len() - 1]);
+    if step.pseudo != 0 {
+        return false;
+    }
+    match step.combinator {
+        Combinator::Child => {
+            let Some((parent, rest_ancestors)) = ancestors.split_last() else {
+                return false;
+            };
+            match_compound_fixed_only(&step.classes, &parent.fixed)
+                && match_chain_fixed_only(rest_chain, rest_ancestors)
+        }
+        Combinator::Descendant => {
+            for idx in (1..=ancestors.len()).rev() {
+                if match_compound_fixed_only(&step.classes, &ancestors[idx - 1].fixed)
+                    && match_chain_fixed_only(rest_chain, &ancestors[..idx - 1])
+                {
+                    return true;
+                }
+            }
+            false
+        }
+        Combinator::NextSibling | Combinator::SubsequentSibling => false,
+    }
+}
+
+fn match_chain(chain: &[AncestorStep], ancestors: &[AncestorFrame]) -> Vec<Vec<MatchTerm>> {
     if chain.is_empty() {
         return vec![Vec::new()];
     }
-    let ((comb, required), rest_chain) = (&chain[chain.len() - 1], &chain[..chain.len() - 1]);
-    match comb {
+    let (step, rest_chain) = (&chain[chain.len() - 1], &chain[..chain.len() - 1]);
+    match step.combinator {
         Combinator::Child => {
             let Some((parent, rest_ancestors)) = ancestors.split_last() else {
                 return Vec::new();
             };
-            let Some(parent_conds) = match_compound(required, &parent.fixed, &parent.conditional)
+            if step.pseudo != 0 && !parent.can_track_interactive {
+                return Vec::new();
+            }
+            let Some(parent_conds) =
+                match_compound(&step.classes, &parent.fixed, &parent.conditional)
             else {
                 return Vec::new();
             };
+            let parent_idx = ancestors.len() - 1;
             match_chain(rest_chain, rest_ancestors)
                 .into_iter()
                 .map(|mut clause| {
-                    clause.extend(parent_conds.iter().cloned());
+                    clause.extend(parent_conds.iter().cloned().map(MatchTerm::Expr));
+                    if step.pseudo != 0 {
+                        clause.push(MatchTerm::AncestorPseudo(parent_idx, step.pseudo));
+                    }
                     clause
                 })
                 .collect()
@@ -2106,15 +1993,22 @@ fn match_chain(chain: &[(Combinator, Vec<String>)], ancestors: &[AncestorFrame])
         Combinator::Descendant => {
             let mut clauses = Vec::new();
             for idx in (1..=ancestors.len()).rev() {
-                let candidate = &ancestors[idx - 1];
-                let rest_ancestors = &ancestors[..idx - 1];
+                let candidate_idx = idx - 1;
+                let candidate = &ancestors[candidate_idx];
+                if step.pseudo != 0 && !candidate.can_track_interactive {
+                    continue;
+                }
+                let rest_ancestors = &ancestors[..candidate_idx];
                 let Some(anc_conds) =
-                    match_compound(required, &candidate.fixed, &candidate.conditional)
+                    match_compound(&step.classes, &candidate.fixed, &candidate.conditional)
                 else {
                     continue;
                 };
                 for mut clause in match_chain(rest_chain, rest_ancestors) {
-                    clause.extend(anc_conds.iter().cloned());
+                    clause.extend(anc_conds.iter().cloned().map(MatchTerm::Expr));
+                    if step.pseudo != 0 {
+                        clause.push(MatchTerm::AncestorPseudo(candidate_idx, step.pseudo));
+                    }
                     if clause.is_empty() {
                         return vec![Vec::new()];
                     }
@@ -2123,20 +2017,34 @@ fn match_chain(chain: &[(Combinator, Vec<String>)], ancestors: &[AncestorFrame])
             }
             clauses
         }
-        Combinator::AdjacentSibling | Combinator::SubsequentSibling => Vec::new(),
+        Combinator::NextSibling | Combinator::SubsequentSibling => Vec::new(),
     }
 }
 
 fn wrap_condition_source(expr: &Expr, runtime: &TokenStream) -> TokenStream {
     match expr {
-        Expr::Path(_) | Expr::Closure(_) | Expr::Lit(_) => {
+        Expr::Path(_) | Expr::Closure(_) | Expr::Lit(_) | Expr::Field(_) => {
             quote!(#runtime::view::IntoProp::<bool>::into_source(#expr))
         }
         other => quote!(#runtime::view::IntoProp::<bool>::into_source(move || (#other))),
     }
 }
 
-fn combine_dnf_condition(dnf: Vec<Vec<Expr>>, runtime: &TokenStream) -> TokenStream {
+/// Format a conditional `class:name=...` expression cleanly without double-wrapping closures.
+fn class_condition_tokens(expr: &Expr) -> TokenStream {
+    match expr {
+        Expr::Path(_) | Expr::Closure(_) | Expr::Lit(_) | Expr::Field(_) => quote!(#expr),
+        other => quote!(move || #other),
+    }
+}
+
+#[derive(Clone)]
+enum ResolvedTerm {
+    Expr(Expr),
+    AncestorPseudo(syn::Ident, u8),
+}
+
+fn combine_dnf_condition(dnf: Vec<Vec<ResolvedTerm>>, runtime: &TokenStream) -> TokenStream {
     let mut unique: Vec<(String, Expr)> = Vec::new();
     let mut index_of = |expr: &Expr| -> usize {
         let key = expr.to_token_stream().to_string();
@@ -2150,10 +2058,17 @@ fn combine_dnf_condition(dnf: Vec<Vec<Expr>>, runtime: &TokenStream) -> TokenStr
         .iter()
         .map(|clause| {
             let mut terms: Vec<TokenStream> = Vec::new();
-            for expr in clause {
-                let idx = index_of(expr);
-                let ident = format_ident!("__nana_c{idx}");
-                terms.push(quote!(#ident.get()));
+            for term in clause {
+                match term {
+                    ResolvedTerm::Expr(expr) => {
+                        let idx = index_of(expr);
+                        let ident = format_ident!("__nana_c{idx}");
+                        terms.push(quote!(#ident.get()));
+                    }
+                    ResolvedTerm::AncestorPseudo(handle, mask) => {
+                        terms.push(quote!(#handle.matches(#mask)));
+                    }
+                }
             }
             match terms.as_slice() {
                 [] => quote!(true),
@@ -2172,33 +2087,60 @@ fn combine_dnf_condition(dnf: Vec<Vec<Expr>>, runtime: &TokenStream) -> TokenStr
         [one] => one.clone(),
         many => quote!(#(#many)||*),
     };
-    quote!({
-        #(#bindings)*
-        move || (#body)
-    })
+    if unique.is_empty() {
+        quote!(move || (#body))
+    } else {
+        quote!({
+            #(#bindings)*
+            move || (#body)
+        })
+    }
 }
 
-/// Turns the classes of a view's elements into `.class(…)` and
-/// `.class_when(…)` on its sheet, the calls the Rust spelling writes.
-pub(crate) struct Styler<'a> {
-    sheet: &'a Sheet,
+enum SynthAttachment {
+    Fixed(String, Span),
+    AncestorPseudo(String, syn::Ident, u8, Span),
+    Conditional(String, TokenStream, Span),
+}
+
+struct TemplateWalk<'a> {
+    sheet: &'a mut Sheet,
     name: syn::Ident,
     runtime: &'a TokenStream,
-    classes: Vec<String>,
-    sheet_classes: BTreeSet<String>,
     attach_all: bool,
     ancestors: Vec<AncestorFrame>,
-    /// Whether an element uses the sheet, so its statics are needed.
-    used: bool,
-    pub(crate) warnings: Vec<StyleWarning>,
+    var_stack: Vec<(Arc<VarScope>, Arc<VarScope>)>,
+    /// Deduplicated inline patches emitted for `style="..."` attributes:
+    /// `patch_stmts -> patch_ident`.
+    inline_patches: BTreeMap<String, syn::Ident>,
+    inline_items: Vec<TokenStream>,
+    /// Deduplicated specialized deferred-var rules:
+    /// `(deferred_rule_idx, patch_stmts) -> synth_class`.
+    deferred_specializations: BTreeMap<(usize, String), String>,
+    /// Track which deferred rules matched at least one template element.
+    matched_deferred: BTreeSet<usize>,
+    /// Next `__anc_N` counter for ancestor interactive state handles.
+    next_anc_id: usize,
+    /// Pending element injections (resolved after sheet classes are finalized? No —
+    /// we collect all deferred rules during pass 1, finalize sheet items, or allocate
+    /// class indices directly? Let's do clean two-step: walk collects `sheet.rules`
+    /// extensions & attaches class names, OR records class names in a mutable `Vec<String>`
+    /// that `Sheet::items_with_hot` uses!).
+    classes: Vec<String>,
+    sheet_classes: BTreeSet<String>,
+    used_sheet: bool,
+    attached_font_sheet: bool,
+    warnings: Vec<StyleWarning>,
+    errors: Vec<StyleWarning>,
 }
 
-impl<'a> Styler<'a> {
+impl<'a> TemplateWalk<'a> {
     fn new(
-        sheet: &'a Sheet,
-        classes: Vec<String>,
+        sheet: &'a mut Sheet,
+        initial_classes: Vec<String>,
         name: syn::Ident,
         runtime: &'a TokenStream,
+        attach_all: bool,
     ) -> Self {
         let mut sheet_classes = BTreeSet::new();
         for rule in &sheet.rules {
@@ -2210,27 +2152,157 @@ impl<'a> Styler<'a> {
         for rule in &sheet.animations {
             sheet_classes.extend(rule.classes.iter().cloned());
         }
+        let root_light = Arc::clone(&sheet.root_light);
+        let root_dark = Arc::clone(&sheet.root_dark);
+        // Seed `classes` with all existing rule/transition/animation classes so
+        // indices are stable and known before walking.
+        let mut classes = initial_classes;
+        for c in &sheet_classes {
+            Sheet::class_index(&mut classes, c);
+        }
         Self {
             sheet,
             name,
             runtime,
+            attach_all,
+            ancestors: Vec::new(),
+            var_stack: vec![(root_light, root_dark)],
+            inline_patches: BTreeMap::new(),
+            inline_items: Vec::new(),
+            deferred_specializations: BTreeMap::new(),
+            matched_deferred: BTreeSet::new(),
+            next_anc_id: 0,
             classes,
             sheet_classes,
-            attach_all: false,
-            ancestors: Vec::new(),
-            used: false,
+            used_sheet: false,
+            attached_font_sheet: false,
             warnings: Vec::new(),
+            errors: Vec::new(),
         }
     }
 
     fn warn(&mut self, span: Span, message: String) {
         self.warnings.push(StyleWarning {
             at: StyleAt::Template(span),
+            severity: StyleSeverity::Warning,
             message,
         });
     }
 
-    pub(crate) fn nodes(&mut self, nodes: &mut [Node]) {
+    fn alloc_ancestor_handle(&mut self, anc_idx: usize, mask: u8) -> syn::Ident {
+        let frame = &mut self.ancestors[anc_idx];
+        frame.tracked_mask |= mask;
+        if let Some(existing) = &frame.interactive_handle {
+            return existing.clone();
+        }
+        let ident = format_ident!("__anc_{}", self.next_anc_id);
+        self.next_anc_id += 1;
+        frame.interactive_handle = Some(ident.clone());
+        ident
+    }
+
+    fn resolve_match_dnf(
+        &mut self,
+        class_name: String,
+        dnf: Vec<Vec<MatchTerm>>,
+        span: Span,
+    ) -> SynthAttachment {
+        if dnf.iter().any(|clause| clause.is_empty()) {
+            return SynthAttachment::Fixed(class_name, span);
+        }
+        // Fast path: single clause with a single `AncestorPseudo` term -> `.ancestor_pseudo(class, handle, mask)`.
+        if dnf.len() == 1
+            && dnf[0].len() == 1
+            && let MatchTerm::AncestorPseudo(anc_idx, mask) = dnf[0][0]
+        {
+            let handle = self.alloc_ancestor_handle(anc_idx, mask);
+            return SynthAttachment::AncestorPseudo(class_name, handle, mask, span);
+        }
+        let resolved: Vec<Vec<ResolvedTerm>> = dnf
+            .into_iter()
+            .map(|clause| {
+                clause
+                    .into_iter()
+                    .map(|term| match term {
+                        MatchTerm::Expr(e) => ResolvedTerm::Expr(e),
+                        MatchTerm::AncestorPseudo(anc_idx, mask) => {
+                            let handle = self.alloc_ancestor_handle(anc_idx, mask);
+                            ResolvedTerm::AncestorPseudo(handle, mask)
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        let expr_tokens = combine_dnf_condition(resolved, self.runtime);
+        SynthAttachment::Conditional(class_name, expr_tokens, span)
+    }
+
+    fn intern_inline_patch(&mut self, patch_stmts: String) -> syn::Ident {
+        if let Some(existing) = self.inline_patches.get(&patch_stmts) {
+            return existing.clone();
+        }
+        let idx = self.inline_patches.len();
+        let ident = format_ident!("__NANA_INLINE_PATCH_{idx}");
+        let apply = patch_tokens(&patch_stmts, self.runtime);
+        let runtime = self.runtime;
+        self.inline_items.push(quote! {
+            static #ident: #runtime::view::StylePatch = #runtime::view::StylePatch::new(#apply);
+        });
+        self.inline_patches.insert(patch_stmts, ident.clone());
+        ident
+    }
+
+    fn build_element_var_scopes(
+        &self,
+        fixed_names: &[String],
+        inline_css: Option<&str>,
+    ) -> (Arc<VarScope>, Arc<VarScope>) {
+        let (parent_light, parent_dark) = self.var_stack.last().expect("var_stack non-empty");
+
+        let mut rule_props: Vec<(&CustomPropDecl, CascadeKey)> = Vec::new();
+        for vr in &self.sheet.scoped_var_rules {
+            if !match_compound_fixed_only(&vr.subject, fixed_names) {
+                continue;
+            }
+            if !match_chain_fixed_only(&vr.ancestors, &self.ancestors) {
+                continue;
+            }
+            for cp in &vr.custom_props {
+                let key = CascadeKey::new(vr.layer, cp.important, vr.specificity, vr.source_order);
+                rule_props.push((cp, key));
+            }
+        }
+
+        let inline_custom_props: Vec<CustomPropDecl> = inline_css
+            .map(|css| {
+                compile_inline_css(css, parent_light, &CompileContext::default()).custom_props
+            })
+            .unwrap_or_default();
+
+        if rule_props.is_empty() && inline_custom_props.is_empty() {
+            return (Arc::clone(parent_light), Arc::clone(parent_dark));
+        }
+
+        let make_child = |parent: &Arc<VarScope>| {
+            let mut scope = VarScope::with_parent(Arc::clone(parent));
+            for (cp, key) in &rule_props {
+                scope.set_with_cascade(cp.name.clone(), cp.value.clone(), key.to_var_key());
+            }
+            if !inline_custom_props.is_empty() {
+                let mut inline_scope = VarScope::with_parent(Arc::new(scope));
+                for cp in &inline_custom_props {
+                    inline_scope.set(cp.name.clone(), cp.value.clone());
+                }
+                Arc::new(inline_scope)
+            } else {
+                Arc::new(scope)
+            }
+        };
+
+        (make_child(parent_light), make_child(parent_dark))
+    }
+
+    fn nodes(&mut self, nodes: &mut [Node]) {
         for node in nodes {
             if let Node::Element(element) = node {
                 self.element(element);
@@ -2241,9 +2313,15 @@ impl<'a> Styler<'a> {
     fn element(&mut self, element: &mut Element) {
         let tag = element.tag();
         let at_element = element.name.span();
+        let is_real_builtin = crate::is_builtin(&tag) && !BLOCKS.contains(&tag.as_str());
+        let is_el = is_real_builtin && !STRUCTURAL_CONTAINERS.contains(&tag.as_str());
+        let is_span = element.module.is_empty() && element.name == "Span";
+
         let mut fixed: Vec<(String, Span)> = Vec::new();
         let mut conditional: Vec<(String, Expr, Span)> = Vec::new();
+        let mut inline_style: Option<(String, Span)> = None;
         let mut kept = Vec::new();
+
         for attr in std::mem::take(&mut element.attrs) {
             match (&attr.name, &attr.value) {
                 (AttrName::Plain(name), AttrValue::Lit(Expr::Lit(literal))) if name == "class" => {
@@ -2262,12 +2340,40 @@ impl<'a> Styler<'a> {
                         ),
                     );
                 }
+                // Fix `class:` bugs: accept BOTH `AttrValue::Expr` and `AttrValue::Lit` (e.g. `class:active=true`).
                 (AttrName::Directive(directive, span), AttrValue::Expr(condition))
                     if directive.starts_with("class:") =>
                 {
                     let class = directive["class:".len()..].to_owned();
                     conditional.push((class, condition.clone(), *span));
                 }
+                (AttrName::Directive(directive, span), AttrValue::Lit(condition))
+                    if directive.starts_with("class:") =>
+                {
+                    let class = directive["class:".len()..].to_owned();
+                    conditional.push((class, condition.clone(), *span));
+                }
+                (AttrName::Directive(directive, span), AttrValue::None)
+                    if directive.starts_with("class:") =>
+                {
+                    let class = directive["class:".len()..].to_owned();
+                    let cond: Expr = syn::parse_quote_spanned!(*span=> true);
+                    conditional.push((class, cond, *span));
+                }
+                // Inline `style="..."` on built-in elements (preserving `<Span style={RichSpanStyle}>`).
+                (
+                    AttrName::Plain(name),
+                    AttrValue::Lit(Expr::Lit(syn::ExprLit {
+                        lit: Lit::Str(text),
+                        ..
+                    })),
+                ) if name == "style" && is_el && !is_span => match &mut inline_style {
+                    Some((existing, _)) => {
+                        existing.push(';');
+                        existing.push_str(&text.value());
+                    }
+                    None => inline_style = Some((text.value(), name.span())),
+                },
                 _ => kept.push(attr),
             }
         }
@@ -2278,13 +2384,51 @@ impl<'a> Styler<'a> {
             .map(|(c, e, _)| (c.clone(), e.clone()))
             .collect();
 
-        let mut synth_fixed: Vec<(String, Span)> = Vec::new();
-        let mut synth_conditional: Vec<(String, TokenStream, Span)> = Vec::new();
-        if (!fixed_names.is_empty() || !cond_pairs.is_empty())
-            && crate::is_builtin(&tag)
-            && !BLOCKS.contains(&tag.as_str())
-        {
-            for target in &self.sheet.combinators {
+        // Compute this element's hierarchical `VarScope` (light & dark).
+        let (var_light, var_dark) = self.build_element_var_scopes(
+            &fixed_names,
+            inline_style.as_ref().map(|(css, _)| css.as_str()),
+        );
+
+        // Compile inline `style="..."` against this element's resolved `VarScope`.
+        let mut inline_injected: Vec<Attr> = Vec::new();
+        if let Some((css_text, style_span)) = inline_style {
+            let (ops, compiled_trans, diags) =
+                compile_inline_dual(&css_text, &var_light, &var_dark);
+            push_template_diags(style_span, diags, &mut self.warnings, &mut self.errors);
+            if !ops.is_empty() {
+                let stmts = emit_patch_stmts(&ops, "__nana_patch", false);
+                let patch_ident = self.intern_inline_patch(stmts);
+                inline_injected.push(Attr {
+                    name: AttrName::Directive("inline_patch".into(), style_span),
+                    value: AttrValue::Verbatim(quote!(&#patch_ident)),
+                });
+            }
+            if !compiled_trans.is_empty() {
+                let mut tr_warnings = Vec::new();
+                let items = transition_items_from_compiled(
+                    &compiled_trans,
+                    0..css_text.len(),
+                    &mut tr_warnings,
+                );
+                for w in tr_warnings {
+                    self.warn(style_span, w.message);
+                }
+                if !items.is_empty() {
+                    let anim_tokens = animate_tokens(&items, self.runtime);
+                    inline_injected.push(Attr {
+                        name: AttrName::Directive("inline_animate".into(), style_span),
+                        value: AttrValue::Verbatim(anim_tokens),
+                    });
+                }
+            }
+        }
+
+        // Match static/interactive combinator targets against ancestors + self.
+        let mut synth_attachments: Vec<SynthAttachment> = Vec::new();
+        if (!fixed_names.is_empty() || !cond_pairs.is_empty()) && is_real_builtin {
+            let combinators = self.sheet.combinators.clone();
+            for target in combinators {
                 let Some(subj_conds) = match_compound(&target.subject, &fixed_names, &cond_pairs)
                 else {
                     continue;
@@ -2293,26 +2437,129 @@ impl<'a> Styler<'a> {
                 if anc_dnf.is_empty() {
                     continue;
                 }
-                let combined: Vec<Vec<Expr>> = anc_dnf
+                let combined: Vec<Vec<MatchTerm>> = anc_dnf
                     .into_iter()
                     .map(|mut clause| {
-                        clause.extend(subj_conds.iter().cloned());
+                        clause.extend(subj_conds.iter().cloned().map(MatchTerm::Expr));
                         clause
                     })
                     .collect();
-                if combined.iter().any(|clause| clause.is_empty()) {
-                    synth_fixed.push((target.synth_class.clone(), at_element));
-                } else {
-                    let expr_tokens = combine_dnf_condition(combined, self.runtime);
-                    synth_conditional.push((target.synth_class.clone(), expr_tokens, at_element));
+                synth_attachments.push(self.resolve_match_dnf(
+                    target.synth_class,
+                    combined,
+                    at_element,
+                ));
+            }
+
+            // Match deferred element-scoped-var rules and specialize them against `(var_light, var_dark)`.
+            let deferred_len = self.sheet.deferred_var_rules.len();
+            for def_idx in 0..deferred_len {
+                let def = self.sheet.deferred_var_rules[def_idx].clone();
+                let Some(subj_conds) = match_compound(&def.subject, &fixed_names, &cond_pairs)
+                else {
+                    continue;
+                };
+                let anc_dnf = match_chain(&def.ancestors, &self.ancestors);
+                if anc_dnf.is_empty() {
+                    continue;
                 }
+                self.matched_deferred.insert(def_idx);
+                let is_scrollbar_pseudo = matches!(
+                    def.pseudo_element,
+                    Some(
+                        PseudoElement::WebkitScrollbar
+                            | PseudoElement::WebkitScrollbarThumb
+                            | PseudoElement::WebkitScrollbarTrack
+                    )
+                );
+                let mut decl_diags = Vec::new();
+                let (ops, compiled_trans, compiled_anims) = compile_decls_dual(
+                    &def.declarations,
+                    &var_light,
+                    &var_dark,
+                    def.pseudo_element.as_ref(),
+                    &mut decl_diags,
+                );
+                push_diags(decl_diags, &mut self.warnings, &mut self.errors);
+
+                let trans_items = transition_items_from_compiled(
+                    &compiled_trans,
+                    def.span.clone(),
+                    &mut self.warnings,
+                );
+                let anim_items = animation_items_from_compiled(
+                    &compiled_anims,
+                    &self.sheet.compiled_kf,
+                    def.span.clone(),
+                    &mut self.warnings,
+                );
+                let patch = emit_patch_stmts(&ops, "__nana_patch", is_scrollbar_pseudo);
+                if patch.is_empty() && trans_items.is_empty() && anim_items.is_empty() {
+                    continue;
+                }
+
+                let spec_key = (def_idx, patch.clone());
+                let synth_class =
+                    if let Some(existing) = self.deferred_specializations.get(&spec_key) {
+                        existing.clone()
+                    } else {
+                        let synth = format!("__nana_var_{}", self.deferred_specializations.len());
+                        self.deferred_specializations
+                            .insert(spec_key, synth.clone());
+                        Sheet::class_index(&mut self.classes, &synth);
+                        self.sheet_classes.insert(synth.clone());
+                        if !patch.is_empty() {
+                            self.sheet.rules.push(Rule {
+                                classes: vec![synth.clone()],
+                                pseudo: def.subject_pseudo,
+                                rank: def.rank,
+                                ops,
+                                patch,
+                                query: def.query,
+                                media: def.media,
+                                is_scrollbar_pseudo,
+                            });
+                        }
+                        if def.query.is_none() && !trans_items.is_empty() {
+                            self.sheet.transitions.push(TransitionRule {
+                                classes: vec![synth.clone()],
+                                pseudo: def.subject_pseudo,
+                                rank: def.rank,
+                                items: trans_items,
+                            });
+                        }
+                        if def.query.is_none() && !anim_items.is_empty() {
+                            self.sheet.animations.push(AnimationRule {
+                                classes: vec![synth.clone()],
+                                pseudo: def.subject_pseudo,
+                                rank: def.rank,
+                                items: anim_items,
+                            });
+                        }
+                        synth
+                    };
+
+                let combined: Vec<Vec<MatchTerm>> = anc_dnf
+                    .into_iter()
+                    .map(|mut clause| {
+                        clause.extend(subj_conds.iter().cloned().map(MatchTerm::Expr));
+                        clause
+                    })
+                    .collect();
+                synth_attachments.push(self.resolve_match_dnf(synth_class, combined, at_element));
             }
         }
 
+        // Push ancestor & var frames, recurse into children and slot views, then pop.
         self.ancestors.push(AncestorFrame {
             fixed: fixed_names,
             conditional: cond_pairs,
+            can_track_interactive: is_el && !is_span,
+            interactive_handle: None,
+            tracked_mask: 0,
         });
+        self.var_stack.push((var_light, var_dark));
+
         self.nodes(&mut element.children);
         for attr in &mut kept {
             if let AttrValue::View(slot) = &mut attr.value {
@@ -2321,177 +2568,260 @@ impl<'a> Styler<'a> {
                 self.ancestors.pop();
             }
         }
-        self.ancestors.pop();
+
+        self.var_stack.pop();
+        let popped_frame = self.ancestors.pop().expect("balanced ancestor push/pop");
 
         element.attrs = kept;
-        if fixed.is_empty()
-            && conditional.is_empty()
-            && synth_fixed.is_empty()
-            && synth_conditional.is_empty()
-        {
-            return;
-        }
-        if !crate::is_builtin(&tag) || BLOCKS.contains(&tag.as_str()) {
-            self.warn(
-                at_element,
-                format!("`<{tag}>` takes no class: style the elements inside it"),
-            );
-            return;
-        }
-        if conditional.len() + synth_conditional.len() > MAX_CONDITIONAL_CLASSES {
-            self.warn(
-                at_element,
-                format!("`<{tag}>` has more than {MAX_CONDITIONAL_CLASSES} conditional classes"),
-            );
-            return;
-        }
-        let all_fixed: Vec<String> = fixed
-            .iter()
-            .chain(synth_fixed.iter())
-            .map(|(name, _)| name.clone())
-            .collect();
-        let all_conditional: Vec<String> = conditional
-            .iter()
-            .map(|(name, _, _)| name.clone())
-            .chain(synth_conditional.iter().map(|(name, _, _)| name.clone()))
-            .collect();
-        let holds = |classes: &[String], conditional_too: bool| {
-            classes.iter().all(|class| {
-                all_fixed.iter().any(|name| name == class)
-                    || (conditional_too && all_conditional.iter().any(|name| name == class))
-            })
-        };
-        // The element follows one container on one axis: the `@container`
-        // rules its classes can bring in must agree on it, with every
-        // conditional class on.
-        let queried: Vec<Result<ContainerQuery, ContainerQueryUnsupported>> = self
-            .sheet
-            .rules
-            .iter()
-            .filter(|rule| holds(&rule.classes, true))
-            .filter_map(|rule| rule.query)
-            .map(|index| Ok(self.sheet.queries[index].clone()))
-            .collect();
-        match plan_container_queries(&queried) {
-            Err(ContainerPlanUnsupported::MixedContainers) => self.warn(
-                at_element,
-                format!(
-                    "`<{tag}>`: its classes take `@container` rules on more than one container \
-                     or axis; while such rules apply together, none of them does"
-                ),
-            ),
-            Err(ContainerPlanUnsupported::TooManyBreakpoints) => self.warn(
-                at_element,
-                format!(
-                    "`<{tag}>`: its classes take `@container` rules with more than \
-                     {MAX_CONTAINER_BREAKPOINTS} breakpoints; while they all apply, none of \
-                     them does"
-                ),
-            ),
-            Ok(_) => {}
-        }
-        let runtime = self.runtime;
-        let name = self.name.clone();
+
         let mut injected = Vec::new();
-        let index = |classes: &[String], class: &str| {
-            classes
-                .iter()
-                .position(|known| known == class)
-                .map(|at| at as u16)
-        };
-        for (class, span) in fixed {
-            let known_in_sheet = self.sheet_classes.contains(&class)
-                || self.sheet.referenced_classes.contains(&class);
-            match index(&self.classes, &class) {
-                Some(at) if known_in_sheet || self.attach_all => {
-                    injected.push(Attr {
-                        name: AttrName::Directive("class".into(), span),
-                        value: AttrValue::Verbatim(quote!(#runtime::view::Class::new(&#name, #at))),
-                    });
-                    if !known_in_sheet {
-                        self.warn(
-                            span,
-                            format!("`<{tag}>`: no rule in `<style>` uses class `{class}`"),
-                        );
-                    }
-                }
-                Some(_) | None if self.sheet.referenced_classes.contains(&class) => {}
-                Some(_) | None => self.warn(
-                    span,
-                    format!("`<{tag}>`: no rule in `<style>` uses class `{class}`"),
-                ),
-            }
-        }
-        for (class, span) in synth_fixed {
-            if let Some(at) = index(&self.classes, &class) {
-                injected.push(Attr {
-                    name: AttrName::Directive("class".into(), span),
-                    value: AttrValue::Verbatim(quote!(#runtime::view::Class::new(&#name, #at))),
-                });
-            }
-        }
-        for (class, condition, span) in conditional {
-            let known_in_sheet = self.sheet_classes.contains(&class)
-                || self.sheet.referenced_classes.contains(&class);
-            let Some(at) =
-                index(&self.classes, &class).filter(|_| known_in_sheet || self.attach_all)
-            else {
-                if !known_in_sheet {
-                    self.warn(
-                        span,
-                        format!("`<{tag}>`: no rule in `<style>` uses class `{class}`"),
-                    );
-                }
-                continue;
-            };
-            if !known_in_sheet {
-                self.warn(
-                    span,
-                    format!("`<{tag}>`: no rule in `<style>` uses class `{class}`"),
-                );
-            }
-            let condition = match condition {
-                Expr::Path(_) => quote!(#condition),
-                condition => quote!(move || #condition),
-            };
+
+        // Attach `.sheet(&__NANA_SHEET)` on the first real built-in element when
+        // the stylesheet declares `@font-face` rules.
+        if is_el && !is_span && !self.attached_font_sheet && !self.sheet.font_faces.is_empty() {
+            let name = &self.name;
             injected.push(Attr {
-                name: AttrName::Directive("class_when".into(), span),
-                value: AttrValue::Verbatim(
-                    quote!(#runtime::view::Class::new(&#name, #at), #condition),
-                ),
+                name: AttrName::Directive("sheet".into(), at_element),
+                value: AttrValue::Verbatim(quote!(&#name)),
+            });
+            self.attached_font_sheet = true;
+            self.used_sheet = true;
+        }
+
+        // Attach `.track_interactive_state(__anc_N, mask)` if any descendant matched an ancestor pseudo here.
+        if let Some(handle) = popped_frame.interactive_handle
+            && popped_frame.tracked_mask != 0
+        {
+            let mask = popped_frame.tracked_mask;
+            injected.push(Attr {
+                name: AttrName::Directive("track_interactive".into(), at_element),
+                value: AttrValue::Verbatim(quote!(#handle, #mask)),
             });
         }
-        for (class, condition, span) in synth_conditional {
-            if let Some(at) = index(&self.classes, &class) {
-                injected.push(Attr {
-                    name: AttrName::Directive("class_when".into(), span),
-                    value: AttrValue::Verbatim(
-                        quote!(#runtime::view::Class::new(&#name, #at), #condition),
-                    ),
-                });
+
+        // Attach inline `style="..."` patches/transitions.
+        injected.extend(inline_injected);
+
+        let has_class_work =
+            !fixed.is_empty() || !conditional.is_empty() || !synth_attachments.is_empty();
+
+        if has_class_work {
+            if !is_real_builtin {
+                self.warn(
+                    at_element,
+                    format!("`<{tag}>` takes no class: style the elements inside it"),
+                );
+            } else {
+                let dynamic_count = conditional.len()
+                    + synth_attachments
+                        .iter()
+                        .filter(|a| !matches!(a, SynthAttachment::Fixed(..)))
+                        .count();
+                if dynamic_count > MAX_CONDITIONAL_CLASSES {
+                    self.warn(
+                        at_element,
+                        format!(
+                            "`<{tag}>` has more than {MAX_CONDITIONAL_CLASSES} conditional classes"
+                        ),
+                    );
+                } else {
+                    let all_fixed: Vec<String> = fixed
+                        .iter()
+                        .map(|(name, _)| name.clone())
+                        .chain(synth_attachments.iter().filter_map(|a| match a {
+                            SynthAttachment::Fixed(name, _) => Some(name.clone()),
+                            _ => None,
+                        }))
+                        .collect();
+                    let all_conditional: Vec<String> = conditional
+                        .iter()
+                        .map(|(name, _, _)| name.clone())
+                        .chain(synth_attachments.iter().filter_map(|a| match a {
+                            SynthAttachment::AncestorPseudo(name, ..)
+                            | SynthAttachment::Conditional(name, ..) => Some(name.clone()),
+                            SynthAttachment::Fixed(..) => None,
+                        }))
+                        .collect();
+                    let holds = |classes: &[String], conditional_too: bool| {
+                        classes.iter().all(|class| {
+                            all_fixed.iter().any(|name| name == class)
+                                || (conditional_too
+                                    && all_conditional.iter().any(|name| name == class))
+                        })
+                    };
+                    let queried: Vec<Result<ContainerQuery, ContainerQueryUnsupported>> = self
+                        .sheet
+                        .rules
+                        .iter()
+                        .filter(|rule| holds(&rule.classes, true))
+                        .filter_map(|rule| rule.query)
+                        .map(|index| Ok(self.sheet.queries[index].clone()))
+                        .collect();
+                    match plan_container_queries(&queried) {
+                        Err(ContainerPlanUnsupported::MixedContainers) => self.warn(
+                            at_element,
+                            format!(
+                                "`<{tag}>`: its classes take `@container` rules on more than one \
+                                 container or axis; while such rules apply together, none of them \
+                                 does"
+                            ),
+                        ),
+                        Err(ContainerPlanUnsupported::TooManyBreakpoints) => self.warn(
+                            at_element,
+                            format!(
+                                "`<{tag}>`: its classes take `@container` rules with more than \
+                                 {MAX_CONTAINER_BREAKPOINTS} breakpoints; while they all apply, \
+                                 none of them does"
+                            ),
+                        ),
+                        Ok(_) => {}
+                    }
+
+                    let runtime = self.runtime;
+                    let name = self.name.clone();
+                    let index_of = |classes: &[String], class: &str| {
+                        classes
+                            .iter()
+                            .position(|known| known == class)
+                            .map(|at| at as u16)
+                    };
+
+                    let mut added_sheet_attr = false;
+                    for (class, span) in fixed {
+                        let known_in_sheet = self.sheet_classes.contains(&class)
+                            || self.sheet.referenced_classes.contains(&class);
+                        match index_of(&self.classes, &class) {
+                            Some(at) if known_in_sheet || self.attach_all => {
+                                injected.push(Attr {
+                                    name: AttrName::Directive("class".into(), span),
+                                    value: AttrValue::Verbatim(
+                                        quote!(#runtime::view::Class::new(&#name, #at)),
+                                    ),
+                                });
+                                added_sheet_attr = true;
+                                if !known_in_sheet {
+                                    self.warn(
+                                        span,
+                                        format!(
+                                            "`<{tag}>`: no rule in `<style>` uses class `{class}`"
+                                        ),
+                                    );
+                                }
+                            }
+                            Some(_) | None if self.sheet.referenced_classes.contains(&class) => {}
+                            Some(_) | None => self.warn(
+                                span,
+                                format!("`<{tag}>`: no rule in `<style>` uses class `{class}`"),
+                            ),
+                        }
+                    }
+
+                    for (class, condition, span) in conditional {
+                        let known_in_sheet = self.sheet_classes.contains(&class)
+                            || self.sheet.referenced_classes.contains(&class);
+                        let Some(at) = index_of(&self.classes, &class)
+                            .filter(|_| known_in_sheet || self.attach_all)
+                        else {
+                            if !known_in_sheet {
+                                self.warn(
+                                    span,
+                                    format!("`<{tag}>`: no rule in `<style>` uses class `{class}`"),
+                                );
+                            }
+                            continue;
+                        };
+                        if !known_in_sheet {
+                            self.warn(
+                                span,
+                                format!("`<{tag}>`: no rule in `<style>` uses class `{class}`"),
+                            );
+                        }
+                        let cond_tokens = class_condition_tokens(&condition);
+                        injected.push(Attr {
+                            name: AttrName::Directive("class_when".into(), span),
+                            value: AttrValue::Verbatim(
+                                quote!(#runtime::view::Class::new(&#name, #at), #cond_tokens),
+                            ),
+                        });
+                        added_sheet_attr = true;
+                    }
+
+                    for attachment in synth_attachments {
+                        match attachment {
+                            SynthAttachment::Fixed(class, span) => {
+                                if let Some(at) = index_of(&self.classes, &class) {
+                                    injected.push(Attr {
+                                        name: AttrName::Directive("class".into(), span),
+                                        value: AttrValue::Verbatim(
+                                            quote!(#runtime::view::Class::new(&#name, #at)),
+                                        ),
+                                    });
+                                    added_sheet_attr = true;
+                                }
+                            }
+                            SynthAttachment::AncestorPseudo(class, handle, mask, span) => {
+                                if let Some(at) = index_of(&self.classes, &class) {
+                                    injected.push(Attr {
+                                        name: AttrName::Directive("ancestor_pseudo".into(), span),
+                                        value: AttrValue::Verbatim(
+                                            quote!(#runtime::view::Class::new(&#name, #at), #handle, #mask),
+                                        ),
+                                    });
+                                    added_sheet_attr = true;
+                                }
+                            }
+                            SynthAttachment::Conditional(class, condition, span) => {
+                                if let Some(at) = index_of(&self.classes, &class) {
+                                    injected.push(Attr {
+                                        name: AttrName::Directive("class_when".into(), span),
+                                        value: AttrValue::Verbatim(
+                                            quote!(#runtime::view::Class::new(&#name, #at), #condition),
+                                        ),
+                                    });
+                                    added_sheet_attr = true;
+                                }
+                            }
+                        }
+                    }
+
+                    self.used_sheet |= added_sheet_attr;
+                }
             }
         }
-        self.used |= !injected.is_empty();
-        injected.append(&mut element.attrs);
-        element.attrs = injected;
+
+        if !injected.is_empty() {
+            injected.append(&mut element.attrs);
+            element.attrs = injected;
+        }
+    }
+
+    /// Validate any deferred var-dependent rules that did not match any template
+    /// element so invalid properties/values are still surfaced (ignoring only
+    /// `MissingVariable` since the variable may be defined on an unmounted scope).
+    fn validate_unmatched_deferred(&mut self) {
+        let len = self.sheet.deferred_var_rules.len();
+        for idx in 0..len {
+            if self.matched_deferred.contains(&idx) {
+                continue;
+            }
+            let def = self.sheet.deferred_var_rules[idx].clone();
+            let mut diags = Vec::new();
+            let _ = compile_decls_dual(
+                &def.declarations,
+                &self.sheet.root_light,
+                &self.sheet.root_dark,
+                def.pseudo_element.as_ref(),
+                &mut diags,
+            );
+            diags.retain(|d| d.code != DiagCode::MissingVariable);
+            push_diags(diags, &mut self.warnings, &mut self.errors);
+        }
     }
 }
 
-/// What compiling a view's styles adds: statics to put before the view's
-/// code, and warnings about what was not compiled.
-pub struct CompiledStyles {
-    pub items: Vec<TokenStream>,
-    pub warnings: Vec<StyleWarning>,
-}
-
-/// What compiling a view's styles in hot mode adds, plus the pure-data
-/// [`HotStyleSheet`] and structural `style_shape` token stream.
-pub struct CompiledHotStyles {
-    pub items: Vec<TokenStream>,
-    pub warnings: Vec<StyleWarning>,
-    pub hot_sheet: HotStyleSheet,
-    pub style_shape: TokenStream,
-}
+// ============================================================================
+// Hot Reload Helpers
+// ============================================================================
 
 fn collect_template_classes(nodes: &[Node], out: &mut BTreeSet<String>) {
     for node in nodes {
@@ -2507,9 +2837,10 @@ fn collect_template_classes(nodes: &[Node], out: &mut BTreeSet<String>) {
                         }
                     }
                 }
-                (AttrName::Directive(directive, _), AttrValue::Expr(_))
-                    if directive.starts_with("class:") =>
-                {
+                (
+                    AttrName::Directive(directive, _),
+                    AttrValue::Expr(_) | AttrValue::Lit(_) | AttrValue::None,
+                ) if directive.starts_with("class:") => {
                     out.insert(directive["class:".len()..].to_owned());
                 }
                 _ => {}
@@ -2544,14 +2875,16 @@ fn hot_style_shape(sheet: &Sheet, runtime: &TokenStream) -> TokenStream {
     let combinators = sheet.combinators.iter().map(|target| {
         let synth = &target.synth_class;
         let subject = &target.subject;
-        let ancestors = target.ancestors.iter().map(|(comb, classes)| {
-            let kind = match comb {
+        let ancestors = target.ancestors.iter().map(|step| {
+            let kind = match step.combinator {
                 Combinator::Child => ">",
                 Combinator::Descendant => " ",
-                Combinator::AdjacentSibling => "+",
+                Combinator::NextSibling => "+",
                 Combinator::SubsequentSibling => "~",
             };
-            quote!((#kind, [#(#classes),*]))
+            let classes = &step.classes;
+            let pseudo = step.pseudo;
+            quote!((#kind, #pseudo, [#(#classes),*]))
         });
         quote!((#synth, [#(#ancestors),*], [#(#subject),*]);)
     });
@@ -2587,90 +2920,162 @@ fn hot_style_shape(sheet: &Sheet, runtime: &TokenStream) -> TokenStream {
     let pseudos = interactive_keys
         .iter()
         .map(|(classes, pseudo)| quote!((#pseudo, [#(#classes),*]);));
+    let media_count = sheet.media_queries.len();
+    let font_count = sheet.font_faces.len();
     quote! {
         {
             #(#combinators)*
             #(#transitions)*
             #(#animations)*
             #(#pseudos)*
+            (#media_count, #font_count);
         }
     }
 }
 
-/// Compile `css` against `nodes` for development hot reload: attaches every
-/// template class to a [`Sheet::with_hot`], returns the pure-data
-/// [`HotStyleSheet`] and structural `style_shape` (excluding rule declarations
-/// so static `<style>` edits do not invalidate the view's shape).
+fn build_hot_style_sheet(sheet: &Sheet) -> HotStyleSheet {
+    let mut ordered_rules: Vec<&Rule> = sheet.rules.iter().collect();
+    ordered_rules.sort_by_key(|rule| rule.rank);
+
+    // Coalesce `::-webkit-scrollbar*` rules targeting the same `(classes, pseudo, query)`
+    // so `HotStylePatch::from_ops` preserves all merged scrollbar fields.
+    let mut merged_scrollbars: BTreeMap<(Vec<String>, u8, Option<usize>), ScrollbarSkin> =
+        BTreeMap::new();
+    let mut out_rules: Vec<HotStyleRule> = Vec::new();
+    for rule in ordered_rules {
+        let mut ops = rule.ops.clone();
+        if rule.is_scrollbar_pseudo {
+            let key = (rule.classes.clone(), rule.pseudo, rule.query);
+            let entry = merged_scrollbars.entry(key).or_default();
+            for op in &mut ops {
+                if let StyleOp::Scrollbar(Some(skin)) = op {
+                    merge_scrollbar_skin(entry, skin);
+                    *skin = *entry;
+                }
+            }
+        }
+        out_rules.push(HotStyleRule {
+            classes: rule.classes.clone(),
+            pseudo: rule.pseudo,
+            patch: HotStylePatch::from_ops(ops),
+            query: rule.query.map(|idx| hot_query(&sheet.queries[idx])),
+        });
+    }
+    HotStyleSheet { rules: out_rules }
+}
+
+// ============================================================================
+// Public Entry Points
+// ============================================================================
+
+/// Compile `css` against `nodes` for development hot reload.
 pub fn compile_styles_hot(
     css: &str,
     nodes: &mut [Node],
     runtime: &TokenStream,
     view_name: &str,
 ) -> CompiledHotStyles {
-    let sheet = parse_sheet(css, true);
+    let mut inline_scoped = BTreeSet::new();
+    collect_inline_scoped_var_names(nodes, &mut inline_scoped);
+    let mut sheet = parse_sheet(css, true, inline_scoped);
     let mut template_classes = BTreeSet::new();
     collect_template_classes(nodes, &mut template_classes);
     let initial_classes: Vec<String> = template_classes.into_iter().collect();
     let name = format_ident!("__NANA_SHEET");
-    let SheetItems { classes, items } =
-        sheet.items_with_hot(&name, runtime, initial_classes, Some(view_name));
-    let mut styler = Styler::new(&sheet, classes, name, runtime);
-    styler.attach_all = true;
-    styler.nodes(nodes);
-    let mut warnings = sheet.warnings.clone();
-    warnings.extend(styler.warnings);
 
-    let mut ordered_rules: Vec<&Rule> = sheet.rules.iter().collect();
-    ordered_rules.sort_by_key(|rule| rule.rank);
-    let hot_sheet = HotStyleSheet {
-        rules: ordered_rules
-            .iter()
-            .map(|rule| HotStyleRule {
-                classes: rule.classes.clone(),
-                pseudo: rule.pseudo,
-                patch: rule.hot_patch.clone(),
-                query: rule.query.map(|idx| hot_query(&sheet.queries[idx])),
-            })
-            .collect(),
+    let (classes, used_sheet, inline_items, walk_warnings, walk_errors) = {
+        let mut walk = TemplateWalk::new(&mut sheet, initial_classes, name.clone(), runtime, true);
+        walk.nodes(nodes);
+        walk.validate_unmatched_deferred();
+        (
+            walk.classes,
+            walk.used_sheet,
+            walk.inline_items,
+            walk.warnings,
+            walk.errors,
+        )
     };
+
+    let SheetItems {
+        items: sheet_items, ..
+    } = sheet.items_with_hot(&name, runtime, classes, Some(view_name));
+
+    let mut warnings = sheet.warnings.clone();
+    warnings.extend(walk_warnings);
+    let mut errors = sheet.errors.clone();
+    errors.extend(walk_errors);
+
+    let hot_sheet = build_hot_style_sheet(&sheet);
     let style_shape = hot_style_shape(&sheet, runtime);
+
+    let mut items = inline_items;
+    if used_sheet {
+        items.extend(sheet_items);
+    }
+
     CompiledHotStyles {
-        items: if styler.used { items } else { Vec::new() },
+        items,
         warnings,
+        errors,
         hot_sheet,
         style_shape,
     }
 }
 
-/// Compile `css` against the elements of `nodes`: each element's
-/// `class="…"` and `class:name="…"` become `.class(…)` and
-/// `.class_when(…)` on the view's sheet, and are removed from the element.
+/// Compile `css` against the elements of `nodes`: each element's `class="…"`,
+/// `class:name="…"`, and inline `style="…"` become `.class(…)`, `.class_when(…)`,
+/// `.ancestor_pseudo(…)`, `.track_interactive_state(…)`, `.inline_patch(…)`, and
+/// `.sheet(…)` on the view's elements.
 pub fn compile_styles(css: &str, nodes: &mut [Node], runtime: &TokenStream) -> CompiledStyles {
-    let sheet = parse_sheet(css, true);
+    let mut inline_scoped = BTreeSet::new();
+    collect_inline_scoped_var_names(nodes, &mut inline_scoped);
+    let mut sheet = parse_sheet(css, true, inline_scoped);
     let name = format_ident!("__NANA_SHEET");
-    let SheetItems { classes, items } = sheet.items(&name, runtime);
-    let mut styler = Styler::new(&sheet, classes, name, runtime);
-    styler.nodes(nodes);
+
+    let (classes, used_sheet, inline_items, walk_warnings, walk_errors) = {
+        let mut walk = TemplateWalk::new(&mut sheet, Vec::new(), name.clone(), runtime, false);
+        walk.nodes(nodes);
+        walk.validate_unmatched_deferred();
+        (
+            walk.classes,
+            walk.used_sheet,
+            walk.inline_items,
+            walk.warnings,
+            walk.errors,
+        )
+    };
+
+    let SheetItems {
+        items: sheet_items, ..
+    } = sheet.items_with_hot(&name, runtime, classes, None);
+
     let mut warnings = sheet.warnings.clone();
-    warnings.extend(styler.warnings);
+    warnings.extend(walk_warnings);
+    let mut errors = sheet.errors.clone();
+    errors.extend(walk_errors);
+
+    let mut items = inline_items;
+    if used_sheet {
+        items.extend(sheet_items);
+    }
+
     CompiledStyles {
-        items: if styler.used { items } else { Vec::new() },
+        items,
         warnings,
+        errors,
     }
 }
 
 /// `stylesheet! { mod name; … }`: a module holding the sheet and one
 /// `view::Class` constant per class, named as the class with `-` as `_`.
-/// `class_at` gives the span a class is written at: an unused class then
-/// warns there.
 pub fn compile_stylesheet(
     css: &str,
     module: &syn::Ident,
     public: bool,
     runtime: &TokenStream,
     class_at: &dyn Fn(&str) -> Span,
-) -> (TokenStream, Vec<StyleWarning>) {
-    let sheet = parse_sheet(css, false);
+) -> CompiledStylesheet {
+    let sheet = parse_sheet(css, false, BTreeSet::new());
     let name = format_ident!("SHEET");
     let SheetItems { classes, items } = sheet.items(&name, runtime);
     let visibility = if public {
@@ -2691,463 +3096,108 @@ pub fn compile_stylesheet(
         }
     });
     let module_visibility = if public { quote!(pub) } else { quote!() };
-    (
-        quote! {
-            #[allow(non_upper_case_globals)]
-            #module_visibility mod #module {
-                #(#items)*
-                #(#constants)*
-            }
-        },
-        sheet.warnings.clone(),
-    )
-}
-
-/// `declarations` with each top-level at-rule (`@container … { … }`,
-/// `@x …;`) blanked to spaces, the same length so other ranges still point
-/// into the text, and the ranges blanked.
-fn without_at_rules(declarations: &str) -> (String, Vec<Range<usize>>) {
-    let bytes = declarations.as_bytes();
-    let mut kept = bytes.to_vec();
-    let mut ranges = Vec::new();
-    let mut depth = 0usize;
-    let mut at = 0;
-    while at < bytes.len() {
-        if let Some(next) = skip_opaque(bytes, at) {
-            at = next;
-            continue;
+    let tokens = quote! {
+        #[allow(non_upper_case_globals)]
+        #module_visibility mod #module {
+            #(#items)*
+            #(#constants)*
         }
-        match bytes[at] {
-            b'(' | b'[' => depth += 1,
-            b')' | b']' => depth = depth.saturating_sub(1),
-            b'@' if depth == 0 => {
-                let end = at_rule_end(bytes, at);
-                kept[at..end].fill(b' ');
-                ranges.push(at..end);
-                at = end;
-                continue;
-            }
-            _ => {}
-        }
-        at += 1;
+    };
+    CompiledStylesheet {
+        tokens,
+        warnings: sheet.warnings,
+        errors: sheet.errors,
     }
-    // Whole characters became spaces: the text is still UTF-8.
-    let kept = String::from_utf8(kept).unwrap_or_default();
-    (kept, ranges)
-}
-
-/// Where the at-rule starting at `start` ends: after its `;`, or after the
-/// `}` closing its block, or at the end of the text.
-fn at_rule_end(bytes: &[u8], start: usize) -> usize {
-    let mut parens = 0usize;
-    let mut braces = 0usize;
-    let mut at = start;
-    while at < bytes.len() {
-        if let Some(next) = skip_opaque(bytes, at) {
-            at = next;
-            continue;
-        }
-        match bytes[at] {
-            b'(' | b'[' => parens += 1,
-            b')' | b']' => parens = parens.saturating_sub(1),
-            b';' if parens == 0 && braces == 0 => return at + 1,
-            b'{' if parens == 0 => braces += 1,
-            b'}' if parens == 0 && braces > 0 => {
-                braces -= 1;
-                if braces == 0 {
-                    return at + 1;
-                }
-            }
-            _ => {}
-        }
-        at += 1;
-    }
-    bytes.len()
 }
 
 /// `css! { padding: 8px; transition: opacity 120ms }`: one declaration
-/// block as a compiled style, an expression of type
-/// `view::InlineStyle` for `El::css`. Warnings point into `declarations`.
-/// An `@container` block in it is not compiled and is a warning: container
-/// rules belong in a `<style>` or a `stylesheet!`.
-pub fn compile_inline(
-    declarations: &str,
-    runtime: &TokenStream,
-) -> (TokenStream, Vec<StyleWarning>) {
-    const OPEN: &str = ".__nana_inline { ";
-    // One declaration block holds no `@container` (or other at-rule): each
-    // is blanked out, its offsets kept, and said so.
-    let (kept, at_rules) = without_at_rules(declarations);
-    let css = format!("{OPEN}{kept} }}");
-    let sheet = parse_sheet(&css, false);
-    // The wrapper is not the author's: what points at it points at the
-    // whole block.
-    let inner = |range: Range<usize>| {
-        let clamp = |at: usize| at.saturating_sub(OPEN.len()).min(declarations.len());
-        let range = clamp(range.start)..clamp(range.end);
-        if range.is_empty() {
-            0..declarations.len()
-        } else {
-            range
-        }
-    };
-    let mut warnings: Vec<StyleWarning> = at_rules
-        .into_iter()
-        .map(|range| {
-            let text = declarations[range.clone()].trim();
-            let keyword = text
-                .split(|c: char| c.is_whitespace() || c == '(' || c == '{' || c == ';')
-                .next()
-                .unwrap_or(text);
-            StyleWarning {
-                at: StyleAt::Sheet(range),
-                message: format!(
-                    "`{keyword}` is not compiled in `css!`, which holds one declaration block; \
-                     write it in a `<style>` or a `stylesheet!`. It is ignored"
-                ),
-            }
-        })
-        .collect();
-    warnings.extend(sheet.warnings.iter().cloned().map(|warning| StyleWarning {
-        at: match warning.at {
-            StyleAt::Sheet(range) => StyleAt::Sheet(inner(range)),
-            StyleAt::Template(_) => StyleAt::Sheet(0..declarations.len()),
-        },
-        message: warning.message,
-    }));
-    let mut rules: Vec<&Rule> = sheet.rules.iter().collect();
-    rules.sort_by_key(|rule| rule.rank);
-    let patches = rules.iter().enumerate().map(|(index, rule)| {
-        let name = format_ident!("__NANA_PATCH_{index}");
-        let apply = patch_tokens(&rule.patch, runtime);
-        quote! {
-            static #name: #runtime::view::StylePatch = #runtime::view::StylePatch::new(#apply);
-        }
-    });
-    let entries = (0..rules.len()).map(|index| {
-        let name = format_ident!("__NANA_PATCH_{index}");
-        quote!((0u64, &#name, ::core::option::Option::None))
-    });
-    let site = if rules.is_empty() {
-        quote!(::core::option::Option::None)
+/// block compiled into `view::InlineStyle` for `El::css`.
+pub fn compile_inline(declarations: &str, runtime: &TokenStream) -> CompiledInlineStyle {
+    let compiled = compile_inline_css(declarations, &VarScope::new(), &CompileContext::default());
+    let mut warnings = Vec::new();
+    let mut errors = Vec::new();
+    push_diags(compiled.diags, &mut warnings, &mut errors);
+
+    let trans_items =
+        transition_items_from_compiled(&compiled.transitions, 0..declarations.len(), &mut warnings);
+
+    let patch_stmts = emit_patch_stmts(&compiled.ops, "__nana_patch", false);
+    let (patches, site) = if patch_stmts.is_empty() {
+        (quote!(), quote!(::core::option::Option::None))
     } else {
-        quote! {{
-            static __NANA_SITE: #runtime::view::StyleSite =
-                #runtime::view::StyleSite::new(&[#(#entries),*]);
-            ::core::option::Option::Some(&__NANA_SITE)
-        }}
+        let apply = patch_tokens(&patch_stmts, runtime);
+        (
+            quote! {
+                static __NANA_PATCH_0: #runtime::view::StylePatch =
+                    #runtime::view::StylePatch::new(#apply);
+            },
+            quote! {{
+                static __NANA_SITE: #runtime::view::StyleSite =
+                    #runtime::view::StyleSite::new(&[(0u64, &__NANA_PATCH_0, ::core::option::Option::None)]);
+                ::core::option::Option::Some(&__NANA_SITE)
+            }},
+        )
     };
-    let animate = sheet
-        .transitions
-        .iter()
-        .max_by_key(|rule| rule.rank)
-        .map_or_else(|| quote!([]), |rule| animate_tokens(&rule.items, runtime));
-    (
-        quote! {{
-            #(#patches)*
-            static __NANA_ANIMATE: &[#runtime::view::Implicit] = &#animate;
-            #runtime::view::InlineStyle::new(#site, __NANA_ANIMATE)
-        }},
+    let animate = if trans_items.is_empty() {
+        quote!([])
+    } else {
+        animate_tokens(&trans_items, runtime)
+    };
+    let tokens = quote! {{
+        #patches
+        static __NANA_ANIMATE: &[#runtime::view::Implicit] = &#animate;
+        #runtime::view::InlineStyle::new(#site, __NANA_ANIMATE)
+    }};
+    CompiledInlineStyle {
+        tokens,
         warnings,
-    )
+        errors,
+    }
+}
+
+/// Emit a test verification function that exercises every single `StyleOp`
+/// variant emitted by `nana_ui_css::emit_style_op_rust` against
+/// `#runtime::view::__patch`, guaranteeing at compile time that all 242
+/// emitted setters and type paths resolve and match `StyleOp::apply`.
+#[doc(hidden)]
+pub fn emit_all_style_ops_verification_fn(runtime: &TokenStream) -> TokenStream {
+    let samples = nana_ui_core::sample_style_ops();
+    assert_eq!(samples.len(), nana_ui_core::STYLE_OP_COUNT);
+    let mut stmts_str = String::new();
+    for op in &samples {
+        emit_style_op_rust(op, "__nana_patch", &mut stmts_str);
+    }
+    let stmts: TokenStream = stmts_str
+        .parse()
+        .expect("all 242 emitted StyleOp statements parse as Rust tokens");
+    let count = samples.len();
+    quote! {
+        fn __apply_all_242_style_ops(__nana_layout: &mut #runtime::LayoutStyle) -> usize {
+            #[allow(unused_imports)]
+            use #runtime::view::__patch as __nana_patch;
+            #stmts
+            #count
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Each sheet warning as the text it points at and its message.
-    fn located(css: &str) -> Vec<(&str, String)> {
-        parse(css)
-            .warnings
-            .into_iter()
-            .map(|warning| match warning.at {
-                StyleAt::Sheet(range) => (&css[range], warning.message),
-                StyleAt::Template(_) => unreachable!("a sheet alone has no template"),
-            })
-            .collect()
-    }
-
-    fn at<'a>(warnings: &[(&'a str, String)], needle: &str) -> &'a str {
-        warnings
-            .iter()
-            .find(|(_, message)| message.contains(needle))
-            .unwrap_or_else(|| panic!("no warning about {needle}: {warnings:?}"))
-            .0
-    }
-
-    #[test]
-    fn each_warning_points_at_what_it_is_about() {
-        let warnings = located(
-            "/* lead */ .a { padding: 4px; frobnicate: 3; transition: display 1s; animation: spin 1s }\n\
-             @media (min-width: 1px) { .b { opacity: 1 } }\n\
-             .c::before { opacity: 1 }\n\
-             .d:hover .child { opacity: 0.5; }\n\
-             div > .f { opacity: 1; }",
-        );
-        assert_eq!(at(&warnings, "frobnicate"), "frobnicate: 3");
-        assert_eq!(at(&warnings, "not animated"), "transition: display 1s");
-        assert_eq!(at(&warnings, "`@keyframes`"), "animation: spin 1s");
-        assert_eq!(at(&warnings, "@media"), "@media (min-width: 1px)");
-        assert_eq!(at(&warnings, "pseudo-element"), ".c::before");
-        assert_eq!(at(&warnings, ":hover"), ".d:hover .child");
-        assert_eq!(at(&warnings, "class selectors"), "div > .f");
-        assert_eq!(warnings.len(), 7, "{warnings:?}");
-    }
-
-    /// What the engine skips while parsing is a warning at its text, not
-    /// silently dropped.
-    #[test]
-    fn what_the_engine_skips_is_a_warning_at_its_text() {
-        for (css, text, needle) in [
-            (".a:has(> .b) { opacity: 0.5 }", ".a:has(> .b)", "selector"),
-            (
-                ".a::file-selector-button { opacity: 0.5 }",
-                ".a::file-selector-button",
-                "selector",
-            ),
-            (
-                "@supports (frob: 1) { .a { opacity: 0.5 } }",
-                "@supports (frob: 1)",
-                "condition",
-            ),
-            (
-                "@frobnicate x { .a { opacity: 0.5 } }",
-                "@frobnicate x",
-                "`@frobnicate`",
-            ),
-            ("@import \"x.css\";", "@import \"x.css\"", "`@import`"),
-        ] {
-            let warnings = located(css);
-            assert_eq!(warnings.len(), 1, "{css}: {warnings:?}");
-            assert_eq!(at(&warnings, needle), text, "{css}");
-        }
-        // One selector of a list, and what an `@supports` or `@layer` that
-        // applies holds, are pointed at themselves.
-        let warnings = located(
-            ".a, .b:has(> .c) { opacity: 0.5 }\n\
-             @supports (display: flex) { .d { opacity: 0.5 } @frob y { .e { opacity: 1 } } }\n\
-             @layer base { .f::file-selector-button, .g { opacity: 0.5 } }",
-        );
-        let texts: Vec<&str> = warnings.iter().map(|(text, _)| *text).collect();
-        assert_eq!(
-            texts,
-            [".b:has(> .c)", "@frob y", ".f::file-selector-button"],
-            "{warnings:?}"
-        );
-        // A selector list warned about as a whole still points at the one
-        // the engine skips.
-        let warnings = located("div.a, .b:has(> .c) { opacity: 0.5 }");
-        assert_eq!(at(&warnings, "class selectors"), "div.a, .b:has(> .c)");
-        assert_eq!(at(&warnings, "CSS engine parses"), ".b:has(> .c)");
-        assert_eq!(warnings.len(), 2, "{warnings:?}");
-        // An at-rule already warned about as a whole is not warned again.
-        let warnings = located("@media (min-width: 1px) { @frob z { .a { opacity: 1 } } }");
-        assert_eq!(warnings.len(), 1, "{warnings:?}");
-        assert_eq!(at(&warnings, "@media"), "@media (min-width: 1px)");
-    }
-
-    #[test]
-    fn cascade_order_drops_unknown_properties_and_keeps_opacity_motion() {
-        let sheet = parse(
-            ".card { padding: 12px; opacity: 1; transition: opacity 150ms linear; }\n\
-             .card.done { opacity: 0.5; }\n\
-             .title { opacity: 0.9 !important; }\n\
-             .title { opacity: 0.2; }\n\
-             .card:hover { opacity: 0.7; }\n\
-             .card > .title { padding: 2px; }\n\
-             .card { frobnicate: 3; }",
-        );
-        let mut rules: Vec<&Rule> = sheet.rules.iter().collect();
-        rules.sort_by_key(|rule| rule.rank);
-        let classes: Vec<(Vec<&str>, u8)> = rules
-            .iter()
-            .map(|rule| {
-                (
-                    rule.classes.iter().map(String::as_str).collect(),
-                    rule.pseudo,
-                )
-            })
-            .collect();
-        assert_eq!(
-            classes,
-            vec![
-                (vec!["card"], 0),
-                (vec!["title"], 0),
-                (vec!["card", "done"], 0),
-                (vec!["card"], PSEUDO_HOVER),
-                (vec!["__nana_comb_0"], 0),
-                (vec!["title"], 0),
-            ]
-        );
-        assert!(
-            !rules[1].rank.0,
-            "the later normal title stays below important"
-        );
-        assert!(rules[5].rank.0, "the important title is last");
-        assert!(
-            rules.iter().all(|rule| !rule.patch.contains("frobnicate")),
-            "an unknown property is not a patch"
-        );
-        let mut transitions: Vec<&TransitionRule> = sheet.transitions.iter().collect();
-        transitions.sort_by_key(|rule| rule.rank);
-        assert_eq!(transitions.len(), 1);
-        assert_eq!(transitions[0].classes, ["card"]);
-        assert!(
-            transitions[0].items.iter().any(|item| {
-                item.property == "Opacity"
-                    && item.duration_ms == 150.0
-                    && matches!(item.easing, Easing::Linear)
-            }),
-            "{:?}",
-            transitions[0].items
-        );
-    }
-
-    #[test]
-    fn a_clean_sheet_warns_of_nothing() {
-        let css =
-            ".a { padding: 4px 8px; background: url(\"x;{y}.png\"); }\n.a.b { opacity: 0.5; }";
-        assert!(located(css).is_empty(), "{:?}", located(css));
-    }
-
-    #[test]
-    fn the_outline_skips_strings_comments_and_brackets() {
-        let css =
-            ".a[title=\"}{;\"] { content: \"a;b\"; /* ; } */ padding: 1px }\n@import \"x.css\";";
-        let blocks = outline(css);
-        assert_eq!(blocks.len(), 2);
-        assert_eq!(&css[blocks[0].prelude.clone()], ".a[title=\"}{;\"]");
-        let segments: Vec<_> = blocks[0]
-            .segments
-            .iter()
-            .map(|segment| &css[segment.clone()])
-            .collect();
-        assert_eq!(segments, ["content: \"a;b\"", "padding: 1px"]);
-        assert_eq!(&css[blocks[1].prelude.clone()], "@import \"x.css\"");
-    }
-
-    /// The rules of an `@container` block compile like the sheet's, with
-    /// the block's query, and rank among the others by where they are
-    /// written: a later plain rule still comes after them.
-    #[test]
-    fn container_rules_compile_with_their_query_in_cascade_order() {
-        let sheet = parse(
-            ".row { height: 20px; background: red; }\n\
-             @container card (max-width: 300px) { .row { height: 40px; } .row.on { opacity: 0.5; } }\n\
-             .row.on { height: 30px; }\n\
-             @container card (max-width: 300px) { .row { padding: 2px; } }\n\
-             @container style(--x: 1) { .row { width: 1px; } }",
-        );
-        assert_eq!(sheet.queries.len(), 1, "an equal query is one");
-        let query = &sheet.queries[0];
-        assert_eq!(query.name.as_deref(), Some("card"));
-        assert_eq!(query.axis, ContainerAxis::Width);
-        let mut rules: Vec<&Rule> = sheet.rules.iter().collect();
-        rules.sort_by_key(|rule| rule.rank);
-        let order: Vec<(Vec<&str>, Option<usize>, u32)> = rules
-            .iter()
-            .map(|rule| {
-                (
-                    rule.classes.iter().map(String::as_str).collect(),
-                    rule.query,
-                    rule.rank.2,
-                )
-            })
-            .collect();
-        assert_eq!(
-            order,
-            vec![
-                (vec!["row"], None, 0),
-                (vec!["row"], Some(0), 1),
-                (vec!["row"], Some(0), 4),
-                (vec!["row", "on"], Some(0), 2),
-                (vec!["row", "on"], None, 3),
-            ],
-            "the unsupported block compiles nothing"
-        );
-
-        let items = sheet.items(&format_ident!("S"), &quote!(x));
-        let tokens = items
-            .items
-            .iter()
-            .map(ToString::to_string)
-            .collect::<String>();
-        assert_eq!(tokens.matches("SheetQuery =").count(), 1, "{tokens}");
-        let bits = |value: f32| format!("from_bits ({}u32)", value.to_bits());
-        assert!(tokens.contains(&bits(f32::NEG_INFINITY)), "{tokens}");
-        assert!(
-            tokens.contains(&bits(300f32.next_up())),
-            "max-width includes 300: {tokens}"
-        );
-        assert!(tokens.contains("x :: ResponsiveAxis :: Width"), "{tokens}");
-        assert_eq!(
-            tokens
-                .matches("query : :: core :: option :: Option :: Some")
-                .count(),
-            3
-        );
-    }
-
-    /// Each `@container` problem is a warning at the CSS it is about; the
-    /// container properties write fields and warn of nothing.
-    #[test]
-    fn container_warnings_point_at_what_they_are_about() {
-        let warnings = located(
-            ".a { container-type: inline-size; container-name: card; container: card / size; }\n\
-             @container style(--wide: 1) { .b { opacity: 1 } }\n\
-             @container (width > 10em) { .b { opacity: 1 } }\n\
-             @container (width > 1px) {\n\
-               div.c { opacity: 1 }\n\
-               .e:hover .child { opacity: 1 }\n\
-               .f { transition: opacity 1s; frobnicate: 1 }\n\
-               @media (min-width: 1px) { .g { opacity: 1 } }\n\
-               @container (height > 1px) { .h { opacity: 1 } }\n\
-               .ok { opacity: 0.5 }\n\
-             }\n\
-             @supports (display: flex) { @container (inline-size: 1em) { .i { opacity: 1 } } }",
-        );
-        assert_eq!(at(&warnings, "`style()`"), "@container style(--wide: 1)");
-        assert_eq!(at(&warnings, "`em`"), "@container (width > 10em)");
-        assert_eq!(at(&warnings, "class selectors"), "div.c");
-        assert_eq!(at(&warnings, ":hover"), ".e:hover .child");
-        assert_eq!(
-            at(&warnings, "`transition` inside `@container`"),
-            "transition: opacity 1s"
-        );
-        assert_eq!(at(&warnings, "frobnicate"), "frobnicate: 1");
-        assert_eq!(
-            at(&warnings, "`@media` inside `@container`"),
-            "@media (min-width: 1px)"
-        );
-        assert_eq!(
-            at(&warnings, "inside another `@container`"),
-            "@container (height > 1px)"
-        );
-        assert_eq!(
-            at(&warnings, "a length in"),
-            "@container (width > 10em)",
-            "the first unit warning"
-        );
-        assert!(
-            warnings
-                .iter()
-                .any(|(text, message)| *text == "@container (inline-size: 1em)"
-                    && message.contains("`em`")),
-            "an `@container` inside `@supports`: {warnings:?}"
-        );
-        assert_eq!(warnings.len(), 9, "{warnings:?}");
-    }
-
-    fn element(class: &str, conditional: &[&str]) -> Node {
-        let mut attrs = vec![Attr {
-            name: AttrName::Plain(format_ident!("class")),
-            value: AttrValue::Lit(syn::parse_quote!(#class)),
-        }];
-        for name in conditional {
+    fn element(classes: &str, conditional: &[&str]) -> Node {
+        let mut attrs = Vec::new();
+        if !classes.is_empty() {
             attrs.push(Attr {
-                name: AttrName::Directive(format!("class:{name}"), Span::call_site()),
-                value: AttrValue::Expr(syn::parse_quote!(flag)),
+                name: AttrName::Plain(format_ident!("class")),
+                value: AttrValue::Lit(syn::parse_quote!(#classes)),
+            });
+        }
+        for &c in conditional {
+            let ident = format_ident!("{}", c.replace('-', "_"));
+            attrs.push(Attr {
+                name: AttrName::Directive(format!("class:{c}"), Span::call_site()),
+                value: AttrValue::Expr(syn::parse_quote!(#ident)),
             });
         }
         Node::Element(Element {
@@ -3158,201 +3208,75 @@ mod tests {
         })
     }
 
-    /// An element follows one container on one axis: classes that bring in
-    /// rules on two, or more than 16 bounds, warn at the element.
     #[test]
-    fn an_element_whose_container_rules_cannot_share_a_plan_warns() {
-        let css = "@container a (width < 100px) { .x { opacity: 0.5 } }\n\
-                   @container b (width < 100px) { .y { opacity: 0.5 } }\n\
-                   @container a (width < 200px) { .z { opacity: 0.5 } }";
-        let warn = |nodes: &mut [Node]| {
-            compile_styles(css, nodes, &quote!(x))
-                .warnings
-                .into_iter()
-                .filter(|warning| warning.message.contains("more than one container"))
-                .count()
-        };
-        assert_eq!(warn(&mut [element("x z", &[])]), 0, "one container");
-        assert_eq!(warn(&mut [element("x", &["y"])]), 1, "with the class on");
-        assert_eq!(warn(&mut [element("x y", &[])]), 1);
+    fn layer_cascade_order_respects_layers_and_important_reversal() {
+        let css = "\
+            @layer base, overrides;\n\
+            @layer overrides { .box { padding: 20px; opacity: 0.2 !important; } }\n\
+            @layer base { .box { padding: 8px; opacity: 0.9 !important; } }\n\
+            .box { padding: 12px; }";
+        let sheet = parse(css);
+        assert!(sheet.errors.is_empty(), "{:?}", sheet.errors);
+        assert!(sheet.warnings.is_empty(), "{:?}", sheet.warnings);
+        let mut rules: Vec<&Rule> = sheet.rules.iter().collect();
+        rules.sort_by_key(|r| r.rank);
+        // Expected ascending cascade order (last wins):
+        // 1. base normal (padding: 8px)
+        // 2. overrides normal (padding: 20px)
+        // 3. unlayered normal (padding: 12px)  -> unlayered beats layered!
+        // 4. overrides !important (opacity: 0.2)
+        // 5. base !important (opacity: 0.9)    -> earlier layer wins on !important!
+        assert_eq!(rules.len(), 5);
+        assert!(rules[0].patch.contains("8.0"), "{}", rules[0].patch);
+        assert!(rules[1].patch.contains("20.0"), "{}", rules[1].patch);
+        assert!(rules[2].patch.contains("12.0"), "{}", rules[2].patch);
+        assert!(rules[3].patch.contains("0.2"), "{}", rules[3].patch);
+        assert!(rules[4].patch.contains("0.9"), "{}", rules[4].patch);
+    }
 
-        let many: String = (1..=17)
-            .map(|px| format!("@container (min-width: {px}px) {{ .m {{ opacity: 0.5 }} }}\n"))
-            .collect();
-        let compiled = compile_styles(&many, &mut [element("m", &[])], &quote!(x));
+    #[test]
+    fn tiered_diagnostics_separate_errors_and_warnings() {
+        let css = "\
+            .a { padding: 4px; frobnicate: 3; -webkit-font-smoothing: antialiased; }\n\
+            .b::before { opacity: 0.5; }\n\
+            div > .c { opacity: 1; }";
+        let sheet = parse(css);
         assert!(
-            compiled
+            sheet
+                .errors
+                .iter()
+                .any(|e| e.message.contains("frobnicate")),
+            "unknown property must be an error: {:?}",
+            sheet.errors
+        );
+        assert!(
+            sheet
                 .warnings
                 .iter()
-                .any(|warning| warning.message.contains("breakpoints")),
+                .any(|w| w.message.contains("-webkit-font-smoothing")),
+            "vendor-prefixed property must be a warning: {:?}",
+            sheet.warnings
+        );
+        assert!(
+            sheet
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("pseudo-element")),
             "{:?}",
-            compiled
+            sheet.warnings
+        );
+        assert!(
+            sheet
                 .warnings
                 .iter()
-                .map(|warning| &warning.message)
-                .collect::<Vec<_>>()
-        );
-    }
-
-    /// `css!` holds one declaration block: an `@container` in it is a
-    /// warning at it, and the declarations around it still compile.
-    #[test]
-    fn css_warns_of_an_at_rule_and_compiles_the_rest() {
-        let declarations =
-            "padding: 4px; @container (width < 300px) { padding: 2px; } opacity: 0.5";
-        let (tokens, warnings) = compile_inline(declarations, &quote!(x));
-        let pointed: Vec<(&str, &str)> = warnings
-            .iter()
-            .map(|warning| match &warning.at {
-                StyleAt::Sheet(range) => (&declarations[range.clone()], warning.message.as_str()),
-                StyleAt::Template(_) => unreachable!("css! has no template"),
-            })
-            .collect();
-        assert_eq!(pointed.len(), 1, "{pointed:?}");
-        assert_eq!(pointed[0].0, "@container (width < 300px) { padding: 2px; }");
-        assert!(
-            pointed[0]
-                .1
-                .contains("`@container` is not compiled in `css!`")
-        );
-        // Each written field compiles directly into a typed setter call.
-        let tokens: String = tokens
-            .to_string()
-            .chars()
-            .filter(|character| !character.is_whitespace())
-            .collect();
-        assert!(
-            tokens.contains("usex::view::__patchas__nana_patch;"),
-            "{tokens}"
-        );
-        assert!(
-            tokens.contains("__nana_patch::set::opacity(__nana_layout,Some(0.5_f32));"),
-            "{tokens}"
-        );
-        assert!(
-            tokens.contains(
-                "__nana_patch::set::padding(__nana_layout,Some(__nana_patch::LengthSpec::Px(4.0_f32)));"
-            ),
-            "{tokens}"
-        );
-        assert!(!tokens.contains("__style_value"), "{tokens}");
-        assert!(!tokens.contains("2.0_f32"), "{tokens}");
-        assert!(!tokens.contains("SheetQuery"), "{tokens}");
-    }
-
-    #[test]
-    fn complex_css_declarations_emit_valid_rust_patch_tokens() {
-        let declarations = "\
-            width: calc(50% - 8px); \
-            max-width: min(76%, 620px); \
-            background-image: linear-gradient(90deg, red, blue); \
-            box-shadow: 0 2px 4px oklch(0.7 0.1 120); \
-            grid-template-columns: [a] 1fr minmax(10px, 2fr); \
-            transform: translate(4px, 8px); \
-            padding: theme(space-md); \
-            color: oklch(0.6 0.15 240);";
-        let (tokens, warnings) = compile_inline(declarations, &quote!(x));
-        assert!(warnings.is_empty(), "{warnings:?}");
-        syn::parse2::<syn::Expr>(tokens.clone()).expect("compiled tokens are valid Rust expr");
-        let compact: String = tokens
-            .to_string()
-            .chars()
-            .filter(|c| !c.is_whitespace())
-            .collect();
-        assert!(!compact.contains("__style_value"), "{compact}");
-        assert!(
-            compact.contains("usex::view::__patchas__nana_patch;"),
-            "{compact}"
-        );
-        assert!(compact.contains("__nana_patch::set::width("), "{compact}");
-        assert!(
-            compact.contains("__nana_patch::set::max_width("),
-            "{compact}"
-        );
-        assert!(
-            compact.contains("__nana_patch::set::paint::background_layers("),
-            "{compact}"
-        );
-        assert!(
-            compact.contains("__nana_patch::set::paint::box_shadows("),
-            "{compact}"
-        );
-        assert!(
-            compact.contains("__nana_patch::set::grid::columns("),
-            "{compact}"
-        );
-        assert!(
-            compact.contains("__nana_patch::set::transforms::transform("),
-            "{compact}"
-        );
-        assert!(
-            compact.contains("__nana_patch::set::theme::padding("),
-            "{compact}"
-        );
-        assert!(
-            compact.contains("__nana_patch::set::paint_colors::color("),
-            "{compact}"
+                .any(|w| w.message.contains("class selectors")),
+            "{:?}",
+            sheet.warnings
         );
     }
 
     #[test]
-    fn removed_css_and_subgrid_diagnostics_cover_migration_cases() {
-        let warnings = located(
-            ".legacy { display: block; display: inline-block; display: flow-root; \
-             display: contents; float: left; clear: both; }\n\
-             .grid-bad { grid-template-columns: subgrid 80px; grid-template-rows: masonry; }\n\
-             .grid-ok { display: grid; grid-template-columns: subgrid [a] [b]; \
-             grid-template-rows: subgrid; }",
-        );
-        assert!(at(&warnings, "legacy block display").contains("display: block"));
-        assert!(at(&warnings, "inline-block").contains("display: inline-block"));
-        assert!(at(&warnings, "display: flow-root").contains("flow-root"));
-        assert!(at(&warnings, "display: contents").contains("display: contents"));
-        assert!(at(&warnings, "CSS floats").contains("float: left"));
-        assert!(
-            warnings
-                .iter()
-                .any(|(text, msg)| *text == "clear: both" && msg.contains("CSS floats"))
-        );
-        assert!(at(&warnings, "mixing `subgrid`").contains("subgrid 80px"));
-        assert!(at(&warnings, "could not parse").contains("masonry"));
-        assert!(
-            !warnings
-                .iter()
-                .any(|(text, _)| text.contains("subgrid [a] [b]")
-                    || *text == "grid-template-rows: subgrid"),
-            "valid standalone subgrid must not emit warnings: {warnings:?}"
-        );
-
-        let (inline_tokens, inline_warnings) = compile_inline(
-            "display: grid; grid-template-columns: subgrid; float: right;",
-            &quote!(x),
-        );
-        assert!(
-            inline_warnings
-                .iter()
-                .any(|w| w.message.contains("CSS floats")),
-            "{inline_warnings:?}"
-        );
-        assert!(
-            !inline_warnings
-                .iter()
-                .any(|w| w.message.contains("subgrid")),
-            "{inline_warnings:?}"
-        );
-        let compact: String = inline_tokens
-            .to_string()
-            .chars()
-            .filter(|c| !c.is_whitespace())
-            .collect();
-        assert!(
-            compact.contains("__nana_patch::set::grid::columns_subgrid(__nana_layout,true);"),
-            "{compact}"
-        );
-    }
-
-    #[test]
-    fn dynamic_theme_tokens_emit_theme_aware_paint_colors() {
+    fn dynamic_theme_tokens_and_dual_root_vars_emit_light_dark() {
         let css = "\
             :root { --tint: #112233; }\n\
             :root[data-theme=\"dark\"] { --tint: #ddeeff; }\n\
@@ -3363,6 +3287,7 @@ mod tests {
                 outline-color: var(--tint);\n\
             }";
         let sheet = parse(css);
+        assert!(sheet.errors.is_empty(), "{:?}", sheet.errors);
         assert!(sheet.warnings.is_empty(), "{:?}", sheet.warnings);
         let items = sheet.items(&format_ident!("S"), &quote!(x));
         let tokens: String = items
@@ -3375,84 +3300,93 @@ mod tests {
             .collect();
         assert!(tokens.contains("ThemeRole"), "{tokens}");
         assert!(tokens.contains("ThemeMix"), "{tokens}");
-        assert!(tokens.contains("PaintColor::light_dark"), "{tokens}");
-    }
-
-    #[test]
-    fn interactive_pseudos_emit_subject_bits_and_warn_on_ancestor_pseudo() {
-        let css = "\
-            .btn:hover { opacity: 0.9; transition: opacity 120ms 30ms linear; }\n\
-            .btn:focus { opacity: 0.8; }\n\
-            .btn:focus-visible { opacity: 0.7; }\n\
-            .btn:active { opacity: 0.6; }\n\
-            .btn:selected { opacity: 0.55; }\n\
-            .card:hover .child { opacity: 0.5; }";
-        let sheet = parse(css);
-        assert_eq!(sheet.warnings.len(), 1, "{:?}", sheet.warnings);
         assert!(
-            sheet.warnings[0].message.contains("subject"),
-            "{:?}",
-            sheet.warnings
+            tokens.contains("ThemePair") || tokens.contains("PaintColor::light_dark"),
+            "{tokens}"
         );
-        let pseudos: Vec<u8> = sheet.rules.iter().map(|r| r.pseudo).collect();
-        assert_eq!(
-            pseudos,
-            vec![
-                PSEUDO_HOVER,
-                PSEUDO_FOCUS,
-                PSEUDO_FOCUS_VISIBLE,
-                PSEUDO_ACTIVE,
-                PSEUDO_SELECTED
-            ]
-        );
-        assert_eq!(sheet.transitions.len(), 1);
-        assert_eq!(sheet.transitions[0].pseudo, PSEUDO_HOVER);
-        assert_eq!(sheet.transitions[0].items[0].delay_ms, 30.0);
     }
 
     #[test]
-    fn keyframes_and_animations_emit_with_valid_syntax_and_warn_when_unknown() {
-        let css = "\
-            @keyframes fade-shift {\n\
-                from { opacity: 0.2; transform: translateX(0px); }\n\
-                to { opacity: 1.0; transform: translateX(12px); color: light-dark(#111, #eee); filter: blur(2px); }\n\
-            }\n\
-            .card { animation: fade-shift 300ms 50ms steps(4, start) infinite alternate both; transition: filter 120ms; }\n\
-            .card:hover { animation-play-state: paused; }\n\
-            .bad { animation: missing 200ms; }";
-        let sheet = parse(css);
-        assert_eq!(sheet.warnings.len(), 1, "{:?}", sheet.warnings);
-        assert!(
-            sheet.warnings[0].message.contains("missing"),
-            "{:?}",
-            sheet.warnings
-        );
-        let items = sheet.items(&format_ident!("S"), &quote!(x));
-        for item in &items.items {
-            syn::parse2::<syn::Item>(item.clone()).expect("emitted animation item is valid Rust");
-        }
-        let tokens: String = items
-            .items
-            .iter()
-            .map(ToString::to_string)
-            .collect::<String>()
-            .chars()
-            .filter(|c| !c.is_whitespace())
-            .collect();
-        assert!(tokens.contains("Sheet::with_animations"), "{tokens}");
-        assert!(tokens.contains("MotionCurve::Steps"), "{tokens}");
-        assert!(tokens.contains("AnimationIteration::Infinite"), "{tokens}");
-        assert!(tokens.contains("AnimationDirection::Alternate"), "{tokens}");
-        assert!(tokens.contains("AnimationFillMode::Both"), "{tokens}");
-        assert!(tokens.contains("AnimationPlayState::Paused"), "{tokens}");
-        assert!(tokens.contains("CompiledMotionValue::Filter"), "{tokens}");
+    fn ancestor_interactive_emits_track_and_ancestor_pseudo() {
+        let css = ".card:hover .icon { opacity: 0.5; }";
+        let mut nodes = vec![Node::Element(Element {
+            module: Vec::new(),
+            name: format_ident!("Column"),
+            attrs: vec![Attr {
+                name: AttrName::Plain(format_ident!("class")),
+                value: AttrValue::Lit(syn::parse_quote!("card")),
+            }],
+            children: vec![element("icon", &[])],
+        })];
+        let compiled = compile_styles(css, &mut nodes, &quote!(x));
+        assert!(compiled.errors.is_empty(), "{:?}", compiled.errors);
+        assert!(compiled.warnings.is_empty(), "{:?}", compiled.warnings);
+        let expanded = crate::expand(&quote!(x), &nodes).unwrap().to_string();
+        assert!(expanded.contains("interactive_state"), "{expanded}");
+        assert!(expanded.contains("track_interactive_state"), "{expanded}");
+        assert!(expanded.contains("ancestor_pseudo"), "{expanded}");
     }
 
     #[test]
-    fn combinators_compile_in_styles_and_warn_in_stylesheet() {
+    fn element_scoped_custom_properties_inherit_down_tree() {
         let css = "\
-            .card.open > .title { opacity: 0.5; }\n\
-            .card .badge { padding: 4px; }";
+            .dark-card { --bg: #111111; }\n\
+            .dark-card .title { color: var(--bg); }";
+        let mut nodes = vec![Node::Element(Element {
+            module: Vec::new(),
+            name: format_ident!("Column"),
+            attrs: vec![Attr {
+                name: AttrName::Plain(format_ident!("class")),
+                value: AttrValue::Lit(syn::parse_quote!("dark-card")),
+            }],
+            children: vec![element("title", &[])],
+        })];
+        let compiled = compile_styles(css, &mut nodes, &quote!(x));
+        assert!(compiled.errors.is_empty(), "{:?}", compiled.errors);
+        assert!(compiled.warnings.is_empty(), "{:?}", compiled.warnings);
+        let items: String = compiled.items.iter().map(ToString::to_string).collect();
+        assert!(items.contains("paint_colors :: color"), "{items}");
+    }
+
+    #[test]
+    fn media_and_font_face_emit_on_sheet() {
+        let css = "\
+            @font-face { font-family: \"TestFont\"; src: local(\"TestFont\"); }\n\
+            @media (min-width: 600px) { .card { padding: 24px; } }";
+        let mut nodes = vec![element("card", &[])];
+        let compiled = compile_styles(css, &mut nodes, &quote!(x));
+        assert!(compiled.errors.is_empty(), "{:?}", compiled.errors);
+        assert!(compiled.warnings.is_empty(), "{:?}", compiled.warnings);
+        let items: String = compiled.items.iter().map(ToString::to_string).collect();
+        assert!(items.contains("with_media"), "{items}");
+        assert!(items.contains("SheetMediaQuery :: new"), "{items}");
+        assert!(items.contains("with_font_faces"), "{items}");
+        assert!(items.contains("FontFaceRule"), "{items}");
+        let expanded = crate::expand(&quote!(x), &nodes).unwrap().to_string();
+        assert!(expanded.contains(". sheet (& __NANA_SHEET)"), "{expanded}");
+    }
+
+    #[test]
+    fn inline_style_attr_emits_inline_patch_and_preserves_span_style() {
+        let mut nodes = vec![Node::Element(Element {
+            module: Vec::new(),
+            name: format_ident!("Column"),
+            attrs: vec![Attr {
+                name: AttrName::Plain(format_ident!("style")),
+                value: AttrValue::Lit(syn::parse_quote!("padding: 10px; opacity: 0.5;")),
+            }],
+            children: Vec::new(),
+        })];
+        let compiled = compile_styles("", &mut nodes, &quote!(x));
+        assert!(compiled.errors.is_empty(), "{:?}", compiled.errors);
+        assert!(compiled.warnings.is_empty(), "{:?}", compiled.warnings);
+        let expanded = crate::expand(&quote!(x), &nodes).unwrap().to_string();
+        assert!(expanded.contains("inline_patch"), "{expanded}");
+    }
+
+    #[test]
+    fn class_when_avoids_double_closure_and_allows_bool_literal() {
+        let css = ".card.active { opacity: 0.5; }";
         let mut nodes = vec![Node::Element(Element {
             module: Vec::new(),
             name: format_ident!("Column"),
@@ -3462,33 +3396,41 @@ mod tests {
                     value: AttrValue::Lit(syn::parse_quote!("card")),
                 },
                 Attr {
-                    name: AttrName::Directive("class:open".into(), Span::call_site()),
-                    value: AttrValue::Expr(syn::parse_quote!(open_sig)),
+                    name: AttrName::Directive("class:active".into(), Span::call_site()),
+                    value: AttrValue::Expr(syn::parse_quote!(move || flag.get())),
                 },
             ],
-            children: vec![
-                element("title", &[]),
-                Node::Element(Element {
-                    module: Vec::new(),
-                    name: format_ident!("Column"),
-                    attrs: Vec::new(),
-                    children: vec![element("badge", &[])],
-                }),
-            ],
+            children: Vec::new(),
         })];
         let compiled = compile_styles(css, &mut nodes, &quote!(x));
-        assert!(compiled.warnings.is_empty(), "{:?}", compiled.warnings);
-        assert!(!compiled.items.is_empty());
+        assert!(compiled.errors.is_empty(), "{:?}", compiled.errors);
+        let expanded = crate::expand(&quote!(x), &nodes).unwrap().to_string();
+        assert!(!expanded.contains("move || move ||"), "{expanded}");
 
-        let (_, sheet_warnings) =
-            compile_stylesheet(css, &format_ident!("m"), false, &quote!(x), &|_| {
-                Span::call_site()
-            });
-        assert_eq!(sheet_warnings.len(), 2, "{sheet_warnings:?}");
+        let mut lit_nodes = vec![Node::Element(Element {
+            module: Vec::new(),
+            name: format_ident!("Column"),
+            attrs: vec![
+                Attr {
+                    name: AttrName::Plain(format_ident!("class")),
+                    value: AttrValue::Lit(syn::parse_quote!("card")),
+                },
+                Attr {
+                    name: AttrName::Directive("class:active".into(), Span::call_site()),
+                    value: AttrValue::Lit(syn::parse_quote!(true)),
+                },
+            ],
+            children: Vec::new(),
+        })];
+        let compiled_lit = compile_styles(css, &mut lit_nodes, &quote!(x));
+        assert!(compiled_lit.errors.is_empty(), "{:?}", compiled_lit.errors);
+        let expanded_lit = crate::expand(&quote!(x), &lit_nodes).unwrap().to_string();
+        assert!(expanded_lit.contains("class_when"), "{expanded_lit}");
+        assert!(expanded_lit.contains(", true)"), "{expanded_lit}");
     }
 
     #[test]
-    fn compile_styles_hot_keeps_shape_stable_across_static_declaration_edits() {
+    fn compile_styles_hot_emits_hot_style_patch_from_ops_and_keeps_shape_stable() {
         let mut nodes_a = vec![element("card", &["open"])];
         let a = compile_styles_hot(
             ".card { padding: 4px; opacity: 0.9; }\n.card.open { opacity: 0.5; }",
@@ -3496,6 +3438,9 @@ mod tests {
             &quote!(x),
             "Card",
         );
+        assert!(a.errors.is_empty(), "{:?}", a.errors);
+        assert!(!a.hot_sheet.rules[0].patch.ops.is_empty());
+
         let mut nodes_b = vec![element("card", &["open"])];
         let b = compile_styles_hot(
             ".card { padding: 16px; }\n.card.open { opacity: 1; }",

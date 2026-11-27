@@ -378,22 +378,50 @@ impl Compiler {
         }
         analysis.fold();
         analysis.finish();
-        // Classes against the view's `<style>`, after the analysis has seen
-        // their conditions and before bindings are rewritten.
+        // Lift `<template #default>` / `<template #name>` slots BEFORE compiling
+        // styles (matching `view!`) so `<template #default>` never breaks `.parent > .child`.
+        nana_ui_view_codegen::lift_slots(&mut template)
+            .map_err(|error| parse::syn_error(file, error))?;
+        // Classes and inline `style="..."` against the view's `<style>`, after
+        // the analysis has seen their conditions and before bindings are rewritten.
         let css = style.as_ref().map_or("", |style| style.css.as_str());
-        let (style_items, style_warnings, hot_styles, style_shape) = if self.hot {
+        let (style_items, style_warnings, style_errors, hot_styles, style_shape) = if self.hot {
             let compiled =
                 nana_ui_view_codegen::compile_styles_hot(css, &mut template, &self.runtime, &name);
             (
                 compiled.items,
                 compiled.warnings,
+                compiled.errors,
                 Some(compiled.hot_sheet),
                 compiled.style_shape,
             )
         } else {
             let compiled = nana_ui_view_codegen::compile_styles(css, &mut template, &self.runtime);
-            (compiled.items, compiled.warnings, None, TokenStream::new())
+            (
+                compiled.items,
+                compiled.warnings,
+                compiled.errors,
+                None,
+                TokenStream::new(),
+            )
         };
+        if let Some(first_err) = style_errors.into_iter().next() {
+            let (line, column) = match first_err.at {
+                nana_ui_view_codegen::StyleAt::Sheet(range) => style
+                    .as_ref()
+                    .map_or((1, 1), |style| style.position(range.start)),
+                nana_ui_view_codegen::StyleAt::Template(span) => {
+                    let start = span.start();
+                    (start.line.max(1), start.column + 1)
+                }
+            };
+            return Err(Error {
+                file: file.to_owned(),
+                line,
+                column,
+                message: first_err.message,
+            });
+        }
         let mut rows = Vec::new();
         let mut rewrite = Rewrite {
             file,
@@ -403,10 +431,6 @@ impl Compiler {
             rows: &mut rows,
         };
         rewrite.nodes(&mut template)?;
-        // Named slots left on builtin elements (the known components' are
-        // arguments now) become `.name(view)`, as in `view!`.
-        nana_ui_view_codegen::lift_slots(&mut template)
-            .map_err(|error| parse::syn_error(file, error))?;
         let (body, lints) =
             nana_ui_view_codegen::expand_checked_at(&self.runtime, &template, Some(file))
                 .map_err(|error| parse::syn_error(file, error))?;
@@ -655,6 +679,10 @@ impl Rewrite<'_> {
         // its own.
         let builtin = is_builtin(element);
         for attr in &mut element.attrs {
+            if let AttrValue::View(slot) = &mut attr.value {
+                self.nodes(slot)?;
+                continue;
+            }
             let label = match &attr.name {
                 AttrName::Plain(ident)
                     if builtin
@@ -850,7 +878,26 @@ impl Rewrite<'_> {
         };
         let mut kept = Vec::new();
         for attr in std::mem::take(&mut element.attrs) {
-            if matches!(&attr.name, AttrName::Plain(ident) if ident == "key")
+            if let Attr {
+                name: AttrName::Directive(directive, span),
+                value: AttrValue::View(mut nodes),
+            } = attr
+            {
+                if let Some(slot) = directive.strip_prefix("slot:") {
+                    let slot = match slot.replace('-', "_") {
+                        default if default == "default" => String::from("children"),
+                        other => other,
+                    };
+                    self.nodes(&mut nodes)?;
+                    values.insert(slot, AttrValue::View(nodes));
+                    continue;
+                }
+                kept.push(Attr {
+                    name: AttrName::Directive(directive, span),
+                    value: AttrValue::View(nodes),
+                });
+                continue;
+            } else if matches!(&attr.name, AttrName::Plain(ident) if ident == "key")
                 || matches!(attr.name, AttrName::Directive(..))
             {
                 kept.push(attr);

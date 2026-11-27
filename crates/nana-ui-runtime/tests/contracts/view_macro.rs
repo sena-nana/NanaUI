@@ -2512,6 +2512,458 @@ mod styles {
         cx.flush_reactive().unwrap();
         assert_eq!(layout_of(&cx, btn).opacity, None);
     }
+
+    #[test]
+    fn all_242_emitted_style_ops_compile_and_execute_against_runtime_patch() {
+        nana_ui_view_macros::__test_all_style_ops!();
+        let mut emitted = nana_ui_runtime::LayoutStyle::default();
+        let count = __apply_all_242_style_ops(&mut emitted);
+        assert_eq!(count, nana_ui_core::STYLE_OP_COUNT);
+        assert_eq!(count, 242);
+
+        let mut direct = nana_ui_runtime::LayoutStyle::default();
+        for op in nana_ui_core::sample_style_ops() {
+            op.apply(&mut direct);
+        }
+        // `MaterialRef::new` assigns a fresh atomic instance id per construction;
+        // verify each material's program/parameters/textures match, then compare all
+        // remaining 239 fields for exact equality.
+        for (e, d) in [
+            (
+                emitted.paint.background_material.as_ref(),
+                direct.paint.background_material.as_ref(),
+            ),
+            (
+                emitted.paint.border_material.as_ref(),
+                direct.paint.border_material.as_ref(),
+            ),
+            (
+                emitted.paint.text_material.as_ref(),
+                direct.paint.text_material.as_ref(),
+            ),
+        ] {
+            let (e, d) = (e.expect("emitted material"), d.expect("direct material"));
+            assert_eq!(e.program().source, d.program().source);
+            assert_eq!(e.parameters(), d.parameters());
+            assert_eq!(e.textures(), d.textures());
+        }
+        emitted.paint.background_material = None;
+        emitted.paint.border_material = None;
+        emitted.paint.text_material = None;
+        direct.paint.background_material = None;
+        direct.paint.border_material = None;
+        direct.paint.text_material = None;
+        assert_eq!(emitted, direct);
+    }
+
+    #[test]
+    fn layer_cascade_ordering_and_important_reversal() {
+        let mut cx = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let mounted = cx
+            .mount_view_root(document, || {
+                view! {
+                    <style>
+                        @layer base, overrides;
+                        @layer overrides {
+                            .card { padding: 20px; margin: 16px; opacity: 0.2 !important; }
+                        }
+                        @layer base {
+                            .card { padding: 8px; margin: 4px; opacity: 0.9 !important; }
+                        }
+                        .card { padding: 12px; }
+                    </style>
+                    <Column class="card" />
+                }
+            })
+            .unwrap();
+        let layout = layout_of(&cx, mounted.roots()[0]);
+        assert_eq!(
+            layout.padding,
+            Some(LengthSpec::Px(12.0)),
+            "unlayered normal rule beats layered normal rules"
+        );
+        assert_eq!(
+            layout.margin,
+            Some(LengthSpec::Px(16.0)),
+            "later declared layer beats earlier layer for normal declarations"
+        );
+        assert_eq!(
+            layout.opacity,
+            Some(0.9),
+            "earlier declared layer beats later layer under !important"
+        );
+    }
+
+    #[test]
+    fn inline_style_attr_beats_class_layer_and_preserves_span_style() {
+        let mut cx = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let mounted = cx
+            .mount_view_root(document, || {
+                view! {
+                    <style>
+                        .card { padding: 8px; opacity: 0.4; }
+                    </style>
+                    <Column class="card" style="padding: 24px;">
+                        <Text style="opacity: 0.75;">
+                            "hi "<Span style={nana_ui_core::RichSpanStyle::new().size(18.0)}>"big"</Span>
+                        </Text>
+                    </Column>
+                }
+            })
+            .unwrap();
+        let card = mounted.roots()[0];
+        let text_id = cx.world().node(card).unwrap().children[0];
+        assert_eq!(
+            layout_of(&cx, card).padding,
+            Some(LengthSpec::Px(24.0)),
+            "inline style (Layer 2) beats .class (Layer 1)"
+        );
+        assert_eq!(layout_of(&cx, card).opacity, Some(0.4));
+        assert_eq!(layout_of(&cx, text_id).opacity, Some(0.75));
+        assert!(
+            cx.world().rich_text(text_id).is_some(),
+            "<Span style={{RichSpanStyle}}> remains intact"
+        );
+
+        // Inline `style="..."` also works without any `<style>` block at all.
+        let standalone = cx
+            .mount_view_root(document, || {
+                view! { <Column style="margin: 14px; opacity: 0.6;" /> }
+            })
+            .unwrap();
+        let st_layout = layout_of(&cx, standalone.roots()[0]);
+        assert_eq!(st_layout.margin, Some(LengthSpec::Px(14.0)));
+        assert_eq!(st_layout.opacity, Some(0.6));
+    }
+
+    #[test]
+    fn pseudo_elements_placeholder_selection_and_merged_scrollbar_skin() {
+        let mut cx = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let mounted = cx
+            .mount_view_root(document, || {
+                view! {
+                    <style>
+                        .field::placeholder { color: "#ff0000"; opacity: 0.6; }
+                        .field::selection { background: "#00ff00"; color: "#0000ff"; }
+                        .scroller::-webkit-scrollbar { width: 10px; }
+                        .scroller::-webkit-scrollbar-thumb { background: "#ff0000"; }
+                        .scroller::-webkit-scrollbar-track { background: "#0000ff"; }
+                    </style>
+                    <Column class="scroller">
+                        <TextInput label="name" class="field" />
+                    </Column>
+                }
+            })
+            .unwrap();
+        let scroller = mounted.roots()[0];
+        let field = cx.world().node(scroller).unwrap().children[0];
+        let field_layout = layout_of(&cx, field);
+        assert_eq!(
+            field_layout.text_ext.placeholder_color,
+            Some([1.0, 0.0, 0.0, 1.0])
+        );
+        assert_eq!(field_layout.text_ext.placeholder_opacity, Some(0.6));
+        assert_eq!(
+            field_layout
+                .paint_colors
+                .selection_background
+                .map(|c| c.to_srgb()),
+            Some([0.0, 1.0, 0.0, 1.0])
+        );
+        assert_eq!(
+            field_layout
+                .paint_colors
+                .selection_color
+                .map(|c| c.to_srgb()),
+            Some([0.0, 0.0, 1.0, 1.0])
+        );
+        let skin = layout_of(&cx, scroller)
+            .paint
+            .scrollbar
+            .expect("merged ScrollbarSkin");
+        assert_eq!(skin.thickness, Some(10.0));
+        assert_eq!(skin.thumb_color, Some([1.0, 0.0, 0.0, 1.0]));
+        assert_eq!(skin.track_color, Some([0.0, 0.0, 1.0, 1.0]));
+    }
+
+    #[test]
+    fn font_face_registers_on_world_via_root_sheet() {
+        let mut cx = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let _mounted = cx
+            .mount_view_root(document, || {
+                view! {
+                    <style>
+                        @font-face {
+                            font-family: "Wave3Sans";
+                            src: local("Wave3Sans");
+                            font-weight: 400 700;
+                        }
+                    </style>
+                    <Column>
+                        <Text>"hello"</Text>
+                    </Column>
+                }
+            })
+            .unwrap();
+        let faces = cx.world().registered_font_faces();
+        assert!(
+            faces.iter().any(|f| f.family == "Wave3Sans"
+                && f.weight == Some(400)
+                && f.weight_end == Some(700)),
+            "expected Wave3Sans @font-face to register automatically on mount: {faces:?}"
+        );
+    }
+
+    #[test]
+    fn element_scoped_custom_properties_inherit_and_isolate_siblings() {
+        let mut cx = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let mounted = cx
+            .mount_view_root(document, || {
+                view! {
+                    <style>
+                        :root { --bg: "#ffffff"; }
+                        .dark-card { --bg: "#111111"; }
+                        .title { color: var(--bg); }
+                        .dark-card .sub { background: var(--bg); }
+                    </style>
+                    <Column>
+                        <Text class="title">"root"</Text>
+                        <Column class="dark-card">
+                            <Text class="title">"dark"</Text>
+                            <Text class="sub">"sub"</Text>
+                        </Column>
+                        <Column style="--bg: #00ff00;">
+                            <Text class="title">"inline-scoped"</Text>
+                        </Column>
+                    </Column>
+                }
+            })
+            .unwrap();
+        let root = mounted.roots()[0];
+        let kids = cx.world().node(root).unwrap().children.clone();
+        let root_title = kids[0];
+        let dark_kids = cx.world().node(kids[1]).unwrap().children.clone();
+        let inline_kid = cx.world().node(kids[2]).unwrap().children[0];
+
+        assert_eq!(
+            layout_of(&cx, root_title).color_srgb(),
+            Some([1.0, 1.0, 1.0, 1.0])
+        );
+        let dark_c = layout_of(&cx, dark_kids[0]).color_srgb().unwrap();
+        assert!(
+            dark_c[0] < 0.1 && dark_c[1] < 0.1 && dark_c[2] < 0.1,
+            "{dark_c:?}"
+        );
+        assert_eq!(layout_of(&cx, dark_kids[1]).background_srgb(), Some(dark_c));
+        assert_eq!(
+            layout_of(&cx, inline_kid).color_srgb(),
+            Some([0.0, 1.0, 0.0, 1.0])
+        );
+    }
+
+    #[test]
+    fn media_queries_react_to_viewport_and_color_scheme_changes() {
+        use nana_ui_core::{MediaColorScheme, MediaEnv};
+
+        let mut cx = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        cx.set_media_env(MediaEnv {
+            width: 500.0,
+            height: 400.0,
+            color_scheme: MediaColorScheme::Light,
+            ..MediaEnv::default()
+        });
+        let mounted = cx
+            .mount_view_root(document, || {
+                view! {
+                    <style>
+                        .box { padding: 8px; opacity: 1; }
+                        @media (min-width: 800px) { .box { padding: 32px; } }
+                        @media (prefers-color-scheme: dark) { .box { opacity: 0.5; } }
+                    </style>
+                    <Column class="box" />
+                }
+            })
+            .unwrap();
+        let node = mounted.roots()[0];
+        assert_eq!(layout_of(&cx, node).padding, Some(LengthSpec::Px(8.0)));
+        assert_eq!(layout_of(&cx, node).opacity, Some(1.0));
+
+        cx.set_media_viewport(1024.0, 768.0);
+        cx.flush_reactive().unwrap();
+        assert_eq!(layout_of(&cx, node).padding, Some(LengthSpec::Px(32.0)));
+        assert_eq!(layout_of(&cx, node).opacity, Some(1.0));
+
+        cx.update_media_env(|env| {
+            env.color_scheme = MediaColorScheme::Dark;
+        });
+        cx.flush_reactive().unwrap();
+        assert_eq!(layout_of(&cx, node).padding, Some(LengthSpec::Px(32.0)));
+        assert_eq!(layout_of(&cx, node).opacity, Some(0.5));
+    }
+
+    #[test]
+    fn ancestor_interactive_selectors_drive_descendant_styles_live() {
+        use std::time::Duration;
+
+        let mut cx = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let mounted = cx
+            .mount_view_root(document, || {
+                view! {
+                    <style>
+                        .card .icon { opacity: 0.4; }
+                        .card:hover .icon { opacity: 0.9; }
+                        .card:active .icon { padding: 12px; }
+                    </style>
+                    <Column>
+                        <Column class="card">
+                            <Text class="icon">"first"</Text>
+                        </Column>
+                        <Column class="card">
+                            <Text class="icon">"second"</Text>
+                        </Column>
+                    </Column>
+                }
+            })
+            .unwrap();
+        let root = mounted.roots()[0];
+        let cards = cx.world().node(root).unwrap().children.clone();
+        let icon0 = cx.world().node(cards[0]).unwrap().children[0];
+        let icon1 = cx.world().node(cards[1]).unwrap().children[0];
+
+        assert_eq!(layout_of(&cx, icon0).opacity, Some(0.4));
+        assert_eq!(layout_of(&cx, icon1).opacity, Some(0.4));
+
+        // Hovering card 0 highlights ONLY icon 0, not sibling card 1's icon!
+        cx.set_pointer_hover_at(document, 1, Some(cards[0]), Duration::from_millis(10))
+            .unwrap();
+        cx.flush_reactive().unwrap();
+        assert_eq!(layout_of(&cx, icon0).opacity, Some(0.9));
+        assert_eq!(layout_of(&cx, icon1).opacity, Some(0.4));
+
+        // Pressing card 0 activates `.card:active .icon` on icon 0.
+        cx.press_pointer(document, 1, cards[0]).unwrap();
+        cx.flush_reactive().unwrap();
+        assert_eq!(layout_of(&cx, icon0).padding, Some(LengthSpec::Px(12.0)));
+        assert_eq!(layout_of(&cx, icon1).padding, None);
+
+        cx.release_pointer(document, 1);
+        cx.set_pointer_hover_at(document, 1, None, Duration::from_millis(20))
+            .unwrap();
+        cx.flush_reactive().unwrap();
+        assert_eq!(layout_of(&cx, icon0).opacity, Some(0.4));
+        assert_eq!(layout_of(&cx, icon0).padding, None);
+    }
+
+    stylesheet! {
+        mod raw_styles;
+        r#"
+        .raw-card { padding: 14px; color: #ff0000; }
+        "#
+    }
+
+    #[test]
+    fn hyphenated_class_bool_literal_closure_and_raw_string_macros_work_end_to_end() {
+        let mut cx = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let flag_cell = std::cell::Cell::new(None);
+        let mounted = cx
+            .mount_view_root(document, || {
+                let flag = signal(false);
+                flag_cell.set(Some(flag));
+                view! {
+                    <style>
+                        r#"
+                        .item { padding: 4px; }
+                        .item.is-active { opacity: 0.7; }
+                        .item.pinned { margin: 6px; }
+                        .item.dyn-on { padding: 16px; }
+                        "#
+                    </style>
+                    <Column>
+                        <Text
+                            class="item"
+                            class:is-active={flag}
+                            class:pinned=true
+                            class:dyn-on={move || flag.get()}
+                        >"item"</Text>
+                        {column().class(raw_styles::raw_card).css(css!(r#"opacity: 0.85; color: #00ff00;"#))}
+                    </Column>
+                }
+            })
+            .unwrap();
+        let kids = cx
+            .world()
+            .node(mounted.roots()[0])
+            .unwrap()
+            .children
+            .clone();
+        let item = kids[0];
+        let raw_box = kids[1];
+        let flag = flag_cell.get().unwrap();
+
+        assert_eq!(layout_of(&cx, item).padding, Some(LengthSpec::Px(4.0)));
+        assert_eq!(layout_of(&cx, item).margin, Some(LengthSpec::Px(6.0)));
+        assert_eq!(layout_of(&cx, item).opacity, None);
+
+        flag.set(true);
+        cx.flush_reactive().unwrap();
+        assert_eq!(layout_of(&cx, item).opacity, Some(0.7));
+        assert_eq!(layout_of(&cx, item).padding, Some(LengthSpec::Px(16.0)));
+
+        let raw_layout = layout_of(&cx, raw_box);
+        assert_eq!(raw_layout.padding, Some(LengthSpec::Px(14.0)));
+        assert_eq!(raw_layout.opacity, Some(0.85));
+        assert_eq!(
+            raw_layout.color_srgb(),
+            Some([0.0, 1.0, 0.0, 1.0]),
+            "css!(r#...#) Layer 2 beats stylesheet!(r#...#) Layer 1"
+        );
+    }
+
+    #[test]
+    fn grid_template_areas_and_font_features_preserve_quotes_in_token_mode() {
+        let mut cx = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let mounted = cx
+            .mount_view_root(document, || {
+                view! {
+                    <style>
+                        .shell {
+                            display: grid;
+                            grid-template-areas: "header header" "sidebar main";
+                            font-feature-settings: "tnum" 1;
+                            font-family: "Inter", sans-serif;
+                        }
+                    </style>
+                    <Column class="shell" />
+                }
+            })
+            .unwrap();
+        let layout = layout_of(&cx, mounted.roots()[0]);
+        let areas = layout
+            .grid
+            .template_areas
+            .as_ref()
+            .expect("grid-template-areas parsed with quotes intact");
+        assert!(areas.lookup("header").is_some());
+        assert!(areas.lookup("sidebar").is_some());
+        assert!(areas.lookup("main").is_some());
+        assert!(
+            layout
+                .text_ext
+                .font_features
+                .as_ref()
+                .is_some_and(|f| !f.is_empty())
+        );
+        assert!(layout.text_ext.font_family.is_some());
+    }
 }
 
 /// Each block written as a template and in Rust mounts the same tree and

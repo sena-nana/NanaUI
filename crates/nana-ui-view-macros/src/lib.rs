@@ -18,6 +18,17 @@ pub fn view(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     expand_tokens(input.into()).into()
 }
 
+/// Internal compile-time verification macro that emits code invoking all 242
+/// `StyleOp` Rust setters from `nana-ui-css` against `nana_ui_runtime::view::__patch`.
+#[doc(hidden)]
+#[proc_macro]
+pub fn __test_all_style_ops(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let krate = (|input: ParseStream| parse_crate(input))
+        .parse2(input.into())
+        .unwrap_or_else(|_| quote!(::nana_ui_runtime));
+    nana_ui_view_codegen::emit_all_style_ops_verification_fn(&krate).into()
+}
+
 /// `#[derive(Store)]` on a struct with named fields or an enum, generic or
 /// not: a `<Name>StoreFields` trait, with the type's parameters, giving
 /// every path to the value inside a store an accessor per field. An enum
@@ -50,33 +61,40 @@ mod component;
 mod css_tokens;
 mod store;
 
-/// `css! { padding: 12px; transition: opacity 150ms }`: one declaration
-/// block written as CSS tokens, compiled with the CSS engine now, for
-/// `El::css`. A value Rust cannot tokenize goes in double quotes
-/// (`font-size: "1.5em"`). Use it through `nana_ui_runtime::css!`, which
-/// supplies the crate path.
+/// `css! { padding: 12px; transition: opacity 150ms }` or
+/// `css!(r#"padding: 12px; color: #9ecafe;"#)`: one declaration block written
+/// as CSS tokens or a raw string literal, compiled with `nana-ui-css` at build
+/// time, for `El::css`. Use it through `nana_ui_runtime::css!`, which supplies
+/// the crate path.
 #[proc_macro]
 pub fn css(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    let parsed = (|input: ParseStream| -> syn::Result<(TokenStream, TokenStream)> {
+    let parsed = (|input: ParseStream| -> syn::Result<(TokenStream, css_tokens::CssText)> {
         let krate = parse_crate(input)?;
         let fork = input.fork();
-        if fork.parse::<LitStr>().is_ok() && fork.is_empty() {
-            return Err(input.error(
-                "`css!` takes CSS, not a string: `css! { padding: 12px; font-size: \"1.5em\" }`",
-            ));
+        if let Ok(lit) = fork.parse::<LitStr>()
+            && fork.is_empty()
+        {
+            let _: LitStr = input.parse()?;
+            return Ok((krate, css_tokens::CssText::from_lit(&lit)));
         }
-        Ok((krate, input.parse()?))
+        let declarations: TokenStream = input.parse()?;
+        Ok((
+            krate,
+            css_tokens::css(declarations, true, Span::call_site()),
+        ))
     })
     .parse2(input.into());
     match parsed {
-        Ok((krate, declarations)) => {
-            let css = css_tokens::css(declarations, true, Span::call_site());
-            let (tokens, warnings) = nana_ui_view_codegen::compile_inline(&css.text, &krate);
-            let warnings = locate(&css, warnings);
+        Ok((krate, css)) => {
+            let compiled = nana_ui_view_codegen::compile_inline(&css.text, &krate);
+            if !compiled.errors.is_empty() {
+                return style_errors_to_compile_error(&css, compiled.errors).into();
+            }
+            let warnings = locate(&css, compiled.warnings);
             if warnings.is_empty() {
-                tokens
+                compiled.tokens
             } else {
-                with_warnings("css!", tokens, warnings)
+                with_warnings("css!", compiled.tokens, warnings)
             }
         }
         Err(error) => error.to_compile_error(),
@@ -84,12 +102,12 @@ pub fn css(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     .into()
 }
 
-/// `stylesheet! { mod styles; .card { padding: 12px; } … }`: a
-/// stylesheet written as CSS tokens (the rules of `<style>`), compiled now
-/// into a module holding the sheet and one `view::Class` per class
-/// (`styles::card`; `-` becomes `_`), named at the class in the sheet. With
-/// `pub mod` the classes are public; otherwise the parent module sees them.
-/// Use it through `nana_ui_runtime::stylesheet!`.
+/// `stylesheet! { mod styles; .card { padding: 12px; } … }` or
+/// `stylesheet! { mod styles; r#" .card { padding: 12px; } "# }`: a stylesheet
+/// written as CSS tokens or a raw string literal, compiled at build time into a
+/// module holding the sheet and one `view::Class` per class (`styles::card`;
+/// `-` becomes `_`). With `pub mod` the classes are public; otherwise the
+/// parent module sees them. Use it through `nana_ui_runtime::stylesheet!`.
 #[proc_macro]
 pub fn stylesheet(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let parsed = (|input: ParseStream| -> syn::Result<_> {
@@ -101,25 +119,38 @@ pub fn stylesheet(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         input.parse::<Token![mod]>()?;
         let module = input.parse::<Ident>()?;
         input.parse::<Token![;]>()?;
-        Ok((krate, public, module, input.parse::<TokenStream>()?))
+        let fork = input.fork();
+        let css = if let Ok(lit) = fork.parse::<LitStr>()
+            && fork.is_empty()
+        {
+            let _: LitStr = input.parse()?;
+            css_tokens::CssText::from_lit(&lit)
+        } else {
+            let sheet: TokenStream = input.parse()?;
+            css_tokens::css(sheet, false, module.span())
+        };
+        Ok((krate, public, module, css))
     })
     .parse2(input.into());
     match parsed {
-        Ok((krate, public, module, sheet)) => {
-            let css = css_tokens::css(sheet, false, module.span());
-            let (tokens, warnings) = nana_ui_view_codegen::compile_stylesheet(
+        Ok((krate, public, module, css)) => {
+            let compiled = nana_ui_view_codegen::compile_stylesheet(
                 &css.text,
                 &module,
                 public,
                 &krate,
                 &|class| css.class_span(class),
             );
-            let warnings = locate(&css, warnings);
+            if !compiled.errors.is_empty() {
+                return style_errors_to_compile_error(&css, compiled.errors).into();
+            }
+            let warnings = locate(&css, compiled.warnings);
             if warnings.is_empty() {
-                tokens
+                compiled.tokens
             } else {
                 // Items cannot hold the warning's `let`: put it in a const.
                 let warned = with_warnings("stylesheet!", quote!(()), warnings);
+                let tokens = compiled.tokens;
                 quote! {
                     #tokens
                     const _: () = #warned;
@@ -163,24 +194,56 @@ fn locate(
         .collect()
 }
 
+/// Combine CSS errors into one `syn::Error` pointing at each diagnostic's token.
+fn style_errors_to_syn(
+    css: &css_tokens::CssText,
+    errors: Vec<nana_ui_view_codegen::StyleWarning>,
+) -> syn::Error {
+    let mut combined: Option<syn::Error> = None;
+    for err in errors {
+        let span = match err.at {
+            nana_ui_view_codegen::StyleAt::Sheet(range) => css.span(&range),
+            nana_ui_view_codegen::StyleAt::Template(span) => span,
+        };
+        let syn_err = syn::Error::new(span, err.message);
+        match &mut combined {
+            Some(existing) => existing.combine(syn_err),
+            None => combined = Some(syn_err),
+        }
+    }
+    combined.expect("errors is non-empty")
+}
+
+fn style_errors_to_compile_error(
+    css: &css_tokens::CssText,
+    errors: Vec<nana_ui_view_codegen::StyleWarning>,
+) -> TokenStream {
+    style_errors_to_syn(css, errors).to_compile_error()
+}
+
 fn expand_tokens(input: TokenStream) -> TokenStream {
     let expanded = parse_template.parse2(input).and_then(|mut template| {
         nana_ui_view_codegen::lift_slots(&mut template.nodes)?;
-        let styles = template.style.as_ref().map(|style| {
-            let compiled = nana_ui_view_codegen::compile_styles(
-                &style.text,
-                &mut template.nodes,
-                &template.krate,
-            );
-            (compiled.items, locate(style, compiled.warnings))
-        });
+        let empty_css = css_tokens::CssText::empty(Span::call_site());
+        let style_ref = template.style.as_ref().unwrap_or(&empty_css);
+        let compiled = nana_ui_view_codegen::compile_styles(
+            &style_ref.text,
+            &mut template.nodes,
+            &template.krate,
+        );
+        if !compiled.errors.is_empty() {
+            return Err(style_errors_to_syn(style_ref, compiled.errors));
+        }
+        let style_warnings = locate(style_ref, compiled.warnings);
+        let items = compiled.items;
         let (tokens, mut warnings) =
             nana_ui_view_codegen::expand_checked(&template.krate, &template.nodes)?;
-        let Some((items, style_warnings)) = styles else {
-            return Ok((tokens, warnings));
-        };
         warnings.extend(style_warnings);
-        Ok((quote! {{ #(#items)* #tokens }}, warnings))
+        if items.is_empty() {
+            Ok((tokens, warnings))
+        } else {
+            Ok((quote! {{ #(#items)* #tokens }}, warnings))
+        }
     });
     match expanded {
         Ok((tokens, warnings)) if warnings.is_empty() => tokens,
@@ -251,7 +314,7 @@ fn peek_tag(input: ParseStream, name: &str, close: bool) -> bool {
         && fork.parse::<Token![>]>().is_ok()
 }
 
-/// `<style>…</style>` at the top of a template: CSS as tokens.
+/// `<style>…</style>` at the top of a template: CSS as tokens or a raw string literal.
 fn parse_style(input: ParseStream) -> syn::Result<Option<css_tokens::CssText>> {
     if !peek_tag(input, "style", false) {
         return Ok(None);
@@ -269,11 +332,10 @@ fn parse_style(input: ParseStream) -> syn::Result<Option<css_tokens::CssText>> {
     for _ in 0..4 {
         input.parse::<TokenTree>()?;
     }
-    if tokens.clone().into_iter().count() == 1 && syn::parse2::<LitStr>(tokens.clone()).is_ok() {
-        return Err(syn::Error::new(
-            open.span(),
-            "`<style>` takes CSS, not a string: `<style> .a { padding: 4px; } </style>`",
-        ));
+    if tokens.clone().into_iter().count() == 1
+        && let Ok(lit) = syn::parse2::<LitStr>(tokens.clone())
+    {
+        return Ok(Some(css_tokens::CssText::from_lit(&lit)));
     }
     Ok(Some(css_tokens::css(tokens, false, open.span())))
 }
@@ -386,9 +448,19 @@ fn parse_attr(input: ParseStream) -> syn::Result<Attr> {
             input.parse::<Token![:]>()?;
             AttrName::On(input.parse()?)
         } else if first == "class" && input.peek(Token![:]) && !input.peek(Token![::]) {
-            // `class:active={condition}`: the class while it holds.
+            // `class:active={condition}` or `class:is-active={condition}`: the class while it holds.
             input.parse::<Token![:]>()?;
-            let class = Ident::parse_any(input)?;
+            let mut class = Ident::parse_any(input)?.to_string();
+            while input.peek(Token![-]) {
+                input.parse::<Token![-]>()?;
+                class.push('-');
+                if input.peek(syn::LitInt) {
+                    let num: syn::LitInt = input.parse()?;
+                    class.push_str(&num.to_string());
+                } else {
+                    class.push_str(&Ident::parse_any(input)?.to_string());
+                }
+            }
             AttrName::Directive(format!("class:{class}"), first.span())
         } else if first == "v" && input.peek(Token![-]) {
             input.parse::<Token![-]>()?;
@@ -510,7 +582,7 @@ mod tests {
         assert_eq!(
             css.text,
             ".a.b .c { padding: 4px 8px; margin: 0 -1px; font-size: 1.5em; }\n\
-             .d > .e { color: #9ecafe; background: url(\"a//b.png\"); font-family: Noto Sans SC, sans-serif; }\n\
+             .d > .e { color: #9ecafe; background: url(\"a//b.png\"); font-family: \"Noto Sans SC\", sans-serif; }\n\
              a[href^=\"x\"] { opacity: 0.5 !important; }\n\
              @media (min-width: 600px) { .f { flex-grow: 1; } }"
         );
@@ -545,9 +617,68 @@ mod tests {
             let start = warning.span.start();
             (start.line, start.column)
         };
-        assert_eq!(at("`style()`"), (1, 0));
+        assert_eq!(at("`style()`"), (1, 27));
         assert_eq!(at("class selectors"), (2, 27));
         assert_eq!(warnings.len(), 2, "{warnings:?}");
+    }
+
+    #[test]
+    fn css_tokens_preserve_quotes_on_string_properties_and_allow_escape_hatch() {
+        let css = sheet(
+            r##".grid {
+                grid-template-areas: "head head" "nav main";
+                font-feature-settings: "liga" 1, "tnum" 1;
+                font-variation-settings: "wght" 600;
+                font-family: "Inter", sans-serif;
+                color: "#334455";
+                font-size: "1.5em";
+            }"##,
+        );
+        assert!(
+            css.text
+                .contains(r#"grid-template-areas: "head head" "nav main";"#),
+            "{}",
+            css.text
+        );
+        assert!(
+            css.text
+                .contains(r#"font-feature-settings: "liga" 1, "tnum" 1;"#),
+            "{}",
+            css.text
+        );
+        assert!(
+            css.text.contains(r#"font-variation-settings: "wght" 600;"#),
+            "{}",
+            css.text
+        );
+        assert!(
+            css.text.contains(r#"font-family: "Inter", sans-serif;"#),
+            "{}",
+            css.text
+        );
+        assert!(css.text.contains("color: #334455;"), "{}", css.text);
+        assert!(css.text.contains("font-size: 1.5em;"), "{}", css.text);
+    }
+
+    #[test]
+    fn hyphenated_class_inline_style_and_css_errors_expand_cleanly() {
+        let expanded = expand(
+            r##"crate = x;
+            <style>
+                .card.is-active { opacity: 0.5; }
+            </style>
+            <Column class="card" class:is-active={active} style="padding: 8px;" />"##,
+        );
+        assert!(!expanded.contains("compile_error"), "{expanded}");
+        assert!(expanded.contains("class_when"), "{expanded}");
+        assert!(expanded.contains("inline_patch"), "{expanded}");
+
+        // Unknown CSS property inside `<style>` becomes a compile_error!
+        let bad = expand(
+            r##"crate = x; <style>.card { nonexistent_prop: 1px; }</style> <Column class="card"/>"##,
+        );
+        assert!(bad.contains("compile_error"), "{bad}");
+        assert!(bad.contains("nonexistent_prop"), "{bad}");
     }
 
     #[test]
@@ -568,8 +699,8 @@ mod tests {
     }
 
     #[test]
-    fn style_warnings_point_at_their_tokens() {
-        let source = ".a { padding: 4px; frobnicate: 3; }\n.b:hover .c { opacity: 0.5; }\ndiv .a { opacity: 1; }";
+    fn style_diagnostics_point_at_their_tokens() {
+        let source = ".a { padding: 4px; frobnicate: 3; -webkit-font-smoothing: antialiased; }\n.b:hover .c { opacity: 0.5; }\ndiv .a { opacity: 1; }";
         let css = sheet(source);
         let template = "crate = x; <Column class=\"a ghost\"/>";
         let mut nodes = parse_template
@@ -577,26 +708,28 @@ mod tests {
             .unwrap()
             .nodes;
         let compiled = nana_ui_view_codegen::compile_styles(&css.text, &mut nodes, &quote!(x));
-        let at = |needle: &str| {
-            let warnings = locate(&css, compiled.warnings.clone());
-            let warning = warnings
+        let warnings = locate(&css, compiled.warnings);
+        let errors = locate(&css, compiled.errors);
+        let at = |list: &[nana_ui_view_codegen::Warning], needle: &str| {
+            let item = list
                 .iter()
                 .find(|w| w.message.contains(needle))
-                .unwrap_or_else(|| panic!("no warning about {needle}: {warnings:?}"));
-            let start = warning.span.start();
+                .unwrap_or_else(|| panic!("no diagnostic about {needle}: {list:?}"));
+            let start = item.span.start();
             (start.line, start.column)
         };
         // Lines and columns of the test source (1-based lines, 0-based columns).
-        assert_eq!(at("frobnicate"), (1, 19));
-        assert_eq!(at(":hover"), (2, 0));
-        assert_eq!(at("class selectors"), (3, 0));
+        assert_eq!(at(&errors, "frobnicate"), (1, 19));
+        assert_eq!(at(&warnings, "-webkit-font-smoothing"), (1, 34));
+        assert_eq!(at(&warnings, "class selectors"), (3, 0));
     }
 
     #[test]
-    fn a_style_string_is_refused_with_the_new_form() {
-        let expanded = expand("crate = x; <style>\".a { padding: 4px }\"</style> <Column/>");
-        assert!(expanded.contains("compile_error"), "{expanded}");
-        assert!(expanded.contains("<style>"), "{expanded}");
+    fn raw_string_style_is_accepted_and_legacy_style_assign_is_refused() {
+        let expanded =
+            expand(r##"crate = x; <style>r#".a { padding: 4px; }"#</style> <Column class="a"/>"##);
+        assert!(!expanded.contains("compile_error"), "{expanded}");
+        assert!(expanded.contains("__NANA_SHEET"), "{expanded}");
         let expanded = expand("crate = x; style = \".a {}\"; <Column/>");
         assert!(expanded.contains("compile_error"), "{expanded}");
         assert!(expanded.contains("style ="), "{expanded}");

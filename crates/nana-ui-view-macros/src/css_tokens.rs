@@ -1,11 +1,14 @@
-//! CSS written as Rust tokens (`view!`'s `<style>`, `css!`), turned back
-//! into CSS text with a map from each piece of the text to its token.
+//! CSS written as Rust tokens (`view!`'s `<style>`, `css!`, `stylesheet!`) or
+//! as a raw string literal (`css!(r#"..."#)`), turned into CSS text with a map
+//! from each piece of the text back to its token span.
 //!
-//! Whitespace comes back from where the tokens sit in the source, so
-//! `.a.b` and `.a .b` stay apart. A string in a declaration's value is
-//! spliced without its quotes: that is how a value Rust cannot tokenize is
-//! written (`font-size: "1.5em"`, `color: "#9ecafe"`). A string inside
-//! `url(…)` or in a selector keeps its quotes.
+//! In Token mode, whitespace comes back from where the tokens sit in the source,
+//! so `.a.b` and `.a .b` stay apart. Double-quoted strings stay quoted on
+//! string-expecting CSS properties (`grid-template-areas`, `font-feature-settings`,
+//! `font-variation-settings`, `font-family`, `content`, `src`, etc.), inside
+//! `url(...)`, and in selectors; on non-string properties (`color: "#9ecafe"`,
+//! `font-size: "1.5em"`), a string is spliced without its quotes as the escape
+//! hatch for values Rust cannot tokenize.
 
 use std::ops::Range;
 
@@ -21,6 +24,26 @@ pub(crate) struct CssText {
 }
 
 impl CssText {
+    /// Wrap a raw CSS string literal (`css!(r#"..."#)` / `<style>r#"..."#</style>`).
+    pub(crate) fn from_lit(lit: &syn::LitStr) -> Self {
+        let text = lit.value();
+        let span = lit.span();
+        Self {
+            pieces: vec![(0..text.len(), span)],
+            text,
+            whole: span,
+        }
+    }
+
+    /// Empty CSS text anchored at `whole`.
+    pub(crate) fn empty(whole: Span) -> Self {
+        Self {
+            text: String::new(),
+            pieces: Vec::new(),
+            whole,
+        }
+    }
+
     /// Where `.class` is first written in a selector.
     pub(crate) fn class_span(&self, class: &str) -> Span {
         let name = |c: char| c.is_alphanumeric() || c == '-' || c == '_';
@@ -42,6 +65,24 @@ impl CssText {
     }
 }
 
+/// CSS properties whose grammar expects CSS string tokens (`"..."`), so Token
+/// mode must preserve double quotes rather than unwrapping them.
+fn prop_preserves_quotes(prop: &str) -> bool {
+    matches!(
+        prop.trim().to_ascii_lowercase().as_str(),
+        "grid-template-areas"
+            | "grid-template"
+            | "grid"
+            | "font-feature-settings"
+            | "font-variation-settings"
+            | "font-family"
+            | "font"
+            | "content"
+            | "src"
+            | "quotes"
+    )
+}
+
 /// Where the builder is inside the CSS.
 #[derive(Clone, Copy, PartialEq)]
 enum Place {
@@ -56,8 +97,10 @@ enum Place {
 struct Builder {
     out: CssText,
     last: Option<proc_macro2::LineColumn>,
-    /// The previous token was the identifier `url`.
-    after_url: bool,
+    /// The previous token was the identifier `url` or `local` or `format`.
+    after_quoted_fn: bool,
+    /// Property name accumulated in `Place::Property`.
+    current_prop: String,
 }
 
 impl Builder {
@@ -86,55 +129,101 @@ impl Builder {
         self.last = Some(span.end());
     }
 
-    fn stream(&mut self, tokens: TokenStream, mut place: Place, in_url: bool) {
-        // An at-rule's block holds rules, a rule's declarations.
+    fn stream(&mut self, tokens: TokenStream, mut place: Place, in_quoted_fn: bool) {
+        // An at-rule's block holds rules (except `@font-face`, which holds descriptors).
         let mut at_rule = false;
+        let mut at_rule_name: Option<String> = None;
         for token in tokens {
-            let after_url = std::mem::take(&mut self.after_url);
+            let after_quoted_fn = std::mem::take(&mut self.after_quoted_fn);
             match token {
                 TokenTree::Group(group) => {
-                    let (open, close, inner, url) = match group.delimiter() {
+                    let (open, close, inner, quoted_fn, reset_to_prop) = match group.delimiter() {
                         Delimiter::Brace if place == Place::Rules => {
-                            let inner = if at_rule {
+                            let is_decl_at_rule =
+                                at_rule_name.as_deref().is_some_and(|n| n == "font-face");
+                            let inner = if at_rule && !is_decl_at_rule {
                                 Place::Rules
                             } else {
                                 Place::Property
                             };
-                            ("{", "}", inner, false)
+                            ("{", "}", inner, false, false)
                         }
-                        Delimiter::Brace => ("{", "}", place, in_url),
-                        Delimiter::Parenthesis => ("(", ")", place, in_url || after_url),
-                        Delimiter::Bracket => ("[", "]", place, in_url),
+                        Delimiter::Brace => {
+                            // Nested style rule block inside a declaration block (CSS Nesting).
+                            ("{", "}", Place::Property, false, true)
+                        }
+                        Delimiter::Parenthesis => {
+                            ("(", ")", place, in_quoted_fn || after_quoted_fn, false)
+                        }
+                        Delimiter::Bracket => ("[", "]", place, in_quoted_fn, false),
                         Delimiter::None => {
-                            self.stream(group.stream(), place, in_url);
+                            self.stream(group.stream(), place, in_quoted_fn);
                             continue;
                         }
                     };
+                    let saved_prop = if open == "{" {
+                        std::mem::take(&mut self.current_prop)
+                    } else {
+                        String::new()
+                    };
                     self.push(open, group.span_open());
-                    self.stream(group.stream(), inner, url);
+                    self.stream(group.stream(), inner, quoted_fn);
                     self.push(close, group.span_close());
-                    if place == Place::Rules && open == "{" {
-                        at_rule = false;
+                    if open == "{" {
+                        self.current_prop = if reset_to_prop {
+                            place = Place::Property;
+                            String::new()
+                        } else {
+                            saved_prop
+                        };
+                        if place == Place::Rules {
+                            at_rule = false;
+                            at_rule_name = None;
+                        }
                     }
                 }
                 TokenTree::Punct(punct) => {
                     let c = punct.as_char();
                     match (place, c) {
-                        (Place::Rules, '@') => at_rule = true,
-                        (Place::Rules, ';') => at_rule = false,
+                        (Place::Rules, '@') => {
+                            at_rule = true;
+                            at_rule_name = None;
+                        }
+                        (Place::Rules, ';') => {
+                            at_rule = false;
+                            at_rule_name = None;
+                        }
                         (Place::Property, ':') => place = Place::Value,
-                        (Place::Value, ';') => place = Place::Property,
+                        (Place::Property, '-') => self.current_prop.push('-'),
+                        (Place::Value, ';') => {
+                            place = Place::Property;
+                            self.current_prop.clear();
+                        }
                         _ => {}
                     }
                     self.push(&c.to_string(), punct.span());
                 }
                 TokenTree::Ident(ident) => {
-                    self.after_url = ident == "url";
-                    self.push(&ident.to_string(), ident.span());
+                    let s = ident.to_string();
+                    if place == Place::Rules && at_rule && at_rule_name.is_none() {
+                        at_rule_name = Some(s.to_ascii_lowercase());
+                    } else if place == Place::Property {
+                        self.current_prop.push_str(&s);
+                    }
+                    self.after_quoted_fn = s.eq_ignore_ascii_case("url")
+                        || s.eq_ignore_ascii_case("local")
+                        || s.eq_ignore_ascii_case("format");
+                    self.push(&s, ident.span());
                 }
                 TokenTree::Literal(literal) => {
                     let text = match syn::parse2::<syn::LitStr>(literal.to_token_stream()) {
-                        Ok(string) if place == Place::Value && !in_url => string.value(),
+                        Ok(string)
+                            if place == Place::Value
+                                && !in_quoted_fn
+                                && !prop_preserves_quotes(&self.current_prop) =>
+                        {
+                            string.value()
+                        }
                         Ok(string) => format!("{:?}", string.value()),
                         Err(_) => literal.to_string(),
                     };
@@ -155,7 +244,8 @@ pub(crate) fn css(tokens: TokenStream, declarations: bool, whole: Span) -> CssTe
             whole,
         },
         last: None,
-        after_url: false,
+        after_quoted_fn: false,
+        current_prop: String::new(),
     };
     let place = if declarations {
         Place::Property

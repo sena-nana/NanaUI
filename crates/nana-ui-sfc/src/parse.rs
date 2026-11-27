@@ -30,23 +30,44 @@ pub struct Component {
     pub style: Option<Style>,
 }
 
-/// A `<style>` block's CSS and where it starts in the file.
-pub struct Style {
-    pub css: String,
+/// One `<style>` block slice inside [`Style::css`], recording its starting
+/// offset in the combined CSS text and its starting position in the `.vue` file.
+#[derive(Debug, Clone)]
+pub struct StyleSegment {
+    pub combined_start: usize,
+    pub len: usize,
     /// 1-based.
     pub line: usize,
     /// 0-based, in characters.
     pub column: usize,
 }
 
+/// All `<style>` blocks of a `.vue` component combined in document order, with
+/// per-block origin metadata so diagnostics map back to exact `.vue` positions.
+pub struct Style {
+    pub css: String,
+    pub segments: Vec<StyleSegment>,
+}
+
 impl Style {
-    /// `line:column` (1-based) of a byte offset into the CSS.
+    /// `line:column` (1-based) of a byte offset into the combined CSS.
     pub fn position(&self, offset: usize) -> (usize, usize) {
-        let before = &self.css[..offset.min(self.css.len())];
+        let clamped = offset.min(self.css.len());
+        let seg = self
+            .segments
+            .iter()
+            .rev()
+            .find(|s| clamped >= s.combined_start)
+            .or_else(|| self.segments.first());
+        let Some(seg) = seg else {
+            return (1, 1);
+        };
+        let local_end = clamped.min(seg.combined_start + seg.len);
+        let before = &self.css[seg.combined_start..local_end];
         match before.rfind('\n') {
-            None => (self.line, self.column + before.chars().count() + 1),
+            None => (seg.line, seg.column + before.chars().count() + 1),
             Some(newline) => (
-                self.line + before.matches('\n').count(),
+                seg.line + before.matches('\n').count(),
                 before[newline + 1..].chars().count() + 1,
             ),
         }
@@ -184,65 +205,469 @@ fn component_name(file: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Find `<tag …>…</tag>` at the top level; returns (attributes, content
-/// start, content end).
-fn block<'t>(src: &Source<'t>, tag: &str) -> Result<Option<(&'t str, usize, usize)>, Error> {
-    let open = format!("<{tag}");
-    let Some(start) = src.text.find(&open) else {
-        return Ok(None);
+struct RawBlock<'t> {
+    tag: &'t str,
+    attrs: Vec<(String, Option<String>)>,
+    body_start: usize,
+    body_end: usize,
+}
+
+fn parse_tag_attrs(raw: &str) -> Vec<(String, Option<String>)> {
+    let mut out = Vec::new();
+    let bytes = raw.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= bytes.len() {
+            break;
+        }
+        let name_start = i;
+        while i < bytes.len()
+            && !bytes[i].is_ascii_whitespace()
+            && bytes[i] != b'='
+            && bytes[i] != b'/'
+        {
+            i += 1;
+        }
+        if i == name_start {
+            i += 1;
+            continue;
+        }
+        let name = raw[name_start..i].to_ascii_lowercase();
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        let value = if i < bytes.len() && bytes[i] == b'=' {
+            i += 1;
+            while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            if i < bytes.len() && (bytes[i] == b'"' || bytes[i] == b'\'') {
+                let q = bytes[i];
+                i += 1;
+                let v_start = i;
+                while i < bytes.len() && bytes[i] != q {
+                    i += 1;
+                }
+                let val = raw[v_start..i].to_owned();
+                if i < bytes.len() {
+                    i += 1;
+                }
+                Some(val)
+            } else {
+                let v_start = i;
+                while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
+                    i += 1;
+                }
+                Some(raw[v_start..i].to_owned())
+            }
+        } else {
+            None
+        };
+        out.push((name, value));
+    }
+    out
+}
+
+/// Find the closing `>` of an opening tag starting at `tag_start`, respecting
+/// `"..."` and `'...'` quoted attribute values.
+fn find_open_tag_end(text: &str, tag_start: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut i = tag_start;
+    let mut quote: Option<u8> = None;
+    while i < bytes.len() {
+        let b = bytes[i];
+        match quote {
+            Some(q) if b == q => quote = None,
+            Some(_) => {}
+            None if b == b'"' || b == b'\'' => quote = Some(b),
+            None if b == b'>' => return Some(i),
+            None => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Check if `text[pos..]` starts with `</tag` followed by optional whitespace and `>`,
+/// returning the byte index immediately after `>`.
+fn match_closing_tag(text: &str, pos: usize, tag: &str) -> Option<usize> {
+    let rest = text.get(pos..)?;
+    let after_slash = rest.strip_prefix("</")?;
+    let after_tag = after_slash.get(..tag.len())?;
+    if !after_tag.eq_ignore_ascii_case(tag) {
+        return None;
+    }
+    let tail = &after_slash[tag.len()..];
+    let ws_len = tail.len() - tail.trim_start().len();
+    if tail[ws_len..].starts_with('>') {
+        Some(pos + 2 + tag.len() + ws_len + 1)
+    } else {
+        None
+    }
+}
+
+/// Check if `text[pos..]` starts with `<tag` followed by whitespace, `>`, or `/`.
+fn starts_open_tag(text: &str, pos: usize, tag: &str) -> bool {
+    let Some(rest) = text.get(pos..) else {
+        return false;
     };
-    let head_end = src.text[start..]
-        .find('>')
-        .map(|index| start + index)
-        .ok_or_else(|| src.error(start, format!("`<{tag}` is never closed")))?;
-    let attrs = &src.text[start + open.len()..head_end];
-    let close = format!("</{tag}>");
-    let end = src.text[head_end..]
-        .rfind(&close)
-        .map(|index| head_end + index)
-        .ok_or_else(|| src.error(start, format!("`<{tag}>` has no `{close}`")))?;
-    Ok(Some((attrs, head_end + 1, end)))
+    let Some(after_lt) = rest.strip_prefix('<') else {
+        return false;
+    };
+    let Some(head) = after_lt.get(..tag.len()) else {
+        return false;
+    };
+    if !head.eq_ignore_ascii_case(tag) {
+        return false;
+    }
+    matches!(
+        after_lt.as_bytes().get(tag.len()),
+        Some(b' ' | b'\t' | b'\r' | b'\n' | b'>' | b'/')
+    )
+}
+
+/// Scan `<template>` body until its matching `</template>`, tracking nested
+/// `<template>` blocks (like `<template #header>` / `<template #default>`) and
+/// skipping HTML comments and quoted tag attributes.
+fn find_template_close(text: &str, body_start: usize) -> Option<(usize, usize)> {
+    let bytes = text.as_bytes();
+    let mut i = body_start;
+    let mut depth = 1usize;
+    while i < bytes.len() {
+        if bytes[i] == b'<' {
+            if text[i..].starts_with("<!--") {
+                i = match text[i + 4..].find("-->") {
+                    Some(rel) => i + 4 + rel + 3,
+                    None => return None,
+                };
+                continue;
+            }
+            if let Some(after_close) = match_closing_tag(text, i, "template") {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((i, after_close));
+                }
+                i = after_close;
+                continue;
+            }
+            if starts_open_tag(text, i, "template") {
+                if let Some(gt) = find_open_tag_end(text, i + 1) {
+                    let self_closing = text[i..gt].trim_end().ends_with('/');
+                    if !self_closing {
+                        depth += 1;
+                    }
+                    i = gt + 1;
+                    continue;
+                }
+                return None;
+            }
+            // Skip any other element's opening tag so quoted attribute values
+            // containing `</template>` or `<template` don't confuse nesting.
+            if bytes.get(i + 1).is_some_and(|b| b.is_ascii_alphabetic())
+                && let Some(gt) = find_open_tag_end(text, i + 1)
+            {
+                i = gt + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Scan `<script>` (Rust) body until `</script>`, skipping Rust string literals,
+/// raw strings `r#"..."#`, line comments `//`, and nested block comments `/* */`.
+fn find_script_close(text: &str, body_start: usize) -> Option<(usize, usize)> {
+    let bytes = text.as_bytes();
+    let mut i = body_start;
+    while i < bytes.len() {
+        if bytes[i] == b'<'
+            && let Some(after_close) = match_closing_tag(text, i, "script")
+        {
+            return Some((i, after_close));
+        }
+        // Line comment `// ...`
+        if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'/') {
+            i += 2;
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        // Nested Rust block comment `/* ... */`
+        if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
+            i += 2;
+            let mut cdepth = 1usize;
+            while i < bytes.len() && cdepth > 0 {
+                if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
+                    cdepth += 1;
+                    i += 2;
+                } else if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
+                    cdepth -= 1;
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+        // Raw string literal: `r#"..."#`, `br#"..."#`, `cr#"..."#`
+        if bytes[i] == b'r'
+            && (i == body_start
+                || !bytes[i - 1].is_ascii_alphanumeric() && bytes[i - 1] != b'_'
+                || matches!(bytes[i - 1], b'b' | b'c'))
+        {
+            let mut j = i + 1;
+            while j < bytes.len() && bytes[j] == b'#' {
+                j += 1;
+            }
+            if j < bytes.len() && bytes[j] == b'"' {
+                let hashes = j - (i + 1);
+                j += 1;
+                while j < bytes.len() {
+                    if bytes[j] == b'"' {
+                        let mut h = 0;
+                        while h < hashes && bytes.get(j + 1 + h) == Some(&b'#') {
+                            h += 1;
+                        }
+                        if h == hashes {
+                            j = j + 1 + hashes;
+                            break;
+                        }
+                    }
+                    j += 1;
+                }
+                i = j;
+                continue;
+            }
+        }
+        // Regular string literal `"..."`
+        if bytes[i] == b'"' {
+            i += 1;
+            while i < bytes.len() {
+                if bytes[i] == b'\\' {
+                    i = (i + 2).min(bytes.len());
+                    continue;
+                }
+                if bytes[i] == b'"' {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Scan `<style>` (CSS) body until `</style>`, skipping CSS strings and `/* */` comments.
+fn find_style_close(text: &str, body_start: usize) -> Option<(usize, usize)> {
+    let bytes = text.as_bytes();
+    let mut i = body_start;
+    while i < bytes.len() {
+        if bytes[i] == b'<'
+            && let Some(after_close) = match_closing_tag(text, i, "style")
+        {
+            return Some((i, after_close));
+        }
+        if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
+            i += 2;
+            while i < bytes.len() {
+                if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
+                    i += 2;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        if bytes[i] == b'"' || bytes[i] == b'\'' {
+            let q = bytes[i];
+            i += 1;
+            while i < bytes.len() {
+                if bytes[i] == b'\\' {
+                    i = (i + 2).min(bytes.len());
+                    continue;
+                }
+                if bytes[i] == q {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Scan top-level SFC blocks (`<template>`, `<script>`, `<style>`) cleanly
+/// without being fooled by strings inside `<script>` or `<template>` or by
+/// multiple `<style>` blocks.
+fn scan_top_level_blocks<'t>(src: &Source<'t>) -> Result<Vec<RawBlock<'t>>, Error> {
+    let text = src.text;
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    let mut blocks = Vec::new();
+    while i < bytes.len() {
+        if bytes[i].is_ascii_whitespace() {
+            i += 1;
+            continue;
+        }
+        if bytes[i] != b'<' {
+            i += 1;
+            continue;
+        }
+        if text[i..].starts_with("<!--") {
+            let Some(rel) = text[i + 4..].find("-->") else {
+                return Err(src.error(i, "comment is never closed"));
+            };
+            i = i + 4 + rel + 3;
+            continue;
+        }
+        let open_offset = i;
+        let name_start = i + 1;
+        let mut name_end = name_start;
+        while name_end < bytes.len()
+            && (bytes[name_end].is_ascii_alphanumeric() || bytes[name_end] == b'-')
+        {
+            name_end += 1;
+        }
+        let tag = &text[name_start..name_end];
+        let Some(gt) = find_open_tag_end(text, name_end) else {
+            return Err(src.error(open_offset, format!("`<{tag}` is never closed")));
+        };
+        let attrs_raw = &text[name_end..gt];
+        let self_closing = attrs_raw.trim_end().ends_with('/');
+        let attrs = parse_tag_attrs(attrs_raw.trim_end_matches('/'));
+        let body_start = gt + 1;
+        if self_closing {
+            blocks.push(RawBlock {
+                tag,
+                attrs,
+                body_start,
+                body_end: body_start,
+            });
+            i = body_start;
+            continue;
+        }
+        let close = match tag {
+            "template" => find_template_close(text, body_start),
+            "script" => find_script_close(text, body_start),
+            "style" => find_style_close(text, body_start),
+            _ => {
+                // Unknown top-level tag: advance past opening tag.
+                i = body_start;
+                continue;
+            }
+        };
+        let Some((body_end, next_i)) = close else {
+            return Err(src.error(open_offset, format!("`<{tag}>` has no `</{tag}>`")));
+        };
+        blocks.push(RawBlock {
+            tag,
+            attrs,
+            body_start,
+            body_end,
+        });
+        i = next_i;
+    }
+    Ok(blocks)
 }
 
 pub fn component(file: &str, text: &str) -> Result<Component, Error> {
     let src = Source::new(file, text);
-    // A view's style is always its own (`scoped` or not): it is matched
-    // against this template only, at build time.
-    let style = match block(&src, "style")? {
-        Some((attrs, start, end)) => {
-            if attrs.contains("lang=") && !attrs.contains("lang=\"css\"") {
-                return Err(src.error(start, "`<style>` takes plain CSS (`lang=\"css\"`)"));
+    let blocks = scan_top_level_blocks(&src)?;
+
+    // Combine all top-level `<style>` blocks in document order. Each block is
+    // component-scoped by default (`scoped` or bare); `<style global>` is also
+    // accepted cleanly.
+    let mut combined_css = String::new();
+    let mut style_segments = Vec::new();
+    let mut script_block: Option<&RawBlock<'_>> = None;
+    let mut template_block: Option<&RawBlock<'_>> = None;
+
+    for blk in &blocks {
+        match blk.tag {
+            "style" => {
+                if let Some((_, lang)) = blk.attrs.iter().find(|(k, _)| k == "lang") {
+                    if !lang
+                        .as_deref()
+                        .is_some_and(|v| v.eq_ignore_ascii_case("css"))
+                    {
+                        return Err(
+                            src.error(blk.body_start, "`<style>` takes plain CSS (`lang=\"css\"`)")
+                        );
+                    }
+                }
+                if !combined_css.is_empty() {
+                    combined_css.push('\n');
+                }
+                let combined_start = combined_css.len();
+                let slice = &src.text[blk.body_start..blk.body_end];
+                combined_css.push_str(slice);
+                let pos = src.pos(blk.body_start);
+                style_segments.push(StyleSegment {
+                    combined_start,
+                    len: slice.len(),
+                    line: pos.line,
+                    column: pos.column,
+                });
             }
-            let pos = src.pos(start);
-            Some(Style {
-                css: src.text[start..end].to_owned(),
-                line: pos.line,
-                column: pos.column,
-            })
+            "script" => {
+                if script_block.is_none() {
+                    script_block = Some(blk);
+                }
+            }
+            "template" => {
+                if template_block.is_none() {
+                    template_block = Some(blk);
+                }
+            }
+            _ => {}
         }
-        None => None,
+    }
+
+    let style = if style_segments.is_empty() {
+        None
+    } else {
+        Some(Style {
+            css: combined_css,
+            segments: style_segments,
+        })
     };
-    let (props, script, script_pos) = match block(&src, "script")? {
-        Some((attrs, start, end)) => {
-            if !attrs.contains("setup") || !attrs.contains("lang=\"rust\"") {
+
+    let (props, script, script_pos) = match script_block {
+        Some(blk) => {
+            let has_setup = blk.attrs.iter().any(|(k, _)| k == "setup");
+            let has_rust = blk.attrs.iter().any(|(k, v)| {
+                k == "lang" && v.as_deref().is_some_and(|l| l.eq_ignore_ascii_case("rust"))
+            });
+            if !has_setup || !has_rust {
                 return Err(src.error(
-                    start,
+                    blk.body_start,
                     "the script block must be `<script setup lang=\"rust\">`",
                 ));
             }
-            let pos = src.pos(start);
-            let (props, script) = script(&src, start, end)?;
+            let pos = src.pos(blk.body_start);
+            let (props, script) = script(&src, blk.body_start, blk.body_end)?;
             (props, script, Some(pos))
         }
         None => (Vec::new(), Vec::new(), None),
     };
-    let (_, start, end) = block(&src, "template")?
-        .ok_or_else(|| src.error(0, "a `.vue` view needs a `<template>`"))?;
-    let template_pos = src.pos(start);
+
+    let tpl = template_block.ok_or_else(|| src.error(0, "a `.vue` view needs a `<template>`"))?;
+    let template_pos = src.pos(tpl.body_start);
     let mut parser = Template {
         src: &src,
-        offset: start,
-        end,
+        offset: tpl.body_start,
+        end: tpl.body_end,
     };
     let template = parser.nodes(None)?;
     let name_pos = script_pos.unwrap_or(template_pos);

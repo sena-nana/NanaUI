@@ -7,8 +7,9 @@ mod style;
 
 pub use nana_ui_core::{HotSheetAxis, HotSheetQuery, HotStylePatch, HotStyleRule, HotStyleSheet};
 pub use style::{
-    CompiledHotStyles, CompiledStyles, StyleAt, StyleWarning, compile_inline, compile_styles,
-    compile_styles_hot, compile_stylesheet,
+    CompiledHotStyles, CompiledInlineStyle, CompiledStyles, CompiledStylesheet, StyleAt,
+    StyleSeverity, StyleWarning, compile_inline, compile_styles, compile_styles_hot,
+    compile_stylesheet, emit_all_style_ops_verification_fn,
 };
 
 use proc_macro2::{Span, TokenStream};
@@ -134,6 +135,7 @@ const T_NODE_ATTRIBUTES: &[&str] = &[
     "labelled_by",
     "locale",
     "class",
+    "style",
     "decorative",
     "hit_test",
 ];
@@ -704,10 +706,10 @@ fn loop_parts(element: &Element) -> syn::Result<(&Pat, &Expr, TokenStream)> {
 }
 
 /// Whether an attribute is a class the view's `<style>` compiled onto the
-/// element (`class`, `class:name`).
+/// element (`class`, `class:name`, ancestor interactive pseudo).
 fn is_class_directive(name: &AttrName) -> bool {
     matches!(name, AttrName::Directive(directive, _)
-        if directive == "class" || directive == "class_when")
+        if directive == "class" || directive == "class_when" || directive == "ancestor_pseudo")
 }
 
 /// A block's compiled classes as calls on the structural view it builds:
@@ -722,6 +724,10 @@ fn container_classes(element: &Element) -> syn::Result<Vec<TokenStream>> {
             }
             AttrName::Directive(directive, span) if directive == "class_when" => Some(
                 raw(&attr.value, *span).map(|value| quote_spanned!(*span=> .class_when(#value))),
+            ),
+            AttrName::Directive(directive, span) if directive == "ancestor_pseudo" => Some(
+                raw(&attr.value, *span)
+                    .map(|value| quote_spanned!(*span=> .ancestor_pseudo(#value))),
             ),
             _ => None,
         })
@@ -1656,8 +1662,8 @@ impl Gen<'_> {
                         let signal = raw(&attr.value, *span)?;
                         out = quote_spanned!(*span=> #out.model(#signal));
                     }
-                    // Written from `class` and `class:name` against the
-                    // view's `<style>`: the calls the Rust spelling writes.
+                    // Written from `class`, `class:name`, inline `style`, `@font-face`,
+                    // and ancestor interactive pseudos against the view's `<style>`.
                     "class" => {
                         let value = raw(&attr.value, *span)?;
                         out = quote_spanned!(*span=> #out.class(#value));
@@ -1665,6 +1671,26 @@ impl Gen<'_> {
                     "class_when" => {
                         let value = raw(&attr.value, *span)?;
                         out = quote_spanned!(*span=> #out.class_when(#value));
+                    }
+                    "ancestor_pseudo" => {
+                        let value = raw(&attr.value, *span)?;
+                        out = quote_spanned!(*span=> #out.ancestor_pseudo(#value));
+                    }
+                    "inline_patch" => {
+                        let value = raw(&attr.value, *span)?;
+                        out = quote_spanned!(*span=> #out.inline_patch(#value));
+                    }
+                    "inline_animate" => {
+                        let value = raw(&attr.value, *span)?;
+                        out = quote_spanned!(*span=> #out.animate(#value));
+                    }
+                    "sheet" => {
+                        let value = raw(&attr.value, *span)?;
+                        out = quote_spanned!(*span=> #out.sheet(#value));
+                    }
+                    "track_interactive" => {
+                        let value = raw(&attr.value, *span)?;
+                        out = quote_spanned!(*span=> #out.track_interactive_state(#value));
                     }
                     "if" | "else-if" | "else" | "for" => {}
                     slot if slot.starts_with("slot:") => {}
@@ -1682,12 +1708,31 @@ impl Gen<'_> {
                 },
             }
         }
+        let wrap_interactive = |expr: TokenStream| -> syn::Result<TokenStream> {
+            let mut wrapped = expr;
+            for attr in &element.attrs {
+                if let AttrName::Directive(directive, at) = &attr.name
+                    && directive == "track_interactive"
+                {
+                    let tokens = raw(&attr.value, *at)?;
+                    let mut iter = tokens.into_iter();
+                    let Some(handle) = iter.next() else {
+                        continue;
+                    };
+                    wrapped = quote_spanned!(*at=> {
+                        let #handle = #krate::view::interactive_state();
+                        #wrapped
+                    });
+                }
+            }
+            Ok(wrapped)
+        };
         let out = slot_calls(self, element, out)?;
         if !matches!(tag.as_str(), "Column" | "Row" | "Inline" | "Widget") && control.is_none() {
-            return Ok(out);
+            return wrap_interactive(out);
         }
         let Some(source) = self.source_site(span) else {
-            return Ok(out);
+            return wrap_interactive(out);
         };
         let mut fields = Vec::new();
         for attr in &element.attrs {
@@ -1703,7 +1748,9 @@ impl Gen<'_> {
                 AttrName::Directive(name, at) => (
                     match name.as_str() {
                         "show" => "style.layout.hidden",
-                        "class" | "class_when" => "style.layout",
+                        "class" | "class_when" | "ancestor_pseudo" | "inline_patch" => {
+                            "style.layout"
+                        }
                         "model" => match tag.as_str() {
                             "Switch" | "Checkbox" => "checked",
                             _ => "value",
@@ -1745,9 +1792,9 @@ impl Gen<'_> {
             }
         }
         if fields.is_empty() {
-            return Ok(out);
+            return wrap_interactive(out);
         }
-        Ok(
+        wrap_interactive(
             quote!(#out.source_site(const { &#krate::view::ViewSource { element: #source, fields: &[#(#fields),*] } })),
         )
     }
