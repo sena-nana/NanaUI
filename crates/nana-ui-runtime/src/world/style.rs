@@ -1508,6 +1508,16 @@ impl UiWorld {
     /// high-contrast rendition while the system asks for one.
     pub(super) fn install_theme(&mut self, theme: Arc<nana_ui_core::CompiledTheme>) {
         self.invalidation.installed_theme = theme;
+        self.invalidation.media_env.color_scheme = if self
+            .invalidation
+            .installed_theme
+            .style_model()
+            .is_dark_appearance()
+        {
+            nana_ui_core::MediaColorScheme::Dark
+        } else {
+            nana_ui_core::MediaColorScheme::Light
+        };
         self.apply_compiled_theme(self.contrast_rendition());
     }
 
@@ -1519,6 +1529,11 @@ impl UiWorld {
             return false;
         }
         self.invalidation.high_contrast = high_contrast;
+        self.invalidation.media_env.contrast = if high_contrast {
+            nana_ui_core::MediaContrast::More
+        } else {
+            nana_ui_core::MediaContrast::NoPreference
+        };
         self.apply_compiled_theme(self.contrast_rendition());
         if !self
             .invalidation

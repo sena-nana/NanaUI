@@ -30,9 +30,12 @@ use nana_ui_core::sort::CompactSort as _;
 use std::collections::HashMap;
 use std::panic::Location;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError, Weak};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 
-use nana_ui_core::{HotSheetAxis, HotSheetQuery, HotStyleRule, HotStyleSheet, LayoutStyle};
+use nana_ui_core::{
+    FontFaceRule, HotSheetAxis, HotSheetQuery, HotStyleRule, HotStyleSheet, LayoutStyle, MediaEnv,
+    MediaQueryList,
+};
 
 use super::controls::StyledComponent;
 use super::node::{DynBinding, DynProp, El, NodeBindings};
@@ -82,27 +85,154 @@ pub mod __patch {
         ContainerType, ControlHeight, ControlPadding, ControlSize, CornerShape, CssGradient,
         CursorSpec, CustomCursorError, CustomCursorSpec, CustomCursorVariant, CustomCursorVector,
         DirSpec, DisplaySpec, DominantBaselineSpec, Easing, EasingRole, ElevationRole,
-        FilterDropShadow, FilterValue, FlexDirection, FlexWrap, FontFeatureSetting,
-        FontKerningSpec, FontVariationSetting, GradientStop, GridAutoFlow, GridLine, GridPlacement,
-        GridRepeatAuto, GridStyle, GridTemplateAreas, GridTrack, GridTrackListUnsupported,
-        HitTestBehavior, HyphensSpec, Icon, IconData, IconGeometry, IconPathCommand, IconShape,
-        ImageSampling, JustifySpec, LengthAtom, LengthSpec, LineBreakSpec, LineHeightSpec,
-        LineRole, LinearGradient, LogicalBoxEdges, LogicalEdge, LogicalEdges, MaskImage, MaskKind,
-        MaterialProgram, MaterialRef, MaterialTexture, MixBlendMode, MotionCurve, MotionRole,
+        FilterDropShadow, FilterValue, FlexDirection, FlexWrap, FontFaceRule, FontFaceSource,
+        FontFeatureSetting, FontKerningSpec, FontStyleSpec, FontVariationSetting, GradientStop,
+        GridAutoFlow, GridLine, GridPlacement, GridRepeatAuto, GridStyle, GridTemplateAreas,
+        GridTrack, GridTrackListUnsupported, HitTestBehavior, HyphensSpec, Icon, IconData,
+        IconGeometry, IconPathCommand, IconShape, ImageSampling, JustifySpec, LengthAtom,
+        LengthSpec, LineBreakSpec, LineHeightSpec, LineRole, LinearGradient, LogicalBoxEdges,
+        LogicalEdge, LogicalEdges, MaskImage, MaskKind, MaterialProgram, MaterialRef,
+        MaterialTexture, MediaColorScheme, MediaComparison, MediaCondition, MediaContrast,
+        MediaEnv, MediaFeature, MediaHover, MediaOrientation, MediaPointer, MediaQuery,
+        MediaQueryList, MediaReducedMotion, MediaType, MixBlendMode, MotionCurve, MotionRole,
         OutlineSpec, OutlineStyle, OverflowSpec, OverflowWrapSpec, PaddingSpec, PaintColor,
         PaintColorSlots, PaintMat4, PaintStyle, PaintTransform, PointerEventsSpec,
         PopoverAlignment, PopoverPlacement, PositionSpec, RadialGradient, RadiusTier,
         ScrollEdgeFade, ScrollbarSkin, SemanticColor, SemanticColorMix, SemanticColorRole,
-        ShapeRole, SpacingRole, SpacingStep, SquareSize, StepJump, SurfacePadding, SurfaceRole,
-        SystemCursor, TextAlignSpec, TextAutospaceSpec, TextDecorationLine, TextDecorationStyle,
-        TextEmphasis, TextEmphasisColor, TextEmphasisPosition, TextEmphasisShape,
-        TextEmphasisStyle, TextJustifySpec, TextOrientationSpec, TextShadowSpec,
+        ShapeRole, SpacingRole, SpacingStep, SquareSize, StepJump, StyleOp, SurfacePadding,
+        SurfaceRole, SystemCursor, TextAlignSpec, TextAutospaceSpec, TextDecorationLine,
+        TextDecorationStyle, TextEmphasis, TextEmphasisColor, TextEmphasisPosition,
+        TextEmphasisShape, TextEmphasisStyle, TextJustifySpec, TextOrientationSpec, TextShadowSpec,
         TextSpacingTrimSpec, TextStrokeJoin, TextStrokePlacement, TextStrokeSpec, TextStyleExt,
         TextTypography, TextWeight, TextWrapBreak, TextWrapStyleSpec, ThemeColorPairRef, ThemeExpr,
         ThemeProperty, ThemeToken, TransformBox, TransformOrigin, TransformStyle, TypeRole,
         UserSelectSpec, VerticalAlignSpec, ViewportAxis, VisibilitySpec, WhiteSpaceSpec,
         WindowResizeEdge, WordBreakSpec, WritingModeSpec, intern_theme_color_pair,
     };
+}
+
+/// Compiled `@media` query guard on a [`Sheet`] rule or [`StyleSite`],
+/// constructed lazily once from a static builder function and cached for
+/// the process lifetime.
+#[doc(hidden)]
+pub struct SheetMediaQuery {
+    build: fn() -> MediaQueryList,
+    cached: OnceLock<MediaQueryList>,
+}
+
+impl SheetMediaQuery {
+    #[doc(hidden)]
+    pub const fn new(build: fn() -> MediaQueryList) -> Self {
+        Self {
+            build,
+            cached: OnceLock::new(),
+        }
+    }
+
+    /// The cached [`MediaQueryList`].
+    pub fn query_list(&self) -> &MediaQueryList {
+        self.cached.get_or_init(self.build)
+    }
+
+    /// Whether this `@media` query matches `env` under Kleene 3-valued logic.
+    #[inline]
+    pub fn matches(&self, env: &MediaEnv) -> bool {
+        self.query_list().matches(env)
+    }
+}
+
+/// Reactive access to the active `@media` evaluation environment (viewport
+/// dimensions, scale factor, light/dark color scheme, reduced motion, contrast,
+/// pointer/hover capabilities). Initialized on mount and updated whenever the
+/// world's media environment changes.
+pub fn media_env_signal() -> Signal<MediaEnv> {
+    let value = signal(MediaEnv::default());
+    super::reactive::on_mount(move |cx| {
+        value.set_if_changed(cx.media_env());
+        cx.media_env_signals.push(value);
+    });
+    value
+}
+
+/// Reactive interactive pseudo-state handle (`:hover` / `:focus` /
+/// `:focus-visible` / `:active` / `:selected`) exposed by an ancestor element
+/// via [`El::track_interactive_state`] so compiled descendant rules
+/// (`.card:hover .icon`, `.item:active .label`) react without a runtime DOM
+/// selector engine.
+#[derive(Clone, Copy)]
+pub struct InteractiveStateHandle {
+    signal: Signal<u8>,
+}
+
+impl Default for InteractiveStateHandle {
+    #[track_caller]
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl InteractiveStateHandle {
+    /// Create a new interactive-state handle in the current reactive scope.
+    #[track_caller]
+    pub fn new() -> Self {
+        Self {
+            signal: signal(0u8),
+        }
+    }
+
+    /// Current active pseudo-state bitmask (tracked).
+    #[inline]
+    pub fn bits(self) -> u8 {
+        self.signal.get()
+    }
+
+    /// Whether every pseudo bit in `mask` is currently active (tracked).
+    #[inline]
+    pub fn matches(self, mask: u8) -> bool {
+        (self.signal.get() & mask) == mask
+    }
+
+    /// Whether the tracked element (or a descendant) is hovered (tracked).
+    #[inline]
+    pub fn hovered(self) -> bool {
+        self.matches(PSEUDO_HOVER)
+    }
+
+    /// Whether the tracked element (or a descendant) is pressed/active (tracked).
+    #[inline]
+    pub fn active(self) -> bool {
+        self.matches(PSEUDO_ACTIVE)
+    }
+
+    /// Whether the tracked element holds focus (tracked).
+    #[inline]
+    pub fn focused(self) -> bool {
+        self.matches(PSEUDO_FOCUS)
+    }
+
+    /// Whether the tracked element holds keyboard-visible focus (tracked).
+    #[inline]
+    pub fn focus_visible(self) -> bool {
+        self.matches(PSEUDO_FOCUS_VISIBLE)
+    }
+
+    /// Whether the tracked element is selected (tracked).
+    #[inline]
+    pub fn selected(self) -> bool {
+        self.matches(PSEUDO_SELECTED)
+    }
+
+    pub(crate) fn signal(self) -> Signal<u8> {
+        self.signal
+    }
+}
+
+/// Create a new [`InteractiveStateHandle`] to attach to an ancestor element
+/// via [`El::track_interactive_state`] and consume from descendants via
+/// [`El::ancestor_pseudo`] or [`El::class_when`].
+#[track_caller]
+pub fn interactive_state() -> InteractiveStateHandle {
+    InteractiveStateHandle::new()
 }
 
 /// The CSS `@container` query of a rule, compiled at build time: the
@@ -166,10 +296,14 @@ struct HotSiteMeta {
 }
 
 /// One element's compiled rules, in cascade order: each patch applies
-/// while every conditional class and interactive pseudo in its mask is active,
-/// and a guarded one only in the buckets of its container where its query holds.
+/// while every conditional class, interactive pseudo, and `@media` query in
+/// its mask is active, and a guarded one only in the buckets of its container
+/// where its query holds.
 pub struct StyleSite {
     rules: &'static [SiteRule],
+    /// Optional per-rule `@media` guard (parallel to `rules`); empty when no
+    /// rule in this site is guarded by `@media`.
+    rule_media: &'static [Option<&'static SheetMediaQuery>],
     transitions: &'static [SiteTransition],
     animations: &'static [SiteAnimation],
     used_pseudos: u8,
@@ -193,10 +327,10 @@ struct Composed {
     /// classes swaps its base for the composition, so nothing else keeps
     /// the base, and the next equal element would compose again.
     recent: Vec<Arc<LayoutStyle>>,
-    /// `(base pointer, active classes) -> composed`.
-    by_base: HashMap<(usize, u64), (Weak<LayoutStyle>, Arc<LayoutStyle>)>,
-    /// `(base pointer, active classes) -> the rule its guarded rules give`.
-    responsive: HashMap<(usize, u64), (Weak<LayoutStyle>, Option<Arc<ResponsiveRule>>)>,
+    /// `(base pointer, active classes, active media mask) -> composed`.
+    by_base: HashMap<(usize, u64, u64), (Weak<LayoutStyle>, Arc<LayoutStyle>)>,
+    /// `(base pointer, active classes, active media mask) -> the rule its guarded rules give`.
+    responsive: HashMap<(usize, u64, u64), (Weak<LayoutStyle>, Option<Arc<ResponsiveRule>>)>,
     /// Entries at the last prune; the next runs when that doubles.
     pruned_at: usize,
     /// Compositions made, for tests.
@@ -289,6 +423,7 @@ impl StyleSite {
     pub const fn new(rules: &'static [SiteRule]) -> Self {
         Self {
             rules,
+            rule_media: &[],
             transitions: &[],
             animations: &[],
             used_pseudos: 0,
@@ -306,6 +441,7 @@ impl StyleSite {
     ) -> Self {
         Self {
             rules,
+            rule_media: &[],
             transitions,
             animations,
             used_pseudos,
@@ -314,8 +450,19 @@ impl StyleSite {
         }
     }
 
+    /// Attach per-rule `@media` guards (parallel to `rules`) to this site.
+    #[doc(hidden)]
+    pub const fn with_media(
+        mut self,
+        rule_media: &'static [Option<&'static SheetMediaQuery>],
+    ) -> Self {
+        self.rule_media = rule_media;
+        self
+    }
+
     const fn with_hot(
         rules: &'static [SiteRule],
+        rule_media: &'static [Option<&'static SheetMediaQuery>],
         transitions: &'static [SiteTransition],
         animations: &'static [SiteAnimation],
         used_pseudos: u8,
@@ -323,11 +470,48 @@ impl StyleSite {
     ) -> Self {
         Self {
             rules,
+            rule_media,
             transitions,
             animations,
             used_pseudos,
             hot,
             composed: Mutex::new(None),
+        }
+    }
+
+    pub(crate) fn has_media(&self) -> bool {
+        self.rule_media.iter().any(Option::is_some)
+    }
+
+    fn eval_media_mask(&self, env: Option<&MediaEnv>) -> Option<u64> {
+        if !self.has_media() {
+            return Some(0);
+        }
+        let default_env = MediaEnv::default();
+        let env = env.unwrap_or(&default_env);
+        let mut mask = 0u64;
+        let mut bit = 0u32;
+        for entry in self.rule_media {
+            if let Some(mq) = entry {
+                if bit >= 64 {
+                    return None;
+                }
+                if mq.matches(env) {
+                    mask |= 1u64 << bit;
+                }
+                bit += 1;
+            }
+        }
+        Some(mask)
+    }
+
+    fn rule_media_matches(&self, idx: usize, env: Option<&MediaEnv>) -> bool {
+        match self.rule_media.get(idx).copied().flatten() {
+            None => true,
+            Some(mq) => match env {
+                Some(env) => mq.matches(env),
+                None => mq.matches(&MediaEnv::default()),
+            },
         }
     }
 
@@ -405,10 +589,29 @@ impl StyleSite {
     /// guarded by an `@container` query is left out: it applies through
     /// [`Self::responsive`].
     pub fn compose(&self, base: &Arc<LayoutStyle>, active: u64) -> Arc<LayoutStyle> {
+        self.compose_with_media(base, active, None)
+    }
+
+    /// Like [`Self::compose`], evaluating `@media`-guarded rules against `env`.
+    pub fn compose_for_media(
+        &self,
+        base: &Arc<LayoutStyle>,
+        active: u64,
+        env: &MediaEnv,
+    ) -> Arc<LayoutStyle> {
+        self.compose_with_media(base, active, Some(env))
+    }
+
+    fn compose_with_media(
+        &self,
+        base: &Arc<LayoutStyle>,
+        active: u64,
+        env: Option<&MediaEnv>,
+    ) -> Arc<LayoutStyle> {
         let mut guard = self.composed.lock().unwrap_or_else(PoisonError::into_inner);
         let composed = guard.get_or_insert_with(Composed::default);
         let base = composed.canonical(base);
-        let layout = self.compose_in(composed, &base, active);
+        let layout = self.compose_in(composed, &base, active, env);
         composed.prune();
         layout
     }
@@ -419,29 +622,50 @@ impl StyleSite {
         composed: &mut Composed,
         base: &Arc<LayoutStyle>,
         active: u64,
+        env: Option<&MediaEnv>,
     ) -> Arc<LayoutStyle> {
-        let key = (Arc::as_ptr(base) as usize, active);
-        if let Some((known, layout)) = composed.by_base.get(&key)
-            && known
-                .upgrade()
-                .is_some_and(|known| Arc::ptr_eq(&known, base))
-        {
-            return Arc::clone(layout);
+        let media_mask = self.eval_media_mask(env);
+        if let Some(media_mask) = media_mask {
+            let key = (Arc::as_ptr(base) as usize, active, media_mask);
+            if let Some((known, layout)) = composed.by_base.get(&key)
+                && known
+                    .upgrade()
+                    .is_some_and(|known| Arc::ptr_eq(&known, base))
+            {
+                return Arc::clone(layout);
+            }
+            let applying = self
+                .rules
+                .iter()
+                .enumerate()
+                .filter(|(idx, (needs, _, query))| {
+                    query.is_none() && needs & !active == 0 && self.rule_media_matches(*idx, env)
+                })
+                .map(|(_, (_, patch, _))| *patch);
+            let layout = Arc::new(apply(base, applying));
+            #[cfg(test)]
+            {
+                composed.compositions += 1;
+            }
+            composed
+                .by_base
+                .insert(key, (Arc::downgrade(base), Arc::clone(&layout)));
+            return layout;
         }
+        // Fallback for sites with > 64 distinct @media rules: compose directly without mask cache.
         let applying = self
             .rules
             .iter()
-            .filter(|(needs, _, query)| query.is_none() && needs & !active == 0)
-            .map(|(_, patch, _)| *patch);
-        let layout = Arc::new(apply(base, applying));
+            .enumerate()
+            .filter(|(idx, (needs, _, query))| {
+                query.is_none() && needs & !active == 0 && self.rule_media_matches(*idx, env)
+            })
+            .map(|(_, (_, patch, _))| *patch);
         #[cfg(test)]
         {
             composed.compositions += 1;
         }
-        composed
-            .by_base
-            .insert(key, (Arc::downgrade(base), Arc::clone(&layout)));
-        layout
+        Arc::new(apply(base, applying))
     }
 
     /// The rule the site's `@container` rules give an element over `base`
@@ -454,10 +678,21 @@ impl StyleSite {
     /// [`MAX_RESPONSIVE_BREAKPOINTS`] bounds. The last is a diagnostic,
     /// naming where the element's classes were given (`at`). One rule per
     /// base and active set: an equal call returns the same one.
+    #[cfg(test)]
     pub(crate) fn responsive(
         &self,
         base: &Arc<LayoutStyle>,
         active: u64,
+        at: &'static Location<'static>,
+    ) -> Option<Arc<ResponsiveRule>> {
+        self.responsive_with_media(base, active, None, at)
+    }
+
+    fn responsive_with_media(
+        &self,
+        base: &Arc<LayoutStyle>,
+        active: u64,
+        env: Option<&MediaEnv>,
         at: &'static Location<'static>,
     ) -> Option<Arc<ResponsiveRule>> {
         if !self.has_queries() {
@@ -466,20 +701,24 @@ impl StyleSite {
         let mut guard = self.composed.lock().unwrap_or_else(PoisonError::into_inner);
         let composed = guard.get_or_insert_with(Composed::default);
         let base = composed.canonical(base);
-        let key = (Arc::as_ptr(&base) as usize, active);
-        if let Some((known, rule)) = composed.responsive.get(&key)
-            && known
-                .upgrade()
-                .is_some_and(|known| Arc::ptr_eq(&known, &base))
-        {
-            return rule.clone();
+        let media_mask = self.eval_media_mask(env);
+        if let Some(media_mask) = media_mask {
+            let key = (Arc::as_ptr(&base) as usize, active, media_mask);
+            if let Some((known, rule)) = composed.responsive.get(&key)
+                && known
+                    .upgrade()
+                    .is_some_and(|known| Arc::ptr_eq(&known, &base))
+            {
+                return rule.clone();
+            }
+            let rule = self.plan_in(composed, &base, active, env, at).map(Arc::new);
+            composed
+                .responsive
+                .insert(key, (Arc::downgrade(&base), rule.clone()));
+            composed.prune();
+            return rule;
         }
-        let rule = self.plan_in(composed, &base, active, at).map(Arc::new);
-        composed
-            .responsive
-            .insert(key, (Arc::downgrade(&base), rule.clone()));
-        composed.prune();
-        rule
+        self.plan_in(composed, &base, active, env, at).map(Arc::new)
     }
 
     /// [`Self::responsive`], uncached.
@@ -488,16 +727,21 @@ impl StyleSite {
         composed: &mut Composed,
         base: &Arc<LayoutStyle>,
         active: u64,
+        env: Option<&MediaEnv>,
         at: &'static Location<'static>,
     ) -> Option<ResponsiveRule> {
         let applying: Vec<&SiteRule> = self
             .rules
             .iter()
-            .filter(|(needs, _, _)| needs & !active == 0)
+            .enumerate()
+            .filter(|(idx, (needs, _, _))| {
+                needs & !active == 0 && self.rule_media_matches(*idx, env)
+            })
+            .map(|(_, rule)| rule)
             .collect();
         let queries: Vec<&SheetQuery> = applying.iter().filter_map(|rule| rule.2).collect();
         let (name, axis, breakpoints) = plan(&queries, at)?;
-        let authored = self.compose_in(composed, base, active);
+        let authored = self.compose_in(composed, base, active, env);
         let variants: Vec<Option<StyleVariant>> = (0..=breakpoints.len())
             .map(|bucket| {
                 // The bucket's lower bound decides: no query changes inside
@@ -568,8 +812,9 @@ impl StyleSite {
         base: &Arc<LayoutStyle>,
         active: u64,
         inline: Option<&InlineLayer>,
+        env: Option<&MediaEnv>,
     ) -> Arc<LayoutStyle> {
-        let composed = self.compose(base, active);
+        let composed = self.compose_with_media(base, active, env);
         match inline {
             None => composed,
             Some(inline) => inline.apply_over(&composed),
@@ -584,10 +829,11 @@ impl StyleSite {
         base: &Arc<LayoutStyle>,
         active: u64,
         inline: Option<&InlineLayer>,
+        env: Option<&MediaEnv>,
         at: &'static Location<'static>,
     ) -> Option<Arc<ResponsiveRule>> {
         let Some(inline) = inline else {
-            return self.responsive(base, active, at);
+            return self.responsive_with_media(base, active, env, at);
         };
         if !self.has_queries() {
             return None;
@@ -595,11 +841,15 @@ impl StyleSite {
         let applying: Vec<&SiteRule> = self
             .rules
             .iter()
-            .filter(|(needs, _, _)| needs & !active == 0)
+            .enumerate()
+            .filter(|(idx, (needs, _, _))| {
+                needs & !active == 0 && self.rule_media_matches(*idx, env)
+            })
+            .map(|(_, rule)| rule)
             .collect();
         let queries: Vec<&SheetQuery> = applying.iter().filter_map(|rule| rule.2).collect();
         let (name, axis, breakpoints) = plan(&queries, at)?;
-        let authored = self.compose_layered(base, active, Some(inline));
+        let authored = self.compose_layered(base, active, Some(inline), env);
         let variants: Vec<Option<StyleVariant>> = (0..=breakpoints.len())
             .map(|bucket| {
                 let lower = bucket
@@ -637,9 +887,10 @@ impl StyleSite {
         active: u64,
         sheet: &HotStyleSheet,
         inline: Option<&InlineLayer>,
+        env: Option<&MediaEnv>,
     ) -> Arc<LayoutStyle> {
         let Some(meta) = self.hot else {
-            return self.compose_layered(base, active, inline);
+            return self.compose_layered(base, active, inline, env);
         };
         let mut layout = (**base).clone();
         for rule in &sheet.rules {
@@ -700,7 +951,7 @@ impl StyleSite {
             );
             return None;
         }
-        let authored = self.compose_hot(base, active, sheet, inline);
+        let authored = self.compose_hot(base, active, sheet, inline, None);
         let variants: Vec<Option<StyleVariant>> = (0..=breakpoints.len())
             .map(|bucket| {
                 let lower = bucket
@@ -741,11 +992,17 @@ impl StyleSite {
 }
 
 /// A stylesheet compiled at build time (`stylesheet!`, a view's `<style>`):
-/// its class rules, transitions, and keyframe animations, each in cascade order.
+/// its class rules, transitions, keyframe animations, `@media` rule guards,
+/// and `@font-face` declarations, each in cascade order.
 pub struct Sheet {
     rules: &'static [SheetRule],
     transitions: &'static [SheetTransition],
     animations: &'static [SheetAnimation],
+    /// Sparse `(rule_index, &'static SheetMediaQuery)` pairs guarding entries
+    /// of [`Self::rules`].
+    rule_media: &'static [(usize, &'static SheetMediaQuery)],
+    /// Compiled `@font-face` declarations attached to this sheet.
+    font_faces: Option<fn() -> Vec<FontFaceRule>>,
     hot: Option<HotSheetMeta>,
     /// `(fixed classes, conditional classes) -> (site, static animations)`.
     resolved: Mutex<Vec<Resolved>>,
@@ -786,6 +1043,8 @@ impl Sheet {
             rules,
             transitions,
             animations: &[],
+            rule_media: &[],
+            font_faces: None,
             hot: None,
             resolved: Mutex::new(Vec::new()),
         }
@@ -801,6 +1060,8 @@ impl Sheet {
             rules,
             transitions,
             animations,
+            rule_media: &[],
+            font_faces: None,
             hot: None,
             resolved: Mutex::new(Vec::new()),
         }
@@ -818,9 +1079,39 @@ impl Sheet {
             rules,
             transitions,
             animations,
+            rule_media: &[],
+            font_faces: None,
             hot: Some(HotSheetMeta { view, classes }),
             resolved: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Attach `@media` query guards to rules of this sheet by rule index.
+    #[doc(hidden)]
+    pub const fn with_media(
+        mut self,
+        rule_media: &'static [(usize, &'static SheetMediaQuery)],
+    ) -> Self {
+        self.rule_media = rule_media;
+        self
+    }
+
+    /// Attach compiled `@font-face` declarations to this sheet so mounting any
+    /// element styled by it automatically registers them on [`crate::UiWorld`].
+    #[doc(hidden)]
+    pub const fn with_font_faces(mut self, font_faces: fn() -> Vec<FontFaceRule>) -> Self {
+        self.font_faces = Some(font_faces);
+        self
+    }
+
+    /// Whether this sheet declares any `@font-face` rules.
+    pub const fn has_font_faces(&self) -> bool {
+        self.font_faces.is_some()
+    }
+
+    /// Evaluate and return this sheet's `@font-face` declarations.
+    pub fn font_faces(&self) -> Vec<FontFaceRule> {
+        self.font_faces.map_or_else(Vec::new, |build| build())
     }
 
     /// The rules an element with these classes can match, with the bit of
@@ -852,19 +1143,34 @@ impl Sheet {
             class_bits | (u64::from(pseudo) << PSEUDO_BIT_SHIFT)
         };
         let mut used_pseudos = 0u8;
-        let rules: Vec<SiteRule> = self
-            .rules
-            .iter()
-            .filter(|rule| {
-                rule.classes
-                    .iter()
-                    .all(|class| fixed.contains(class) || conditional.contains(class))
-            })
-            .map(|rule| {
-                used_pseudos |= rule.pseudo;
-                (mask_for(rule.classes, rule.pseudo), rule.patch, rule.query)
-            })
-            .collect();
+        let mut rules: Vec<SiteRule> = Vec::new();
+        let mut rule_media_vec: Vec<Option<&'static SheetMediaQuery>> = Vec::new();
+        let mut any_media = false;
+        for (rule_idx, rule) in self.rules.iter().enumerate() {
+            if !rule
+                .classes
+                .iter()
+                .all(|class| fixed.contains(class) || conditional.contains(class))
+            {
+                continue;
+            }
+            used_pseudos |= rule.pseudo;
+            rules.push((mask_for(rule.classes, rule.pseudo), rule.patch, rule.query));
+            let media = self
+                .rule_media
+                .iter()
+                .find(|(idx, _)| *idx == rule_idx)
+                .map(|(_, mq)| *mq);
+            if media.is_some() {
+                any_media = true;
+            }
+            rule_media_vec.push(media);
+        }
+        let site_rule_media: &'static [Option<&'static SheetMediaQuery>] = if any_media {
+            Box::leak(rule_media_vec.into_boxed_slice())
+        } else {
+            &[]
+        };
         let transitions: Vec<SiteTransition> = self
             .transitions
             .iter()
@@ -937,6 +1243,7 @@ impl Sheet {
         // by the program's source, not by how many nodes it builds.
         let site: &'static StyleSite = Box::leak(Box::new(StyleSite::with_hot(
             Box::leak(rules.into_boxed_slice()),
+            site_rule_media,
             dynamic_transitions,
             dynamic_animations,
             used_pseudos,
@@ -1137,10 +1444,17 @@ type ApplySite<C> = fn(
     &'static StyleSite,
     Vec<PropSource<bool>>,
     Option<InlineLayer>,
+    MediaEnv,
+    &mut Vec<Signal<MediaEnv>>,
     &'static Location<'static>,
 );
 
 impl<C> Classes<C> {
+    /// The stylesheet these classes belong to.
+    pub(crate) fn sheet(&self) -> &'static Sheet {
+        self.sheet
+    }
+
     /// Write the element's styles into it (Layer 0 -> Layer 1 -> Layer 2), and
     /// return its static animations.
     pub(crate) fn apply(
@@ -1148,6 +1462,8 @@ impl<C> Classes<C> {
         component: &mut C,
         bindings: &mut NodeBindings<C>,
         inline: Option<InlineLayer>,
+        media_env: MediaEnv,
+        media_signals: &mut Vec<Signal<MediaEnv>>,
     ) -> &'static [Implicit] {
         let indices: Vec<u16> = self.conditional.iter().map(|(class, _)| *class).collect();
         let (site, animate) = self.sheet.resolve(&self.fixed, &indices);
@@ -1156,7 +1472,16 @@ impl<C> Classes<C> {
             .into_iter()
             .map(|(_, source)| source)
             .collect();
-        (self.apply)(component, bindings, site, sources, inline, self.at);
+        (self.apply)(
+            component,
+            bindings,
+            site,
+            sources,
+            inline,
+            media_env,
+            media_signals,
+            self.at,
+        );
         animate
     }
 }
@@ -1195,11 +1520,48 @@ impl<C: StyledComponent, F: Fn() -> Arc<LayoutStyle> + Send> DynProp<C> for Comp
     }
 }
 
-/// Per-node interactive pseudo state signal driven by [`ReactiveHost`].
+/// Per-node interactive pseudo state binding driven by [`ReactiveHost`]:
+/// tracks the node's own `:hover`/`:active`/`:focus`/`:focus-visible`/`:selected`
+/// stylesheet signal plus any ancestor [`InteractiveStateHandle`] observers.
 #[derive(Clone)]
 pub(crate) struct InteractiveStyleBinding {
     pub(crate) used_pseudos: u8,
-    pub(crate) signal: Signal<u8>,
+    pub(crate) signal: Option<Signal<u8>>,
+    pub(crate) observers: Vec<(u8, Signal<u8>)>,
+}
+
+impl InteractiveStyleBinding {
+    pub(crate) fn bind_self(slot: &mut Option<Self>, used_pseudos: u8, sig: Signal<u8>) {
+        match slot {
+            Some(existing) => {
+                existing.used_pseudos |= used_pseudos;
+                existing.signal = Some(sig);
+            }
+            None => {
+                *slot = Some(Self {
+                    used_pseudos,
+                    signal: Some(sig),
+                    observers: Vec::new(),
+                });
+            }
+        }
+    }
+
+    pub(crate) fn add_observer(slot: &mut Option<Self>, mask: u8, sig: Signal<u8>) {
+        match slot {
+            Some(existing) => {
+                existing.used_pseudos |= mask;
+                existing.observers.push((mask, sig));
+            }
+            None => {
+                *slot = Some(Self {
+                    used_pseudos: mask,
+                    signal: None,
+                    observers: vec![(mask, sig)],
+                });
+            }
+        }
+    }
 }
 
 /// Per-node dynamic motion metadata (conditional/pseudo transitions & keyframes).
@@ -1223,16 +1585,20 @@ impl MotionBinding {
 /// conditional class. A site with `@container` rules also gives the element
 /// its responsive rule under the active classes, kept in `bindings` for the
 /// node to send.
+#[allow(clippy::too_many_arguments)]
 fn apply_site<C: StyledComponent + ComponentView>(
     component: &mut C,
     bindings: &mut NodeBindings<C>,
     site: &'static StyleSite,
     conditions: Vec<PropSource<bool>>,
     inline: Option<InlineLayer>,
+    media_env: MediaEnv,
+    media_signals: &mut Vec<Signal<MediaEnv>>,
     at: &'static Location<'static>,
 ) {
     let base = &component.node_style().layout;
     let queried = site.has_queries();
+    let has_media = site.has_media();
     let used_pseudos = site.used_pseudos();
     let hot_styles = site
         .hot
@@ -1250,25 +1616,30 @@ fn apply_site<C: StyledComponent + ComponentView>(
     } else {
         None
     };
-    if conditions.is_empty() && used_pseudos == 0 && hot_styles.is_none() {
+    if conditions.is_empty() && used_pseudos == 0 && hot_styles.is_none() && !has_media {
         if queried {
             bindings.responsive = Some(ResponsiveBinding::new(site.responsive_layered(
                 base,
                 0,
                 inline.as_ref(),
+                None,
                 at,
             )));
         }
-        let composed = site.compose_layered(base, 0, inline.as_ref());
+        let composed = site.compose_layered(base, 0, inline.as_ref(), None);
         <ComposedLayout as FieldWrite<C, Arc<LayoutStyle>>>::write(component, composed);
         return;
     }
     let pseudo_signal = if used_pseudos != 0 {
         let sig = signal(0u8);
-        bindings.interactive = Some(InteractiveStyleBinding {
-            used_pseudos,
-            signal: sig,
-        });
+        InteractiveStyleBinding::bind_self(&mut bindings.interactive, used_pseudos, sig);
+        Some(sig)
+    } else {
+        None
+    };
+    let media_signal = if has_media {
+        let sig = signal(media_env);
+        media_signals.push(sig);
         Some(sig)
     } else {
         None
@@ -1295,22 +1666,23 @@ fn apply_site<C: StyledComponent + ComponentView>(
         if let Some(mask) = &motion_mask {
             mask.store(active, Ordering::Relaxed);
         }
+        let env = media_signal.map(|sig| sig.get());
         if let Some(hot_sheet) = hot_styles.and_then(|sig| sig.get()) {
             if let Some(pending) = &pending {
                 let rule = site.responsive_hot(&base, active, &hot_sheet, inline.as_ref(), at);
                 *pending.lock().unwrap_or_else(PoisonError::into_inner) = Some(rule);
             }
-            site.compose_hot(&base, active, &hot_sheet, inline.as_ref())
+            site.compose_hot(&base, active, &hot_sheet, inline.as_ref(), env.as_ref())
         } else {
             if let Some(pending) = &pending {
                 let rule = if queried {
-                    site.responsive_layered(&base, active, inline.as_ref(), at)
+                    site.responsive_layered(&base, active, inline.as_ref(), env.as_ref(), at)
                 } else {
                     None
                 };
                 *pending.lock().unwrap_or_else(PoisonError::into_inner) = Some(rule);
             }
-            site.compose_layered(&base, active, inline.as_ref())
+            site.compose_layered(&base, active, inline.as_ref(), env.as_ref())
         }
     };
     bindings.composed_style = Some(DynBinding {
@@ -1437,6 +1809,22 @@ impl<C: StyledComponent + ComponentView, K> El<C, K> {
     #[track_caller]
     pub fn class_when(self, class: Class, condition: impl IntoProp<bool>) -> Self {
         self.class_when_at(class, condition.into_source(), Location::caller())
+    }
+
+    /// Enable `class` while the ancestor tracked by `handle` matches every
+    /// interactive pseudo-state bit in `pseudo_mask` (e.g. `.card:hover .icon`).
+    #[track_caller]
+    pub fn ancestor_pseudo(
+        self,
+        class: Class,
+        handle: InteractiveStateHandle,
+        pseudo_mask: u8,
+    ) -> Self {
+        self.class_when_at(
+            class,
+            (move || handle.matches(pseudo_mask)).into_source(),
+            Location::caller(),
+        )
     }
 
     fn class_at(self, class: Class, at: &'static Location<'static>) -> Self {
@@ -1593,6 +1981,18 @@ macro_rules! container_styles {
                     ::std::panic::Location::caller(),
                 );
                 self
+            }
+
+            /// Enable `class` on the container while the ancestor tracked by
+            /// `handle` matches every pseudo bit in `pseudo_mask`.
+            #[track_caller]
+            pub fn ancestor_pseudo(
+                self,
+                class: $crate::view::Class,
+                handle: $crate::view::InteractiveStateHandle,
+                pseudo_mask: u8,
+            ) -> Self {
+                self.class_when(class, move || handle.matches(pseudo_mask))
             }
 
             /// A `css!` block on the container, as [`El::css`] on an
@@ -2218,5 +2618,649 @@ mod site_tests {
         active.set(false);
         cx.flush_reactive().unwrap();
         check_reactive(&cx, None);
+    }
+
+    #[test]
+    fn hot_style_patch_from_ops_applies_typed_ops_and_preserves_layers() {
+        use crate::view::{__hot_register, HotStylePatch, apply_hot_styles, column, signal};
+        use crate::{AppContext, DocumentId};
+        use nana_ui_core::{PaintColor, StyleOp};
+
+        static OPS_HOT_BASE: StylePatch = StylePatch::new(|layout| {
+            layout.padding = Some(LengthSpec::Px(4.0));
+            layout.width = Some(LengthSpec::Px(100.0));
+        });
+        static OPS_HOT_RULES: [SheetRule; 1] = [SheetRule {
+            classes: &[0],
+            pseudo: 0,
+            patch: &OPS_HOT_BASE,
+            query: None,
+        }];
+        static OPS_HOT_SHEET: Sheet =
+            Sheet::with_hot(&OPS_HOT_RULES, &[], &[], "HotOpsUnit", &["box"]);
+
+        let shape = 0x4220_0002;
+        __hot_register("HotOpsUnit", shape);
+        let c_box = Class::new(&OPS_HOT_SHEET, 0);
+        let op_sig = signal(0.35_f32);
+
+        let mut cx = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let root = cx
+            .mount_view_root(document, move || {
+                column()
+                    .padding(18.0) // Layer 2 inline override
+                    .class(c_box)
+                    .paint_opacity(op_sig) // Layer 3 reactive override
+            })
+            .unwrap()
+            .roots()[0];
+
+        let sel_bg = PaintColor::srgb([0.1, 0.4, 0.9, 0.5]);
+        let sheet = HotStyleSheet {
+            rules: vec![HotStyleRule {
+                classes: vec!["box".into()],
+                pseudo: 0,
+                patch: HotStylePatch::from_ops(vec![
+                    StyleOp::Padding(Some(LengthSpec::Px(2.0))),
+                    StyleOp::Width(Some(LengthSpec::Px(240.0))),
+                    StyleOp::Opacity(Some(0.9)),
+                    StyleOp::SelectionBackground(Some(sel_bg)),
+                    StyleOp::PlaceholderOpacity(Some(0.45)),
+                ]),
+                query: None,
+            }],
+        };
+        apply_hot_styles("HotOpsUnit", shape, sheet).unwrap();
+        cx.flush_reactive().unwrap();
+
+        let layout = &cx.world().node_style(root).unwrap().layout;
+        assert_eq!(layout.width, Some(LengthSpec::Px(240.0)));
+        assert_eq!(layout.paint_colors.selection_background, Some(sel_bg));
+        assert_eq!(layout.text_ext.placeholder_opacity, Some(0.45));
+        assert_eq!(
+            layout.padding,
+            Some(LengthSpec::Px(18.0)),
+            "Layer 2 inline padding must survive hot ops"
+        );
+        assert_eq!(
+            layout.opacity,
+            Some(0.35),
+            "Layer 3 reactive opacity must survive hot ops"
+        );
+    }
+
+    #[test]
+    fn media_query_rules_react_to_viewport_theme_scale_and_accessibility_while_preserving_layers() {
+        use crate::view::{column, media_env_signal, signal};
+        use crate::{AppContext, DocumentId};
+        use nana_ui_core::{
+            MediaColorScheme, MediaCondition, MediaContrast, MediaFeature, MediaQuery,
+            MediaQueryList, MediaReducedMotion, ThemeAppearance, builtin_theme_arc,
+        };
+
+        static MEDIA_BASE: StylePatch = StylePatch::new(|layout| {
+            layout.width = Some(LengthSpec::Px(100.0));
+            layout.height = Some(LengthSpec::Px(40.0));
+            layout.padding = Some(LengthSpec::Px(4.0));
+            layout.opacity = Some(1.0);
+        });
+        static MEDIA_WIDE: StylePatch = StylePatch::new(|layout| {
+            layout.width = Some(LengthSpec::Px(480.0));
+            layout.padding = Some(LengthSpec::Px(2.0));
+        });
+        static MEDIA_LIGHT: StylePatch = StylePatch::new(|layout| {
+            layout.height = Some(LengthSpec::Px(64.0));
+        });
+        static MEDIA_REDUCED: StylePatch = StylePatch::new(|layout| {
+            layout.margin_top = Some(LengthSpec::Px(12.0));
+        });
+        static MEDIA_CONTRAST: StylePatch = StylePatch::new(|layout| {
+            layout.border_width = Some(3.0);
+        });
+        static MEDIA_HIDPI: StylePatch = StylePatch::new(|layout| {
+            layout.border_radius = Some(12.0);
+        });
+
+        static MQ_WIDE: SheetMediaQuery = SheetMediaQuery::new(|| MediaQueryList {
+            queries: vec![MediaQuery::from_condition(MediaCondition::feature(
+                MediaFeature::min_width(720.0),
+            ))],
+        });
+        static MQ_LIGHT: SheetMediaQuery = SheetMediaQuery::new(|| MediaQueryList {
+            queries: vec![MediaQuery::from_condition(MediaCondition::feature(
+                MediaFeature::PrefersColorScheme(MediaColorScheme::Light),
+            ))],
+        });
+        static MQ_REDUCED: SheetMediaQuery = SheetMediaQuery::new(|| MediaQueryList {
+            queries: vec![MediaQuery::from_condition(MediaCondition::feature(
+                MediaFeature::PrefersReducedMotion(MediaReducedMotion::Reduce),
+            ))],
+        });
+        static MQ_CONTRAST: SheetMediaQuery = SheetMediaQuery::new(|| MediaQueryList {
+            queries: vec![MediaQuery::from_condition(MediaCondition::feature(
+                MediaFeature::PrefersContrast(MediaContrast::More),
+            ))],
+        });
+        static MQ_HIDPI: SheetMediaQuery = SheetMediaQuery::new(|| MediaQueryList {
+            queries: vec![MediaQuery::from_condition(MediaCondition::feature(
+                MediaFeature::min_resolution(2.0),
+            ))],
+        });
+
+        static MEDIA_RULES: [SheetRule; 6] = [
+            SheetRule {
+                classes: &[0],
+                pseudo: 0,
+                patch: &MEDIA_BASE,
+                query: None,
+            },
+            SheetRule {
+                classes: &[0],
+                pseudo: 0,
+                patch: &MEDIA_WIDE,
+                query: None,
+            },
+            SheetRule {
+                classes: &[0],
+                pseudo: 0,
+                patch: &MEDIA_LIGHT,
+                query: None,
+            },
+            SheetRule {
+                classes: &[0],
+                pseudo: 0,
+                patch: &MEDIA_REDUCED,
+                query: None,
+            },
+            SheetRule {
+                classes: &[0],
+                pseudo: 0,
+                patch: &MEDIA_CONTRAST,
+                query: None,
+            },
+            SheetRule {
+                classes: &[0],
+                pseudo: 0,
+                patch: &MEDIA_HIDPI,
+                query: None,
+            },
+        ];
+        static MEDIA_GUARDS: [(usize, &'static SheetMediaQuery); 5] = [
+            (1, &MQ_WIDE),
+            (2, &MQ_LIGHT),
+            (3, &MQ_REDUCED),
+            (4, &MQ_CONTRAST),
+            (5, &MQ_HIDPI),
+        ];
+        static MEDIA_SHEET: Sheet = Sheet::new(&MEDIA_RULES, &[]).with_media(&MEDIA_GUARDS);
+
+        let c_card = Class::new(&MEDIA_SHEET, 0);
+        let op_sig = signal(0.75_f32);
+        let mut cx = AppContext::new();
+        cx.set_media_viewport(600.0, 500.0);
+
+        let document = DocumentId::new(1).unwrap();
+        let env_holder = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let env_holder_mount = Arc::clone(&env_holder);
+        let root = cx
+            .mount_view_root(document, move || {
+                let env_sig = media_env_signal();
+                *env_holder_mount.lock().unwrap() = Some(env_sig);
+                column()
+                    .padding(20.0) // Layer 2 inline override
+                    .class(c_card)
+                    .paint_opacity(op_sig) // Layer 3 reactive override
+            })
+            .unwrap()
+            .roots()[0];
+
+        let env_sig = env_holder.lock().unwrap().expect("media_env_signal");
+        assert_eq!(env_sig.get_untracked().width, 600.0);
+
+        // Initial mount reflects narrow dark 1x viewport immediately.
+        {
+            let layout = &cx.world().node_style(root).unwrap().layout;
+            assert_eq!(layout.width, Some(LengthSpec::Px(100.0)));
+            assert_eq!(layout.height, Some(LengthSpec::Px(40.0)));
+            assert_eq!(layout.padding, Some(LengthSpec::Px(20.0)));
+            assert_eq!(layout.opacity, Some(0.75));
+            assert_eq!(layout.margin_top, None);
+            assert_eq!(layout.border_width, None);
+            assert_eq!(layout.border_radius, None);
+        }
+
+        // Cross viewport breakpoint -> @media (min-width: 720px) activates; Layer 2/3 stay intact.
+        assert!(cx.set_media_viewport(800.0, 600.0));
+        cx.flush_reactive().unwrap();
+        assert_eq!(env_sig.get_untracked().width, 800.0);
+        {
+            let layout = &cx.world().node_style(root).unwrap().layout;
+            assert_eq!(layout.width, Some(LengthSpec::Px(480.0)));
+            assert_eq!(layout.padding, Some(LengthSpec::Px(20.0)));
+            assert_eq!(layout.opacity, Some(0.75));
+        }
+
+        // Resize within same bucket (800 -> 820) must hit StyleSite cache without extra recomposition.
+        let (site, _) = MEDIA_SHEET.resolve(&[0], &[]);
+        let before_compositions = site.compositions();
+        assert!(cx.set_media_viewport(820.0, 600.0));
+        cx.flush_reactive().unwrap();
+        assert_eq!(site.compositions(), before_compositions);
+
+        // Theme light polarity, reduced motion, high contrast, and 2x resolution.
+        cx.set_theme_tokens(builtin_theme_arc(ThemeAppearance::Light))
+            .unwrap();
+        cx.set_reduced_motion(true);
+        assert!(cx.set_high_contrast(true));
+        assert!(cx.set_scale_factor(2.0));
+        cx.flush_reactive().unwrap();
+        {
+            let layout = &cx.world().node_style(root).unwrap().layout;
+            assert_eq!(layout.height, Some(LengthSpec::Px(64.0)));
+            assert_eq!(layout.margin_top, Some(LengthSpec::Px(12.0)));
+            assert_eq!(layout.border_width, Some(3.0));
+            assert_eq!(layout.border_radius, Some(12.0));
+            assert_eq!(layout.padding, Some(LengthSpec::Px(20.0)));
+            assert_eq!(layout.opacity, Some(0.75));
+        }
+    }
+
+    #[test]
+    fn ancestor_interactive_selector_updates_descendant_layer1_while_preserving_layer2_and_layer3()
+    {
+        use crate::view::{column, interactive_state, row, signal};
+        use crate::{AppContext, DocumentId, HeadlessInput, LayoutViewport};
+        use nana_ui_input::PointerPhase;
+
+        static CARD_RESTING: StylePatch = StylePatch::new(|layout| {
+            layout.width = Some(LengthSpec::Px(200.0));
+            layout.height = Some(LengthSpec::Px(80.0));
+            layout.border_width = Some(1.0);
+            layout.paint_colors.background =
+                Some(nana_ui_core::PaintColor::srgb([0.1, 0.1, 0.1, 1.0]));
+        });
+        static CARD_HOVER: StylePatch = StylePatch::new(|layout| {
+            layout.border_width = Some(2.0);
+        });
+        static ICON_RESTING: StylePatch = StylePatch::new(|layout| {
+            layout.width = Some(LengthSpec::Px(24.0));
+            layout.height = Some(LengthSpec::Px(24.0));
+            layout.padding = Some(LengthSpec::Px(2.0));
+            layout.opacity = Some(0.5);
+            layout.paint_colors.background =
+                Some(nana_ui_core::PaintColor::srgb([0.2, 0.2, 0.2, 1.0]));
+        });
+        static ICON_ANC_HOVER: StylePatch = StylePatch::new(|layout| {
+            layout.width = Some(LengthSpec::Px(32.0));
+            layout.padding = Some(LengthSpec::Px(1.0));
+            layout.opacity = Some(0.9);
+        });
+        static ICON_ANC_ACTIVE: StylePatch = StylePatch::new(|layout| {
+            layout.height = Some(LengthSpec::Px(36.0));
+        });
+        static ANC_RULES: [SheetRule; 5] = [
+            SheetRule {
+                classes: &[0],
+                pseudo: 0,
+                patch: &CARD_RESTING,
+                query: None,
+            },
+            SheetRule {
+                classes: &[0],
+                pseudo: PSEUDO_HOVER,
+                patch: &CARD_HOVER,
+                query: None,
+            },
+            SheetRule {
+                classes: &[1],
+                pseudo: 0,
+                patch: &ICON_RESTING,
+                query: None,
+            },
+            SheetRule {
+                classes: &[1, 2],
+                pseudo: 0,
+                patch: &ICON_ANC_HOVER,
+                query: None,
+            },
+            SheetRule {
+                classes: &[1, 3],
+                pseudo: 0,
+                patch: &ICON_ANC_ACTIVE,
+                query: None,
+            },
+        ];
+        static ANC_SHEET: Sheet = Sheet::new(&ANC_RULES, &[]);
+
+        let c_card = Class::new(&ANC_SHEET, 0);
+        let c_icon = Class::new(&ANC_SHEET, 1);
+        let c_anc_hover = Class::new(&ANC_SHEET, 2);
+        let c_anc_active = Class::new(&ANC_SHEET, 3);
+        let op_sig = signal(0.6_f32);
+
+        let mut cx = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let root = cx
+            .mount_view_root(document, move || {
+                let card_state = interactive_state();
+                column()
+                    .class(c_card)
+                    .track_interactive_state(card_state, PSEUDO_HOVER | PSEUDO_ACTIVE)
+                    .children((row()
+                        .padding(10.0) // Layer 2 inline override
+                        .class(c_icon)
+                        .ancestor_pseudo(c_anc_hover, card_state, PSEUDO_HOVER)
+                        .ancestor_pseudo(c_anc_active, card_state, PSEUDO_ACTIVE)
+                        .paint_opacity(op_sig),))
+            })
+            .unwrap()
+            .roots()[0];
+        let icon_id = cx.world().node(root).unwrap().children[0];
+
+        let work = cx.take_system_work();
+        cx.resolve_styles(&work.style).unwrap();
+        cx.layout_document(document, LayoutViewport::new(400.0, 300.0))
+            .unwrap();
+        cx.rebuild_hit_test(document);
+        let mut input = HeadlessInput::bind(&mut cx, document);
+
+        // Resting state
+        {
+            let card_layout = &cx.world().node_style(root).unwrap().layout;
+            let icon_layout = &cx.world().node_style(icon_id).unwrap().layout;
+            assert_eq!(card_layout.border_width, Some(1.0));
+            assert_eq!(icon_layout.width, Some(LengthSpec::Px(24.0)));
+            assert_eq!(icon_layout.height, Some(LengthSpec::Px(24.0)));
+            assert_eq!(icon_layout.padding, Some(LengthSpec::Px(10.0)));
+            assert_eq!(icon_layout.opacity, Some(0.6));
+        }
+
+        // Hover inside the card (at (10, 10), which is also inside the descendant icon)
+        input
+            .pointer(&mut cx, PointerPhase::Move, 10.0, 10.0)
+            .unwrap();
+        {
+            let card_layout = &cx.world().node_style(root).unwrap().layout;
+            let icon_layout = &cx.world().node_style(icon_id).unwrap().layout;
+            assert_eq!(card_layout.border_width, Some(2.0), "ancestor own :hover");
+            assert_eq!(
+                icon_layout.width,
+                Some(LengthSpec::Px(32.0)),
+                ".card:hover .icon activates"
+            );
+            assert_eq!(icon_layout.height, Some(LengthSpec::Px(24.0)));
+            assert_eq!(
+                icon_layout.padding,
+                Some(LengthSpec::Px(10.0)),
+                "Layer 2 preserved"
+            );
+            assert_eq!(icon_layout.opacity, Some(0.6), "Layer 3 preserved");
+        }
+
+        // Press inside the card -> .card:active .icon activates too
+        input
+            .pointer(&mut cx, PointerPhase::Down, 10.0, 10.0)
+            .unwrap();
+        {
+            let icon_layout = &cx.world().node_style(icon_id).unwrap().layout;
+            assert_eq!(icon_layout.width, Some(LengthSpec::Px(32.0)));
+            assert_eq!(
+                icon_layout.height,
+                Some(LengthSpec::Px(36.0)),
+                ".card:active .icon activates"
+            );
+            assert_eq!(icon_layout.padding, Some(LengthSpec::Px(10.0)));
+            assert_eq!(icon_layout.opacity, Some(0.6));
+        }
+
+        // Release and leave -> reverts to resting
+        input
+            .pointer(&mut cx, PointerPhase::Up, 350.0, 250.0)
+            .unwrap();
+        input
+            .pointer(&mut cx, PointerPhase::Move, 350.0, 250.0)
+            .unwrap();
+        {
+            let icon_layout = &cx.world().node_style(icon_id).unwrap().layout;
+            assert_eq!(icon_layout.width, Some(LengthSpec::Px(24.0)));
+            assert_eq!(icon_layout.height, Some(LengthSpec::Px(24.0)));
+        }
+    }
+
+    #[test]
+    fn sheet_font_faces_auto_register_and_deduplicate_on_world() {
+        use crate::view::{column, row};
+        use crate::{AppContext, DocumentId};
+        use nana_ui_core::{FontFaceRule, FontFaceSource, FontStyleSpec};
+
+        fn build_fonts() -> Vec<FontFaceRule> {
+            let mut italic = FontFaceRule::new(
+                "DisplayFace",
+                vec![FontFaceSource::url("nana://res/fonts/display-italic.ttf")],
+            );
+            italic.weight = Some(400);
+            italic.style = Some(FontStyleSpec::Italic);
+            vec![
+                FontFaceRule::new(
+                    "DisplayFace",
+                    vec![FontFaceSource::url("nana://res/fonts/display.ttf")],
+                ),
+                // Duplicate of the first rule: must be deduplicated.
+                FontFaceRule::new(
+                    "DisplayFace",
+                    vec![FontFaceSource::url("nana://res/fonts/display.ttf")],
+                ),
+                // Distinct descriptor (italic): kept.
+                italic,
+                // Invalid (empty family): ignored.
+                FontFaceRule::new("", vec![FontFaceSource::url("nana://res/fonts/bad.ttf")]),
+            ]
+        }
+
+        static FONT_RULES: [SheetRule; 1] = [SheetRule {
+            classes: &[0],
+            pseudo: 0,
+            patch: &PAD,
+            query: None,
+        }];
+        static FONT_SHEET: Sheet = Sheet::new(&FONT_RULES, &[]).with_font_faces(build_fonts);
+        static ATTACHED_SHEET: Sheet = Sheet::new(&[], &[]).with_font_faces(|| {
+            vec![FontFaceRule::new(
+                "MonoFace",
+                vec![FontFaceSource::url("nana://res/fonts/mono.ttf")],
+            )]
+        });
+
+        let c_box = Class::new(&FONT_SHEET, 0);
+        let mut cx = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let root = cx
+            .mount_view_root(document, move || {
+                column()
+                    .sheet(&ATTACHED_SHEET)
+                    .children((row().class(c_box), row().class(c_box)))
+            })
+            .unwrap()
+            .roots()[0];
+
+        assert_eq!(cx.world().registered_font_faces().len(), 3);
+        let pending = cx.take_pending_font_faces();
+        assert_eq!(pending.len(), 3);
+        assert_eq!(pending[0].family, "MonoFace");
+        assert_eq!(pending[1].family, "DisplayFace");
+        assert_eq!(pending[1].style, None);
+        assert_eq!(pending[2].family, "DisplayFace");
+        assert_eq!(pending[2].style, Some(FontStyleSpec::Italic));
+
+        // Already drained; mounting more nodes from the same sheet queues nothing new.
+        assert!(cx.take_pending_font_faces().is_empty());
+        cx.mount_view(root, move || row().class(c_box)).unwrap();
+        assert!(cx.take_pending_font_faces().is_empty());
+        assert_eq!(cx.register_font_faces(&pending), 0);
+    }
+
+    #[test]
+    fn placeholder_and_selection_styles_apply_to_text_input_and_text_area() {
+        use crate::view::{column, text_area, text_input};
+        use crate::{
+            AppContext, DocumentId, LayoutViewport, MeasureTextShaper, MutationQueue, TextSelection,
+        };
+        use nana_ui_core::PaintColor;
+
+        static INPUT_PSEUDO_PATCH: StylePatch = StylePatch::new(|layout| {
+            layout.text_ext.placeholder_color = Some([0.8, 0.2, 0.1, 1.0]);
+            layout.text_ext.placeholder_opacity = Some(0.5);
+            layout.paint_colors.selection_background = Some(PaintColor::srgb([0.1, 0.6, 0.2, 0.4]));
+            layout.paint_colors.selection_color = Some(PaintColor::srgb([1.0, 1.0, 0.0, 1.0]));
+        });
+        static INPUT_RULES: [SheetRule; 1] = [SheetRule {
+            classes: &[0],
+            pseudo: 0,
+            patch: &INPUT_PSEUDO_PATCH,
+            query: None,
+        }];
+        static INPUT_SHEET: Sheet = Sheet::new(&INPUT_RULES, &[]);
+        let c_styled = Class::new(&INPUT_SHEET, 0);
+
+        let mut cx = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let root = cx
+            .mount_view_root(document, move || {
+                column().children((
+                    text_input().placeholder("Type here").class(c_styled),
+                    text_input().placeholder("Default placeholder"),
+                    text_area().value("Hello selected world").class(c_styled),
+                    text_area().value("Default selection"),
+                ))
+            })
+            .unwrap()
+            .roots()[0];
+        let children = cx.world().node(root).unwrap().children.to_vec();
+        let (styled_input, default_input, styled_area, default_area) =
+            (children[0], children[1], children[2], children[3]);
+
+        let work = cx.take_system_work();
+        cx.resolve_styles(&work.style).unwrap();
+        cx.shape_text(&work.text, &mut MeasureTextShaper).unwrap();
+        cx.layout_document(document, LayoutViewport::new(480.0, 320.0))
+            .unwrap();
+        cx.shape_text_for_layout(document, &mut MeasureTextShaper)
+            .unwrap();
+
+        // Select "selected" (bytes 6..14) in styled_area and "Default" (0..7) in default_area.
+        let mut queue = MutationQueue::new();
+        queue.set_text_selection(
+            styled_area,
+            TextSelection {
+                anchor: 6,
+                focus: 14,
+                affinity: crate::TextAffinity::Downstream,
+            },
+        );
+        queue.set_text_selection(
+            default_area,
+            TextSelection {
+                anchor: 0,
+                focus: 7,
+                affinity: crate::TextAffinity::Downstream,
+            },
+        );
+        cx.commit_mutations(queue).unwrap();
+        let work = cx.take_system_work();
+        cx.shape_text(&work.text, &mut MeasureTextShaper).unwrap();
+
+        // 1. Placeholder color * placeholder opacity applied; default uses theme fallback.
+        let styled_input_geom = cx
+            .world()
+            .text_input_geometry(styled_input)
+            .expect("styled input geometry");
+        let default_input_geom = cx
+            .world()
+            .text_input_geometry(default_input)
+            .expect("default input geometry");
+        let styled_ph = styled_input_geom.text.color.expect("placeholder color");
+        assert!((styled_ph[0] - 0.8).abs() < 1e-4);
+        assert!((styled_ph[1] - 0.2).abs() < 1e-4);
+        assert!((styled_ph[2] - 0.1).abs() < 1e-4);
+        assert!((styled_ph[3] - 0.5).abs() < 1e-4);
+        assert_ne!(default_input_geom.text.color, Some(styled_ph));
+
+        // 2. Selection background applied on TextArea; default uses theme fallback.
+        let styled_area_geom = cx
+            .world()
+            .text_input_geometry(styled_area)
+            .expect("styled area geometry");
+        let default_area_geom = cx
+            .world()
+            .text_input_geometry(default_area)
+            .expect("default area geometry");
+        assert_eq!(styled_area_geom.selection_color, [0.1, 0.6, 0.2, 0.4]);
+        assert_ne!(
+            default_area_geom.selection_color,
+            styled_area_geom.selection_color
+        );
+
+        // 3. Selection foreground color emitted as ExtractedTextSpan over bytes 6..14;
+        //    default_area emits no selection foreground override span.
+        let extracted = cx.world().extract_nodes(&[styled_area, default_area]);
+        let styled_extracted = extracted
+            .iter()
+            .find(|n| n.id == styled_area)
+            .expect("styled extracted");
+        let default_extracted = extracted
+            .iter()
+            .find(|n| n.id == default_area)
+            .expect("default extracted");
+        assert!(
+            styled_extracted.text_spans.iter().any(|span| {
+                span.start == 6
+                    && span.end == 14
+                    && span.color == [1.0, 1.0, 0.0, 1.0]
+                    && span.paint_color == Some(PaintColor::srgb([1.0, 1.0, 0.0, 1.0]))
+            }),
+            "expected selection foreground span on styled TextArea, got {:?}",
+            styled_extracted.text_spans
+        );
+        assert!(
+            default_extracted.text_spans.is_empty(),
+            "unstyled TextArea should keep default text color with no selection span"
+        );
+    }
+
+    #[test]
+    fn patch_module_reexports_all_wave1_core_types() {
+        use super::__patch::{
+            FontFaceRule, FontFaceSource, FontStyleSpec, MediaColorScheme, MediaComparison,
+            MediaCondition, MediaContrast, MediaEnv, MediaFeature, MediaHover, MediaOrientation,
+            MediaPointer, MediaQuery, MediaQueryList, MediaReducedMotion, MediaType, StyleOp,
+        };
+
+        let _env = MediaEnv {
+            media_type: MediaType::Screen,
+            color_scheme: MediaColorScheme::Dark,
+            reduced_motion: MediaReducedMotion::Reduce,
+            contrast: MediaContrast::More,
+            hover: MediaHover::Hover,
+            pointer: MediaPointer::Fine,
+            ..MediaEnv::default()
+        };
+        let _query = MediaQueryList {
+            queries: vec![MediaQuery::with_type(
+                false,
+                MediaType::Screen,
+                Some(MediaCondition::and(vec![
+                    MediaCondition::feature(MediaFeature::Width(MediaComparison::Ge, 600.0)),
+                    MediaCondition::feature(MediaFeature::Orientation(MediaOrientation::Landscape)),
+                ])),
+            )],
+        };
+        let _font = FontFaceRule {
+            family: "Reexported".into(),
+            sources: vec![FontFaceSource::local("System")],
+            style: Some(FontStyleSpec::Normal),
+            ..FontFaceRule::default()
+        };
+        let _op = StyleOp::Hidden(true);
     }
 }

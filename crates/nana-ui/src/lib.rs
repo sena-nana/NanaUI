@@ -208,7 +208,9 @@ pub use component_support::{
 pub use default_gpu_view::{DefaultGpuViewRenderer, default_scene_gpu_renderers};
 pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
 #[cfg(feature = "gpu")]
-pub use font_face_ingest::{HostFontFaceSpec, ingest_host_font_faces};
+pub use font_face_ingest::{
+    HostFontFaceSpec, drain_world_font_faces, ingest_font_face_rules, ingest_host_font_faces,
+};
 #[cfg(feature = "gpu")]
 pub use frame_binding::{FrameBinding, MediaFrame, MediaSampleOutcome, MediaTimestamp};
 pub use geometry::{LogicalPoint, LogicalRect, PhysicalRect, RegionRect, WorkspaceGeometry};

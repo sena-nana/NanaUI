@@ -192,6 +192,9 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let a11y_enabled = self.is_accessibility_activated(id);
         let Some(flush) = self.program.write_document(id, |document| {
             document.set_accessibility_enabled(a11y_enabled);
+            document
+                .context_mut()
+                .set_scale_factor(geometry.scale_factor);
             crate::output::driver::flush_presentation(document, viewport, &mut self.text)
         }) else {
             self.program

@@ -193,6 +193,11 @@ impl UiWorld {
     /// surfaces open and close at once.
     pub fn set_reduced_motion(&mut self, reduced: bool) {
         self.motion.reduced_motion = reduced;
+        self.invalidation.media_env.reduced_motion = if reduced {
+            nana_ui_core::MediaReducedMotion::Reduce
+        } else {
+            nana_ui_core::MediaReducedMotion::NoPreference
+        };
     }
 
     /// Whether the application's reduce-motion preference holds: a

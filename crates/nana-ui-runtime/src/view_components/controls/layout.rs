@@ -676,6 +676,10 @@ impl ComponentView for Stack {
         share(&mut self.style);
     }
 
+    fn enable_interactive_pointer(&mut self) {
+        self.hittable = true;
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "stack".into(),

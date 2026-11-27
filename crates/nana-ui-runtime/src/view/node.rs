@@ -425,6 +425,10 @@ pub(crate) struct ViewParts {
     pub(crate) shared_elements: Vec<SharedElementDecl>,
     pub(crate) interactive: Vec<(StableNodeId, super::style::InteractiveStyleBinding)>,
     pub(crate) motion: Vec<(StableNodeId, super::style::MotionBinding)>,
+    /// `@media`-guarded style composition signals created during this build.
+    pub(crate) media_signals: Vec<Signal<nana_ui_core::MediaEnv>>,
+    /// Stylesheets carrying `@font-face` rules mounted during this build.
+    pub(crate) font_face_sheets: Vec<&'static super::style::Sheet>,
     /// Composites to assemble once built (their `slot_assembler`, or their
     /// `assembler`, which otherwise runs only after a write), each after
     /// its slots and its children.
@@ -1181,6 +1185,8 @@ pub struct El<C: ComponentView, K = ()> {
     shared_element: Option<Box<SharedElementBinding>>,
     slots: Vec<Slot<C>>,
     classes: Option<super::style::Classes<C>>,
+    /// Stylesheets attached explicitly via [`El::sheet`] (e.g. for `@font-face`).
+    sheets: Vec<&'static super::style::Sheet>,
     /// Layer 2 author inline overrides (`.css(css!{...})` and static Rust
     /// layout/paint builder overrides); boxed so simple elements pay 0 allocs.
     inline_styles: Option<Box<super::style::InlineStyles<C>>>,
@@ -1212,6 +1218,7 @@ pub fn widget<C: ComponentView>(component: C) -> El<C> {
         shared_element: None,
         slots: Vec::new(),
         classes: None,
+        sheets: Vec::new(),
         inline_styles: None,
         children: Box::new(()),
         site: Location::caller(),
@@ -1266,6 +1273,39 @@ impl<C: ComponentView, K> El<C, K> {
 
     pub(crate) fn parts_mut(&mut self) -> (&mut C, &mut NodeBindings<C>) {
         (&mut self.component, &mut self.bindings)
+    }
+
+    /// Expose this element's interactive pseudo-states (`mask` of
+    /// `PSEUDO_HOVER | PSEUDO_ACTIVE | PSEUDO_FOCUS | PSEUDO_FOCUS_VISIBLE | PSEUDO_SELECTED`)
+    /// through `handle` so compiled descendant rules (`.card:hover .icon`,
+    /// `.item:active .label`) react without a runtime DOM selector engine.
+    pub fn track_interactive_state(
+        mut self,
+        handle: super::style::InteractiveStateHandle,
+        mask: u8,
+    ) -> Self {
+        if mask != 0 {
+            super::style::InteractiveStyleBinding::add_observer(
+                &mut self.bindings.interactive,
+                mask,
+                handle.signal(),
+            );
+        }
+        self
+    }
+
+    /// Attach a compiled [`super::Sheet`] to this element so any `@font-face`
+    /// declarations it carries are registered on [`crate::UiWorld`] when mounted.
+    pub fn sheet(mut self, sheet: &'static super::style::Sheet) -> Self {
+        if sheet.has_font_faces()
+            && !self
+                .sheets
+                .iter()
+                .any(|existing| std::ptr::eq(*existing, sheet))
+        {
+            self.sheets.push(sheet);
+        }
+        self
     }
 
     /// Drive one field through a [`FieldWrite`].
@@ -1485,6 +1525,7 @@ impl<C: ComponentView, K> El<C, K> {
             shared_element: self.shared_element,
             slots: self.slots,
             classes: self.classes,
+            sheets: self.sheets,
             inline_styles: self.inline_styles,
             children: Box::new(children),
             site: self.site,
@@ -1607,6 +1648,7 @@ impl<C: ComponentView, K> El<C, K> {
             shared_element,
             slots,
             classes,
+            sheets,
             inline_styles,
             children,
             site,
@@ -1627,6 +1669,7 @@ impl<C: ComponentView, K> El<C, K> {
             shared_element,
             slots,
             classes,
+            sheets,
             inline_styles,
             children: Box::new(()),
             site,
@@ -1660,16 +1703,43 @@ impl<C: ComponentView> El<C> {
             shared_element,
             slots,
             classes,
+            sheets,
             inline_styles,
             children: _,
             site,
             source,
         } = self;
+        for sheet in sheets {
+            if sheet.has_font_faces()
+                && !vb
+                    .st
+                    .parts
+                    .font_face_sheets
+                    .iter()
+                    .any(|existing| std::ptr::eq(*existing, sheet))
+            {
+                vb.st.parts.font_face_sheets.push(sheet);
+            }
+        }
         if let Some(classes) = classes {
+            let sheet = classes.sheet();
+            if sheet.has_font_faces()
+                && !vb
+                    .st
+                    .parts
+                    .font_face_sheets
+                    .iter()
+                    .any(|existing| std::ptr::eq(*existing, sheet))
+            {
+                vb.st.parts.font_face_sheets.push(sheet);
+            }
+            let media_env = vb.ui.media_env();
             implicit.extend_from_slice(classes.apply(
                 &mut component,
                 &mut bindings,
                 inline_styles.map(|inline| inline.layer),
+                media_env,
+                &mut vb.st.parts.media_signals,
             ));
         } else if let Some(inline) = inline_styles {
             inline.apply_direct(&mut component);
@@ -1702,6 +1772,11 @@ impl<C: ComponentView> El<C> {
             reactive::run_tracked(effect, || bindings.apply(&mut component));
             effect
         });
+        if bindings.interactive.as_ref().is_some_and(|interactive| {
+            interactive.used_pseudos & (super::PSEUDO_HOVER | super::PSEUDO_ACTIVE) != 0
+        }) {
+            component.enable_interactive_pointer();
+        }
         let entity = vb.place(key, component);
         let id = entity.stable_id();
         if id == UNBUILT {

@@ -123,6 +123,9 @@ pub(crate) struct ReactiveHost {
     keyframe_tracks: HashMap<StableNodeId, Vec<RunningKeyframeTrack>, crate::BuildIdHasher>,
     /// Deduplicated hooks run once a reactive flush has installed every node it patched.
     post_flush_hooks: Vec<(StableNodeId, PostFlushFn)>,
+    /// Pointer addresses of static [`crate::view::Sheet`]s whose `@font-face`
+    /// declarations have already been registered on this context's world.
+    registered_font_sheets: HashSet<usize>,
 }
 
 impl Default for ReactiveHost {
@@ -150,6 +153,7 @@ impl Default for ReactiveHost {
             motion_bindings: HashMap::default(),
             keyframe_tracks: HashMap::default(),
             post_flush_hooks: Vec::new(),
+            registered_font_sheets: HashSet::new(),
         }
     }
 }
@@ -590,6 +594,20 @@ impl AppContext {
         for (id, motion) in parts.motion {
             if self.world.contains(id) {
                 self.reactive.motion_bindings.insert(id, motion);
+            }
+        }
+        if !parts.media_signals.is_empty() {
+            let env = self.world.media_env();
+            for sig in parts.media_signals {
+                sig.set_if_changed(env);
+                self.media_env_signals.push(sig);
+            }
+        }
+        for sheet in parts.font_face_sheets {
+            let key = std::ptr::from_ref(sheet) as usize;
+            if self.reactive.registered_font_sheets.insert(key) {
+                let rules = sheet.font_faces();
+                self.world.register_font_faces(&rules);
             }
         }
         for (id, scope) in parts.anchors {
@@ -1990,8 +2008,19 @@ impl AppContext {
         } else {
             self.reactive.active_interactive_nodes.remove(&node);
         }
-        if binding.signal.get_untracked() != bits {
-            binding.signal.set(bits);
+        if let Some(signal) = binding.signal
+            && signal.get_untracked() != bits
+        {
+            signal.set(bits);
+        }
+        if !binding.observers.is_empty() {
+            let observers = binding.observers.clone();
+            for (mask, obs) in observers {
+                let masked = bits & mask;
+                if obs.get_untracked() != masked {
+                    obs.set(masked);
+                }
+            }
         }
     }
 

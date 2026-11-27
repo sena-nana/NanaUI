@@ -103,6 +103,7 @@ pub use marks::{
     kbd_glyph, keycap_face, keycap_label, line_hang, scroll_foot_fade, settings_group, tag,
     tag_frame, tone_role,
 };
+pub use nana_ui_core::MediaEnv;
 #[doc(hidden)]
 pub use node::ViewSource;
 pub use node::{
@@ -147,10 +148,13 @@ pub use structural::{Dynamic, Each, EachExt, EachIn, When, WhenExt, dynamic, eac
 #[doc(hidden)]
 pub use style::{
     __patch, ComposedLayout, MAX_CONDITIONAL_CLASSES, PSEUDO_ACTIVE, PSEUDO_BIT_SHIFT,
-    PSEUDO_FOCUS, PSEUDO_FOCUS_VISIBLE, PSEUDO_HOVER, PSEUDO_SELECTED, SheetAnimation, SheetQuery,
-    SheetRule, SheetTransition,
+    PSEUDO_FOCUS, PSEUDO_FOCUS_VISIBLE, PSEUDO_HOVER, PSEUDO_SELECTED, SheetAnimation,
+    SheetMediaQuery, SheetQuery, SheetRule, SheetTransition,
 };
-pub use style::{Class, InlineStyle, Sheet, StylePatch, StyleSite};
+pub use style::{
+    Class, InlineStyle, InteractiveStateHandle, Sheet, StylePatch, StyleSite, interactive_state,
+    media_env_signal,
+};
 pub(crate) use style::{InteractiveStyleBinding, MotionBinding};
 pub use task::{
     Task, has_woken_tasks, poll_tasks, set_task_wake, spawn_blocking, spawn_local, task_count,

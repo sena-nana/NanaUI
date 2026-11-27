@@ -628,10 +628,23 @@ impl<P: RuntimeProgram> HeadlessRuntime<P> {
         self.program.prepare_window_frame(id, &context);
         let now = self.clock.runtime_time(self.now());
         let (width, height) = context.content_geometry().logical_size;
+        let scale_factor = context.content_geometry().scale_factor;
         let text = &mut self.text;
         let flushed = self.program.write_document(id, |document| {
             if document.compositor_needs_tick() {
                 document.sync_presentation_clock(now);
+            }
+            {
+                let ctx = document.context_mut();
+                ctx.set_media_viewport(width, height);
+                ctx.set_scale_factor(scale_factor);
+                #[cfg(feature = "gpu")]
+                {
+                    let pending_fonts = ctx.take_pending_font_faces();
+                    if !pending_fonts.is_empty() {
+                        let _ = crate::font_face_ingest::ingest_font_face_rules(&pending_fonts);
+                    }
+                }
             }
             document
                 .flush(LayoutViewport::new(width, height), text)

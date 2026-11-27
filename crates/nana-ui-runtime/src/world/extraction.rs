@@ -271,12 +271,13 @@ impl UiWorld {
             layout.padding_bottom = Some(nana_ui_core::LengthSpec::Px(padding.bottom));
             layout.padding_left = Some(nana_ui_core::LengthSpec::Px(padding.left));
         }
+        let editable = self.nodes.has_text_inputs() && self.nodes.text_input(id).is_some();
         let document_selection = self
             .text
             .document_text_selections
             .get(&document)
             .filter(|selection| selection.node == id && !selection.is_empty());
-        let mut text_spans = if has_text {
+        let mut text_spans = if has_text || editable {
             self.extracted_text_spans(id)
         } else {
             Vec::new()
@@ -293,6 +294,17 @@ impl UiWorld {
                 color,
                 selection_paint_color,
             );
+        }
+        if editable && let Some(color) = selection_color {
+            let editor_selections = self.editor_selection_display_spans(id);
+            if !editor_selections.is_empty() {
+                text_spans = merge_inlay_glyph_spans_with_paint(
+                    text_spans,
+                    &editor_selections,
+                    color,
+                    selection_paint_color,
+                );
+            }
         }
         let document_text_selection = document_selection
             .map(|selection| selection.lines.clone())
@@ -361,7 +373,7 @@ impl UiWorld {
             // Paint's question, so paint's answer: a control put into focus
             // by a click is focused and does not draw a ring about it.
             focused: self.focus_visible(document) == Some(id),
-            editable: self.nodes.has_text_inputs() && self.nodes.text_input(id).is_some(),
+            editable,
             text_spans,
             rich_text,
             // The caret shows only on the focused editor, and not in the
@@ -752,6 +764,82 @@ impl UiWorld {
             &inlay_spans,
             model.color(SemanticColorRole::Muted).as_rgba_array(),
         )
+    }
+
+    /// Display-space byte spans of active non-empty selections in a
+    /// `TextInput` / `TextArea`, for applying `::selection { color: ... }`.
+    fn editor_selection_display_spans(&self, id: StableNodeId) -> Vec<(usize, usize)> {
+        if self
+            .nodes
+            .editor(id)
+            .is_some_and(|editor| editor.session.is_composing())
+        {
+            return Vec::new();
+        }
+        if self
+            .nodes
+            .text_input_presentation(id)
+            .is_some_and(|presentation| presentation.placeholder)
+        {
+            return Vec::new();
+        }
+        let Some(state) = self.nodes.text_input(id) else {
+            return Vec::new();
+        };
+        let secure = self.text_input_is_secure(id);
+        let display_view =
+            if !secure && self.nodes.contains(id) && self.nodes.accessibility(id).multiline {
+                self.text_display_view(id)
+            } else {
+                None
+            };
+        let display_len = self
+            .nodes
+            .text_input_presentation(id)
+            .filter(|p| !p.display_value.is_empty() || state.value.is_empty())
+            .map(|p| p.display_value.len())
+            .unwrap_or_else(|| {
+                if secure {
+                    use unicode_segmentation::UnicodeSegmentation;
+                    state.value.graphemes(true).count() * "•".len()
+                } else if let Some(view) = display_view.as_ref() {
+                    view.value.len()
+                } else {
+                    state.value.len()
+                }
+            });
+        let map_offset = |offset: usize| -> usize {
+            let mapped = if secure {
+                use unicode_segmentation::UnicodeSegmentation;
+                state.value[..offset].graphemes(true).count() * "•".len()
+            } else if let Some(view) = display_view.as_ref() {
+                view.display_of(offset)
+            } else {
+                offset
+            };
+            mapped.min(display_len)
+        };
+        let mut ranges = Vec::new();
+        if state.selection.is_valid_for(state.value) && !state.selection.is_collapsed() {
+            let ordered = state.selection.ordered();
+            let start = map_offset(ordered.start);
+            let end = map_offset(ordered.end);
+            if start < end {
+                ranges.push((start, end));
+            }
+        }
+        for sel in state.additional_selections {
+            if sel.is_valid_for(state.value) && !sel.is_collapsed() {
+                let ordered = sel.ordered();
+                let start = map_offset(ordered.start);
+                let end = map_offset(ordered.end);
+                if start < end {
+                    ranges.push((start, end));
+                }
+            }
+        }
+        ranges.compact_sort_by_key(|&(start, end)| (start, end));
+        ranges
     }
 }
 

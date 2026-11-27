@@ -97,10 +97,29 @@ pub(in crate::world) struct WorldInvalidation {
     pub(in crate::world) viewport_basis: HashMap<DocumentId, HashSet<StableNodeId>, BuildIdHasher>,
     pub(in crate::world) document_viewports:
         HashMap<DocumentId, crate::LayoutViewport, BuildIdHasher>,
+    /// Live `@media` evaluation environment mirrored from viewport, theme,
+    /// scale factor, and accessibility flags.
+    pub(in crate::world) media_env: nana_ui_core::MediaEnv,
+    /// All deduplicated `@font-face` rules registered on this world, in
+    /// registration order.
+    pub(in crate::world) registered_font_faces: Vec<nana_ui_core::FontFaceRule>,
+    /// Membership set for O(1) `@font-face` deduplication.
+    pub(in crate::world) registered_font_face_set: HashSet<nana_ui_core::FontFaceRule>,
+    /// Newly registered `@font-face` rules waiting for host ingestion.
+    pub(in crate::world) pending_font_faces: Vec<nana_ui_core::FontFaceRule>,
 }
 
 impl Default for WorldInvalidation {
     fn default() -> Self {
+        let theme = nana_ui_core::builtin_theme_arc(ThemeAppearance::default());
+        let media_env = nana_ui_core::MediaEnv {
+            color_scheme: if theme.style_model().is_dark_appearance() {
+                nana_ui_core::MediaColorScheme::Dark
+            } else {
+                nana_ui_core::MediaColorScheme::Light
+            },
+            ..nana_ui_core::MediaEnv::default()
+        };
         Self {
             dirty_entities: HashSet::default(),
             pending_layout_invalidations: NodeMap::default(),
@@ -112,8 +131,8 @@ impl Default for WorldInvalidation {
             modal_surface_recordings: RefCell::new(crate::NodeMap::default()),
             painter_overrides: crate::NodeMap::default(),
             media_time_mappings: crate::NodeMap::default(),
-            theme: nana_ui_core::builtin_theme_arc(ThemeAppearance::default()),
-            installed_theme: nana_ui_core::builtin_theme_arc(ThemeAppearance::default()),
+            theme: Arc::clone(&theme),
+            installed_theme: theme,
             high_contrast: false,
             style_model: StyleModelRef::default(),
             theme_state: theme_scope::ThemeRuntimeState::default(),
@@ -161,6 +180,10 @@ impl Default for WorldInvalidation {
             viewport_basis_nodes: 0,
             viewport_basis: HashMap::default(),
             document_viewports: HashMap::default(),
+            media_env,
+            registered_font_faces: Vec::new(),
+            registered_font_face_set: HashSet::new(),
+            pending_font_faces: Vec::new(),
         }
     }
 }

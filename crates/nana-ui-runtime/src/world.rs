@@ -5872,6 +5872,98 @@ impl UiWorld {
         self.invalidation
             .document_viewports
             .insert(document, viewport);
+        self.set_media_viewport(viewport.width, viewport.height);
+    }
+
+    /// Current live `@media` evaluation environment on this world.
+    pub fn media_env(&self) -> nana_ui_core::MediaEnv {
+        self.invalidation.media_env
+    }
+
+    /// Replace the live `@media` evaluation environment. Returns `true` if
+    /// any field changed.
+    pub fn set_media_env(&mut self, env: nana_ui_core::MediaEnv) -> bool {
+        if self.invalidation.media_env == env {
+            return false;
+        }
+        self.invalidation.media_env = env;
+        true
+    }
+
+    /// Update the logical viewport dimensions carried by [`Self::media_env`].
+    /// Non-finite or non-positive values are ignored. Returns `true` if either
+    /// dimension changed.
+    pub fn set_media_viewport(&mut self, width: f32, height: f32) -> bool {
+        if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
+            return false;
+        }
+        let env = &mut self.invalidation.media_env;
+        if env.width.to_bits() == width.to_bits() && env.height.to_bits() == height.to_bits() {
+            return false;
+        }
+        env.width = width;
+        env.height = height;
+        true
+    }
+
+    /// Update the display scale factor (`resolution_dppx`) carried by
+    /// [`Self::media_env`]. Non-finite or non-positive values are ignored.
+    /// Returns `true` if the value changed.
+    pub fn set_scale_factor(&mut self, scale_factor: f32) -> bool {
+        if !scale_factor.is_finite() || scale_factor <= 0.0 {
+            return false;
+        }
+        let env = &mut self.invalidation.media_env;
+        if env.resolution_dppx.to_bits() == scale_factor.to_bits() {
+            return false;
+        }
+        env.resolution_dppx = scale_factor;
+        true
+    }
+
+    /// Register `@font-face` rules on this world for host ingestion.
+    ///
+    /// Invalid rules (empty family or empty source list) and rules already
+    /// registered on this world are ignored. Returns the number of newly
+    /// queued rules.
+    pub fn register_font_faces(&mut self, rules: &[nana_ui_core::FontFaceRule]) -> usize {
+        let mut added = 0usize;
+        for rule in rules {
+            if !rule.is_valid() {
+                continue;
+            }
+            if self
+                .invalidation
+                .registered_font_face_set
+                .insert(rule.clone())
+            {
+                self.invalidation.registered_font_faces.push(rule.clone());
+                self.invalidation.pending_font_faces.push(rule.clone());
+                added += 1;
+            }
+        }
+        added
+    }
+
+    /// Whether newly registered `@font-face` rules are waiting for host
+    /// ingestion.
+    #[inline]
+    pub fn has_pending_font_faces(&self) -> bool {
+        !self.invalidation.pending_font_faces.is_empty()
+    }
+
+    /// Drain newly registered `@font-face` rules waiting for host ingestion.
+    pub fn take_pending_font_faces(&mut self) -> Vec<nana_ui_core::FontFaceRule> {
+        if self.invalidation.pending_font_faces.is_empty() {
+            return Vec::new();
+        }
+        std::mem::take(&mut self.invalidation.pending_font_faces)
+    }
+
+    /// All deduplicated `@font-face` rules registered on this world, in
+    /// registration order.
+    pub fn registered_font_faces(&self) -> &[nana_ui_core::FontFaceRule] {
+        &self.invalidation.registered_font_faces
     }
 
     /// Viewport `document` was last laid out against.

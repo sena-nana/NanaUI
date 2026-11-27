@@ -149,6 +149,10 @@ impl<'a> UiBuilder<'a> {
         self.error.is_some()
     }
 
+    pub(crate) fn media_env(&self) -> nana_ui_core::MediaEnv {
+        self.context.world().media_env()
+    }
+
     /// The batch this build commits, for what a view sets on a node it just
     /// placed beside the node's own projection: a locale scope, there before
     /// the children it holds are inserted.

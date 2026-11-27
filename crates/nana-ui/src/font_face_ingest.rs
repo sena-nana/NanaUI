@@ -6,14 +6,20 @@
 //! the network.
 
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use nana_text::font::{FontBlob, font_blob};
+use nana_ui_core::{
+    FontFaceRule, FontStyleSpec, MAX_FONT_FACE_BYTES, font_registration_would_exceed_cap,
+};
 
 use crate::nana_text::{HostFontStyle, register_host_font_face_blob};
 use crate::scene_paint::{resolve_background_image_url, resolved_resource_is_allowed};
 
-const FONT_FACE_MAX_BYTES: usize = 8 * 1024 * 1024;
+const FONT_FACE_MAX_BYTES: usize = MAX_FONT_FACE_BYTES as usize;
+static REGISTERED_FONT_BYTES: AtomicU64 = AtomicU64::new(0);
 
 /// One parsed `@font-face` ready for host ingest (no CSSOM).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,9 +91,9 @@ fn mark_loaded(key: LoadedFaceKey) {
 /// A face already loaded from the same src under the same descriptors is
 /// skipped. Failed srcs drop that face (no system-font stand-in). Remote
 /// `http(s)` srcs are refused — `@font-face` has no network transport.
-/// `data:` and jailed filesystem srcs read up to 8 MiB; `data:` is decoded
-/// here, since the CSS engine's file loader
-/// (`nana_ui_css::css_at_rule::load_font_face_bytes`) reads only files.
+/// `data:` and jailed filesystem srcs read up to [`MAX_FONT_FACE_BYTES`] each,
+/// within [`nana_ui_core::MAX_REGISTERED_FONT_BYTES`] cumulative unique font
+/// bytes.
 pub fn ingest_host_font_faces(specs: &[HostFontFaceSpec]) -> usize {
     let mut loaded = 0usize;
     for spec in specs {
@@ -96,6 +102,120 @@ pub fn ingest_host_font_faces(specs: &[HostFontFaceSpec]) -> usize {
         }
     }
     loaded
+}
+
+/// Load and register typed [`FontFaceRule`] descriptors (from compiled sheets
+/// or [`nana_ui_runtime::UiWorld::take_pending_font_faces`]) into the host
+/// font system, respecting per-file ([`MAX_FONT_FACE_BYTES`]) and cumulative
+/// ([`nana_ui_core::MAX_REGISTERED_FONT_BYTES`]) caps and refusing remote URLs.
+pub fn ingest_font_face_rules(rules: &[FontFaceRule]) -> usize {
+    let mut loaded = 0usize;
+    for rule in rules {
+        if !rule.is_valid() {
+            continue;
+        }
+        let urls: Vec<String> = rule
+            .url_sources()
+            .map(|href| resolve_rule_url(href, rule.base_href.as_deref()))
+            .collect();
+        if urls.is_empty() {
+            continue;
+        }
+        let spec = HostFontFaceSpec {
+            family: Some(rule.family.clone()),
+            urls,
+            weight: rule.weight,
+            weight_end: rule.weight_end,
+            style: rule.style.map(|style| match style {
+                FontStyleSpec::Normal => HostFontStyle::Normal,
+                FontStyleSpec::Italic => HostFontStyle::Italic,
+                FontStyleSpec::Oblique => HostFontStyle::Oblique,
+            }),
+        };
+        if ingest_one(&spec) {
+            loaded += 1;
+        }
+    }
+    loaded
+}
+
+/// Drain any newly registered `@font-face` rules queued on `world` and ingest
+/// them into the host font system. Returns the number of rules ingested.
+pub fn drain_world_font_faces(world: &mut nana_ui_runtime::UiWorld) -> usize {
+    if !world.has_pending_font_faces() {
+        return 0;
+    }
+    let rules = world.take_pending_font_faces();
+    ingest_font_face_rules(&rules)
+}
+
+fn resolve_rule_url(href: &str, base_href: Option<&str>) -> String {
+    let trimmed = href.trim();
+    if trimmed.starts_with("data:")
+        || trimmed.starts_with("nana://")
+        || trimmed.starts_with("http://")
+        || trimmed.starts_with("https://")
+        || trimmed.starts_with("file://")
+        || Path::new(trimmed).is_absolute()
+    {
+        return trimmed.to_owned();
+    }
+    let Some(base) = base_href.map(str::trim).filter(|base| !base.is_empty()) else {
+        return trimmed.to_owned();
+    };
+    if let Some(rest) = base.strip_prefix("nana://res/") {
+        let dir = rest.rsplit_once('/').map_or("", |(dir, _)| dir);
+        let mut parts: Vec<&str> = dir.split('/').filter(|p| !p.is_empty()).collect();
+        for seg in trimmed.split('/') {
+            match seg {
+                "" | "." => {}
+                ".." => {
+                    parts.pop();
+                }
+                other => parts.push(other),
+            }
+        }
+        return format!("nana://res/{}", parts.join("/"));
+    }
+    let base_path = base.strip_prefix("file://").unwrap_or(base);
+    let base_dir = Path::new(base_path)
+        .parent()
+        .unwrap_or_else(|| Path::new(""));
+    base_dir.join(trimmed).to_string_lossy().into_owned()
+}
+
+fn try_reserve_font_bytes(add: u64) -> bool {
+    let mut current = REGISTERED_FONT_BYTES.load(Ordering::Relaxed);
+    loop {
+        if font_registration_would_exceed_cap(current, add) {
+            return false;
+        }
+        match REGISTERED_FONT_BYTES.compare_exchange_weak(
+            current,
+            current + add,
+            Ordering::AcqRel,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => return true,
+            Err(observed) => current = observed,
+        }
+    }
+}
+
+fn release_font_bytes(bytes: u64) {
+    let mut current = REGISTERED_FONT_BYTES.load(Ordering::Relaxed);
+    loop {
+        let next = current.saturating_sub(bytes);
+        match REGISTERED_FONT_BYTES.compare_exchange_weak(
+            current,
+            next,
+            Ordering::AcqRel,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => break,
+            Err(observed) => current = observed,
+        }
+    }
 }
 
 fn ingest_one(spec: &HostFontFaceSpec) -> bool {
@@ -140,9 +260,14 @@ fn load_or_reuse_font_blob(src_key: &str, resolved: &str) -> Option<FontBlob> {
         return Some(existing);
     }
     let bytes = load_font_src_bytes(resolved)?;
+    let byte_len = bytes.len() as u64;
+    if !try_reserve_font_bytes(byte_len) {
+        return None;
+    }
     let blob = font_blob(bytes);
     if let Ok(mut guard) = loaded_blobs().lock() {
         if let Some(existing) = guard.get(src_key).and_then(Weak::upgrade) {
+            release_font_bytes(byte_len);
             return Some(existing);
         }
         if guard.len() >= 64 {
@@ -347,6 +472,100 @@ mod tests {
         assert_eq!(
             backing_ptrs[0], backing_ptrs[1],
             "multiple @font-face rules over one src must share a single FontBlob allocation"
+        );
+    }
+
+    #[test]
+    fn resolve_rule_url_handles_relative_packaged_and_local_paths() {
+        assert_eq!(
+            resolve_rule_url("../fonts/inter.ttf", Some("nana://res/styles/app.css")),
+            "nana://res/fonts/inter.ttf"
+        );
+        assert_eq!(
+            resolve_rule_url("./bold.ttf", Some("nana://res/fonts/faces.css")),
+            "nana://res/fonts/bold.ttf"
+        );
+        assert_eq!(
+            resolve_rule_url(
+                "data:font/ttf;base64,AAAA",
+                Some("nana://res/styles/app.css")
+            ),
+            "data:font/ttf;base64,AAAA"
+        );
+        assert_eq!(
+            resolve_rule_url(
+                "https://example.com/a.woff2",
+                Some("nana://res/styles/app.css")
+            ),
+            "https://example.com/a.woff2"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "bundled-fonts")]
+    fn world_font_face_rules_drain_deduplicate_and_ingest() {
+        use base64::Engine as _;
+        use nana_ui_core::{FontFaceRule, FontFaceSource, FontStyleSpec};
+        use nana_ui_runtime::UiWorld;
+
+        let encoded = base64::engine::general_purpose::STANDARD.encode(crate::UI_FONT_REGULAR);
+        let mut world = UiWorld::new();
+
+        let mut valid = FontFaceRule::new(
+            "NanaWorldDrainFace",
+            vec![
+                FontFaceSource::local("NonExistentLocal"),
+                FontFaceSource::url_with_format(
+                    format!("data:font/ttf;base64,{encoded}"),
+                    "truetype",
+                ),
+            ],
+        );
+        valid.weight = Some(500);
+        valid.style = Some(FontStyleSpec::Normal);
+
+        let remote = FontFaceRule::new(
+            "NanaWorldRemoteFace",
+            vec![FontFaceSource::url("https://example.invalid/font.ttf")],
+        );
+        let invalid = FontFaceRule::new("", vec![FontFaceSource::url("data:font/ttf;base64,AAAA")]);
+
+        // Duplicate valid rule is deduplicated at registration; invalid is skipped.
+        assert_eq!(
+            world.register_font_faces(&[valid.clone(), valid, remote, invalid]),
+            2
+        );
+        assert!(world.has_pending_font_faces());
+        assert_eq!(world.registered_font_faces().len(), 2);
+
+        // Drain ingests the valid data: rule and safely rejects the remote rule.
+        assert_eq!(drain_world_font_faces(&mut world), 1);
+        assert!(!world.has_pending_font_faces());
+        assert_eq!(drain_world_font_faces(&mut world), 0);
+
+        let style = nana_text::TextStyle {
+            font_family: Some(std::sync::Arc::from("NanaWorldDrainFace")),
+            font_weight: 500,
+            ..nana_text::TextStyle::default()
+        };
+        let engine = crate::text_engine::nana_text_engine();
+        let mut engine = crate::text_engine::lock_engine(&engine);
+        let layout = nana_text::TextEngine::layout(
+            &mut *engine,
+            nana_text::TextKind::Label,
+            &nana_text::TextSource::new("H"),
+            &style,
+            &nana_text::TextConstraints::default(),
+            &mut nana_text::TextWorkCounters::default(),
+        );
+        assert!(
+            layout.runs.iter().any(|run| {
+                engine
+                    .fonts()
+                    .describe(run.font)
+                    .is_some_and(|face| face.families.iter().any(|f| &**f == "NanaWorldDrainFace"))
+            }),
+            "drained @font-face rule must shape in the host font system"
         );
     }
 }

@@ -478,7 +478,11 @@ impl AppContext {
         // Diagnostics time layout even outside a profiled frame.
         let diagnostics_clock =
             started.or_else(|| nana_diagnostics::metrics_enabled().then(Instant::now));
+        let prev_media_env = self.world.media_env();
         self.world.set_document_viewport(document, viewport);
+        if self.world.media_env() != prev_media_env {
+            self.notify_media_env_signals();
+        }
         // A seed of another document is its own frame's to lay out; this pass
         // would only drop it, and the edit with it.
         let own_seeds: Vec<crate::LayoutFrontierSeed>;

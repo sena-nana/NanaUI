@@ -388,6 +388,13 @@ pub trait ComponentView: Clone + PartialEq + Send + 'static {
     #[doc(hidden)]
     fn announce_change(&self, _previous: &Self, _cx: &mut crate::ViewContext<'_, Self>) {}
 
+    /// Enable pointer hit-testing on layout containers that carry CSS `:hover`
+    /// / `:active` rules or [`crate::view::El::track_interactive_state`] so
+    /// pointer movement and presses reach them without requiring explicit event
+    /// listeners. Defaults to nothing.
+    #[doc(hidden)]
+    fn enable_interactive_pointer(&mut self) {}
+
     fn node_kind(&self) -> NodeKind;
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue);
 

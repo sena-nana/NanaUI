@@ -1259,6 +1259,7 @@ struct LifecycleHub {
 pub struct AppContext {
     pub(crate) theme_signals: Vec<crate::view::Signal<Arc<nana_ui_core::CompiledTheme>>>,
     pub(crate) i18n_signals: Vec<crate::view::Signal<Arc<crate::i18n::LocalizedResolver>>>,
+    pub(crate) media_env_signals: Vec<crate::view::Signal<nana_ui_core::MediaEnv>>,
     /// Boxed: the world is about 15 KiB, four fifths of the context, and
     /// held inline every move of a context (construction, `RuntimeDocument`)
     /// copied it through a frame over the 16 KiB stack budget. One pointer
@@ -1583,6 +1584,7 @@ impl AppContext {
         let mut context = Self {
             theme_signals: Vec::new(),
             i18n_signals: Vec::new(),
+            media_env_signals: Vec::new(),
             world: Box::new(world),
             store: ComponentStore::default(),
             layout: LayoutDriver::default(),
@@ -1694,6 +1696,75 @@ impl AppContext {
         });
     }
 
+    pub(crate) fn notify_media_env_signals(&mut self) {
+        if self.media_env_signals.is_empty() {
+            return;
+        }
+        let env = self.world.media_env();
+        self.media_env_signals.retain(|signal| {
+            if signal.defined_at().is_none() {
+                return false;
+            }
+            signal.set_if_changed(env);
+            true
+        });
+    }
+
+    /// Current live `@media` evaluation environment.
+    pub fn media_env(&self) -> nana_ui_core::MediaEnv {
+        self.world.media_env()
+    }
+
+    /// Replace the live `@media` evaluation environment and notify reactive
+    /// `@media` subscribers when any field changes.
+    pub fn set_media_env(&mut self, env: nana_ui_core::MediaEnv) -> bool {
+        if !self.world.set_media_env(env) {
+            return false;
+        }
+        self.notify_media_env_signals();
+        true
+    }
+
+    /// Mutate the live `@media` evaluation environment in place and notify
+    /// reactive `@media` subscribers when any field changes.
+    pub fn update_media_env(&mut self, f: impl FnOnce(&mut nana_ui_core::MediaEnv)) -> bool {
+        let mut next = self.world.media_env();
+        f(&mut next);
+        self.set_media_env(next)
+    }
+
+    /// Update the logical viewport dimensions carried by [`Self::media_env`]
+    /// and notify reactive `@media` subscribers when either dimension changes.
+    pub fn set_media_viewport(&mut self, width: f32, height: f32) -> bool {
+        if !self.world.set_media_viewport(width, height) {
+            return false;
+        }
+        self.notify_media_env_signals();
+        true
+    }
+
+    /// Update the display scale factor (`resolution_dppx`) carried by
+    /// [`Self::media_env`] and notify reactive `@media` subscribers when it
+    /// changes.
+    pub fn set_scale_factor(&mut self, scale_factor: f32) -> bool {
+        if !self.world.set_scale_factor(scale_factor) {
+            return false;
+        }
+        self.notify_media_env_signals();
+        true
+    }
+
+    /// Register `@font-face` rules on the underlying [`UiWorld`] for host
+    /// ingestion. Returns the number of newly queued rules.
+    pub fn register_font_faces(&mut self, rules: &[nana_ui_core::FontFaceRule]) -> usize {
+        self.world.register_font_faces(rules)
+    }
+
+    /// Drain newly registered `@font-face` rules waiting for host ingestion.
+    pub fn take_pending_font_faces(&mut self) -> Vec<nana_ui_core::FontFaceRule> {
+        self.world.take_pending_font_faces()
+    }
+
     /// Whether view-layer motion is reduced: implicit property transitions
     /// ([`crate::view::Implicit`], `El::animate`), the enter, leave and move
     /// of [`crate::view::Transition`], and [`crate::PresenceLifecycle`] then
@@ -1739,6 +1810,7 @@ impl AppContext {
             return;
         }
         self.world.set_reduced_motion(reduced);
+        self.notify_media_env_signals();
         if reduced {
             self.finish_wheel_scrolls();
             self.finish_touch_scrolls();
@@ -2802,6 +2874,7 @@ impl AppContext {
         let mut queue = MutationQueue::new();
         queue.set_theme_tokens(Arc::clone(&theme));
         self.world.commit(queue)?;
+        self.notify_media_env_signals();
         self.theme_signals.retain(|signal| {
             if signal.defined_at().is_none() {
                 return false;
@@ -2827,6 +2900,7 @@ impl AppContext {
     pub fn set_high_contrast(&mut self, high_contrast: bool) -> bool {
         let changed = self.world.set_high_contrast(high_contrast);
         if changed {
+            self.notify_media_env_signals();
             let _ = self.sync_keyframe_animations(true);
         }
         changed

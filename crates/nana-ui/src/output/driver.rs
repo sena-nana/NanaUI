@@ -31,6 +31,12 @@ pub(crate) fn flush_presentation(
     viewport: LayoutViewport,
     text: &mut NanaTextShaper,
 ) -> Result<RuntimeFrameUpdate, FrameworkError> {
+    let context = document.context_mut();
+    context.set_media_viewport(viewport.width, viewport.height);
+    let pending_fonts = context.take_pending_font_faces();
+    if !pending_fonts.is_empty() {
+        let _ = crate::font_face_ingest::ingest_font_face_rules(&pending_fonts);
+    }
     document.flush(viewport, text)
 }
 
