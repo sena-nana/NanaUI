@@ -358,6 +358,8 @@ pub struct ReorderDragVisual {
     pub live_gap: bool,
     /// Active layout mode ([`ReorderLayout::Column`] or [`ReorderLayout::Grid`]).
     pub layout_mode: ReorderLayout,
+    /// The carried rows stop painting ([`ReorderList::hide_carried`]).
+    pub hide_carried: bool,
     rules: Arc<DropRules>,
     carried: Carried,
     /// The pointer is over another list of the transfer group, which shows
@@ -1617,6 +1619,11 @@ pub struct ReorderList {
     /// whole bounds accept transfers and keep `inside_group = true` even over
     /// header/padding areas outside the list rows themselves.
     pub drop_zone: Option<StableNodeId>,
+    /// While a row is dragged it stops painting (it keeps its box and the
+    /// pointer capture): the host draws what follows the pointer from
+    /// [`ReorderListEvent::Drag`], and in [`ReorderDragPreview::LiveGap`]
+    /// the dashed slot stands where it would land.
+    pub hide_carried: bool,
     pub label: Option<Arc<str>>,
     pub style: NodeStyle,
     drag: Option<ReorderDrag>,
@@ -1640,6 +1647,7 @@ impl ReorderList {
             live_rows: false,
             transfer_group: None,
             drop_zone: None,
+            hide_carried: false,
             label: None,
             style: NodeStyle::default(),
             drag: None,
@@ -1672,6 +1680,12 @@ impl ReorderList {
     }
 
     /// Sets [`Self::drop_zone`](field@Self::drop_zone).
+    /// Whether a dragged row stops painting while it is carried.
+    pub fn hide_carried(mut self, hide: bool) -> Self {
+        self.hide_carried = hide;
+        self
+    }
+
     pub fn drop_zone(mut self, zone: Option<StableNodeId>) -> Self {
         self.drop_zone = zone;
         self
@@ -1851,6 +1865,7 @@ impl ReorderList {
             preview,
             live_gap,
             layout_mode: self.layout_mode,
+            hide_carried: self.hide_carried,
             rules: Arc::new(DropRules::of(self)),
             carried: Carried::Row(source),
             elsewhere: drag.over.is_some(),
@@ -1876,6 +1891,7 @@ impl ReorderList {
             preview: live_gap,
             live_gap,
             layout_mode: self.layout_mode,
+            hide_carried: false,
             rules: Arc::new(DropRules::of(self)),
             carried: Carried::Foreign(incoming.kind.clone()),
             elsewhere: false,

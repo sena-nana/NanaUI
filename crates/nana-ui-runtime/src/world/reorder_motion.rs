@@ -3,7 +3,7 @@
 //! Layout, hit testing of the drop and the rows' logical style stay as they
 //! are; only compositor tracks move, and they all go when the drag ends.
 use super::*;
-use crate::component_animation_kinds::{REORDER_PREVIEW, REORDER_SHIFT};
+use crate::component_animation_kinds::{REORDER_HIDE, REORDER_PREVIEW, REORDER_SHIFT};
 use crate::reorder_list::{REORDER_PREVIEW_Z_INDEX, ReorderDragVisual, ReorderListVisual};
 use nana_ui_core::PaintTransform;
 
@@ -111,6 +111,7 @@ impl UiWorld {
             for row in rows {
                 self.cancel_component_track(row, REORDER_PREVIEW);
                 self.cancel_component_track(row, REORDER_SHIFT);
+                self.cancel_component_track(row, REORDER_HIDE);
             }
             return;
         };
@@ -160,9 +161,26 @@ impl UiWorld {
                     crate::MotionInterrupt::Replace,
                     Some(hold),
                 );
+                if drag.hide_carried {
+                    // The host draws what follows the pointer; the row
+                    // keeps its box (and the drag's capture) unpainted.
+                    let hidden = crate::MotionValue::Scalar(0.0);
+                    self.start_component_track(
+                        row,
+                        REORDER_HIDE,
+                        Duration::from_nanos(1),
+                        easing,
+                        crate::AnimatableProperty::Opacity,
+                        hidden,
+                        hidden,
+                        crate::MotionInterrupt::Replace,
+                        Some(hold),
+                    );
+                }
                 continue;
             }
             self.cancel_component_track(row, REORDER_PREVIEW);
+            self.cancel_component_track(row, REORDER_HIDE);
             let [sx, sy] = shifts.get(index).copied().unwrap_or([0.0, 0.0]);
             let [tx, ty] = self.reorder_shift_target(row, logical);
             if (tx - sx).abs() <= 1e-3 && (ty - sy).abs() <= 1e-3 {

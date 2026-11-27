@@ -94,6 +94,9 @@ pub mod component_animation_kinds {
     pub const SHARED_ELEMENT_WIDTH: u64 = 24;
     /// Cross-node shared-element `Layout`-class height morph (never scale).
     pub const SHARED_ELEMENT_HEIGHT: u64 = 25;
+    /// A reorder list's carried row hidden while the host draws what
+    /// follows the pointer ([`crate::ReorderList::hide_carried`]).
+    pub const REORDER_HIDE: u64 = 26;
 }
 
 /// Derives the animation ID for one component-owned timeline from the
@@ -116,7 +119,7 @@ pub(crate) fn is_component_animation(id: AnimationId, target: StableNodeId) -> b
 
 /// Returns the [`component_animation_kinds`] tag for `id` on `target`, if any.
 pub(crate) fn component_animation_kind(id: AnimationId, target: StableNodeId) -> Option<u64> {
-    (component_animation_kinds::SKELETON..=component_animation_kinds::SHARED_ELEMENT_HEIGHT)
+    (component_animation_kinds::SKELETON..=component_animation_kinds::REORDER_HIDE)
         .find(|&kind| component_animation_id(kind, target) == Some(id))
 }
 
