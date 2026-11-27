@@ -65,6 +65,10 @@ fn caret(cx: &AppContext, node: StableNodeId) -> LayoutBox {
 }
 
 #[test]
+#[cfg_attr(
+    not(feature = "bundled-fonts"),
+    ignore = "needs the bundled CJK face: a system fallback may lack vertical metrics"
+)]
 fn a_vertical_text_area_edits_in_columns() {
     let mut cx = AppContext::new();
     let doc = DocumentId::new(1).unwrap();
@@ -165,6 +169,10 @@ fn a_vertical_text_area_edits_in_columns() {
 /// editor's columns start at the right and its later ones overflow to the
 /// left, so reaching them takes a negative `x`, from 0 at the first column.
 #[test]
+#[cfg_attr(
+    not(feature = "bundled-fonts"),
+    ignore = "needs the bundled CJK face: a system fallback may lack vertical metrics"
+)]
 fn a_wheel_scrolls_a_vertical_rl_editor_towards_its_later_columns() {
     let mut cx = AppContext::new();
     let doc = DocumentId::new(1).unwrap();
@@ -244,6 +252,10 @@ fn a_wheel_scrolls_a_vertical_rl_editor_towards_its_later_columns() {
 /// axis: the geometry hands it to the painter as a translation (#223), and
 /// the value's unscrolled start stays put while the columns scroll.
 #[test]
+#[cfg_attr(
+    not(feature = "bundled-fonts"),
+    ignore = "needs the bundled CJK face: a system fallback may lack vertical metrics"
+)]
 fn a_vertical_rl_editor_hands_its_column_scroll_to_the_painter() {
     let mut cx = AppContext::new();
     let doc = DocumentId::new(1).unwrap();
@@ -347,6 +359,10 @@ fn a_vertical_text_input_centres_its_column() {
 /// bottom. A wrapping area's geometry and painter share the content height as
 /// their budget, so both align each column's `start` to the bottom themselves.
 #[test]
+#[cfg_attr(
+    not(feature = "bundled-fonts"),
+    ignore = "needs the bundled CJK face: a system fallback may lack vertical metrics"
+)]
 fn a_vertical_rtl_editor_starts_its_lines_at_the_bottom() {
     let mut cx = AppContext::new();
     let doc = DocumentId::new(1).unwrap();
@@ -439,6 +455,10 @@ fn a_vertical_rtl_editor_starts_its_lines_at_the_bottom() {
 /// line goes on at the right of the next. ↓ is back the other way. Within a
 /// column the step is visual, and CJK still sits top to bottom.
 #[test]
+#[cfg_attr(
+    not(feature = "bundled-fonts"),
+    ignore = "needs the bundled CJK face: a system fallback may lack vertical metrics"
+)]
 fn arrow_keys_in_a_vertical_rtl_editor_follow_its_reading_direction() {
     let mut cx = AppContext::new();
     let doc = DocumentId::new(1).unwrap();

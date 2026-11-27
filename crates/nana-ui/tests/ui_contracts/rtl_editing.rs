@@ -194,6 +194,10 @@ fn an_overflowing_rtl_field_shows_the_start_of_its_line() {
 /// its caret in view near either end of the column, and those are different
 /// views of it.
 #[test]
+#[cfg_attr(
+    not(feature = "bundled-fonts"),
+    ignore = "needs the bundled CJK face: a system fallback may lack vertical metrics"
+)]
 fn an_overflowing_vertical_rtl_field_keeps_either_end_of_its_column_in_view() {
     let mut cx = AppContext::new();
     let doc = DocumentId::new(1).unwrap();

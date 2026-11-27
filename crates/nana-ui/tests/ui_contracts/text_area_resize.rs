@@ -315,9 +315,12 @@ fn textarea_resize_reconcile_preserves_dragged_height_and_clamps_percent_and_em_
     let mut view = TextArea::new("limits").height(150.0).resize_vertical(true);
     let style = Arc::make_mut(&mut view.style.layout);
     style.width = Some(nana_ui_core::LengthSpec::Px(260.0));
+    // A literal size: clear the control's theme font-size binding, which
+    // would otherwise win and turn `6em` into 78px instead of 96px.
     style.font_size = Some(16.0);
+    style.theme.font_size = None;
     style.min_height = Some(nana_ui_core::LengthSpec::Em(6.0)); // 96px
-    style.max_height = Some(nana_ui_core::LengthSpec::Percent(0.5)); // 200px of 400px parent
+    style.max_height = Some(nana_ui_core::LengthSpec::Percent(50.0)); // 50%: 200px of 400px parent
     let area = cx.create_detached_component(doc, view.clone()).unwrap();
     cx.append_child(root, area).unwrap();
     layout(&mut cx, doc, area);
