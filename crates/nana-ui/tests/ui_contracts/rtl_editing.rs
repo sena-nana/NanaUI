@@ -196,7 +196,7 @@ fn an_overflowing_rtl_field_shows_the_start_of_its_line() {
 #[test]
 #[cfg_attr(
     not(feature = "bundled-fonts"),
-    ignore = "needs the bundled CJK face: a system fallback may lack vertical metrics"
+    ignore = "needs a CJK face: the bundled one, or a system one such as Noto Sans CJK or WenQuanYi"
 )]
 fn an_overflowing_vertical_rtl_field_keeps_either_end_of_its_column_in_view() {
     let mut cx = AppContext::new();

@@ -67,7 +67,7 @@ fn caret(cx: &AppContext, node: StableNodeId) -> LayoutBox {
 #[test]
 #[cfg_attr(
     not(feature = "bundled-fonts"),
-    ignore = "needs the bundled CJK face: a system fallback may lack vertical metrics"
+    ignore = "needs a CJK face: the bundled one, or a system one such as Noto Sans CJK or WenQuanYi"
 )]
 fn a_vertical_text_area_edits_in_columns() {
     let mut cx = AppContext::new();
@@ -171,7 +171,7 @@ fn a_vertical_text_area_edits_in_columns() {
 #[test]
 #[cfg_attr(
     not(feature = "bundled-fonts"),
-    ignore = "needs the bundled CJK face: a system fallback may lack vertical metrics"
+    ignore = "needs a CJK face: the bundled one, or a system one such as Noto Sans CJK or WenQuanYi"
 )]
 fn a_wheel_scrolls_a_vertical_rl_editor_towards_its_later_columns() {
     let mut cx = AppContext::new();
@@ -254,7 +254,7 @@ fn a_wheel_scrolls_a_vertical_rl_editor_towards_its_later_columns() {
 #[test]
 #[cfg_attr(
     not(feature = "bundled-fonts"),
-    ignore = "needs the bundled CJK face: a system fallback may lack vertical metrics"
+    ignore = "needs a CJK face: the bundled one, or a system one such as Noto Sans CJK or WenQuanYi"
 )]
 fn a_vertical_rl_editor_hands_its_column_scroll_to_the_painter() {
     let mut cx = AppContext::new();
@@ -361,7 +361,7 @@ fn a_vertical_text_input_centres_its_column() {
 #[test]
 #[cfg_attr(
     not(feature = "bundled-fonts"),
-    ignore = "needs the bundled CJK face: a system fallback may lack vertical metrics"
+    ignore = "checks the bundled CJK face's exact advances (縦書き = 48px); other faces differ"
 )]
 fn a_vertical_rtl_editor_starts_its_lines_at_the_bottom() {
     let mut cx = AppContext::new();
@@ -457,7 +457,7 @@ fn a_vertical_rtl_editor_starts_its_lines_at_the_bottom() {
 #[test]
 #[cfg_attr(
     not(feature = "bundled-fonts"),
-    ignore = "needs the bundled CJK face: a system fallback may lack vertical metrics"
+    ignore = "needs a CJK face: the bundled one, or a system one such as Noto Sans CJK or WenQuanYi"
 )]
 fn arrow_keys_in_a_vertical_rtl_editor_follow_its_reading_direction() {
     let mut cx = AppContext::new();

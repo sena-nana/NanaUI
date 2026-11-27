@@ -127,7 +127,7 @@ fn a_short_box_clips_its_wrapped_text_instead_of_losing_lines() {
 #[test]
 #[cfg_attr(
     not(feature = "bundled-fonts"),
-    ignore = "needs the bundled CJK face: a system fallback may lack vertical metrics"
+    ignore = "needs a CJK face: the bundled one, or a system one such as Noto Sans CJK or WenQuanYi"
 )]
 fn a_vertical_text_node_is_measured_as_columns_and_painted_from_that_layout() {
     fn vertical_label(
@@ -262,7 +262,7 @@ fn an_inherited_upright_orientation_stands_every_character_up() {
 #[test]
 #[cfg_attr(
     not(feature = "bundled-fonts"),
-    ignore = "needs the bundled CJK face: a system fallback may lack vertical metrics"
+    ignore = "needs a CJK face: the bundled one, or a system one such as Noto Sans CJK or WenQuanYi"
 )]
 fn selecting_vertical_text_follows_the_column() {
     let mut cx = AppContext::new();

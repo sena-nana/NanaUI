@@ -208,6 +208,19 @@ impl FaceShapers {
         } else {
             0.0
         };
+        // Some faces ship a `vmtx` that gives spacing glyphs no height
+        // (WenQuanYi Zen Hei: every ideograph advances 0): a column would
+        // stack them on one spot. A glyph that advances horizontally takes
+        // one em down a column instead, as an ideograph's square body does.
+        let hmtx = {
+            use skrifa::raw::TableProvider;
+            input.vertical.then(|| font_ref.hmtx().ok()).flatten()
+        };
+        let spacing = |glyph: u32| {
+            hmtx.as_ref()
+                .and_then(|hmtx| hmtx.advance(skrifa::GlyphId::new(glyph)))
+                .is_some_and(|advance| advance > 0)
+        };
         Some(
             output
                 .glyph_infos()
@@ -215,7 +228,11 @@ impl FaceShapers {
                 .zip(output.glyph_positions())
                 .map(|(info, position)| {
                     let (along, across) = if input.vertical {
-                        (-position.y_advance, position.x_advance)
+                        let along = match -position.y_advance {
+                            0 if spacing(info.glyph_id) => upem,
+                            along => along,
+                        };
+                        (along, position.x_advance)
                     } else {
                         (position.x_advance, position.y_advance)
                     };
@@ -319,6 +336,72 @@ mod tests {
             shapers
                 .faces
                 .contains_key(&FontId::from_parts((MAX_SHAPER_FACES + 7) as u32, 1))
+        );
+    }
+
+    /// `data` with every `vmtx` advance set to 0, as WenQuanYi Zen Hei ships.
+    fn without_vertical_advances(mut data: Vec<u8>) -> Vec<u8> {
+        let read =
+            |data: &[u8], at: usize| u32::from_be_bytes(data[at..at + 4].try_into().unwrap());
+        let tables = u16::from_be_bytes([data[4], data[5]]) as usize;
+        let find = |data: &[u8], tag: &[u8; 4]| {
+            (0..tables)
+                .map(|i| 12 + 16 * i)
+                .find(|&r| &data[r..r + 4] == tag)
+                .map(|r| (read(data, r + 8) as usize, read(data, r + 12) as usize))
+        };
+        let (vhea, _) = find(&data, b"vhea").expect("the fixture has vhea");
+        let (vmtx, _) = find(&data, b"vmtx").expect("the fixture has vmtx");
+        let long = u16::from_be_bytes([data[vhea + 34], data[vhea + 35]]) as usize;
+        for i in 0..long {
+            data[vmtx + 4 * i] = 0;
+            data[vmtx + 4 * i + 1] = 0;
+        }
+        data
+    }
+
+    #[test]
+    fn a_vmtx_that_gives_spacing_glyphs_no_height_still_advances_a_column() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/fonts/noto-sans-kr.ttf");
+        let bytes = std::fs::read(path).unwrap();
+        let advances = |bytes: Vec<u8>| {
+            let mut fonts = FontSystem::hermetic();
+            let font = fonts
+                .register_bytes(font_blob(bytes), &Default::default())
+                .unwrap()
+                .faces[0];
+            let data = fonts.face_data(font).unwrap();
+            let text = "한글";
+            let input = ShapeInput {
+                text,
+                range: 0..text.len(),
+                rtl: false,
+                vertical: true,
+                script: Some(ScriptTag(*b"Hang")),
+                language: None,
+                features: &[],
+                disable_kerning: false,
+                coords: &[],
+                size_px: 16.0,
+            };
+            FaceShapers::default()
+                .shape(font, || Some(data.clone()), &input)
+                .unwrap()
+                .iter()
+                .map(|glyph| glyph.x_advance)
+                .collect::<Vec<_>>()
+        };
+        let real = advances(bytes.clone());
+        assert_eq!(real.len(), 2);
+        assert!(
+            real.iter().all(|&a| a > 8.0),
+            "the face's own heights: {real:?}"
+        );
+        let broken = advances(without_vertical_advances(bytes));
+        assert_eq!(
+            broken,
+            vec![16.0, 16.0],
+            "one em each, not stacked on one spot"
         );
     }
 }

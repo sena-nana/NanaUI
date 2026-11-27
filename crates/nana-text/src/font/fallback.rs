@@ -361,9 +361,27 @@ mod platform {
             cursive: &["Noto Sans"],
             fantasy: &["Noto Sans"],
             math: &["Noto Sans Math"],
-            han_sc: &["Noto Sans CJK SC", "Noto Sans SC"],
-            han_tc: &["Noto Sans CJK TC", "Noto Sans TC"],
-            han_hk: &["Noto Sans CJK HK", "Noto Sans HK"],
+            // WenQuanYi after Noto: what many Chinese distributions and minimal
+            // images ship instead. Without either, Han falls to a last-resort
+            // face that may lack vertical metrics and break `vertical-rl`.
+            han_sc: &[
+                "Noto Sans CJK SC",
+                "Noto Sans SC",
+                "WenQuanYi Micro Hei",
+                "WenQuanYi Zen Hei",
+            ],
+            han_tc: &[
+                "Noto Sans CJK TC",
+                "Noto Sans TC",
+                "WenQuanYi Micro Hei",
+                "WenQuanYi Zen Hei",
+            ],
+            han_hk: &[
+                "Noto Sans CJK HK",
+                "Noto Sans HK",
+                "WenQuanYi Micro Hei",
+                "WenQuanYi Zen Hei",
+            ],
             japanese: &["Noto Sans CJK JP", "Noto Sans JP"],
             korean: &["Noto Sans CJK KR", "Noto Sans KR"],
             arabic: &["Noto Sans Arabic", "Noto Naskh Arabic"],
