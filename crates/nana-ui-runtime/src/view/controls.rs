@@ -768,13 +768,18 @@ macro_rules! controls {
     (@differs text_state $target:ident, $value:ident, $field:ident) => {
         $target.state.value != *$value
     };
+    // A draft the user is typing stays on screen; the committed number under
+    // it still follows the application, so cancelling the draft shows the
+    // application's value rather than one it has since replaced.
     (@write assign $target:ident, $value:ident, $field:ident) => {{
-        if $target.state.value == $target.formatted_value() && $target.assign($value) {
+        if $target.state.value != $target.formatted_value() {
+            $target.restore_value($value);
+        } else if $target.assign($value) {
             $target.state.selection = TextSelection::caret($target.state.value.len());
         }
     }};
     (@differs assign $target:ident, $value:ident, $field:ident) => {
-        $target.state.value == $target.formatted_value() && $target.$field() != *$value
+        $target.$field() != *$value
     };
     (@write clamp $target:ident, $value:ident, $field:ident) => {{
         if $target.dragging.is_none() && !$target.editing {
@@ -2192,13 +2197,19 @@ mod tests {
         fields::color_field::value::write(&mut color, [0.9, 0.8, 0.7, 1.0]);
         assert_eq!(color.value, [0.1, 0.2, 0.3, 1.0]);
 
-        // NumberInput: skip while user holds an uncommitted draft.
+        // NumberInput: an uncommitted draft stays on screen while the
+        // committed number follows the application; cancelling the draft
+        // shows the application's latest value.
         let mut number = NumberInput::new(10.0);
         number.state.replace_value("12.".to_owned());
         assert!(!number.is_idle());
-        assert!(!fields::number_input::value::differs(&number, &50.0));
+        assert!(fields::number_input::value::differs(&number, &50.0));
         fields::number_input::value::write(&mut number, 50.0);
         assert_eq!(number.state.value, "12.");
+        assert_eq!(number.value(), 50.0);
+        assert!(number.revert_draft());
+        assert_eq!(number.state.value, number.formatted_value());
+        assert_eq!(number.value(), 50.0);
 
         // CurveField: skip while dragging.
         let mut curve = CurveField::new(vec![0.0, 0.5, 1.0], 0.05);

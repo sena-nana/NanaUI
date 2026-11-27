@@ -26,7 +26,9 @@
 //! - `text_state`: the edited text, replaced only when it differs, so an
 //!   edit echoed back keeps the caret;
 //! - `assign`: a number field's value through `assign`; a new value puts the
-//!   caret after it, as a field built at that value has it;
+//!   caret after it, as a field built at that value has it. While the user
+//!   holds an uncommitted draft the draft stays and only the committed number
+//!   moves, so cancelling the draft shows the application's latest value;
 //! - `clamp`: a range's value, held inside its range (a value the data does
 //!   not have yet, or a non-finite one, lands on the minimum);
 //! - `span_low` / `span_high`: one thumb of a range span, held inside its
