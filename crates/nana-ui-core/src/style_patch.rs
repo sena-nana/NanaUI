@@ -24,42 +24,22 @@ impl StylePatch {
     }
 }
 
-/// Dev-only data patch: typed [`StyleOp`] leaf writes (preferred), with legacy
-/// `(layout, written)` retained transiently during Wave 1 migration.
+/// Dev-only data patch: typed [`StyleOp`] leaf writes.
 /// Never constructed in product builds.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct HotStylePatch {
     pub ops: Vec<StyleOp>,
-    pub layout: crate::LayoutStyle,
-    pub written: Vec<String>,
 }
 
 impl HotStylePatch {
     /// Construct a data patch from typed [`StyleOp`] leaf operations.
     pub fn from_ops(ops: Vec<StyleOp>) -> Self {
-        Self {
-            ops,
-            layout: crate::LayoutStyle::default(),
-            written: Vec::new(),
-        }
-    }
-
-    /// Legacy constructor taking a compiled `LayoutStyle` plus dotted leaf paths.
-    pub fn new(layout: crate::LayoutStyle, written: Vec<String>) -> Self {
-        Self {
-            ops: Vec::new(),
-            layout,
-            written,
-        }
+        Self { ops }
     }
 
     pub fn apply(&self, target: &mut crate::LayoutStyle) {
-        if !self.ops.is_empty() {
-            for op in &self.ops {
-                op.apply(target);
-            }
-        } else {
-            target.apply_written_leaves(&self.layout, &self.written);
+        for op in &self.ops {
+            op.apply(target);
         }
     }
 }
@@ -930,25 +910,18 @@ mod tests {
     }
 
     #[test]
-    fn hot_style_patch_supports_both_ops_and_legacy_written() {
+    fn hot_style_patch_applies_typed_ops() {
         let patch = HotStylePatch::from_ops(vec![
             StyleOp::Opacity(Some(0.75)),
             StyleOp::Elevation(Some(ElevationRole::Menu)),
             StyleOp::PaddingLeft(Some(LengthSpec::Px(16.0))),
+            StyleOp::Order(5),
         ]);
         let mut target = LayoutStyle::default();
         patch.apply(&mut target);
         assert_eq!(target.opacity, Some(0.75));
         assert_eq!(target.paint.elevation, Some(ElevationRole::Menu));
         assert_eq!(target.padding_left, Some(LengthSpec::Px(16.0)));
-
-        let legacy_layout = LayoutStyle {
-            order: 5,
-            ..LayoutStyle::default()
-        };
-        let legacy = HotStylePatch::new(legacy_layout, vec!["order".into()]);
-        legacy.apply(&mut target);
         assert_eq!(target.order, 5);
-        assert_eq!(target.opacity, Some(0.75));
     }
 }

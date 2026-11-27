@@ -30,7 +30,7 @@ The sole normal dependency of `crates/nana-ui-css/Cargo.toml` is **`nana-ui-core
 | Type / entry point | File | Purpose |
 | --- | --- | --- |
 | `StyleOp` / `style_patch::set::*` | `crates/nana-ui-core/src/style_patch.rs` | 242 typed leaf-write variants and direct setter functions generated together from one table `define_style_ops!` (`STYLE_OP_COUNT == LayoutStyle::OVERLAY_LEAVES`) |
-| `StylePatch` / `HotStylePatch` | `crates/nana-ui-core/src/style_patch.rs` | Zero-overhead product function-pointer patch `StylePatch(fn(&mut LayoutStyle))` and dev-only hot-reload data patch `HotStylePatch { ops: Vec<StyleOp>, .. }` |
+| `StylePatch` / `HotStylePatch` | `crates/nana-ui-core/src/style_patch.rs` | Zero-overhead product function-pointer patch `StylePatch(fn(&mut LayoutStyle))` and dev-only hot-reload data patch `HotStylePatch { ops: Vec<StyleOp> }` |
 | `MediaQueryList` / `MediaEnv` | `crates/nana-ui-core/src/media_query.rs` | Backend-neutral `@media` contract with strong Kleene 3-valued logic (`Some(true)` / `Some(false)` / `None`) over viewport, color scheme, reduced motion, contrast, pointer/hover, and resolution |
 | `FontFaceRule` / `FontFaceSource` | `crates/nana-ui-core/src/font_face.rs` | Backend-neutral `@font-face` descriptor (`family`, `sources`, `weight` / `weight_end`, `style`, `base_href`) with 8 MiB per-file / 16 MiB cumulative caps |
 | `Token` / `ComponentValue` / `Span` | `crates/nana-ui-css/src/syntax/{tokenizer,parser,span}.rs` | W3C CSS Syntax Level 3 UTF-8 char-safe tokens, nesting-bounded (`MAX_NESTING = 32`) component values, and exact byte spans with 1-based line/column mapping |

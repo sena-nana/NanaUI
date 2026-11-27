@@ -315,10 +315,10 @@ pub struct StyleSite {
 /// How many of the bases a site saw last it keeps alive itself.
 const RECENT_BASES: usize = 4;
 
-/// A site's bases, compositions and responsive rules. Held weakly by base:
-/// a base no instance keeps any more, and that is not among the last
-/// [`RECENT_BASES`] the site saw, takes what was made from it with it at
-/// the next prune.
+/// A site's bases, inline layers, compositions and responsive rules. Held
+/// weakly by base (and inline layer): entries no instance keeps any more, and
+/// that are not among the last [`RECENT_BASES`] the site saw, take what was
+/// made from them with them at the next prune.
 #[derive(Default)]
 struct Composed {
     /// The distinct bases seen, one per value.
@@ -327,8 +327,15 @@ struct Composed {
     /// classes swaps its base for the composition, so nothing else keeps
     /// the base, and the next equal element would compose again.
     recent: Vec<Arc<LayoutStyle>>,
+    /// The distinct Layer 2 inline stacks seen, one per value.
+    inlines: Vec<Weak<InlineLayer>>,
+    /// The last few distinct inline stacks, held (mirrors [`Self::recent`]).
+    recent_inlines: Vec<Arc<InlineLayer>>,
     /// `(base pointer, active classes, active media mask) -> composed`.
     by_base: HashMap<(usize, u64, u64), (Weak<LayoutStyle>, Arc<LayoutStyle>)>,
+    /// `(base pointer, active classes, active media mask, inline pointer) -> composed`.
+    by_inline:
+        HashMap<(usize, u64, u64, usize), (Weak<LayoutStyle>, Weak<InlineLayer>, Arc<LayoutStyle>)>,
     /// `(base pointer, active classes, active media mask) -> the rule its guarded rules give`.
     responsive: HashMap<(usize, u64, u64), (Weak<LayoutStyle>, Option<Arc<ResponsiveRule>>)>,
     /// Entries at the last prune; the next runs when that doubles.
@@ -366,17 +373,84 @@ impl Composed {
         found
     }
 
-    /// Drop what belongs to bases nothing holds, once the maps have doubled.
+    /// The live Layer 2 inline stack equal to `inline`, sharing one `Arc`
+    /// across all instances with identical inline overrides.
+    fn canonical_inline(&mut self, inline: InlineLayer) -> Arc<InlineLayer> {
+        let found = self
+            .inlines
+            .iter()
+            .filter_map(Weak::upgrade)
+            .find(|known| **known == inline)
+            .unwrap_or_else(|| {
+                let arc = Arc::new(inline);
+                self.inlines.push(Arc::downgrade(&arc));
+                arc
+            });
+        self.keep_recent_inline(&found);
+        found
+    }
+
+    fn canonical_inline_ref(&mut self, inline: &InlineLayer) -> Arc<InlineLayer> {
+        let found = self
+            .inlines
+            .iter()
+            .filter_map(Weak::upgrade)
+            .find(|known| **known == *inline)
+            .unwrap_or_else(|| {
+                let arc = Arc::new(inline.clone());
+                self.inlines.push(Arc::downgrade(&arc));
+                arc
+            });
+        self.keep_recent_inline(&found);
+        found
+    }
+
+    fn canonical_inline_arc(&mut self, inline: &Arc<InlineLayer>) -> Arc<InlineLayer> {
+        let found = self
+            .inlines
+            .iter()
+            .filter_map(Weak::upgrade)
+            .find(|known| Arc::ptr_eq(known, inline))
+            .or_else(|| {
+                self.inlines
+                    .iter()
+                    .filter_map(Weak::upgrade)
+                    .find(|known| **known == **inline)
+            })
+            .unwrap_or_else(|| {
+                self.inlines.push(Arc::downgrade(inline));
+                Arc::clone(inline)
+            });
+        self.keep_recent_inline(&found);
+        found
+    }
+
+    fn keep_recent_inline(&mut self, found: &Arc<InlineLayer>) {
+        if !self
+            .recent_inlines
+            .iter()
+            .any(|kept| Arc::ptr_eq(kept, found))
+        {
+            self.recent_inlines.truncate(RECENT_BASES - 1);
+            self.recent_inlines.insert(0, Arc::clone(found));
+        }
+    }
+
+    /// Drop what belongs to bases or inline layers nothing holds, once the
+    /// maps have doubled.
     fn prune(&mut self) {
-        let entries = self.by_base.len() + self.responsive.len();
+        let entries = self.by_base.len() + self.by_inline.len() + self.responsive.len();
         if entries < (self.pruned_at * 2).max(64) {
             return;
         }
         self.bases.retain(|base| base.strong_count() > 0);
+        self.inlines.retain(|inline| inline.strong_count() > 0);
         self.by_base.retain(|_, (base, _)| base.strong_count() > 0);
+        self.by_inline
+            .retain(|_, (base, inline, _)| base.strong_count() > 0 && inline.strong_count() > 0);
         self.responsive
             .retain(|_, (base, _)| base.strong_count() > 0);
-        self.pruned_at = self.by_base.len() + self.responsive.len();
+        self.pruned_at = self.by_base.len() + self.by_inline.len() + self.responsive.len();
     }
 }
 
@@ -583,6 +657,16 @@ impl StyleSite {
         composed
             .get_or_insert_with(Composed::default)
             .canonical(base)
+    }
+
+    /// Canonicalize a Layer 2 [`InlineLayer`] for this site so repeated
+    /// instances with identical inline overrides share one `Arc<InlineLayer>`
+    /// and hit the site's `(base, active, media, inline)` composition cache.
+    fn shared_inline(&self, inline: InlineLayer) -> Arc<InlineLayer> {
+        let mut composed = self.composed.lock().unwrap_or_else(PoisonError::into_inner);
+        composed
+            .get_or_insert_with(Composed::default)
+            .canonical_inline(inline)
     }
 
     /// `base` with the patches that apply under `active`, in order. A rule
@@ -806,7 +890,8 @@ impl StyleSite {
     }
 
     /// `base` (Layer 0) -> matching stylesheet rules (Layer 1) -> optional
-    /// author inline overrides (Layer 2).
+    /// author inline overrides (Layer 2), caching composed `Arc<LayoutStyle>`
+    /// across instances with identical `(base, active, media, inline)`.
     pub(crate) fn compose_layered(
         &self,
         base: &Arc<LayoutStyle>,
@@ -814,11 +899,85 @@ impl StyleSite {
         inline: Option<&InlineLayer>,
         env: Option<&MediaEnv>,
     ) -> Arc<LayoutStyle> {
-        let composed = self.compose_with_media(base, active, env);
-        match inline {
-            None => composed,
-            Some(inline) => inline.apply_over(&composed),
+        let Some(inline) = inline.filter(|inline| !inline.0.is_empty()) else {
+            return self.compose_with_media(base, active, env);
+        };
+        let mut guard = self.composed.lock().unwrap_or_else(PoisonError::into_inner);
+        let composed = guard.get_or_insert_with(Composed::default);
+        let base = composed.canonical(base);
+        let inline = composed.canonical_inline_ref(inline);
+        let layout = self.compose_layered_in(composed, &base, active, &inline, env);
+        composed.prune();
+        layout
+    }
+
+    /// Like [`Self::compose_layered`], using an already-canonicalized Layer 2
+    /// `Arc<InlineLayer>` for pointer-fast cache hits.
+    pub(crate) fn compose_layered_arc(
+        &self,
+        base: &Arc<LayoutStyle>,
+        active: u64,
+        inline: Option<&Arc<InlineLayer>>,
+        env: Option<&MediaEnv>,
+    ) -> Arc<LayoutStyle> {
+        let Some(inline) = inline.filter(|inline| !inline.0.is_empty()) else {
+            return self.compose_with_media(base, active, env);
+        };
+        let mut guard = self.composed.lock().unwrap_or_else(PoisonError::into_inner);
+        let composed = guard.get_or_insert_with(Composed::default);
+        let base = composed.canonical(base);
+        let inline = composed.canonical_inline_arc(inline);
+        let layout = self.compose_layered_in(composed, &base, active, &inline, env);
+        composed.prune();
+        layout
+    }
+
+    fn compose_layered_in(
+        &self,
+        composed: &mut Composed,
+        base: &Arc<LayoutStyle>,
+        active: u64,
+        inline: &Arc<InlineLayer>,
+        env: Option<&MediaEnv>,
+    ) -> Arc<LayoutStyle> {
+        let media_mask = self.eval_media_mask(env);
+        if let Some(media_mask) = media_mask {
+            let key = (
+                Arc::as_ptr(base) as usize,
+                active,
+                media_mask,
+                Arc::as_ptr(inline) as usize,
+            );
+            if let Some((known_base, known_inline, layout)) = composed.by_inline.get(&key)
+                && known_base
+                    .upgrade()
+                    .is_some_and(|known| Arc::ptr_eq(&known, base))
+                && known_inline
+                    .upgrade()
+                    .is_some_and(|known| Arc::ptr_eq(&known, inline))
+            {
+                return Arc::clone(layout);
+            }
+            let layer01 = self.compose_in(composed, base, active, env);
+            let mut layout = (*layer01).clone();
+            inline.apply(&mut layout);
+            layout.drop_inert_physical_edges();
+            let layout = Arc::new(layout);
+            composed.by_inline.insert(
+                key,
+                (
+                    Arc::downgrade(base),
+                    Arc::downgrade(inline),
+                    Arc::clone(&layout),
+                ),
+            );
+            return layout;
         }
+        let layer01 = self.compose_in(composed, base, active, env);
+        let mut layout = (*layer01).clone();
+        inline.apply(&mut layout);
+        layout.drop_inert_physical_edges();
+        Arc::new(layout)
     }
 
     /// [`Self::responsive`] with optional Layer 2 author inline overrides
@@ -1376,8 +1535,39 @@ impl InlineOverride {
     }
 }
 
+impl PartialEq for InlineOverride {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Site(a), Self::Site(b)) => std::ptr::eq(*a, *b),
+            (Self::Patch(a), Self::Patch(b)) => std::ptr::eq(*a, *b),
+            (Self::Gap(a), Self::Gap(b)) => a == b,
+            (Self::Padding(a), Self::Padding(b)) => a == b,
+            (Self::Margin(a), Self::Margin(b)) => a == b,
+            (Self::Width(a), Self::Width(b)) => a == b,
+            (Self::Height(a), Self::Height(b)) => a == b,
+            (Self::MinWidth(a), Self::MinWidth(b)) => a == b,
+            (Self::MaxWidth(a), Self::MaxWidth(b)) => a == b,
+            (Self::MinHeight(a), Self::MinHeight(b)) => a == b,
+            (Self::MaxHeight(a), Self::MaxHeight(b)) => a == b,
+            (Self::FlexGrow(a), Self::FlexGrow(b)) => a.map(f32::to_bits) == b.map(f32::to_bits),
+            (Self::FlexShrink(a), Self::FlexShrink(b)) => {
+                a.map(f32::to_bits) == b.map(f32::to_bits)
+            }
+            (Self::Direction(a), Self::Direction(b)) => a == b,
+            (Self::Opacity(a), Self::Opacity(b)) => a.to_bits() == b.to_bits(),
+            (Self::Transform(a), Self::Transform(b)) => a == b,
+            (Self::Fill(a), Self::Fill(b)) => a == b,
+            (Self::Ink(a), Self::Ink(b)) => a == b,
+            (Self::Edge(a), Self::Edge(b)) => a == b,
+            (Self::Elevation(a), Self::Elevation(b)) => a == b,
+            (Self::Hidden(a), Self::Hidden(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
 /// Ordered Layer 2 overrides attached to an element.
-#[derive(Default, Clone)]
+#[derive(Default, Clone, PartialEq)]
 pub(crate) struct InlineLayer(Vec<InlineOverride>);
 
 impl InlineLayer {
@@ -1645,6 +1835,7 @@ fn apply_site<C: StyledComponent + ComponentView>(
         None
     };
     let base = site.shared_base(base);
+    let inline = inline.map(|inline| site.shared_inline(inline));
     // The binding computes the active classes and pseudo bits once per run, for both.
     let pending = (queried || hot_styles.is_some()).then(|| {
         let binding = ResponsiveBinding::default();
@@ -1669,20 +1860,20 @@ fn apply_site<C: StyledComponent + ComponentView>(
         let env = media_signal.map(|sig| sig.get());
         if let Some(hot_sheet) = hot_styles.and_then(|sig| sig.get()) {
             if let Some(pending) = &pending {
-                let rule = site.responsive_hot(&base, active, &hot_sheet, inline.as_ref(), at);
+                let rule = site.responsive_hot(&base, active, &hot_sheet, inline.as_deref(), at);
                 *pending.lock().unwrap_or_else(PoisonError::into_inner) = Some(rule);
             }
-            site.compose_hot(&base, active, &hot_sheet, inline.as_ref(), env.as_ref())
+            site.compose_hot(&base, active, &hot_sheet, inline.as_deref(), env.as_ref())
         } else {
             if let Some(pending) = &pending {
                 let rule = if queried {
-                    site.responsive_layered(&base, active, inline.as_ref(), env.as_ref(), at)
+                    site.responsive_layered(&base, active, inline.as_deref(), env.as_ref(), at)
                 } else {
                     None
                 };
                 *pending.lock().unwrap_or_else(PoisonError::into_inner) = Some(rule);
             }
-            site.compose_layered(&base, active, inline.as_ref(), env.as_ref())
+            site.compose_layered_arc(&base, active, inline.as_ref(), env.as_ref())
         }
     };
     bindings.composed_style = Some(DynBinding {
@@ -2403,31 +2594,28 @@ mod site_tests {
         assert_eq!(layout(&cx).opacity, Some(0.8));
 
         // 1. Override padding, remove opacity (reverts to base = None), and add conditional + container rule.
-        let mut box_layout = LayoutStyle::default();
-        box_layout.padding = Some(LengthSpec::Px(16.0));
-        let mut on_layout = LayoutStyle::default();
-        on_layout.opacity = Some(0.4);
-        let mut narrow_layout = LayoutStyle::default();
-        narrow_layout.height = Some(LengthSpec::Px(40.0));
-
         let sheet = HotStyleSheet {
             rules: vec![
                 HotStyleRule {
                     classes: vec!["box".into()],
                     pseudo: 0,
-                    patch: HotStylePatch::new(box_layout, vec!["padding".into()]),
+                    patch: HotStylePatch::from_ops(vec![nana_ui_core::StyleOp::Padding(Some(
+                        LengthSpec::Px(16.0),
+                    ))]),
                     query: None,
                 },
                 HotStyleRule {
                     classes: vec!["on".into()],
                     pseudo: 0,
-                    patch: HotStylePatch::new(on_layout, vec!["opacity".into()]),
+                    patch: HotStylePatch::from_ops(vec![nana_ui_core::StyleOp::Opacity(Some(0.4))]),
                     query: None,
                 },
                 HotStyleRule {
                     classes: vec!["box".into()],
                     pseudo: 0,
-                    patch: HotStylePatch::new(narrow_layout, vec!["height".into()]),
+                    patch: HotStylePatch::from_ops(vec![nana_ui_core::StyleOp::Height(Some(
+                        LengthSpec::Px(40.0),
+                    ))]),
                     query: Some(HotSheetQuery {
                         name: None,
                         axis: HotSheetAxis::Width,
@@ -2456,8 +2644,6 @@ mod site_tests {
         assert_eq!(layout(&cx).opacity, Some(0.4));
 
         // 3. Write-back of default (opacity: None or 1.0) overrides earlier rule.
-        let mut default_layout = LayoutStyle::default();
-        default_layout.opacity = Some(1.0);
         apply_hot_styles(
             "HotStyleUnit",
             shape,
@@ -2466,19 +2652,17 @@ mod site_tests {
                     HotStyleRule {
                         classes: vec!["on".into()],
                         pseudo: 0,
-                        patch: HotStylePatch::new(
-                            LayoutStyle {
-                                opacity: Some(0.2),
-                                ..LayoutStyle::default()
-                            },
-                            vec!["opacity".into()],
-                        ),
+                        patch: HotStylePatch::from_ops(vec![nana_ui_core::StyleOp::Opacity(Some(
+                            0.2,
+                        ))]),
                         query: None,
                     },
                     HotStyleRule {
                         classes: vec!["box".into(), "on".into()],
                         pseudo: 0,
-                        patch: HotStylePatch::new(default_layout, vec!["opacity".into()]),
+                        patch: HotStylePatch::from_ops(vec![nana_ui_core::StyleOp::Opacity(Some(
+                            1.0,
+                        ))]),
                         query: None,
                     },
                 ],

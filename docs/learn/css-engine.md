@@ -30,7 +30,7 @@ title: CSS 引擎：nana-ui-css
 | 类型 / 入口 | 所在文件 | 作用说明 |
 | --- | --- | --- |
 | `StyleOp` / `style_patch::set::*` | `crates/nana-ui-core/src/style_patch.rs` | 由单一宏表 `define_style_ops!` 同时生成的 242 个强类型叶子写操作与直接 setter 函数（`STYLE_OP_COUNT == LayoutStyle::OVERLAY_LEAVES`） |
-| `StylePatch` / `HotStylePatch` | `crates/nana-ui-core/src/style_patch.rs` | 产品构建的零开销函数指针补丁 `StylePatch(fn(&mut LayoutStyle))` 与开发期热重载纯数据补丁 `HotStylePatch { ops: Vec<StyleOp>, .. }` |
+| `StylePatch` / `HotStylePatch` | `crates/nana-ui-core/src/style_patch.rs` | 产品构建的零开销函数指针补丁 `StylePatch(fn(&mut LayoutStyle))` 与开发期热重载纯数据补丁 `HotStylePatch { ops: Vec<StyleOp> }` |
 | `MediaQueryList` / `MediaEnv` | `crates/nana-ui-core/src/media_query.rs` | 后端中立的 `@media` 契约，基于强 Kleene 三值逻辑（`Some(true)` / `Some(false)` / `None`）对视口、色彩方案、减少动效、对比度、指针/悬停与分辨率求值 |
 | `FontFaceRule` / `FontFaceSource` | `crates/nana-ui-core/src/font_face.rs` | 后端中立的 `@font-face` 描述符（`family`、`sources`、`weight` / `weight_end`、`style`、`base_href`），含 8 MiB 单文件 / 16 MiB 总量字节上界 |
 | `Token` / `ComponentValue` / `Span` | `crates/nana-ui-css/src/syntax/{tokenizer,parser,span}.rs` | W3C CSS Syntax Level 3 UTF-8 字符安全词法记号、嵌套有界（`MAX_NESTING = 32`）组件值树与精确字节跨度（支持 1-based 行列映射） |
