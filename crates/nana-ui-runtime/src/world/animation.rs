@@ -914,8 +914,20 @@ impl UiWorld {
                 }
                 crate::AnimatableProperty::Width => previous.width != next.width,
                 crate::AnimatableProperty::Height => previous.height != next.height,
-                crate::AnimatableProperty::Padding => previous.padding != next.padding,
-                crate::AnimatableProperty::Margin => previous.margin != next.margin,
+                crate::AnimatableProperty::Padding => {
+                    previous.padding != next.padding
+                        || previous.padding_top != next.padding_top
+                        || previous.padding_right != next.padding_right
+                        || previous.padding_bottom != next.padding_bottom
+                        || previous.padding_left != next.padding_left
+                }
+                crate::AnimatableProperty::Margin => {
+                    previous.margin != next.margin
+                        || previous.margin_top != next.margin_top
+                        || previous.margin_right != next.margin_right
+                        || previous.margin_bottom != next.margin_bottom
+                        || previous.margin_left != next.margin_left
+                }
                 _ => false,
             })
             .collect();

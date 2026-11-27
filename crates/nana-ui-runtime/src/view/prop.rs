@@ -379,6 +379,9 @@ const_props! {
     Option<nana_ui_core::FlexDirection> => Option<nana_ui_core::FlexDirection>, |v| v;
     nana_ui_core::LengthSpec => Option<nana_ui_core::LengthSpec>, |v| Some(v);
     Option<nana_ui_core::LengthSpec> => Option<nana_ui_core::LengthSpec>, |v| v;
+    f32 => Option<nana_ui_core::LengthSpec>, |v| Some(nana_ui_core::LengthSpec::Px(v));
+    f64 => Option<nana_ui_core::LengthSpec>, |v| Some(nana_ui_core::LengthSpec::Px(v as f32));
+    i32 => Option<nana_ui_core::LengthSpec>, |v| Some(nana_ui_core::LengthSpec::Px(v as f32));
     crate::MenuItemMark => crate::MenuItemMark, |v| v;
     nana_ui_core::ColorOverrides => nana_ui_core::ColorOverrides, |v| v;
     nana_ui_core::ThemePatch => nana_ui_core::ThemePatch, |v| v;

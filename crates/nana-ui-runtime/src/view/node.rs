@@ -60,6 +60,11 @@ impl<C, F: FnMut(&mut C) + Send> DynProp<C> for BindProp<F> {
 /// input evaluates all of them against the retained view; only when one
 /// differs is the view copied, written and projected, once.
 pub struct NodeBindings<C> {
+    /// Dynamic Layer 0 -> Layer 1 -> Layer 2 style composition (`view/style.rs`),
+    /// always evaluated and written BEFORE Layer 3 (`direct` / `dynamic`)
+    /// reactive bindings so toggling `.class_when()` / `:hover` / hot styles
+    /// never clobbers reactive Rust layout/paint props.
+    pub(crate) composed_style: Option<DynBinding<C>>,
     pub(crate) direct: Vec<DirectBinding<C>>,
     pub(crate) dynamic: Vec<DynBinding<C>>,
     /// The responsive rule the element's `@container` classes give it
@@ -75,6 +80,7 @@ pub struct NodeBindings<C> {
 impl<C> Default for NodeBindings<C> {
     fn default() -> Self {
         Self {
+            composed_style: None,
             direct: Vec::new(),
             dynamic: Vec::new(),
             responsive: None,
@@ -86,11 +92,15 @@ impl<C> Default for NodeBindings<C> {
 
 impl<C> NodeBindings<C> {
     fn is_empty(&self) -> bool {
-        self.direct.is_empty() && self.dynamic.is_empty()
+        self.composed_style.is_none() && self.direct.is_empty() && self.dynamic.is_empty()
     }
 
     /// The first run, on the component before it is created.
     pub(crate) fn apply(&mut self, target: &mut C) {
+        if let Some(style) = &mut self.composed_style {
+            style.prop.evaluate(target);
+            style.prop.write(target);
+        }
         for binding in &self.direct {
             let cell = reactive::read_cell(binding.source, binding.site, true);
             (binding.apply)(target, &*cell);
@@ -105,6 +115,9 @@ impl<C> NodeBindings<C> {
     /// read. True when any field would change.
     pub(crate) fn evaluate(&mut self, current: &C) -> bool {
         let mut changed = false;
+        if let Some(style) = &mut self.composed_style {
+            changed |= style.prop.evaluate(current);
+        }
         for binding in &self.direct {
             let cell = reactive::read_cell(binding.source, binding.site, true);
             changed |= (binding.differs)(current, &*cell);
@@ -117,6 +130,9 @@ impl<C> NodeBindings<C> {
 
     /// Write what [`Self::evaluate`] computed into a staged copy.
     pub(crate) fn write(&mut self, target: &mut C) {
+        if let Some(style) = &mut self.composed_style {
+            style.prop.write(target);
+        }
         for binding in &self.direct {
             let cell = reactive::read_cell(binding.source, binding.site, false);
             (binding.apply)(target, &*cell);
@@ -127,6 +143,9 @@ impl<C> NodeBindings<C> {
     }
 
     fn discard(&mut self) {
+        if let Some(style) = &mut self.composed_style {
+            style.prop.discard();
+        }
         for binding in &mut self.dynamic {
             binding.prop.discard();
         }
@@ -213,9 +232,14 @@ impl<C: ComponentView> NodePatch for NodeBindings<C> {
     }
 
     fn fields(&self) -> Vec<(&'static str, &'static Location<'static>)> {
-        self.direct
+        self.composed_style
             .iter()
             .map(|binding| (binding.field, binding.site))
+            .chain(
+                self.direct
+                    .iter()
+                    .map(|binding| (binding.field, binding.site)),
+            )
             .chain(
                 self.dynamic
                     .iter()
@@ -1157,6 +1181,9 @@ pub struct El<C: ComponentView, K = ()> {
     shared_element: Option<Box<SharedElementBinding>>,
     slots: Vec<Slot<C>>,
     classes: Option<super::style::Classes<C>>,
+    /// Layer 2 author inline overrides (`.css(css!{...})` and static Rust
+    /// layout/paint builder overrides); boxed so simple elements pay 0 allocs.
+    inline_styles: Option<Box<super::style::InlineStyles<C>>>,
     /// Boxed, so an element is the same size whatever it holds: a static
     /// tree is a value, and holding its children inline made each
     /// element as large as its subtree (a settings page, some 70 KB),
@@ -1185,6 +1212,7 @@ pub fn widget<C: ComponentView>(component: C) -> El<C> {
         shared_element: None,
         slots: Vec::new(),
         classes: None,
+        inline_styles: None,
         children: Box::new(()),
         site: Location::caller(),
         source: None,
@@ -1230,6 +1258,10 @@ impl<C: ComponentView, K> El<C, K> {
 
     pub(crate) fn classes_mut(&mut self) -> &mut Option<super::style::Classes<C>> {
         &mut self.classes
+    }
+
+    pub(crate) fn inline_styles_mut(&mut self) -> &mut Option<Box<super::style::InlineStyles<C>>> {
+        &mut self.inline_styles
     }
 
     pub(crate) fn parts_mut(&mut self) -> (&mut C, &mut NodeBindings<C>) {
@@ -1453,6 +1485,7 @@ impl<C: ComponentView, K> El<C, K> {
             shared_element: self.shared_element,
             slots: self.slots,
             classes: self.classes,
+            inline_styles: self.inline_styles,
             children: Box::new(children),
             site: self.site,
             source: self.source,
@@ -1574,6 +1607,7 @@ impl<C: ComponentView, K> El<C, K> {
             shared_element,
             slots,
             classes,
+            inline_styles,
             children,
             site,
             source,
@@ -1593,6 +1627,7 @@ impl<C: ComponentView, K> El<C, K> {
             shared_element,
             slots,
             classes,
+            inline_styles,
             children: Box::new(()),
             site,
             source,
@@ -1625,12 +1660,19 @@ impl<C: ComponentView> El<C> {
             shared_element,
             slots,
             classes,
+            inline_styles,
             children: _,
             site,
             source,
         } = self;
         if let Some(classes) = classes {
-            implicit.extend_from_slice(classes.apply(&mut component, &mut bindings));
+            implicit.extend_from_slice(classes.apply(
+                &mut component,
+                &mut bindings,
+                inline_styles.map(|inline| inline.layer),
+            ));
+        } else if let Some(inline) = inline_styles {
+            inline.apply_direct(&mut component);
         }
         let mut adopt = Vec::new();
         for slot in slots {

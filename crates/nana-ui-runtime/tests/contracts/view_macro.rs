@@ -1922,6 +1922,200 @@ mod styles {
         }
     }
 
+    stylesheet! {
+        mod layering_styles;
+        .box_a { align-items: flex-start; padding: 8px; opacity: 0.5; width: 120px; }
+        .box_a.active { padding: 14px; opacity: 0.9; width: 240px; height: 48px; }
+        .box_a:hover { opacity: 0.85; width: 260px; height: 64px; }
+    }
+
+    #[test]
+    fn four_layer_css_builder_and_reactive_precedence_survives_class_when_and_hover() {
+        use nana_ui_core::{AlignSpec, PaintTransform};
+        use nana_ui_runtime::view::row;
+        use std::time::Duration;
+
+        let mut cx = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let active = signal(false);
+        let op_sig = signal(0.35_f32);
+        let tx = PaintTransform {
+            e: 8.0,
+            f: -6.0,
+            ..PaintTransform::IDENTITY
+        };
+        let tx_sig = signal(Some(tx));
+        let width_sig = signal(Some(LengthSpec::Px(320.0)));
+
+        let mounted = cx
+            .mount_view_root(document, move || {
+                column().children((
+                    row()
+                        .css(css! { padding: 20px; })
+                        .class(layering_styles::box_a),
+                    row()
+                        .class(layering_styles::box_a)
+                        .css(css! { padding: 20px; }),
+                    row().padding(20.0).class(layering_styles::box_a),
+                    row()
+                        .hittable()
+                        .padding(20.0)
+                        .class(layering_styles::box_a)
+                        .class_when(layering_styles::active, active)
+                        .paint_opacity(op_sig)
+                        .transform(tx_sig)
+                        .width(width_sig),
+                    column().css(css! {
+                        backface-visibility: hidden;
+                        dominant-baseline: central;
+                        hyphens: auto;
+                    }),
+                ))
+            })
+            .unwrap();
+        let kids = cx
+            .world()
+            .node(mounted.roots()[0])
+            .unwrap()
+            .children
+            .clone();
+        let (css_before, class_before, static_pad, reactive_node, patch_reexports) =
+            (kids[0], kids[1], kids[2], kids[3], kids[4]);
+
+        // Both `.css().class()` and `.class().css()` let `.css()` win on padding
+        // while inheriting non-overlapping `.class()` opacity and overriding row() defaults.
+        for id in [css_before, class_before, static_pad] {
+            let layout = layout_of(&cx, id);
+            assert_eq!(layout.padding, Some(LengthSpec::Px(20.0)));
+            assert_eq!(layout.opacity, Some(0.5));
+            assert_eq!(layout.align_items, AlignSpec::Start);
+        }
+
+        // `__patch` re-exports compile and apply for backface-visibility, dominant-baseline, hyphens.
+        let reexport_layout = layout_of(&cx, patch_reexports);
+        assert_eq!(
+            reexport_layout.transforms.backface_visibility,
+            nana_ui_core::BackfaceVisibility::Hidden
+        );
+        assert_eq!(
+            reexport_layout.text_ext.dominant_baseline,
+            Some(nana_ui_core::DominantBaselineSpec::Central)
+        );
+        assert_eq!(
+            reexport_layout.text_ext.hyphens,
+            Some(nana_ui_core::HyphensSpec::Auto)
+        );
+
+        frames(&mut cx, document);
+        cx.rebuild_hit_test(document);
+
+        let assert_layer3_intact = |cx: &AppContext, expected_height: Option<LengthSpec>| {
+            let layout = layout_of(cx, reactive_node);
+            assert_eq!(layout.padding, Some(LengthSpec::Px(20.0)));
+            assert_eq!(layout.opacity, Some(0.35));
+            assert_eq!(layout.transforms.transform, Some(tx));
+            assert_eq!(layout.width, Some(LengthSpec::Px(320.0)));
+            assert_eq!(layout.height, expected_height);
+        };
+        assert_layer3_intact(&cx, None);
+
+        // Toggle `.class_when()` -> non-overlapping height updates; Layer 2 & 3 stay intact!
+        active.set(true);
+        cx.flush_reactive().unwrap();
+        assert_layer3_intact(&cx, Some(LengthSpec::Px(48.0)));
+
+        // Trigger `:hover` -> non-overlapping height updates; Layer 2 & 3 stay intact!
+        cx.set_pointer_hover_at(document, 1, Some(reactive_node), Duration::from_millis(10))
+            .unwrap();
+        cx.flush_reactive().unwrap();
+        assert_layer3_intact(&cx, Some(LengthSpec::Px(64.0)));
+
+        // Clear `:hover` and `.class_when()` -> Layer 2 & 3 remain intact!
+        cx.set_pointer_hover_at(document, 1, None, Duration::from_millis(20))
+            .unwrap();
+        active.set(false);
+        cx.flush_reactive().unwrap();
+        assert_layer3_intact(&cx, None);
+    }
+
+    #[test]
+    fn dynamic_paint_only_theme_colors_invalidate_and_repaint_on_theme_switch() {
+        use nana_ui_core::{
+            BackgroundImage, PaintColor, SemanticColorRole, StyleModelRef, ThemeAppearance,
+        };
+
+        let mut cx = AppContext::new();
+        cx.set_preset_theme(ThemeAppearance::Light).unwrap();
+        let document = DocumentId::new(1).unwrap();
+        let mounted = cx
+            .mount_view_root(document, || {
+                column().children((
+                    column().css(css! {
+                        width: 100px;
+                        height: 40px;
+                        box-shadow: 0 2px 6px var(--nana-accent);
+                    }),
+                    column().css(css! {
+                        width: 100px;
+                        height: 40px;
+                        background-image: linear-gradient(90deg, var(--nana-surface), var(--nana-accent));
+                    }),
+                ))
+            })
+            .unwrap();
+        let kids = cx
+            .world()
+            .node(mounted.roots()[0])
+            .unwrap()
+            .children
+            .clone();
+        let (shadow_node, grad_node) = (kids[0], kids[1]);
+
+        frames(&mut cx, document);
+        // Drain any initial work before switching theme.
+        let _ = cx.take_system_work();
+
+        cx.set_preset_theme(ThemeAppearance::Dark).unwrap();
+        let work = cx.take_system_work();
+        assert!(
+            work.style.contains(&shadow_node),
+            "shadow_node with dynamic paint box_shadow must be scheduled for style resolution on theme switch"
+        );
+        assert!(
+            work.style.contains(&grad_node),
+            "grad_node with dynamic paint gradient must be scheduled for style resolution on theme switch"
+        );
+        cx.resolve_styles(&work.style).unwrap();
+        let after_style = cx.take_system_work();
+        assert!(
+            after_style.render_extraction.contains(&shadow_node),
+            "shadow_node must be marked DirtyMask::RENDER on theme switch"
+        );
+        assert!(
+            after_style.render_extraction.contains(&grad_node),
+            "grad_node must be marked DirtyMask::RENDER on theme switch"
+        );
+
+        let dark_model = StyleModelRef::new(ThemeAppearance::Dark);
+        let dark_accent = dark_model.color(SemanticColorRole::Accent).as_rgba_array();
+        let dark_surface = dark_model.color(SemanticColorRole::Surface).as_rgba_array();
+
+        let extracted = cx.world().extract_document(document);
+        let ex_shadow = extracted.iter().find(|n| n.id == shadow_node).unwrap();
+        assert_eq!(
+            ex_shadow.source_style.layout.paint.box_shadows[0].color,
+            PaintColor::Srgb { rgba: dark_accent }
+        );
+        let ex_grad = extracted.iter().find(|n| n.id == grad_node).unwrap();
+        match &ex_grad.source_style.layout.paint.background_layers[0] {
+            BackgroundImage::Gradient(g) => {
+                assert_eq!(g.stops()[0].color, PaintColor::Srgb { rgba: dark_surface });
+                assert_eq!(g.stops()[1].color, PaintColor::Srgb { rgba: dark_accent });
+            }
+            other => panic!("expected gradient, got {other:?}"),
+        }
+    }
+
     #[test]
     fn interactive_pseudo_classes_follow_hover_active_focus_and_focus_visible() {
         use nana_ui_input::PointerPhase;

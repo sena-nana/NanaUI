@@ -35,7 +35,7 @@ use std::sync::{Arc, Mutex, PoisonError, Weak};
 use nana_ui_core::{HotSheetAxis, HotSheetQuery, HotStyleRule, HotStyleSheet, LayoutStyle};
 
 use super::controls::StyledComponent;
-use super::node::{El, NodeBindings};
+use super::node::{DynBinding, DynProp, El, NodeBindings};
 use super::prop::{FieldWrite, IntoProp, PropSource};
 use super::reactive::{Signal, signal};
 use super::transition::{Implicit, KeyframeAnimation};
@@ -73,27 +73,35 @@ pub mod __patch {
     pub use nana_ui_core::shared::Shared;
     pub use nana_ui_core::style_patch::set;
     pub use nana_ui_core::{
-        AlignSpec, AnchorSpec, AnimationDirection, AnimationFillMode, AnimationIteration,
-        AnimationPlayState, BackdropFilter, BackgroundImage, BackgroundImageFit,
-        BackgroundPosition, BackgroundRepeat, BorderImageSlice, BorderImageSpec, BorderStyle,
-        BorderWidth, BoxShadowSpec, BoxSizing, CalcBinOp, CalcExpr, ClipCircle, ClipEllipse,
-        ClipInset, ClipPath, ClipPoint, ClipShapeRadius, ColorFilter, ContainerType,
-        ControlPadding, ControlSize, CssGradient, CursorSpec, DirSpec, DisplaySpec, Easing,
-        FilterDropShadow, FlexDirection, FlexWrap, FontFeatureSetting, FontKerningSpec,
-        FontVariationSetting, GradientStop, GridAutoFlow, GridLine, GridRepeatAuto,
-        GridTemplateAreas, GridTrack, GridTrackListUnsupported, HitTestBehavior, ImageSampling,
-        JustifySpec, LengthSpec, LineBreakSpec, LineHeightSpec, LineRole, LinearGradient,
-        MaskImage, MaterialProgram, MaterialRef, MaterialTexture, MixBlendMode, MotionCurve,
-        OutlineStyle, OverflowSpec, OverflowWrapSpec, PaintColor, PaintMat4, PaintTransform,
-        PointerEventsSpec, PopoverAlignment, PopoverPlacement, PositionSpec, RadialGradient,
-        RadiusTier, ScrollEdgeFade, ScrollbarSkin, SemanticColorMix, SemanticColorRole,
-        SpacingStep, StepJump, TextAlignSpec, TextAutospaceSpec, TextDecorationLine,
-        TextEmphasisColor, TextEmphasisPosition, TextEmphasisShape, TextEmphasisStyle,
-        TextJustifySpec, TextOrientationSpec, TextShadowSpec, TextSpacingTrimSpec, TextStrokeSpec,
-        TextWeight, TextWrapStyleSpec, ThemeColorPairRef, ThemeExpr, ThemeProperty, ThemeToken,
-        TransformBox, TransformOrigin, TypeRole, UserSelectSpec, VerticalAlignSpec, ViewportAxis,
-        VisibilitySpec, WhiteSpaceSpec, WindowResizeEdge, WordBreakSpec, WritingModeSpec,
-        intern_theme_color_pair,
+        AlignSpec, AnchorSpec, AnimatableProperty, AnimationDirection, AnimationFillMode,
+        AnimationIteration, AnimationPlayState, BackdropFilter, BackfaceVisibility,
+        BackgroundImage, BackgroundImageFit, BackgroundPosition, BackgroundRepeat,
+        BorderImageSlice, BorderImageSpec, BorderImageTile, BorderSides, BorderStyle, BorderWidth,
+        BoxShadowSpec, BoxSizing, CalcBinOp, CalcExpr, CalcExprRef, ClipCircle, ClipEllipse,
+        ClipInset, ClipPath, ClipPoint, ClipShapeRadius, ColorFilter, ContainerStyle,
+        ContainerType, ControlHeight, ControlPadding, ControlSize, CornerShape, CssGradient,
+        CursorSpec, CustomCursorError, CustomCursorSpec, CustomCursorVariant, CustomCursorVector,
+        DirSpec, DisplaySpec, DominantBaselineSpec, Easing, EasingRole, ElevationRole,
+        FilterDropShadow, FilterValue, FlexDirection, FlexWrap, FontFeatureSetting,
+        FontKerningSpec, FontVariationSetting, GradientStop, GridAutoFlow, GridLine, GridPlacement,
+        GridRepeatAuto, GridStyle, GridTemplateAreas, GridTrack, GridTrackListUnsupported,
+        HitTestBehavior, HyphensSpec, Icon, IconData, IconGeometry, IconPathCommand, IconShape,
+        ImageSampling, JustifySpec, LengthAtom, LengthSpec, LineBreakSpec, LineHeightSpec,
+        LineRole, LinearGradient, LogicalBoxEdges, LogicalEdge, LogicalEdges, MaskImage, MaskKind,
+        MaterialProgram, MaterialRef, MaterialTexture, MixBlendMode, MotionCurve, MotionRole,
+        OutlineSpec, OutlineStyle, OverflowSpec, OverflowWrapSpec, PaddingSpec, PaintColor,
+        PaintColorSlots, PaintMat4, PaintStyle, PaintTransform, PointerEventsSpec,
+        PopoverAlignment, PopoverPlacement, PositionSpec, RadialGradient, RadiusTier,
+        ScrollEdgeFade, ScrollbarSkin, SemanticColor, SemanticColorMix, SemanticColorRole,
+        ShapeRole, SpacingRole, SpacingStep, SquareSize, StepJump, SurfacePadding, SurfaceRole,
+        SystemCursor, TextAlignSpec, TextAutospaceSpec, TextDecorationLine, TextDecorationStyle,
+        TextEmphasis, TextEmphasisColor, TextEmphasisPosition, TextEmphasisShape,
+        TextEmphasisStyle, TextJustifySpec, TextOrientationSpec, TextShadowSpec,
+        TextSpacingTrimSpec, TextStrokeJoin, TextStrokePlacement, TextStrokeSpec, TextStyleExt,
+        TextTypography, TextWeight, TextWrapBreak, TextWrapStyleSpec, ThemeColorPairRef, ThemeExpr,
+        ThemeProperty, ThemeToken, TransformBox, TransformOrigin, TransformStyle, TypeRole,
+        UserSelectSpec, VerticalAlignSpec, ViewportAxis, VisibilitySpec, WhiteSpaceSpec,
+        WindowResizeEdge, WordBreakSpec, WritingModeSpec, intern_theme_color_pair,
     };
 }
 
@@ -553,20 +561,94 @@ impl StyleSite {
         })
     }
 
+    /// `base` (Layer 0) -> matching stylesheet rules (Layer 1) -> optional
+    /// author inline overrides (Layer 2).
+    pub(crate) fn compose_layered(
+        &self,
+        base: &Arc<LayoutStyle>,
+        active: u64,
+        inline: Option<&InlineLayer>,
+    ) -> Arc<LayoutStyle> {
+        let composed = self.compose(base, active);
+        match inline {
+            None => composed,
+            Some(inline) => inline.apply_over(&composed),
+        }
+    }
+
+    /// [`Self::responsive`] with optional Layer 2 author inline overrides
+    /// applied on top of both the base composition and every `@container`
+    /// bucket so `@container` (Layer 1) never overrides Layer 2.
+    pub(crate) fn responsive_layered(
+        &self,
+        base: &Arc<LayoutStyle>,
+        active: u64,
+        inline: Option<&InlineLayer>,
+        at: &'static Location<'static>,
+    ) -> Option<Arc<ResponsiveRule>> {
+        let Some(inline) = inline else {
+            return self.responsive(base, active, at);
+        };
+        if !self.has_queries() {
+            return None;
+        }
+        let applying: Vec<&SiteRule> = self
+            .rules
+            .iter()
+            .filter(|(needs, _, _)| needs & !active == 0)
+            .collect();
+        let queries: Vec<&SheetQuery> = applying.iter().filter_map(|rule| rule.2).collect();
+        let (name, axis, breakpoints) = plan(&queries, at)?;
+        let authored = self.compose_layered(base, active, Some(inline));
+        let variants: Vec<Option<StyleVariant>> = (0..=breakpoints.len())
+            .map(|bucket| {
+                let lower = bucket
+                    .checked_sub(1)
+                    .map_or(f32::NEG_INFINITY, |below| breakpoints[below]);
+                let mut styled = apply(
+                    base,
+                    applying
+                        .iter()
+                        .filter(|(_, _, query)| query.is_none_or(|query| query.holds_at(lower)))
+                        .map(|(_, patch, _)| *patch),
+                );
+                inline.apply(&mut styled);
+                styled.drop_inert_physical_edges();
+                StyleVariant::between(&authored, &styled)
+            })
+            .collect();
+        if variants.iter().all(Option::is_none) {
+            return None;
+        }
+        ResponsiveRule::from_buckets(
+            ResponsiveContainer::Nearest {
+                name: name.map(str::to_owned),
+            },
+            axis,
+            breakpoints,
+            variants,
+        )
+        .map(Arc::new)
+    }
+
     fn compose_hot(
         &self,
         base: &Arc<LayoutStyle>,
         active: u64,
         sheet: &HotStyleSheet,
+        inline: Option<&InlineLayer>,
     ) -> Arc<LayoutStyle> {
         let Some(meta) = self.hot else {
-            return self.compose(base, active);
+            return self.compose_layered(base, active, inline);
         };
         let mut layout = (**base).clone();
         for rule in &sheet.rules {
             if rule.query.is_none() && Self::hot_rule_matches(meta, active, rule) {
                 rule.patch.apply(&mut layout);
             }
+        }
+        if let Some(inline) = inline {
+            inline.apply(&mut layout);
         }
         layout.drop_inert_physical_edges();
         Arc::new(layout)
@@ -577,6 +659,7 @@ impl StyleSite {
         base: &Arc<LayoutStyle>,
         active: u64,
         sheet: &HotStyleSheet,
+        inline: Option<&InlineLayer>,
         at: &'static Location<'static>,
     ) -> Option<Arc<ResponsiveRule>> {
         let meta = self.hot?;
@@ -617,7 +700,7 @@ impl StyleSite {
             );
             return None;
         }
-        let authored = self.compose_hot(base, active, sheet);
+        let authored = self.compose_hot(base, active, sheet, inline);
         let variants: Vec<Option<StyleVariant>> = (0..=breakpoints.len())
             .map(|bucket| {
                 let lower = bucket
@@ -628,6 +711,9 @@ impl StyleSite {
                     if rule.query.as_ref().is_none_or(|q| q.holds_at(lower)) {
                         rule.patch.apply(&mut styled);
                     }
+                }
+                if let Some(inline) = inline {
+                    inline.apply(&mut styled);
                 }
                 styled.drop_inert_physical_edges();
                 StyleVariant::between(&authored, &styled)
@@ -875,6 +961,167 @@ impl Class {
     }
 }
 
+/// One Layer 2 author inline override (`.css(css!{...})` or static Rust
+/// layout/paint builder override). Applied after Layer 1 stylesheet rules and
+/// before Layer 3 reactive Rust prop bindings.
+#[derive(Clone)]
+pub(crate) enum InlineOverride {
+    Site(&'static StyleSite),
+    Patch(&'static StylePatch),
+    Gap(nana_ui_core::LengthSpec),
+    Padding(Option<nana_ui_core::LengthSpec>),
+    Margin(Option<nana_ui_core::LengthSpec>),
+    Width(Option<nana_ui_core::LengthSpec>),
+    Height(Option<nana_ui_core::LengthSpec>),
+    MinWidth(Option<nana_ui_core::LengthSpec>),
+    MaxWidth(Option<nana_ui_core::LengthSpec>),
+    MinHeight(Option<nana_ui_core::LengthSpec>),
+    MaxHeight(Option<nana_ui_core::LengthSpec>),
+    FlexGrow(Option<f32>),
+    FlexShrink(Option<f32>),
+    Direction(Option<nana_ui_core::FlexDirection>),
+    Opacity(f32),
+    Transform(Option<nana_ui_core::PaintTransform>),
+    Fill(Option<nana_ui_core::PaintColor>),
+    Ink(Option<nana_ui_core::PaintColor>),
+    Edge(Option<nana_ui_core::PaintColor>),
+    Elevation(Option<nana_ui_core::ElevationRole>),
+    Hidden(bool),
+}
+
+impl InlineOverride {
+    fn apply(&self, layout: &mut LayoutStyle) {
+        match self {
+            Self::Site(site) => {
+                for &(needs, patch, query) in site.rules {
+                    if needs == 0 && query.is_none() {
+                        patch.apply(layout);
+                    }
+                }
+            }
+            Self::Patch(patch) => patch.apply(layout),
+            Self::Gap(gap) => {
+                layout.gap = Some(*gap);
+                layout.row_gap = None;
+                layout.column_gap = None;
+            }
+            Self::Padding(padding) => {
+                layout.padding = *padding;
+                if padding.is_some() {
+                    layout.padding_top = None;
+                    layout.padding_right = None;
+                    layout.padding_bottom = None;
+                    layout.padding_left = None;
+                    if !layout.logical_edges.is_shared_default() {
+                        layout.logical_edges.padding = Default::default();
+                    }
+                }
+            }
+            Self::Margin(margin) => {
+                layout.margin = *margin;
+                if margin.is_some() {
+                    layout.margin_top = None;
+                    layout.margin_right = None;
+                    layout.margin_bottom = None;
+                    layout.margin_left = None;
+                    if !layout.logical_edges.is_shared_default() {
+                        layout.logical_edges.margin = Default::default();
+                    }
+                }
+            }
+            Self::Width(v) => layout.width = *v,
+            Self::Height(v) => layout.height = *v,
+            Self::MinWidth(v) => layout.min_width = *v,
+            Self::MaxWidth(v) => layout.max_width = *v,
+            Self::MinHeight(v) => layout.min_height = *v,
+            Self::MaxHeight(v) => layout.max_height = *v,
+            Self::FlexGrow(v) => layout.flex_grow = *v,
+            Self::FlexShrink(v) => layout.flex_shrink = *v,
+            Self::Direction(v) => layout.direction = *v,
+            Self::Opacity(v) => layout.opacity = Some(*v),
+            Self::Transform(v) => {
+                if layout.transforms.transform != *v {
+                    layout.transforms.transform = *v;
+                }
+            }
+            Self::Fill(v) => {
+                if layout.paint_colors.background != *v {
+                    layout.paint_colors.background = *v;
+                }
+            }
+            Self::Ink(v) => {
+                if layout.paint_colors.color != *v {
+                    layout.paint_colors.color = *v;
+                }
+            }
+            Self::Edge(v) => {
+                if layout.paint_colors.border != *v {
+                    layout.paint_colors.border = *v;
+                }
+            }
+            Self::Elevation(v) => {
+                if layout.paint.elevation != *v {
+                    layout.paint.elevation = *v;
+                }
+            }
+            Self::Hidden(v) => layout.hidden = *v,
+        }
+    }
+}
+
+/// Ordered Layer 2 overrides attached to an element.
+#[derive(Default, Clone)]
+pub(crate) struct InlineLayer(Vec<InlineOverride>);
+
+impl InlineLayer {
+    pub(crate) fn push(&mut self, item: InlineOverride) {
+        self.0.push(item);
+    }
+
+    pub(crate) fn apply(&self, layout: &mut LayoutStyle) {
+        for item in &self.0 {
+            item.apply(layout);
+        }
+    }
+
+    /// Apply this Layer 2 stack over `base`, preserving `StyleSite` `Arc`
+    /// sharing when there is a single compiled `css! { ... }` site.
+    pub(crate) fn apply_over(&self, base: &Arc<LayoutStyle>) -> Arc<LayoutStyle> {
+        if let [InlineOverride::Site(site)] = self.0.as_slice() {
+            return site.compose(base, 0);
+        }
+        let mut layout = (**base).clone();
+        self.apply(&mut layout);
+        layout.drop_inert_physical_edges();
+        Arc::new(layout)
+    }
+}
+
+/// Type-erased Layer 2 carrier stored on [`El`] so `El<C>::place_node` can
+/// apply Layer 2 even without `C: StyledComponent` in its generic bound.
+pub(crate) struct InlineStyles<C> {
+    pub(crate) layer: InlineLayer,
+    apply: fn(&mut C, InlineLayer),
+}
+
+impl<C> InlineStyles<C> {
+    pub(crate) fn new(apply: fn(&mut C, InlineLayer)) -> Self {
+        Self {
+            layer: InlineLayer::default(),
+            apply,
+        }
+    }
+
+    pub(crate) fn apply_direct(self, component: &mut C) {
+        (self.apply)(component, self.layer);
+    }
+}
+
+pub(crate) fn apply_inline_only<C: StyledComponent>(component: &mut C, inline: InlineLayer) {
+    let composed = inline.apply_over(&component.node_style().layout);
+    component.node_style_mut().layout = composed;
+}
+
 /// The classes [`El::class`] and [`El::class_when`] gave an element.
 pub(crate) struct Classes<C> {
     sheet: &'static Sheet,
@@ -889,15 +1136,18 @@ type ApplySite<C> = fn(
     &mut NodeBindings<C>,
     &'static StyleSite,
     Vec<PropSource<bool>>,
+    Option<InlineLayer>,
     &'static Location<'static>,
 );
 
 impl<C> Classes<C> {
-    /// Write the element's styles into it, and return its animations.
+    /// Write the element's styles into it (Layer 0 -> Layer 1 -> Layer 2), and
+    /// return its static animations.
     pub(crate) fn apply(
         self,
         component: &mut C,
         bindings: &mut NodeBindings<C>,
+        inline: Option<InlineLayer>,
     ) -> &'static [Implicit] {
         let indices: Vec<u16> = self.conditional.iter().map(|(class, _)| *class).collect();
         let (site, animate) = self.sheet.resolve(&self.fixed, &indices);
@@ -906,8 +1156,42 @@ impl<C> Classes<C> {
             .into_iter()
             .map(|(_, source)| source)
             .collect();
-        (self.apply)(component, bindings, site, sources, self.at);
+        (self.apply)(component, bindings, site, sources, inline, self.at);
         animate
+    }
+}
+
+/// Dynamic Layer 0+1+2 style composition binding installed into
+/// `NodeBindings::composed_style`, which always runs BEFORE Layer 3
+/// (`direct` and `dynamic`) reactive bindings.
+struct ComposedStyleProp<F> {
+    f: F,
+    last: Option<Arc<LayoutStyle>>,
+    pending: Option<Arc<LayoutStyle>>,
+}
+
+impl<C: StyledComponent, F: Fn() -> Arc<LayoutStyle> + Send> DynProp<C> for ComposedStyleProp<F> {
+    fn evaluate(&mut self, _current: &C) -> bool {
+        let next = (self.f)();
+        let changed = match &self.last {
+            Some(prev) => !Arc::ptr_eq(prev, &next) && **prev != *next,
+            None => true,
+        };
+        if changed {
+            self.pending = Some(next);
+        }
+        changed
+    }
+
+    fn write(&mut self, target: &mut C) {
+        if let Some(next) = self.pending.take() {
+            self.last = Some(Arc::clone(&next));
+            target.node_style_mut().layout = next;
+        }
+    }
+
+    fn discard(&mut self) {
+        self.pending = None;
     }
 }
 
@@ -934,15 +1218,17 @@ impl MotionBinding {
     }
 }
 
-/// `site` over the component's layout as built; the `i`-th condition
-/// switches the site's `i`-th conditional class. A site with `@container`
-/// rules also gives the element its responsive rule under the active
-/// classes, kept in `bindings` for the node to send.
+/// `site` over the component's Layer 0 layout, followed by optional Layer 2
+/// author inline overrides; the `i`-th condition switches the site's `i`-th
+/// conditional class. A site with `@container` rules also gives the element
+/// its responsive rule under the active classes, kept in `bindings` for the
+/// node to send.
 fn apply_site<C: StyledComponent + ComponentView>(
     component: &mut C,
     bindings: &mut NodeBindings<C>,
     site: &'static StyleSite,
     conditions: Vec<PropSource<bool>>,
+    inline: Option<InlineLayer>,
     at: &'static Location<'static>,
 ) {
     let base = &component.node_style().layout;
@@ -966,9 +1252,14 @@ fn apply_site<C: StyledComponent + ComponentView>(
     };
     if conditions.is_empty() && used_pseudos == 0 && hot_styles.is_none() {
         if queried {
-            bindings.responsive = Some(ResponsiveBinding::new(site.responsive(base, 0, at)));
+            bindings.responsive = Some(ResponsiveBinding::new(site.responsive_layered(
+                base,
+                0,
+                inline.as_ref(),
+                at,
+            )));
         }
-        let composed = site.compose(base, 0);
+        let composed = site.compose_layered(base, 0, inline.as_ref());
         <ComposedLayout as FieldWrite<C, Arc<LayoutStyle>>>::write(component, composed);
         return;
     }
@@ -1006,23 +1297,31 @@ fn apply_site<C: StyledComponent + ComponentView>(
         }
         if let Some(hot_sheet) = hot_styles.and_then(|sig| sig.get()) {
             if let Some(pending) = &pending {
-                let rule = site.responsive_hot(&base, active, &hot_sheet, at);
+                let rule = site.responsive_hot(&base, active, &hot_sheet, inline.as_ref(), at);
                 *pending.lock().unwrap_or_else(PoisonError::into_inner) = Some(rule);
             }
-            site.compose_hot(&base, active, &hot_sheet)
+            site.compose_hot(&base, active, &hot_sheet, inline.as_ref())
         } else {
             if let Some(pending) = &pending {
                 let rule = if queried {
-                    site.responsive(&base, active, at)
+                    site.responsive_layered(&base, active, inline.as_ref(), at)
                 } else {
                     None
                 };
                 *pending.lock().unwrap_or_else(PoisonError::into_inner) = Some(rule);
             }
-            site.compose(&base, active)
+            site.compose_layered(&base, active, inline.as_ref())
         }
     };
-    composed.bind_field::<C, ComposedLayout>(component, bindings, at);
+    bindings.composed_style = Some(DynBinding {
+        prop: Box::new(ComposedStyleProp {
+            f: composed,
+            last: None,
+            pending: None,
+        }),
+        field: <ComposedLayout as FieldWrite<C, Arc<LayoutStyle>>>::FIELD,
+        site: at,
+    });
 }
 
 /// The responsive rule an element's compiled `@container` rules give it,
@@ -1094,24 +1393,22 @@ fn apply(base: &LayoutStyle, patches: impl Iterator<Item = &'static StylePatch>)
     layout
 }
 
-/// Writes a composed layout, keeping what `.visible` decided.
+/// Writes a composed layout (Layer 0 -> Layer 1 -> Layer 2).
+/// Layer 3 reactive prop bindings (including `.visible(sig)`) run after this
+/// writer in `NodeBindings`.
 #[doc(hidden)]
 pub struct ComposedLayout;
 
 impl<C: StyledComponent> FieldWrite<C, Arc<LayoutStyle>> for ComposedLayout {
     const FIELD: &'static str = "style.layout";
 
-    fn write(target: &mut C, mut layout: Arc<LayoutStyle>) {
-        let style = target.node_style_mut();
-        if style.layout.hidden != layout.hidden {
-            Arc::make_mut(&mut layout).hidden = style.layout.hidden;
-        }
-        style.layout = layout;
+    fn write(target: &mut C, layout: Arc<LayoutStyle>) {
+        target.node_style_mut().layout = layout;
     }
 
     fn differs(target: &C, layout: &Arc<LayoutStyle>) -> bool {
         let current = &target.node_style().layout;
-        !Arc::ptr_eq(current, layout) && (current.hidden != layout.hidden || **current != **layout)
+        !Arc::ptr_eq(current, layout) && **current != **layout
     }
 }
 
@@ -1180,10 +1477,20 @@ impl<C: StyledComponent + ComponentView, K> El<C, K> {
         self
     }
 
-    /// A compiled site over the element's layout as built, now (`css!`).
-    fn styles(mut self, site: &'static StyleSite, at: &'static Location<'static>) -> Self {
-        let (component, bindings) = self.parts_mut();
-        apply_site(component, bindings, site, Vec::new(), at);
+    /// Record a Layer 2 author inline override (applied after Layer 1
+    /// stylesheet rules and before Layer 3 reactive bindings).
+    pub(crate) fn push_inline_override(&mut self, item: InlineOverride) {
+        self.inline_styles_mut()
+            .get_or_insert_with(|| Box::new(InlineStyles::new(apply_inline_only::<C>)))
+            .layer
+            .push(item);
+    }
+
+    /// Apply a compiled [`StylePatch`] as a Layer 2 author inline override
+    /// (wins over `.class` / `.class_when` / `:hover` / `@container`, regardless
+    /// of builder call order; yields to Layer 3 reactive prop bindings).
+    pub fn inline_patch(mut self, patch: &'static StylePatch) -> Self {
+        self.push_inline_override(InlineOverride::Patch(patch));
         self
     }
 }
@@ -1208,19 +1515,22 @@ impl InlineStyle {
 
 impl<C: StyledComponent + ComponentView, K> El<C, K> {
     /// A declaration block compiled by `css!`: `column().gap(8.0).children(rows)
-    /// .css(css! { padding: 12px; transition: opacity 150ms })`. Call it
-    /// before other layout props.
+    /// .css(css! { padding: 12px; transition: opacity 150ms })`.
+    ///
+    /// Applies as Layer 2 (author inline override): wins over Layer 1
+    /// stylesheet rules (`.class`, `.class_when`, `:hover`, `@container`)
+    /// regardless of builder call order, while Layer 3 reactive bindings win
+    /// over it.
     #[track_caller]
     pub fn css(self, style: InlineStyle) -> Self {
         self.css_at(style, Location::caller())
     }
 
-    fn css_at(self, style: InlineStyle, at: &'static Location<'static>) -> Self {
-        let styled = match style.site {
-            Some(site) => self.styles(site, at),
-            None => self,
-        };
-        styled.animate(style.animate.iter().copied())
+    fn css_at(mut self, style: InlineStyle, _at: &'static Location<'static>) -> Self {
+        if let Some(site) = style.site {
+            self.push_inline_override(InlineOverride::Site(site));
+        }
+        self.animate(style.animate.iter().copied())
     }
 }
 
@@ -1778,5 +2088,135 @@ mod site_tests {
         cx.flush_reactive().unwrap();
         assert_eq!(layout(&cx).opacity, Some(1.0));
         assert!(cx.world().responsive_rule(root).is_none());
+    }
+
+    static LAYER1_BASE: StylePatch = StylePatch::new(|layout| {
+        layout.align_items = nana_ui_core::AlignSpec::Start;
+        layout.padding = Some(LengthSpec::Px(8.0));
+        layout.opacity = Some(0.5);
+        layout.width = Some(LengthSpec::Px(120.0));
+    });
+    static LAYER1_ACTIVE: StylePatch = StylePatch::new(|layout| {
+        layout.padding = Some(LengthSpec::Px(14.0));
+        layout.opacity = Some(0.9);
+        layout.width = Some(LengthSpec::Px(240.0));
+        layout.height = Some(LengthSpec::Px(48.0));
+    });
+    static LAYER1_NARROW: StylePatch = StylePatch::new(|layout| {
+        layout.padding = Some(LengthSpec::Px(2.0));
+        layout.height = Some(LengthSpec::Px(96.0));
+    });
+    static LAYER_RULES: [SheetRule; 3] = [
+        SheetRule {
+            classes: &[0],
+            pseudo: 0,
+            patch: &LAYER1_BASE,
+            query: None,
+        },
+        SheetRule {
+            classes: &[0, 1],
+            pseudo: 0,
+            patch: &LAYER1_ACTIVE,
+            query: None,
+        },
+        SheetRule {
+            classes: &[0],
+            pseudo: 0,
+            patch: &LAYER1_NARROW,
+            query: Some(&CARD),
+        },
+    ];
+    static LAYER_SHEET: Sheet = Sheet::new(&LAYER_RULES, &[]);
+    static INLINE_PAD_SITE: StyleSite = StyleSite::new(&[(0, &INLINE_PAD_PATCH, None)]);
+    static INLINE_PAD_PATCH: StylePatch = StylePatch::new(|layout| {
+        layout.padding = Some(LengthSpec::Px(20.0));
+    });
+
+    #[test]
+    fn four_layer_precedence_and_reactive_preservation_hold_regardless_of_order() {
+        use crate::view::{column, row, signal};
+        use crate::{AppContext, DocumentId};
+        use nana_ui_core::{AlignSpec, PaintTransform};
+
+        let c_base = Class::new(&LAYER_SHEET, 0);
+        let c_active = Class::new(&LAYER_SHEET, 1);
+        let inline_css = InlineStyle::new(Some(&INLINE_PAD_SITE), &[]);
+
+        let active = signal(false);
+        let op_sig = signal(0.3_f32);
+        let tx = PaintTransform {
+            e: 12.0,
+            f: -4.0,
+            ..PaintTransform::IDENTITY
+        };
+        let tx_sig = signal(Some(tx));
+        let width_sig = signal(Some(LengthSpec::Px(300.0)));
+
+        let mut cx = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let mounted = cx
+            .mount_view_root(document, move || {
+                column().children((
+                    // Order A: .css() before .class()
+                    row().css(inline_css).class(c_base),
+                    // Order B: .class() before .css()
+                    row().class(c_base).css(inline_css),
+                    // Static Rust builder .padding(20.0) before .class()
+                    row().padding(20.0).class(c_base),
+                    // Reactive Layer 3 bindings combined with dynamic Layer 1 .class_when() and Layer 2 .padding(20.0)
+                    row()
+                        .padding(20.0)
+                        .class(c_base)
+                        .class_when(c_active, active)
+                        .paint_opacity(op_sig)
+                        .transform(tx_sig)
+                        .width(width_sig),
+                ))
+            })
+            .unwrap();
+        let children = cx
+            .world()
+            .node(mounted.roots()[0])
+            .unwrap()
+            .children
+            .clone();
+        let (css_first, class_first, builder_first, reactive_node) =
+            (children[0], children[1], children[2], children[3]);
+
+        // 1. Layer 2 .css() beats Layer 1 .class() in both orders, inherits non-overlapping fields,
+        // and Layer 1 beats Layer 0 row() default (AlignSpec::Center -> AlignSpec::Start).
+        for id in [css_first, class_first, builder_first] {
+            let layout = &cx.world().node_style(id).unwrap().layout;
+            assert_eq!(layout.padding, Some(LengthSpec::Px(20.0)));
+            assert_eq!(layout.opacity, Some(0.5));
+            assert_eq!(layout.align_items, AlignSpec::Start);
+            // @container bucket (Layer 1) also respects Layer 2 padding override while keeping height!
+            let rule = cx.world().responsive_rule(id).expect("responsive rule");
+            let mut narrow = (**layout).clone();
+            rule.variant(0).expect("narrow variant").apply(&mut narrow);
+            assert_eq!(narrow.padding, Some(LengthSpec::Px(20.0)));
+            assert_eq!(narrow.height, Some(LengthSpec::Px(96.0)));
+        }
+
+        // 2. Layer 3 reactive bindings beat Layer 1 & Layer 2 on mount...
+        let check_reactive = |cx: &AppContext, expected_height: Option<LengthSpec>| {
+            let layout = &cx.world().node_style(reactive_node).unwrap().layout;
+            assert_eq!(layout.align_items, AlignSpec::Start);
+            assert_eq!(layout.padding, Some(LengthSpec::Px(20.0)));
+            assert_eq!(layout.opacity, Some(0.3));
+            assert_eq!(layout.transforms.transform, Some(tx));
+            assert_eq!(layout.width, Some(LengthSpec::Px(300.0)));
+            assert_eq!(layout.height, expected_height);
+        };
+        check_reactive(&cx, None);
+
+        // ...and survive toggling .class_when() on and off!
+        active.set(true);
+        cx.flush_reactive().unwrap();
+        check_reactive(&cx, Some(LengthSpec::Px(48.0)));
+
+        active.set(false);
+        cx.flush_reactive().unwrap();
+        check_reactive(&cx, None);
     }
 }

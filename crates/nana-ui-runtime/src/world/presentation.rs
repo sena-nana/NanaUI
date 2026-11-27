@@ -231,8 +231,9 @@ impl UiWorld {
         id: StableNodeId,
         property: AnimatableProperty,
     ) -> Option<MotionValue> {
-        let style = self.node_style(id)?;
-        let layout = style.layout.as_ref();
+        let record = self.nodes.get(id)?;
+        let authored = record.style.layout.as_ref();
+        let layout = record.resolved_layout.as_ref();
         match property {
             AnimatableProperty::Opacity => Some(MotionValue::Scalar(layout.opacity.unwrap_or(1.0))),
             AnimatableProperty::Transform => Some(MotionValue::Transform(
@@ -240,19 +241,36 @@ impl UiWorld {
             )),
             AnimatableProperty::Background => {
                 let model = self.node_style_model(id);
-                let resolved_layout = &self.record(id).resolved_layout;
-                resolved_layout
+                layout
                     .paint_colors
                     .background
-                    .or(layout.paint_colors.background)
+                    .or(authored.paint_colors.background)
                     .map(|c| c.resolve_srgb(model))
                     .or_else(|| self.computed_style(id).and_then(|s| s.background))
                     .map(MotionValue::Color)
             }
             AnimatableProperty::Width => length_px(layout.width),
             AnimatableProperty::Height => length_px(layout.height),
-            AnimatableProperty::Padding => length_px(layout.padding),
-            AnimatableProperty::Margin => length_px(layout.margin),
+            AnimatableProperty::Padding => uniform_box_edge_px(
+                layout.padding,
+                [
+                    layout.padding_top,
+                    layout.padding_right,
+                    layout.padding_bottom,
+                    layout.padding_left,
+                ],
+            )
+            .map(MotionValue::Scalar),
+            AnimatableProperty::Margin => uniform_box_edge_px(
+                layout.margin,
+                [
+                    layout.margin_top,
+                    layout.margin_right,
+                    layout.margin_bottom,
+                    layout.margin_left,
+                ],
+            )
+            .map(MotionValue::Scalar),
             AnimatableProperty::Display => Some(MotionValue::Discrete(display_tag(
                 layout.display.unwrap_or(DisplaySpec::Flex),
             ))),
@@ -263,11 +281,10 @@ impl UiWorld {
             .map(MotionValue::Scalar),
             AnimatableProperty::Color => {
                 let model = self.node_style_model(id);
-                let resolved_layout = &self.record(id).resolved_layout;
-                resolved_layout
+                layout
                     .paint_colors
                     .color
-                    .or(layout.paint_colors.color)
+                    .or(authored.paint_colors.color)
                     .map(|c| c.resolve_srgb(model))
                     .or_else(|| self.computed_style(id).and_then(|s| s.color))
                     .map(MotionValue::Color)
@@ -827,6 +844,32 @@ fn length_px(spec: Option<LengthSpec>) -> Option<MotionValue> {
         Some(LengthSpec::Px(px)) if px.is_finite() => Some(MotionValue::Scalar(px)),
         _ => None,
     }
+}
+
+/// Returns the uniform pixel value for a box edge shorthand (`padding` / `margin`)
+/// when no asymmetric per-side overrides exist. Asymmetric per-side edges return
+/// `None` so scalar motion values do not collapse distinct sides.
+pub(super) fn uniform_box_edge_px(
+    shorthand: Option<LengthSpec>,
+    sides: [Option<LengthSpec>; 4],
+) -> Option<f32> {
+    if sides.iter().all(Option::is_none) {
+        return match shorthand {
+            Some(LengthSpec::Px(px)) if px.is_finite() => Some(px),
+            _ => None,
+        };
+    }
+    let effective = sides.map(|side| side.or(shorthand));
+    let Some(LengthSpec::Px(first)) = effective[0] else {
+        return None;
+    };
+    if !first.is_finite() {
+        return None;
+    }
+    effective[1..]
+        .iter()
+        .all(|side| matches!(side, Some(LengthSpec::Px(px)) if px.is_finite() && *px == first))
+        .then_some(first)
 }
 
 fn display_tag(display: DisplaySpec) -> u32 {

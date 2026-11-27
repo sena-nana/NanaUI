@@ -2570,6 +2570,9 @@ fn css_keyframe_animation_id(
         AnimatableProperty::Progress => 17,
     };
     hasher.write_u64(tag);
+    if let AnimatableProperty::FontAxis(axis) = property {
+        hasher.write(&axis);
+    }
     AnimationId::new(hasher.finish())
         .unwrap_or_else(|| AnimationId::new(node.get() | (1u64 << 63)).expect("nonzero"))
 }
@@ -2606,5 +2609,21 @@ fn presence_values(
 impl AppContext {
     pub(crate) fn event_handler_count(&self) -> usize {
         self.lifecycle.event_handlers.values().map(Vec::len).sum()
+    }
+}
+
+#[cfg(test)]
+mod motion_id_tests {
+    use super::*;
+
+    #[test]
+    fn css_keyframe_animation_id_distinguishes_font_axis_tags() {
+        let node = StableNodeId::new(7).unwrap();
+        let wght = css_keyframe_animation_id(node, "pulse", AnimatableProperty::FontAxis(*b"wght"));
+        let wdth = css_keyframe_animation_id(node, "pulse", AnimatableProperty::FontAxis(*b"wdth"));
+        let opsz = css_keyframe_animation_id(node, "pulse", AnimatableProperty::FontAxis(*b"opsz"));
+        assert_ne!(wght, wdth);
+        assert_ne!(wght, opsz);
+        assert_ne!(wdth, opsz);
     }
 }

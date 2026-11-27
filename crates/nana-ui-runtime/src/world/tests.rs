@@ -13500,3 +13500,144 @@ fn disabling_a_container_releases_focus_below_it_at_commit() {
     world.commit(disable_self).unwrap();
     assert_eq!(world.focused(document(1)), Some(node(4)));
 }
+
+#[test]
+fn logical_motion_value_reads_resolved_layout_and_preserves_per_side_edges() {
+    let mut world = UiWorld::new();
+    let mut create = MutationQueue::new();
+    create.create(node(1), document(1), NodeKind::Document);
+    for id in 2..=4 {
+        create.create(
+            node(id),
+            document(1),
+            NodeKind::Element { tag: "div".into() },
+        );
+        create.insert(node(1), node(id), None);
+    }
+
+    // Node 2: theme-token width + uniform padding_step resolved into `resolved_layout` only.
+    let mut themed_layout = LayoutStyle::default();
+    themed_layout.theme.width = Some(nana_ui_core::ThemeExpr::token(
+        nana_ui_core::ThemeToken::Space(nana_ui_core::SpacingStep::Lg),
+    ));
+    let themed_style = NodeStyle {
+        layout: Arc::new(themed_layout),
+        ..NodeStyle::visible()
+    }
+    .padding_step(nana_ui_core::SpacingStep::Md, nana_ui_core::SpacingStep::Md);
+    create.set_style(node(2), themed_style);
+
+    // Node 3: asymmetric per-side padding & margin must NOT collapse into scalar motion values.
+    let asym_layout = LayoutStyle {
+        padding: Some(LengthSpec::Px(10.0)),
+        padding_left: Some(LengthSpec::Px(24.0)),
+        margin_top: Some(LengthSpec::Px(4.0)),
+        margin_bottom: Some(LengthSpec::Px(12.0)),
+        ..LayoutStyle::default()
+    };
+    create.set_style(
+        node(3),
+        NodeStyle {
+            layout: Arc::new(asym_layout),
+            ..NodeStyle::visible()
+        },
+    );
+
+    // Node 4: equal per-side margin returns uniform scalar.
+    let uniform_sides = LayoutStyle {
+        margin_top: Some(LengthSpec::Px(6.0)),
+        margin_right: Some(LengthSpec::Px(6.0)),
+        margin_bottom: Some(LengthSpec::Px(6.0)),
+        margin_left: Some(LengthSpec::Px(6.0)),
+        ..LayoutStyle::default()
+    };
+    create.set_style(
+        node(4),
+        NodeStyle {
+            layout: Arc::new(uniform_sides),
+            ..NodeStyle::visible()
+        },
+    );
+
+    world.commit(create).unwrap();
+
+    let expected_lg = world.theme().spacing().lg;
+    let expected_md = world.theme().spacing().md;
+    assert_eq!(
+        world.logical_motion_value(node(2), AnimatableProperty::Width),
+        Some(MotionValue::Scalar(expected_lg)),
+        "width must read theme-resolved resolved_layout"
+    );
+    assert_eq!(
+        world.logical_motion_value(node(2), AnimatableProperty::Padding),
+        Some(MotionValue::Scalar(expected_md)),
+        "uniform padding_step must resolve from resolved_layout"
+    );
+    assert_eq!(
+        world.logical_motion_value(node(3), AnimatableProperty::Padding),
+        None,
+        "asymmetric per-side padding must not collapse to shorthand scalar"
+    );
+    assert_eq!(
+        world.logical_motion_value(node(3), AnimatableProperty::Margin),
+        None,
+        "asymmetric per-side margin must not collapse to shorthand scalar"
+    );
+    assert_eq!(
+        world.logical_motion_value(node(4), AnimatableProperty::Margin),
+        Some(MotionValue::Scalar(6.0))
+    );
+}
+
+#[test]
+fn theme_switch_invalidates_node_with_only_dynamic_paint_theme_dependency() {
+    use nana_ui_core::{BoxShadowSpec, PaintColor, SemanticColorRole, ThemeAppearance};
+
+    let mut world = UiWorld::new();
+    let mut create = MutationQueue::new();
+    create.set_preset_theme(ThemeAppearance::Light);
+    create.create(node(1), document(1), NodeKind::Document);
+    create.create(
+        node(2),
+        document(1),
+        NodeKind::Element { tag: "div".into() },
+    );
+    create.insert(node(1), node(2), None);
+    let mut layout = LayoutStyle::default();
+    layout.paint.box_shadows.push(BoxShadowSpec {
+        offset_x: 0.0,
+        offset_y: 2.0,
+        blur_radius: 4.0,
+        spread_radius: 0.0,
+        color: PaintColor::ThemeRole {
+            role: SemanticColorRole::Accent,
+        },
+        inset: false,
+    });
+    create.set_style(
+        node(2),
+        NodeStyle {
+            layout: Arc::new(layout),
+            ..NodeStyle::visible()
+        },
+    );
+    world.commit(create).unwrap();
+    let initial = world.take_system_work();
+    world.resolve_styles(&initial.style).unwrap();
+    let _ = world.take_system_work();
+
+    let mut dark = MutationQueue::new();
+    dark.set_preset_theme(ThemeAppearance::Dark);
+    world.commit(dark).unwrap();
+    let switched = world.take_system_work();
+    assert!(
+        switched.style.contains(&node(2)),
+        "dynamic paint box_shadow must mark node dirty for STYLE on theme switch"
+    );
+    world.resolve_styles(&switched.style).unwrap();
+    let repainted = world.take_system_work();
+    assert!(
+        repainted.render_extraction.contains(&node(2)),
+        "dynamic paint box_shadow must trigger RENDER repaint on theme switch"
+    );
+}

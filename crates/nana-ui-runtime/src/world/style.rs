@@ -1888,6 +1888,22 @@ impl UiWorld {
         }
         mask = mask.union(record.style.layout.paint_colors.dependency_mask());
         mask = mask.union(record.resolved_layout.paint_colors.dependency_mask());
+        if record.style.layout.has_dynamic_paint() {
+            let paint_mask = paint_theme_dependency_mask(&record.style.layout.paint);
+            mask = mask.union(if paint_mask.is_empty() {
+                ThemeDependencyMask::COLOR_ANY
+            } else {
+                paint_mask
+            });
+        }
+        if record.resolved_layout.has_dynamic_paint() {
+            let paint_mask = paint_theme_dependency_mask(&record.resolved_layout.paint);
+            mask = mask.union(if paint_mask.is_empty() {
+                ThemeDependencyMask::COLOR_ANY
+            } else {
+                paint_mask
+            });
+        }
         mask = mask.union(record.style.layout.theme.dependency_mask());
         if record.style.type_role.is_some() {
             mask = mask.union(ThemeDependencyMask::TYPOGRAPHY_LAYOUT);
@@ -2003,9 +2019,26 @@ impl UiWorld {
         {
             return true;
         }
-        let doc = self.record(id).document;
+        let record = self.record(id);
+        if record.style.layout.has_dynamic_paint() || record.resolved_layout.has_dynamic_paint() {
+            let mut paint_mask = nana_ui_core::ThemeDependencyMask::NONE;
+            if record.style.layout.has_dynamic_paint() {
+                paint_mask =
+                    paint_mask.union(paint_theme_dependency_mask(&record.style.layout.paint));
+            }
+            if record.resolved_layout.has_dynamic_paint() {
+                paint_mask =
+                    paint_mask.union(paint_theme_dependency_mask(&record.resolved_layout.paint));
+            }
+            if paint_mask.is_empty() {
+                paint_mask = nana_ui_core::ThemeDependencyMask::COLOR_ANY;
+            }
+            if paint_mask.intersects(theme_change) {
+                return true;
+            }
+        }
+        let doc = record.document;
         if theme_change.intersects(nana_ui_core::ThemeDependencyMask::EFFECT) {
-            let record = self.record(id);
             let rounded = record.style.radius.is_some()
                 || record.style.corner_radii.is_some()
                 || record.style.shape.is_some()
@@ -2025,6 +2058,47 @@ impl UiWorld {
         }
         false
     }
+}
+
+fn paint_theme_dependency_mask(
+    paint: &nana_ui_core::PaintStyle,
+) -> nana_ui_core::ThemeDependencyMask {
+    use nana_ui_core::{BackgroundImage, CssGradient, MaskImage, ThemeDependencyMask};
+
+    let mut mask = ThemeDependencyMask::NONE;
+    let gradient_mask = |g: &CssGradient| {
+        g.stops().iter().fold(ThemeDependencyMask::NONE, |acc, s| {
+            acc.union(s.color.dependency_mask())
+        })
+    };
+    for shadow in &paint.box_shadows {
+        mask = mask.union(shadow.color.dependency_mask());
+    }
+    if paint.elevation.is_some() {
+        mask = mask.union(ThemeDependencyMask::EFFECT);
+    }
+    for shadow in &paint.text_shadows {
+        mask = mask.union(shadow.color.dependency_mask());
+    }
+    if let Some(stroke) = paint.text_stroke
+        && let Some(color) = stroke.color
+    {
+        mask = mask.union(color.dependency_mask());
+    }
+    if let Some(filter) = paint.filter
+        && let Some(shadow) = filter.drop_shadow
+    {
+        mask = mask.union(shadow.color.dependency_mask());
+    }
+    for layer in &paint.background_layers {
+        if let BackgroundImage::Gradient(g) = layer {
+            mask = mask.union(gradient_mask(g));
+        }
+    }
+    if let Some(MaskImage::Gradient(g)) = &paint.mask {
+        mask = mask.union(gradient_mask(g));
+    }
+    mask
 }
 
 #[derive(Clone, Copy, Default)]

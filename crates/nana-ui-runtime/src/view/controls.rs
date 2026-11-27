@@ -7,9 +7,10 @@ use std::sync::Arc;
 
 use super::node::IntoView;
 use super::node::{El, node_ref, widget};
-use super::prop::{FieldWrite, IntoProp, Writable};
+use super::prop::{FieldWrite, IntoProp, PropSource, Writable};
 pub use super::prop::{InteractiveIdle, NonEmpty, NonEmptyString, WhileIdle};
 use super::reactive::{Signal, on_mount, signal};
+use super::style::InlineOverride;
 use crate::{
     ActionMenu, ActionMenuItem, ColorChanged, ColorField, ColorSubmitted, HoverCard,
     IconButtonTooltip, InlineContent, ListItemRole, MenuItemMark, SegmentedControl, SizeField,
@@ -240,55 +241,234 @@ layout_field_writers! {
     LayoutDirection: direction: Option<FlexDirection>;
     LayoutWidth: width: Option<LengthSpec>;
     LayoutHeight: height: Option<LengthSpec>;
+    LayoutMinWidth: min_width: Option<LengthSpec>;
     LayoutMaxWidth: max_width: Option<LengthSpec>;
     LayoutMinHeight: min_height: Option<LengthSpec>;
+    LayoutMaxHeight: max_height: Option<LengthSpec>;
     LayoutFlexGrow: flex_grow: Option<f32>;
+    LayoutFlexShrink: flex_shrink: Option<f32>;
+}
+
+/// Uniform box padding (`style.layout.padding`), clearing per-side overrides
+/// when set so Layer 3 reactive padding wins over Layer 1 per-side rules.
+pub struct LayoutPadding;
+
+impl<C: StyledComponent> FieldWrite<C, Option<LengthSpec>> for LayoutPadding {
+    const FIELD: &'static str = "style.layout.padding";
+
+    fn write(target: &mut C, value: Option<LengthSpec>) {
+        let style = target.node_style_mut();
+        let needs_clear = value.is_some()
+            && (style.layout.padding_top.is_some()
+                || style.layout.padding_right.is_some()
+                || style.layout.padding_bottom.is_some()
+                || style.layout.padding_left.is_some()
+                || !style.layout.logical_edges.is_shared_default());
+        if style.layout.padding != value || needs_clear {
+            let layout = Arc::make_mut(&mut style.layout);
+            layout.padding = value;
+            if value.is_some() {
+                layout.padding_top = None;
+                layout.padding_right = None;
+                layout.padding_bottom = None;
+                layout.padding_left = None;
+                if !layout.logical_edges.is_shared_default() {
+                    layout.logical_edges.padding = Default::default();
+                }
+            }
+        }
+    }
+
+    fn differs(target: &C, value: &Option<LengthSpec>) -> bool {
+        let layout = &target.node_style().layout;
+        layout.padding != *value
+            || (value.is_some()
+                && (layout.padding_top.is_some()
+                    || layout.padding_right.is_some()
+                    || layout.padding_bottom.is_some()
+                    || layout.padding_left.is_some()))
+    }
+}
+
+/// Uniform box margin (`style.layout.margin`), clearing per-side overrides
+/// when set so Layer 3 reactive margin wins over Layer 1 per-side rules.
+pub struct LayoutMargin;
+
+impl<C: StyledComponent> FieldWrite<C, Option<LengthSpec>> for LayoutMargin {
+    const FIELD: &'static str = "style.layout.margin";
+
+    fn write(target: &mut C, value: Option<LengthSpec>) {
+        let style = target.node_style_mut();
+        let needs_clear = value.is_some()
+            && (style.layout.margin_top.is_some()
+                || style.layout.margin_right.is_some()
+                || style.layout.margin_bottom.is_some()
+                || style.layout.margin_left.is_some()
+                || !style.layout.logical_edges.is_shared_default());
+        if style.layout.margin != value || needs_clear {
+            let layout = Arc::make_mut(&mut style.layout);
+            layout.margin = value;
+            if value.is_some() {
+                layout.margin_top = None;
+                layout.margin_right = None;
+                layout.margin_bottom = None;
+                layout.margin_left = None;
+                if !layout.logical_edges.is_shared_default() {
+                    layout.logical_edges.margin = Default::default();
+                }
+            }
+        }
+    }
+
+    fn differs(target: &C, value: &Option<LengthSpec>) -> bool {
+        let layout = &target.node_style().layout;
+        layout.margin != *value
+            || (value.is_some()
+                && (layout.margin_top.is_some()
+                    || layout.margin_right.is_some()
+                    || layout.margin_bottom.is_some()
+                    || layout.margin_left.is_some()))
+    }
 }
 
 impl<C: StyledComponent + crate::ComponentView, K> El<C, K> {
+    #[track_caller]
+    fn layout_prop<T: Clone + Send + 'static, W: FieldWrite<C, T> + 'static>(
+        mut self,
+        value: impl IntoProp<T>,
+        inline_override: impl FnOnce(T) -> InlineOverride,
+    ) -> Self {
+        let site = std::panic::Location::caller();
+        match value.into_source() {
+            PropSource::Const(v) => {
+                self.push_inline_override(inline_override(v));
+            }
+            source => {
+                let (component, bindings) = self.parts_mut();
+                source.bind_field::<C, W>(component, bindings, site);
+            }
+        }
+        self
+    }
+
     /// Theme elevation shadow role (`ElevationRole::Surface` / `Overlay`).
     #[track_caller]
     pub fn elevation(self, value: impl IntoProp<Option<ElevationRole>>) -> Self {
-        self.prop::<Option<ElevationRole>, Elevation>(value)
+        self.layout_prop::<Option<ElevationRole>, Elevation>(value, InlineOverride::Elevation)
     }
 
-    /// Reactive node opacity (`style.layout.opacity`).
+    /// Static or reactive node opacity (`style.layout.opacity`).
     #[track_caller]
     pub fn paint_opacity(self, value: impl IntoProp<f32>) -> Self {
-        self.prop::<f32, Opacity>(value)
+        self.layout_prop::<f32, Opacity>(value, InlineOverride::Opacity)
     }
 
-    /// Reactive paint transform (`style.layout.transforms.transform`).
+    /// Static or reactive paint transform (`style.layout.transforms.transform`).
     #[track_caller]
     pub fn transform(self, value: impl IntoProp<Option<PaintTransform>>) -> Self {
-        self.prop::<Option<PaintTransform>, Transform>(value)
+        self.layout_prop::<Option<PaintTransform>, Transform>(value, InlineOverride::Transform)
     }
 
-    /// Reactive background paint color (`style.layout.paint_colors.background`).
+    /// Static or reactive background paint color (`style.layout.paint_colors.background`).
     #[track_caller]
     pub fn paint_fill(
         self,
         value: impl IntoProp<Option<nana_ui_core::style_model::PaintColor>>,
     ) -> Self {
-        self.prop::<Option<nana_ui_core::style_model::PaintColor>, Fill>(value)
+        self.layout_prop::<Option<nana_ui_core::style_model::PaintColor>, Fill>(
+            value,
+            InlineOverride::Fill,
+        )
     }
 
-    /// Reactive foreground/ink paint color (`style.layout.paint_colors.color`).
+    /// Static or reactive foreground/ink paint color (`style.layout.paint_colors.color`).
     #[track_caller]
     pub fn paint_ink(
         self,
         value: impl IntoProp<Option<nana_ui_core::style_model::PaintColor>>,
     ) -> Self {
-        self.prop::<Option<nana_ui_core::style_model::PaintColor>, Ink>(value)
+        self.layout_prop::<Option<nana_ui_core::style_model::PaintColor>, Ink>(
+            value,
+            InlineOverride::Ink,
+        )
     }
 
-    /// Reactive border paint color (`style.layout.paint_colors.border`).
+    /// Static or reactive border paint color (`style.layout.paint_colors.border`).
     #[track_caller]
     pub fn paint_edge(
         self,
         value: impl IntoProp<Option<nana_ui_core::style_model::PaintColor>>,
     ) -> Self {
-        self.prop::<Option<nana_ui_core::style_model::PaintColor>, Edge>(value)
+        self.layout_prop::<Option<nana_ui_core::style_model::PaintColor>, Edge>(
+            value,
+            InlineOverride::Edge,
+        )
+    }
+
+    /// Static or reactive uniform padding (`style.layout.padding`).
+    #[track_caller]
+    pub fn padding(self, value: impl IntoProp<Option<LengthSpec>>) -> Self {
+        self.layout_prop::<Option<LengthSpec>, LayoutPadding>(value, InlineOverride::Padding)
+    }
+
+    /// Static or reactive uniform margin (`style.layout.margin`).
+    #[track_caller]
+    pub fn margin(self, value: impl IntoProp<Option<LengthSpec>>) -> Self {
+        self.layout_prop::<Option<LengthSpec>, LayoutMargin>(value, InlineOverride::Margin)
+    }
+
+    /// Static or reactive width (`style.layout.width`).
+    #[track_caller]
+    pub fn width(self, value: impl IntoProp<Option<LengthSpec>>) -> Self {
+        self.layout_prop::<Option<LengthSpec>, LayoutWidth>(value, InlineOverride::Width)
+    }
+
+    /// Static or reactive height (`style.layout.height`).
+    #[track_caller]
+    pub fn height(self, value: impl IntoProp<Option<LengthSpec>>) -> Self {
+        self.layout_prop::<Option<LengthSpec>, LayoutHeight>(value, InlineOverride::Height)
+    }
+
+    /// Static or reactive minimum width (`style.layout.min_width`).
+    #[track_caller]
+    pub fn min_width(self, value: impl IntoProp<Option<LengthSpec>>) -> Self {
+        self.layout_prop::<Option<LengthSpec>, LayoutMinWidth>(value, InlineOverride::MinWidth)
+    }
+
+    /// Static or reactive maximum width (`style.layout.max_width`).
+    #[track_caller]
+    pub fn max_width(self, value: impl IntoProp<Option<LengthSpec>>) -> Self {
+        self.layout_prop::<Option<LengthSpec>, LayoutMaxWidth>(value, InlineOverride::MaxWidth)
+    }
+
+    /// Static or reactive minimum height (`style.layout.min_height`).
+    #[track_caller]
+    pub fn min_height(self, value: impl IntoProp<Option<LengthSpec>>) -> Self {
+        self.layout_prop::<Option<LengthSpec>, LayoutMinHeight>(value, InlineOverride::MinHeight)
+    }
+
+    /// Static or reactive maximum height (`style.layout.max_height`).
+    #[track_caller]
+    pub fn max_height(self, value: impl IntoProp<Option<LengthSpec>>) -> Self {
+        self.layout_prop::<Option<LengthSpec>, LayoutMaxHeight>(value, InlineOverride::MaxHeight)
+    }
+
+    /// Static or reactive `flex-grow` (`style.layout.flex_grow`).
+    #[track_caller]
+    pub fn flex_grow(self, value: impl IntoProp<Option<f32>>) -> Self {
+        self.layout_prop::<Option<f32>, LayoutFlexGrow>(value, InlineOverride::FlexGrow)
+    }
+
+    /// Static or reactive `flex-shrink` (`style.layout.flex_shrink`).
+    #[track_caller]
+    pub fn flex_shrink(self, value: impl IntoProp<Option<f32>>) -> Self {
+        self.layout_prop::<Option<f32>, LayoutFlexShrink>(value, InlineOverride::FlexShrink)
+    }
+
+    /// Static or reactive flex direction (`style.layout.direction`).
+    #[track_caller]
+    pub fn direction(self, value: impl IntoProp<Option<FlexDirection>>) -> Self {
+        self.layout_prop::<Option<FlexDirection>, LayoutDirection>(value, InlineOverride::Direction)
     }
 }
 
@@ -412,7 +592,7 @@ impl<C: StyledComponent + crate::ComponentView, K> El<C, K> {
     /// (`v-show`). Use [`super::when`] to drop the subtree instead (`v-if`).
     #[track_caller]
     pub fn visible(self, visible: impl IntoProp<bool>) -> Self {
-        self.prop::<bool, Visible>(visible)
+        self.layout_prop::<bool, Visible>(visible, |v| InlineOverride::Hidden(!v))
     }
 
     /// [`Self::visible`] declared at `at`: a structural view's container.
@@ -421,8 +601,15 @@ impl<C: StyledComponent + crate::ComponentView, K> El<C, K> {
         visible: super::prop::PropSource<bool>,
         at: &'static std::panic::Location<'static>,
     ) -> Self {
-        let (component, bindings) = self.parts_mut();
-        visible.bind_field::<C, Visible>(component, bindings, at);
+        match visible {
+            PropSource::Const(v) => {
+                self.push_inline_override(InlineOverride::Hidden(!v));
+            }
+            source => {
+                let (component, bindings) = self.parts_mut();
+                source.bind_field::<C, Visible>(component, bindings, at);
+            }
+        }
         self
     }
 }
@@ -725,10 +912,11 @@ macro_rules! px {
 px!(f32, f64, i32, u32, i64, u64, usize, u16, u8);
 
 impl<K> El<Stack, K> {
-    /// Space between the children, in logical pixels.
-    pub fn gap(self, gap: impl Px) -> Self {
+    /// Space between the children, in logical pixels (Layer 2 inline override).
+    pub fn gap(mut self, gap: impl Px) -> Self {
         let gap = crate::LengthSpec::Px(gap.px().max(0.0));
-        self.map_component(|stack| stack.with_layout(|layout| layout.gap = Some(gap)))
+        self.push_inline_override(InlineOverride::Gap(gap));
+        self
     }
 
     /// Make this container participate in hit testing (`Stack::hittable`).
@@ -1043,8 +1231,11 @@ pub mod fields {
     /// [`StyledComponent`](super::StyledComponent).
     pub mod layout {
         pub use super::super::{
-            LayoutDirection as direction, LayoutFlexGrow as flex_grow, LayoutHeight as height,
-            LayoutMaxWidth as max_width, LayoutMinHeight as min_height, LayoutWidth as width,
+            LayoutDirection as direction, LayoutFlexGrow as flex_grow,
+            LayoutFlexShrink as flex_shrink, LayoutHeight as height, LayoutMargin as margin,
+            LayoutMaxHeight as max_height, LayoutMaxWidth as max_width,
+            LayoutMinHeight as min_height, LayoutMinWidth as min_width, LayoutPadding as padding,
+            LayoutWidth as width,
         };
     }
 

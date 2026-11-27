@@ -115,10 +115,40 @@ impl PresentationLengthOverlay {
             layout.height = Some(LengthSpec::Px(height));
         }
         if let Some(padding) = self.get(crate::AnimatableProperty::Padding) {
-            layout.padding = Some(LengthSpec::Px(padding));
+            let sides = [
+                layout.padding_top,
+                layout.padding_right,
+                layout.padding_bottom,
+                layout.padding_left,
+            ];
+            let has_sides = sides.iter().any(Option::is_some);
+            if !has_sides
+                || super::presentation::uniform_box_edge_px(layout.padding, sides).is_some()
+            {
+                layout.padding = Some(LengthSpec::Px(padding));
+                layout.padding_top = None;
+                layout.padding_right = None;
+                layout.padding_bottom = None;
+                layout.padding_left = None;
+            }
         }
         if let Some(margin) = self.get(crate::AnimatableProperty::Margin) {
-            layout.margin = Some(LengthSpec::Px(margin));
+            let sides = [
+                layout.margin_top,
+                layout.margin_right,
+                layout.margin_bottom,
+                layout.margin_left,
+            ];
+            let has_sides = sides.iter().any(Option::is_some);
+            if !has_sides
+                || super::presentation::uniform_box_edge_px(layout.margin, sides).is_some()
+            {
+                layout.margin = Some(LengthSpec::Px(margin));
+                layout.margin_top = None;
+                layout.margin_right = None;
+                layout.margin_bottom = None;
+                layout.margin_left = None;
+            }
         }
     }
 }
@@ -906,8 +936,26 @@ impl UiWorld {
         let logical_length = |layout: &LayoutStyle, prop: crate::AnimatableProperty| match prop {
             crate::AnimatableProperty::Width => layout.width,
             crate::AnimatableProperty::Height => layout.height,
-            crate::AnimatableProperty::Padding => layout.padding,
-            crate::AnimatableProperty::Margin => layout.margin,
+            crate::AnimatableProperty::Padding => super::presentation::uniform_box_edge_px(
+                layout.padding,
+                [
+                    layout.padding_top,
+                    layout.padding_right,
+                    layout.padding_bottom,
+                    layout.padding_left,
+                ],
+            )
+            .map(LengthSpec::Px),
+            crate::AnimatableProperty::Margin => super::presentation::uniform_box_edge_px(
+                layout.margin,
+                [
+                    layout.margin_top,
+                    layout.margin_right,
+                    layout.margin_bottom,
+                    layout.margin_left,
+                ],
+            )
+            .map(LengthSpec::Px),
             _ => None,
         };
         let prev_px = self
