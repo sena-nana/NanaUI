@@ -1519,6 +1519,65 @@ mod tests {
         );
     }
 
+    /// A range paints its own fill and thumb and keeps the root quad off. Its
+    /// hover fade reaches those through the computed style; it must not
+    /// become CSS surface paint, which would cover the whole slider in the
+    /// accent for the length of the fade. A button's root quad still fades.
+    #[test]
+    fn hover_fade_paints_no_root_surface_under_a_widget_that_owns_it() {
+        let mut cx = AppContext::new();
+        let doc = DocumentId::new(1).unwrap();
+        let root = cx.create_component(doc, crate::Stack::column(0.0)).unwrap();
+        let range = cx
+            .create_component(doc, crate::RangeField::new(50.0, 0.0, 100.0, 1.0))
+            .unwrap();
+        let button = cx.create_component(doc, Button::new("Hover")).unwrap();
+        cx.append_child(root, range).unwrap();
+        cx.append_child(root, button).unwrap();
+        cx.layout_document(doc, crate::LayoutViewport::new(300.0, 120.0))
+            .unwrap();
+        tick(&mut cx, 0);
+        let thumb_fill = |cx: &AppContext| {
+            let node = cx.world().extract_nodes(&[range.stable_id()]).remove(0);
+            let paint = node.widget_paint.expect("range paints itself");
+            assert!(paint.suppress_root_surface);
+            let fill = paint
+                .ops
+                .iter()
+                .rev()
+                .find_map(|op| match &op.op {
+                    crate::WidgetPaintOp::Quad(quad) => quad.fill,
+                    _ => None,
+                })
+                .expect("thumb fill");
+            (node.source_style.layout.has_surface_paint(), fill)
+        };
+        let (_, idle_fill) = thumb_fill(&cx);
+        for (pointer, id) in [(1, range.stable_id()), (2, button.stable_id())] {
+            cx.set_pointer_hover_at(doc, pointer, Some(id), Duration::ZERO)
+                .unwrap();
+        }
+        tick(&mut cx, 0);
+        tick(&mut cx, 60);
+        for id in [range.stable_id(), button.stable_id()] {
+            assert!(cx.world().has_active_hover_track(id), "mid-fade");
+        }
+        let (surface, fading_fill) = thumb_fill(&cx);
+        assert!(!surface, "the fade lays no surface over the range's box");
+        assert_ne!(fading_fill, idle_fill, "the thumb still fades");
+
+        let button_node = cx.world().extract_nodes(&[button.stable_id()]).remove(0);
+        assert!(
+            button_node
+                .source_style
+                .layout
+                .paint_colors
+                .background
+                .is_some(),
+            "a root quad that is painted still fades"
+        );
+    }
+
     #[test]
     fn hover_foreground_repaints_inheriting_children_through_the_final_frame() {
         let mut world = UiWorld::new();

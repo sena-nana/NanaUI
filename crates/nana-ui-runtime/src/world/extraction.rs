@@ -235,7 +235,18 @@ impl UiWorld {
             } else if layout_mut.has_dynamic_paint_colors() {
                 layout_mut.resolve_theme_colors(model);
             }
-            if let Some(bg) = overlay_bg {
+            // A background paint colour is CSS surface paint to the Scene: it
+            // draws the root quad even under `suppress_root_surface`. A widget
+            // that paints its own surface (a range's fill and thumb) takes the
+            // animated colour from its computed style instead, so a hover
+            // fade must not lay that colour over its whole box for the
+            // length of the fade. One the author gave a background keeps it.
+            let widget_owns_surface = widget_paint.as_deref().is_some_and(|paint| {
+                paint.suppress_root_surface || paint.suppress_css_root_surface
+            });
+            if let Some(bg) = overlay_bg
+                && (!widget_owns_surface || layout_mut.paint_colors.background.is_some())
+            {
                 layout_mut.paint_colors.background = Some(nana_ui_core::PaintColor::srgb(bg));
             }
             if let Some(fg) = overlay_fg {
