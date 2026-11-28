@@ -113,6 +113,10 @@ pub struct NodeWheel {
     pub y: f32,
     pub delta_x: f32,
     pub delta_y: f32,
+    /// The wheel turned in notches (lines), not by a touchpad's or a
+    /// precise wheel's px. A notch is a jump a scroller may glide through;
+    /// px already arrive as smooth as the hand made them.
+    pub lines: bool,
     /// Control or Meta held (the zoom modifier).
     pub ctrl: bool,
     /// All modifier keys held.

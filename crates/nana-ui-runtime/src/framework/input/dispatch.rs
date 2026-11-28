@@ -700,6 +700,7 @@ impl AppContext {
                     y: pointer.y,
                     delta_x: dx * scale,
                     delta_y: dy * scale,
+                    lines: *line_delta,
                     ctrl: wheel.modifiers.control || wheel.modifiers.meta,
                     modifiers: wheel.modifiers,
                 },

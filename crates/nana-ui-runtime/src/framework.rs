@@ -670,6 +670,9 @@ struct ComponentLifecycle {
     /// When each menu bar's submenu aim runs out.
     menu_aims: HashMap<StableNodeId, Duration, crate::BuildIdHasher>,
     wheel_scrolls: HashMap<StableNodeId, smooth_scroll::WheelScroll, crate::BuildIdHasher>,
+    /// Open Select, Dropdown and SearchDropdown menus whose rows a line
+    /// wheel is gliding.
+    menu_wheel_glides: HashMap<StableNodeId, select_menu::MenuWheelGlide, crate::BuildIdHasher>,
     /// Where a wheel turn over a node goes on when nothing inside it takes
     /// it, in place of the node's parent ([`AppContext::set_wheel_target`]).
     wheel_targets: HashMap<StableNodeId, StableNodeId, crate::BuildIdHasher>,
@@ -1819,6 +1822,7 @@ impl AppContext {
         self.notify_media_env_signals();
         if reduced {
             self.finish_wheel_scrolls();
+            self.finish_menu_wheel_glides();
             self.finish_touch_scrolls();
         }
         for (id, reproject) in

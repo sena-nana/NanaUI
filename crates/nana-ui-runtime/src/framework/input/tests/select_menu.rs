@@ -185,6 +185,112 @@ fn the_wheel_scrolls_an_overflowing_menu_and_keeps_the_page_still() {
     assert_eq!(page_offset(&context, page), 0.0);
 }
 
+fn notch_at(x: f32, y: f32, notches: f32) -> Gesture {
+    wheel_fixture! {
+        x,
+        y,
+        delta_x: 0.0,
+        delta_y: notches,
+        line_delta: true,
+        modifiers: InputModifiers::default(),
+    }
+}
+
+#[test]
+fn a_notched_wheel_glides_the_rows_like_a_scroll_view() {
+    let mut context = AppContext::new();
+    let (page, select) = page_with(
+        &mut context,
+        0.0,
+        Select::new(Some("v0")).options(options(40)).opened(true),
+    );
+    let id = select.stable_id();
+    let menu = menu_of(&context, id);
+    assert_eq!(menu.scroll, 0.0);
+    let (x, y) = centre(menu.viewport);
+    let mut adapter = TestInput::default();
+    let start = context.animation_now();
+    assert!(
+        adapter
+            .dispatch(&mut context, document(), &notch_at(x, y, -1.0))
+            .unwrap()
+            .prevent_default
+    );
+    // The notch does not jump: the rows are on their way, with a wake due.
+    assert_eq!(menu_of(&context, id).scroll, 0.0);
+    assert!(context.next_animation_deadline().is_some());
+    let frame = context.advance_animations(start + Duration::from_millis(90));
+    assert!(frame.component_updates.contains(&id));
+    let halfway = menu_of(&context, id).scroll;
+    assert!(halfway > 0.0 && halfway < 60.0, "{halfway}");
+    context.advance_animations(start + Duration::from_millis(180));
+    assert_eq!(menu_of(&context, id).scroll, 60.0);
+    assert_eq!(context.next_animation_deadline(), None);
+    assert_eq!(page_offset(&context, page), 0.0);
+}
+
+#[test]
+fn notches_add_up_on_where_the_rows_are_going() {
+    let mut context = AppContext::new();
+    let (_, select) = page_with(
+        &mut context,
+        0.0,
+        Select::new(Some("v0")).options(options(40)).opened(true),
+    );
+    let id = select.stable_id();
+    let (x, y) = centre(menu_of(&context, id).viewport);
+    let mut adapter = TestInput::default();
+    let start = context.animation_now();
+    for _ in 0..2 {
+        adapter
+            .dispatch(&mut context, document(), &notch_at(x, y, -1.0))
+            .unwrap();
+    }
+    context.advance_animations(start + Duration::from_secs(1));
+    assert_eq!(menu_of(&context, id).scroll, 120.0);
+}
+
+#[test]
+fn the_keyboard_ends_a_glide() {
+    let mut context = AppContext::new();
+    let (_, select) = page_with(
+        &mut context,
+        0.0,
+        Select::new(Some("v0")).options(options(40)).opened(true),
+    );
+    let id = select.stable_id();
+    let (x, y) = centre(menu_of(&context, id).viewport);
+    let mut adapter = TestInput::default();
+    let start = context.animation_now();
+    adapter
+        .dispatch(&mut context, document(), &notch_at(x, y, -3.0))
+        .unwrap();
+    context.advance_animations(start + Duration::from_millis(40));
+    context
+        .update_component(select, |select, _| select.menu_scroll.offset = Some(10.0))
+        .unwrap();
+    context.advance_animations(start + Duration::from_secs(1));
+    assert_eq!(menu_of(&context, id).scroll, 10.0);
+    assert_eq!(context.next_animation_deadline(), None);
+}
+
+#[test]
+fn reduced_motion_jumps_a_notch() {
+    let mut context = AppContext::new();
+    context.set_reduced_motion(true);
+    let (_, select) = page_with(
+        &mut context,
+        0.0,
+        Select::new(Some("v0")).options(options(40)).opened(true),
+    );
+    let id = select.stable_id();
+    let (x, y) = centre(menu_of(&context, id).viewport);
+    TestInput::default()
+        .dispatch(&mut context, document(), &notch_at(x, y, -1.0))
+        .unwrap();
+    assert_eq!(menu_of(&context, id).scroll, 60.0);
+}
+
 #[test]
 fn the_wheel_over_a_menu_that_holds_its_rows_scrolls_the_page() {
     let mut context = AppContext::new();
