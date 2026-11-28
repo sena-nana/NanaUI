@@ -36,6 +36,7 @@ mod semaphore_list;
 mod swapchain;
 
 pub use adapter::PhysicalDeviceFeatures;
+pub use ash;
 
 use alloc::{boxed::Box, ffi::CString, sync::Arc, vec::Vec};
 use core::{borrow::Borrow, ffi::CStr, fmt, marker::PhantomData, mem, num::NonZeroU32};
@@ -755,6 +756,7 @@ enum BufferMemoryBacking {
     VulkanMemory {
         memory: vk::DeviceMemory,
         offset: u64,
+        #[allow(dead_code)]
         size: u64,
     },
 }
@@ -771,20 +773,32 @@ impl BufferMemoryBacking {
             Self::VulkanMemory { offset, .. } => *offset,
         }
     }
-    fn size(&self) -> u64 {
-        match self {
-            Self::Managed(m) => m.size(),
-            Self::VulkanMemory { size, .. } => *size,
-        }
-    }
 }
+/// Memory ownership for a raw Vulkan buffer passed to [`Device::buffer_from_raw`].
+#[derive(Debug)]
+pub enum BufferMemory {
+    /// Dedicated `vk::DeviceMemory` owned by wgpu-hal (freed via `vkFreeMemory` on destroy).
+    Dedicated {
+        memory: vk::DeviceMemory,
+        offset: u64,
+        size: u64,
+    },
+    /// Memory not owned by wgpu-hal; kept alive by the caller until destroy / `drop_callback`.
+    External,
+}
+
 /// Describes who owns a [`Buffer`]'s `vk::Buffer` handle and its backing memory,
 /// and therefore what cleanup is required when the buffer is destroyed.
 #[derive(Debug)]
 enum BufferOwnership {
-    /// wgpu-hal owns the `vk::Buffer` and its backing memory. On cleanup the buffer
-    /// handle is destroyed and the memory is released.
-    Managed(Mutex<BufferMemoryBacking>),
+    /// wgpu-hal owns the `vk::Buffer` (unless `drop_guard` is `Some`) and its
+    /// backing memory. On cleanup the buffer handle is destroyed (when
+    /// `drop_guard` is `None`), the memory is released, and any `drop_guard`
+    /// runs last.
+    Managed {
+        backing: Mutex<BufferMemoryBacking>,
+        drop_guard: Option<crate::DropGuard>,
+    },
     /// wgpu-hal owns the `vk::Buffer` handle but the backing memory is kept alive
     /// by the caller. On cleanup only the buffer handle is destroyed.
     RawHandle,
@@ -840,11 +854,14 @@ impl Buffer {
     ) -> Self {
         Self {
             raw: vk_buffer,
-            ownership: BufferOwnership::Managed(Mutex::new(BufferMemoryBacking::VulkanMemory {
-                memory,
-                offset,
-                size,
-            })),
+            ownership: BufferOwnership::Managed {
+                backing: Mutex::new(BufferMemoryBacking::VulkanMemory {
+                    memory,
+                    offset,
+                    size,
+                }),
+                drop_guard: None,
+            },
         }
     }
 

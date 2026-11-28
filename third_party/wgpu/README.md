@@ -53,7 +53,10 @@ Package names are prefixed with `nana-` (`nana-wgpu`, `nana-wgpu-core`, `nana-wg
   - `rasterizer_ordered_storage` checks naga's WGSL/HLSL/SPIR-V/MSL handling of
     `rasterizer_ordered` storage textures (every OS) and runs validation and
     high-contention overlapping blend order checks on DX12, Vulkan and (on
-    Apple) Metal.
+    Apple) Metal;
+  - `vulkan_buffer_from_raw` checks `wgpu_hal::vulkan::Device::buffer_from_raw`
+    with both `BufferMemory::Dedicated` (compute write + readback + HAL counter
+    accounting) and `BufferMemory::External` (`drop_callback` invocation).
 
   A GPU test without an adapter skips; `NANA_REQUIRE_WGPU_FORK_TESTS=1`
   makes it fail instead, as the Windows CI job does for DX12.
@@ -322,3 +325,36 @@ embedded host-texture viewport) to keep prior backbuffer contents via
   create/resize, and calls `Present1` with clamped `RECT`s when allowed by DXGI.
 - **`wgpu-core`**: skips zero-init clearing (`init = !ast.preserved`) for
   preserved backbuffers so `LoadOp::Load` does not trigger a full-surface clear.
+
+### Vulkan `Device::buffer_from_raw` and raw-buffer memory counter fix
+
+Mirrors `vulkan::Device::texture_from_raw` and the DX12/Metal/GLES
+`Device::buffer_from_raw` helpers so Linux Vulkan hosts can import dedicated
+external-memory `vk::Buffer`s directly (avoiding extra GPU-to-GPU copies for
+byte-oriented shared slots such as NDI UYVA export).
+
+- **`wgpu-hal` Vulkan**: adds `wgpu_hal::vulkan::BufferMemory` (`Dedicated` /
+  `External`), `wgpu_hal::vulkan::Device::buffer_from_raw`, and `pub use ash;`
+  (all additive; existing `Buffer::from_raw*` constructors stay unchanged).
+- **`wgpu-hal` Vulkan (`destroy_buffer`)**: fixes an upstream counter underflow
+  where destroying a `BufferMemoryBacking::VulkanMemory` raw buffer subtracted
+  its size from `counters.buffer_memory` even though `add_raw_buffer` never
+  added it (matching `destroy_texture` for `TextureMemory::Dedicated`).
+
+#### Deferred fork audit notes (dynamic cull mode & Metal Framebuffer Fetch)
+
+- **Dynamic cull mode (`MTLRenderCommandEncoder::setCullMode` /
+  `VK_EXT_extended_dynamic_state` / Vulkan 1.3 `vkCmdSetCullMode`)**:
+  *Deferred.* Metal already calls `setCullMode` dynamically on pipeline bind
+  (`wgpu-hal/src/metal/command.rs`), whereas DX12 bakes cull mode into
+  immutable `ID3D12PipelineState` PSOs, so cross-platform renderers must still
+  retain dual-cull PSOs for Windows DX12. Adding a cross-layer
+  `RenderPass::set_cull_mode` API would touch `wgpu-types`, `wgpu-hal`,
+  `wgpu-core` (including depth-stencil read-only validation against cull mode),
+  and `wgpu` for minimal savings over a small cached PSO set.
+- **Metal Framebuffer Fetch (`[[color(0)]]` fragment input)**: *Deferred.*
+  `Features::TEXTURE_STORAGE_RASTERIZER_ORDER` (`raster_order_group(0)` on
+  Metal) already provides a unified three-platform WGSL path eliminating render
+  pass splits and backdrop copies. Adding a Metal-only naga + `wgpu-core`
+  framebuffer-fetch extension is deferred unless Apple Silicon GPU profiling
+  shows `raster_order_group(0)` storage-texture bandwidth is a top bottleneck.

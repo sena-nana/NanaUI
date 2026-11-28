@@ -1549,20 +1549,88 @@ impl fmt::Display for HostedRunError {
 
 impl std::error::Error for HostedRunError {}
 
+/// Optional capabilities shared content producers on the host's device may use
+/// when the adapter offers them. Enabling supported optional features does not
+/// alter UI pipelines; unsupported features remain off, including after device
+/// recovery.
+const OPTIONAL_SHARED_DEVICE_FEATURES: wgpu::Features = wgpu::Features::DUAL_SOURCE_BLENDING
+    .union(wgpu::Features::TEXTURE_COMPRESSION_BC)
+    .union(wgpu::Features::TEXTURE_COMPRESSION_ASTC)
+    .union(wgpu::Features::TEXTURE_STORAGE_RASTERIZER_ORDER)
+    .union(wgpu::Features::SHADER_F16)
+    .union(wgpu::Features::SUBGROUP)
+    .union(wgpu::Features::TEXTURE_BINDING_ARRAY)
+    .union(wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING)
+    // The device's shader and pipeline cache, which the host may
+    // persist (`nana_gpu::GpuContext::load_pipeline_cache`).
+    .union(wgpu::Features::PIPELINE_CACHE);
+
+/// Optional advanced platform capabilities that may be toggled off via
+/// `NANA_WGPU_DISABLE_FEATURES` (comma-separated: `rov`, `f16`, `subgroup`,
+/// `bindless`, `non_uniform_indexing`, `all`) for A/B testing or driver
+/// workarounds without breaking device creation.
+const ABLATABLE_ADVANCED_FEATURES: wgpu::Features =
+    wgpu::Features::TEXTURE_STORAGE_RASTERIZER_ORDER
+        .union(wgpu::Features::SHADER_F16)
+        .union(wgpu::Features::SUBGROUP)
+        .union(wgpu::Features::TEXTURE_BINDING_ARRAY)
+        .union(wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING);
+
+fn parse_disabled_wgpu_features(raw: &str) -> wgpu::Features {
+    let mut disabled = wgpu::Features::empty();
+    for token in raw.split([',', ';', ' ']) {
+        match token.trim().to_ascii_lowercase().as_str() {
+            "" => {}
+            "rov"
+            | "rasterizer_order"
+            | "rasterizer-order"
+            | "texture_storage_rasterizer_order" => {
+                disabled |= wgpu::Features::TEXTURE_STORAGE_RASTERIZER_ORDER;
+            }
+            "f16" | "shader_f16" | "shader-f16" => {
+                disabled |= wgpu::Features::SHADER_F16;
+            }
+            "subgroup" | "subgroups" => {
+                disabled |= wgpu::Features::SUBGROUP;
+            }
+            "bindless" | "binding_array" | "binding-array" | "texture_binding_array" => {
+                disabled |= wgpu::Features::TEXTURE_BINDING_ARRAY
+                    | wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING;
+            }
+            "non_uniform_indexing" | "non-uniform-indexing" => {
+                disabled |=
+                    wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING;
+            }
+            "all" => {
+                disabled |= ABLATABLE_ADVANCED_FEATURES;
+            }
+            _ => {}
+        }
+    }
+    disabled
+}
+
+fn disabled_wgpu_features_from_env() -> wgpu::Features {
+    std::env::var("NANA_WGPU_DISABLE_FEATURES")
+        .ok()
+        .map(|raw| parse_disabled_wgpu_features(&raw))
+        .unwrap_or_else(wgpu::Features::empty)
+}
+
+fn shared_device_features_with_disabled(
+    available: wgpu::Features,
+    requested: wgpu::Features,
+    disabled: wgpu::Features,
+) -> wgpu::Features {
+    (available & (requested | OPTIONAL_SHARED_DEVICE_FEATURES)) & !disabled
+}
+
 /// Shared content producers on the host's device need compressed texture
-/// sampling and rasterizer-ordered storage textures when the adapter offers
-/// them. Enabling supported optional features does not alter UI pipelines;
-/// unsupported features remain off, including after device recovery.
+/// sampling and optional platform capabilities (ROV, f16, subgroups, binding
+/// arrays) when the adapter offers them. `NANA_WGPU_DISABLE_FEATURES` can
+/// mask off advanced capabilities for A/B testing or driver workarounds.
 fn shared_device_features(available: wgpu::Features, requested: wgpu::Features) -> wgpu::Features {
-    available
-        & (requested
-            | wgpu::Features::DUAL_SOURCE_BLENDING
-            | wgpu::Features::TEXTURE_COMPRESSION_BC
-            | wgpu::Features::TEXTURE_COMPRESSION_ASTC
-            | wgpu::Features::TEXTURE_STORAGE_RASTERIZER_ORDER
-            // The device's shader and pipeline cache, which the host may
-            // persist (`nana_gpu::GpuContext::load_pipeline_cache`).
-            | wgpu::Features::PIPELINE_CACHE)
+    shared_device_features_with_disabled(available, requested, disabled_wgpu_features_from_env())
 }
 
 /// The instance every hosted device is created on: `backends`, and on DX12
@@ -1584,11 +1652,13 @@ fn instance_descriptor(backends: wgpu::Backends) -> wgpu::InstanceDescriptor {
 }
 
 /// DX12's shader compiler. Every scene pipeline is compiled at startup, and
-/// DXC does that roughly twice as fast as FXC, but DXC is a DLL the
-/// application ships: a `dxcompiler.dll` beside the executable is used by its
-/// full path, so neither `PATH` nor the working directory can substitute
-/// another one. Without it the compiler is FXC, which Windows always has.
-/// `WGPU_DX12_COMPILER` still decides when it is set.
+/// DXC does that roughly twice as fast as FXC (and unlocks SM 6.x capabilities
+/// such as `SHADER_F16` and `SUBGROUP`), but DXC is a DLL pair (`dxcompiler.dll`
+/// + `dxil.dll`) the application ships: a `dxcompiler.dll` beside the executable
+/// or under its nested `runtime/` directory is used by its full path, so neither
+/// `PATH` nor the working directory can substitute another one. Without it the
+/// compiler is FXC, which Windows always has. `WGPU_DX12_COMPILER` still decides
+/// when it is set.
 #[cfg(target_os = "windows")]
 fn dx12_shader_compiler(
     from_env: Option<wgpu::Dx12Compiler>,
@@ -1597,13 +1667,19 @@ fn dx12_shader_compiler(
     if let Some(compiler) = from_env {
         return compiler;
     }
-    exe.and_then(std::path::Path::parent)
-        .map(|dir| dir.join("dxcompiler.dll"))
-        .filter(|dll| dll.is_file())
-        .and_then(|dll| dll.to_str().map(str::to_owned))
-        .map_or(wgpu::Dx12Compiler::Fxc, |dxc_path| {
-            wgpu::Dx12Compiler::DynamicDxc { dxc_path }
-        })
+    let Some(dir) = exe.and_then(std::path::Path::parent) else {
+        return wgpu::Dx12Compiler::Fxc;
+    };
+    [
+        dir.join("dxcompiler.dll"),
+        dir.join("runtime").join("dxcompiler.dll"),
+    ]
+    .into_iter()
+    .find(|dll| dll.is_file())
+    .and_then(|dll| dll.to_str().map(str::to_owned))
+    .map_or(wgpu::Dx12Compiler::Fxc, |dxc_path| {
+        wgpu::Dx12Compiler::DynamicDxc { dxc_path }
+    })
 }
 
 fn adapter_backend(backend: wgpu::Backend) -> GpuBackend {
@@ -1815,31 +1891,85 @@ mod tests {
             | F::TEXTURE_COMPRESSION_BC
             | F::TEXTURE_COMPRESSION_ASTC
             | F::TEXTURE_STORAGE_RASTERIZER_ORDER
+            | F::SHADER_F16
+            | F::SUBGROUP
+            | F::TEXTURE_BINDING_ARRAY
+            | F::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
             | F::PIPELINE_CACHE;
         for available in [
             F::empty(),
             F::TEXTURE_COMPRESSION_BC,
             F::TEXTURE_COMPRESSION_ASTC,
             F::TEXTURE_STORAGE_RASTERIZER_ORDER,
+            F::SHADER_F16,
+            F::SUBGROUP,
+            F::TEXTURE_BINDING_ARRAY,
+            F::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING,
             F::PIPELINE_CACHE,
             optional,
         ] {
             assert_eq!(
-                super::shared_device_features(available, F::empty()),
+                super::shared_device_features_with_disabled(available, F::empty(), F::empty()),
                 available
             );
             assert_eq!(
-                super::shared_device_features(available | F::TIMESTAMP_QUERY, F::TIMESTAMP_QUERY),
+                super::shared_device_features_with_disabled(
+                    available | F::TIMESTAMP_QUERY,
+                    F::TIMESTAMP_QUERY,
+                    F::empty(),
+                ),
                 available | F::TIMESTAMP_QUERY,
             );
             assert_eq!(
-                super::shared_device_features(available, F::TIMESTAMP_QUERY),
+                super::shared_device_features_with_disabled(
+                    available,
+                    F::TIMESTAMP_QUERY,
+                    F::empty(),
+                ),
                 available
             );
         }
         assert_eq!(
-            super::shared_device_features(F::TIMESTAMP_QUERY, F::empty()),
+            super::shared_device_features_with_disabled(F::TIMESTAMP_QUERY, F::empty(), F::empty()),
             F::empty()
+        );
+    }
+
+    #[test]
+    fn env_ablation_override_masks_individual_and_all_advanced_features() {
+        use wgpu::Features as F;
+        let all_optional = super::OPTIONAL_SHARED_DEVICE_FEATURES;
+
+        let disabled = super::parse_disabled_wgpu_features("rov, f16, unknown-token");
+        assert_eq!(
+            disabled,
+            F::TEXTURE_STORAGE_RASTERIZER_ORDER | F::SHADER_F16
+        );
+        let enabled =
+            super::shared_device_features_with_disabled(all_optional, F::empty(), disabled);
+        assert!(!enabled.contains(F::TEXTURE_STORAGE_RASTERIZER_ORDER));
+        assert!(!enabled.contains(F::SHADER_F16));
+        assert!(enabled.contains(F::SUBGROUP));
+        assert!(enabled.contains(F::TEXTURE_BINDING_ARRAY));
+        assert!(enabled.contains(F::DUAL_SOURCE_BLENDING));
+
+        let bindless_off = super::parse_disabled_wgpu_features("SUBGROUP;bindless");
+        assert_eq!(
+            bindless_off,
+            F::SUBGROUP
+                | F::TEXTURE_BINDING_ARRAY
+                | F::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
+        );
+
+        let all_off = super::parse_disabled_wgpu_features("all");
+        let after_all =
+            super::shared_device_features_with_disabled(all_optional, F::empty(), all_off);
+        assert_eq!(
+            after_all,
+            F::DUAL_SOURCE_BLENDING
+                | F::TEXTURE_COMPRESSION_BC
+                | F::TEXTURE_COMPRESSION_ASTC
+                | F::PIPELINE_CACHE
         );
     }
 
@@ -2308,9 +2438,10 @@ mod tests {
         ));
     }
 
-    /// DXC is the one shipped beside the executable, named by full path;
-    /// without it the compiler is FXC, whatever `PATH` holds, and an explicit
-    /// `WGPU_DX12_COMPILER` wins over both.
+    /// DXC is the one shipped beside the executable (or under its nested
+    /// `runtime/` directory), named by full path; without it the compiler is
+    /// FXC, whatever `PATH` holds, and an explicit `WGPU_DX12_COMPILER` wins
+    /// over both.
     #[cfg(target_os = "windows")]
     #[test]
     fn dx12_uses_the_dxc_shipped_beside_the_executable() {
@@ -2325,6 +2456,20 @@ mod tests {
             dx12_shader_compiler(None, Some(&exe)),
             wgpu::Dx12Compiler::Fxc
         ));
+
+        // Nested `runtime/dxcompiler.dll` is discovered when no top-level DLL exists.
+        let runtime_dir = dir.join("runtime");
+        std::fs::create_dir_all(&runtime_dir).unwrap();
+        let runtime_dll = runtime_dir.join("dxcompiler.dll");
+        std::fs::write(&runtime_dll, b"").unwrap();
+        match dx12_shader_compiler(None, Some(&exe)) {
+            wgpu::Dx12Compiler::DynamicDxc { dxc_path } => {
+                assert_eq!(std::path::Path::new(&dxc_path), runtime_dll);
+            }
+            other => panic!("expected runtime DXC, got {other:?}"),
+        }
+
+        // A DLL directly beside the executable takes precedence over `runtime/`.
         let dll = dir.join("dxcompiler.dll");
         std::fs::write(&dll, b"").unwrap();
         match dx12_shader_compiler(None, Some(&exe)) {

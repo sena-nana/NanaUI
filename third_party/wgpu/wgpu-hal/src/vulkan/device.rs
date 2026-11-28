@@ -235,7 +235,11 @@ impl super::DeviceShared {
         buffer: &'a super::Buffer,
         ranges: I,
     ) -> Option<impl 'a + Iterator<Item = vk::MappedMemoryRange<'a>>> {
-        let super::BufferOwnership::Managed(ref allocation) = buffer.ownership else {
+        let super::BufferOwnership::Managed {
+            backing: ref allocation,
+            ..
+        } = buffer.ownership
+        else {
             return None;
         };
         let allocation = allocation.lock();
@@ -314,6 +318,65 @@ impl super::Device {
             format: desc.format,
             copy_size: desc.copy_extent(),
             identity,
+        }
+    }
+
+    /// Wrap an existing raw Vulkan buffer handle as a HAL buffer.
+    ///
+    /// Mirrors [`Self::texture_from_raw`] and the `buffer_from_raw` helpers on
+    /// the DX12, Metal, and GLES backends.
+    ///
+    /// # Safety
+    ///
+    /// - `vk_buffer` must have been created on this device respecting `desc`
+    ///   (size and usage flags).
+    /// - If `drop_callback` is [`None`], wgpu-hal takes ownership of `vk_buffer`
+    ///   and destroys it via `vkDestroyBuffer` when destroyed. If `drop_callback`
+    ///   is [`Some`], `vk_buffer` must remain valid until the callback runs, and
+    ///   wgpu-hal will not call `vkDestroyBuffer`.
+    /// - If `memory` is [`super::BufferMemory::Dedicated`], wgpu-hal takes
+    ///   ownership of `memory` and frees it via `vkFreeMemory` on destroy
+    ///   (`offset` and `size` must match the bound allocation, and
+    ///   `drop_callback` should normally be [`None`] so `vk_buffer` is destroyed
+    ///   before `vkFreeMemory`). Otherwise, the backing memory must stay valid
+    ///   until destroy / `drop_callback`.
+    /// - Externally imported buffers cannot be mapped by `wgpu`.
+    pub unsafe fn buffer_from_raw(
+        &self,
+        vk_buffer: vk::Buffer,
+        desc: &crate::BufferDescriptor,
+        drop_callback: Option<crate::DropCallback>,
+        memory: super::BufferMemory,
+    ) -> super::Buffer {
+        if let Some(label) = desc.label {
+            unsafe { self.shared.set_object_name(vk_buffer, label) };
+        }
+
+        let ownership = match (drop_callback, memory) {
+            (
+                drop_callback,
+                super::BufferMemory::Dedicated {
+                    memory,
+                    offset,
+                    size,
+                },
+            ) => super::BufferOwnership::Managed {
+                backing: Mutex::new(super::BufferMemoryBacking::VulkanMemory {
+                    memory,
+                    offset,
+                    size,
+                }),
+                drop_guard: crate::DropGuard::from_option(drop_callback),
+            },
+            (None, super::BufferMemory::External) => super::BufferOwnership::RawHandle,
+            (Some(drop_callback), super::BufferMemory::External) => {
+                super::BufferOwnership::External(crate::DropGuard::new(drop_callback))
+            }
+        };
+
+        super::Buffer {
+            raw: vk_buffer,
+            ownership,
         }
     }
 
@@ -1078,19 +1141,24 @@ impl crate::Device for super::Device {
 
         Ok(super::Buffer {
             raw,
-            ownership: super::BufferOwnership::Managed(Mutex::new(
-                super::BufferMemoryBacking::Managed(allocation),
-            )),
+            ownership: super::BufferOwnership::Managed {
+                backing: Mutex::new(super::BufferMemoryBacking::Managed(allocation)),
+                drop_guard: None,
+            },
         })
     }
     unsafe fn destroy_buffer(&self, buffer: super::Buffer) {
         match buffer.ownership {
-            super::BufferOwnership::Managed(allocation) => {
-                unsafe { self.shared.raw.destroy_buffer(buffer.raw, None) };
-                let allocation = allocation.into_inner();
-                self.counters.buffer_memory.sub(allocation.size() as isize);
-                match allocation {
+            super::BufferOwnership::Managed {
+                backing,
+                drop_guard,
+            } => {
+                if drop_guard.is_none() {
+                    unsafe { self.shared.raw.destroy_buffer(buffer.raw, None) };
+                }
+                match backing.into_inner() {
                     super::BufferMemoryBacking::Managed(allocation) => {
+                        self.counters.buffer_memory.sub(allocation.size() as isize);
                         let result = self.mem_allocator.lock().free(allocation);
                         if let Err(err) = result {
                             log::warn!("Failed to free buffer allocation: {err}");
@@ -1122,7 +1190,11 @@ impl crate::Device for super::Device {
         buffer: &super::Buffer,
         range: crate::MemoryRange,
     ) -> Result<crate::BufferMapping, crate::DeviceError> {
-        let super::BufferOwnership::Managed(ref allocation) = buffer.ownership else {
+        let super::BufferOwnership::Managed {
+            backing: ref allocation,
+            ..
+        } = buffer.ownership
+        else {
             crate::hal_usage_error("tried to map external buffer")
         };
         let mut allocation = allocation.lock();
@@ -1146,7 +1218,7 @@ impl crate::Device for super::Device {
 
     unsafe fn unmap_buffer(&self, buffer: &super::Buffer) {
         match buffer.ownership {
-            super::BufferOwnership::Managed(_) => {
+            super::BufferOwnership::Managed { .. } => {
                 // gpu-allocator maps the buffer when allocated and unmaps it when free'd
             }
             super::BufferOwnership::RawHandle | super::BufferOwnership::External(_) => {

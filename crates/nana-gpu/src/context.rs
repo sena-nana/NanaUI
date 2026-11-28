@@ -82,6 +82,10 @@ pub struct GpuFeatureSet {
     pipeline_cache: bool,
     timestamp_query: bool,
     resource_arrays: bool,
+    non_uniform_indexing: bool,
+    rasterizer_ordered_storage: bool,
+    shader_f16: bool,
+    subgroup: bool,
     indirect: bool,
     multi_draw: bool,
     external_texture: bool,
@@ -103,6 +107,23 @@ impl GpuFeatureSet {
     }
     pub const fn resource_arrays(self) -> bool {
         self.resource_arrays
+    }
+    /// Non-uniform dynamic indexing into sampled texture and storage buffer arrays.
+    pub const fn non_uniform_indexing(self) -> bool {
+        self.non_uniform_indexing
+    }
+    /// Fragment-stage rasterizer-ordered storage textures (DX12 ROV, Vulkan
+    /// fragment shader interlock, Metal raster order groups).
+    pub const fn rasterizer_ordered_storage(self) -> bool {
+        self.rasterizer_ordered_storage
+    }
+    /// Native 16-bit floating-point (`f16`) shader arithmetic.
+    pub const fn shader_f16(self) -> bool {
+        self.shader_f16
+    }
+    /// Subgroup (wave / SIMD-group) shader operations.
+    pub const fn subgroup(self) -> bool {
+        self.subgroup
     }
     pub const fn indirect(self) -> bool {
         self.indirect
@@ -132,6 +153,10 @@ pub struct GpuLimits {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GpuCapability {
     ResourceArrays,
+    NonUniformIndexing,
+    RasterizerOrderedStorage,
+    ShaderF16,
+    Subgroup,
     Indirect,
     MultiDraw,
     Timestamps,
@@ -154,6 +179,12 @@ impl GpuCapabilities {
         let features = self.features;
         match capability {
             GpuCapability::ResourceArrays => features.resource_arrays(),
+            GpuCapability::NonUniformIndexing => {
+                features.resource_arrays() && features.non_uniform_indexing()
+            }
+            GpuCapability::RasterizerOrderedStorage => features.rasterizer_ordered_storage(),
+            GpuCapability::ShaderF16 => features.shader_f16(),
+            GpuCapability::Subgroup => features.subgroup(),
             GpuCapability::Indirect => features.indirect(),
             GpuCapability::MultiDraw => features.multi_draw(),
             GpuCapability::Timestamps => features.timestamp_query(),
@@ -175,6 +206,14 @@ impl GpuCapabilities {
             } else {
                 Some(match capability {
                     GpuCapability::ResourceArrays => "resource arrays are unavailable",
+                    GpuCapability::NonUniformIndexing => {
+                        "non-uniform resource array indexing is unavailable"
+                    }
+                    GpuCapability::RasterizerOrderedStorage => {
+                        "rasterizer-ordered storage textures are unavailable"
+                    }
+                    GpuCapability::ShaderF16 => "16-bit floating-point shader ops are unavailable",
+                    GpuCapability::Subgroup => "subgroup shader operations are unavailable",
                     GpuCapability::Indirect => "indirect first-instance is unavailable",
                     GpuCapability::MultiDraw => "multi-draw indirect count is unavailable",
                     GpuCapability::Timestamps => "timestamp queries are unavailable",
@@ -328,6 +367,13 @@ impl GpuCapabilities {
                 // arrays. Storage resource arrays are a separate ABI shape
                 // and must not advertise support for this declaration.
                 resource_arrays: features.contains(wgpu::Features::TEXTURE_BINDING_ARRAY),
+                non_uniform_indexing: features.contains(
+                    wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING,
+                ),
+                rasterizer_ordered_storage: features
+                    .contains(wgpu::Features::TEXTURE_STORAGE_RASTERIZER_ORDER),
+                shader_f16: features.contains(wgpu::Features::SHADER_F16),
+                subgroup: features.contains(wgpu::Features::SUBGROUP),
                 indirect: features.contains(wgpu::Features::INDIRECT_FIRST_INSTANCE),
                 multi_draw: features.contains(wgpu::Features::MULTI_DRAW_INDIRECT_COUNT),
                 external_texture: false,
@@ -1148,5 +1194,75 @@ mod tests {
             false,
             false
         ));
+    }
+
+    #[test]
+    fn advanced_capabilities_mirror_feature_set_and_report_fallbacks() {
+        let make = |features: GpuFeatureSet| GpuCapabilities {
+            backend: GpuBackend::Vulkan,
+            device_type: GpuDeviceType::DiscreteGpu,
+            adapter_name: Arc::from("test"),
+            driver: Arc::from("test"),
+            driver_info: Arc::from("test"),
+            vendor_id: 0,
+            device_id: 0,
+            max_texture_dimension_2d: 8192,
+            supports_view_formats: true,
+            supports_rgba16_float_render: true,
+            supports_rgba32_float_render: true,
+            features,
+            limits: GpuLimits {
+                max_bind_groups: 4,
+                max_bindings_per_group: 1000,
+                max_uniform_buffer_binding_size: 65536,
+                max_storage_buffer_binding_size: 134_217_728,
+                min_uniform_buffer_offset_alignment: 256,
+                min_storage_buffer_offset_alignment: 256,
+                max_buffer_size: 268_435_456,
+            },
+        };
+
+        let empty = make(GpuFeatureSet::default());
+        for cap in [
+            GpuCapability::RasterizerOrderedStorage,
+            GpuCapability::ShaderF16,
+            GpuCapability::Subgroup,
+            GpuCapability::NonUniformIndexing,
+        ] {
+            let outcome = empty.capability(cap);
+            assert!(!outcome.supported);
+            assert!(outcome.fallback_reason.is_some());
+        }
+
+        // NonUniformIndexing requires both resource arrays and non-uniform indexing.
+        let indexing_only = make(GpuFeatureSet {
+            non_uniform_indexing: true,
+            ..GpuFeatureSet::default()
+        });
+        assert!(!indexing_only.supports(GpuCapability::NonUniformIndexing));
+
+        let full = make(GpuFeatureSet {
+            resource_arrays: true,
+            non_uniform_indexing: true,
+            rasterizer_ordered_storage: true,
+            shader_f16: true,
+            subgroup: true,
+            ..GpuFeatureSet::default()
+        });
+        assert!(full.features().rasterizer_ordered_storage());
+        assert!(full.features().shader_f16());
+        assert!(full.features().subgroup());
+        assert!(full.features().non_uniform_indexing());
+        for cap in [
+            GpuCapability::ResourceArrays,
+            GpuCapability::NonUniformIndexing,
+            GpuCapability::RasterizerOrderedStorage,
+            GpuCapability::ShaderF16,
+            GpuCapability::Subgroup,
+        ] {
+            let outcome = full.capability(cap);
+            assert!(outcome.supported);
+            assert_eq!(outcome.fallback_reason, None);
+        }
     }
 }

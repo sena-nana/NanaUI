@@ -107,7 +107,7 @@ Inside the `nana-startup-gpu` thread:
 
 On Windows DX12, almost all of `SceneWgpuPainter`'s startup build time is spent compiling shaders. **DXC is about twice as fast as the system's built-in FXC** (measured on an RTX 5060 Ti: release-build painter compilation drops from FXC's `2.24–2.39 s` to DXC's `1.18–1.79 s`; debug builds drop from `4.73–7.77 s` to `1.61–1.98 s`):
 
-- When an x64 `dxcompiler.dll` is present in the same directory as the executable (`.exe`) (DXC `v1.8.2502` or later is recommended, from [DirectXShaderCompiler releases](https://github.com/microsoft/DirectXShaderCompiler/releases) or Windows SDK `10.0.26100`; `dxil.dll` is not needed), the host loads it first by its full absolute path (unaffected by `PATH` or the current working directory).
+- When a target-architecture `dxcompiler.dll` is present in the same directory as the executable (`.exe`) or under its nested `runtime/` directory (DXC `v1.8.2502` or later is recommended, from [DirectXShaderCompiler releases](https://github.com/microsoft/DirectXShaderCompiler/releases) or Windows SDK `10.0.26100`, paired alongside its matching `dxil.dll` so DXIL shaders are signed on retail Windows machines without Developer Mode), the host loads it first by its full absolute path (the executable directory takes precedence over `runtime/`, unaffected by `PATH` or the current working directory).
 - Without `dxcompiler.dll` it automatically falls back to the system's built-in FXC. You can also choose explicitly with the `WGPU_DX12_COMPILER` environment variable (`fxc` / `dxc` / `staticdxc` / `auto`).
 
 ### Precompiled shader artifacts (DXIL / Metal MSL 3.1 / Naga IR)

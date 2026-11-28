@@ -22,7 +22,8 @@
   - `vulkan_present_tracking`（Windows）在 Vulkan 上、带着在途帧反复缩放窗口，适配器支持的每种 present 跟踪方式各跑一遍，并请求校验层；后端记下任何错误即失败。没有 `VK_LAYER_KHRONOS_validation` 时只检查驱动自己的消息；设 `NANA_REQUIRE_VULKAN_VALIDATION=1` 则缺少校验层就失败；
   - `timed_poll` 在 DX12 与 Vulkan 上让零超时的等待与其他线程的 poll、提交竞争几秒；
   - `device_lost_poll` 不重置 GPU 就让设备丢失（Vulkan 用 hal 的测试专用 `simulate_device_lost`，DX12 用 `ID3D12Device5::RemoveDevice`），检查 poll 报 `PollError::DeviceLost`、丢失回调只调一次、挂起的回调都有结果；
-  - `rasterizer_ordered_storage` 在所有系统上检查 naga 对 `rasterizer_ordered` 存储纹理的 WGSL/HLSL/SPIR-V/MSL 处理，并在 DX12、Vulkan（及 Apple 平台上的 Metal）上运行校验与高竞争重叠混合顺序测试。
+  - `rasterizer_ordered_storage` 在所有系统上检查 naga 对 `rasterizer_ordered` 存储纹理的 WGSL/HLSL/SPIR-V/MSL 处理，并在 DX12、Vulkan（及 Apple 平台上的 Metal）上运行校验与高竞争重叠混合顺序测试；
+  - `vulkan_buffer_from_raw` 测试 `wgpu_hal::vulkan::Device::buffer_from_raw` 的 `BufferMemory::Dedicated`（计算着色器写入 + 回读 + HAL 计数器核对）与 `BufferMemory::External`（`drop_callback` 调用）。
 
   没有适配器时 GPU 测试会跳过；设 `NANA_REQUIRE_WGPU_FORK_TESTS=1` 则改为失败，Windows CI 对 DX12 就是这样跑的。这些测试里的 GPU 负载要小且有上限。
 
@@ -126,3 +127,15 @@ NanaUI 在 Apple 平台上通过 `Device::create_shader_module_passthrough` 直�
 - **`wgpu::Queue::present_with_damage(&self, SurfaceTexture, &[[u32; 4]])`**（增量新增）：携带物理像素脏矩形 `[x, y, width, height]` 提交呈现；在不支持局部呈现的后端（以及 DX12 建链/缩放后的首次呈现、或 `PresentMode::Immediate` 撕裂模式下）自动回退到完整呈现。
 - **`wgpu-hal` DX12**：将 DXGI 交换链配置为 `DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL`，跨建链/`ResizeBuffers` 追踪每个后缓冲的初始化状态，并在符合 DXGI 规则时使用裁剪后的 `RECT` 调用 `Present1`。
 - **`wgpu-core`**：对 `preserved == true` 的后缓冲跳过初次全屏清零标记（`init = !ast.preserved`），避免 `LoadOp::Load` 触发隐式全屏清屏。
+
+### Vulkan `Device::buffer_from_raw` 与原始缓冲内存计数修复
+
+对齐 `vulkan::Device::texture_from_raw` 以及 DX12/Metal/GLES 的 `Device::buffer_from_raw`，使 Linux Vulkan 宿主可直接接管外部专用内存的 `vk::Buffer`（消除字节型共享槽如 NDI UYVA 导出中每帧多余的 GPU 内部拷贝）。
+
+- **`wgpu-hal` Vulkan**：增量新增 `wgpu_hal::vulkan::BufferMemory`（`Dedicated` / `External`）、`wgpu_hal::vulkan::Device::buffer_from_raw` 与 `pub use ash;`（保持现有 `Buffer::from_raw*` 构造不变）。
+- **`wgpu-hal` Vulkan（`destroy_buffer`）**：修复上游计数下溢缺陷——销毁 `BufferMemoryBacking::VulkanMemory` 原始缓冲时原本会从 `counters.buffer_memory` 减去其大小，但 `add_raw_buffer` 从未加过该值（对齐 `destroy_texture` 对 `TextureMemory::Dedicated` 的处理）。
+
+#### 暂缓的 fork 审计结论（动态剔除模式与 Metal Framebuffer Fetch）
+
+- **动态剔除模式（`MTLRenderCommandEncoder::setCullMode` / `VK_EXT_extended_dynamic_state` / Vulkan 1.3 `vkCmdSetCullMode`）**：*暂缓*。Metal 在绑定管线时本就动态调用 `setCullMode`（`wgpu-hal/src/metal/command.rs`），但 DX12 将剔除模式固化在不可变 `ID3D12PipelineState` PSO 中，跨平台渲染器仍须为 Windows DX12 保留两份剔除 PSO。引入跨层 `RenderPass::set_cull_mode` 需要修改 `wgpu-types`、`wgpu-hal`、`wgpu-core`（含深度模板只读性与剔除模式的耦合校验）与 `wgpu`，相对极少数已缓存 PSO 的收益过低。
+- **Metal Framebuffer Fetch（片元输入 `[[color(0)]]`）**：*暂缓*。`Features::TEXTURE_STORAGE_RASTERIZER_ORDER`（Metal 上为 `raster_order_group(0)`）已提供三平台统一的 WGSL 路径，可直接消除渲染通道拆分与背景拷贝。引入仅限 Metal 的 naga + `wgpu-core` 扩展与独立着色器变体维护成本较高，仅在 Apple Silicon 实机性能分析确认 `raster_order_group(0)` 存储纹理带宽成为主要瓶颈后再考虑。

@@ -107,7 +107,7 @@ startup.cancel_takeover(ticket)?;    // 撤回接管请求并使旧 ticket 作�
 
 在 Windows DX12 下，`SceneWgpuPainter` 的启动构建耗时几乎全部花在着色器编译上。**DXC 比系统自带的 FXC 快约一倍**（实测 RTX 5060 Ti 上 release 构建的 painter 编译从 FXC 的 `2.24–2.39 s` 降至 DXC 的 `1.18–1.79 s`，debug 构建从 `4.73–7.77 s` 降至 `1.61–1.98 s`）：
 
-- 当可执行文件（`.exe`）同目录下存在 x64 的 `dxcompiler.dll`（建议 DXC `v1.8.2502` 或更新版本，来自 [DirectXShaderCompiler releases](https://github.com/microsoft/DirectXShaderCompiler/releases) 或 Windows SDK `10.0.26100`，无需附带 `dxil.dll`）时，宿主会按完整绝对路径优先加载它（不受 `PATH` 或当前工作目录污染）；
+- 当可执行文件（`.exe`）同目录或其嵌套的 `runtime/` 目录下存在与目标架构匹配的 `dxcompiler.dll`（建议 DXC `v1.8.2502` 或更新版本，来自 [DirectXShaderCompiler releases](https://github.com/microsoft/DirectXShaderCompiler/releases) 或 Windows SDK `10.0.26100`，并同目录附带匹配的 `dxil.dll` 以在未开启开发者模式的零售 Windows 上完成 DXIL 签名）时，宿主会按完整绝对路径优先加载它（同目录优先于 `runtime/`，不受 `PATH` 或当前工作目录污染）；
 - 未携带 `dxcompiler.dll` 时自动回退到系统内置的 FXC，也可通过环境变量 `WGPU_DX12_COMPILER`（`fxc` / `dxc` / `staticdxc` / `auto`）显式指定。
 
 ### 预编译的着色器产物（DXIL / Metal MSL 3.1 / Naga IR）
