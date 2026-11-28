@@ -1578,6 +1578,55 @@ mod tests {
         );
     }
 
+    /// The colour picker's hue slider is a range over a spectrum track. Its
+    /// hover fade must not cover the strip in the accent either.
+    #[test]
+    fn hue_slider_hover_fade_paints_no_root_surface() {
+        let mut cx = AppContext::new();
+        let doc = DocumentId::new(1).unwrap();
+        let root = cx
+            .create_component(
+                doc,
+                crate::Stack::column(0.0).width(nana_ui_core::LengthSpec::Px(280.0)),
+            )
+            .unwrap();
+        let field = cx
+            .create_component(
+                doc,
+                crate::ColorField::new([0.2, 0.4, 0.8, 1.0]).inline(true),
+            )
+            .unwrap();
+        cx.append_child(root, field).unwrap();
+        assert!(cx.assemble_color_field(field).unwrap());
+        cx.layout_document(doc, crate::LayoutViewport::new(400.0, 600.0))
+            .unwrap();
+        let hue = cx
+            .read(field, |f| f.hue_slider)
+            .unwrap()
+            .expect("hue slider");
+        tick(&mut cx, 0);
+        let surface = |cx: &AppContext| {
+            let node = cx.world().extract_nodes(&[hue]).remove(0);
+            assert!(
+                node.widget_paint
+                    .expect("range paints itself")
+                    .suppress_root_surface
+            );
+            (
+                node.source_style.layout.has_surface_paint(),
+                node.source_style.layout.paint_colors.background,
+            )
+        };
+        assert!(!surface(&cx).0, "idle");
+        cx.set_pointer_hover_at(doc, 1, Some(hue), Duration::ZERO)
+            .unwrap();
+        for ms in [0, 16, 60, 120] {
+            tick(&mut cx, ms);
+            let (has, bg) = surface(&cx);
+            assert!(!has, "no surface at +{ms}ms: {bg:?}");
+        }
+    }
+
     #[test]
     fn hover_foreground_repaints_inheriting_children_through_the_final_frame() {
         let mut world = UiWorld::new();
