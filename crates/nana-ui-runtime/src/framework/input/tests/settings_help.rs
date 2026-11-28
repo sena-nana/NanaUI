@@ -1,6 +1,6 @@
 //! A settings row's help button: pressing it with a mouse, a touch or the
-//! keyboard opens the hint in place under the row and pressing again closes
-//! it, through the one input path.
+//! keyboard pins its hint's tooltip open and pressing again closes it,
+//! through the one input path; the row keeps its height.
 
 use super::*;
 use crate::view::{IntoView, column, settings_row, switch, widget};
@@ -72,13 +72,26 @@ impl Fixture {
         self.cx.read(self.row, |row| row.help_open).unwrap()
     }
 
-    fn opened_text_shown(&self) -> bool {
-        let text = self
+    /// Whether the button's tooltip, which carries the hint, is showing.
+    fn tooltip_shown(&self) -> bool {
+        let button = self.button();
+        let tooltip = self
             .cx
-            .assembled_slot::<crate::settings::SettingsRowAssembled>(self.row.stable_id())
-            .and_then(|s| s.help_text_slot)
-            .unwrap();
-        !self.cx.world().node_style(text).unwrap().layout.hidden
+            .component_tooltip(Entity::<IconButton>::from_stable_id(button))
+            .unwrap()
+            .expect("the help button tips its hint");
+        self.cx
+            .world()
+            .overlay_host(button)
+            .is_some_and(|state| state.active == Some(tooltip.stable_id()))
+    }
+
+    fn row_height(&self) -> f32 {
+        self.cx
+            .world()
+            .canonical_layout_box(self.row.stable_id())
+            .unwrap()
+            .height
     }
 
     fn tap(&mut self, pointer_type: PointerType) {
@@ -158,20 +171,37 @@ fn a_click_on_the_help_button_opens_the_hint_and_another_closes_it() {
         nana_ui_core::TooltipPlacement::FollowCursor
     );
 
+    let height = f.row_height();
     f.tap(PointerType::Mouse);
     assert!(f.open());
-    assert_eq!(tooltip(&f), None, "nothing to preview while it is open");
-    assert!(f.opened_text_shown());
-    assert_eq!(
-        f.button_state(),
-        (Some(true), false),
-        "open, it says so and no longer previews the hint"
+    assert!(f.tooltip_shown(), "the hint shows in the tooltip at once");
+    assert_eq!(f.button_state(), (Some(true), true), "open, it says so");
+    assert_eq!(f.row_height(), height, "the row keeps its height");
+
+    f.cx.set_pointer_hover_at(f.doc, 1, None, Duration::from_secs(5))
+        .unwrap();
+    f.layout();
+    assert!(
+        f.tooltip_shown(),
+        "pinned, it stays when the pointer leaves"
     );
 
     f.tap(PointerType::Mouse);
     assert!(!f.open());
-    assert!(!f.opened_text_shown());
+    assert!(!f.tooltip_shown(), "the press that closes it hides it");
     assert_eq!(f.button_state(), (Some(false), true));
+}
+
+#[test]
+fn escape_closes_the_pinned_hint_and_the_next_press_opens_it_again() {
+    let mut f = Fixture::new();
+    f.tap(PointerType::Mouse);
+    assert!(f.tooltip_shown());
+    f.press("Escape", "Escape");
+    assert!(!f.tooltip_shown());
+    f.tap(PointerType::Mouse);
+    assert!(f.open());
+    assert!(f.tooltip_shown(), "one press, not two, opens it again");
 }
 
 #[test]
@@ -179,7 +209,7 @@ fn a_touch_opens_the_hint_as_a_click_does() {
     let mut f = Fixture::new();
     f.tap(PointerType::Touch);
     assert!(f.open(), "a touch has no hover: the press is how it opens");
-    assert!(f.opened_text_shown());
+    assert!(f.tooltip_shown());
     f.tap(PointerType::Touch);
     assert!(!f.open());
 }
@@ -197,6 +227,7 @@ fn the_keyboard_reaches_the_help_button_and_toggles_the_hint() {
     f.cx.focus_node(f.doc, button).unwrap();
     f.press("Enter", "Enter");
     assert!(f.open());
+    assert!(f.tooltip_shown(), "with no pointer it shows by the button");
     let spoken =
         f.cx.world()
             .project_accessibility(f.doc)

@@ -24,8 +24,7 @@ const ROW_INLINE_GAP: f32 = nana_ui_core::space::MD;
 const ROW_INLINE_GAP_LOOSE: f32 = nana_ui_core::space::XXL;
 pub(super) const ROW_COPY_GAP: f32 = nana_ui_core::space::XS;
 const ROW_LABEL_ACCESSORY_GAP: f32 = nana_ui_core::space::XS;
-/// Between a row's main line and what is under it (the opened hint, the
-/// notice).
+/// Between a row's main line and what is under it (the notice).
 const ROW_UNDER_GAP: f32 = nana_ui_core::space::XS;
 /// Between a column row's control and its trailing node.
 const ROW_TRAILING_GAP: f32 = nana_ui_core::space::XXS;
@@ -52,9 +51,10 @@ pub enum HintPlacement {
     /// Under the name, in the row's copy.
     #[default]
     Below,
-    /// Behind a help button after the name: hovering it previews the hint,
-    /// pressing it (with a pointer, a touch or the keyboard) opens the hint
-    /// in place under the row, and pressing again closes it.
+    /// Behind a help button after the name: hovering it previews the hint in
+    /// a tooltip, pressing it (with a pointer, a touch or the keyboard) pins
+    /// that tooltip open by the button, and pressing again (or Escape)
+    /// closes it. The row keeps its height either way.
     Help,
 }
 
@@ -84,10 +84,13 @@ pub struct SettingsRow {
     /// The placement the row's group or card gives it, written by them; see
     /// [`Self::hint_placement`](field@Self::hint_placement).
     pub(crate) inherited_hint_placement: Option<HintPlacement>,
-    /// Whether the hint behind the help button is open under the row. The
-    /// help button flips it; it is the row's own state, as a hover card's
-    /// `open` is the card's.
+    /// Whether the hint behind the help button is pinned open in its
+    /// tooltip. It follows the tooltip: pressing the button asks for a flip
+    /// (`help_toggle`), and the row's lifecycle pins or lets go of the
+    /// tooltip and writes back what it then is, so a tooltip Escape closed
+    /// opens again on the next press.
     pub(crate) help_open: bool,
+    pub(crate) help_toggle: bool,
     pub stacked: bool,
     /// Stack below this row's laid-out width in logical pixels. `stacked`
     /// remains an unconditional override; `None` preserves inline layout.
@@ -139,7 +142,6 @@ pub struct SettingsRow {
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub(crate) struct SettingsRowAssembled {
     pub(crate) help_slot: Option<StableNodeId>,
-    pub(crate) help_text_slot: Option<StableNodeId>,
     pub(crate) notice_slot: Option<StableNodeId>,
     pub(crate) notice_glyph_slot: Option<StableNodeId>,
     pub(crate) notice_text_slot: Option<StableNodeId>,
@@ -170,6 +172,7 @@ impl SettingsRow {
             notice_tone: nana_ui_core::ValidationIntent::Warning,
             inherited_hint_placement: None,
             help_open: false,
+            help_toggle: false,
             stacked: false,
             stack_below: None,
             auto_stack: false,
@@ -520,8 +523,8 @@ impl SettingsRow {
         }
         layout.width = Some(LengthSpec::Percent(100.0));
         if main_slot.is_some() {
-            // The main line, then what is under it (the opened hint, the
-            // notice), each across the row.
+            // The main line, then what is under it (the notice), across
+            // the row.
             layout.direction = Some(FlexDirection::Column);
             layout.align_items = AlignSpec::Stretch;
             layout.justify_content = JustifySpec::Start;
@@ -832,11 +835,6 @@ impl SettingsRow {
             .project(main, world, mutations);
         }
         let help = self.shows_help();
-        if let Some(text) = assembled.help_text_slot {
-            Text::new(self.hint.as_deref().unwrap_or(""))
-                .style(hint_slot_style(!(help && self.help_open)))
-                .project(text, world, mutations);
-        }
         let notice = self.shown_notice();
         if let Some(slot) = assembled.notice_slot {
             notice_box_style(notice.map(|(_, tone)| tone)).project(slot, world, mutations);
@@ -1457,14 +1455,12 @@ fn sync_row_parts(
 /// (24px at the default metrics) to aim at, hanging out of the name's line
 /// on every side so the line and the row keep their height; its glyph is
 /// the body text's size. Its name is the hint itself. Hovering it previews
-/// the hint, until the hint is `open` under the row.
+/// the hint in its tooltip; pressing it pins the tooltip `open`.
 fn help_button(hint: &Arc<str>, open: bool) -> crate::IconButton {
     let mut button = crate::IconButton::new(nana_ui_core::Icon::HelpCircle, Arc::clone(hint))
         .compact(true)
-        .expanded(open);
-    if !open {
-        button = button.with_tooltip(Arc::clone(hint));
-    }
+        .expanded(open)
+        .with_tooltip(Arc::clone(hint));
     let overhang = (nana_ui_core::SpacingTokens::DEFAULT.page
         - nana_ui_core::TypographyTokens::DEFAULT.body)
         * -0.5;
@@ -1489,8 +1485,9 @@ fn help_button(hint: &Arc<str>, open: bool) -> crate::IconButton {
 }
 
 /// Bring `row`'s help button in line with its hint and whether the hint is
-/// open: named by the hint, saying whether it is expanded, and previewing
-/// the hint on hover only while it is closed.
+/// pinned open: named and tipped by the hint, saying whether it is
+/// expanded. A press asked for (`help_toggle`) pins the tooltip or lets it
+/// go, from what the tooltip is now; the row then records what it is.
 fn sync_row_help(context: &mut AppContext, row: Entity<SettingsRow>) -> Result<(), FrameworkError> {
     let Some(button) = context
         .assembled_slot::<SettingsRowAssembled>(row.stable_id())
@@ -1498,9 +1495,20 @@ fn sync_row_help(context: &mut AppContext, row: Entity<SettingsRow>) -> Result<(
     else {
         return Ok(());
     };
-    let (hint, open) = context.read(row, |row| {
-        (row.hint.clone().unwrap_or_default(), row.help_open)
+    let (hint, was_open, toggle) = context.read(row, |row| {
+        (
+            row.hint.clone().unwrap_or_default(),
+            row.help_open,
+            row.help_toggle,
+        )
     })?;
+    let pinned = context.tooltip_pinned(button);
+    let open = if toggle { !pinned } else { pinned };
+    // The tooltip first, then the button, then the row: writing the row runs
+    // this again, which must find them already agreeing.
+    if open != pinned {
+        context.pin_tooltip(button, open)?;
+    }
     let button = Entity::<crate::IconButton>::from_stable_id(button);
     let next = help_button(&hint, open);
     let stale = context
@@ -1515,6 +1523,12 @@ fn sync_row_help(context: &mut AppContext, row: Entity<SettingsRow>) -> Result<(
             current.label = next.label;
             current.tooltip = next.tooltip;
             current.expanded = next.expanded;
+        })?;
+    }
+    if toggle || open != was_open {
+        context.update_component(row, |row, _| {
+            row.help_open = open;
+            row.help_toggle = false;
         })?;
     }
     Ok(())
@@ -1809,9 +1823,9 @@ impl AppContext {
     /// [`SettingsRow::label_accessory`] or a help button
     /// ([`HintPlacement::Help`]) puts the label and those on one line in the
     /// copy; without either the label is the copy's own child, as it always
-    /// was. A row with something under it (the hint opened from its help
-    /// button, a notice or an error) holds its copy and control in a main
-    /// line and stacks what is under it after that line. What the label and
+    /// was. A row with something under it (a notice or an error) holds its
+    /// copy and control in a main line and stacks what is under it after
+    /// that line. What the label and
     /// hint say is the row's own `label` / `hint`; its projection writes
     /// them. The view layer runs this after it builds a row
     /// (`TypeBehavior::slot_assembler`); a row made with
@@ -1848,7 +1862,6 @@ impl AppContext {
         let error_shown = existing_assembled.error_shown;
         let (wants_help, help_open) = self.read(row, |row| (row.shows_help(), row.help_open))?;
         let help_slot = existing_assembled.help_slot;
-        let help_text_slot = existing_assembled.help_text_slot;
         let notice_slot = existing_assembled.notice_slot;
         let notice_glyph_slot = existing_assembled.notice_glyph_slot;
         let notice_text_slot = existing_assembled.notice_text_slot;
@@ -1930,9 +1943,9 @@ impl AppContext {
         }
 
         let mut changed = false;
-        // The help button goes with the hint behind it; the opened hint's
-        // node is made with it and kept, hidden, after it goes: the row keeps
-        // one shape meanwhile.
+        // The help button goes with the hint behind it. Its tooltip shows the
+        // hint, previewed on hover and pinned open by a press, so the row
+        // keeps one shape either way.
         let live_help = live(self, help_slot);
         let help = match (wants_help, live_help) {
             (true, Some(id)) => Some(id),
@@ -1941,24 +1954,14 @@ impl AppContext {
                 let button =
                     self.create_detached_component(document, help_button(&hint, help_open))?;
                 self.observe(button, row, |row, _: &Activate, cx| {
-                    row.help_open = !row.help_open;
-                    // The row's lifecycle brings the button along.
+                    row.help_toggle = true;
+                    // The row's lifecycle pins the tooltip or lets it go and
+                    // brings the button along.
                     cx.reassemble();
                 })?;
                 Some(button.stable_id())
             }
             (false, _) => None,
-        };
-        let help_text = match (live(self, help_text_slot), help) {
-            (Some(id), _) => Some(id),
-            (None, Some(_)) => Some(
-                self.create_detached_component(
-                    document,
-                    Text::new(hint.as_deref().unwrap_or("")).style(hint_slot_style(true)),
-                )?
-                .stable_id(),
-            ),
-            (None, None) => None,
         };
         // The notice line is made the first time there is a notice or an
         // error and kept, hidden, after they clear: a row that was wrong
@@ -1989,10 +1992,7 @@ impl AppContext {
             };
         // Something under the row puts the copy and the control on a main
         // line of their own, kept from then on.
-        let main = match (
-            live(self, main_slot),
-            help_text.is_some() || notice.is_some(),
-        ) {
+        let main = match (live(self, main_slot), notice.is_some()) {
             (Some(id), _) => Some(id),
             (None, true) => Some(
                 self.create_detached_component(
@@ -2105,7 +2105,6 @@ impl AppContext {
                 live(self, flash_slot)
                     .into_iter()
                     .chain([main])
-                    .chain(help_text)
                     .chain(notice)
                     .collect()
             }
@@ -2123,7 +2122,6 @@ impl AppContext {
 
         let slots_changed = created
             || help != live_help
-            || help_text != help_text_slot
             || notice != notice_slot
             || next_notice_glyph != notice_glyph_slot
             || next_notice_text != notice_text_slot
@@ -2138,7 +2136,6 @@ impl AppContext {
                 row.stable_id(),
                 SettingsRowAssembled {
                     help_slot: help,
-                    help_text_slot: help_text,
                     notice_slot: notice,
                     notice_glyph_slot: next_notice_glyph,
                     notice_text_slot: next_notice_text,
@@ -2202,7 +2199,7 @@ impl AppContext {
             self.focus_first_in(document, control)?;
         }
 
-        if help != live_help || help_text != help_text_slot || main != main_slot {
+        if help != live_help || main != main_slot {
             changed = true;
         }
         sync_row_help(self, row)?;

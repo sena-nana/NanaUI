@@ -598,6 +598,10 @@ struct TooltipLifecycle {
     overlay: StableNodeId,
     show_at: Option<Duration>,
     open: bool,
+    /// Kept showing whatever the pointer does, until unpinned: a help
+    /// button's hint, opened by pressing the button. Anchored on its target
+    /// rather than the pointer, so it holds still.
+    pinned: bool,
 }
 
 /// Timer state for a hover-triggered surface ([`crate::HoverCard`]). The

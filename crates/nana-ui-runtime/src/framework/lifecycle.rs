@@ -1122,6 +1122,7 @@ impl AppContext {
                         overlay,
                         show_at: None,
                         open: false,
+                        pinned: false,
                     },
                 );
             }
@@ -1331,6 +1332,7 @@ impl AppContext {
         if let Some(tooltip) = self.component_lifecycle.tooltips.get_mut(&id) {
             tooltip.show_at = None;
             tooltip.open = false;
+            tooltip.pinned = false;
         }
         changed
     }
@@ -1691,12 +1693,56 @@ impl AppContext {
             return Ok(());
         };
         lifecycle.show_at = None;
-        if !lifecycle.open {
+        if !lifecycle.open || lifecycle.pinned {
             return Ok(());
         }
         lifecycle.open = false;
         self.set_tooltip_visible(target, None)?;
         Ok(())
+    }
+
+    /// Whether `target`'s tooltip is pinned open ([`Self::pin_tooltip`]).
+    pub(crate) fn tooltip_pinned(&self, target: StableNodeId) -> bool {
+        self.component_lifecycle
+            .tooltips
+            .get(&target)
+            .is_some_and(|lifecycle| lifecycle.pinned)
+    }
+
+    /// Pin `target`'s tooltip open, or let it go. Pinned, it shows at once
+    /// (or stays, when a hover already shows it) and leaving the target no
+    /// longer hides it; it sits by the target, not the pointer. Unpinned, it
+    /// hides, the pointer where it may: the press that unpins it is the
+    /// user saying they are done with it. Escape, a blocking overlay opening
+    /// or the target being parked unpin it too. Returns whether that
+    /// changed anything.
+    pub(crate) fn pin_tooltip(
+        &mut self,
+        target: StableNodeId,
+        pinned: bool,
+    ) -> Result<bool, FrameworkError> {
+        let Some(lifecycle) = self.component_lifecycle.tooltips.get_mut(&target) else {
+            return Ok(false);
+        };
+        if lifecycle.pinned == pinned {
+            return Ok(false);
+        }
+        lifecycle.pinned = pinned;
+        lifecycle.show_at = None;
+        let (open, overlay) = (lifecycle.open, lifecycle.overlay);
+        if pinned {
+            if open {
+                self.position_tooltip(target, overlay)?;
+            } else {
+                self.open_tooltip(target)?;
+            }
+        } else if open {
+            if let Some(lifecycle) = self.component_lifecycle.tooltips.get_mut(&target) {
+                lifecycle.open = false;
+            }
+            self.set_tooltip_visible(target, None)?;
+        }
+        Ok(true)
     }
 
     pub(super) fn open_tooltip(&mut self, target: StableNodeId) -> Result<bool, FrameworkError> {
@@ -2050,10 +2096,14 @@ impl AppContext {
         let left_available = (anchor.x - config.gap - padding).max(0.0);
         let right_available =
             (viewport.width - padding - (anchor.x + anchor.width + config.gap)).max(0.0);
-        let cursor = self.pointer_location_on(target).unwrap_or((
-            anchor.x + anchor.width / 2.0,
-            anchor.y + anchor.height / 2.0,
-        ));
+        // A pinned tooltip holds still by its target as the pointer moves on.
+        let cursor = (!self.tooltip_pinned(target))
+            .then(|| self.pointer_location_on(target))
+            .flatten()
+            .unwrap_or((
+                anchor.x + anchor.width / 2.0,
+                anchor.y + anchor.height / 2.0,
+            ));
         let (width, horizontal_side) = match config.placement {
             TooltipPlacement::Left => {
                 let side = if left_available >= desired_width

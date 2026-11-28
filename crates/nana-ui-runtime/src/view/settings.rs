@@ -829,12 +829,12 @@ mod tests {
             );
         }
 
-        /// The hint opened from the button and the notice stand under the
-        /// row's main line, the hint above the notice, both above the row's
-        /// divider and across the row; the control stays centred on the
-        /// name.
+        /// The hint opened from the button shows in the button's tooltip,
+        /// not in the row: the row keeps its height and only the notice
+        /// stands under its main line, above the row's divider and across
+        /// the row; the control stays centred on the name.
         #[test]
-        fn the_opened_hint_and_the_notice_stand_under_the_row() {
+        fn the_opened_hint_leaves_the_row_and_the_notice_stands_under_it() {
             let document = DocumentId::new(1).unwrap();
             let mut cx = AppContext::new();
             let view = cx
@@ -854,6 +854,8 @@ mod tests {
             let id = children(&cx, view.roots()[0])[0];
             let entity = row(&cx, id);
             let help = help_of(&cx, id).unwrap();
+            lay_out(&mut cx, document, 480.0);
+            let closed_height = bounds(&cx, id).height;
             assert!(
                 cx.activate_icon_button(Entity::<IconButton>::from_stable_id(help))
                     .unwrap()
@@ -868,20 +870,18 @@ mod tests {
                     (row.control.unwrap(), row.label_slot.unwrap())
                 })
                 .unwrap();
-            let (main, opened, notice) = (
-                assembled.main_slot.unwrap(),
-                assembled.help_text_slot.unwrap(),
-                assembled.notice_slot.unwrap(),
-            );
+            let (main, notice) = (assembled.main_slot.unwrap(), assembled.notice_slot.unwrap());
             assert!(cx.read(entity, |row| row.help_open).unwrap());
-            assert_eq!(children(&cx, id), [main, opened, notice]);
-            assert!(!cx.world().node_style(opened).unwrap().layout.hidden);
-            assert_eq!(cx.world().text(opened), Some("编辑器在这个端口上监听"));
+            assert!(cx.tooltip_pinned(help), "the tooltip holds the hint");
+            assert_eq!(children(&cx, id), [main, notice]);
 
             let (row_box, main_box) = (bounds(&cx, id), bounds(&cx, main));
-            let (opened_box, notice_box) = (bounds(&cx, opened), bounds(&cx, notice));
-            assert!(opened_box.y >= main_box.y + main_box.height - 0.5);
-            assert!(notice_box.y >= opened_box.y + opened_box.height - 0.5);
+            let notice_box = bounds(&cx, notice);
+            assert!(
+                (row_box.height - closed_height).abs() < 0.5,
+                "opening the hint does not raise the row"
+            );
+            assert!(notice_box.y >= main_box.y + main_box.height - 0.5);
             let divider = cx
                 .world()
                 .node_style(id)
@@ -899,7 +899,6 @@ mod tests {
                 (notice_box.width - row_box.width).abs() < 0.5,
                 "across the row"
             );
-            assert!((opened_box.width - row_box.width).abs() < 0.5);
             let centre = |b: crate::LayoutBox| b.y + b.height / 2.0;
             let offset = centre(bounds(&cx, control)) - centre(bounds(&cx, label));
             assert!(
@@ -912,7 +911,7 @@ mod tests {
                     .unwrap()
             );
             assert!(!cx.read(entity, |row| row.help_open).unwrap());
-            assert!(cx.world().node_style(opened).unwrap().layout.hidden);
+            assert!(!cx.tooltip_pinned(help));
         }
 
         /// A row without a notice keeps no room for one, before it has had

@@ -344,6 +344,11 @@ impl AppContext {
                         self.dismiss_overlay(Entity::from_stable_id(overlay.host))?;
                     }
                     RuntimeOverlayKind::Tooltip => {
+                        if let Some(lifecycle) =
+                            self.component_lifecycle.tooltips.get_mut(&overlay.host)
+                        {
+                            lifecycle.pinned = false;
+                        }
                         self.leave_tooltip(overlay.host)?;
                         if self
                             .world
@@ -525,6 +530,7 @@ impl AppContext {
             if let Some(lifecycle) = self.component_lifecycle.tooltips.get_mut(&target) {
                 lifecycle.show_at = None;
                 lifecycle.open = false;
+                lifecycle.pinned = false;
             }
         }
         for (target, range) in cancelled_ranges {
